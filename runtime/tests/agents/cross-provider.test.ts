@@ -27,6 +27,44 @@ function sessionWithModels(provider: string, model: string, liveModels: string[]
 }
 
 describe("child provider selection", () => {
+  it("uses sign-in model tool capability when admitting a child", async () => {
+    const session = sessionWithModels("grok", "grok-4.6", ["grok-4.6"], {
+      agents: { cross_provider_enabled: true, allowed_providers: ["openai"] },
+    });
+    Object.assign(session, {
+      conversationId: "sign-in-parent",
+      sessionConfiguration: { cwd: "/workspace", collaborationMode: { model: "grok-4.6" } },
+      providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }),
+        prepareChild: async () => ({ authProfile: "sign_in", billingSource: "sign_in",
+          signInModelCapabilities: { supportsToolUse: false },
+          binding: { instance: { dispose: () => {} },
+            factoryOptions: { baseURL: "https://chatgpt.com/backend-api/codex" } } }) },
+    });
+    const args = { session, selection: { provider: "openai", model: "gpt-6-luna" },
+      modelInfo: { slug: "gpt-6-luna", provider: "openai", supportsToolUse: true } as Session["modelInfo"],
+      parentPath: "/root", taskId: "worker", taskName: "worker", taskText: "inspect",
+      forkedHistory: false };
+    await expect(createChildExecutionPlan({ ...args, toolFree: false }))
+      .rejects.toThrow(/does not support client-side tool calling on this sign-in/u);
+    const free = await createChildExecutionPlan({ ...args, toolFree: true });
+    expect(free.modelInfo.supportsToolUse).toBe(false);
+  });
+
+  it("admits a model on the sign-in list even if the API-key catalog lacks it", async () => {
+    const session = sessionWithModels("grok", "grok-4.6", ["grok-4.6"], {
+      agents: { cross_provider_enabled: true, allowed_providers: ["openai"] },
+    });
+    const dispose = vi.fn();
+    const prepareChild = vi.fn(async () => ({ authProfile: "sign_in",
+      binding: { instance: { dispose } } }));
+    Object.assign(session, { providerService: {
+      current: () => ({ provider: "grok", model: "grok-4.6" }), prepareChild,
+    } });
+    expect(await resolveChildSelection(session, "openai", "gpt-6-subscription-only"))
+      .toEqual({ provider: "openai", model: "gpt-6-subscription-only" });
+    expect(prepareChild).toHaveBeenCalledOnce();
+    expect(dispose).toHaveBeenCalledOnce();
+  });
   it("accepts a live-only local model with a real configStore and no provider", async () => {
     const session = sessionWithModels("ollama", "llama3.3", ["llama3.3", "team/custom-local"]);
     expect(await resolveChildSelection(session, undefined, "team/custom-local"))

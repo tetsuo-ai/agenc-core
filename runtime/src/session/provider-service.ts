@@ -27,6 +27,9 @@ import { readGeminiRuntimeOptions } from "../llm/providers/gemini/runtime-option
 import { createPinnedProviderFetch } from "../llm/credential-redirect-fetch.js";
 import { isGrokComposerModel } from "../llm/providers/grok/acp-adapter.js";
 import { assertSupportedCrossProviderAuth } from "../llm/cross-provider-auth.js";
+import { CHATGPT_BACKEND_BASE_URL } from "../llm/providers/openai/chatgpt-backend.js";
+import { assertSignInChildModelEligible, type SignInChildModelCapabilities } from "../llm/sign-in-child-models.js";
+import { LLMAuthenticationError } from "../llm/errors.js";
 
 export type { ReadSavedProviderApiKey } from "../llm/provider-options.js";
 
@@ -51,6 +54,7 @@ export interface PreparedProviderBinding {
   readonly managedDefaultOutputCap: boolean;
   readonly billingSource?: "byok" | "sign_in" | "managed" | "local";
   readonly authProfile?: "api_key" | "sign_in" | "managed" | "local" | "aws_sigv4";
+  readonly signInModelCapabilities?: SignInChildModelCapabilities;
 }
 
 export interface ProviderPreparationRuntime {
@@ -347,6 +351,7 @@ export class SessionProviderService {
          !approvedConcreteDestination.model.trim())) {
       throw new Error("Managed AgenC child requires an approved concrete provider and model execution plan");
     }
+    let signInModelCapabilities: SignInChildModelCapabilities | undefined;
     if (canonicalEndpointRequired) {
       const info = resolveBuiltInProviderInfo(provider)!;
       const envBaseURL = resolveProviderBaseURLEnvironment(provider, this.#environment);
@@ -358,7 +363,8 @@ export class SessionProviderService {
           return value.trim();
         }
       };
-      if (normalize(resolvedBaseURL) !== normalize(info.baseURL)) {
+      if (normalize(resolvedBaseURL) !== normalize(info.baseURL) &&
+          !(provider === "openai" && normalize(resolvedBaseURL) === normalize(CHATGPT_BACKEND_BASE_URL))) {
         const source = envBaseURL?.value === resolvedBaseURL
           ? envBaseURL.envVar
           : requested === undefined
@@ -434,7 +440,16 @@ export class SessionProviderService {
           : {}),
       },
     );
-    requireProviderRuntimeCredential(provider, authority);
+    try {
+      requireProviderRuntimeCredential(provider, authority);
+    } catch (error) {
+      if (canonicalEndpointRequired &&
+          ((provider === "openai" && this.#environment.OPENAI_AUTH_MODE === "oauth") ||
+           (provider === "grok" && this.#environment.GROK_AUTH_MODE === "oauth"))) {
+        throw new LLMAuthenticationError(provider, 401, "sign-in is required for this child");
+      }
+      throw error;
+    }
     const authProfile = provider === "agenc" || authority.managedCredential
       ? "managed" as const
       : authority.factoryOptions.extra?.authMode === "oauth"
@@ -447,6 +462,8 @@ export class SessionProviderService {
     if (canonicalEndpointRequired) {
       const info = resolveBuiltInProviderInfo(provider)!;
       const effective = authority.factoryOptions;
+      const canonicalBaseURL = provider === "openai" && authProfile === "sign_in"
+        ? CHATGPT_BACKEND_BASE_URL : info.baseURL;
       const normalize = (value: string): string | undefined => {
         try {
           return new URL(value).href.replace(/\/+$/u, "");
@@ -455,7 +472,7 @@ export class SessionProviderService {
         }
       };
       if (effective.baseURL !== undefined &&
-          normalize(effective.baseURL) !== normalize(info.baseURL)) {
+          normalize(effective.baseURL) !== normalize(canonicalBaseURL)) {
         throw new Error(`Cross-provider ${info.name} child requires its default endpoint after credential resolution`);
       }
       if (provider === "gemini") {
@@ -480,16 +497,29 @@ export class SessionProviderService {
         throw new Error("Cross-provider Grok Composer children cannot use the CLI transport");
       }
       assertSupportedCrossProviderAuth(provider, authProfile);
+      if (authProfile === "sign_in") {
+        signInModelCapabilities = await assertSignInChildModelEligible({
+          provider, model, options: effective,
+          fetchImpl: typeof effective.extra?.fetchImpl === "function"
+            ? effective.extra.fetchImpl as typeof fetch : fetch,
+          environment: this.#environment,
+        });
+      }
     }
     const factoryOptions = canonicalEndpointRequired
       ? { ...authority.factoryOptions, extra: {
           ...(authority.factoryOptions.extra ?? {}), canonicalEndpointRequired: true,
           fetchImpl: createPinnedProviderFetch(
-            [resolveBuiltInProviderInfo(provider)!.baseURL],
+            [provider === "openai" && authProfile === "sign_in"
+              ? CHATGPT_BACKEND_BASE_URL : resolveBuiltInProviderInfo(provider)!.baseURL],
             typeof authority.factoryOptions.extra?.fetchImpl === "function"
               ? authority.factoryOptions.extra.fetchImpl as typeof fetch
               : fetch,
           ),
+          ...(provider === "openai" && authProfile === "sign_in" ? {
+            oauth: { ...authority.factoryOptions.extra?.oauth as Record<string, unknown>,
+              maxRefreshAttempts: 1 },
+          } : {}),
           ...(provider === "agenc" ? {
             ...(approvedConcreteDestination !== undefined
               ? { approvedConcreteDestination: Object.freeze({ ...approvedConcreteDestination }) } : {}),
@@ -508,6 +538,7 @@ export class SessionProviderService {
     return Object.freeze({
       expectedRevision,
       authProfile,
+      ...(signInModelCapabilities !== undefined ? { signInModelCapabilities } : {}),
       billingSource: authProfile === "managed" ? "managed" as const
         : authProfile === "sign_in" ? "sign_in" as const
         : authProfile === "local" ? "local" as const : "byok" as const,

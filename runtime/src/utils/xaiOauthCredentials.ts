@@ -268,12 +268,17 @@ const inflightRefreshByHome = new Map<
  * updated blob, or `undefined` when no refresh is possible (missing/
  * quarantined credentials, or terminal invalid_grant — which quarantines).
  */
-export function forceRefreshXaiOauthCredentials(home: HomeContext): Promise<
+export function forceRefreshXaiOauthCredentials(home: HomeContext, rejectedAccessToken?: string): Promise<
   XaiOauthCredentialBlob | undefined
 > {
   const storageIdentity = secureStorageIdentityKey(home)
   const existing = inflightRefreshByHome.get(storageIdentity)
   if (existing) return existing
+  const current = readXaiOauthCredentials(home)
+  if (rejectedAccessToken !== undefined && current?.accessToken !== undefined &&
+      current.accessToken !== rejectedAccessToken && current.quarantinedAt === undefined) {
+    return Promise.resolve(current)
+  }
   const pending = doRefresh(home).finally(() => {
     if (inflightRefreshByHome.get(storageIdentity) === pending) {
       inflightRefreshByHome.delete(storageIdentity)

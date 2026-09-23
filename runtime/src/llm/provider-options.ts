@@ -599,6 +599,7 @@ function resolveProviderCredentialAuthorityCore(
           resolveStoredChatGptSubscriptionCredentials(stored);
         if (home !== undefined && subscription !== undefined) {
           const initialAccessToken = subscription.bearerToken;
+          let activeAccessToken = initialAccessToken;
           apiKey = undefined;
           baseURL = CHATGPT_BACKEND_BASE_URL;
           chatGptSubscription = true;
@@ -614,7 +615,7 @@ function resolveProviderCredentialAuthorityCore(
                 const refreshed = await refreshOpenAiSubscriptionIfNeeded(
                   home,
                   snapshot,
-                  { force: true },
+                  { force: true, rejectedAccessToken: activeAccessToken },
                 );
                 const credentials = refreshed.credentials;
                 if (
@@ -627,6 +628,7 @@ function resolveProviderCredentialAuthorityCore(
                     reason: "OpenAI subscription token refresh is unavailable",
                   };
                 }
+                activeAccessToken = credentials.accessToken;
                 return {
                   kind: "refreshed" as const,
                   accessToken: credentials.accessToken,

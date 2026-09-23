@@ -88,7 +88,17 @@ export function createPinnedProviderFetch(
   canonicalBaseURLs: readonly string[],
   fetchImpl: typeof fetch = fetch,
 ): typeof fetch {
-  const allowedOrigins = new Set(canonicalBaseURLs.map((baseURL) => new URL(baseURL).origin));
+  const bases = canonicalBaseURLs.map((baseURL) => new URL(baseURL));
+  const allowedOrigins = new Set(bases.map((base) => base.origin));
+  const guardedFetch: typeof fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (!bases.some((base) => url.origin === base.origin &&
+        (url.pathname === base.pathname.replace(/\/$/u, "") ||
+          url.pathname.startsWith(`${base.pathname.replace(/\/$/u, "")}/`)))) {
+      throw new Error("Provider request outside its canonical endpoint was refused");
+    }
+    return fetchImpl(input, init);
+  }) as typeof fetch;
   return ((input: RequestInfo | URL, init?: RequestInit) =>
-    fetchProviderRequest(input, init ?? {}, fetchImpl, allowedOrigins)) as typeof fetch;
+    fetchProviderRequest(input, init ?? {}, guardedFetch, allowedOrigins)) as typeof fetch;
 }

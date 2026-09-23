@@ -1645,6 +1645,7 @@ export class AgentControl {
         }
       } catch (error) {
         throw new InvalidAgentMetadataError(
+          `${metadata.executionPlan?.destination.authProfile === "sign_in" ? "resume_blocked: " : ""}` +
           `cannot resume cross-provider child: ${error instanceof Error ? error.message : String(error)}`,
         );
       }

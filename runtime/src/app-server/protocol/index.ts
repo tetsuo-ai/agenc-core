@@ -3785,6 +3785,7 @@ export interface CrossProviderSpawnDisclosure extends JsonObject {
   readonly network: boolean;
   readonly search: boolean;
   readonly price: { readonly inputUsdPer1K: number; readonly outputUsdPer1K: number } | "price unknown";
+  readonly subscriptionUsageNote?: string;
   readonly maxModelCalls: number | null;
   readonly futureToolResultsGoToProvider: true;
   readonly scopeKey: string;

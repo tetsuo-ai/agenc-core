@@ -38,6 +38,15 @@ describe("cross-provider consent grants", () => {
     expect(buildCrossProviderDisclosure(unknown).price).toBe("price unknown");
   });
 
+  it("discloses sign-in billing and subscription limits without API unit prices", () => {
+    const signedIn = { ...plan, destination: { ...plan.destination,
+      provider: "openai", model: "gpt-6-luna", endpoint: "https://chatgpt.com/backend-api/codex",
+      authProfile: "sign_in", billingSource: "sign_in" } } as ChildExecutionPlan;
+    expect(buildCrossProviderDisclosure(signedIn)).toMatchObject({ provider: "openai",
+      model: "gpt-6-luna", billingSource: "sign_in", price: "price unknown",
+      subscriptionUsageNote: "Usage counts against your subscription limits." });
+  });
+
   it("allow once covers only the same logical task and payload", () => {
     const disclosure = buildCrossProviderDisclosure(plan, "Read the design", []);
     const granted = withChildConsentGrant(plan, { kind: "once", ownerSessionId: "root-session", sessionEpoch: "epoch", taskId: "task-one", scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey });

@@ -1,4 +1,5 @@
 import { isProviderFundsFailure } from "../llm/funds.js";
+import { getRateLimitResetDelayMs } from "../llm/api/retry.js";
 import { LLMRateLimitError, LLMTimeoutError, LLMAuthenticationError,
   LLMContextWindowExceededError, LLMManagedUsagePendingError,
   LLMMessageValidationError, LLMManagedAdmissionError, LLMFundsError } from "../llm/errors.js";
@@ -48,20 +49,43 @@ export function childDispatchCertainty(error: unknown): ChildTerminalOutcome["di
 }
 
 function retryAfterOf(error: unknown): number | undefined {
-  if (error instanceof LLMRateLimitError) return error.retryAfterMs;
-  if (error === null || typeof error !== "object") return undefined;
-  const item = error as { retryAfterMs?: unknown; headers?: Headers | Record<string, string> };
-  if (typeof item.retryAfterMs === "number") return item.retryAfterMs;
-  const raw = item.headers instanceof Headers ? item.headers.get("retry-after")
-    : item.headers?.["retry-after"];
-  const seconds = Number(raw);
-  return raw !== undefined && Number.isFinite(seconds) ? seconds * 1000 : undefined;
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (error instanceof LLMRateLimitError) return error.retryAfterMs;
+    if (error === null || typeof error !== "object") return undefined;
+    const item = error as { retryAfterMs?: unknown; headers?: Headers | Record<string, string>; cause?: unknown; originalError?: unknown };
+    if (typeof item.retryAfterMs === "number") return item.retryAfterMs;
+    const raw = item.headers instanceof Headers ? item.headers.get("retry-after")
+      : item.headers?.["retry-after"];
+    if (raw !== undefined && raw !== null) {
+      const seconds = Number(raw);
+      if (Number.isFinite(seconds)) return seconds * 1000;
+      const absolute = Date.parse(raw);
+      if (Number.isFinite(absolute)) return Math.max(0, absolute - Date.now());
+    }
+    if (item.headers !== undefined) {
+      const reset = getRateLimitResetDelayMs(item.headers, "openai_compatible");
+      if (reset !== null) return reset;
+      const resetAt = item.headers instanceof Headers
+        ? item.headers.get("x-ratelimit-reset")
+        : item.headers["x-ratelimit-reset"];
+      const unixSeconds = Number(resetAt);
+      if (resetAt !== undefined && resetAt !== null && Number.isFinite(unixSeconds)) {
+        return Math.max(0, unixSeconds * 1000 - Date.now());
+      }
+    }
+    error = item.cause ?? item.originalError;
+  }
+  return undefined;
 }
 
 export function classifyChildFailure(provider: string, error: unknown): {
   readonly reason: ChildTerminalReason; readonly retryable: boolean; readonly retryAfterMs?: number;
 } {
-  if (isProviderFundsFailure(provider, error)) return { reason: "insufficient_funds", retryable: false };
+  if (isProviderFundsFailure(provider, error)) {
+    const retryAfterMs = retryAfterOf(error);
+    return { reason: "insufficient_funds", retryable: false,
+      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) };
+  }
   // StreamModelError and the daemon's turn wrapper retain the typed provider
   // failure on `cause`. Use it before parsing the wrapper's summary prose.
   for (let depth = 0; depth < 4; depth += 1) {

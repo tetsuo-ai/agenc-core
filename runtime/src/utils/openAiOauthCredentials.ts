@@ -33,15 +33,14 @@ export interface OpenAiOauthRefreshResult {
 
 export interface RefreshOpenAiSubscriptionOptions {
   readonly force?: boolean
+  /** A 401 for an older bearer must reuse the grant already rotated by another session. */
+  readonly rejectedAccessToken?: string
   readonly nowMs?: number
   readonly windowMs?: number
 }
 
 interface OpenAiRefreshState {
-  readonly inFlightByEnvironment: WeakMap<
-    object,
-    Promise<OpenAiOauthRefreshResult>
-  >
+  inFlight?: Promise<OpenAiOauthRefreshResult>
   lastRefreshFailureAt: number | null
 }
 
@@ -266,7 +265,6 @@ function refreshState(home: HomeContext): OpenAiRefreshState {
   const existing = refreshStateByStorageIdentity.get(storageIdentity)
   if (existing !== undefined) return existing
   const created: OpenAiRefreshState = {
-    inFlightByEnvironment: new WeakMap(),
     lastRefreshFailureAt: null,
   }
   refreshStateByStorageIdentity.set(storageIdentity, created)
@@ -370,6 +368,8 @@ export async function refreshOpenAiSubscriptionIfNeeded(
   environment: ProviderEnvironment,
   options: RefreshOpenAiSubscriptionOptions = {},
 ): Promise<OpenAiOauthRefreshResult> {
+  const state = refreshState(home)
+  if (state.inFlight !== undefined) return state.inFlight
   const current = await readOpenAiOauthCredentialsAsync(home)
   if (current === undefined) {
     return { refreshed: false }
@@ -387,16 +387,18 @@ export async function refreshOpenAiSubscriptionIfNeeded(
 
   const now = options.nowMs ?? Date.now()
   const windowMs = options.windowMs ?? REFRESH_WINDOW_MS
+  if (options.rejectedAccessToken !== undefined &&
+      accessToken !== options.rejectedAccessToken) {
+    return { refreshed: true, credentials: current }
+  }
   if (options.force !== true && !shouldRefresh(current, now, windowMs)) {
     return { refreshed: false, credentials: current }
   }
-  const state = refreshState(home)
   if (refreshIsCoolingDown(current, state, now)) {
     return { refreshed: false, credentials: current }
   }
 
-  const existing = state.inFlightByEnvironment.get(environment)
-  if (existing !== undefined) return existing
+  if (state.inFlight !== undefined) return state.inFlight
 
   const inFlight = Promise.resolve().then(async () => {
     const attemptedAt = options.nowMs ?? Date.now()
@@ -457,10 +459,10 @@ export async function refreshOpenAiSubscriptionIfNeeded(
       persistRefreshFailure(home, current, attemptedAt)
       throw error
     } finally {
-      state.inFlightByEnvironment.delete(environment)
+      if (state.inFlight === inFlight) state.inFlight = undefined
     }
   })
 
-  state.inFlightByEnvironment.set(environment, inFlight)
+  state.inFlight = inFlight
   return inFlight
 }

@@ -79,7 +79,7 @@ export function xaiBillingRefusalError(
   const refusal = readXaiBillingRefusal(error);
   if (refusal === undefined) return undefined;
   const code = refusal.code === undefined ? "" : ` (${refusal.code})`;
-  return new LLMFundsError(
+  const funds = new LLMFundsError(
     providerName,
     refusal.status,
     "xAI refused the request: the account has run out of credits, reached " +
@@ -87,4 +87,13 @@ export function xaiBillingRefusalError(
       "billing limit, not a sign-in problem, so signing in again will not " +
       "help. Add credits, raise the limit, or upgrade the account, then retry.",
   );
+  const metadata = error as { readonly headers?: unknown; readonly retryAfterMs?: unknown };
+  if (metadata.headers instanceof Headers ||
+      (metadata.headers !== null && typeof metadata.headers === "object")) {
+    Object.assign(funds, { headers: metadata.headers });
+  }
+  if (typeof metadata.retryAfterMs === "number") {
+    Object.assign(funds, { retryAfterMs: metadata.retryAfterMs });
+  }
+  return funds;
 }

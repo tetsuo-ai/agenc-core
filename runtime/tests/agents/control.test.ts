@@ -1249,6 +1249,49 @@ describe("AgentControl", () => {
     expect(registry.activeCount).toBe(0);
   });
 
+  it("blocks recovery of a signed-out sign-in child before dispatch", async () => {
+    const session = stubSession({ conversationId: "sign-in-root" });
+    let signedIn = true;
+    const prepareChild = vi.fn(async () => {
+      if (!signedIn) throw new Error("openai authentication failed (HTTP 401): signed out");
+      return { authProfile: "sign_in", billingSource: "sign_in",
+        binding: { instance: { dispose: vi.fn() }, factoryOptions: {
+          baseURL: "https://chatgpt.com/backend-api/codex" } } };
+    });
+    Object.assign(session, {
+      modelInfo: { slug: "grok-4.6", provider: "grok" },
+      sessionConfiguration: { ...session.sessionConfiguration, cwd: "/workspace",
+        collaborationMode: { model: "grok-4.6" } },
+      providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }), prepareChild },
+      services: { ...session.services, configStore: { current: () => ({ model_provider: "grok",
+        model: "grok-4.6", agents: { cross_provider_enabled: true, allowed_providers: ["openai"] } }) },
+        crossProviderConsent: { ownerSessionId: "sign-in-root", sessionEpoch: "live-epoch",
+          request: async (_requester: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+            kind: "granted" as const, grant: { kind: "once" as const, ownerSessionId: "sign-in-root",
+              sessionEpoch: "live-epoch", taskId: disclosure.taskId,
+              scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey },
+          }) } },
+    });
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    const proposed = await createChildExecutionPlan({ session,
+      selection: { provider: "openai", model: "gpt-6-luna" },
+      modelInfo: { slug: "gpt-6-luna", provider: "openai", supportsToolUse: true } as Session["modelInfo"],
+      parentPath: "/root", taskId: "sign-in-task", taskName: "worker", taskText: "inspect",
+      toolFree: false, forkedHistory: false });
+    const authorized = await authorizeChildExecutionPlan(session, proposed);
+    expect(authorized.kind).toBe("granted");
+    if (authorized.kind !== "granted") throw new Error("fixture consent was not granted");
+    signedIn = false;
+    const metadata: AgentMetadata = {
+      agentId: "sign-in-child", agentPath: "/root/sign_in_child", agentNickname: "sign-in child",
+      agentRole: "scanner", ...roleProvenance(control, "scanner"), depth: 1,
+      crossProvider: { provider: "openai", model: "gpt-6-luna", policy: "user-or-managed-agents-v1" },
+      executionPlan: authorized.plan,
+    };
+    await expect(control.resume({ parentPath: "/root", metadata })).rejects.toThrow(/resume_blocked/u);
+    expect(prepareChild).toHaveBeenCalledTimes(2);
+  });
+
   it("resume() fails closed for named legacy metadata without workspace provenance", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();

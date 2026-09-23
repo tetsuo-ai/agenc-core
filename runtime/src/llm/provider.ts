@@ -1756,13 +1756,18 @@ export function createProvider(
       }
       const grokProvider = new GrokProvider(cfg);
       if (usesXaiOauth) {
+        let activeBearer = apiKey;
         // I-14: first real consumer of the adapter's auth-refresh seam.
         // On 401, force a single-flight refresh of the stored OAuth grant,
         // swap the bearer on the live SDK client, and retry.
         grokProvider.withAuthRefreshCallbacks({
-          refreshBearer: async () => {
+          refreshBearer: async ({ attempt }) => {
+            if (extra.canonicalEndpointRequired === true && attempt > 1) {
+              return { kind: "exhausted", reason: "xAI sign-in retry was already used" };
+            }
             const refreshed = await forceRefreshXaiOauthCredentials(
               opts.credentialHome!,
+              activeBearer,
             );
             if (refreshed === undefined) {
               // Honesty split: only claim the user is logged out when the
@@ -1788,6 +1793,7 @@ export function createProvider(
               };
             }
             grokProvider.applyRefreshedBearer(refreshed.accessToken);
+            activeBearer = refreshed.accessToken;
             return { kind: "refreshed", bearer: refreshed.accessToken };
           },
         });

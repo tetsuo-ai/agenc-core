@@ -73,6 +73,15 @@ describe("child terminal failures", () => {
     expect(classifyChildFailure(provider, error).retryable).toBe(false);
   });
 
+  it("keeps a subscription limit's provider reset time on insufficient_funds", async () => {
+    const { childTerminalOutcome } = await import("../../src/agents/child-terminal.js");
+    expect(childTerminalOutcome({ provider: "openai", model: "gpt-6-luna", dispatch: "sent",
+      error: { status: 429, body: { error: { code: "usage_limit_reached" } },
+        headers: { "retry-after": "37" } } })).toMatchObject({
+      reason: "insufficient_funds", retryable: false, retryAfterMs: 37_000,
+    });
+  });
+
   it.each([
     ["openai", { status: 429, error: { code: "rate_limit_exceeded" }, headers: { "retry-after": "2" } }],
     ["gemini", { status: 429, error: { status: "RESOURCE_EXHAUSTED", message: "Requests per minute exceeded" }, headers: { "retry-after": "2" } }],

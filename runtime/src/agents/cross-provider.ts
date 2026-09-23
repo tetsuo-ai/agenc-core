@@ -40,6 +40,7 @@ export interface CrossProviderSpawnDisclosure {
   readonly network: boolean;
   readonly search: boolean;
   readonly price: { readonly inputUsdPer1K: number; readonly outputUsdPer1K: number } | "price unknown";
+  readonly subscriptionUsageNote?: string;
   readonly maxModelCalls: number | null;
   readonly futureToolResultsGoToProvider: true;
   readonly scopeKey: string;
@@ -155,6 +156,7 @@ export async function createChildExecutionPlan(params: {
     ? "local" : selection.provider === "agenc" ? "managed" :
       destination.provider === "amazon-bedrock" ? "aws_sigv4" : "api_key";
   let billingSource: ChildBillingSource = authProfile === "local" ? "local" : authProfile === "managed" ? "managed" : "byok";
+  let signInSupportsToolUse: boolean | undefined;
   if (crossProvider && typeof session.providerService?.prepareChild === "function") {
     const prepared = await session.providerService.prepareChild(selection, undefined, {}, true,
       selection.provider === "agenc" ? destination : undefined);
@@ -164,6 +166,7 @@ export async function createChildExecutionPlan(params: {
         : prepared.binding.factoryOptions?.baseURL ?? endpoint;
       authProfile = prepared.authProfile ?? authProfile;
       billingSource = prepared.billingSource ?? billingSource;
+      signInSupportsToolUse = prepared.signInModelCapabilities?.supportsToolUse;
     } finally {
       await prepared.binding.instance.dispose?.();
     }
@@ -171,11 +174,15 @@ export async function createChildExecutionPlan(params: {
     endpoint = session.providerService?.current().factoryOptions?.baseURL ?? endpoint;
   }
   if (crossProvider) assertSupportedCrossProviderAuth(destination.provider, authProfile);
+  if (!params.toolFree && signInSupportsToolUse === false) {
+    throw new Error(`Model ${destination.provider}/${destination.model} does not support client-side tool calling on this sign-in. Set tool_free = true.`);
+  }
   return Object.freeze({
     version: 1 as const,
     route: Object.freeze({ ...selection }),
     destination: Object.freeze({ ...destination, endpoint: endpointIdentity(endpoint), authProfile, billingSource }),
-    modelInfo: freezeValue(structuredClone(destinationModelInfo)),
+    modelInfo: freezeValue({ ...structuredClone(destinationModelInfo),
+      ...(signInSupportsToolUse !== undefined ? { supportsToolUse: signInSupportsToolUse } : {}) }),
     catalogRevision: catalogRevision(session),
     requiredCapabilities: Object.freeze({ clientTools: !params.toolFree }),
     parent: Object.freeze({ sessionId: session.conversationId, agentPath: params.parentPath }),
@@ -235,9 +242,12 @@ export function buildCrossProviderDisclosure(
     fileReadDenylist: plan.scope.fileReadDenylist ?? [],
     dataScope: plan.scope.data, tools,
     network, search,
-    price: cost === null ? "price unknown" as const : {
+    price: plan.destination.billingSource === "sign_in" || cost === null ? "price unknown" as const : {
       inputUsdPer1K: cost.entry.inputUsdPer1K, outputUsdPer1K: cost.entry.outputUsdPer1K,
     },
+    ...(plan.destination.billingSource === "sign_in" ? {
+      subscriptionUsageNote: "Usage counts against your subscription limits.",
+    } : {}),
     maxModelCalls: plan.budgetAllocation?.maxModelCalls ?? null,
     futureToolResultsGoToProvider: true as const, scopeKey, payloadKey, denialKey,
   });
@@ -341,6 +351,13 @@ export async function assertChildExecutionPlan(session: Session, plan: ChildExec
 }
 
 export function assertPreparedChildMatchesPlan(plan: ChildExecutionPlan, prepared: PreparedProviderBinding): void {
+  if (plan.destination.authProfile === "sign_in" && prepared.authProfile !== "sign_in") {
+    throw new Error("resume_blocked: child sign-in authority is no longer available");
+  }
+  if (plan.requiredCapabilities.clientTools &&
+      prepared.signInModelCapabilities?.supportsToolUse === false) {
+    throw new Error("resume_blocked: sign-in model no longer supports child tools");
+  }
   if (prepared.binding.provider !== plan.route.provider ||
       prepared.binding.model !== plan.route.model ||
       (prepared.authProfile !== undefined && prepared.authProfile !== plan.destination.authProfile) ||
@@ -447,9 +464,20 @@ export async function resolveChildSelection(
     assertCrossProviderAllowed(session, provider);
   }
   const inheritedLocalModel = requestedModel === undefined && provider === active.provider;
-  const knownModel = provider === active.provider
+  let knownModel = provider === active.provider
     ? isLiveLocalModel(model) || inheritedLocalModel
     : (catalog[provider] ?? []).includes(model);
+  if (!knownModel && provider !== active.provider &&
+      typeof session.providerService?.prepareChild === "function") {
+    // A subscription can serve account-specific models absent from the
+    // platform API catalog. The sign-in's pinned /models response decides.
+    const prepared = await session.providerService.prepareChild({ provider, model });
+    try {
+      knownModel = prepared.authProfile === "sign_in";
+    } finally {
+      await prepared.binding.instance.dispose?.();
+    }
+  }
   if (!knownModel) {
     const alternatives = Object.entries(catalog)
       .filter(([, models]) => models.includes(model))

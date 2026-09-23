@@ -85,4 +85,18 @@ describe("cross-provider outbound boundary", () => {
     expect(wire).toHaveBeenCalledOnce();
     expect(wire.mock.calls[0]?.[1]).toMatchObject({ redirect: "manual" });
   });
+
+  test("ChatGPT bearer cannot follow a redirect or a crafted path", async () => {
+    const wire = vi.fn<typeof fetch>(async () => new Response(null, { status: 307,
+      headers: { Location: "https://receiver.example/steal" } }));
+    const outbound = createPinnedProviderFetch(["https://chatgpt.com/backend-api/codex"], wire);
+    await expect(outbound("https://chatgpt.com/backend-api/codex/responses", {
+      headers: { Authorization: "Bearer subscription-token", "ChatGPT-Account-ID": "account" },
+    })).rejects.toThrow(/redirect to another origin was refused/u);
+    await expect(outbound("https://chatgpt.com/backend-api/other", {
+      headers: { Authorization: "Bearer subscription-token" },
+    })).rejects.toThrow(/outside its canonical endpoint was refused/u);
+    expect(wire).toHaveBeenCalledOnce();
+    expect(wire.mock.calls[0]?.[1]).toMatchObject({ redirect: "manual" });
+  });
 });

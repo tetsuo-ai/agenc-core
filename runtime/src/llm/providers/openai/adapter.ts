@@ -526,7 +526,12 @@ function mapOpenAIHttpFailureToError(args: {
   }
   if (isProviderFundsFailure(args.providerName, {
     status: args.status, body: args.body, message: args.message,
-  })) return new LLMFundsError(args.providerName, args.status);
+  })) {
+    const error = new LLMFundsError(args.providerName, args.status);
+    const retryAfterMs = args.retryAfterMs ?? readRetryAfterMs(args.body);
+    if (retryAfterMs !== undefined) Object.assign(error, { retryAfterMs });
+    return error;
+  }
   if (isZaiInsufficientBalanceFailure(args)) {
     return new LLMProviderError(
       args.providerName,
