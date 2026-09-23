@@ -79,6 +79,155 @@ beforeEach(() => { spawn.mockReset(); clients.length = 0; setupTransport(); });
 afterEach(async () => { for (const path of homes.splice(0)) await rm(path, { recursive: true, force: true }); });
 
 describe("plugin MCP on-demand lifecycle", () => {
+  it("serializes a call queued behind eviction before a later reconnect", async () => {
+    const cacheHome = await home();
+    const cfg = config(cacheHome, "plugin:sample:evict-reconnect", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "evict-reconnect", digest: "a".repeat(64), maxProcesses: 1, idleTimeoutMs: 0 } } });
+    warm(cfg);
+    const manager = new MCPManager([cfg]); const close = deferred();
+    const discovery = deferred<{ tools: ReturnType<typeof descriptor>[] }>();
+    try {
+      await manager.start(); await manager.callTool(cfg.name, "ping", {});
+      clients[0]!.close.mockImplementation(() => close.promise);
+      const original = spawn.getMockImplementation()!;
+      spawn.mockImplementation(async (...args) => {
+        const client = await original(...args);
+        if (clients.length === 2) (client as never as { listTools: ReturnType<typeof vi.fn> }).listTools.mockImplementation(() => discovery.promise);
+        return client;
+      });
+      const eviction = (manager as never as { evictPlugin: (name: string) => Promise<void> }).evictPlugin(cfg.name);
+      await waitFor(() => clients[0]!.close.mock.calls.length > 0);
+      const call = manager.callTool(cfg.name, "ping", {});
+      const reconnect = manager.reconnectServer(cfg.name);
+      close.resolve();
+      await waitFor(() => spawn.mock.calls.length >= 2);
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(spawn).toHaveBeenCalledTimes(2);
+      discovery.resolve({ tools: [descriptor()] });
+      await Promise.all([eviction, call, reconnect]);
+      expect(clients.filter(client => client.close.mock.calls.length === 0)).toHaveLength(1);
+      expect(manager.getConnectionState(cfg.name)?.type).toBe("connected");
+    } finally { close.resolve(); discovery.resolve({ tools: [descriptor()] }); await manager.stop(); }
+  });
+
+  it("rejects a retained cached proxy after its plugin configuration is replaced", async () => {
+    const cacheHome = await home(); const old = config(cacheHome, "plugin:sample:retained", { command: "old-binary" }); warm(old);
+    const replacement = config(cacheHome, old.name, { command: "new-binary", origin: { scope: "plugin", pluginServer: { ...old.origin!.pluginServer!, version: "2", digest: "b".repeat(64) } } });
+    warm(replacement);
+    const manager = new MCPManager([old]);
+    try {
+      await manager.start();
+      const retained = manager.getToolsByServer(old.name)[0]!;
+      await manager.refreshServers([replacement]);
+      expect((await retained.execute({})).isError).toBe(true);
+      expect(spawn).not.toHaveBeenCalled();
+    } finally { await manager.stop(); }
+  });
+
+  it("bounds a call waiting for existing disposal by its timeout and abort", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome, "plugin:sample:closing-wait", { timeout: 30, origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "closing-wait", digest: "a".repeat(64), idleTimeoutMs: 0 } } });
+    warm(cfg); const manager = new MCPManager([cfg]); const close = deferred();
+    try {
+      await manager.start(); await manager.callTool(cfg.name, "ping", {});
+      clients[0]!.close.mockImplementation(() => close.promise);
+      const eviction = (manager as never as { evictPlugin: (name: string) => Promise<void> }).evictPlugin(cfg.name);
+      await waitFor(() => clients[0]!.close.mock.calls.length > 0);
+      const controller = new AbortController();
+      const call = manager.callTool(cfg.name, "ping", {}, { signal: controller.signal });
+      controller.abort(new Error("cancelled while closing"));
+      const result = await Promise.race([call, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("call stayed pending during close")), 100))]);
+      expect(result.isError).toBe(true);
+      const timedOut = await Promise.race([
+        manager.callTool(cfg.name, "ping", {}),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("call exceeded cleanup deadline")), 100)),
+      ]);
+      expect(timedOut.metadata?.errorCode).toBe("MCP_PLUGIN_STARTUP_FAILED");
+      expect(spawn).toHaveBeenCalledTimes(1);
+      close.resolve(); await eviction;
+    } finally { close.resolve(); await manager.stop(); }
+  });
+
+  it("cancels a reconnect waiter without releasing disposal ownership", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome, "plugin:sample:reconnect-wait", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "reconnect-wait", digest: "a".repeat(64), idleTimeoutMs: 0 } } });
+    warm(cfg); const manager = new MCPManager([cfg]); const close = deferred();
+    try {
+      await manager.start(); await manager.callTool(cfg.name, "ping", {});
+      clients[0]!.close.mockImplementation(() => close.promise);
+      const eviction = (manager as never as { evictPlugin: (name: string) => Promise<void> }).evictPlugin(cfg.name);
+      await waitFor(() => clients[0]!.close.mock.calls.length > 0);
+      const controller = new AbortController();
+      const reconnect = manager.reconnectServer(cfg.name, { signal: controller.signal });
+      controller.abort(new Error("reconnect cancelled"));
+      const result = await Promise.race([reconnect, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("reconnect wait was not cancelled")), 100))]);
+      expect(result.success).toBe(false);
+      expect(spawn).toHaveBeenCalledTimes(1);
+      close.resolve(); await eviction;
+    } finally { close.resolve(); await manager.stop(); }
+  });
+
+  it("invalidates a connection that closes during resource discovery", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome, "plugin:sample:discovery-close", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "discovery-close", digest: "a".repeat(64), idleTimeoutMs: 0 } } });
+    warm(cfg); setupTransport([descriptor()], { capabilities: { resources: {} } });
+    const original = spawn.getMockImplementation()!;
+    spawn.mockImplementation(async (...args) => {
+      const client = await original(...args);
+      if (clients.length === 1) (client as never as { listResources: ReturnType<typeof vi.fn>; onclose?: () => void }).listResources.mockImplementation(async () => {
+        (client as never as { onclose?: () => void }).onclose?.();
+        throw new Error("transport closed during discovery");
+      });
+      return client;
+    });
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      await manager.callTool(cfg.name, "ping", {});
+      expect(manager.getConnectionState(cfg.name)?.type).not.toBe("connected");
+      expect(manager.getConnectedServers()).toHaveLength(0);
+      await manager.callTool(cfg.name, "ping", {});
+      expect(spawn).toHaveBeenCalledTimes(2);
+    } finally { await manager.stop(); }
+  });
+
+  it("preserves an eager server's configured timeout during reconnect", async () => {
+    const cfg: MCPServerConfig = { name: "ordinary-reconnect-timeout", command: "fixture", transport: "stdio", timeout: 11_000 };
+    const manager = new MCPManager([cfg]);
+    const original = spawn.getMockImplementation()!;
+    const delayed = deferred<never>();
+    try {
+      await manager.start();
+      spawn.mockImplementation(async (...args) => args[0].name === cfg.name ? delayed.promise : original(...args));
+      vi.useFakeTimers();
+      const reconnect = manager.reconnectServer(cfg.name);
+      let settled = false;
+      void reconnect.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(spawn).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(10_001);
+      expect(settled).toBe(false);
+      delayed.reject(new Error("test complete"));
+      await reconnect;
+    } finally { delayed.reject(new Error("test complete")); vi.useRealTimers(); await manager.stop(); }
+  });
+
+  it("starts an explicitly required lazy plugin and checks readiness", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome, "plugin:sample:required"); warm(cfg);
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start({ requiredServers: [cfg.name], requireOneReady: true });
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(manager.getConnectionState(cfg.name)?.type).toBe("connected");
+    } finally { await manager.stop(); }
+  });
+
+  it("rejects startup when an explicitly required lazy plugin cannot connect", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome, "plugin:sample:required-failure"); warm(cfg);
+    spawn.mockRejectedValueOnce(new Error("required plugin unavailable"));
+    const manager = new MCPManager([cfg]);
+    try {
+      await expect(manager.start({ requiredServers: [cfg.name], requireOneReady: true }))
+        .rejects.toThrow(/required server\(s\) not ready/);
+      expect(spawn).toHaveBeenCalledTimes(1);
+    } finally { await manager.stop(); }
+  });
   it("serializes reconnect disposal with a concurrent call and keeps a starting reconnect budgeted", async () => {
     const cacheHome = await home();
     const a = config(cacheHome, "plugin:sample:reconnect-race", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "reconnect-race", digest: "a".repeat(64), maxProcesses: 1, idleTimeoutMs: 0 } } });

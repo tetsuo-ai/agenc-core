@@ -162,13 +162,14 @@ interface ManagedReconnectOperation {
 /** One owner for the process slot, transitions, and requests of a plugin server. */
 interface PluginServerLifecycle {
   reservation?: object;
-  start?: Promise<void>;
+  /** Every transition owns the server until its cleanup has settled. */
+  transitionTail?: Promise<void>;
+  transitions: number;
   startController?: AbortController;
-  closing?: Promise<void>;
-  reconnectTail?: Promise<void>;
   idleTimer?: ReturnType<typeof setTimeout>;
   client?: unknown;
   active: number;
+  activeWaiters: Array<() => void>;
   pending: number;
   crash?: { client: unknown; done: Promise<void>; resolve: () => void; retiring: boolean };
 }
@@ -505,6 +506,7 @@ export class MCPManager {
   private lastStartOpts: Omit<MCPManagerStartOpts, "signal"> = {};
   private lifecycleGeneration = 0;
   private readonly startupGates = new Set<StartupGate>();
+  private readonly startupWaitControllers = new Set<AbortController>();
   private readonly connectionAttempts = new Set<ManagedConnectionAttempt>();
   private readonly serverEpochs = new Map<string, number>();
   private readonly companionEpochs = new Map<string, number>();
@@ -852,7 +854,7 @@ export class MCPManager {
   private pluginLifecycle(name: string): PluginServerLifecycle {
     let lifecycle = this.pluginLifecycles.get(name);
     if (!lifecycle) {
-      lifecycle = { active: 0, pending: 0 };
+      lifecycle = { active: 0, activeWaiters: [], pending: 0, transitions: 0 };
       this.pluginLifecycles.set(name, lifecycle);
     }
     return lifecycle;
@@ -865,23 +867,27 @@ export class MCPManager {
     if (lifecycle.reservation === owner) delete lifecycle.reservation;
   }
 
-  /** The per-server close barrier owns disposal and its budget slot until close settles. */
-  private closePlugin(name: string, reason: string, afterClose?: () => void): Promise<void> {
+  /** The tail absorbs failures; each caller receives its own transition result. */
+  private enqueuePluginTransition<T>(name: string, work: () => Promise<T>): Promise<T> {
     const lifecycle = this.pluginLifecycle(name);
-    const existing = lifecycle.closing;
-    if (existing) return existing;
-    const task = Promise.resolve().then(() => this.disconnectServer(name, reason, true)).then(afterClose);
-    lifecycle.closing = task;
-    const clear = (): void => {
-      if (lifecycle.closing === task) delete lifecycle.closing;
-    };
-    void task.then(clear, clear);
+    lifecycle.transitions++;
+    const task = (lifecycle.transitionTail ?? Promise.resolve()).then(work);
+    const tail = task.then(() => undefined, () => undefined).then(() => {
+      lifecycle.transitions--;
+      const config = this.getServerConfig(name);
+      if (config) this.scheduleIdle(config);
+      notifyPluginProcessIdle();
+    });
+    lifecycle.transitionTail = tail;
     return task;
   }
 
   private finishPluginActivity(name: string, config: MCPServerConfig): void {
     const lifecycle = this.pluginLifecycle(name);
     lifecycle.active = Math.max(0, lifecycle.active - 1);
+    if (lifecycle.active === 0) {
+      for (const resolve of lifecycle.activeWaiters.splice(0)) resolve();
+    }
     this.retireCrashedPlugin(name);
     this.scheduleIdle(config);
   }
@@ -891,10 +897,8 @@ export class MCPManager {
     const crash = lifecycle.crash;
     if (!crash || crash.retiring || lifecycle.active > 0) return;
     crash.retiring = true;
-    void this.closePlugin(name, "after transport crash", () => {
-      if (this.running && this.getServerConfig(name)?.enabled !== false) {
-        this.commitSurfaceMutation(() => this.connectionStates.set(name, { type: "stopped" }));
-      }
+    void this.enqueuePluginTransition(name, async () => {
+      await this.retireCrashNow(name);
     }).catch(error => {
       this.commitSurfaceMutation(() => this.connectionStates.set(name, { type: "failed", error: errMessage(error) }));
       this.logger.warn?.(`Could not retire crashed plugin MCP server ${name}`, error);
@@ -905,27 +909,35 @@ export class MCPManager {
     });
   }
 
-  private trackAbandonedAttempt(attempt: ManagedConnectionAttempt, owner?: object): void {
-    const name = attempt.serverName;
+  /** Called only from the server executor, including before a later start. */
+  private async retireCrashNow(name: string): Promise<void> {
     const lifecycle = this.pluginLifecycle(name);
-    const task = (async (): Promise<void> => {
-      try {
-        await attempt.promise;
-        if (this.bridges.has(name)) {
-          await this.disconnectServer(name, "after cancelled startup", true);
-        }
-      } catch (error) {
-        if (error instanceof MCPConnectionCleanupError) throw error;
-      } finally {
-        if (owner) this.releaseOwner(name, owner);
+    const crash = lifecycle.crash;
+    if (!crash) return;
+    while (lifecycle.active > 0) {
+      await new Promise<void>(resolve => lifecycle.activeWaiters.push(resolve));
+    }
+    if (lifecycle.crash !== crash) return;
+    await this.disconnectServer(name, "after transport crash", true);
+    if (lifecycle.crash === crash) delete lifecycle.crash;
+    crash.resolve();
+    if (this.running && this.getServerConfig(name)?.enabled !== false) {
+      this.commitSurfaceMutation(() => this.connectionStates.set(name, { type: "stopped" }));
+    }
+  }
+
+  private async trackAbandonedAttempt(attempt: ManagedConnectionAttempt, owner?: object): Promise<void> {
+    const name = attempt.serverName;
+    try {
+      await attempt.promise;
+      if (this.bridges.has(name)) {
+        await this.disconnectServer(name, "after cancelled startup", true);
       }
-    })();
-    lifecycle.closing = task;
-    const remove = (): void => {
-      if (lifecycle.closing === task) delete lifecycle.closing;
-    };
-    void task.then(remove, remove);
-    void task.catch(() => undefined);
+    } catch (error) {
+      if (error instanceof MCPConnectionCleanupError) throw error;
+    } finally {
+      if (owner) this.releaseOwner(name, owner);
+    }
   }
 
   private isLazyPlugin(config: MCPServerConfig): boolean {
@@ -939,21 +951,18 @@ export class MCPManager {
     return lifecycle.reservation;
   }
 
-  private busy(name: string): boolean {
+  private busy(name: string, ignoreTransition = false): boolean {
     const config = this.getServerConfig(name);
     const lifecycle = this.pluginLifecycle(name);
     return (config !== undefined && !this.isLazyPlugin(config)) ||
       lifecycle.active > 0 || lifecycle.pending > 0 ||
-      lifecycle.start !== undefined || lifecycle.closing !== undefined ||
-      lifecycle.reconnectTail !== undefined || lifecycle.crash !== undefined ||
+      (!ignoreTransition && lifecycle.transitions > 0) || lifecycle.crash !== undefined ||
       [...this.connectionAttempts].some(attempt => attempt.serverName === name);
   }
 
   private async reserve(config: MCPServerConfig, signal?: AbortSignal): Promise<object | undefined> {
     const identity = this.pluginIdentity(config);
     if (!identity) return undefined;
-    const closing = this.pluginLifecycle(config.name).closing;
-    if (closing) await raceWithAbort(closing, signal);
     if (!this.configIsCurrent(config)) throw new Error(`MCP plugin ${config.name} configuration changed`);
     const owner = this.owner(config.name);
     const generation = this.lifecycleGeneration;
@@ -983,17 +992,22 @@ export class MCPManager {
     lifecycle.idleTimer = timer;
   }
 
-  private async evictPlugin(
+  private evictPlugin(
+    name: string, expectedOwner?: object, expectedConfig?: MCPServerConfig,
+    expectedGeneration?: number,
+  ): Promise<void> {
+    return this.enqueuePluginTransition(name, () => this.evictPluginNow(name, expectedOwner, expectedConfig, expectedGeneration));
+  }
+
+  private async evictPluginNow(
     name: string, expectedOwner?: object, expectedConfig?: MCPServerConfig,
     expectedGeneration?: number,
   ): Promise<void> {
     if (expectedGeneration !== undefined && this.lifecycleGeneration !== expectedGeneration) return;
     if (expectedConfig && !this.configs.includes(expectedConfig)) return;
     const lifecycle = this.pluginLifecycle(name);
-    const closing = lifecycle.closing;
-    if (closing) return closing;
     if (expectedOwner && lifecycle.reservation !== expectedOwner) return;
-    if (this.busy(name)) return;
+    if (this.busy(name, true)) return;
     if (!this.bridges.has(name)) {
       const owner = lifecycle.reservation;
       if (owner) this.releaseOwner(name, owner);
@@ -1002,19 +1016,17 @@ export class MCPManager {
     const timer = lifecycle.idleTimer;
     if (timer) clearTimeout(timer);
     delete lifecycle.idleTimer;
-    const task = this.closePlugin(name, "after idle eviction", () => {
-      if (this.running &&
-        (expectedGeneration === undefined || this.lifecycleGeneration === expectedGeneration) &&
-        (!expectedConfig || this.configs.includes(expectedConfig)) &&
-        this.getServerConfig(name)?.enabled !== false) {
-        this.commitSurfaceMutation(() => this.connectionStates.set(name, { type: "stopped" }));
-      }
-    });
-    await task;
+    await this.disconnectServer(name, "after idle eviction", true);
+    if (this.running &&
+      (expectedGeneration === undefined || this.lifecycleGeneration === expectedGeneration) &&
+      (!expectedConfig || this.configs.includes(expectedConfig)) &&
+      this.getServerConfig(name)?.enabled !== false) {
+      this.commitSurfaceMutation(() => this.connectionStates.set(name, { type: "stopped" }));
+    }
   }
 
-  private watchIdlePluginClient(config: MCPServerConfig, client: unknown): void {
-    if (!this.isLazyPlugin(config) || typeof client !== "object" || client === null) return;
+  private watchIdlePluginClient(config: MCPServerConfig, client: unknown, startupGate: StartupGate): void {
+    if (typeof client !== "object" || client === null) return;
     const observed = client as { onclose?: () => void };
     const previous = observed.onclose;
     const generation = this.lifecycleGeneration;
@@ -1022,7 +1034,16 @@ export class MCPManager {
     lifecycle.client = client;
     observed.onclose = () => {
       previous?.();
+      startupGate.cancel(`MCP server "${config.name}" transport closed`);
       if (lifecycle.client !== client || !this.running || this.lifecycleGeneration !== generation) return;
+      if (!this.isLazyPlugin(config)) {
+        this.invalidateServerAuthority(config.name);
+        this.commitSurfaceMutation(() => {
+          this.connectedConnections.delete(config.name);
+          this.connectionStates.set(config.name, { type: "failed", error: `MCP server "${config.name}" transport closed` });
+        });
+        return;
+      }
       if (lifecycle.crash?.client === client) return;
       let resolve!: () => void;
       const done = new Promise<void>(yes => { resolve = yes; });
@@ -1091,14 +1112,21 @@ export class MCPManager {
     canPublish: () => boolean = () => true,
   ): Promise<void> {
     const generation = this.lifecycleGeneration;
+    const identity = JSON.stringify(this.pluginIdentity(config));
     const client = { listTools: async () => ({ tools: catalog.tools }), close: async () => undefined };
     const bridge = await createToolBridge(client, config.name, this.logger, {
       environment: this.environment, serverConfig: toToolCatalogPolicyConfig(config),
     });
     const tools = bridge.tools.map(tool => ({
       ...tool,
-      execute: (args: Record<string, unknown>): Promise<ToolResult> =>
-        this.invokeTool(config.name, tool.mcpInfo.toolName, args),
+      execute: (args: Record<string, unknown>): Promise<ToolResult> => {
+        const current = this.getServerConfig(config.name);
+        if (this.lifecycleGeneration !== generation || current !== config ||
+            JSON.stringify(current && this.pluginIdentity(current)) !== identity) {
+          return Promise.resolve({ content: `MCP plugin ${config.name} proxy configuration was superseded`, isError: true });
+        }
+        return this.invokeTool(config.name, tool.mcpInfo.toolName, args);
+      },
     }));
     if (!this.running || this.lifecycleGeneration !== generation || !this.configIsCurrent(config) || !canPublish()) return;
     this.cachedCatalogs.set(config.name, catalog);
@@ -1134,7 +1162,7 @@ export class MCPManager {
       this.running ||
       this.shutdownTask !== undefined ||
       this.connectionAttempts.size > 0 ||
-      [...this.pluginLifecycles.values()].some(lifecycle => lifecycle.start !== undefined || lifecycle.closing !== undefined) ||
+      [...this.pluginLifecycles.values()].some(lifecycle => lifecycle.transitions > 0) ||
       this.reconnectOperations.size > 0 ||
       this.retainedCleanup.size > 0 ||
       this.bridges.size > 0
@@ -1155,11 +1183,13 @@ export class MCPManager {
     this.resetConnectionStates();
     await this.loadCachedCatalogs();
     if (!this.running || this.lifecycleGeneration !== generation) return;
-    const enabledConfigs = this.configs.filter((c) => c.enabled !== false && !this.isLazyPlugin(c));
+    const enabledConfigs = this.configs.filter((c) => c.enabled !== false && (!this.isLazyPlugin(c) || opts.requiredServers?.includes(c.name)));
 
     if (enabledConfigs.length === 0) {
       this.logger.info(this.configs.some(config => config.enabled !== false)
         ? "No eager MCP servers to start" : "No MCP servers configured");
+      if (opts.requiredServers?.length) throw new Error(`MCP aggregate startup failure — required server(s) not ready: ${opts.requiredServers.join(", ")}`);
+      if (opts.requireOneReady) throw new Error("MCP aggregate startup failure — zero servers ready");
       return;
     }
 
@@ -1170,23 +1200,45 @@ export class MCPManager {
     // I-50: race each per-server connect against the external signal.
     const results = await Promise.all(
       enabledConfigs.map(async (config) => {
-        const serverTimeout = this.isLazyPlugin(config) ? Math.min(config.timeout ?? 5_000, 10_000) : timeoutMs;
-        const budgetSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(serverTimeout)]) : AbortSignal.timeout(serverTimeout);
-        let attempt: ManagedConnectionAttempt | undefined;
-        let owner: object | undefined;
+        const stopWait = new AbortController();
+        this.startupWaitControllers.add(stopWait);
         try {
-          owner = await this.reserve(config, budgetSignal);
-          budgetSignal.throwIfAborted();
-          if (this.lifecycleGeneration !== generation || !this.configIsCurrent(config)) throw new Error(`MCP server "${config.name}" configuration changed`);
-          attempt = this.beginConnection(config);
-          const bridge = await raceWithSignal(attempt.promise, budgetSignal, serverTimeout,
-            `MCP server "${config.name}" connect`, attempt.gate);
-          return { status: "fulfilled" as const, value: bridge };
-        } catch (reason) {
-          if (attempt) this.trackAbandonedAttempt(attempt, owner);
-          else if (owner) this.releaseOwner(config.name, owner);
-          return { status: "rejected" as const, reason };
-        }
+          const serverTimeout = this.isLazyPlugin(config) ? Math.min(config.timeout ?? 5_000, 10_000) : timeoutMs;
+          const budgetSignal = AbortSignal.any([
+            stopWait.signal, AbortSignal.timeout(serverTimeout), ...(signal ? [signal] : []),
+          ]);
+          if (this.isLazyPlugin(config)) {
+            try {
+              await this.ensurePluginConnectedWithSignal(config, budgetSignal);
+              return { status: "fulfilled" as const, value: this.bridges.get(config.name)! };
+            } catch (reason) {
+              return { status: "rejected" as const, reason };
+            }
+          }
+          const task = this.enqueuePluginTransition(config.name, async () => {
+            let attempt: ManagedConnectionAttempt | undefined;
+            let owner: object | undefined;
+            try {
+              budgetSignal.throwIfAborted();
+              owner = await this.reserve(config, budgetSignal);
+              budgetSignal.throwIfAborted();
+              if (this.lifecycleGeneration !== generation || !this.configIsCurrent(config)) throw new Error(`MCP server "${config.name}" configuration changed`);
+              attempt = this.beginConnection(config);
+              return await raceWithSignal(attempt.promise, budgetSignal, serverTimeout,
+                `MCP server "${config.name}" connect`, attempt.gate);
+            } catch (error) {
+              if (attempt) await this.trackAbandonedAttempt(attempt, owner);
+              else if (owner) this.releaseOwner(config.name, owner);
+              throw error;
+            }
+          });
+          try {
+            const bridge = await raceWithAbort(task, budgetSignal);
+            return { status: "fulfilled" as const, value: bridge };
+          } catch (reason) {
+            return { status: "rejected" as const, reason };
+          }
+        } finally { this.startupWaitControllers.delete(stopWait); }
       }),
     );
 
@@ -1318,6 +1370,9 @@ export class MCPManager {
     for (const gate of this.startupGates) {
       gate.cancel("MCP manager stopped during startup");
     }
+    for (const controller of this.startupWaitControllers) {
+      controller.abort(new Error("MCP manager stopped during startup"));
+    }
     for (const lifecycle of this.pluginLifecycles.values()) {
       lifecycle.startController?.abort(new Error("MCP manager stopped during plugin startup"));
     }
@@ -1328,8 +1383,7 @@ export class MCPManager {
     const resourceBridges = Array.from(this.resourceBridges.values());
     const promptBridges = Array.from(this.promptBridges.values());
     const attempts = Array.from(this.connectionAttempts);
-    const lazyStarts = Array.from(this.pluginLifecycles.values()).flatMap(lifecycle => lifecycle.start ? [lifecycle.start] : []);
-    const closingTasks = Array.from(this.pluginLifecycles.values()).flatMap(lifecycle => lifecycle.closing ? [lifecycle.closing] : []);
+    const pluginTransitions = Array.from(this.pluginLifecycles.values()).flatMap(lifecycle => lifecycle.transitionTail ? [lifecycle.transitionTail] : []);
     const catalogPrimeTask = this.catalogPrimeTask;
     const reconnectOperations = Array.from(this.reconnectOperations);
     const publishedOwners: ServerCleanupOwner[] = [
@@ -1343,9 +1397,7 @@ export class MCPManager {
         cleanupOwner(bridge.serverName, bridge, () => invokeDisposal(bridge)),
       ),
     ];
-    const retainedRetries = Array.from(this.retainedCleanup.keys(), (name) =>
-      this.retryRetainedCleanup(name, "during shutdown"),
-    );
+    const retainedNames = Array.from(this.retainedCleanup.keys());
     // Remove every published surface before awaiting teardown. An in-flight
     // caller can no longer discover a bridge once stop begins.
     this.bridges.clear();
@@ -1355,13 +1407,16 @@ export class MCPManager {
     this.serverInstructions.clear();
     this.resetConnectionStates();
 
-    const disposalCount = publishedOwners.length + retainedRetries.length;
+    const ownerDisposals = publishedOwners.map(owner =>
+      this.enqueuePluginTransition(owner.serverName, () => owner.dispose()));
+    const retainedRetries = retainedNames.map(name =>
+      this.enqueuePluginTransition(name, () => this.retryRetainedCleanup(name, "during shutdown")));
+    const disposalCount = ownerDisposals.length + retainedRetries.length;
     const task = Promise.allSettled([
-      ...publishedOwners.map((owner) => owner.dispose()),
+      ...ownerDisposals,
       ...retainedRetries,
       ...attempts.map((attempt) => attempt.promise),
-      ...lazyStarts,
-      ...closingTasks,
+      ...pluginTransitions,
       ...(catalogPrimeTask ? [catalogPrimeTask] : []),
       ...reconnectOperations.map((operation) => operation.promise),
     ]).then((results): ReadonlyArray<unknown> => {
@@ -1478,65 +1533,71 @@ export class MCPManager {
   }
 
   private async ensurePluginConnected(config: MCPServerConfig): Promise<void> {
-    if (!this.configIsCurrent(config)) throw new Error(`MCP plugin ${config.name} is disabled or its configuration changed`);
-    const lifecycle = this.pluginLifecycle(config.name);
-    const reconnect = lifecycle.reconnectTail;
-    if (reconnect) {
-      await reconnect;
-      if (!this.configIsCurrent(config)) throw new Error(`MCP plugin ${config.name} configuration changed`);
-    }
-    const existing = lifecycle.start;
-    if (existing) {
-      await existing;
-      if (lifecycle.reconnectTail) await lifecycle.reconnectTail;
-      return;
-    }
-    const crashed = lifecycle.crash;
-    if (crashed) await crashed.done;
-    const closing = lifecycle.closing;
-    if (closing) await closing;
-    const laterStart = lifecycle.start;
-    if (laterStart) return laterStart;
+    return this.ensurePluginConnectedWithSignal(config);
+  }
+
+  private async ensurePluginConnectedWithSignal(config: MCPServerConfig, signal?: AbortSignal): Promise<void> {
+    const timeoutMs = Math.min(config.timeout ?? 5_000, 10_000);
+    const deadline = AbortSignal.timeout(timeoutMs);
+    const waitSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    let active = false;
+    const markTimedOut = (): void => {
+      if (active && this.configIsCurrent(config)) {
+        this.commitSurfaceMutation(() => this.connectionStates.set(config.name, {
+          type: "failed", error: `MCP plugin ${config.name} startup cancelled or timed out`,
+        }));
+      }
+    };
+    waitSignal.addEventListener("abort", markTimedOut, { once: true });
+    const task = this.enqueuePluginTransition(config.name, async () => {
+      waitSignal.throwIfAborted();
+      active = true;
+      try { await this.startPluginNow(config, waitSignal); }
+      finally { active = false; }
+    });
+    try { await raceWithAbort(task, waitSignal); }
+    finally { waitSignal.removeEventListener("abort", markTimedOut); }
+  }
+
+  private async startPluginNow(config: MCPServerConfig, callerSignal?: AbortSignal): Promise<void> {
+    if (!this.configIsCurrent(config)) throw new Error(`MCP plugin ${config.name} configuration changed`);
+    await this.retireCrashNow(config.name);
+    callerSignal?.throwIfAborted();
     if (!this.configIsCurrent(config)) throw new Error(`MCP plugin ${config.name} configuration changed`);
     if (this.bridges.has(config.name) && this.connectedConnections.has(config.name)) return;
     const timeoutMs = Math.min(config.timeout ?? 5_000, 10_000);
     const generation = this.lifecycleGeneration;
+    const lifecycle = this.pluginLifecycle(config.name);
     const controller = new AbortController();
+    const startSignal = callerSignal ? AbortSignal.any([controller.signal, callerSignal]) : controller.signal;
     lifecycle.startController = controller;
     const timeout = setTimeout(() => controller.abort(new Error(`MCP plugin ${config.name} startup timed out after ${timeoutMs} ms`)), timeoutMs);
-    const task = (async (): Promise<void> => {
-      let attempt: ManagedConnectionAttempt | undefined;
-      let owner: object | undefined;
-      try {
-        this.commitSurfaceMutation(() => this.connectionStates.set(config.name, { type: "pending" }));
-        owner = await this.reserve(config, controller.signal);
-        controller.signal.throwIfAborted();
-        if (this.lifecycleGeneration !== generation || !this.configIsCurrent(config) || this.shutdownTask) throw new Error(`MCP plugin ${config.name} configuration changed or session stopped`);
-        attempt = this.beginConnection(config);
-        await raceWithSignal(attempt.promise, controller.signal, timeoutMs,
-          `MCP plugin ${config.name} startup`, attempt.gate);
-        if (this.running && this.lifecycleGeneration === generation) {
-          this.commitSurfaceMutation(() => this.connectionStates.set(config.name, { type: "connected" }));
-        }
-      } catch (error) {
-        if (attempt) this.trackAbandonedAttempt(attempt, owner);
-        else if (owner) this.releaseOwner(config.name, owner);
-        if (this.running && this.lifecycleGeneration === generation) {
-          this.commitSurfaceMutation(() => this.connectionStates.set(config.name, {
-            type: "failed", error: errMessage(error),
-          }));
-        }
-        throw error;
-      } finally {
-        clearTimeout(timeout);
-        if (lifecycle.startController === controller) delete lifecycle.startController;
+    let attempt: ManagedConnectionAttempt | undefined;
+    let owner: object | undefined;
+    try {
+      this.commitSurfaceMutation(() => this.connectionStates.set(config.name, { type: "pending" }));
+      owner = await this.reserve(config, startSignal);
+      startSignal.throwIfAborted();
+      if (this.lifecycleGeneration !== generation || !this.configIsCurrent(config) || this.shutdownTask) throw new Error(`MCP plugin ${config.name} configuration changed or session stopped`);
+      attempt = this.beginConnection(config);
+      await raceWithSignal(attempt.promise, startSignal, timeoutMs,
+        `MCP plugin ${config.name} startup`, attempt.gate);
+      if (!attempt.isCurrent()) throw new Error(`MCP plugin ${config.name} closed during discovery`);
+      if (this.running && this.lifecycleGeneration === generation) {
+        this.commitSurfaceMutation(() => this.connectionStates.set(config.name, { type: "connected" }));
       }
-    })();
-    lifecycle.start = task;
-    try { await task; }
-    finally {
-      if (lifecycle.start === task) delete lifecycle.start;
-      if (this.configs.includes(config)) this.scheduleIdle(config);
+    } catch (error) {
+      if (this.running && this.lifecycleGeneration === generation) {
+        this.commitSurfaceMutation(() => this.connectionStates.set(config.name, {
+          type: "failed", error: errMessage(error),
+        }));
+      }
+      if (attempt) await this.trackAbandonedAttempt(attempt, owner);
+      else if (owner) this.releaseOwner(config.name, owner);
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+      if (lifecycle.startController === controller) delete lifecycle.startController;
     }
   }
 
@@ -1556,7 +1617,7 @@ export class MCPManager {
       typeof (value as MCPPromptDescriptor).namespacedName === "string");
   }
 
-  private async withPluginActivity<T>(name: string, operation: () => Promise<T>): Promise<T> {
+  private async withPluginActivity<T>(name: string, operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     const config = this.getServerConfig(name);
     if (!config || config.enabled === false || !this.configIsCurrent(config)) return null as T;
     if (!this.isLazyPlugin(config)) {
@@ -1566,7 +1627,7 @@ export class MCPManager {
     const lifecycle = this.pluginLifecycle(name);
     lifecycle.pending++;
     try {
-      await this.ensurePluginConnected(config);
+      await this.ensurePluginConnectedWithSignal(config, signal);
       if (!this.configIsCurrent(config)) return null as T;
       lifecycle.active++;
       try {
@@ -1652,7 +1713,7 @@ export class MCPManager {
     if (config && this.isLazyPlugin(config) && this.running) {
       this.pluginLifecycle(serverName).pending++;
       try {
-        try { await this.ensurePluginConnected(config); }
+        try { await this.ensurePluginConnectedWithSignal(config, executionArgs.__abortSignal instanceof AbortSignal ? executionArgs.__abortSignal : undefined); }
         catch (error) {
           return {
             content: `MCP plugin startup failed for ${JSON.stringify(serverName)}: ${errMessage(error)}`,
@@ -1810,7 +1871,10 @@ export class MCPManager {
     return undefined;
   }
 
-  async reconnectServer(name: string): Promise<MCPReconnectResult> {
+  async reconnectServer(
+    name: string,
+    options: { readonly signal?: AbortSignal; readonly timeoutMs?: number } = {},
+  ): Promise<MCPReconnectResult> {
     if (this.isSandboxExecutionAuthorityClosed()) {
       return reconnectFailure(
         name,
@@ -1848,40 +1912,31 @@ export class MCPManager {
       };
     }
 
-    return this.enqueueReconnect(config);
+    return this.enqueueReconnect(config, options);
   }
 
   private enqueueReconnect(
     config: MCPServerConfig,
+    options: { readonly signal?: AbortSignal; readonly timeoutMs?: number },
   ): Promise<MCPReconnectResult> {
     const lifecycleGeneration = this.lifecycleGeneration;
     const running = this.running;
-    const lifecycle = this.pluginLifecycle(config.name);
-    const previous = lifecycle.reconnectTail ?? Promise.resolve();
-    const promise = previous.then(() =>
-      this.performReconnect(config, lifecycleGeneration, running),
-    );
+    const configuredTimeoutMs = this.isLazyPlugin(config) ? Math.min(config.timeout ?? 5_000, 10_000) : config.timeout ?? MCP_STARTUP_TIMEOUT_MS;
+    const timeoutMs = Math.min(options.timeoutMs ?? configuredTimeoutMs, configuredTimeoutMs);
+    const deadline = AbortSignal.timeout(timeoutMs);
+    const waitSignal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
+    const promise = this.enqueuePluginTransition(config.name, () => {
+      waitSignal.throwIfAborted();
+      return this.performReconnect(config, lifecycleGeneration, running, waitSignal);
+    });
     const operation: ManagedReconnectOperation = {
       serverName: config.name,
       promise,
     };
     this.reconnectOperations.add(operation);
-    const tail = promise.then(
-      () => undefined,
-      () => undefined,
-    );
-    lifecycle.reconnectTail = tail;
-    const remove = (): void => {
-      this.reconnectOperations.delete(operation);
-      if (lifecycle.reconnectTail === tail) {
-        delete lifecycle.reconnectTail;
-        this.scheduleIdle(config);
-        notifyPluginProcessIdle();
-      }
-    };
-    void tail.then(remove);
+    void promise.then(() => this.reconnectOperations.delete(operation), () => this.reconnectOperations.delete(operation));
 
-    return promise.catch((error: unknown) => {
+    return raceWithAbort(promise, waitSignal).catch((error: unknown) => {
       if (this.isReconnectLifecycleCurrent(lifecycleGeneration, running)) {
         this.commitSurfaceMutation(() => {
           this.connectionStates.set(config.name, isMcpAuthenticationError(error) ? { type: "needs-auth" } : {
@@ -1898,14 +1953,10 @@ export class MCPManager {
     config: MCPServerConfig,
     lifecycleGeneration: number,
     running: boolean,
+    callerSignal: AbortSignal,
   ): Promise<MCPReconnectResult> {
-    const lifecycle = this.pluginLifecycle(config.name);
-    const starting = lifecycle.start;
-    if (starting) await starting.catch(() => undefined);
-    const crash = lifecycle.crash;
-    if (crash) await crash.done;
-    const priorCleanup = lifecycle.closing;
-    if (priorCleanup) await priorCleanup;
+    await this.retireCrashNow(config.name);
+    callerSignal.throwIfAborted();
     if (!this.isReconnectLifecycleCurrent(lifecycleGeneration, running)) {
       return reconnectFailure(
         config.name,
@@ -1913,7 +1964,8 @@ export class MCPManager {
       );
     }
     this.connectionStates.set(config.name, { type: "pending" });
-    await this.closePlugin(config.name, "before reconnect");
+    await this.disconnectServer(config.name, "before reconnect", true);
+    callerSignal.throwIfAborted();
 
     if (!this.isReconnectLifecycleCurrent(lifecycleGeneration, running)) {
       return reconnectFailure(
@@ -1924,23 +1976,24 @@ export class MCPManager {
 
     try {
       if (!this.configIsCurrent(config)) throw new Error(`MCP server "${config.name}" configuration changed`);
-      const timeoutMs = Math.min(config.timeout ?? 5_000, 10_000);
+      const timeoutMs = this.isLazyPlugin(config) ? Math.min(config.timeout ?? 5_000, 10_000) : config.timeout ?? MCP_STARTUP_TIMEOUT_MS;
       const controller = new AbortController();
+      const startSignal = AbortSignal.any([controller.signal, callerSignal]);
       const timeout = setTimeout(() => controller.abort(new Error(`MCP server "${config.name}" reconnect timed out`)), timeoutMs);
       let owner: object | undefined;
       let attempt: ManagedConnectionAttempt | undefined;
       let bridge: MCPToolBridge;
       try {
-        owner = await this.reserve(config, controller.signal);
-        controller.signal.throwIfAborted();
+        owner = await this.reserve(config, startSignal);
+        startSignal.throwIfAborted();
         if (!this.configIsCurrent(config) || !this.isReconnectLifecycleCurrent(lifecycleGeneration, running)) {
           throw new Error(`MCP server "${config.name}" reconnect configuration changed`);
         }
         attempt = this.beginConnection(config);
-        bridge = await raceWithSignal(attempt.promise, controller.signal, timeoutMs,
+        bridge = await raceWithSignal(attempt.promise, startSignal, timeoutMs,
           `MCP server "${config.name}" reconnect`, attempt.gate);
       } catch (error) {
-        if (attempt) this.trackAbandonedAttempt(attempt, owner);
+        if (attempt) await this.trackAbandonedAttempt(attempt, owner);
         else if (owner) this.releaseOwner(config.name, owner);
         throw error;
       } finally { clearTimeout(timeout); }
@@ -2001,11 +2054,11 @@ export class MCPManager {
   ): Promise<ReadonlyArray<MCPResourceDescriptor>> {
     signal?.throwIfAborted();
     if (this.isSandboxExecutionAuthorityClosed()) return [];
-    if (this.running) await this.primeCatalogs();
+    if (this.running) await raceWithAbort(this.primeCatalogs(), signal);
     const bridges = Array.from(this.resourceBridges.values()).filter(bridge => {
       const config = this.getServerConfig(bridge.serverName);
       return config && this.configIsCurrent(config) &&
-        !this.pluginLifecycle(config.name).closing && !this.pluginLifecycle(config.name).crash;
+        this.connectedConnections.has(config.name) && !this.pluginLifecycle(config.name).crash;
     });
     const results = await Promise.allSettled(
       bridges.map((bridge) => this.withLiveBridgeActivity(bridge.serverName, () => bridge.listResources(signal))),
@@ -2020,7 +2073,7 @@ export class MCPManager {
     }
     for (const config of this.configs) {
       if (config.enabled !== false && this.installedSnapshotCurrent(config) && this.isLazyPlugin(config) &&
-        (!this.resourceBridges.has(config.name) || this.pluginLifecycle(config.name).closing || this.pluginLifecycle(config.name).crash)) {
+        (!this.resourceBridges.has(config.name) || !this.connectedConnections.has(config.name) || this.pluginLifecycle(config.name).crash)) {
         flattened.push(...this.cachedResources(config.name));
       }
     }
@@ -2039,10 +2092,10 @@ export class MCPManager {
     if (this.isSandboxExecutionAuthorityClosed()) return [];
     const config = this.getServerConfig(name);
     if (!config || config.enabled === false || !this.installedSnapshotCurrent(config)) return [];
-    if (this.running && config && this.isLazyPlugin(config)) await this.primeCatalogs();
+    if (this.running && config && this.isLazyPlugin(config)) await raceWithAbort(this.primeCatalogs(), signal);
     if (!this.configIsCurrent(config)) return [];
     const bridge = this.resourceBridges.get(name);
-    if (!bridge || this.pluginLifecycle(name).closing || this.pluginLifecycle(name).crash) return this.cachedResources(name);
+    if (!bridge || !this.connectedConnections.has(name) || this.pluginLifecycle(name).crash) return this.cachedResources(name);
     const result = await this.withLiveBridgeActivity(name, () => signal === undefined
       ? bridge.listResources()
       : bridge.listResources(signal));
@@ -2065,7 +2118,7 @@ export class MCPManager {
       const bridge = this.resourceBridges.get(parsed.serverName);
       if (!bridge) return null;
       return signal === undefined ? bridge.readResource(parsed.rest) : bridge.readResource(parsed.rest, signal);
-    });
+    }, signal);
   }
 
   /**
@@ -2077,7 +2130,7 @@ export class MCPManager {
     const bridges = Array.from(this.promptBridges.values()).filter(bridge => {
       const config = this.getServerConfig(bridge.serverName);
       return config && this.configIsCurrent(config) &&
-        !this.pluginLifecycle(config.name).closing && !this.pluginLifecycle(config.name).crash;
+        this.connectedConnections.has(config.name) && !this.pluginLifecycle(config.name).crash;
     });
     const results = await Promise.allSettled(
       bridges.map((bridge) => this.withLiveBridgeActivity(bridge.serverName, () => bridge.listPrompts())),
@@ -2091,7 +2144,7 @@ export class MCPManager {
     }
     for (const config of this.configs) {
       if (config.enabled !== false && this.installedSnapshotCurrent(config) && this.isLazyPlugin(config) &&
-        (!this.promptBridges.has(config.name) || this.pluginLifecycle(config.name).closing || this.pluginLifecycle(config.name).crash)) {
+        (!this.promptBridges.has(config.name) || !this.connectedConnections.has(config.name) || this.pluginLifecycle(config.name).crash)) {
         flattened.push(...this.cachedPrompts(config.name));
       }
     }
@@ -2110,7 +2163,7 @@ export class MCPManager {
     if (this.running && config && this.isLazyPlugin(config)) await this.primeCatalogs();
     if (!this.configIsCurrent(config)) return [];
     const bridge = this.promptBridges.get(name);
-    if (!bridge || this.pluginLifecycle(name).closing || this.pluginLifecycle(name).crash) return this.cachedPrompts(name);
+    if (!bridge || !this.connectedConnections.has(name) || this.pluginLifecycle(name).crash) return this.cachedPrompts(name);
     const result = await this.withLiveBridgeActivity(name, () => bridge.listPrompts());
     return this.configIsCurrent(config) && this.promptBridges.get(name) === bridge ? result : [];
   }
@@ -2131,7 +2184,7 @@ export class MCPManager {
       const bridge = this.promptBridges.get(parsed.serverName);
       if (!bridge) return null;
       return signal === undefined ? bridge.renderPrompt(parsed.rest, args) : bridge.renderPrompt(parsed.rest, args, signal);
-    });
+    }, signal);
   }
 
   /**
@@ -2279,6 +2332,9 @@ export class MCPManager {
       }
       throw error;
     }
+    // The transport can close during tool, resource, or prompt discovery.
+    // Install the observer before the first discovery await.
+    this.watchIdlePluginClient(config, client, startupGate);
     let bridge: ResilientMCPBridge | undefined;
     let companions: RefreshedCompanionBridges | undefined;
     try {
@@ -2379,7 +2435,7 @@ export class MCPManager {
             }
           }
           if (reconnectIsCurrent()) {
-            this.watchIdlePluginClient(config, newClient);
+            this.watchIdlePluginClient(config, newClient, createStartupGate());
             const connected = this.connectedConnections.get(config.name);
             if (connected) this.connectedConnections.set(config.name, { ...connected, client: newClient as never });
           }
@@ -2444,7 +2500,6 @@ export class MCPManager {
           );
         },
       });
-      this.watchIdlePluginClient(config, client);
       this.connectionStates.set(config.name, { type: "connected" });
       return bridge;
     } catch (error) {
