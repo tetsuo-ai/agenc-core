@@ -157,4 +157,41 @@ describe("frontmatter the canonical parser accepts", () => {
     const skill = snapshot.skills.find((entry) => entry.name === "mention");
     expect(skill?.disableModelInvocation).toBe(false);
   });
+
+  it.each([
+    { indicator: "|", flag: "disable-model-invocation: false" },
+    { indicator: ">", flag: "" },
+  ])("does not hide a skill when a $indicator description contains the flag as text", async ({ indicator, flag }) => {
+    const { snapshot } = await snapshotOf({
+      example: [
+        "---",
+        `description: ${indicator}`,
+        "  Example frontmatter:",
+        "  disable-model-invocation: true",
+        flag,
+        "---",
+        "# Example",
+        "",
+      ].filter(Boolean).join("\n"),
+    });
+    const skill = snapshot.skills.find((entry) => entry.name === "example");
+    expect(skill?.disableModelInvocation).toBe(false);
+    expect(buildSkillListingWithinBudget(snapshot.skills).listedNames).toContain("example");
+  });
+
+  it("does not use block scalar text as a fallback flag when another field is invalid", async () => {
+    const { snapshot } = await snapshotOf({
+      example: [
+        "---",
+        "description: |",
+        "  disable-model-invocation: true",
+        "invalid unindented line",
+        "---",
+        "# Example",
+        "",
+      ].join("\n"),
+    });
+    expect(snapshot.skills.find((entry) => entry.name === "example")?.disableModelInvocation).toBe(false);
+    expect(buildSkillListingWithinBudget(snapshot.skills).listedNames).toContain("example");
+  });
 });

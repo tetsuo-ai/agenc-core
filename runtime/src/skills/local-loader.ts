@@ -659,20 +659,38 @@ function implicitAliasesForSkillName(name: string): readonly string[] {
   return /^[A-Za-z][A-Za-z0-9_:-]*$/u.test(leaf) ? [leaf] : [];
 }
 
-/**
- * Any `disable-model-invocation: true` line is authoritative even if YAML
- * recovery changes its value or another frontmatter field is invalid.
- */
+/** A top-level true flag survives YAML recovery or invalid sibling fields. */
 function hasRawDisableModelInvocation(yamlText: string): boolean {
   const lines = yamlText.split(/\r?\n/u);
-  return lines.some((line) => {
-    const match = /^[ \t]*disable-model-invocation[ \t]*:[ \t]*(.*)$/iu.exec(line);
-    if (match === null) return false;
-    const rawValue = (match[1] ?? "").trim();
+  const mappingParents: number[] = [];
+  let blockScalarIndent: number | null = null;
+  for (const line of lines) {
+    if (line.trim() === "") continue;
+    const indent = /^[ \t]*/u.exec(line)?.[0].length ?? 0;
+    if (blockScalarIndent !== null) {
+      if (indent > blockScalarIndent) continue;
+      blockScalarIndent = null;
+    }
+    while (mappingParents.length > 0 && indent <= mappingParents[mappingParents.length - 1]!) {
+      mappingParents.pop();
+    }
+    const match = /^[ \t]*([^#\s][^:]*?)[ \t]*:[ \t]*(.*)$/u.exec(line);
+    if (match === null) continue;
+    const rawValue = (match[2] ?? "").trim();
+    if (/^[|>](?:[+-][1-9]?|[1-9][+-]?)?(?:[ \t]+#.*)?$/u.test(rawValue)) {
+      blockScalarIndent = indent;
+      continue;
+    }
+    if (rawValue === "" || rawValue.startsWith("#")) {
+      mappingParents.push(indent);
+      continue;
+    }
+    if (mappingParents.length > 0 || match[1]?.toLowerCase() !== "disable-model-invocation") continue;
     const quoted = /^(['"])(.*)\1(?:[ \t]+#.*)?$/u.exec(rawValue);
     const value = quoted?.[2] ?? rawValue;
-    return parseBooleanFrontmatter(value);
-  });
+    if (parseBooleanFrontmatter(value)) return true;
+  }
+  return false;
 }
 
 function splitFrontmatter(raw: string): SplitFrontmatter {
