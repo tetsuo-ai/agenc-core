@@ -7,10 +7,11 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 
-const { launchBrowserMock, markerReadSeam, ownershipSeam } = vi.hoisted(() => ({
+const { launchBrowserMock, markerReadSeam, ownershipSeam, linkSeam } = vi.hoisted(() => ({
   launchBrowserMock: vi.fn(),
   markerReadSeam: { path: "", replace: undefined as undefined | (() => void) },
   ownershipSeam: { path: "" },
+  linkSeam: { path: "" },
 }));
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -27,6 +28,11 @@ vi.mock("node:fs", async (importOriginal) => {
     }) as typeof actual.readFileSync,
     lstatSync: ((path: Parameters<typeof actual.lstatSync>[0], ...args: unknown[]) => {
       const info = (actual.lstatSync as (...args: unknown[]) => ReturnType<typeof actual.lstatSync>)(path, ...args);
+      if (String(path) === linkSeam.path) {
+        return Object.assign(Object.create(Object.getPrototypeOf(info)), info, {
+          isSymbolicLink: () => true,
+        });
+      }
       return String(path) === ownershipSeam.path
         ? Object.assign(Object.create(Object.getPrototypeOf(info)), info, { uid: info.uid + 1 })
         : info;
@@ -86,6 +92,7 @@ afterEach(async () => {
   markerReadSeam.path = "";
   markerReadSeam.replace = undefined;
   ownershipSeam.path = "";
+  linkSeam.path = "";
   vi.restoreAllMocks();
 });
 
@@ -94,6 +101,7 @@ function fakeManager(
   profileDir?: string,
   sandboxExecutionBroker?: SandboxExecutionBroker,
   projectRootMarkers?: readonly string[],
+  extraOptions: Partial<ConstructorParameters<typeof BrowserManager>[0]> = {},
 ) {
   let created = 0;
   let currentUrl = "about:blank";
@@ -137,6 +145,7 @@ function fakeManager(
       headless: true, allowPrivateNetwork: false, noSandbox: false, navigationTimeoutMs: 1_000,
       ...(profileDir !== undefined ? { profileDir } : {}),
     },
+    ...extraOptions,
   });
   managers.push(manager);
   return { manager, connection };
@@ -339,7 +348,7 @@ describe("project-scoped browser profiles", () => {
     ]);
   });
 
-  it("keys a symlinked workspace by its real project", async () => {
+  it("uses a private profile when lexical trust and real workspace roots differ", async () => {
     const lexical = join(profileRoot, "lexical");
     const realProject = join(profileRoot, "real");
     const realWorkspace = join(realProject, "src");
@@ -347,10 +356,103 @@ describe("project-scoped browser profiles", () => {
     mkdirSync(join(realProject, ".git"), { recursive: true });
     mkdirSync(realWorkspace);
     symlinkSync(realWorkspace, join(lexical, "workspace"), "dir");
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     await launchThroughTool(join(lexical, "workspace"));
 
-    expect(launchedProfiles()).toEqual([projectProfile(realProject)]);
+    expect(launchedProfiles()[0]).toMatch(/^.*\/agenc-browser-[^/]+$/);
+    expect(launchedProfiles()[0]).not.toBe(projectProfile(realProject));
+    expect(launchedProfiles()[0]).not.toBe(projectProfile(lexical));
+    expect(warning).toHaveBeenCalledOnce();
+    expect(String(warning.mock.calls[0]?.[0])).toContain("lexical trust root differs");
+  });
+
+  it("closes a running browser on marker reload and launches with the new key", async () => {
+    const first = join(profileRoot, "first");
+    mkdirSync(first);
+    writeFileSync(join(profileRoot, "package.json"), "{}");
+    writeFileSync(join(first, ".project"), "");
+    let markers: readonly string[] = ["package.json"];
+    let notifyReload: (() => void) | undefined;
+    const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd: first });
+    const { manager, connection } = fakeManager(async () => ({}), undefined, broker, markers, {
+      projectRootMarkersProvider: () => markers,
+      subscribeProjectRootMarkers: (listener) => {
+        notifyReload = listener;
+        return () => { notifyReload = undefined; };
+      },
+    });
+    await manager.newTab();
+    expect(launchedProfiles()).toEqual([projectProfile(profileRoot)]);
+    markers = [".project"];
+    notifyReload?.();
+    await vi.waitFor(() => expect(manager.running).toBe(false));
+    connection.closed = false;
+    await manager.newTab();
+    expect(launchedProfiles()).toEqual([projectProfile(profileRoot), projectProfile(first)]);
+  });
+
+  it.skipIf(process.platform === "win32")("refuses writable browser chain components", async () => {
+    for (const component of ["browser", "profiles"] as const) {
+      const path = join(profileRoot, "browser", ...(component === "profiles" ? ["profiles"] : []));
+      mkdirSync(path, { recursive: true });
+      chmodSync(path, component === "browser" ? 0o770 : 0o777);
+      const { manager } = fakeManager(async () => ({}));
+      await manager.newTab();
+      expect(launchedProfiles().at(-1)).toMatch(/^.*\/agenc-browser-[^/]+$/);
+      await manager.closeAll();
+      chmodSync(path, 0o700);
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("allows a sticky shared ancestor with our own entry but refuses a non-sticky one", async () => {
+    const ancestor = join(profileRoot, "shared");
+    const home = join(ancestor, "home");
+    mkdirSync(home, { recursive: true, mode: 0o700 });
+    chmodSync(ancestor, 0o1777);
+    const options = { agencHome: home, projectRoot: profileRoot };
+    const first = fakeManager(async () => ({}), undefined, undefined, undefined, options).manager;
+    await first.newTab();
+    expect(launchedProfiles().at(-1)).toBe(join(home, "browser", "profiles", createHash("sha256").update(profileRoot).digest("hex").slice(0, 24)));
+    await first.closeAll();
+    chmodSync(ancestor, 0o777);
+    const second = fakeManager(async () => ({}), undefined, undefined, undefined, options).manager;
+    await second.newTab();
+    expect(launchedProfiles().at(-1)).toMatch(/^.*\/agenc-browser-[^/]+$/);
+  });
+
+  it.skipIf(process.platform === "win32")("refuses a sticky ancestor when its immediate entry has another owner", async () => {
+    const shared = join(profileRoot, "shared");
+    const entry = join(shared, "entry");
+    const home = join(entry, "home");
+    mkdirSync(home, { recursive: true, mode: 0o700 });
+    chmodSync(shared, 0o1777);
+    ownershipSeam.path = entry;
+    const { manager } = fakeManager(async () => ({}), undefined, undefined, undefined, { agencHome: home });
+    await manager.newTab();
+    const path = (launchBrowserMock.mock.calls[0]?.[0] as { userDataDir: string }).userDataDir;
+    expect(path).toMatch(/^.*\/agenc-browser-[^/]+$/);
+  });
+
+  it("refuses a Windows junction reported by lstat in the browser chain", async () => {
+    const browser = join(profileRoot, "browser");
+    mkdirSync(browser);
+    linkSeam.path = browser;
+    const { manager } = fakeManager(async () => ({}), undefined, undefined, undefined, {
+      profileValidationPlatform: "win32",
+    });
+    await manager.newTab();
+    expect(launchedProfiles()[0]).toMatch(/^.*\/agenc-browser-[^/]+$/);
+  });
+
+  it.skipIf(process.platform === "win32")("refuses a link in the browser chain", async () => {
+    const elsewhere = join(profileRoot, "elsewhere");
+    mkdirSync(elsewhere);
+    symlinkSync(elsewhere, join(profileRoot, "browser"), "dir");
+    const { manager } = fakeManager(async () => ({}));
+    await manager.newTab();
+    expect(launchedProfiles()[0]).toMatch(/^.*\/agenc-browser-[^/]+$/);
+    expect(readdirSync(elsewhere)).toEqual([]);
   });
 
   it("recomputes a transitioned workspace with the same trust markers", async () => {

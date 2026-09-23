@@ -16,3 +16,13 @@ export function resolveBrowserProjectRootSync(
   }
   return resolveProjectTrustRootSync({ cwd: realCwd, projectRootMarkers });
 }
+
+/** Trust walks lexical ancestors, so a different realpath root cannot share either stored profile. */
+export function resolveBrowserProfileProjectSync(
+  cwd: string,
+  projectRootMarkers?: readonly string[],
+): { readonly root: string; readonly trustRootMismatch: boolean } {
+  const root = resolveBrowserProjectRootSync(cwd, projectRootMarkers);
+  const lexicalTrustRoot = resolveProjectTrustRootSync({ cwd: resolve(cwd), projectRootMarkers });
+  return { root, trustRootMismatch: root !== lexicalTrustRoot };
+}

@@ -21,7 +21,7 @@ import {
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { hostname } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import {
   BrowserLaunchCleanupError,
@@ -40,7 +40,7 @@ import {
   terminateProcessTreeAndWait,
 } from "../utils/supervisedProcess.js";
 import { resolveSessionTempRoot } from "../session/runtime-options.js";
-import { resolveBrowserProjectRootSync } from "./profile-root.js";
+import { resolveBrowserProfileProjectSync, resolveBrowserProjectRootSync } from "./profile-root.js";
 
 const IDLE_SHUTDOWN_MS = 5 * 60 * 1000;
 const MAX_TABS = 8;
@@ -270,20 +270,41 @@ function cleanStalePrivateProfiles(root: string, sharedProfile?: string): void {
   cleanedTempRoots.add(root);
 }
 
-/** Check a persistent profile component without following its final symlink. */
-function ensurePrivateProfileDirectory(path: string, recursive: boolean): boolean {
-  if (process.platform === "win32") {
-    const created = !existsSync(path);
-    mkdirSync(path, { recursive: true, mode: 0o700 });
-    return created;
+/** A shared ancestor may be sticky only when it protects our entry below it. */
+function validateAncestorsAboveHome(home: string): void {
+  const uid = process.getuid?.();
+  if (uid === undefined) throw new Error("cannot verify browser profile owner");
+  let child = home;
+  for (let parent = dirname(home); parent !== child; child = parent, parent = dirname(parent)) {
+    const info = lstatSync(parent);
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw new Error(`browser profile ancestor is not a regular directory: ${parent}`);
+    }
+    if (info.uid !== uid && info.uid !== 0) {
+      throw new Error(`browser profile ancestor is owned by another user: ${parent}`);
+    }
+    if (((info.mode & 0o002) !== 0 && (info.mode & 0o1000) === 0) ||
+        ((info.mode & 0o002) === 0 && (info.mode & 0o020) !== 0)) {
+      throw new Error(`browser profile ancestor can be replaced by another user: ${parent}`);
+    }
+    if ((info.mode & 0o002) !== 0) {
+      const entry = lstatSync(child);
+      if (entry.uid !== uid && entry.uid !== 0) {
+        throw new Error(`browser profile entry in sticky directory has another owner: ${child}`);
+      }
+    }
   }
+}
+
+/** Node lstat reports Windows junctions as symbolic links; never follow one. */
+function ensurePrivateProfileDirectory(path: string, platform: NodeJS.Platform): boolean {
   let created = false;
   try {
     lstatSync(path);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     try {
-      mkdirSync(path, { recursive, mode: 0o700 });
+      mkdirSync(path, { mode: 0o700 });
       created = true;
     } catch (mkdirError) {
       if ((mkdirError as NodeJS.ErrnoException).code !== "EEXIST") throw mkdirError;
@@ -293,9 +314,17 @@ function ensurePrivateProfileDirectory(path: string, recursive: boolean): boolea
   if (info.isSymbolicLink() || !info.isDirectory()) {
     throw new Error(`browser profile path is not a regular directory: ${path}`);
   }
+  if (platform === "win32") {
+    // Windows per-user profile folders are private by default. Node has no
+    // portable owner/ACL check here, so only reparse points are refused.
+    return created;
+  }
   const uid = process.getuid?.();
   if (uid === undefined || info.uid !== uid) {
     throw new Error(`browser profile directory is not owned by this user: ${path}`);
+  }
+  if ((info.mode & 0o022) !== 0) {
+    throw new Error(`browser profile directory is writable by another user: ${path}`);
   }
   const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try {
@@ -309,6 +338,15 @@ function ensurePrivateProfileDirectory(path: string, recursive: boolean): boolea
     closeSync(fd);
   }
   return created;
+}
+
+function ensurePersistentProjectProfile(home: string, profile: string, platform: NodeJS.Platform): boolean {
+  const absoluteHome = resolve(home);
+  if (platform !== "win32") validateAncestorsAboveHome(absoluteHome);
+  ensurePrivateProfileDirectory(absoluteHome, platform);
+  ensurePrivateProfileDirectory(join(absoluteHome, "browser"), platform);
+  ensurePrivateProfileDirectory(join(absoluteHome, "browser", "profiles"), platform);
+  return ensurePrivateProfileDirectory(profile, platform);
 }
 
 /**
@@ -344,6 +382,12 @@ export interface BrowserManagerOptions {
   readonly projectRoot?: string;
   /** Session root markers used by trust and workspace transition recomputes. */
   readonly projectRootMarkers?: readonly string[];
+  /** Current markers from the same live config snapshot used by trust. */
+  readonly projectRootMarkersProvider?: () => readonly string[] | undefined;
+  /** Notify this manager when that snapshot is published on reload. */
+  readonly subscribeProjectRootMarkers?: (listener: () => void) => () => void;
+  /** Test seam for Windows reparse-point validation. */
+  readonly profileValidationPlatform?: NodeJS.Platform;
   readonly policy: BrowserPolicy;
   /** Authenticated session boundary for the Chromium process. */
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
@@ -397,6 +441,8 @@ export class BrowserManager {
   #sharedProfileDir: string | undefined;
   #sharedProfileMarker: string | undefined;
   #profilePathWarningLogged = false;
+  #launchedProfileIdentity: string | undefined;
+  readonly #unsubscribeProjectRootMarkers: (() => void) | undefined;
   readonly #exitListener = (): void => {
     this.#killNow();
   };
@@ -408,6 +454,40 @@ export class BrowserManager {
       this.#initialAuthorityCwd ?? process.cwd(),
       options.projectRootMarkers,
     );
+    this.#unsubscribeProjectRootMarkers = options.subscribeProjectRootMarkers?.(() => {
+      void this.closeIfProfileKeyChanged().catch((error: unknown) => {
+        console.error(`[Browser] Failed to close browser after profile key change: ${String(error)}`);
+      });
+    });
+  }
+
+  #profileProject(): { readonly root: string; readonly trustRootMismatch: boolean } {
+    const cwd = this.#options.sandboxExecutionBroker?.cwd;
+    if (cwd === undefined) return { root: this.#initialProjectRoot, trustRootMismatch: false };
+    return resolveBrowserProfileProjectSync(
+      cwd,
+      this.#options.projectRootMarkersProvider?.() ?? this.#options.projectRootMarkers,
+    );
+  }
+
+  #profileIdentity(): string {
+    if (this.#options.policy.profileDir !== undefined) return this.#options.policy.profileDir;
+    const project = this.#profileProject();
+    return `${project.trustRootMismatch ? "private:" : "project:"}${project.root}`;
+  }
+
+  /** Reload publication closes a browser before it can reuse an obsolete profile key. */
+  closeIfProfileKeyChanged(): Promise<void> {
+    if (this.#launchedProfileIdentity !== undefined &&
+        this.#launchedProfileIdentity !== this.#profileIdentity()) {
+      return this.closeAll();
+    }
+    return Promise.resolve();
+  }
+
+  async dispose(): Promise<void> {
+    this.#unsubscribeProjectRootMarkers?.();
+    await this.closeAll();
   }
 
   get running(): boolean {
@@ -424,17 +504,12 @@ export class BrowserManager {
    */
   #ensureProfileDir(): string {
     const tempRoot = resolveSessionTempRoot();
-    const currentCwd = this.#options.sandboxExecutionBroker?.cwd;
-    // Workspace transitions quiesce and rebase the broker without replacing
-    // this manager. Recompute the root if its authority cwd has changed.
-    const projectRoot = currentCwd === this.#initialAuthorityCwd
-      ? this.#initialProjectRoot
-      : resolveBrowserProjectRootSync(
-        currentCwd ?? process.cwd(),
-        this.#options.projectRootMarkers,
-      );
+    const project = this.#profileProject();
+    const projectRoot = project.root;
+    this.#launchedProfileIdentity = this.#options.policy.profileDir ??
+      `${project.trustRootMismatch ? "private:" : "project:"}${project.root}`;
     const profilesRoot = this.#options.agencHome !== undefined
-      ? join(this.#options.agencHome, "browser", "profiles")
+      ? join(resolve(this.#options.agencHome), "browser", "profiles")
       : undefined;
     const projectProfile = profilesRoot !== undefined
       ? join(profilesRoot, createHash("sha256").update(projectRoot).digest("hex").slice(0, 24))
@@ -453,11 +528,16 @@ export class BrowserManager {
       return this.#tempProfileDir;
     }
     if (shared !== undefined) {
-      let usable = true;
+      let usable = !project.trustRootMismatch || this.#options.policy.profileDir !== undefined;
       if (this.#options.policy.profileDir === undefined && profilesRoot !== undefined) {
         try {
-          ensurePrivateProfileDirectory(profilesRoot, true);
-          const created = ensurePrivateProfileDirectory(shared, false);
+          if (project.trustRootMismatch) {
+            throw new Error("lexical trust root differs from the realpath workspace root");
+          }
+          const created = ensurePersistentProjectProfile(
+            this.#options.agencHome!, shared,
+            this.#options.profileValidationPlatform ?? process.platform,
+          );
           if (created && this.#options.agencHome !== undefined &&
               existsSync(join(this.#options.agencHome, "browser", "profile"))) {
             console.info("[Browser] Existing legacy browser profile left unused; created a project profile.");
@@ -571,6 +651,10 @@ export class BrowserManager {
         await this.closeAll();
         continue;
       }
+      if (this.running && this.#launchedProfileIdentity !== this.#profileIdentity()) {
+        await this.closeAll();
+        continue;
+      }
       if (this.running) {
         this.#touchIdle();
         return;
@@ -621,6 +705,7 @@ export class BrowserManager {
           : {}),
       });
     } catch (err) {
+      this.#launchedProfileIdentity = undefined;
       const boundary: BrowserBoundary = {
         child: undefined,
         proxy,
@@ -865,6 +950,7 @@ export class BrowserManager {
     this.#connection = undefined;
     this.#child = undefined;
     this.#launchAuthorityCwd = undefined;
+    this.#launchedProfileIdentity = undefined;
     const proxy = this.#proxy;
     this.#proxy = undefined;
     activeManagers.delete(this);

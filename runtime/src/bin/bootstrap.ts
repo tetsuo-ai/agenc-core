@@ -1331,6 +1331,8 @@ async function bootstrapLocalRuntimeSessionScoped(
         ? { browserConfig: startup.config.browser }
         : {}),
       projectRootMarkers: startup.config.project_root_markers,
+      projectRootMarkersProvider: () => configStore.current().project_root_markers,
+      subscribeProjectRootMarkers: (listener) => configStore.subscribe(() => listener()),
       // Coordinator mode restricts the LIVE surface to orchestration +
       // user-interaction tools: the coordinator directs workers, it
       // does not edit files or run commands itself.
