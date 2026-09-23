@@ -251,7 +251,16 @@ export class ModelMetadataResolver {
       const openAi = metadataFromOpenAiModelsResponse(response, params.model);
       if (hasAnyMetadata(openAi)) return openAi;
     }
-    return await this.resolveOllamaNativeMetadata(baseUrl, params, headers);
+    if (
+      provider !== "ollama" &&
+      provider !== "ollama-cloud" &&
+      !isLocalOllamaCompatibleEndpoint(provider, baseUrl)
+    ) return undefined;
+    return await this.resolveOllamaNativeMetadata(
+      baseUrl,
+      params,
+      provider === "ollama-cloud" ? headers : undefined,
+    );
   }
 
   /**
@@ -259,9 +268,8 @@ export class ModelMetadataResolver {
    * context length -- so a local model silently inherited the conservative
    * 128k fallback while really being 32k (qwen2.5-coder) or 2k (moondream).
    * `/api/show` reports the true window under an architecture-prefixed key
-   * (`qwen2.context_length`). This also runs for `openai-compatible` and
-   * `lmstudio` pointed at an Ollama endpoint, which is a common setup; a
-   * non-Ollama server simply 404s and the caller falls through.
+   * (`qwen2.context_length`). Compatible local providers pointed at Ollama's
+   * default port also use this endpoint, without forwarding their API keys.
    */
   private async resolveOllamaNativeMetadata(
     baseUrl: string,
@@ -883,6 +891,24 @@ function providerBaseUrl(
   const configured = providerConfig?.base_url?.trim();
   const envBaseURL = envBaseUrl(provider, env);
   return envBaseURL || configured || defaultProviderBaseUrl(provider);
+}
+
+function isLocalOllamaCompatibleEndpoint(
+  provider: string,
+  baseUrl: string,
+): boolean {
+  if (provider !== "openai-compatible" && provider !== "lmstudio") {
+    return false;
+  }
+  try {
+    const url = new URL(baseUrl);
+    return url.port === "11434" &&
+      (url.hostname === "localhost" ||
+        url.hostname === "[::1]" ||
+        /^127\./.test(url.hostname));
+  } catch {
+    return false;
+  }
 }
 
 /**
