@@ -220,7 +220,7 @@ function environmentVideoBackend(
   const environmentBaseURL = resolveProviderBaseURLEnvironment(kind, env)?.value;
   const baseURL = kind === "openai"
     ? environmentBaseURL ?? sessionBaseURL ?? DEFAULT_OPENAI_BASE_URL
-    : sessionBaseURL ?? environmentBaseURL ?? DEFAULT_MINIMAX_BASE_URL;
+    : environmentBaseURL ?? sessionBaseURL ?? DEFAULT_MINIMAX_BASE_URL;
   try {
     new URL(baseURL);
   } catch {

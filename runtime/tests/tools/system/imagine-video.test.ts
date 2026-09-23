@@ -519,6 +519,34 @@ describe("ImagineVideo execute", () => {
     );
   });
 
+  it("uses MINIMAX_BASE_URL before the MiniMax session's default factory URL", async () => {
+    const provider = createProvider("minimax", {
+      apiKey: "session-key",
+      model: "MiniMax-M2.5",
+      baseURL: "https://api.minimax.io/v1",
+    });
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ error: "unavailable" }), { status: 503 })) as unknown as typeof fetch;
+    const tool = createImagineVideoTool({
+      workspaceRoot: process.cwd(),
+      home: testHome(process.cwd()),
+      getSession: () => ({ services: { provider } }) as unknown as Session,
+      env: {
+        MINIMAX_API_KEY: "env-key",
+        MINIMAX_BASE_URL: "https://env-minimax.example/v1",
+      },
+      fetchImpl,
+    });
+
+    await tool.execute({ prompt: "a rotating cube" });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://env-minimax.example/v1/video_generation",
+      expect.objectContaining({
+        headers: expect.objectContaining({ authorization: "Bearer env-key" }),
+      }),
+    );
+  });
+
   it("snaps a duration Sora does not offer and maps size from the frame", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-sora-snap-"));
     const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
