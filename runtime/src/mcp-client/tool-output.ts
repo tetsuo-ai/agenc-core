@@ -19,7 +19,7 @@ import {
 } from "../utils/toolResultStorage.js";
 import type { Logger } from "./_deps/logger.js";
 import type { ToolResult } from "./_deps/tools-types.js";
-import { DISPLAY_ATTACHMENT_LIMIT, DISPLAY_BINARY_LIMIT, validateDisplayBlock, type DisplayAttachment } from "./display-attachments.js";
+import { DISPLAY_ATTACHMENT_LIMIT, DISPLAY_BINARY_LIMIT, DisplayValidationError, validateDisplayBlock, type DisplayAttachment } from "./display-attachments.js";
 import {
   consumeMcpSanitizationBudget,
   createMcpSanitizationBudget,
@@ -62,6 +62,7 @@ export interface NormalizeMcpToolOutputOptions {
   readonly logger: Logger;
   /** Trusted roots supplied by the plugin bridge, never from MCP output. */
   readonly displayRoots?: readonly string[];
+  readonly displayDataRoot?: string;
 }
 
 interface RenderState {
@@ -601,15 +602,15 @@ export async function normalizeMcpToolOutput(
           continue;
         }
         try {
-          const shown = await validateDisplayBlock(displayRecord ?? {}, options.displayRoots ?? []);
+          const shown = await validateDisplayBlock(displayRecord ?? {}, options.displayRoots ?? [], undefined, options.displayDataRoot);
           const imageBytes = state.displayAttachments.filter(item => item.kind === "image").reduce((sum, item) => sum + item.size, 0);
-          if (shown.attachment.kind === "image" && imageBytes + shown.attachment.size > DISPLAY_BINARY_LIMIT) throw new Error("images exceed 5 MiB per result");
+          if (shown.attachment.kind === "image" && imageBytes + shown.attachment.size > DISPLAY_BINARY_LIMIT) throw new DisplayValidationError("images exceed 5 MiB per result");
           const inlineBytes = [...state.displayAttachments, shown.attachment].reduce((sum, item) => sum + Buffer.byteLength(JSON.stringify(item), "utf8"), 0);
-          if (inlineBytes > MAX_DISPLAY_INLINE_COMPLETION_BYTES) throw new Error("display attachments exceed journal budget");
+          if (inlineBytes > MAX_DISPLAY_INLINE_COMPLETION_BYTES) throw new DisplayValidationError("display attachments exceed journal budget");
           state.displayAttachments.push(shown.attachment);
           appendStaticText(state, shown.caption);
         } catch (error) {
-          const reason = error instanceof Error ? error.message : "validation failed";
+          const reason = error instanceof DisplayValidationError ? error.message : "file could not be read";
           appendStaticText(state, `[Display attachment could not be shown: ${reason}]`);
         }
         continue;

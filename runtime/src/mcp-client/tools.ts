@@ -1175,6 +1175,7 @@ export async function createToolBridge(
               ...(options.serverConfig?.displayDataRoot ? [options.serverConfig.displayDataRoot] : []),
               ...(options.permissions?.cwd ? [options.permissions.cwd] : []),
             ],
+            displayDataRoot: options.serverConfig?.displayDataRoot,
           });
           const effectDisposition = desktopControlEffectReceipt(rawResult, {
             serverName,

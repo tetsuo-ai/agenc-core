@@ -665,8 +665,9 @@ describe("AgenC background agent lifecycle", () => {
       }
       const bytes = randomBytes(13 * 1024 * 1024);
       const id = createHash("sha256").update(bytes).digest("hex");
-      const file = join(cwd, "large.bin"); writeFileSync(file, bytes);
-      const display = await validateDisplayBlock({ type: "resource_link", uri: pathToFileURL(file).href, name: "large.bin" }, [cwd]);
+      const pluginDataRoot = join(home, "plugin-data"); mkdirSync(pluginDataRoot);
+      const file = join(pluginDataRoot, "large.bin"); writeFileSync(file, bytes);
+      const display = await validateDisplayBlock({ type: "resource_link", uri: pathToFileURL(file).href, name: "large.bin" }, [pluginDataRoot, cwd], undefined, pluginDataRoot);
       const stored = persistDisplayAttachments(first.store.sessionDir, [display.attachment]);
       first.appendRollout({ type: "event_msg", payload: { id: "display-complete", seq: 1, msg: { type: "tool_call_completed", payload: { callId: "call-1", result: '[Shown to the user: file "talk.ics"]', isError: false, displayAttachments: stored } } } });
       first.flushDurable();

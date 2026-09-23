@@ -50,7 +50,9 @@ export function toToolCatalogPolicyConfig(
   config: MCPServerConfig,
 ): MCPToolCatalogPolicyConfig | undefined {
   const allowedTools = config.enabled_tools;
-  const displayDataRoot = config.env?.AGENC_PLUGIN_DATA;
+  // Only the runtime-minted plugin sandbox metadata identifies the trusted
+  // directory. An arbitrary MCP server may set AGENC_PLUGIN_DATA in its env.
+  const displayDataRoot = config.pluginSandbox?.pluginDataDir;
   const deniedTools = config.disabled_tools;
   const defaultToolsApprovalMode = isValidPermissionDefaultMode(
     config.default_tools_approval_mode,

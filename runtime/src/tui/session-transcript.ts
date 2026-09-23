@@ -293,6 +293,7 @@ function clampResultContent(content: unknown): unknown {
  *     submitted was modified or dropped before being sent.
  */
 const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
+  "transcript_truncated",
   // User action / configuration
   "mcp_auth_required",
   "model_token_limit_config",

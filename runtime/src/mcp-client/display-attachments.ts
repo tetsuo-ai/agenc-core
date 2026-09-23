@@ -85,7 +85,8 @@ const tableSchema = z.object({ version: z.literal(1), title: z.string().trim().m
 
 function digest(bytes: Buffer): string { return createHash("sha256").update(bytes).digest("hex"); }
 function safeTitle(value: unknown): string { return typeof value === "string" ? value.replace(/[\r\n\t\x00-\x1f]/gu, " ").trim().slice(0, 120) : ""; }
-function fail(reason: string): never { throw new Error(reason); }
+export class DisplayValidationError extends Error {}
+function fail(reason: string): never { throw new DisplayValidationError(reason); }
 function makeAttachment(kind: DisplayAttachment["kind"], title: string, mimeType: string, bytes: Buffer, data?: JsonValue): DisplayAttachment {
   const hash = digest(bytes);
   const attachment: DisplayAttachment = { id: hash, kind, title, mimeType, size: bytes.length, digest: hash, ...(data !== undefined ? { data } : {}) };
@@ -94,7 +95,7 @@ function makeAttachment(kind: DisplayAttachment["kind"], title: string, mimeType
 }
 function within(path: string, root: string): boolean { const rel = relative(root, path); return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)); }
 
-export async function validateDisplayBlock(block: Record<string, unknown>, roots: readonly string[], readContext: VerifiedReadContext = DEFAULT_VERIFIED_READ_CONTEXT): Promise<{ attachment: DisplayAttachment; caption: string }> {
+export async function validateDisplayBlock(block: Record<string, unknown>, roots: readonly string[], readContext: VerifiedReadContext = DEFAULT_VERIFIED_READ_CONTEXT, trustedDataRoot?: string): Promise<{ attachment: DisplayAttachment; caption: string }> {
   if (block.type === "resource") {
     const resource = block.resource as Record<string, unknown> | undefined;
     const mimeType = resource?.mimeType;
@@ -148,7 +149,12 @@ export async function validateDisplayBlock(block: Record<string, unknown>, roots
     if (typeof block.name !== "string" || !safeTitle(block.name)) fail("file link needs a name");
     let path: string;
     try { path = fileURLToPath(block.uri); } catch { fail("invalid file URI"); }
-    const realRoots = await Promise.all(roots.map(root => realpath(root).catch(() => undefined)));
+    const pathnameOnlyPlatform = process.platform === "darwin" || process.platform === "freebsd";
+    if (pathnameOnlyPlatform && (!trustedDataRoot || !within(path, trustedDataRoot) || path === trustedDataRoot)) {
+      fail("workspace file links are unavailable on this platform; send inline data instead");
+    }
+    const allowedRoots = pathnameOnlyPlatform ? [trustedDataRoot!] : roots;
+    const realRoots = await Promise.all(allowedRoots.map(root => realpath(root).catch(() => undefined)));
     let bytes: Buffer | undefined;
     for (const rootPath of realRoots) {
       if (!rootPath || !within(path, rootPath) || path === rootPath) continue;

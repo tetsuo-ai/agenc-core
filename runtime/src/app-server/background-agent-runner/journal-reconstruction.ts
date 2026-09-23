@@ -442,6 +442,9 @@ export function sessionTranscriptV2FromRollout(
     const sequence = positiveSequence(event.seq);
     if (sequence === undefined) continue;
     if (event.msg.type === "tool_call_completed" && event.msg.payload.displayAttachments?.length) {
+      const captions = typeof event.msg.payload.result === "string"
+        ? event.msg.payload.result.match(/\[Shown to the user: [^\]\r\n]{0,500}\]/gu)?.slice(0, 8).join("\n")
+        : undefined;
       attachmentEvents.push({
         eventId: canonicalEventId(event),
         committedSequence: sequence,
@@ -449,7 +452,12 @@ export function sessionTranscriptV2FromRollout(
         payload: {
           callId: event.msg.payload.callId,
           ...(event.msg.payload.toolName ? { toolName: event.msg.payload.toolName } : {}),
-          displayAttachments: event.msg.payload.displayAttachments,
+          result: captions ?? event.msg.payload.displayAttachments.map(item => `[Shown to the user: ${item.kind} "${item.title}"]`).join("\n"),
+          isError: event.msg.payload.isError,
+          displayAttachments: event.msg.payload.displayAttachments.map(item =>
+            item.data !== undefined && Buffer.byteLength(JSON.stringify(item.data), "utf8") > 8 * 1024
+              ? { id: item.id, kind: item.kind, title: item.title, mimeType: item.mimeType, size: item.size, digest: item.digest }
+              : item),
         },
       });
     }
@@ -569,7 +577,7 @@ export function sessionTranscriptV2FromRollout(
     currentClientMessageId === undefined
       ? activeTurn
       : { turnId: activeTurn.turnId, clientMessageId: currentClientMessageId };
-  return {
+  const snapshot: SessionTranscriptV2Result = {
     schemaVersion: 2,
     sessionId,
     runId,
@@ -586,6 +594,26 @@ export function sessionTranscriptV2FromRollout(
         }
       : {}),
   };
+  // The remote transport has a 1 MiB envelope ceiling. Leave room for JSON
+  // escaping in that envelope and keep the newest transcript entries when an
+  // unusually long session cannot fit in one snapshot response.
+  const maxSnapshotBytes = 384 * 1024;
+  if (Buffer.byteLength(JSON.stringify(snapshot), "utf8") <= maxSnapshotBytes) return snapshot;
+  const boundedMessages = [...snapshot.messages];
+  const boundedEvents = [...(snapshot.events ?? [])];
+  const boundedTurnResults = [...(snapshot.turnResults ?? [])];
+  let bounded: SessionTranscriptV2Result = { ...snapshot, truncated: true };
+  while (Buffer.byteLength(JSON.stringify(bounded), "utf8") > maxSnapshotBytes) {
+    const collections = [boundedMessages, boundedEvents, boundedTurnResults] as const;
+    const largest = collections
+      .map((items, index) => ({ index, bytes: Buffer.byteLength(JSON.stringify(items), "utf8") }))
+      .sort((left, right) => right.bytes - left.bytes)[0]!;
+    const entries = collections[largest.index]!;
+    if (entries.length === 0) break;
+    entries.splice(0, Math.max(1, Math.ceil(entries.length / 4)));
+    bounded = { ...snapshot, messages: boundedMessages, events: boundedEvents, turnResults: boundedTurnResults, truncated: true };
+  }
+  return bounded;
 }
 
 /** The fields that say what a call would act on, for "You denied: ...". */

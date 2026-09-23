@@ -3508,6 +3508,8 @@ export interface SessionTranscriptV2Event extends JsonObject {
     readonly reason?: string;
     readonly callId?: string;
     readonly toolName?: string;
+    readonly result?: string;
+    readonly isError?: boolean;
     readonly input?: { readonly [key: string]: string };
     readonly stage?: "before_execution" | "sandbox_escalation";
     readonly displayAttachments?: readonly DisplayAttachment[];
@@ -3532,6 +3534,8 @@ export interface SessionTranscriptV2Result extends JsonObject {
   readonly historyEpoch: string;
   readonly asOfSequence: number;
   readonly messages: readonly SessionTranscriptV2Message[];
+  /** Older rows were omitted to keep the response within transport limits. */
+  readonly truncated?: boolean;
   readonly activeTurn?: SessionTranscriptV2ActiveTurn;
   readonly turnResults?: readonly SessionTranscriptV2TurnResult[];
   readonly events?: readonly SessionTranscriptV2Event[];

@@ -61,6 +61,13 @@ describe("durable resume notices", () => {
     expect(daemonTranscriptSnapshotEvents(snapshot, "session-1")).toContainEqual(expect.objectContaining({
       type: "tool_call_completed", payload: expect.objectContaining({ callId: "nested", displayAttachments: expect.any(Array) }),
     }));
+    const resumed = adaptTranscriptEvents(daemonTranscriptSnapshotEvents(snapshot, "session-1"));
+    expect(JSON.stringify(resumed.messages)).toContain("[Shown to the user: table]");
+  });
+  it("shows a warning when an oversized snapshot omitted older rows", () => {
+    const snapshot = { ...sessionTranscriptV2FromRollout(failedTurn(), "session-1", "run-1"), truncated: true };
+    const resumed = adaptTranscriptEvents(daemonTranscriptSnapshotEvents(snapshot, "session-1"));
+    expect(JSON.stringify(resumed.messages)).toContain("Earlier transcript entries were omitted from this snapshot.");
   });
   it("restores failure explanations and exact per-sample spend through the production adapter", () => {
     const items = failedTurn();

@@ -7,11 +7,15 @@ const ARTIFACT_DIRECTORY = "display-artifacts";
 const ID = /^[a-f0-9]{64}$/u;
 export const DISPLAY_ARTIFACT_CHUNK_BYTES = 512 * 1024;
 
-function fsyncDirectoryBestEffort(path: string): void {
+function fsyncDirectory(path: string): void {
+  const fd = openSync(path, "r");
   try {
-    const fd = openSync(path, "r");
-    try { fsyncSync(fd); } finally { closeSync(fd); }
-  } catch { /* directory fsync is unavailable on some filesystems */ }
+    try { fsyncSync(fd); }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (process.platform !== "win32" || !["EBADF", "EISDIR", "EINVAL", "ENOTSUP", "EPERM"].includes(code ?? "")) throw error;
+    }
+  } finally { closeSync(fd); }
 }
 
 /** Session scoped, immutable, content addressed bytes. The caller supplies a
@@ -21,7 +25,7 @@ export function persistDisplayAttachments(sessionDir: string, pending: readonly 
   const rootExisted = existsSync(root);
   mkdirSync(root, { recursive: true, mode: 0o700 });
   if (!lstatSync(root).isDirectory()) throw new Error("display artifact directory is not a directory");
-  if (!rootExisted) fsyncDirectoryBestEffort(sessionDir);
+  if (!rootExisted) fsyncDirectory(sessionDir);
   return pending.map(item => {
     const limit = item.kind === "file" ? DISPLAY_FILE_LIMIT : item.kind === "image" ? DISPLAY_BINARY_LIMIT : DISPLAY_JSON_LIMIT;
     if (item.size > limit) throw new Error("display artifact exceeds size limit");
@@ -45,7 +49,7 @@ export function persistDisplayAttachments(sessionDir: string, pending: readonly 
           renameSync(temporary, path);
         }
       }
-      fsyncDirectoryBestEffort(root);
+      fsyncDirectory(root);
     } finally {
       try { unlinkSync(temporary); } catch { /* already renamed or never created */ }
     }

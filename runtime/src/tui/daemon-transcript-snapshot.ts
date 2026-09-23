@@ -82,6 +82,11 @@ export function daemonTranscriptSnapshotEvents(
   }
   events.sort((left, right) => left.sequence - right.sequence);
   const transcript: JsonObject[] = events.map((entry) => entry.event);
+  if (snapshot.truncated === true) transcript.unshift({
+    id: `snapshot:${snapshot.historyEpoch}:truncated`,
+    type: "warning",
+    payload: { cause: "transcript_truncated", message: "Earlier transcript entries were omitted from this snapshot." },
+  });
   if (snapshot.activeTurn !== undefined) {
     const firstActiveMessage = snapshot.messages.find((message) =>
       message.turnId === snapshot.activeTurn?.turnId,

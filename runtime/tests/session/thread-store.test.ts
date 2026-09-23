@@ -1,3 +1,14 @@
+const artifactCleanupFailure = vi.hoisted(() => ({ path: "", failOnce: false }));
+vi.mock("node:fs", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs")>();
+  return { ...fs, rmSync: ((path: Parameters<typeof fs.rmSync>[0], options?: Parameters<typeof fs.rmSync>[1]) => {
+    if (artifactCleanupFailure.failOnce && String(path) === artifactCleanupFailure.path) {
+      artifactCleanupFailure.failOnce = false;
+      throw Object.assign(new Error("injected artifact cleanup failure"), { code: "EIO" });
+    }
+    return fs.rmSync(path, options);
+  }) as typeof fs.rmSync };
+});
 import {
   existsSync,
   mkdirSync,
@@ -6,11 +17,10 @@ import {
   readFileSync,
   rmSync,
   writeFileSync,
-  chmodSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RolloutItem } from "./rollout-item.js";
 import { RolloutStore } from "./rollout-store.js";
 import {
@@ -104,6 +114,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  artifactCleanupFailure.path = "";
+  artifactCleanupFailure.failOnce = false;
   if (originalAgencHome) process.env.AGENC_HOME = originalAgencHome;
   else delete process.env.AGENC_HOME;
   if (agencHome) rmSync(agencHome, { recursive: true, force: true });
@@ -344,12 +356,12 @@ describe("FileThreadStore.archiveThread / listThreads", () => {
       rollout.close();
       mkdirSync(artifacts);
       writeFileSync(join(artifacts, "held"), "x");
-      chmodSync(artifacts, 0o000);
-      expect(() => store.archiveThread({ threadId: "artifact-retry" })).toThrow();
-      chmodSync(artifacts, 0o700);
+      artifactCleanupFailure.path = artifacts;
+      artifactCleanupFailure.failOnce = true;
+      expect(() => store.archiveThread({ threadId: "artifact-retry" })).toThrow("injected artifact cleanup failure");
       store.archiveThread({ threadId: "artifact-retry" });
       expect(existsSync(artifacts)).toBe(false);
-    } finally { try { chmodSync(artifacts, 0o700); } catch { /* absent */ } rollout.close(); rmSync(cwd, { recursive: true, force: true }); }
+    } finally { rollout.close(); rmSync(cwd, { recursive: true, force: true }); }
   });
   it("archived threads do not appear in listThreads() without archived=true", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
