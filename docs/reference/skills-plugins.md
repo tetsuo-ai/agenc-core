@@ -306,6 +306,7 @@ of becoming a second authority.
 | `skills` | Skill roots / files |
 | `hooks` | Lifecycle hooks map |
 | `mcpServers` | Outbound MCP server configs |
+| `mcpEagerServers` | Array of MCP server names that must remain connected for notifications or listeners |
 | `lspServers` | LSP server configs |
 | `outputStyles` | Output styles |
 | `apps` / `channels` / `userConfig` | Extended packaging metadata |

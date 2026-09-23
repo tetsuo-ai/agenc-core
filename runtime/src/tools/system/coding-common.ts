@@ -47,6 +47,7 @@ export interface CodingToolConfig {
   readonly logger?: Logger;
   readonly getToolCatalog?: () => readonly ToolCatalogEntry[];
   readonly onDiscoverTools?: (toolNames: readonly string[]) => void;
+  readonly onBeforeSearch?: () => Promise<void>;
   /**
    * Enable heavier AgenC-owned structured tools:
    * system.repoInventory, system.git*, system.symbol*.

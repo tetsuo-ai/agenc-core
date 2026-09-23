@@ -183,6 +183,11 @@ export type McpServerConfig = z.infer<ReturnType<typeof McpServerConfigSchema>>
 export type PluginMcpServerIdentity = {
   pluginName: string
   serverName: string
+  version?: string
+  digest?: string
+  eager?: boolean
+  idleTimeoutMs?: number
+  maxProcesses?: number
 }
 
 export type ScopedMcpServerConfig = McpServerConfig & {
@@ -246,6 +251,12 @@ export type PendingMCPServer = {
   maxReconnectAttempts?: number
 }
 
+export type StoppedMCPServer = {
+  name: string
+  type: 'stopped'
+  config: ScopedMcpServerConfig
+}
+
 export type DisabledMCPServer = {
   name: string
   type: 'disabled'
@@ -257,6 +268,7 @@ export type MCPServerConnection =
   | FailedMCPServer
   | NeedsAuthMCPServer
   | PendingMCPServer
+  | StoppedMCPServer
   | DisabledMCPServer
 
 // Resource types

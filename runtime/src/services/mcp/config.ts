@@ -1360,6 +1360,11 @@ export async function getAllMcpConfigs(
       pluginServer: {
         pluginName: registration.pluginName,
         serverName: registration.serverName,
+        ...(registration.version !== undefined ? { version: registration.version } : {}),
+        digest: registration.digest,
+        eager: registration.eager,
+        idleTimeoutMs: registration.idleTimeoutMs,
+        maxProcesses: registration.maxProcesses,
       },
     }
   }

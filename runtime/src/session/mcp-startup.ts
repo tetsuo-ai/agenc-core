@@ -850,6 +850,7 @@ export async function resolveSessionMcpPlan(
   );
   const configs: MCPServerConfig[] = Object.entries(servers).map(([name, config]) => ({
       ...toRuntimeMcpServerConfig(name, config),
+      ...(config.pluginServer !== undefined ? { pluginCatalogHome: authority.homeContext.path } : {}),
       // This restriction is runtime-owned, not a configurable permission grant.
       ...(sessionDispositions[name] === "active" && sessionServers[name]?.localOnly === true
         ? { localOnly: true, ...(sessionServers[name]?.desktopAuthorityGrant ? { desktopAuthorityGrant: sessionServers[name].desktopAuthorityGrant } : {}) } : {}),

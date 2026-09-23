@@ -144,6 +144,7 @@ export class MCPReconnectCleanupError extends AggregateError {
 }
 
 interface ResilientMCPBridgeOptions {
+  readonly onCatalog?: (tools: readonly Record<string, unknown>[]) => void;
   readonly permissions?: MCPToolBridgePermissionOptions;
   /**
    * Local event observer forwarded to the inner bridge on reconnect so a
@@ -443,6 +444,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
             : {}),
           environment:
             this.options.environment ?? EMPTY_MCP_REQUEST_ENVIRONMENT,
+          ...(this.options.onCatalog !== undefined ? { onCatalog: this.options.onCatalog } : {}),
         },
       );
 

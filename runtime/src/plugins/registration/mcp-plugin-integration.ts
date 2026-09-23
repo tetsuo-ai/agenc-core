@@ -26,6 +26,7 @@ import {
 import type { PluginConfigStoredValue } from "../../utils/plugins/pluginConfigAuthority.js";
 import type { PluginUserConfigOption } from "../manifest-schema.js";
 import { getPluginDataDir } from "../directories.js";
+import { hashInstalledPlugin } from "../../mcp-client/plugin-catalog-cache.js";
 
 export interface PluginMcpRegistrationOptions extends PluginRuntimeLoadOptions {
   readonly plugins?: readonly LoadedPlugin[];
@@ -321,6 +322,11 @@ export interface PluginMcpServerRegistration {
   readonly pluginSource: string;
   readonly serverName: string;
   readonly server: McpServerConfig;
+  readonly version?: string;
+  readonly digest: string;
+  readonly eager: boolean;
+  readonly idleTimeoutMs: number;
+  readonly maxProcesses: number;
 }
 
 async function extractMcpServerRegistrationsFromPlugins(
@@ -331,6 +337,15 @@ async function extractMcpServerRegistrationsFromPlugins(
   for (const plugin of plugins.filter(
     (candidate) => !isRepositoryControlledPlugin(candidate)
   )) {
+    let digest: string;
+    try { digest = hashInstalledPlugin(plugin.root); }
+    catch (error) {
+      options.errors?.push({
+        type: "mcp", source: `plugin:${plugin.id}`, plugin: plugin.id,
+        message: `Could not hash installed plugin content: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      continue;
+    }
     const scoped = addPluginScopeToServers(plugin, plugin.mcpServers, options);
     for (const serverName of Object.keys(plugin.mcpServers)) {
       const name = pluginScopedServerIdentifier(plugin.id, serverName);
@@ -342,6 +357,14 @@ async function extractMcpServerRegistrationsFromPlugins(
         pluginSource: plugin.source,
         serverName,
         server,
+        ...(plugin.version !== undefined ? { version: plugin.version } : {}),
+        digest,
+        eager: plugin.manifest.channels?.some(channel => channel.server === serverName) === true ||
+          plugin.manifest.mcpEagerServers?.includes(serverName) === true ||
+          options.config?.plugins?.plugins?.[plugin.id]?.mcp_servers?.[serverName]?.eager === true,
+        idleTimeoutMs: options.config?.plugins?.plugins?.[plugin.id]?.mcp_servers?.[serverName]?.idle_timeout_ms ??
+          options.config?.plugins?.mcp_idle_timeout_ms ?? 600_000,
+        maxProcesses: options.config?.plugins?.mcp_max_processes ?? 8,
       });
     }
   }

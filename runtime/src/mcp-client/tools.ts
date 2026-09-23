@@ -250,6 +250,8 @@ interface ToolBridgeOptions {
   serverOrigin?: string;
   transport?: "stdio" | "sse" | "http" | "streamable_http";
   environment: ProviderEnvironment;
+  /** Raw, unfiltered descriptors for the installed-plugin catalog cache. */
+  onCatalog?: (tools: readonly Record<string, unknown>[]) => void;
 }
 
 interface MCPToolDescriptor {
@@ -956,6 +958,7 @@ export async function createToolBridge(
     logger,
   );
   const rawTools = normalizeMCPToolCatalog(response.tools);
+  options.onCatalog?.(Array.isArray(response.tools) ? response.tools.filter((tool): tool is Record<string, unknown> => typeof tool === "object" && tool !== null && !Array.isArray(tool)) : []);
   const mcpTools: MCPToolDescriptorLike[] = options.serverConfig
     ? (filterMCPToolCatalog(
         options.serverConfig,

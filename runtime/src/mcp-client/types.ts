@@ -42,6 +42,11 @@ export interface MCPServerOrigin {
   readonly pluginServer?: {
     readonly pluginName: string;
     readonly serverName: string;
+    readonly version?: string;
+    readonly digest?: string;
+    readonly eager?: boolean;
+    readonly idleTimeoutMs?: number;
+    readonly maxProcesses?: number;
   };
 }
 
@@ -111,6 +116,8 @@ export interface MCPServerConfig {
   };
   /** Metadata for plugin-owned stdio servers isolated as child processes. */
   readonly pluginSandbox?: PluginMcpSandboxMetadata;
+  /** Runtime home authority used only for content-addressed plugin catalogs. */
+  readonly pluginCatalogHome?: string;
   /** Canonical source identity used by status and policy projections. */
   readonly origin?: MCPServerOrigin;
 }
