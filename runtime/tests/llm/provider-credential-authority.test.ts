@@ -398,6 +398,68 @@ describe("provider credential authority", () => {
     expect(() => createProvider("grok", replayed)).toThrow(/xAI sign-in token/);
   });
 
+  test.each(["explicit", "environment"] as const)(
+    "rejects a revoked Grok sign-in token from the %s key in automatic mode on a custom URL",
+    async (source) => {
+      const home = await createHome(`revoked-custom-${source}`);
+      const { providerOptions, xaiCredentials } = await loadCredentialModules();
+      xaiCredentials.saveXaiOauthCredentials(home, { accessToken: "oauth-token-t1" });
+      xaiCredentials.saveXaiOauthCredentials(home, { accessToken: "oauth-token-t2" });
+      xaiCredentials.clearXaiOauthCredentials(home);
+      expect(xaiCredentials.readXaiOauthAccessToken(home)).toBeUndefined();
+      expect(xaiCredentials.isXaiOauthBearer(home, "oauth-token-t1")).toBe(true);
+
+      const requested = {
+        credentialHome: home,
+        model: "grok-4.6",
+        baseURL: "https://gateway.example.test/v1",
+        ...(source === "explicit" ? { apiKey: "oauth-token-t1" } : {}),
+      };
+      const environment = source === "environment"
+        ? { XAI_API_KEY: "oauth-token-t1" }
+        : {};
+      expect(() => providerOptions.resolveProviderCredentialAuthority(
+        "grok", requested, environment,
+      )).toThrow(/xAI sign-in credentials.*custom Grok base URL/);
+
+      const { resolveGrokProviderCredential } = await import("../../src/llm/xai-capability-config.js");
+      expect(resolveGrokProviderCredential(home, requested.apiKey, environment)).toEqual({
+        value: "oauth-token-t1",
+        isOAuth: true,
+      });
+    },
+  );
+
+  test("registers unrelated tools when a custom xAI host has only stored OAuth", async () => {
+    const home = await createHome("oauth-only-xsearch-custom-host");
+    const { xaiCredentials } = await loadCredentialModules();
+    xaiCredentials.saveXaiOauthCredentials(home, { accessToken: "oauth-token" });
+    const { createProvider } = await import("../../src/llm/provider.js");
+    const { createModelFacingTools } = await import("../../src/bin/model-facing-tools.js");
+    const { runWithStartupProviderSelection } = await import("../../src/utils/model/providers.js");
+    const metaProvider = createProvider("meta", {
+      apiKey: "meta-key", model: "muse-spark-1.3", baseURL: "https://api.meta.ai/v1",
+    });
+    const environment = {
+      AGENC_HOME: home.path,
+      XAI_BASE_URL: "https://cli-chat-proxy.grok.com/v1",
+    };
+    await runWithStartupProviderSelection({
+      provider: "meta", model: "muse-spark-1.3", environment,
+    }, async () => {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        agencHome: home.path,
+        getSession: () => ({ services: { provider: metaProvider } }) as never,
+        sessionProvider: "meta",
+        env: environment,
+        grokCapabilities: { x_search: true },
+      });
+      expect(tools.some((tool) => tool.name === "XSearch")).toBe(false);
+      expect(tools.some((tool) => tool.name === "NotebookRead")).toBe(true);
+    });
+  });
+
   test("loads saved Grok BYOK before rejecting a custom URL", async () => {
     const home = await createHome("saved-grok-custom-url");
     const { providerOptions, xaiCredentials } = await loadCredentialModules();

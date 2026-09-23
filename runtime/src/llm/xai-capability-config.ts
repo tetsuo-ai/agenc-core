@@ -358,7 +358,7 @@ export function resolveXaiBearerTokenForBaseUrl(
 
 export interface ResolvedGrokProviderCredential {
   readonly value?: string;
-  /** True only when the selected value came from stored xAI OAuth. */
+  /** True when the selected value is a tracked xAI OAuth bearer. */
   readonly isOAuth: boolean;
 }
 
@@ -381,7 +381,7 @@ export function resolveGrokProviderCredential(
   if (explicit && explicit.toLowerCase() !== "undefined") {
     return Object.freeze({
       value: explicit,
-      isOAuth: false,
+      isOAuth: isXaiOauthBearer(home, explicit),
     });
   }
   const environment = resolveProviderApiKeyEnvironment("grok", env);
@@ -389,7 +389,7 @@ export function resolveGrokProviderCredential(
     ? Object.freeze({ isOAuth: false })
     : Object.freeze({
         value: environment.value,
-        isOAuth: false,
+        isOAuth: isXaiOauthBearer(home, environment.value),
       });
 }
 

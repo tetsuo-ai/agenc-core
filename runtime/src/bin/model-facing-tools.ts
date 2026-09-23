@@ -1019,6 +1019,20 @@ function resolveXaiToolBackend(
   };
 }
 
+/** A URL-bound OAuth rejection means this backend cannot be registered. */
+function registrationBackendAvailable(resolve: () => boolean): boolean {
+  try {
+    return resolve();
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith(
+      "xAI sign-in credentials are bound to the first-party xAI API endpoint.",
+    )) {
+      return false;
+    }
+    throw error;
+  }
+}
+
 async function runAdmittedModelFacingCall(
   opts: ModelFacingToolOptions,
   provider: LLMProvider,
@@ -3943,7 +3957,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
   // main turn. The internal one-shot still uses a Grok provider because
   // native x_search is an xAI wire capability.
   const includeXSearch =
-    resolveXaiToolBackend(opts) !== undefined &&
+    registrationBackendAvailable(() => resolveXaiToolBackend(opts) !== undefined) &&
     isXaiLiveXSearchEnabled(opts.grokCapabilities);
   if (!includeXSearch) {
     return tools.filter((t) => t.name !== "XSearch");
@@ -5161,9 +5175,13 @@ export function createModelFacingTools(
   // that lifecycle state; execution resolves current isolated authority and
   // fails closed if the selected backend still has no media credential.
   const includeImagineImage =
-    scopedOpts.getSession() === null || hasImagineImageBackend(imagineOptions);
+    scopedOpts.getSession() === null || registrationBackendAvailable(
+      () => hasImagineImageBackend(imagineOptions),
+    );
   const includeImagineVideo =
-    scopedOpts.getSession() === null || hasImagineVideoBackend(imagineOptions);
+    scopedOpts.getSession() === null || registrationBackendAvailable(
+      () => hasImagineVideoBackend(imagineOptions),
+    );
 
   return [
     ...createMultiAgentV2RuntimeTools(scopedOpts),
