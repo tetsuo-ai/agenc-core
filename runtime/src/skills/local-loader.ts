@@ -170,9 +170,8 @@ interface SkillRoot {
   readonly pluginId?: string;
 }
 
-interface SkillWithContent {
+interface LoadedSkillFile {
   readonly skill: LocalSkillMetadata;
-  readonly content: string;
   readonly filePath: string;
   /** Real path of the file, for deduplication across roots. */
   readonly identity: string | null;
@@ -282,14 +281,6 @@ function rootKey(root: SkillRoot): string {
 async function pathIsDirectory(path: string): Promise<boolean> {
   try {
     return (await stat(path)).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-async function pathIsFile(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isFile();
   } catch {
     return false;
   }
@@ -760,13 +751,88 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
-async function loadSkillFile(
-  file: ScannedSkillFile | { readonly path: string; readonly identity: string | null },
-  root: SkillRoot,
+/**
+ * What one SKILL.md contributes to its metadata, whichever root it is read
+ * through: the parsed frontmatter, the parse problem if any, the first
+ * non-blank body line (all the description fallback reads) and the body
+ * length (for token estimates). The body itself is only read on render.
+ */
+interface ParsedSkillFile {
+  readonly frontmatter: Readonly<Record<string, unknown>>;
+  readonly warning?: string;
+  readonly leadLine: string;
+  readonly markdownLength: number;
+}
+
+/**
+ * Parsed SKILL.md files for the whole process, keyed by path and checked
+ * against size, mtime, ctime, inode and device on every scan. A 1,822-skill
+ * catalog is otherwise read and YAML-parsed in full (7.7 MB) by every
+ * session the daemon opens, by every /skills and every watcher reload,
+ * although an edit touches one file. ctime cannot be set from user space,
+ * so an edit that restores size and mtime is still seen. Model aliases and
+ * other settings-dependent fields are derived from the cached frontmatter on
+ * every build, never cached themselves.
+ */
+const PARSED_SKILL_FILE_CACHE_LIMIT = 10_000;
+const parsedSkillFiles = new Map<
+  string,
+  { readonly signature: string; readonly parsed: ParsedSkillFile }
+>();
+let skillFileParseCount = 0;
+
+/** SKILL.md files read and parsed by this process; for tests. */
+export function skillFileParseCountForTest(): number {
+  return skillFileParseCount;
+}
+
+/** Longest lead line kept; the description fallback uses at most 100. */
+const LEAD_LINE_MAX_CHARS = 512;
+
+function firstNonBlankLine(markdown: string): string {
+  for (const line of markdown.split("\n")) {
+    if (line.trim().length > 0) return line.slice(0, LEAD_LINE_MAX_CHARS);
+  }
+  return "";
+}
+
+/**
+ * A copy of a parsed value whose strings no longer point into the file
+ * text. V8 keeps substrings as views of their parent, so caching the YAML
+ * output as parsed kept every SKILL.md alive in full: 12.6 MB retained for
+ * the audited catalog against 1.5 MB for detached copies. Dates and other
+ * non-plain values are kept as they are.
+ */
+function detachStrings<T>(value: T): T {
+  if (typeof value === "string") return JSON.parse(JSON.stringify(value)) as T;
+  if (Array.isArray(value)) return value.map(detachStrings) as T;
+  if (value !== null && typeof value === "object" &&
+    Object.getPrototypeOf(value) === Object.prototype) {
+    const copy: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) copy[key] = detachStrings(entry);
+    return copy as T;
+  }
+  return value;
+}
+
+async function readParsedSkillFile(
+  filePath: string,
   warnings: SkillLoadWarning[],
-): Promise<SkillWithContent | null> {
-  const filePath = file.path;
-  if (!(await pathIsFile(filePath))) return null;
+): Promise<ParsedSkillFile | null> {
+  let signature: string;
+  try {
+    const stats = await stat(filePath);
+    if (!stats.isFile()) return null;
+    signature = `${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}:${stats.ino}:${stats.dev}`;
+  } catch {
+    return null;
+  }
+  const cached = parsedSkillFiles.get(filePath);
+  if (cached !== undefined && cached.signature === signature) {
+    parsedSkillFiles.delete(filePath);
+    parsedSkillFiles.set(filePath, cached);
+    return cached.parsed;
+  }
   let raw: string;
   try {
     raw = await readFile(filePath, "utf8");
@@ -777,14 +843,40 @@ async function loadSkillFile(
     });
     return null;
   }
-
+  skillFileParseCount += 1;
   const { frontmatter, markdown, warning } = splitFrontmatter(raw);
+  const parsed: ParsedSkillFile = {
+    frontmatter: Object.freeze(detachStrings(frontmatter)),
+    ...(warning !== undefined ? { warning: detachStrings(warning) } : {}),
+    leadLine: detachStrings(firstNonBlankLine(markdown)),
+    markdownLength: markdown.length,
+  };
+  parsedSkillFiles.delete(filePath);
+  parsedSkillFiles.set(filePath, { signature, parsed });
+  while (parsedSkillFiles.size > PARSED_SKILL_FILE_CACHE_LIMIT) {
+    const oldest = parsedSkillFiles.keys().next().value;
+    if (oldest === undefined) break;
+    parsedSkillFiles.delete(oldest);
+  }
+  return parsed;
+}
+
+async function loadSkillFile(
+  file: ScannedSkillFile | { readonly path: string; readonly identity: string | null },
+  root: SkillRoot,
+  warnings: SkillLoadWarning[],
+): Promise<LoadedSkillFile | null> {
+  const filePath = file.path;
+  const parsedFile = await readParsedSkillFile(filePath, warnings);
+  if (parsedFile === null) return null;
+  const { frontmatter, warning } = parsedFile;
   if (warning !== undefined) warnings.push({ path: filePath, reason: warning });
   const skillName = skillNameForSkillFile(filePath, root.path);
   if (skillName.length === 0) return null;
   const canonicalFields = parseCanonicalSkillFrontmatterFields(
-    frontmatter,
-    markdown,
+    // The canonical parser's input type is mutable; it only reads.
+    frontmatter as Record<string, unknown>,
+    parsedFile.leadLine,
     skillName,
     "Skill",
   );
@@ -841,18 +933,18 @@ async function loadSkillFile(
       ? { pluginRoot: root.pluginRoot }
       : {}),
     ...(root.pluginId !== undefined ? { pluginId: root.pluginId } : {}),
-    contentLength: markdown.length,
+    contentLength: parsedFile.markdownLength,
     ...(() => {
       const aliases = implicitAliasesForSkillName(skillName);
       return aliases.length > 0 ? { aliases } : {};
     })(),
   };
 
-  return { skill, content: markdown, filePath, identity: file.identity };
+  return { skill, filePath, identity: file.identity };
 }
 
 interface LoadedSkillRoot {
-  readonly skills: readonly SkillWithContent[];
+  readonly skills: readonly LoadedSkillFile[];
   readonly droppedCount: number;
   readonly warnings: readonly SkillLoadWarning[];
 }
@@ -898,7 +990,7 @@ async function loadSkillsFromRoot(root: SkillRoot): Promise<LoadedSkillRoot> {
     files.map((file) => loadSkillFile(file, root, warnings)),
   );
   return {
-    skills: loaded.filter((entry): entry is SkillWithContent => entry !== null),
+    skills: loaded.filter((entry): entry is LoadedSkillFile => entry !== null),
     droppedCount: scan.droppedCount,
     // Files finish loading in any order; report them in path order.
     warnings: warnings.sort((a, b) => a.path.localeCompare(b.path)),
@@ -906,10 +998,10 @@ async function loadSkillsFromRoot(root: SkillRoot): Promise<LoadedSkillRoot> {
 }
 
 function dedupeSkillsByRealPath(
-  entries: readonly SkillWithContent[],
-): readonly SkillWithContent[] {
+  entries: readonly LoadedSkillFile[],
+): readonly LoadedSkillFile[] {
   const seen = new Set<string>();
-  const out: SkillWithContent[] = [];
+  const out: LoadedSkillFile[] = [];
   for (const entry of entries) {
     const identity = entry.identity;
     if (identity === null) {
