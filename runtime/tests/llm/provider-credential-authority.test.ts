@@ -197,6 +197,19 @@ describe("provider credential authority", () => {
     )).toBe("byok");
   });
 
+  test.each(["XAI_API_KEY", "GROK_API_KEY"] as const)(
+    "Grok media uses %s for a custom URL in automatic mode", async (keyName) => {
+      const home = await createHome("grok-media-custom-auto");
+      const { xaiCredentials } = await loadCredentialModules();
+      xaiCredentials.saveXaiOauthCredentials(home, { accessToken: "oauth-token" });
+      const media = await import("../../src/llm/xai-capability-config.js");
+
+      expect(media.resolveXaiBearerTokenForBaseUrl(
+        home, { [keyName]: "env-api-key" }, "https://gateway.example.test/v1",
+      )).toBe("env-api-key");
+    },
+  );
+
   test("rejects invalid auth intent and conflicting OpenAI OAuth factory state", async () => {
     const { providerOptions } = await loadCredentialModules();
     expect(() => providerOptions.resolveProviderCredentialAuthority("openai", {}, { OPENAI_AUTH_MODE: "typo" })).toThrow("OPENAI_AUTH_MODE must be");
@@ -281,6 +294,48 @@ describe("provider credential authority", () => {
       )).toThrow(/xAI sign-in credentials.*custom Grok base URL/);
     },
   );
+
+  test("replayed Grok OAuth options cannot become a gateway API key after refresh", async () => {
+    const home = await createHome("rotated-grok-oauth");
+    const { providerOptions, xaiCredentials } = await loadCredentialModules();
+    xaiCredentials.saveXaiOauthCredentials(home, { accessToken: "oauth-token-t1" });
+    const recorded = providerOptions.resolveProviderCredentialAuthority(
+      "grok", { credentialHome: home, model: "grok-4.6" }, {},
+    ).factoryOptions;
+    xaiCredentials.saveXaiOauthCredentials(home, { accessToken: "oauth-token-t2" });
+    const replayed = {
+      ...recorded,
+      baseURL: "https://gateway.example.test/v1",
+      extra: { ...recorded.extra, authMode: "api_key" },
+    };
+
+    expect(() => providerOptions.resolveProviderCredentialAuthority(
+      "grok", replayed, { GROK_AUTH_MODE: "api-key" },
+    )).toThrow(/xAI sign-in token/);
+    const { createProvider } = await import("../../src/llm/provider.js");
+    expect(() => createProvider("grok", replayed)).toThrow(/xAI sign-in token/);
+  });
+
+  test("loads saved Grok BYOK before rejecting a custom URL", async () => {
+    const home = await createHome("saved-grok-custom-url");
+    const { providerOptions, xaiCredentials } = await loadCredentialModules();
+    xaiCredentials.saveXaiOauthCredentials(home, { accessToken: "oauth-token" });
+    const readSavedApiKey = vi.fn(async () => "saved-api-key");
+    const resolved = await providerOptions.resolveProviderRuntimeAuthority(
+      "grok",
+      { credentialHome: home, model: "grok-4.6" },
+      { XAI_BASE_URL: "https://gateway.example.test/v1" },
+      { readSavedApiKey },
+    );
+
+    expect(readSavedApiKey).toHaveBeenCalledExactlyOnceWith("grok");
+    expect(resolved.credential).toMatchObject({ status: "ready", mode: "api-key", source: "saved-byok" });
+    expect(resolved.factoryOptions).toMatchObject({
+      apiKey: "saved-api-key",
+      baseURL: "https://gateway.example.test/v1",
+      extra: { authMode: "api_key" },
+    });
+  });
 
   test("reports Grok environment API keys through the same authority", async () => {
     const { providerOptions } = await loadCredentialModules();

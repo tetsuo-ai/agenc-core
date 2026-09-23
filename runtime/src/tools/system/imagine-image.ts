@@ -542,28 +542,25 @@ function resolveImageBackend(opts: ImagineImageToolOptions): BackendResolution {
 
   if (providerIdentity === "grok" && provider !== undefined) {
     const factory = readProviderFactoryOptions(provider as never);
-    if (isDirectXaiInferenceHost(factory.baseURL)) {
-      const sessionKey =
-        typeof factory.apiKey === "string" ? factory.apiKey : undefined;
-      const bearer = resolveXaiBearerTokenForBaseUrl(
-        opts.home, env, factory.baseURL ?? DEFAULT_XAI_BASE_URL, sessionKey,
-      );
-      if (bearer !== undefined) {
-        return {
-          backend: {
-            kind: "xai",
-            baseURL: withoutTrailingSlash(
-              factory.baseURL ?? DEFAULT_XAI_BASE_URL,
-            ),
-            bearer,
-          },
-        };
-      }
+    const sessionKey =
+      typeof factory.apiKey === "string" ? factory.apiKey : undefined;
+    const bearer = resolveXaiBearerTokenForBaseUrl(
+      opts.home, env, factory.baseURL ?? DEFAULT_XAI_BASE_URL, sessionKey,
+    );
+    if (bearer !== undefined) {
+      return {
+        backend: {
+          kind: "xai",
+          baseURL: withoutTrailingSlash(
+            factory.baseURL ?? DEFAULT_XAI_BASE_URL,
+          ),
+          bearer,
+        },
+      };
     }
   }
 
-  // A non-direct Grok session follows this path too: use only independent
-  // xAI authority, never the gateway's session key or base URL.
+  // Without a usable Grok session key, use only independent xAI authority.
   const xaiBearer = resolveXaiBearerTokenForBaseUrl(
     opts.home, env,
     resolveProviderBaseURLEnvironment("grok", env)?.value ?? DEFAULT_XAI_BASE_URL,

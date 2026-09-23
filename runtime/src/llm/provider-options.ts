@@ -38,6 +38,7 @@ import {
   resolveBuiltInProviderInfo,
 } from "./registry/provider-info.js";
 import { resolveGrokProviderCredential } from "./xai-capability-config.js";
+import { isXaiOauthBearer } from "../utils/xaiOauthCredentials.js";
 import { providerAuthPreference } from "./provider-auth-selection.js";
 import type { ProviderFactoryOptions, ProviderName } from "./provider.js";
 import {
@@ -496,6 +497,14 @@ function resolveProviderCredentialAuthorityCore(
       ? credentialEnvironment.apiKey?.value
       : undefined;
   const explicitApiKey = nonEmpty(requested.apiKey);
+  if (
+    provider === "grok" &&
+    home !== undefined &&
+    authPreference === "api-key" &&
+    isXaiOauthBearer(home, explicitApiKey)
+  ) {
+    throw new Error("Grok API-key mode cannot use an xAI sign-in token");
+  }
   const explicitAuthToken = nonEmpty(requested.authToken);
   const environmentAuthToken =
     provider === "anthropic" && explicitApiKey === undefined
@@ -525,7 +534,10 @@ function resolveProviderCredentialAuthorityCore(
           environmentApiKey,
           nonEmpty(candidates.savedApiKey),
         ]
-          .find((key) => key !== undefined && key !== grokCredential?.value)
+          .find(
+            (key) => key !== undefined &&
+              (home === undefined || !isXaiOauthBearer(home, key)),
+          )
       : undefined;
     if (fallbackApiKey === undefined) {
       assertXaiOauthBaseUrl(baseURL);
@@ -536,7 +548,8 @@ function resolveProviderCredentialAuthorityCore(
   let apiKey =
     provider === "grok" && home !== undefined
       ? ((grokComposer && grokCredential?.isOAuth === true
-          ? (explicitApiKey === grokCredential.value ? undefined : explicitApiKey) ??
+          ? (isXaiOauthBearer(home, explicitApiKey)
+              ? undefined : explicitApiKey) ??
             environmentApiKey ?? nonEmpty(candidates.savedApiKey)
           : grokCredential?.value) ??
         (authPreference === "oauth" ? undefined : nonEmpty(candidates.savedApiKey)))
@@ -927,9 +940,9 @@ function withRuntimeAuthExtra(
 
 /**
  * Resolve the complete credential authority for a live provider binding.
- * Saved BYOK is read only when explicit, native, and environment credentials
- * are absent. Subscription credentials remain lazy and are vended only by the
- * provider wrapper when the first model operation starts.
+ * Saved BYOK is normally read after other credentials are absent. A custom
+ * Grok URL needs it before the OAuth endpoint check. Subscription credentials
+ * remain lazy and are vended when the first model operation starts.
  */
 export async function resolveProviderRuntimeAuthority(
   provider: ProviderName,
@@ -942,13 +955,28 @@ export async function resolveProviderRuntimeAuthority(
   const authPreference = provider === "openai" || provider === "grok"
     ? providerAuthPreference(provider, env)
     : "auto";
-  let resolved = resolveProviderCredentialAuthority(provider, requested, env);
   const info = resolveBuiltInProviderInfo(provider);
+  const requestedBaseURL = nonEmpty(requested.baseURL) ??
+    resolveProviderBaseURLEnvironment(provider, env)?.value;
+  const customGrokBaseURL = provider === "grok" &&
+    requestedBaseURL !== undefined &&
+    !isTrustedXaiOauthInferenceBaseUrl(requestedBaseURL);
+  const savedApiKey = customGrokBaseURL &&
+    authPreference !== "oauth" &&
+    runtime.readSavedApiKey !== undefined
+      ? nonEmpty(await runtime.readSavedApiKey(provider))
+      : undefined;
+  let resolved = resolveProviderCredentialAuthority(
+    provider, requested, env,
+    savedApiKey === undefined ? {} : { savedApiKey },
+  );
   if (
     resolved.credential.status === "missing" &&
     authPreference !== "oauth" &&
     info?.onboarding.access === "api-key" &&
-    runtime.readSavedApiKey !== undefined
+    runtime.readSavedApiKey !== undefined &&
+    savedApiKey === undefined &&
+    !customGrokBaseURL
   ) {
     const savedApiKey = nonEmpty(await runtime.readSavedApiKey(provider));
     if (savedApiKey !== undefined) {

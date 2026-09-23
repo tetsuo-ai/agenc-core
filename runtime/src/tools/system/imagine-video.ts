@@ -263,29 +263,26 @@ function resolveVideoBackend(
 
   if (providerIdentity === "grok" && provider !== undefined) {
     const factory = readProviderFactoryOptions(provider as never);
-    if (isDirectXaiInferenceHost(factory.baseURL)) {
-      const sessionKey =
-        typeof factory.apiKey === "string" ? factory.apiKey : undefined;
-      const bearer = resolveXaiBearerTokenForBaseUrl(
-        opts.home, env, factory.baseURL ?? DEFAULT_XAI_BASE_URL, sessionKey,
-      );
-      if (bearer !== undefined) {
-        return {
-          backend: {
-            kind: "xai",
-            baseURL: (factory.baseURL ?? DEFAULT_XAI_BASE_URL).replace(
-              /\/$/,
-              "",
-            ),
-            bearer,
-          },
-        };
-      }
+    const sessionKey =
+      typeof factory.apiKey === "string" ? factory.apiKey : undefined;
+    const bearer = resolveXaiBearerTokenForBaseUrl(
+      opts.home, env, factory.baseURL ?? DEFAULT_XAI_BASE_URL, sessionKey,
+    );
+    if (bearer !== undefined) {
+      return {
+        backend: {
+          kind: "xai",
+          baseURL: (factory.baseURL ?? DEFAULT_XAI_BASE_URL).replace(
+            /\/$/,
+            "",
+          ),
+          bearer,
+        },
+      };
     }
   }
 
-  // Never pass a non-Grok session key/base URL. A non-direct Grok session
-  // also lands here and must supply independent xAI authority.
+  // Without a usable Grok session key, use only independent xAI authority.
   const bearer = resolveXaiBearerTokenForBaseUrl(
     opts.home, env,
     resolveProviderBaseURLEnvironment("grok", env)?.value ?? DEFAULT_XAI_BASE_URL,

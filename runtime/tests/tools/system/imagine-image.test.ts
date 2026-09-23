@@ -1268,6 +1268,28 @@ describe("ImagineImage tool", () => {
     expect(auth).toBe("Bearer oauth-subscription-bearer");
   });
 
+  it("uses a Grok session API key for image requests on its custom URL", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-grok-gateway-"));
+    const provider = createProvider("grok", {
+      apiKey: "gateway-api-key",
+      model: "grok-4.6",
+      baseURL: "https://gateway.example.test/v1",
+      extra: { authMode: "api_key" },
+    });
+    const b64 = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64");
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      data: [{ b64_json: b64 }],
+    }))) as unknown as typeof fetch;
+    const tool = createSessionImagineImageTool({ workspaceRoot: root, provider, fetchImpl });
+
+    const result = await tool.execute({ prompt: "a cat" });
+
+    expect(result.isError).toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe("https://gateway.example.test/v1/images/generations");
+    expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({ authorization: "Bearer gateway-api-key" });
+  });
+
   it("calls /images/generations and saves b64 image under workspace", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-"));
     const provider = createProvider("grok", {

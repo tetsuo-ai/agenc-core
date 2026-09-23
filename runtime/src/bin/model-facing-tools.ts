@@ -980,27 +980,26 @@ function resolveXaiToolBackend(
   const currentFactory = currentIsGrok && currentProvider
     ? readProviderFactoryOptions(currentProvider)
     : undefined;
-  const currentIsDirect =
-    currentFactory !== undefined &&
-    isDirectXaiInferenceHost(currentFactory.baseURL);
   const sessionApiKey =
-    currentIsDirect && typeof currentFactory?.apiKey === "string"
+    typeof currentFactory?.apiKey === "string"
       ? currentFactory.apiKey
       : undefined;
   const configuredBaseURL = resolveProviderBaseURLEnvironment(
     "grok",
     environment,
   )?.value;
-  const baseURL = currentIsDirect
+  const baseURL = currentFactory !== undefined
     ? (currentFactory?.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS.grok)
     : (configuredBaseURL ?? BUILT_IN_PROVIDER_BASE_URLS.grok);
-  if (!isDirectXaiInferenceHost(baseURL)) return undefined;
+  if (currentFactory === undefined && !isDirectXaiInferenceHost(baseURL)) {
+    return undefined;
+  }
   const apiKey = resolveXaiBearerTokenForBaseUrl(
     credentialHome, environment, baseURL, sessionApiKey,
   );
   if (apiKey === undefined) return undefined;
 
-  const currentModel = currentIsDirect ? currentFactory?.model : undefined;
+  const currentModel = currentFactory?.model;
   const model = supportsProviderNativeXSearch({
     provider: "grok",
     model: currentModel,

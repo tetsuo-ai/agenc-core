@@ -139,6 +139,35 @@ describe("ImagineVideo catalog gate", () => {
 });
 
 describe("ImagineVideo execute", () => {
+  it("uses a Grok session API key for video requests on its custom URL", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-video-gateway-"));
+    const provider = createProvider("grok", {
+      apiKey: "gateway-api-key",
+      model: "grok-4.6",
+      baseURL: "https://gateway.example.test/v1",
+      extra: { authMode: "api_key" },
+    });
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ request_id: "gateway-video" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: "done", video: { url: "https://cdn.example.test/video.mp4" },
+      })))
+      .mockResolvedValueOnce(new Response(Uint8Array.from([0, 0, 0, 24])));
+    const tool = createImagineVideoTool({
+      workspaceRoot: root,
+      home: testHome(root),
+      getSession: () => ({ services: { provider } }) as unknown as Session,
+      env: {},
+      fetchImpl,
+    });
+
+    const result = await tool.execute({ prompt: "a rocket", duration: 3, resolution: "480p" });
+
+    expect(result.isError).toBeUndefined();
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe("https://gateway.example.test/v1/videos/generations");
+    expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({ authorization: "Bearer gateway-api-key" });
+  });
+
   it("submits, polls, downloads mp4 with OAuth session bearer", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-vid-"));
     const provider = createProvider("grok", {

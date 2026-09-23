@@ -175,6 +175,7 @@ test('bare mode preserves xAI OAuth read, refresh, login, and logout authority',
   const {
     clearXaiOauthCredentials,
     forceRefreshXaiOauthCredentials,
+    isXaiOauthBearer,
     readXaiOauthAccessToken,
     readXaiOauthCredentials,
     saveXaiOauthCredentials,
@@ -186,9 +187,12 @@ test('bare mode preserves xAI OAuth read, refresh, login, and logout authority',
     refreshToken: 'refresh-2',
   })
   expect(readXaiOauthCredentials(home)?.accessToken).toBe('access-2')
+  expect(isXaiOauthBearer(home, 'access-1')).toBe(true)
   expect(saveXaiOauthCredentials(home, storedBlob({ accessToken: 'access-3' })))
     .toMatchObject({ success: true })
   expect(readXaiOauthAccessToken(home)).toBe('access-3')
+  expect(isXaiOauthBearer(home, 'access-1')).toBe(true)
+  expect(isXaiOauthBearer(home, 'access-2')).toBe(true)
   expect(clearXaiOauthCredentials(home)).toMatchObject({ success: true })
   expect(readXaiOauthCredentials(home)).toBeUndefined()
 })

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { createModelFacingTools } from "../../src/bin/model-facing-tools.js";
+import { createProvider } from "../../src/llm/provider.js";
+import type { Session } from "../../src/session/session.js";
 import { clearProxyCache } from "../../src/utils/proxy.js";
 
 const originalFetch = globalThis.fetch;
@@ -15,6 +17,22 @@ afterEach(() => {
 });
 
 describe("model-facing HTTP transport authority", () => {
+  test("registers XSearch with a Grok session API key on a custom URL", () => {
+    const provider = createProvider("grok", {
+      apiKey: "gateway-api-key",
+      model: "grok-4.6",
+      baseURL: "https://gateway.example.test/v1",
+      extra: { authMode: "api_key" },
+    });
+    const tools = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => ({ services: { provider } }) as unknown as Session,
+      env: {},
+    });
+
+    expect(tools.some((tool) => tool.name === "XSearch")).toBe(true);
+  });
+
   test("snapshots each tool registry environment before later mutation", async () => {
     const calls: RequestInit[] = [];
     globalThis.fetch = vi.fn(async (_input, init) => {
