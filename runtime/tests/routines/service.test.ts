@@ -205,6 +205,26 @@ describe("daemon-owned local routines", () => {
     expect(() => f.service.delete({ id: routine.id })).toThrow("Cancel");
   });
 
+  it("keeps a newer unsettled run fenced when an older terminal arrives late", async () => {
+    let number = 0;
+    const f = setup({ execute: async (_routine, _run, context) => {
+      const agentId = `agent-${++number}`;
+      context.bind({ agentId, sessionId: `session-${number}`, coreRunId: agentId });
+      if (number === 1) return "completed";
+      throw new RoutineExecutionUnsettledError("unsettled");
+    } });
+    const { routine } = f.service.create(f.params);
+    f.service.run({ id: routine.id }); await terminal(f.service, routine.id);
+    f.service.run({ id: routine.id });
+    await vi.waitFor(() => expect(f.service.runs({ id: routine.id }).runs[0]?.error).toContain("could not confirm"));
+    f.service.observeSessionEvent("session-1", { method: "event.session_event", params: {
+      agentId: "agent-1", runId: "agent-1", eventId: "terminal:agent-1:1", sequence: 3,
+      event: { type: "run_terminal", payload: { runId: "agent-1", status: "failed", exitCode: 1 } },
+    } });
+    expect(f.service.runs({ id: routine.id }).runs[0]).toMatchObject({ status: "running", finishedAt: null });
+    expect(() => f.service.run({ id: routine.id })).toThrow("active run");
+  });
+
   it("can pause a routine whose workspace was removed, without rebinding its authority", () => {
     const f = setup(); const { routine } = f.service.create({ ...f.params, schedule: { kind: "cron", expression: "* * * * *" } });
     rmSync(f.cwd, { recursive: true });

@@ -65,9 +65,14 @@ export function createDaemonRoutineExecutor(options: {
       let rejectCancellation!: (error: unknown) => void;
       const cancellationOutcome = new Promise<{ terminal: { code: 130 } }>((resolve, reject) => { resolveCancellation = resolve; rejectCancellation = reject; });
       void cancellationOutcome.catch(() => {});
-      const stop = async (): Promise<void> => {
+      const terminal = context.terminal ?? new Promise<never>(() => {});
+      const stop = async (): Promise<"completed" | "failed" | "cancelled" | undefined> => {
         if (agentId === undefined || finalized) return;
-        try { await options.agentManager.stopAgent({ agentId, reason: "Routine invocation finished" }); finalized = true; }
+        try {
+          const outcome = await Promise.race([options.agentManager.stopAgent({ agentId, reason: "Routine invocation finished" }), terminal]);
+          finalized = true;
+          return typeof outcome === "string" ? outcome : undefined;
+        }
         catch { throw new RoutineExecutionUnsettledError("Core could not confirm routine quiescence."); }
       };
       const cancel = (): void => {
@@ -77,6 +82,12 @@ export function createDaemonRoutineExecutor(options: {
           // The same rejection is awaited below; the signal callback must not reject globally.
           void cancellation.catch(() => {});
         }
+      };
+      const finishCancellation = async (): Promise<"completed" | "failed" | "cancelled"> => {
+        cancel();
+        const outcome = await Promise.race([cancellation!.then(() => "cancelled" as const), terminal]);
+        finalized = true;
+        return outcome;
       };
       context.signal.addEventListener("abort", cancel, { once: true });
       try {
@@ -92,21 +103,22 @@ export function createDaemonRoutineExecutor(options: {
         agentId = agent.agentId;
         if (!agent.sessionId) throw new Error("Core did not create a routine session.");
         context.bind({ agentId, sessionId: agent.sessionId, coreRunId: agentId });
-        if (context.signal.aborted) { cancel(); await cancellation; return "cancelled"; }
+        if (context.signal.aborted) return await finishCancellation();
         const messageId = `routine_message_${randomUUID()}`;
         const result = await Promise.race([options.agentManager.streamAgentMessage({
           sessionId: agent.sessionId, content: routine.instructions,
           messageId, streamId: `routine_stream_${randomUUID()}`,
           acceptedAt: new Date().toISOString(), ifBusy: "reject", methodName: "message.stream",
-        }), cancellationOutcome]);
-        if (context.signal.aborted) { cancel(); await cancellation; return "cancelled"; }
-        const outcome = await options.agentManager.finishRoutineRun(agentId, messageId);
-        finalized = true;
-        return outcome ?? (result.terminal?.code === 0 ? "completed" : result.terminal?.code === 130 ? "cancelled" : "failed");
+        }), cancellationOutcome, terminal]);
+        if (typeof result === "string") { finalized = true; return result; }
+        if (context.signal.aborted) return await finishCancellation();
+        const outcome = await Promise.race([options.agentManager.finishRoutineRun(agentId, messageId), terminal]);
+        if (outcome !== undefined) finalized = true;
+        return outcome ?? await stop() ?? (result.terminal?.code === 0 ? "completed" : result.terminal?.code === 130 ? "cancelled" : "failed");
       } finally {
         context.signal.removeEventListener("abort", cancel);
-        if (agentId !== undefined) {
-          if (context.signal.aborted) { cancel(); await cancellation; }
+        if (agentId !== undefined && !finalized) {
+          if (context.signal.aborted) { cancel(); await Promise.race([cancellation!, terminal]); }
           else await stop();
         }
       }
