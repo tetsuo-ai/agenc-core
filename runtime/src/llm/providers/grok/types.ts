@@ -24,6 +24,7 @@ export interface GrokProviderConfig
   credentialHome?: HomeContext;
   /** API base URL; defaults to the canonical provider-registry endpoint. */
   baseURL?: string;
+  readonly fetchImpl?: typeof fetch;
   /** Optional operator override for effective context window budgeting. */
   contextWindowTokens?: number;
   /**

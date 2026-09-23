@@ -94,7 +94,8 @@ describe("ProviderHttpClientSession", () => {
     const crossError = await session.requestJson({ query: { cross: true }, body: {} })
       .catch((error: unknown) => error);
     expect(crossError).toBeInstanceOf(Error);
-    expect((crossError as Error).message).toMatch(/receiver\.example/u);
+    expect((crossError as Error).message).toBe("Provider redirect to another origin was refused");
+    expect((crossError as Error).message).not.toContain("receiver.example");
     expect((crossError as Error).message).not.toContain("synthetic-secret");
     expect(receivedByOtherHost).toEqual([]);
     const queryKeySession = new ProviderHttpClientSession({
@@ -104,7 +105,8 @@ describe("ProviderHttpClientSession", () => {
     const queryError = await queryKeySession.requestJson({ query: { cross: true }, body: {} })
       .catch((error: unknown) => error);
     expect(queryError).toBeInstanceOf(Error);
-    expect((queryError as Error).message).toMatch(/receiver\.example/u);
+    expect((queryError as Error).message).toBe("Provider redirect to another origin was refused");
+    expect((queryError as Error).message).not.toContain("receiver.example");
     expect((queryError as Error).message).not.toContain("synthetic-secret");
     expect(receivedByOtherHost).toEqual([]);
     const sameOrigin = await session.requestJson<{ ok: boolean }>({ body: {} });

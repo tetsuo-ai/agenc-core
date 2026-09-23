@@ -2337,6 +2337,7 @@ export class GrokProvider implements LLMProvider {
         baseURL: this.config.baseURL,
         timeout: this.config.timeoutMs,
         maxRetries: this.config.maxRetries ?? 2,
+        ...(this.config.fetchImpl ? { fetch: this.config.fetchImpl } : {}),
       });
       installAgenCManagedSdkFetch(client);
       return client;

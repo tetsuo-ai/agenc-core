@@ -125,6 +125,24 @@ describe("SessionProviderService", () => {
     await switched.binding.instance.dispose?.();
   });
 
+  test("a cross-provider child's later provider switch retains its endpoint pin", async () => {
+    const service = new SessionProviderService({
+      initialProvider: createProvider("openai", { model: "gpt-5.4", apiKey: "parent" }),
+      environment: { DEEPSEEK_API_KEY: "child-key" },
+    });
+    const prepared = await service.prepareChild(
+      { provider: "deepseek", model: "deepseek-v4-pro" },
+      { model: "deepseek-v4-pro" },
+    );
+    const child = service.forkForChild(prepared.binding.instance, {
+      provider: "deepseek", model: "deepseek-v4-pro",
+    });
+    await expect(child.prepare(
+      { provider: "deepseek", model: "deepseek-flash" },
+      { model: "deepseek-flash", baseURL: "https://receiver.example/v1" },
+    )).rejects.toThrow(/default endpoint/u);
+  });
+
   test("managed child refuses a vended noncanonical endpoint before sending its key", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () => completion("unexpected"));
     const vendKey = vi.fn((provider: string, sessionId: string) => ({
@@ -153,6 +171,52 @@ describe("SessionProviderService", () => {
     expect(vendKey).toHaveBeenCalledOnce();
     expect(fetchImpl).not.toHaveBeenCalled();
     await prepared.binding.instance.dispose?.();
+  });
+
+  test("AgenC child refuses a noncanonical concrete endpoint from vending", async () => {
+    const wire = vi.fn<typeof fetch>(async () => completion("unexpected"));
+    const authBackend = {
+      kind: "local" as const,
+      login: vi.fn(), logout: vi.fn(), whoami: vi.fn(),
+      vendKey: vi.fn(async (provider: string, sessionId: string) => ({
+        kind: "api-key" as const, provider, sessionId,
+        apiKey: "vended-secret", baseUrl: "https://receiver.example/v1",
+      })),
+      inferAgencModel: vi.fn(async () => ({ provider: "deepseek", model: "deepseek-v4-pro" })),
+      getLlmUsage: vi.fn(), getSubscriptionTier: vi.fn(),
+    };
+    const service = new SessionProviderService({
+      initialProvider: createProvider("openai", { model: "gpt-5.4", apiKey: "parent" }),
+      authBackend,
+      sessionId: "child-session",
+    });
+    const prepared = await service.prepareChild(
+      { provider: "agenc", model: "deepseek-v4-pro" },
+      { model: "deepseek-v4-pro", extra: { fetchImpl: wire } },
+      { managedKeysEnabled: true },
+      true,
+    );
+    await expect(prepared.binding.instance.chat([{ role: "user", content: "hello" }]))
+      .rejects.toThrow(/endpoint|refused/u);
+    expect(authBackend.vendKey).toHaveBeenCalledOnce();
+    expect(wire).not.toHaveBeenCalled();
+  });
+
+  test("Gemini implicit Vertex routing is refused after credentials resolve", async () => {
+    const wire = vi.fn<typeof fetch>(async () => completion("unexpected"));
+    const service = new SessionProviderService({
+      initialProvider: createProvider("openai", { model: "gpt-5.4", apiKey: "parent" }),
+      environment: {
+        GEMINI_ACCESS_TOKEN: "vertex-secret",
+        GOOGLE_CLOUD_PROJECT: "gemini-project",
+        GOOGLE_CLOUD_LOCATION: "us-central1",
+      },
+    });
+    await expect(service.prepareChild(
+      { provider: "gemini", model: "gemini-2.5-pro" },
+      { model: "gemini-2.5-pro", extra: { fetchImpl: wire } },
+    )).rejects.toThrow(/endpoint|Vertex/u);
+    expect(wire).not.toHaveBeenCalled();
   });
 
   test("rejects a direct child factory endpoint override before reading a saved key", async () => {

@@ -19,13 +19,31 @@ export async function fetchProviderRequest(
   input: RequestInfo | URL,
   init: RequestInit,
   fetchImpl: typeof fetch,
+  allowedOrigins?: ReadonlySet<string>,
 ): Promise<Response> {
-  let url = new URL(input instanceof Request ? input.url : String(input));
+  let url: URL;
+  try {
+    url = new URL(input instanceof Request ? input.url : String(input));
+  } catch {
+    throw new Error("Provider request has an invalid URL");
+  }
+  if (allowedOrigins !== undefined && !allowedOrigins.has(url.origin)) {
+    throw new Error("Provider request to another origin was refused");
+  }
   const headers = new Headers(input instanceof Request ? input.headers : undefined);
   new Headers(init.headers).forEach((value, name) => headers.set(name, value));
-  if (!carriesCredential(url, headers)) return fetchImpl(input, init);
+  if (allowedOrigins === undefined && !carriesCredential(url, headers)) return fetchImpl(input, init);
 
   let request: RequestInit = {
+    ...(input instanceof Request ? {
+      method: input.method,
+      headers: input.headers,
+      ...(input.body !== null ? {
+        body: input.body,
+        duplex: "half" as const,
+      } : {}),
+      signal: input.signal,
+    } : {}),
     ...init,
     ...(input instanceof Request && init.headers === undefined
       ? { headers: input.headers }
@@ -43,9 +61,10 @@ export async function fetchProviderRequest(
     } catch {
       throw new Error("Provider redirect has an invalid location");
     }
-    if (next.origin !== url.origin) {
+    if (next.origin !== url.origin ||
+        (allowedOrigins !== undefined && !allowedOrigins.has(next.origin))) {
       void response.body?.cancel().catch(() => {});
-      throw new Error(`Provider credential redirect to another origin was refused (${next.hostname})`);
+      throw new Error("Provider redirect to another origin was refused");
     }
     if (!FOLLOWED_REDIRECTS.has(response.status)) return response;
     if (redirects >= MAX_SAME_ORIGIN_REDIRECTS) {
@@ -62,4 +81,14 @@ export async function fetchProviderRequest(
     }
     url = next;
   }
+}
+
+/** Bind a child's transport to the registry origins before any request is sent. */
+export function createPinnedProviderFetch(
+  canonicalBaseURLs: readonly string[],
+  fetchImpl: typeof fetch = fetch,
+): typeof fetch {
+  const allowedOrigins = new Set(canonicalBaseURLs.map((baseURL) => new URL(baseURL).origin));
+  return ((input: RequestInfo | URL, init?: RequestInit) =>
+    fetchProviderRequest(input, init ?? {}, fetchImpl, allowedOrigins)) as typeof fetch;
 }

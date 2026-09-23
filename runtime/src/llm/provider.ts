@@ -157,6 +157,7 @@ export type ProviderRuntimeExtra = Partial<
   };
   readonly defaultHeaders?: Readonly<Record<string, string>>;
   readonly fetchImpl?: typeof fetch;
+  readonly canonicalEndpointRequired?: boolean;
   readonly accessKeyId?: string;
   readonly secretAccessKey?: string;
   readonly sessionToken?: string;
@@ -210,6 +211,7 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "grokAcp",
   "defaultHeaders",
   "fetchImpl",
+  "canonicalEndpointRequired",
   "accessKeyId",
   "secretAccessKey",
   "sessionToken",
@@ -1172,6 +1174,9 @@ function readRuntimeExtra(
       ? { defaultHeaders: readStringRecord(extra, "defaultHeaders") }
       : {}),
     ...(extra?.fetchImpl ? { fetchImpl: extra.fetchImpl as typeof fetch } : {}),
+    ...(readBoolean(extra, "canonicalEndpointRequired") === true
+      ? { canonicalEndpointRequired: true }
+      : {}),
     ...(readString(extra, "accessKeyId") !== undefined
       ? { accessKeyId: readString(extra, "accessKeyId") }
       : {}),
@@ -1711,6 +1716,7 @@ export function createProvider(
         model,
         tools: opts.tools ? [...opts.tools] : undefined,
         baseURL: normalizeBaseURL(opts.baseURL) ?? defaultBaseURLFor("grok"),
+        ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
         ...(extra.contextWindowTokens !== undefined
           ? { contextWindowTokens: extra.contextWindowTokens }
@@ -1953,6 +1959,7 @@ export function createProvider(
         ...(extra.keepAlive ? { keepAlive: extra.keepAlive } : {}),
         ...(numCtx !== undefined ? { numCtx } : {}),
         ...(extra.numGpu !== undefined ? { numGpu: extra.numGpu } : {}),
+        ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
       };
       return markFactoryProvider(new OllamaProvider(cfg), {
         provider: "ollama",

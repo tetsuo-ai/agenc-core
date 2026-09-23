@@ -24,8 +24,12 @@ import {
 } from "../llm/registry/provider-info.js";
 import { resolveProviderBaseURLEnvironment } from "../llm/registry/provider-ingress.js";
 import { readGeminiRuntimeOptions } from "../llm/providers/gemini/runtime-options.js";
+import { createPinnedProviderFetch } from "../llm/credential-redirect-fetch.js";
+import { isGrokComposerModel } from "../llm/providers/grok/acp-adapter.js";
 
 export type { ReadSavedProviderApiKey } from "../llm/provider-options.js";
+
+const pinnedChildProviders = new WeakSet<LLMProvider>();
 
 export interface ProviderSelection {
   readonly provider: string;
@@ -198,6 +202,7 @@ export class SessionProviderService {
   readonly #resolvePreparationRequest:
     | ResolveProviderPreparationRequest
     | undefined;
+  readonly #crossProviderProvenance: boolean;
   #binding: ProviderBinding;
 
   constructor(params: {
@@ -210,6 +215,7 @@ export class SessionProviderService {
     readonly sessionId?: string;
     readonly subscriptionTier?: AuthSubscriptionTier;
     readonly resolvePreparationRequest?: ResolveProviderPreparationRequest;
+    readonly crossProviderProvenance?: boolean;
   }) {
     this.#environment = snapshotProviderEnvironment(params.environment ?? {});
     const initialBinding = bindingFromProvider({
@@ -222,6 +228,9 @@ export class SessionProviderService {
         : {}),
     });
     this.#binding = initialBinding;
+    this.#crossProviderProvenance = params.crossProviderProvenance === true ||
+      pinnedChildProviders.has(params.initialProvider) ||
+      initialBinding.factoryOptions.extra?.canonicalEndpointRequired === true;
     this.#credentialHome = initialBinding.factoryOptions.credentialHome;
     this.#readSavedApiKey = params.readSavedApiKey;
     this.#authBackend = params.authBackend;
@@ -251,6 +260,8 @@ export class SessionProviderService {
       ...(this.#subscriptionTier !== undefined ? { subscriptionTier: this.#subscriptionTier } : {}),
       ...(this.#resolvePreparationRequest !== undefined
         ? { resolvePreparationRequest: this.#resolvePreparationRequest } : {}),
+      crossProviderProvenance: this.#crossProviderProvenance || pinnedChildProviders.has(provider) ||
+        readProviderFactoryOptions(provider).extra?.canonicalEndpointRequired === true,
     });
   }
 
@@ -298,8 +309,8 @@ export class SessionProviderService {
     }
     const requestedOptions = preparation.requested;
     const runtimeOptions = preparation.runtime ?? {};
-    const canonicalEndpointRequired = child &&
-      (crossProviderProvenance || provider !== this.#binding.provider);
+    const canonicalEndpointRequired = this.#crossProviderProvenance ||
+      (child && (crossProviderProvenance || provider !== this.#binding.provider));
     if (canonicalEndpointRequired) {
       const info = resolveBuiltInProviderInfo(provider)!;
       const envBaseURL = resolveProviderBaseURLEnvironment(provider, this.#environment);
@@ -388,12 +399,70 @@ export class SessionProviderService {
       },
     );
     requireProviderRuntimeCredential(provider, authority);
+    if (canonicalEndpointRequired) {
+      const info = resolveBuiltInProviderInfo(provider)!;
+      const effective = authority.factoryOptions;
+      const normalize = (value: string): string | undefined => {
+        try {
+          return new URL(value).href.replace(/\/+$/u, "");
+        } catch {
+          return undefined;
+        }
+      };
+      if (effective.baseURL !== undefined &&
+          normalize(effective.baseURL) !== normalize(info.baseURL)) {
+        throw new Error(`Cross-provider ${info.name} child requires its default endpoint after credential resolution`);
+      }
+      if (provider === "gemini") {
+        const runtimePlan = readGeminiRuntimeOptions(effective.extra);
+        const plan = runtimePlan?.endpointPlan;
+        if (plan === undefined || plan.kind !== "developer" ||
+            normalize(plan.nativeBaseURL) !== normalize(info.baseURL)) {
+          throw new Error("Cross-provider Gemini child requires its default endpoint after credential resolution");
+        }
+        if (runtimePlan?.credentialPlan.kind === "adc") {
+          throw new Error("Cross-provider Gemini child cannot use ADC token refresh outside the pinned transport");
+        }
+      }
+      if (provider === "amazon-bedrock") {
+        const region = typeof effective.extra?.region === "string" ? effective.extra.region : undefined;
+        const endpoint = resolveBuiltInProviderRegionalEndpoint(provider, region);
+        if (endpoint !== undefined && normalize(endpoint.baseURL) !== normalize(info.baseURL)) {
+          throw new Error("Cross-provider Bedrock child requires its default regional endpoint after credential resolution");
+        }
+      }
+      if (provider === "grok" && isGrokComposerModel(model)) {
+        throw new Error("Cross-provider Grok Composer children cannot use the CLI transport");
+      }
+      if (provider === "grok" && effective.extra?.authMode === "oauth") {
+        throw new Error("Cross-provider Grok children cannot use OAuth refresh outside the pinned transport");
+      }
+      if (provider === "openai" && effective.extra?.authMode === "oauth") {
+        throw new Error("Cross-provider OpenAI children cannot use OAuth refresh outside the pinned transport");
+      }
+    }
     const factoryOptions = canonicalEndpointRequired
       ? { ...authority.factoryOptions, extra: {
           ...(authority.factoryOptions.extra ?? {}), canonicalEndpointRequired: true,
+          fetchImpl: createPinnedProviderFetch(
+            [resolveBuiltInProviderInfo(provider)!.baseURL],
+            typeof authority.factoryOptions.extra?.fetchImpl === "function"
+              ? authority.factoryOptions.extra.fetchImpl as typeof fetch
+              : fetch,
+          ),
+          ...(provider === "agenc" ? {
+            agencDelegateFetchFactory: (concreteProvider: ProviderName): typeof fetch =>
+              createPinnedProviderFetch(
+                [resolveBuiltInProviderInfo(concreteProvider)!.baseURL],
+                typeof authority.factoryOptions.extra?.fetchImpl === "function"
+                  ? authority.factoryOptions.extra.fetchImpl as typeof fetch
+                  : fetch,
+              ),
+          } : {}),
         } }
       : authority.factoryOptions;
     const instance = createProvider(provider, factoryOptions);
+    if (canonicalEndpointRequired) pinnedChildProviders.add(instance);
     return Object.freeze({
       expectedRevision,
       managedDefaultOutputCap:

@@ -961,9 +961,9 @@ export class OllamaProvider implements LLMProvider {
           const url = input instanceof Request ? input.url : String(input);
           if (new URL(url).pathname.endsWith("/api/show")) {
             const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
-            return fetchProviderRequest(input, { ...init, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(3_000)]) : AbortSignal.timeout(3_000) }, fetch);
+            return fetchProviderRequest(input, { ...init, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(3_000)]) : AbortSignal.timeout(3_000) }, this.config.fetchImpl ?? fetch);
           }
-          return fetchProviderRequest(input, init ?? {}, fetch);
+          return fetchProviderRequest(input, init ?? {}, this.config.fetchImpl ?? fetch);
         }) as typeof fetch,
       });
     });

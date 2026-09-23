@@ -145,6 +145,28 @@ describe("provider credential authority", () => {
     await prepared.binding.instance.dispose?.();
   });
 
+  test("cross-provider OpenAI child rejects a resolved ChatGPT subscription endpoint", async () => {
+    const wire = vi.fn<typeof fetch>(async () => new Response("unexpected"));
+    const home = await createHome("cross-provider-openai-subscription");
+    const { openAiCredentials } = await loadCredentialModules();
+    openAiCredentials.saveOpenAiOauthCredentials(home, {
+      accessToken: "child-openai-oauth", accountId: "account",
+    });
+    const [{ SessionProviderService }, { createProvider }] = await Promise.all([
+      import("../../src/session/provider-service.js"),
+      import("../../src/llm/provider.js"),
+    ]);
+    const service = new SessionProviderService({
+      initialProvider: createProvider("ollama", { model: "llama3.3" }),
+      environment: { OPENAI_AUTH_MODE: "oauth" },
+    });
+    await expect(service.prepareChild(
+      { provider: "openai", model: "gpt-5.4" },
+      { model: "gpt-5.4", credentialHome: home, extra: { fetchImpl: wire } },
+    )).rejects.toThrow(/endpoint/u);
+    expect(wire).not.toHaveBeenCalled();
+  });
+
   test("cross-provider child preparation pins xAI sign-in and refuses a custom host", async () => {
     const home = await createHome("child-xai-sign-in");
     const { xaiCredentials } = await loadCredentialModules();
