@@ -1748,7 +1748,7 @@ export function createLocalSkillsServices(
   } | null = null;
   let lastPluginConfig: Pick<AgenCConfig, "plugins"> | undefined =
     options.config;
-  let watchedPluginConfigKey = JSON.stringify(options.config ?? null);
+  let watchedPluginConfigKey = pluginWatchKey(options.config);
   const activePaths = new Set<string>();
   const discoveredSkillRoots = new Set<string>();
   let watcherStarted = false;
@@ -1838,7 +1838,7 @@ export function createLocalSkillsServices(
   const startWatcher = () => {
     if (watcherStarted) return Promise.resolve();
     watcherStarted = true;
-    watchedPluginConfigKey = JSON.stringify(lastPluginConfig ?? null);
+    watchedPluginConfigKey = pluginWatchKey(lastPluginConfig);
     return detector.initialize({
       fileWatcher: options.fileWatcher,
       getWatchRoots: async () => {
@@ -1864,7 +1864,7 @@ export function createLocalSkillsServices(
   };
   const restartWatcherIfPluginConfigChanged = async () => {
     if (!watcherStarted) return;
-    const nextKey = JSON.stringify(lastPluginConfig ?? null);
+    const nextKey = pluginWatchKey(lastPluginConfig);
     if (nextKey === watchedPluginConfigKey) return;
     await detector.dispose();
     watcherStarted = false;
@@ -1973,6 +1973,16 @@ export function createLocalSkillsServices(
       },
     },
   };
+}
+
+/**
+ * The watch roots depend on the plugin section alone (plugin discovery reads
+ * nothing else). The whole session config used to be the key, so changing
+ * the model or a permission rule tore the watcher down and registered every
+ * root again.
+ */
+function pluginWatchKey(config: Pick<AgenCConfig, "plugins"> | undefined): string {
+  return JSON.stringify(config?.plugins ?? null);
 }
 
 function skillSnapshotCacheKey(
