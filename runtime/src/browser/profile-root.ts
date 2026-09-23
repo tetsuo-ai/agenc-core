@@ -21,8 +21,8 @@ export function resolveBrowserProjectRootSync(
 export function resolveBrowserProfileProjectSync(
   cwd: string,
   projectRootMarkers?: readonly string[],
-): { readonly root: string; readonly trustRootMismatch: boolean } {
+): { readonly root: string; readonly lexicalRoot: string; readonly trustRootMismatch: boolean } {
   const root = resolveBrowserProjectRootSync(cwd, projectRootMarkers);
   const lexicalTrustRoot = resolveProjectTrustRootSync({ cwd: resolve(cwd), projectRootMarkers });
-  return { root, trustRootMismatch: root !== lexicalTrustRoot };
+  return { root, lexicalRoot: lexicalTrustRoot, trustRootMismatch: root !== lexicalTrustRoot };
 }

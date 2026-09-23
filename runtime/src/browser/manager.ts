@@ -16,12 +16,12 @@ import {
   closeSync, constants, existsSync, fchmodSync, fstatSync, linkSync, lstatSync,
   mkdirSync, mkdtempSync,
   openSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync,
-  unlinkSync, writeFileSync,
+  realpathSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { hostname } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { hostname, userInfo } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import {
   BrowserLaunchCleanupError,
@@ -270,34 +270,63 @@ function cleanStalePrivateProfiles(root: string, sharedProfile?: string): void {
   cleanedTempRoots.add(root);
 }
 
-/** A shared ancestor may be sticky only when it protects our entry below it. */
-function validateAncestorsAboveHome(home: string): void {
-  const uid = process.getuid?.();
-  if (uid === undefined) throw new Error("cannot verify browser profile owner");
-  let child = home;
-  for (let parent = dirname(home); parent !== child; child = parent, parent = dirname(parent)) {
-    const info = lstatSync(parent);
-    if (info.isSymbolicLink() || !info.isDirectory()) {
-      throw new Error(`browser profile ancestor is not a regular directory: ${parent}`);
+function isWithin(parent: string, child: string): boolean {
+  const suffix = relative(parent, child);
+  return suffix === "" || (!/^\.\.(?:[\\/]|$)/.test(suffix) && !isAbsolute(suffix));
+}
+
+const MAC_ACL_PERMISSIONS = new Set([
+  "read", "write", "execute", "delete", "append", "readattr", "writeattr",
+  "readextattr", "writeextattr", "readsecurity", "writesecurity", "chown",
+  "list", "search", "add_file", "add_subdirectory", "delete_child",
+  "read_data", "write_data", "append_data",
+  // Inheritance flags, not rights; they appear on folders in shared locations.
+  "file_inherit", "directory_inherit", "limit_inherit", "only_inherit",
+]);
+const MAC_ACL_UNSAFE = new Set([
+  "write", "add_file", "add_subdirectory", "delete", "delete_child",
+  "write_data", "append_data", "append", "writeattr", "writeextattr",
+  "writesecurity", "chown",
+]);
+
+/** Inspect every component in one ls invocation; unknown output refuses storage. */
+function verifyMacAcls(paths: readonly string[], runner: (paths: readonly string[]) => string): void {
+  if (paths.some((path) => path.includes("\n") || path.includes("\r"))) {
+    throw new Error("browser profile path cannot be parsed by ls");
+  }
+  const output = runner(paths);
+  const pending = new Set(paths);
+  let current: string | undefined;
+  let aclExpected = false;
+  let aclSeen = false;
+  for (const line of output.trimEnd().split("\n")) {
+    const header = paths.find((path) => line.endsWith(` ${path}`) &&
+      /^d[rwxstST-]{9}[+@ ]?\s+\d+\s+/.test(line));
+    if (header !== undefined) {
+      if (current !== undefined && aclExpected && !aclSeen) throw new Error("unparsed browser profile ACL");
+      if (!pending.delete(header)) throw new Error("duplicate browser profile ACL path");
+      current = header;
+      aclExpected = line.slice(0, line.indexOf(" ")).includes("+");
+      aclSeen = false;
+      continue;
     }
-    if (info.uid !== uid && info.uid !== 0) {
-      throw new Error(`browser profile ancestor is owned by another user: ${parent}`);
+    const entry = /^\s+\d+:\s+(.+?)\s+(allow|deny)\s+([a-z_,]+)$/.exec(line);
+    if (current === undefined || entry === null) throw new Error("unparsed browser profile ACL");
+    aclSeen = true;
+    const permissions = entry[3]!.split(",");
+    if (permissions.some((permission) => !MAC_ACL_PERMISSIONS.has(permission))) {
+      throw new Error("unknown browser profile ACL permission");
     }
-    if (((info.mode & 0o002) !== 0 && (info.mode & 0o1000) === 0) ||
-        ((info.mode & 0o002) === 0 && (info.mode & 0o020) !== 0)) {
-      throw new Error(`browser profile ancestor can be replaced by another user: ${parent}`);
-    }
-    if ((info.mode & 0o002) !== 0) {
-      const entry = lstatSync(child);
-      if (entry.uid !== uid && entry.uid !== 0) {
-        throw new Error(`browser profile entry in sticky directory has another owner: ${child}`);
-      }
+    if (entry[2] === "allow" && permissions.some((permission) => MAC_ACL_UNSAFE.has(permission))) {
+      throw new Error(`browser profile ACL allows writes or deletion: ${current}`);
     }
   }
+  if (current !== undefined && aclExpected && !aclSeen) throw new Error("unparsed browser profile ACL");
+  if (pending.size !== 0) throw new Error("missing browser profile ACL path");
 }
 
 /** Node lstat reports Windows junctions as symbolic links; never follow one. */
-function ensurePrivateProfileDirectory(path: string, platform: NodeJS.Platform): boolean {
+function ensurePrivateProfileDirectory(path: string, platform: NodeJS.Platform, tighten = true): boolean {
   let created = false;
   try {
     lstatSync(path);
@@ -315,8 +344,8 @@ function ensurePrivateProfileDirectory(path: string, platform: NodeJS.Platform):
     throw new Error(`browser profile path is not a regular directory: ${path}`);
   }
   if (platform === "win32") {
-    // Windows per-user profile folders are private by default. Node has no
-    // portable owner/ACL check here, so only reparse points are refused.
+    // The default ACL of the current user's profile folder protects this
+    // contained chain; Node reports junctions and other reparse links here.
     return created;
   }
   const uid = process.getuid?.();
@@ -333,20 +362,58 @@ function ensurePrivateProfileDirectory(path: string, platform: NodeJS.Platform):
         opened.uid !== uid) {
       throw new Error(`browser profile directory changed during validation: ${path}`);
     }
-    if ((opened.mode & 0o777) !== 0o700) fchmodSync(fd, 0o700);
+    if (tighten && (opened.mode & 0o777) !== 0o700) fchmodSync(fd, 0o700);
   } finally {
     closeSync(fd);
   }
   return created;
 }
 
-function ensurePersistentProjectProfile(home: string, profile: string, platform: NodeJS.Platform): boolean {
-  const absoluteHome = resolve(home);
-  if (platform !== "win32") validateAncestorsAboveHome(absoluteHome);
-  ensurePrivateProfileDirectory(absoluteHome, platform);
-  ensurePrivateProfileDirectory(join(absoluteHome, "browser"), platform);
-  ensurePrivateProfileDirectory(join(absoluteHome, "browser", "profiles"), platform);
-  return ensurePrivateProfileDirectory(profile, platform);
+function ensurePersistentProjectProfile(
+  home: string, key: string, platform: NodeJS.Platform,
+  userHomeOverride?: string, lsRunner?: (paths: readonly string[]) => string,
+): { readonly path: string; readonly created: boolean } {
+  const userHome = userHomeOverride ?? (platform === "win32" ? process.env.USERPROFILE : userInfo().homedir);
+  if (userHome === undefined || userHome === "") throw new Error("cannot identify current user's home");
+  const canonicalUserHome = realpathSync.native(userHome);
+  const canonicalHome = realpathSync.native(home);
+  if (!isWithin(canonicalUserHome, canonicalHome)) {
+    throw new Error("browser profile home is outside the current user's home");
+  }
+  // A canonical home may have been named through /var, /tmp, or another
+  // symlink. Validate only the real path inside the user's real home.
+  const path = join(canonicalHome, "browser", "profiles", key);
+  const suffix = relative(canonicalUserHome, path);
+  const components = [canonicalUserHome];
+  for (const part of suffix.split(/[\\/]/).filter(Boolean)) {
+    components.push(join(components.at(-1)!, part));
+  }
+  if (platform === "win32") {
+    const lexicalHome = resolve(home);
+    if (!isWithin(canonicalUserHome, lexicalHome)) {
+      throw new Error("browser profile home is outside the current user's profile folder");
+    }
+    let lexical = canonicalUserHome;
+    for (const part of relative(canonicalUserHome, lexicalHome).split(/[\\/]/).filter(Boolean)) {
+      lexical = join(lexical, part);
+      if (lstatSync(lexical).isSymbolicLink()) {
+        throw new Error(`browser profile path is a link or junction: ${lexical}`);
+      }
+    }
+  }
+  let created = false;
+  for (const component of components) {
+    const made = ensurePrivateProfileDirectory(component, platform,
+      component !== canonicalUserHome && isWithin(canonicalHome, component));
+    if (component === path) created = made;
+  }
+  if (platform === "darwin") {
+    verifyMacAcls(components, lsRunner ?? ((paths) => execFileSync("/bin/ls", ["-lde", ...paths], {
+      encoding: "utf8", timeout: 5_000,
+      env: { LANG: "C", LC_ALL: "C", PATH: "/usr/bin:/bin" },
+    })));
+  }
+  return { path, created };
 }
 
 /**
@@ -388,6 +455,10 @@ export interface BrowserManagerOptions {
   readonly subscribeProjectRootMarkers?: (listener: () => void) => () => void;
   /** Test seam for Windows reparse-point validation. */
   readonly profileValidationPlatform?: NodeJS.Platform;
+  /** Test seam for the OS-owned user profile path. */
+  readonly profileValidationUserHome?: string;
+  /** Test seam for a single macOS ACL inspection of the entire chain. */
+  readonly profileValidationLs?: (paths: readonly string[]) => string;
   readonly policy: BrowserPolicy;
   /** Authenticated session boundary for the Chromium process. */
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
@@ -442,6 +513,12 @@ export class BrowserManager {
   #sharedProfileMarker: string | undefined;
   #profilePathWarningLogged = false;
   #launchedProfileIdentity: string | undefined;
+  #profileConfigGeneration = 0;
+  #cachedProfileProject: {
+    readonly generation: number;
+    readonly cwd: string | undefined;
+    readonly project: { readonly root: string; readonly lexicalRoot: string; readonly trustRootMismatch: boolean };
+  } | undefined;
   readonly #unsubscribeProjectRootMarkers: (() => void) | undefined;
   readonly #exitListener = (): void => {
     this.#killNow();
@@ -461,26 +538,62 @@ export class BrowserManager {
     });
   }
 
-  #profileProject(): { readonly root: string; readonly trustRootMismatch: boolean } {
+  #profileProject(): { readonly root: string; readonly lexicalRoot: string; readonly trustRootMismatch: boolean } {
     const cwd = this.#options.sandboxExecutionBroker?.cwd;
-    if (cwd === undefined) return { root: this.#initialProjectRoot, trustRootMismatch: false };
-    return resolveBrowserProfileProjectSync(
-      cwd,
-      this.#options.projectRootMarkersProvider?.() ?? this.#options.projectRootMarkers,
-    );
+    const cached = this.#cachedProfileProject;
+    if (cached?.generation === this.#profileConfigGeneration && cached.cwd === cwd) return cached.project;
+    const project = cwd === undefined
+      ? { root: this.#initialProjectRoot, lexicalRoot: this.#initialProjectRoot, trustRootMismatch: false }
+      : resolveBrowserProfileProjectSync(
+        cwd,
+        this.#options.projectRootMarkersProvider?.() ?? this.#options.projectRootMarkers,
+      );
+    this.#cachedProfileProject = { generation: this.#profileConfigGeneration, cwd, project };
+    return project;
+  }
+
+  #identityFor(project: { readonly root: string; readonly lexicalRoot: string }): string {
+    return JSON.stringify([this.#options.policy.profileDir ?? null, project.lexicalRoot, project.root]);
   }
 
   #profileIdentity(): string {
-    if (this.#options.policy.profileDir !== undefined) return this.#options.policy.profileDir;
-    const project = this.#profileProject();
-    return `${project.trustRootMismatch ? "private:" : "project:"}${project.root}`;
+    return this.#identityFor(this.#profileProject());
+  }
+
+  #validateProjectProfile(root: string): { readonly path: string; readonly created: boolean } {
+    return ensurePersistentProjectProfile(
+      this.#options.agencHome!, createHash("sha256").update(root).digest("hex").slice(0, 24),
+      this.#options.profileValidationPlatform ?? process.platform,
+      this.#options.profileValidationUserHome,
+      this.#options.profileValidationLs,
+    );
+  }
+
+  #warnProfileFallback(error: unknown): void {
+    if (this.#profilePathWarningLogged) return;
+    console.warn(`[Browser] Refusing persistent browser profile; using a private temporary profile: ${String(error)}`);
+    this.#profilePathWarningLogged = true;
   }
 
   /** Reload publication closes a browser before it can reuse an obsolete profile key. */
   closeIfProfileKeyChanged(): Promise<void> {
+    this.#profileConfigGeneration += 1;
     if (this.#launchedProfileIdentity !== undefined &&
         this.#launchedProfileIdentity !== this.#profileIdentity()) {
       return this.closeAll();
+    }
+    // A reload is also the next chance to catch a changed home or ACL while
+    // the browser is running. Ordinary actions reuse this generation's result.
+    if (this.#options.policy.profileDir === undefined &&
+        this.#options.agencHome !== undefined && this.#sharedProfileDir !== undefined) {
+      try {
+        if (this.#validateProjectProfile(this.#profileProject().root).path !== this.#sharedProfileDir) {
+          return this.closeAll();
+        }
+      } catch (error) {
+        this.#warnProfileFallback(error);
+        return this.closeAll();
+      }
     }
     return Promise.resolve();
   }
@@ -505,18 +618,8 @@ export class BrowserManager {
   #ensureProfileDir(): string {
     const tempRoot = resolveSessionTempRoot();
     const project = this.#profileProject();
-    const projectRoot = project.root;
-    this.#launchedProfileIdentity = this.#options.policy.profileDir ??
-      `${project.trustRootMismatch ? "private:" : "project:"}${project.root}`;
-    const profilesRoot = this.#options.agencHome !== undefined
-      ? join(resolve(this.#options.agencHome), "browser", "profiles")
-      : undefined;
-    const projectProfile = profilesRoot !== undefined
-      ? join(profilesRoot, createHash("sha256").update(projectRoot).digest("hex").slice(0, 24))
-      : undefined;
-    const shared =
-      this.#options.policy.profileDir ??
-      projectProfile;
+    this.#launchedProfileIdentity = this.#identityFor(project);
+    let shared = this.#options.policy.profileDir;
     cleanStalePrivateProfiles(tempRoot, shared);
     // Child sessions get an ephemeral profile. Sharing the root session's
     // persistent cookies/storage across independently sandboxed browser
@@ -527,32 +630,27 @@ export class BrowserManager {
       }
       return this.#tempProfileDir;
     }
-    if (shared !== undefined) {
-      let usable = !project.trustRootMismatch || this.#options.policy.profileDir !== undefined;
-      if (this.#options.policy.profileDir === undefined && profilesRoot !== undefined) {
+    if (shared !== undefined || this.#options.agencHome !== undefined) {
+      let usable = !project.trustRootMismatch || shared !== undefined;
+      if (shared === undefined && this.#options.agencHome !== undefined) {
         try {
           if (project.trustRootMismatch) {
             throw new Error("lexical trust root differs from the realpath workspace root");
           }
-          const created = ensurePersistentProjectProfile(
-            this.#options.agencHome!, shared,
-            this.#options.profileValidationPlatform ?? process.platform,
-          );
-          if (created && this.#options.agencHome !== undefined &&
+          const persistent = this.#validateProjectProfile(project.root);
+          shared = persistent.path;
+          if (persistent.created &&
               existsSync(join(this.#options.agencHome, "browser", "profile"))) {
             console.info("[Browser] Existing legacy browser profile left unused; created a project profile.");
           }
         } catch (error) {
           usable = false;
-          if (!this.#profilePathWarningLogged) {
-            console.warn(`[Browser] Refusing persistent browser profile; using a private temporary profile: ${String(error)}`);
-            this.#profilePathWarningLogged = true;
-          }
+          this.#warnProfileFallback(error);
         }
       } else {
-        mkdirSync(shared, { recursive: true, mode: 0o700 });
+        mkdirSync(shared!, { recursive: true, mode: 0o700 });
       }
-      if (usable && this.#claimSharedProfile(shared)) return shared;
+      if (usable && shared !== undefined && this.#claimSharedProfile(shared)) return shared;
       // Another session's browser holds the shared profile. Chromium would
       // hand this launch to it and exit, so this browser gets its own fresh
       // profile instead: nothing is shared with the other session, and the

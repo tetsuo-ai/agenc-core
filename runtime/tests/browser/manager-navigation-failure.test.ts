@@ -1,18 +1,29 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 
-const { launchBrowserMock, markerReadSeam, ownershipSeam, linkSeam } = vi.hoisted(() => ({
+const { launchBrowserMock, markerReadSeam, ownershipSeam, linkSeam, userHomeSeam } = vi.hoisted(() => ({
   launchBrowserMock: vi.fn(),
   markerReadSeam: { path: "", replace: undefined as undefined | (() => void) },
   ownershipSeam: { path: "" },
   linkSeam: { path: "" },
+  userHomeSeam: { path: "" },
 }));
+vi.mock("node:os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:os")>();
+  return {
+    ...actual,
+    userInfo: ((...args: Parameters<typeof actual.userInfo>) => ({
+      ...actual.userInfo(...args),
+      homedir: userHomeSeam.path || actual.userInfo(...args).homedir,
+    })) as typeof actual.userInfo,
+  };
+});
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return {
@@ -83,7 +94,8 @@ function projectProfile(root = profileRoot): string {
 }
 
 beforeEach(async () => {
-  profileRoot = await mkdtemp(join(tmpdir(), "agenc-browser-navigation-test-"));
+  profileRoot = realpathSync.native(await mkdtemp(join(tmpdir(), "agenc-browser-navigation-test-")));
+  userHomeSeam.path = profileRoot;
 });
 afterEach(async () => {
   for (const manager of managers.splice(0)) await manager.closeAll();
@@ -93,6 +105,7 @@ afterEach(async () => {
   markerReadSeam.replace = undefined;
   ownershipSeam.path = "";
   linkSeam.path = "";
+  userHomeSeam.path = "";
   vi.restoreAllMocks();
 });
 
@@ -392,6 +405,178 @@ describe("project-scoped browser profiles", () => {
     expect(launchedProfiles()).toEqual([projectProfile(profileRoot), projectProfile(first)]);
   });
 
+  it("closes a private browser when a reload changes only the lexical trust root", async () => {
+    const lexical = join(profileRoot, "a");
+    const sub = join(lexical, "sub");
+    const real = join(profileRoot, "b");
+    const work = join(real, "work");
+    mkdirSync(sub, { recursive: true });
+    mkdirSync(work, { recursive: true });
+    writeFileSync(join(sub, ".project"), "");
+    writeFileSync(join(lexical, ".root"), "");
+    writeFileSync(join(real, ".project"), "");
+    writeFileSync(join(real, ".root"), "");
+    symlinkSync(work, join(sub, "link"), "dir");
+    let markers: readonly string[] = [".project"];
+    let notifyReload: (() => void) | undefined;
+    const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd: join(sub, "link") });
+    const { manager, connection } = fakeManager(async () => ({}), undefined, broker, markers, {
+      projectRootMarkersProvider: () => markers,
+      subscribeProjectRootMarkers: (listener) => {
+        notifyReload = listener;
+        return () => { notifyReload = undefined; };
+      },
+    });
+    await manager.newTab();
+    expect(manager.running).toBe(true);
+    const first = launchedProfiles()[0];
+    markers = [".root"];
+    notifyReload?.();
+    await vi.waitFor(() => expect(manager.running).toBe(false));
+    connection.closed = false;
+    await manager.newTab();
+    expect(launchedProfiles()).toHaveLength(2);
+    expect(launchedProfiles()[1]).not.toBe(first);
+  });
+
+  it("walks roots once per launch and once per reload", async () => {
+    const project = join(profileRoot, "project");
+    mkdirSync(project);
+    writeFileSync(join(project, ".project"), "");
+    let notifyReload: (() => void) | undefined;
+    const markers = vi.fn(() => [".project"]);
+    const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd: project });
+    const { manager } = fakeManager(async () => ({}), undefined, broker, [".project"], {
+      projectRootMarkersProvider: markers,
+      subscribeProjectRootMarkers: (listener) => {
+        notifyReload = listener;
+        return () => { notifyReload = undefined; };
+      },
+    });
+    await manager.newTab();
+    await manager.newTab();
+    expect(markers).toHaveBeenCalledTimes(1);
+    notifyReload?.();
+    await manager.newTab();
+    expect(markers).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back when agencHome is outside the current user's home", async () => {
+    const userHome = join(profileRoot, "user");
+    const outside = join(profileRoot, "outside");
+    mkdirSync(userHome);
+    mkdirSync(outside);
+    const { manager } = fakeManager(async () => ({}), undefined, undefined, undefined, {
+      agencHome: outside,
+      profileValidationUserHome: userHome,
+    });
+    await manager.newTab();
+    expect(launchedProfiles()[0]).toMatch(/^.*\/agenc-browser-[^/]+$/);
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a macOS allow-write ACL but accepts a deny ACL", async () => {
+    const browser = join(profileRoot, "browser");
+    const runLs = (effect: "allow" | "deny") => vi.fn((paths: readonly string[]) =>
+      paths.map((path) => `${path === browser ? "drwx------+" : "drwx------"} 1 owner staff 0 Sep 23 00:00 ${path}` +
+        (path === browser ? `\n 0: group:everyone ${effect} ${effect === "allow" ? "write" : "delete"}` : ""))
+        .join("\n") + "\n");
+    const allowLs = runLs("allow");
+    const first = fakeManager(async () => ({}), undefined, undefined, undefined, {
+      profileValidationPlatform: "darwin", profileValidationLs: allowLs,
+    }).manager;
+    await first.newTab();
+    expect(launchedProfiles()[0]).toMatch(/^.*\/agenc-browser-[^/]+$/);
+    expect(allowLs).toHaveBeenCalledOnce();
+    expect(allowLs.mock.calls[0]?.[0]).toContain(browser);
+    await first.closeAll();
+
+    const denyLs = runLs("deny");
+    const second = fakeManager(async () => ({}), undefined, undefined, undefined, {
+      profileValidationPlatform: "darwin", profileValidationLs: denyLs,
+    }).manager;
+    await second.newTab();
+    expect(launchedProfiles()[1]).toBe(projectProfile());
+    expect(denyLs).toHaveBeenCalledOnce();
+  });
+
+  it.skipIf(process.platform === "win32")("accepts macOS output as this Mac prints it: @ instead of +, and inheritance flags", async () => {
+    // A home folder with extended attributes shows "@", not "+", even when it
+    // also carries the standard deny ACL.
+    const ls = vi.fn((paths: readonly string[]) => paths.map((path, index) =>
+      index === 0
+        ? `drwxr-xr-x@ 411 owner staff 13152 Sep 23 18:17 ${path}\n 0: group:everyone deny delete`
+        : `drwx------+ 1 owner staff 0 Sep 23 00:00 ${path}\n 0: group:everyone inherited deny delete,file_inherit,directory_inherit`,
+    ).join("\n") + "\n");
+    const { manager } = fakeManager(async () => ({}), undefined, undefined, undefined, {
+      profileValidationPlatform: "darwin", profileValidationLs: ls,
+    });
+    await manager.newTab();
+    expect(launchedProfiles()[0]).toBe(projectProfile());
+    expect(ls).toHaveBeenCalledOnce();
+  });
+
+  it.skipIf(process.platform === "win32")("checks macOS ACLs on launch and reload, not on each action", async () => {
+    let notifyReload: (() => void) | undefined;
+    let unsafe = false;
+    const browser = join(profileRoot, "browser");
+    const ls = vi.fn((paths: readonly string[]) => paths.map((path) =>
+      `${path === browser ? "drwx------+" : "drwx------"} 1 owner staff 0 Sep 23 00:00 ${path}` +
+      (path === browser ? `\n 0: group:everyone ${unsafe ? "allow write" : "deny delete"}` : ""),
+    ).join("\n") + "\n");
+    const { manager } = fakeManager(async () => ({}), undefined, undefined, undefined, {
+      profileValidationPlatform: "darwin",
+      profileValidationLs: ls,
+      subscribeProjectRootMarkers: (listener) => {
+        notifyReload = listener;
+        return () => { notifyReload = undefined; };
+      },
+    });
+    await manager.newTab();
+    await manager.newTab();
+    expect(ls).toHaveBeenCalledTimes(1);
+    notifyReload?.();
+    await manager.newTab();
+    expect(ls).toHaveBeenCalledTimes(2);
+    unsafe = true;
+    notifyReload?.();
+    await vi.waitFor(() => expect(manager.running).toBe(false));
+    expect(ls).toHaveBeenCalledTimes(3);
+  });
+
+  it.skipIf(process.platform === "win32")("accepts an agencHome named through a symlinked tmp path", async () => {
+    const alias = profileRoot.replace(/^\/private\/tmp\//, "/tmp/").replace(/^\/private\/var\//, "/var/");
+    expect(alias).not.toBe(profileRoot);
+    const home = join(profileRoot, "home");
+    mkdirSync(home);
+    const { manager } = fakeManager(async () => ({}), undefined, undefined, undefined, {
+      agencHome: join(alias, "home"),
+    });
+    await manager.newTab();
+    const key = createHash("sha256").update(profileRoot).digest("hex").slice(0, 24);
+    expect(launchedProfiles()[0]).toBe(join(home, "browser", "profiles", key));
+  });
+
+  it("uses a Windows user profile only for contained, junction-free homes", async () => {
+    const userHome = join(profileRoot, "windows-user");
+    const inside = join(userHome, "agenc");
+    const outside = join(profileRoot, "windows-outside");
+    mkdirSync(inside, { recursive: true });
+    mkdirSync(outside);
+    const options = { profileValidationPlatform: "win32" as const, profileValidationUserHome: userHome };
+    const first = fakeManager(async () => ({}), undefined, undefined, undefined, {
+      ...options, agencHome: inside,
+    }).manager;
+    await first.newTab();
+    const key = createHash("sha256").update(profileRoot).digest("hex").slice(0, 24);
+    expect(launchedProfiles()[0]).toBe(join(inside, "browser", "profiles", key));
+    await first.closeAll();
+    const second = fakeManager(async () => ({}), undefined, undefined, undefined, {
+      ...options, agencHome: outside,
+    }).manager;
+    await second.newTab();
+    expect(launchedProfiles()[1]).toMatch(/^.*\/agenc-browser-[^/]+$/);
+  });
+
   it.skipIf(process.platform === "win32")("refuses writable browser chain components", async () => {
     for (const component of ["browser", "profiles"] as const) {
       const path = join(profileRoot, "browser", ...(component === "profiles" ? ["profiles"] : []));
@@ -405,7 +590,7 @@ describe("project-scoped browser profiles", () => {
     }
   });
 
-  it.skipIf(process.platform === "win32")("allows a sticky shared ancestor with our own entry but refuses a non-sticky one", async () => {
+  it.skipIf(process.platform === "win32")("refuses a group-writable ancestor even when it is sticky", async () => {
     const ancestor = join(profileRoot, "shared");
     const home = join(ancestor, "home");
     mkdirSync(home, { recursive: true, mode: 0o700 });
@@ -413,7 +598,7 @@ describe("project-scoped browser profiles", () => {
     const options = { agencHome: home, projectRoot: profileRoot };
     const first = fakeManager(async () => ({}), undefined, undefined, undefined, options).manager;
     await first.newTab();
-    expect(launchedProfiles().at(-1)).toBe(join(home, "browser", "profiles", createHash("sha256").update(profileRoot).digest("hex").slice(0, 24)));
+    expect(launchedProfiles().at(-1)).toMatch(/^.*\/agenc-browser-[^/]+$/);
     await first.closeAll();
     chmodSync(ancestor, 0o777);
     const second = fakeManager(async () => ({}), undefined, undefined, undefined, options).manager;
@@ -440,6 +625,7 @@ describe("project-scoped browser profiles", () => {
     linkSeam.path = browser;
     const { manager } = fakeManager(async () => ({}), undefined, undefined, undefined, {
       profileValidationPlatform: "win32",
+      profileValidationUserHome: profileRoot,
     });
     await manager.newTab();
     expect(launchedProfiles()[0]).toMatch(/^.*\/agenc-browser-[^/]+$/);
