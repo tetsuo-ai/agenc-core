@@ -360,6 +360,31 @@ describe("SandboxExecutionBroker", () => {
     },
   );
 
+  it("refuses CDP stdio for any surface but the browser", () => {
+    const root = tempRoot("agenc-browser-cdp-surface-");
+    const broker = new SandboxExecutionBroker({
+      mode: "workspace_write",
+      cwd: root,
+      sandboxManager: {
+        selectInitial: () => "linux_seccomp",
+        transform: () => ({
+          command: ["/sandbox/helper", "--sandbox-policy-cwd", root, "--", "/bin/echo"],
+          cwd: root,
+          env: {},
+        }),
+      } as never,
+      probe: () => readyStatus("workspace_write"),
+    });
+
+    expect(() => broker.prepareSpawn("tool", {
+      program: "/bin/echo",
+      args: [],
+      cwd: root,
+      env: {},
+      browserCdp: true,
+    })).toThrow(/only valid for the browser surface/);
+  });
+
   describe("Landlock-fallback pre-flight", () => {
     function fallbackStatus(): SandboxExecutionStatus {
       return {

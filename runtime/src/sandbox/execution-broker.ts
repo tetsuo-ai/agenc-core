@@ -1066,6 +1066,11 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     command: SandboxSpawnCommand,
     options: SandboxPrepareSpawnOptions = {},
   ): SandboxPreparedSpawn {
+    // CDP over stdio takes over the child's stdin and stdout; only the browser
+    // speaks it.
+    if (command.browserCdp === true && surface !== "browser") {
+      throw new Error(`browserCdp is only valid for the browser surface, not ${surface}`);
+    }
     try {
       const participantName = options.lifecycleParticipant;
       const requiresLifecyclePermit =

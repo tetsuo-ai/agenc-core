@@ -15,12 +15,15 @@ const SUID_ABORT =
 const NAMESPACE_ABORT =
   "[9:9:0923/173401.190279:FATAL:content/browser/zygote_host/zygote_host_impl_linux.cc:128] No usable sandbox! If you are running on Ubuntu 23.10+ or another Linux distro that has disabled unprivileged user namespaces with AppArmor, see https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md.";
 
-async function launchFailure(stderr: string): Promise<string> {
+async function launchFailure(stderr: string, overStdio = false): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "agenc-browser-hint-test-"));
   const worker = `process.stderr.write(${JSON.stringify(`${stderr}\n`)}, () => process.exit(1));`;
   const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd: dir });
   vi.spyOn(broker, "prepareSpawn").mockImplementation((_surface, command) => {
-    const transformed = { program: process.execPath, args: ["-e", worker], cwd: dir, env: command.env };
+    // overStdio stands for a launch through AgenC's Linux sandbox, where CDP
+    // travels over stdin and stdout.
+    const transformed = { program: process.execPath, args: ["-e", worker], cwd: dir, env: command.env,
+      ...(overStdio ? { browserCdpOverStdio: true } : {}) };
     const signal = new AbortController().signal;
     return {
       run: operation => operation(transformed, signal),
@@ -46,11 +49,17 @@ async function launchFailure(stderr: string): Promise<string> {
   }
 }
 
-test.skipIf(process.platform === "win32")("a Chromium sandbox abort points at no_sandbox, not at the executable path", async () => {
-  const message = await launchFailure(SUID_ABORT);
+test.skipIf(process.platform === "win32")("a Chromium sandbox abort inside AgenC's Linux sandbox points at no_sandbox", async () => {
+  const message = await launchFailure(SUID_ABORT, true);
   expect(message).toMatch(/did not establish a CDP pipe/);
   expect(message).toContain("Set [browser] no_sandbox = true to run it under AgenC's sandbox alone.");
   expect(message).not.toContain("wrapper script");
+});
+
+test.skipIf(process.platform === "win32")("a Chromium sandbox abort outside AgenC's sandbox points at the installation", async () => {
+  const message = await launchFailure(SUID_ABORT, false);
+  expect(message).toContain("Fix the Chromium installation");
+  expect(message).not.toContain("no_sandbox");
 });
 
 test.skipIf(process.platform === "win32")("any other launch failure keeps the wrapper script hint", async () => {
@@ -59,8 +68,16 @@ test.skipIf(process.platform === "win32")("any other launch failure keeps the wr
   expect(message).not.toContain("no_sandbox");
 });
 
-test("both of Chromium's own-sandbox aborts are recognized", () => {
-  expect(launchFailureHint(SUID_ABORT)).toContain("no_sandbox = true");
-  expect(launchFailureHint(NAMESPACE_ABORT)).toContain("no_sandbox = true");
-  expect(launchFailureHint("")).toContain("wrapper script");
+test("both of Chromium's own-sandbox aborts are recognized inside AgenC's Linux sandbox", () => {
+  expect(launchFailureHint(SUID_ABORT, true)).toContain("no_sandbox = true");
+  expect(launchFailureHint(NAMESPACE_ABORT, true)).toContain("no_sandbox = true");
+  expect(launchFailureHint("", true)).toContain("wrapper script");
+});
+
+test("outside AgenC's Linux sandbox, a sandbox abort never suggests turning Chromium's sandbox off", () => {
+  for (const abort of [SUID_ABORT, NAMESPACE_ABORT]) {
+    const hint = launchFailureHint(abort, false);
+    expect(hint).toContain("Fix the Chromium installation");
+    expect(hint).not.toContain("no_sandbox");
+  }
 });
