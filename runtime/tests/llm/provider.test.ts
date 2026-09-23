@@ -192,6 +192,38 @@ describe("createProvider", () => {
     ).toBe("/client/bin");
   });
 
+  test("removes custom base URLs from a composer CLI using cached sign-in", () => {
+    const cachedLogin = createProvider("grok", {
+      model: "grok-composer-2.5-fast",
+      extra: {
+        grokAcp: {
+          environment: {
+            XAI_BASE_URL: "https://gateway.example.test/v1",
+            GROK_BASE_URL: "https://other-gateway.example.test/v1",
+          },
+        },
+      },
+    });
+    const environment = (cachedLogin as unknown as {
+      config: { env: NodeJS.ProcessEnv };
+    }).config.env;
+    expect(environment.XAI_BASE_URL).toBeUndefined();
+    expect(environment.GROK_BASE_URL).toBeUndefined();
+
+    const withKey = createProvider("grok", {
+      apiKey: "fake-xai-api-key",
+      model: "grok-composer-2.5-fast",
+      extra: {
+        grokAcp: { environment: { XAI_BASE_URL: "https://gateway.example.test/v1" } },
+      },
+    });
+    expect((withKey as unknown as { config: { env: NodeJS.ProcessEnv } }).config.env)
+      .toMatchObject({
+        XAI_API_KEY: "fake-xai-api-key",
+        XAI_BASE_URL: "https://gateway.example.test/v1",
+      });
+  });
+
   test("preserves configured tools in factory accounting options", () => {
     const tools = [
       {

@@ -49,7 +49,7 @@ import type { GrokCapabilityConfig } from "../config/schema.js";
 import {
   isDirectXaiInferenceHost,
   isXaiLiveXSearchEnabled,
-  resolveXaiBearerToken,
+  resolveXaiBearerTokenForBaseUrl,
   resolveXaiLiveWebSearchOptions,
   resolveXaiLiveXSearchOptions,
 } from "../llm/xai-capability-config.js";
@@ -987,13 +987,6 @@ function resolveXaiToolBackend(
     currentIsDirect && typeof currentFactory?.apiKey === "string"
       ? currentFactory.apiKey
       : undefined;
-  const apiKey = resolveXaiBearerToken(
-    credentialHome,
-    environment,
-    sessionApiKey,
-  );
-  if (apiKey === undefined) return undefined;
-
   const configuredBaseURL = resolveProviderBaseURLEnvironment(
     "grok",
     environment,
@@ -1002,6 +995,10 @@ function resolveXaiToolBackend(
     ? (currentFactory?.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS.grok)
     : (configuredBaseURL ?? BUILT_IN_PROVIDER_BASE_URLS.grok);
   if (!isDirectXaiInferenceHost(baseURL)) return undefined;
+  const apiKey = resolveXaiBearerTokenForBaseUrl(
+    credentialHome, environment, baseURL, sessionApiKey,
+  );
+  if (apiKey === undefined) return undefined;
 
   const currentModel = currentIsDirect ? currentFactory?.model : undefined;
   const model = supportsProviderNativeXSearch({

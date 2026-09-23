@@ -40,11 +40,13 @@ describe('endpoint trust', () => {
     expect(isTrustedXaiOauthEndpoint('not a url')).toBe(false)
   })
 
-  test('inference base URL allows api.x.ai and the grok.com CLI proxy', () => {
+  test('inference base URL allows only the canonical xAI API path', () => {
     expect(isTrustedXaiOauthInferenceBaseUrl('https://api.x.ai/v1')).toBe(true)
+    expect(isTrustedXaiOauthInferenceBaseUrl('https://api.x.ai/v1/')).toBe(true)
+    expect(isTrustedXaiOauthInferenceBaseUrl('https://api.x.ai/proxy/v1')).toBe(false)
     expect(
       isTrustedXaiOauthInferenceBaseUrl('https://cli-chat-proxy.grok.com/v1'),
-    ).toBe(true)
+    ).toBe(false)
     expect(isTrustedXaiOauthInferenceBaseUrl('https://attacker.example/v1')).toBe(false)
     expect(isTrustedXaiOauthInferenceBaseUrl('http://api.x.ai/v1')).toBe(false)
     expect(isTrustedXaiOauthInferenceBaseUrl(undefined)).toBe(false)

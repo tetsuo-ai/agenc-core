@@ -590,6 +590,33 @@ describe("provider discovery", () => {
         provider: "grok",
       });
       expect(grok?.detail).not.toContain("BYOK");
+
+      const custom = await collectProviderAvailability({
+        authBackend: authBackend("local", "free"),
+        checkLocal: false,
+        config: defaultConfig(),
+        env: { ...env, XAI_BASE_URL: "https://gateway.example.test/v1" },
+      });
+      expect(byProvider(custom.entries).get("grok")).toMatchObject({
+        usable: true,
+        credentialStatus: "present",
+      });
+      expect(byProvider(custom.entries).get("grok")?.credentialProvenance).not.toEqual({
+        kind: "oauth",
+        provider: "grok",
+      });
+
+      const forcedOauth = await collectProviderAvailability({
+        authBackend: authBackend("local", "free"),
+        checkLocal: false,
+        config: defaultConfig(),
+        env: { ...env, GROK_AUTH_MODE: "oauth", XAI_BASE_URL: "https://gateway.example.test/v1" },
+      });
+      expect(byProvider(forcedOauth.entries).get("grok")).toMatchObject({
+        usable: false,
+        credentialStatus: "unavailable",
+      });
+      expect(byProvider(forcedOauth.entries).get("grok")?.detail).toContain("custom Grok base URL");
     } finally {
       clearXaiOauthCredentials(home);
       rmSync(root, { recursive: true, force: true });

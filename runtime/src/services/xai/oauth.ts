@@ -25,6 +25,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 
 import { asRecord } from '../../utils/record.js'
+import { BUILT_IN_PROVIDER_BASE_URLS } from '../../llm/registry/provider-info.js'
 
 /** xAI's shared Grok-CLI OAuth client (public client, no secret). */
 export const XAI_OAUTH_CLIENT_ID = 'b1a00492-073a-47ea-816f-4c329264a828'
@@ -173,29 +174,20 @@ export function isTrustedXaiOauthEndpoint(url: string): boolean {
   return host === 'x.ai' || host.endsWith('.x.ai')
 }
 
-/**
- * Hosts the OAuth bearer may be sent to for INFERENCE: xAI's API
- * (`api.x.ai`, Hermes' choice) and the Grok Build CLI proxy
- * (`cli-chat-proxy.grok.com`, OpenClaw's choice). A custom base-URL
- * override outside these origins must never receive the subscription
- * bearer — that is a token-exfiltration vector, not a configuration.
- */
+/** The only inference base URL allowed to receive the xAI sign-in bearer. */
 export function isTrustedXaiOauthInferenceBaseUrl(url: string | undefined): boolean {
-  if (!url) return false
-  let parsed: URL
-  try {
-    parsed = new URL(url)
-  } catch {
-    return false
+  return url !== undefined &&
+    url.replace(/\/+$/u, '') === BUILT_IN_PROVIDER_BASE_URLS.grok
+}
+
+export function assertXaiOauthBaseUrl(baseURL: string | undefined): string {
+  if (baseURL !== undefined && !isTrustedXaiOauthInferenceBaseUrl(baseURL)) {
+    throw new Error(
+      'xAI sign-in credentials are bound to the first-party xAI API endpoint. ' +
+      'Select API-key mode to use a custom Grok base URL, or unset the base URL override.',
+    )
   }
-  if (parsed.protocol !== 'https:') return false
-  const host = parsed.hostname.toLowerCase()
-  return (
-    host === 'x.ai' ||
-    host.endsWith('.x.ai') ||
-    host === 'grok.com' ||
-    host.endsWith('.grok.com')
-  )
+  return BUILT_IN_PROVIDER_BASE_URLS.grok
 }
 
 function requireTrustedEndpoint(url: unknown, label: string): string {

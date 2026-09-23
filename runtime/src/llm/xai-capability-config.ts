@@ -20,6 +20,7 @@ import type { ProviderRuntimeExtra } from "./provider.js";
 import { isDynamicSessionCredentialEnvironmentKey } from "../session/environment.js";
 import { resolveProviderApiKeyEnvironment } from "./registry/provider-ingress.js";
 import { providerAuthPreference } from "./provider-auth-selection.js";
+import { assertXaiOauthBaseUrl } from "../services/xai/oauth.js";
 
 const DIRECT_XAI_HOST_SUFFIXES = [".x.ai", ".grok.com"] as const;
 
@@ -314,6 +315,18 @@ export function resolveXaiBearerToken(
   sessionApiKey?: string,
 ): string | undefined {
   return resolveGrokProviderCredential(home, sessionApiKey, env).value;
+}
+
+/** Resolve a bearer only after binding a stored sign-in to the API URL. */
+export function resolveXaiBearerTokenForBaseUrl(
+  home: HomeContext,
+  env: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>,
+  baseURL: string,
+  sessionApiKey?: string,
+): string | undefined {
+  const credential = resolveGrokProviderCredential(home, sessionApiKey, env);
+  if (credential.isOAuth) assertXaiOauthBaseUrl(baseURL);
+  return credential.value;
 }
 
 export interface ResolvedGrokProviderCredential {

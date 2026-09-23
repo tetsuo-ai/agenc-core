@@ -184,6 +184,17 @@ describe("provider credential authority", () => {
     expect(media.resolveXaiBearerToken(home, { GROK_AUTH_MODE: "api-key", XAI_API_KEY: "byok" })).toBe("byok");
     expect(media.resolveXaiBearerToken(home, { GROK_AUTH_MODE: "oauth", XAI_API_KEY: "byok" })).toBe("oauth-token");
     expect(media.hasXaiCredentials(home, { GROK_AUTH_MODE: "api-key" })).toBe(false);
+    expect(media.resolveXaiBearerTokenForBaseUrl(
+      home, {}, "https://api.x.ai/v1",
+    )).toBe("oauth-token");
+    expect(() => media.resolveXaiBearerTokenForBaseUrl(
+      home, { XAI_BASE_URL: "https://gateway.example.test/v1" },
+      "https://gateway.example.test/v1",
+    )).toThrow(/xAI sign-in credentials.*custom Grok base URL/);
+    expect(media.resolveXaiBearerTokenForBaseUrl(
+      home, { GROK_AUTH_MODE: "api-key", XAI_API_KEY: "byok" },
+      "https://gateway.example.test/v1",
+    )).toBe("byok");
   });
 
   test("rejects invalid auth intent and conflicting OpenAI OAuth factory state", async () => {
@@ -239,6 +250,37 @@ describe("provider credential authority", () => {
       apiKey: "selected-xai-oauth",
     });
   });
+
+  test.each(["XAI_BASE_URL", "GROK_BASE_URL"] as const)(
+    "never resolves a Grok sign-in token for custom %s",
+    async (baseUrlName) => {
+      const home = await createHome(`custom-${baseUrlName}`);
+      const { providerOptions, xaiCredentials } = await loadCredentialModules();
+      xaiCredentials.saveXaiOauthCredentials(home, { accessToken: "fake-xai-sign-in-token" });
+      const customUrl = "https://gateway.example.test/v1";
+
+      expect(() => providerOptions.resolveProviderCredentialAuthority(
+        "grok", { credentialHome: home, model: "grok-4.6" },
+        { [baseUrlName]: customUrl },
+      )).toThrow(/xAI sign-in credentials.*custom.*base URL/i);
+
+      const withKey = providerOptions.resolveProviderCredentialAuthority(
+        "grok", { credentialHome: home, model: "grok-4.6" },
+        { [baseUrlName]: customUrl, XAI_API_KEY: "fake-xai-api-key" },
+      );
+      expect(withKey.credential).toMatchObject({ mode: "api-key", status: "ready" });
+      expect(withKey.factoryOptions).toMatchObject({
+        apiKey: "fake-xai-api-key",
+        baseURL: customUrl,
+        extra: { authMode: "api_key" },
+      });
+      expect(JSON.stringify(withKey.factoryOptions)).not.toContain("fake-xai-sign-in-token");
+      expect(() => providerOptions.resolveProviderCredentialAuthority(
+        "grok", { credentialHome: home, model: "grok-4.6" },
+        { [baseUrlName]: customUrl, XAI_API_KEY: "fake-xai-api-key", GROK_AUTH_MODE: "oauth" },
+      )).toThrow(/xAI sign-in credentials.*custom Grok base URL/);
+    },
+  );
 
   test("reports Grok environment API keys through the same authority", async () => {
     const { providerOptions } = await loadCredentialModules();
@@ -397,6 +439,16 @@ describe("provider credential authority", () => {
       mode: "none",
     });
     expect(resolved.factoryOptions.apiKey).toBeUndefined();
+  });
+
+  test("does not project a stored Grok sign-in token into composer CLI options", async () => {
+    const home = await createHome("composer-oauth");
+    const { providerOptions, xaiCredentials } = await loadCredentialModules();
+    xaiCredentials.saveXaiOauthCredentials(home, { accessToken: "fake-xai-sign-in-token" });
+    const resolved = providerOptions.resolveProviderCredentialAuthority(
+      "grok", { credentialHome: home, model: "grok-composer-2.5-fast" }, {},
+    );
+    expect(JSON.stringify(resolved.factoryOptions)).not.toContain("fake-xai-sign-in-token");
   });
 
   test("projects Grok composer inputs from one captured client", async () => {

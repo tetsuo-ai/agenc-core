@@ -35,7 +35,7 @@ import {
 } from "../../llm/provider.js";
 import {
   isDirectXaiInferenceHost,
-  resolveXaiBearerToken,
+  resolveXaiBearerTokenForBaseUrl,
 } from "../../llm/xai-capability-config.js";
 import {
   resolveProviderApiKeyEnvironment,
@@ -266,7 +266,9 @@ function resolveVideoBackend(
     if (isDirectXaiInferenceHost(factory.baseURL)) {
       const sessionKey =
         typeof factory.apiKey === "string" ? factory.apiKey : undefined;
-      const bearer = resolveXaiBearerToken(opts.home, env, sessionKey);
+      const bearer = resolveXaiBearerTokenForBaseUrl(
+        opts.home, env, factory.baseURL ?? DEFAULT_XAI_BASE_URL, sessionKey,
+      );
       if (bearer !== undefined) {
         return {
           backend: {
@@ -284,7 +286,10 @@ function resolveVideoBackend(
 
   // Never pass a non-Grok session key/base URL. A non-direct Grok session
   // also lands here and must supply independent xAI authority.
-  const bearer = resolveXaiBearerToken(opts.home, env);
+  const bearer = resolveXaiBearerTokenForBaseUrl(
+    opts.home, env,
+    resolveProviderBaseURLEnvironment("grok", env)?.value ?? DEFAULT_XAI_BASE_URL,
+  );
   if (bearer !== undefined) {
     const baseURL =
       resolveProviderBaseURLEnvironment("grok", env)?.value ??

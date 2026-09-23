@@ -47,6 +47,10 @@ import {
 } from "./providers/gemini/runtime-options.js";
 import { createGeminiEndpointPlan } from "./providers/gemini/endpoint-plan.js";
 import { isGrokComposerModel } from "./providers/grok/acp-adapter.js";
+import {
+  assertXaiOauthBaseUrl,
+  isTrustedXaiOauthInferenceBaseUrl,
+} from "../services/xai/oauth.js";
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import { hasActivePilotModelAccess } from "../auth/pilot-access.js";
 
@@ -498,13 +502,43 @@ function resolveProviderCredentialAuthorityCore(
       ? nonEmpty(snapshot.ANTHROPIC_AUTH_TOKEN)
       : undefined;
   const authToken = explicitAuthToken ?? environmentAuthToken;
-  const grokCredential =
+  let grokCredential =
     provider === "grok" && home !== undefined
       ? resolveGrokProviderCredential(home, requested.apiKey, snapshot)
       : undefined;
+  let baseURL =
+    requestedBaseURL ??
+    resolveProviderBaseURLEnvironment(provider, snapshot)?.value;
+  const grokComposer =
+    provider === "grok" && isGrokComposerModel(requested.model);
+  let grokCustomApiKey = false;
+  if (
+    provider === "grok" &&
+    grokCredential?.isOAuth === true &&
+    !grokComposer &&
+    baseURL !== undefined &&
+    !isTrustedXaiOauthInferenceBaseUrl(baseURL)
+  ) {
+    const fallbackApiKey = authPreference === "auto"
+      ? [
+          requested.extra?.authMode === "api_key" ? explicitApiKey : undefined,
+          environmentApiKey,
+          nonEmpty(candidates.savedApiKey),
+        ]
+          .find((key) => key !== undefined && key !== grokCredential?.value)
+      : undefined;
+    if (fallbackApiKey === undefined) {
+      assertXaiOauthBaseUrl(baseURL);
+    }
+    grokCredential = { value: fallbackApiKey, isOAuth: false };
+    grokCustomApiKey = true;
+  }
   let apiKey =
     provider === "grok" && home !== undefined
-      ? (grokCredential?.value ??
+      ? ((grokComposer && grokCredential?.isOAuth === true
+          ? (explicitApiKey === grokCredential.value ? undefined : explicitApiKey) ??
+            environmentApiKey ?? nonEmpty(candidates.savedApiKey)
+          : grokCredential?.value) ??
         (authPreference === "oauth" ? undefined : nonEmpty(candidates.savedApiKey)))
       : (explicitApiKey ??
         environmentApiKey ??
@@ -515,16 +549,17 @@ function resolveProviderCredentialAuthorityCore(
   if (authToken !== undefined) {
     apiKey = undefined;
   }
-  let baseURL =
-    requestedBaseURL ??
-    resolveProviderBaseURLEnvironment(provider, snapshot)?.value;
-
   const resolvedExtra: Record<string, unknown> = {};
   const forcedExtra: Record<string, unknown> = {};
-  if (provider === "grok" && authPreference !== "auto") {
+  if (
+    provider === "grok" &&
+    (authPreference !== "auto" || grokCustomApiKey ||
+      (grokCredential?.isOAuth === true && !grokComposer))
+  ) {
     // Preserve the captured selection when providers are recreated from their
     // recorded options; the raw factory must not reinterpret API-key intent.
-    forcedExtra.authMode = authPreference === "api-key" ? "api_key" : "oauth";
+    forcedExtra.authMode =
+      authPreference === "api-key" || grokCustomApiKey ? "api_key" : "oauth";
   }
   let chatGptSubscription = false;
   let openAiNativeAuthMode: "api-key" | "oauth" | undefined;
