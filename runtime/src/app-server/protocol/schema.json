@@ -69,6 +69,7 @@
     "session.snapshot",
     "session.transcript",
     "session.transcript.v2",
+    "session.artifact.read",
     "session.cancelTurn",
     "session.resolveToolCall",
     "session.mcp.status",
@@ -2316,6 +2317,15 @@
         "sessionId"
       ]
     },
+    "SessionArtifactReadParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": { "type": "string", "minLength": 1 },
+        "id": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      },
+      "required": ["sessionId", "id"]
+    },
     "SessionCancelTurnParams": {
       "type": "object",
       "additionalProperties": false,
@@ -4181,6 +4191,9 @@
           "$ref": "#/definitions/SessionTranscriptV2Request"
         },
         {
+          "$ref": "#/definitions/SessionArtifactReadRequest"
+        },
+        {
           "$ref": "#/definitions/SessionCancelTurnRequest"
         },
         {
@@ -5360,6 +5373,17 @@
         "method",
         "params"
       ]
+    },
+    "SessionArtifactReadRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/definitions/RequestId" },
+        "method": { "const": "session.artifact.read" },
+        "params": { "$ref": "#/definitions/SessionArtifactReadParams" }
+      },
+      "required": ["jsonrpc", "id", "method", "params"]
     },
     "SessionCancelTurnRequest": {
       "type": "object",

@@ -17,6 +17,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgenCSessionSnapshotPolicy } from "../state/snapshot-policy.js";
 import { upsertAgentRun } from "../state/agent-runs.js";
 import { RolloutStore } from "../session/rollout-store.js";
+import { persistDisplayAttachments, readDisplayArtifact } from "../session/display-artifact-store.js";
+import { validateDisplayBlock } from "../mcp-client/display-attachments.js";
+import { pathToFileURL } from "node:url";
 import type { RolloutItem } from "../session/rollout-item.js";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
 import { FileThreadStore } from "../thread-store/store.js";
@@ -645,6 +648,38 @@ describe("AgenC background agent lifecycle", () => {
       threadStore.close();
       rollout.close();
       restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("reads a display artifact only through its owning session after a manager restart", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const first = openRollout(cwd, "conv-display-one");
+    const second = openRollout(cwd, "conv-display-two");
+    const threadStore = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      for (const [id, rollout] of [["conv-display-one", first], ["conv-display-two", second]] as const) {
+        threadStore.createThread({ threadId: id, rolloutStore: rollout, source: "cli_main", cwd });
+        threadStore.shutdownThread(id);
+      }
+      const bytes = Buffer.from("BEGIN:VCALENDAR");
+      const id = createHash("sha256").update(bytes).digest("hex");
+      const file = join(cwd, "talk.ics"); writeFileSync(file, bytes);
+      const display = await validateDisplayBlock({ type: "resource_link", uri: pathToFileURL(file).href, name: "talk.ics", mimeType: "text/calendar" }, [cwd]);
+      const stored = persistDisplayAttachments(first.store.sessionDir, [display.attachment]);
+      first.appendRollout({ type: "event_msg", payload: { id: "display-complete", seq: 1, msg: { type: "tool_call_completed", payload: { callId: "call-1", result: '[Shown to the user: file "talk.ics"]', isError: false, displayAttachments: stored } } } });
+      first.flushDurable();
+      const sessionManager = new AgenCDaemonSessionManager({ createSessionId: () => "conv-display-one" });
+      await sessionManager.createSession({ agentId: "agent-display", cwd });
+      const restarted = new AgenCDaemonAgentManager({ threadStore, sessionManager });
+      await expect(restarted.readSessionArtifact({ sessionId: "conv-display-one", id })).resolves.toMatchObject({ sessionId: "conv-display-one", id, data: bytes.toString("base64") });
+      await expect(restarted.getSessionTranscriptV2({ sessionId: "conv-display-one" })).resolves.toMatchObject({ events: expect.arrayContaining([expect.objectContaining({ type: "tool_call_completed", payload: expect.objectContaining({ displayAttachments: stored }) })]) });
+      await expect(restarted.readSessionArtifact({ sessionId: "conv-display-two", id })).rejects.toThrow("session artifact not found");
+      threadStore.archiveThread({ threadId: "conv-display-one" });
+      expect(() => readDisplayArtifact(first.store.sessionDir, id)).toThrow();
+    } finally {
+      threadStore.close(); first.close(); second.close(); restoreEnv();
       rmSync(home, { recursive: true, force: true });
       rmSync(cwd, { recursive: true, force: true });
     }

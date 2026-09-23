@@ -161,6 +161,7 @@ import {
   type SessionAttachResult,
   type SessionCancelTurnParams,
   type SessionTranscriptV2Params,
+  type SessionArtifactReadParams,
   type SessionResolveToolCallAttestationParams,
   type SessionResolveToolCallEvidenceParams,
   type SessionResolveToolCallLegacyParams,
@@ -271,6 +272,7 @@ const MINIMUM_PROTOCOL_MINOR_BY_METHOD: Readonly<
   Partial<Record<AgenCDaemonKnownMethod, number>>
 > = Object.freeze({
   "session.transcript.v2": 2,
+  "session.artifact.read": 17,
   "session.mcp.status": 3,
   "session.permissions.mutateRule": 7,
   "session.shell.execute": 9,
@@ -372,6 +374,7 @@ function buildServerCapabilities(
     "session.processes.stop": hasMethod(agentManager, "stopSessionProcess"),
     "session.transcript": hasMethod(agentManager, "getSessionTranscript"),
     "session.transcript.v2": hasMethod(agentManager, "getSessionTranscriptV2"),
+    "session.artifact.read": hasMethod(agentManager, "readSessionArtifact"),
     "session.cancelTurn": hasMethod(agentManager, "cancelSessionTurn"),
     "session.resolveToolCall": hasMethod(
       agentManager,
@@ -512,6 +515,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "snapshotSession"
     | "getSessionTranscript"
     | "getSessionTranscriptV2"
+    | "readSessionArtifact"
     | "getMcpStatusForSession"
     | "addMcpServerToSession"
     | "reconnectMcpServerOnSession"
@@ -639,6 +643,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "snapshotSession"
     | "getSessionTranscript"
     | "getSessionTranscriptV2"
+    | "readSessionArtifact"
     | "getMcpStatusForSession"
     | "addMcpServerToSession"
     | "reconnectMcpServerOnSession"
@@ -1326,6 +1331,10 @@ export class AgenCDaemonJsonRpcDispatcher {
             validateSessionTranscriptV2Params(params),
           ),
         );
+      case "session.artifact.read":
+        return successResponse(id, await this.#agentManager.readSessionArtifact(
+          validateSessionArtifactReadParams(params),
+        ));
       case "session.cancelTurn":
         return successResponse(
           id,
@@ -3399,6 +3408,14 @@ function validateSessionTranscriptV2Params(
   });
   validateRequiredString(validated, "session.transcript.v2", "sessionId");
   return validated as SessionTranscriptV2Params;
+}
+
+function validateSessionArtifactReadParams(params: JsonObject): SessionArtifactReadParams {
+  const validated = validateObjectShape(params, { methodName: "session.artifact.read", stringFields: ["sessionId", "id"] });
+  validateRequiredString(validated, "session.artifact.read", "sessionId");
+  validateRequiredString(validated, "session.artifact.read", "id");
+  if (typeof validated.id !== "string" || !/^[a-f0-9]{64}$/u.test(validated.id)) throw invalidParams("session.artifact.read.id must be a SHA-256 digest");
+  return validated as SessionArtifactReadParams;
 }
 
 function validateSessionCancelTurnParams(

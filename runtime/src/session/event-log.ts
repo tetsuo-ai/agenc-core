@@ -1206,6 +1206,7 @@ export type EventMsg =
         readonly toolName?: string;
         readonly result: string;
         readonly isError: boolean;
+        readonly displayAttachments?: readonly import("../mcp-client/display-attachments.js").DisplayAttachment[];
         readonly metadata?: Record<string, unknown>;
         /**
          * Wall time the tool spent executing, in milliseconds. Omitted for

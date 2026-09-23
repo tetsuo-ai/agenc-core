@@ -44,10 +44,11 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.16 adds project trust for a working directory (`project.trustStatus`,
  * `project.trust`), resolved to the project root a session there would use.
  * 1.17 adds a bounded routine session preparation handshake.
+ * 1.18 adds display attachment events and session-scoped artifact reads.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.17.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.18.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -158,6 +159,7 @@ export const AGENC_DAEMON_METHODS = [
   "session.goal",
   "session.transcript",
   "session.transcript.v2",
+  "session.artifact.read",
   "session.cancelTurn",
   "session.resolveToolCall",
   "session.mcp.status",
@@ -797,6 +799,13 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     result: "object",
     description:
       "Read an identity-bearing, sequence-watermarked transcript projection suitable for atomic snapshot-plus-live reconciliation.",
+  },
+  "session.artifact.read": {
+    method: "session.artifact.read",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Read immutable display artifact bytes by digest within a daemon session.",
   },
   "session.cancelTurn": {
     method: "session.cancelTurn",
@@ -2562,6 +2571,7 @@ export type AgenCDaemonRequest =
       "session.transcript.v2",
       SessionTranscriptV2Params
     >
+  | AgenCDaemonRequestWithParams<"session.artifact.read", SessionArtifactReadParams>
   | AgenCDaemonRequestWithParams<"session.cancelTurn", SessionCancelTurnParams>
   | AgenCDaemonRequestWithParams<
       "session.resolveToolCall",
@@ -3383,6 +3393,19 @@ export interface SessionTranscriptV2Params extends JsonObject {
   readonly sessionId: string;
 }
 
+export interface SessionArtifactReadParams extends JsonObject {
+  readonly sessionId: string;
+  readonly id: string;
+}
+
+export interface SessionArtifactReadResult extends JsonObject {
+  readonly sessionId: string;
+  readonly id: string;
+  readonly encoding: "base64";
+  readonly data: string;
+  readonly size: number;
+}
+
 export interface SessionTranscriptMessage extends JsonObject {
   readonly role: string; // "user" | "assistant"
   readonly text: string;
@@ -3435,7 +3458,7 @@ export interface SessionTranscriptV2Event extends JsonObject {
    * `approval_denied` names a call the user denied (`callId`, `toolName`,
    * `stage`, and `input` bounded to the fields that identify its target).
    */
-  readonly type: "token_count" | "session_usage" | "turn_failed" | "turn_aborted" | "approval_denied";
+  readonly type: "token_count" | "session_usage" | "turn_failed" | "turn_aborted" | "approval_denied" | "tool_call_completed";
   readonly payload: {
     readonly runId?: string;
     readonly sequence?: number;
@@ -3483,7 +3506,19 @@ export interface SessionTranscriptV2Event extends JsonObject {
     readonly toolName?: string;
     readonly input?: { readonly [key: string]: string };
     readonly stage?: "before_execution" | "sandbox_escalation";
+    readonly displayAttachments?: readonly DisplayAttachment[];
   };
+}
+
+/** Attachment bytes are fetched with session.artifact.read using id. */
+export interface DisplayAttachment extends JsonObject {
+  readonly id: string;
+  readonly kind: "chart" | "table" | "image" | "file";
+  readonly title: string;
+  readonly mimeType: string;
+  readonly size: number;
+  readonly digest: string;
+  readonly data?: JsonValue;
 }
 
 export interface SessionTranscriptV2Result extends JsonObject {
@@ -4003,6 +4038,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "session.goal": SessionGoalResult;
   readonly "session.transcript": SessionTranscriptResult;
   readonly "session.transcript.v2": SessionTranscriptV2Result;
+  readonly "session.artifact.read": SessionArtifactReadResult;
   readonly "session.cancelTurn": SessionCancelTurnResult;
   readonly "session.resolveToolCall": SessionResolveToolCallResult;
   readonly "session.mcp.status": SessionMcpStatusResult;

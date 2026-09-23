@@ -50,6 +50,7 @@ export function toToolCatalogPolicyConfig(
   config: MCPServerConfig,
 ): MCPToolCatalogPolicyConfig | undefined {
   const allowedTools = config.enabled_tools;
+  const displayDataRoot = config.env?.AGENC_PLUGIN_DATA;
   const deniedTools = config.disabled_tools;
   const defaultToolsApprovalMode = isValidPermissionDefaultMode(
     config.default_tools_approval_mode,
@@ -66,6 +67,7 @@ export function toToolCatalogPolicyConfig(
       ? config.virtual_no_fs_write_tools
       : undefined;
   if (
+    !displayDataRoot &&
     !config.supplyChain &&
     !config.pinnedCatalogSha256 &&
     allowedTools === undefined &&
@@ -79,6 +81,7 @@ export function toToolCatalogPolicyConfig(
     return undefined;
   }
   return {
+    ...(displayDataRoot ? { displayDataRoot } : {}),
     ...(config.localOnly === true ? { localOnly: true } : {}),
     ...(config.desktopAuthorityGrant ? { desktopAuthorityGrant: config.desktopAuthorityGrant } : {}),
     ...(config.origin?.scope === "session" && config.headers !== undefined

@@ -19,6 +19,7 @@ import {
 } from "../utils/toolResultStorage.js";
 import type { Logger } from "./_deps/logger.js";
 import type { ToolResult } from "./_deps/tools-types.js";
+import { DISPLAY_ATTACHMENT_LIMIT, DISPLAY_BINARY_LIMIT, validateDisplayBlock, type DisplayAttachment } from "./display-attachments.js";
 import {
   consumeMcpSanitizationBudget,
   createMcpSanitizationBudget,
@@ -58,6 +59,8 @@ export interface NormalizeMcpToolOutputOptions {
   readonly callId: string;
   readonly environment: ProviderEnvironment;
   readonly logger: Logger;
+  /** Trusted roots supplied by the plugin bridge, never from MCP output. */
+  readonly displayRoots?: readonly string[];
 }
 
 interface RenderState {
@@ -66,6 +69,7 @@ interface RenderState {
   readonly textParts: string[];
   readonly binaryArtifacts: BinaryArtifact[];
   readonly contentItems: FunctionCallOutputContentItem[];
+  readonly displayAttachments: DisplayAttachment[];
   imageUrlBytes: number;
   binaryBytes: number;
   imagesProcessed: number;
@@ -570,6 +574,7 @@ export async function normalizeMcpToolOutput(
     textParts: [],
     binaryArtifacts: [],
     contentItems: [],
+    displayAttachments: [],
     imageUrlBytes: 0,
     binaryBytes: 0,
     imagesProcessed: 0,
@@ -587,6 +592,25 @@ export async function normalizeMcpToolOutput(
     );
     for (const [index, block] of retainedBlocks.entries()) {
       state.contentBlocksProcessed += 1;
+      const displayRecord = asRecord(block);
+      const annotations = asRecord(displayRecord?.annotations);
+      if (Array.isArray(annotations?.audience) && annotations.audience.length === 1 && annotations.audience[0] === "user") {
+        if (state.displayAttachments.length >= DISPLAY_ATTACHMENT_LIMIT) {
+          appendStaticText(state, "[Display attachment could not be shown: limit of 8 attachments per result exceeded]");
+          continue;
+        }
+        try {
+          const shown = await validateDisplayBlock(displayRecord ?? {}, options.displayRoots ?? []);
+          const imageBytes = state.displayAttachments.filter(item => item.kind === "image").reduce((sum, item) => sum + item.size, 0);
+          if (shown.attachment.kind === "image" && imageBytes + shown.attachment.size > DISPLAY_BINARY_LIMIT) throw new Error("images exceed 5 MiB per result");
+          state.displayAttachments.push(shown.attachment);
+          appendStaticText(state, shown.caption);
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "validation failed";
+          appendStaticText(state, `[Display attachment could not be shown: ${reason}]`);
+        }
+        continue;
+      }
       await renderContentBlock(state, block, index, options);
       if (
         state.budget.remainingBytes <= 0 ||
@@ -714,6 +738,7 @@ export async function normalizeMcpToolOutput(
     isError,
     codeModeResult,
     metadata: {
+      ...(state.displayAttachments.length > 0 ? { displayAttachments: state.displayAttachments } : {}),
       mcp: {
         server: options.serverName,
         tool: options.toolName,

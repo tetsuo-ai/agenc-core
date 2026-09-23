@@ -1,4 +1,5 @@
 import type { EventMsg } from "../session/event-log.js";
+import type { DisplayAttachment } from "../mcp-client/display-attachments.js";
 import { RUN_RUNTIME_REASONING_EFFORTS } from "../contracts/run-contracts.js";
 import {
   MAX_TURN_FAILURE_MESSAGE_LENGTH,
@@ -869,6 +870,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
     {
       toolName: isString,
       metadata: isRecord,
+      displayAttachments: arrayOf(((value: unknown): value is DisplayAttachment => isRecord(value) && typeof value.id === "string" && typeof value.digest === "string" && typeof value.kind === "string" && typeof value.title === "string" && typeof value.mimeType === "string" && typeof value.size === "number") as Validator<DisplayAttachment>),
       durationMs: isNumber,
     },
   ),

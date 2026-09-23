@@ -93,6 +93,21 @@ function daemonMethodCapabilities(
   >;
 }
 
+describe("session.artifact.read wire contract", () => {
+  it("requires a digest and routes an authenticated session-scoped id", async () => {
+    const agentManager = new AgenCDaemonAgentManager();
+    const id = "a".repeat(64);
+    const read = vi.spyOn(agentManager, "readSessionArtifact").mockResolvedValue({ sessionId: "one", id, encoding: "base64", data: "YQ==", size: 1 });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager, sessionManager: new AgenCDaemonSessionManager() });
+    const connection = dispatcher.createConnection({ sendNotification: () => {} });
+    await initialize(connection, "1.17.0");
+    await expect(connection.dispatch(request("bad", "session.artifact.read", { sessionId: "one", id: "../other" }))).resolves.toHaveProperty("error");
+    expect(read).not.toHaveBeenCalled();
+    await expect(connection.dispatch(request("good", "session.artifact.read", { sessionId: "one", id }))).resolves.toMatchObject({ result: { sessionId: "one", id, data: "YQ==" } });
+    expect(read).toHaveBeenCalledWith({ sessionId: "one", id });
+  });
+});
+
 describe("AgenC daemon session lifecycle dispatcher", () => {
   it("does not turn an aborted v1.2 identity-bearing send into session-wide cancellation", async () => {
     let resolveSubmission!: (value: {

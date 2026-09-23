@@ -17,6 +17,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
+import { removeDisplayArtifacts } from "../session/display-artifact-store.js";
 import {
   basename,
   dirname,
@@ -833,6 +834,7 @@ export class FileThreadStore implements ThreadStore {
 
   archiveThread(params: ArchiveThreadParams): void {
     this.assertOpen();
+    let archivedSessionDir: string | undefined;
     timed("thread_archive", () =>
       this.updateRegistry((registry) => {
         const existing = registry.get(params.threadId);
@@ -849,6 +851,7 @@ export class FileThreadStore implements ThreadStore {
         const archivedRolloutPath = this.liveRecorders.has(params.threadId)
           ? existing.archivedRolloutPath
           : this.archiveRolloutFile(existing);
+        if (existing.rolloutPath) archivedSessionDir = dirname(existing.rolloutPath);
         registry.set(params.threadId, {
           ...existing,
           updatedAt: now,
@@ -857,6 +860,7 @@ export class FileThreadStore implements ThreadStore {
         });
       }),
     );
+    if (archivedSessionDir !== undefined) removeDisplayArtifacts(archivedSessionDir);
   }
 
   unarchiveThread(params: ArchiveThreadParams): StoredThread {

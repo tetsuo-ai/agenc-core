@@ -373,6 +373,7 @@ export function sessionTranscriptV2FromRollout(
   let pendingUserIndex: number | undefined;
   let pendingClientMessageId: string | undefined;
   const assistantOrdinals = new Map<string, number>();
+  const attachmentEvents: SessionTranscriptV2Event[] = [];
 
   if (boundary?.kind === "replaced") {
     const replacement = reconstructFromRollout(
@@ -440,6 +441,18 @@ export function sessionTranscriptV2FromRollout(
     const event = item.payload;
     const sequence = positiveSequence(event.seq);
     if (sequence === undefined) continue;
+    if (event.msg.type === "tool_call_completed" && event.msg.payload.displayAttachments?.length) {
+      attachmentEvents.push({
+        eventId: canonicalEventId(event),
+        committedSequence: sequence,
+        type: "tool_call_completed",
+        payload: {
+          callId: event.msg.payload.callId,
+          ...(event.msg.payload.toolName ? { toolName: event.msg.payload.toolName } : {}),
+          displayAttachments: event.msg.payload.displayAttachments,
+        },
+      });
+    }
     if (event.msg.type === "message_submission") {
       pendingUserIndex = undefined;
       pendingClientMessageId = event.msg.payload.messageId;
@@ -563,7 +576,7 @@ export function sessionTranscriptV2FromRollout(
     historyEpoch: historyEpochForBoundary(runId, boundaryId),
     asOfSequence,
     messages,
-    events: transcriptNoticesFromRollout(items, boundaryIndex, runId),
+    events: [...transcriptNoticesFromRollout(items, boundaryIndex, runId), ...attachmentEvents].sort((a, b) => a.committedSequence - b.committedSequence),
     ...(liveTurn !== undefined ? { activeTurn: liveTurn } : {}),
     ...(turnResults.length > 0 ? { turnResults } : {}),
     ...(planMode !== undefined

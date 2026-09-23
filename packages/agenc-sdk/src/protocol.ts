@@ -17,6 +17,7 @@ export type {
   SessionTranscriptV2Message,
   SessionTranscriptV2Result,
   SessionTranscriptV2TurnResult,
+  DisplayAttachment,
 } from "./transcript-v2.generated.js";
 
 /** JSON-RPC 2.0 envelope version sent on every request. */
@@ -115,6 +116,7 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "session.goal",
   "session.transcript",
   "session.transcript.v2",
+  "session.artifact.read",
   "session.cancelTurn",
   "session.resolveToolCall",
   "session.mcp.status",
@@ -234,6 +236,9 @@ export type RunStartParams = Wire.RunStartParams;
 /** Helper input; generic request() uses the required-cwd wire shape. */
 export type SessionCreateParams =
   AgencDefaultCwdParams<Wire.SessionCreateParams>;
+
+export type SessionArtifactReadParams = Wire.SessionArtifactReadParams;
+export type SessionArtifactReadResult = Wire.SessionArtifactReadResult;
 
 export type SessionListParams = Wire.SessionListParams;
 
