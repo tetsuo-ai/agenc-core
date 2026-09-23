@@ -308,9 +308,11 @@ async function projectSkillDirs(
   workspaceRoot: string,
   home?: string,
 ): Promise<string[]> {
-  const workspace = resolve(workspaceRoot);
+  const workspace = (await getFileIdentity(workspaceRoot)) ?? resolve(workspaceRoot);
   const ancestors: string[] = [];
-  const homeResolved = home ? resolve(home) : null;
+  const homeResolved = home
+    ? (await getFileIdentity(home)) ?? resolve(home)
+    : null;
   let current = workspace;
   let foundGitRoot = false;
   while (true) {
@@ -338,6 +340,21 @@ async function projectSkillDirs(
 
 const warnedUnsafeProjectRoots = new Set<string>();
 const WORLD_WRITABLE_PROJECT_ROOT_WARNING = "skipped world-writable project skill root";
+const WORLD_WRITABLE_PROJECT_LINK_WARNING = "skipped world-writable project skill symlink target";
+
+async function projectSkillPathIsSafe(path: string, allowMissing = false): Promise<boolean> {
+  if (process.platform === "win32") return true;
+  for (const component of [dirname(dirname(path)), dirname(path), path]) {
+    try {
+      if (((await stat(component)).mode & 0o002) !== 0) return false;
+    } catch (error) {
+      if (allowMissing && isRecord(error) &&
+        (error.code === "ENOENT" || error.code === "ENOTDIR")) continue;
+      return false;
+    }
+  }
+  return true;
+}
 
 /** Check every directory that can let another user replace a project root. */
 async function projectSkillRootIsSafe(
@@ -345,14 +362,11 @@ async function projectSkillRootIsSafe(
   warnings?: SkillLoadWarning[],
 ): Promise<boolean> {
   if (process.platform === "win32") return true;
-  for (const path of [dirname(dirname(root)), dirname(root), root]) {
-    try {
-      if (((await stat(path)).mode & 0o002) === 0) continue;
-    } catch (error) {
-      // Missing components stay eligible for watches until they are created.
-      if (isRecord(error) && (error.code === "ENOENT" || error.code === "ENOTDIR")) continue;
-      return false;
-    }
+  // Missing components stay eligible for watches until they are created.
+  const lexicalSafe = await projectSkillPathIsSafe(root, true);
+  const realRoot = lexicalSafe ? await getFileIdentity(root) : null;
+  if (!lexicalSafe || (realRoot !== null &&
+    realRoot !== resolve(root) && !(await projectSkillPathIsSafe(realRoot)))) {
     // Missing roots are watch candidates, but have no skill to warn about.
     if (await pathIsDirectory(root)) {
       if (warnings && !warnings.some((warning) =>
@@ -542,6 +556,7 @@ interface SkillFileScan {
   readonly droppedCount: number;
   readonly rootRealPath: string;
   readonly emptyDirectories: readonly EmptySkillDirectory[];
+  readonly warnings: readonly SkillLoadWarning[];
 }
 
 interface ScanFrame {
@@ -598,9 +613,9 @@ function byPath<T extends { readonly path: string }>(a: T, b: T): number {
  * Files past the per-root cap are counted, shallowest and then
  * alphabetically first loaded, the same way on every scan.
  */
-async function findSkillFiles(root: string): Promise<SkillFileScan> {
+async function findSkillFiles(root: SkillRoot): Promise<SkillFileScan> {
   const maxFiles = maxSkillFilesPerRoot();
-  const rootRealPath = (await getFileIdentity(root)) ?? resolve(root);
+  const rootRealPath = (await getFileIdentity(root.path)) ?? resolve(root.path);
   const visited = new Set<string>([rootRealPath]);
   const loaded: Array<ScannedSkillFile & { readonly depth: number }> = [];
   let droppedCount = 0;
@@ -608,6 +623,7 @@ async function findSkillFiles(root: string): Promise<SkillFileScan> {
   const topLevel: string[] = [];
   const topsWithSkills = new Set<string>();
   const topMarkdown = new Map<string, string>();
+  const warnings: SkillLoadWarning[] = [];
 
   const walk = async (start: readonly ScanFrame[], oneLevel = false): Promise<ScanFrame[]> => {
     let level = start;
@@ -663,7 +679,7 @@ async function findSkillFiles(root: string): Promise<SkillFileScan> {
     return [];
   };
 
-  await walk([{ path: root, realPath: rootRealPath, depth: 0, top: null }]);
+  await walk([{ path: root.path, realPath: rootRealPath, depth: 0, top: null }]);
   const pendingDirectories: ScanFrame[] = [];
   while (pendingLinks.length > 0 || pendingDirectories.length > 0) {
     pendingLinks.sort((a, b) => a.depth - b.depth || byPath(a, b));
@@ -684,6 +700,10 @@ async function findSkillFiles(root: string): Promise<SkillFileScan> {
       async (link): Promise<ScanFrame | null> => {
         const realPath = await getFileIdentity(link.path);
         if (realPath === null || !(await pathIsDirectory(realPath))) return null;
+        if (root.scope === "project" && !(await projectSkillPathIsSafe(realPath))) {
+          warnings.push({ path: link.path, reason: WORLD_WRITABLE_PROJECT_LINK_WARNING });
+          return null;
+        }
         return { path: link.path, realPath, depth: link.depth, top: link.top };
       },
     );
@@ -699,6 +719,7 @@ async function findSkillFiles(root: string): Promise<SkillFileScan> {
     files: loaded.toSorted(byPath),
     droppedCount,
     rootRealPath,
+    warnings,
     // Hidden directories (.system, .cache) hold support files by convention.
     emptyDirectories: topLevel
       .filter((dir) => !topsWithSkills.has(dir) && !basename(dir).startsWith("."))
@@ -1103,7 +1124,7 @@ interface LoadedSkillRoot {
 }
 
 async function loadSkillsFromRoot(root: SkillRoot): Promise<LoadedSkillRoot> {
-  const scan = await findSkillFiles(root.path);
+  const scan = await findSkillFiles(root);
   const files: Array<{ readonly path: string; readonly identity: string | null }> =
     [...scan.files];
   // A root can BE one skill: plugin manifests may declare each skill
@@ -1113,7 +1134,7 @@ async function loadSkillsFromRoot(root: SkillRoot): Promise<LoadedSkillRoot> {
   if (files.length === 0) {
     const leaf = join(root.path, SKILL_FILE_NAME);
     try {
-      const stats = await stat(leaf);
+      const stats = await lstat(leaf);
       if (stats.isFile()) {
         files.push({ path: leaf, identity: await getFileIdentity(leaf) });
         leafRoot = true;
@@ -1122,7 +1143,7 @@ async function loadSkillsFromRoot(root: SkillRoot): Promise<LoadedSkillRoot> {
       // Genuinely empty root.
     }
   }
-  const warnings: SkillLoadWarning[] = [];
+  const warnings: SkillLoadWarning[] = [...scan.warnings];
   // A directory in a user, project or managed root with no SKILL.md is a
   // skill that failed to install (the audited catalog had one holding only
   // CLAUDE.md). Plugin layouts are the plugin author's to choose, and a

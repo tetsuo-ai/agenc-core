@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -269,6 +269,55 @@ describe("local skills loader", () => {
     expect(await discoverSkillWatchRoots(options)).not.toContain(unsafeRoot);
   });
 
+  it("skips a project skill reached through a link into a world-writable folder", async () => {
+    if (process.platform === "win32") return;
+    const workspaceRoot = tmpRoot("skills-linked-project");
+    const root = join(workspaceRoot, ".agents", "skills");
+    writeSkill(root, "safe");
+    const shared = tmpRoot("skills-linked-shared");
+    writeSkill(shared, "external");
+    chmodSync(shared, 0o777);
+    const link = join(root, "external");
+    symlinkSync(join(shared, "external"), link);
+    const agencHome = tmpRoot("skills-home");
+    const snapshot = await loadLocalSkillsSnapshot({
+      agencHome, pluginStorageRoot: join(agencHome, "plugins"),
+      workspaceRoot, env: { HOME: tmpRoot("skills-user") },
+    });
+
+    expect(snapshot.skills.map((skill) => skill.name)).toContain("safe");
+    expect(snapshot.skills.map((skill) => skill.name)).not.toContain("external");
+    expect(snapshot.warnings.filter((warning) => warning.path === link)).toEqual([{
+      path: link,
+      reason: "skipped world-writable project skill symlink target",
+    }]);
+  });
+
+  it("checks the real parent of a symlinked project root", async () => {
+    if (process.platform === "win32") return;
+    const workspaceRoot = tmpRoot("skills-linked-root");
+    const shared = tmpRoot("skills-linked-root-parent");
+    const target = join(shared, "catalog");
+    writeSkill(target, "external");
+    chmodSync(shared, 0o777);
+    mkdirSync(join(workspaceRoot, ".agents"));
+    const root = join(workspaceRoot, ".agents", "skills");
+    symlinkSync(target, root);
+    const agencHome = tmpRoot("skills-home");
+    const options = {
+      agencHome, pluginStorageRoot: join(agencHome, "plugins"),
+      workspaceRoot, env: { HOME: tmpRoot("skills-user") },
+    };
+
+    const snapshot = await loadLocalSkillsSnapshot(options);
+    expect(snapshot.skills.map((skill) => skill.name)).not.toContain("external");
+    expect(snapshot.warnings).toContainEqual({
+      path: root,
+      reason: "skipped world-writable project skill root",
+    });
+    expect(await discoverSkillWatchRoots(options)).not.toContain(root);
+  });
+
   it("skips dynamic roots with a world-writable hidden directory or skills folder", async () => {
     if (process.platform === "win32") return;
     const workspaceRoot = tmpRoot("skills-dynamic-writable");
@@ -300,6 +349,26 @@ describe("local skills loader", () => {
     expect(snapshot.skills.map((skill) => skill.name)).toContain("workspace-skill");
     expect(snapshot.skills.map((skill) => skill.name)).toContain("home-user-skill");
     expect(snapshot.skills.map((skill) => skill.name)).not.toContain("above-workspace");
+    expect(snapshot.skills.map((skill) => skill.name)).not.toContain("home-project-skill");
+    expect(await discoverSkillWatchRoots(options)).not.toContain(join(home, ".agenc", "skills"));
+  });
+
+  it("stops at the real HOME when HOME is a symlink", async () => {
+    const home = tmpRoot("skills-real-git-home");
+    mkdirSync(join(home, ".git"));
+    const homeLink = join(tmpRoot("skills-home-link"), "home");
+    symlinkSync(home, homeLink);
+    const workspaceRoot = join(home, "repo", "workspace");
+    writeSkill(join(workspaceRoot, ".agents", "skills"), "workspace-skill");
+    writeSkill(join(home, ".agenc", "skills"), "home-project-skill");
+    const agencHome = tmpRoot("skills-home");
+    const options = {
+      agencHome, pluginStorageRoot: join(agencHome, "plugins"),
+      workspaceRoot, env: { HOME: homeLink },
+    };
+
+    const snapshot = await loadLocalSkillsSnapshot(options);
+    expect(snapshot.skills.map((skill) => skill.name)).toContain("workspace-skill");
     expect(snapshot.skills.map((skill) => skill.name)).not.toContain("home-project-skill");
     expect(await discoverSkillWatchRoots(options)).not.toContain(join(home, ".agenc", "skills"));
   });
@@ -950,6 +1019,46 @@ All=$ARGUMENTS
 
       await expect(services.skillsManager.resolveSkill?.("late"))
         .resolves.toMatchObject({ name: "late" });
+    } finally {
+      await services.skillsWatcher.stop?.();
+      await detector.resetForTesting();
+      vi.useRealTimers();
+    }
+  });
+
+  it("unwatches a missing project root created world-writable", async () => {
+    if (process.platform === "win32") return;
+    vi.useFakeTimers();
+    const agencHome = tmpRoot("skills-home");
+    const workspaceRoot = tmpRoot("skills-workspace");
+    const root = join(workspaceRoot, ".agenc", "skills");
+    const watcher = FileWatcher.noop();
+    const detector = createSkillChangeDetector();
+    const services = createLocalSkillsServices({
+      agencHome, pluginStorageRoot: join(agencHome, "plugins"),
+      workspaceRoot, fileWatcher: watcher,
+      skillChangeDetector: detector,
+      skillChangeEventSink: createSkillChangeDetector(),
+      watcherDebounceMs: 1,
+      watcherClearRuntimeCaches: false,
+      watcherRunConfigChangeHooks: false,
+      env: {},
+    });
+
+    try {
+      await services.skillsWatcher.start();
+      expect(watcher.watchCountsForTest(workspaceRoot)?.nonRecursive).toBeGreaterThan(0);
+      mkdirSync(root, { recursive: true, mode: 0o777 });
+      chmodSync(root, 0o777);
+      const reloaded = new Promise<void>((resolve) => {
+        detector.subscribe(() => resolve());
+      });
+      await watcher.sendPathsForTest([root]);
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(1);
+      await reloaded;
+
+      expect(watcher.watchCountsForTest(root)).toBeNull();
     } finally {
       await services.skillsWatcher.stop?.();
       await detector.resetForTesting();

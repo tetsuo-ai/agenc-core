@@ -50,6 +50,7 @@ export function createSkillChangeDetector(): SkillChangeDetector {
   let disposed = false;
   let lifecycleVersion = 0;
   let activeOptions: SkillChangeDetectorOptions | null = null;
+  let watchedRoots: readonly string[] = [];
   const pendingChangedPaths = new Set<string>();
   let firstPendingChangedPath: string | null = null;
 
@@ -74,6 +75,7 @@ export function createSkillChangeDetector(): SkillChangeDetector {
       throw error;
     }
     if (disposed || version !== lifecycleVersion) return;
+    watchedRoots = roots;
     if (roots.length === 0) return;
 
     fileWatcher = options.fileWatcher ?? FileWatcher.create();
@@ -109,6 +111,7 @@ export function createSkillChangeDetector(): SkillChangeDetector {
     firstPendingChangedPath = null;
     registration?.close();
     registration = null;
+    watchedRoots = [];
     subscriber?.close();
     subscriber = null;
     if (ownsFileWatcher) fileWatcher?.close();
@@ -165,14 +168,35 @@ export function createSkillChangeDetector(): SkillChangeDetector {
     const event = { changedPaths };
     await activeOptions?.onReload?.(event);
     if (disposed) return;
+    // A missing root can become writable by others before the watcher sees
+    // its creation. Re-evaluate the roots on every reload and drop unsafe ones.
+    const version = lifecycleVersion;
     const options = activeOptions;
-    if (options?.clearRuntimeCaches !== false) {
+    if (options !== null) {
+      try {
+        const nextRoots = await options.getWatchRoots();
+        if (disposed || version !== lifecycleVersion) return;
+        if (nextRoots.length !== watchedRoots.length ||
+          nextRoots.some((root, index) => root !== watchedRoots[index])) {
+          registration?.close();
+          registration = subscriber?.registerPaths(
+            nextRoots.map((root) => ({ path: root, recursive: true })),
+          ) ?? null;
+          watchedRoots = nextRoots;
+        }
+      } catch {
+        // Keep the previous watches if root discovery failed transiently.
+      }
+    }
+    if (disposed) return;
+    const reloadOptions = activeOptions;
+    if (reloadOptions?.clearRuntimeCaches !== false) {
       await resetSkillAnnouncementState();
       await clearCommandCaches();
     }
     if (disposed) return;
     notify(event);
-    options?.forwardTo?.notify(event);
+    reloadOptions?.forwardTo?.notify(event);
   }
 
   async function configChangeHookBlocked(changedPath: string): Promise<boolean> {
