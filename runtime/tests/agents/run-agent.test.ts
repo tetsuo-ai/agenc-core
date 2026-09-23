@@ -775,7 +775,9 @@ describe("runAgent", () => {
     ({ live } = await spawnLive(parent));
     const { result } = await collectRun(runAgent({ live, parent, initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", model: "deepseek-v4-pro", modelInfo, providerSelection: { provider: "deepseek", model: "deepseek-v4-pro" } }));
     expect(result.outcome).toBe("completed");
-    expect(prepare).toHaveBeenCalledWith({ provider: "deepseek", model: "deepseek-v4-pro" });
+    expect(prepare).toHaveBeenCalledWith(
+      { provider: "deepseek", model: "deepseek-v4-pro" }, undefined, {}, true,
+    );
     expect(target.chatStream).toHaveBeenCalledOnce();
     expect(rootProvider.chatStream).not.toHaveBeenCalled();
     expect(live.configSnapshot?.crossProvider).toEqual({ provider: "deepseek", model: "deepseek-v4-pro", policy: "user-or-managed-agents-v1" });

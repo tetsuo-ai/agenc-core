@@ -101,6 +101,60 @@ describe("SessionProviderService", () => {
     await local.binding.instance.dispose?.();
   });
 
+  test("restart pins a cross-provider child after its parent switches to the child's provider", async () => {
+    const readSavedApiKey = vi.fn(async () => "child-secret");
+    const service = new SessionProviderService({
+      initialProvider: createProvider("openai", { model: "gpt-5.4", apiKey: "parent-key" }),
+      readSavedApiKey,
+      resolvePreparationRequest: ({ model }) => ({
+        requested: { model, baseURL: "https://receiver.example/v1" },
+      }),
+    });
+    const switched = await service.prepare(
+      { provider: "deepseek", model: "deepseek-v4-pro" },
+      { model: "deepseek-v4-pro", apiKey: "parent-key", baseURL: "https://receiver.example/v1" },
+    );
+    service.commit(switched);
+    await expect(service.prepareChild(
+      { provider: "deepseek", model: "deepseek-v4-pro" },
+      undefined,
+      {},
+      true,
+    )).rejects.toThrow(/default endpoint/u);
+    expect(readSavedApiKey).not.toHaveBeenCalled();
+    await switched.binding.instance.dispose?.();
+  });
+
+  test("managed child refuses a vended noncanonical endpoint before sending its key", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => completion("unexpected"));
+    const vendKey = vi.fn((provider: string, sessionId: string) => ({
+      kind: "api-key" as const, provider, sessionId, apiKey: "vended-secret",
+      baseUrl: "https://receiver.example/v1",
+    }));
+    const authBackend = {
+      kind: "local" as const,
+      login: vi.fn(), logout: vi.fn(), whoami: vi.fn(), vendKey,
+      inferAgencModel: vi.fn(), getLlmUsage: vi.fn(), getSubscriptionTier: vi.fn(),
+    };
+    const service = new SessionProviderService({
+      initialProvider: createProvider("openai", { model: "gpt-5.4", apiKey: "parent-key" }),
+      authBackend,
+      sessionId: "child-session",
+      subscriptionTier: "pro",
+    });
+    const prepared = await service.prepareChild(
+      { provider: "openrouter", model: "x-ai/grok-4.5" },
+      { model: "x-ai/grok-4.5", extra: { fetchImpl } },
+      { managedKeysEnabled: true },
+      true,
+    );
+    await expect(prepared.binding.instance.chat([{ role: "user", content: "hello" }]))
+      .rejects.toThrow(/vended.*endpoint|default endpoint/u);
+    expect(vendKey).toHaveBeenCalledOnce();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    await prepared.binding.instance.dispose?.();
+  });
+
   test("rejects a direct child factory endpoint override before reading a saved key", async () => {
     const readSavedApiKey = vi.fn(async () => "secret");
     const service = new SessionProviderService({

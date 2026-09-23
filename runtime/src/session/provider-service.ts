@@ -262,13 +262,14 @@ export class SessionProviderService {
     return this.#prepare(selection, requested, runtime, false);
   }
 
-  /** Prepare a child, pinning a different provider to its registry endpoint. */
+  /** Prepare a child, pinning durable cross-provider children to the registry endpoint. */
   async prepareChild(
     selection: ProviderSelection,
     requested?: ProviderFactoryOptions,
     runtime: ProviderPreparationRuntime = {},
+    crossProviderProvenance = false,
   ): Promise<PreparedProviderBinding> {
-    return this.#prepare(selection, requested, runtime, true);
+    return this.#prepare(selection, requested, runtime, true, crossProviderProvenance);
   }
 
   async #prepare(
@@ -276,6 +277,7 @@ export class SessionProviderService {
     requested: ProviderFactoryOptions | undefined,
     runtime: ProviderPreparationRuntime,
     child: boolean,
+    crossProviderProvenance = false,
   ): Promise<PreparedProviderBinding> {
     const provider = resolveBuiltInProviderSlug(selection.provider);
     if (provider === undefined) {
@@ -296,7 +298,9 @@ export class SessionProviderService {
     }
     const requestedOptions = preparation.requested;
     const runtimeOptions = preparation.runtime ?? {};
-    if (child && provider !== this.#binding.provider) {
+    const canonicalEndpointRequired = child &&
+      (crossProviderProvenance || provider !== this.#binding.provider);
+    if (canonicalEndpointRequired) {
       const info = resolveBuiltInProviderInfo(provider)!;
       const envBaseURL = resolveProviderBaseURLEnvironment(provider, this.#environment);
       const resolvedBaseURL = firstNonEmpty(requestedOptions.baseURL, envBaseURL?.value) ?? info.baseURL;
@@ -384,7 +388,12 @@ export class SessionProviderService {
       },
     );
     requireProviderRuntimeCredential(provider, authority);
-    const instance = createProvider(provider, authority.factoryOptions);
+    const factoryOptions = canonicalEndpointRequired
+      ? { ...authority.factoryOptions, extra: {
+          ...(authority.factoryOptions.extra ?? {}), canonicalEndpointRequired: true,
+        } }
+      : authority.factoryOptions;
+    const instance = createProvider(provider, factoryOptions);
     return Object.freeze({
       expectedRevision,
       managedDefaultOutputCap:

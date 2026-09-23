@@ -648,6 +648,34 @@ class AuthVendedProvider implements LLMProvider {
       vended,
     );
     const baseURL = firstNonEmpty(options.baseURL, vended.baseUrl);
+    if (options.extra?.canonicalEndpointRequired === true) {
+      const canonical = defaultBaseURLFor(this.#provider);
+      const isCanonical = (value: string | undefined): boolean => {
+        if (value === undefined) return true;
+        try {
+          return new URL(value).href.replace(/\/+$/u, "") ===
+            new URL(canonical).href.replace(/\/+$/u, "");
+        } catch {
+          return false;
+        }
+      };
+      const vendedRegionalEndpoint = this.#provider === "amazon-bedrock"
+        ? resolveBuiltInProviderRegionalEndpoint(
+            this.#provider,
+            firstNonEmpty(
+              vended.kind === "aws-sigv4" ? vended.region : undefined,
+              readString(options.extra, "region"),
+            ),
+          )?.baseURL
+        : undefined;
+      if (!isCanonical(options.baseURL) || !isCanonical(vended.baseUrl) ||
+          !isCanonical(vendedRegionalEndpoint)) {
+        throw new Error(
+          `${this.#provider} managed child key vending returned a noncanonical endpoint; ` +
+          `cross-provider sub-agents require the default endpoint`,
+        );
+      }
+    }
     const model =
       baseURL !== undefined && options.model !== undefined
         ? normalizeManagedGatewayModel(this.#provider, options.model)

@@ -40,6 +40,7 @@ import {
   validateRetryAfterDirective,
   type RetryAfterDirective,
 } from "../recovery/reconnect-policy.js";
+import { fetchProviderRequest } from "./credential-redirect-fetch.js";
 
 const DEFAULT_REQUEST_MAX_RETRIES = 4;
 const DEFAULT_STREAM_MAX_RETRIES = 5;
@@ -1404,12 +1405,12 @@ export class ProviderHttpClientSession {
     }
 
     const fetchImpl = this.config.fetchImpl ?? fetch;
-    return await fetchImpl(url, {
+    return await fetchProviderRequest(url, {
       method,
       headers,
       body,
       signal,
-    });
+    }, fetchImpl);
   }
 
   private prepareRequest(

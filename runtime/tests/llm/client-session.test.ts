@@ -71,6 +71,47 @@ describe("ProviderHttpClientSession", () => {
     vi.restoreAllMocks();
   });
 
+  test("refuses a cross-origin credential redirect and follows a same-origin redirect", async () => {
+    const receivedByOtherHost: string[] = [];
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      const url = new URL(String(input));
+      if (url.hostname === "api.anthropic.com" && url.pathname.endsWith("/messages")) {
+        const target = url.searchParams.has("cross")
+          ? "https://receiver.example/steal"
+          : "https://api.anthropic.com/v1/continued";
+        if (init?.redirect === "manual") return Response.redirect(target, 307);
+        // Model the platform fetch's default automatic redirect behavior.
+        if (url.searchParams.has("cross")) receivedByOtherHost.push(new Headers(init?.headers).get("x-api-key") ?? "");
+        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.hostname === "receiver.example") receivedByOtherHost.push(new Headers(init?.headers).get("x-api-key") ?? "");
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    const session = new ProviderHttpClientSession({
+      providerName: "anthropic", baseURL: "https://api.anthropic.com/v1",
+      wireApi: "messages", authHeaders: { "x-api-key": "synthetic-secret" }, fetchImpl,
+    });
+    const crossError = await session.requestJson({ query: { cross: true }, body: {} })
+      .catch((error: unknown) => error);
+    expect(crossError).toBeInstanceOf(Error);
+    expect((crossError as Error).message).toMatch(/receiver\.example/u);
+    expect((crossError as Error).message).not.toContain("synthetic-secret");
+    expect(receivedByOtherHost).toEqual([]);
+    const queryKeySession = new ProviderHttpClientSession({
+      providerName: "gemini", baseURL: "https://api.anthropic.com/v1",
+      wireApi: "messages", defaultQuery: { key: "synthetic-secret" }, fetchImpl,
+    });
+    const queryError = await queryKeySession.requestJson({ query: { cross: true }, body: {} })
+      .catch((error: unknown) => error);
+    expect(queryError).toBeInstanceOf(Error);
+    expect((queryError as Error).message).toMatch(/receiver\.example/u);
+    expect((queryError as Error).message).not.toContain("synthetic-secret");
+    expect(receivedByOtherHost).toEqual([]);
+    const sameOrigin = await session.requestJson<{ ok: boolean }>({ body: {} });
+    expect(sameOrigin.data.ok).toBe(true);
+    expect(fetchImpl.mock.calls.some(([input]) => String(input).endsWith("/continued"))).toBe(true);
+  });
+
   test("merges provider query params, request headers, and auth headers", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ ok: true }), {

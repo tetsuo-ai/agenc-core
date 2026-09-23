@@ -51,6 +51,7 @@ import {
   providerCredentialEnvironmentLabel,
   resolveBuiltInProviderRegionalEndpoint,
 } from "../../registry/provider-info.js";
+import { fetchProviderRequest } from "../../credential-redirect-fetch.js";
 
 const BEDROCK_PROVIDER_ID = "amazon-bedrock";
 const BEDROCK_SERVICE = "bedrock";
@@ -1119,12 +1120,12 @@ export class BedrockProvider implements LLMProvider {
       now: this.config.now?.() ?? new Date(),
       operation: "count-tokens",
     });
-    const response = await (this.config.fetchImpl ?? fetch)(signed.url, {
+    const response = await fetchProviderRequest(signed.url, {
       method: "POST",
       headers: signed.headers,
       body: signed.body,
       signal,
-    });
+    }, this.config.fetchImpl ?? fetch);
     const parsed = await readJsonResponse(response);
     if (!response.ok) {
       throw new Error(
@@ -1190,12 +1191,12 @@ export class BedrockProvider implements LLMProvider {
       positiveInteger(this.config.timeoutMs);
     const signalState = requestSignal(options?.signal, timeoutMs);
     try {
-      const response = await (this.config.fetchImpl ?? fetch)(signed.url, {
+      const response = await fetchProviderRequest(signed.url, {
         method: "POST",
         headers: signed.headers,
         body: signed.body,
         signal: signalState.signal,
-      });
+      }, this.config.fetchImpl ?? fetch);
       const parsed = await readJsonResponse(response);
       if (!response.ok) {
         throw new Error(
@@ -1247,12 +1248,12 @@ export class BedrockProvider implements LLMProvider {
       positiveInteger(this.config.timeoutMs);
     const signalState = requestSignal(options?.signal, timeoutMs);
     try {
-      const response = await (this.config.fetchImpl ?? fetch)(signed.url, {
+      const response = await fetchProviderRequest(signed.url, {
         method: "POST",
         headers: signed.headers,
         body: signed.body,
         signal: signalState.signal,
-      });
+      }, this.config.fetchImpl ?? fetch);
       if (!response.ok) {
         const parsed = await readJsonResponse(response);
         throw new Error(

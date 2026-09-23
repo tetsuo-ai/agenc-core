@@ -29,6 +29,7 @@ import { ollamaTemplateRequiresTextTools } from "./template-tool-support.js";
 import { createOllamaToolNameProjection, projectOllamaHistoryToolNames } from "./tool-naming.js";
 import { LLMProviderError, mapLLMError } from "../../errors.js";
 import { ensureLazyImport } from "../../lazy-import.js";
+import { fetchProviderRequest } from "../../credential-redirect-fetch.js";
 import {
   buildUnsupportedCompactionDiagnostics,
   resolveLLMCompactionConfig,
@@ -960,9 +961,9 @@ export class OllamaProvider implements LLMProvider {
           const url = input instanceof Request ? input.url : String(input);
           if (new URL(url).pathname.endsWith("/api/show")) {
             const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
-            return fetch(input, { ...init, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(3_000)]) : AbortSignal.timeout(3_000) });
+            return fetchProviderRequest(input, { ...init, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(3_000)]) : AbortSignal.timeout(3_000) }, fetch);
           }
-          return fetch(input, init);
+          return fetchProviderRequest(input, init ?? {}, fetch);
         }) as typeof fetch,
       });
     });

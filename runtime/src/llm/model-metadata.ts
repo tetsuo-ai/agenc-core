@@ -23,6 +23,7 @@ import {
 } from "./openai-compatible-token-limits.js";
 import { OLLAMA_CLOUD_BASE_URL } from "./registry/ollama-cloud-models.js";
 import { asRecord } from "../utils/record.js";
+import { fetchProviderRequest } from "./credential-redirect-fetch.js";
 
 export const CONSERVATIVE_CONTEXT_WINDOW_TOKENS =
   OPENAI_COMPATIBLE_FALLBACK_CONTEXT_WINDOW;
@@ -329,7 +330,7 @@ export class ModelMetadataResolver {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await this.fetchImpl!(url, {
+      const response = await fetchProviderRequest(url, {
         ...(options.jsonBody !== undefined
           ? {
             method: "POST",
@@ -341,7 +342,7 @@ export class ModelMetadataResolver {
           }
           : { headers: options.headers }),
         signal: controller.signal,
-      });
+      }, this.fetchImpl!);
       if (!response.ok) return undefined;
       return await response.json();
     } catch {

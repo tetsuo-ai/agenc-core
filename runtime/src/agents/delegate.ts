@@ -239,7 +239,7 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       }
       // Credential readiness is checked before the durable child spawn edge.
       // The run checks again immediately before the first provider call.
-      const prepared = await opts.parent.providerService.prepareChild(validated);
+      const prepared = await opts.parent.providerService.prepareChild(validated, undefined, {}, true);
       await prepared.binding.instance.dispose?.();
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -932,7 +932,7 @@ async function restartLiveAgent(opts: {
           validated.model !== providerSelection.model) {
         throw new Error("child provider/model pair changed before restart");
       }
-      const prepared = await opts.parent.providerService.prepareChild(validated);
+      const prepared = await opts.parent.providerService.prepareChild(validated, undefined, {}, true);
       await prepared.binding.instance.dispose?.();
     }
   } catch (err) {
