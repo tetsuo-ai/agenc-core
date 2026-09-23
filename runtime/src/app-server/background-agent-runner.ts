@@ -3175,6 +3175,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
               ? { clientMessageId: submission.clientMessageId }
               : {}),
           },
+      active.bootstrap.rolloutStore.store?.sessionDir,
     );
   }
 

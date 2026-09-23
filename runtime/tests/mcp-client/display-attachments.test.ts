@@ -1,16 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 const fileRace = vi.hoisted(() => ({ target: "", switched: false, restored: false, switchAncestor: undefined as undefined | (() => Promise<void>), restoreAncestor: undefined as undefined | (() => Promise<void>) }));
-const fsyncFailure = vi.hoisted(() => ({ enabled: false }));
+const fsyncFailure = vi.hoisted(() => ({ enabled: false, directoryCalls: 0 }));
+const fileOpens = vi.hoisted(() => ({ count: 0 }));
 vi.mock("node:fs", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs")>();
   return { ...fs, fsyncSync: (fd: number) => {
-    if (fsyncFailure.enabled && fs.fstatSync(fd).isDirectory()) throw Object.assign(new Error("I/O failure"), { code: "EIO" });
+    if (fs.fstatSync(fd).isDirectory()) {
+      fsyncFailure.directoryCalls += 1;
+      if (fsyncFailure.enabled) throw Object.assign(new Error("I/O failure"), { code: "EIO" });
+    }
     return fs.fsyncSync(fd);
   } };
 });
 vi.mock("node:fs/promises", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...fs, lstat: async (...args: Parameters<typeof fs.lstat>) => {
+  return { ...fs, open: async (...args: Parameters<typeof fs.open>) => { fileOpens.count += 1; return fs.open(...args); }, lstat: async (...args: Parameters<typeof fs.lstat>) => {
     if (String(args[0]) === fileRace.target && fileRace.switched && !fileRace.restored) {
       await fileRace.restoreAncestor?.(); fileRace.restored = true;
     }
@@ -39,7 +43,7 @@ import { adaptTranscriptEvents } from "../../src/tui/session-transcript.js";
 import { toToolCatalogPolicyConfig } from "../../src/mcp-client/resilient-client.js";
 
 const directories: string[] = [];
-afterEach(async () => { fsyncFailure.enabled = false; fileRace.target = ""; fileRace.switched = false; fileRace.restored = false; fileRace.switchAncestor = undefined; fileRace.restoreAncestor = undefined; vi.restoreAllMocks(); await Promise.all(directories.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
+afterEach(async () => { fsyncFailure.enabled = false; fsyncFailure.directoryCalls = 0; fileOpens.count = 0; fileRace.target = ""; fileRace.switched = false; fileRace.restored = false; fileRace.switchAncestor = undefined; fileRace.restoreAncestor = undefined; vi.restoreAllMocks(); await Promise.all(directories.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
 const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 const user = { audience: ["user"] };
 const chart = { version: 1, kind: "timeseries", title: "NVDA, daily", series: [{ name: "Close", type: "line", data: [{ time: "2026-06-08", value: 100 }, { time: "2026-08-28", value: 110 }] }] };
@@ -74,15 +78,13 @@ describe("MCP user audience display attachments", () => {
   });
 
   it("captions tables, images and files without exposing their bytes", async () => {
-    const root = await mkdtemp(join(tmpdir(), "display-plugin-")); directories.push(root);
-    const path = join(root, "talk.ics"); await writeFile(path, "BEGIN:VCALENDAR\nEND:VCALENDAR\n");
     const sharp = (await import("sharp")).default;
     const png = await sharp({ create: { width: 2, height: 2, channels: 3, background: "red" } }).png().toBuffer();
     const result = await normalize([
       resource("application/vnd.agenc.table+json", table),
       { type: "image", annotations: user, mimeType: "image/png", data: png.toString("base64"), name: "Plot" },
-      { type: "resource_link", annotations: user, uri: pathToFileURL(path).href, name: "talk.ics", mimeType: "text/calendar" },
-    ], [root]);
+      { type: "resource", annotations: user, resource: { uri: "agenc:talk.ics", name: "talk.ics", mimeType: "text/calendar", blob: Buffer.from("BEGIN:VCALENDAR\nEND:VCALENDAR\n").toString("base64") } },
+    ]);
     expect(result.content).toContain('table "Holdings", 1 row, 1 column');
     expect(result.content).toContain('image "Plot"');
     expect(result.content).toContain('file "talk.ics"');
@@ -120,7 +122,7 @@ describe("MCP user audience display attachments", () => {
     expect(result.content).toContain("images exceed 5 MiB per result");
   });
 
-  it("confines file links against outside paths, symlink escape and missing files", async () => {
+  it.skipIf(process.platform !== "linux")("confines file links against outside paths, symlink escape and missing files", async () => {
     const root = await mkdtemp(join(tmpdir(), "display-root-")); directories.push(root);
     const outside = await mkdtemp(join(tmpdir(), "display-outside-")); directories.push(outside);
     const outsidePath = join(outside, "secret.txt"); await writeFile(outsidePath, "secret");
@@ -135,7 +137,7 @@ describe("MCP user audience display attachments", () => {
     expect(result.content).toContain("32 MiB");
   });
 
-  it("rejects an ancestor switched to an outside symlink between confinement and open", async () => {
+  it.skipIf(process.platform !== "linux")("rejects an ancestor switched to an outside symlink between confinement and open", async () => {
     const root = await mkdtemp(join(tmpdir(), "display-race-root-")); directories.push(root);
     const outside = await mkdtemp(join(tmpdir(), "display-race-outside-")); directories.push(outside);
     const slot = join(root, "slot"); await mkdir(slot);
@@ -174,26 +176,100 @@ describe("MCP user audience display attachments", () => {
     try {
       // Treating the workspace as a trusted root reproduces the reviewer's
       // schedule: switch after the first parent walk, restore before the last.
-      const raced = await validateDisplayBlock({ type: "resource_link", uri: pathToFileURL(target).href, name: "secret.txt" }, [workspace], DEFAULT_VERIFIED_READ_CONTEXT, workspace);
-      expect(raced.attachment.digest).toBe(createHash("sha256").update("OUTSIDE_SECRET_BYTES").digest("hex"));
-      expect(fileRace.switched && fileRace.restored).toBe(true);
-      fileRace.switched = false; fileRace.restored = false;
+      await expect(validateDisplayBlock({ type: "resource_link", uri: pathToFileURL(target).href, name: "secret.txt" }, [workspace], DEFAULT_VERIFIED_READ_CONTEXT, workspace)).rejects.toThrow("send an embedded resource instead");
+      expect(fileRace.switched).toBe(false);
       const result = await normalizeMcpToolOutput({ raw: { content: [{ type: "resource_link", annotations: user, uri: pathToFileURL(target).href, name: "secret.txt" }] }, serverName: "fixture", toolName: "show", callId: "call-1", environment: {}, logger, displayRoots: [plugin, workspace], displayDataRoot: plugin });
       expect(attachments(result)).toBeUndefined();
-      expect(result.content).toContain("send inline data instead");
+      expect(result.content).toContain("send an embedded resource instead");
       expect(result.content).not.toContain("OUTSIDE_SECRET_BYTES");
       expect(fileRace.switched).toBe(false);
     } finally { platformSpy.mockRestore(); }
   });
 
-  it.each(["darwin", "freebsd"])("accepts a regular file in the plugin data directory on %s", async (platform) => {
+  it.each(["darwin", "freebsd"])("refuses a regular file in the plugin data directory on %s", async (platform) => {
     const plugin = await mkdtemp(join(tmpdir(), "display-trusted-")); directories.push(plugin);
     const path = join(plugin, "calendar.ics"); await writeFile(path, "BEGIN:VCALENDAR");
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue(platform as NodeJS.Platform);
     try {
       const result = await normalize([{ type: "resource_link", annotations: user, uri: pathToFileURL(path).href, name: "calendar.ics", mimeType: "text/calendar" }], [plugin]);
-      expect(attachments(result)).toMatchObject([{ kind: "file", size: 15 }]);
+      expect(attachments(result)).toBeUndefined();
+      expect(result.content).toContain("send an embedded resource instead");
     } finally { platformSpy.mockRestore(); }
+  });
+
+  it.each(["darwin", "freebsd"])("rejects raced plugin data file links and accepts embedded file bytes on %s", async (platform) => {
+    const plugin = await mkdtemp(join(tmpdir(), "display-plugin-race-")); directories.push(plugin);
+    const outside = await mkdtemp(join(tmpdir(), "display-plugin-outside-")); directories.push(outside);
+    const slot = join(plugin, "slot"); await mkdir(slot);
+    const target = join(slot, "calendar.ics"); await writeFile(target, "inside");
+    await writeFile(join(outside, "calendar.ics"), "OUTSIDE_SECRET_BYTES");
+    const parked = join(plugin, "parked");
+    fileRace.target = slot;
+    fileRace.switchAncestor = async () => { await rename(slot, parked); await symlink(outside, slot); };
+    fileRace.restoreAncestor = async () => { await rm(slot); await rename(parked, slot); };
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue(platform as NodeJS.Platform);
+    try {
+      const linked = await normalize([{ type: "resource_link", annotations: user, uri: pathToFileURL(target).href, name: "calendar.ics", mimeType: "text/calendar" }], [plugin]);
+      expect(attachments(linked)).toBeUndefined();
+      expect(linked.content).toContain("send an embedded resource instead");
+      expect(fileRace.switched).toBe(false);
+      const embedded = await normalize([{ type: "resource", annotations: user, resource: { uri: "agenc:calendar", mimeType: "text/calendar", blob: Buffer.from("BEGIN:VCALENDAR").toString("base64") } }], [plugin]);
+      expect(attachments(embedded)).toMatchObject([{ kind: "file", mimeType: "text/calendar", size: 15 }]);
+    } finally { platformSpy.mockRestore(); }
+  });
+
+  it("retries the parent directory fsync after first creation fails", async () => {
+    const session = await mkdtemp(join(tmpdir(), "display-fsync-retry-")); directories.push(session);
+    const result = await normalize([resource("application/vnd.agenc.table+json", table)]);
+    const pending = result.metadata?.displayAttachments as Parameters<typeof persistDisplayAttachments>[1];
+    fsyncFailure.enabled = true;
+    expect(() => persistDisplayAttachments(session, pending)).toThrow("I/O failure");
+    expect(fsyncFailure.directoryCalls).toBe(1);
+    fsyncFailure.enabled = false;
+    persistDisplayAttachments(session, pending);
+    expect(fsyncFailure.directoryCalls).toBe(3);
+    expect(readDisplayArtifact(session, pending[0]!.id).length).toBeGreaterThan(0);
+  });
+
+  it("bounds nine unsupported large links before opening any file", async () => {
+    const root = await mkdtemp(join(tmpdir(), "display-unsupported-")); directories.push(root);
+    const path = join(root, "large.html"); await writeFile(path, ""); await truncate(path, 32 * 1024 * 1024);
+    fileOpens.count = 0;
+    const link = { type: "resource_link", annotations: user, uri: pathToFileURL(path).href, name: "large.html", mimeType: "text/html" };
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+    try {
+      const result = await normalize(Array.from({ length: 9 }, () => link), [root]);
+      expect(fileOpens.count).toBe(0);
+      expect(attachments(result)).toBeUndefined();
+      expect(result.content).toContain("unsupported file MIME type");
+      expect(result.content).toContain("aggregate display budget exhausted");
+    } finally { platformSpy.mockRestore(); }
+  });
+
+  it("keeps a 400 KB newest assistant answer fetchable in a bounded snapshot", async () => {
+    const session = await mkdtemp(join(tmpdir(), "display-answer-session-")); directories.push(session);
+    const answer = "answer".repeat(67_000);
+    const items = [
+      { type: "event_msg" as const, payload: { id: "user", eventId: "user", seq: 1, msg: { type: "user_message" as const, payload: { message: "short question" } } } },
+      { type: "event_msg" as const, payload: { id: "assistant", eventId: "assistant", seq: 2, msg: { type: "agent_message" as const, payload: { message: answer } } } },
+    ];
+    const snapshot = sessionTranscriptV2FromRollout(items, "session", "run", undefined, session);
+    const latest = snapshot.messages.at(-1);
+    expect(latest?.role).toBe("assistant");
+    expect(snapshot.messages[0]?.text).toBe("short question");
+    expect(latest?.textArtifact?.id).toMatch(/^[a-f0-9]{64}$/u);
+    expect(readDisplayArtifact(session, latest!.textArtifact!.id).toString()).toBe(answer);
+    expect(Buffer.byteLength(JSON.stringify(snapshot))).toBeLessThanOrEqual(384 * 1024);
+  });
+
+  it("keeps a recent answer inline when removing older history makes it fit", () => {
+    const older = "o".repeat(220_000);
+    const latest = "n".repeat(220_000);
+    const items = [older, latest].map((message, index) => ({ type: "event_msg" as const, payload: { id: `answer-${index}`, eventId: `answer-${index}`, seq: index + 1, msg: { type: "agent_message" as const, payload: { message } } } }));
+    const snapshot = sessionTranscriptV2FromRollout(items, "session", "run");
+    expect(snapshot.messages.at(-1)?.text).toBe(latest);
+    expect(snapshot.messages.at(-1)?.textArtifact).toBeUndefined();
+    expect(snapshot.truncated).toBe(true);
   });
 
   it("does not leak a private workspace path from an ENOENT file-link rejection", async () => {
@@ -247,11 +323,9 @@ describe("MCP user audience display attachments", () => {
   });
 
   it("repairs a partial digest path left by an interrupted direct write", async () => {
-    const root = await mkdtemp(join(tmpdir(), "display-partial-root-")); directories.push(root);
     const session = await mkdtemp(join(tmpdir(), "display-partial-session-")); directories.push(session);
     const bytes = Buffer.from("BEGIN:VCALENDAR\nEND:VCALENDAR\n");
-    const file = join(root, "talk.ics"); await writeFile(file, bytes);
-    const result = await normalize([{ type: "resource_link", annotations: user, uri: pathToFileURL(file).href, name: "talk.ics", mimeType: "text/calendar" }], [root]);
+    const result = await normalize([{ type: "resource", annotations: user, resource: { uri: "agenc:talk.ics", mimeType: "text/calendar", blob: bytes.toString("base64") } }]);
     const item = attachments(result)?.[0];
     expect(item).toBeDefined();
     await mkdir(join(session, "display-artifacts"));
@@ -261,11 +335,9 @@ describe("MCP user audience display attachments", () => {
   });
 
   it("serves a 13 MiB file in transport-sized chunks", async () => {
-    const root = await mkdtemp(join(tmpdir(), "display-large-root-")); directories.push(root);
     const session = await mkdtemp(join(tmpdir(), "display-large-session-")); directories.push(session);
     const bytes = randomBytes(13 * 1024 * 1024);
-    const file = join(root, "large.bin"); await writeFile(file, bytes);
-    const result = await normalize([{ type: "resource_link", annotations: user, uri: pathToFileURL(file).href, name: "large.bin" }], [root]);
+    const result = await normalize([{ type: "resource", annotations: user, resource: { uri: "agenc:large.bin", mimeType: "application/octet-stream", blob: bytes.toString("base64") } }]);
     const item = attachments(result)?.[0];
     expect(item).toBeDefined();
     persistDisplayAttachments(session, result.metadata?.displayAttachments as Parameters<typeof persistDisplayAttachments>[1]);
@@ -285,15 +357,13 @@ describe("MCP user audience display attachments", () => {
   it("stores bytes by digest, isolates sessions, survives reread and removes with its session", async () => {
     const base = await mkdtemp(join(tmpdir(), "display-session-")); directories.push(base);
     const first = join(base, "one"); const second = join(base, "two");
-    const pluginRoot = join(base, "plugin"); await mkdir(pluginRoot);
     const bytes = Buffer.from("BEGIN:VCALENDAR");
-    const file = join(pluginRoot, "talk.ics"); await writeFile(file, bytes);
     const id = createHash("sha256").update(bytes).digest("hex");
-    const result = await normalize([{ type: "resource_link", annotations: user, uri: pathToFileURL(file).href, name: "talk.ics", mimeType: "text/calendar" }], [pluginRoot]);
+    const result = await normalize([{ type: "resource", annotations: user, resource: { uri: "agenc:talk.ics", mimeType: "text/calendar", blob: bytes.toString("base64") } }]);
     const pending = result.metadata?.displayAttachments as Parameters<typeof persistDisplayAttachments>[1];
     const stored = persistDisplayAttachments(first, pending);
     expect(stored[0]).not.toHaveProperty("pendingBytes");
-    const duplicate = await normalize([{ type: "resource_link", annotations: user, uri: pathToFileURL(file).href, name: "talk.ics", mimeType: "text/calendar" }], [pluginRoot]);
+    const duplicate = await normalize([{ type: "resource", annotations: user, resource: { uri: "agenc:talk.ics", mimeType: "text/calendar", blob: bytes.toString("base64") } }]);
     expect(persistDisplayAttachments(first, duplicate.metadata?.displayAttachments as Parameters<typeof persistDisplayAttachments>[1])).toEqual(stored);
     expect(readDisplayArtifact(first, id)).toEqual(bytes);
     expect(() => readDisplayArtifact(second, id)).toThrow();

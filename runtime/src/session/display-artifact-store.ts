@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, writeFileSync, lstatSync, rmSync, unlinkSync, linkSync, renameSync, readSync, fstatSync, constants } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, writeFileSync, lstatSync, rmSync, unlinkSync, linkSync, renameSync, readSync, fstatSync, constants } from "node:fs";
 import { join } from "node:path";
-import { DISPLAY_BINARY_LIMIT, DISPLAY_FILE_LIMIT, DISPLAY_JSON_LIMIT, takeDisplayArtifactBytes, type DisplayAttachment } from "../mcp-client/display-attachments.js";
+import { DISPLAY_BINARY_LIMIT, DISPLAY_FILE_LIMIT, DISPLAY_JSON_LIMIT, peekDisplayArtifactBytes, releaseDisplayArtifactBytes, type DisplayAttachment } from "../mcp-client/display-attachments.js";
 
 const ARTIFACT_DIRECTORY = "display-artifacts";
 const ID = /^[a-f0-9]{64}$/u;
@@ -21,40 +21,51 @@ function fsyncDirectory(path: string): void {
 /** Session scoped, immutable, content addressed bytes. The caller supplies a
  * session directory from the durable session store, never from MCP or RPC. */
 export function persistDisplayAttachments(sessionDir: string, pending: readonly DisplayAttachment[]): DisplayAttachment[] {
-  const root = join(sessionDir, ARTIFACT_DIRECTORY);
-  const rootExisted = existsSync(root);
-  mkdirSync(root, { recursive: true, mode: 0o700 });
-  if (!lstatSync(root).isDirectory()) throw new Error("display artifact directory is not a directory");
-  if (!rootExisted) fsyncDirectory(sessionDir);
-  return pending.map(item => {
+  const persisted = pending.map(item => {
     const limit = item.kind === "file" ? DISPLAY_FILE_LIMIT : item.kind === "image" ? DISPLAY_BINARY_LIMIT : DISPLAY_JSON_LIMIT;
     if (item.size > limit) throw new Error("display artifact exceeds size limit");
-    const bytes = takeDisplayArtifactBytes(item);
+    const bytes = peekDisplayArtifactBytes(item);
     if (!bytes) throw new Error("display artifact bytes unavailable");
     const id = createHash("sha256").update(bytes).digest("hex");
     if (id !== item.digest || bytes.length !== item.size) throw new Error("display artifact digest mismatch");
-    const path = join(root, id);
-    const temporary = join(root, `.pending-${randomUUID()}`);
-    try {
-      const fd = openSync(temporary, "wx", 0o600);
-      try { writeFileSync(fd, bytes); fsyncSync(fd); }
-      finally { closeSync(fd); }
-      try { linkSync(temporary, path); }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        // An older interrupted direct write may have left this digest path
-        // empty or partial. Replace it with a complete fsynced file.
-        const existing = readFileSync(path);
-        if (createHash("sha256").update(existing).digest("hex") !== id) {
-          renameSync(temporary, path);
-        }
-      }
-      fsyncDirectory(root);
-    } finally {
-      try { unlinkSync(temporary); } catch { /* already renamed or never created */ }
-    }
+    persistDisplayArtifactBytes(sessionDir, bytes);
     return item;
   });
+  for (const item of pending) releaseDisplayArtifactBytes(item);
+  return persisted;
+}
+
+/** Publish transcript text through the same durable content-addressed store. */
+export function persistDisplayArtifactBytes(sessionDir: string, bytes: Buffer): string {
+  if (bytes.length > DISPLAY_FILE_LIMIT) throw new Error("display artifact exceeds size limit");
+  const id = createHash("sha256").update(bytes).digest("hex");
+  const root = join(sessionDir, ARTIFACT_DIRECTORY);
+  mkdirSync(root, { recursive: true, mode: 0o700 });
+  if (!lstatSync(root).isDirectory()) throw new Error("display artifact directory is not a directory");
+  // A prior creation may have failed its parent fsync while leaving root in
+  // place. Re-establish this proof before every successful publication.
+  fsyncDirectory(sessionDir);
+  const path = join(root, id);
+  const temporary = join(root, `.pending-${randomUUID()}`);
+  try {
+    const fd = openSync(temporary, "wx", 0o600);
+    try { writeFileSync(fd, bytes); fsyncSync(fd); }
+    finally { closeSync(fd); }
+    try { linkSync(temporary, path); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      // An older interrupted direct write may have left this digest path
+      // empty or partial. Replace it with a complete fsynced file.
+      const existing = readFileSync(path);
+      if (createHash("sha256").update(existing).digest("hex") !== id) {
+        renameSync(temporary, path);
+      }
+    }
+    fsyncDirectory(root);
+  } finally {
+    try { unlinkSync(temporary); } catch { /* already renamed or never created */ }
+  }
+  return id;
 }
 
 export function readDisplayArtifactChunk(sessionDir: string, id: string, offset: number, length = DISPLAY_ARTIFACT_CHUNK_BYTES): { readonly data: Buffer; readonly size: number; readonly nextOffset: number | null } {

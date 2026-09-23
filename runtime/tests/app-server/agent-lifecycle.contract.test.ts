@@ -19,7 +19,6 @@ import { upsertAgentRun } from "../state/agent-runs.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import { persistDisplayAttachments, readDisplayArtifact } from "../session/display-artifact-store.js";
 import { validateDisplayBlock } from "../mcp-client/display-attachments.js";
-import { pathToFileURL } from "node:url";
 import type { RolloutItem } from "../session/rollout-item.js";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
 import { FileThreadStore } from "../thread-store/store.js";
@@ -665,9 +664,7 @@ describe("AgenC background agent lifecycle", () => {
       }
       const bytes = randomBytes(13 * 1024 * 1024);
       const id = createHash("sha256").update(bytes).digest("hex");
-      const pluginDataRoot = join(home, "plugin-data"); mkdirSync(pluginDataRoot);
-      const file = join(pluginDataRoot, "large.bin"); writeFileSync(file, bytes);
-      const display = await validateDisplayBlock({ type: "resource_link", uri: pathToFileURL(file).href, name: "large.bin" }, [pluginDataRoot, cwd], undefined, pluginDataRoot);
+      const display = await validateDisplayBlock({ type: "resource", resource: { uri: "agenc:large.bin", name: "large.bin", mimeType: "application/octet-stream", blob: bytes.toString("base64") } }, []);
       const stored = persistDisplayAttachments(first.store.sessionDir, [display.attachment]);
       first.appendRollout({ type: "event_msg", payload: { id: "display-complete", seq: 1, msg: { type: "tool_call_completed", payload: { callId: "call-1", result: '[Shown to the user: file "talk.ics"]', isError: false, displayAttachments: stored } } } });
       first.flushDurable();

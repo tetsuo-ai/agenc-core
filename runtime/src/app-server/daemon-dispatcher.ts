@@ -272,7 +272,7 @@ const MINIMUM_PROTOCOL_MINOR_BY_METHOD: Readonly<
   Partial<Record<AgenCDaemonKnownMethod, number>>
 > = Object.freeze({
   "session.transcript.v2": 2,
-  "session.artifact.read": 17,
+  "session.artifact.read": 18,
   "session.mcp.status": 3,
   "session.permissions.mutateRule": 7,
   "session.shell.execute": 9,
@@ -1330,23 +1330,14 @@ export class AgenCDaemonJsonRpcDispatcher {
             validateSessionTranscriptV2Params(params),
           );
           const clientMinor = Number(connection.initializeState?.clientProtocol.version.split(".")[1] ?? 0);
-          return successResponse(id, clientMinor >= 17 ? transcript : {
+          return successResponse(id, clientMinor >= 18 ? transcript : {
             ...transcript,
             events: transcript.events?.filter(event => event.type !== "tool_call_completed"),
           });
         }
       case "session.artifact.read":
         {
-          const readParams = validateSessionArtifactReadParams(params);
-          const clientMinor = Number(connection.initializeState?.clientProtocol.version.split(".")[1] ?? 0);
-          if (clientMinor < 18 && (readParams.offset !== undefined || readParams.length !== undefined)) {
-            return errorResponse(id, -32000, "Chunked artifact reads require protocol 1.18", { code: "PROTOCOL_VERSION_UNSUPPORTED" });
-          }
-          const chunk = await this.#agentManager.readSessionArtifact(readParams);
-          if (clientMinor < 18 && chunk.nextOffset !== null) {
-            return errorResponse(id, -32000, "Artifact is too large for protocol 1.17", { code: "PROTOCOL_VERSION_UNSUPPORTED" });
-          }
-          return successResponse(id, chunk);
+          return successResponse(id, await this.#agentManager.readSessionArtifact(validateSessionArtifactReadParams(params)));
         }
       case "session.cancelTurn":
         return successResponse(

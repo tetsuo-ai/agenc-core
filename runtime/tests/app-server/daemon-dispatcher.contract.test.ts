@@ -95,17 +95,17 @@ function daemonMethodCapabilities(
 }
 
 describe("session.artifact.read wire contract", () => {
-  it("omits attachment transcript events for a client negotiating 1.16", async () => {
+  it("omits attachment transcript events for a client negotiating 1.17", async () => {
     const manager = new AgenCDaemonAgentManager();
     const snapshot = sessionTranscriptV2FromRollout([{ type: "event_msg", payload: { id: "event", eventId: "event", seq: 1, msg: { type: "tool_call_completed", payload: { callId: "c", result: "shown", isError: false, displayAttachments: [{ id: "a".repeat(64), digest: "a".repeat(64), kind: "file", title: "F", mimeType: "text/plain", size: 1 }] } } } }], "one", "run");
     vi.spyOn(manager, "getSessionTranscriptV2").mockResolvedValue(snapshot);
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: new AgenCDaemonSessionManager() });
     const older = dispatcher.createConnection({ sendNotification: () => {} });
-    await initialize(older, "1.16.0");
+    await initialize(older, "1.17.0");
     const oldResult = await older.dispatch(request("old", "session.transcript.v2", { sessionId: "one" }));
     expect((oldResult.result as typeof snapshot).events).toEqual([]);
     const current = dispatcher.createConnection({ sendNotification: () => {} });
-    await initialize(current, "1.18.0");
+    await initialize(current, AGENC_DAEMON_PROTOCOL_VERSION);
     const currentResult = await current.dispatch(request("new", "session.transcript.v2", { sessionId: "one" }));
     expect((currentResult.result as typeof snapshot).events).toHaveLength(1);
   });
@@ -116,14 +116,15 @@ describe("session.artifact.read wire contract", () => {
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager, sessionManager: new AgenCDaemonSessionManager() });
     const connection = dispatcher.createConnection({ sendNotification: () => {} });
     await initialize(connection, "1.17.0");
-    await expect(connection.dispatch(request("bad", "session.artifact.read", { sessionId: "one", id: "../other" }))).resolves.toHaveProperty("error");
+    await expect(connection.dispatch(request("legacy", "session.artifact.read", { sessionId: "one", id }))).resolves.toMatchObject({ error: { code: -32601 } });
     expect(read).not.toHaveBeenCalled();
-    await expect(connection.dispatch(request("good", "session.artifact.read", { sessionId: "one", id }))).resolves.toMatchObject({ result: { sessionId: "one", id, data: "YQ==" } });
+    const current = dispatcher.createConnection({ sendNotification: () => {} });
+    await initialize(current, AGENC_DAEMON_PROTOCOL_VERSION);
+    await expect(current.dispatch(request("bad", "session.artifact.read", { sessionId: "one", id: "../other" }))).resolves.toHaveProperty("error");
+    expect(read).not.toHaveBeenCalled();
+    await expect(current.dispatch(request("good", "session.artifact.read", { sessionId: "one", id }))).resolves.toMatchObject({ result: { sessionId: "one", id, data: "YQ==" } });
     expect(read).toHaveBeenCalledWith({ sessionId: "one", id });
     read.mockResolvedValue({ sessionId: "one", id, encoding: "base64", data: "YQ==", size: 1024 * 1024, offset: 0, nextOffset: 1 });
-    await expect(connection.dispatch(request("legacy-large", "session.artifact.read", { sessionId: "one", id }))).resolves.toMatchObject({ error: { data: { code: "PROTOCOL_VERSION_UNSUPPORTED" } } });
-    const current = dispatcher.createConnection({ sendNotification: () => {} });
-    await initialize(current, "1.18.0");
     await expect(current.dispatch(request("chunk", "session.artifact.read", { sessionId: "one", id, offset: 0, length: 1 }))).resolves.toMatchObject({ result: { nextOffset: 1 } });
   });
 });

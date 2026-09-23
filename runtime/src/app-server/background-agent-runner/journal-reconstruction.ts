@@ -8,6 +8,7 @@ import type { LocalRuntimeBootstrap } from "../../bin/bootstrap.js";
 import type { Event } from "../../session/event-log.js";
 import { classifyTurnTerminal, type TurnTerminal } from "../../contracts/turn-terminal.js";
 import type { RolloutItem } from "../../session/rollout-item.js";
+import { persistDisplayArtifactBytes } from "../../session/display-artifact-store.js";
 import { isAdmissionUsageSummary } from "../../session/usage-summary.js";
 import {
   reconstructFromRollout,
@@ -329,6 +330,7 @@ export function sessionTranscriptV2FromRollout(
   sessionId: string,
   runId: string,
   activeTurn?: { readonly turnId: string; readonly clientMessageId?: string },
+  artifactSessionDir?: string,
 ): SessionTranscriptV2Result {
   const boundary = latestTranscriptBoundary(items);
   const boundaryIndex = boundary?.index ?? -1;
@@ -599,18 +601,34 @@ export function sessionTranscriptV2FromRollout(
   // unusually long session cannot fit in one snapshot response.
   const maxSnapshotBytes = 384 * 1024;
   if (Buffer.byteLength(JSON.stringify(snapshot), "utf8") <= maxSnapshotBytes) return snapshot;
+  const referenceMessage = (message: typeof snapshot.messages[number]) => {
+    if (artifactSessionDir === undefined) throw new Error("oversized transcript message requires a session artifact store");
+    const bytes = Buffer.from(message.text, "utf8");
+    const id = persistDisplayArtifactBytes(artifactSessionDir, bytes);
+    return { ...message, text: `[Full message available with session.artifact.read: ${id}]`, textArtifact: { id, digest: id, size: bytes.length, mimeType: "text/plain" as const } };
+  };
   const boundedMessages = [...snapshot.messages];
+  const newestMessage = boundedMessages.at(-1);
+  if (newestMessage !== undefined && Buffer.byteLength(JSON.stringify(newestMessage), "utf8") > maxSnapshotBytes) {
+    boundedMessages[boundedMessages.length - 1] = referenceMessage(newestMessage);
+  }
   const boundedEvents = [...(snapshot.events ?? [])];
   const boundedTurnResults = [...(snapshot.turnResults ?? [])];
-  let bounded: SessionTranscriptV2Result = { ...snapshot, truncated: true };
+  let bounded: SessionTranscriptV2Result = { ...snapshot, messages: boundedMessages, truncated: true };
   while (Buffer.byteLength(JSON.stringify(bounded), "utf8") > maxSnapshotBytes) {
     const collections = [boundedMessages, boundedEvents, boundedTurnResults] as const;
     const largest = collections
-      .map((items, index) => ({ index, bytes: Buffer.byteLength(JSON.stringify(items), "utf8") }))
+      .map((items, index) => ({ index, bytes: index === 0 && items.length <= 1 ? 0 : Buffer.byteLength(JSON.stringify(items), "utf8") }))
       .sort((left, right) => right.bytes - left.bytes)[0]!;
     const entries = collections[largest.index]!;
-    if (entries.length === 0) break;
-    entries.splice(0, Math.max(1, Math.ceil(entries.length / 4)));
+    if (largest.bytes === 0) {
+      const latest = boundedMessages.at(-1);
+      if (latest === undefined || latest.textArtifact !== undefined) throw new Error("transcript snapshot cannot fit transport limit");
+      boundedMessages[boundedMessages.length - 1] = referenceMessage(latest);
+      bounded = { ...snapshot, messages: boundedMessages, events: boundedEvents, turnResults: boundedTurnResults, truncated: true };
+      continue;
+    }
+    entries.splice(0, Math.min(entries.length - (largest.index === 0 ? 1 : 0), Math.max(1, Math.ceil(entries.length / 4))));
     bounded = { ...snapshot, messages: boundedMessages, events: boundedEvents, turnResults: boundedTurnResults, truncated: true };
   }
   return bounded;

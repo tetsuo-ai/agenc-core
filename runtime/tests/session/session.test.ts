@@ -25,7 +25,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { RolloutStore } from "./rollout-store.js";
 import { createToolBridge } from "../mcp-client/tools.js";
 import { readDisplayArtifact } from "./display-artifact-store.js";
@@ -383,14 +382,12 @@ function buildSession(
 
 it("commits plugin MCP chart and file attachments while the model sees only captions", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "display-plugin-e2e-"));
-  const file = join(cwd, "talk.ics");
-  writeFileSync(file, "BEGIN:VCALENDAR\nEND:VCALENDAR\n");
   const chart = { version: 1, kind: "timeseries", title: "NVDA, daily", series: [{ name: "Close", type: "line", data: [{ time: "2026-06-08", value: 100 }] }] };
   const bridge = await createToolBridge({
     listTools: async () => ({ tools: [{ name: "show", description: "Show chart and calendar", inputSchema: { type: "object", properties: {} } }] }),
     callTool: async () => ({ content: [
       { type: "resource", annotations: { audience: ["user"] }, resource: { uri: "agenc:chart", mimeType: "application/vnd.agenc.chart+json", text: JSON.stringify(chart) } },
-      { type: "resource_link", annotations: { audience: ["user"] }, uri: pathToFileURL(file).href, name: "talk.ics", mimeType: "text/calendar" },
+      { type: "resource", annotations: { audience: ["user"] }, resource: { uri: "agenc:talk.ics", name: "talk.ics", mimeType: "text/calendar", blob: Buffer.from("BEGIN:VCALENDAR\nEND:VCALENDAR\n").toString("base64") } },
     ] }),
     close: async () => {},
   }, "fixture", undefined, { environment: { MAX_MCP_OUTPUT_TOKENS: "100000" }, serverConfig: { displayDataRoot: cwd } });

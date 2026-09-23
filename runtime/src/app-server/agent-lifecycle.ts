@@ -3639,6 +3639,8 @@ export class AgenCDaemonAgentManager {
       thread.history?.items ?? [],
       sessionId,
       thread.threadId,
+      undefined,
+      thread.rolloutPath ? dirname(thread.rolloutPath) : undefined,
     );
   }
 

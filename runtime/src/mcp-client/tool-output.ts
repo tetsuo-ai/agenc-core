@@ -19,7 +19,7 @@ import {
 } from "../utils/toolResultStorage.js";
 import type { Logger } from "./_deps/logger.js";
 import type { ToolResult } from "./_deps/tools-types.js";
-import { DISPLAY_ATTACHMENT_LIMIT, DISPLAY_BINARY_LIMIT, DisplayValidationError, validateDisplayBlock, type DisplayAttachment } from "./display-attachments.js";
+import { DISPLAY_ATTACHMENT_LIMIT, DISPLAY_BINARY_LIMIT, DISPLAY_WORK_LIMIT, DisplayValidationError, validateDisplayBlock, type DisplayAttachment } from "./display-attachments.js";
 import {
   consumeMcpSanitizationBudget,
   createMcpSanitizationBudget,
@@ -584,6 +584,7 @@ export async function normalizeMcpToolOutput(
     contentBlocksProcessed: 0,
     omitted: false,
   };
+  const displayBudget = { remainingBytes: DISPLAY_WORK_LIMIT };
 
   if (record === null) {
     appendPrimitiveContent(state, options.raw);
@@ -602,7 +603,7 @@ export async function normalizeMcpToolOutput(
           continue;
         }
         try {
-          const shown = await validateDisplayBlock(displayRecord ?? {}, options.displayRoots ?? [], undefined, options.displayDataRoot);
+          const shown = await validateDisplayBlock(displayRecord ?? {}, options.displayRoots ?? [], undefined, options.displayDataRoot, displayBudget);
           const imageBytes = state.displayAttachments.filter(item => item.kind === "image").reduce((sum, item) => sum + item.size, 0);
           if (shown.attachment.kind === "image" && imageBytes + shown.attachment.size > DISPLAY_BINARY_LIMIT) throw new DisplayValidationError("images exceed 5 MiB per result");
           const inlineBytes = [...state.displayAttachments, shown.attachment].reduce((sum, item) => sum + Buffer.byteLength(JSON.stringify(item), "utf8"), 0);

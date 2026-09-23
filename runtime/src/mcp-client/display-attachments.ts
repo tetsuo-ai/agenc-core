@@ -12,6 +12,13 @@ export const DISPLAY_JSON_LIMIT = 512 * 1024;
 export const DISPLAY_BINARY_LIMIT = 5 * 1024 * 1024;
 export const DISPLAY_FILE_LIMIT = 32 * 1024 * 1024;
 export const DISPLAY_ATTACHMENT_LIMIT = 8;
+export const DISPLAY_WORK_LIMIT = 64 * 1024 * 1024;
+const FILE_ATTEMPT_COST = 8 * 1024 * 1024;
+export interface DisplayWorkBudget { remainingBytes: number }
+export function chargeDisplayWork(budget: DisplayWorkBudget, bytes: number): void {
+  if (bytes > budget.remainingBytes) fail("aggregate display budget exhausted");
+  budget.remainingBytes -= bytes;
+}
 
 export type DisplayAttachment = {
   readonly id: string;
@@ -24,11 +31,8 @@ export type DisplayAttachment = {
 };
 
 const pendingArtifactBytes = new WeakMap<DisplayAttachment, Buffer>();
-export function takeDisplayArtifactBytes(item: DisplayAttachment): Buffer | undefined {
-  const bytes = pendingArtifactBytes.get(item);
-  pendingArtifactBytes.delete(item);
-  return bytes;
-}
+export function peekDisplayArtifactBytes(item: DisplayAttachment): Buffer | undefined { return pendingArtifactBytes.get(item); }
+export function releaseDisplayArtifactBytes(item: DisplayAttachment): void { pendingArtifactBytes.delete(item); }
 
 // Keep the timeseries rules identical to Desktop chartSpec.ts. Any change to
 // these rules must be mirrored there before a new chart version is accepted.
@@ -95,13 +99,47 @@ function makeAttachment(kind: DisplayAttachment["kind"], title: string, mimeType
 }
 function within(path: string, root: string): boolean { const rel = relative(root, path); return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)); }
 
-export async function validateDisplayBlock(block: Record<string, unknown>, roots: readonly string[], readContext: VerifiedReadContext = DEFAULT_VERIFIED_READ_CONTEXT, trustedDataRoot?: string): Promise<{ attachment: DisplayAttachment; caption: string }> {
+const imageMimes = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+const fileMimes = ["application/octet-stream", "text/plain", "text/csv", "application/pdf", "text/calendar", "application/zip"];
+function validateBinaryMime(mimeType: string): void {
+  if (mimeType.startsWith("image/")) {
+    if (!imageMimes.includes(mimeType)) fail("unsupported image MIME type");
+  } else if (!fileMimes.includes(mimeType)) fail("unsupported file MIME type");
+}
+function binaryAttachment(title: string, mimeType: string, bytes: Buffer): { attachment: DisplayAttachment; caption: string } {
+  validateBinaryMime(mimeType);
+  if (mimeType.startsWith("image/")) {
+    if (bytes.length > DISPLAY_BINARY_LIMIT) fail("image exceeds 5 MiB");
+    const inspection = inspectImageBytes(bytes);
+    if (!inspection.ok || inspection.mediaType !== mimeType) fail("image bytes do not match MIME type or are invalid");
+    return { attachment: makeAttachment("image", title, mimeType, bytes), caption: `[Shown to the user: image "${title}", ${inspection.width}×${inspection.height} ${inspection.format.toUpperCase()}]` };
+  }
+  if (bytes.length > DISPLAY_FILE_LIMIT) fail("file exceeds 32 MiB");
+  return { attachment: makeAttachment("file", title, mimeType, bytes), caption: `[Shown to the user: file "${title}", ${bytes.length} bytes]` };
+}
+
+export async function validateDisplayBlock(block: Record<string, unknown>, roots: readonly string[], readContext: VerifiedReadContext = DEFAULT_VERIFIED_READ_CONTEXT, _trustedDataRoot?: string, budget: DisplayWorkBudget = { remainingBytes: DISPLAY_WORK_LIMIT }): Promise<{ attachment: DisplayAttachment; caption: string }> {
+  chargeDisplayWork(budget, 1);
   if (block.type === "resource") {
     const resource = block.resource as Record<string, unknown> | undefined;
     const mimeType = resource?.mimeType;
     const kind = mimeType === "application/vnd.agenc.chart+json" ? "chart" : mimeType === "application/vnd.agenc.table+json" ? "table" : undefined;
-    if (!kind || typeof resource?.text !== "string") fail("unsupported resource MIME type or missing text");
+    if (!kind) {
+      if (typeof mimeType !== "string") fail("unsupported resource MIME type");
+      validateBinaryMime(mimeType);
+      const blob = resource?.blob;
+      if (typeof blob !== "string") fail("invalid or oversized embedded resource data");
+      chargeDisplayWork(budget, blob.length);
+      if (blob.length > Math.ceil(DISPLAY_FILE_LIMIT * 4 / 3) + 4 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(blob)) fail("invalid or oversized embedded resource data");
+      const bytes = Buffer.from(blob, "base64");
+      if (bytes.length > DISPLAY_FILE_LIMIT || bytes.toString("base64") !== blob) fail("invalid or oversized embedded resource data");
+      return binaryAttachment(safeTitle(resource?.name) || safeTitle(block.name) || (mimeType.startsWith("image/") ? "Image" : "File"), mimeType, bytes);
+    }
+    if (typeof resource?.text !== "string") fail("missing resource text");
+    chargeDisplayWork(budget, resource.text.length);
+    if (resource.text.length > DISPLAY_JSON_LIMIT) fail(`${kind} exceeds 512 KiB`);
     const bytes = Buffer.from(resource.text, "utf8");
+    chargeDisplayWork(budget, Math.max(0, bytes.length - resource.text.length));
     if (bytes.length > DISPLAY_JSON_LIMIT) fail(`${kind} exceeds 512 KiB`);
     let source: unknown;
     try { source = redactSecretsInValue(JSON.parse(resource.text)); } catch { fail("invalid JSON"); }
@@ -136,7 +174,9 @@ export async function validateDisplayBlock(block: Record<string, unknown>, roots
   if (block.type === "image") {
     const mimeType = block.mimeType;
     if (!["image/png", "image/jpeg", "image/webp", "image/gif"].includes(String(mimeType))) fail("unsupported image MIME type");
-    if (typeof block.data !== "string" || block.data.length > Math.ceil(DISPLAY_BINARY_LIMIT * 4 / 3) + 4 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(block.data)) fail("invalid or oversized image data");
+    if (typeof block.data !== "string") fail("invalid or oversized image data");
+    chargeDisplayWork(budget, block.data.length);
+    if (block.data.length > Math.ceil(DISPLAY_BINARY_LIMIT * 4 / 3) + 4 || !/^[A-Za-z0-9+/]*={0,2}$/u.test(block.data)) fail("invalid or oversized image data");
     const bytes = Buffer.from(block.data, "base64");
     if (bytes.length > DISPLAY_BINARY_LIMIT || bytes.toString("base64") !== block.data) fail("invalid or oversized image data");
     const inspection = inspectImageBytes(bytes);
@@ -145,15 +185,16 @@ export async function validateDisplayBlock(block: Record<string, unknown>, roots
     return { attachment: makeAttachment("image", title, String(mimeType), bytes), caption: `[Shown to the user: image "${title}", ${inspection.width}×${inspection.height} ${inspection.format.toUpperCase()}]` };
   }
   if (block.type === "resource_link") {
+    chargeDisplayWork(budget, FILE_ATTEMPT_COST);
     if (typeof block.uri !== "string" || !block.uri.startsWith("file:")) fail("file link must use a file: URI");
+    if (process.platform !== "linux") fail("file links are unavailable on this platform; send an embedded resource instead");
     if (typeof block.name !== "string" || !safeTitle(block.name)) fail("file link needs a name");
     let path: string;
     try { path = fileURLToPath(block.uri); } catch { fail("invalid file URI"); }
-    const pathnameOnlyPlatform = process.platform === "darwin" || process.platform === "freebsd";
-    if (pathnameOnlyPlatform && (!trustedDataRoot || !within(path, trustedDataRoot) || path === trustedDataRoot)) {
-      fail("workspace file links are unavailable on this platform; send inline data instead");
-    }
-    const allowedRoots = pathnameOnlyPlatform ? [trustedDataRoot!] : roots;
+    const inferredImages: Readonly<Record<string, string>> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" };
+    const mimeType = typeof block.mimeType === "string" ? block.mimeType : inferredImages[extname(path).toLowerCase()] ?? "application/octet-stream";
+    validateBinaryMime(mimeType);
+    const allowedRoots = roots;
     const realRoots = await Promise.all(allowedRoots.map(root => realpath(root).catch(() => undefined)));
     let bytes: Buffer | undefined;
     for (const rootPath of realRoots) {
@@ -172,6 +213,7 @@ export async function validateDisplayBlock(block: Record<string, unknown>, roots
           let length = 0;
           for (;;) {
             const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, DISPLAY_FILE_LIMIT + 1 - length));
+            chargeDisplayWork(budget, chunk.length);
             const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
             if (bytesRead === 0) break;
             length += bytesRead;
@@ -187,17 +229,7 @@ export async function validateDisplayBlock(block: Record<string, unknown>, roots
     }
     if (!bytes) fail("file is outside the plugin data directory and session workspace or is not a regular file");
     const title = safeTitle(block.name) || basename(path);
-    const inferredImages: Readonly<Record<string, string>> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" };
-    const mimeType = typeof block.mimeType === "string" ? block.mimeType : inferredImages[extname(path).toLowerCase()] ?? "application/octet-stream";
-    if (mimeType.startsWith("image/")) {
-      if (!["image/png", "image/jpeg", "image/webp", "image/gif"].includes(mimeType)) fail("unsupported image MIME type");
-      if (bytes.length > DISPLAY_BINARY_LIMIT) fail("image exceeds 5 MiB");
-      const inspection = inspectImageBytes(bytes);
-      if (!inspection.ok || inspection.mediaType !== mimeType) fail("image bytes do not match MIME type or are invalid");
-      return { attachment: makeAttachment("image", title, mimeType, bytes), caption: `[Shown to the user: image "${title}", ${inspection.width}×${inspection.height} ${inspection.format.toUpperCase()}]` };
-    }
-    if (mimeType !== "application/octet-stream" && !["text/plain", "text/csv", "application/pdf", "text/calendar", "application/zip"].includes(mimeType)) fail("unsupported file MIME type");
-    return { attachment: makeAttachment("file", title, mimeType, bytes), caption: `[Shown to the user: file "${title}", ${bytes.length} bytes]` };
+    return binaryAttachment(title, mimeType, bytes);
   }
   fail("unsupported display block type");
 }

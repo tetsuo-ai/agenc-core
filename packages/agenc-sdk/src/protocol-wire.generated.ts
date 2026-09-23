@@ -2121,6 +2121,13 @@ export interface SessionTranscriptV2Message extends JsonObject {
     readonly commitEventId: string;
     readonly role: "user" | "assistant";
     readonly text: string;
+    /** Full UTF-8 text when the snapshot substitutes a bounded reference. */
+    readonly textArtifact?: {
+        readonly id: string;
+        readonly digest: string;
+        readonly size: number;
+        readonly mimeType: "text/plain";
+    };
     readonly turnId?: string;
     readonly clientMessageId?: string;
     /** Zero only for migrated response_item rows that predate event sequencing. */
