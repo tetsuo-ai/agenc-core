@@ -1,5 +1,5 @@
 import type { ProviderEnvironment } from "../llm/provider-options.js";
-import { API_IMAGE_MAX_BASE64_SIZE, IMAGE_TARGET_RAW_SIZE } from "../constants/apiLimits.js";
+import { API_IMAGE_MAX_BASE64_SIZE } from "../constants/apiLimits.js";
 import type { FunctionCallOutputContentItem } from "../tools/context.js";
 import { inspectImageBytes } from "../utils/image-validation.js";
 import { maybeResizeAndDownsampleImageBuffer } from "../utils/imageResizer.js";
@@ -31,7 +31,8 @@ import {
 /** One aggregate untrusted-work envelope for an MCP CallToolResult. */
 export const MCP_TOOL_RESULT_HARD_LIMIT_BYTES = 5 * 1024 * 1024;
 export const MAX_MCP_TOOL_RESULT_CONTENT_BLOCKS = 1_024;
-export const MAX_MCP_BASE64_INSPECTION_BYTES = MCP_TOOL_RESULT_HARD_LIMIT_BYTES;
+export const MAX_MCP_BASE64_INSPECTION_BYTES = 8 * 1024 * 1024;
+const MAX_MCP_INLINE_IMAGE_BYTES_PER_RESULT = 4 * 1024 * 1024;
 
 const MAX_MCP_META_BYTES = 64 * 1024;
 const MAX_MCP_META_NODES = 4_096;
@@ -42,8 +43,6 @@ const WORK_LIMIT_MARKER =
 const BINARY_OMITTED = "[Invalid or oversized MCP binary content omitted]";
 const IMAGE_OMITTED = "[MCP image omitted: invalid, unsupported, or oversized image]";
 const MAX_MCP_IMAGES_PER_RESULT = 4;
-const BASE64_VALUE_PATTERN =
-  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
 
 interface BinaryArtifact {
   readonly filepath: string;
@@ -66,7 +65,8 @@ interface RenderState {
   readonly safeContentBlocks: Array<Record<string, unknown>>;
   readonly textParts: string[];
   readonly binaryArtifacts: BinaryArtifact[];
-  readonly imageItems: FunctionCallOutputContentItem[];
+  readonly contentItems: FunctionCallOutputContentItem[];
+  imageUrlBytes: number;
   binaryBytes: number;
   imagesProcessed: number;
   base64InspectedBytes: number;
@@ -107,6 +107,7 @@ function appendStaticText(state: RenderState, text: string): void {
   const safe = sanitizeMcpOutputText(text);
   state.textParts.push(safe);
   state.safeContentBlocks.push({ type: "text", text: safe });
+  state.contentItems.push({ type: "input_text", text: safe });
 }
 
 function consumeSanitizedText(
@@ -138,6 +139,7 @@ function appendUntrustedText(state: RenderState, raw: string): void {
   if (safe === undefined) return;
   state.textParts.push(safe);
   state.safeContentBlocks.push({ type: "text", text: safe });
+  state.contentItems.push({ type: "input_text", text: safe });
 }
 
 function appendPrimitiveContent(state: RenderState, value: unknown): void {
@@ -210,7 +212,17 @@ function decodeBase64WithinBudget(
   const encoded = value.trim();
   if (encoded.length === 0 || encoded.length % 4 === 1) return undefined;
   const padded = `${encoded}${"=".repeat((4 - (encoded.length % 4)) % 4)}`;
-  if (!BASE64_VALUE_PATTERN.test(padded)) return undefined;
+  // Repeated capture groups can overflow V8's regexp stack on a valid
+  // multi-megabyte image. Scan once before the canonical round trip below.
+  for (let index = 0; index < padded.length; index += 1) {
+    const char = padded.charCodeAt(index);
+    if (
+      !((char >= 65 && char <= 90) ||
+        (char >= 97 && char <= 122) ||
+        (char >= 48 && char <= 57) ||
+        char === 43 || char === 47 || char === 61)
+    ) return undefined;
+  }
 
   const decoded = Buffer.from(padded, "base64");
   const canonicalInput = padded.replace(/=+$/u, "");
@@ -279,7 +291,7 @@ async function appendImage(
   if (
     state.imagesProcessed >= MAX_MCP_IMAGES_PER_RESULT ||
     typeof encoded !== "string" ||
-    encoded.length > API_IMAGE_MAX_BASE64_SIZE
+    encoded.length > MAX_MCP_BASE64_INSPECTION_BYTES
   ) {
     appendStaticText(state, IMAGE_OMITTED);
     return;
@@ -291,7 +303,7 @@ async function appendImage(
   const declaredMime = rawDeclaredMime === undefined
     ? undefined
     : sanitizeMimeType(state, rawDeclaredMime);
-  if (bytes === undefined || bytes.length > IMAGE_TARGET_RAW_SIZE) {
+  if (bytes === undefined) {
     appendStaticText(state, IMAGE_OMITTED);
     return;
   }
@@ -327,10 +339,12 @@ async function appendImage(
     appendStaticText(state, IMAGE_OMITTED);
     return;
   }
-  state.imageItems.push({
-    type: "input_image",
-    image_url: `data:${mediaType};base64,${base64}`,
-  });
+  const imageUrl = `data:${mediaType};base64,${base64}`;
+  const imageUrlBytes = Buffer.byteLength(imageUrl, "utf8");
+  if (state.imageUrlBytes + imageUrlBytes > MAX_MCP_INLINE_IMAGE_BYTES_PER_RESULT) {
+    appendStaticText(state, IMAGE_OMITTED);
+    return;
+  }
 
   const persisted = await persistBinaryContent(
     bytes,
@@ -341,6 +355,7 @@ async function appendImage(
     appendStaticText(state, "[MCP image could not be persisted]");
     return;
   }
+  state.imageUrlBytes += imageUrlBytes;
   state.binaryBytes += bytes.byteLength;
   state.binaryArtifacts.push({
     filepath: persisted.filepath,
@@ -357,6 +372,7 @@ async function appendImage(
       "MCP image: ",
     ),
   );
+  state.contentItems.push({ type: "input_image", image_url: imageUrl });
 }
 
 async function appendResource(
@@ -549,11 +565,12 @@ export async function normalizeMcpToolOutput(
   const record = asRecord(options.raw);
   const isError = record?.isError === true;
   const state: RenderState = {
-    budget: createMcpSanitizationBudget(MCP_TOOL_RESULT_HARD_LIMIT_BYTES),
+    budget: createMcpSanitizationBudget(MAX_MCP_BASE64_INSPECTION_BYTES),
     safeContentBlocks: [],
     textParts: [],
     binaryArtifacts: [],
-    imageItems: [],
+    contentItems: [],
+    imageUrlBytes: 0,
     binaryBytes: 0,
     imagesProcessed: 0,
     base64InspectedBytes: 0,
@@ -590,7 +607,9 @@ export async function normalizeMcpToolOutput(
     ? sanitizeStructuredValue(record.structuredContent, state.budget)
     : { omitted: false as const };
   if (structured.serialized !== undefined) {
-    state.textParts.push(`Structured content:\n${structured.serialized}`);
+    const structuredText = `Structured content:\n${structured.serialized}`;
+    state.textParts.push(structuredText);
+    state.contentItems.push({ type: "input_text", text: structuredText });
   } else if (hasStructuredContent) {
     state.omitted = true;
     appendStaticText(state, "[Oversized or invalid MCP structured content omitted]");
@@ -684,8 +703,13 @@ export async function normalizeMcpToolOutput(
 
   return {
     content,
-    ...(state.imageItems.length > 0
-      ? { contentItems: [{ type: "input_text" as const, text: content }, ...state.imageItems] }
+    ...(state.imageUrlBytes > 0
+      ? { contentItems: persistedPath === undefined && !persistenceFailed && !hardBound.truncated
+          ? state.contentItems
+          : [
+              { type: "input_text" as const, text: content },
+              ...state.contentItems.filter((item) => item.type === "input_image"),
+            ] }
       : {}),
     isError,
     codeModeResult,

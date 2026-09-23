@@ -26,6 +26,31 @@ type RolloutContentPart = Extract<
   ReadonlyArray<unknown>
 >[number];
 
+const MAX_DURABLE_TOOL_IMAGE_URL_BYTES = 5 * 1024 * 1024;
+const DURABLE_TOOL_IMAGE_OMITTED =
+  "[Image omitted from durable history: image byte limit reached]";
+
+function boundDurableToolImages(item: ResponseItem): ResponseItem {
+  if (item.role !== "tool" || !Array.isArray(item.content)) return item;
+  let imageBytes = 0;
+  let changed = false;
+  const content = item.content.map((part) => {
+    const image = part.type === "image_url" &&
+      typeof part.image_url === "object" && part.image_url !== null
+      ? part.image_url as { url?: unknown }
+      : undefined;
+    if (typeof image?.url !== "string") return part;
+    const bytes = Buffer.byteLength(image.url, "utf8");
+    if (imageBytes + bytes <= MAX_DURABLE_TOOL_IMAGE_URL_BYTES) {
+      imageBytes += bytes;
+      return part;
+    }
+    changed = true;
+    return { type: "text", text: DURABLE_TOOL_IMAGE_OMITTED };
+  });
+  return changed ? { ...item, content } : item;
+}
+
 export function llmMessageToResponseItem(message: LLMMessage): ResponseItem {
   assertLlmAgentInvocationMessage(message);
   return {
@@ -357,6 +382,7 @@ function redactResponseItemForPersistence(
     redacted = withoutReplay as ResponseItem;
   }
   redacted = withoutAlteredBinaryCarriers(item, redacted);
+  redacted = boundDurableToolImages(redacted);
   assertResponseAgentInvocationItem(redacted);
   if (integrity === undefined) return redacted;
   if (redacted.role !== "tool" || redacted.toolCallId === undefined) {
