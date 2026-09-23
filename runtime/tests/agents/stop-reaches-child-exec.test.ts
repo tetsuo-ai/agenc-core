@@ -395,6 +395,9 @@ function createScenario(options: ScenarioOptions): Scenario {
       })
     : undefined;
   if (providerService !== undefined && targetProvider !== undefined) {
+    vi.spyOn(providerService, "previewChildDestination").mockResolvedValue({
+      endpoint: "https://openrouter.ai/api/v1", authProfile: "api_key", billingSource: "byok",
+    });
     vi.spyOn(providerService, "prepareChild").mockImplementation(async (selection) => ({
       expectedRevision: 0,
       managedDefaultOutputCap: false,

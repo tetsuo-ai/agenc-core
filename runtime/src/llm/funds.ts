@@ -59,9 +59,11 @@ export function isProviderFundsFailure(providerName: string, error: unknown): bo
     if ((provider === "grok" || provider === "xai") && status === 403 &&
       (code === "personal-team-blocked:spending-limit" ||
         /you have run out of credits or need a grok subscription/.test(message))) return true;
+    const bodyError = record(record(item.body)?.error);
     if (provider === "gemini" &&
-      (code === "RESOURCE_EXHAUSTED" || record(item.error)?.status === "RESOURCE_EXHAUSTED") &&
-      geminiLongQuota(item)) return true;
+      (code === "RESOURCE_EXHAUSTED" || record(item.error)?.status === "RESOURCE_EXHAUSTED" ||
+       bodyError?.status === "RESOURCE_EXHAUSTED") &&
+      (geminiLongQuota(item) || geminiLongQuota(item.body))) return true;
     if (provider === "openrouter" && status === 429 && /requires more credits|insufficient credits|monthly limit/.test(message)) return true;
     current = item.cause ?? item.originalError;
   }

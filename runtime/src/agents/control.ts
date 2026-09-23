@@ -1565,6 +1565,8 @@ export class AgentControl {
   async resume(opts: {
     readonly parentPath: AgentPath;
     readonly metadata: AgentMetadata;
+    /** Rollout restores handles before runAgent binds their Sessions. */
+    readonly deferNestedPlanValidation?: boolean;
   }): Promise<LiveAgent | null> {
     const metadata = normalizeAgentMetadata(opts.metadata);
     if (metadata.terminalOutcome?.reason === "insufficient_funds") {
@@ -1606,6 +1608,7 @@ export class AgentControl {
 
     const role = resolveResumedAgentRole(this.roleCatalog, metadata);
     let planParentSession = this.session;
+    let deferredPlanValidation = false;
     if (metadata.executionPlan !== undefined) {
       try {
         if (metadata.executionPlan.parent.agentPath !== parentPath) {
@@ -1613,16 +1616,34 @@ export class AgentControl {
         }
         const planParent = parentPath === ROOT_AGENT_PATH
           ? this.session : liveAgentSession(this.getLiveByPath(parentPath)!);
-        if (planParent === undefined) throw new Error("parent session is not live for child plan recovery");
-        await assertChildExecutionPlan(planParent, metadata.executionPlan);
-        planParentSession = planParent;
+        if (planParent === undefined) {
+          if (!opts.deferNestedPlanValidation || parentPath === ROOT_AGENT_PATH ||
+              this.getLiveByPath(parentPath)?.agentId !== metadata.executionPlan.parent.sessionId) {
+            throw new Error("parent session is not live for child plan recovery");
+          }
+          // This restores only a handle. runAgent rechecks the complete plan
+          // against the bound parent Session before preparing or dispatching.
+          if (metadata.executionPlan.crossProvider) {
+            const consent = this.session.services.crossProviderConsent;
+            if (consent === undefined || !consentGrantCoversPlan(metadata.executionPlan,
+                consent.ownerSessionId, metadata.executionPlan.task.text,
+                metadata.executionPlan.task.attachments, consent.sessionEpoch)) {
+              throw new Error("resume_blocked: cross-provider child has no live consent grant");
+            }
+            assertCrossProviderAllowed(this.session, metadata.executionPlan.destination.provider);
+          }
+          deferredPlanValidation = true;
+        } else {
+          await assertChildExecutionPlan(planParent, metadata.executionPlan);
+          planParentSession = planParent;
+        }
       } catch (error) {
         throw new InvalidAgentMetadataError(
           `cannot resume child execution plan: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     }
-    if (metadata.crossProvider !== undefined) {
+    if (metadata.crossProvider !== undefined && !deferredPlanValidation) {
       try {
         if (metadata.executionPlan === undefined) {
           throw new Error("resume_blocked: cross-provider child has no persisted consent plan");
@@ -1819,6 +1840,7 @@ export class AgentControl {
           const childLive = await this.resumeSingleAgentFromRollout({
             parentPath: edge.parentPath,
             metadata: edge.metadata,
+            deferNestedPlanValidation: true,
           });
           if (!childLive) {
             continue;
@@ -1846,6 +1868,7 @@ export class AgentControl {
   async resumeSingleAgentFromRollout(opts: {
     readonly parentPath: AgentPath;
     readonly metadata: AgentMetadata;
+    readonly deferNestedPlanValidation?: boolean;
   }): Promise<LiveAgent | null> {
     return this.resume(opts);
   }

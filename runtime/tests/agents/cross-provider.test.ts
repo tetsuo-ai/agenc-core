@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../../src/config/schema.js";
-import { childModelInfo, createChildExecutionPlan, resolveChildSelection } from "../../src/agents/cross-provider.js";
+import { assertPreparedChildMatchesPlan, authorizeChildExecutionPlan, childModelInfo, createChildExecutionPlan, resolveChildSelection } from "../../src/agents/cross-provider.js";
 import { StaticModelsManager } from "../../src/llm/models-manager.js";
 import type { Session } from "../../src/session/session.js";
 
@@ -27,7 +27,87 @@ function sessionWithModels(provider: string, model: string, liveModels: string[]
 }
 
 describe("child provider selection", () => {
-  it("uses sign-in model tool capability when admitting a child", async () => {
+  it("does not discover with a child's credential before its endpoint and consent are checked", async () => {
+    const session = sessionWithModels("grok", "grok-4.6", ["grok-4.6"]);
+    const wire = vi.fn(async () => new Response("{}"));
+    const config = session.services.configStore.current();
+    Object.assign(session.services, { modelsManager: new StaticModelsManager({ config,
+      fallbackProvider: "grok", metadata: { env: {
+        DEEPSEEK_BASE_URL: "https://receiver.example/v1", DEEPSEEK_API_KEY: "child-secret",
+      }, fetchImpl: wire as typeof fetch } }) });
+    await childModelInfo(session, { provider: "deepseek", model: "deepseek-v4-pro" });
+    expect(wire).not.toHaveBeenCalled();
+  });
+
+  it("keeps same-provider managed AgenC admission under the default policy", async () => {
+    const session = sessionWithModels("agenc", "agenc", ["agenc"], {
+      agents: { cross_provider_enabled: false, allowed_providers: [] },
+    });
+    Object.assign(session, { conversationId: "managed-root",
+      sessionConfiguration: { cwd: "/repo", collaborationMode: { model: "agenc" } },
+      providerService: { current: () => ({ provider: "agenc", model: "agenc" }),
+        resolveManagedChildDestination: async () => ({ provider: "deepseek", model: "deepseek-v4-pro" }) } });
+    const plan = await createChildExecutionPlan({ session,
+      selection: { provider: "agenc", model: "agenc" },
+      modelInfo: { slug: "agenc", supportsToolUse: true } as Session["modelInfo"],
+      parentPath: "/root", taskId: "managed-task", taskName: "worker", taskText: "inspect",
+      toolFree: false, forkedHistory: false });
+    expect(plan.crossProvider).toBe(false);
+    expect(plan.destination.provider).toBe("deepseek");
+  });
+
+  it("does not ask the managed backend to infer a cross-provider destination before consent", async () => {
+    const session = sessionWithModels("grok", "grok-4.6", ["grok-4.6"], {
+      agents: { cross_provider_enabled: true, allowed_providers: ["agenc", "deepseek"] },
+    });
+    const infer = vi.fn(async () => ({ provider: "deepseek", model: "deepseek-v4-pro" }));
+    Object.assign(session, { conversationId: "managed-parent",
+      sessionConfiguration: { cwd: "/repo", collaborationMode: { model: "grok-4.6" } },
+      providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }),
+        resolveManagedChildDestination: infer,
+        previewChildDestination: async () => ({ endpoint: "https://api.agenc.ai/v1",
+          authProfile: "managed", billingSource: "managed" }) } });
+    await expect(createChildExecutionPlan({ session,
+      selection: { provider: "agenc", model: "agenc" },
+      modelInfo: { slug: "agenc", supportsToolUse: true } as Session["modelInfo"],
+      parentPath: "/root", taskId: "managed-task", taskName: "worker", taskText: "inspect",
+      toolFree: false, forkedHistory: false })).rejects.toThrow(/consent_unavailable/u);
+    expect(infer).not.toHaveBeenCalled();
+  });
+
+  it("discloses the managed route before inference and the concrete destination afterward", async () => {
+    const session = sessionWithModels("grok", "grok-4.6", ["grok-4.6"], {
+      agents: { cross_provider_enabled: true, allowed_providers: ["agenc", "deepseek"] },
+    });
+    const order: string[] = [];
+    Object.assign(session, { conversationId: "managed-parent",
+      sessionConfiguration: { cwd: "/repo", collaborationMode: { model: "grok-4.6" } },
+      providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }),
+        resolveManagedChildDestination: async () => { order.push("infer");
+          return { provider: "deepseek", model: "deepseek-v4-pro" }; },
+        previewChildDestination: async (_selection: unknown, concrete: { provider: string }) => ({
+          endpoint: concrete?.provider === "agenc" ? "https://id.agenc.ag/v1" : "https://api.deepseek.com/v1",
+          authProfile: "managed", billingSource: "managed" }),
+      } });
+    Object.assign(session.services, { crossProviderConsent: {
+      ownerSessionId: "managed-parent", sessionEpoch: "epoch",
+      request: async (_requester: Session, disclosure: { provider: string; taskId: string; scopeKey: string; payloadKey: string }) => {
+        order.push(`consent:${disclosure.provider}`);
+        return { kind: "granted" as const, grant: { kind: "once" as const,
+          ownerSessionId: "managed-parent", sessionEpoch: "epoch", taskId: disclosure.taskId,
+          scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey } };
+      },
+    } });
+    const proposed = await createChildExecutionPlan({ session,
+      selection: { provider: "agenc", model: "agenc" },
+      modelInfo: { slug: "agenc", supportsToolUse: true } as Session["modelInfo"],
+      parentPath: "/root", taskId: "managed-task", taskName: "worker", taskText: "inspect",
+      toolFree: false, forkedHistory: false });
+    expect(proposed.destination.provider).toBe("deepseek");
+    expect((await authorizeChildExecutionPlan(session, proposed)).kind).toBe("granted");
+    expect(order).toEqual(["consent:agenc", "infer", "consent:deepseek"]);
+  });
+  it("checks sign-in tool capability after consent on the pinned preparation", async () => {
     const session = sessionWithModels("grok", "grok-4.6", ["grok-4.6"], {
       agents: { cross_provider_enabled: true, allowed_providers: ["openai"] },
     });
@@ -35,6 +115,8 @@ describe("child provider selection", () => {
       conversationId: "sign-in-parent",
       sessionConfiguration: { cwd: "/workspace", collaborationMode: { model: "grok-4.6" } },
       providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }),
+        previewChildDestination: async () => ({ endpoint: "https://chatgpt.com/backend-api/codex",
+          authProfile: "sign_in", billingSource: "sign_in" }),
         prepareChild: async () => ({ authProfile: "sign_in", billingSource: "sign_in",
           signInModelCapabilities: { supportsToolUse: false },
           binding: { instance: { dispose: () => {} },
@@ -44,10 +126,13 @@ describe("child provider selection", () => {
       modelInfo: { slug: "gpt-6-luna", provider: "openai", supportsToolUse: true } as Session["modelInfo"],
       parentPath: "/root", taskId: "worker", taskName: "worker", taskText: "inspect",
       forkedHistory: false };
-    await expect(createChildExecutionPlan({ ...args, toolFree: false }))
-      .rejects.toThrow(/does not support client-side tool calling on this sign-in/u);
+    const normal = await createChildExecutionPlan({ ...args, toolFree: false });
+    expect(() => assertPreparedChildMatchesPlan(normal, {
+      authProfile: "sign_in", billingSource: "sign_in", signInModelCapabilities: { supportsToolUse: false },
+      binding: { provider: "openai", model: "gpt-6-luna", factoryOptions: { baseURL: "https://chatgpt.com/backend-api/codex" } },
+    } as never)).toThrow(/no longer supports child tools/u);
     const free = await createChildExecutionPlan({ ...args, toolFree: true });
-    expect(free.modelInfo.supportsToolUse).toBe(false);
+    expect(free.requiredCapabilities.clientTools).toBe(false);
   });
 
   it("admits a model on the sign-in list even if the API-key catalog lacks it", async () => {
@@ -59,11 +144,13 @@ describe("child provider selection", () => {
       binding: { instance: { dispose } } }));
     Object.assign(session, { providerService: {
       current: () => ({ provider: "grok", model: "grok-4.6" }), prepareChild,
+      previewChildDestination: async () => ({ endpoint: "https://chatgpt.com/backend-api/codex",
+        authProfile: "sign_in", billingSource: "sign_in" }),
     } });
     expect(await resolveChildSelection(session, "openai", "gpt-6-subscription-only"))
       .toEqual({ provider: "openai", model: "gpt-6-subscription-only" });
-    expect(prepareChild).toHaveBeenCalledOnce();
-    expect(dispose).toHaveBeenCalledOnce();
+    expect(prepareChild).not.toHaveBeenCalled();
+    expect(dispose).not.toHaveBeenCalled();
   });
   it("accepts a live-only local model with a real configStore and no provider", async () => {
     const session = sessionWithModels("ollama", "llama3.3", ["llama3.3", "team/custom-local"]);
@@ -92,19 +179,17 @@ describe("child provider selection", () => {
       .rejects.toThrow(/deepseek\/deepseek-v4-pro/u);
   });
 
-  it("uses the session's captured metadata resolver for another provider", async () => {
+  it("uses the local model registry before consent rather than the live metadata resolver", async () => {
     const session = sessionWithModels("grok", "grok-4.6", ["grok-4.6"]);
     const captured = { slug: "deepseek-v4-pro", provider: "deepseek", contextWindow: 777_777 };
-    const getModelInfoForProvider = async (provider: string, model: string) => {
-      expect([provider, model]).toEqual(["deepseek", "deepseek-v4-pro"]);
-      return captured;
-    };
+    const getModelInfoForProvider = vi.fn(async () => captured);
     Object.assign(session.services, { modelsManager: { getModelInfoForProvider } });
     expect(await childModelInfo(session, { provider: "deepseek", model: "deepseek-v4-pro" }))
-      .toBe(captured);
+      .toMatchObject({ slug: "deepseek-v4-pro", provider: "deepseek", supportsToolUse: true });
+    expect(getModelInfoForProvider).not.toHaveBeenCalled();
   });
 
-  it("uses captured environment and fetch for cross-provider metadata", async () => {
+  it("uses captured local environment without fetching cross-provider metadata", async () => {
     const session = sessionWithModels("grok", "grok-4.6", ["grok-4.6"]);
     const previous = process.env.DEEPSEEK_BASE_URL;
     process.env.DEEPSEEK_BASE_URL = "https://ambient.example/v1";
@@ -122,9 +207,9 @@ describe("child provider selection", () => {
           fetchImpl: fetchImpl as typeof fetch },
       }) });
       const info = await childModelInfo(session, { provider: "deepseek", model: "deepseek-v4-pro" });
-      expect(info.contextWindow).toBe(543_210);
-      expect(info.maxOutputTokens).toBe(4096);
-      expect(fetchImpl).toHaveBeenCalled();
+      expect(info.contextWindow).toBeGreaterThan(0);
+      expect(info.maxOutputTokens).toBe(64_000);
+      expect(fetchImpl).not.toHaveBeenCalled();
     } finally {
       if (previous === undefined) delete process.env.DEEPSEEK_BASE_URL;
       else process.env.DEEPSEEK_BASE_URL = previous;
@@ -142,6 +227,14 @@ describe("child provider selection", () => {
         resolveManagedChildDestination: async () => ({ provider: "deepseek", model: "deepseek-v4-pro" }),
       },
     });
+    Object.assign(session.services, { crossProviderConsent: {
+      ownerSessionId: "root", sessionEpoch: "epoch",
+      request: async (_requester: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+        kind: "granted" as const, grant: { kind: "once" as const,
+          ownerSessionId: "root", sessionEpoch: "epoch", taskId: disclosure.taskId,
+          scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey },
+      }),
+    } });
     await expect(createChildExecutionPlan({
       session, selection: { provider: "agenc", model: "agenc" },
       modelInfo: { slug: "agenc" } as Session["modelInfo"],

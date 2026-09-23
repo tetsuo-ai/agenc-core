@@ -44,7 +44,7 @@ interface ApprovalOwner {
   readonly undeliverable: Set<string>;
   readonly sessionEpoch: string;
   readonly consentSessionGrants: Set<string>;
-  readonly fundsStoppedTasks: Set<string>;
+  fundsStopObserved: boolean;
   readonly deniedConsentPayloads: Set<string>;
 }
 
@@ -107,7 +107,7 @@ export class LiveApprovalBroker {
       undeliverable: new Set(),
       sessionEpoch: randomUUID(),
       consentSessionGrants: new Set(),
-      fundsStoppedTasks: new Set(),
+      fundsStopObserved: false,
       deniedConsentPayloads: new Set(),
     };
     this.#owners.set(session.conversationId, owner);
@@ -117,7 +117,8 @@ export class LiveApprovalBroker {
     const unsubscribeRootFunds = typeof rootEventLog?.subscribe === "function"
       ? rootEventLog.subscribe((event) => {
         if (event.msg.type === "subagent_funds_notice") {
-          owner.fundsStoppedTasks.add(event.msg.payload.taskText);
+          owner.fundsStopObserved = true;
+          owner.consentSessionGrants.clear();
         }
       })
       : () => {};
@@ -131,7 +132,7 @@ export class LiveApprovalBroker {
     const consentService: CrossProviderConsentService = {
       ownerSessionId: owner.session.conversationId,
       sessionEpoch: owner.sessionEpoch,
-      request: (requestingSession, disclosure) => this.#requestCrossProviderConsent(owner, requestingSession, disclosure),
+      request: (requestingSession, disclosure, options) => this.#requestCrossProviderConsent(owner, requestingSession, disclosure, options),
     };
     services.crossProviderConsent = consentService;
     const subscriptions = new Set<() => void>();
@@ -145,7 +146,8 @@ export class LiveApprovalBroker {
       requestIds.set(requestingSession, ids);
       const unsubscribe = requestingSession.eventLog.subscribe((event) => {
         if (event.msg.type === "subagent_funds_notice") {
-          owner.fundsStoppedTasks.add(event.msg.payload.taskText);
+          owner.fundsStopObserved = true;
+          owner.consentSessionGrants.clear();
           return;
         }
         if (
@@ -316,6 +318,7 @@ export class LiveApprovalBroker {
     owner: ApprovalOwner,
     requestingSession: Session,
     disclosure: CrossProviderSpawnDisclosure,
+    options: { readonly fresh?: boolean } = {},
   ): Promise<CrossProviderConsentOutcome> {
     const unavailable = (reason: string): CrossProviderConsentOutcome => ({
       kind: "consent_unavailable", reason: `${reason} Continue this task yourself.`,
@@ -344,7 +347,10 @@ export class LiveApprovalBroker {
       sessionEpoch: owner.sessionEpoch, taskId: disclosure.taskId,
       scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey,
     });
-    if (!owner.fundsStoppedTasks.has(disclosure.taskText) &&
+    // Once any child hits a funds stop, task text cannot identify a retry.
+    // Session-wide fresh approval is intentionally stricter than lineage-only
+    // invalidation and cannot be evaded by changing the model's task wording.
+    if (options.fresh !== true && !owner.fundsStopObserved &&
         owner.consentSessionGrants.has(disclosure.scopeKey)) {
       return { kind: "granted", grant: grant("session") };
     }

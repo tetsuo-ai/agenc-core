@@ -639,6 +639,15 @@ describe("env info section", () => {
 });
 
 describe("assembleSystemPrompt", () => {
+  test("names the cross-provider child's actual provider and model in Environment", async () => {
+    const session = { ...fakeSession, modelInfo: { slug: "deepseek-v4-pro", provider: "deepseek" },
+      providerService: { current: () => ({ provider: "deepseek", model: "deepseek-v4-pro" }) } } as unknown as Session;
+    const prompt = await assembleSystemPrompt({ session, ctx: fakeCtx(), provider: "grok" });
+    const next = await assembleSystemPrompt({ session, ctx: fakeCtx(), provider: "grok" });
+    expect(prompt.text).toContain("Model: deepseek-v4-pro (provider: deepseek)");
+    expect(prompt.text).not.toContain("Model: grok-4-fast (provider: grok)");
+    expect(prompt.staticPrefix).toBe(next.staticPrefix);
+  });
   test("builds subagent prompts from explicit canonical inputs", () => {
     const prompt = assembleSubagentSystemPrompt({
       basePrompts: ["Review the change."],

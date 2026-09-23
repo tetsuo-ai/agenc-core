@@ -1,9 +1,54 @@
 import { describe, expect, test, vi } from "vitest";
 import { createPinnedProviderFetch, fetchProviderRequest } from "../../src/llm/credential-redirect-fetch.js";
-import { createProvider } from "../../src/llm/provider.js";
+import { createProvider, readProviderFactoryOptions } from "../../src/llm/provider.js";
 import { SessionProviderService } from "../../src/session/provider-service.js";
+import { wrapProviderForAgentSummary } from "../../src/agents/run-agent.js";
 
 describe("cross-provider outbound boundary", () => {
+  test("the summary-wrapped delegated child stays confined on its next preparation", async () => {
+    const parent = new SessionProviderService({
+      initialProvider: createProvider("grok", { model: "grok-4.7", apiKey: "parent" }),
+      environment: { DEEPSEEK_API_KEY: "child-secret" },
+    });
+    const selection = { provider: "deepseek", model: "deepseek-v4-pro" };
+    const prepared = await parent.prepareChild(selection, { model: selection.model });
+    const wrapped = wrapProviderForAgentSummary(prepared.binding.instance, () => {});
+    expect(readProviderFactoryOptions(wrapped).extra?.canonicalEndpointRequired).toBe(true);
+    const child = parent.forkForChild(wrapped, selection, selection);
+    await expect(child.prepare(selection, { model: selection.model,
+      baseURL: "https://receiver.example/v1", apiKey: "child-secret" }))
+      .rejects.toThrow(/default endpoint/u);
+  });
+
+  test("a custom child endpoint is refused by the local preview", async () => {
+    const wire = vi.fn<typeof fetch>();
+    const service = new SessionProviderService({
+      initialProvider: createProvider("grok", { model: "grok-4.7", apiKey: "parent" }),
+      environment: { DEEPSEEK_BASE_URL: "https://receiver.example/v1", DEEPSEEK_API_KEY: "secret" },
+      resolvePreparationRequest: (selection) => ({ requested: { model: selection.model,
+        extra: { fetchImpl: wire } } }),
+    });
+    await expect(service.previewChildDestination({ provider: "deepseek", model: "deepseek-v4-pro" }))
+      .rejects.toThrow(/default endpoint/u);
+    expect(wire).not.toHaveBeenCalled();
+  });
+
+  test("Grok's session fork preserves the child endpoint requirement through summary wrapping", async () => {
+    const parent = new SessionProviderService({
+      initialProvider: createProvider("deepseek", { model: "deepseek-v4-pro", apiKey: "parent" }),
+      environment: { GROK_API_KEY: "child-secret" },
+    });
+    const selection = { provider: "grok", model: "grok-4.7" };
+    const prepared = await parent.prepareChild(selection, { model: selection.model });
+    const wrapped = wrapProviderForAgentSummary(prepared.binding.instance, () => {});
+    const forked = wrapped.forkForSession?.({ conversationId: "grok-child" } as never);
+    expect(forked).toBeDefined();
+    expect(readProviderFactoryOptions(forked!).extra?.canonicalEndpointRequired).toBe(true);
+    const child = parent.forkForChild(forked!, selection, selection);
+    await expect(child.prepare(selection, { model: selection.model,
+      baseURL: "https://receiver.example/v1", apiKey: "child-secret" }))
+      .rejects.toThrow(/default endpoint/u);
+  });
   test("refuses a direct provider fetch to another origin before sending credentials", async () => {
     const wire = vi.fn<typeof fetch>(async () => new Response("ok"));
     const service = new SessionProviderService({

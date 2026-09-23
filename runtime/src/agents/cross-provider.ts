@@ -56,7 +56,8 @@ export type CrossProviderConsentOutcome =
 export interface CrossProviderConsentService {
   readonly ownerSessionId: string;
   readonly sessionEpoch: string;
-  request(session: Session, disclosure: CrossProviderSpawnDisclosure): Promise<CrossProviderConsentOutcome>;
+  request(session: Session, disclosure: CrossProviderSpawnDisclosure,
+    options?: { readonly fresh?: boolean }): Promise<CrossProviderConsentOutcome>;
 }
 
 export interface ChildExecutionPlan {
@@ -132,14 +133,23 @@ export async function createChildExecutionPlan(params: {
   readonly reasoningEffort?: ReasoningEffort;
   readonly serviceTier?: string;
   readonly toolAllowlist?: readonly string[];
-}): Promise<ChildExecutionPlan> {
+}, preliminaryManaged = false): Promise<ChildExecutionPlan> {
   const { session, selection } = params;
   const crossProvider = selection.provider !== currentChildProvider(session).provider;
   if (crossProvider) assertCrossProviderAllowed(session, selection.provider);
+  if (crossProvider && selection.provider === "agenc" && !preliminaryManaged) {
+    // Concrete managed routing may contact the authenticated AgenC backend.
+    // First disclose the locally known managed route, then request separate
+    // consent for the concrete provider/model after routing is resolved.
+    const preliminary = await createChildExecutionPlan(params, true);
+    const consent = await authorizeChildExecutionPlan(session, preliminary);
+    if (consent.kind !== "granted") throw new Error(`${consent.kind}: ${consent.reason}`);
+  }
   const destination = selection.provider === "agenc"
-    ? await session.providerService.resolveManagedChildDestination(selection.model)
+    ? preliminaryManaged ? selection
+      : await session.providerService.resolveManagedChildDestination(selection.model)
     : selection;
-  if (selection.provider === "agenc") assertCrossProviderAllowed(session, destination.provider);
+  if (crossProvider && selection.provider === "agenc") assertCrossProviderAllowed(session, destination.provider);
   if (selection.provider === "agenc" &&
       !(buildProviderModelCatalog(childCatalogConfig(session), { includeConfiguredSelection: true })[destination.provider] ?? [])
         .includes(destination.model)) {
@@ -156,33 +166,22 @@ export async function createChildExecutionPlan(params: {
     ? "local" : selection.provider === "agenc" ? "managed" :
       destination.provider === "amazon-bedrock" ? "aws_sigv4" : "api_key";
   let billingSource: ChildBillingSource = authProfile === "local" ? "local" : authProfile === "managed" ? "managed" : "byok";
-  let signInSupportsToolUse: boolean | undefined;
-  if (crossProvider && typeof session.providerService?.prepareChild === "function") {
-    const prepared = await session.providerService.prepareChild(selection, undefined, {}, true,
+  if (crossProvider && typeof session.providerService?.previewChildDestination === "function") {
+    // Disclose from local configuration; authenticated discovery follows consent.
+    const preview = await session.providerService.previewChildDestination(selection,
       selection.provider === "agenc" ? destination : undefined);
-    try {
-      endpoint = selection.provider === "agenc"
-        ? endpoint
-        : prepared.binding.factoryOptions?.baseURL ?? endpoint;
-      authProfile = prepared.authProfile ?? authProfile;
-      billingSource = prepared.billingSource ?? billingSource;
-      signInSupportsToolUse = prepared.signInModelCapabilities?.supportsToolUse;
-    } finally {
-      await prepared.binding.instance.dispose?.();
-    }
+    endpoint = preview.endpoint;
+    authProfile = preview.authProfile;
+    billingSource = preview.billingSource;
   } else if (!crossProvider) {
     endpoint = session.providerService?.current().factoryOptions?.baseURL ?? endpoint;
   }
   if (crossProvider) assertSupportedCrossProviderAuth(destination.provider, authProfile);
-  if (!params.toolFree && signInSupportsToolUse === false) {
-    throw new Error(`Model ${destination.provider}/${destination.model} does not support client-side tool calling on this sign-in. Set tool_free = true.`);
-  }
   return Object.freeze({
     version: 1 as const,
     route: Object.freeze({ ...selection }),
     destination: Object.freeze({ ...destination, endpoint: endpointIdentity(endpoint), authProfile, billingSource }),
-    modelInfo: freezeValue({ ...structuredClone(destinationModelInfo),
-      ...(signInSupportsToolUse !== undefined ? { supportsToolUse: signInSupportsToolUse } : {}) }),
+    modelInfo: freezeValue({ ...structuredClone(destinationModelInfo) }),
     catalogRevision: catalogRevision(session),
     requiredCapabilities: Object.freeze({ clientTools: !params.toolFree }),
     parent: Object.freeze({ sessionId: session.conversationId, agentPath: params.parentPath }),
@@ -279,14 +278,15 @@ export function consentGrantCoversPlan(
 }
 
 /** The only path that turns a proposed cross-provider plan into a dispatchable one. */
-export async function authorizeChildExecutionPlan(session: Session, plan: ChildExecutionPlan): Promise<
+export async function authorizeChildExecutionPlan(session: Session, plan: ChildExecutionPlan,
+  options: { readonly fresh?: boolean } = {}): Promise<
   { readonly kind: "granted"; readonly plan: ChildExecutionPlan } |
   { readonly kind: "consent_denied" | "consent_unavailable"; readonly reason: string }
 > {
   if (!plan.crossProvider) return { kind: "granted", plan };
   const service = (session.services as { readonly crossProviderConsent?: CrossProviderConsentService }).crossProviderConsent;
   if (service === undefined) return { kind: "consent_unavailable", reason: "No attached client can answer cross-provider consent. Continue this task yourself." };
-  const outcome = await service.request(session, buildCrossProviderDisclosure(plan));
+  const outcome = await service.request(session, buildCrossProviderDisclosure(plan), options);
   if (outcome.kind !== "granted") return outcome;
   const granted = withChildConsentGrant(plan, outcome.grant);
   if (!consentGrantCoversPlan(granted, service.ownerSessionId, plan.task.text,
@@ -319,7 +319,7 @@ export async function assertChildExecutionPlan(session: Session, plan: ChildExec
     throw new Error("child execution plan route changed");
   }
   if (plan.route.provider === "agenc") {
-    assertCrossProviderAllowed(session, plan.destination.provider);
+    if (plan.crossProvider) assertCrossProviderAllowed(session, plan.destination.provider);
     if (!(buildProviderModelCatalog(childCatalogConfig(session), { includeConfiguredSelection: true })[plan.destination.provider] ?? [])
         .includes(plan.destination.model)) {
       throw new Error("managed child destination is no longer in the catalog");
@@ -468,16 +468,12 @@ export async function resolveChildSelection(
   let knownModel = provider === active.provider
     ? isLiveLocalModel(model) || inheritedLocalModel
     : (catalog[provider] ?? []).includes(model);
+  // Account-specific sign-in models are admitted provisionally. Their live
+  // /models eligibility is checked through the pinned transport after consent.
   if (!knownModel && provider !== active.provider &&
-      typeof session.providerService?.prepareChild === "function") {
-    // A subscription can serve account-specific models absent from the
-    // platform API catalog. The sign-in's pinned /models response decides.
-    const prepared = await session.providerService.prepareChild({ provider, model });
-    try {
-      knownModel = prepared.authProfile === "sign_in";
-    } finally {
-      await prepared.binding.instance.dispose?.();
-    }
+      (provider === "openai" || provider === "grok") &&
+      typeof session.providerService?.previewChildDestination === "function") {
+    knownModel = (await session.providerService.previewChildDestination({ provider, model })).authProfile === "sign_in";
   }
   if (!knownModel) {
     const alternatives = Object.entries(catalog)
@@ -503,13 +499,9 @@ export async function childModelInfo(
         : await (session.services.modelsManager.getModelInfoForProvider?.(selection.provider, selection.model) ??
             session.services.modelsManager.getModelInfo(selection.model));
   }
-  const manager = session.services.modelsManager;
-  if (manager?.getModelInfoForProvider !== undefined) {
-    return await manager.getModelInfoForProvider(selection.provider, selection.model);
-  }
-  const entry = await new ModelRegistry({
+  const entry = new ModelRegistry({
     config: childCatalogConfig(session),
     metadata: { env: session.providerService?.environment?.() ?? session.services.providerEnvironment ?? {} },
-  }).resolve(selection);
+  }).resolveSync(selection);
   return modelRegistryEntryToModelInfo(entry);
 }

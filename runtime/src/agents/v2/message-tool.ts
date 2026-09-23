@@ -100,6 +100,24 @@ export async function handleMessageStringTool(
     return agentValidationError("target agent is missing an agent_path");
   }
   let assignedPlan: ChildExecutionPlan | undefined;
+  if (mode === "queue_only" && live?.metadata.executionPlan?.crossProvider) {
+    // A passive message is prepended to a later assignment. Obtain a fresh
+    // disclosure for its text before it enters the child's mailbox, even if
+    // the worker has a reusable session grant for assignments.
+    const caller = current.threadId === sessionOrError.conversationId
+      ? sessionOrError : liveAgentSession(control.getLive(current.threadId)!);
+    if (caller === undefined) return agentValidationError("consent_unavailable: calling session is no longer live");
+    const previous = live.metadata.executionPlan;
+    const proposed: ChildExecutionPlan = { ...previous,
+      task: { id: callId, name: previous.task.name, text: message, attachments: [] },
+      consentGrant: null,
+    };
+    const consent = await authorizeChildExecutionPlan(caller, proposed, { fresh: true });
+    if (consent.kind !== "granted") {
+      return confirmedNoAgentEffect(json({ code: consent.kind, error: consent.reason,
+        action: "Keep this message on the current provider or request consent again for a new task." }, true));
+    }
+  }
   if (mode === "trigger_turn" && live?.metadata.executionPlan?.crossProvider) {
     const caller = current.threadId === sessionOrError.conversationId
       ? sessionOrError : liveAgentSession(control.getLive(current.threadId)!);

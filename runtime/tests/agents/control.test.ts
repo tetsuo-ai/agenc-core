@@ -1262,7 +1262,9 @@ describe("AgentControl", () => {
       modelInfo: { slug: "grok-4.6", provider: "grok" },
       sessionConfiguration: { ...session.sessionConfiguration, cwd: "/workspace",
         collaborationMode: { model: "grok-4.6" } },
-      providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }), prepareChild },
+      providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }), prepareChild,
+        previewChildDestination: async () => ({ endpoint: "https://chatgpt.com/backend-api/codex",
+          authProfile: "sign_in", billingSource: "sign_in" }) },
       services: { ...session.services, configStore: { current: () => ({ model_provider: "grok",
         model: "grok-4.6", agents: { cross_provider_enabled: true, allowed_providers: ["openai"] } }) },
         crossProviderConsent: { ownerSessionId: "sign-in-root", sessionEpoch: "live-epoch",
@@ -1289,7 +1291,7 @@ describe("AgentControl", () => {
       executionPlan: authorized.plan,
     };
     await expect(control.resume({ parentPath: "/root", metadata })).rejects.toThrow(/resume_blocked/u);
-    expect(prepareChild).toHaveBeenCalledTimes(2);
+    expect(prepareChild).toHaveBeenCalledOnce();
   });
 
   it("resume() fails closed for named legacy metadata without workspace provenance", async () => {
@@ -2197,6 +2199,34 @@ describe("AgentControl", () => {
       rolloutStore.close();
       rmSync(cwd, { recursive: true, force: true });
     }
+  });
+
+  it("rehydrates a nested child with a persisted same-provider plan before parent sessions are bound", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-nested-plan-rollout-"));
+    const store = openRolloutStore({ cwd, sessionId: "nested-plan-root" });
+    try {
+      const session = stubSession({ cwd, rolloutStore: store, conversationId: "nested-plan-root" });
+      Object.assign(session, { modelInfo: { slug: "grok-4.7", provider: "grok", supportsToolUse: true },
+        sessionConfiguration: { cwd, collaborationMode: { model: "grok-4.7" } },
+        providerService: { current: () => ({ provider: "grok", model: "grok-4.7" }) },
+        services: { ...session.services, configStore: { current: () => ({ model_provider: "grok", model: "grok-4.7", agents: {} }) } } });
+      const control = new AgentControl({ session, registry: new AgentRegistry(), maxDepth: 3 });
+      const root = await control.spawn({ parentPath: "/root" });
+      seedRunningAgentRun(cwd, root.agentId);
+      const child = await control.spawn({ parentPath: root.agentPath });
+      const proposed = await createChildExecutionPlan({ session,
+        selection: { provider: "grok", model: "grok-4.7" },
+        modelInfo: session.modelInfo, parentPath: child.agentPath,
+        taskId: "grandchild-task", taskName: "planned", taskText: "inspect",
+        toolFree: false, forkedHistory: false });
+      const nestedPlan = { ...proposed, parent: { sessionId: child.agentId, agentPath: child.agentPath } };
+      const grandchild = await control.spawn({ parentPath: child.agentPath, executionPlan: nestedPlan });
+      await control.shutdownAll("manager_shutdown");
+      const resumed = await control.resumeAgentFromRollout({ rootThreadId: root.agentId,
+        parentPath: "/root", metadata: root.metadata });
+      expect(resumed.resumedCount).toBe(3);
+      expect(control.getLive(grandchild.agentId)?.metadata.executionPlan).toEqual(nestedPlan);
+    } finally { store.close(); rmSync(cwd, { recursive: true, force: true }); }
   });
 
   it("resumeAgentFromRollout() restores descendants on a fresh control plane restart", async () => {

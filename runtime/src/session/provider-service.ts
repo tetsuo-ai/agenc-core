@@ -11,6 +11,7 @@ import {
 } from "../llm/provider.js";
 import {
   requireProviderRuntimeCredential,
+  resolveProviderCredentialAuthority,
   resolveProviderRuntimeAuthority,
   snapshotProviderEnvironment,
   type ProviderEnvironment,
@@ -271,10 +272,80 @@ export class SessionProviderService {
       ...(this.#subscriptionTier !== undefined ? { subscriptionTier: this.#subscriptionTier } : {}),
       ...(this.#resolvePreparationRequest !== undefined
         ? { resolvePreparationRequest: this.#resolvePreparationRequest } : {}),
-      crossProviderProvenance: this.#crossProviderProvenance || pinnedChildProviders.has(provider) ||
+      crossProviderProvenance: this.#crossProviderProvenance || destinationLock !== undefined || pinnedChildProviders.has(provider) ||
         readProviderFactoryOptions(provider).extra?.canonicalEndpointRequired === true,
       ...(destinationLock !== undefined ? { destinationLock } : {}),
     });
+  }
+
+  /** Local-only destination preview for the consent card. No credential is
+   * refreshed, vended, or sent to a provider from this method. */
+  async previewChildDestination(selection: ProviderSelection, concreteDestination?: ProviderSelection): Promise<{
+    readonly endpoint: string;
+    readonly authProfile: "api_key" | "sign_in" | "managed" | "local" | "aws_sigv4";
+    readonly billingSource: "byok" | "sign_in" | "managed" | "local";
+  }> {
+    const provider = resolveBuiltInProviderSlug(selection.provider);
+    if (provider === undefined) throw new Error(`unknown provider "${selection.provider}"`);
+    if (provider === "agenc") {
+      if (concreteDestination === undefined) throw new Error("Managed AgenC child needs a concrete destination");
+      const info = resolveBuiltInProviderInfo(concreteDestination.provider);
+      if (info === undefined) throw new Error("Managed AgenC child resolved an unknown destination");
+      const routeInfo = resolveBuiltInProviderInfo("agenc")!;
+      const routeBaseURL = resolveProviderBaseURLEnvironment("agenc", this.#environment)?.value;
+      if (routeBaseURL !== undefined && new URL(routeBaseURL).href.replace(/\/+$/u, "") !==
+          new URL(routeInfo.baseURL).href.replace(/\/+$/u, "")) {
+        throw new Error("Cross-provider managed AgenC child requires its default endpoint");
+      }
+      return { endpoint: info.baseURL, authProfile: "managed", billingSource: "managed" };
+    }
+    const info = resolveBuiltInProviderInfo(provider)!;
+    const preparation = await this.#resolvePreparationRequest?.(selection);
+    if (preparation === undefined) throw new Error(`${provider} provider switch has no canonical preparation request`);
+    const requested = preparation.requested;
+    const credentialHome = requested.credentialHome ?? this.#credentialHome;
+    const authority = resolveProviderCredentialAuthority(provider, {
+      ...requested, ...(credentialHome !== undefined ? { credentialHome } : {}), model: selection.model,
+    }, this.#environment);
+    const managed = authority.credential.status === "missing" &&
+      preparation.runtime?.managedKeysEnabled === true &&
+      this.#authBackend !== undefined && this.#sessionId !== undefined;
+    const authProfile = managed ? "managed" as const
+      : authority.factoryOptions.extra?.authMode === "oauth" ? "sign_in" as const
+      : provider === "amazon-bedrock" ? "aws_sigv4" as const
+      : provider === "ollama" || provider === "lmstudio" ||
+        (provider === "openai-compatible" && !authority.factoryOptions.apiKey)
+        ? "local" as const : "api_key" as const;
+    const endpoint = provider === "openai" && authProfile === "sign_in"
+      ? CHATGPT_BACKEND_BASE_URL : info.baseURL;
+    const normalize = (value: string): string => {
+      try { return new URL(value).href.replace(/\/+$/u, ""); }
+      catch { return value.trim(); }
+    };
+    const configured = firstNonEmpty(requested.baseURL,
+      resolveProviderBaseURLEnvironment(provider, this.#environment)?.value,
+      authority.factoryOptions.baseURL);
+    if (configured !== undefined && normalize(configured) !== normalize(endpoint) &&
+        !(provider === "openai" && authProfile === "sign_in" && normalize(configured) === normalize(info.baseURL))) {
+      throw new Error(`Sub-agents on ${info.name} use its default endpoint, but a custom base URL is set`);
+    }
+    if (provider === "gemini") {
+      const runtimePlan = readGeminiRuntimeOptions(requested.extra)?.endpointPlan;
+      if (runtimePlan !== undefined && (runtimePlan.kind !== "developer" ||
+          normalize(runtimePlan.nativeBaseURL) !== normalize(info.baseURL))) {
+        throw new Error("Cross-provider Gemini child requires its default endpoint");
+      }
+    }
+    if (provider === "amazon-bedrock") {
+      const region = typeof requested.extra?.region === "string" ? requested.extra.region : undefined;
+      const regional = resolveBuiltInProviderRegionalEndpoint(provider, region);
+      if (regional !== undefined && normalize(regional.baseURL) !== normalize(info.baseURL)) {
+        throw new Error("Cross-provider Bedrock child requires its default endpoint");
+      }
+    }
+    assertSupportedCrossProviderAuth(provider, authProfile);
+    return { endpoint, authProfile, billingSource: authProfile === "sign_in" ? "sign_in"
+      : authProfile === "managed" ? "managed" : authProfile === "local" ? "local" : "byok" };
   }
 
   async prepare(

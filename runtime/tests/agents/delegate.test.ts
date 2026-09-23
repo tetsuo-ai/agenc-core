@@ -852,7 +852,7 @@ describe("delegate lifecycle recovery", () => {
           expect(spawnSpy.mock.calls[1]?.[0].providerSelection).toEqual(pair);
           expect(harness.rolloutStore.getThreadSpawnEdge(outcome.thread.threadId)?.metadata.crossProvider)
             .toMatchObject(pair);
-          expect(readSavedApiKey.mock.calls.length).toBeGreaterThanOrEqual(2);
+          expect(readSavedApiKey).toHaveBeenCalledOnce(); // credential lookup follows consent
         } else {
           expect(outcome.result.outcome).toBe("errored");
           expect(spawnSpy).toHaveBeenCalledTimes(1);

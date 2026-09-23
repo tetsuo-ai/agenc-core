@@ -750,6 +750,7 @@ Do not narrate each step, list every file you read, or explain routine actions. 
 // ─────────────────────────────────────────────────────────────────────
 
 export interface SystemPromptSessionSnapshot {
+  readonly providerService?: { current(): { readonly provider: string; readonly model: string } };
   readonly services?: {
     readonly runtimeOptions?: Partial<AgentRuntimeOptions>;
     readonly configStore?: ConfigStore;
@@ -1106,11 +1107,14 @@ export async function assembleSystemPrompt(
     session.services?.providerEnvironment,
   );
 
-  const model = ctx.config.model;
+  // The turn config can inherit the root model in a delegated child. Its
+  // session binding is the authority for the actual destination.
+  const childBinding = session.providerService?.current();
+  const model = childBinding?.model ?? ctx.modelInfo.slug ?? ctx.config.model;
   const cwd = ctx.cwd;
   const envInfoInputs: EnvInfoInputs = {
     model,
-    provider: opts.provider,
+    provider: childBinding?.provider ?? opts.provider,
     cwd,
     ...(session.services?.sandboxExecutionBroker !== undefined
       ? { sandboxExecutionBroker: session.services.sandboxExecutionBroker }

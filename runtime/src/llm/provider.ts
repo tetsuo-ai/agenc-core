@@ -1448,6 +1448,8 @@ function buildOpenAICompatibleProvider(
   const ProviderCtor = input.providerCtor ?? OpenAIProvider;
   const providerExtra = readProviderRuntimeExtra({
     ...(cfg as unknown as Record<string, unknown>),
+    ...(extra.canonicalEndpointRequired === true
+      ? { canonicalEndpointRequired: true } : {}),
     ...(extra.openAiCompatibility !== undefined
       ? { openAiCompatibility: extra.openAiCompatibility }
       : {}),
@@ -1800,6 +1802,8 @@ export function createProvider(
       }
       const storedExtra = readProviderRuntimeExtra({
         ...(cfg as unknown as Record<string, unknown>),
+        ...(extra.canonicalEndpointRequired === true
+          ? { canonicalEndpointRequired: true } : {}),
         ...(usesXaiOauth
           ? { authMode: "oauth" }
           : extra.authMode !== undefined

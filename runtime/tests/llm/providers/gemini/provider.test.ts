@@ -108,6 +108,17 @@ function providerWithFetch(fetchImpl: typeof fetch): GeminiProvider {
   });
 }
 
+test("a Gemini daily quota HTTP response stops after one wire attempt", async () => {
+  const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ error: {
+    status: "RESOURCE_EXHAUSTED", message: "Daily quota exhausted",
+    details: [{ violations: [{ quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier" }] }],
+  } }, { status: 429 }));
+  const provider = providerWithFetch(fetchImpl);
+  await expect(provider.chat([{ role: "user", content: "hello" }]))
+    .rejects.toMatchObject({ name: "LLMFundsError" });
+  expect(fetchImpl).toHaveBeenCalledOnce();
+});
+
 test("Gemini function responses omit tool images without serializing base64 as text", async () => {
   const fetchImpl = successfulGeminiFetch();
   const provider = providerWithFetch(fetchImpl);

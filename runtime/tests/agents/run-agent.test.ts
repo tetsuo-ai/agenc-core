@@ -830,7 +830,7 @@ describe("runAgent", () => {
       plan,
     }));
     expect(result.outcome).toBe("errored");
-    expect(dispose).toHaveBeenCalledTimes(2); // consent plan preflight and revoked run preparation
+    expect(dispose).toHaveBeenCalledOnce(); // only the post-consent run preparation
     expect(target.chatStream).not.toHaveBeenCalled();
   });
 

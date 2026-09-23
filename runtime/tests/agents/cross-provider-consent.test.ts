@@ -175,6 +175,24 @@ describe("live cross-provider consent", () => {
     } finally { fixture.close(); }
   });
 
+  it("requires a fresh visible approval for a passive message despite a session grant", async () => {
+    const fixture = interactiveFixture();
+    try {
+      const first = await pendingDecision(fixture);
+      fixture.broker.resolve("root-session", first.pending.requestId, { kind: "approved_for_session" },
+        { approvalKind: "cross_provider_spawn" });
+      expect((await first.promise).kind).toBe("granted");
+      const messagePlan = { ...plan, task: { ...plan.task, id: "message-1", text: "private update" } };
+      const pending = authorizeChildExecutionPlan(fixture.session, messagePlan, { fresh: true });
+      await vi.waitFor(() => expect(fixture.broker.list("root-session")).toHaveLength(1));
+      const card = fixture.broker.list("root-session")[0]!;
+      expect(card.crossProvider?.taskText).toBe("private update");
+      fixture.broker.resolve("root-session", card.requestId, { kind: "approved" },
+        { approvalKind: "cross_provider_spawn" });
+      expect((await pending).kind).toBe("granted");
+    } finally { fixture.close(); }
+  });
+
   it("asks for fresh consent when a funds-stopped task switches provider", async () => {
     const fixture = interactiveFixture();
     try {
@@ -198,6 +216,22 @@ describe("live cross-provider consent", () => {
       expect(next.pending.crossProvider).toMatchObject({ provider: "openrouter", model: "openai/gpt-5" });
       fixture.broker.resolve("root-session", next.pending.requestId, { kind: "denied" });
       expect((await next.promise).kind).toBe("consent_denied");
+    } finally { fixture.close(); }
+  });
+
+  it("retires reusable grants after a funds stop even when the retry text changes", async () => {
+    const fixture = interactiveFixture();
+    try {
+      const first = await pendingDecision(fixture);
+      fixture.broker.resolve("root-session", first.pending.requestId, { kind: "approved_for_session" },
+        { approvalKind: "cross_provider_spawn" });
+      expect((await first.promise).kind).toBe("granted");
+      fixture.publishFunds("Read the design");
+      const changed = { ...plan, task: { ...plan.task, id: "retry", text: "Read the design\n" } };
+      const retry = await pendingDecision(fixture, changed);
+      expect(retry.pending.crossProvider).toMatchObject({ taskText: "Read the design\n" });
+      fixture.broker.resolve("root-session", retry.pending.requestId, { kind: "denied" });
+      expect((await retry.promise).kind).toBe("consent_denied");
     } finally { fixture.close(); }
   });
 
