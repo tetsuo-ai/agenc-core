@@ -174,6 +174,8 @@ interface SkillWithContent {
   readonly skill: LocalSkillMetadata;
   readonly content: string;
   readonly filePath: string;
+  /** Real path of the file, for deduplication across roots. */
+  readonly identity: string | null;
 }
 
 interface SplitFrontmatter {
@@ -455,103 +457,155 @@ async function readDirEntries(path: string) {
   }
 }
 
-async function isDirectoryEntry(path: string, isSymlink: boolean): Promise<boolean> {
-  if (!isSymlink) return true;
-  try {
-    return (await stat(path)).isDirectory();
-  } catch {
-    return false;
-  }
+interface ScannedSkillFile {
+  /** Path as reached from the root; names the skill. */
+  readonly path: string;
+  /**
+   * Real path of the file, derived from the real path of its directory. The
+   * walk only records regular files, never links, so this equals
+   * realpath(path) without a syscall per file.
+   */
+  readonly identity: string;
 }
 
 interface SkillFileScan {
-  readonly files: readonly string[];
+  readonly files: readonly ScannedSkillFile[];
   readonly droppedCount: number;
-}
-
-interface MutableSkillFileScan {
-  readonly files: string[];
-  droppedCount: number;
-  readonly maxFiles: number;
+  readonly rootRealPath: string;
 }
 
 interface ScanFrame {
   readonly path: string;
+  readonly realPath: string;
   readonly depth: number;
 }
 
-type DirEntry = Awaited<ReturnType<typeof readDirEntries>>[number];
-
-async function isScannableDir(entry: DirEntry, path: string): Promise<boolean> {
-  if (!entry.isDirectory() && !entry.isSymbolicLink()) return false;
-  if (SKIP_DIRS.has(entry.name)) return false;
-  return isDirectoryEntry(path, entry.isSymbolicLink());
+interface PendingLink {
+  readonly path: string;
+  readonly depth: number;
 }
 
-async function topLevelScanFrames(root: string): Promise<ScanFrame[]> {
-  const frames: ScanFrame[] = [];
-  for (const entry of await readDirEntries(root)) {
-    const next = join(root, entry.name);
-    if (await isScannableDir(entry, next)) frames.push({ path: next, depth: 1 });
-  }
-  return frames;
-}
+/** Directory reads in flight per root; the threadpool does the rest. */
+const SCAN_CONCURRENCY = 32;
 
-/** Returns false when the directory (by real path) was already scanned. */
-async function markVisited(path: string, visited: Set<string>): Promise<boolean> {
-  const dirId = await getFileIdentity(path);
-  if (dirId === null) return true;
-  if (visited.has(dirId)) return false;
-  visited.add(dirId);
-  return true;
-}
-
-function recordSkillFile(scan: MutableSkillFileScan, file: string): void {
-  // Past the cap the walk keeps going but only counts, so the snapshot can
-  // say how many skills this root holds that were never loaded.
-  if (scan.files.length >= scan.maxFiles) scan.droppedCount += 1;
-  else scan.files.push(file);
-}
-
-async function scanSkillDir(
-  frame: ScanFrame,
-  scan: MutableSkillFileScan,
-  queue: ScanFrame[],
-): Promise<void> {
-  for (const entry of await readDirEntries(frame.path)) {
-    const next = join(frame.path, entry.name);
-    if (entry.isFile()) {
-      if (isSkillFile(next)) recordSkillFile(scan, next);
-      continue;
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index]!);
     }
-    if (frame.depth < MAX_SCAN_DEPTH && (await isScannableDir(entry, next))) {
-      queue.push({ path: next, depth: frame.depth + 1 });
-    }
-  }
-}
-
-async function findSkillFiles(root: string): Promise<SkillFileScan> {
-  const scan: MutableSkillFileScan = {
-    files: [],
-    droppedCount: 0,
-    maxFiles: maxSkillFilesPerRoot(),
   };
-  const queue = await topLevelScanFrames(root);
-  const visitedDirs = new Set<string>();
-  while (queue.length > 0) {
-    const frame = queue.shift()!;
-    if (await markVisited(frame.path, visitedDirs)) {
-      await scanSkillDir(frame, scan, queue);
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, worker),
+  );
+  return results;
+}
+
+function byPath<T extends { readonly path: string }>(a: T, b: T): number {
+  return a.path.localeCompare(b.path);
+}
+
+/**
+ * Every SKILL.md under a root, down to MAX_SCAN_DEPTH directory levels,
+ * skipping SKIP_DIRS and never loading a SKILL.md that is itself a link.
+ *
+ * The walk used to take one directory at a time: realpath, then readdir,
+ * then the next, so 2,950 directories of a 1,822-skill catalog cost 128 ms
+ * of serialized round trips to the threadpool. It now reads a whole level
+ * with bounded concurrency, and derives each directory's real path from its
+ * parent's, calling realpath only for symbolic links. Symlinked directories
+ * wait until every directory reachable without one has been walked, so a
+ * directory reached both ways keeps its own name instead of the link's.
+ * Files past the per-root cap are counted, shallowest and then
+ * alphabetically first loaded, the same way on every scan.
+ */
+async function findSkillFiles(root: string): Promise<SkillFileScan> {
+  const maxFiles = maxSkillFilesPerRoot();
+  const rootRealPath = (await getFileIdentity(root)) ?? resolve(root);
+  const visited = new Set<string>([rootRealPath]);
+  const loaded: ScannedSkillFile[] = [];
+  let droppedCount = 0;
+  const pendingLinks: PendingLink[] = [];
+
+  const walk = async (start: readonly ScanFrame[]): Promise<void> => {
+    let level = start;
+    while (level.length > 0) {
+      const listings = await mapWithConcurrency(
+        level,
+        SCAN_CONCURRENCY,
+        (frame) => readDirEntries(frame.path),
+      );
+      const found: ScannedSkillFile[] = [];
+      const next: ScanFrame[] = [];
+      level.forEach((frame, index) => {
+        for (const entry of listings[index]!) {
+          const path = join(frame.path, entry.name);
+          if (entry.isFile()) {
+            // Files directly in the root are never skills (leaf roots are
+            // handled by the caller).
+            if (frame.depth > 0 && isSkillFile(entry.name)) {
+              found.push({ path, identity: join(frame.realPath, entry.name) });
+            }
+            continue;
+          }
+          if (frame.depth >= MAX_SCAN_DEPTH || SKIP_DIRS.has(entry.name)) continue;
+          if (entry.isDirectory()) {
+            const realPath = join(frame.realPath, entry.name);
+            if (visited.has(realPath)) continue;
+            visited.add(realPath);
+            next.push({ path, realPath, depth: frame.depth + 1 });
+          } else if (entry.isSymbolicLink()) {
+            pendingLinks.push({ path, depth: frame.depth + 1 });
+          }
+        }
+      });
+      // Past the cap the walk keeps going but only counts, so the snapshot
+      // can say how many skills this root holds that were never loaded.
+      for (const file of found.sort(byPath)) {
+        if (loaded.length >= maxFiles) droppedCount += 1;
+        else loaded.push(file);
+      }
+      level = next;
     }
+  };
+
+  await walk([{ path: root, realPath: rootRealPath, depth: 0 }]);
+  while (pendingLinks.length > 0) {
+    const links = pendingLinks
+      .splice(0)
+      .sort((a, b) => a.depth - b.depth || byPath(a, b));
+    const targets = await mapWithConcurrency(
+      links,
+      SCAN_CONCURRENCY,
+      async (link): Promise<ScanFrame | null> => {
+        const realPath = await getFileIdentity(link.path);
+        if (realPath === null || !(await pathIsDirectory(realPath))) return null;
+        return { path: link.path, realPath, depth: link.depth };
+      },
+    );
+    const frames: ScanFrame[] = [];
+    for (const target of targets) {
+      if (target === null || visited.has(target.realPath)) continue;
+      visited.add(target.realPath);
+      frames.push(target);
+    }
+    await walk(frames);
   }
   return {
-    files: scan.files.toSorted((a, b) => a.localeCompare(b)),
-    droppedCount: scan.droppedCount,
+    files: loaded.toSorted(byPath),
+    droppedCount,
+    rootRealPath,
   };
 }
 
-function isSkillFile(filePath: string): boolean {
-  return basename(filePath).toLowerCase() === "skill.md";
+function isSkillFile(fileName: string): boolean {
+  return fileName.toLowerCase() === "skill.md";
 }
 
 function buildNamespace(targetDir: string, baseDir: string): string {
@@ -675,10 +729,11 @@ function escapeRegExp(value: string): string {
 }
 
 async function loadSkillFile(
-  filePath: string,
+  file: ScannedSkillFile | { readonly path: string; readonly identity: string | null },
   root: SkillRoot,
   warnings: SkillLoadWarning[],
 ): Promise<SkillWithContent | null> {
+  const filePath = file.path;
   if (!(await pathIsFile(filePath))) return null;
   let raw: string;
   try {
@@ -752,7 +807,7 @@ async function loadSkillFile(
     })(),
   };
 
-  return { skill, content: markdown, filePath };
+  return { skill, content: markdown, filePath, identity: file.identity };
 }
 
 interface LoadedSkillRoot {
@@ -763,7 +818,8 @@ interface LoadedSkillRoot {
 
 async function loadSkillsFromRoot(root: SkillRoot): Promise<LoadedSkillRoot> {
   const scan = await findSkillFiles(root.path);
-  const files = [...scan.files];
+  const files: Array<{ readonly path: string; readonly identity: string | null }> =
+    [...scan.files];
   // A root can BE one skill: plugin manifests may declare each skill
   // dir individually (skills: ["./skills/flash-board"]), so the root
   // itself carries the SKILL.md instead of holding child skill dirs.
@@ -771,7 +827,9 @@ async function loadSkillsFromRoot(root: SkillRoot): Promise<LoadedSkillRoot> {
     const leaf = join(root.path, SKILL_FILE_NAME);
     try {
       const stats = await stat(leaf);
-      if (stats.isFile()) files.push(leaf);
+      if (stats.isFile()) {
+        files.push({ path: leaf, identity: await getFileIdentity(leaf) });
+      }
     } catch {
       // Genuinely empty root.
     }
@@ -787,17 +845,13 @@ async function loadSkillsFromRoot(root: SkillRoot): Promise<LoadedSkillRoot> {
   };
 }
 
-async function dedupeSkillsByRealPath(
+function dedupeSkillsByRealPath(
   entries: readonly SkillWithContent[],
-): Promise<readonly SkillWithContent[]> {
-  const identities = await Promise.all(
-    entries.map((entry) => getFileIdentity(entry.filePath)),
-  );
+): readonly SkillWithContent[] {
   const seen = new Set<string>();
   const out: SkillWithContent[] = [];
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i]!;
-    const identity = identities[i];
+  for (const entry of entries) {
+    const identity = entry.identity;
     if (identity === null) {
       out.push(entry);
       continue;
@@ -878,7 +932,7 @@ export async function loadLocalSkillsSnapshot(
 ): Promise<LocalSkillsSnapshot> {
   const roots = await discoverSkillRoots(options, discoveredSkillRoots);
   const loadedNested = await Promise.all(roots.map(loadSkillsFromRoot));
-  const deduped = await dedupeSkillsByRealPath(
+  const deduped = dedupeSkillsByRealPath(
     loadedNested.flatMap((loaded) => loaded.skills),
   );
   const truncatedRoots = loadedNested.flatMap((loaded, index) =>
