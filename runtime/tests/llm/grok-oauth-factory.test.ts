@@ -15,6 +15,7 @@ const CREDENTIAL_HOME = resolveHomeContext(
 )
 
 let storedAccessToken: string | undefined
+let previousAccessTokens = new Set<string>()
 let requiresRelogin = true
 const forceRefreshMock = vi.fn()
 
@@ -23,7 +24,7 @@ async function importProviderModule() {
   vi.doMock(credentialsModulePath, () => ({
     readXaiOauthAccessToken: () => storedAccessToken,
     isXaiOauthBearer: (_home: unknown, key: string | undefined) =>
-      key !== undefined && key === storedAccessToken,
+      key !== undefined && (key === storedAccessToken || previousAccessTokens.has(key)),
     forceRefreshXaiOauthCredentials: forceRefreshMock,
     xaiOauthRequiresRelogin: () => requiresRelogin,
   }))
@@ -50,6 +51,7 @@ async function importProviderModule() {
 
 beforeEach(() => {
   storedAccessToken = undefined
+  previousAccessTokens = new Set()
   requiresRelogin = true
   forceRefreshMock.mockReset()
 })
@@ -195,6 +197,23 @@ test('composer never passes a stored sign-in token as its CLI API key', async ()
     credentialHome: CREDENTIAL_HOME,
     extra: { grokAcp: { environment: {} } },
   })).toThrow(/refusing to pass the xAI sign-in token/)
+})
+
+test('composer rejects a rotated sign-in token selected from the environment for a custom URL', async () => {
+  storedAccessToken = 'oauth-bearer-1'
+  const { createProviderRaw, resolveProviderFactoryOptions } = await importProviderModule()
+  previousAccessTokens.add(storedAccessToken)
+  storedAccessToken = 'oauth-bearer-2'
+  const options = resolveProviderFactoryOptions('grok', {
+    model: 'grok-composer-2.5-fast',
+    credentialHome: CREDENTIAL_HOME,
+    extra: { grokAcp: { environment: {
+      XAI_API_KEY: 'oauth-bearer-1',
+      XAI_BASE_URL: 'https://gateway.example.test/v1',
+    } } },
+  }, { XAI_API_KEY: 'oauth-bearer-1', XAI_BASE_URL: 'https://gateway.example.test/v1' })
+  expect(options.apiKey).toBe('oauth-bearer-1')
+  expect(() => createProviderRaw('grok', options)).toThrow(/refusing to pass the xAI sign-in token/)
 })
 
 test('API-key mode cannot re-label the stored sign-in token as a gateway key', async () => {
@@ -361,6 +380,7 @@ test('a stale OAuth snapshot cannot become a gateway API key', async () => {
     model: 'grok-4.5',
     credentialHome: CREDENTIAL_HOME,
   })
+  previousAccessTokens.add(storedAccessToken)
   storedAccessToken = 'fake-xai-sign-in-token-2'
   expect(() => resolveProviderFactoryOptions('grok', {
     ...readProviderFactoryOptions(first),

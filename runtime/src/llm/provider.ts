@@ -1599,15 +1599,11 @@ export function createProvider(
             "grok composer provider requires a prepared child environment in factory options extra",
           );
         }
-        const storedOauthBearer =
-          opts.credentialHome === undefined
-            ? undefined
-            : readXaiOauthAccessToken(opts.credentialHome);
         if (
-          storedOauthBearer !== undefined &&
-          (factoryApiKey === storedOauthBearer ||
-            acpEnvironment.XAI_API_KEY === storedOauthBearer ||
-            acpEnvironment.GROK_API_KEY === storedOauthBearer)
+          opts.credentialHome !== undefined &&
+          (isXaiOauthBearer(opts.credentialHome, factoryApiKey) ||
+            isXaiOauthBearer(opts.credentialHome, acpEnvironment.XAI_API_KEY) ||
+            isXaiOauthBearer(opts.credentialHome, acpEnvironment.GROK_API_KEY))
         ) {
           throw new Error(
             "grok composer provider: refusing to pass the xAI sign-in token to the Grok CLI as an API key",

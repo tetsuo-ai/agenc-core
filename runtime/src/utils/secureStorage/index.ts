@@ -146,8 +146,11 @@ export interface SecureStorageData {
     lastRefreshFailureAt?: number
   }
   /** xAI OAuth (Sign in with X / Grok subscription) tokens. */
+  /** Revoked bearer hashes survive sign-out without retaining live tokens. */
+  xaiOauthRevokedAccessTokenHashes?: string[]
   xaiOauth?: {
     accessToken: string
+    previousAccessTokenHashes?: string[]
     refreshToken?: string
     idToken?: string
     expiresAt?: number

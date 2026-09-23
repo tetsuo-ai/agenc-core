@@ -53,6 +53,7 @@ import {
   resolveXaiLiveWebSearchOptions,
   resolveXaiLiveXSearchOptions,
 } from "../llm/xai-capability-config.js";
+import { isTrustedXaiOauthInferenceBaseUrl } from "../services/xai/oauth.js";
 import {
   BUILT_IN_PROVIDER_BASE_URLS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
@@ -1273,6 +1274,9 @@ function buildGrokNativeXSearchProvider(
   })();
   const extra: ProviderFactoryOptions["extra"] = {
     // One-shot only: native x_search, no dual continuous web search spam.
+    ...(!isTrustedXaiOauthInferenceBaseUrl(backend.baseURL)
+      ? { authMode: "api_key" as const }
+      : {}),
     webSearch: false,
     xSearch: true,
     ...(mergedXSearchOptions !== undefined

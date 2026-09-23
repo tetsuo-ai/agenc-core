@@ -197,6 +197,88 @@ describe("provider credential authority", () => {
     )).toBe("byok");
   });
 
+  test("custom Grok URL uses the explicit gateway key before environment or saved keys", async () => {
+    const home = await createHome("explicit-gateway");
+    const { providerOptions, xaiCredentials } = await loadCredentialModules();
+    xaiCredentials.saveXaiOauthCredentials(home, { accessToken: "oauth-token" });
+    const resolved = providerOptions.resolveProviderCredentialAuthority(
+      "grok",
+      { credentialHome: home, model: "grok-4.6", apiKey: "gateway-key",
+        baseURL: "https://gateway.example.test/v1" },
+      { XAI_API_KEY: "other-endpoint-env-key" },
+      { savedApiKey: "other-endpoint-saved-key" },
+    );
+    expect(resolved.factoryOptions.apiKey).toBe("gateway-key");
+    expect(resolved.factoryOptions.extra?.authMode).toBe("api_key");
+  });
+
+  test("XSearch uses the selected key on a custom URL and keeps direct OAuth while signed in", async () => {
+    const home = await createHome("xsearch-custom");
+    const { xaiCredentials } = await loadCredentialModules();
+    xaiCredentials.saveXaiOauthCredentials(home, { accessToken: "oauth-token" });
+    const { createProvider } = await import("../../src/llm/provider.js");
+    const { createModelFacingTools } = await import("../../src/bin/model-facing-tools.js");
+    const { runWithStartupProviderSelection } = await import("../../src/utils/model/providers.js");
+    const sessionProvider = createProvider("grok", {
+      credentialHome: home, apiKey: "gateway-key", model: "grok-4.6",
+      baseURL: "https://gateway.example.test/v1", extra: { authMode: "api_key" },
+    });
+    const chat = vi.fn(async () => ({
+      content: "Found a post https://x.com/xai/status/1", toolCalls: [],
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      model: "grok-4.6", finishReason: "stop" as const,
+      providerEvidence: { citations: ["https://x.com/xai/status/1"],
+        serverSideToolCalls: [{ type: "x_search_call", toolType: "x_search", id: "c1" }] },
+    }));
+    const factory = vi.fn((...args: Parameters<typeof createProvider>) =>
+      Object.assign(createProvider(...args), { chat }));
+    const environment = { AGENC_HOME: home.path, XAI_API_KEY: "gateway-key",
+      XAI_BASE_URL: "https://gateway.example.test/v1" };
+    await runWithStartupProviderSelection({ provider: "grok", model: "grok-4.6",
+      environment }, async () => {
+      const tools = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        agencHome: home.path,
+        getSession: () => ({ conversationId: "xsearch-custom", nextInternalSubId: () => "xsearch-1",
+          services: { admissionRequired: false, provider: sessionProvider } }) as never,
+        sessionProvider: "grok", sessionBaseURL: "https://gateway.example.test/v1",
+        env: environment,
+        grokCapabilities: { x_search: true }, providerFactory: factory,
+      });
+      const result = await tools.find((tool) => tool.name === "XSearch")!.execute({ query: "xAI" });
+      expect(result.isError).toBeUndefined();
+      expect(factory).toHaveBeenCalledWith("grok", expect.objectContaining({
+        apiKey: "gateway-key", baseURL: "https://gateway.example.test/v1",
+        extra: expect.objectContaining({ authMode: "api_key" }),
+      }));
+      expect(chat).toHaveBeenCalled();
+    });
+
+    factory.mockClear();
+    chat.mockClear();
+    const metaProvider = createProvider("meta", {
+      apiKey: "meta-key", model: "muse-spark-1.3", baseURL: "https://api.meta.ai/v1",
+    });
+    await runWithStartupProviderSelection({ provider: "meta", model: "muse-spark-1.3",
+      environment: { AGENC_HOME: home.path } }, async () => {
+      const directTools = createModelFacingTools({
+        workspaceRoot: process.cwd(), agencHome: home.path,
+        getSession: () => ({ conversationId: "xsearch-oauth", nextInternalSubId: () => "xsearch-2",
+          services: { admissionRequired: false, provider: metaProvider } }) as never,
+        sessionProvider: "meta", env: { AGENC_HOME: home.path },
+        grokCapabilities: { x_search: true }, providerFactory: factory,
+      });
+      const directResult = await directTools.find((tool) => tool.name === "XSearch")!
+        .execute({ query: "xAI" });
+      expect(directResult.isError).toBeUndefined();
+      expect(factory).toHaveBeenCalledWith("grok", expect.objectContaining({
+        apiKey: "oauth-token", baseURL: "https://api.x.ai/v1",
+      }));
+      expect(factory.mock.calls[0]?.[1].extra?.authMode).toBeUndefined();
+      expect(chat).toHaveBeenCalled();
+    });
+  });
+
   test.each(["XAI_API_KEY", "GROK_API_KEY"] as const)(
     "Grok media uses %s for a custom URL in automatic mode", async (keyName) => {
       const home = await createHome("grok-media-custom-auto");

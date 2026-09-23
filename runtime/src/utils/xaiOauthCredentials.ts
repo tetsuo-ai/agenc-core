@@ -113,9 +113,16 @@ export function isXaiOauthBearer(
 ): boolean {
   if (!apiKey) return false
   const blob = readXaiOauthCredentials(home)
-  return blob !== undefined &&
-    (blob.accessToken === apiKey ||
-      blob.previousAccessTokenHashes?.includes(accessTokenHash(apiKey)) === true)
+  if (blob?.accessToken === apiKey ||
+    blob?.previousAccessTokenHashes?.includes(accessTokenHash(apiKey)) === true) {
+    return true
+  }
+  try {
+    return readNativeSecureStorage(home).xaiOauthRevokedAccessTokenHashes
+      ?.includes(accessTokenHash(apiKey)) === true
+  } catch {
+    return false
+  }
 }
 
 function accessTokenHash(token: string): string {
@@ -179,6 +186,14 @@ export function clearXaiOauthCredentials(
       home,
       current => {
         const next = { ...current }
+        const previous = current.xaiOauth
+        if (previous !== undefined) {
+          next.xaiOauthRevokedAccessTokenHashes = [...new Set([
+            ...(current.xaiOauthRevokedAccessTokenHashes ?? []),
+            ...(previous.previousAccessTokenHashes ?? []),
+            accessTokenHash(previous.accessToken),
+          ])]
+        }
         delete next[XAI_OAUTH_STORAGE_KEY]
         return next
       },

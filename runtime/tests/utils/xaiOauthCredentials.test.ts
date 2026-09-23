@@ -104,6 +104,26 @@ test('save/read/clear round trip', async () => {
   expect(readXaiOauthCredentials(home)).toBeUndefined()
 })
 
+test('logout retains rotated bearer history so an old token cannot become a gateway API key', async () => {
+  const { clearXaiOauthCredentials, isXaiOauthBearer, readXaiOauthCredentials,
+    saveXaiOauthCredentials } =
+    await importFreshModule()
+  expect(saveXaiOauthCredentials(home, storedBlob({ accessToken: 'access-1' })).success).toBe(true)
+  expect(saveXaiOauthCredentials(home, storedBlob({ accessToken: 'access-2' })).success).toBe(true)
+  expect(isXaiOauthBearer(home, 'access-1')).toBe(true)
+  expect(clearXaiOauthCredentials(home).success).toBe(true)
+  expect(readXaiOauthCredentials(home)).toBeUndefined()
+  expect(isXaiOauthBearer(home, 'access-1')).toBe(true)
+  expect(isXaiOauthBearer(home, 'access-2')).toBe(true)
+  expect(saveXaiOauthCredentials(home, storedBlob({ accessToken: 'access-3' })).success).toBe(true)
+  expect(isXaiOauthBearer(home, 'access-1')).toBe(true)
+  const { createProvider } = await import('../../src/llm/provider.js')
+  expect(() => createProvider('grok', {
+    credentialHome: home, apiKey: 'access-1', model: 'grok-4.6',
+    baseURL: 'https://gateway.example.test/v1', extra: { authMode: 'api_key' },
+  })).toThrow(/refusing to use the stored xAI sign-in token as an API key/)
+})
+
 test('quarantined credentials do not surface a bearer', async () => {
   const { readXaiOauthAccessToken, saveXaiOauthCredentials } =
     await importFreshModule()

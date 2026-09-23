@@ -530,7 +530,7 @@ function resolveProviderCredentialAuthorityCore(
   ) {
     const fallbackApiKey = authPreference === "auto"
       ? [
-          requested.extra?.authMode === "api_key" ? explicitApiKey : undefined,
+          explicitApiKey,
           environmentApiKey,
           nonEmpty(candidates.savedApiKey),
         ]
