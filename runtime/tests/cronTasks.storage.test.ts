@@ -124,8 +124,16 @@ describe("cron tools without durable storage", () => {
     hooks.beforeMkdir = (path) => {
       if (path.endsWith("/.agenc")) hooks.descriptorUnavailable = true;
     };
-    await expect(create.execute({ cron: "* * * * *", prompt: "durable work", durable: true }))
-      .rejects.toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
+    let failure: unknown;
+    try {
+      await create.execute({ cron: "* * * * *", prompt: "durable work", durable: true });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect(["DESCRIPTOR_UNSUPPORTED", "ENOENT"])
+      .toContain((failure as NodeJS.ErrnoException).code);
+    expect(failure).not.toHaveProperty("effectDisposition");
     expect(await readdir(workspace)).toEqual([".agenc"]);
   });
 

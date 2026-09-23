@@ -96,17 +96,17 @@ async function flush(): Promise<void> {
 }
 
 /** Advance virtual time AND flush async work between each fired timer. */
-async function advanceAndFlush(clock: FakeClock, ms: number): Promise<void> {
+async function advanceAndFlush(clock: FakeClock, ms: number, stepMs = 60_000): Promise<void> {
   // The driver's onWake is async and re-arms a timer only after awaiting. So
   // step in small slices, flushing microtasks after each, until we've covered
   // the whole window.
   const end = clock.nowMs + ms;
   while (clock.nowMs < end) {
     const before = clock.nowMs;
-    clock.advance(Math.min(60_000, end - clock.nowMs));
+    clock.advance(Math.min(stepMs, end - clock.nowMs));
     await flush();
     // Guard against zero-progress (no timer in this slice).
-    if (clock.nowMs === before) clock.nowMs = Math.min(end, before + 60_000);
+    if (clock.nowMs === before) clock.nowMs = Math.min(end, before + stepMs);
   }
 }
 
@@ -149,6 +149,66 @@ function makeScheduler(
 describe("CronScheduler", () => {
   beforeEach(() => {
     setScheduledTasksEnabled(true);
+  });
+
+  test.each([
+    { cadence: "hourly", cron: "1 * * * *" },
+    { cadence: "daily", cron: "1 12 * * *" },
+  ])("retries a failed $cadence durable one-shot after backoff", async ({ cron }) => {
+    const clock = new FakeClock(new Date(2026, 6, 7, 12, 0, 30).getTime());
+    const due = task({
+      id: "recovering-one-shot",
+      cron,
+      createdAt: clock.nowMs,
+      recurring: false,
+      durable: true,
+    });
+    const attempts: number[] = [];
+    const scheduler = makeScheduler(clock, [due], () => {
+      attempts.push(clock.nowMs);
+      return attempts.length === 1 ? "cancelled" : "accepted";
+    });
+
+    scheduler.start(TEST_ACTIVATION);
+    await flush();
+    await advanceAndFlush(clock, 3 * 60_000, 30_000);
+
+    expect(attempts.map((at) => at - due.createdAt)).toEqual([30_000, 150_000]);
+    expect(scheduler.isPaused()).toBe(false);
+    scheduler.stop();
+  });
+
+  test("a frequent session job cannot bypass another task's durable-claim backoff", async () => {
+    const clock = new FakeClock(new Date(2026, 6, 7, 12, 0, 30).getTime());
+    const durable = task({
+      id: "failing-durable",
+      cron: "* * * * *",
+      createdAt: clock.nowMs,
+      durable: true,
+    });
+    const session = task({
+      id: "minute-session",
+      cron: "* * * * *",
+      createdAt: clock.nowMs,
+    });
+    const durableAttempts: number[] = [];
+    const sessionFires: number[] = [];
+    const scheduler = makeScheduler(clock, [durable, session], (_command, due) => {
+      if (due.id === durable.id) {
+        durableAttempts.push(clock.nowMs - durable.createdAt);
+        return "cancelled";
+      }
+      sessionFires.push(clock.nowMs - session.createdAt);
+      return "accepted";
+    });
+
+    scheduler.start(TEST_ACTIVATION);
+    await flush();
+    await advanceAndFlush(clock, 5 * 60_000, 30_000);
+
+    expect(durableAttempts).toEqual([30_000, 150_000]);
+    expect(sessionFires).toEqual([30_000, 90_000, 150_000, 210_000, 270_000]);
+    scheduler.stop();
   });
 
   test("failed minute durable claims leave the hourly session turn and invocation budget available", async () => {

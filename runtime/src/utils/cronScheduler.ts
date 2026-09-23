@@ -472,6 +472,12 @@ export class CronScheduler {
       if (!this.isCurrentActivation(activation, generation) || this.paused) {
         return;
       }
+      // Another task can wake this scheduler before a failed durable claim's
+      // retry timer. Enforce the deadline here as well as in timer selection.
+      const claimBackoff = this.durableClaimBackoff.get(task.id);
+      if (claimBackoff !== undefined && this.deps.monotonicNow() < claimBackoff.untilMono) {
+        continue;
+      }
       const occurrences = this.dueOccurrences(task, now);
       if (occurrences === 0) continue;
 
@@ -509,6 +515,7 @@ export class CronScheduler {
       // Advance the effective anchor past everything we just coalesced so the
       // next reschedule resolves this task to a FUTURE slot — never the same
       // past-due instant (which would re-fire in a tight loop / busy-spin).
+      const previouslyFiredThrough = this.firedThrough.get(task.id);
       this.firedThrough.set(task.id, now);
       const queueOwner =
         task.durable === false ? task.queueOwner : activation.queueOwner;
@@ -541,6 +548,10 @@ export class CronScheduler {
         }
         if (result === "cancelled") {
           if (task.durable !== false) {
+            // The claim was never accepted. Leave its schedule anchor in place
+            // so the same slot remains due when backoff expires.
+            if (previouslyFiredThrough === undefined) this.firedThrough.delete(task.id);
+            else this.firedThrough.set(task.id, previouslyFiredThrough);
             const failures = (this.durableClaimBackoff.get(task.id)?.failures ?? 0) + 1;
             this.durableClaimBackoff.set(task.id, {
               failures,
