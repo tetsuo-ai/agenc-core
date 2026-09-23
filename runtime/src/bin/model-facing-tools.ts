@@ -4482,7 +4482,7 @@ async function initializeCsvRecoverySupervisor(opts: {
     return null;
   }
   const { control, registry } = ensureAgentControl(opts.session);
-  const { backgroundTaskLifecycle, registerAgentThreadTask } =
+  const { backgroundTaskLifecycleForSession, registerAgentThreadTask } =
     await import("../tasks/index.js");
   opts.signal?.throwIfAborted();
   const outstandingThreadIds = new Map<string, Set<string>>();
@@ -4570,11 +4570,15 @@ async function initializeCsvRecoverySupervisor(opts: {
       const thread = outcome.thread;
       threadIdsForJob(ctx.jobId).add(thread.threadId);
       try {
-        registerAgentThreadTask(backgroundTaskLifecycle, thread as never, {
-          description: `csv-job:${ctx.itemId}`,
-          prompt: `CSV job item ${ctx.itemId}`,
-          runtimeOptions: opts.session.services.runtimeOptions,
-        });
+        registerAgentThreadTask(
+          backgroundTaskLifecycleForSession(opts.session),
+          thread as never,
+          {
+            description: `csv-job:${ctx.itemId}`,
+            prompt: `CSV job item ${ctx.itemId}`,
+            runtimeOptions: opts.session.services.runtimeOptions,
+          },
+        );
       } catch {
         /* pill registration is best-effort */
       }

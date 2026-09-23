@@ -25,14 +25,20 @@ import {
   assertAgentInvocationEnvelope,
   type AgentInvocationEnvelope,
 } from "../contracts/agent-invocation-envelope.js";
-import type { AgentControl, LiveAgent } from "./control.js";
+import {
+  MaxDepthExceededError,
+  type AgentControl,
+  type LiveAgent,
+} from "./control.js";
 import {
   AgentCapacityQueueFullError,
   AgentConcurrencyLimitError,
+  AgentPathExistsError,
   type AgentCapacityPermit,
   type AgentRegistry,
   type AgentPath,
 } from "./registry.js";
+import { createToolEffectDispositionEvidence } from "../tools/effect-boundary.js";
 import type { ForkMode } from "./fork-context.js";
 import type { WorktreeHandle, WorktreeTurnEvidence } from "./worktree.js";
 import type { AgentThread } from "./thread.js";
@@ -155,6 +161,37 @@ function delegateModelOptions(
   };
 }
 
+/**
+ * Evidence that a refused delegation created no child and no worktree. A
+ * caller such as spawn_agent otherwise files the refusal as an unknown
+ * outcome, which gates the whole session behind /resolve (luna-mac F1).
+ */
+function noChildCreated(reason: string): ToolEffectDispositionEvidence {
+  return createToolEffectDispositionEvidence({
+    disposition: "confirmed_no_effect",
+    evidenceKind: "boundary_not_crossed",
+    evidenceRef: "agents.delegate:refused-before-child",
+    evidenceMaterial: reason,
+  });
+}
+
+/**
+ * AgentControl.spawn commits a child only at its durable spawn edge and rolls
+ * back its slot, path and nickname for every refusal before that commit.
+ * These refusals are raised only before it (the depth cap, the slot limits,
+ * and a path another agent of this session holds). Any other failure,
+ * including a thread id collision that the commit itself can report, stays
+ * unknown.
+ */
+function refusedBeforeChildCommit(error: unknown): boolean {
+  return (
+    error instanceof AgentConcurrencyLimitError ||
+    error instanceof AgentCapacityQueueFullError ||
+    error instanceof AgentPathExistsError ||
+    error instanceof MaxDepthExceededError
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // delegate — main entry
 // ─────────────────────────────────────────────────────────────────────
@@ -185,10 +222,12 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
         );
       }
     } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
       return reject(
         "INVALID_DELEGATE_REQUEST",
         "invalid_request",
-        error instanceof Error ? error.message : String(error),
+        reason,
+        noChildCreated(reason),
       );
     }
   }
@@ -197,10 +236,12 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
     isolation === "worktree" &&
     (!opts.worktreeSlug || opts.worktreeSlug.trim().length === 0)
   ) {
+    const reason = "worktree isolation requires a non-empty worktreeSlug";
     return reject(
       "INVALID_DELEGATE_REQUEST",
       "invalid_request",
-      "worktree isolation requires a non-empty worktreeSlug",
+      reason,
+      noChildCreated(reason),
     );
   }
 
@@ -211,10 +252,13 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
     parentThreadId === undefined ? undefined : opts.registry.agentMetadataForThread?.(parentThreadId)?.executionConstraint,
   );
   if (readOnlyConstraint !== undefined && isolation === "worktree") {
+    const reason =
+      "Read-only delegation cannot create a worktree. Use isolation none.";
     return reject(
       "INVALID_DELEGATE_REQUEST",
       "invalid_request",
-      "Read-only delegation cannot create a worktree. Use isolation none.",
+      reason,
+      noChildCreated(reason),
     );
   }
 
@@ -327,13 +371,30 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       });
     }
     const reason = err instanceof Error ? err.message : String(err);
+    // A worktree created for this child is removed above, but that is a
+    // change and its cleanup can fail, so only a spawn without one claims
+    // no effect.
+    const evidence =
+      refusedBeforeChildCommit(err) && worktree?.created !== true
+        ? noChildCreated(reason)
+        : undefined;
     if (err instanceof AgentConcurrencyLimitError) {
-      return reject("AGENT_CONCURRENCY_LIMIT", "retryable_capacity", reason);
+      return reject(
+        "AGENT_CONCURRENCY_LIMIT",
+        "retryable_capacity",
+        reason,
+        evidence,
+      );
     }
     if (err instanceof AgentCapacityQueueFullError) {
-      return reject("AGENT_CAPACITY_QUEUE_FULL", "retryable_capacity", reason);
+      return reject(
+        "AGENT_CAPACITY_QUEUE_FULL",
+        "retryable_capacity",
+        reason,
+        evidence,
+      );
     }
-    return reject("AGENT_SPAWN_REJECTED", "spawn_failed", reason);
+    return reject("AGENT_SPAWN_REJECTED", "spawn_failed", reason, evidence);
   }
 
   // Build the fork context.

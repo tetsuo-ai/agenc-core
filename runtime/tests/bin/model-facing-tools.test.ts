@@ -20,7 +20,7 @@ import type { LLMProvider, LLMResponse } from "../llm/types.js";
 import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import type { Session } from "../session/session.js";
-import { backgroundTaskLifecycle, isBackgroundTask } from "../tasks/index.js";
+import { backgroundTaskLifecycleForSession, isBackgroundTask } from "../tasks/index.js";
 import {
   createModelFacingTools,
   __setLiveWebFetchDnsAllLookupForTests,
@@ -4575,7 +4575,7 @@ describe("model-facing tools", () => {
     const handle = (JSON.parse(spawned.content) as { task_name: string })
       .task_name;
     expect(handle).toBe("/root/task_handle");
-    backgroundTaskLifecycle.appendOutput("thread-handle-1", "alias output");
+    backgroundTaskLifecycleForSession(session).appendOutput("thread-handle-1", "alias output");
 
     const output = await byName.get("TaskOutput")!.execute({
       task_id: handle,

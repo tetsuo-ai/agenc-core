@@ -33,7 +33,7 @@ import {
 } from "../role-presentation.js";
 import {
   BackgroundTaskError,
-  backgroundTaskLifecycle,
+  backgroundTaskLifecycleForSession,
   observeAgentThreadTask,
   registerAgentThreadTask,
   isTerminalTaskStatus,
@@ -865,8 +865,11 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         if (isTerminalTaskStatus(snapshot.status)) projection.close();
       }
     };
-    try {
-      registerAgentThreadTask(backgroundTaskLifecycle, thread, {
+    // Tasks belong to the root session: agent paths such as
+    // /root/<task_name> repeat across the sessions of one daemon.
+    const lifecycle = backgroundTaskLifecycleForSession(rootSession);
+    const registerTask = (registerAgentPathAlias: boolean): void => {
+      registerAgentThreadTask(lifecycle, thread, {
         toolUseId: callId,
         runtimeOptions: session.services.runtimeOptions,
         // Short title (from task_name), not the full prompt — the rail /
@@ -874,21 +877,36 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         // is preserved separately on the task's `prompt` field.
         description: shortAgentTaskTitle(taskName, prompt),
         prompt,
+        registerAgentPathAlias,
       });
-    } catch (error) {
-      if (
-        !(error instanceof BackgroundTaskError) ||
-        error.code !== "already_exists"
-      ) {
-        projection.close();
-        throw error;
+    };
+    try {
+      try {
+        registerTask(true);
+      } catch (error) {
+        if (
+          !(error instanceof BackgroundTaskError) ||
+          error.code !== "already_exists"
+        ) {
+          throw error;
+        }
+        // The child is already running. Another registration of this same
+        // thread is fine to observe. A live task that still holds the agent
+        // path, such as a stale record of a closed agent, must not leave this
+        // child unregistered: register it by its id alone.
+        if (lifecycle.get(thread.threadId ?? live.agentId) === undefined) {
+          registerTask(false);
+        }
       }
+    } catch (error) {
+      projection.close();
+      throw error;
     }
     try {
       // The daemon may already own registration. In either case, status
       // projection has a separate subscription scoped to this Session.
       projection.own(observeAgentThreadTask(
-        backgroundTaskLifecycle,
+        lifecycle,
         thread,
         (snapshot) => {
           if (!projection.active()) return;

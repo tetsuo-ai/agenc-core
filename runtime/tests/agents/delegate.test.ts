@@ -30,10 +30,16 @@ import {
 import { delegate } from "./delegate.js";
 import { forkSubagent } from "./fork-context.js";
 import { runAgent } from "./run-agent.js";
-import { AgentControl, type LiveAgent } from "./control.js";
-import { AgentRegistry } from "./registry.js";
+import { AgentControl, MaxDepthExceededError, type LiveAgent } from "./control.js";
+import {
+  AgentCapacityQueueFullError,
+  AgentConcurrencyLimitError,
+  AgentPathExistsError,
+  AgentRegistry,
+} from "./registry.js";
 import type { AgentMetadata } from "./registry.js";
 import { RolloutStore } from "../session/rollout-store.js";
+import { EventLog } from "../session/event-log.js";
 import {
   computeAgentInvocationEnvelopeDigest,
   createCsvAgentInvocationEnvelope,
@@ -458,6 +464,10 @@ describe("delegate lifecycle recovery", () => {
       code: "INVALID_DELEGATE_REQUEST",
       category: "invalid_request",
       reason: "worktree isolation requires a non-empty worktreeSlug",
+      effectDisposition: expect.objectContaining({
+        disposition: "confirmed_no_effect",
+        evidenceRef: "agents.delegate:refused-before-child",
+      }),
     });
     expect(control.spawn).not.toHaveBeenCalled();
   });
@@ -878,6 +888,88 @@ describe("delegate lifecycle recovery", () => {
       expect(resumeFromRolloutSpy).toHaveBeenCalledOnce();
       expect(harness.registry.activeCount).toBe(0);
     } finally {
+      harness.cleanup();
+    }
+  });
+});
+
+// A spawn refused before any child exists changed nothing. Without evidence
+// spawn_agent filed the refusal as an unknown outcome, which gates the whole
+// session behind /resolve (luna-mac F1).
+describe("spawns refused before any child exists", () => {
+  it.each([
+    ["the concurrency limit", () => new AgentConcurrencyLimitError(4, 4), "AGENT_CONCURRENCY_LIMIT"],
+    ["a full capacity queue", () => new AgentCapacityQueueFullError("capacity queue is full"), "AGENT_CAPACITY_QUEUE_FULL"],
+    ["a taken agent path", () => new AgentPathExistsError("/root/worker"), "AGENT_SPAWN_REJECTED"],
+    ["the depth cap", () => new MaxDepthExceededError(3, 2), "AGENT_SPAWN_REJECTED"],
+  ] as const)("settles %s as confirmed_no_effect", async (_label, failure, code) => {
+    const control = {
+      spawn: vi.fn(async () => { throw failure(); }),
+      shutdown: vi.fn(),
+      resumeAgentFromRollout: vi.fn(),
+    };
+    const outcome = await delegate({
+      parent: makeParentSession() as never,
+      parentPath: "/root",
+      control: control as never,
+      registry: {} as never,
+      taskPrompt: "work",
+      agentName: "worker",
+    });
+    expect(outcome).toMatchObject({
+      kind: "rejected",
+      code,
+      effectDisposition: { disposition: "confirmed_no_effect", evidenceKind: "boundary_not_crossed" },
+    });
+    expect(control.shutdown).not.toHaveBeenCalled();
+  });
+
+  it("keeps a spawn failure it cannot place before the commit unknown", async () => {
+    const control = {
+      spawn: vi.fn(async () => { throw new Error("durable spawn edge could not be stored"); }),
+      shutdown: vi.fn(),
+      resumeAgentFromRollout: vi.fn(),
+    };
+    const outcome = await delegate({
+      parent: makeParentSession() as never,
+      parentPath: "/root",
+      control: control as never,
+      registry: {} as never,
+      taskPrompt: "work",
+    });
+    expect(outcome).toMatchObject({ kind: "rejected", code: "AGENT_SPAWN_REJECTED" });
+    expect((outcome as { effectDisposition?: unknown }).effectDisposition).toBeUndefined();
+  });
+
+  it("refuses a second live agent with the same name in one session with no effect", async () => {
+    const harness = makeRealDelegateHarness("same-name-live");
+    // The path collision is reported on the session's event log.
+    (harness.parent as { eventLog: unknown }).eventLog = new EventLog();
+    const running = Promise.withResolvers<void>();
+    mockRunAgent.mockImplementationOnce((params) => (async function* () {
+      await running.promise;
+      return { threadId: params.live.agentId, durationMs: 1, outcome: "completed" as const };
+    })());
+    try {
+      const first = await delegate({
+        parent: harness.parent as never, parentPath: "/root", control: harness.control,
+        registry: harness.registry, taskPrompt: "first worker", agentName: "worker",
+      });
+      expect(first.kind).toBe("async_launched");
+      const second = await delegate({
+        parent: harness.parent as never, parentPath: "/root", control: harness.control,
+        registry: harness.registry, taskPrompt: "second worker", agentName: "worker",
+      });
+      expect(second).toMatchObject({
+        kind: "rejected",
+        reason: expect.stringContaining("agent path already exists: /root/worker"),
+        effectDisposition: { disposition: "confirmed_no_effect" },
+      });
+      expect(harness.control.listLive()).toHaveLength(1);
+      running.resolve();
+      if (first.kind === "async_launched") await first.thread.join();
+    } finally {
+      running.resolve();
       harness.cleanup();
     }
   });
