@@ -993,6 +993,36 @@ describe("UnifiedExecProcessManager", () => {
     }
   });
 
+  test("never reports a session its own hard timeout already stopped", async () => {
+    // Live run (luna-mac F7): a model filled timeoutMs=1000 next to
+    // yield_time_ms=1000. The hard timeout fired first and signalled the
+    // process, then the yield window closed before its exit was observed, so
+    // the result named session_id=1 as a live yielded process and the next
+    // list_processes found nothing.
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      maxTimeoutMs: 5_000,
+    });
+    try {
+      const started = await manager.execCommand({
+        cmd: "sleep 30",
+        yield_time_ms: 300,
+        timeoutMs: 300,
+        ownerId: "owner-f7",
+      });
+      expect(started.timedOut).toBe(true);
+      expect(started.process_id).toBeUndefined();
+      expect(started.session_id).toBeUndefined();
+      expect(
+        manager
+          .listOwnedProcesses({ ownerId: "owner-f7" })
+          .filter((view) => view.status === "running" || view.status === "stopping"),
+      ).toEqual([]);
+    } finally {
+      await manager.closeAll("test_cleanup");
+    }
+  });
+
   test("respects explicit timeoutMs for tty calls (default does not apply)", async () => {
     // tty=true is the interactive-session path. We deliberately exempt tty
     // from the default hard timeout so persistent shells stay

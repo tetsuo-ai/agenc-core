@@ -1638,6 +1638,17 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         timeout,
         entry.exitPromise.then(() => "exit" as const),
       ]);
+      if (
+        outcome === "timeout" &&
+        entry.hardTimeoutExpired === true &&
+        entry.exitState === null
+      ) {
+        // The hard timeout already signalled this process (forceTerminate
+        // escalates to SIGKILL after 500 ms). Returning now would name it as
+        // a live yielded session although it is being stopped, so wait for
+        // the exit, bounded like the abort path below.
+        await Promise.race([entry.exitPromise, delay(1_000)]);
+      }
       timedOut = outcome === "timeout" && entry.exitState === null;
     } catch (error) {
       if (isAbortError(error)) {

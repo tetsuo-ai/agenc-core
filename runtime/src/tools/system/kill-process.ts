@@ -65,17 +65,36 @@ type KillSelection =
   | { readonly kind: "many"; readonly sessionIds: readonly number[] }
   | { readonly kind: "all" };
 
+/**
+ * Models that fill every optional field send the empty value of each selector
+ * they did not mean: `session_ids: []`, `all: false`, and `session_id: 0`.
+ * None of those can select anything (session ids start at 1), so they count as
+ * absent instead of as a second selector. Any other value still counts, so a
+ * call that names two real targets is refused as before.
+ */
+function selectorGiven(
+  args: Record<string, unknown>,
+  key: "session_id" | "session_ids" | "all",
+): boolean {
+  const value = args[key];
+  if (value === undefined) return false;
+  if (key === "session_id") return value !== 0;
+  if (key === "session_ids") return !(Array.isArray(value) && value.length === 0);
+  return value !== false;
+}
+
 function selectTargets(
   args: Record<string, unknown>,
 ): KillSelection | { readonly error: string } {
-  const provided = [
-    args.session_id !== undefined,
-    args.session_ids !== undefined,
-    args.all !== undefined,
-  ].filter(Boolean).length;
+  const sessionIdGiven = selectorGiven(args, "session_id");
+  const sessionIdsGiven = selectorGiven(args, "session_ids");
+  const allGiven = selectorGiven(args, "all");
+  const provided = [sessionIdGiven, sessionIdsGiven, allGiven].filter(Boolean)
+    .length;
   if (provided === 0) {
     return {
-      error: "session_id must be a number (or pass session_ids, or all=true)",
+      error:
+        "session_id must be a number returned by exec_command (or pass session_ids, or all=true)",
     };
   }
   if (provided > 1) {
@@ -83,13 +102,13 @@ function selectTargets(
       error: "pass exactly one of session_id, session_ids, or all=true",
     };
   }
-  if (args.session_id !== undefined) {
+  if (sessionIdGiven) {
     const sessionId = asNumber(args.session_id);
     return sessionId === undefined
       ? { error: "session_id must be a number" }
       : { kind: "one", sessionId };
   }
-  if (args.session_ids !== undefined) {
+  if (sessionIdsGiven) {
     const sessionIds = asNumberArray(args.session_ids);
     if (sessionIds === undefined || sessionIds.length === 0) {
       return { error: "session_ids must be a non-empty array of numbers" };
