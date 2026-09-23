@@ -117,24 +117,24 @@ describe("spawn_agent isolation", () => {
     mockDelegate.mockReset();
   });
 
-  async function crossProviderFixture(allowed: readonly string[], enabled = true) {
+  async function crossProviderFixture(allowed: readonly string[], enabled = true, activeProvider: "grok" | "deepseek" = "grok") {
     const config = {
       ...defaultConfig(),
-      model_provider: "grok",
-      model: "grok-4.6",
+      model_provider: activeProvider,
+      model: activeProvider === "grok" ? "grok-4.6" : "deepseek-v4-pro",
       agents: { cross_provider_enabled: enabled, allowed_providers: allowed },
     };
-    const modelsManager = new StaticModelsManager({ config, fallbackProvider: "grok" });
+    const modelsManager = new StaticModelsManager({ config, fallbackProvider: activeProvider });
     const base = makeSession();
     const session = {
       ...base,
-      modelInfo: await modelsManager.getModelInfo("grok-4.6"),
+      modelInfo: await modelsManager.getModelInfo(config.model),
       sessionConfiguration: {
         ...base.sessionConfiguration,
-        collaborationMode: { model: "grok-4.6" },
+        collaborationMode: { model: config.model },
       },
       config: { ...base.config, agents: config.agents },
-      providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }) },
+      providerService: { current: () => ({ provider: activeProvider, model: config.model }) },
       services: {
         ...base.services,
         modelsManager,
@@ -184,6 +184,7 @@ describe("spawn_agent isolation", () => {
     const result = await tool.execute({ message: "inspect", task_name: "worker", provider: "grok", model: "grok-4.6" });
     expect(result.isError).not.toBe(true);
     expect(mockDelegate.mock.calls[0]?.[0].providerSelection).toBeUndefined();
+    expect(mockDelegate.mock.calls[0]?.[0].plan).toBeUndefined();
   });
 
   it.each(["string", "object"] as const)("projects a %s live status safely", async (shape) => {
@@ -214,13 +215,13 @@ describe("spawn_agent isolation", () => {
   });
 
   it("refuses a model known to lack client-side tools unless tool_free is explicit", async () => {
-    const { tool } = await crossProviderFixture(["grok"]);
-    const refused = await tool.execute({ message: "inspect", task_name: "worker", model: "grok-4.20-multi-agent-0309" });
+    const { tool } = await crossProviderFixture(["grok"], true, "deepseek");
+    const refused = await tool.execute({ message: "inspect", task_name: "worker", provider: "grok", model: "grok-4.20-multi-agent-0309" });
     expect(refused.isError).toBe(true);
     expect(refused.content).toContain("client-side tool calling");
     expect(mockDelegate).not.toHaveBeenCalled();
     mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
-    const allowed = await tool.execute({ message: "summarize", task_name: "worker", model: "grok-4.20-multi-agent-0309", tool_free: true });
+    const allowed = await tool.execute({ message: "summarize", task_name: "worker", provider: "grok", model: "grok-4.20-multi-agent-0309", tool_free: true });
     expect(allowed.isError).not.toBe(true);
     expect(mockDelegate.mock.calls[0]?.[0].plan?.scope.tools).toEqual([]);
   });
@@ -266,10 +267,11 @@ describe("spawn_agent isolation", () => {
   });
 
   it("refuses a foreign bare slug instead of treating the flattened list as local", async () => {
-    const { tool } = await crossProviderFixture(["deepseek"]);
+    const { session, tool } = await crossProviderFixture(["deepseek"]);
+    session.services.modelsManager.tryListModels = () => [session.modelInfo];
     const result = await tool.execute({ message: "inspect", task_name: "worker", model: "deepseek-v4-pro" });
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("deepseek/deepseek-v4-pro");
+    expect(result.content).toContain("Unknown model `deepseek-v4-pro` for spawn_agent");
     expect(mockDelegate).not.toHaveBeenCalled();
   });
 
@@ -293,6 +295,7 @@ describe("spawn_agent isolation", () => {
     });
     expect(result.isError).not.toBe(true);
     expect(mockDelegate.mock.calls[0]?.[0].providerSelection).toBeUndefined();
+    expect(mockDelegate.mock.calls[0]?.[0].plan).toBeUndefined();
   });
 
   it("advertises a live-only local model with a production configStore", async () => {
@@ -519,7 +522,7 @@ describe("spawn_agent isolation", () => {
       if (["low", "medium", "high", "none"].includes(effort)) {
         expect(result.isError).not.toBe(true);
         expect(mockDelegate).toHaveBeenCalledWith(expect.objectContaining({
-          plan: expect.objectContaining({ reasoningEffort: effort }),
+          reasoningEffort: effort,
         }));
       } else {
         expect(result.isError).toBe(true);

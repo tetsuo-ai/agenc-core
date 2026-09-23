@@ -379,11 +379,12 @@ export function assertPreparedChildMatchesPlan(plan: ChildExecutionPlan, prepare
 }
 
 export function childProviderPolicy(session: Session): AgentsConfig {
-  return session.services.configStore?.current().agents ?? session.config?.agents ?? {};
+  if (session.services == null) return {};
+  return session.services?.configStore?.current().agents ?? session.config?.agents ?? {};
 }
 
 export function childCatalogConfig(session: Session): AgenCConfig {
-  return session.services.configStore?.current() ?? {
+  return session.services?.configStore?.current() ?? {
     model: session.modelInfo.slug,
     model_provider: currentChildProvider(session).provider,
   };
@@ -393,7 +394,7 @@ export function currentChildProvider(session: Session): ProviderSelection {
   // Sessions constructed by normal ingress always have providerService. The
   // fallback exists only for legacy/test Session stubs without that service.
   return session.providerService?.current() ?? {
-    provider: session.services.configStore?.current().model_provider ?? "grok",
+    provider: session.services?.configStore?.current().model_provider ?? "grok",
     model: session.modelInfo.slug,
   };
 }

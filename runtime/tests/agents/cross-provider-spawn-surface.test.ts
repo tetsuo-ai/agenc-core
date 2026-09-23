@@ -69,4 +69,18 @@ describe("spawn_agent cross-provider surface", () => {
     allowed = ["deepseek", "openai"];
     expect(description()).toMatch(/openai\/\S+/u);
   });
+
+  it("treats a partial session without services as cross-provider off", () => {
+    const session = {
+      modelInfo: { slug: "grok-4.7" },
+      config: { agents: { cross_provider_enabled: true, allowed_providers: ["openai"] } },
+    } as unknown as Session;
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      modelFacingTools: [spawnTool(() => session)],
+    });
+    const advertised = registry.toLLMTools().find((tool) => tool.function.name === "spawn_agent");
+    expect(advertised?.function.description).not.toContain("Allowed provider/model pairs");
+    expect(advertised?.function.parameters).toBeDefined();
+  });
 });
