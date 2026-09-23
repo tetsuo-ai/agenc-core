@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -21,7 +22,12 @@ import {
 } from "./pluginCliCommands.js";
 import type { PluginCliIo } from "./pluginOperations.js";
 import { loadPlugins } from "../loader.js";
+import { installPluginOp, listInstalledPlugins, uninstallPluginOp } from "./pluginOperations.js";
+import { addMarketplaceOp } from "../marketplace/marketplace.js";
+import { buildMarketplaceCatalog, OFFICIAL_MARKETPLACE_NAME,
+  OFFICIAL_MARKETPLACE_REFRESH_MS, OFFICIAL_MARKETPLACE_URL } from "../marketplace/catalog-cli.js";
 import { substitutePluginTemplate } from "../registration/common.js";
+import { pluginSignaturePayloadBytes } from "../resolution.js";
 
 function createIo(): PluginCliIo & {
   readonly stdoutText: () => string;
@@ -143,6 +149,146 @@ describe("agenc plugin CLI", () => {
     });
     expect(result.plugins[0]).toMatchObject({ updateAvailable: true,
       lastRefreshTime: "2026-09-23T00:00:00Z" });
+  });
+  it("does not call an unsigned advertised version an authenticated update", () => {
+    const result = pluginListWithCatalog({ plugins: [{ id: "alpha", name: "alpha", version: "1.0.0",
+      enabled: true, root: "/plugins/alpha", source: "alpha", marketplace: "team",
+      verificationState: "verified", payloadDigest: "sha256:old" }], errors: [] }, {
+      schemaVersion: 1, kind: "agenc.plugin.marketplace.catalog", marketplaces: [{
+        name: "team", sourceType: "local", source: "/market", plugins: [{
+          id: "alpha@team", name: "alpha", marketplace: "team",
+          source: { type: "local", path: "/market/alpha" }, root: "/market",
+          policy: { installation: "AVAILABLE", authentication: "ON_USE" }, version: "99.0.0",
+        }],
+      }], errors: [],
+    });
+    expect(result.plugins[0]).toMatchObject({ updateAvailable: false,
+      updateVerificationState: "unavailable" });
+  });
+
+  it("contains corrupt install metadata per plugin and still removes that install", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const io = createIo();
+    const opts = options(agencHome, workspaceRoot, io);
+    const good = await writePlugin(root, "good");
+    const damaged = await writePlugin(root, "damaged");
+    await installPluginOp({ ...opts, source: good });
+    const installed = await installPluginOp({ ...opts, source: damaged });
+    await writeFile(join(installed.destination, ".agenc-plugin", "agenc-install.json"), "{broken");
+    const listed = await listInstalledPlugins(opts);
+    expect(listed.plugins.map((plugin) => plugin.id)).toEqual(["damaged", "good"]);
+    expect(listed.plugins.find((plugin) => plugin.id === "damaged")?.verificationState).toBe("failed");
+    expect(listed.errors.some((error) => error.includes("damaged") && error.includes("agenc-install.json"))).toBe(true);
+    expect((await uninstallPluginOp({ ...opts, pluginId: "damaged" })).removedRoots)
+      .toContain(installed.destination);
+  });
+
+  it("retains local marketplace provenance across install, update, and list", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const source = join(root, "market");
+    await writePlugin(source, "alpha");
+    await mkdir(join(source, ".agenc-plugin"), { recursive: true });
+    await writeFile(join(source, ".agenc-plugin", "marketplace.json"), JSON.stringify({
+      metadata: { name: "team" }, plugins: [{ name: "alpha", source: "./alpha",
+        policy: { installation: "AVAILABLE", authentication: "ON_USE" } }],
+    }));
+    const opts = options(agencHome, workspaceRoot, createIo());
+    await addMarketplaceOp({ ...opts, source, name: "team" });
+    expect(await runAgenCPluginCli({ kind: "marketplace-install", pluginId: "alpha@team",
+      scope: "user", force: false, json: true }, opts)).toBe(0);
+    expect(await runAgenCPluginCli({ kind: "update", pluginId: "alpha", scope: "user" }, opts)).toBe(0);
+    const listed = await listInstalledPlugins(opts);
+    expect(listed.plugins[0]).toMatchObject({ marketplace: "team", sourceKind: "marketplace" });
+    const location = listed.plugins[0]?.sourceLocation ?? "";
+    const compared = pluginListWithCatalog(listed, { schemaVersion: 1,
+      kind: "agenc.plugin.marketplace.catalog", errors: [], marketplaces: ["team", "other"].map((name) => ({
+        name, sourceType: "local" as const, source: location, plugins: [{
+          id: `alpha@${name}`, name: "alpha", marketplace: name,
+          source: { type: "local" as const, path: location }, root: source,
+          policy: { installation: "AVAILABLE" as const, authentication: "ON_USE" as const },
+          version: "2.0.0",
+        }],
+      })) });
+    expect(compared.plugins[0]?.updateAvailable).toBe(true);
+  });
+
+  it("refreshes an already configured official marketplace from installed list", async () => {
+    const { agencHome, workspaceRoot } = await tempRuntime();
+    const t0 = Date.parse("2026-09-23T00:00:00Z");
+    let fetches = 0;
+    const fetcher = async (_url: string) => {
+      fetches += 1;
+      return jsonResponse({ metadata: { name: OFFICIAL_MARKETPLACE_NAME }, plugins: [] });
+    };
+    const opts = options(agencHome, workspaceRoot, createIo());
+    await addMarketplaceOp({ ...opts, source: OFFICIAL_MARKETPLACE_URL,
+      name: OFFICIAL_MARKETPLACE_NAME, fetcher, now: () => new Date(t0) });
+    expect(fetches).toBe(1);
+    const stale = { ...opts, fetcher, now: () => new Date(t0 + OFFICIAL_MARKETPLACE_REFRESH_MS + 1) };
+    expect(await runAgenCPluginCli({ kind: "list", json: true }, stale)).toBe(0);
+    expect(await runAgenCPluginCli({ kind: "list", json: true }, stale)).toBe(0);
+    expect(fetches).toBe(2);
+  });
+
+  it("reports a valid unsigned local-marketplace install as unsigned-local", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const source = join(root, "market");
+    await writePlugin(source, "alpha");
+    await mkdir(join(source, ".agenc-plugin"), { recursive: true });
+    await writeFile(join(source, ".agenc-plugin", "marketplace.json"), JSON.stringify({
+      metadata: { name: "team" }, plugins: [{ name: "alpha", source: "./alpha",
+        policy: { installation: "AVAILABLE", authentication: "ON_USE" } }],
+    }));
+    const opts = options(agencHome, workspaceRoot, createIo());
+    await addMarketplaceOp({ ...opts, source, name: "team" });
+    expect(await runAgenCPluginCli({ kind: "marketplace-install", pluginId: "alpha@team",
+      scope: "user", force: false, json: true }, opts)).toBe(0);
+    expect((await listInstalledPlugins(opts)).plugins[0]).toMatchObject({
+      marketplace: "team", verificationState: "unsigned-local",
+    });
+  });
+
+  it("finds updates for a plugin offered only to cli users", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const source = join(root, "market");
+    const pluginRoot = await writePlugin(source, "alpha");
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    await writeFile(join(agencHome, "plugin-publishers.json"), JSON.stringify({ publishers: {
+      team: { publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64") },
+    } }));
+    const files = { "commands/hello.md": `sha256:${createHash("sha256")
+      .update(await readFile(join(pluginRoot, "commands", "hello.md"))).digest("hex")}` };
+    const signPlugin = async () => {
+      const manifest = await readFile(join(pluginRoot, ".agenc-plugin", "plugin.json"));
+      await writeFile(join(pluginRoot, ".agenc-plugin", "signature.json"), JSON.stringify({
+        publisher: "team", files,
+        signature: sign(null, pluginSignaturePayloadBytes(manifest, files), privateKey).toString("base64"),
+      }));
+    };
+    await signPlugin();
+    await mkdir(join(source, ".agenc-plugin"), { recursive: true });
+    await writeFile(join(source, ".agenc-plugin", "marketplace.json"), JSON.stringify({
+      metadata: { name: "team" }, plugins: [{ name: "alpha", source: "./alpha",
+        policy: { installation: "AVAILABLE", authentication: "ON_USE", products: ["cli"] } }],
+    }));
+    const opts = options(agencHome, workspaceRoot, createIo());
+    await addMarketplaceOp({ ...opts, source, name: "team" });
+    expect(await runAgenCPluginCli({ kind: "marketplace-install", pluginId: "alpha@team",
+      product: "cli", scope: "user", force: false, json: true }, opts)).toBe(0);
+    await writeFile(join(pluginRoot, ".agenc-plugin", "plugin.json"), JSON.stringify({
+      name: "alpha", version: "2.0.0", commands: "./commands",
+    }));
+    await signPlugin();
+    await addMarketplaceOp({ ...opts, source, name: "team", force: true });
+    const installedBeforeList = await listInstalledPlugins(opts);
+    const advertised = await buildMarketplaceCatalog(opts, undefined, true, true);
+    expect(installedBeforeList.plugins[0]?.payloadDigest).toBeDefined();
+    expect(advertised.marketplaces[0]?.plugins[0]?.payloadDigest).toBeDefined();
+    expect(advertised.marketplaces[0]?.plugins[0]?.payloadDigest)
+      .not.toBe(installedBeforeList.plugins[0]?.payloadDigest);
+    const io = createIo();
+    expect(await runAgenCPluginCli({ kind: "list", json: true }, { ...opts, io })).toBe(0);
+    expect(JSON.parse(io.stdoutText()).plugins[0].updateAvailable).toBe(true);
   });
   it("documents marketplace and plugin source forms in help text", () => {
     const help = formatAgenCPluginCliHelpText();
@@ -685,6 +831,12 @@ describe("agenc plugin CLI", () => {
       force: false,
     }, options(agencHome, workspaceRoot, installIo));
     expect(installExit).toBe(0);
+
+    const inventory = JSON.stringify(await listInstalledPlugins(options(
+      agencHome, workspaceRoot, createIo(),
+    )));
+    expect(inventory).not.toContain(firstSecret);
+    expect(inventory).not.toContain(secondSecret);
 
     const updateIo = createIo();
     const updateExit = await runAgenCPluginCli({

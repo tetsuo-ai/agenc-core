@@ -20,7 +20,7 @@ import { createHash } from "node:crypto";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { normalizeSkillDisplayName, skillDisplayNameFromMarkdown } from "../skill-display-metadata.js";
-import { verifiedAdvertisedPluginPayloadDigest } from "../resolution.js";
+import { verifiedAdvertisedPluginPayloadDigest, verifiedAdvertisedPluginPayloadDigestFromManifestHash } from "../resolution.js";
 import { updateMarketplaceInventory } from "./inventory.js";
 
 import {
@@ -91,7 +91,7 @@ export async function refreshStaleMarketplaces(
   const index = await readMarketplaceIndex(options);
   const now = (options.now ?? (() => new Date()))().getTime();
   for (const record of Object.values(index.marketplaces)) {
-    if (record.name === OFFICIAL_MARKETPLACE_NAME || record.refreshable === false) continue;
+    if (record.refreshable === false) continue;
     if (now - Math.max(Date.parse(record.updatedAt), Date.parse(record.lastCheckedAt ?? "") || 0)
       <= OFFICIAL_MARKETPLACE_REFRESH_MS) continue;
     if (!(await claimMarketplaceRefresh(options, record.name))) continue;
@@ -506,9 +506,25 @@ async function prefetchPinnedCardMeta(
           // Meta survives a pruned logo file.
         }
       }
-      const metadata = metaFromSidecar(cached, logoPath);
+      // A sidecar digest is only a hint. Rebuild it from signed material so
+      // cache edits and publisher revocation cannot authenticate an advert.
+      let verifiedDigest: string | undefined;
+      if (includePayloadDigest && options.agencHome !== undefined &&
+        typeof cached.signedManifestSha256 === "string" &&
+        typeof cached.signedSignature === "string") {
+        try {
+          verifiedDigest = await verifiedAdvertisedPluginPayloadDigestFromManifestHash(
+            cached.signedManifestSha256,
+            Buffer.from(cached.signedSignature, "base64"),
+            { agencHome: options.agencHome },
+          );
+        } catch { /* The cached signature or current trust is invalid. */ }
+      }
+      const { payloadDigest: _untrustedDigest, ...display } = metaFromSidecar(cached, logoPath);
+      const metadata: PrefetchedCardMeta = { ...display,
+        ...(verifiedDigest !== undefined ? { payloadDigest: verifiedDigest } : {}) };
       if (cached.cardMetadataVersion === CARD_METADATA_VERSION &&
-        (!includePayloadDigest || metadata.payloadDigest !== undefined ||
+        (!includePayloadDigest || verifiedDigest !== undefined ||
           (typeof cached.digestRetryAfter === "string" &&
             Date.parse(cached.digestRetryAfter) > (options.now ?? (() => new Date()))().getTime())))
         return metadata;
@@ -605,7 +621,10 @@ async function prefetchPinnedCardMeta(
       : {}),
     ...(description !== undefined ? { description } : {}),
     ...(version !== undefined ? { version } : {}),
-    ...(payloadDigest !== undefined ? { payloadDigest } : {}),
+    ...(payloadDigest !== undefined && signatureBytes !== undefined
+      ? { signedManifestSha256: createHash("sha256").update(manifestBytes).digest("hex"),
+          signedSignature: Buffer.from(signatureBytes).toString("base64") }
+      : {}),
     ...(includePayloadDigest && options.agencHome !== undefined && payloadDigest === undefined
       ? { digestRetryAfter: new Date((options.now ?? (() => new Date()))().getTime() +
         OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString() } : {}),
@@ -624,7 +643,8 @@ async function prefetchPinnedCardMeta(
   } catch {
     // Uncached is refetched next catalog, never fatal.
   }
-  return metaFromSidecar(sidecar, logoPath);
+  return { ...metaFromSidecar(sidecar, logoPath),
+    ...(payloadDigest !== undefined ? { payloadDigest } : {}) };
 }
 
 async function catalogRowsForMarketplace(
@@ -633,11 +653,12 @@ async function catalogRowsForMarketplace(
   product: string | undefined,
   lastRefreshTime: string,
   includePayloadDigests: boolean,
+  includeAllProducts: boolean,
 ): Promise<readonly MarketplaceCatalogPluginRow[]> {
   const rows: MarketplaceCatalogPluginRow[] = [];
   for (const plugin of marketplace.plugins) {
     if (plugin.policy.installation === "NOT_AVAILABLE") continue;
-    if (!marketplacePluginSupportsProduct(plugin.policy, product)) continue;
+    if (!includeAllProducts && !marketplacePluginSupportsProduct(plugin.policy, product)) continue;
     const manifestLogo = await resolveLogoPath(marketplace.root, plugin);
     const prefetched = await prefetchPinnedCardMeta(options, plugin, includePayloadDigests);
     let localPayloadDigest: string | undefined;
@@ -706,6 +727,7 @@ export async function buildMarketplaceCatalog(
   options: MarketplaceOperationOptions,
   product?: string,
   includePayloadDigests = false,
+  includeAllProducts = false,
 ): Promise<MarketplaceCatalogDocument> {
   const index = await readMarketplaceIndex(options);
   const records = Object.values(index.marketplaces).sort((left, right) =>
@@ -726,7 +748,8 @@ export async function buildMarketplaceCatalog(
           : {}),
         sourceType: record.sourceType,
         source: record.source,
-        plugins: await catalogRowsForMarketplace(options, marketplace, product, record.updatedAt, includePayloadDigests),
+        plugins: await catalogRowsForMarketplace(options, marketplace, product, record.updatedAt,
+          includePayloadDigests, includeAllProducts),
       });
     } catch (error) {
       errors.push({

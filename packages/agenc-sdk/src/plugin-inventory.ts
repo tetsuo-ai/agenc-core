@@ -7,5 +7,6 @@ export interface AgencPluginInventoryProvenance {
   readonly publisherKeyId?: string;
   readonly payloadDigest?: string;
   readonly lastRefreshTime?: string;
+  readonly updateVerificationState?: "verified" | "unavailable";
   readonly updateAvailable?: boolean;
 }

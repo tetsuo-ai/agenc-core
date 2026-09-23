@@ -84,10 +84,16 @@ export function pluginListWithCatalog(
       }),
     );
     const current = matches.length === 1 ? matches[0] : undefined;
+    const signedInstall = plugin.verificationState === "verified" ||
+      plugin.verificationState === "failed" || plugin.payloadDigest !== undefined;
+    const updateVerificationState = plugin.payloadDigest !== undefined &&
+      current?.payloadDigest !== undefined ? "verified" : "unavailable";
     return { ...plugin,
       ...(current !== undefined ? { lastRefreshTime: current.lastRefreshTime } : {}),
-      updateAvailable: plugin.payloadDigest !== undefined && current?.payloadDigest !== undefined
-        ? plugin.payloadDigest !== current.payloadDigest
+      ...(signedInstall ? { updateVerificationState } : {}),
+      updateAvailable: signedInstall
+        ? plugin.payloadDigest !== undefined && current?.payloadDigest !== undefined &&
+          plugin.payloadDigest !== current.payloadDigest
         : plugin.version !== undefined && current?.version !== undefined &&
           plugin.version !== current.version,
     };
@@ -214,7 +220,7 @@ export async function runAgenCPluginCli(
         try {
           await refreshStaleMarketplaces(options);
           freshResult = pluginListWithCatalog(result,
-            await buildMarketplaceCatalog(options, "desktop", true));
+            await buildMarketplaceCatalog(options, undefined, true, true));
         } catch {
           // Local installed inventory remains usable if a marketplace is broken.
         }

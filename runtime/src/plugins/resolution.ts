@@ -808,13 +808,20 @@ export function pluginSignaturePayloadBytes(
   manifestBytes: Uint8Array,
   files: Readonly<Record<string, string>>,
 ): Uint8Array {
+  return pluginSignaturePayloadBytesFromManifestHash(sha256Hex(manifestBytes), files);
+}
+
+function pluginSignaturePayloadBytesFromManifestHash(
+  manifestSha256: string,
+  files: Readonly<Record<string, string>>,
+): Uint8Array {
   const normalizedFiles = Object.fromEntries(
     Object.entries(files)
       .map(([path, digest]) => [path, normalizeSha256Digest(digest)] as const)
       .sort(([a], [b]) => a.localeCompare(b)),
   );
   return Buffer.from(JSON.stringify({
-    manifestSha256: sha256Hex(manifestBytes),
+    manifestSha256,
     files: normalizedFiles,
   }));
 }
@@ -825,6 +832,20 @@ export async function verifiedAdvertisedPluginPayloadDigest(
   signatureBytes: Uint8Array,
   options: { readonly agencHome: string; readonly publishersPath?: string },
 ): Promise<string> {
+  return verifiedAdvertisedPluginPayloadDigestFromManifestHash(
+    sha256Hex(manifestBytes), signatureBytes, options,
+  );
+}
+
+/** Recheck a cached signed advert against today's publisher keyring. */
+export async function verifiedAdvertisedPluginPayloadDigestFromManifestHash(
+  manifestSha256: string,
+  signatureBytes: Uint8Array,
+  options: { readonly agencHome: string; readonly publishersPath?: string },
+): Promise<string> {
+  if (!/^[a-f0-9]{64}$/u.test(manifestSha256)) {
+    throw new Error("invalid cached plugin manifest digest");
+  }
   const signature = parseSignatureFile(Buffer.from(signatureBytes).toString("utf8"));
   const publicKeys = await readPublisherPublicKeys(
     options.publishersPath ?? defaultPublishersPath(options.agencHome),
@@ -832,7 +853,7 @@ export async function verifiedAdvertisedPluginPayloadDigest(
     options.publishersPath === undefined
       ? builtInPluginPublisherPublicKeys(signature.publisher) : undefined,
   );
-  const payload = pluginSignaturePayloadBytes(manifestBytes, signature.files);
+  const payload = pluginSignaturePayloadBytesFromManifestHash(manifestSha256, signature.files);
   if (!publicKeys.some((publicKey) => verifyEd25519Signature({
     publicKey, payload, signature: signature.signature,
   }))) throw new Error(`plugin signature verification failed for publisher ${signature.publisher}`);

@@ -16,6 +16,7 @@ import {
 } from "./catalog-cli.js";
 import { addMarketplaceOp } from "./marketplace.js";
 import { pluginSignaturePayloadBytes } from "../resolution.js";
+import { pluginListWithCatalog } from "../cli/pluginCliCommands.js";
 
 async function tempRuntime(): Promise<{
   readonly root: string;
@@ -126,6 +127,93 @@ describe("marketplace catalog CLI surface", () => {
     const tampered = await buildMarketplaceCatalog({ ...options, agencHome: options.root }, "desktop", true);
     expect(tampered.marketplaces[0]?.plugins.find((plugin) => plugin.name === "everywhere")?.payloadDigest)
       .toBeUndefined();
+  });
+  it("rechecks cached remote adverts against signed bytes and the current publisher keyring", async () => {
+    const options = await tempRuntime();
+    const market = join(options.root, "remote-market");
+    await mkdir(join(market, ".agenc-plugin"), { recursive: true });
+    await writeFile(join(market, ".agenc-plugin", "marketplace.json"), JSON.stringify({
+      metadata: { name: "team" }, plugins: [{ name: "remote",
+        source: { source: "git", url: "https://github.com/team/plugins.git", sha: "a".repeat(40) },
+        policy: { installation: "AVAILABLE", authentication: "ON_USE" } }],
+    }));
+    await addMarketplaceOp({ ...options, source: market, name: "team" });
+    const manifest = Buffer.from(JSON.stringify({ name: "remote", version: "1.0.0" }));
+    const files = {};
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const trustPath = join(options.root, "plugin-publishers.json");
+    await writeFile(trustPath, JSON.stringify({ publishers: { team: {
+      publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64"),
+    } } }));
+    const signature = Buffer.from(JSON.stringify({ publisher: "team", files,
+      signature: sign(null, pluginSignaturePayloadBytes(manifest, files), privateKey).toString("base64"),
+    }));
+    const manifestUrl = `https://raw.githubusercontent.com/team/plugins/${"a".repeat(40)}/.agenc-plugin/plugin.json`;
+    const fetcher = async (url: string) => {
+      const bytes = url === manifestUrl ? manifest : signature;
+      return { ok: true, status: 200, statusText: "OK", text: async () => bytes.toString(),
+        arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer };
+    };
+    const catalogOptions = { ...options, agencHome: options.root, fetcher };
+    const first = await buildMarketplaceCatalog(catalogOptions, undefined, true);
+    const genuineDigest = first.marketplaces[0]?.plugins[0]?.payloadDigest;
+    expect(genuineDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
+    const key = createHash("sha256").update(manifestUrl).digest("hex").slice(0, 24);
+    const sidecarPath = join(options.pluginStorageRoot, "marketplaces", ".logo-cache", `${key}.meta.json`);
+    const cached = JSON.parse(await readFile(sidecarPath, "utf8"));
+    await writeFile(sidecarPath, JSON.stringify({ ...cached, payloadDigest: `sha256:${"0".repeat(64)}` }));
+    const tampered = await buildMarketplaceCatalog(catalogOptions, undefined, true);
+    expect.soft(tampered.marketplaces[0]?.plugins[0]?.payloadDigest).toBe(genuineDigest);
+    await writeFile(trustPath, JSON.stringify({ publishers: {} }));
+    const untrusted = await buildMarketplaceCatalog(catalogOptions, undefined, true);
+    expect(untrusted.marketplaces[0]?.plugins[0]?.payloadDigest).toBeUndefined();
+  });
+
+  it("does not turn an unsigned 99.0.0 remote manifest into a signed installed update", async () => {
+    const options = await tempRuntime();
+    const market = join(options.root, "unsigned-market");
+    await mkdir(join(market, ".agenc-plugin"), { recursive: true });
+    await writeFile(join(market, ".agenc-plugin", "marketplace.json"), JSON.stringify({
+      metadata: { name: "team" }, plugins: [{ name: "remote",
+        source: { source: "git", url: "https://github.com/team/plugins.git", sha: "b".repeat(40) },
+        policy: { installation: "AVAILABLE", authentication: "ON_USE" } }],
+    }));
+    await addMarketplaceOp({ ...options, source: market, name: "team" });
+    const manifest = Buffer.from(JSON.stringify({ name: "remote", version: "99.0.0" }));
+    const signature = Buffer.from(JSON.stringify({ publisher: "team", files: {}, signature: "AAAA" }));
+    const fetcher = async (url: string) => {
+      const bytes = url.endsWith("/plugin.json") ? manifest : signature;
+      return { ok: true, status: 200, statusText: "OK", text: async () => bytes.toString(),
+        arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer };
+    };
+    const catalog = await buildMarketplaceCatalog({ ...options, agencHome: options.root,
+      fetcher }, undefined, true);
+    expect(catalog.marketplaces[0]?.plugins[0]).toMatchObject({ version: "99.0.0" });
+    expect(catalog.marketplaces[0]?.plugins[0]?.payloadDigest).toBeUndefined();
+    const compared = pluginListWithCatalog({ plugins: [{ id: "remote", name: "remote",
+      version: "1.0.0", enabled: true, root: "/plugins/remote", source: "user",
+      marketplace: "team", verificationState: "verified", payloadDigest: "sha256:signed" }],
+    errors: [] }, catalog);
+    expect(compared.plugins[0]).toMatchObject({ updateAvailable: false,
+      updateVerificationState: "unavailable" });
+  });
+
+  it("refreshes an existing official marketplace through the persisted throttle", async () => {
+    const { root, pluginStorageRoot, workspaceRoot } = await tempRuntime();
+    const source = await writeMarketplace(join(root, "source"));
+    const t0 = Date.parse("2026-09-23T00:00:00Z");
+    await addMarketplaceOp({ pluginStorageRoot, workspaceRoot, source,
+      name: OFFICIAL_MARKETPLACE_NAME, now: () => new Date(t0) });
+    const attempts: string[] = [];
+    const upgrade = async (input: { readonly name?: string }) => {
+      attempts.push(input.name ?? "");
+      return { upgraded: [], skipped: [] };
+    };
+    const opts = { pluginStorageRoot, workspaceRoot,
+      now: () => new Date(t0 + OFFICIAL_MARKETPLACE_REFRESH_MS + 1) };
+    await refreshStaleMarketplaces(opts, upgrade);
+    await refreshStaleMarketplaces(opts, upgrade);
+    expect(attempts).toEqual([OFFICIAL_MARKETPLACE_NAME]);
   });
   it("rate limits marketplace refresh from its persisted update time", async () => {
     const { root, pluginStorageRoot, workspaceRoot } = await tempRuntime();
