@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  buildSkillListingWithinBudget,
   createLocalSkillsServices,
   loadLocalSkillsSnapshot,
   skillFileParseCountForTest,
@@ -116,5 +117,24 @@ describe("parsed SKILL.md reuse", () => {
         join(broken, "SKILL.md"),
       ]);
     }
+  });
+});
+
+describe("listing bytes across snapshot rebuilds", () => {
+  it("renders the same listing from a fresh and a cached snapshot", async () => {
+    // The listing is sent once per session and kept in the cached prompt
+    // prefix; two sessions asking the same thing should send the same bytes.
+    const f = fixture(300);
+    writeSkill(f.root, "zz-orbit-planner", "Plans satellite orbits");
+    const request = "plan a satellite orbit";
+    const cold = await loadLocalSkillsSnapshot(f.options);
+    const warm = await loadLocalSkillsSnapshot(f.options);
+    const other = await createLocalSkillsServices({ ...f.options, sessionId: "other" })
+      .skillsManager.skillsForConfig({}, null);
+    const listings = [cold.skills, warm.skills, other.availableSkills ?? []].map(
+      (skills) => buildSkillListingWithinBudget(skills, 100_000, request).listing,
+    );
+    expect(listings[0]).toContain("- zz-orbit-planner: Plans satellite orbits");
+    expect(new Set(listings).size).toBe(1);
   });
 });
