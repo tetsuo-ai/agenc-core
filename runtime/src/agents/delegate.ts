@@ -239,7 +239,7 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       }
       // Credential readiness is checked before the durable child spawn edge.
       // The run checks again immediately before the first provider call.
-      const prepared = await opts.parent.providerService.prepare(validated);
+      const prepared = await opts.parent.providerService.prepareChild(validated);
       await prepared.binding.instance.dispose?.();
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -808,6 +808,7 @@ async function runDelegateAgentLoop(opts: {
         parent: opts.parent,
         parentPath: opts.parentPath,
         control: opts.control,
+        ...(opts.providerSelection !== undefined ? { providerSelection: opts.providerSelection } : {}),
         onRoleProvenanceFailure: opts.onRoleProvenanceFailure,
       });
       if (!restarted) {
@@ -896,6 +897,7 @@ async function restartLiveAgent(opts: {
   readonly parent: Session;
   readonly parentPath: AgentPath;
   readonly control: AgentControl;
+  readonly providerSelection?: ProviderSelection;
   readonly onRoleProvenanceFailure: () => void;
 }): Promise<LiveAgent | null> {
   const live = opts.thread.live;
@@ -903,6 +905,37 @@ async function restartLiveAgent(opts: {
     opts.control.assertAgentMetadataRoleWorkspace(live.metadata);
   } catch (err) {
     opts.onRoleProvenanceFailure();
+    emitWarning(
+      opts.parent.eventLog,
+      opts.parent.nextInternalSubId(),
+      "subagent_restart_failed",
+      err instanceof Error ? err.message : String(err),
+    );
+    return null;
+  }
+  const persisted = live.metadata.crossProvider;
+  const providerSelection = persisted === undefined
+    ? opts.providerSelection
+    : { provider: persisted.provider, model: persisted.model };
+  try {
+    if (persisted !== undefined && opts.providerSelection !== undefined &&
+        (persisted.provider !== opts.providerSelection.provider ||
+          persisted.model !== opts.providerSelection.model)) {
+      throw new Error("child provider/model pair changed before restart");
+    }
+    if (providerSelection !== undefined) {
+      assertCrossProviderAllowed(opts.parent, providerSelection.provider);
+      const validated = await resolveChildSelection(
+        opts.parent, providerSelection.provider, providerSelection.model,
+      );
+      if (validated.provider !== providerSelection.provider ||
+          validated.model !== providerSelection.model) {
+        throw new Error("child provider/model pair changed before restart");
+      }
+      const prepared = await opts.parent.providerService.prepareChild(validated);
+      await prepared.binding.instance.dispose?.();
+    }
+  } catch (err) {
     emitWarning(
       opts.parent.eventLog,
       opts.parent.nextInternalSubId(),
@@ -921,13 +954,21 @@ async function restartLiveAgent(opts: {
   await opts.control.shutdown(live.agentId, "delegate_restart");
 
   try {
-    return await opts.control.spawn({
+    const restarted = await opts.control.spawn({
       parentPath: opts.parentPath,
       roleName: live.metadata.agentRole ?? live.role.name,
       agentPath: live.agentPath,
       preferredNickname: live.nickname,
       expectedRoleProvenance: live.metadata,
+      ...(providerSelection !== undefined ? { providerSelection } : {}),
     });
+    if (providerSelection !== undefined &&
+        (restarted.metadata.crossProvider?.provider !== providerSelection.provider ||
+          restarted.metadata.crossProvider.model !== providerSelection.model)) {
+      await opts.control.shutdown(restarted.agentId, "delegate_restart_provenance_failed");
+      throw new Error("replacement spawn lost child provider/model provenance");
+    }
+    return restarted;
   } catch (err) {
     emitWarning(
       opts.parent.eventLog,

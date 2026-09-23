@@ -15,10 +15,8 @@ import { liveAgentSession } from "../live-session.js";
 import { READ_ONLY_DELEGATION_PROMPT, sessionIsPlanning, sessionReadOnlyDelegation } from "../readonly-delegation.js";
 import type { ForkMode } from "../fork-context.js";
 import type { AgentThread } from "../thread.js";
-import { buildProviderModelCatalog } from "../../config/provider-model-authority.js";
 import {
   allowedChildPairs,
-  childCatalogConfig,
   childModelInfo,
   childProviderPolicy,
   currentChildProvider,
@@ -322,9 +320,7 @@ function buildSpawnModelSchema(
 ): Record<string, unknown> {
   const currentSlug = session?.modelInfo?.slug;
   const slugs = session === null ? undefined : [
-    ...(session.services.configStore !== undefined
-      ? buildProviderModelCatalog(childCatalogConfig(session), { includeConfiguredSelection: true })[currentChildProvider(session).provider] ?? []
-      : (session.services.modelsManager?.tryListModels() ?? []).map((candidate) => candidate.slug)),
+    ...(session.services.modelsManager?.tryListModels() ?? []).map((candidate) => candidate.slug),
     ...allowedChildPairs(session).map(({ provider, model }) => `${provider}/${model}`),
   ];
   const inheritClause = currentSlug

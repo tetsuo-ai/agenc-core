@@ -18,6 +18,12 @@ import {
 } from "../llm/provider-options.js";
 import type { LLMProvider } from "../llm/types.js";
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
+import {
+  resolveBuiltInProviderInfo,
+  resolveBuiltInProviderRegionalEndpoint,
+} from "../llm/registry/provider-info.js";
+import { resolveProviderBaseURLEnvironment } from "../llm/registry/provider-ingress.js";
+import { readGeminiRuntimeOptions } from "../llm/providers/gemini/runtime-options.js";
 
 export type { ReadSavedProviderApiKey } from "../llm/provider-options.js";
 
@@ -253,6 +259,24 @@ export class SessionProviderService {
     requested?: ProviderFactoryOptions,
     runtime: ProviderPreparationRuntime = {},
   ): Promise<PreparedProviderBinding> {
+    return this.#prepare(selection, requested, runtime, false);
+  }
+
+  /** Prepare a child, pinning a different provider to its registry endpoint. */
+  async prepareChild(
+    selection: ProviderSelection,
+    requested?: ProviderFactoryOptions,
+    runtime: ProviderPreparationRuntime = {},
+  ): Promise<PreparedProviderBinding> {
+    return this.#prepare(selection, requested, runtime, true);
+  }
+
+  async #prepare(
+    selection: ProviderSelection,
+    requested: ProviderFactoryOptions | undefined,
+    runtime: ProviderPreparationRuntime,
+    child: boolean,
+  ): Promise<PreparedProviderBinding> {
     const provider = resolveBuiltInProviderSlug(selection.provider);
     if (provider === undefined) {
       throw new Error(`unknown provider "${selection.provider.trim()}"`);
@@ -272,6 +296,65 @@ export class SessionProviderService {
     }
     const requestedOptions = preparation.requested;
     const runtimeOptions = preparation.runtime ?? {};
+    if (child && provider !== this.#binding.provider) {
+      const info = resolveBuiltInProviderInfo(provider)!;
+      const envBaseURL = resolveProviderBaseURLEnvironment(provider, this.#environment);
+      const resolvedBaseURL = firstNonEmpty(requestedOptions.baseURL, envBaseURL?.value) ?? info.baseURL;
+      const normalize = (value: string): string => {
+        try {
+          return new URL(value).href.replace(/\/$/u, "");
+        } catch {
+          return value.trim();
+        }
+      };
+      if (normalize(resolvedBaseURL) !== normalize(info.baseURL)) {
+        const source = envBaseURL?.value === resolvedBaseURL
+          ? envBaseURL.envVar
+          : requested === undefined
+            ? `providers.${provider}.base_url or another provider endpoint setting`
+            : "a provider factory option";
+        throw new Error(
+          `Sub-agents on ${info.name} use its default endpoint, but a custom base URL is set (${source}). ` +
+          `Remove it, or use ${info.name} as the main session's provider.`,
+        );
+      }
+      const rejectOtherEndpoint = (source: string): never => {
+        throw new Error(
+          `Sub-agents on ${info.name} use its default endpoint, but another endpoint is configured (${source}). ` +
+          `Remove it, or use ${info.name} as the main session's provider.`,
+        );
+      };
+      if (provider === "amazon-bedrock" && info.credentials.kind === "aws-sigv4") {
+        const regionEnvVar = info.credentials.regionEnvVars.find((name) =>
+          firstNonEmpty(this.#environment[name]) !== undefined
+        );
+        const explicitRegion = requestedOptions.extra?.region;
+        const region = firstNonEmpty(
+          typeof explicitRegion === "string" ? explicitRegion : undefined,
+          regionEnvVar === undefined ? undefined : this.#environment[regionEnvVar],
+        );
+        const endpoint = resolveBuiltInProviderRegionalEndpoint(provider, region);
+        if (endpoint !== undefined && normalize(endpoint.baseURL) !== normalize(info.baseURL)) {
+          rejectOtherEndpoint(typeof explicitRegion === "string" && explicitRegion.trim()
+            ? "provider region option"
+            : regionEnvVar ?? "provider region");
+        }
+      }
+      if (provider === "gemini") {
+        const geminiRuntime = readGeminiRuntimeOptions(requestedOptions.extra);
+        if (geminiRuntime !== undefined &&
+            (geminiRuntime.endpointPlan.kind !== "developer" ||
+              normalize(geminiRuntime.endpointPlan.nativeBaseURL) !== normalize(info.baseURL))) {
+          rejectOtherEndpoint("extra.gemini.endpointPlan");
+        }
+        const authMode = firstNonEmpty(this.#environment.GEMINI_AUTH_MODE)?.toLowerCase();
+        if (geminiRuntime === undefined &&
+            firstNonEmpty(requestedOptions.baseURL, envBaseURL?.value) === undefined &&
+            (authMode === "access-token" || authMode === "adc")) {
+          rejectOtherEndpoint("GEMINI_AUTH_MODE");
+        }
+      }
+    }
     const credentialHome = requestedOptions.credentialHome ?? this.#credentialHome;
     const authority = await resolveProviderRuntimeAuthority(
       provider,

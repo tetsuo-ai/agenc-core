@@ -151,12 +151,12 @@ describe("spawn_agent isolation", () => {
     expect(mockDelegate).not.toHaveBeenCalled();
   });
 
-  it("requires the switch for an explicit pair even on the current provider", async () => {
+  it("accepts an explicit pair on the current provider without the cross-provider switch", async () => {
     const { tool } = await crossProviderFixture(["grok"], false);
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
     const result = await tool.execute({ message: "inspect", task_name: "worker", provider: "grok", model: "grok-4.6" });
-    expect(result.isError).toBe(true);
-    expect(result.content).toContain("cross_provider_enabled = true");
-    expect(mockDelegate).not.toHaveBeenCalled();
+    expect(result.isError).not.toBe(true);
+    expect(mockDelegate.mock.calls[0]?.[0].providerSelection).toBeUndefined();
   });
 
   it("refuses a provider outside the operator allowlist", async () => {
@@ -167,11 +167,12 @@ describe("spawn_agent isolation", () => {
     expect(mockDelegate).not.toHaveBeenCalled();
   });
 
-  it("requires an explicit provider for a slug on another provider", async () => {
+  it("uses the live model list for a same-provider slug even when the catalog assigns it elsewhere", async () => {
     const { tool } = await crossProviderFixture(["deepseek"]);
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
     const result = await tool.execute({ message: "inspect", task_name: "worker", model: "deepseek-v4-pro" });
-    expect(result.isError).toBe(true);
-    expect(result.content).toContain("Specify provider and model together");
+    expect(result.isError).not.toBe(true);
+    expect(mockDelegate.mock.calls[0]?.[0].providerSelection).toBeUndefined();
   });
 
   it("keeps a slash-containing local model on its current provider", async () => {
@@ -192,6 +193,21 @@ describe("spawn_agent isolation", () => {
     const result = await createSpawnAgentTool(makeOptions(session)).execute({
       message: "inspect", task_name: "worker", model: "openai/gpt-4o-mini",
     });
+    expect(result.isError).not.toBe(true);
+    expect(mockDelegate.mock.calls[0]?.[0].providerSelection).toBeUndefined();
+  });
+
+  it("advertises a live-only local model with a production configStore", async () => {
+    const { session } = await crossProviderFixture([], false);
+    const local = { ...session.modelInfo, slug: "team/live-only" };
+    session.services.modelsManager.tryListModels = () => [session.modelInfo, local];
+    session.services.modelsManager.listModels = async () => [session.modelInfo, local];
+    session.services.modelsManager.getModelInfo = async (slug) => slug === local.slug ? local : session.modelInfo;
+    const tool = createSpawnAgentTool(makeOptions(session));
+    const schema = tool.inputSchema as unknown as FakeSchema;
+    expect(schema.properties.model?.enum).toContain(local.slug);
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await tool.execute({ message: "inspect", task_name: "worker", model: local.slug });
     expect(result.isError).not.toBe(true);
     expect(mockDelegate.mock.calls[0]?.[0].providerSelection).toBeUndefined();
   });

@@ -1559,7 +1559,7 @@ export class AgentControl {
           metadata.crossProvider.provider,
           metadata.crossProvider.model,
         );
-        const prepared = await this.session.providerService.prepare(selection);
+        const prepared = await this.session.providerService.prepareChild(selection);
         await prepared.binding.instance.dispose?.();
       } catch (error) {
         throw new InvalidAgentMetadataError(

@@ -4,6 +4,7 @@ import { resolveProviderFactoryOptions } from "../../src/llm/provider-options.js
 import { createProvider } from "../../src/llm/provider.js";
 import { resolveProviderRuntimeRequest } from "../../src/llm/provider-request.js";
 import { resolveBuiltInProviderSlug } from "../../src/llm/registry/provider-info.js";
+import { defaultConfig } from "../../src/config/schema.js";
 import {
   clearCurrentRuntimeSession,
   runWithCurrentRuntimeSession,
@@ -46,6 +47,88 @@ function completion(label: string): Response {
 }
 
 describe("SessionProviderService", () => {
+  test.each([
+    {
+      label: "captured environment",
+      environment: { DEEPSEEK_BASE_URL: "https://receiver.example/v1" },
+      providers: undefined,
+      source: "DEEPSEEK_BASE_URL",
+    },
+    {
+      label: "provider config",
+      environment: {},
+      providers: { deepseek: { base_url: "https://receiver.example/v1" } },
+      source: "providers.deepseek.base_url",
+    },
+  ])("rejects a cross-provider child's custom endpoint from $label before credentials", async ({ environment, providers, source }) => {
+    const readSavedApiKey = vi.fn(async () => "secret");
+    const config = { ...defaultConfig(), ...(providers ? { providers } : {}) };
+    const service = new SessionProviderService({
+      initialProvider: createProvider("openai", { model: "gpt-5.4", apiKey: "parent-key" }),
+      environment,
+      readSavedApiKey,
+      resolvePreparationRequest: ({ provider, model }) => ({
+        requested: resolveProviderRuntimeRequest({
+          provider: resolveBuiltInProviderSlug(provider)!, model, config,
+          environment: service.environment(),
+        }).requested,
+      }),
+    });
+    await expect(service.prepareChild({ provider: "deepseek", model: "deepseek-v4-pro" }))
+      .rejects.toThrow(source);
+    expect(readSavedApiKey).not.toHaveBeenCalled();
+  });
+
+  test("accepts a canonical cross-provider endpoint and preserves same-provider custom endpoints", async () => {
+    const service = new SessionProviderService({
+      initialProvider: createProvider("openai", { model: "gpt-5.4", apiKey: "parent-key" }),
+      environment: { DEEPSEEK_BASE_URL: "https://api.deepseek.com/v1" },
+      readSavedApiKey: async () => "target-key",
+      resolvePreparationRequest: ({ model }) => ({ requested: { model } }),
+    });
+    const cross = await service.prepareChild({ provider: "deepseek", model: "deepseek-v4-pro" });
+    expect(cross.binding.factoryOptions.baseURL).toBe("https://api.deepseek.com/v1");
+    expect(cross.binding.factoryOptions.apiKey).toBe("target-key");
+    await cross.binding.instance.dispose?.();
+
+    const child = service.forkForChild(createProvider("deepseek", {
+      model: "deepseek-v4-pro", apiKey: "target-key", baseURL: "https://receiver.example/v1",
+    }), { provider: "deepseek", model: "deepseek-v4-pro" });
+    const local = await child.prepareChild({ provider: "deepseek", model: "deepseek-flash" }, {
+      model: "deepseek-flash", baseURL: "https://receiver.example/v1",
+    });
+    expect(local.binding.factoryOptions.baseURL).toBe("https://receiver.example/v1");
+    await local.binding.instance.dispose?.();
+  });
+
+  test("rejects a direct child factory endpoint override before reading a saved key", async () => {
+    const readSavedApiKey = vi.fn(async () => "secret");
+    const service = new SessionProviderService({
+      initialProvider: createProvider("openai", { model: "gpt-5.4", apiKey: "parent-key" }),
+      readSavedApiKey,
+    });
+    await expect(service.prepareChild(
+      { provider: "deepseek", model: "deepseek-v4-pro" },
+      { model: "deepseek-v4-pro", baseURL: "https://receiver.example/v1" },
+    )).rejects.toThrow(/provider factory option/u);
+    expect(readSavedApiKey).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    { provider: "amazon-bedrock", environment: { AWS_REGION: "eu-west-1" }, source: "AWS_REGION" },
+    { provider: "gemini", environment: { GEMINI_AUTH_MODE: "access-token" }, source: "GEMINI_AUTH_MODE" },
+  ])("rejects $provider alternate endpoint routing before credentials", async ({ provider, environment, source }) => {
+    const readSavedApiKey = vi.fn(async () => "secret");
+    const service = new SessionProviderService({
+      initialProvider: createProvider("openai", { model: "gpt-5.4", apiKey: "parent-key" }),
+      environment,
+      readSavedApiKey,
+    });
+    await expect(service.prepareChild(
+      { provider, model: "target-model" }, { model: "target-model" },
+    )).rejects.toThrow(source);
+    expect(readSavedApiKey).not.toHaveBeenCalled();
+  });
   test("forked child and nested child resolve target credentials and endpoint from captured authority", async () => {
     const mutableEnvironment: Record<string, string> = {
       DEEPSEEK_BASE_URL: "https://target.example.test/v1",

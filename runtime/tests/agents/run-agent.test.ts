@@ -725,6 +725,7 @@ describe("runAgent", () => {
       current: () => ({ provider: "grok", model: "grok-4.6", instance: rootProvider }),
       environment: () => Object.freeze({ DEEPSEEK_API_KEY: "captured-target-key" }),
       prepare,
+      prepareChild: prepare,
       forkForChild: (provider: LLMProvider, selection: { provider: string; model: string }) =>
         new SessionProviderService({
           initialProvider: provider,
@@ -804,10 +805,15 @@ describe("runAgent", () => {
       }),
     } satisfies LLMProvider;
     const { parent, modelInfo } = crossProviderRuntime(target, configStore);
-    const { live } = await spawnLive(parent);
+    const terminateOwnedProcesses = vi.fn(() => ({ results: [] as [] }));
+    Object.assign(parent.services, { unifiedExecManager: { terminateOwnedProcesses } });
+    const control = new AgentControl({ session: parent, registry: new AgentRegistry() });
+    control.registerSessionRoot(parent.conversationId);
+    const live = await control.spawn({ parentPath: "/root" });
+    expect(control.openThreadSpawnChildren(parent.conversationId).map(([id]) => id)).toContain(live.agentId);
     const run = collectRun(runAgent({ live, parent, initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", model: "deepseek-v4-pro", modelInfo, providerSelection: { provider: "deepseek", model: "deepseek-v4-pro" } }));
     await active;
-    if (cause === "Stop") parent.abortController.abort("stop");
+    if (cause === "Stop") control.stopOpenSpawnChildren(parent.conversationId, "user_stop");
     else {
       enabled = false;
       await configStore.reload();
@@ -815,6 +821,10 @@ describe("runAgent", () => {
     const { result } = await run;
     expect(streamSignal?.aborted).toBe(true);
     expect(result.outcome).not.toBe("completed");
+    if (cause === "Stop") {
+      expect(live.abortController.signal.aborted).toBe(true);
+      expect(terminateOwnedProcesses).toHaveBeenCalledWith({ ownerId: live.agentId });
+    }
   });
   it("forks and disposes a factory Grok provider for the child session", async () => {
     const provider = createProvider("grok", {

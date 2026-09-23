@@ -1155,7 +1155,7 @@ describe("AgentControl", () => {
     });
     Object.assign(session, {
       modelInfo: { slug: "grok-4.6" },
-      providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }), prepare },
+      providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }), prepare, prepareChild: prepare },
       services: { ...session.services, configStore: { current: () => ({ model_provider: "grok", model: "grok-4.6", agents: { cross_provider_enabled: true, allowed_providers: allowed } }) } },
     });
     const registry = new AgentRegistry();

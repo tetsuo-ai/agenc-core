@@ -18,6 +18,8 @@ export function childCatalogConfig(session: Session): AgenCConfig {
 }
 
 export function currentChildProvider(session: Session): ProviderSelection {
+  // Sessions constructed by normal ingress always have providerService. The
+  // fallback exists only for legacy/test Session stubs without that service.
   return session.providerService?.current() ?? {
     provider: session.services.configStore?.current().model_provider ?? "grok",
     model: session.modelInfo.slug,
@@ -58,13 +60,22 @@ export async function resolveChildSelection(
   }
   let model = requestedModel?.trim();
   const catalog = buildProviderModelCatalog(childCatalogConfig(session), { includeConfiguredSelection: true });
-  let qualified = false;
-  if (model?.includes("/") &&
-      !(requestedProvider === undefined && (catalog[active.provider] ?? []).includes(model))) {
+  const localModels = requestedModel === undefined ||
+      (provider !== undefined && provider !== active.provider)
+    ? undefined
+    : session.services.modelsManager?.tryListModels() ?? await session.services.modelsManager?.listModels();
+  const isLiveLocalModel = (slug: string): boolean =>
+    (localModels ?? []).some((candidate) => candidate.slug === slug);
+  if (model?.includes("/") && !(
+    provider === active.provider
+      ? isLiveLocalModel(model)
+      : provider !== undefined
+        ? (catalog[provider] ?? []).includes(model)
+        : isLiveLocalModel(model)
+  )) {
     const slash = model.indexOf("/");
     const qualifiedProvider = resolveBuiltInProviderSlug(model.slice(0, slash));
     if (qualifiedProvider !== undefined) {
-      qualified = true;
       if (provider !== undefined && provider !== qualifiedProvider) {
         throw new Error(`Provider \`${provider}\` conflicts with qualified model \`${model}\`. Use the same provider in both fields.`);
       }
@@ -75,17 +86,14 @@ export async function resolveChildSelection(
   provider ??= active.provider;
   model ??= session.sessionConfiguration.collaborationMode.model ?? active.model;
   if (!model) throw new Error("spawn_agent requires a model for the selected provider.");
-  if (provider !== active.provider || requestedProvider !== undefined || qualified) {
+  if (provider !== active.provider) {
     assertCrossProviderAllowed(session, provider);
   }
   const inheritedLocalModel = requestedModel === undefined && provider === active.provider;
-  const localModels = provider === active.provider && requestedModel !== undefined
-    ? session.services.modelsManager?.tryListModels() ?? await session.services.modelsManager?.listModels()
-    : undefined;
-  const fixtureLocalModel = session.services.configStore === undefined &&
-    provider === active.provider &&
-    (localModels ?? []).some((candidate) => candidate.slug === model);
-  if (!(catalog[provider] ?? []).includes(model) && !fixtureLocalModel && !inheritedLocalModel) {
+  const knownModel = provider === active.provider
+    ? isLiveLocalModel(model) || inheritedLocalModel
+    : (catalog[provider] ?? []).includes(model);
+  if (!knownModel) {
     const alternatives = Object.entries(catalog)
       .filter(([, models]) => models.includes(model))
       .map(([name]) => name);

@@ -3865,7 +3865,7 @@ export async function* runAgent(
     let provider = providerFromParent(parent);
     if (params.providerSelection !== undefined) {
       assertCrossProviderAllowed(parent, params.providerSelection.provider);
-      const prepared = await parent.providerService.prepare(params.providerSelection);
+      const prepared = await parent.providerService.prepareChild(params.providerSelection);
       assertCrossProviderAllowed(parent, params.providerSelection.provider);
       provider = prepared.binding.instance;
       ownedPreparedProvider = provider;
