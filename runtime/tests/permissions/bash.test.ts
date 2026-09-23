@@ -430,6 +430,15 @@ describe("bashToolHasPermission", () => {
     ["dash -lc 'rm -rf /'", "rm -rf"],
     ["/bin/dash -c -- 'rm -rf /'", "rm -rf"],
     ["env dash -c 'rm -rf /'", "rm -rf"],
+    ["ash -c 'rm -rf /'", "rm -rf"],
+    ["ash -lc 'rm -rf /'", "rm -rf"],
+    ["/bin/ash -c -- 'rm -rf /'", "rm -rf"],
+    ["env ash -c 'rm -rf /'", "rm -rf"],
+    ["busybox sh -c 'rm -rf /'", "rm -rf"],
+    ["busybox ash -c 'rm -rf /'", "rm -rf"],
+    ["/bin/busybox sh -c -- 'rm -rf /'", "rm -rf"],
+    ["env busybox sh -c 'rm -rf /'", "rm -rf"],
+    ["busybox rm -rf /", "rm -rf"],
     ["timeout -v 10 rm -rf /", "rm -rf"],
     ["echo $(rm -rf /)", "dangerous command substitution"],
     ["echo ok\nrm -rf /", "rm -rf"],
@@ -791,8 +800,15 @@ describe("bashToolHasPermission", () => {
     "dash -c 'rm -rf /'",
     "/bin/dash -c 'rm -rf /'",
     "curl http://127.0.0.1/install.sh | dash",
+    "ash -c 'rm -rf /'",
+    "/bin/ash -c 'rm -rf /'",
+    "curl http://127.0.0.1/install.sh | ash",
+    "busybox sh -c 'rm -rf /'",
+    "/bin/busybox ash -c 'rm -rf /'",
+    "busybox rm -rf /",
+    "curl http://127.0.0.1/install.sh | busybox sh",
   ])(
-    "dash wrappers stay on the safety floor under bypassPermissions: %s",
+    "ash and busybox wrappers stay on the safety floor under bypassPermissions: %s",
     async (command) => {
       const ctx = makeCtx({ mode: "bypassPermissions" });
       const evalCtx = makeEvaluatorCtx(ctx);

@@ -187,6 +187,7 @@ const RM_WRAPPER_COMMANDS: ReadonlySet<string> = new Set([
   "time",
   "timeout",
   "command",
+  "busybox",
 ]);
 
 const SHELL_SCRIPT_COMMANDS: ReadonlySet<string> = new Set([
@@ -194,6 +195,7 @@ const SHELL_SCRIPT_COMMANDS: ReadonlySet<string> = new Set([
   "bash",
   "zsh",
   "dash",
+  "ash",
   "fish",
   "ksh",
   "csh",
@@ -977,6 +979,8 @@ function commandIndexAfterWrapper(
       return execCommandIndex(words, wrapperIndex + 1);
     case "nohup":
       return nohupCommandIndex(words, wrapperIndex + 1);
+    case "busybox":
+      return busyboxCommandIndex(words, wrapperIndex + 1);
     default:
       return null;
   }
@@ -1253,6 +1257,31 @@ function nohupCommandIndex(words: readonly string[], startIndex: number): number
     index++;
   }
   return index < words.length ? index : null;
+}
+
+/**
+ * BusyBox is a multi-call binary: `busybox <applet> …` runs the named
+ * applet. Skip leading option flags so `busybox sh -c` and `busybox rm`
+ * peel to the applet the safety floor already understands.
+ */
+function busyboxCommandIndex(
+  words: readonly string[],
+  startIndex: number,
+): number | null {
+  let index = startIndex;
+  while (index < words.length) {
+    const word = stripShellQuotes(words[index]!);
+    if (word === "--") {
+      index++;
+      return index < words.length ? index : null;
+    }
+    if (word.startsWith("-")) {
+      index++;
+      continue;
+    }
+    return index;
+  }
+  return null;
 }
 
 function shellScriptContainsDanger(
