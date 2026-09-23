@@ -904,22 +904,32 @@ export async function loadLocalSkillsSnapshot(
   }
 
   const bundled = BUNDLED_SKILLS.map(bundledSkillMetadata);
-  const discoveredRoots = new Set(
-    discoveredSkillRoots.map(normalizeExistingCandidate),
-  );
-  const sortedSkills = [...bundled, ...unconditional].sort((a, b) => {
-    const byName = a.name.localeCompare(b.name);
-    if (byName !== 0) return byName;
-    if (discoveredRoots.has(a.root) && discoveredRoots.has(b.root)) {
-      const byDepth = b.root.split(sep).length - a.root.split(sep).length;
-      if (byDepth !== 0) return byDepth;
+  const active = keepOneSkillPerName([...bundled, ...unconditional]);
+  // A path-gated skill that loses to an active skill of the same name could
+  // never load, even once its paths match; one that wins takes over when
+  // it activates, so only the losers are dropped.
+  const activeByName = new Map(active.kept.map((skill) => [skill.name, skill]));
+  const gated = keepOneSkillPerName(conditional);
+  const gatedKept: LocalSkillMetadata[] = [];
+  const gatedShadowed: ShadowedSkill[] = [];
+  for (const skill of gated.kept) {
+    const winner = activeByName.get(skill.name);
+    if (winner !== undefined && compareSkillPrecedence(winner, skill) < 0) {
+      gatedShadowed.push({ skill, by: winner });
+    } else {
+      gatedKept.push(skill);
     }
-    return a.path.localeCompare(b.path);
-  });
+  }
+  const allWarnings = [
+    ...warnings,
+    ...[...active.shadowed, ...gated.shadowed, ...gatedShadowed].map(
+      shadowWarning,
+    ),
+  ];
 
   return {
-    skills: sortedSkills,
-    conditionalSkills: conditional.sort((a, b) => a.name.localeCompare(b.name)),
+    skills: active.kept.sort(byNameThenPath),
+    conditionalSkills: gatedKept.sort(byNameThenPath),
     skillRoots: unique(roots.map((root) => root.path)).sort((a, b) =>
       a.localeCompare(b)
     ),
@@ -927,7 +937,91 @@ export async function loadLocalSkillsSnapshot(
       roots.filter((root) => root.scope === "plugin").map((root) => root.path),
     ).sort((a, b) => a.localeCompare(b)),
     truncatedRoots,
-    warnings,
+    warnings: allWarnings,
+  };
+}
+
+function byNameThenPath(a: LocalSkillMetadata, b: LocalSkillMetadata): number {
+  return a.name.localeCompare(b.name) || a.path.localeCompare(b.path);
+}
+
+/**
+ * Which of two same-named skills the listing, `/skills` and the Skill tool
+ * use. Managed policy first, then the user's own skills ($AGENC_HOME before
+ * the shared ~/.agents catalog), then repository skills (the root nearest
+ * the files being worked on first, `.agenc` before `.agents` in one
+ * directory), then plugins, then AgenC's built-ins. A repository cannot
+ * replace a skill the user installed for themselves, which matches the
+ * upstream rule (managed > personal > project), and a local skill still
+ * overrides a built-in, as the bundled-skill listing already did.
+ *
+ * Before this order was explicit the first skill by path won, so the
+ * result depended on where the home directory and the checkout happened
+ * to sort, and both copies were listed while only one could ever load.
+ */
+const SKILL_PRECEDENCE_TIER: Readonly<Record<LocalSkillScope, number>> = {
+  managed: 0,
+  user: 1,
+  project: 2,
+  plugin: 3,
+  mcp: 4,
+  bundled: 5,
+};
+
+function sharedCatalogRoot(root: string): number {
+  return root.endsWith(SHARED_AGENTS_SKILLS_SUFFIX) ? 1 : 0;
+}
+
+export function compareSkillPrecedence(
+  a: LocalSkillMetadata,
+  b: LocalSkillMetadata,
+): number {
+  const byTier = SKILL_PRECEDENCE_TIER[a.scope] - SKILL_PRECEDENCE_TIER[b.scope];
+  if (byTier !== 0) return byTier;
+  if (a.scope === "project") {
+    const byDepth = b.root.split(sep).length - a.root.split(sep).length;
+    if (byDepth !== 0) return byDepth;
+  }
+  return (
+    sharedCatalogRoot(a.root) - sharedCatalogRoot(b.root) ||
+    a.path.localeCompare(b.path)
+  );
+}
+
+interface ShadowedSkill {
+  readonly skill: LocalSkillMetadata;
+  readonly by: LocalSkillMetadata;
+}
+
+function keepOneSkillPerName(skills: readonly LocalSkillMetadata[]): {
+  readonly kept: LocalSkillMetadata[];
+  readonly shadowed: ShadowedSkill[];
+} {
+  const winners = new Map<string, LocalSkillMetadata>();
+  for (const skill of skills) {
+    const current = winners.get(skill.name);
+    if (current === undefined || compareSkillPrecedence(skill, current) < 0) {
+      winners.set(skill.name, skill);
+    }
+  }
+  const shadowed: ShadowedSkill[] = [];
+  for (const skill of skills) {
+    const winner = winners.get(skill.name)!;
+    if (winner !== skill) shadowed.push({ skill, by: winner });
+  }
+  return { kept: [...winners.values()], shadowed };
+}
+
+function shadowWarning({ skill, by }: ShadowedSkill): SkillLoadWarning {
+  if (skill.loadedFrom === "bundled") {
+    return {
+      path: by.path,
+      reason: `replaces the built-in skill "${skill.name}"; the built-in one is not listed or loadable`,
+    };
+  }
+  return {
+    path: skill.path,
+    reason: `not loaded: ${by.path} defines a skill with the same name ("${skill.name}") and takes precedence`,
   };
 }
 
@@ -1016,8 +1110,10 @@ function snapshotFindSkill(
   name: string,
 ): LocalSkillMetadata | undefined {
   const normalized = normalizeSkillName(name);
-  return snapshot.skills.find(
-    (skill) => skill.name === normalized || skill.aliases?.includes(normalized),
+  // A skill's own name wins over another skill's alias, as in findCommand.
+  return (
+    snapshot.skills.find((skill) => skill.name === normalized) ??
+    snapshot.skills.find((skill) => skill.aliases?.includes(normalized))
   );
 }
 
