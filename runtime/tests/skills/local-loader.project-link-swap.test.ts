@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const readDirHook = vi.hoisted(() => ({ run: null as ((path: string) => void) | null }));
+const openHook = vi.hoisted(() => ({ run: null as ((path: string) => void) | null }));
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs/promises")>();
   return {
@@ -12,6 +13,16 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     readdir: (...args: unknown[]) => {
       if (typeof args[0] === "string") readDirHook.run?.(args[0]);
       return Reflect.apply(original.readdir, original, args);
+    },
+    open: (...args: unknown[]) => {
+      if (typeof args[0] === "string") openHook.run?.(args[0]);
+      return Reflect.apply(original.open, original, args);
+    },
+    // Same hook for a whole-file read, so the swap lands at the read whichever
+    // API performs it.
+    readFile: (...args: unknown[]) => {
+      if (typeof args[0] === "string") openHook.run?.(args[0]);
+      return Reflect.apply(original.readFile, original, args);
     },
   };
 });
@@ -61,6 +72,7 @@ function retarget(link: string, target: string): void {
 
 afterEach(() => {
   readDirHook.run = null;
+  openHook.run = null;
 });
 
 describe("project skill real-path reads", () => {
@@ -106,5 +118,26 @@ describe("project skill real-path reads", () => {
 
     await expect(services.skillsManager.renderSkill({ name: "linked" }))
       .rejects.toThrow(/project skill.*safe location/i);
+  });
+
+  it("does not follow a SKILL.md swapped for a link between the safety check and the read", async () => {
+    if (process.platform === "win32") return;
+    const f = fixture();
+    const services = createLocalSkillsServices(f.options);
+    expect((await services.skillsManager.resolveSkill("linked"))?.description).toBe("safe");
+    // The swap lands after the invocation check passed, as the read opens the
+    // file. The directory stays safe; only the file itself becomes a link.
+    let swapped = false;
+    openHook.run = (path) => {
+      if (swapped || !path.endsWith(join("linked", "SKILL.md"))) return;
+      swapped = true;
+      const file = join(f.safeDir, "SKILL.md");
+      renameSync(file, `${file}.old`);
+      symlinkSync(join(f.unsafeDir, "SKILL.md"), file);
+    };
+
+    const rendered = await services.skillsManager.renderSkill({ name: "linked" });
+    expect(swapped).toBe(true);
+    expect(rendered?.content ?? "").not.toContain("unsafe body");
   });
 });

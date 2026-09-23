@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import {
   lstat,
+  open,
   readdir,
-  readFile,
   realpath,
   stat,
 } from "node:fs/promises";
@@ -748,6 +749,23 @@ async function findSkillFiles(root: SkillRoot): Promise<SkillFileScan> {
   };
 }
 
+/**
+ * Read a SKILL.md without following a link at its last component, and only
+ * when the opened descriptor is a regular file (null otherwise). A project
+ * skill is read through a real path that passed the safety check; opening it
+ * this way means a file swapped for a link after that check is refused, not
+ * followed, and the check and the read concern the same file.
+ */
+async function readRegularFileNoFollow(path: string): Promise<Buffer | null> {
+  const handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  try {
+    if (!(await handle.stat()).isFile()) return null;
+    return await handle.readFile();
+  } finally {
+    await handle.close();
+  }
+}
+
 function isSkillFile(fileName: string): boolean {
   return fileName.toLowerCase() === "skill.md";
 }
@@ -1011,15 +1029,11 @@ async function readParsedSkillFile(
   warnings: SkillLoadWarning[],
   readPath = filePath,
 ): Promise<ParsedSkillFile | null> {
-  try {
-    const stats = await stat(readPath);
-    if (!stats.isFile()) return null;
-  } catch {
-    return null;
-  }
   let bytes: Buffer;
   try {
-    bytes = await readFile(readPath);
+    const read = await readRegularFileNoFollow(readPath);
+    if (read === null) return null;
+    bytes = read;
   } catch (error) {
     warnings.push({
       path: filePath,
@@ -1491,7 +1505,9 @@ async function loadSkillContent(
     readPath = realPath;
   }
   try {
-    raw = await readFile(readPath, "utf8");
+    const read = await readRegularFileNoFollow(readPath);
+    if (read === null) return null;
+    raw = read.toString("utf8");
   } catch {
     return null;
   }
