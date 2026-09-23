@@ -146,8 +146,8 @@ export async function readCronTasks(dir?: string): Promise<CronTask[]> {
 
 /**
  * Whether a failed startup restore of durable tasks deserves a warning. A
- * platform without descriptor-confined I/O (macOS, Windows) cannot restore
- * durable tasks at all, but a workspace that never had a durable record has
+ * platform without a safe read path cannot restore durable tasks, but a
+ * workspace that never had a durable record has
  * nothing to restore, and a warning in every session there buries real
  * failures. Every other failure, and a record that exists but cannot be
  * restored, is reported.

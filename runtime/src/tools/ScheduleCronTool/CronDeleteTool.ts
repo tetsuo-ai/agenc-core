@@ -1,10 +1,12 @@
 import { z } from "zod/v4";
+import { markEffectBoundaryNotCrossed } from "../effect-boundary.js";
 import { getProjectRoot } from "../../bootstrap/state.js";
 import type { ValidationResult } from "../Tool.js";
 import { buildTool, type ToolDef } from "../Tool.js";
 import {
   getCronFilePath,
   listAllCronTasks,
+  listSessionCronTasks,
   removeCronTasks,
 } from "../../utils/cronTasks.js";
 import { lazySchema } from "../../utils/lazySchema.js";
@@ -67,7 +69,16 @@ export const CronDeleteTool = buildTool({
         errorCode: 3,
       };
     }
-    const tasks = await listAllCronTasks(getProjectRoot(), conversationId);
+    let tasks;
+    try {
+      tasks = await listAllCronTasks(getProjectRoot(), conversationId);
+    } catch (error) {
+      if (error instanceof Error) markEffectBoundaryNotCrossed(error, {
+        evidenceRef: "tool:CronDelete:validation-read",
+        evidenceMaterial: error.message,
+      });
+      throw error;
+    }
     const task = tasks.find((t) => t.id === input.id);
     if (!task) {
       return {
@@ -92,7 +103,19 @@ export const CronDeleteTool = buildTool({
     if (typeof conversationId !== "string" || conversationId.length === 0) {
       throw new Error("CronDelete requires an active owning conversation");
     }
-    await removeCronTasks([id], getProjectRoot(), conversationId);
+    const sessionTaskExists = listSessionCronTasks(conversationId).some((task) => task.id === id);
+    try {
+      await removeCronTasks([id], getProjectRoot(), conversationId);
+    } catch (error) {
+      if (!sessionTaskExists && error instanceof Error &&
+          (error as NodeJS.ErrnoException).code === "DESCRIPTOR_UNSUPPORTED") {
+        markEffectBoundaryNotCrossed(error, {
+          evidenceRef: "tool:CronDelete:descriptor-admission",
+          evidenceMaterial: error.message,
+        });
+      }
+      throw error;
+    }
     return { data: { id } };
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {

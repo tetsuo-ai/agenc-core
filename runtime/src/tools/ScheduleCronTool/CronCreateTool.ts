@@ -1,4 +1,5 @@
 import { z } from "zod/v4";
+import { markEffectBoundaryNotCrossed } from "../effect-boundary.js";
 import {
   getProjectRoot,
   setScheduledTasksEnabled,
@@ -186,16 +187,28 @@ export const CronCreateTool = buildTool({
     // task file, so they are always durable.
     const effectiveDurable =
       deliver !== undefined ? true : durable && isDurableCronEnabled();
-    const id = await addCronTask(
-      cron,
-      prompt,
-      recurring,
-      effectiveDurable,
-      getTeammateContext()?.agentId,
-      deliver,
-      { kind: "session", conversationId },
-      workspaceRoot,
-    );
+    let id: string;
+    try {
+      id = await addCronTask(
+        cron,
+        prompt,
+        recurring,
+        effectiveDurable,
+        getTeammateContext()?.agentId,
+        deliver,
+        { kind: "session", conversationId },
+        workspaceRoot,
+      );
+    } catch (error) {
+      if (effectiveDurable && error instanceof Error &&
+          (error as NodeJS.ErrnoException).code === "DESCRIPTOR_UNSUPPORTED") {
+        markEffectBoundaryNotCrossed(error, {
+          evidenceRef: "tool:CronCreate:descriptor-admission",
+          evidenceMaterial: error.message,
+        });
+      }
+      throw error;
+    }
     // Enable the scheduler so the task fires in this session, then start the
     // timer-driven driver and reschedule it to the new task's next-due moment.
     // start() is gated behind the enable flag (just set) and is idempotent;

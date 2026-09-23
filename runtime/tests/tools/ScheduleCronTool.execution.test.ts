@@ -1,5 +1,5 @@
 import "../helpers/cron-os-home.js";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
@@ -12,6 +12,7 @@ import {
 import { CronCreateTool } from "../../src/tools/ScheduleCronTool/CronCreateTool.ts";
 import { CronDeleteTool } from "../../src/tools/ScheduleCronTool/CronDeleteTool.ts";
 import { CronListTool } from "../../src/tools/ScheduleCronTool/CronListTool.ts";
+import { readEffectBoundaryNotCrossed } from "../../src/tools/effect-boundary.ts";
 import { resetCronSchedulerForTests } from "../../src/utils/cronScheduler.ts";
 
 let tempRoot: string | undefined;
@@ -85,9 +86,30 @@ test("ScheduleCron defaults to session-only jobs while delivery forces durabilit
     cron: "*/5 * * * *", prompt: "local default",
   }, toolContext);
   expect(local.data.durable).toBe(false);
-  const delivery = await CronCreateTool.call({
+  const createDelivery = () => CronCreateTool.call({
     cron: "*/5 * * * *", prompt: "delivery default", durable: false,
     announceChannel: "stdio", announceTo: "test-recipient",
   }, toolContext);
-  expect(delivery.data.durable).toBe(true);
+  if (process.platform === "darwin") {
+    const error = await createDelivery().catch((cause: unknown) => cause);
+    expect(error).toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
+    expect(readEffectBoundaryNotCrossed(error, new Date().toISOString())).toBeDefined();
+  } else {
+    const delivery = await createDelivery();
+    expect(delivery.data.durable).toBe(true);
+  }
+});
+
+test("a legacy durable CronDelete refusal proves no effect on darwin", async () => {
+  if (process.platform !== "darwin") return;
+  await setTempProjectRoot();
+  const metadata = join(tempRoot!, ".agenc");
+  await mkdir(metadata, { mode: 0o700 });
+  await writeFile(join(metadata, "scheduled_tasks.json"), JSON.stringify({
+    tasks: [{ id: "durable-job", cron: "* * * * *", prompt: "work", createdAt: 1_000 }],
+  }), { mode: 0o600 });
+  const error = await CronDeleteTool.call({ id: "durable-job" }, toolContext)
+    .catch((cause: unknown) => cause);
+  expect(error).toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
+  expect(readEffectBoundaryNotCrossed(error, new Date().toISOString())).toBeDefined();
 });

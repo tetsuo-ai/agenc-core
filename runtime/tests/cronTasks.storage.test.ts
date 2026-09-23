@@ -101,7 +101,7 @@ describe("cron tools without durable storage", () => {
     }
     const durable = await tool("CronCreate").execute({ cron: "* * * * *", prompt: "durable work", durable: true });
     expect(durable.isError).toBe(true);
-    expect(String(durable.content)).toContain("Durable scheduled tasks are not supported on macOS yet.");
+    expect(String(durable.content)).toContain("descriptor-relative writes");
     expect(durable.effectDisposition?.disposition).toBe("confirmed_no_effect");
     const missing = await tool("CronDelete").execute({});
     expect(missing.effectDisposition?.disposition).toBe("confirmed_no_effect");
@@ -140,7 +140,26 @@ describe("cron tools without durable storage", () => {
     }
   });
 
-  test("an existing durable record gets a plain refusal before creating an unlistable job", async () => {
+  test("a known session job can be deleted when durable storage cannot be read", async () => {
+    const { createModelFacingTools } = await import("../src/bin/model-facing-tools.js");
+    const tools = createModelFacingTools({ workspaceRoot: workspace,
+      getSession: () => ({ conversationId: "delete-known-session-job" }) as Session,
+    });
+    const tool = (name: string) => tools.find((candidate) => candidate.name === name)!;
+    const created = await tool("CronCreate").execute({ cron: "* * * * *", prompt: "session job" });
+    const id = (JSON.parse(String(created.content)) as { cron: { id: string } }).cron.id;
+    const failure = vi.spyOn(cronTasks, "listAllCronTasks").mockRejectedValueOnce(new Error("storage unavailable"));
+    try {
+      const deleted = await tool("CronDelete").execute({ id });
+      expect(deleted.isError).toBeFalsy();
+      expect(JSON.parse(String(deleted.content))).toEqual({ deleted: true, id });
+      expect(getSessionCronTasks()).toEqual([]);
+    } finally {
+      failure.mockRestore();
+    }
+  });
+
+  test.skipIf(process.platform === "darwin")("an existing durable record gets a plain refusal before creating an unlistable job", async () => {
     const metadata = join(workspace, ".agenc");
     await mkdir(metadata, { mode: 0o700 });
     const file = getCronFilePath(workspace);
@@ -165,9 +184,45 @@ describe("cron tools without durable storage", () => {
   });
 });
 
+describe.runIf(process.platform === "darwin")("darwin cron tools", () => {
+  test("creates, lists, and deletes a session job while reading existing durable records", async () => {
+    const metadata = join(workspace, ".agenc");
+    await mkdir(metadata, { mode: 0o700 });
+    await writeFile(getCronFilePath(workspace), JSON.stringify({ tasks: [task("prior-durable")] }), { mode: 0o600 });
+    const { createModelFacingTools } = await import("../src/bin/model-facing-tools.js");
+    const tools = createModelFacingTools({ workspaceRoot: workspace,
+      getSession: () => ({ conversationId: "darwin-durable" }) as Session,
+    });
+    const tool = (name: string) => tools.find((candidate) => candidate.name === name)!;
+    const created = await tool("CronCreate").execute({ cron: "* * * * *", prompt: "session work" });
+    expect(created.isError).toBeFalsy();
+    const id = (JSON.parse(String(created.content)) as { cron: { id: string } }).cron.id;
+    expect((await readCronTasks(workspace)).map((entry) => entry.id)).toEqual(["prior-durable"]);
+    const listed = await tool("CronList").execute({});
+    expect(listed.isError).toBeFalsy();
+    expect((JSON.parse(String(listed.content)) as { crons: { id: string }[] }).crons)
+      .toContainEqual(expect.objectContaining({ id }));
+    expect((JSON.parse(String(listed.content)) as { crons: { id: string }[] }).crons)
+      .toContainEqual(expect.objectContaining({ id: "prior-durable" }));
+    const deleted = await tool("CronDelete").execute({ id });
+    expect(deleted.isError).toBeFalsy();
+    expect(JSON.parse(String(deleted.content))).toEqual({ deleted: true, id });
+    expect((await readCronTasks(workspace)).map((entry) => entry.id)).toEqual(["prior-durable"]);
+    const durableDelete = await tool("CronDelete").execute({ id: "prior-durable" });
+    expect(durableDelete.isError).toBe(true);
+    expect(String(durableDelete.content)).toContain("Use durable:false");
+    expect(durableDelete.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    const durableCreate = await tool("CronCreate").execute({ cron: "* * * * *", prompt: "durable work", durable: true });
+    expect(durableCreate.isError).toBe(true);
+    expect(String(durableCreate.content)).toContain("Use durable:false");
+    expect(durableCreate.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    expect((await readCronTasks(workspace)).map((entry) => entry.id)).toEqual(["prior-durable"]);
+  });
+});
+
 describe.skipIf(process.platform === "darwin")("descriptor-confined durable cron storage", () => {
 
-  test("default in-memory creation still fires when durable storage is unavailable", async () => {
+  test.skipIf(process.platform === "darwin")("default in-memory creation still fires when durable storage is unavailable", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
     vi.setSystemTime(new Date("2026-07-07T12:00:30Z"));
     await writeCronTasks([task("durable-kept")], workspace);
@@ -213,7 +268,7 @@ describe.skipIf(process.platform === "darwin")("descriptor-confined durable cron
     }
   });
 
-  test("fails closed before any metadata write when directory aliases are unavailable", async () => {
+  test.skipIf(process.platform === "darwin")("fails closed before any metadata write when directory aliases are unavailable", async () => {
     hooks.descriptorUnavailable = true;
     await expect(appendCronTask(task("new"), workspace)).rejects.toThrow(/descriptor-confined I\/O is unsupported/);
     await expect(readCronFile(workspace)).rejects.toThrow(/descriptor-confined I\/O is unsupported/);
@@ -221,7 +276,7 @@ describe.skipIf(process.platform === "darwin")("descriptor-confined durable cron
     expect(await readdir(workspace)).toEqual([]);
   });
 
-  test("startup restore warns only when an unrestorable durable record exists", async () => {
+  test.skipIf(process.platform === "darwin")("startup restore warns only when an unrestorable durable record exists", async () => {
     hooks.descriptorUnavailable = true;
     const unsupported: unknown = await readCronTasks(workspace).catch((error: unknown) => error);
     expect(unsupported).toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
@@ -233,7 +288,7 @@ describe.skipIf(process.platform === "darwin")("descriptor-confined durable cron
     expect(await cronRestoreFailureNeedsWarning(new Error("Cron storage must be owned by the current user"), workspace)).toBe(true);
   });
 
-  test("distinguishes missing or malformed records from storage capability failures", async () => {
+  test.skipIf(process.platform === "darwin")("distinguishes missing or malformed records from storage capability failures", async () => {
     expect(await readCronTasks(workspace)).toEqual([]);
     await mkdir(join(workspace, ".agenc"), { mode: 0o700 });
     expect(await readCronTasks(workspace)).toEqual([]);
@@ -243,7 +298,7 @@ describe.skipIf(process.platform === "darwin")("descriptor-confined durable cron
     await expect(readCronTasks(workspace)).rejects.toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
   });
 
-  test("CronList reports unavailable storage instead of returning an empty list", async () => {
+  test.skipIf(process.platform === "darwin")("CronList reports unavailable storage instead of returning an empty list", async () => {
     await writeCronTasks([task("kept")], workspace);
     const { createModelFacingTools } = await import("../src/bin/model-facing-tools.js");
     const list = createModelFacingTools({ workspaceRoot: workspace,
@@ -255,7 +310,7 @@ describe.skipIf(process.platform === "darwin")("descriptor-confined durable cron
     expect(String(result.content)).toContain("Durable scheduled tasks are not supported on macOS yet.");
   });
 
-  test("reports a session warning for failed durable loading without submitting model work", async () => {
+  test.skipIf(process.platform === "darwin")("reports a session warning for failed durable loading without submitting model work", async () => {
     await writeCronTasks([task("kept")], workspace);
     hooks.descriptorUnavailable = true;
     const eventLog = new EventLog();

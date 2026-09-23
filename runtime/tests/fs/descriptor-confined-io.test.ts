@@ -67,6 +67,10 @@ const privatePolicy: ConfinedIoPolicy = Object.freeze({
   privateFile: true,
   unavailableAlias: "reject",
 });
+const darwinPrivatePolicy: ConfinedIoPolicy = Object.freeze({
+  ...privatePolicy,
+  unavailableAlias: "identity-checked-path",
+});
 let temporaryDirectory: string;
 let root: string;
 let candidate: string;
@@ -258,7 +262,7 @@ describe("descriptor-confined I/O", () => {
     }
     await chmod(role === "directory" ? root : candidate, 0o755);
     expect(await readCandidate(sharedPolicy)).toEqual(Buffer.from("safe"));
-    await expect(readCandidate(privatePolicy)).rejects.toMatchObject({
+    await expect(readCandidate(process.platform === "darwin" ? darwinPrivatePolicy : privatePolicy)).rejects.toMatchObject({
       code: role === "directory" ? "ROOT_UNSAFE" : "CHILD_UNSAFE",
     });
   });
@@ -268,6 +272,61 @@ describe("descriptor-confined I/O", () => {
     expect(await readCandidate(sharedPolicy)).toEqual(Buffer.from("safe"));
     await expect(readCandidate({ ...sharedPolicy, unavailableAlias: "reject" }))
       .rejects.toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
+  });
+
+  it.runIf(process.platform === "darwin")("reads a private child through a verified path on darwin", async () => {
+    expect(await readCandidate(darwinPrivatePolicy)).toEqual(Buffer.from("safe"));
+  });
+
+  it.runIf(process.platform === "darwin")("refuses a symlink swapped in before child opening", async () => {
+    const outside = join(temporaryDirectory, "outside");
+    await writeFile(outside, "evil");
+    controls.beforeOpen = async (path) => {
+      if (!path.endsWith("candidate")) return;
+      controls.beforeOpen = undefined;
+      await unlink(candidate);
+      await symlink(outside, candidate);
+    };
+    await expect(readCandidate(darwinPrivatePolicy)).rejects.toMatchObject({ code: "CHILD_CHANGED" });
+    expect(controls.requestedBytes).toEqual([]);
+  });
+
+  it.runIf(process.platform === "darwin")("refuses a renamed root before reading a child", async () => {
+    await expect(readCandidate(darwinPrivatePolicy, {
+      async afterRootOpen() { await rename(root, `${root}.old`); await mkdir(root, { mode: 0o700 }); },
+    })).rejects.toMatchObject({ code: "ROOT_CHANGED" });
+    expect(controls.requestedBytes).toEqual([]);
+  });
+
+  it.runIf(process.platform === "darwin")("refuses replacement of a canonical ancestor even when the root inode returns", async () => {
+    const movedParent = `${temporaryDirectory}.old`;
+    try {
+      await expect(readCandidate(darwinPrivatePolicy, {
+        async afterRootOpen() {
+          await rename(temporaryDirectory, movedParent);
+          await mkdir(temporaryDirectory);
+          await rename(join(movedParent, "root"), root);
+        },
+      })).rejects.toMatchObject({ code: "ROOT_CHANGED" });
+      expect(controls.requestedBytes).toEqual([]);
+    } finally {
+      await rm(movedParent, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === "darwin")("refuses a child symlink swap during reading", async () => {
+    const outside = join(temporaryDirectory, "outside");
+    await writeFile(outside, "evil");
+    controls.afterRead = async () => {
+      await unlink(candidate);
+      await symlink(outside, candidate);
+    };
+    await expect(readCandidate(darwinPrivatePolicy)).rejects.toMatchObject({ code: "CHILD_UNSAFE" });
+  });
+
+  it.runIf(process.platform === "darwin")("refuses a root rename during reading", async () => {
+    controls.afterRead = async () => { await rename(root, `${root}.old`); };
+    await expect(readCandidate(darwinPrivatePolicy)).rejects.toMatchObject({ code: "CHILD_CHANGED" });
   });
 
   it("streams bounded chunks without accumulating a whole-file result", async () => {
@@ -415,7 +474,11 @@ describe("workflow consumer filesystem policies", () => {
         idempotencyKey: "item", bytes: Buffer.from("safe"), tokenCount: 1,
       });
       controls.hideAliases = true;
-      await expect(store.read(artifact.artifact_id)).rejects.toMatchObject({ code: "WORKFLOW_HANDOFF_SAFE_IO_UNSUPPORTED" });
+      if (process.platform === "darwin") {
+        await expect(store.read(artifact.artifact_id)).resolves.toMatchObject({ artifact });
+      } else {
+        await expect(store.read(artifact.artifact_id)).rejects.toMatchObject({ code: "WORKFLOW_HANDOFF_SAFE_IO_UNSUPPORTED" });
+      }
       expect(await readFile(join(store.trustedRoot, `${artifact.artifact_id}.handoff`), "utf8")).toBe("safe");
     } finally {
       driver.close();

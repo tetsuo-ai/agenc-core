@@ -661,8 +661,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     const tty = request.tty === true;
     if (tty && hasCurrentWorkspaceOperationLifetime()) {
       throw new UnifiedExecError(
-        "create_process",
-        "tty=true execution is blocked inside a contained tool operation because PTY descendants cannot be contained safely",
+        "tty_unavailable_in_contained_operation",
+        "tty=true is unavailable in this contained tool operation because PTY descendants cannot be contained safely. Rerun without tty and use non-interactive flags. If an interactive terminal is required, ask the user to run the command with the app's Run button. The same arguments will be refused again.",
       );
     }
 

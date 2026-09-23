@@ -21,6 +21,7 @@ import {
   prepareReadOnlyInspectionInvocation,
 } from "../../permissions/readonly-inspection.js";
 import { restrictedFileSystemPolicy } from "../../sandbox/engine/index.js";
+import { createWorkspaceOperationLifetime, runWithWorkspaceOperationLifetime } from "../../workspace/tool-operation-lifetime.js";
 import type { UnifiedExecRuntimeSandbox } from "../../unified-exec/types.js";
 
 const createExecCommandTool = (
@@ -100,6 +101,30 @@ describe("exec_command tool", () => {
   afterEach(async () => {
     if (root) await rm(root, { recursive: true, force: true });
     root = "";
+  });
+
+  test("contained tty refusal is structured, corrective, and not retryable unchanged", async () => {
+    const manager = new UnifiedExecProcessManager({ cwd: root });
+    const tool = createExecCommandTool({ cwd: root, allowedPaths: [root], unifiedExecManager: manager });
+    expect(String((tool.inputSchema.properties?.tty as { description?: string }).description))
+      .toContain("Unavailable inside a contained tool operation");
+    const lifetime = createWorkspaceOperationLifetime(() => {});
+    try {
+      const refused = await runWithWorkspaceOperationLifetime(lifetime, () =>
+        tool.execute({ cmd: "node -v", tty: true }));
+      expect(refused.isError).toBe(true);
+      expect(JSON.parse(String(refused.content))).toMatchObject({
+        code: "tty_unavailable_in_contained_operation",
+        retryable: false,
+      });
+      expect(String(refused.content)).toMatch(/without tty|non-interactive|Run button/u);
+      expect(refused.metadata).toMatchObject({ retryable: false });
+      expect(refused.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    } finally {
+      await lifetime.release();
+      await lifetime.settled();
+      await manager.closeAll("test cleanup");
+    }
   });
 
   /**

@@ -325,12 +325,16 @@ function windowsSandboxLevel(value: unknown): WindowsSandboxLevel {
 
 function errorResult(error: unknown): ToolResult {
   const message = error instanceof Error ? error.message : String(error);
+  const ttyUnavailable = error instanceof UnifiedExecError &&
+    error.code === "tty_unavailable_in_contained_operation";
   return {
     content: safeStringify({
       error: message,
       ...(error instanceof UnifiedExecError ? { code: error.code } : {}),
+      ...(ttyUnavailable ? { retryable: false } : {}),
     }),
     isError: true,
+    ...(ttyUnavailable ? { metadata: { retryable: false } } : {}),
     ...(error instanceof UnifiedExecError || error instanceof SandboxExecutionError
       ? {
           effectDisposition: confirmedNoEffectDisposition(
@@ -578,7 +582,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         tty: {
           type: "boolean",
           description:
-            "Allocate an interactive PTY. Required for persistent shells and write_stdin.",
+            "Allocate an interactive PTY. Required for persistent shells and write_stdin. Unavailable inside a contained tool operation; use tty=false with non-interactive flags, or ask the user to run it with the app's Run button.",
         },
         shell: {
           type: "string",
