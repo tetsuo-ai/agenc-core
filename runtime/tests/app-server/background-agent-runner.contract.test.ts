@@ -1009,6 +1009,7 @@ function makeTopLevelRunner(opts: {
     sendInput: vi.fn(async () => {}),
     interrupt: vi.fn(),
     openThreadSpawnChildren: vi.fn(() => []),
+    liveThreadSpawnDescendants: vi.fn((): string[] => []),
     stopOpenSpawnChildren: vi.fn(),
     liveThreadSpawnChildren: vi.fn(() => new Map()),
     clearConversationHistory: vi.fn(async () => {}),
@@ -11320,6 +11321,66 @@ describe("AgenC delegate background-agent runner", () => {
       "child-agent",
       "user_cancel",
     );
+  });
+
+  it.each([false, true])("owner Stop keeps child IDs captured before root cancellation settles (scoped=%s)", async (scoped) => {
+    const { runner, session, control, setActiveTurn, abortTurnIfActive } = makeTopLevelRunner({
+      conversationId: "session-stop-closing-child-edge",
+      scopedTurnCancellation: scoped,
+    });
+    await runner.startAgent({ objective: "hi", unattendedAllow: [], unattendedDeny: [] });
+    if (scoped) setActiveTurn("turn-stop-closing-child-edge");
+
+    let edgeOpen = true;
+    control.liveThreadSpawnDescendants.mockImplementation(() => edgeOpen ? ["child-agent"] : []);
+    const terminated = vi.fn();
+    control.stopOpenSpawnChildren.mockImplementation((parentThreadId: string, _reason: string, earlyDescendants: ReadonlySet<string>) => {
+      for (const childThreadId of new Set([
+        ...earlyDescendants,
+        ...control.liveThreadSpawnDescendants(parentThreadId),
+      ])) terminated(childThreadId);
+    });
+    let releaseAbort!: () => void;
+    const abortPending = new Promise<void>((resolve) => { releaseAbort = resolve; });
+    if (scoped) {
+      abortTurnIfActive.mockImplementationOnce(async () => {
+        await abortPending;
+        return true;
+      });
+    } else {
+      session.abortAllTasks.mockImplementationOnce(async () => { await abortPending; });
+    }
+
+    const stopping = scoped
+      ? runner.interruptAgentTurnIfMatches("session-stop-closing-child-edge", "user_cancel", "turn-stop-closing-child-edge")
+      : runner.interruptAgentTurn("session-stop-closing-child-edge", "user_cancel");
+    expect(control.liveThreadSpawnDescendants).toHaveBeenCalledTimes(1);
+    expect(control.stopOpenSpawnChildren).not.toHaveBeenCalled();
+    edgeOpen = false;
+    releaseAbort();
+    await stopping;
+
+    expect(control.stopOpenSpawnChildren).toHaveBeenCalledWith(
+      "session-stop-closing-child-edge",
+      "user_cancel",
+      new Set(["child-agent"]),
+    );
+    expect(terminated).toHaveBeenCalledExactlyOnceWith("child-agent");
+  });
+
+  it("a stale scoped Stop leaves child sessions alone", async () => {
+    const { runner, control, setActiveTurn } = makeTopLevelRunner({
+      conversationId: "session-stale-stop-child",
+      scopedTurnCancellation: true,
+    });
+    await runner.startAgent({ objective: "hi", unattendedAllow: [], unattendedDeny: [] });
+    setActiveTurn("replacement-turn");
+
+    await expect(runner.interruptAgentTurnIfMatches(
+      "session-stale-stop-child", "user_cancel", "stale-turn",
+    )).resolves.toEqual({ cancelled: false, activeTurnId: "replacement-turn", stale: true });
+    expect(control.liveThreadSpawnDescendants).not.toHaveBeenCalled();
+    expect(control.stopOpenSpawnChildren).not.toHaveBeenCalled();
   });
 
   it("[managed-thread] scoped cancellation cannot interrupt a replacement turn", async () => {

@@ -508,13 +508,16 @@ function createScenario(options: ScenarioOptions): Scenario {
 async function ownerStop(scenario: Scenario): Promise<void> {
   const turnId = scenario.root.activeTurn.unsafePeek()?.turnId;
   expect(turnId).toBeDefined();
+  const earlyDescendants = new Set(
+    scenario.control.liveThreadSpawnDescendants(scenario.root.conversationId),
+  );
   expect(await scenario.root.abortTurnIfActive(turnId!, "interrupted")).toBe(true);
   scenario.root.markStoppedByUser();
   const children = scenario.control.openThreadSpawnChildren(
     scenario.root.conversationId,
   );
   expect(children).toHaveLength(1);
-  scenario.control.stopOpenSpawnChildren(scenario.root.conversationId, STOP_REASON);
+  scenario.control.stopOpenSpawnChildren(scenario.root.conversationId, STOP_REASON, earlyDescendants);
 }
 
 /** Wait until the child's run has closed its canonical journal. */
