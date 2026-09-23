@@ -406,8 +406,8 @@ function openaiEnvironmentBackend(
   const credential = resolveProviderApiKeyEnvironment("openai", env);
   if (credential === undefined) return undefined;
   const baseURL =
-    sessionBaseURL ??
     resolveProviderBaseURLEnvironment("openai", env)?.value ??
+    sessionBaseURL ??
     DEFAULT_OPENAI_BASE_URL;
   try {
     new URL(baseURL);

@@ -217,10 +217,10 @@ function environmentVideoBackend(
 ): VideoBackend | undefined {
   const credential = resolveProviderApiKeyEnvironment(kind, env);
   if (credential === undefined) return undefined;
-  const baseURL =
-    sessionBaseURL ??
-    resolveProviderBaseURLEnvironment(kind, env)?.value ??
-    (kind === "openai" ? DEFAULT_OPENAI_BASE_URL : DEFAULT_MINIMAX_BASE_URL);
+  const environmentBaseURL = resolveProviderBaseURLEnvironment(kind, env)?.value;
+  const baseURL = kind === "openai"
+    ? environmentBaseURL ?? sessionBaseURL ?? DEFAULT_OPENAI_BASE_URL
+    : sessionBaseURL ?? environmentBaseURL ?? DEFAULT_MINIMAX_BASE_URL;
   try {
     new URL(baseURL);
   } catch {

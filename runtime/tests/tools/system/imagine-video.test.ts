@@ -491,6 +491,34 @@ describe("ImagineVideo execute", () => {
     );
   });
 
+  it("uses OPENAI_BASE_URL before the OpenAI session's default factory URL", async () => {
+    const provider = createProvider("openai", {
+      apiKey: "session-key",
+      model: "gpt-6-astra",
+      baseURL: "https://api.openai.com/v1",
+    });
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ error: "unavailable" }), { status: 503 })) as unknown as typeof fetch;
+    const tool = createImagineVideoTool({
+      workspaceRoot: process.cwd(),
+      home: testHome(process.cwd()),
+      getSession: () => ({ services: { provider } }) as unknown as Session,
+      env: {
+        OPENAI_API_KEY: "env-key",
+        OPENAI_BASE_URL: "https://env-openai.example/v1",
+      },
+      fetchImpl,
+    });
+
+    await tool.execute({ prompt: "a rotating cube" });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://env-openai.example/v1/videos",
+      expect.objectContaining({
+        headers: expect.objectContaining({ authorization: "Bearer env-key" }),
+      }),
+    );
+  });
+
   it("snaps a duration Sora does not offer and maps size from the frame", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-sora-snap-"));
     const fetchImpl = vi.fn(async (url: string | URL, init?: RequestInit) => {
