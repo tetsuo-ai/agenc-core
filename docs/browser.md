@@ -11,7 +11,7 @@ It is a coding-agent capability (not a gateway messaging channel). Related:
 | --- | --- |
 | Tool name | `Browser` |
 | Driver | `runtime/src/browser/` + `runtime/src/tools/BrowserTool/` |
-| Profile | Dedicated dir under `$AGENC_HOME/browser/profile` by default, **never** your personal Chrome profile. Chromium runs one browser per profile, so a session whose browser starts while another session's browser (or another Chromium on this host) holds that profile gets a fresh private profile of its own, removed when that browser closes |
+| Profile | Root sessions use `$AGENC_HOME/browser/profiles/<key>` by default, where `<key>` is a digest of the realpathed project trust root. Sessions in one project share logins; different projects have separate profiles. Child sessions use temporary profiles. Chromium runs one browser per profile, so a concurrent session in the same project gets a private temporary profile while the persistent one is held. A configured `profile_dir` remains shared across projects. The old `$AGENC_HOME/browser/profile` stays on disk but is unused. The browser never uses your personal Chrome profile. |
 | Default mode | Headless |
 | Egress | All navigation routes through an **SSRF proxy** that blocks private / loopback / cloud-metadata addresses by default |
 
@@ -56,7 +56,7 @@ Precedence: **env > config.toml > built-in defaults** (`browser/config.ts`).
 | `AGENC_BROWSER_EXECUTABLE` | auto-detect | Absolute path to a Chromium-family binary |
 | `AGENC_BROWSER_HEADLESS` | on | Headless Chromium |
 | `AGENC_BROWSER_ALLOW_PRIVATE_NETWORK` | off | Permit private/loopback destinations (cloud-metadata stays blocked) |
-| `AGENC_BROWSER_PROFILE_DIR` | `$AGENC_HOME/browser/profile` | Dedicated profile directory |
+| `AGENC_BROWSER_PROFILE_DIR` | Per-project profile under `$AGENC_HOME/browser/profiles/` | Explicit shared profile directory when set |
 | `AGENC_BROWSER_NO_SANDBOX` | off | Pass Chromium `--no-sandbox` (some containers) |
 | `AGENC_BROWSER_NAV_TIMEOUT_MS` | `30000` | Navigation timeout (clamped 1s–300s) |
 

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -63,6 +64,11 @@ const managers: BrowserManager[] = [];
 const PROFILE_MARKER = ".agenc-profile-owner";
 const PROFILE_RECOVERY_MARKER = ".agenc-profile-recovery";
 
+function projectProfile(root = profileRoot): string {
+  const key = createHash("sha256").update(root).digest("hex").slice(0, 24);
+  return join(profileRoot, "browser", "profiles", key);
+}
+
 beforeEach(async () => {
   profileRoot = await mkdtemp(join(tmpdir(), "agenc-browser-navigation-test-"));
 });
@@ -75,7 +81,11 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-function fakeManager(navigation: (options: CdpSendOptions) => Promise<Record<string, unknown>>, profileDir?: string) {
+function fakeManager(
+  navigation: (options: CdpSendOptions) => Promise<Record<string, unknown>>,
+  profileDir?: string,
+  sandboxExecutionBroker?: SandboxExecutionBroker,
+) {
   let created = 0;
   let currentUrl = "about:blank";
   const connection = {
@@ -109,6 +119,9 @@ function fakeManager(navigation: (options: CdpSendOptions) => Promise<Record<str
   });
   const manager = new BrowserManager({
     agencHome: profileRoot,
+    ...(sandboxExecutionBroker === undefined
+      ? { projectRoot: profileRoot }
+      : { sandboxExecutionBroker }),
     policy: {
       executablePath: process.execPath,
       headless: true, allowPrivateNetwork: false, noSandbox: false, navigationTimeoutMs: 1_000,
@@ -242,7 +255,7 @@ describe("tab ids a model fills in", () => {
       expect(refused.effectDisposition?.disposition, callId).toBe("confirmed_no_effect");
     }
     expect(launchBrowserMock).not.toHaveBeenCalled();
-    expect(existsSync(join(profileRoot, "browser", "profile"))).toBe(false);
+    expect(existsSync(projectProfile())).toBe(false);
     const opened = await dispatch("first-navigate", { action: "navigate", url: "https://example.com/" });
     expect(opened.isError, String(opened.content)).not.toBe(true);
     for (const [callId, args] of [
@@ -275,19 +288,81 @@ describe("tab ids a model fills in", () => {
   });
 });
 
-// Live run (luna-mac F2): every session's manager launched Chromium on the one
+describe("project-scoped browser profiles", () => {
+  const launchedProfiles = (): string[] =>
+    launchBrowserMock.mock.calls.map(
+      ([options]) => (options as { userDataDir: string }).userDataDir,
+    );
+
+  it("reuses the same profile across sessions in one project", async () => {
+    const project = join(profileRoot, "project");
+    mkdirSync(join(project, ".git"), { recursive: true });
+    for (let index = 0; index < 2; index += 1) {
+      const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd: project });
+      const { manager } = fakeManager(async () => ({}), undefined, broker);
+      await manager.newTab();
+      await manager.closeAll();
+    }
+    expect(launchedProfiles()).toEqual([projectProfile(project), projectProfile(project)]);
+    expect(statSync(join(profileRoot, "browser", "profiles")).mode & 0o777).toBe(0o700);
+    expect(statSync(projectProfile(project)).mode & 0o777).toBe(0o700);
+  });
+
+  it("isolates different projects and maps a git subfolder to its root", async () => {
+    const first = join(profileRoot, "first");
+    const nested = join(first, "src", "nested");
+    const second = join(profileRoot, "second");
+    mkdirSync(join(first, ".git"), { recursive: true });
+    mkdirSync(nested, { recursive: true });
+    mkdirSync(join(second, ".git"), { recursive: true });
+    for (const cwd of [nested, second]) {
+      const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd });
+      const { manager } = fakeManager(async () => ({}), undefined, broker);
+      await manager.newTab();
+    }
+    expect(launchedProfiles()).toEqual([projectProfile(first), projectProfile(second)]);
+    expect(launchedProfiles()[0]).not.toBe(launchedProfiles()[1]);
+  });
+
+  it("honors a configured profile and leaves the legacy profile unchanged", async () => {
+    const project = join(profileRoot, "project");
+    const legacy = join(profileRoot, "browser", "profile");
+    const configured = join(profileRoot, "configured");
+    mkdirSync(project);
+    mkdirSync(legacy, { recursive: true });
+    writeFileSync(join(legacy, "cookie"), "old data");
+    const legacyModifiedAt = statSync(legacy).mtimeMs;
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd: project });
+    const configuredManager = fakeManager(async () => ({}), configured, broker).manager;
+    await configuredManager.newTab();
+    await configuredManager.closeAll();
+    const defaultManager = fakeManager(async () => ({}), undefined, broker).manager;
+    await defaultManager.newTab();
+    await defaultManager.closeAll();
+    const nextManager = fakeManager(async () => ({}), undefined, broker).manager;
+    await nextManager.newTab();
+    expect(launchedProfiles()).toEqual([configured, projectProfile(project), projectProfile(project)]);
+    expect(readFileSync(join(legacy, "cookie"), "utf8")).toBe("old data");
+    expect(readdirSync(legacy)).toEqual(["cookie"]);
+    expect(statSync(legacy).mtimeMs).toBe(legacyModifiedAt);
+    expect(info).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Live run (luna-mac F2): concurrent sessions in one project use the same
 // persistent profile. A second session's launch handed itself to the first
 // session's still-running browser through the profile's SingletonLock and
 // exited, so it failed with "browser did not establish a CDP pipe: CDP pipe
 // closed" until the first browser idled out five minutes later.
-describe("one shared profile across sessions", () => {
+describe("one shared profile per project", () => {
   const launchedProfiles = (): string[] =>
     launchBrowserMock.mock.calls.map(
       ([options]) => (options as { userDataDir: string }).userDataDir,
     );
 
   it("gives a concurrent session its own profile and frees the shared one on close", async () => {
-    const persistent = join(profileRoot, "browser", "profile");
+    const persistent = projectProfile();
     const { manager: first } = fakeManager(async () => ({ frameId: "frame-1" }));
     const { manager: second } = fakeManager(async () => ({ frameId: "frame-1" }));
     await Promise.all([first.newTab(), second.newTab()]);
@@ -312,7 +387,7 @@ describe("one shared profile across sessions", () => {
   });
 
   it("claims the shared profile before another daemon can launch on it", async () => {
-    const persistent = join(profileRoot, "browser", "profile");
+    const persistent = projectProfile();
     const { manager: first } = fakeManager(async () => ({ frameId: "frame-1" }));
     await first.newTab();
     expect(existsSync(join(persistent, PROFILE_MARKER))).toBe(true);
@@ -323,6 +398,7 @@ describe("one shared profile across sessions", () => {
     const { BrowserManager: OtherDaemonBrowserManager } = await import("../../src/browser/manager.js");
     const second = new OtherDaemonBrowserManager({
       agencHome: profileRoot,
+      projectRoot: profileRoot,
       policy: {
         executablePath: process.execPath,
         headless: true, allowPrivateNetwork: false, noSandbox: false, navigationTimeoutMs: 1_000,
@@ -336,7 +412,7 @@ describe("one shared profile across sessions", () => {
   });
 
   it("reclaims a shared profile after a recovery owner dies", async () => {
-    const persistent = join(profileRoot, "browser", "profile");
+    const persistent = projectProfile();
     mkdirSync(persistent, { recursive: true, mode: 0o700 });
     const exited = spawnSync(process.execPath, ["-e", ""]);
     for (const name of [PROFILE_MARKER, PROFILE_RECOVERY_MARKER]) {
@@ -354,7 +430,7 @@ describe("one shared profile across sessions", () => {
   });
 
   it("keeps a replacement recovery marker when the dead owner check races a new claim", async () => {
-    const persistent = join(profileRoot, "browser", "profile");
+    const persistent = projectProfile();
     mkdirSync(persistent, { recursive: true, mode: 0o700 });
     const recoveryPath = join(persistent, PROFILE_RECOVERY_MARKER);
     const deadPid = 999_999_991;
@@ -380,7 +456,7 @@ describe("one shared profile across sessions", () => {
   });
 
   it("refuses to overwrite a claim replaced after reading its identity", async () => {
-    const persistent = join(profileRoot, "browser", "profile");
+    const persistent = projectProfile();
     const path = join(persistent, PROFILE_MARKER);
     const { manager, connection } = fakeManager(async () => ({ frameId: "frame-1" }));
     const child = new EventEmitter() as ChildProcess;
@@ -405,7 +481,7 @@ describe("one shared profile across sessions", () => {
   });
 
   it("reclaims an old empty claim left by a crash before the marker write", async () => {
-    const persistent = join(profileRoot, "browser", "profile");
+    const persistent = projectProfile();
     mkdirSync(persistent, { recursive: true, mode: 0o700 });
     const path = join(persistent, PROFILE_MARKER);
     writeFileSync(path, "");
@@ -417,7 +493,7 @@ describe("one shared profile across sessions", () => {
   });
 
   it.skipIf(process.platform === "win32")("does not reclaim a dead daemon's claim while its detached browser is still starting", async () => {
-    const persistent = join(profileRoot, "browser", "profile");
+    const persistent = projectProfile();
     mkdirSync(persistent, { recursive: true, mode: 0o700 });
     const exited = spawnSync(process.execPath, ["-e", ""]);
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
@@ -437,7 +513,7 @@ describe("one shared profile across sessions", () => {
   });
 
   it("reclaims a marker whose live pid belongs to a different process", async () => {
-    const persistent = join(profileRoot, "browser", "profile");
+    const persistent = projectProfile();
     mkdirSync(persistent, { recursive: true, mode: 0o700 });
     writeFileSync(join(persistent, PROFILE_MARKER), JSON.stringify({
       pid: process.pid, startedAt: Date.now() - 60_000,
@@ -480,7 +556,7 @@ describe("one shared profile across sessions", () => {
   });
 
   it("waits for the unrecorded child startup window before reclaiming a dead claim", async () => {
-    const persistent = join(profileRoot, "browser", "profile");
+    const persistent = projectProfile();
     mkdirSync(persistent, { recursive: true, mode: 0o700 });
     const exited = spawnSync(process.execPath, ["-e", ""]);
     writeFileSync(join(persistent, PROFILE_MARKER), JSON.stringify({
@@ -492,7 +568,7 @@ describe("one shared profile across sessions", () => {
   });
 
   it.skipIf(process.platform === "win32")("reclaims a dead gated claim before Chromium was released", async () => {
-    const persistent = join(profileRoot, "browser", "profile");
+    const persistent = projectProfile();
     mkdirSync(persistent, { recursive: true, mode: 0o700 });
     const exited = spawnSync(process.execPath, ["-e", ""]);
     writeFileSync(join(persistent, PROFILE_MARKER), JSON.stringify({
@@ -504,7 +580,7 @@ describe("one shared profile across sessions", () => {
   });
 
   it("records the spawned browser pid in the shared claim before CDP is ready", async () => {
-    const persistent = join(profileRoot, "browser", "profile");
+    const persistent = projectProfile();
     const { manager, connection } = fakeManager(async () => ({ frameId: "frame-1" }));
     const child = new EventEmitter() as ChildProcess;
     Object.defineProperty(child, "pid", { value: process.pid });
@@ -536,7 +612,7 @@ describe("one shared profile across sessions", () => {
       expect(process.platform).toBe("win32");
       return;
     }
-    const persistent = join(profileRoot, "browser", "profile");
+    const persistent = projectProfile();
     mkdirSync(persistent, { recursive: true, mode: 0o700 });
     const lock = join(persistent, "SingletonLock");
     // A browser in another process: this test process stands in for it.
@@ -583,8 +659,13 @@ describe("one shared profile across sessions", () => {
     mkdirSync(unrelated);
     const linked = join(profileRoot, "agenc-browser-child-abcdef");
     symlinkSync(unrelated, linked, "dir");
-    const shared = join(profileRoot, "browser", "profile");
+    const shared = projectProfile();
     mkdirSync(shared, { recursive: true });
+    const otherProject = projectProfile(join(profileRoot, "other-project"));
+    mkdirSync(otherProject, { mode: 0o700 });
+    writeFileSync(join(otherProject, PROFILE_MARKER), JSON.stringify({
+      pid: exited.pid, startedAt: Date.now() - 10_000,
+    }));
     const configuredShared = join(profileRoot, "agenc-browser-abcdef");
     mkdirSync(configuredShared, { mode: 0o700 });
     writeFileSync(join(configuredShared, "marker"), "keep");
@@ -600,6 +681,7 @@ describe("one shared profile across sessions", () => {
     expect(existsSync(linked)).toBe(true);
     expect(existsSync(unrelated)).toBe(true);
     expect(existsSync(shared)).toBe(true);
+    expect(existsSync(otherProject)).toBe(true);
     expect(readFileSync(join(configuredShared, "marker"), "utf8")).toBe("keep");
   });
 });

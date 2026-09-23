@@ -4,10 +4,10 @@
  *
  * The browser launches lazily on the first action, all egress is forced through
  * the in-process proxy (no independent DNS/connections), a dedicated profile
- * lives under `<agencHome>/browser/profile` (0700 — never the user's real
- * profile), it shuts down after an idle period, and is force-killed on process
- * exit. The daemon calls {@link closeAllBrowserManagers} from its cleanup
- * registry.
+ * lives under `<agencHome>/browser/profiles/<project-key>` (0700, never the
+ * user's real profile), it shuts down after an idle period, and is force-killed
+ * on process exit. The daemon calls {@link closeAllBrowserManagers} from its
+ * cleanup registry.
  *
  * @module
  */
@@ -17,7 +17,7 @@ import {
   openSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync,
   unlinkSync, writeFileSync,
 } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -39,6 +39,7 @@ import {
   terminateProcessTreeAndWait,
 } from "../utils/supervisedProcess.js";
 import { resolveSessionTempRoot } from "../session/runtime-options.js";
+import { resolveProjectTrustRootSync } from "../permissions/trust/project-trust.js";
 
 const IDLE_SHUTDOWN_MS = 5 * 60 * 1000;
 const MAX_TABS = 8;
@@ -297,6 +298,8 @@ export async function closeAllBrowserManagers(): Promise<void> {
 
 export interface BrowserManagerOptions {
   readonly agencHome?: string;
+  /** Realpathed trust root for the session's initial working directory. */
+  readonly projectRoot?: string;
   readonly policy: BrowserPolicy;
   /** Authenticated session boundary for the Chromium process. */
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
@@ -344,6 +347,8 @@ export class BrowserManager {
   #retainedBoundaries: RetainedBrowserBoundary[] = [];
   #shutdownGeneration = 0;
   #launchAuthorityCwd: string | undefined;
+  readonly #initialAuthorityCwd: string | undefined;
+  readonly #initialProjectRoot: string;
   #tempProfileDir: string | undefined;
   #sharedProfileDir: string | undefined;
   #sharedProfileMarker: string | undefined;
@@ -353,6 +358,10 @@ export class BrowserManager {
 
   constructor(options: BrowserManagerOptions) {
     this.#options = options;
+    this.#initialAuthorityCwd = options.sandboxExecutionBroker?.cwd;
+    this.#initialProjectRoot = options.projectRoot ?? resolveProjectTrustRootSync({
+      cwd: this.#initialAuthorityCwd ?? process.cwd(),
+    });
   }
 
   get running(): boolean {
@@ -364,16 +373,26 @@ export class BrowserManager {
    * `mkdtempSync` rather than a predictable `<tmpdir>/agenc-browser-<pid>-<ts>`
    * path: on a shared host that predictable name lets a local attacker
    * pre-create (or symlink) the directory so Chromium reuses an
-   * attacker-readable profile — `mkdtempSync` always creates a fresh,
+   * attacker-readable profile. `mkdtempSync` always creates a fresh,
    * unpredictable 0700 directory and never reuses an existing one.
    */
   #ensureProfileDir(): string {
     const tempRoot = resolveSessionTempRoot();
+    const currentCwd = this.#options.sandboxExecutionBroker?.cwd;
+    // Workspace transitions quiesce and rebase the broker without replacing
+    // this manager. Recompute the root if its authority cwd has changed.
+    const projectRoot = currentCwd === this.#initialAuthorityCwd
+      ? this.#initialProjectRoot
+      : resolveProjectTrustRootSync({ cwd: currentCwd ?? process.cwd() });
+    const profilesRoot = this.#options.agencHome !== undefined
+      ? join(this.#options.agencHome, "browser", "profiles")
+      : undefined;
+    const projectProfile = profilesRoot !== undefined
+      ? join(profilesRoot, createHash("sha256").update(projectRoot).digest("hex").slice(0, 24))
+      : undefined;
     const shared =
       this.#options.policy.profileDir ??
-      (this.#options.agencHome !== undefined
-        ? join(this.#options.agencHome, "browser", "profile")
-        : undefined);
+      projectProfile;
     cleanStalePrivateProfiles(tempRoot, shared);
     // Child sessions get an ephemeral profile. Sharing the root session's
     // persistent cookies/storage across independently sandboxed browser
@@ -385,7 +404,16 @@ export class BrowserManager {
       return this.#tempProfileDir;
     }
     if (shared !== undefined) {
+      const creatingProjectProfile = this.#options.policy.profileDir === undefined &&
+        projectProfile !== undefined && !existsSync(projectProfile);
+      if (creatingProjectProfile && profilesRoot !== undefined) {
+        mkdirSync(profilesRoot, { recursive: true, mode: 0o700 });
+      }
       mkdirSync(shared, { recursive: true, mode: 0o700 });
+      if (creatingProjectProfile && this.#options.agencHome !== undefined &&
+          existsSync(join(this.#options.agencHome, "browser", "profile"))) {
+        console.info("[Browser] Existing legacy browser profile left unused; created a project profile.");
+      }
       if (this.#claimSharedProfile(shared)) return shared;
       // Another session's browser holds the shared profile. Chromium would
       // hand this launch to it and exit, so this browser gets its own fresh

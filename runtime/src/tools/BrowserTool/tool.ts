@@ -24,6 +24,7 @@ import type { PermissionResult, PermissionUpdate } from "../../permissions/types
 import type { ToolEvaluatorContext } from "../../permissions/evaluator.js";
 import { getRuleByContentsForTool } from "../../permissions/rules.js";
 import { BrowserManager } from "../../browser/manager.js";
+import { resolveProjectTrustRootSync } from "../../permissions/trust/project-trust.js";
 import {
   BROWSER_NAMED_KEYS,
   readBrowserNavigationFailureReceipt,
@@ -183,6 +184,7 @@ export function createBrowserTool(
         const agencHome = safeAgencHome(options.agencHome);
         created = new BrowserManager({
           ...(agencHome !== undefined ? { agencHome } : {}),
+          projectRoot: resolveProjectTrustRootSync({ cwd: sandboxExecutionBroker.cwd }),
           policy,
           sandboxExecutionBroker,
         });
