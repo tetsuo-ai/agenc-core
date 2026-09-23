@@ -5254,25 +5254,27 @@ export class AgenCDaemonSnapshotPolicyRegistry {
     const key = this.#sessionPolicyKeys.get(sessionId);
     if (key === undefined) return;
     const entry = this.#policies.get(key);
-    const errors: unknown[] = [];
     try {
       entry?.policy.flushSession(sessionId);
+      entry?.policy.forgetSession(sessionId);
     } catch (error) {
-      errors.push(error);
+      throw new AggregateError([error], "session snapshot release failed");
     }
-    if (errors.length === 0) {
-      try {
-        entry?.policy.forgetSession(sessionId);
-      } catch (error) {
-        errors.push(error);
-      }
-    }
+    if (this.#projectHasLiveSession(key)) return;
+    const errors = this.#closeProjectHandles(key, entry);
     if (errors.length > 0) throw new AggregateError(errors, "session snapshot release failed");
+  }
+
+  #projectHasLiveSession(key: string): boolean {
     for (const liveId of this.#liveSessions) {
-      if (this.#sessionPolicyKeys.get(liveId) === key) {
-        return;
-      }
+      if (this.#sessionPolicyKeys.get(liveId) === key) return true;
     }
+    return false;
+  }
+
+  /** Close a project's snapshot policy, driver and agent-log stores. */
+  #closeProjectHandles(key: string, entry: AgenCDaemonSnapshotPolicyEntry | undefined): unknown[] {
+    const errors: unknown[] = [];
     if (entry !== undefined) {
       try {
         entry.policy.close();
@@ -5291,7 +5293,7 @@ export class AgenCDaemonSnapshotPolicyRegistry {
         errors.push(error);
       }
     }
-    if (errors.length > 0) throw new AggregateError(errors, "session snapshot release failed");
+    return errors;
   }
 
   threadStoreForAgentLogs(

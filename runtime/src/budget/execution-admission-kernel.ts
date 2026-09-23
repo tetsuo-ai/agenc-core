@@ -288,7 +288,8 @@ export class ExecutionAdmissionKernel {
         });
       }
     }
-    for (const binding of [...this.#byStatePath.values()]) {
+    // Deleting the visited entry during Map iteration is safe.
+    for (const binding of this.#byStatePath.values()) {
       this.#evictIdleBinding(binding);
     }
     return {

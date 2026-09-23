@@ -53,6 +53,43 @@ async function boot(
   });
 }
 
+/** Record one run and its completed terminal result, as the runner does. */
+function recordCompletedRun(
+  registry: AgenCDaemonSnapshotPolicyRegistry,
+  cwd: string,
+  id: string,
+  eventId: string,
+  at: string,
+): void {
+  registry.recordAgentRun({
+    id, objective: id, status: "running",
+    startedAt: at, lastActiveAt: at, currentSessionId: id, cwd,
+  });
+  registry.recordRunTerminal({
+    agentId: id, sessionId: id, cwd,
+    openedAt: at, epoch: 1, eventId,
+    rolloutPath: join(cwd, `${id}-rollout.jsonl`),
+    result: {
+      runId: id, status: "completed", exitCode: 0,
+      stopReason: null, finalMessage: "done", usage: null,
+      lastSequence: null, finishedAt: at,
+    },
+  });
+}
+
+/** Daemon-shared admission and CSV authorities, with a stub provider and no MCP. */
+async function sharedDaemonServices(home: string) {
+  const kernel = new ExecutionAdmissionKernel({ agencHome: home });
+  const csv = new CsvAgentJobsRepositoryAuthority({ agencHome: home });
+  const providerModule = await import("../../src/llm/provider.js");
+  vi.spyOn(providerModule, "createProvider").mockReturnValue({
+    name: "stub",
+    chat: async () => ({ content: "ok", toolCalls: [] }),
+  } as never);
+  vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+  return { kernel, csv };
+}
+
 describe.skipIf(process.platform === "win32")("session descriptor ownership", () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -136,21 +173,7 @@ describe.skipIf(process.platform === "win32")("session descriptor ownership", ()
     const at = new Date().toISOString();
     const driver = openStateDatabases({ cwd: fixture.workspace, agencHome: fixture.home });
     try {
-      registry.recordAgentRun({
-        id: "terminal-fd-run", objective: "test", status: "running",
-        startedAt: at, lastActiveAt: at, currentSessionId: "terminal-fd-run",
-        cwd: fixture.workspace,
-      });
-      registry.recordRunTerminal({
-        agentId: "terminal-fd-run", sessionId: "terminal-fd-run", cwd: fixture.workspace,
-        openedAt: at, epoch: 1, eventId: "terminal-fd-event",
-        rolloutPath: join(fixture.workspace, "terminal-fd-rollout.jsonl"),
-        result: {
-          runId: "terminal-fd-run", status: "completed", exitCode: 0,
-          stopReason: null, finalMessage: "done", usage: null,
-          lastSequence: null, finishedAt: at,
-        },
-      });
+      recordCompletedRun(registry, fixture.workspace, "terminal-fd-run", "terminal-fd-event", at);
       driver.state.exec(`CREATE TRIGGER reject_terminal_snapshot BEFORE INSERT ON session_state_snapshots
         BEGIN SELECT RAISE(ABORT, 'retry terminal snapshot'); END`);
       const transition = {
@@ -185,21 +208,7 @@ describe.skipIf(process.platform === "win32")("session descriptor ownership", ()
     const baseline = openDescriptors();
     const at = new Date().toISOString();
     try {
-      registry.recordAgentRun({
-        id: "old", objective: "old", status: "running",
-        startedAt: at, lastActiveAt: at, currentSessionId: "old",
-        cwd: fixture.workspace,
-      });
-      registry.recordRunTerminal({
-        agentId: "old", sessionId: "old", cwd: fixture.workspace,
-        openedAt: at, epoch: 1, eventId: "old-terminal",
-        rolloutPath: join(fixture.workspace, "old-rollout.jsonl"),
-        result: {
-          runId: "old", status: "completed", exitCode: 0,
-          stopReason: null, finalMessage: "done", usage: null,
-          lastSequence: null, finishedAt: at,
-        },
-      });
+      recordCompletedRun(registry, fixture.workspace, "old", "old-terminal", at);
       registry.registerSession({ sessionId: "new", agentId: "new", cwd: fixture.workspace });
       registry.recordAgentStatusTransition({
         sessionId: "old", agentId: "old", cwd: fixture.workspace,
@@ -230,14 +239,7 @@ describe.skipIf(process.platform === "win32")("session descriptor ownership", ()
 
   it("releases shared admission and CSV databases as projects end", async () => {
     const fixture = await makeFixture();
-    const kernel = new ExecutionAdmissionKernel({ agencHome: fixture.home });
-    const csv = new CsvAgentJobsRepositoryAuthority({ agencHome: fixture.home });
-    const providerModule = await import("../../src/llm/provider.js");
-    vi.spyOn(providerModule, "createProvider").mockReturnValue({
-      name: "stub",
-      chat: async () => ({ content: "ok", toolCalls: [] }),
-    } as never);
-    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const { kernel, csv } = await sharedDaemonServices(fixture.home);
     const projects: string[] = [];
     const baseline = openDescriptors();
     const counts: number[] = [];
@@ -273,14 +275,7 @@ describe.skipIf(process.platform === "win32")("session descriptor ownership", ()
 
   it("keeps shared project databases usable until both live sessions close", async () => {
     const fixture = await makeFixture();
-    const kernel = new ExecutionAdmissionKernel({ agencHome: fixture.home });
-    const csv = new CsvAgentJobsRepositoryAuthority({ agencHome: fixture.home });
-    const providerModule = await import("../../src/llm/provider.js");
-    vi.spyOn(providerModule, "createProvider").mockReturnValue({
-      name: "stub",
-      chat: async () => ({ content: "ok", toolCalls: [] }),
-    } as never);
-    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const { kernel, csv } = await sharedDaemonServices(fixture.home);
     const shared = { executionAdmissionKernel: kernel, csvAgentJobsRepositories: csv };
     const baseline = openDescriptors();
     let first: Awaited<ReturnType<typeof boot>> | undefined;
