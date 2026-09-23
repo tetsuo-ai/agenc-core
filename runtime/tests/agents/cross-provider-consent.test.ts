@@ -80,7 +80,7 @@ describe("cross-provider consent grants", () => {
   });
 });
 
-function interactiveFixture(options: { answerable?: boolean; nonInteractive?: boolean; workflow?: boolean; goal?: boolean; autonomousTick?: boolean } = {}) {
+function interactiveFixture(options: { answerable?: boolean; nonInteractive?: boolean; workflow?: boolean; goal?: boolean; autonomousTick?: boolean; activeTurnId?: string } = {}) {
   let stopped = false;
   let answerable = options.answerable !== false;
   const eventListeners = new Set<(event: unknown) => void>();
@@ -94,6 +94,10 @@ function interactiveFixture(options: { answerable?: boolean; nonInteractive?: bo
     } },
     onBeforeDurableClose: () => () => {},
     ...(options.autonomousTick ? { activeTurn: { unsafePeek: () => ({ turnId: "tick" }) }, currentRootHumanTurn: () => null } : {}),
+    ...(options.activeTurnId !== undefined ? {
+      activeTurn: { unsafePeek: () => ({ turnId: options.activeTurnId }) },
+      currentRootHumanTurn: () => ({ turnId: options.activeTurnId }),
+    } : {}),
   } as unknown as Session;
   const broker = new LiveApprovalBroker({ canAnswerCrossProviderConsent: () => answerable });
   const close = broker.register(session, { isActive: () => true, workflow: options.workflow === true });
@@ -125,6 +129,19 @@ describe("live cross-provider consent", () => {
       } finally { fixture.close(); }
     },
   );
+
+  it("asks on the session's active turn so the answer is not dropped as stale", async () => {
+    // A live run was refused: the request carried the spawn call id as its
+    // turn, and the arbiter aborted it before anyone could answer.
+    const fixture = interactiveFixture({ activeTurnId: "turn-7" });
+    try {
+      const { promise, pending } = await pendingDecision(fixture);
+      expect(pending.turnId).toBe("turn-7");
+      expect(fixture.broker.resolve("root-session", pending.requestId, { kind: "approved" },
+        { approvalKind: "cross_provider_spawn" })).toBe(true);
+      expect((await promise).kind).toBe("granted");
+    } finally { fixture.close(); }
+  });
 
   it("allows once and old clients cannot approve an unknown kind", async () => {
     const fixture = interactiveFixture();

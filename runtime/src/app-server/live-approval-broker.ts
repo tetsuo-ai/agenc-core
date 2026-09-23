@@ -349,6 +349,10 @@ export class LiveApprovalBroker {
       return { kind: "granted", grant: grant("session") };
     }
     const callId = `cross-provider-consent:${disclosure.taskId}:${randomUUID()}`;
+    // The arbiter settles a modal as stale unless it belongs to the session's
+    // active turn, and clients match a request to that turn: use its id, not
+    // the spawn call's.
+    const turnId = requestingSession.activeTurn?.unsafePeek()?.turnId ?? disclosure.taskId;
     const result = await requestApproval({
       ctx: {
         invocation: {
@@ -356,7 +360,7 @@ export class LiveApprovalBroker {
           payload: { kind: "function", arguments: JSON.stringify(disclosure) },
         } as Parameters<typeof requestApproval>[0]["ctx"]["invocation"],
         callId, toolName: "spawn_agent", approvalKind: "cross_provider_spawn",
-        turnId: disclosure.taskId, requiresUserInteraction: true,
+        turnId, requiresUserInteraction: true,
         signal: requestingSession.abortController.signal,
       },
       args: disclosure as unknown as Record<string, unknown>,
