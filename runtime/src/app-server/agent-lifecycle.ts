@@ -1763,6 +1763,11 @@ export class AgenCDaemonAgentManager {
     }
   }
 
+  /** The daemon session ids clients attach to for this agent. */
+  async sessionIdsForAgent(agentId: string): Promise<readonly string[]> {
+    return await this.#state.with((state) => state.agents.get(agentId)?.sessionIds.slice() ?? []);
+  }
+
   async getAgent(agentId: string): Promise<AgentSummary | null> {
     await this.#refreshAgentFromRunner(agentId);
     return this.#state.with((state) => {

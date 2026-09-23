@@ -6,7 +6,7 @@
  * later daemon rows.
  */
 
-import { LiveApprovalBroker } from "./live-approval-broker.js";
+import { LiveApprovalBroker, crossProviderConsentAvailability } from "./live-approval-broker.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { enterDaemonWorkingDirectory } from "./daemon-working-directory.js";
 import { randomUUID } from "node:crypto";
@@ -115,7 +115,6 @@ import {
   type JsonValue,
   type SessionStatus,
   AGENC_PENDING_APPROVALS_LIST_CAPABILITY,
-  AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY,
 } from "./protocol/index.js";
 import { sessionEventDelivery } from "./approval-delivery.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
@@ -3562,9 +3561,12 @@ async function runAgenCDaemonForegroundLocked(
       },
     );
     let runner = options.runner;
-    const approvalBroker = new LiveApprovalBroker({
-      canAnswerCrossProviderConsent: (sessionId) =>
-        clientMultiplexer.hasAttachedClientWithCapability(sessionId, AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY),
+    const approvalBroker: LiveApprovalBroker = new LiveApprovalBroker({
+      canAnswerCrossProviderConsent: crossProviderConsentAvailability({
+        sessionIdsForAgent: (agentId): Promise<readonly string[]> => agentManager.sessionIdsForAgent(agentId),
+        hasAttachedClientWithCapability: (sessionId, capability) =>
+          clientMultiplexer.hasAttachedClientWithCapability(sessionId, capability),
+      }),
     });
     let configuredRunner: AgenCDelegateBackgroundAgentRunner | undefined;
     if (runner === undefined) {

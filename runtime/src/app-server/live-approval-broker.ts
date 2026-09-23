@@ -20,7 +20,7 @@ import {
 import { daemonEventFromUnboundSessionEvent } from "./background-agent-runner/daemon-events.js";
 import { isUndeliverableApproval } from "./approval-delivery.js";
 import type { BackgroundAgentDaemonEvent } from "./background-agent-runner/shared.js";
-import type { PendingToolApproval, JsonObject } from "./protocol/index.js";
+import { AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY, type PendingToolApproval, type JsonObject } from "./protocol/index.js";
 import { requestApproval } from "../permissions/guardian/arbiter.js";
 import type { CrossProviderConsentService, CrossProviderSpawnDisclosure, CrossProviderConsentOutcome } from "../agents/cross-provider.js";
 import { getSessionGoal } from "../goal/session-goal.js";
@@ -53,6 +53,23 @@ export interface LivePendingApproval {
   readonly responseKey: string;
   readonly projection: PendingToolApproval;
   readonly settle: (decision: ReviewDecision) => void;
+}
+
+/**
+ * Whether a person can answer a cross-provider consent question for an owner
+ * now. The broker asks by owner run id, which is the daemon agent id; clients
+ * attach to that agent's daemon session ids, not to the run id itself.
+ */
+export function crossProviderConsentAvailability(deps: {
+  readonly sessionIdsForAgent: (agentId: string) => Promise<readonly string[]>;
+  readonly hasAttachedClientWithCapability: (sessionId: string, capability: string) => Promise<boolean>;
+}): (ownerRunId: string) => Promise<boolean> {
+  return async (ownerRunId) => {
+    for (const sessionId of await deps.sessionIdsForAgent(ownerRunId)) {
+      if (await deps.hasAttachedClientWithCapability(sessionId, AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY)) return true;
+    }
+    return false;
+  };
 }
 
 export class LiveApprovalBroker {
