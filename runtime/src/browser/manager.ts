@@ -283,12 +283,6 @@ const MAC_ACL_PERMISSIONS = new Set([
   // Inheritance flags, not rights; they appear on folders in shared locations.
   "file_inherit", "directory_inherit", "limit_inherit", "only_inherit",
 ]);
-const MAC_ACL_UNSAFE = new Set([
-  "write", "add_file", "add_subdirectory", "delete", "delete_child",
-  "write_data", "append_data", "append", "writeattr", "writeextattr",
-  "writesecurity", "chown",
-]);
-
 /** Inspect every component in one ls invocation; unknown output refuses storage. */
 function verifyMacAcls(paths: readonly string[], runner: (paths: readonly string[]) => string): void {
   if (paths.some((path) => path.includes("\n") || path.includes("\r"))) {
@@ -317,8 +311,10 @@ function verifyMacAcls(paths: readonly string[], runner: (paths: readonly string
     if (permissions.some((permission) => !MAC_ACL_PERMISSIONS.has(permission))) {
       throw new Error("unknown browser profile ACL permission");
     }
-    if (entry[2] === "allow" && permissions.some((permission) => MAC_ACL_UNSAFE.has(permission))) {
-      throw new Error(`browser profile ACL allows writes or deletion: ${current}`);
+    // The owner's rights come from the mode bits; an allow entry only ever
+    // grants someone else access, even just to read stored logins.
+    if (entry[2] === "allow") {
+      throw new Error(`browser profile ACL grants access to another principal: ${current}`);
     }
   }
   if (current !== undefined && aclExpected && !aclSeen) throw new Error("unparsed browser profile ACL");
@@ -376,6 +372,9 @@ function ensurePersistentProjectProfile(
   const userHome = userHomeOverride ?? (platform === "win32" ? process.env.USERPROFILE : userInfo().homedir);
   if (userHome === undefined || userHome === "") throw new Error("cannot identify current user's home");
   const canonicalUserHome = realpathSync.native(userHome);
+  // A fresh AGENC_HOME may not exist yet. Create it privately; the checks
+  // below then judge the real path it resolved to.
+  if (!existsSync(home)) mkdirSync(home, { recursive: true, mode: 0o700 });
   const canonicalHome = realpathSync.native(home);
   if (!isWithin(canonicalUserHome, canonicalHome)) {
     throw new Error("browser profile home is outside the current user's home");

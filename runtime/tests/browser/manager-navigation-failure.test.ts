@@ -461,6 +461,31 @@ describe("project-scoped browser profiles", () => {
     expect(markers).toHaveBeenCalledTimes(2);
   });
 
+  it("creates a fresh agencHome inside the user's home privately and keeps a stored profile there", async () => {
+    const fresh = join(profileRoot, "fresh-home");
+    const { manager } = fakeManager(async () => ({}), undefined, undefined, undefined, {
+      agencHome: fresh,
+      profileValidationUserHome: profileRoot,
+    });
+    await manager.newTab();
+    const key = createHash("sha256").update(profileRoot).digest("hex").slice(0, 24);
+    expect(launchedProfiles()[0]).toBe(join(fresh, "browser", "profiles", key));
+    expect(statSync(fresh).mode & 0o777).toBe(0o700);
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a macOS ACL that lets another user read the profile chain", async () => {
+    const browser = join(profileRoot, "browser");
+    const ls = vi.fn((paths: readonly string[]) => paths.map((path) =>
+      `${path === browser ? "drwx------+" : "drwx------"} 1 owner staff 0 Sep 23 00:00 ${path}` +
+      (path === browser ? "\n 0: user:guest allow list,search,read" : ""),
+    ).join("\n") + "\n");
+    const { manager } = fakeManager(async () => ({}), undefined, undefined, undefined, {
+      profileValidationPlatform: "darwin", profileValidationLs: ls,
+    });
+    await manager.newTab();
+    expect(launchedProfiles()[0]).toMatch(/^.*\/agenc-browser-[^/]+$/);
+  });
+
   it("falls back when agencHome is outside the current user's home", async () => {
     const userHome = join(profileRoot, "user");
     const outside = join(profileRoot, "outside");
