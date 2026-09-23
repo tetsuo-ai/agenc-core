@@ -42,6 +42,7 @@ import { bindAdmittedToolHarness } from "../helpers/admitted-tool-harness.js";
 
 let profileRoot = "";
 const managers: BrowserManager[] = [];
+const PROFILE_MARKER = ".agenc-profile-owner";
 
 beforeEach(async () => {
   profileRoot = await mkdtemp(join(tmpdir(), "agenc-browser-navigation-test-"));
@@ -275,15 +276,52 @@ describe("one shared profile across sessions", () => {
     const isolated = firstHoldsShared ? secondProfile! : firstProfile!;
     expect(isolated).not.toBe(persistent);
     expect(statSync(isolated).mode & 0o777).toBe(0o700);
+    expect(existsSync(join(isolated, PROFILE_MARKER))).toBe(true);
 
     await (firstHoldsShared ? second : first).closeAll();
     expect(existsSync(isolated)).toBe(false);
     expect(existsSync(persistent)).toBe(true);
 
     await (firstHoldsShared ? first : second).closeAll();
+    expect(existsSync(join(persistent, PROFILE_MARKER))).toBe(false);
     const { manager: third } = fakeManager(async () => ({ frameId: "frame-1" }));
     await third.newTab();
     expect(launchedProfiles()[2]).toBe(persistent);
+  });
+
+  it("claims the shared profile before another daemon can launch on it", async () => {
+    const persistent = join(profileRoot, "browser", "profile");
+    const { manager: first } = fakeManager(async () => ({ frameId: "frame-1" }));
+    await first.newTab();
+    expect(existsSync(join(persistent, PROFILE_MARKER))).toBe(true);
+
+    // Reloading this module gives the next manager a separate holder map, as
+    // it would have in another daemon.
+    vi.resetModules();
+    const { BrowserManager: OtherDaemonBrowserManager } = await import("../../src/browser/manager.js");
+    const second = new OtherDaemonBrowserManager({
+      agencHome: profileRoot,
+      policy: {
+        executablePath: process.execPath,
+        headless: true, allowPrivateNetwork: false, noSandbox: false, navigationTimeoutMs: 1_000,
+      },
+    });
+    managers.push(second);
+    await second.newTab();
+    expect(launchedProfiles()).toHaveLength(2);
+    expect(launchedProfiles()[0]).toBe(persistent);
+    expect(launchedProfiles()[1]).not.toBe(persistent);
+  });
+
+  it.skipIf(process.platform === "win32")("keeps a private profile while its daemon is launching", async () => {
+    const launching = await mkdtemp(join(profileRoot, "agenc-browser-child-"));
+    writeFileSync(join(launching, PROFILE_MARKER), JSON.stringify({
+      pid: process.pid,
+      startedAt: Date.now() - process.uptime() * 1_000,
+    }));
+    const { manager } = fakeManager(async () => ({ frameId: "frame-1" }));
+    await manager.newTab();
+    expect(existsSync(launching)).toBe(true);
   });
 
   it("leaves a profile to the live Chromium that holds its SingletonLock", async () => {
@@ -305,6 +343,10 @@ describe("one shared profile across sessions", () => {
     const exited = spawnSync(process.execPath, ["-e", ""]);
     unlinkSync(lock);
     symlinkSync(`${hostname()}-${exited.pid}`, lock);
+    writeFileSync(join(persistent, PROFILE_MARKER), JSON.stringify({
+      pid: exited.pid,
+      startedAt: Date.now() - 10_000,
+    }));
     const { manager: reused } = fakeManager(async () => ({ frameId: "frame-1" }));
     await reused.newTab();
     expect(launchedProfiles()[1]).toBe(persistent);
@@ -314,11 +356,17 @@ describe("one shared profile across sessions", () => {
     const stale = await mkdtemp(join(profileRoot, "agenc-browser-"));
     const staleChild = await mkdtemp(join(profileRoot, "agenc-browser-child-"));
     const exited = spawnSync(process.execPath, ["-e", ""]);
+    for (const dir of [stale, staleChild]) {
+      writeFileSync(join(dir, PROFILE_MARKER), JSON.stringify({
+        pid: exited.pid, startedAt: Date.now() - 10_000,
+      }));
+    }
     symlinkSync(`${hostname()}-${exited.pid}`, join(staleChild, "SingletonLock"));
     const live = await mkdtemp(join(profileRoot, "agenc-browser-"));
     symlinkSync(`${hostname()}-${process.pid}`, join(live, "SingletonLock"));
     const uncertain = await mkdtemp(join(profileRoot, "agenc-browser-"));
     writeFileSync(join(uncertain, "SingletonLock"), "unreadable lock format");
+    const unclaimed = await mkdtemp(join(profileRoot, "agenc-browser-"));
     const unrelated = join(profileRoot, "unrelated");
     mkdirSync(unrelated);
     const linked = join(profileRoot, "agenc-browser-child-abcdef");
@@ -336,6 +384,7 @@ describe("one shared profile across sessions", () => {
     expect(existsSync(staleChild)).toBe(false);
     expect(existsSync(live)).toBe(true);
     expect(existsSync(uncertain)).toBe(true);
+    expect(existsSync(unclaimed)).toBe(true);
     expect(existsSync(linked)).toBe(true);
     expect(existsSync(unrelated)).toBe(true);
     expect(existsSync(shared)).toBe(true);

@@ -12,7 +12,12 @@
  * @module
  */
 
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, rmSync } from "node:fs";
+import {
+  closeSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync,
+  openSync, readFileSync, readdirSync, readlinkSync, rmSync, unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
@@ -53,6 +58,76 @@ const sharedProfileHolders = new Map<string, BrowserManager>();
 const privateProfileDirs = new Set<string>();
 const cleanedTempRoots = new Set<string>();
 const PRIVATE_PROFILE_NAME = /^agenc-browser-(?:child-)?[a-zA-Z0-9]{6}$/;
+const PROFILE_MARKER = ".agenc-profile-owner";
+const PROFILE_RECOVERY_MARKER = ".agenc-profile-recovery";
+const processStartedAt = Math.round(Date.now() - process.uptime() * 1_000);
+
+/** An exclusive claim protects the interval before Chromium writes its lock. */
+function claimProfileMarker(dir: string, name = PROFILE_MARKER): string | undefined {
+  const marker = JSON.stringify({
+    pid: process.pid, startedAt: processStartedAt, id: randomUUID(),
+  });
+  const path = join(dir, name);
+  let fd: number;
+  try {
+    fd = openSync(
+      path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600,
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return undefined;
+    throw error;
+  }
+  try {
+    writeFileSync(fd, marker, "utf8");
+  } catch (error) {
+    unlinkSync(path);
+    throw error;
+  } finally {
+    closeSync(fd);
+  }
+  return marker;
+}
+
+/** Serialize removal of a dead shared claim before creating a fresh one. */
+function claimSharedProfileMarker(dir: string): string | undefined {
+  const recoveryPath = join(dir, PROFILE_RECOVERY_MARKER);
+  if (existsSync(recoveryPath)) return undefined;
+  const marker = claimProfileMarker(dir);
+  if (marker !== undefined || !markerOwnerProvablyDead(dir)) return marker;
+  const recovery = claimProfileMarker(dir, PROFILE_RECOVERY_MARKER);
+  if (recovery === undefined) return undefined;
+  try {
+    if (!markerOwnerProvablyDead(dir)) return undefined;
+    unlinkSync(join(dir, PROFILE_MARKER));
+    return claimProfileMarker(dir);
+  } finally {
+    if (readFileSync(recoveryPath, "utf8") === recovery) unlinkSync(recoveryPath);
+  }
+}
+
+function markerOwnerProvablyDead(dir: string): boolean {
+  const path = join(dir, PROFILE_MARKER);
+  try {
+    const info = lstatSync(path);
+    if (!info.isFile() || info.isSymbolicLink()) return false;
+    const owner: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (typeof owner !== "object" || owner === null) return false;
+    const { pid, startedAt } = owner as { pid?: unknown; startedAt?: unknown };
+    if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0 ||
+        typeof startedAt !== "number" || !Number.isFinite(startedAt) || startedAt <= 0) {
+      return false;
+    }
+    try {
+      process.kill(pid, 0);
+      return false;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ESRCH";
+    }
+  } catch {
+    // Missing, incomplete, or unreadable claims cannot prove that a daemon died.
+    return false;
+  }
+}
 
 /**
  * Whether a live Chromium, possibly in another process, holds `profileDir`.
@@ -101,7 +176,7 @@ function cleanStalePrivateProfiles(root: string, sharedProfile?: string): void {
     if (!info.isDirectory() || info.isSymbolicLink()) continue;
     if (typeof process.getuid === "function" && info.uid !== process.getuid()) continue;
     if ((info.mode & 0o077) !== 0) continue;
-    if (sharedProfileHeldElsewhere(path, true)) continue;
+    if (!markerOwnerProvablyDead(path) || sharedProfileHeldElsewhere(path, true)) continue;
     rmSync(path, { recursive: true, force: true });
   }
   cleanedTempRoots.add(root);
@@ -185,6 +260,7 @@ export class BrowserManager {
   #launchAuthorityCwd: string | undefined;
   #tempProfileDir: string | undefined;
   #sharedProfileDir: string | undefined;
+  #sharedProfileMarker: string | undefined;
   readonly #exitListener = (): void => {
     this.#killNow();
   };
@@ -218,10 +294,7 @@ export class BrowserManager {
     // processes would silently collapse their authority boundary.
     if ((this.#options.sandboxExecutionBroker?.forkDepth ?? 0) > 0) {
       if (this.#tempProfileDir === undefined) {
-        this.#tempProfileDir = mkdtempSync(
-          join(tempRoot, "agenc-browser-child-"),
-        );
-        privateProfileDirs.add(this.#tempProfileDir);
+        return this.#createPrivateProfile(tempRoot, "agenc-browser-child-");
       }
       return this.#tempProfileDir;
     }
@@ -234,12 +307,19 @@ export class BrowserManager {
       // directory is removed when this browser closes.
     }
     if (this.#tempProfileDir === undefined) {
-      this.#tempProfileDir = mkdtempSync(
-        join(tempRoot, "agenc-browser-"),
-      );
-      privateProfileDirs.add(this.#tempProfileDir);
+      return this.#createPrivateProfile(tempRoot, "agenc-browser-");
     }
     return this.#tempProfileDir;
+  }
+
+  #createPrivateProfile(root: string, prefix: string): string {
+    const dir = mkdtempSync(join(root, prefix));
+    if (claimProfileMarker(dir) === undefined) {
+      throw new Error("new private browser profile already has an owner");
+    }
+    this.#tempProfileDir = dir;
+    privateProfileDirs.add(dir);
+    return dir;
   }
 
   /**
@@ -252,7 +332,12 @@ export class BrowserManager {
   #claimSharedProfile(dir: string): boolean {
     const holder = sharedProfileHolders.get(dir);
     if (holder !== undefined && holder !== this) return false;
-    if (holder === undefined && sharedProfileHeldElsewhere(dir)) return false;
+    if (holder === undefined) {
+      if (sharedProfileHeldElsewhere(dir)) return false;
+      const marker = claimSharedProfileMarker(dir);
+      if (marker === undefined) return false;
+      this.#sharedProfileMarker = marker;
+    }
     sharedProfileHolders.set(dir, this);
     this.#sharedProfileDir = dir;
     return true;
@@ -260,7 +345,17 @@ export class BrowserManager {
 
   #releaseSharedProfile(): void {
     const dir = this.#sharedProfileDir;
+    const marker = this.#sharedProfileMarker;
+    if (dir !== undefined && marker !== undefined) {
+      const path = join(dir, PROFILE_MARKER);
+      try {
+        if (readFileSync(path, "utf8") === marker) unlinkSync(path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
     this.#sharedProfileDir = undefined;
+    this.#sharedProfileMarker = undefined;
     if (dir !== undefined && sharedProfileHolders.get(dir) === this) {
       sharedProfileHolders.delete(dir);
     }
@@ -335,7 +430,6 @@ export class BrowserManager {
           : {}),
       });
     } catch (err) {
-      this.#releaseSharedProfile();
       const boundary: BrowserBoundary = {
         child: undefined,
         proxy,
@@ -343,7 +437,9 @@ export class BrowserManager {
       };
       let managerCleanupError: Error | undefined;
       try {
-        await this.#cleanupOwnedBoundary(boundary);
+        await this.#cleanupOwnedBoundary(
+          boundary, !(err instanceof BrowserLaunchCleanupError),
+        );
       } catch (cleanupError) {
         managerCleanupError = toError(cleanupError);
       }
@@ -391,7 +487,6 @@ export class BrowserManager {
       authorityCwd !== this.#options.sandboxExecutionBroker?.cwd
     ) {
       launched.connection.close();
-      this.#releaseSharedProfile();
       await this.#cleanupOwnedBoundary({
         child: launched.child,
         proxy,
@@ -579,7 +674,6 @@ export class BrowserManager {
     this.#connection = undefined;
     this.#child = undefined;
     this.#launchAuthorityCwd = undefined;
-    this.#releaseSharedProfile();
     const proxy = this.#proxy;
     this.#proxy = undefined;
     activeManagers.delete(this);
@@ -599,11 +693,6 @@ export class BrowserManager {
         signalProcessTree(boundary.child, "SIGKILL");
       }
       void boundary.proxy?.stop();
-    }
-    if (this.#tempProfileDir !== undefined) {
-      rmSync(this.#tempProfileDir, { recursive: true, force: true });
-      privateProfileDirs.delete(this.#tempProfileDir);
-      this.#tempProfileDir = undefined;
     }
   }
 
@@ -686,7 +775,10 @@ export class BrowserManager {
     this.#processCleanup = tracked;
   }
 
-  async #cleanupOwnedBoundary(boundary: BrowserBoundary): Promise<void> {
+  async #cleanupOwnedBoundary(
+    boundary: BrowserBoundary,
+    releaseClaim = true,
+  ): Promise<void> {
     const errors: unknown[] = [];
     if (boundary.child !== undefined) {
       try {
@@ -706,10 +798,22 @@ export class BrowserManager {
         errors.push(error);
       }
     }
-    try {
-      this.#cleanupTempProfile();
-    } catch (error) {
-      errors.push(error);
+    if (
+      releaseClaim && boundary.child === undefined &&
+      !this.#retainedBoundaries.some(
+        ({ boundary: retained }) => retained.child !== undefined,
+      )
+    ) {
+      try {
+        this.#cleanupTempProfile();
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        this.#releaseSharedProfile();
+      } catch (error) {
+        errors.push(error);
+      }
     }
     if (errors.length === 0) return;
     const failure = errors.length === 1

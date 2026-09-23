@@ -1023,6 +1023,55 @@ describe("UnifiedExecProcessManager", () => {
     }
   });
 
+  test("reports a hard timeout with delayed exit observation as stopping", async () => {
+    const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
+    const fakePty = installFakePty(manager);
+    try {
+      const result = await manager.execCommand({
+        cmd: "bash -i",
+        tty: true,
+        yield_time_ms: 250,
+        timeoutMs: 100,
+        ownerId: "delayed-exit",
+      });
+      expect(result.timedOut).toBe(true);
+      expect(result.session_id).toBeUndefined();
+      expect(result.process_id).toBeUndefined();
+      expect(manager.listOwnedProcesses({ ownerId: "delayed-exit" })).toMatchObject([
+        { status: "stopping" },
+      ]);
+    } finally {
+      fakePty.exitAll();
+      await manager.closeAll("test_cleanup");
+    }
+  });
+
+  test("does not return a session id when a poll observes a hard timeout without exit", async () => {
+    const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
+    const fakePty = installFakePty(manager);
+    try {
+      const started = await manager.execCommand({
+        cmd: "bash -i",
+        tty: true,
+        yield_time_ms: 250,
+        timeoutMs: 400,
+      });
+      expect(started.session_id).toEqual(expect.any(Number));
+      await delay(450);
+      const result = await manager.writeStdin({
+        session_id: started.session_id!,
+        chars: "x",
+        yield_time_ms: 250,
+      });
+      expect(result.timedOut).toBe(true);
+      expect(result.session_id).toBeUndefined();
+      expect(result.process_id).toBeUndefined();
+    } finally {
+      fakePty.exitAll();
+      await manager.closeAll("test_cleanup");
+    }
+  });
+
   test("respects explicit timeoutMs for tty calls (default does not apply)", async () => {
     // tty=true is the interactive-session path. We deliberately exempt tty
     // from the default hard timeout so persistent shells stay
