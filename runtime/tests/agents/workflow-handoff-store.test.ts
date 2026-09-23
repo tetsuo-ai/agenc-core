@@ -42,6 +42,15 @@ import {
 } from "../../src/state/sqlite-driver.js";
 import { __setAtomicArtifactOperationForTesting } from "../../src/durability/atomic-artifact.js";
 
+// macOS has no traversable directory descriptor alias: /dev/fd/N cannot be
+// used for child paths. The store intentionally refuses descriptor-confined
+// writes and, until the separate read-only fallback lands, reads as well.
+// Keep these cases active on Linux, where /proc/self/fd supplies that proof.
+const itWithDescriptorIo = process.platform === "darwin" ? it.skip : it;
+const darwinDescriptorSkipReason = process.platform === "darwin"
+  ? " [skipped on macOS: /dev/fd has no traversable directory alias]"
+  : "";
+
 const OWNER: WorkflowHandoffOwner = Object.freeze({
   run_id: "run-one",
   workflow_id: "workflow-one",
@@ -156,7 +165,7 @@ function seedIntents(options: {
 }
 
 describe("workflow handoff publication and integrity", () => {
-  it("publishes a repeatable fixed-chunk source without a whole-result buffer", async () => {
+  itWithDescriptorIo(`publishes a repeatable fixed-chunk source without a whole-result buffer${darwinDescriptorSkipReason}`, async () => {
     const artifactStore = store();
     const chunks = [
       Buffer.from("streamed "),
@@ -226,7 +235,7 @@ describe("workflow handoff publication and integrity", () => {
     expect(artifact.preview_truncated).toBe(true);
   });
 
-  it("publishes immutable digest-bound bytes and reads only for the owner", async () => {
+  itWithDescriptorIo(`publishes immutable digest-bound bytes and reads only for the owner${darwinDescriptorSkipReason}`, async () => {
     const artifactStore = store();
     const body = "x".repeat(MAX_WORKFLOW_STEP_PREVIEW_BYTES) + "🙂tail";
     const artifact = await artifactStore.publish({
@@ -312,7 +321,7 @@ describe("workflow handoff publication and integrity", () => {
     );
   });
 
-  it("length-prefixes identity components so embedded NUL tuples cannot collide", async () => {
+  itWithDescriptorIo(`length-prefixes identity components so embedded NUL tuples cannot collide${darwinDescriptorSkipReason}`, async () => {
     const artifactStore = store();
     const left = await publish(artifactStore, "e", "left", {
       run_id: "a",
@@ -347,7 +356,7 @@ describe("workflow handoff publication and integrity", () => {
     expect(artifact.committed_at_ms).toBe(2_000_000);
   });
 
-  it("fails closed for corrupt bytes, mode changes, and unknown kinds", async () => {
+  itWithDescriptorIo(`fails closed for corrupt bytes, mode changes, and unknown kinds${darwinDescriptorSkipReason}`, async () => {
     const artifactStore = store();
     const artifact = await publish(artifactStore, "corrupt", "expected");
     await writeFile(artifactPath(artifact.artifact_id), "tampered");
@@ -373,7 +382,7 @@ describe("workflow handoff publication and integrity", () => {
     expect(await readFile(artifactPath(artifact.artifact_id), "utf8")).toBe("expected");
   });
 
-  it("rejects an artifact symlink without reading or deleting its target", async () => {
+  itWithDescriptorIo(`rejects an artifact symlink without reading or deleting its target${darwinDescriptorSkipReason}`, async () => {
     if (process.platform === "win32") {
       expect(process.platform).toBe("win32");
       return;
@@ -415,8 +424,8 @@ describe("workflow handoff publication and integrity", () => {
 });
 
 describe("workflow handoff confined filesystem races", () => {
-  it.each(["read", "cleanup"])(
-    "rejects root replacement before %s touches a child",
+  itWithDescriptorIo.each(["read", "cleanup"])(
+    `rejects root replacement before %s touches a child${darwinDescriptorSkipReason}`,
     async (operation) => {
       let armed = false;
       const artifactStore = store({
@@ -443,12 +452,12 @@ describe("workflow handoff confined filesystem races", () => {
     },
   );
 
-  it.each([
+  itWithDescriptorIo.each([
     ["read", "replace"],
     ["read", "grow"],
     ["cleanup", "replace"],
     ["cleanup", "grow"],
-  ])("preserves a child changed by %s/%s after opening", async (operation, mutation) => {
+  ])(`preserves a child changed by %s/%s after opening${darwinDescriptorSkipReason}`, async (operation, mutation) => {
     let armed = false;
     const artifactStore = store({
       async afterCandidateOpen(path) {
@@ -479,7 +488,7 @@ describe("workflow handoff confined filesystem races", () => {
       .toBe(mutation === "replace" ? "evil" : "safe-oversized");
   });
 
-  it("rejects hard-linked handoffs during reads and cleanup", async () => {
+  itWithDescriptorIo(`rejects hard-linked handoffs during reads and cleanup${darwinDescriptorSkipReason}`, async () => {
     const artifactStore = store();
     const artifact = await publish(artifactStore, "hard-link", "safe");
     const alias = join(temporaryDirectory, "hard-link");
@@ -498,7 +507,7 @@ describe("workflow handoff confined filesystem races", () => {
 });
 
 describe("workflow handoff restart recovery", () => {
-  it("removes a reserved intent whose bytes were never installed", async () => {
+  itWithDescriptorIo(`removes a reserved intent whose bytes were never installed${darwinDescriptorSkipReason}`, async () => {
     const crashing = store({
       afterIntentReserved() {
         throw new Error("crash after reservation");
@@ -516,7 +525,7 @@ describe("workflow handoff restart recovery", () => {
     expect(store().listForOperator().entries).toEqual([]);
   });
 
-  it("commits a digest-matching installed file exactly once after restart", async () => {
+  itWithDescriptorIo(`commits a digest-matching installed file exactly once after restart${darwinDescriptorSkipReason}`, async () => {
     const crashing = store({
       afterArtifactInstalled() {
         throw new Error("crash after install");
@@ -538,7 +547,7 @@ describe("workflow handoff restart recovery", () => {
     expect(Buffer.from(recovered.bytes).toString("utf8")).toBe("durable");
   });
 
-  it("marks a mismatched installed intent as conflict and preserves its bytes", async () => {
+  itWithDescriptorIo(`marks a mismatched installed intent as conflict and preserves its bytes${darwinDescriptorSkipReason}`, async () => {
     let artifactId = "";
     const crashing = store({
       afterArtifactInstalled(installedArtifactId) {
@@ -557,7 +566,7 @@ describe("workflow handoff restart recovery", () => {
     expect(await readFile(artifactPath(artifactId), "utf8")).toBe("tampered");
   });
 
-  it("resumes cleanup after reservation and after unlink", async () => {
+  itWithDescriptorIo(`resumes cleanup after reservation and after unlink${darwinDescriptorSkipReason}`, async () => {
     const initial = store();
     const first = await publish(initial, "cleanup-reserved");
     now += 101;
@@ -589,7 +598,7 @@ describe("workflow handoff restart recovery", () => {
 });
 
 describe("workflow handoff reachability, cleanup, quotas, and operator output", () => {
-  it("never evicts an active reference and ages from the final release", async () => {
+  itWithDescriptorIo(`never evicts an active reference and ages from the final release${darwinDescriptorSkipReason}`, async () => {
     const artifactStore = store();
     const artifact = await publish(artifactStore, "retained");
     artifactStore.retain(artifact.artifact_id, "consumer-step", "consumer-run");
@@ -640,7 +649,7 @@ describe("workflow handoff reachability, cleanup, quotas, and operator output", 
     });
   });
 
-  it("makes cleanup reservation win atomically over a racing retain", async () => {
+  itWithDescriptorIo(`makes cleanup reservation win atomically over a racing retain${darwinDescriptorSkipReason}`, async () => {
     const artifactStore = store();
     const artifact = await publish(artifactStore, "retain-race");
     now += 101;
@@ -652,7 +661,7 @@ describe("workflow handoff reachability, cleanup, quotas, and operator output", 
     await expect(cleanup).resolves.toMatchObject({ removed: 1 });
   });
 
-  it("uses bounded keyset cleanup pages at 256/257", async () => {
+  itWithDescriptorIo(`uses bounded keyset cleanup pages at 256/257${darwinDescriptorSkipReason}`, async () => {
     const artifactStore = store();
     for (let index = 0; index < MAX_WORKFLOW_ARTIFACT_CLEANUP_BATCH + 1; index += 1) {
       await publish(

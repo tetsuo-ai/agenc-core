@@ -15,7 +15,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
   existsSync,
@@ -64,6 +64,13 @@ vi.mock("../../src/utils/supervisedProcess.js", async (importOriginal) => {
       if (terminationSeam.failuresRemaining > 0) {
         terminationSeam.failuresRemaining -= 1;
         throw new Error("injected process-tree cleanup failure");
+      }
+      // A fake EventEmitter has no OS process to signal. Keep manager cleanup
+      // assertions independent of the platform supervisor; the real-tree
+      // cases below exercise that supervisor with actual child processes.
+      if ((args[0] as { syntheticBrowserChild?: boolean }).syntheticBrowserChild) {
+        args[0].kill("SIGTERM");
+        return;
       }
       await actual.terminateProcessTreeAndWait(...args);
     },
@@ -116,6 +123,7 @@ afterEach(async () => {
 });
 
 interface FakeChild extends EventEmitter {
+  syntheticBrowserChild: true;
   kill(signal?: string): boolean;
   exitCode: number | null;
   signalCode: string | null;
@@ -124,6 +132,7 @@ interface FakeChild extends EventEmitter {
 
 function makeFakeChild(): FakeChild {
   const child = new EventEmitter() as FakeChild;
+  child.syntheticBrowserChild = true;
   child.exitCode = null;
   child.signalCode = null;
   child.killed = false;
@@ -265,7 +274,19 @@ describe("BrowserManager launch failure", () => {
 });
 
 describe("BrowserManager shutdown/launch race", () => {
-  const testPosix = process.platform === "win32" ? test.skip : test;
+  const darwinProcessTableUnavailable = process.platform === "darwin" &&
+    spawnSync("/bin/ps", ["-axo", "pid=,ppid=,state=,lstart="], {
+      stdio: "ignore",
+    }).status !== 0;
+  // The supervisor needs a readable process table to prove descendant cleanup.
+  // A restricted macOS runner may deny /bin/ps; the same tests run on a Mac
+  // with process-table access and on Linux.
+  const testPosix = process.platform === "win32" || darwinProcessTableUnavailable
+    ? test.skip
+    : test;
+  const processTableSkipReason = darwinProcessTableUnavailable
+    ? " [skipped on macOS: sandbox denies /bin/ps process-table access]"
+    : "";
 
   test("closeAll tears down a browser that finished launching mid-shutdown", async () => {
     const child = makeFakeChild();
@@ -293,7 +314,7 @@ describe("BrowserManager shutdown/launch race", () => {
   });
 
   testPosix(
-    "closeAll kills a TERM-resistant descendant before returning",
+    `closeAll kills a TERM-resistant descendant before returning${processTableSkipReason}`,
     async () => {
       const tree = spawnTermResistantTree();
       const mgr = track(new BrowserManager({ policy: BASE_POLICY }));
@@ -321,7 +342,7 @@ describe("BrowserManager shutdown/launch race", () => {
   );
 
   testPosix(
-    "waits for unexpected-exit tree cleanup before relaunching",
+    `waits for unexpected-exit tree cleanup before relaunching${processTableSkipReason}`,
     async () => {
       const tree = spawnTermResistantTree(true);
       const replacement = makeFakeChild();

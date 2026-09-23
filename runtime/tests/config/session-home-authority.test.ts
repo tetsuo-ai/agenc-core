@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, test } from "vitest";
@@ -19,6 +20,8 @@ import { getAgenCHomeDir } from "../../src/utils/envUtils.js";
 import { resolveSecureStorageHome } from "../../src/utils/secureStorage/home.js";
 import { runWithCanonicalSettingsAuthority } from "../../src/utils/settings/canonicalAuthority.js";
 import { getAttributionTexts } from "../../src/utils/attribution.js";
+
+const testTmpRoot = realpathSync("/tmp");
 
 function sessionAt(
   homePath: string,
@@ -71,8 +74,8 @@ afterEach(() => clearCurrentRuntimeSession());
 
 describe("session-bound home authority", () => {
   test("isolates canonical and secure-storage homes across concurrent sessions", async () => {
-    const sessionA = sessionAt(join("/tmp", "agenc-session-home-a"));
-    const sessionB = sessionAt(join("/tmp", "agenc-session-home-b"));
+    const sessionA = sessionAt(join(testTmpRoot, "agenc-session-home-a"));
+    const sessionB = sessionAt(join(testTmpRoot, "agenc-session-home-b"));
 
     const [a, b] = await Promise.all([
       runWithCurrentRuntimeSession(sessionA, async () => {
@@ -81,7 +84,7 @@ describe("session-bound home authority", () => {
           getAgenCHomeDir(),
           resolveSecureStorageHome().path,
           resolveSecureStorageHome({
-            AGENC_HOME: join("/tmp", "conflicting-captured-home-a"),
+            AGENC_HOME: join(testTmpRoot, "conflicting-captured-home-a"),
           }).path,
           resolveSecureStorageHome({}).path,
         ] as const;
@@ -92,7 +95,7 @@ describe("session-bound home authority", () => {
           getAgenCHomeDir(),
           resolveSecureStorageHome().path,
           resolveSecureStorageHome({
-            AGENC_HOME: join("/tmp", "conflicting-captured-home-b"),
+            AGENC_HOME: join(testTmpRoot, "conflicting-captured-home-b"),
           }).path,
           resolveSecureStorageHome({}).path,
         ] as const;
@@ -100,27 +103,27 @@ describe("session-bound home authority", () => {
     ]);
 
     expect(a).toEqual([
-      join("/tmp", "agenc-session-home-a"),
-      join("/tmp", "agenc-session-home-a"),
-      join("/tmp", "agenc-session-home-a"),
-      join("/tmp", "agenc-session-home-a"),
+      join(testTmpRoot, "agenc-session-home-a"),
+      join(testTmpRoot, "agenc-session-home-a"),
+      join(testTmpRoot, "agenc-session-home-a"),
+      join(testTmpRoot, "agenc-session-home-a"),
     ]);
     expect(b).toEqual([
-      join("/tmp", "agenc-session-home-b"),
-      join("/tmp", "agenc-session-home-b"),
-      join("/tmp", "agenc-session-home-b"),
-      join("/tmp", "agenc-session-home-b"),
+      join(testTmpRoot, "agenc-session-home-b"),
+      join(testTmpRoot, "agenc-session-home-b"),
+      join(testTmpRoot, "agenc-session-home-b"),
+      join(testTmpRoot, "agenc-session-home-b"),
     ]);
   });
 
   test("isolates temp roots across concurrent daemon sessions", async () => {
     const sessionA = sessionAt(
-      join("/tmp", "agenc-session-home-a"),
-      join("/tmp", "agenc-session-temp-a"),
+      join(testTmpRoot, "agenc-session-home-a"),
+      join(testTmpRoot, "agenc-session-temp-a"),
     );
     const sessionB = sessionAt(
-      join("/tmp", "agenc-session-home-b"),
-      join("/tmp", "agenc-session-temp-b"),
+      join(testTmpRoot, "agenc-session-home-b"),
+      join(testTmpRoot, "agenc-session-temp-b"),
     );
 
     const [rootA, rootB] = await Promise.all([
@@ -134,14 +137,14 @@ describe("session-bound home authority", () => {
       }),
     ]);
 
-    expect(rootA).toBe(join("/tmp", "agenc-session-temp-a"));
-    expect(rootB).toBe(join("/tmp", "agenc-session-temp-b"));
+    expect(rootA).toBe(join(testTmpRoot, "agenc-session-temp-a"));
+    expect(rootB).toBe(join(testTmpRoot, "agenc-session-temp-b"));
   });
 
   test("uses an explicit startup scope before an ambiguous session fallback", async () => {
-    setCurrentRuntimeSession(sessionAt(join("/tmp", "agenc-fallback-a")));
-    setCurrentRuntimeSession(sessionAt(join("/tmp", "agenc-fallback-b")));
-    const scopedRoot = join("/tmp", "agenc-scoped-startup-temp");
+    setCurrentRuntimeSession(sessionAt(join(testTmpRoot, "agenc-fallback-a")));
+    setCurrentRuntimeSession(sessionAt(join(testTmpRoot, "agenc-fallback-b")));
+    const scopedRoot = join(testTmpRoot, "agenc-scoped-startup-temp");
     const options = resolveAgentRuntimeOptions(
       {},
       { sessionTempRoot: scopedRoot },
@@ -156,9 +159,9 @@ describe("session-bound home authority", () => {
   });
 
   test("keeps a turn-bound session ahead of an outer startup scope", () => {
-    const startupRoot = join("/tmp", "agenc-outer-startup-temp");
-    const sessionRoot = join("/tmp", "agenc-inner-session-temp");
-    const session = sessionAt(join("/tmp", "agenc-session-home"), sessionRoot);
+    const startupRoot = join(testTmpRoot, "agenc-outer-startup-temp");
+    const sessionRoot = join(testTmpRoot, "agenc-inner-session-temp");
+    const session = sessionAt(join(testTmpRoot, "agenc-session-home"), sessionRoot);
     const options = resolveAgentRuntimeOptions(
       {},
       { sessionTempRoot: startupRoot },
@@ -173,7 +176,7 @@ describe("session-bound home authority", () => {
 
   test("isolates remote attribution metadata across concurrent daemon sessions", async () => {
     const sessionA = sessionAt(
-      join("/tmp", "agenc-session-home-a"),
+      join(testTmpRoot, "agenc-session-home-a"),
       undefined,
       {
         mode: true,
@@ -184,7 +187,7 @@ describe("session-bound home authority", () => {
       },
     );
     const sessionB = sessionAt(
-      join("/tmp", "agenc-session-home-b"),
+      join(testTmpRoot, "agenc-session-home-b"),
       undefined,
       {
         mode: true,
@@ -217,13 +220,13 @@ describe("session-bound home authority", () => {
   });
 
   test("uses startup ConfigStore authority before ambient or captured env", () => {
-    const startupHome = join("/tmp", "agenc-startup-authority-home");
+    const startupHome = join(testTmpRoot, "agenc-startup-authority-home");
     const result = runWithCanonicalSettingsAuthority(
       authorityAt(startupHome),
       () => [
         getAgenCHomeDir(),
         resolveSecureStorageHome({
-          AGENC_HOME: join("/tmp", "conflicting-startup-home"),
+          AGENC_HOME: join(testTmpRoot, "conflicting-startup-home"),
         }).path,
       ],
     );
@@ -232,8 +235,8 @@ describe("session-bound home authority", () => {
   });
 
   test("refuses the ambiguous session fallback while retaining startup home authority", () => {
-    setCurrentRuntimeSession(sessionAt(join("/tmp", "agenc-fallback-a")));
-    setCurrentRuntimeSession(sessionAt(join("/tmp", "agenc-fallback-b")));
+    setCurrentRuntimeSession(sessionAt(join(testTmpRoot, "agenc-fallback-a")));
+    setCurrentRuntimeSession(sessionAt(join(testTmpRoot, "agenc-fallback-b")));
 
     expect(() => getCurrentRuntimeSession()).toThrow(/Ambiguous runtime session/u);
     expect(getAgenCHomeDir()).toBe(process.env.AGENC_HOME);
@@ -247,7 +250,7 @@ describe("session-bound home authority", () => {
   });
 
   test("keeps explicit pre-session secure-storage home inputs explicit", () => {
-    const explicit = join("/tmp", "agenc-explicit-secure-home");
+    const explicit = join(testTmpRoot, "agenc-explicit-secure-home");
     expect(resolveSecureStorageHome({}, explicit).path).toBe(explicit);
   });
 });
