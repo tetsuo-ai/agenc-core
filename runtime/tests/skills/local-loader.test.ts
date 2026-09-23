@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -172,6 +172,156 @@ describe("skill listing relevance", () => {
 });
 
 describe("local skills loader", () => {
+  it("loads project skills through the nearest git root and watches no higher", async () => {
+    const outer = tmpRoot("skills-outer");
+    const repo = join(outer, "repo");
+    const workspaceRoot = join(repo, "packages", "ui");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    const workspaceSkill = writeSkill(join(workspaceRoot, ".agents", "skills"), "workspace-skill");
+    const packageSkill = writeSkill(join(repo, "packages", ".agenc", "skills"), "package-skill");
+    const repoSkill = writeSkill(join(repo, ".agents", "skills"), "repo-skill");
+    const outsideRoot = join(outer, ".agents", "skills");
+    writeSkill(outsideRoot, "outside-skill");
+    const agencHome = tmpRoot("skills-home");
+    const options = {
+      agencHome, pluginStorageRoot: join(agencHome, "plugins"),
+      workspaceRoot, env: { HOME: tmpRoot("skills-user") },
+    };
+
+    const snapshot = await loadLocalSkillsSnapshot(options);
+    expect(snapshot.skills.map((skill) => skill.path)).toEqual(expect.arrayContaining([
+      workspaceSkill, packageSkill, repoSkill,
+    ]));
+    expect(snapshot.skills.map((skill) => skill.name)).not.toContain("outside-skill");
+    expect(snapshot.skillRoots).not.toContain(outsideRoot);
+    const watches = await discoverSkillWatchRoots(options);
+    expect(watches).toContain(join(repo, ".agents", "skills"));
+    expect(watches).not.toContain(outsideRoot);
+  });
+
+  it("uses only the workspace for project skills when there is no git root", async () => {
+    const outer = tmpRoot("skills-no-git");
+    const workspaceRoot = join(outer, "workspace");
+    writeSkill(join(workspaceRoot, ".agents", "skills"), "workspace-only");
+    const outsideRoot = join(outer, ".agents", "skills");
+    writeSkill(outsideRoot, "outside-skill");
+    const agencHome = tmpRoot("skills-home");
+    const options = {
+      agencHome, pluginStorageRoot: join(agencHome, "plugins"),
+      workspaceRoot, env: { HOME: tmpRoot("skills-user") },
+    };
+
+    const snapshot = await loadLocalSkillsSnapshot(options);
+    expect(snapshot.skills.map((skill) => skill.name)).toContain("workspace-only");
+    expect(snapshot.skills.map((skill) => skill.name)).not.toContain("outside-skill");
+    expect(await discoverSkillWatchRoots(options)).not.toContain(outsideRoot);
+  });
+
+  it.each([0o777, 0o1777])("skips a project directory with mode %o and warns once", async (mode) => {
+    if (process.platform === "win32") return;
+    const repo = tmpRoot("skills-writable-parent");
+    const workspaceRoot = join(repo, "workspace");
+    mkdirSync(join(repo, ".git"));
+    writeSkill(join(repo, ".agents", "skills"), "unsafe-parent");
+    writeSkill(join(workspaceRoot, ".agents", "skills"), "safe-workspace");
+    chmodSync(repo, mode);
+    const agencHome = tmpRoot("skills-home");
+    const options = {
+      agencHome, pluginStorageRoot: join(agencHome, "plugins"),
+      workspaceRoot, env: { HOME: tmpRoot("skills-user") },
+    };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const snapshot = await loadLocalSkillsSnapshot(options);
+      expect(snapshot.skills.map((skill) => skill.name)).toContain("safe-workspace");
+      expect(snapshot.skills.map((skill) => skill.name)).not.toContain("unsafe-parent");
+      expect(snapshot.warnings).toContainEqual({
+        path: join(repo, ".agents", "skills"),
+        reason: "skipped world-writable project skill root",
+      });
+      expect(await discoverSkillWatchRoots(options)).not.toContain(join(repo, ".agents", "skills"));
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("skips a world-writable skills folder", async () => {
+    if (process.platform === "win32") return;
+    const workspaceRoot = tmpRoot("skills-writable-root");
+    const unsafeRoot = join(workspaceRoot, ".agenc", "skills");
+    writeSkill(unsafeRoot, "unsafe-skill");
+    writeSkill(join(workspaceRoot, ".agents", "skills"), "safe-skill");
+    chmodSync(unsafeRoot, 0o777);
+    const agencHome = tmpRoot("skills-home");
+    const options = {
+      agencHome, pluginStorageRoot: join(agencHome, "plugins"),
+      workspaceRoot, env: { HOME: tmpRoot("skills-user") },
+    };
+
+    const snapshot = await loadLocalSkillsSnapshot(options);
+    expect(snapshot.skills.map((skill) => skill.name)).toContain("safe-skill");
+    expect(snapshot.skills.map((skill) => skill.name)).not.toContain("unsafe-skill");
+    expect(snapshot.warnings).toContainEqual({
+      path: unsafeRoot,
+      reason: "skipped world-writable project skill root",
+    });
+    expect(await discoverSkillWatchRoots(options)).not.toContain(unsafeRoot);
+  });
+
+  it("skips dynamic roots with a world-writable hidden directory or skills folder", async () => {
+    if (process.platform === "win32") return;
+    const workspaceRoot = tmpRoot("skills-dynamic-writable");
+    const nested = join(workspaceRoot, "packages", "ui");
+    const unsafeAgentRoot = join(nested, ".agents", "skills");
+    const unsafeAgencRoot = join(nested, ".agenc", "skills");
+    writeSkill(unsafeAgentRoot, "unsafe-agent");
+    writeSkill(unsafeAgencRoot, "unsafe-agenc");
+    chmodSync(join(nested, ".agents"), 0o777);
+    chmodSync(unsafeAgencRoot, 0o777);
+
+    await expect(discoverDynamicSkillDirsForPaths(
+      [join(nested, "src", "Button.tsx")], workspaceRoot,
+    )).resolves.toEqual([]);
+  });
+
+  it("does not include home in the project walk even when home is a git root", async () => {
+    const home = tmpRoot("skills-git-home");
+    mkdirSync(join(home, ".git"));
+    const workspaceRoot = join(home, "repo", "workspace");
+    writeSkill(join(workspaceRoot, ".agents", "skills"), "workspace-skill");
+    writeSkill(join(home, "repo", ".agents", "skills"), "above-workspace");
+    writeSkill(join(home, ".agenc", "skills"), "home-project-skill");
+    writeSkill(join(home, ".agents", "skills"), "home-user-skill");
+    const agencHome = tmpRoot("skills-home");
+    const options = { agencHome, pluginStorageRoot: join(agencHome, "plugins"), workspaceRoot, env: { HOME: home } };
+
+    const snapshot = await loadLocalSkillsSnapshot(options);
+    expect(snapshot.skills.map((skill) => skill.name)).toContain("workspace-skill");
+    expect(snapshot.skills.map((skill) => skill.name)).toContain("home-user-skill");
+    expect(snapshot.skills.map((skill) => skill.name)).not.toContain("above-workspace");
+    expect(snapshot.skills.map((skill) => skill.name)).not.toContain("home-project-skill");
+    expect(await discoverSkillWatchRoots(options)).not.toContain(join(home, ".agenc", "skills"));
+  });
+
+  it("treats a git worktree marker file as the project root", async () => {
+    const outer = tmpRoot("skills-worktree-outer");
+    const repo = join(outer, "worktree");
+    const workspaceRoot = join(repo, "package");
+    mkdirSync(repo);
+    writeFileSync(join(repo, ".git"), "gitdir: /private/tmp/other-git-dir\n");
+    writeSkill(join(repo, ".agents", "skills"), "worktree-skill");
+    writeSkill(join(outer, ".agents", "skills"), "outside-skill");
+    const agencHome = tmpRoot("skills-home");
+    const snapshot = await loadLocalSkillsSnapshot({
+      agencHome, pluginStorageRoot: join(agencHome, "plugins"),
+      workspaceRoot, env: { HOME: tmpRoot("skills-user") },
+    });
+
+    expect(snapshot.skills.map((skill) => skill.name)).toContain("worktree-skill");
+    expect(snapshot.skills.map((skill) => skill.name)).not.toContain("outside-skill");
+  });
+
   it("discovers AgenC, agent, user, and plugin skill roots", async () => {
     const agencHome = tmpRoot("skills-home");
     const home = tmpRoot("skills-user");

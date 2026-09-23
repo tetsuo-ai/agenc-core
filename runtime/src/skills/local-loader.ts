@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  lstat,
   readdir,
   readFile,
   realpath,
@@ -302,34 +303,83 @@ function normalizeDisplayPath(path: string): string {
   return process.platform === "win32" ? path.replace(/\\/g, "/") : path;
 }
 
-function projectDirsUpToHome(
+/** Walk from the workspace through its nearest git root, excluding HOME. */
+async function projectSkillDirs(
   workspaceRoot: string,
   home?: string,
-): string[] {
-  const dirs: string[] = [];
+): Promise<string[]> {
+  const workspace = resolve(workspaceRoot);
+  const ancestors: string[] = [];
   const homeResolved = home ? resolve(home) : null;
-  let current = resolve(workspaceRoot);
+  let current = workspace;
+  let foundGitRoot = false;
   while (true) {
     if (homeResolved !== null && current === homeResolved) break;
-    dirs.push(join(current, ".agents", "skills"));
-    dirs.push(join(current, ".agenc", "skills"));
+    ancestors.push(current);
+    try {
+      const gitMarker = await lstat(join(current, ".git"));
+      if (gitMarker.isDirectory() || gitMarker.isFile()) {
+        foundGitRoot = true;
+        break;
+      }
+    } catch {
+      // Keep looking for a git root within the home boundary.
+    }
     const parent = dirname(current);
     if (parent === current) break;
     current = parent;
   }
-  return dirs;
+  const projectDirs = foundGitRoot ? ancestors : ancestors.slice(0, 1);
+  return projectDirs.flatMap((dir) => [
+    join(dir, ".agents", "skills"),
+    join(dir, ".agenc", "skills"),
+  ]);
 }
 
-function localSkillRootCandidates(
+const warnedUnsafeProjectRoots = new Set<string>();
+const WORLD_WRITABLE_PROJECT_ROOT_WARNING = "skipped world-writable project skill root";
+
+/** Check every directory that can let another user replace a project root. */
+async function projectSkillRootIsSafe(
+  root: string,
+  warnings?: SkillLoadWarning[],
+): Promise<boolean> {
+  if (process.platform === "win32") return true;
+  for (const path of [dirname(dirname(root)), dirname(root), root]) {
+    try {
+      if (((await stat(path)).mode & 0o002) === 0) continue;
+    } catch (error) {
+      // Missing components stay eligible for watches until they are created.
+      if (isRecord(error) && (error.code === "ENOENT" || error.code === "ENOTDIR")) continue;
+      return false;
+    }
+    // Missing roots are watch candidates, but have no skill to warn about.
+    if (await pathIsDirectory(root)) {
+      if (warnings && !warnings.some((warning) =>
+        warning.path === root && warning.reason === WORLD_WRITABLE_PROJECT_ROOT_WARNING
+      )) {
+        warnings.push({ path: root, reason: WORLD_WRITABLE_PROJECT_ROOT_WARNING });
+      }
+      if (!warnedUnsafeProjectRoots.has(root)) {
+        warnedUnsafeProjectRoots.add(root);
+        console.warn(`Skills: ${WORLD_WRITABLE_PROJECT_ROOT_WARNING}: ${root}`);
+      }
+    }
+    return false;
+  }
+  return true;
+}
+
+async function localSkillRootCandidates(
   options: LocalSkillsServiceOptions,
-): SkillRoot[] {
+): Promise<SkillRoot[]> {
   const home = options.env?.HOME ?? homedir();
   const agencHome = normalizeExistingCandidate(options.agencHome);
   const workspaceRoot = normalizeExistingCandidate(options.workspaceRoot);
 
   const roots: SkillRoot[] = [];
 
-  for (const path of projectDirsUpToHome(workspaceRoot, home)) {
+  for (const path of await projectSkillDirs(workspaceRoot, home)) {
     roots.push({
       path,
       scope: "project",
@@ -366,15 +416,16 @@ function localSkillRootCandidates(
   return roots;
 }
 
-export async function discoverSkillRoots(
+async function discoverSkillRootsWithWarnings(
   options: LocalSkillsServiceOptions,
-  discoveredSkillRoots: readonly string[] = [],
+  discoveredSkillRoots: readonly string[],
+  warnings: SkillLoadWarning[],
 ): Promise<readonly SkillRoot[]> {
   const pluginStorageRoot = normalizeExistingCandidate(
     options.pluginStorageRoot,
   );
   const workspaceRoot = normalizeExistingCandidate(options.workspaceRoot);
-  const roots = localSkillRootCandidates(options);
+  const roots = await localSkillRootCandidates(options);
 
   for (const path of discoveredSkillRoots) {
     const normalized = normalizeExistingCandidate(path);
@@ -418,10 +469,20 @@ export async function discoverSkillRoots(
       ...root,
       path: normalizeExistingCandidate(root.path),
     };
+    if (normalized.scope === "project" && !(await projectSkillRootIsSafe(normalized.path, warnings))) {
+      continue;
+    }
     if (!(await pathIsDirectory(normalized.path))) continue;
     deduped.set(rootKey(normalized), normalized);
   }
   return [...deduped.values()];
+}
+
+export async function discoverSkillRoots(
+  options: LocalSkillsServiceOptions,
+  discoveredSkillRoots: readonly string[] = [],
+): Promise<readonly SkillRoot[]> {
+  return discoverSkillRootsWithWarnings(options, discoveredSkillRoots, []);
 }
 
 export async function discoverSkillWatchRoots(
@@ -431,8 +492,14 @@ export async function discoverSkillWatchRoots(
     options.pluginStorageRoot,
   );
   const workspaceRoot = normalizeExistingCandidate(options.workspaceRoot);
+  const localRoots = await localSkillRootCandidates(options);
+  const safeLocalRoots = await Promise.all(localRoots.map(async (root) =>
+    root.scope !== "project" || await projectSkillRootIsSafe(root.path)
+      ? root.path
+      : null
+  ));
   const roots = [
-    ...localSkillRootCandidates(options).map((root) => root.path),
+    ...safeLocalRoots.filter((path): path is string => path !== null),
     ...(await discoverPluginSkillRootsWithProvenance({
       pluginStorageRoot,
       workspaceRoot,
@@ -1168,7 +1235,8 @@ export async function loadLocalSkillsSnapshot(
   activePaths: readonly string[] = [],
   discoveredSkillRoots: readonly string[] = [],
 ): Promise<LocalSkillsSnapshot> {
-  const roots = await discoverSkillRoots(options, discoveredSkillRoots);
+  const warnings: SkillLoadWarning[] = [];
+  const roots = await discoverSkillRootsWithWarnings(options, discoveredSkillRoots, warnings);
   const loadedNested = await Promise.all(roots.map(loadSkillsFromRoot));
   const deduped = dedupeSkillsByRealPath(
     loadedNested.flatMap((loaded) => loaded.skills),
@@ -1182,7 +1250,7 @@ export async function loadLocalSkillsSnapshot(
       }]
       : [],
   );
-  const warnings = loadedNested.flatMap((loaded) => loaded.warnings);
+  warnings.push(...loadedNested.flatMap((loaded) => loaded.warnings));
 
   const allFileSkills = deduped.map((entry) => entry.skill);
   const unconditional: LocalSkillMetadata[] = [];
@@ -2233,7 +2301,9 @@ export async function discoverDynamicSkillDirsForPaths(
         const skillDir = join(current, rootName, "skills");
         if (seen.has(skillDir)) continue;
         seen.add(skillDir);
-        if (await pathIsDirectory(skillDir)) dirs.push(skillDir);
+        if (await pathIsDirectory(skillDir) && await projectSkillRootIsSafe(skillDir)) {
+          dirs.push(skillDir);
+        }
       }
       const parent = dirname(current);
       if (parent === current) break;
