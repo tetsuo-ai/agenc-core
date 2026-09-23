@@ -10,7 +10,8 @@ import {
   omitAlteredBinaryCarriers,
   validatedBinaryCarrierBody,
 } from "../llm/content-conversion.js";
-import type { ResponseItem } from "./rollout-item.js";
+import { serializeRolloutItem, type ResponseItem } from "./rollout-item.js";
+import { HARD_MAX_RECOVERY_LINE_BYTES } from "../state/recovery-contract.js";
 import {
   deterministicToolResultId,
   verifyToolResultIntegrity,
@@ -26,29 +27,65 @@ type RolloutContentPart = Extract<
   ReadonlyArray<unknown>
 >[number];
 
-const MAX_DURABLE_TOOL_IMAGE_URL_BYTES = 5 * 1024 * 1024;
 const DURABLE_TOOL_IMAGE_OMITTED =
   "[Image omitted from durable history: image byte limit reached]";
+const DURABLE_TOOL_TEXT_TRUNCATED =
+  "[Tool result text truncated for durable history]";
 
-function boundDurableToolImages(item: ResponseItem): ResponseItem {
-  if (item.role !== "tool" || !Array.isArray(item.content)) return item;
-  let imageBytes = 0;
-  let changed = false;
-  const content = item.content.map((part) => {
-    const image = part.type === "image_url" &&
-      typeof part.image_url === "object" && part.image_url !== null
-      ? part.image_url as { url?: unknown }
-      : undefined;
-    if (typeof image?.url !== "string") return part;
-    const bytes = Buffer.byteLength(image.url, "utf8");
-    if (imageBytes + bytes <= MAX_DURABLE_TOOL_IMAGE_URL_BYTES) {
-      imageBytes += bytes;
-      return part;
+function boundDurableToolRecord(
+  item: ResponseItem,
+  seal: (body: ResponseItem) => ResponseItem,
+): ResponseItem {
+  let durable = seal(item);
+  if (item.role !== "tool") return durable;
+  const lineBytes = () => Buffer.byteLength(
+    serializeRolloutItem({ type: "response_item", payload: durable }),
+    "utf8",
+  ) - 1;
+  let bytes = lineBytes();
+  if (bytes <= HARD_MAX_RECOVERY_LINE_BYTES) return durable;
+
+  if (Array.isArray(item.content)) {
+    const content = [...item.content];
+    for (let index = 0; index < content.length; index += 1) {
+      const part = content[index]!;
+      const image = part.type === "image_url" &&
+        typeof part.image_url === "object" && part.image_url !== null
+        ? part.image_url as { url?: unknown }
+        : undefined;
+      if (typeof image?.url !== "string") continue;
+      content[index] = { type: "text", text: DURABLE_TOOL_IMAGE_OMITTED };
+      durable = seal({ ...item, content });
+      bytes = lineBytes();
+      if (bytes <= HARD_MAX_RECOVERY_LINE_BYTES) return durable;
     }
-    changed = true;
-    return { type: "text", text: DURABLE_TOOL_IMAGE_OMITTED };
-  });
-  return changed ? { ...item, content } : item;
+    for (let index = content.length - 1; index >= 0; index -= 1) {
+      const part = content[index]!;
+      if (
+        part.type !== "text" || typeof part.text !== "string" ||
+        part.text === DURABLE_TOOL_IMAGE_OMITTED
+      ) continue;
+      const excess = bytes - HARD_MAX_RECOVERY_LINE_BYTES;
+      const keep = Math.max(0, part.text.length - excess - DURABLE_TOOL_TEXT_TRUNCATED.length - 256);
+      content[index] = {
+        ...part,
+        text: `${part.text.slice(0, keep)}${DURABLE_TOOL_TEXT_TRUNCATED}`,
+      };
+      durable = seal({ ...item, content });
+      bytes = lineBytes();
+      if (bytes <= HARD_MAX_RECOVERY_LINE_BYTES) return durable;
+    }
+  } else {
+    const excess = bytes - HARD_MAX_RECOVERY_LINE_BYTES;
+    const keep = Math.max(0, item.content.length - excess - DURABLE_TOOL_TEXT_TRUNCATED.length - 256);
+    durable = seal({
+      ...item,
+      content: `${item.content.slice(0, keep)}${DURABLE_TOOL_TEXT_TRUNCATED}`,
+    });
+    bytes = lineBytes();
+    if (bytes <= HARD_MAX_RECOVERY_LINE_BYTES) return durable;
+  }
+  throw new Error("durable tool result exceeds the recovery line byte limit");
 }
 
 export function llmMessageToResponseItem(message: LLMMessage): ResponseItem {
@@ -382,42 +419,43 @@ function redactResponseItemForPersistence(
     redacted = withoutReplay as ResponseItem;
   }
   redacted = withoutAlteredBinaryCarriers(item, redacted);
-  redacted = boundDurableToolImages(redacted);
   assertResponseAgentInvocationItem(redacted);
-  if (integrity === undefined) return redacted;
-  if (redacted.role !== "tool" || redacted.toolCallId === undefined) {
-    throw new Error("redaction removed a durable tool-result identity");
-  }
+  return boundDurableToolRecord(redacted, (body) => {
+    if (integrity === undefined) return body;
+    if (body.role !== "tool" || body.toolCallId === undefined) {
+      throw new Error("redaction removed a durable tool-result identity");
+    }
 
-  let durableIntegrity = rebindRedactedIdentity(integrity, redacted.toolCallId);
-  if (bodyMode === "authenticate") {
-    const redactedBody = verifyToolResultIntegrity({
-      integrity: durableIntegrity,
-      toolCallId: redacted.toolCallId,
-      content: redacted.content,
-    });
-    if (redactedBody.status !== "valid") {
-      if (
-        redactedBody.status !== "invalid" ||
-        (redactedBody.failure.code !== "persisted_body_digest_mismatch" &&
-          redactedBody.failure.code !== "persisted_body_length_mismatch")
-      ) {
-        throw new Error(
-          `cannot persist redacted tool result: ${redactedBody.failure.reason}`,
+    let durableIntegrity = rebindRedactedIdentity(integrity, body.toolCallId);
+    if (bodyMode === "authenticate") {
+      const redactedBody = verifyToolResultIntegrity({
+        integrity: durableIntegrity,
+        toolCallId: body.toolCallId,
+        content: body.content,
+      });
+      if (redactedBody.status !== "valid") {
+        if (
+          redactedBody.status !== "invalid" ||
+          (redactedBody.failure.code !== "persisted_body_digest_mismatch" &&
+            redactedBody.failure.code !== "persisted_body_length_mismatch")
+        ) {
+          throw new Error(
+            `cannot persist redacted tool result: ${redactedBody.failure.reason}`,
+          );
+        }
+        const representation =
+          durableIntegrity.persisted.representation === "original"
+            ? "redacted"
+            : durableIntegrity.persisted.representation;
+        durableIntegrity = withPersistedToolResultRepresentation(
+          durableIntegrity,
+          representation,
+          body.content,
         );
       }
-      const representation =
-        durableIntegrity.persisted.representation === "original"
-          ? "redacted"
-          : durableIntegrity.persisted.representation;
-      durableIntegrity = withPersistedToolResultRepresentation(
-        durableIntegrity,
-        representation,
-        redacted.content,
-      );
     }
-  }
-  return { ...redacted, toolResultIntegrity: durableIntegrity };
+    return { ...body, toolResultIntegrity: durableIntegrity };
+  });
 }
 
 /**
