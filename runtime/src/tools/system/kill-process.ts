@@ -36,6 +36,16 @@ export interface KillProcessToolConfig {
 const REMAINING_OWNED_WORK_NOTE =
   "these are the sessions this conversation started that are still running; stop them by session_id or with all=true. Do not search the process table for task filenames or command text: that also matches AgenC's own CLI and process brokers.";
 
+/**
+ * A signal returns before the process exits, so a session killed a moment
+ * ago is still live in the result. Naming it as stopping keeps the report
+ * honest (its exit is not observed yet) without reading as a failed kill.
+ * The wording says a stop was requested: the manager records the request
+ * even when it refuses to signal an unsafe pid.
+ */
+const STOPPING_SESSIONS_NOTE =
+  "a stop was requested for these sessions and their exit is not confirmed yet. Do not signal them again; check list_processes shortly.";
+
 function asNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)
     ? value
@@ -106,6 +116,13 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
       ?.({ ...(ownerId !== undefined ? { ownerId } : {}) })
       .filter(isLiveOwnedProcess)
       .map((view) => view.sessionId);
+
+  /** Owned sessions signalled to stop whose exit is not observed yet. */
+  const ownedStoppingSessions = (ownerId: string | undefined): number[] =>
+    manager.listOwnedProcesses
+      ?.({ ...(ownerId !== undefined ? { ownerId } : {}) })
+      .filter((view) => view.status === "stopping")
+      .map((view) => view.sessionId) ?? [];
 
   return {
     name: "kill_process",
@@ -242,6 +259,7 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
           }
         }
         const remaining = ownedLiveSessions(ownerId);
+        const stopping = remaining === undefined ? [] : ownedStoppingSessions(ownerId);
         return {
           content: safeStringify({
             ...body,
@@ -250,6 +268,9 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
                   owned_live_sessions: remaining,
                   ...(remaining.length > 0
                     ? { owned_live_sessions_note: REMAINING_OWNED_WORK_NOTE }
+                    : {}),
+                  ...(stopping.length > 0
+                    ? { stopping_sessions: stopping, stopping_sessions_note: STOPPING_SESSIONS_NOTE }
                     : {}),
                 }
               : {}),
