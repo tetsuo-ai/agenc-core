@@ -468,21 +468,32 @@ interface ScannedSkillFile {
   readonly identity: string;
 }
 
+/** A top-level directory of a root with no SKILL.md anywhere below it. */
+interface EmptySkillDirectory {
+  readonly path: string;
+  /** A markdown file it does hold, when the file was probably misnamed. */
+  readonly markdownFile?: string;
+}
+
 interface SkillFileScan {
   readonly files: readonly ScannedSkillFile[];
   readonly droppedCount: number;
   readonly rootRealPath: string;
+  readonly emptyDirectories: readonly EmptySkillDirectory[];
 }
 
 interface ScanFrame {
   readonly path: string;
   readonly realPath: string;
   readonly depth: number;
+  /** The root's direct child this frame sits under; null for the root. */
+  readonly top: string | null;
 }
 
 interface PendingLink {
   readonly path: string;
   readonly depth: number;
+  readonly top: string | null;
 }
 
 /** Directory reads in flight per root; the threadpool does the rest. */
@@ -532,6 +543,9 @@ async function findSkillFiles(root: string): Promise<SkillFileScan> {
   const loaded: ScannedSkillFile[] = [];
   let droppedCount = 0;
   const pendingLinks: PendingLink[] = [];
+  const topLevel: string[] = [];
+  const topsWithSkills = new Set<string>();
+  const topMarkdown = new Map<string, string>();
 
   const walk = async (start: readonly ScanFrame[]): Promise<void> => {
     let level = start;
@@ -544,24 +558,34 @@ async function findSkillFiles(root: string): Promise<SkillFileScan> {
       const found: ScannedSkillFile[] = [];
       const next: ScanFrame[] = [];
       level.forEach((frame, index) => {
+        if (frame.depth === 1) topLevel.push(frame.path);
         for (const entry of listings[index]!) {
           const path = join(frame.path, entry.name);
           if (entry.isFile()) {
             // Files directly in the root are never skills (leaf roots are
             // handled by the caller).
-            if (frame.depth > 0 && isSkillFile(entry.name)) {
+            if (frame.top === null) continue;
+            if (isSkillFile(entry.name)) {
               found.push({ path, identity: join(frame.realPath, entry.name) });
+              topsWithSkills.add(frame.top);
+            } else if (
+              frame.depth === 1 &&
+              !topMarkdown.has(frame.top) &&
+              entry.name.toLowerCase().endsWith(".md")
+            ) {
+              topMarkdown.set(frame.top, entry.name);
             }
             continue;
           }
           if (frame.depth >= MAX_SCAN_DEPTH || SKIP_DIRS.has(entry.name)) continue;
+          const top = frame.top ?? path;
           if (entry.isDirectory()) {
             const realPath = join(frame.realPath, entry.name);
             if (visited.has(realPath)) continue;
             visited.add(realPath);
-            next.push({ path, realPath, depth: frame.depth + 1 });
+            next.push({ path, realPath, depth: frame.depth + 1, top });
           } else if (entry.isSymbolicLink()) {
-            pendingLinks.push({ path, depth: frame.depth + 1 });
+            pendingLinks.push({ path, depth: frame.depth + 1, top });
           }
         }
       });
@@ -575,7 +599,7 @@ async function findSkillFiles(root: string): Promise<SkillFileScan> {
     }
   };
 
-  await walk([{ path: root, realPath: rootRealPath, depth: 0 }]);
+  await walk([{ path: root, realPath: rootRealPath, depth: 0, top: null }]);
   while (pendingLinks.length > 0) {
     const links = pendingLinks
       .splice(0)
@@ -586,7 +610,7 @@ async function findSkillFiles(root: string): Promise<SkillFileScan> {
       async (link): Promise<ScanFrame | null> => {
         const realPath = await getFileIdentity(link.path);
         if (realPath === null || !(await pathIsDirectory(realPath))) return null;
-        return { path: link.path, realPath, depth: link.depth };
+        return { path: link.path, realPath, depth: link.depth, top: link.top };
       },
     );
     const frames: ScanFrame[] = [];
@@ -601,6 +625,14 @@ async function findSkillFiles(root: string): Promise<SkillFileScan> {
     files: loaded.toSorted(byPath),
     droppedCount,
     rootRealPath,
+    // Hidden directories (.system, .cache) hold support files by convention.
+    emptyDirectories: topLevel
+      .filter((dir) => !topsWithSkills.has(dir) && !basename(dir).startsWith("."))
+      .sort((a, b) => a.localeCompare(b))
+      .map((dir) => {
+        const markdownFile = topMarkdown.get(dir);
+        return markdownFile === undefined ? { path: dir } : { path: dir, markdownFile };
+      }),
   };
 }
 
@@ -756,6 +788,15 @@ async function loadSkillFile(
     skillName,
     "Skill",
   );
+  // The description is what the model matches a request against; a heading
+  // borrowed from the body ("Tech Debt Analysis") rarely says when to use
+  // the skill. A frontmatter warning already explains a missing one.
+  if (!canonicalFields.hasUserSpecifiedDescription && warning === undefined) {
+    warnings.push({
+      path: filePath,
+      reason: `no description in frontmatter, so the listing shows its first line instead: ${JSON.stringify(canonicalFields.description)}`,
+    });
+  }
   const {
     argumentNames,
     executionContext,
@@ -823,25 +864,44 @@ async function loadSkillsFromRoot(root: SkillRoot): Promise<LoadedSkillRoot> {
   // A root can BE one skill: plugin manifests may declare each skill
   // dir individually (skills: ["./skills/flash-board"]), so the root
   // itself carries the SKILL.md instead of holding child skill dirs.
+  let leafRoot = false;
   if (files.length === 0) {
     const leaf = join(root.path, SKILL_FILE_NAME);
     try {
       const stats = await stat(leaf);
       if (stats.isFile()) {
         files.push({ path: leaf, identity: await getFileIdentity(leaf) });
+        leafRoot = true;
       }
     } catch {
       // Genuinely empty root.
     }
   }
   const warnings: SkillLoadWarning[] = [];
+  // A directory in a user, project or managed root with no SKILL.md is a
+  // skill that failed to install (the audited catalog had one holding only
+  // CLAUDE.md). Plugin layouts are the plugin author's to choose, and a
+  // leaf root's subdirectories are that skill's own files.
+  if (root.scope !== "plugin" && !leafRoot) {
+    for (const dir of scan.emptyDirectories) {
+      warnings.push({
+        path: dir.path,
+        reason:
+          "no SKILL.md in this directory or below it, so nothing here was loaded as a skill" +
+          (dir.markdownFile !== undefined
+            ? ` (it holds ${dir.markdownFile}; a skill is read from a file named SKILL.md)`
+            : ""),
+      });
+    }
+  }
   const loaded = await Promise.all(
     files.map((file) => loadSkillFile(file, root, warnings)),
   );
   return {
     skills: loaded.filter((entry): entry is SkillWithContent => entry !== null),
     droppedCount: scan.droppedCount,
-    warnings,
+    // Files finish loading in any order; report them in path order.
+    warnings: warnings.sort((a, b) => a.path.localeCompare(b.path)),
   };
 }
 
