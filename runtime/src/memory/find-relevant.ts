@@ -473,7 +473,9 @@ function snapshotMemoryTree(root: string): MemoryTreeSnapshot | null {
         }
       }
     }
-    entries.sort();
+    // A deterministic code-point order, not a locale-aware one: the sorted
+    // array only ever feeds a canonical signature, never a display list.
+    entries.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     return { signature: JSON.stringify(entries), hasIndexableMemory };
   } catch {
     return null;
