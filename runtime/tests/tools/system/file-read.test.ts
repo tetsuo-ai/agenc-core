@@ -802,6 +802,31 @@ describe("FileRead tool", () => {
     expect(snap?.rawContent).toBeUndefined();
   });
 
+  test("a PDF window that covers every line stays a partial view", async () => {
+    // A PDF snapshot's raw content is extracted text, not the file's bytes;
+    // an explicit window must not promote it to a full raw read.
+    const file = join(root, "doc-covering.pdf");
+    await writeFile(file, "%PDF-1.4\n", "utf8");
+    await installFakePoppler(1, "one\ntwo");
+    const tool = createFileReadTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      file_path: file,
+      offset: 1,
+      limit: 100,
+      __agencSessionId: sessionId,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("1→one");
+    expect(result.content).toContain("2→two");
+    const snap = getSessionReadSnapshot(sessionId, file);
+    expect(snap?.viewKind).toBe("partial");
+    expect(snap?.readOffset).toBe(1);
+    expect(snap?.readLimit).toBe(100);
+    expect(snap?.rawContent).toBeUndefined();
+  });
+
   test("PDF page ranges reject malformed page specs", async () => {
     const file = join(root, "malformed-pages.pdf");
     await writeFile(file, "%PDF-1.4\n", "utf8");
