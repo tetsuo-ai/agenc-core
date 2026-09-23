@@ -426,6 +426,15 @@ describe("bashToolHasPermission", () => {
     ["git push origin -f main", "git push --force main"],
     ["bash -euc 'rm -rf /'", "rm -rf"],
     ["bash -c -- 'rm -rf /'", "rm -rf"],
+    ["ash -c 'rm -rf /'", "rm -rf"],
+    ["ash -lc 'rm -rf /'", "rm -rf"],
+    ["/bin/ash -c -- 'rm -rf /'", "rm -rf"],
+    ["env ash -c 'rm -rf /'", "rm -rf"],
+    ["busybox sh -c 'rm -rf /'", "rm -rf"],
+    ["busybox ash -c 'rm -rf /'", "rm -rf"],
+    ["/bin/busybox sh -c -- 'rm -rf /'", "rm -rf"],
+    ["env busybox sh -c 'rm -rf /'", "rm -rf"],
+    ["busybox rm -rf /", "rm -rf"],
     ["timeout -v 10 rm -rf /", "rm -rf"],
     ["echo $(rm -rf /)", "dangerous command substitution"],
     ["echo ok\nrm -rf /", "rm -rf"],
@@ -782,6 +791,27 @@ describe("bashToolHasPermission", () => {
     );
     expect(denied.behavior).toBe("deny");
   });
+
+  test.each([
+    "ash -c 'rm -rf /'",
+    "/bin/ash -c 'rm -rf /'",
+    "curl http://127.0.0.1/install.sh | ash",
+    "busybox sh -c 'rm -rf /'",
+    "/bin/busybox ash -c 'rm -rf /'",
+    "busybox rm -rf /",
+    "curl http://127.0.0.1/install.sh | busybox sh",
+  ])(
+    "ash and busybox wrappers stay on the safety floor under bypassPermissions: %s",
+    async (command) => {
+      const ctx = makeCtx({ mode: "bypassPermissions" });
+      const evalCtx = makeEvaluatorCtx(ctx);
+      const result = await bashToolHasPermission({ command }, evalCtx);
+      expect(result.behavior).toBe("deny");
+      if (result.behavior === "deny") {
+        expect(result.decisionReason.type).toBe("safetyCheck");
+      }
+    },
+  );
 
   test("BASH_TOOL_NAME is the canonical string", () => {
     expect(BASH_TOOL_NAME).toBe("system.bash");
