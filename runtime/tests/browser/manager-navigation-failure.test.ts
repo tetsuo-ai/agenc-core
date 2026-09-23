@@ -6,7 +6,25 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 
-const { launchBrowserMock } = vi.hoisted(() => ({ launchBrowserMock: vi.fn() }));
+const { launchBrowserMock, markerReadSeam } = vi.hoisted(() => ({
+  launchBrowserMock: vi.fn(),
+  markerReadSeam: { path: "", replace: undefined as undefined | (() => void) },
+}));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    readFileSync: ((path: Parameters<typeof actual.readFileSync>[0], ...args: unknown[]) => {
+      const result = (actual.readFileSync as (...args: unknown[]) => unknown)(path, ...args);
+      if (String(path) === markerReadSeam.path && markerReadSeam.replace !== undefined) {
+        const replace = markerReadSeam.replace;
+        markerReadSeam.replace = undefined;
+        replace();
+      }
+      return result;
+    }) as typeof actual.readFileSync,
+  };
+});
 vi.mock("../../src/browser/cdp.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../src/browser/cdp.js")>(),
   launchBrowser: launchBrowserMock,
@@ -52,6 +70,9 @@ afterEach(async () => {
   for (const manager of managers.splice(0)) await manager.closeAll();
   await rm(profileRoot, { recursive: true, force: true });
   launchBrowserMock.mockReset();
+  markerReadSeam.path = "";
+  markerReadSeam.replace = undefined;
+  vi.restoreAllMocks();
 });
 
 function fakeManager(navigation: (options: CdpSendOptions) => Promise<Record<string, unknown>>, profileDir?: string) {
@@ -321,7 +342,7 @@ describe("one shared profile across sessions", () => {
     for (const name of [PROFILE_MARKER, PROFILE_RECOVERY_MARKER]) {
       const path = join(persistent, name);
       writeFileSync(path, JSON.stringify({
-        pid: exited.pid, startedAt: Date.now() - 10_000,
+        pid: exited.pid, startedAt: Date.now() - 10_000, id: `dead-${name}`,
       }));
       const old = new Date(Date.now() - 90_000);
       utimesSync(path, old, old);
@@ -330,6 +351,57 @@ describe("one shared profile across sessions", () => {
     await manager.newTab();
     expect(launchedProfiles()[0]).toBe(persistent);
     expect(existsSync(join(persistent, PROFILE_RECOVERY_MARKER))).toBe(false);
+  });
+
+  it("keeps a replacement recovery marker when the dead owner check races a new claim", async () => {
+    const persistent = join(profileRoot, "browser", "profile");
+    mkdirSync(persistent, { recursive: true, mode: 0o700 });
+    const recoveryPath = join(persistent, PROFILE_RECOVERY_MARKER);
+    const deadPid = 999_999_991;
+    writeFileSync(recoveryPath, JSON.stringify({
+      pid: deadPid, startedAt: Date.now() - 10_000, id: "old-recovery",
+    }));
+    const replacement = JSON.stringify({
+      pid: process.pid, startedAt: Date.now(), id: "new-recovery",
+    });
+    const realKill = process.kill.bind(process);
+    const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (pid === deadPid && signal === 0) {
+        writeFileSync(recoveryPath, replacement);
+        throw Object.assign(new Error("no such process"), { code: "ESRCH" });
+      }
+      return realKill(pid, signal);
+    });
+    const { manager } = fakeManager(async () => ({ frameId: "frame-1" }));
+    await manager.newTab();
+    expect(launchedProfiles()[0]).not.toBe(persistent);
+    expect(readFileSync(recoveryPath, "utf8")).toBe(replacement);
+    kill.mockRestore();
+  });
+
+  it("refuses to overwrite a claim replaced after reading its identity", async () => {
+    const persistent = join(profileRoot, "browser", "profile");
+    const path = join(persistent, PROFILE_MARKER);
+    const { manager, connection } = fakeManager(async () => ({ frameId: "frame-1" }));
+    const child = new EventEmitter() as ChildProcess;
+    Object.defineProperty(child, "pid", { value: process.pid });
+    let replacement = "";
+    markerReadSeam.path = path;
+    markerReadSeam.replace = () => {
+      const claimed = JSON.parse(readFileSync(path, "utf8")) as {
+        pid: number; startedAt: number; id: string;
+      };
+      replacement = JSON.stringify({ ...claimed, id: "other-claim" });
+      writeFileSync(path, replacement);
+    };
+    launchBrowserMock.mockImplementationOnce(async (options: {
+      onSpawn?: (child: ChildProcess) => void;
+    }) => {
+      options.onSpawn?.(child);
+      return { child, connection };
+    });
+    await expect(manager.newTab()).rejects.toThrow("browser profile claim changed");
+    expect(readFileSync(path, "utf8")).toBe(replacement);
   });
 
   it("reclaims an old empty claim left by a crash before the marker write", async () => {

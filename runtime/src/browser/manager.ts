@@ -20,7 +20,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import {
   BrowserLaunchCleanupError,
@@ -74,7 +74,7 @@ interface ProfileOwnerMarker {
   readonly gated?: boolean;
 }
 
-function writeMarkerAtomically(path: string, marker: string, replace = false): boolean {
+function writeMarkerAtomically(path: string, marker: string, expected?: ProfileOwnerMarker): boolean {
   const temporary = `${path}.${randomUUID()}.tmp`;
   const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
   let written = false;
@@ -86,8 +86,10 @@ function writeMarkerAtomically(path: string, marker: string, replace = false): b
     if (!written) unlinkSync(temporary);
   }
   try {
-    if (replace) renameSync(temporary, path);
-    else linkSync(temporary, path);
+    if (expected !== undefined) {
+      if (!markerIdentityMatches(path, expected)) return false;
+      renameSync(temporary, path);
+    } else linkSync(temporary, path);
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
@@ -110,7 +112,10 @@ function claimProfileMarker(dir: string, name = PROFILE_MARKER): string | undefi
 function claimSharedProfileMarker(dir: string): string | undefined {
   const recoveryPath = join(dir, PROFILE_RECOVERY_MARKER);
   if (existsSync(recoveryPath)) {
-    if (!markerOwnerProvablyDead(dir, PROFILE_RECOVERY_MARKER, true)) return undefined;
+    const staleRecovery = readProfileMarker(dir, PROFILE_RECOVERY_MARKER);
+    if (staleRecovery === undefined ||
+        !markerOwnerProvablyDead(dir, PROFILE_RECOVERY_MARKER, true, staleRecovery) ||
+        !markerIdentityMatches(recoveryPath, staleRecovery?.owner)) return undefined;
     unlinkSync(recoveryPath);
   }
   const marker = claimProfileMarker(dir);
@@ -164,8 +169,17 @@ function readProfileMarker(dir: string, name: string): { owner?: ProfileOwnerMar
   }
 }
 
-function markerOwnerProvablyDead(dir: string, name = PROFILE_MARKER, oldIncomplete = false): boolean {
-  const marker = readProfileMarker(dir, name);
+function markerIdentityMatches(path: string, expected: ProfileOwnerMarker | undefined): boolean {
+  if (expected === undefined || typeof expected.id !== "string" || expected.id.length === 0) return false;
+  const current = readProfileMarker(dirname(path), basename(path))?.owner;
+  return current !== undefined && current.id === expected.id &&
+    current.pid === expected.pid && current.startedAt === expected.startedAt;
+}
+
+function markerOwnerProvablyDead(
+  dir: string, name = PROFILE_MARKER, oldIncomplete = false,
+  marker = readProfileMarker(dir, name),
+): boolean {
   if (marker === undefined) return false;
   if (marker.owner === undefined) {
     return oldIncomplete && Date.now() - marker.modifiedAt >= UNRECORDED_BROWSER_START_MS;
@@ -445,7 +459,9 @@ export class BrowserManager {
       throw new Error("browser profile owner changed before child identity was recorded");
     }
     const updated = JSON.stringify({ ...owner, browserPid: child.pid });
-    writeMarkerAtomically(path, updated, true);
+    if (!writeMarkerAtomically(path, updated, owner)) {
+      throw new Error("browser profile claim changed before child identity was recorded");
+    }
     if (dir === this.#sharedProfileDir) this.#sharedProfileMarker = updated;
   }
 
