@@ -2,6 +2,7 @@ import { existsSync, lstatSync } from "node:fs";
 import { mkdir, mkdtemp, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const frozenMemoryStat = vi.hoisted(() => ({
@@ -374,7 +375,7 @@ describe("C3a relevant memory selection", () => {
       signal: new AbortController().signal,
       memoryIndexDatabasePath: roots.databasePath,
     });
-    expect(refresh).toHaveBeenCalledTimes(refreshes + 1);
+    expect(refresh).toHaveBeenCalledTimes(refreshes);
 
     expect(await findRelevantMemories({
       query: "browser",
@@ -386,6 +387,74 @@ describe("C3a relevant memory selection", () => {
 
     closeFullCorpusMemoryIndexes();
     expect(bytes(await roots.recall())).toBe(bytes(first));
+  });
+
+  it("does not explicitly rebuild for a new query against a known unchanged tree", async () => {
+    const roots = await emptyMemoryRoots(["global"]);
+    await memory(roots.memoryDirs[0]!, "browser.md", "Browser", "Browser notes");
+    const refresh = vi.spyOn(PersistentMemoryIndex.prototype, "refresh");
+    await roots.recall();
+    const before = refresh.mock.calls.length;
+
+    const result = await findRelevantMemories({
+      query: "notes",
+      memoryDirs: roots.memoryDirs,
+      signal: new AbortController().signal,
+      memoryIndexDatabasePath: roots.databasePath,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(refresh).toHaveBeenCalledTimes(before);
+  });
+
+  it("does not trust a resumed staging generation that missed a new file", async () => {
+    const roots = await emptyMemoryRoots(["global"]);
+    const root = roots.memoryDirs[0]!;
+    await memory(root, "cooking.md", "Cooking", "Cooking notes");
+    const seeded = new PersistentMemoryIndex({
+      databasePath: roots.databasePath,
+      backgroundRefresh: false,
+      buildPolicyForTesting: { maxEntriesPerSlice: 1 },
+    });
+    const specs = [{ path: root, role: "global" as const }];
+    let enumerated = false;
+    let staging = false;
+    for (let attempt = 0; attempt < 10 && !enumerated; attempt += 1) {
+      await seeded.refresh(specs, new AbortController().signal);
+      const db = new Database(roots.databasePath, { readonly: true });
+      try {
+        enumerated = (db.prepare(
+          "SELECT COUNT(*) AS count FROM memory_index_directory_work WHERE relative_path = '' AND state = 'complete'",
+        ).get() as { count: number }).count > 0;
+        staging = (db.prepare(
+          "SELECT COUNT(*) AS count FROM memory_index_generations WHERE state = 'staging'",
+        ).get() as { count: number }).count > 0;
+      } finally {
+        db.close();
+      }
+    }
+    expect(enumerated).toBe(true);
+    expect(staging).toBe(true);
+    seeded.close();
+
+    const matching = await memory(root, "browser.md", "Browser", "Browser notes");
+    const actualRefresh = PersistentMemoryIndex.prototype.refresh;
+    const refresh = vi.spyOn(PersistentMemoryIndex.prototype, "refresh")
+      .mockImplementationOnce(async function (...args) {
+        const result = await actualRefresh.apply(this, args);
+        // Replay the delayed watcher event after this root was processed.
+        this.recordChange({
+          rootPath: root,
+          relativePath: "browser.md",
+          kind: "create",
+        });
+        return result;
+      });
+    // The file is present for both recall snapshots, while the persisted
+    // staging generation already enumerated this directory without it.
+    expect(await roots.recall()).toEqual([]);
+    expect(refresh.mock.calls[0]?.[2]?.explicit).toBe(true);
+    expect((await roots.recall()).map((entry) => entry.path)).toEqual([matching]);
   });
 
   it("refreshes a first query before caching when a watcher has not delivered an addition", async () => {

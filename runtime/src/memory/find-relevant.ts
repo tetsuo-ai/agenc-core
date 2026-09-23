@@ -67,13 +67,20 @@ interface CachedRecall {
   readonly ranked: readonly RankedMemoryHeader[];
 }
 
+interface KnownFreshTree {
+  readonly snapshot: string;
+  readonly generations: readonly string[];
+}
+
 const cachedRecalls = new Map<string, CachedRecall>();
+const knownFreshTrees = new Map<string, KnownFreshTree>();
 const pendingIndexRecalls = new Map<string, Promise<void>>();
 
 export function closeFullCorpusMemoryIndexes(): void {
   for (const index of fullCorpusIndexes.values()) index.close();
   fullCorpusIndexes.clear();
   cachedRecalls.clear();
+  knownFreshTrees.clear();
 }
 
 export function findRelevantMemories(
@@ -266,6 +273,8 @@ async function tryFullCorpusRanking(
       (entry) => !options.alreadySurfaced.has(entry.header.filePath),
     );
   }
+  const knownFresh = snapshot === null ? undefined : knownFreshTrees.get(indexKey);
+  let needsExplicitRefresh = snapshot !== null && knownFresh?.snapshot !== snapshot;
   const index = getFullCorpusIndex(options.memoryIndexDatabasePath);
   const roots: MemoryIndexRootSpec[] = options.memoryDirs.map(
     (path, rootIndex) => ({
@@ -274,18 +283,35 @@ async function tryFullCorpusRanking(
     }),
   );
   try {
-    // A normal refresh may return a complete generation before its watcher
-    // reports a new file. Rebuild on a cache miss and cache only that generation.
-    const refreshed = await index.refresh(
-      roots,
-      options.signal,
-      snapshot === null ? {} : { explicit: true },
-    );
-    const result = await index.query(
+    // Query the proven generation directly when its content snapshot still
+    // matches. An unseen tree needs an explicit rebuild.
+    let refreshed = knownFresh?.snapshot === snapshot
+      ? undefined
+      : await index.refresh(
+          roots,
+          options.signal,
+          needsExplicitRefresh ? { explicit: true } : {},
+        );
+    let result = await index.query(
       roots,
       normalizedQuery.terms,
       options.signal,
     );
+    if (
+      refreshed === undefined &&
+      knownFresh !== undefined &&
+      (result.freshness.length !== knownFresh.generations.length ||
+        result.freshness.some(
+          (root, rootIndex) =>
+            generationKey(root) !== knownFresh.generations[rootIndex],
+        ))
+    ) {
+      // A different generation cannot inherit the snapshot's proof.
+      knownFreshTrees.delete(indexKey);
+      needsExplicitRefresh = true;
+      refreshed = await index.refresh(roots, options.signal, { explicit: true });
+      result = await index.query(roots, normalizedQuery.terms, options.signal);
+    }
     throwIfMemoryRecallAborted(options.signal);
     if (
       result.kind === "unavailable" ||
@@ -305,21 +331,41 @@ async function tryFullCorpusRanking(
         cappedTermOccurrences: 1,
       });
     }
-    if (
-      snapshot !== null &&
-      refreshed.roots.length === roots.length &&
+    const matchingGenerations =
       result.freshness.length === roots.length &&
-      refreshed.roots.every((root, index) =>
-        root.state === "complete" &&
-        root.generationId !== null &&
-        root.generationId === result.freshness[index]?.generationId &&
-        root.generationToken === result.freshness[index]?.generationToken,
-      ) &&
+      (refreshed === undefined
+        ? result.freshness.every((root, index) =>
+            root.state === "complete" &&
+            generationKey(root) === knownFresh?.generations[index],
+          )
+        : refreshed.roots.length === roots.length &&
+          refreshed.roots.every((root, index) =>
+            root.state === "complete" &&
+            root.generationId !== null &&
+            root.generationId === result.freshness[index]?.generationId &&
+            root.generationToken === result.freshness[index]?.generationToken,
+          ));
+    const unchangedSnapshot =
+      snapshot !== null &&
       JSON.stringify(
         options.memoryDirs.map((directory) => snapshotMemoryTree(directory)?.signature),
-      ) === snapshot &&
+      ) === snapshot;
+    const generations = result.freshness.map(generationKey);
+    const provenFresh = refreshed === undefined
+      ? knownFresh?.snapshot === snapshot
+      : needsExplicitRefresh && refreshed.freshGeneration?.every(Boolean) === true;
+    if (
+      snapshot !== null &&
+      matchingGenerations &&
+      unchangedSnapshot &&
+      provenFresh &&
       !options.signal.aborted
     ) {
+      knownFreshTrees.delete(indexKey);
+      knownFreshTrees.set(indexKey, { snapshot, generations });
+      if (knownFreshTrees.size > MAX_CACHED_RECALLS) {
+        knownFreshTrees.delete(knownFreshTrees.keys().next().value!);
+      }
       cachedRecalls.delete(recallKey);
       cachedRecalls.set(recallKey, { snapshot, ranked });
       if (cachedRecalls.size > MAX_CACHED_RECALLS) {
@@ -335,6 +381,10 @@ async function tryFullCorpusRanking(
     }
     return null;
   }
+}
+
+function generationKey(root: { generationId: number | null; generationToken: string | null }): string {
+  return JSON.stringify([root.generationId, root.generationToken]);
 }
 
 function snapshotMemoryTree(root: string): MemoryTreeSnapshot | null {
