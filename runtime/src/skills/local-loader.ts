@@ -542,7 +542,7 @@ async function findSkillFiles(root: string): Promise<SkillFileScan> {
   const topsWithSkills = new Set<string>();
   const topMarkdown = new Map<string, string>();
 
-  const walk = async (start: readonly ScanFrame[]): Promise<void> => {
+  const walk = async (start: readonly ScanFrame[], oneLevel = false): Promise<ScanFrame[]> => {
     let level = start;
     while (level.length > 0) {
       const listings = await mapWithConcurrency(
@@ -590,15 +590,27 @@ async function findSkillFiles(root: string): Promise<SkillFileScan> {
       loaded.sort((a, b) => a.depth - b.depth || byPath(a, b));
       droppedCount += Math.max(0, loaded.length - maxFiles);
       loaded.length = Math.min(loaded.length, maxFiles);
+      if (oneLevel) return next;
       level = next;
     }
+    return [];
   };
 
   await walk([{ path: root, realPath: rootRealPath, depth: 0, top: null }]);
-  while (pendingLinks.length > 0) {
-    const links = pendingLinks
-      .splice(0)
-      .sort((a, b) => a.depth - b.depth || byPath(a, b));
+  const pendingDirectories: ScanFrame[] = [];
+  while (pendingLinks.length > 0 || pendingDirectories.length > 0) {
+    pendingLinks.sort((a, b) => a.depth - b.depth || byPath(a, b));
+    pendingDirectories.sort((a, b) => a.depth - b.depth || byPath(a, b));
+    const depth = Math.min(
+      pendingLinks[0]?.depth ?? Infinity,
+      pendingDirectories[0]?.depth ?? Infinity,
+    );
+    let directoryCount = 0;
+    while (pendingDirectories[directoryCount]?.depth === depth) directoryCount++;
+    pendingDirectories.push(...await walk(pendingDirectories.splice(0, directoryCount), true));
+    let linkCount = 0;
+    while (pendingLinks[linkCount]?.depth === depth) linkCount++;
+    const links = pendingLinks.splice(0, linkCount);
     const targets = await mapWithConcurrency(
       links,
       SCAN_CONCURRENCY,
@@ -614,7 +626,7 @@ async function findSkillFiles(root: string): Promise<SkillFileScan> {
       visited.add(target.realPath);
       frames.push(target);
     }
-    await walk(frames);
+    pendingDirectories.push(...await walk(frames, true));
   }
   return {
     files: loaded.toSorted(byPath),
@@ -659,6 +671,28 @@ function implicitAliasesForSkillName(name: string): readonly string[] {
   return /^[A-Za-z][A-Za-z0-9_:-]*$/u.test(leaf) ? [leaf] : [];
 }
 
+function opensMultilineFlowCollection(value: string): boolean {
+  if (value[0] !== "{" && value[0] !== "[") return false;
+  let depth = 0;
+  let quote: "'" | '"' | null = null;
+  for (let index = 0; index < value.length; index++) {
+    const char = value[index];
+    if (quote !== null) {
+      if (quote === '"' && char === "\\") index++;
+      else if (char === quote) {
+        if (quote === "'" && value[index + 1] === "'") index++;
+        else quote = null;
+      }
+      continue;
+    }
+    if (char === "#" && (index === 0 || /[ \t]/u.test(value[index - 1]!))) break;
+    if (char === "'" || char === '"') quote = char;
+    else if (char === "{" || char === "[") depth++;
+    else if (char === "}" || char === "]") depth--;
+  }
+  return depth > 0;
+}
+
 /** A top-level true flag survives YAML recovery or invalid sibling fields. */
 function hasRawDisableModelInvocation(yamlText: string): boolean {
   const lines = yamlText.split(/\r?\n/u);
@@ -677,11 +711,15 @@ function hasRawDisableModelInvocation(yamlText: string): boolean {
     const match = /^[ \t]*([^#\s][^:]*?)[ \t]*:[ \t]*(.*)$/u.exec(line);
     if (match === null) continue;
     const rawValue = (match[2] ?? "").trim();
-    if (/^[|>](?:[+-][1-9]?|[1-9][+-]?)?(?:[ \t]+#.*)?$/u.test(rawValue)) {
+    const scopedValue = rawValue.replace(/^&[^\s,{}\[\]]+(?:[ \t]+|$)/u, "");
+    if (/^[|>](?:[+-][1-9]?|[1-9][+-]?)?(?:[ \t]+#.*)?$/u.test(scopedValue)) {
       blockScalarIndent = indent;
       continue;
     }
-    if (rawValue === "" || rawValue.startsWith("#")) {
+    if (
+      scopedValue === "" || scopedValue.startsWith("#") ||
+      opensMultilineFlowCollection(scopedValue)
+    ) {
       mappingParents.push(indent);
       continue;
     }

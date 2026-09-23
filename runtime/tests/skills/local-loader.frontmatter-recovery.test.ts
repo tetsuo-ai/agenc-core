@@ -194,4 +194,30 @@ describe("frontmatter the canonical parser accepts", () => {
     expect(snapshot.skills.find((entry) => entry.name === "example")?.disableModelInvocation).toBe(false);
     expect(buildSkillListingWithinBudget(snapshot.skills).listedNames).toContain("example");
   });
+
+  it.each([
+    { name: "flow mapping", value: "{", close: "}" },
+    { name: "flow mapping with an inline entry", value: "{ other: 1,", close: "}", inlineOther: true },
+    { name: "flow sequence", value: "[", close: "]" },
+    { name: "anchored mapping", value: "&example", close: "" },
+    { name: "anchored flow mapping", value: "&example {", close: "}" },
+  ])("does not treat a flag inside a $name as top-level", async ({ value, close, inlineOther }) => {
+    const { snapshot } = await snapshotOf({
+      example: [
+        "---",
+        "description: A visible skill",
+        `metadata: ${value}`,
+        inlineOther ? "" : `  other: 1${close ? "," : ""}`,
+        "  disable-model-invocation: true",
+        close,
+        "disable-model-invocation: false",
+        "---",
+        "# Example",
+        "",
+      ].filter(Boolean).join("\n"),
+    });
+    expect(snapshot.warnings).toEqual([]);
+    expect(snapshot.skills.find((skill) => skill.name === "example")?.disableModelInvocation).toBe(false);
+    expect(buildSkillListingWithinBudget(snapshot.skills).listedNames).toContain("example");
+  });
 });

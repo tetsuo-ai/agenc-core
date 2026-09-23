@@ -123,4 +123,28 @@ describe("skill root walk", () => {
 
     expect(localNames(await f.load())).toEqual(["alpha"]);
   });
+
+  it("reaches a skill through a shallower symlink discovered in a later pass", async () => {
+    const f = fixture();
+    const elsewhere = tmpRoot("scan-link-depth");
+    const deepEntry = join(elsewhere, "deep-entry");
+    const shallowEntry = join(elsewhere, "shallow-entry");
+    const intermediate = join(elsewhere, "intermediate");
+    const target = join(elsewhere, "target");
+    const tail = Array.from({ length: 8 }, (_, i) => `n${i + 1}`).join("/");
+    writeSkill(target, tail);
+    mkdirSync(join(deepEntry, "d1", "d2", "d3"), { recursive: true });
+    mkdirSync(shallowEntry, { recursive: true });
+    mkdirSync(intermediate, { recursive: true });
+    symlinkSync(target, join(deepEntry, "d1", "d2", "d3", "deep"));
+    symlinkSync(intermediate, join(shallowEntry, "via-c"));
+    symlinkSync(target, join(intermediate, "short"));
+    mkdirSync(f.root, { recursive: true });
+    symlinkSync(deepEntry, join(f.root, "a-deep"));
+    symlinkSync(shallowEntry, join(f.root, "b-shallow"));
+
+    expect(localNames(await f.load())).toContain(
+      `b-shallow:via-c:short:${tail.replaceAll("/", ":")}`,
+    );
+  });
 });
