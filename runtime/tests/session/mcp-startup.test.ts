@@ -2601,6 +2601,27 @@ describe("private Desktop session legacy migration", () => {
 });
 
 describe("session MCP mutation transactions", () => {
+  it("enables a stopped plugin and explicitly starts it on session reconnect", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const name = "plugin:sample:lazy";
+    mockLoadPluginMcpServerRegistrations.mockResolvedValue([{
+      name, pluginName: "sample", pluginSource: "sample@registry", serverName: "lazy",
+      digest: "a".repeat(64), eager: false, idleTimeoutMs: 10_000, maxProcesses: 8,
+      server: { transport: "stdio", command: "node", args: ["lazy.js"] },
+    } as never]);
+    const manager = createSessionMcpManager([]);
+    const service = createSessionMcpService(manager, { authority: fixture.store, environment: {} });
+    try {
+      await service.refreshFromAuthority?.();
+      expect(manager.getConnectionState(name)?.type).toBe("stopped");
+      await expect(service.disableServer?.(name)).resolves.toMatchObject({ success: true });
+      await expect(service.enableServer?.(name)).resolves.toMatchObject({ success: true });
+      expect(manager.getConnectionState(name)?.type).toBe("stopped");
+      await expect(service.reconnectServer?.(name)).resolves.toMatchObject({ success: true });
+      expect(manager.getConnectionState(name)?.type).toBe("connected");
+      expect(mockCreateMCPConnection).toHaveBeenCalledTimes(1);
+    } finally { await service.dispose?.(); fixture.cleanup(); }
+  });
   it("attaches, idempotently replaces and rotates authenticated local HTTP state without persisting credentials", async () => {
     const fixture = await createMcpAuthorityFixture();
     const before = readFileSync(fixture.userConfigPath, "utf8");

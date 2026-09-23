@@ -46,6 +46,14 @@ function stubSession(
 }
 
 describe("mcpCommand", () => {
+  it("renders an idle plugin as stopped on demand", async () => {
+    const snapshot = await collectMcpServerStatus(stubSession(
+      new Map([["plugin:sample:lazy", { enabled: true, required: false, command: "node" }]]),
+      { getConnectionState: () => ({ type: "stopped" }) },
+    ));
+    expect(snapshot[0]?.state).toBe("stopped");
+    expect(formatMcpServerStatus(snapshot)).toContain("plugin:sample:lazy: stopped (on demand)");
+  });
   it("collects sorted MCP server status from the session service", async () => {
     const snapshot = await collectMcpServerStatus(
       stubSession(

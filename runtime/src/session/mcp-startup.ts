@@ -1518,7 +1518,7 @@ export function createSessionMcpService(
     }
     const state = manager.getConnectionState(name);
     const ready = enabled
-      ? state?.type === "connected"
+      ? state?.type === "connected" || state?.type === "stopped"
       : state?.type === "disabled";
     if (!ready) {
       const error =
@@ -1683,6 +1683,10 @@ export function createSessionMcpService(
         name,
         new Error(`MCP server "${name}" is disabled in config.`),
       );
+    }
+    const reconnect = await manager.reconnectServer(name);
+    if (!reconnect.success) {
+      return mcpMutationFailure(name, new Error(reconnect.error ?? `MCP server "${name}" did not become ready.`));
     }
     const state = manager.getConnectionState(name);
     if (state?.type !== "connected") {

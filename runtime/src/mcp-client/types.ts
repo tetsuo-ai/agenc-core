@@ -44,6 +44,9 @@ export interface MCPServerOrigin {
     readonly serverName: string;
     readonly version?: string;
     readonly digest?: string;
+    readonly pluginRoot?: string;
+    readonly snapshotRoot?: string;
+    readonly userConfigDigest?: string;
     readonly eager?: boolean;
     readonly idleTimeoutMs?: number;
     readonly maxProcesses?: number;

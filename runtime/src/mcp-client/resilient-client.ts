@@ -144,6 +144,8 @@ export class MCPReconnectCleanupError extends AggregateError {
 }
 
 interface ResilientMCPBridgeOptions {
+  /** Revalidate manager generation and installation before an automatic spawn. */
+  readonly beforeReconnect?: () => void;
   readonly onCatalog?: (tools: readonly Record<string, unknown>[]) => void;
   readonly permissions?: MCPToolBridgePermissionOptions;
   /**
@@ -399,6 +401,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
 
       const { createMCPConnection } = await import("./connection.js");
       const { createToolBridge } = await import("./tools.js");
+      this.options.beforeReconnect?.();
 
       // gaphunt3 #14: re-supply the session's elicitation handlers so the
       // rebuilt client re-registers its ElicitRequest/ElicitationComplete

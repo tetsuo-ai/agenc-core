@@ -26,6 +26,36 @@ export function releasePluginProcess(owner: object): void {
   if (slots.delete(owner)) wake();
 }
 
+function awaitOrAbort<T>(task: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return task;
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => { signal.removeEventListener("abort", onAbort); reject(signal.reason ?? new Error("Plugin process budget wait cancelled")); };
+    signal.addEventListener("abort", onAbort, { once: true });
+    void task.then(
+      value => { signal.removeEventListener("abort", onAbort); resolve(value); },
+      error => { signal.removeEventListener("abort", onAbort); reject(error); },
+    );
+  });
+}
+
+function waitForWake(signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => {
+      waiters.delete(onWake);
+      signal?.removeEventListener("abort", onAbort);
+      reject(signal?.reason ?? new Error("Plugin process budget wait cancelled"));
+    };
+    const onWake = (): void => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    waiters.add(onWake);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export async function reservePluginProcess(
   owner: object,
   maxProcesses: number,
@@ -36,31 +66,26 @@ export async function reservePluginProcess(
   while (!slots.has(owner)) {
     signal?.throwIfAborted();
     const limit = Math.min(maxProcesses,
-      ...[...slots.values(), ...pendingEvictions].map(slot => slot.maxProcesses));
-    if (slots.size + pendingEvictions.size < limit) {
+      ...[...slots.values()].map(slot => slot.maxProcesses));
+    if (slots.size < limit) {
       slots.set(owner, { owner, busy, evict, lastUsed: ++tick, maxProcesses });
       return;
     }
-    const oldest = [...slots.values()].filter(slot => !slot.busy())
+    const oldest = [...slots.values()].filter(slot => !pendingEvictions.has(slot) && !slot.busy())
       .sort((a, b) => a.lastUsed - b.lastUsed)[0];
     if (oldest) {
-      // Remove the slot synchronously before awaiting process disposal. No
-      // new spawn occurs until that disposal proves complete.
-      slots.delete(oldest.owner);
       pendingEvictions.add(oldest);
-      try { await oldest.evict(); }
-      catch (error) {
-        slots.set(oldest.owner, oldest);
-        throw error;
-      } finally { pendingEvictions.delete(oldest); wake(); }
+      // The slot remains occupied while disposal is in progress. A timed-out
+      // requester leaves the eviction task owned by the budget until it settles.
+      const disposal = Promise.resolve().then(() => oldest.evict()).finally(() => {
+        pendingEvictions.delete(oldest);
+        wake();
+      });
+      await awaitOrAbort(disposal, signal);
+      if (slots.has(oldest.owner)) await waitForWake(signal);
       continue;
     }
-    await new Promise<void>((resolve, reject) => {
-      const onAbort = (): void => { waiters.delete(onWake); reject(signal?.reason ?? new Error("Plugin process budget wait cancelled")); };
-      const onWake = (): void => { signal?.removeEventListener("abort", onAbort); resolve(); };
-      waiters.add(onWake);
-      signal?.addEventListener("abort", onAbort, { once: true });
-    });
+    await waitForWake(signal);
   }
   touchPluginProcess(owner);
 }

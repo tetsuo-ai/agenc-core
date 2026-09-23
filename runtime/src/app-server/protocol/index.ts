@@ -1720,6 +1720,8 @@ export interface SessionCancelTurnParams extends JsonObject {
 
 export interface SessionMcpStatusParams extends JsonObject {
   readonly sessionId: string;
+  /** Opt in to the on-demand `stopped` state. Older clients receive `disconnected`. */
+  readonly includeStoppedState?: boolean;
 }
 
 export interface SessionMcpServerConfig extends JsonObject {

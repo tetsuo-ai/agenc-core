@@ -185,6 +185,9 @@ export type PluginMcpServerIdentity = {
   serverName: string
   version?: string
   digest?: string
+  pluginRoot?: string
+  snapshotRoot?: string
+  userConfigDigest?: string
   eager?: boolean
   idleTimeoutMs?: number
   maxProcesses?: number

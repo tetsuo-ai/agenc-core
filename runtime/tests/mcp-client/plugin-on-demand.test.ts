@@ -1,10 +1,10 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MCPManager } from "./manager.js";
 import { writePluginCatalog } from "./plugin-catalog-cache.js";
-import { hashInstalledPlugin, readPluginCatalog } from "./plugin-catalog-cache.js";
+import { fingerprintPluginCatalogConfig, hashInstalledPlugin, readPluginCatalog, snapshotInstalledPlugin } from "./plugin-catalog-cache.js";
 import { projectMcpManagerToConnections } from "./tui-connections.js";
 import { writeFile } from "node:fs/promises";
 import { loadPluginMcpServerRegistrations } from "../plugins/registration/mcp-plugin-integration.js";
@@ -37,7 +37,7 @@ function config(cacheHome: string, name = "plugin:sample:main", overrides: Parti
 
 function warm(cfg: MCPServerConfig, tools = [descriptor()]): void {
   const plugin = cfg.origin!.pluginServer!;
-  writePluginCatalog({ pluginName: plugin.pluginName, serverName: plugin.serverName, version: plugin.version, digest: plugin.digest!, cacheHome: cfg.pluginCatalogHome! }, { format: 1, tools });
+  writePluginCatalog({ pluginName: plugin.pluginName, serverName: plugin.serverName, version: plugin.version, digest: plugin.digest!, cacheHome: cfg.pluginCatalogHome!, configFingerprint: fingerprintPluginCatalogConfig({ transport: cfg.transport ?? "stdio", command: cfg.command, args: cfg.args, env: cfg.env, env_vars: cfg.env_vars, cwd: cfg.cwd, endpoint: cfg.endpoint, headers: cfg.headers, pluginSandbox: cfg.pluginSandbox, userConfigDigest: plugin.userConfigDigest, parentEnvironment: {} }) }, { format: 1, tools });
 }
 
 function setupTransport(
@@ -60,6 +60,13 @@ function setupTransport(
   });
 }
 
+function deferred<T = void>(): { promise: Promise<T>; resolve(value: T): void; reject(error: Error): void } {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
 async function waitFor(check: () => boolean): Promise<void> {
   for (let i = 0; i < 100; i++) {
     if (check()) return;
@@ -72,6 +79,295 @@ beforeEach(() => { spawn.mockReset(); clients.length = 0; setupTransport(); });
 afterEach(async () => { for (const path of homes.splice(0)) await rm(path, { recursive: true, force: true }); });
 
 describe("plugin MCP on-demand lifecycle", () => {
+  it("keeps an evicted generation owned until disposal and waits for it at shutdown", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome); warm(cfg);
+    const close = deferred();
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      await manager.callTool(cfg.name, "ping", {});
+      clients[0]!.close.mockImplementation(() => close.promise);
+      await waitFor(() => clients[0]!.close.mock.calls.length > 0);
+      const next = manager.callTool(cfg.name, "ping", {});
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(spawn).toHaveBeenCalledTimes(1);
+      const stopped = manager.stop();
+      let settled = false;
+      void stopped.then(() => { settled = true; });
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(settled).toBe(false);
+      close.resolve();
+      await Promise.all([next, stopped]);
+    } finally { close.resolve(); await manager.stop(); }
+  });
+
+  it("does not complete shutdown while an idle timer is closing a process", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome); warm(cfg);
+    const close = deferred(); const manager = new MCPManager([cfg]);
+    try {
+      await manager.start(); await manager.callTool(cfg.name, "ping", {});
+      clients[0]!.close.mockImplementation(() => close.promise);
+      await waitFor(() => clients[0]!.close.mock.calls.length > 0);
+      let stopped = false;
+      const task = manager.stop().then(() => { stopped = true; });
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(stopped).toBe(false);
+      close.resolve(); await task;
+    } finally { close.resolve(); await manager.stop(); }
+  });
+
+  it("does not let an old eviction callback close a replacement generation", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome); warm(cfg);
+    const replacement = { ...cfg, command: "replacement" }; warm(replacement);
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start(); await manager.callTool(cfg.name, "ping", {});
+      const oldConfig = manager.getServerConfig(cfg.name)!;
+      const oldOwner = (manager as never as { processOwners: Map<string, object> }).processOwners.get(cfg.name)!;
+      const oldGeneration = (manager as never as { lifecycleGeneration: number }).lifecycleGeneration;
+      await manager.refreshServers([replacement]);
+      await manager.callTool(cfg.name, "ping", {});
+      await (manager as never as { evictPlugin: (name: string, owner: object, config: MCPServerConfig, generation: number) => Promise<void> })
+        .evictPlugin(cfg.name, oldOwner, oldConfig, oldGeneration);
+      expect(manager.getConnectionState(cfg.name)?.type).toBe("connected");
+      expect(clients[1]!.close).not.toHaveBeenCalled();
+    } finally { await manager.stop(); }
+  });
+
+  it("does not launch a superseded config after a budget wait", async () => {
+    const cacheHome = await home();
+    const blocker = config(cacheHome, "plugin:sample:blocker", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "blocker", digest: "a".repeat(64), maxProcesses: 1 } } });
+    const old = config(cacheHome, "plugin:sample:target", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "target", digest: "a".repeat(64), maxProcesses: 1 } } });
+    const replacement = { ...old, command: "replacement" };
+    warm(blocker); warm(old);
+    const first = new MCPManager([blocker]); const second = new MCPManager([old]);
+    const close = deferred();
+    try {
+      await Promise.all([first.start(), second.start()]);
+      await first.callTool(blocker.name, "ping", {});
+      clients[0]!.close.mockImplementation(() => close.promise);
+      const pending = second.callTool(old.name, "ping", {});
+      await waitFor(() => clients[0]!.close.mock.calls.length > 0);
+      const refresh = second.refreshServers([replacement]);
+      await waitFor(() => second.getServerConfig(old.name)?.command === "replacement");
+      close.resolve();
+      await Promise.all([pending, refresh]);
+      expect(spawn.mock.calls.filter(call => call[0].name === old.name).map(call => call[0].command)).not.toContain("fixture");
+    } finally { close.resolve(); await Promise.all([first.stop(), second.stop()]); }
+  });
+
+  it("rejects a changed installed tree before a retained manager launches it", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const digest = hashInstalledPlugin(root);
+    const cfg = config(cacheHome, "plugin:sample:installed", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "installed", digest, pluginRoot: root } } as never });
+    warm(cfg);
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      await writeFile(join(root, "entry.js"), "replacement");
+      const result = await manager.callTool(cfg.name, "ping", {});
+      expect(result.isError).toBe(true);
+      expect(spawn).toHaveBeenCalledTimes(0);
+      expect(manager.getToolsByServer(cfg.name)).toHaveLength(0);
+    } finally { await manager.stop(); }
+  });
+
+  it("launches a pinned plugin tree even if installation changes at the transport boundary", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const digest = hashInstalledPlugin(root);
+    const snapshotRoot = snapshotInstalledPlugin(root, cacheHome, digest);
+    const cfg = config(cacheHome, "plugin:sample:pinned", {
+      command: join(root, "entry.js"), args: [join(root, "entry.js")], cwd: root,
+      env: { AGENC_PLUGIN_ROOT: root },
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "pinned", digest, pluginRoot: root, snapshotRoot } },
+    });
+    warm(cfg);
+    const original = spawn.getMockImplementation()!;
+    spawn.mockImplementation(async (...args) => {
+      await writeFile(join(root, "entry.js"), "replacement");
+      return original(...args);
+    });
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      await manager.callTool(cfg.name, "ping", {});
+      expect(spawn.mock.calls[0]?.[0]).toMatchObject({
+        command: join(snapshotRoot, "entry.js"), args: [join(snapshotRoot, "entry.js")],
+        cwd: snapshotRoot, env: { AGENC_PLUGIN_ROOT: snapshotRoot },
+      });
+      expect(await (await import("node:fs/promises")).readFile(join(snapshotRoot, "entry.js"), "utf8")).toBe("old");
+    } finally { await manager.stop(); }
+  });
+
+  it("separates trees whose raw concatenations collide", async () => {
+    const root = await home(); const single = join(root, "single"); const split = join(root, "split");
+    await mkdir(single); await mkdir(split);
+    await writeFile(join(single, "a"), "A./b\0file\0B");
+    await writeFile(join(split, "a"), "A"); await writeFile(join(split, "b"), "B");
+    await writeFile(join(single, "plugin.json"), "{}");
+    await writeFile(join(split, "plugin.json"), "{}");
+    expect(hashInstalledPlugin(single)).not.toBe(hashInstalledPlugin(split));
+  });
+
+  it("rejects a snapshot with a link to mutable bytes outside the install", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "plugin");
+    await mkdir(root); await writeFile(join(cacheHome, "outside.js"), "mutable");
+    await symlink(join(cacheHome, "outside.js"), join(root, "entry.js"));
+    expect(() => snapshotInstalledPlugin(root, cacheHome, hashInstalledPlugin(root)))
+      .toThrow(/symbolic link/);
+  });
+
+  it("revokes retained cached proxies and resource access when disabled", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome); warm(cfg);
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      const retained = manager.getToolsByServer(cfg.name)[0]!;
+      await manager.refreshServers([{ ...cfg, enabled: false }]);
+      expect((await retained.execute({})).isError).toBe(true);
+      expect(await manager.readResource(`mcp.${cfg.name}.fixture://item`)).toBeNull();
+      expect(spawn).toHaveBeenCalledTimes(0);
+    } finally { await manager.stop(); }
+  });
+
+  it("retains failed idle disposal without an unhandled rejection", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome); warm(cfg);
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start(); await manager.callTool(cfg.name, "ping", {});
+      clients[0]!.close.mockRejectedValueOnce(new Error("close failed"));
+      await waitFor(() => clients[0]!.close.mock.calls.length > 0);
+      expect(manager.getConnectionState(cfg.name)?.type).toBe("failed");
+    } finally { await manager.stop(); }
+  });
+
+  it("does not publish a connection after resource discovery outlives startup timeout", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome, "plugin:sample:discovery", { timeout: 20 }); warm(cfg);
+    const resources = deferred<{ resources: readonly Record<string, unknown>[] }>();
+    setupTransport([descriptor()], { capabilities: { resources: {} } });
+    const original = spawn.getMockImplementation()!;
+    spawn.mockImplementation(async (...args) => {
+      const client = await original(...args);
+      (client as never as { listResources: ReturnType<typeof vi.fn> }).listResources.mockImplementation(() => resources.promise);
+      return client;
+    });
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      const result = await manager.callTool(cfg.name, "ping", {});
+      expect(result.metadata?.errorCode).toBe("MCP_PLUGIN_STARTUP_FAILED");
+      expect(manager.getConnectionState(cfg.name)?.type).toBe("failed");
+      expect(manager.getConnectedServers()).toHaveLength(0);
+      resources.resolve({ resources: [] });
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(manager.getConnectionState(cfg.name)?.type).not.toBe("connected");
+      expect(manager.getConnectedServers()).toHaveLength(0);
+      expect(clients[0]!.close).toHaveBeenCalled();
+    } finally { resources.resolve({ resources: [] }); await manager.stop(); }
+  });
+
+  it("does not spawn a second generation while timed-out discovery still owns its process", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome, "plugin:sample:held-discovery", { timeout: 20 }); warm(cfg);
+    const resources = deferred<{ resources: readonly Record<string, unknown>[] }>();
+    setupTransport([descriptor()], { capabilities: { resources: {} } });
+    const original = spawn.getMockImplementation()!;
+    spawn.mockImplementation(async (...args) => {
+      const client = await original(...args);
+      if (clients.length === 1) (client as never as { listResources: ReturnType<typeof vi.fn> }).listResources.mockImplementation(() => resources.promise);
+      return client;
+    });
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      expect((await manager.callTool(cfg.name, "ping", {})).isError).toBe(true);
+      const next = manager.callTool(cfg.name, "ping", {});
+      let settled = false;
+      void next.then(() => { settled = true; });
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(settled).toBe(false);
+      expect(spawn).toHaveBeenCalledTimes(1);
+      resources.resolve({ resources: [] });
+      await next;
+      expect(clients[0]!.close).toHaveBeenCalled();
+    } finally { resources.resolve({ resources: [] }); await manager.stop(); }
+  });
+
+  it("keeps catalogs separate for resolved environment variants", async () => {
+    const cacheHome = await home();
+    const firstCfg = config(cacheHome, "plugin:sample:env", { env: { MODE: "first" } });
+    const secondCfg = config(cacheHome, "plugin:sample:env", { env: { MODE: "second" } });
+    spawn.mockImplementation(async (server) => {
+      const name = server.env?.MODE ?? "missing";
+      const client = { listTools: vi.fn().mockResolvedValue({ tools: [descriptor(name)] }), callTool: vi.fn().mockResolvedValue({ content: [] }), close: vi.fn().mockResolvedValue(undefined) };
+      clients.push(client); return client as never;
+    });
+    const first = new MCPManager([firstCfg]); const second = new MCPManager([secondCfg]);
+    try {
+      await first.start(); await first.primeCatalogs();
+      await second.start(); await second.primeCatalogs();
+      expect(second.getToolsByServer(secondCfg.name)[0]?.name).toContain("second");
+      expect(spawn).toHaveBeenCalledTimes(2);
+    } finally { await Promise.all([first.stop(), second.stop()]); }
+  });
+
+  it("keeps catalogs separate for user configuration variants", async () => {
+    const cacheHome = await home(); const base = config(cacheHome, "plugin:sample:user-config");
+    const firstCfg = config(cacheHome, base.name, { origin: { scope: "plugin", pluginServer: { ...base.origin!.pluginServer!, userConfigDigest: "first" } } });
+    const secondCfg = config(cacheHome, base.name, { origin: { scope: "plugin", pluginServer: { ...base.origin!.pluginServer!, userConfigDigest: "second" } } });
+    setupTransport([descriptor("first")]);
+    const first = new MCPManager([firstCfg]); const second = new MCPManager([secondCfg]);
+    try {
+      await first.start(); await first.primeCatalogs();
+      setupTransport([descriptor("second")]);
+      await second.start(); await second.primeCatalogs();
+      expect(second.getToolsByServer(base.name)[0]?.name).toContain("second");
+      expect(spawn).toHaveBeenCalledTimes(2);
+    } finally { await Promise.all([first.stop(), second.stop()]); }
+  });
+
+  it("bounds a budget eviction wait by the caller startup timeout", async () => {
+    const cacheHome = await home();
+    const firstCfg = config(cacheHome, "plugin:sample:budget-a", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "budget-a", digest: "a".repeat(64), maxProcesses: 1 } } });
+    const nextCfg = config(cacheHome, "plugin:sample:budget-b", { timeout: 20, origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "budget-b", digest: "a".repeat(64), maxProcesses: 1 } } });
+    warm(firstCfg); warm(nextCfg);
+    const manager = new MCPManager([firstCfg, nextCfg]); const close = deferred();
+    try {
+      await manager.start(); await manager.callTool(firstCfg.name, "ping", {});
+      clients[0]!.close.mockImplementation(() => close.promise);
+      const result = await Promise.race([
+        manager.callTool(nextCfg.name, "ping", {}),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("budget wait exceeded timeout")), 80)),
+      ]);
+      expect(result.metadata?.errorCode).toBe("MCP_PLUGIN_STARTUP_FAILED");
+      expect(spawn).toHaveBeenCalledTimes(1);
+    } finally { close.resolve(); await manager.stop(); }
+  });
+
+  it("reserves the budget and schedules idle cleanup on explicit reconnect", async () => {
+    const cacheHome = await home();
+    const configs = ["reconnect-a", "reconnect-b"].map(name => config(cacheHome, `plugin:sample:${name}`, { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: name, digest: "a".repeat(64), maxProcesses: 1, idleTimeoutMs: 20 } } }));
+    configs.forEach(cfg => warm(cfg));
+    const manager = new MCPManager(configs);
+    try {
+      await manager.start(); await manager.callTool(configs[0]!.name, "ping", {});
+      expect((await manager.reconnectServer(configs[1]!.name)).success).toBe(true);
+      expect(clients[0]!.close).toHaveBeenCalled();
+      await waitFor(() => manager.getConnectionState(configs[1]!.name)?.type === "stopped");
+    } finally { await manager.stop(); }
+  });
+
+  it("schedules idle cleanup when live discovery drops the requested cached tool", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome); warm(cfg, [descriptor("old")]);
+    setupTransport([descriptor("new")]);
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      expect((await manager.callTool(cfg.name, "old", {})).isError).toBe(true);
+      await waitFor(() => manager.getConnectionState(cfg.name)?.type === "stopped");
+    } finally { await manager.stop(); }
+  });
   it("starts five sessions with four warm fixture plugins without spawning 20 processes and serves search from cache", async () => {
     const cacheHome = await home();
     const configs = Array.from({ length: 4 }, (_, i) => config(cacheHome, `plugin:sample:s${i}`));
@@ -140,7 +436,7 @@ describe("plugin MCP on-demand lifecycle", () => {
     expect(search.content).toContain(`mcp.${cfg.name}.ping`);
     expect(spawn).toHaveBeenCalledTimes(1);
     expect(first.getConnectionState(cfg.name)?.type).toBe("stopped");
-    expect(readPluginCatalog({ pluginName: "sample", serverName: cfg.name, version: "1", digest: "a".repeat(64), cacheHome })?.tools).toMatchObject([descriptor()]);
+    expect(readPluginCatalog({ pluginName: "sample", serverName: cfg.name, version: "1", digest: "a".repeat(64), cacheHome, configFingerprint: fingerprintPluginCatalogConfig({ transport: cfg.transport ?? "stdio", command: cfg.command, args: cfg.args, env: cfg.env, env_vars: cfg.env_vars, cwd: cfg.cwd, endpoint: cfg.endpoint, headers: cfg.headers, pluginSandbox: cfg.pluginSandbox, userConfigDigest: cfg.origin?.pluginServer?.userConfigDigest, parentEnvironment: {} }) })?.tools).toMatchObject([descriptor()]);
     await first.stop();
     spawn.mockClear();
     const second = new MCPManager([cfg]);
@@ -262,6 +558,8 @@ describe("plugin MCP on-demand lifecycle", () => {
     });
     expect(Object.fromEntries(registrations.map(registration => [registration.serverName, registration.eager]))).toEqual({ channel: true, listener: true, ordinary: false });
     expect(registrations.find(registration => registration.serverName === "ordinary")).toMatchObject({ idleTimeoutMs: 5_000, maxProcesses: 3 });
+    expect(registrations[0]?.snapshotRoot).toContain(join(root, "storage", "cache", "mcp-install-snapshots"));
+    expect(hashInstalledPlugin(registrations[0]!.snapshotRoot)).toBe(registrations[0]!.digest);
   });
 
   it("accepts global and per-plugin lifecycle settings from config.toml", () => {

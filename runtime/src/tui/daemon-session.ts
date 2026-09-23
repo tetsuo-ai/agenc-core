@@ -1857,6 +1857,7 @@ function daemonMcpProjectionState(
     value === "failed" ||
     value === "disabled" ||
     value === "needs-auth" ||
+    value === "stopped" ||
     value === "disconnected"
   ) {
     return value;
@@ -1964,7 +1965,7 @@ function createDaemonMcpProjection(
         requestedRevision = -1;
         let result: SessionMcpStatusResult;
         try {
-          result = await client.request("session.mcp.status", { sessionId });
+          result = await client.request("session.mcp.status", { sessionId, includeStoppedState: true });
         } catch (error) {
           if (connectionEpoch !== taskEpoch) return snapshot;
           requestedRevision = Math.max(requestedRevision, targetRevision);

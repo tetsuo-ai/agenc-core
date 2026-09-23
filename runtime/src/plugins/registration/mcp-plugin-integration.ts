@@ -26,7 +26,7 @@ import {
 import type { PluginConfigStoredValue } from "../../utils/plugins/pluginConfigAuthority.js";
 import type { PluginUserConfigOption } from "../manifest-schema.js";
 import { getPluginDataDir } from "../directories.js";
-import { hashInstalledPlugin } from "../../mcp-client/plugin-catalog-cache.js";
+import { fingerprintPluginCatalogConfig, hashInstalledPlugin, snapshotInstalledPlugin } from "../../mcp-client/plugin-catalog-cache.js";
 
 export interface PluginMcpRegistrationOptions extends PluginRuntimeLoadOptions {
   readonly plugins?: readonly LoadedPlugin[];
@@ -320,6 +320,9 @@ export interface PluginMcpServerRegistration {
   readonly name: string;
   readonly pluginName: string;
   readonly pluginSource: string;
+  readonly pluginRoot: string;
+  readonly snapshotRoot: string;
+  readonly userConfigDigest?: string;
   readonly serverName: string;
   readonly server: McpServerConfig;
   readonly version?: string;
@@ -338,7 +341,11 @@ async function extractMcpServerRegistrationsFromPlugins(
     (candidate) => !isRepositoryControlledPlugin(candidate)
   )) {
     let digest: string;
-    try { digest = hashInstalledPlugin(plugin.root); }
+    let snapshotRoot: string;
+    try {
+      digest = hashInstalledPlugin(plugin.root);
+      snapshotRoot = snapshotInstalledPlugin(plugin.root, options.pluginStorageRoot, digest);
+    }
     catch (error) {
       options.errors?.push({
         type: "mcp", source: `plugin:${plugin.id}`, plugin: plugin.id,
@@ -355,6 +362,9 @@ async function extractMcpServerRegistrationsFromPlugins(
         name,
         pluginName: plugin.id,
         pluginSource: plugin.source,
+        pluginRoot: plugin.root,
+        snapshotRoot,
+        userConfigDigest: fingerprintPluginCatalogConfig(schemaOwnedServerUserConfig(plugin, serverName)?.values ?? {}),
         serverName,
         server,
         ...(plugin.version !== undefined ? { version: plugin.version } : {}),
