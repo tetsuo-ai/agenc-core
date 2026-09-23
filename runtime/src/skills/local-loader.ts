@@ -1363,7 +1363,11 @@ function formatHiddenSkillsLine(count: number): string {
 }
 
 /**
- * Words too common to say anything about which skill fits a request.
+ * Words too common to say anything about which skill fits a request, mostly
+ * the grammar of an instruction ("write", "create", "set up"). How common a
+ * word is among the installed skills is weighed separately, per catalog,
+ * below; "module" and "project" are left to that weighing, which measured
+ * better than listing them here.
  */
 const SKILL_MATCH_STOPWORDS: ReadonlySet<string> = new Set([
   "the", "and", "for", "with", "that", "this", "you", "your", "are", "was",
@@ -1372,51 +1376,160 @@ const SKILL_MATCH_STOPWORDS: ReadonlySet<string> = new Set([
   "add", "into", "from", "when", "what", "where", "which", "will", "would",
   "please", "should", "then", "them", "they", "there", "here", "just", "like",
   "file", "files", "code", "line", "lines",
+  "write", "create", "set", "get", "need", "want", "help", "some", "about",
+  "also", "our", "these", "those", "via", "etc", "thing", "things", "stuff",
+  "something", "repo", "codebase",
 ]);
 
-/** Content words of the current request, lowercased and de-duplicated. */
+/**
+ * A light suffix strip so "tests", "testing" and "tested" meet "test", and
+ * "policies" meets "policy". Applied to request words and skill words alike,
+ * so the stems only need to agree with each other, not be real words.
+ */
+function stemTerm(word: string): string {
+  let stem = word;
+  if (stem.length > 4 && stem.endsWith("ies")) stem = `${stem.slice(0, -3)}y`;
+  else if (stem.length > 5 && stem.endsWith("ing")) stem = stem.slice(0, -3);
+  else if (stem.length > 4 && stem.endsWith("ed")) stem = stem.slice(0, -2);
+  else if (
+    stem.length > 3 &&
+    stem.endsWith("s") &&
+    !stem.endsWith("ss") &&
+    !stem.endsWith("us") &&
+    !stem.endsWith("is")
+  ) {
+    stem = stem.slice(0, -1);
+  }
+  return stem.length > 4 && stem.endsWith("e") ? stem.slice(0, -1) : stem;
+}
+
+/** Stemmed content words of free text: a request or a skill description. */
+function matchTerms(
+  text: string,
+  stopwords: ReadonlySet<string> = SKILL_MATCH_STOPWORDS,
+): Set<string> {
+  const terms = new Set<string>();
+  for (const raw of text.toLowerCase().split(/[^a-z0-9+#.]+/u)) {
+    const token = raw.replace(/^[.]+|[.]+$/gu, "");
+    if (token.length < 3 || stopwords.has(token)) continue;
+    terms.add(stemTerm(token));
+    // "next.js" and "package.json" also mean "next" and "json".
+    if (token.includes(".")) {
+      for (const part of token.split(".")) {
+        if (part.length >= 3 && !stopwords.has(part)) terms.add(stemTerm(part));
+      }
+    }
+  }
+  return terms;
+}
+
+/** Content words of the current request, stemmed and de-duplicated. */
 function requestMatchTokens(request: string | null | undefined): readonly string[] {
   if (typeof request !== "string" || request.length === 0) return [];
-  const tokens = new Set<string>();
-  for (const raw of request.toLowerCase().split(/[^a-z0-9+#.]+/u)) {
-    const token = raw.replace(/^[.]+|[.]+$/gu, "");
-    if (token.length < 3) continue;
-    if (SKILL_MATCH_STOPWORDS.has(token)) continue;
-    tokens.add(token);
+  return [...matchTerms(request)];
+}
+
+const EMPTY_STOPWORDS: ReadonlySet<string> = new Set();
+
+interface IndexedSkill {
+  /** Stemmed parts of the skill name and its plugin id. */
+  readonly nameTerms: ReadonlySet<string>;
+  readonly nameParts: readonly string[];
+  /** Stemmed words of the description and when_to_use. */
+  readonly textTerms: ReadonlySet<string>;
+}
+
+/**
+ * Per-skill match index, built once per metadata object. Snapshot entries
+ * are the same objects until the snapshot is rebuilt, so a human turn over a
+ * 1,822-skill catalog does set lookups instead of lowercasing and scanning
+ * every description again.
+ */
+const skillMatchIndex = new WeakMap<SkillListingEntry, IndexedSkill>();
+
+function indexedSkill(skill: SkillListingEntry): IndexedSkill {
+  let entry = skillMatchIndex.get(skill);
+  if (entry === undefined) {
+    const parts = [
+      ...new Set(
+        `${skill.name} ${skill.pluginId ?? ""}`
+          .toLowerCase()
+          .split(/[^a-z0-9]+/u)
+          .filter((part) => part.length > 0)
+          .map(stemTerm),
+      ),
+    ];
+    entry = {
+      nameTerms: new Set(parts),
+      nameParts: parts,
+      // Descriptions keep every content word; only the request drops the
+      // instruction words.
+      textTerms: matchTerms(
+        `${skill.description ?? ""} ${skill.whenToUse ?? ""}`,
+        EMPTY_STOPWORDS,
+      ),
+    };
+    skillMatchIndex.set(skill, entry);
   }
-  return [...tokens];
+  return entry;
 }
 
 /** Cap so one long description cannot outweigh a real name match. */
 const SKILL_DESCRIPTION_MATCH_CAP = 6;
+const NAME_MATCH_WEIGHT = 3;
+const NAME_PREFIX_MATCH_WEIGHT = 1.5;
+const DESCRIPTION_MATCH_WEIGHT = 1;
+/** Share of the best score a relevance-block line needs to be shown. */
+const RELEVANCE_BLOCK_FLOOR = 0.3;
 
 /**
- * How well a skill answers the current request. A name match counts most: a
- * skill called `generating-unit-tests` is what "write unit tests" wants, and
- * its description only corroborates that.
+ * How well each skill answers the current request. A name match counts most:
+ * a skill called `generating-unit-tests` is what "write unit tests" wants,
+ * and its description only corroborates that. Each word is weighed by how
+ * rare it is in this catalog (inverse document frequency): "vercel" or
+ * "dockerfile" picks out a few skills, "service" or "deploy" appears in
+ * hundreds and says little. A name part that starts with the word, or that
+ * the word starts with ("docker" / "dockerfile"), is a partial match.
  */
-function skillRelevance(
-  skill: SkillListingEntry,
-  tokens: readonly string[],
-): number {
-  if (tokens.length === 0) return 0;
-  const name = `${skill.name} ${skill.pluginId ?? ""}`.toLowerCase();
-  const nameParts = new Set(name.split(/[^a-z0-9]+/u));
-  const description = `${skill.description ?? ""} ${skill.whenToUse ?? ""}`.toLowerCase();
-  let score = 0;
-  let fromDescription = 0;
-  for (const token of tokens) {
-    if (nameParts.has(token)) {
-      score += 4;
-    } else if (name.includes(token)) {
-      score += 2;
+function skillRelevanceScores(
+  skills: readonly SkillListingEntry[],
+  terms: readonly string[],
+): number[] {
+  if (terms.length === 0) return skills.map(() => 0);
+  const indexed = skills.map(indexedSkill);
+  const count = indexed.length;
+  const weights = terms.map((term) => {
+    let documents = 0;
+    for (const entry of indexed) {
+      if (entry.nameTerms.has(term) || entry.textTerms.has(term)) documents += 1;
     }
-    if (fromDescription < SKILL_DESCRIPTION_MATCH_CAP && description.includes(token)) {
-      score += 1;
-      fromDescription += 1;
-    }
-  }
-  return score;
+    return Math.log(1 + count / (1 + documents));
+  });
+  return indexed.map((entry) => {
+    let score = 0;
+    let fromDescription = 0;
+    terms.forEach((term, index) => {
+      const weight = weights[index]!;
+      if (entry.nameTerms.has(term)) {
+        score += NAME_MATCH_WEIGHT * weight;
+      } else if (
+        term.length >= 4 &&
+        entry.nameParts.some(
+          (part) => part.length >= 4 && (part.startsWith(term) || term.startsWith(part)),
+        )
+      ) {
+        score += NAME_PREFIX_MATCH_WEIGHT * weight;
+      }
+      if (
+        fromDescription < SKILL_DESCRIPTION_MATCH_CAP &&
+        entry.textTerms.has(term)
+      ) {
+        score += DESCRIPTION_MATCH_WEIGHT * weight;
+        fromDescription += 1;
+      }
+    });
+    return score;
+  });
 }
 
 /** What a listing pass decided, for the operator-facing diagnostic. */
@@ -1470,10 +1583,18 @@ export function buildSkillListingWithinBudget(
     };
   }
   const budget = getListingCharBudget(contextWindowTokens);
-  const fullLines = commands.map(formatSkillListingLine);
+  // Every line is at least "- <name>: ", so a catalog whose names alone
+  // overflow the budget cannot fit; skip formatting 1,800 lines to learn it.
+  const shortestTotal =
+    commands.reduce((sum, skill) => sum + skill.name.length + 4, 0) +
+    commands.length - 1;
+  const fullLines =
+    shortestTotal <= budget ? commands.map(formatSkillListingLine) : null;
   const fullTotal =
-    fullLines.reduce((sum, line) => sum + line.length, 0) + fullLines.length - 1;
-  if (fullTotal <= budget) {
+    fullLines === null
+      ? Number.POSITIVE_INFINITY
+      : fullLines.reduce((sum, line) => sum + line.length, 0) + fullLines.length - 1;
+  if (fullLines !== null && fullTotal <= budget) {
     return {
       listing: fullLines.join("\n"),
       stats: {
@@ -1502,13 +1623,13 @@ export function buildSkillListingWithinBudget(
   // javascript-typescript — was never shown, which is why 15 turns of exactly
   // that work produced zero Skill invocations. What the request is about now
   // decides who gets the space; scope rank breaks ties, as before.
-  const tokens = tokensForStats;
+  const relevance = skillRelevanceScores(commands, tokensForStats);
   const rest = commands
     .map((skill, index) => ({
       skill,
       index,
       rank: skillListingRank(skill),
-      relevance: skillRelevance(skill, tokens),
+      relevance: relevance[index]!,
     }))
     .filter((entry) => entry.skill.loadedFrom !== "bundled")
     .sort(
@@ -1567,18 +1688,25 @@ export function rankSkillsForRequest(
     [...(request ?? "").matchAll(/(?:^|[\s(])@([a-z0-9][a-z0-9:_-]*)/giu)]
       .map((match) => match[1]!.toLowerCase()),
   );
-  const ranked = skills
-    .filter((skill) => !skill.disableModelInvocation && (
-      !exclude.has(skill.name) ||
-      (skill.pluginId !== undefined && mentionedPlugins.has(skill.pluginId.toLowerCase()))
-    ))
+  // Word weights come from the whole catalog, not just the candidates.
+  const relevance = skillRelevanceScores(skills, tokens);
+  const candidates = skills
     .map((skill, index) => ({
       skill,
       index,
       rank: skillListingRank(skill),
-      relevance: skillRelevance(skill, tokens),
+      relevance: relevance[index]!,
     }))
-    .filter((entry) => entry.relevance > 0)
+    .filter((entry) => entry.relevance > 0 && !entry.skill.disableModelInvocation && (
+      !exclude.has(entry.skill.name) ||
+      (entry.skill.pluginId !== undefined &&
+        mentionedPlugins.has(entry.skill.pluginId.toLowerCase()))
+    ));
+  const best = candidates.reduce((top, entry) => Math.max(top, entry.relevance), 0);
+  const ranked = candidates
+    // A line that matched only a word the best candidates also matched,
+    // and nothing rarer, is noise the model has to read on every turn.
+    .filter((entry) => entry.relevance >= RELEVANCE_BLOCK_FLOOR * best)
     .sort(
       (a, b) =>
         b.relevance - a.relevance || a.rank - b.rank || a.index - b.index,
