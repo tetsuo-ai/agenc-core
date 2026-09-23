@@ -14,7 +14,7 @@ import { resetCronSchedulerForTests } from "../src/utils/cronScheduler.js";
 import type { Session } from "../src/session/session.js";
 import { cronLockAuthorityRoot } from "../src/sandbox/cron-authority-protection.js";
 import { acquireCronStorageLock, withCronStorage } from "../src/utils/cron-storage.js";
-import { appendCronTask, cronRestoreFailureNeedsWarning, getCronFilePath, readCronFile, readCronTasks, writeCronTasks, type CronTask } from "../src/utils/cronTasks.js";
+import { appendCronTask, cronRestoreFailureNeedsWarning, getCronFilePath, readCronFile, readCronTasks, writeCronTasks, type CronFile, type CronTask } from "../src/utils/cronTasks.js";
 import * as cronTasks from "../src/utils/cronTasks.js";
 
 const hooks = vi.hoisted(() => ({
@@ -62,6 +62,79 @@ afterEach(async () => {
   await resetCronSchedulerForTests();
   resetStateForTests();
   await rm(root, { recursive: true, force: true });
+});
+
+describe("session cron scheduler durable claim recovery", () => {
+  test("a second session scan cannot delay a rejected durable claim past its backoff", async () => {
+    const start = Date.parse("2026-07-07T12:00:30Z");
+    const due: CronTask = {
+      ...task("recovering-one-shot"), cron: "1 12 * * *", createdAt: start,
+      recurring: false,
+    };
+    let stored = true;
+    const claimStarted = Promise.withResolvers<void>();
+    const rejectClaim = Promise.withResolvers<void>();
+    let claims = 0;
+    const list = vi.spyOn(cronTasks, "listAllCronTasks")
+      .mockImplementation(async () => stored ? [due] : []);
+    const mutate = vi.spyOn(cronTasks, "mutateCronFile")
+      .mockImplementation(async <Result>(_dir: string | undefined, change: (state: CronFile) => Result): Promise<Result> => {
+        claims += 1;
+        if (claims === 1) {
+          claimStarted.resolve();
+          await rejectClaim.promise;
+        }
+        const state: CronFile = { tasks: stored ? [due] : [] };
+        const result = change(state);
+        stored = state.tasks.length > 0;
+        return result;
+      });
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { ...platform, value: "linux" });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    vi.setSystemTime(start);
+    const closes: Array<() => Promise<void>> = [];
+    const makeSession = (id: string, submit: Session["submit"]): Session => {
+      const abortController = new AbortController();
+      return {
+        conversationId: id, abortController, eventLog: new EventLog(),
+        services: { mcpStartupCancellationToken: { signal: abortController.signal } },
+        nextInternalSubId: () => `${id}-warning`,
+        onBeforeDurableClose: (close: () => Promise<void>) => { closes.push(close); },
+        onTurnDriverReady: (ready: () => void) => { ready(); return () => {}; },
+        submit,
+      } as unknown as Session;
+    };
+    const attempts: number[] = [];
+    const firstSubmit = vi.fn(async (_prompt: string, options: { onAccepted: () => Promise<void> }) => {
+      attempts.push(Date.now());
+      await options.onAccepted();
+    });
+    const secondSubmit = vi.fn();
+    setScheduledTasksEnabled(true);
+    try {
+      const firstScheduler = await startSessionCronScheduler(makeSession("claim-first", firstSubmit as Session["submit"]), workspace);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await claimStarted.promise;
+      await startSessionCronScheduler(makeSession("claim-second", secondSubmit as Session["submit"]), workspace);
+      rejectClaim.reject(Object.assign(new Error("claim failed before write"), { code: "EIO" }));
+      await firstScheduler.drain();
+      expect(firstSubmit).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(2 * 60_000);
+      await firstScheduler.drain();
+      expect(attempts).toEqual([start + 30_000, start + 150_000]);
+      expect(claims).toBe(2);
+      expect(stored).toBe(false);
+      expect(secondSubmit).not.toHaveBeenCalled();
+    } finally {
+      rejectClaim.resolve();
+      await Promise.all(closes.map((close) => close()));
+      vi.useRealTimers();
+      Object.defineProperty(process, "platform", platform);
+      list.mockRestore();
+      mutate.mockRestore();
+    }
+  });
 });
 
 describe("cron tools without durable storage", () => {

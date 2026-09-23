@@ -403,8 +403,13 @@ export class CronScheduler {
   ): Promise<void> {
     if (!this.isCurrentActivation(activation, generation) || this.paused)
       return;
-    await this.dispatchDue(activation, generation);
-    if (!this.isCurrentActivation(activation, generation) || this.paused)
+    const restoredClaim = await this.dispatchDue(activation, generation);
+    // A concurrent reschedule can observe the temporary firedThrough anchor
+    // while a durable claim is pending. If that claim is then cancelled, its
+    // restored anchor and backoff need a fresh timer even though the earlier
+    // scan advanced the generation. Never revive a stopped/replaced activation.
+    if (!this.running || this.activation !== activation || this.paused ||
+      (generation !== this.scheduleGeneration && !restoredClaim))
       return;
     // Re-arm AFTER the tick so the next wake reflects post-fire next_due.
     await this.reschedule();
@@ -454,23 +459,24 @@ export class CronScheduler {
   private async dispatchDue(
     activation: CronSchedulerActivation,
     generation: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const now = this.deps.now();
     const tasks = await this.loadRunnableTasks(activation, generation);
     // loadTasks may cross a session switch. A stale wake must leave no queue
     // item, rate accounting, lease, or task-file mutation behind.
     if (!this.isCurrentActivation(activation, generation) || this.paused)
-      return;
+      return false;
 
     let dispatched = 0;
     let coalescedMisses = 0;
     let skippedDueToLock = 0;
+    let restoredClaim = false;
     const firedRecurringIds: string[] = [];
     const firedOneShotIds: string[] = [];
 
     for (const task of tasks) {
       if (!this.isCurrentActivation(activation, generation) || this.paused) {
-        return;
+        return restoredClaim;
       }
       // Another task can wake this scheduler before a failed durable claim's
       // retry timer. Enforce the deadline here as well as in timer selection.
@@ -558,6 +564,7 @@ export class CronScheduler {
               untilMono: this.deps.monotonicNow() +
                 Math.min(60_000 * 2 ** Math.min(failures, 10), 15 * 60_000),
             });
+            restoredClaim = true;
           }
           continue;
         }
@@ -631,6 +638,7 @@ export class CronScheduler {
       `[CronScheduler] wake fired=${now} dispatched=${dispatched} ` +
         `coalescedMisses=${coalescedMisses} skippedDueToLock=${skippedDueToLock}`,
     );
+    return restoredClaim;
   }
 
   /**
