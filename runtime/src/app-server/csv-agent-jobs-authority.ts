@@ -118,11 +118,7 @@ export class CsvAgentJobsRepositoryAuthority implements CsvAgentJobsRepositoryPr
       const entry = this.#entries.get(key);
       if (entry === undefined) return;
       await Promise.allSettled([entry.opening, ...entry.activeLeases]);
-      if ((this.#workspaceRefs.get(key) ?? 0) > 0 ||
-          entry.openingWaiters.length > 0 || entry.activeLeases.size > 0 ||
-          this.#entries.get(key) !== entry) return;
-      this.#entries.delete(key);
-      this.#closeDriver(entry);
+      this.#closeIdleEntry(entry);
     };
   }
 
@@ -396,19 +392,48 @@ export class CsvAgentJobsRepositoryAuthority implements CsvAgentJobsRepositoryPr
       waiter.signal === undefined
         ? entry.controller.signal
         : AbortSignal.any([entry.controller.signal, waiter.signal]);
-    const task = Promise.resolve()
+    let task!: Promise<void>;
+    task = Promise.resolve()
       .then(() => {
         operationSignal.throwIfAborted();
         return waiter.operation(entry.repository!, operationSignal);
       })
       .then(
-        (result) => this.#settleWaiter(waiter, "resolve", result),
-        (error) => this.#settleWaiter(waiter, "reject", error),
-      )
-      .finally(() => {
-        entry.activeLeases.delete(task);
-      });
+        (result) => this.#finishLease(entry, task, waiter, "resolve", result),
+        (error) => this.#finishLease(entry, task, waiter, "reject", error),
+      );
     entry.activeLeases.add(task);
+  }
+
+  #finishLease(
+    entry: RepositoryEntry,
+    task: Promise<void>,
+    waiter: RepositoryWaiter,
+    outcome: "resolve" | "reject",
+    value: unknown,
+  ): void {
+    entry.activeLeases.delete(task);
+    try {
+      this.#closeIdleEntry(entry);
+    } catch (closeError) {
+      this.#settleWaiter(waiter, "reject", outcome === "reject"
+        ? new AggregateError([value, closeError], "CSV lease and driver close failed")
+        : closeError);
+      return;
+    }
+    this.#settleWaiter(waiter, outcome, value);
+  }
+
+  #closeIdleEntry(entry: RepositoryEntry): void {
+    if (
+      entry.state !== "ready" ||
+      (this.#workspaceRefs.get(entry.key) ?? 0) > 0 ||
+      entry.openingWaiters.length > 0 ||
+      entry.activeLeases.size > 0 ||
+      this.#entries.get(entry.key) !== entry
+    ) return;
+    this.#closeDriver(entry);
+    this.#entries.delete(entry.key);
   }
 
   #settleWaiter(

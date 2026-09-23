@@ -11,6 +11,7 @@ import { MultiProjectFileThreadStore } from "../../src/thread-store/multi-projec
 import { AgenCDaemonSnapshotPolicyRegistry } from "../../src/app-server/daemon-cli.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import { CsvAgentJobsRepositoryAuthority } from "../../src/app-server/csv-agent-jobs-authority.js";
+import { openStateDatabases } from "../../src/state/sqlite-driver.js";
 
 function openDescriptors(): number {
   return readdirSync("/dev/fd").length;
@@ -88,7 +89,7 @@ describe.skipIf(process.platform === "win32")("session descriptor ownership", ()
         counts.push(openDescriptors());
       }
       console.info(`project fd counts: baseline=${baseline} closed=${counts.join(",")}`);
-      expect(counts.at(-1)).toBeLessThanOrEqual(baseline + 3);
+      expect(counts).toEqual(Array.from({ length: 20 }, () => baseline));
     } finally {
       store.close();
       await Promise.all(projects.map((path) => rm(path, { recursive: true, force: true })));
@@ -121,6 +122,108 @@ describe.skipIf(process.platform === "win32")("session descriptor ownership", ()
     } finally {
       registry.close();
       await rm(workspace, { recursive: true, force: true });
+      await fixture.dispose();
+    }
+  });
+
+  it("projects terminal status before releasing the session snapshot, including a write retry", async () => {
+    const fixture = await makeFixture();
+    const registry = new AgenCDaemonSnapshotPolicyRegistry({
+      agencHome: fixture.home,
+      defaultCwd: fixture.workspace,
+      onError: () => undefined,
+    });
+    const at = new Date().toISOString();
+    const driver = openStateDatabases({ cwd: fixture.workspace, agencHome: fixture.home });
+    try {
+      registry.recordAgentRun({
+        id: "terminal-fd-run", objective: "test", status: "running",
+        startedAt: at, lastActiveAt: at, currentSessionId: "terminal-fd-run",
+        cwd: fixture.workspace,
+      });
+      registry.recordRunTerminal({
+        agentId: "terminal-fd-run", sessionId: "terminal-fd-run", cwd: fixture.workspace,
+        openedAt: at, epoch: 1, eventId: "terminal-fd-event",
+        rolloutPath: join(fixture.workspace, "terminal-fd-rollout.jsonl"),
+        result: {
+          runId: "terminal-fd-run", status: "completed", exitCode: 0,
+          stopReason: null, finalMessage: "done", usage: null,
+          lastSequence: null, finishedAt: at,
+        },
+      });
+      driver.state.exec(`CREATE TRIGGER reject_terminal_snapshot BEFORE INSERT ON session_state_snapshots
+        BEGIN SELECT RAISE(ABORT, 'retry terminal snapshot'); END`);
+      const transition = {
+        sessionId: "terminal-fd-run", agentId: "terminal-fd-run", cwd: fixture.workspace,
+        status: "stopped" as const, transitionAt: at, reason: "runner_terminated",
+      };
+      expect(() => registry.recordAgentStatusTransition(transition)).toThrow("retry terminal snapshot");
+      driver.state.exec("DROP TRIGGER reject_terminal_snapshot");
+      registry.flushSession("terminal-fd-run");
+      registry.releaseSession("terminal-fd-run");
+      const row = driver.prepareState<[string], { tool_state_json: string }>(
+        `SELECT tool_state_json FROM session_state_snapshots
+         WHERE session_id = ? ORDER BY snapshot_at DESC LIMIT 1`,
+      ).get("terminal-fd-run");
+      expect(JSON.parse(row!.tool_state_json).statusTransitions).toEqual(
+        expect.arrayContaining([expect.objectContaining({ status: "stopped" })]),
+      );
+    } finally {
+      driver.close();
+      registry.close();
+      await fixture.dispose();
+    }
+  });
+
+  it("preserves both snapshots when a new session starts before the old terminal projection", async () => {
+    const fixture = await makeFixture();
+    const registry = new AgenCDaemonSnapshotPolicyRegistry({
+      agencHome: fixture.home, defaultCwd: fixture.workspace,
+      onError: () => undefined,
+    });
+    const driver = openStateDatabases({ cwd: fixture.workspace, agencHome: fixture.home });
+    const baseline = openDescriptors();
+    const at = new Date().toISOString();
+    try {
+      registry.recordAgentRun({
+        id: "old", objective: "old", status: "running",
+        startedAt: at, lastActiveAt: at, currentSessionId: "old",
+        cwd: fixture.workspace,
+      });
+      registry.recordRunTerminal({
+        agentId: "old", sessionId: "old", cwd: fixture.workspace,
+        openedAt: at, epoch: 1, eventId: "old-terminal",
+        rolloutPath: join(fixture.workspace, "old-rollout.jsonl"),
+        result: {
+          runId: "old", status: "completed", exitCode: 0,
+          stopReason: null, finalMessage: "done", usage: null,
+          lastSequence: null, finishedAt: at,
+        },
+      });
+      registry.registerSession({ sessionId: "new", agentId: "new", cwd: fixture.workspace });
+      registry.recordAgentStatusTransition({
+        sessionId: "old", agentId: "old", cwd: fixture.workspace,
+        status: "stopped", transitionAt: at,
+      });
+      registry.releaseSession("old");
+      registry.recordAgentStatusTransition({
+        sessionId: "new", agentId: "new", cwd: fixture.workspace,
+        status: "running", transitionAt: at,
+      });
+      registry.releaseSession("new");
+      for (const [sessionId, status] of [["old", "stopped"], ["new", "running"]]) {
+        const row = driver.prepareState<[string], { tool_state_json: string }>(
+          `SELECT tool_state_json FROM session_state_snapshots
+           WHERE session_id = ? ORDER BY snapshot_at DESC LIMIT 1`,
+        ).get(sessionId);
+        expect(JSON.parse(row!.tool_state_json).statusTransitions).toEqual(
+          expect.arrayContaining([expect.objectContaining({ status })]),
+        );
+      }
+      expect(openDescriptors()).toBeLessThanOrEqual(baseline + 2);
+    } finally {
+      driver.close();
+      registry.close();
       await fixture.dispose();
     }
   });
@@ -159,7 +262,7 @@ describe.skipIf(process.platform === "win32")("session descriptor ownership", ()
         counts.push(openDescriptors());
       }
       console.info(`shared fd counts: baseline=${baseline} closed=${counts.join(",")}`);
-      expect(counts.at(-1)).toBeLessThanOrEqual(baseline + 3);
+      expect(counts).toEqual(Array.from({ length: 20 }, () => baseline));
     } finally {
       kernel.close();
       await csv.close();
@@ -243,4 +346,5 @@ describe.skipIf(process.platform === "win32")("session descriptor ownership", ()
       await fixture.dispose();
     }
   });
+
 });

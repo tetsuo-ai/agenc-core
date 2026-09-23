@@ -5243,12 +5243,8 @@ export class AgenCDaemonSnapshotPolicyRegistry {
       eventId: terminal.eventId,
     });
     hitM4DurabilityFailpoint("after_terminal_commit");
-    // The run is over: land any unflushed snapshot state and stop tracking
-    // the session in memory, so it neither rides the periodic tick nor holds
-    // its conversation tail until the LRU cap (1,024 sessions) evicts it.
-    entry.policy.flushSession(terminal.sessionId);
-    entry.policy.forgetSession(terminal.sessionId);
-    this.releaseSession(terminal.sessionId);
+    // The lifecycle still has to project the final agent status. Its session
+    // termination callback releases the snapshot after that projection.
   }
 
   /** Drop a project's daemon handles after its final live session ends. */

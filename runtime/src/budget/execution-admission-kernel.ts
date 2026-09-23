@@ -183,6 +183,7 @@ export class ExecutionAdmissionKernel {
   readonly #scheduler = new AsyncLock<void>(undefined);
   readonly #byStatePath = new Map<string, WorkspaceBinding>();
   readonly #knownPaths = new Map<string, StateDatabasePaths>();
+  readonly #journalCursors = new Map<string, number>();
   readonly #byWorkspace = new Map<string, WorkspaceBinding>();
   /**
    * runId -> owning workspace. `live` marks a binding made by an actual
@@ -765,13 +766,7 @@ export class ExecutionAdmissionKernel {
    */
   sumReconciledUsageByRunId(runId: string): AdmissionRunUsageSummary {
     this.#assertOpen();
-    return this.#withKnownBindings((bindings) => {
-      const statePath = this.#runStatePath.get(runId)?.statePath;
-      const bound =
-        statePath === undefined ? undefined : this.#byStatePath.get(statePath);
-      if (bound !== undefined) {
-        return bound.repository.sumReconciledUsageByRunId(runId);
-      }
+    return this.#withBindingsForRun(runId, (bindings) => {
       const total = {
         reconciledCount: 0,
         heldUnknownCount: 0,
@@ -801,7 +796,7 @@ export class ExecutionAdmissionKernel {
     const affected = new Set<string>();
     let voidedReservations = 0;
     let heldUnknownReservations = 0;
-    this.#withKnownBindings((bindings) => {
+    this.#withBindingsForRun(runId, (bindings) => {
       for (const binding of bindings) {
         const report = cancelRunTreeAndAdmission(
           binding.driver,
@@ -840,7 +835,7 @@ export class ExecutionAdmissionKernel {
     const affected = new Set<string>();
     let voidedReservations = 0;
     let heldUnknownReservations = 0;
-    this.#withKnownBindings((bindings) => {
+    this.#withBindingsForRun(runId, (bindings) => {
       for (const binding of bindings) {
         const report = binding.repository.cancel(runId, {
           reason,
@@ -957,6 +952,7 @@ export class ExecutionAdmissionKernel {
     this.#byWorkspace.clear();
     this.#runStatePath.clear();
     this.#knownPaths.clear();
+    this.#journalCursors.clear();
   }
 
   #registerPaths(
@@ -982,7 +978,7 @@ export class ExecutionAdmissionKernel {
         ownerPid: this.#ownerPid,
       }),
       aliases: new Set([workspaceAlias, paths.projectDir]),
-      lastJournalSequence: 0,
+      lastJournalSequence: this.#journalCursors.get(paths.stateDbPath) ?? 0,
       clientRefs: 0,
     };
     try {
@@ -1035,8 +1031,28 @@ export class ExecutionAdmissionKernel {
     }
   }
 
-  #unregisterBinding(binding: WorkspaceBinding): void {
+  #withBindingsForRun<T>(
+    runId: string,
+    operation: (bindings: readonly WorkspaceBinding[]) => T,
+  ): T {
+    const statePath = this.#runStatePath.get(runId)?.statePath;
+    const paths = statePath === undefined ? undefined : this.#knownPaths.get(statePath);
+    if (paths === undefined) return this.#withKnownBindings(operation);
+    const binding = this.#registerPaths(paths, paths.projectDir, false);
+    try {
+      return operation([binding]);
+    } finally {
+      this.#evictIdleBinding(binding);
+    }
+  }
+
+  #unregisterBinding(binding: WorkspaceBinding, idle = false): void {
     this.#byStatePath.delete(binding.paths.stateDbPath);
+    if (idle) {
+      this.#journalCursors.set(binding.paths.stateDbPath, binding.lastJournalSequence);
+    } else {
+      this.#journalCursors.delete(binding.paths.stateDbPath);
+    }
     for (const alias of binding.aliases) {
       if (this.#byWorkspace.get(alias) === binding) {
         this.#byWorkspace.delete(alias);
@@ -1044,7 +1060,11 @@ export class ExecutionAdmissionKernel {
     }
     for (const [runId, bound] of this.#runStatePath) {
       if (bound.statePath === binding.paths.stateDbPath) {
-        this.#runStatePath.delete(runId);
+        if (idle) {
+          this.#runStatePath.set(runId, { ...bound, live: false });
+        } else {
+          this.#runStatePath.delete(runId);
+        }
         this.#listeners.delete(runId);
         this.#criticalListeners.delete(runId);
       }
@@ -1062,7 +1082,7 @@ export class ExecutionAdmissionKernel {
     if ([...this.#active.values()].some((active) => active.binding === binding)) return;
     if ([...this.#pending.values()].some((pending) => pending.binding === binding)) return;
     if (this.#byStatePath.get(binding.paths.stateDbPath) === binding) {
-      this.#unregisterBinding(binding);
+      this.#unregisterBinding(binding, true);
     }
   }
 
