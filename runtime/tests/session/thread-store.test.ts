@@ -6,6 +6,7 @@ import {
   readFileSync,
   rmSync,
   writeFileSync,
+  chmodSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -317,6 +318,39 @@ describe("FileThreadStore.appendItems / loadHistory", () => {
 });
 
 describe("FileThreadStore.archiveThread / listThreads", () => {
+  it("waits for a live writer to stop before removing its late display artifacts", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-artifact-live-"));
+    const rollout = openStore({ cwd, sessionId: "artifact-live" });
+    const artifacts = join(rollout.store.sessionDir, "display-artifacts");
+    try {
+      const store = new FileThreadStore({ agencHome, cwd });
+      store.createThread({ threadId: "artifact-live", rolloutStore: rollout });
+      store.archiveThread({ threadId: "artifact-live" });
+      mkdirSync(artifacts);
+      writeFileSync(join(artifacts, "late"), "late completion");
+      store.shutdownThread("artifact-live");
+      expect(existsSync(artifacts)).toBe(false);
+    } finally { rollout.close(); rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it("retries artifact cleanup after an archive committed before removal failed", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-artifact-retry-"));
+    const rollout = openStore({ cwd, sessionId: "artifact-retry" });
+    const artifacts = join(rollout.store.sessionDir, "display-artifacts");
+    try {
+      const store = new FileThreadStore({ agencHome, cwd });
+      store.createThread({ threadId: "artifact-retry", rolloutStore: rollout });
+      store.shutdownThread("artifact-retry");
+      rollout.close();
+      mkdirSync(artifacts);
+      writeFileSync(join(artifacts, "held"), "x");
+      chmodSync(artifacts, 0o000);
+      expect(() => store.archiveThread({ threadId: "artifact-retry" })).toThrow();
+      chmodSync(artifacts, 0o700);
+      store.archiveThread({ threadId: "artifact-retry" });
+      expect(existsSync(artifacts)).toBe(false);
+    } finally { try { chmodSync(artifacts, 0o700); } catch { /* absent */ } rollout.close(); rmSync(cwd, { recursive: true, force: true }); }
+  });
   it("archived threads do not appear in listThreads() without archived=true", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const active = openStore({ cwd, sessionId: "active" });
@@ -512,6 +546,23 @@ describe("FileThreadStore.archiveThread / listThreads", () => {
     } finally {
       fixture.close();
     }
+  });
+
+  it("retries a deferred foreign archive after its writer disappears", () => {
+    const fixture = openForeignArchiveFixture("foreign-retry");
+    const { originalPath, owner, daemon, rollout } = fixture;
+    const artifacts = join(dirname(originalPath), "display-artifacts");
+    try {
+      mkdirSync(artifacts);
+      writeFileSync(join(artifacts, "late"), "late completion");
+      daemon.archiveThread({ threadId: "foreign-retry" });
+      expect(existsSync(artifacts)).toBe(true);
+      owner.discardThread("foreign-retry");
+      rollout.close();
+      daemon.archiveThread({ threadId: "foreign-retry" });
+      expect(existsSync(artifacts)).toBe(false);
+      expect(existsSync(originalPath)).toBe(false);
+    } finally { fixture.close(); }
   });
 
   it("archives a rollout whose writer has gone away, appending the metadata line", () => {

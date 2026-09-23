@@ -34,6 +34,7 @@
 
 import { randomUUID } from "node:crypto";
 import { persistDisplayAttachments } from "./display-artifact-store.js";
+import { boundDisplayCompletionEvent } from "./display-completion.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readPersistedUserStopState, type RolloutItem } from "./rollout-item.js";
 import type { ReadOnlyDelegationConstraint } from "../agents/readonly-delegation.js";
@@ -4746,21 +4747,23 @@ export class Session {
       );
     }
     if (event.msg.type === "tool_call_completed") {
-      const pending = event.msg.payload.metadata?.displayAttachments;
-      if (Array.isArray(pending) && this.rolloutStore) {
-        const { displayAttachments: _pending, ...metadata } = event.msg.payload.metadata ?? {};
-        event = {
-          ...event,
+      let completion = boundDisplayCompletionEvent(event as Parameters<typeof boundDisplayCompletionEvent>[0]);
+      const pending = completion.msg.payload.metadata?.displayAttachments;
+      if (Array.isArray(pending) && pending.length > 0 && this.rolloutStore) {
+        const { displayAttachments: _pending, ...metadata } = completion.msg.payload.metadata ?? {};
+        completion = {
+          ...completion,
           msg: {
-            ...event.msg,
+            ...completion.msg,
             payload: {
-              ...event.msg.payload,
+              ...completion.msg.payload,
               metadata,
               displayAttachments: persistDisplayAttachments(this.rolloutStore.store.sessionDir, pending as import("../mcp-client/display-attachments.js").DisplayAttachment[]),
             },
           },
         };
       }
+      event = completion;
     }
     if (
       event.msg.type === "context_compacted" ||

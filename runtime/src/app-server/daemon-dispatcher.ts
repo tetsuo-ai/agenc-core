@@ -1325,16 +1325,29 @@ export class AgenCDaemonJsonRpcDispatcher {
           ),
         );
       case "session.transcript.v2":
-        return successResponse(
-          id,
-          await this.#agentManager.getSessionTranscriptV2(
+        {
+          const transcript = await this.#agentManager.getSessionTranscriptV2(
             validateSessionTranscriptV2Params(params),
-          ),
-        );
+          );
+          const clientMinor = Number(connection.initializeState?.clientProtocol.version.split(".")[1] ?? 0);
+          return successResponse(id, clientMinor >= 17 ? transcript : {
+            ...transcript,
+            events: transcript.events?.filter(event => event.type !== "tool_call_completed"),
+          });
+        }
       case "session.artifact.read":
-        return successResponse(id, await this.#agentManager.readSessionArtifact(
-          validateSessionArtifactReadParams(params),
-        ));
+        {
+          const readParams = validateSessionArtifactReadParams(params);
+          const clientMinor = Number(connection.initializeState?.clientProtocol.version.split(".")[1] ?? 0);
+          if (clientMinor < 18 && (readParams.offset !== undefined || readParams.length !== undefined)) {
+            return errorResponse(id, -32000, "Chunked artifact reads require protocol 1.18", { code: "PROTOCOL_VERSION_UNSUPPORTED" });
+          }
+          const chunk = await this.#agentManager.readSessionArtifact(readParams);
+          if (clientMinor < 18 && chunk.nextOffset !== null) {
+            return errorResponse(id, -32000, "Artifact is too large for protocol 1.17", { code: "PROTOCOL_VERSION_UNSUPPORTED" });
+          }
+          return successResponse(id, chunk);
+        }
       case "session.cancelTurn":
         return successResponse(
           id,
@@ -3411,10 +3424,12 @@ function validateSessionTranscriptV2Params(
 }
 
 function validateSessionArtifactReadParams(params: JsonObject): SessionArtifactReadParams {
-  const validated = validateObjectShape(params, { methodName: "session.artifact.read", stringFields: ["sessionId", "id"] });
+  const validated = validateObjectShape(params, { methodName: "session.artifact.read", stringFields: ["sessionId", "id"], numberFields: ["offset", "length"] });
   validateRequiredString(validated, "session.artifact.read", "sessionId");
   validateRequiredString(validated, "session.artifact.read", "id");
   if (typeof validated.id !== "string" || !/^[a-f0-9]{64}$/u.test(validated.id)) throw invalidParams("session.artifact.read.id must be a SHA-256 digest");
+  if (validated.offset !== undefined && (typeof validated.offset !== "number" || !Number.isSafeInteger(validated.offset) || validated.offset < 0 || validated.offset > 32 * 1024 * 1024)) throw invalidParams("session.artifact.read.offset is invalid");
+  if (validated.length !== undefined && (typeof validated.length !== "number" || !Number.isSafeInteger(validated.length) || validated.length < 1 || validated.length > 512 * 1024)) throw invalidParams("session.artifact.read.length is invalid");
   return validated as SessionArtifactReadParams;
 }
 

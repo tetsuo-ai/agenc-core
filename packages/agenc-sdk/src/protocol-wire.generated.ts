@@ -35,7 +35,7 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.16 adds project trust for a working directory (`project.trustStatus`,
  * `project.trust`), resolved to the project root a session there would use.
  * 1.17 adds a bounded routine session preparation handshake.
- * 1.18 adds display attachment events and session-scoped artifact reads.
+ * 1.18 adds display attachment events and chunked artifact reads by digest.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
@@ -865,6 +865,8 @@ export interface SessionTranscriptV2Params extends JsonObject {
 export interface SessionArtifactReadParams extends JsonObject {
     readonly sessionId: string;
     readonly id: string;
+    readonly offset?: number;
+    readonly length?: number;
 }
 
 export interface SessionCancelTurnParams extends JsonObject {
@@ -2247,6 +2249,8 @@ export interface SessionArtifactReadResult extends JsonObject {
     readonly encoding: "base64";
     readonly data: string;
     readonly size: number;
+    readonly offset: number;
+    readonly nextOffset: number | null;
 }
 
 export interface SessionCancelTurnResult extends JsonObject {

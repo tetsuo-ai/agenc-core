@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,7 @@ import { canonicalRemoteWorkspace, pathWithin, RemoteAccessBoundary } from "../.
 import { RemoteService } from "../../src/remote/service.js";
 import type { RemoteBackend, RemoteBackendPoll, RemotePairParams } from "../../src/remote/types.js";
 import type { AgenCDaemonResponse, JsonObject } from "../../src/app-server/protocol/index.js";
+import { readDisplayArtifactChunk } from "../../src/session/display-artifact-store.js";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); vi.useRealTimers(); });
@@ -48,6 +50,36 @@ function fixture() {
 }
 
 describe("daemon browser remote lifecycle", () => {
+  it("delivers a 13 MiB artifact as authenticated responses below the remote frame limit", async () => {
+    const f = fixture(); await f.approve();
+    const bytes = randomBytes(13 * 1024 * 1024);
+    const id = createHash("sha256").update(bytes).digest("hex");
+    const sessionDir = join(f.workspace, "session");
+    mkdirSync(join(sessionDir, "display-artifacts"), { recursive: true });
+    writeFileSync(join(sessionDir, "display-artifacts", id), bytes);
+    f.dispatch.mockImplementation(async (message) => {
+      const params = message.params as { offset: number };
+      const chunk = readDisplayArtifactChunk(sessionDir, id, params.offset);
+      return { jsonrpc: "2.0", id: message.id as string, result: {
+        sessionId: "allowed", id, encoding: "base64", data: chunk.data.toString("base64"), size: chunk.size,
+        offset: params.offset, nextOffset: chunk.nextOffset,
+      } };
+    });
+    let offset = 0;
+    const chunks: Buffer[] = [];
+    for (let index = 0;; index += 1) {
+      f.sockets[0]!.emit("message", f.frame(`chunk-${index}`, "session.artifact.read", { sessionId: "allowed", id, offset }));
+      await vi.advanceTimersByTimeAsync(0);
+      const frame = f.sockets[0]!.sent[index]!;
+      expect(Buffer.byteLength(frame)).toBeLessThan(1024 * 1024);
+      const response = JSON.parse((JSON.parse(frame) as { payload: string }).payload) as { result: { data: string; nextOffset: number | null } };
+      chunks.push(Buffer.from(response.result.data, "base64"));
+      if (response.result.nextOffset === null) break;
+      offset = response.result.nextOffset;
+    }
+    expect(createHash("sha256").update(Buffer.concat(chunks)).digest("hex")).toBe(id);
+    expect(f.sockets[0]!.readyState).toBe(1);
+  });
   it("is disabled by default and idempotent; capability inspection creates no pairing", () => {
     const f = fixture(); expect(f.service.status().state).toBe("stopped");
     expect(f.service.capabilities().requiresLocalApproval).toBe(true);

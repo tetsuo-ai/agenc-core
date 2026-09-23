@@ -27,7 +27,7 @@ import {
   resolve,
 } from "node:path";
 import { randomUUID } from "node:crypto";
-import { readDisplayArtifact } from "../session/display-artifact-store.js";
+import { readDisplayArtifactChunk } from "../session/display-artifact-store.js";
 import type { LiveApprovalBroker } from "./live-approval-broker.js";
 import { permissionGrantsFromToolPermissionContext } from "../permissions/permission-grants.js";
 import { isDeepStrictEqual } from "node:util";
@@ -3552,10 +3552,10 @@ export class AgenCDaemonAgentManager {
     if (!thread?.rolloutPath) {
       throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", "session artifact not found");
     }
-    let bytes: Buffer;
-    try { bytes = readDisplayArtifact(dirname(thread.rolloutPath), params.id); }
+    let chunk: ReturnType<typeof readDisplayArtifactChunk>;
+    try { chunk = readDisplayArtifactChunk(dirname(thread.rolloutPath), params.id, params.offset ?? 0, params.length); }
     catch { throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", "session artifact not found"); }
-    return { sessionId: params.sessionId, id: params.id, encoding: "base64", data: bytes.toString("base64"), size: bytes.length };
+    return { sessionId: params.sessionId, id: params.id, encoding: "base64", data: chunk.data.toString("base64"), size: chunk.size, offset: params.offset ?? 0, nextOffset: chunk.nextOffset };
   }
 
   /**

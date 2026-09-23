@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
-import { realpath, readFile, stat } from "node:fs/promises";
+import { realpath } from "node:fs/promises";
 import { basename, extname, isAbsolute, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import type { JsonValue } from "../app-server/protocol/index.js";
 import { inspectImageBytes } from "../utils/image-validation.js";
+import { redactSecretsInValue } from "../secrets/sanitizer.js";
+import { assertCandidateUnchanged, bindVerifiedRoot, closeVerifiedHandle, DEFAULT_VERIFIED_READ_CONTEXT, descriptorRelativePath, identityFromStats, openVerifiedCandidate, verifyParentChain, type VerifiedReadContext } from "../fs/verified-read.js";
 
 export const DISPLAY_JSON_LIMIT = 512 * 1024;
 export const DISPLAY_BINARY_LIMIT = 5 * 1024 * 1024;
@@ -92,7 +94,7 @@ function makeAttachment(kind: DisplayAttachment["kind"], title: string, mimeType
 }
 function within(path: string, root: string): boolean { const rel = relative(root, path); return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)); }
 
-export async function validateDisplayBlock(block: Record<string, unknown>, roots: readonly string[]): Promise<{ attachment: DisplayAttachment; caption: string }> {
+export async function validateDisplayBlock(block: Record<string, unknown>, roots: readonly string[], readContext: VerifiedReadContext = DEFAULT_VERIFIED_READ_CONTEXT): Promise<{ attachment: DisplayAttachment; caption: string }> {
   if (block.type === "resource") {
     const resource = block.resource as Record<string, unknown> | undefined;
     const mimeType = resource?.mimeType;
@@ -101,10 +103,10 @@ export async function validateDisplayBlock(block: Record<string, unknown>, roots
     const bytes = Buffer.from(resource.text, "utf8");
     if (bytes.length > DISPLAY_JSON_LIMIT) fail(`${kind} exceeds 512 KiB`);
     let source: unknown;
-    try { source = JSON.parse(resource.text); } catch { fail("invalid JSON"); }
+    try { source = redactSecretsInValue(JSON.parse(resource.text)); } catch { fail("invalid JSON"); }
     if (kind === "chart") {
       const parsed = chartSchema.safeParse(source);
-      if (!parsed.success) fail(parsed.error.issues.slice(0, 3).map(issue => `${issue.path.join(".") || kind}: ${issue.message}`).join("; "));
+      if (!parsed.success) fail("invalid chart schema");
       const data = parsed.data;
       const title = safeTitle(data.title);
       const canonicalBytes = Buffer.from(JSON.stringify(data), "utf8");
@@ -123,7 +125,7 @@ export async function validateDisplayBlock(block: Record<string, unknown>, roots
       return { attachment, caption: `[Shown to the user: chart "${title}", pie, ${data.slices.length} slices]` };
     }
     const parsed = tableSchema.safeParse(source);
-    if (!parsed.success) fail(parsed.error.issues.slice(0, 3).map(issue => `${issue.path.join(".") || kind}: ${issue.message}`).join("; "));
+    if (!parsed.success) fail("invalid table schema");
     const data = parsed.data;
     const title = safeTitle(data.title);
     const canonicalBytes = Buffer.from(JSON.stringify(data), "utf8");
@@ -146,18 +148,41 @@ export async function validateDisplayBlock(block: Record<string, unknown>, roots
     if (typeof block.name !== "string" || !safeTitle(block.name)) fail("file link needs a name");
     let path: string;
     try { path = fileURLToPath(block.uri); } catch { fail("invalid file URI"); }
-    let actual: string;
-    try { actual = await realpath(path); } catch { fail("file does not exist"); }
     const realRoots = await Promise.all(roots.map(root => realpath(root).catch(() => undefined)));
-    if (!realRoots.some(root => root && within(actual, root))) fail("file is outside the plugin data directory and session workspace");
-    const info = await stat(actual);
-    if (!info.isFile()) fail("file link must name a regular file");
-    if (info.size > DISPLAY_FILE_LIMIT) fail("file exceeds 32 MiB");
-    const bytes = await readFile(actual);
-    if (bytes.length > DISPLAY_FILE_LIMIT) fail("file exceeds 32 MiB");
-    const title = safeTitle(block.name) || basename(actual);
+    let bytes: Buffer | undefined;
+    for (const rootPath of realRoots) {
+      if (!rootPath || !within(path, rootPath) || path === rootPath) continue;
+      const signal = new AbortController().signal;
+      const root = await bindVerifiedRoot(rootPath, signal, readContext);
+      if (!root) continue;
+      try {
+        const rel = relative(rootPath, path);
+        const handle = await openVerifiedCandidate(root, rel, signal, readContext);
+        if (!handle) continue;
+        try {
+          const before = identityFromStats(await handle.stat({ bigint: true }));
+          if (before.size > BigInt(DISPLAY_FILE_LIMIT)) fail("file exceeds 32 MiB");
+          const chunks: Buffer[] = [];
+          let length = 0;
+          for (;;) {
+            const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, DISPLAY_FILE_LIMIT + 1 - length));
+            const { bytesRead } = await handle.read(chunk, 0, chunk.length, null);
+            if (bytesRead === 0) break;
+            length += bytesRead;
+            if (length > DISPLAY_FILE_LIMIT) fail("file exceeds 32 MiB");
+            chunks.push(chunk.subarray(0, bytesRead));
+          }
+          await assertCandidateUnchanged(handle, descriptorRelativePath(root, rel, readContext), before, signal, readContext);
+          if (!(await verifyParentChain(root, rel, signal, readContext))) fail("file link changed during read");
+          bytes = Buffer.concat(chunks, length);
+        } finally { await closeVerifiedHandle(handle, signal, readContext); }
+      } finally { await closeVerifiedHandle(root.handle, signal, readContext); }
+      if (bytes) break;
+    }
+    if (!bytes) fail("file is outside the plugin data directory and session workspace or is not a regular file");
+    const title = safeTitle(block.name) || basename(path);
     const inferredImages: Readonly<Record<string, string>> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" };
-    const mimeType = typeof block.mimeType === "string" ? block.mimeType : inferredImages[extname(actual).toLowerCase()] ?? "application/octet-stream";
+    const mimeType = typeof block.mimeType === "string" ? block.mimeType : inferredImages[extname(path).toLowerCase()] ?? "application/octet-stream";
     if (mimeType.startsWith("image/")) {
       if (!["image/png", "image/jpeg", "image/webp", "image/gif"].includes(mimeType)) fail("unsupported image MIME type");
       if (bytes.length > DISPLAY_BINARY_LIMIT) fail("image exceeds 5 MiB");

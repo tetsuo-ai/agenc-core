@@ -10,7 +10,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -653,7 +653,7 @@ describe("AgenC background agent lifecycle", () => {
     }
   });
 
-  it("reads a display artifact only through its owning session after a manager restart", async () => {
+  it("reads a 13 MiB artifact through bounded session-scoped responses after a manager restart", async () => {
     const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
     const first = openRollout(cwd, "conv-display-one");
     const second = openRollout(cwd, "conv-display-two");
@@ -663,19 +663,30 @@ describe("AgenC background agent lifecycle", () => {
         threadStore.createThread({ threadId: id, rolloutStore: rollout, source: "cli_main", cwd });
         threadStore.shutdownThread(id);
       }
-      const bytes = Buffer.from("BEGIN:VCALENDAR");
+      const bytes = randomBytes(13 * 1024 * 1024);
       const id = createHash("sha256").update(bytes).digest("hex");
-      const file = join(cwd, "talk.ics"); writeFileSync(file, bytes);
-      const display = await validateDisplayBlock({ type: "resource_link", uri: pathToFileURL(file).href, name: "talk.ics", mimeType: "text/calendar" }, [cwd]);
+      const file = join(cwd, "large.bin"); writeFileSync(file, bytes);
+      const display = await validateDisplayBlock({ type: "resource_link", uri: pathToFileURL(file).href, name: "large.bin" }, [cwd]);
       const stored = persistDisplayAttachments(first.store.sessionDir, [display.attachment]);
       first.appendRollout({ type: "event_msg", payload: { id: "display-complete", seq: 1, msg: { type: "tool_call_completed", payload: { callId: "call-1", result: '[Shown to the user: file "talk.ics"]', isError: false, displayAttachments: stored } } } });
       first.flushDurable();
       const sessionManager = new AgenCDaemonSessionManager({ createSessionId: () => "conv-display-one" });
       await sessionManager.createSession({ agentId: "agent-display", cwd });
       const restarted = new AgenCDaemonAgentManager({ threadStore, sessionManager });
-      await expect(restarted.readSessionArtifact({ sessionId: "conv-display-one", id })).resolves.toMatchObject({ sessionId: "conv-display-one", id, data: bytes.toString("base64") });
+      let offset = 0;
+      const chunks: Buffer[] = [];
+      for (;;) {
+        const response = await restarted.readSessionArtifact({ sessionId: "conv-display-one", id, offset });
+        expect(response).toMatchObject({ sessionId: "conv-display-one", id, size: bytes.length, offset });
+        expect(Buffer.byteLength(JSON.stringify({ jsonrpc: "2.0", id: "read", result: response }))).toBeLessThan(1024 * 1024);
+        chunks.push(Buffer.from(response.data, "base64"));
+        if (response.nextOffset === null) break;
+        offset = response.nextOffset;
+      }
+      expect(createHash("sha256").update(Buffer.concat(chunks)).digest("hex")).toBe(id);
       await expect(restarted.getSessionTranscriptV2({ sessionId: "conv-display-one" })).resolves.toMatchObject({ events: expect.arrayContaining([expect.objectContaining({ type: "tool_call_completed", payload: expect.objectContaining({ displayAttachments: stored }) })]) });
       await expect(restarted.readSessionArtifact({ sessionId: "conv-display-two", id })).rejects.toThrow("session artifact not found");
+      first.close();
       threadStore.archiveThread({ threadId: "conv-display-one" });
       expect(() => readDisplayArtifact(first.store.sessionDir, id)).toThrow();
     } finally {
@@ -6517,6 +6528,7 @@ describe("AgenC background agent lifecycle", () => {
         capabilities: {},
       },
     });
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.18.0");
     expect(connection.initializeState).toMatchObject({
       protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
       clientProtocol: { version: "1.0.0" },

@@ -55,11 +55,16 @@ export function daemonTranscriptSnapshotEvents(
       !Number.isSafeInteger(notice.committedSequence) ||
       notice.committedSequence < 0 || notice.committedSequence > snapshot.asOfSequence ||
       !isRecord(notice.payload) ||
-      (notice.type !== "token_count" && notice.type !== "session_usage" && notice.type !== "turn_failed" && notice.type !== "turn_aborted") ||
+      (notice.type !== "token_count" && notice.type !== "session_usage" && notice.type !== "turn_failed" && notice.type !== "turn_aborted" && notice.type !== "tool_call_completed") ||
       (notice.type === "session_usage" && (
         !isAdmissionUsageSummary(notice.payload) || notice.payload.runId !== snapshot.runId
       )) ||
-      (notice.type !== "token_count" && notice.type !== "session_usage" && classifyTurnTerminal(notice) === undefined)
+      (notice.type === "tool_call_completed" && (
+        typeof notice.payload.callId !== "string" ||
+        !Array.isArray(notice.payload.displayAttachments) ||
+        notice.payload.displayAttachments.length === 0
+      )) ||
+      (notice.type !== "token_count" && notice.type !== "session_usage" && notice.type !== "tool_call_completed" && classifyTurnTerminal(notice) === undefined)
     ) {
       throw new Error("Daemon returned an invalid transcript notice");
     }

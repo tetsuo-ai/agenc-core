@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AuthBackend } from "../auth/backend.js";
 import { createTempWorkspaceFixture } from "../helpers/temp-workspace.js";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
+import { sessionTranscriptV2FromRollout } from "./background-agent-runner.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import {
   AgenCDaemonJsonRpcDispatcher,
@@ -94,10 +95,24 @@ function daemonMethodCapabilities(
 }
 
 describe("session.artifact.read wire contract", () => {
+  it("omits attachment transcript events for a client negotiating 1.16", async () => {
+    const manager = new AgenCDaemonAgentManager();
+    const snapshot = sessionTranscriptV2FromRollout([{ type: "event_msg", payload: { id: "event", eventId: "event", seq: 1, msg: { type: "tool_call_completed", payload: { callId: "c", result: "shown", isError: false, displayAttachments: [{ id: "a".repeat(64), digest: "a".repeat(64), kind: "file", title: "F", mimeType: "text/plain", size: 1 }] } } } }], "one", "run");
+    vi.spyOn(manager, "getSessionTranscriptV2").mockResolvedValue(snapshot);
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: new AgenCDaemonSessionManager() });
+    const older = dispatcher.createConnection({ sendNotification: () => {} });
+    await initialize(older, "1.16.0");
+    const oldResult = await older.dispatch(request("old", "session.transcript.v2", { sessionId: "one" }));
+    expect((oldResult.result as typeof snapshot).events).toEqual([]);
+    const current = dispatcher.createConnection({ sendNotification: () => {} });
+    await initialize(current, "1.18.0");
+    const currentResult = await current.dispatch(request("new", "session.transcript.v2", { sessionId: "one" }));
+    expect((currentResult.result as typeof snapshot).events).toHaveLength(1);
+  });
   it("requires a digest and routes an authenticated session-scoped id", async () => {
     const agentManager = new AgenCDaemonAgentManager();
     const id = "a".repeat(64);
-    const read = vi.spyOn(agentManager, "readSessionArtifact").mockResolvedValue({ sessionId: "one", id, encoding: "base64", data: "YQ==", size: 1 });
+    const read = vi.spyOn(agentManager, "readSessionArtifact").mockResolvedValue({ sessionId: "one", id, encoding: "base64", data: "YQ==", size: 1, offset: 0, nextOffset: null });
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager, sessionManager: new AgenCDaemonSessionManager() });
     const connection = dispatcher.createConnection({ sendNotification: () => {} });
     await initialize(connection, "1.17.0");
@@ -105,6 +120,11 @@ describe("session.artifact.read wire contract", () => {
     expect(read).not.toHaveBeenCalled();
     await expect(connection.dispatch(request("good", "session.artifact.read", { sessionId: "one", id }))).resolves.toMatchObject({ result: { sessionId: "one", id, data: "YQ==" } });
     expect(read).toHaveBeenCalledWith({ sessionId: "one", id });
+    read.mockResolvedValue({ sessionId: "one", id, encoding: "base64", data: "YQ==", size: 1024 * 1024, offset: 0, nextOffset: 1 });
+    await expect(connection.dispatch(request("legacy-large", "session.artifact.read", { sessionId: "one", id }))).resolves.toMatchObject({ error: { data: { code: "PROTOCOL_VERSION_UNSUPPORTED" } } });
+    const current = dispatcher.createConnection({ sendNotification: () => {} });
+    await initialize(current, "1.18.0");
+    await expect(current.dispatch(request("chunk", "session.artifact.read", { sessionId: "one", id, offset: 0, length: 1 }))).resolves.toMatchObject({ result: { nextOffset: 1 } });
   });
 });
 

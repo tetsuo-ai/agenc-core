@@ -34,6 +34,7 @@ export const MCP_TOOL_RESULT_HARD_LIMIT_BYTES = 5 * 1024 * 1024;
 export const MAX_MCP_TOOL_RESULT_CONTENT_BLOCKS = 1_024;
 export const MAX_MCP_BASE64_INSPECTION_BYTES = 8 * 1024 * 1024;
 const MAX_MCP_INLINE_IMAGE_BYTES_PER_RESULT = 4 * 1024 * 1024;
+const MAX_DISPLAY_INLINE_COMPLETION_BYTES = 3.5 * 1024 * 1024;
 
 const MAX_MCP_META_BYTES = 64 * 1024;
 const MAX_MCP_META_NODES = 4_096;
@@ -603,6 +604,8 @@ export async function normalizeMcpToolOutput(
           const shown = await validateDisplayBlock(displayRecord ?? {}, options.displayRoots ?? []);
           const imageBytes = state.displayAttachments.filter(item => item.kind === "image").reduce((sum, item) => sum + item.size, 0);
           if (shown.attachment.kind === "image" && imageBytes + shown.attachment.size > DISPLAY_BINARY_LIMIT) throw new Error("images exceed 5 MiB per result");
+          const inlineBytes = [...state.displayAttachments, shown.attachment].reduce((sum, item) => sum + Buffer.byteLength(JSON.stringify(item), "utf8"), 0);
+          if (inlineBytes > MAX_DISPLAY_INLINE_COMPLETION_BYTES) throw new Error("display attachments exceed journal budget");
           state.displayAttachments.push(shown.attachment);
           appendStaticText(state, shown.caption);
         } catch (error) {

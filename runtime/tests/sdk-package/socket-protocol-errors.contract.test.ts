@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
@@ -67,6 +67,41 @@ describe("SDK socket protocol failures", () => {
     if (server !== undefined) await new Promise<void>((resolve) => server.close(() => resolve()));
     if (root !== undefined) await rm(root, { recursive: true, force: true });
   });
+
+  it("reassembles a 13 MiB display artifact from bounded socket responses", async () => {
+    const bytes = randomBytes(13 * 1024 * 1024);
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    let input = "";
+    peer.on("data", (chunk: Buffer) => {
+      input += chunk.toString("utf8");
+      for (;;) {
+        const newline = input.indexOf("\n");
+        if (newline < 0) break;
+        const request = JSON.parse(input.slice(0, newline)) as { id: string; method: string; params: { offset: number } };
+        input = input.slice(newline + 1);
+        expect(request.method).toBe("session.artifact.read");
+        const offset = request.params.offset;
+        const end = Math.min(bytes.length, offset + 512 * 1024);
+        const frame = JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {
+          sessionId: "session", id: digest, encoding: "base64", data: bytes.subarray(offset, end).toString("base64"),
+          size: bytes.length, offset, nextOffset: end < bytes.length ? end : null,
+        } }) + "\n";
+        expect(Buffer.byteLength(frame)).toBeLessThan(1024 * 1024);
+        peer.write(frame);
+      }
+    });
+    const chunks: Buffer[] = [];
+    let offset = 0;
+    for (let index = 0;; index += 1) {
+      const response = await transport.request({ jsonrpc: "2.0", id: `chunk-${index}`, method: "session.artifact.read", params: { sessionId: "session", id: digest, offset } });
+      const result = response.result as { data: string; nextOffset: number | null };
+      chunks.push(Buffer.from(result.data, "base64"));
+      if (result.nextOffset === null) break;
+      offset = result.nextOffset;
+    }
+    expect(createHash("sha256").update(Buffer.concat(chunks)).digest("hex")).toBe(digest);
+    expect(onClose).not.toHaveBeenCalled();
+  }, 60_000);
 
   it.each([
     "{malformed",

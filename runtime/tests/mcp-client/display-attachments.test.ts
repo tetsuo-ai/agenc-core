@@ -1,12 +1,26 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+const fileRace = vi.hoisted(() => ({ target: "", switchAncestor: undefined as undefined | (() => Promise<void>) }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const fs = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...fs, realpath: async (...args: Parameters<typeof fs.realpath>) => {
+    const resolved = await fs.realpath(...args);
+    if (String(args[0]) === fileRace.target) await fileRace.switchAncestor?.();
+    return resolved;
+  } };
+});
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtemp, writeFile, symlink, rm, truncate, mkdir } from "node:fs/promises";
+import { mkdtemp, writeFile, symlink, rm, truncate, mkdir, rename } from "node:fs/promises";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { normalizeMcpToolOutput } from "../../src/mcp-client/tool-output.js";
-import { DISPLAY_ATTACHMENT_LIMIT, DISPLAY_JSON_LIMIT } from "../../src/mcp-client/display-attachments.js";
-import { persistDisplayAttachments, readDisplayArtifact } from "../../src/session/display-artifact-store.js";
+import { DISPLAY_ATTACHMENT_LIMIT, DISPLAY_JSON_LIMIT, validateDisplayBlock } from "../../src/mcp-client/display-attachments.js";
+import { DEFAULT_VERIFIED_READ_CONTEXT } from "../../src/fs/verified-read.js";
+import { persistDisplayAttachments, readDisplayArtifact, readDisplayArtifactChunk, DISPLAY_ARTIFACT_CHUNK_BYTES } from "../../src/session/display-artifact-store.js";
+import type { Event } from "../../src/session/event-log.js";
+import { mkSession } from "../fixtures.js";
+import { redactSecretsInValue } from "../../src/secrets/sanitizer.js";
 import { sessionTranscriptV2FromRollout } from "../../src/app-server/background-agent-runner.js";
 import { adaptTranscriptEvents } from "../../src/tui/session-transcript.js";
 
@@ -99,6 +113,100 @@ describe("MCP user audience display attachments", () => {
     const tooLarge = join(root, "large.pdf"); await writeFile(tooLarge, ""); await truncate(tooLarge, 32 * 1024 * 1024 + 1);
     const result = await normalize([{ type: "resource_link", annotations: user, uri: pathToFileURL(tooLarge).href, name: "large.pdf" }], [root]);
     expect(result.content).toContain("32 MiB");
+  });
+
+  it("rejects an ancestor switched to an outside symlink between confinement and open", async () => {
+    const root = await mkdtemp(join(tmpdir(), "display-race-root-")); directories.push(root);
+    const outside = await mkdtemp(join(tmpdir(), "display-race-outside-")); directories.push(outside);
+    const slot = join(root, "slot"); await mkdir(slot);
+    const target = join(slot, "secret.txt"); await writeFile(target, "inside");
+    await writeFile(join(outside, "secret.txt"), "outside secret");
+    let switched = false;
+    const switchAncestor = async () => {
+      if (switched) return;
+      switched = true;
+      await rename(slot, join(root, "parked"));
+      await symlink(outside, slot);
+    };
+    fileRace.target = target;
+    fileRace.switchAncestor = switchAncestor;
+    try {
+      await expect(validateDisplayBlock({ type: "resource_link", uri: pathToFileURL(target).href, name: "secret.txt" }, [root], {
+        ...DEFAULT_VERIFIED_READ_CONTEXT,
+        beforeCandidateOpenForTesting: switchAncestor,
+      })).rejects.toThrow();
+      expect(switched).toBe(true);
+    } finally { fileRace.target = ""; fileRace.switchAncestor = undefined; }
+  });
+
+  it("redacts tables before calculating their content digest and storage bytes", async () => {
+    const result = await normalize([resource("application/vnd.agenc.table+json", { version: 1, title: "T", columns: [{ key: "token", label: "Token" }], rows: [{ token: 42 }] })]);
+    const item = attachments(result)?.[0];
+    expect(item?.data).toMatchObject({ rows: [{ token: "[REDACTED_SECRET]" }] });
+    expect(item?.id).toBe(createHash("sha256").update(JSON.stringify(item?.data)).digest("hex"));
+    const journalCopy = redactSecretsInValue({ displayAttachments: [item] });
+    const replayed = journalCopy.displayAttachments[0]!;
+    expect(createHash("sha256").update(JSON.stringify(replayed.data)).digest("hex")).toBe(replayed.digest);
+    const dir = await mkdtemp(join(tmpdir(), "display-redacted-")); directories.push(dir);
+    persistDisplayAttachments(dir, result.metadata?.displayAttachments as Parameters<typeof persistDisplayAttachments>[1]);
+    expect(readDisplayArtifact(dir, item!.id).toString()).toBe(JSON.stringify(item?.data));
+  });
+
+  it("keeps rejected schema keys out of both model projections", async () => {
+    const result = await normalize([resource("application/vnd.agenc.table+json", { ...table, USER_ONLY_PRIVATE_PAYLOAD: "secret" })]);
+    expect(result.content).toContain("invalid table schema");
+    expect(result.content).not.toContain("USER_ONLY_PRIVATE_PAYLOAD");
+    expect(JSON.stringify(result.codeModeResult)).not.toContain("USER_ONLY_PRIVATE_PAYLOAD");
+  });
+
+  it("bounds the complete completion row when eight near-limit tables are accepted", async () => {
+    const data = { ...table, title: "x".repeat(523_000) };
+    const result = await normalize(Array.from({ length: 8 }, () => resource("application/vnd.agenc.table+json", data)));
+    expect(attachments(result)!.length).toBeLessThan(8);
+    const event: Event = { id: "completion", msg: { type: "tool_call_completed", payload: { callId: "call", result: "ordinary output".repeat(1000), isError: false, metadata: result.metadata } } };
+    const directory = await mkdtemp(join(tmpdir(), "display-row-bound-")); directories.push(directory);
+    const { session } = mkSession();
+    let committed: Event | undefined;
+    session.rolloutStore = { store: { sessionDir: directory }, append: vi.fn((item: Event) => { committed = item; return true; }) } as unknown as typeof session.rolloutStore;
+    session.emit(event);
+    expect(Buffer.byteLength(JSON.stringify(committed))).toBeLessThan(4 * 1024 * 1024);
+    expect(committed?.msg.type === "tool_call_completed" ? committed.msg.payload.displayAttachments?.length : 0).toBeLessThan(8);
+  });
+
+  it("repairs a partial digest path left by an interrupted direct write", async () => {
+    const root = await mkdtemp(join(tmpdir(), "display-partial-root-")); directories.push(root);
+    const session = await mkdtemp(join(tmpdir(), "display-partial-session-")); directories.push(session);
+    const bytes = Buffer.from("BEGIN:VCALENDAR\nEND:VCALENDAR\n");
+    const file = join(root, "talk.ics"); await writeFile(file, bytes);
+    const result = await normalize([{ type: "resource_link", annotations: user, uri: pathToFileURL(file).href, name: "talk.ics", mimeType: "text/calendar" }], [root]);
+    const item = attachments(result)?.[0];
+    expect(item).toBeDefined();
+    await mkdir(join(session, "display-artifacts"));
+    writeFileSync(join(session, "display-artifacts", item!.id), bytes.subarray(0, 10));
+    persistDisplayAttachments(session, result.metadata?.displayAttachments as Parameters<typeof persistDisplayAttachments>[1]);
+    expect(readDisplayArtifact(session, item!.id)).toEqual(bytes);
+  });
+
+  it("serves a 13 MiB file in transport-sized chunks", async () => {
+    const root = await mkdtemp(join(tmpdir(), "display-large-root-")); directories.push(root);
+    const session = await mkdtemp(join(tmpdir(), "display-large-session-")); directories.push(session);
+    const bytes = randomBytes(13 * 1024 * 1024);
+    const file = join(root, "large.bin"); await writeFile(file, bytes);
+    const result = await normalize([{ type: "resource_link", annotations: user, uri: pathToFileURL(file).href, name: "large.bin" }], [root]);
+    const item = attachments(result)?.[0];
+    expect(item).toBeDefined();
+    persistDisplayAttachments(session, result.metadata?.displayAttachments as Parameters<typeof persistDisplayAttachments>[1]);
+    let offset = 0;
+    const chunks: Buffer[] = [];
+    for (;;) {
+      const chunk = readDisplayArtifactChunk(session, item!.id, offset);
+      expect(chunk.data.length).toBeLessThanOrEqual(DISPLAY_ARTIFACT_CHUNK_BYTES);
+      expect(Buffer.byteLength(JSON.stringify({ data: chunk.data.toString("base64") }))).toBeLessThan(1024 * 1024);
+      chunks.push(chunk.data);
+      if (chunk.nextOffset === null) break;
+      offset = chunk.nextOffset;
+    }
+    expect(createHash("sha256").update(Buffer.concat(chunks)).digest("hex")).toBe(item!.id);
   });
 
   it("stores bytes by digest, isolates sessions, survives reread and removes with its session", async () => {
