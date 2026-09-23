@@ -397,10 +397,16 @@ export async function launchBrowser(
     throw missingSandboxExecutionBoundary("browser");
   }
   const env = scrubEnvForChildProcess(process.env);
+  // Crashpad needs writable config and cache directories within the private profile.
+  if (process.platform === "linux") {
+    env.XDG_CONFIG_HOME = options.userDataDir;
+    env.XDG_CACHE_HOME = options.userDataDir;
+  }
   const preparedSpawn = sandboxExecutionBroker.prepareSpawn(
     "browser",
     {
       program: options.executablePath,
+      browserCdp: true,
       args: buildChromiumArgs(options),
       cwd: sandboxExecutionBroker.cwd,
       env,
@@ -422,10 +428,12 @@ export async function launchBrowser(
   // the profile marker. A daemon crash before publication closes fd 5, so the
   // gated child exits without ever opening the profile.
   const gated = process.platform !== "win32";
+  let browserCdpOverStdio = false;
   const child = preparedSpawn.spawnLifecycleParticipant(
     "browser",
-    (spawnCommand) =>
-      spawn(gated ? "/bin/sh" : spawnCommand.program,
+    (spawnCommand) => {
+      browserCdpOverStdio = spawnCommand.browserCdpOverStdio === true;
+      return spawn(gated ? "/bin/sh" : spawnCommand.program,
         gated
           ? ["-c", 'IFS= read -r gate <&5 || exit 0; [ "$gate" = go ] || exit 0; exec "$@"',
             "agenc-browser-gate", spawnCommand.program, ...spawnCommand.args]
@@ -433,11 +441,16 @@ export async function launchBrowser(
         cwd: spawnCommand.cwd,
         env: spawnCommand.env,
         ...(!gated ? { argv0: spawnCommand.argv0 } : {}),
-        stdio: gated
-          ? ["ignore", "ignore", "pipe", "pipe", "pipe", "pipe"]
-          : ["ignore", "ignore", "pipe", "pipe", "pipe"],
+        stdio: spawnCommand.browserCdpOverStdio
+          ? gated
+            ? ["pipe", "pipe", "pipe", "ignore", "ignore", "pipe"]
+            : ["pipe", "pipe", "pipe"]
+          : gated
+            ? ["ignore", "ignore", "pipe", "pipe", "pipe", "pipe"]
+            : ["ignore", "ignore", "pipe", "pipe", "pipe"],
         detached: process.platform !== "win32",
-      }),
+      });
+    },
   );
   if (child.pid !== undefined) {
     try {
@@ -499,8 +512,12 @@ export async function launchBrowser(
     stderrTail = (stderrTail + chunk).slice(-2000);
   });
 
-  const writePipe = child.stdio?.[3] as Writable | null | undefined;
-  const readPipe = child.stdio?.[4] as Readable | null | undefined;
+  const writePipe = (browserCdpOverStdio
+    ? child.stdin
+    : child.stdio?.[3]) as Writable | null | undefined;
+  const readPipe = (browserCdpOverStdio
+    ? child.stdout
+    : child.stdio?.[4]) as Readable | null | undefined;
   if (
     writePipe === null ||
     writePipe === undefined ||
@@ -545,13 +562,13 @@ export async function launchBrowser(
     } catch (error) {
       const cleanupError = toError(error);
       throw new BrowserLaunchCleanupError(
-        `browser did not establish a CDP pipe: ${detail}. Cleanup also failed: ${cleanupError.message}. If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.`,
+        `browser did not establish a CDP pipe: ${detail}${stderrTail ? ` (${stderrTail.trim()})` : ""}. Cleanup also failed: ${cleanupError.message}. If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.`,
         child,
         cleanupError,
       );
     }
     throw new CdpError(
-      `browser did not establish a CDP pipe: ${detail}. If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.`,
+      `browser did not establish a CDP pipe: ${detail}${stderrTail ? ` (${stderrTail.trim()})` : ""}. If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.`,
     );
   }
   return { child, connection };
