@@ -15,6 +15,7 @@ import { updateMarketplaceInventory } from "../marketplace/inventory.js";
 import {
   formatAgenCPluginCliHelpText,
   parseAgenCPluginCliArgs,
+  pluginListWithCatalog,
   runAgenCPluginCli,
   type AgenCPluginCliOptions,
 } from "./pluginCliCommands.js";
@@ -127,6 +128,22 @@ function marketplaceGitRunner(
 }
 
 describe("agenc plugin CLI", () => {
+  it("marks a signed payload changed at the same version, with the marketplace refresh time", () => {
+    const result = pluginListWithCatalog({ plugins: [{ id: "stonks", name: "stonks", version: "0.2.5",
+      enabled: true, root: "/plugins/stonks", source: "stonks", sourceKind: "marketplace",
+      marketplace: "team", payloadDigest: "sha256:old" }], errors: [] }, {
+      schemaVersion: 1, kind: "agenc.plugin.marketplace.catalog", marketplaces: [{
+        name: "team", sourceType: "local", source: "/market", plugins: [{
+          id: "stonks@team", name: "stonks", marketplace: "team",
+          source: { type: "local", path: "/market/stonks" }, root: "/market",
+          policy: { installation: "AVAILABLE", authentication: "ON_USE" },
+          version: "0.2.5", payloadDigest: "sha256:new", lastRefreshTime: "2026-09-23T00:00:00Z",
+        }],
+      }], errors: [],
+    });
+    expect(result.plugins[0]).toMatchObject({ updateAvailable: true,
+      lastRefreshTime: "2026-09-23T00:00:00Z" });
+  });
   it("documents marketplace and plugin source forms in help text", () => {
     const help = formatAgenCPluginCliHelpText();
 

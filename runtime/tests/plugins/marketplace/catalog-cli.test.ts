@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -8,11 +9,13 @@ import {
   parseQualifiedMarketplacePluginId,
   resolveMarketplaceInstallTarget,
   ensureOfficialMarketplace,
+  refreshStaleMarketplaces,
   OFFICIAL_MARKETPLACE_NAME,
   OFFICIAL_MARKETPLACE_REFRESH_MS,
   OFFICIAL_MARKETPLACE_URL,
 } from "./catalog-cli.js";
 import { addMarketplaceOp } from "./marketplace.js";
+import { pluginSignaturePayloadBytes } from "../resolution.js";
 
 async function tempRuntime(): Promise<{
   readonly root: string;
@@ -100,6 +103,51 @@ async function writeMarketplace(root: string): Promise<string> {
 }
 
 describe("marketplace catalog CLI surface", () => {
+  it("exposes only a cryptographically verified advertised payload digest", async () => {
+    const options = await tempRuntime();
+    const source = await writeMarketplace(join(options.root, "signed-source"));
+    const pluginRoot = join(source, "everywhere");
+    const manifest = await readFile(join(pluginRoot, ".agenc-plugin", "plugin.json"));
+    const files = { "commands/hello.md": `sha256:${createHash("sha256")
+      .update(await readFile(join(pluginRoot, "commands", "hello.md"))).digest("hex")}` };
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    await writeFile(join(options.root, "plugin-publishers.json"), JSON.stringify({ publishers: {
+      team: { publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64") },
+    } }));
+    const signaturePath = join(pluginRoot, ".agenc-plugin", "signature.json");
+    await writeFile(signaturePath, JSON.stringify({ publisher: "team", files,
+      signature: sign(null, pluginSignaturePayloadBytes(manifest, files), privateKey).toString("base64") }));
+    await addMarketplaceOp({ ...options, source, name: "team" });
+    const catalog = await buildMarketplaceCatalog({ ...options, agencHome: options.root }, "desktop", true);
+    const row = catalog.marketplaces[0]?.plugins.find((plugin) => plugin.name === "everywhere");
+    expect(row?.payloadDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
+    await writeFile(join(options.pluginStorageRoot, "marketplaces", "team", "everywhere",
+      ".agenc-plugin", "signature.json"), JSON.stringify({ publisher: "team", files, signature: "AAAA" }));
+    const tampered = await buildMarketplaceCatalog({ ...options, agencHome: options.root }, "desktop", true);
+    expect(tampered.marketplaces[0]?.plugins.find((plugin) => plugin.name === "everywhere")?.payloadDigest)
+      .toBeUndefined();
+  });
+  it("rate limits marketplace refresh from its persisted update time", async () => {
+    const { root, pluginStorageRoot, workspaceRoot } = await tempRuntime();
+    const source = await writeMarketplace(join(root, "source"));
+    const t0 = Date.parse("2026-09-23T00:00:00Z");
+    await addMarketplaceOp({ pluginStorageRoot, workspaceRoot, source,
+      name: "team", now: () => new Date(t0) });
+    const attempts: string[] = [];
+    const upgrade = async (input: { readonly name?: string }) => {
+      attempts.push(input.name ?? "");
+      return { upgraded: [], skipped: [] };
+    };
+    await refreshStaleMarketplaces({ pluginStorageRoot, workspaceRoot,
+      now: () => new Date(t0 + OFFICIAL_MARKETPLACE_REFRESH_MS / 2) }, upgrade);
+    expect(attempts).toEqual([]);
+    await refreshStaleMarketplaces({ pluginStorageRoot, workspaceRoot,
+      now: () => new Date(t0 + OFFICIAL_MARKETPLACE_REFRESH_MS + 1) }, upgrade);
+    expect(attempts).toEqual(["team"]);
+    await refreshStaleMarketplaces({ pluginStorageRoot, workspaceRoot,
+      now: () => new Date(t0 + OFFICIAL_MARKETPLACE_REFRESH_MS + 2) }, upgrade);
+    expect(attempts).toEqual(["team"]);
+  });
   it("gates plugins by product policy", () => {
     expect(
       marketplacePluginSupportsProduct(

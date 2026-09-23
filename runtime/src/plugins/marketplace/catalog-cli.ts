@@ -20,6 +20,8 @@ import { createHash } from "node:crypto";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { normalizeSkillDisplayName, skillDisplayNameFromMarkdown } from "../skill-display-metadata.js";
+import { verifiedAdvertisedPluginPayloadDigest } from "../resolution.js";
+import { updateMarketplaceInventory } from "./inventory.js";
 
 import {
   findInstallableMarketplacePlugin,
@@ -27,6 +29,7 @@ import {
   marketplaceRootDir,
   marketplaceStoreRoot,
   readMarketplaceIndex,
+  upgradeMarketplaceOp,
   type Fetcher,
   type Marketplace,
   type MarketplacePlugin,
@@ -63,6 +66,40 @@ export const OFFICIAL_MARKETPLACE_URL =
  */
 export const OFFICIAL_MARKETPLACE_REFRESH_MS = 60 * 60_000;
 
+async function claimMarketplaceRefresh(
+  options: MarketplaceOperationOptions,
+  name: string,
+): Promise<boolean> {
+  const now = (options.now ?? (() => new Date()))().getTime();
+  return updateMarketplaceInventory({ pluginsDirectory: options.pluginStorageRoot }, (current) => {
+    const record = current[name];
+    if (record === undefined || record.refreshable === false ||
+      now - Math.max(Date.parse(record.lastUpdated), Date.parse(record.lastChecked ?? "") || 0)
+        <= OFFICIAL_MARKETPLACE_REFRESH_MS) {
+      return { inventory: current, result: false };
+    }
+    return { inventory: { ...current,
+      [name]: { ...record, lastChecked: new Date(now).toISOString() } }, result: true };
+  });
+}
+
+/** Refresh configured sources before using their signed payload adverts. */
+export async function refreshStaleMarketplaces(
+  options: MarketplaceOperationOptions,
+  upgrade: typeof upgradeMarketplaceOp = upgradeMarketplaceOp,
+): Promise<void> {
+  const index = await readMarketplaceIndex(options);
+  const now = (options.now ?? (() => new Date()))().getTime();
+  for (const record of Object.values(index.marketplaces)) {
+    if (record.name === OFFICIAL_MARKETPLACE_NAME || record.refreshable === false) continue;
+    if (now - Math.max(Date.parse(record.updatedAt), Date.parse(record.lastCheckedAt ?? "") || 0)
+      <= OFFICIAL_MARKETPLACE_REFRESH_MS) continue;
+    if (!(await claimMarketplaceRefresh(options, record.name))) continue;
+    try { await upgrade({ ...options, name: record.name }); }
+    catch { /* Keep the verified cached marketplace while offline. */ }
+  }
+}
+
 /**
  * Register the official marketplace when the profile has none, and fetch it
  * again once the cached copy is older than the refresh window. Returns true
@@ -85,9 +122,11 @@ export async function ensureOfficialMarketplace(
   // the cached copy: a stale catalog is a catalog, an empty one is an outage.
   const stale =
     official !== undefined &&
-    (options.now ?? (() => new Date()))().getTime() - Date.parse(official.updatedAt) >
+    (options.now ?? (() => new Date()))().getTime() -
+      Math.max(Date.parse(official.updatedAt), Date.parse(official.lastCheckedAt ?? "") || 0) >
       OFFICIAL_MARKETPLACE_REFRESH_MS;
   if (hasAny && !stale) return false;
+  if (stale && !(await claimMarketplaceRefresh(options, OFFICIAL_MARKETPLACE_NAME))) return false;
   try {
     await addMarketplace({
       ...options,
@@ -114,10 +153,13 @@ export interface MarketplaceCatalogPluginRow {
   readonly description?: string;
   /** Manifest version read at the pinned commit, when available. */
   readonly version?: string;
+  readonly payloadDigest?: string;
+  readonly sourceCommit?: string;
+  readonly lastRefreshTime?: string;
   /** Skills the pinned manifest declares, with SKILL.md descriptions. */
   readonly skills?: readonly { name: string; description?: string }[];
   /** Commands the pinned manifest declares. */
-  readonly commands?: readonly { name: string; description?: string }[];
+  readonly commands?: readonly { name: string; description?: string; argumentHint?: string }[];
   /** Absolute path of the plugin logo, present only when it exists. */
   readonly logoPath?: string;
   /**
@@ -274,6 +316,7 @@ interface MarketplaceComponentRow {
   readonly name: string;
   readonly displayName?: string;
   readonly description?: string;
+  readonly argumentHint?: string;
 }
 
 interface PrefetchedCardMeta {
@@ -281,6 +324,7 @@ interface PrefetchedCardMeta {
   readonly displayName?: string;
   readonly description?: string;
   readonly version?: string;
+  readonly payloadDigest?: string;
   readonly interface?: Record<string, unknown>;
   readonly skills?: readonly MarketplaceComponentRow[];
   readonly commands?: readonly MarketplaceComponentRow[];
@@ -357,10 +401,12 @@ function cardComponentRows(value: unknown): readonly MarketplaceComponentRow[] |
     if (name === undefined) return [];
     const displayName = normalizeSkillDisplayName(raw.displayName);
     const description = cardString(raw.description, CARD_DESCRIPTION_MAX);
+    const argumentHint = cardString(raw.argumentHint, 120);
     return [{
       name,
       ...(displayName !== undefined ? { displayName } : {}),
       ...(description !== undefined ? { description } : {}),
+      ...(argumentHint !== undefined ? { argumentHint } : {}),
     }];
   }).slice(0, CARD_LIST_MAX);
   return rows.length > 0 ? rows : undefined;
@@ -414,6 +460,7 @@ function metaFromSidecar(value: unknown, logoPath: string | undefined): Prefetch
     (surface?.displayName as string | undefined);
   const description = cardString(raw.description, CARD_DESCRIPTION_MAX);
   const version = cardString(raw.version, 64);
+  const payloadDigest = cardString(raw.payloadDigest, 71);
   const skills = cardComponentRows(raw.skills);
   const commands = cardComponentRows(raw.commands);
   return {
@@ -421,6 +468,7 @@ function metaFromSidecar(value: unknown, logoPath: string | undefined): Prefetch
     ...(displayName !== undefined ? { displayName } : {}),
     ...(description !== undefined ? { description } : {}),
     ...(version !== undefined ? { version } : {}),
+    ...(payloadDigest !== undefined ? { payloadDigest } : {}),
     ...(surface !== undefined ? { interface: surface } : {}),
     ...(skills !== undefined ? { skills } : {}),
     ...(commands !== undefined ? { commands } : {}),
@@ -430,6 +478,7 @@ function metaFromSidecar(value: unknown, logoPath: string | undefined): Prefetch
 async function prefetchPinnedCardMeta(
   options: MarketplaceOperationOptions,
   plugin: MarketplacePlugin,
+  includePayloadDigest = false,
 ): Promise<PrefetchedCardMeta | undefined> {
   const fetcher = options.fetcher ?? (globalThis.fetch as unknown as Fetcher);
   if (typeof fetcher !== "function") return undefined;
@@ -458,7 +507,11 @@ async function prefetchPinnedCardMeta(
         }
       }
       const metadata = metaFromSidecar(cached, logoPath);
-      if (cached.cardMetadataVersion === CARD_METADATA_VERSION) return metadata;
+      if (cached.cardMetadataVersion === CARD_METADATA_VERSION &&
+        (!includePayloadDigest || metadata.payloadDigest !== undefined ||
+          (typeof cached.digestRetryAfter === "string" &&
+            Date.parse(cached.digestRetryAfter) > (options.now ?? (() => new Date()))().getTime())))
+        return metadata;
       staleCached = metadata;
     }
   } catch {
@@ -470,6 +523,16 @@ async function prefetchPinnedCardMeta(
     MANIFEST_PREFETCH_MAX_BYTES,
   );
   if (manifestBytes === undefined) return staleCached;
+  const signatureUrl = includePayloadDigest
+    ? pinnedRawUrl(plugin.source, ".agenc-plugin/signature.json") : undefined;
+  const signatureBytes = signatureUrl === undefined ? undefined
+    : await fetchBounded(fetcher, signatureUrl, 256 * 1024);
+  let payloadDigest: string | undefined;
+  if (signatureBytes !== undefined && options.agencHome !== undefined) {
+    try { payloadDigest = await verifiedAdvertisedPluginPayloadDigest(manifestBytes, signatureBytes,
+      { agencHome: options.agencHome }); }
+    catch { /* An invalid advertised signature is not a verified update. */ }
+  }
   let manifest: Record<string, unknown>;
   try {
     const parsed: unknown = JSON.parse(
@@ -492,6 +555,10 @@ async function prefetchPinnedCardMeta(
               description:
                 typeof entry === "object" && entry !== null
                   ? (entry as { description?: unknown }).description
+                  : undefined,
+              argumentHint:
+                typeof entry === "object" && entry !== null
+                  ? (entry as { argumentHint?: unknown }).argumentHint
                   : undefined,
             }),
           ),
@@ -538,6 +605,10 @@ async function prefetchPinnedCardMeta(
       : {}),
     ...(description !== undefined ? { description } : {}),
     ...(version !== undefined ? { version } : {}),
+    ...(payloadDigest !== undefined ? { payloadDigest } : {}),
+    ...(includePayloadDigest && options.agencHome !== undefined && payloadDigest === undefined
+      ? { digestRetryAfter: new Date((options.now ?? (() => new Date()))().getTime() +
+        OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString() } : {}),
     ...(surface !== undefined ? { interface: surface } : {}),
     ...(skills !== undefined ? { skills } : {}),
     ...(commands !== undefined ? { commands } : {}),
@@ -560,16 +631,25 @@ async function catalogRowsForMarketplace(
   options: MarketplaceOperationOptions,
   marketplace: Marketplace,
   product: string | undefined,
+  lastRefreshTime: string,
+  includePayloadDigests: boolean,
 ): Promise<readonly MarketplaceCatalogPluginRow[]> {
   const rows: MarketplaceCatalogPluginRow[] = [];
   for (const plugin of marketplace.plugins) {
     if (plugin.policy.installation === "NOT_AVAILABLE") continue;
     if (!marketplacePluginSupportsProduct(plugin.policy, product)) continue;
     const manifestLogo = await resolveLogoPath(marketplace.root, plugin);
-    const prefetched =
-      manifestLogo === undefined
-        ? await prefetchPinnedCardMeta(options, plugin)
-        : undefined;
+    const prefetched = await prefetchPinnedCardMeta(options, plugin, includePayloadDigests);
+    let localPayloadDigest: string | undefined;
+    if (includePayloadDigests && plugin.source.type === "local" && options.agencHome !== undefined) {
+      try {
+        localPayloadDigest = await verifiedAdvertisedPluginPayloadDigest(
+          await readFile(join(plugin.source.path, ".agenc-plugin", "plugin.json")),
+          await readFile(join(plugin.source.path, ".agenc-plugin", "signature.json")),
+          { agencHome: options.agencHome },
+        );
+      } catch { /* Local packages may be unsigned. */ }
+    }
     const logoPath = manifestLogo ?? prefetched?.logoPath;
     const logoRoot =
       manifestLogo !== undefined
@@ -595,6 +675,11 @@ async function catalogRowsForMarketplace(
       policy: plugin.policy,
       ...(surface !== undefined ? { interface: surface } : {}),
       root: marketplace.root,
+      lastRefreshTime,
+      ...(plugin.source.type === "git" && plugin.source.sha !== undefined
+        ? { sourceCommit: plugin.source.sha } : {}),
+      ...((prefetched?.payloadDigest ?? localPayloadDigest) !== undefined
+        ? { payloadDigest: prefetched?.payloadDigest ?? localPayloadDigest } : {}),
       ...(prefetched?.description !== undefined
         ? { description: prefetched.description }
         : {}),
@@ -620,6 +705,7 @@ async function catalogRowsForMarketplace(
 export async function buildMarketplaceCatalog(
   options: MarketplaceOperationOptions,
   product?: string,
+  includePayloadDigests = false,
 ): Promise<MarketplaceCatalogDocument> {
   const index = await readMarketplaceIndex(options);
   const records = Object.values(index.marketplaces).sort((left, right) =>
@@ -640,7 +726,7 @@ export async function buildMarketplaceCatalog(
           : {}),
         sourceType: record.sourceType,
         source: record.source,
-        plugins: await catalogRowsForMarketplace(options, marketplace, product),
+        plugins: await catalogRowsForMarketplace(options, marketplace, product, record.updatedAt, includePayloadDigests),
       });
     } catch (error) {
       errors.push({

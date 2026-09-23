@@ -11,6 +11,7 @@ import {
   updatePluginOp,
   validatePluginPath,
   type PluginCliIo,
+  type PluginListResult,
   type PluginScope,
 } from "./pluginOperations.js";
 import {
@@ -23,10 +24,12 @@ import {
 import {
   buildMarketplaceCatalog,
   ensureOfficialMarketplace,
+  refreshStaleMarketplaces,
   installRequiresSignature,
   resolveMarketplaceInstallTarget,
   PLUGIN_MARKETPLACE_CATALOG_SCHEMA_VERSION,
   PLUGIN_MARKETPLACE_INSTALL_KIND,
+  type MarketplaceCatalogDocument,
 } from "../marketplace/catalog-cli.js";
 import {
   redactPluginInstallSource,
@@ -65,6 +68,30 @@ export interface AgenCPluginCliOptions extends MarketplaceOperationOptions {
   readonly workspaceRoot: string;
   readonly env: NodeJS.ProcessEnv;
   readonly io?: PluginCliIo;
+}
+
+export function pluginListWithCatalog(
+  result: PluginListResult,
+  catalog: MarketplaceCatalogDocument,
+): PluginListResult {
+  return { ...result, plugins: result.plugins.map((plugin) => {
+    const matches = catalog.marketplaces.flatMap((marketplace) =>
+      marketplace.plugins.filter((row) => {
+        if (row.name !== plugin.name) return false;
+        if (plugin.marketplace !== undefined) return plugin.marketplace === marketplace.name;
+        const location = row.source.type === "git" ? row.source.url : row.source.path;
+        return plugin.sourceLocation === location;
+      }),
+    );
+    const current = matches.length === 1 ? matches[0] : undefined;
+    return { ...plugin,
+      ...(current !== undefined ? { lastRefreshTime: current.lastRefreshTime } : {}),
+      updateAvailable: plugin.payloadDigest !== undefined && current?.payloadDigest !== undefined
+        ? plugin.payloadDigest !== current.payloadDigest
+        : plugin.version !== undefined && current?.version !== undefined &&
+          plugin.version !== current.version,
+    };
+  }) };
 }
 
 export function formatAgenCPluginCliHelpText(): string {
@@ -183,9 +210,17 @@ export async function runAgenCPluginCli(
         return 1;
       case "list": {
         const result = await listInstalledPlugins(options);
+        let freshResult = result;
+        try {
+          await refreshStaleMarketplaces(options);
+          freshResult = pluginListWithCatalog(result,
+            await buildMarketplaceCatalog(options, "desktop", true));
+        } catch {
+          // Local installed inventory remains usable if a marketplace is broken.
+        }
         io.stdout.write(command.json
-          ? `${JSON.stringify(result, null, 2)}\n`
-          : `${formatPluginList(result)}\n`);
+          ? `${JSON.stringify(freshResult, null, 2)}\n`
+          : `${formatPluginList(freshResult)}\n`);
         return 0;
       }
       case "validate": {
@@ -319,7 +354,8 @@ export async function runAgenCPluginCli(
         // register the official one first so a fresh client sees the
         // shipped plugins instead of an empty shelf.
         await ensureOfficialMarketplace(options, addMarketplaceOp);
-        const catalog = await buildMarketplaceCatalog(options, command.product);
+        await refreshStaleMarketplaces(options);
+        const catalog = await buildMarketplaceCatalog(options, command.product, true);
         if (command.json) {
           io.stdout.write(`${JSON.stringify(catalog, null, 2)}\n`);
           return 0;
@@ -357,6 +393,7 @@ export async function runAgenCPluginCli(
               : target.source,
           scope: command.scope,
           name: target.pluginName,
+          marketplace: target.marketplaceName,
           force: command.force,
           requireSignature: installRequiresSignature(target.record),
         });

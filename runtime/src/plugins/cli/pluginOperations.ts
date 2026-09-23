@@ -46,6 +46,8 @@ import {
 } from "../resolution.js";
 import { parsePluginIdentifier } from "../identifier.js";
 import { skillDisplayNameFromMarkdown } from "../skill-display-metadata.js";
+import { loadPluginCommands } from "../registration/load-plugin-commands.js";
+import type { AgencPluginInventoryProvenance } from "./pluginInventoryProtocol.js";
 
 export type PluginScope = "user" | "project" | "local";
 
@@ -62,6 +64,7 @@ export interface PluginOperationOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly configStore?: ConfigStore;
   readonly now?: () => Date;
+  readonly publishersPath?: string;
   readonly onWarn?: (message: string) => void;
 }
 
@@ -69,9 +72,10 @@ export interface PluginComponentRow {
   readonly name: string;
   readonly displayName?: string;
   readonly description?: string;
+  readonly argumentHint?: string;
 }
 
-export interface InstalledPluginSummary {
+export interface InstalledPluginSummary extends AgencPluginInventoryProvenance {
   readonly id: string;
   readonly name: string;
   readonly version?: string;
@@ -79,6 +83,7 @@ export interface InstalledPluginSummary {
   readonly enabled: boolean;
   readonly root: string;
   readonly source: string;
+  readonly marketplace?: string;
   /** Absolute path of the plugin's own logo, proven to sit inside root. */
   readonly logoPath?: string;
   /** Manifest surface copy (logo stripped; artwork travels as logoPath). */
@@ -94,6 +99,7 @@ export interface PluginListResult {
 
 export interface InstallPluginInput extends PluginOperationOptions {
   readonly source: PluginInstallSource;
+  readonly marketplace?: string;
   readonly scope?: PluginScope;
   readonly name?: string;
   readonly force?: boolean;
@@ -283,8 +289,20 @@ export async function listInstalledPlugins(
   const plugins = await Promise.all(
     [...loaded.enabled, ...loaded.disabled].map(async (plugin) => {
       const summary = summarizeLoadedPlugin(plugin);
+      const registeredCommands = await loadPluginCommands({
+        pluginStorageRoot: options.pluginStorageRoot,
+        workspaceRoot,
+        plugins: [plugin],
+      });
       const skills = await describeSkills(plugin.skillsPaths);
-      return skills.length > 0 ? { ...summary, skills } : summary;
+      const provenance = await installedPluginProvenance(plugin.root, options);
+      return { ...summary, ...provenance,
+        commands: registeredCommands
+          .filter((command) => command.userInvocable !== false)
+          .map((command) => ({ name: command.name,
+            ...(command.description !== undefined ? { description: command.description } : {}),
+            ...(command.argumentHint !== undefined ? { argumentHint: command.argumentHint } : {}) })),
+        ...(skills.length > 0 ? { skills } : {}) };
     }),
   );
   return {
@@ -476,6 +494,7 @@ export async function installPluginOp(
         ? { sourceRedacted: true }
         : {}),
       sourceRoot: source,
+      ...(input.marketplace !== undefined ? { marketplace: input.marketplace } : {}),
       scope,
       resolutionKind,
       signatureRequired,
@@ -735,6 +754,9 @@ function summarizeLoadedPlugin(plugin: LoadedPlugin): InstalledPluginSummary {
     ...(command.metadata.description !== undefined
       ? { description: command.metadata.description }
       : {}),
+    ...(command.metadata.argumentHint !== undefined
+      ? { argumentHint: command.metadata.argumentHint }
+      : {}),
   }));
   return {
     id: plugin.id,
@@ -932,6 +954,7 @@ async function writeInstallMetadata(
     readonly source: PluginInstallSource;
     readonly sourceRedacted?: boolean;
     readonly sourceRoot?: string;
+    readonly marketplace?: string;
     readonly scope: PluginScope;
     readonly resolutionKind?: PluginResolutionKind;
     readonly signatureRequired?: boolean;
@@ -941,6 +964,49 @@ async function writeInstallMetadata(
 ): Promise<void> {
   await mkdir(join(pluginRoot, ".agenc-plugin"), { recursive: true, mode: 0o700 });
   await writeJsonAtomic(join(pluginRoot, ".agenc-plugin", INSTALL_METADATA_FILE), metadata);
+}
+
+async function installedPluginProvenance(
+  pluginRoot: string,
+  options: PluginOperationOptions,
+): Promise<Pick<InstalledPluginSummary,
+  "sourceKind" | "sourceLocation" | "sourceCommit" | "verificationState" |
+  "publisherKeyId" | "payloadDigest" | "marketplace">> {
+  const raw = await readJsonFile<unknown>(
+    join(pluginRoot, ".agenc-plugin", INSTALL_METADATA_FILE), null,
+  );
+  const metadata = isRecord(raw) ? raw : {};
+  const source = metadata.source;
+  const gitSource = isRecord(source) && source.type === "git" ? source : undefined;
+  const sourceKind = typeof metadata.marketplace === "string"
+    ? "marketplace" : gitSource !== undefined || metadata.resolutionKind === "git"
+      ? "git" : "local";
+  const sourceLocation = gitSource !== undefined && typeof gitSource.url === "string"
+    ? gitSource.url : typeof source === "string" ? source : pluginRoot;
+  try {
+    const signature = await verifyResolvedPluginSignature(pluginRoot, {
+      agencHome: resolvePluginAgencHome(options),
+      requireSignature: metadata.signatureRequired === true,
+      ...(options.publishersPath !== undefined ? { publishersPath: options.publishersPath } : {}),
+    });
+    return {
+      sourceKind,
+      sourceLocation,
+      ...(typeof metadata.marketplace === "string" ? { marketplace: metadata.marketplace } : {}),
+      ...(gitSource !== undefined && typeof gitSource.sha === "string"
+        ? { sourceCommit: gitSource.sha } : {}),
+      verificationState: signature.verified ? "verified" :
+        metadata.signatureRequired === true || sourceKind !== "local" ? "failed" : "unsigned-local",
+      ...(signature.publisher !== undefined ? { publisherKeyId: signature.publisher } : {}),
+      ...(signature.payloadDigest !== undefined ? { payloadDigest: signature.payloadDigest } : {}),
+    };
+  } catch {
+    return { sourceKind, sourceLocation,
+      ...(typeof metadata.marketplace === "string" ? { marketplace: metadata.marketplace } : {}),
+      ...(gitSource !== undefined && typeof gitSource.sha === "string"
+        ? { sourceCommit: gitSource.sha } : {}),
+      verificationState: "failed" };
+  }
 }
 
 async function readInstalledPluginSource(

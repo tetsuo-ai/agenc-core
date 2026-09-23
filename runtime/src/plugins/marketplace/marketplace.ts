@@ -64,6 +64,7 @@ export interface MarketplaceRecord {
   readonly autoUpdate?: boolean;
   readonly refreshable?: boolean;
   readonly updatedAt: string;
+  readonly lastCheckedAt?: string;
 }
 
 export interface MarketplaceIndex {
@@ -168,6 +169,7 @@ export type Fetcher = (
 ) => Promise<FetchResponse>;
 
 export interface MarketplaceOperationOptions {
+  readonly agencHome?: string;
   readonly pluginStorageRoot: string;
   readonly workspaceRoot?: string;
   readonly env?: NodeJS.ProcessEnv;
@@ -338,6 +340,7 @@ function marketplaceRecordFromInventory(
       ? { refreshable: entry.refreshable }
       : {}),
     updatedAt: entry.lastUpdated,
+    ...(entry.lastChecked !== undefined ? { lastCheckedAt: entry.lastChecked } : {}),
   };
 }
 
@@ -349,6 +352,7 @@ function marketplaceInventoryFromRecord(
     installLocation: record.installedPath,
     manifestPath: record.manifestPath,
     lastUpdated: record.updatedAt,
+    ...(record.lastCheckedAt !== undefined ? { lastChecked: record.lastCheckedAt } : {}),
     ...(record.autoUpdate !== undefined
       ? { autoUpdate: record.autoUpdate }
       : {}),

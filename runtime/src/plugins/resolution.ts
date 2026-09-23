@@ -98,6 +98,8 @@ export interface PluginSignatureVerification {
   readonly present: boolean;
   readonly verified: boolean;
   readonly publisher?: string;
+  /** SHA-256 of the canonical signed manifest and payload digest set. */
+  readonly payloadDigest?: string;
   readonly payloadFileCount?: number;
   readonly reason?: string;
 }
@@ -797,6 +799,7 @@ export async function verifyResolvedPluginSignature(
     present: true,
     verified: true,
     publisher: signature.publisher,
+    payloadDigest: `sha256:${createHash("sha256").update(payload).digest("hex")}`,
     payloadFileCount: Object.keys(signature.files).length,
   };
 }
@@ -814,6 +817,26 @@ export function pluginSignaturePayloadBytes(
     manifestSha256: sha256Hex(manifestBytes),
     files: normalizedFiles,
   }));
+}
+
+/** Verify a pinned package's signed digest set before downloading its payload. */
+export async function verifiedAdvertisedPluginPayloadDigest(
+  manifestBytes: Uint8Array,
+  signatureBytes: Uint8Array,
+  options: { readonly agencHome: string; readonly publishersPath?: string },
+): Promise<string> {
+  const signature = parseSignatureFile(Buffer.from(signatureBytes).toString("utf8"));
+  const publicKeys = await readPublisherPublicKeys(
+    options.publishersPath ?? defaultPublishersPath(options.agencHome),
+    signature.publisher,
+    options.publishersPath === undefined
+      ? builtInPluginPublisherPublicKeys(signature.publisher) : undefined,
+  );
+  const payload = pluginSignaturePayloadBytes(manifestBytes, signature.files);
+  if (!publicKeys.some((publicKey) => verifyEd25519Signature({
+    publicKey, payload, signature: signature.signature,
+  }))) throw new Error(`plugin signature verification failed for publisher ${signature.publisher}`);
+  return `sha256:${createHash("sha256").update(payload).digest("hex")}`;
 }
 
 function verifyEd25519Signature(input: {

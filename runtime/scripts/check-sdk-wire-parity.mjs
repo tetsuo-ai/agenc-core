@@ -69,6 +69,8 @@ export function checkSdkWireParity({
   const source = `
 import type { AgenCDaemonRequest, AgenCDaemonResultByMethod, AgenCDaemonMethod } from "./src/app-server/protocol/index.js";
 import type { AgencParamsByMethod, AgencResultByMethod, AgencDaemonRequest } from "../packages/agenc-sdk/src/protocol.js";
+import type { AgencPluginInventoryProvenance as CorePluginInventoryProvenance } from "./src/plugins/cli/pluginInventoryProtocol.js";
+import type { AgencPluginInventoryProvenance as SdkPluginInventoryProvenance } from "../packages/agenc-sdk/src/plugin-inventory.js";
 import type { AgencClient } from "../packages/agenc-sdk/src/client.js";
 type Equal<A, B> =
   (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2)
@@ -108,6 +110,7 @@ ${exact(
 type RequireTrue<T extends true> = T;
 type RequestKeysMatch = RequireTrue<Equal<keyof AgencParamsByMethod, AgenCDaemonMethod>>;
 type ResultKeysMatch = RequireTrue<Equal<keyof AgencResultByMethod, AgenCDaemonMethod>>;
+type PluginInventoryProvenanceMatch = RequireTrue<Equal<CorePluginInventoryProvenance, SdkPluginInventoryProvenance>>;
 type RequireAll<T extends { [M in AgenCDaemonMethod]: true }> = T;
 type RequestsCovered = RequireAll<{ [M in AgenCDaemonMethod]: [WireRequest<M>] extends [never] ? false : true }>;
 type RequestsMatch = RequireAll<RequestExact>;

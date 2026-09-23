@@ -5,6 +5,7 @@
  */
 
 export * from "./protocol.js";
+export * from "./plugin-inventory.js";
 export * from "./events.js";
 export * from "./client.js";
 export * from "./csv-jobs.js";
