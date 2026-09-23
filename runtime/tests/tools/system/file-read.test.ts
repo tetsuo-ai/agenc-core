@@ -244,6 +244,28 @@ describe("FileRead tool", () => {
     expect(snap?.rawContent).toBe("one\ntwo\nthree\n");
   });
 
+  test("an explicit window that covers every line is a full view", async () => {
+    // Models that fill optional fields send offset 1 with a large limit.
+    // Recording that as partial left full-read gates (NotebookEdit) refusing
+    // a file that was read whole.
+    const file = join(root, "whole-window.txt");
+    await writeFile(file, "a\nb\nc\n", "utf8");
+    const tool = createFileReadTool({ allowedPaths: [root] });
+
+    for (const window of [{ offset: 1, limit: 100 }, { offset: 1, limit: 4 }, { limit: 4 }]) {
+      const result = await tool.execute({ file_path: file, ...window, __agencSessionId: sessionId });
+      expect(result.isError, JSON.stringify(window)).toBeUndefined();
+      const snap = getSessionReadSnapshot(sessionId, file);
+      expect(snap?.viewKind, JSON.stringify(window)).toBe("full");
+      expect(snap?.rawContent, JSON.stringify(window)).toBe("a\nb\nc\n");
+    }
+
+    // One line short of the whole file stays partial.
+    const short = await tool.execute({ file_path: file, offset: 1, limit: 3, __agencSessionId: sessionId });
+    expect(short.isError).toBeUndefined();
+    expect(getSessionReadSnapshot(sessionId, file)?.viewKind).toBe("partial");
+  });
+
   test("offset/limit produces a partial view + sets viewKind=partial", async () => {
     const file = join(root, "many-lines.txt");
     await writeFile(file, "a\nb\nc\nd\ne\nf\n", "utf8");

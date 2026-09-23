@@ -436,9 +436,11 @@ function sliceLines(
     totalLines === 0 || startLine > totalLines
       ? []
       : lines.slice(startLine - 1, endLine);
-  const explicitWindow = offset > 1 || limit !== undefined;
-  const isPartial =
-    explicitWindow || !(startLine === 1 && selected.length === totalLines);
+  // A window the caller asked for is still a full view when it covered
+  // every line: models that fill optional fields send offset 1 with a large
+  // limit, and treating that as partial left NotebookEdit and other
+  // full-read gates refusing a file that was read whole.
+  const isPartial = !(startLine === 1 && selected.length === totalLines);
   return {
     content: selected.join("\n"),
     startLine,

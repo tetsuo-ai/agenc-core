@@ -415,6 +415,49 @@ describe("NotebookEdit through the router", () => {
   });
 });
 
+describe("NotebookRead windows and NotebookEdit's full-read gate", () => {
+  it("edits after a read whose window covered the whole notebook", async () => {
+    // GPT models fill every optional field: the live run read with offset 1
+    // and limit 100, which covers this notebook, and NotebookEdit then
+    // refused with "File has not been read yet" because any explicit window
+    // was recorded as a partial view.
+    const notebookPath = join(workspace, "window.ipynb");
+    await writeFile(notebookPath, JSON.stringify(REPORT_NOTEBOOK), "utf8");
+    const read = await dispatch(
+      "NotebookRead",
+      { notebook_path: notebookPath, offset: 1, limit: 100 },
+      "acceptEdits",
+    );
+    expect(read.isError, String(read.content)).toBeFalsy();
+    const replace = await dispatch(
+      "NotebookEdit",
+      { notebook_path: notebookPath, cell_id: "total", new_source: "sum(rows) * 3" },
+      "acceptEdits",
+    );
+    expect(replace.isError, String(replace.content)).toBeFalsy();
+    const updated = JSON.parse(await readFile(notebookPath, "utf8"));
+    expect(updated.cells.find((cell: { id?: string }) => cell.id === "total").source).toBe("sum(rows) * 3");
+  });
+
+  it("still refuses an edit after a read that skipped part of the notebook", async () => {
+    const notebookPath = join(workspace, "partial.ipynb");
+    await writeFile(notebookPath, JSON.stringify(REPORT_NOTEBOOK), "utf8");
+    const read = await dispatch(
+      "NotebookRead",
+      { notebook_path: notebookPath, offset: 2, limit: 3 },
+      "acceptEdits",
+    );
+    expect(read.isError, String(read.content)).toBeFalsy();
+    const replace = await dispatch(
+      "NotebookEdit",
+      { notebook_path: notebookPath, cell_id: "total", new_source: "sum(rows) * 3" },
+      "acceptEdits",
+    );
+    expect(replace.isError).toBe(true);
+    expect(String(replace.content)).toMatch(/has not been read yet/);
+  });
+});
+
 describe("NotebookRead and NotebookEdit through runToolUse with the evaluator", () => {
   it("reads and then edits when runToolUse arbitrates the permission itself", async () => {
     // runToolUse validates the permission result again before approval, the
