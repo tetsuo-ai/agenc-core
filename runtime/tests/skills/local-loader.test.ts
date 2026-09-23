@@ -1194,10 +1194,12 @@ All=$ARGUMENTS
   it("still loads a skill whose frontmatter is broken and says why the fields were ignored", async () => {
     const agencHome = tmpRoot("skills-home");
     const workspaceRoot = tmpRoot("skills-workspace");
+    // An unterminated quoted scalar: broken even after the canonical parser's
+    // quoting retry, which rescues an unquoted `name: [unclosed`.
     const brokenFile = writeSkill(
       join(workspaceRoot, ".agenc", "skills"),
       "broken-yaml",
-      "---\nname: [unclosed\ndescription: never parsed\n---\n# Broken skill\nBody\n",
+      "---\nname: \"unclosed\ndescription: never parsed\n---\n# Broken skill\nBody\n",
     );
     const listFile = writeSkill(
       join(workspaceRoot, ".agenc", "skills"),

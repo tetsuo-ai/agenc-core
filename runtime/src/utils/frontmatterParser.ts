@@ -81,8 +81,10 @@ const YAML_SPECIAL_CHARS = /[{}[\]*&#!|>%@`]|: /
 /**
  * Pre-processes frontmatter text to quote values that contain special YAML characters.
  * This allows glob patterns like **\/*.{ts,tsx} to be parsed correctly.
+ * Exported so the local skill loader gives SKILL.md files the same second
+ * chance this parser gives commands and MCP skills.
  */
-function quoteProblematicValues(frontmatterText: string): string {
+export function quoteProblematicValues(frontmatterText: string): string {
   const lines = frontmatterText.split('\n')
   const result: string[] = []
 

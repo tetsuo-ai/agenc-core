@@ -80,9 +80,11 @@ describe("agenc skills CLI", () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "agenc-skills-cli-warn-ws-"));
     const brokenDir = join(workspaceRoot, ".agenc", "skills", "broken");
     await mkdir(brokenDir, { recursive: true });
+    // Unterminated quote: still broken after the quoting retry that now
+    // rescues an unquoted `name: [unclosed`, as the canonical parser does.
     await writeFile(
       join(brokenDir, "SKILL.md"),
-      "---\nname: [unclosed\n---\n# Broken\n",
+      "---\nname: \"unclosed\n---\n# Broken\n",
     );
 
     const inventory = await buildSkillsInventory({

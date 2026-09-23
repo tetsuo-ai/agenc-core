@@ -23,6 +23,7 @@ import { discoverPluginSkillRootsWithProvenance } from "../plugins/loader.js";
 import type { SessionServices } from "../session/session.js";
 import type { SkillLoadOutcome } from "../session/turn-context.js";
 import { substituteArguments } from "../tui/slash/argument-substitution.js";
+import { quoteProblematicValues } from "../utils/frontmatterParser.js";
 import { isRecord } from "../utils/record.js";
 import { getAgenCHomeDir } from "../utils/envUtils.js";
 import {
@@ -577,38 +578,62 @@ function implicitAliasesForSkillName(name: string): readonly string[] {
   return /^[A-Za-z][A-Za-z0-9_:-]*$/u.test(leaf) ? [leaf] : [];
 }
 
+/**
+ * A `disable-model-invocation: true` line at the top level of frontmatter
+ * that does not parse. The flag is the author's statement that the model
+ * must not load the skill; a YAML error elsewhere in the block does not
+ * make that statement any less true, so it is kept when nothing else is.
+ */
+const DISABLE_MODEL_INVOCATION_LINE_RE =
+  /^disable-model-invocation:[ \t]*(?:true|"true"|'true')[ \t]*(?:#.*)?$/mu;
+
 function splitFrontmatter(raw: string): SplitFrontmatter {
   if (!raw.startsWith("---")) {
     return { frontmatter: {}, markdown: raw };
   }
   const match = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n)?([\s\S]*)$/u.exec(raw);
   if (!match) return { frontmatter: {}, markdown: raw };
+  const yamlText = match[1] ?? "";
+  let parsed: unknown;
   try {
-    const parsed = loadYaml(match[1] ?? "");
-    if (parsed === null || parsed === undefined) {
-      return { frontmatter: {}, markdown: match[2] ?? "" };
-    }
-    if (typeof parsed !== "object" || Array.isArray(parsed)) {
+    parsed = loadYaml(yamlText);
+  } catch (error) {
+    // The canonical parser (utils/frontmatterParser.ts), which commands and
+    // MCP skills go through, quotes values holding YAML indicators and parses
+    // again: `description: Settle tasks in AUTONOMOUS mode: prompt-free` is
+    // not strict YAML but is a perfectly clear SKILL.md. Without the same
+    // second chance here every field of such a file was dropped, including
+    // disable-model-invocation.
+    try {
+      parsed = loadYaml(quoteProblematicValues(yamlText));
+    } catch {
+      const detail =
+        (error instanceof Error ? error.message : String(error)).split("\n")[0] ??
+        "";
+      const modelProof = DISABLE_MODEL_INVOCATION_LINE_RE.test(yamlText);
       return {
-        frontmatter: {},
-        markdown: match[2] ?? "",
-        warning: "frontmatter is not a YAML mapping; its fields were ignored",
+        frontmatter: modelProof ? { "disable-model-invocation": true } : {},
+        markdown: match[2] ?? raw,
+        warning: modelProof
+          ? `frontmatter is not valid YAML (${detail}); its fields were ignored, except disable-model-invocation: true, which still keeps the model from loading it`
+          : `frontmatter is not valid YAML (${detail}); its fields were ignored`,
       };
     }
-    return {
-      frontmatter: parsed as Record<string, unknown>,
-      markdown: match[2] ?? "",
-    };
-  } catch (error) {
-    const detail =
-      (error instanceof Error ? error.message : String(error)).split("\n")[0] ??
-      "";
+  }
+  if (parsed === null || parsed === undefined) {
+    return { frontmatter: {}, markdown: match[2] ?? "" };
+  }
+  if (typeof parsed !== "object" || Array.isArray(parsed)) {
     return {
       frontmatter: {},
-      markdown: match[2] ?? raw,
-      warning: `frontmatter is not valid YAML (${detail}); its fields were ignored`,
+      markdown: match[2] ?? "",
+      warning: "frontmatter is not a YAML mapping; its fields were ignored",
     };
   }
+  return {
+    frontmatter: parsed as Record<string, unknown>,
+    markdown: match[2] ?? "",
+  };
 }
 
 function coerceString(value: unknown): string | undefined {
