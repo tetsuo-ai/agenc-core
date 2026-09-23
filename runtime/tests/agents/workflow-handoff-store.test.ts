@@ -165,6 +165,15 @@ function seedIntents(options: {
 }
 
 describe("workflow handoff publication and integrity", () => {
+  it.runIf(process.platform === "darwin")("refuses descriptor-unsafe reads and cleanup without changing bytes", async () => {
+    const artifactStore = store();
+    const artifact = await publish(artifactStore, "darwin-confined", "safe");
+    await expectStoreCode(() => artifactStore.read(artifact.artifact_id), "WORKFLOW_HANDOFF_SAFE_IO_UNSUPPORTED");
+    now += 101;
+    await expectStoreCode(() => artifactStore.cleanupExpired(), "WORKFLOW_HANDOFF_SAFE_IO_UNSUPPORTED");
+    expect(await readFile(artifactPath(artifact.artifact_id), "utf8")).toBe("safe");
+  });
+
   itWithDescriptorIo(`publishes a repeatable fixed-chunk source without a whole-result buffer${darwinDescriptorSkipReason}`, async () => {
     const artifactStore = store();
     const chunks = [

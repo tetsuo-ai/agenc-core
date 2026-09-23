@@ -73,11 +73,16 @@ export const CronDeleteTool = buildTool({
     try {
       tasks = await listAllCronTasks(getProjectRoot(), conversationId);
     } catch (error) {
-      if (error instanceof Error) markEffectBoundaryNotCrossed(error, {
-        evidenceRef: "tool:CronDelete:validation-read",
-        evidenceMaterial: error.message,
-      });
-      throw error;
+      if ((error as NodeJS.ErrnoException | null)?.code === "DESCRIPTOR_UNSUPPORTED" &&
+          listSessionCronTasks(conversationId).some((task) => task.id === input.id)) {
+        tasks = listSessionCronTasks(conversationId);
+      } else {
+        if (error instanceof Error) markEffectBoundaryNotCrossed(error, {
+          evidenceRef: "tool:CronDelete:validation-read",
+          evidenceMaterial: error.message,
+        });
+        throw error;
+      }
     }
     const task = tasks.find((t) => t.id === input.id);
     if (!task) {
@@ -103,19 +108,7 @@ export const CronDeleteTool = buildTool({
     if (typeof conversationId !== "string" || conversationId.length === 0) {
       throw new Error("CronDelete requires an active owning conversation");
     }
-    const sessionTaskExists = listSessionCronTasks(conversationId).some((task) => task.id === id);
-    try {
-      await removeCronTasks([id], getProjectRoot(), conversationId);
-    } catch (error) {
-      if (!sessionTaskExists && error instanceof Error &&
-          (error as NodeJS.ErrnoException).code === "DESCRIPTOR_UNSUPPORTED") {
-        markEffectBoundaryNotCrossed(error, {
-          evidenceRef: "tool:CronDelete:descriptor-admission",
-          evidenceMaterial: error.message,
-        });
-      }
-      throw error;
-    }
+    await removeCronTasks([id], getProjectRoot(), conversationId);
     return { data: { id } };
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {

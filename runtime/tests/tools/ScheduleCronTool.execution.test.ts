@@ -64,6 +64,7 @@ test("ScheduleCron tools create, list, and delete a session cron job", async () 
       durable: false,
     }),
   ]);
+  expect(listed.data.warning).toBeUndefined();
 
   expect(
     await CronDeleteTool.validateInput({ id: created.data.id }, toolContext),
@@ -91,16 +92,22 @@ test("ScheduleCron defaults to session-only jobs while delivery forces durabilit
     announceChannel: "stdio", announceTo: "test-recipient",
   }, toolContext);
   if (process.platform === "darwin") {
+    const validationError = await CronCreateTool.validateInput({
+      cron: "*/5 * * * *", prompt: "delivery default", durable: false,
+      announceChannel: "stdio", announceTo: "test-recipient",
+    }, toolContext).catch((cause: unknown) => cause);
+    expect(validationError).toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
+    expect(readEffectBoundaryNotCrossed(validationError, new Date().toISOString())).toBeDefined();
     const error = await createDelivery().catch((cause: unknown) => cause);
     expect(error).toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
-    expect(readEffectBoundaryNotCrossed(error, new Date().toISOString())).toBeDefined();
+    expect(readEffectBoundaryNotCrossed(error, new Date().toISOString())).toBeUndefined();
   } else {
     const delivery = await createDelivery();
     expect(delivery.data.durable).toBe(true);
   }
 });
 
-test("a legacy durable CronDelete refusal proves no effect on darwin", async () => {
+test("a legacy durable CronDelete post-admission refusal does not infer no effect", async () => {
   if (process.platform !== "darwin") return;
   await setTempProjectRoot();
   const metadata = join(tempRoot!, ".agenc");
@@ -108,8 +115,15 @@ test("a legacy durable CronDelete refusal proves no effect on darwin", async () 
   await writeFile(join(metadata, "scheduled_tasks.json"), JSON.stringify({
     tasks: [{ id: "durable-job", cron: "* * * * *", prompt: "work", createdAt: 1_000 }],
   }), { mode: 0o600 });
+  const listed = await CronListTool.call({}, toolContext);
+  expect(listed.data.jobs).toEqual([]);
+  expect(listed.data.warning).toContain("only session jobs");
+  const validationError = await CronDeleteTool.validateInput({ id: "durable-job" }, toolContext)
+    .catch((cause: unknown) => cause);
+  expect(validationError).toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
+  expect(readEffectBoundaryNotCrossed(validationError, new Date().toISOString())).toBeDefined();
   const error = await CronDeleteTool.call({ id: "durable-job" }, toolContext)
     .catch((cause: unknown) => cause);
   expect(error).toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
-  expect(readEffectBoundaryNotCrossed(error, new Date().toISOString())).toBeDefined();
+  expect(readEffectBoundaryNotCrossed(error, new Date().toISOString())).toBeUndefined();
 });

@@ -78,7 +78,6 @@ const HANDOFF_IO_POLICY = Object.freeze({
 } satisfies ConfinedIoPolicy);
 const HANDOFF_READ_IO_POLICY = Object.freeze({
   ...HANDOFF_IO_POLICY,
-  unavailableAlias: process.platform === "darwin" ? "identity-checked-path" : HANDOFF_IO_POLICY.unavailableAlias,
 } satisfies ConfinedIoPolicy);
 const HANDOFF_INSTALLATION_IO_POLICY = Object.freeze({
   ...HANDOFF_IO_POLICY,

@@ -21,12 +21,7 @@ const WRITE_POLICY: ConfinedIoPolicy = {
   hardLinks: "reject", privateDirectory: false, privateFile: false,
   unavailableAlias: "reject",
 };
-const READ_POLICY: ConfinedIoPolicy = {
-  ...WRITE_POLICY,
-  // A verified-path read is discarded if any root/child identity changes.
-  // Darwin writes stay refused because pathname checks cannot confine them.
-  unavailableAlias: process.platform === "darwin" ? "identity-checked-path" : "reject",
-};
+const READ_POLICY: ConfinedIoPolicy = WRITE_POLICY;
 
 function assertOwned(info: BigIntStats): void {
   if (typeof process.getuid !== "function" || info.uid !== BigInt(process.getuid()) ||

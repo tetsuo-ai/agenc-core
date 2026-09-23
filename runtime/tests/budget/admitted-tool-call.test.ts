@@ -12,7 +12,6 @@ import { AdmissionDeniedError } from "../../src/budget/admission-client.js";
 import type { AdmissionLease } from "../../src/budget/admission-types.js";
 import { runAdmittedToolCall } from "../../src/budget/admitted-tool-call.js";
 import { createModelFacingTools } from "../../src/bin/model-facing-tools.js";
-import * as cronTasks from "../../src/utils/cronTasks.js";
 import { WEB_FETCH_TOOL_NAME } from "../../src/tools/WebFetchTool/prompt.js";
 import {
   effectSettlementMetrics,
@@ -113,7 +112,7 @@ function toolHarness() {
 }
 
 describe("runAdmittedToolCall", () => {
-  it("settles a prewrite CronDelete refusal and admits the next prompt's mutation", async () => {
+  it.runIf(process.platform === "darwin")("settles a real pre-read CronDelete refusal and admits the next prompt's mutation", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-cron-delete-settlement-"));
     const state = toolHarness();
     const metadata = join(root, ".agenc");
@@ -123,8 +122,6 @@ describe("runAdmittedToolCall", () => {
     }] }), { mode: 0o600 });
     const cronDelete = createModelFacingTools({ workspaceRoot: root, getSession: () => state.session })
       .find((candidate) => candidate.name === "CronDelete")!;
-    const refused = Object.assign(new Error("descriptor unavailable before write"), { code: "DESCRIPTOR_UNSUPPORTED" });
-    const remove = vi.spyOn(cronTasks, "removeCronTasks").mockRejectedValueOnce(refused);
     const invoke = (tool: Tool, callId: string, args: Record<string, unknown>, turnId = "turn-1") => runAdmittedToolCall({
       session: state.session, turnId, callId, tool, args,
       invoke: async ({ crossEffectBoundary }) => { crossEffectBoundary(); return tool.execute(args); },
@@ -141,7 +138,6 @@ describe("runAdmittedToolCall", () => {
       expect(next.content).toBe("accepted");
       expect(state.effectEvents.some((event) => event.msg.type === "effect_unknown_outcome")).toBe(false);
     } finally {
-      remove.mockRestore();
       await rm(root, { recursive: true, force: true });
     }
   });

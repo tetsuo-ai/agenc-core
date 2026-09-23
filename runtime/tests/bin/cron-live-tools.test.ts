@@ -106,7 +106,7 @@ describe("live Cron tools drive the real scheduler", () => {
         announceChannel: "stdio", announceTo: "test-recipient",
       });
       expect(delivery.isError).toBe(true);
-      expect(String(delivery.content)).toContain("Durable scheduled tasks are not supported on macOS yet.");
+      expect(String(delivery.content)).toContain("descriptor-relative reads and writes");
       expect(delivery.effectDisposition?.disposition).toBe("confirmed_no_effect");
       expect(JSON.parse(String((await tools.get("CronDelete")!.execute({ id: local.id })).content))).toEqual({
         deleted: true, id: local.id,

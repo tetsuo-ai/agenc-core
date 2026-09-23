@@ -274,7 +274,7 @@ function unsupportedDurableCron(error: unknown): boolean {
   return (error as { code?: unknown } | null)?.code === "DESCRIPTOR_UNSUPPORTED";
 }
 
-const DURABLE_CRON_UNSUPPORTED = "Durable scheduled tasks need descriptor-relative writes, which are unavailable on this host. Use durable:false for a session job, or run durable cron on Linux.";
+const DURABLE_CRON_UNSUPPORTED = "Durable scheduled tasks need descriptor-relative reads and writes, which are unavailable on this host. Use durable:false for a session job, or run durable cron on Linux.";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -4852,24 +4852,18 @@ function createCronAndWorkflowTools(
               ? DURABLE_CRON_UNSUPPORTED : errorMessage(error));
           }
         }
-        let id: string;
-        try {
-          id = await addCronTask(
-            schedule,
-            prompt,
-            recurring,
-            durable,
-            undefined,
-            deliver,
-            { kind: "session", conversationId },
-            opts.workspaceRoot,
-          );
-        } catch (error) {
-          if (durable && unsupportedDurableCron(error)) {
-            return cronRefusal("CronCreate", DURABLE_CRON_UNSUPPORTED);
-          }
-          throw error;
-        }
+        // addCronTask may have created .agenc before descriptor admission
+        // fails. Its error code alone cannot prove zero filesystem effects.
+        const id = await addCronTask(
+          schedule,
+          prompt,
+          recurring,
+          durable,
+          undefined,
+          deliver,
+          { kind: "session", conversationId },
+          opts.workspaceRoot,
+        );
         // Arm the real runner: without this the definition is inert.
         // (Delivery-routed jobs are skipped by this in-session runner and
         // picked up by the gateway's cron-delivery scan.)
@@ -4954,16 +4948,7 @@ function createCronAndWorkflowTools(
         if (sessionMatch && !durableMatch) {
           removeSessionCronTasks([id], conversationId);
         } else {
-          try {
-            await removeCronTasks([id], opts.workspaceRoot, conversationId);
-          } catch (error) {
-            // No session job was touched, and descriptor admission refused
-            // before the durable transaction reached its write boundary.
-            if (!sessionMatch && unsupportedDurableCron(error)) {
-              return cronRefusal("CronDelete", DURABLE_CRON_UNSUPPORTED);
-            }
-            throw error;
-          }
+          await removeCronTasks([id], opts.workspaceRoot, conversationId);
         }
         await startCronSchedulerRunner({
           conversationId,
@@ -4997,6 +4982,7 @@ function createCronAndWorkflowTools(
         const { listAllCronTasks, listSessionCronTasks, cronRestoreFailureNeedsWarning } =
           await import("../utils/cronTasks.js");
         let tasks;
+        let durableUnavailable = false;
         if (readToolRuntimeContext(args)?.sandboxMode === "workspace_write") {
           tasks = listSessionCronTasks(conversationId);
         } else {
@@ -5004,13 +4990,12 @@ function createCronAndWorkflowTools(
             tasks = await listAllCronTasks(opts.workspaceRoot, conversationId);
           } catch (error) {
             if (!unsupportedDurableCron(error)) throw error;
-            if (await cronRestoreFailureNeedsWarning(error, opts.workspaceRoot)) {
-              return cronRefusal("CronList", DURABLE_CRON_UNSUPPORTED);
-            }
+            durableUnavailable = await cronRestoreFailureNeedsWarning(error, opts.workspaceRoot);
             tasks = listSessionCronTasks(conversationId);
           }
         }
         return json({
+          ...(durableUnavailable ? { warning: DURABLE_CRON_UNSUPPORTED } : {}),
           crons: tasks.map((task) => ({
             id: task.id,
             cron: task.cron,
