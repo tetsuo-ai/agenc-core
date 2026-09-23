@@ -119,6 +119,7 @@ ${consumerSource}
   const options = {
     ...parsed.options,
     noEmit: true,
+    preserveSymlinks: true,
     rootDir: undefined,
     noUnusedLocals: false,
     noUnusedParameters: false,

@@ -3708,6 +3708,28 @@
         },
         "message": {
           "type": "string"
+        },
+        "turnEvent": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "turn_started",
+                "turn_complete",
+                "turn_aborted",
+                "run_terminal"
+              ]
+            },
+            "payload": {
+              "$ref": "#/definitions/JsonObject"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ]
         }
       },
       "required": [

@@ -329,10 +329,12 @@ export class RoutineService {
             (payload.status === "cancelled" && params.status === "stopped" && params.runStatus === "stopped"))) {
         const status = payload.status === "unknown_outcome" ? "failed" : payload.status;
         for (const entry of this.#entries) {
-          const run = entry.runs.find((r) => r.sessionId === sessionId && r.agentId !== null && r.coreRunId !== null &&
-            r.agentId === params.agentId && r.coreRunId === params.runId && r.coreRunId === payload.runId &&
-            (r.finishedAt === null || r.status !== status ||
-              (payload.status === "unknown_outcome" && r.error !== UNKNOWN_OUTCOME_RUN_FAILURE)));
+          const active = this.#active.get(entry.routine.id);
+          const heldRunId = this.#held.has(entry.routine.id) ? entry.runs[0]?.id : undefined;
+          const run = entry.runs.find((r) => ACTIVE.has(r.status) && r.finishedAt === null &&
+            (active?.runId === r.id || heldRunId === r.id) &&
+            r.sessionId === sessionId && r.agentId !== null && r.coreRunId !== null &&
+            r.agentId === params.agentId && r.coreRunId === params.runId && r.coreRunId === payload.runId);
           if (!run) continue;
           try {
             this.#replaceRun(entry, run.id, { status, finishedAt: this.#now().toISOString(),
@@ -340,7 +342,6 @@ export class RoutineService {
                 : status === "failed" ? payload.stopReason === "routine_permission_denied" ? PERMISSION_DENIED_RUN_FAILURE
                   : "Core could not complete this run. Open its session for details." : null });
             if (entry.runs[0]?.id === run.id) this.#held.delete(entry.routine.id);
-            const active = this.#active.get(entry.routine.id);
             if (active?.runId === run.id) { active.resolveTerminal(status); this.#active.delete(entry.routine.id); }
           } catch { /* Routine storage failure must not interrupt the owning Core event stream. */ }
           return;

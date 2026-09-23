@@ -235,7 +235,7 @@ describe("routine execution finalization", () => {
     }
   });
 
-  it("uses a later failed Core terminal when the finish seam had no outcome", async () => {
+  it("preserves a completed run when a later failed Core terminal arrives", async () => {
     const f = fixture();
     f.manager.streamAgentMessage.mockImplementation(async () => ({ terminal: { code: 0 } }) as never);
     f.manager.finishRoutineRun.mockImplementation(async () => undefined as never);
@@ -244,8 +244,9 @@ describe("routine execution finalization", () => {
       h.service.run({ id: h.routine.id });
       await vi.waitFor(() => expect(h.service.runs({ id: h.routine.id }).runs[0]?.status).toBe("completed"));
       expect(f.manager.finishRoutineRun).toHaveBeenCalledOnce();
+      const completed = h.service.runs({ id: h.routine.id }).runs[0];
       failedCoreTerminal(h.service, h.routine.id);
-      expect(h.service.runs({ id: h.routine.id }).runs[0]).toMatchObject({ status: "failed", finishedAt: expect.any(String) });
+      expect(h.service.runs({ id: h.routine.id }).runs[0]).toEqual(completed);
     } finally { await h.cleanup(); }
   });
 
