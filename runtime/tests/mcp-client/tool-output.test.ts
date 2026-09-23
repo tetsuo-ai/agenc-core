@@ -225,46 +225,37 @@ describe("canonical MCP tool output normalization", () => {
     expect(mocks.persistBinaryContent).not.toHaveBeenCalled();
   });
 
+  /** A dropped image must still leave the trailing text item intact. */
+  async function expectImageDroppedTextKept(data: string, callId: string) {
+    const result = await normalizeMcpToolOutput({
+      raw: { content: [
+        { type: "image", data, mimeType: "image/png" },
+        { type: "text", text: "still working" },
+      ] },
+      serverName: "srv",
+      toolName: "screenshot",
+      callId,
+      environment: { MAX_MCP_OUTPUT_TOKENS: "100000" },
+      logger,
+    });
+
+    expect(result.content).toContain("image omitted");
+    expect(result.content).toContain("still working");
+    expect(result.contentItems?.some((item) => item.type === "input_image")).not.toBe(true);
+    expect(mocks.persistBinaryContent).not.toHaveBeenCalled();
+    return result;
+  }
+
   test.each([
     ["malformed", Buffer.from("iVBORw0KGgoAAAANSUhEUg==", "base64")],
     ["oversized", Buffer.alloc(4 * 1024 * 1024, 0xff)],
   ])("drops a %s MCP image and keeps following text", async (_kind, bytes) => {
-    const result = await normalizeMcpToolOutput({
-      raw: { content: [
-        { type: "image", data: bytes.toString("base64"), mimeType: "image/png" },
-        { type: "text", text: "still working" },
-      ] },
-      serverName: "srv",
-      toolName: "screenshot",
-      callId: "call-bad-image",
-      environment: { MAX_MCP_OUTPUT_TOKENS: "100000" },
-      logger,
-    });
-
-    expect(result.content).toContain("image omitted");
-    expect(result.content).toContain("still working");
-    expect(result.contentItems?.some((item) => item.type === "input_image")).not.toBe(true);
-    expect(mocks.persistBinaryContent).not.toHaveBeenCalled();
+    await expectImageDroppedTextKept(bytes.toString("base64"), "call-bad-image");
   });
 
   test("drops a structurally valid PNG that cannot be decoded", async () => {
     const corrupt = corruptPixelsPng(await makePng());
-    const result = await normalizeMcpToolOutput({
-      raw: { content: [
-        { type: "image", data: corrupt.toString("base64"), mimeType: "image/png" },
-        { type: "text", text: "still working" },
-      ] },
-      serverName: "srv",
-      toolName: "screenshot",
-      callId: "call-undecodable",
-      environment: { MAX_MCP_OUTPUT_TOKENS: "100000" },
-      logger,
-    });
-
-    expect(result.content).toContain("image omitted");
-    expect(result.content).toContain("still working");
-    expect(result.contentItems?.some((item) => item.type === "input_image")).not.toBe(true);
-    expect(mocks.persistBinaryContent).not.toHaveBeenCalled();
+    await expectImageDroppedTextKept(corrupt.toString("base64"), "call-undecodable");
   });
 
   test("rejects an unsupported image MIME type and caps images per result", async () => {
