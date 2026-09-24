@@ -125,10 +125,9 @@ describe("desktop MCP contract", () => {
     const inventory = await mcpDesktopInventory(context);
     expect(inventory.errors).toEqual([]);
     expect(inventory.servers.map(server => server.pluginId).sort()).toEqual(["first-plugin", "second-plugin"]);
-    // Inventory exposes each plugin's immutable MCP launch snapshot.
+    // Inventory shows the installed identity; the snapshot is only where a server launches from.
     for (const server of inventory.servers) {
-      expect(server.cwd).toContain(join(context.pluginStorageRoot, "cache", "mcp-install-snapshots"));
-      expect(await readFile(join(server.cwd!, "server", "main.mjs"), "utf8")).toContain("Inventory must not execute");
+      expect(server.cwd).toBe(join(context.pluginStorageRoot, server.pluginId!));
     }
     expect(new Set(inventory.servers.map(server => server.cwd)).size).toBe(2);
   });

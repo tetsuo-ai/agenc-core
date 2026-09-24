@@ -1355,6 +1355,15 @@ export async function getAllMcpConfigs(
   for (const registration of registrations) {
     pluginMcpServers[registration.name] = {
       ...canonicalMcpServerToServiceConfig(registration.server),
+      // Policy, deduplication, definition IDs, status and catalog fingerprints
+      // use the historical installed-path command identity. MCPManager remaps
+      // these fields to the verified snapshot immediately before spawning.
+      ...(registration.installationIdentity?.command !== undefined
+        ? { command: registration.installationIdentity.command } : {}),
+      ...(registration.installationIdentity?.args !== undefined
+        ? { args: [...registration.installationIdentity.args] } : {}),
+      ...(registration.installationIdentity?.cwd !== undefined
+        ? { cwd: registration.installationIdentity.cwd } : {}),
       scope: 'dynamic',
       pluginSource: registration.pluginSource,
       pluginServer: {

@@ -69,7 +69,7 @@ import {
 } from "./registration/load-plugin-commands.js";
 import { loadPluginHooks } from "./registration/load-plugin-hooks.js";
 import { loadPluginLspServers } from "./registration/lsp-plugin-integration.js";
-import { getUnconfiguredChannels, loadPluginMcpServers } from "./registration/mcp-plugin-integration.js";
+import { getUnconfiguredChannels, loadPluginMcpServerRegistrations, loadPluginMcpServers } from "./registration/mcp-plugin-integration.js";
 import {
   clearPluginRegistrationCaches,
   refreshActivePlugins,
@@ -614,6 +614,36 @@ describe("plugin registration", () => {
       expect(lspServers["plugin:sample:system-reminder_typescript"]).toMatchObject({
         args: [`${pluginRoot}/lsp.js`],
         extensionToLanguage: { ".ts": "typescript" },
+      });
+    });
+  });
+
+  test("keeps the installed command identity beside snapshot launch paths", async () => {
+    await withTempPlugin(async ({ pluginRoot, options }) => {
+      await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+        name: "sample",
+        mcpServers: {
+          local: {
+            command: "${AGENC_PLUGIN_ROOT}/bin/node",
+            args: ["${AGENC_PLUGIN_ROOT}/server.js"],
+            cwd: "./work",
+          },
+        },
+      });
+      const plugins = (await loadPlugins(options)).enabled;
+      const [registration] = await loadPluginMcpServerRegistrations({
+        pluginStorageRoot: options.pluginStorageRoot,
+        plugins,
+      });
+      expect(registration?.installationIdentity).toEqual({
+        command: join(pluginRoot, "bin", "node"),
+        args: [join(pluginRoot, "server.js")],
+        cwd: join(pluginRoot, "work"),
+      });
+      expect(registration?.server).toMatchObject({
+        command: join(registration!.snapshotRoot, "bin", "node"),
+        args: [join(registration!.snapshotRoot, "server.js")],
+        cwd: join(registration!.snapshotRoot, "work"),
       });
     });
   });

@@ -809,6 +809,8 @@ export class MCPManager {
       pluginName: plugin.pluginName, serverName: plugin.serverName,
       ...(plugin.version !== undefined ? { version: plugin.version } : {}),
       digest: plugin.digest, cacheHome: config.pluginCatalogHome,
+      // Command/args/cwd are the installed identity; the digest and effective
+      // snapshot environment keep catalog entries tied to executable bytes.
       configFingerprint: fingerprintPluginCatalogConfig({
         transport: config.transport ?? "stdio", command: config.command,
         args: config.args, env: config.env, env_vars: config.env_vars,

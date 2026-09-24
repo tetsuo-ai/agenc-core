@@ -327,6 +327,8 @@ export interface PluginMcpServerRegistration {
   readonly userConfigDigest?: string;
   readonly serverName: string;
   readonly server: McpServerConfig;
+  /** Resolved against the installed root, as command policy saw it before snapshots. */
+  readonly installationIdentity?: Pick<McpServerConfig, "command" | "args" | "cwd">;
   readonly version?: string;
   readonly digest: string;
   readonly eager: boolean;
@@ -370,6 +372,12 @@ async function extractMcpServerRegistrationsFromPlugins(
       const name = pluginScopedServerIdentifier(plugin.id, serverName);
       const server = scoped[name];
       if (server === undefined) continue;
+      const installation = resolvePluginMcpEnvironmentWithIssues(
+        plugin,
+        plugin.mcpServers[serverName]!,
+        options,
+        schemaOwnedServerUserConfig(plugin, serverName),
+      ).server;
       registrations.push({
         name,
         pluginName: plugin.id,
@@ -379,6 +387,11 @@ async function extractMcpServerRegistrationsFromPlugins(
         userConfigDigest: fingerprintPluginCatalogConfig(schemaOwnedServerUserConfig(plugin, serverName)?.values ?? {}),
         serverName,
         server,
+        installationIdentity: {
+          ...(installation.command !== undefined ? { command: installation.command } : {}),
+          ...(installation.args !== undefined ? { args: installation.args } : {}),
+          ...(installation.cwd !== undefined ? { cwd: installation.cwd } : {}),
+        },
         ...(plugin.version !== undefined ? { version: plugin.version } : {}),
         digest,
         eager: plugin.manifest.channels?.some(channel => channel.server === serverName) === true ||
