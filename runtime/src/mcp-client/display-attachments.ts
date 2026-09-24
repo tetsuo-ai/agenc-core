@@ -100,10 +100,35 @@ const timeseries = z.object({
     if (!all.has(String(marker.time))) ctx.addIssue({ code: "custom", path: ["markers", index, "time"], message: "marker time must match a data point" });
   });
 });
-const category = z.object({ version: z.literal(1), kind: categoryKind, title: z.string().trim().min(1), categories: z.array(z.string().min(1)).min(1).max(5000), series: z.array(z.object({ name: z.string().min(1), values: z.array(number).min(1).max(5000) }).strict()).min(1).max(8) }).strict().superRefine((chart, ctx) => {
+function xyPointCount(series: readonly unknown[]): number {
+  return series.reduce<number>((sum, entry) => {
+    const data = (entry as { readonly data?: unknown } | null)?.data;
+    return sum + (Array.isArray(data) ? data.length : 0);
+  }, 0);
+}
+/** A plain reason for a chart over the size caps, so its plugin can shrink it. */
+function chartSizeReason(source: unknown): string | undefined {
+  const chart = source as { readonly kind?: unknown; readonly categories?: unknown; readonly series?: unknown } | null;
+  if (chart === null || typeof chart !== "object") return undefined;
+  if (chart.kind === "category" && Array.isArray(chart.categories) && chart.categories.length > CATEGORY_CHART_MAX_CATEGORIES) {
+    return `category chart has more than ${CATEGORY_CHART_MAX_CATEGORIES} categories`;
+  }
+  if (chart.kind === "xy" && Array.isArray(chart.series) && xyPointCount(chart.series) > XY_CHART_MAX_POINTS) {
+    return `xy chart has more than ${XY_CHART_MAX_POINTS} points in all series`;
+  }
+  return undefined;
+}
+// Category, xy and pie charts are drawn as SVG, one element per mark, so they
+// keep to the sizes Desktop's renderer was built for. Timeseries charts are
+// drawn on a canvas and keep the limits above.
+export const CATEGORY_CHART_MAX_CATEGORIES = 500;
+export const XY_CHART_MAX_POINTS = 5000;
+const category = z.object({ version: z.literal(1), kind: categoryKind, title: z.string().trim().min(1), categories: z.array(z.string().min(1)).min(1).max(CATEGORY_CHART_MAX_CATEGORIES), series: z.array(z.object({ name: z.string().min(1), values: z.array(number).min(1).max(CATEGORY_CHART_MAX_CATEGORIES) }).strict()).min(1).max(8) }).strict().superRefine((chart, ctx) => {
   chart.series.forEach((series, index) => { if (series.values.length !== chart.categories.length) ctx.addIssue({ code: "custom", path: ["series", index, "values"], message: "values must match categories" }); });
 });
-const xy = z.object({ version: z.literal(1), kind: xyKind, title: z.string().trim().min(1), series: z.array(z.object({ name: z.string().min(1), data: z.array(z.object({ x: number, y: number }).strict()).min(1).max(5000) }).strict()).min(1).max(8) }).strict();
+const xy = z.object({ version: z.literal(1), kind: xyKind, title: z.string().trim().min(1), series: z.array(z.object({ name: z.string().min(1), data: z.array(z.object({ x: number, y: number }).strict()).min(1).max(XY_CHART_MAX_POINTS) }).strict()).min(1).max(8) }).strict().superRefine((chart, ctx) => {
+  if (xyPointCount(chart.series) > XY_CHART_MAX_POINTS) ctx.addIssue({ code: "custom", path: ["series"], message: `at most ${XY_CHART_MAX_POINTS} points in all series` });
+});
 const pie = z.object({ version: z.literal(1), kind: pieKind, title: z.string().trim().min(1), slices: z.array(z.object({ label: z.string().min(1), value: number.nonnegative() }).strict()).min(1).max(100) }).strict();
 const chartSchema = z.union([timeseries, category, xy, pie]);
 const tableSchema = z.object({ version: z.literal(1), title: z.string().trim().min(1), columns: z.array(z.object({ key: z.string().min(1), label: z.string().min(1), format: z.string().max(64).optional() }).strict()).min(1).max(32), rows: z.array(z.record(z.string(), z.union([z.string(), number, z.boolean(), z.null()]))).max(1000) }).strict().superRefine((table, ctx) => {
@@ -170,7 +195,7 @@ export async function validateDisplayBlock(block: Record<string, unknown>, roots
     try { source = redactSecretsInValue(JSON.parse(resource.text)); } catch { fail("invalid JSON"); }
     if (kind === "chart") {
       const parsed = chartSchema.safeParse(source);
-      if (!parsed.success) fail("invalid chart schema");
+      if (!parsed.success) fail(chartSizeReason(source) ?? "invalid chart schema");
       const data = parsed.data;
       const title = safeTitle(data.title);
       const canonicalBytes = Buffer.from(JSON.stringify(data), "utf8");
