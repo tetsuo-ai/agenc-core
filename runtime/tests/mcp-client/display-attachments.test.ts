@@ -99,6 +99,35 @@ describe("display attachments and saved plugin secrets", () => {
     const result = await normalizeMcpToolOutput({ raw, serverName: "plugin:demo:show", toolName: "show", callId: "call-secret", environment: { MAX_MCP_OUTPUT_TOKENS: "100000" }, logger, displayRoots: [], sensitiveHeaders: headers });
     expect(attachments(result)?.map(item => item.kind)).toEqual(["table", "image"]);
   });
+  it.each(["resource", "text"])("keeps a user-only table when a saved secret is %j", async value => {
+    const headers = { token: value };
+    const raw = redactMcpAttachmentValue({ content: [resource("application/vnd.agenc.table+json", table)] }, headers, undefined, "tool-result");
+    const result = await normalizeMcpToolOutput({ raw, serverName: "plugin:demo:show", toolName: "show", callId: "call-table", environment: {}, logger, sensitiveHeaders: headers });
+    expect(attachments(result)?.map(item => item.kind)).toEqual(["table"]);
+    expect(JSON.stringify(result.codeModeResult)).not.toContain('"symbol":"NVDA"');
+  });
+  it("keeps a file link URI scheme through redaction and display routing", async () => {
+    const root = await mkdtemp(join(tmpdir(), "mcp-link-"));
+    directories.push(root);
+    const path = join(root, "report.txt");
+    await writeFile(path, "report bytes");
+    const uri = pathToFileURL(path).href;
+    const raw = redactMcpAttachmentValue({ content: [{ type: "resource_link", annotations: user, uri, name: "report.txt", mimeType: "text/plain" }] }, { token: "file" }, undefined, "tool-result");
+    expect(raw.content[0]!.uri).toBe(uri);
+    const result = await normalizeMcpToolOutput({ raw, serverName: "plugin:demo:show", toolName: "show", callId: "call-file", environment: {}, logger, displayRoots: [root], displayDataRoot: root });
+    expect(result.content).not.toContain("file link must use a file: URI");
+    if (process.platform === "linux") expect(attachments(result)?.map(item => item.kind)).toEqual(["file"]);
+  });
+  it.each(["image/png; charset=binary", "image/jpg"])("retains routed model image MIME %s", async mimeType => {
+    const sharp = (await import("sharp")).default;
+    const bytes = mimeType.includes("jpg")
+      ? await sharp({ create: { width: 2, height: 2, channels: 3, background: "red" } }).jpeg().toBuffer()
+      : await sharp({ create: { width: 2, height: 2, channels: 3, background: "red" } }).png().toBuffer();
+    const headers = { token: "image" };
+    const raw = redactMcpAttachmentValue({ content: [{ type: "image", mimeType, data: bytes.toString("base64") }] }, headers, undefined, "tool-result");
+    const result = await normalizeMcpToolOutput({ raw, serverName: "plugin:demo:show", toolName: "show", callId: "call-image", environment: {}, logger, sensitiveHeaders: headers });
+    expect(result.contentItems?.some(item => item.type === "input_image")).toBe(true);
+  });
   it("still shows an attachment without a saved secret", async () => {
     const result = await normalizeWithSecret([resource("application/vnd.agenc.chart+json", chart)]);
     expect(attachments(result)).toHaveLength(1);

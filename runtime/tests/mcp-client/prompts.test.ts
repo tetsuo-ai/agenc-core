@@ -99,6 +99,18 @@ function installPromptAdmission(
 }
 
 describe("createPromptBridge", () => {
+  it("keeps a generated prompt alias usable after render redaction", async () => {
+    installPromptAdmission();
+    try {
+      const getPrompt = vi.fn(async () => ({ messages: [{ role: "user", content: { type: "text", text: "body" } }] }));
+      const bridge = await createPromptBridge(makeClient({ listPrompts: vi.fn().mockResolvedValue({ prompts: [{ name: "private-prompt" }] }), getPrompt }), "srv", undefined, { sensitiveHeaders: { token: "prompt" } });
+      const alias = (await bridge.listPrompts())[0]!.name;
+      expect(alias).toMatch(/^agenc-redacted-prompt-[a-f0-9]{64}$/);
+      expect((await bridge.renderPrompt(alias)).promptName).toBe(alias);
+      expect((await bridge.renderPrompt(alias)).promptName).toBe(alias);
+      expect(getPrompt).toHaveBeenCalledTimes(2);
+    } finally { clearCurrentRuntimeSession(); }
+  });
   it("keeps colliding prompt aliases stable across listings", async () => {
     const names = ["alpha-private", "alpha-other"];
     const bridge = await createPromptBridge(makeClient({ listPrompts: vi.fn().mockResolvedValue({ prompts: names.map(name => ({ name })) }) }), "srv", undefined, { sensitiveHeaders: { token: "private", other: "other" } });

@@ -14,6 +14,17 @@ describe("ephemeral local MCP authority", () => {
     expect(redactMcpAttachmentText("abcdefgh-secret", { first: "abcd", second: "abcdefgh-secret" })).toBe("[REDACTED]");
     expect(redactMcpAttachmentText("abcdefghi-secret", { first: "abcdef", second: "defghi-secret" })).toBe("[REDACTED]");
   });
+  it("redacts MIME parameters, URI paths and ordinary payload even when routing words are protected", () => {
+    const headers = { token: "image" };
+    const safe = redactMcpAttachmentValue({ content: [{ type: "image", mimeType: "image/png; note=image", uri: "file:///image/report.png", text: "image" }] }, headers, undefined, "tool-result");
+    expect(safe.content[0]).toMatchObject({ type: "image", mimeType: "image/png; note=[REDACTED]", uri: "file:///[REDACTED]/report.png", text: "[REDACTED]" });
+  });
+  it("keeps annotation and encoding markers only in their structural positions", () => {
+    const headers = { token: "base64", audience: "user" };
+    const safe = redactMcpAttachmentValue({ content: [{ type: "text", annotations: { audience: ["user"] }, encoding: "base64", source: { type: "base64", data: "ordinary" }, text: "base64 user" }], structuredContent: { encoding: "base64", audience: "user" } }, headers, undefined, "tool-result");
+    expect(safe.content[0]).toMatchObject({ annotations: { audience: ["user"] }, encoding: "base64", source: { type: "base64" }, text: "[REDACTED] [REDACTED]" });
+    expect(safe.structuredContent).toEqual({ encoding: "[REDACTED]", audience: "[REDACTED]" });
+  });
 
   it("preserves schema controls while visiting property-name maps and nested subschemas", () => {
     const schema = { type: "object", properties: { type: { type: "string", description: "private-phrase", enum: ["private-phrase"] }, nested: { type: "object", properties: { required: { type: "string", description: "private-phrase" } } } } };

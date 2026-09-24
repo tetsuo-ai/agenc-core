@@ -27,7 +27,7 @@ import { sanitizeSystemReminderContent } from "../prompts/attachments/system-rem
 import { asRecord } from "../utils/record.js";
 import { recursivelySanitizeUnicode } from "../utils/sanitization.js";
 import { nonEmptyString } from "../utils/stringUtils.js";
-import { redactMcpAttachmentText, redactMcpAttachmentValue } from "./local-control.js";
+import { redactMcpAttachmentText, redactMcpAttachmentValue, type McpTextPosition } from "./local-control.js";
 
 /** Aggregate decoded-payload upper bound for one resource read (I-76). */
 export const MAX_RESOURCE_BYTES = 5 * 1024 * 1024;
@@ -162,7 +162,7 @@ export async function createResourceBridge(
   const publicUriForRaw = (raw: string): string => {
     const existing = publicUriByRawUri.get(raw);
     if (existing !== undefined) return existing;
-    const redacted = redactMcpAttachmentText(raw, opts.sensitiveHeaders);
+    const redacted = redactMcpAttachmentText(raw, opts.sensitiveHeaders, "uri");
     let publicUri = redacted === raw ? raw : `agenc-redacted-resource:${createHash("sha256").update(raw).digest("hex")}`;
     if (!fitsUtf8(publicUri, MAX_RESOURCE_URI_BYTES) ||
         (rawUriByPublicUri.has(publicUri) && rawUriByPublicUri.get(publicUri) !== raw)) {
@@ -211,7 +211,7 @@ export async function createResourceBridge(
             serverName,
             MAX_RESOURCE_DESCRIPTORS - catalogEntries,
             logger,
-            text => redactMcpAttachmentText(text, opts.sensitiveHeaders),
+            (text, position) => redactMcpAttachmentText(text, opts.sensitiveHeaders, position),
           );
           for (const resource of pageResources) {
             const safe = redact(resource);
@@ -274,7 +274,7 @@ export async function createResourceBridge(
           signal,
         );
         return redact(normalizeResourceContents(response, rawUriByPublicUri.get(uri) ?? uri, logger,
-          text => redactMcpAttachmentText(text, opts.sensitiveHeaders), publicUriForRaw,
+          (text, position) => redactMcpAttachmentText(text, opts.sensitiveHeaders, position), publicUriForRaw,
           blob => binaryContainsSecret(blob, opts.sensitiveHeaders)));
       } catch (error) {
         throw redact(error);
@@ -313,7 +313,7 @@ function normalizeResourceCatalog(
   serverName: string,
   remainingEntries: number,
   logger: Logger,
-  redactText: (text: string) => string = text => text,
+  redactText: (text: string, position?: McpTextPosition) => string = text => text,
 ): MCPResourceDescriptor[] {
   const rawResources = arrayField(asRecord(response), "resources");
   if (rawResources.length > remainingEntries) {
@@ -333,7 +333,7 @@ function normalizeResourceDescriptor(
   serverName: string,
   index: number,
   logger: Logger,
-  redactText: (text: string) => string,
+  redactText: (text: string, position?: McpTextPosition) => string,
 ): MCPResourceDescriptor | null {
   const record = asRecord(raw);
   if (!record) return null;
@@ -356,7 +356,8 @@ function normalizeResourceDescriptor(
     MAX_RESOURCE_DESCRIPTION_BYTES,
   );
   const mimeType = sanitizeOptionalBoundedResourceText(
-    redactOptional(stringField(record, "mimeType"), redactText),
+    // Catalog metadata is redacted before the later structural pass.
+    redactOptional(stringField(record, "mimeType"), redactText, "mime"),
     MAX_RESOURCE_MIME_TYPE_BYTES,
   );
 
@@ -374,7 +375,7 @@ function normalizeResourceContents(
   response: unknown,
   requestedUri: string,
   logger: Logger,
-  redactText: (text: string) => string = text => text,
+  redactText: (text: string, position?: McpTextPosition) => string = text => text,
   publicUriForRaw: (uri: string) => string = uri => uri,
   binaryContainsSecret: (blob: string) => boolean = () => false,
 ): MCPResourceContent {
@@ -423,7 +424,8 @@ function normalizeResourceContents(
       continue;
     }
     const mimeType = sanitizeOptionalBoundedResourceText(
-      redactOptional(stringField(record, "mimeType"), redactText),
+      // Keep the same MIME routing rule on resources/read before persistence.
+      redactOptional(stringField(record, "mimeType"), redactText, "mime"),
       MAX_RESOURCE_MIME_TYPE_BYTES,
     );
     const entryBudget = Math.min(MAX_RESOURCE_ENTRY_BYTES, remainingBytes);
@@ -576,8 +578,8 @@ function binaryContainsSecret(blob: string, headers?: Readonly<Record<string, st
   return secrets.some(secret => bytes.includes(Buffer.from(secret, "utf8")));
 }
 
-function redactOptional(value: string | undefined, redactText: (text: string) => string): string | undefined {
-  return value === undefined ? undefined : redactText(value);
+function redactOptional(value: string | undefined, redactText: (text: string, position?: McpTextPosition) => string, position: McpTextPosition = "payload"): string | undefined {
+  return value === undefined ? undefined : redactText(value, position);
 }
 
 function sanitizeOptionalBoundedResourceText(

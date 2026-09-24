@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   MAX_RESOURCE_BYTES,
   MAX_RESOURCE_BLOB_INPUT_CHARS,
@@ -12,6 +15,9 @@ import {
   MAX_RESOURCE_URI_BYTES,
   createResourceBridge,
 } from "./resources.js";
+import { extensionForMimeType, persistBinaryContent } from "../utils/mcpOutputStorage.js";
+import { clearCurrentRuntimeSession, setCurrentRuntimeSession } from "../session/current-session.js";
+import type { Session } from "../session/session.js";
 
 function makeClient(overrides: {
   listResources?: ReturnType<typeof vi.fn>;
@@ -24,6 +30,43 @@ function makeClient(overrides: {
 }
 
 describe("createResourceBridge", () => {
+  it("keeps catalog and read MIME routing for a PDF saved with its real extension", async () => {
+    const uri = "resource://report";
+    const bytes = Buffer.from("%PDF-1.4\n");
+    const sessionDir = await mkdtemp(join(tmpdir(), "agenc-resource-pdf-"));
+    setCurrentRuntimeSession({ rolloutStore: { store: { sessionDir } } } as unknown as Session);
+    try {
+      for (const [index, secret] of ["application", "resource"].entries()) {
+        const bridge = await createResourceBridge(makeClient({
+          listResources: vi.fn().mockResolvedValue({ resources: [{ uri, mimeType: "application/pdf" }] }),
+          readResource: vi.fn().mockResolvedValue({ contents: [{ uri, mimeType: "application/pdf", blob: bytes.toString("base64") }] }),
+        }), "srv", undefined, { sensitiveHeaders: { token: secret } });
+        const listed = (await bridge.listResources())[0]!;
+        const read = await bridge.readResource(listed.uri);
+        expect(listed.mimeType).toBe("application/pdf");
+        expect(read.contents[0]?.mimeType).toBe("application/pdf");
+        expect(extensionForMimeType(read.contents[0]?.mimeType)).toBe("pdf");
+        const persisted = await persistBinaryContent(Buffer.from(read.contents[0]!.blob!, "base64"), read.contents[0]?.mimeType, `pdf-${index}`);
+        expect(persisted).not.toHaveProperty("error");
+        if ("error" in persisted) throw new Error(persisted.error);
+        expect(persisted.filepath).toBe(join(sessionDir, "tool-results", `pdf-${index}.pdf`));
+        expect(await readFile(persisted.filepath)).toEqual(bytes);
+      }
+    } finally {
+      clearCurrentRuntimeSession();
+      await rm(sessionDir, { recursive: true, force: true });
+    }
+  });
+  it("keeps a generated resource alias usable through repeated reads", async () => {
+    const uri = "test:resource";
+    const readResource = vi.fn(async () => ({ contents: [{ uri, text: "body" }] }));
+    const bridge = await createResourceBridge(makeClient({ listResources: vi.fn().mockResolvedValue({ resources: [{ uri }] }), readResource }), "srv", undefined, { sensitiveHeaders: { token: "resource" } });
+    const alias = (await bridge.listResources())[0]!.uri;
+    expect(alias).toMatch(/^agenc-redacted-resource:[a-f0-9]{64}$/);
+    expect((await bridge.readResource(alias)).contents[0]?.uri).toBe(alias);
+    expect((await bridge.readResource(alias)).contents[0]?.uri).toBe(alias);
+    expect(readResource).toHaveBeenCalledTimes(2);
+  });
   it("redacts resource text before the entry cap cuts a secret", async () => {
     const secret = "private-phrase";
     const text = "x".repeat(MAX_RESOURCE_ENTRY_BYTES - 8) + secret;

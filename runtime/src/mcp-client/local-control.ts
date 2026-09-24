@@ -98,9 +98,38 @@ export function sessionMcpAttachmentIssue(config: {
   return undefined;
 }
 
-export function redactMcpAttachmentText(text: string, headers?: Readonly<Record<string, string>>): string {
-  return redactLiteralSecrets(text, attachmentSecrets(headers));
+export type McpTextPosition = "payload" | "mime" | "uri" | "prompt-alias" | "content-type" | "role" | "audience" | "encoding";
+
+export function redactMcpAttachmentText(text: string, headers?: Readonly<Record<string, string>>, position: McpTextPosition = "payload"): string {
+  const secrets = attachmentSecrets(headers);
+  const redact = (value: string) => redactLiteralSecrets(value, secrets);
+  if (position === "mime") {
+    const separator = text.indexOf(";");
+    const routing = (separator < 0 ? text : text.slice(0, separator)).trim();
+    // Core routes on type/subtype; parameters remain plugin payload.
+    if (ROUTING_MIME_TYPES.has(routing.toLowerCase())) {
+      return separator < 0 ? text : text.slice(0, separator + 1) + redact(text.slice(separator + 1));
+    }
+  }
+  if (position === "uri") {
+    // A generated alias is an opaque Core identity, while a file URI's path
+    // can still contain a saved secret.
+    if (/^agenc-redacted-resource:[a-f0-9]{64}$/u.test(text)) return text;
+    const scheme = /^([A-Za-z][A-Za-z0-9+.-]*:)([\s\S]*)$/u.exec(text);
+    if (scheme?.[1]?.toLowerCase() === "file:") return scheme[1] + redact(scheme[2] ?? "");
+  }
+  if (position === "prompt-alias" && /^agenc-redacted-prompt-[a-f0-9]{64}$/u.test(text)) return text;
+  // Only known wire markers are structure; a matching word in payload text
+  // still goes through literal redaction.
+  if (position === "content-type" && CONTENT_TYPES.has(text) ||
+      position === "role" && (text === "user" || text === "assistant") ||
+      position === "audience" && (text === "user" || text === "assistant") ||
+      position === "encoding" && ENCODING_MARKERS.has(text)) return text;
+  return redact(text);
 }
+
+const CONTENT_TYPES = new Set(["text", "image", "audio", "resource", "resource_link"]);
+const ENCODING_MARKERS = new Set(["base64", "utf8", "utf-8", "binary", "text"]);
 
 function attachmentSecrets(headers?: Readonly<Record<string, string>>): string[] {
   return [...new Set(Object.values(headers ?? {}).flatMap(value => [value, value.replace(/^Bearer\s+/i, "")]))]
@@ -116,7 +145,7 @@ function attachmentSecrets(headers?: Readonly<Record<string, string>>): string[]
  * identifiers and input-schema literal values are outside this boundary, as
  * are copies the plugin itself encodes or splits.
  */
-export type McpRedactionShape = "data" | "schema" | "schema-properties" | "tool-result" | "content-list" | "content-block" | "prompt" | "resource" | "annotations";
+export type McpRedactionShape = "data" | "schema" | "schema-properties" | "tool-result" | "content-list" | "content-block" | "content-source" | "prompt" | "resource" | "annotations" | "annotation-audience";
 
 function redactedDataKey(
   key: string,
@@ -141,9 +170,10 @@ export function redactMcpAttachmentValue<T>(
   headers?: Readonly<Record<string, string>>,
   seen = new WeakMap<object, unknown>(),
   shape: McpRedactionShape = "data",
+  position: McpTextPosition = "payload",
 ): T {
   if (!headers) return value;
-  if (typeof value === "string") return redactMcpAttachmentText(value, headers) as T;
+  if (typeof value === "string") return redactMcpAttachmentText(value, headers, position) as T;
   if (typeof value === "number" || typeof value === "boolean") {
     const literal = String(value);
     return Object.values(headers).some(secret => secret.length >= 4 && (secret === literal || secret.replace(/^Bearer\s+/i, "") === literal))
@@ -162,7 +192,7 @@ export function redactMcpAttachmentValue<T>(
         for (const [key, item] of Object.entries(block)) {
           Object.defineProperty(omitted, redactedDataKey(key, shape, headers, used), {
             value: key === "data" || key === "blob" ? "" :
-              protocolField(key, shape, item) ? item : redactMcpAttachmentValue(item, headers, seen, childShape(shape, key)),
+              protocolField(key, shape, item) ? item : redactMcpAttachmentValue(item, headers, seen, childShape(shape, key), fieldPosition(shape, key)),
             enumerable: true, configurable: true, writable: true,
           });
         }
@@ -178,7 +208,7 @@ export function redactMcpAttachmentValue<T>(
       const used = new Set<string>(["name", "message", "stack", "cause"]);
       for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
         Object.defineProperty(result, ["name", "message", "stack", "cause"].includes(key) ? key : redactedDataKey(key, shape, headers, used), "value" in descriptor
-          ? { ...descriptor, value: protocolField(key, shape, descriptor.value) ? descriptor.value : redactMcpAttachmentValue(descriptor.value, headers, seen, childShape(shape, key)) }
+          ? { ...descriptor, value: protocolField(key, shape, descriptor.value) ? descriptor.value : redactMcpAttachmentValue(descriptor.value, headers, seen, childShape(shape, key), fieldPosition(shape, key)) }
           : descriptor);
       }
       return result as T;
@@ -187,7 +217,7 @@ export function redactMcpAttachmentValue<T>(
     seen.set(value, result);
     const used = new Set<string>();
     for (const [key, item] of Object.entries(value)) Object.defineProperty(result, Array.isArray(value) ? key : redactedDataKey(key, shape, headers, used), {
-      value: protocolField(key, shape, item) ? item : redactMcpAttachmentValue(item, headers, seen, Array.isArray(value) && (shape === "content-block" || shape === "resource") ? shape : childShape(shape, key)), enumerable: true, configurable: true, writable: true,
+      value: protocolField(key, shape, item) ? item : redactMcpAttachmentValue(item, headers, seen, Array.isArray(value) && (shape === "content-block" || shape === "resource") ? shape : childShape(shape, key), Array.isArray(value) ? position : fieldPosition(shape, key)), enumerable: true, configurable: true, writable: true,
     });
     return result as T;
   }
@@ -198,26 +228,36 @@ function protocolField(key: string, shape: McpRedactionShape, value: unknown): b
   return shape === "schema" && SCHEMA_CONTROL_FIELDS.has(key) ||
     shape === "schema" && key === "additionalProperties" && typeof value === "boolean" ||
     shape === "tool-result" && key === "isError" ||
-    shape === "content-block" && (key === "type" || key === "blob" || key === "data") ||
-    shape === "prompt" && (key === "role" || key === "required") ||
+    shape === "content-block" && (key === "blob" || key === "data") ||
+    shape === "prompt" && key === "required" ||
     shape === "resource" && (key === "truncated" || key === "bytesReturned" || key === "blob") ||
-    // MCP annotations route a block to the user or the model; keep valid values.
-    shape === "annotations" && key === "audience" && Array.isArray(value) &&
-      value.every(item => item === "user" || item === "assistant") ||
-    shape === "annotations" && key === "priority" && typeof value === "number" ||
-    (shape === "content-block" || shape === "resource") && (key === "mimeType" || key === "mediaType") &&
-      typeof value === "string" && ROUTING_MIME_TYPES.has(value.toLowerCase());
+    shape === "annotations" && key === "priority" && typeof value === "number";
 }
 
-// Core routes blocks on these exact types: display attachments, images, audio
-// and files. A saved secret must not rewrite them; any other MIME text is
-// still redacted.
+function fieldPosition(shape: McpRedactionShape, key: string): McpTextPosition {
+  if ((shape === "content-block" || shape === "resource") && (key === "mimeType" || key === "mediaType")) return "mime";
+  if ((shape === "content-block" || shape === "resource") && key === "uri") return "uri";
+  if (shape === "content-block" && key === "type") return "content-type";
+  if (shape === "content-source" && key === "type" ||
+      (shape === "content-block" || shape === "resource" || shape === "content-source") && key === "encoding") return "encoding";
+  if (shape === "prompt" && key === "role") return "role";
+  // renderPrompt adds promptName after sanitizing the plugin response.
+  if (shape === "prompt" && key === "promptName") return "prompt-alias";
+  if (shape === "annotations" && key === "audience") return "audience";
+  return "payload";
+}
+
+// Core routes or chooses a persisted extension from these MIME types.
 const ROUTING_MIME_TYPES = new Set([
   "application/vnd.agenc.chart+json", "application/vnd.agenc.table+json",
-  "image/png", "image/jpeg", "image/webp", "image/gif",
+  "image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif", "image/svg+xml",
   "application/octet-stream", "text/plain", "text/csv", "text/calendar", "application/pdf", "application/zip",
   "application/json", "text/markdown", "text/html",
   "audio/mpeg", "audio/wav", "audio/ogg", "audio/webm",
+  "video/mp4", "video/webm", "application/msword", "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 ]);
 
 const SCHEMA_CONTROL_FIELDS = new Set([
@@ -234,8 +274,10 @@ function childShape(shape: McpRedactionShape, key: string): McpRedactionShape {
   if (shape === "schema" && ["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"].includes(key)) return "schema-properties";
   if (shape === "schema") return key === "default" || key === "enum" || key === "const" || key === "examples" ? "data" : "schema";
   if (shape === "prompt") return key === "rawContent" || key === "content" ? "content-block" : "prompt";
+  if (shape === "annotations" && key === "audience") return "annotation-audience";
   if ((shape === "content-block" || shape === "resource") && key === "annotations") return "annotations";
   if (shape === "content-block" && key === "resource") return "resource";
+  if (shape === "content-block" && key === "source") return "content-source";
   return shape === "resource" && key === "contents" ? "resource" : "data";
 }
 
