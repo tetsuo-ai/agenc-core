@@ -197,6 +197,15 @@ const SHELL_SCRIPT_COMMANDS: ReadonlySet<string> = new Set([
   "ksh",
   "csh",
   "tcsh",
+  // Already treated as system.bash input evaluators. Without these names the
+  // rm / curl|sh floor stops at the wrapper, same as dash/ash before them.
+  "mksh",
+  "lksh",
+  "posh",
+  "yash",
+  "rbash",
+  "rksh",
+  "ksh93",
 ]);
 
 function isRecursiveForceRemove(command: string): boolean {
