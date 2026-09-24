@@ -56,10 +56,8 @@ import type {
 import { createCacheSafeParams } from "../services/PromptSuggestion/runtime.js";
 import { llmMessageToAgentSummaryMessage } from "../services/AgentSummary/transcript.js";
 import {
-  createProvider,
   isFactoryProvider,
   preserveProviderFactoryState,
-  readProviderFactoryOptions,
   readProviderIdentity,
 } from "../llm/provider.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
@@ -4061,11 +4059,14 @@ export async function* runAgent(
     } else if (provider && isFactoryProvider(provider)) {
       const selectedModel = params.model ?? live.role.config.model ??
         parent.providerService.current().model;
-      const factoryOptions = readProviderFactoryOptions(provider);
-      if (factoryOptions.model !== undefined && factoryOptions.model !== selectedModel) {
-        const providerName = readProviderIdentity(provider);
-        if (providerName === null) throw new Error("factory provider has no identity");
-        provider = createProvider(providerName, { ...factoryOptions, model: selectedModel });
+      const currentBinding = parent.providerService.current();
+      if (currentBinding.model !== selectedModel) {
+        const prepared = await parent.providerService.prepareChild(
+          { provider: currentBinding.provider, model: selectedModel },
+          undefined,
+          { signal: merged.signal },
+        );
+        provider = prepared.binding.instance;
         ownedPreparedProvider = provider;
       }
     }

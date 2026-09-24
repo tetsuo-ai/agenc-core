@@ -57,6 +57,7 @@ import {
 } from "../llm/provider.js";
 import { createGeminiEndpointPlan } from "../llm/providers/gemini/endpoint-plan.js";
 import { GrokProvider } from "../llm/providers/grok/adapter.js";
+import { AgenCProvider } from "../llm/providers/agenc/index.js";
 import { ZaiProvider } from "../llm/providers/zai/index.js";
 import { OpenAIProvider } from "../llm/providers/openai/adapter.js";
 import {
@@ -881,13 +882,20 @@ describe("runAgent", () => {
 
   it("dispatches another Grok model when the parent provider has factory model metadata", async () => {
     const provider = createProvider("grok", { apiKey: "xai-test", model: "grok-4.7" });
+    const providerService = new SessionProviderService({
+      initialProvider: provider,
+      resolvePreparationRequest: ({ model }) => ({ requested: {
+        ...readProviderFactoryOptions(provider), model,
+      } }),
+    });
     const chat = vi.spyOn(GrokProvider.prototype, "chatStream").mockResolvedValue({
       content: "child completed", toolCalls: [],
       usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
       model: "grok-4.6", finishReason: "stop",
     });
     const parent = makeStubSession({
-      services: { provider, sandboxExecutionBroker: new SandboxExecutionBroker({ mode: "danger_full_access", cwd: "/tmp" }) },
+      services: { provider, providerService,
+        sandboxExecutionBroker: new SandboxExecutionBroker({ mode: "danger_full_access", cwd: "/tmp" }) },
       sessionConfiguration: mkSessionConfiguration({ collaborationMode: { model: "grok-4.7" } }),
       config: { ...mkConfig(), model: "grok-4.7" },
       modelInfo: { ...mkModelInfo(), slug: "grok-4.7" },
@@ -902,6 +910,70 @@ describe("runAgent", () => {
     } finally {
       await parent.shutdown();
       await provider.dispose?.();
+      chat.mockRestore();
+    }
+  });
+
+  it("dispatches another hosted AgenC model using the parent session authority", async () => {
+    const parentModel = "deepseek/deepseek-v4-flash-0731";
+    const authBackend = {
+      kind: "remote" as const,
+      login: vi.fn(), logout: vi.fn(), whoami: vi.fn(),
+      vendKey: vi.fn(), inferAgencModel: vi.fn(),
+      getLlmUsage: vi.fn(), getSubscriptionTier: vi.fn(),
+    } as never;
+    const provider = createProvider("agenc", {
+      model: parentModel, extra: { authBackend, sessionId: "hosted-parent" },
+    });
+    const factoryExtra = readProviderFactoryOptions(provider).extra ?? {};
+    expect(factoryExtra).not.toHaveProperty("authBackend");
+    expect(factoryExtra).not.toHaveProperty("sessionId");
+    const providerService = new SessionProviderService({
+      initialProvider: provider,
+      authBackend,
+      sessionId: "hosted-parent",
+      subscriptionTier: "pro",
+      resolvePreparationRequest: ({ model }) => ({ requested: { model } }),
+    });
+    const prepare = vi.spyOn(providerService, "prepareChild");
+    let live!: Awaited<ReturnType<typeof spawnLive>>["live"];
+    const profile = vi.spyOn(AgenCProvider.prototype, "getExecutionProfile").mockResolvedValue({
+      provider: "agenc", model: "agenc", usageReporting: "unavailable",
+      supportsMaxOutputTokens: false,
+    });
+    const accounting = vi.spyOn(AgenCProvider.prototype, "projectRequestForAccounting")
+      .mockImplementation((messages, options) => ({ messages, options }));
+    const chat = vi.spyOn(AgenCProvider.prototype, "chatStream").mockImplementation(async () => {
+      const child = liveAgentSession(live)!;
+      expect(child.providerService.current()).toMatchObject({ provider: "agenc", model: "agenc" });
+      expect(child.services.provider).not.toBe(provider);
+      return { content: "child completed", toolCalls: [],
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        model: "agenc", finishReason: "stop" };
+    });
+    const parent = makeStubSession({
+      services: { provider, providerService,
+        sandboxExecutionBroker: new SandboxExecutionBroker({ mode: "danger_full_access", cwd: "/tmp" }) },
+      sessionConfiguration: mkSessionConfiguration({ collaborationMode: { model: parentModel } }),
+      config: { ...mkConfig(), model: parentModel },
+      modelInfo: { ...mkModelInfo(), slug: parentModel },
+    });
+    try {
+      ({ live } = await spawnLive(parent));
+      const { result } = await collectRun(runAgent({ live, parent,
+        initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", model: "agenc",
+      }));
+      if (result.error) throw result.error;
+      expect(result.outcome, result.error).toBe("completed");
+      expect(prepare).toHaveBeenCalledWith({ provider: "agenc", model: "agenc" },
+        undefined, { signal: expect.any(AbortSignal) });
+      expect(chat).toHaveBeenCalledOnce();
+      expect(parent.providerService.current().model).toBe(parentModel);
+    } finally {
+      await parent.shutdown();
+      await provider.dispose?.();
+      accounting.mockRestore();
+      profile.mockRestore();
       chat.mockRestore();
     }
   });
