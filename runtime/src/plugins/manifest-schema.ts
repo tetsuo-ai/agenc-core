@@ -2,6 +2,7 @@ import { isAbsolute, normalize, resolve, sep } from "node:path";
 import { validateHooksConfig } from "../config/schema.js";
 import { isRecord } from "../utils/record.js";
 import { isCanonicalPluginName } from "./identifier.js";
+import { isExcludedPluginPayloadDirectory } from "./payload-paths.js";
 
 export { isRecord };
 
@@ -228,10 +229,11 @@ export function resolveManifestRelativePath(
   }
   const rawParts = relativePath.split(/[\\/]/u);
   if (
-    rawParts.some((part) => part.length === 0 || part === "." || part === "..")
+    rawParts.some((part) => part.length === 0 || part === "." || part === ".." ||
+      isExcludedPluginPayloadDirectory(part))
   ) {
     throw new PluginManifestError(`${field} path must be normalized`, [
-      { path: field, message: "Path must not contain empty, ., or .. segments" },
+      { path: field, message: "Path must not contain empty, ., .., or excluded metadata segments" },
     ]);
   }
   const normalized = normalize(relativePath);

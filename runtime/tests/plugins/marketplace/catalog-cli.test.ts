@@ -103,7 +103,79 @@ async function writeMarketplace(root: string): Promise<string> {
   return root;
 }
 
+async function remoteAdvertFixture(manifestText: string, trusted = false) {
+  const base = await tempRuntime();
+  const market = join(base.root, "remote-market");
+  await mkdir(join(market, ".agenc-plugin"), { recursive: true });
+  await writeFile(join(market, ".agenc-plugin", "marketplace.json"), JSON.stringify({
+    metadata: { name: "team" }, plugins: [{ name: "remote",
+      source: { source: "git", url: "https://github.com/team/plugins.git", sha: "a".repeat(40) },
+      policy: { installation: "AVAILABLE", authentication: "ON_USE" } }],
+  }));
+  await addMarketplaceOp({ ...base, source: market, name: "team" });
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  if (trusted) await writeFile(join(base.root, "plugin-publishers.json"), JSON.stringify({ publishers: {
+    team: { publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64") },
+  } }));
+  const manifest = Buffer.from(manifestText);
+  const signature = Buffer.from(JSON.stringify({ publisher: "team", files: {},
+    signature: sign(null, pluginSignaturePayloadBytes(manifest, {}), privateKey).toString("base64"),
+  }));
+  let requests = 0;
+  const fetcher = async (url: string) => {
+    requests++;
+    const bytes = url.endsWith("/plugin.json") ? manifest : signature;
+    return { ok: true, status: 200, statusText: "OK", text: async () => bytes.toString(),
+      arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer };
+  };
+  return { options: { ...base, agencHome: base.root, fetcher }, fetches: () => requests };
+}
+
 describe("marketplace catalog CLI surface", () => {
+  it("does not fetch an encoded traversal from a different commit", async () => {
+    const options = await tempRuntime();
+    const market = join(options.root, "encoded-market");
+    await mkdir(join(market, ".agenc-plugin"), { recursive: true });
+    const pinA = "a".repeat(40);
+    const pinB = "b".repeat(40);
+    await writeFile(join(market, ".agenc-plugin", "marketplace.json"), JSON.stringify({
+      metadata: { name: "team" }, plugins: [{ name: "remote",
+        source: { source: "git", url: "https://github.com/team/plugins.git", sha: pinA,
+          path: `%2e%2e/${pinB}` },
+        policy: { installation: "AVAILABLE", authentication: "ON_USE" } }],
+    }));
+    await addMarketplaceOp({ ...options, source: market, name: "team" });
+    const requests: string[] = [];
+    const fetcher = async (url: string) => {
+      requests.push(new URL(url).pathname);
+      return { ok: false, status: 404, statusText: "Not Found", text: async () => "",
+        arrayBuffer: async () => new ArrayBuffer(0) };
+    };
+    const catalog = await buildMarketplaceCatalog({ ...options, agencHome: options.root, fetcher },
+      undefined, true);
+    expect(catalog.marketplaces[0]?.plugins[0]?.payloadDigest).toBeUndefined();
+    expect(requests).toHaveLength(1);
+    expect(requests.every((path) => path.includes(`/${pinA}/`))).toBe(true);
+    expect(requests[0]).toContain("/%252e%252e/");
+  });
+
+  it("backs off malformed pinned manifests before another poll", async () => {
+    const { options, fetches } = await remoteAdvertFixture("{broken");
+    for (let poll = 0; poll < 3; poll++) await buildMarketplaceCatalog(options, undefined, true);
+    expect(fetches()).toBe(2);
+  });
+
+  it("reuses an authenticated unchanged advert within the refresh deadline", async () => {
+    const { options, fetches } = await remoteAdvertFixture(JSON.stringify({ name: "remote", version: "1.0.0" }), true);
+    const digests: Array<string | undefined> = [];
+    for (let poll = 0; poll < 3; poll++) {
+      const catalog = await buildMarketplaceCatalog(options, undefined, true);
+      digests.push(catalog.marketplaces[0]?.plugins[0]?.payloadDigest);
+    }
+    expect(digests[0]).toMatch(/^sha256:/u);
+    expect(digests).toEqual([digests[0], digests[0], digests[0]]);
+    expect(fetches()).toBe(2);
+  });
   it("exposes only a cryptographically verified advertised payload digest", async () => {
     const options = await tempRuntime();
     const source = await writeMarketplace(join(options.root, "signed-source"));

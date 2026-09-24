@@ -33,6 +33,7 @@ import {
   parsePluginIdentifier,
 } from "./identifier.js";
 import type { LoadedPlugin } from "./loader.js";
+import { isExcludedPluginPayloadDirectory, isExcludedPluginPayloadPath } from "./payload-paths.js";
 
 export type PluginResolutionKind =
   | "local"
@@ -1617,7 +1618,7 @@ async function collectPluginPayloadDigests(
       if (childStat.isSymbolicLink()) {
         throw new Error(`plugin signature cannot cover symlink payloads: ${entry.name}`);
       }
-      if (entry.isDirectory() && isIgnoredSignaturePayloadDirectory(entry.name)) continue;
+      if (entry.isDirectory() && isExcludedPluginPayloadDirectory(entry.name)) continue;
       const childReal = await realpath(child);
       if (!isPathInside(childReal, rootReal)) {
         throw new Error(`plugin payload escapes plugin root: ${entry.name}`);
@@ -1642,17 +1643,8 @@ async function collectPluginPayloadDigests(
   return out;
 }
 
-function isIgnoredSignaturePayloadDirectory(name: string): boolean {
-  return isPluginVcsMetadataDirectoryName(name);
-}
-
-function isPluginVcsMetadataDirectoryName(name: string): boolean {
-  return name === ".git" || name === ".hg" || name === ".svn";
-}
-
 export function shouldCopyPluginPayloadPath(pluginRoot: string, sourcePath: string): boolean {
-  const relativePath = relative(resolve(pluginRoot), resolve(sourcePath)).replace(/\\/g, "/");
-  return relativePath === "" || !relativePath.split("/").some(isPluginVcsMetadataDirectoryName);
+  return !isExcludedPluginPayloadPath(pluginRoot, sourcePath);
 }
 
 function assertSignedPayloadMatches(

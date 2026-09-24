@@ -859,6 +859,26 @@ All=$ARGUMENTS
     expect(rendered?.content).not.toContain("${AGENC_SKILL_DIR}");
   });
 
+  it("skips plugin skills nested below excluded VCS metadata", async () => {
+    const agencHome = tmpRoot("skills-vcs-home");
+    const workspaceRoot = tmpRoot("skills-vcs-workspace");
+    const pluginRoot = join(agencHome, "plugins", "demo");
+    writePluginSkill(pluginRoot, "trusted");
+    writeSkill(join(pluginRoot, "skills"), ".hg/injected");
+    writeSkill(join(pluginRoot, "skills"), ".svn/injected");
+    const snapshot = await loadLocalSkillsSnapshot({
+      agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
+      workspaceRoot,
+      config: { plugins: { enabled: true } },
+      env: {},
+    });
+    expect(snapshot.skills.some((skill) => skill.name === "trusted" && skill.loadedFrom === "plugin"))
+      .toBe(true);
+    expect(snapshot.skills.some((skill) => skill.name === "injected" && skill.loadedFrom === "plugin"))
+      .toBe(false);
+  });
+
   it("loads a plugin skill whose declared dir IS the skill (leaf root)", async () => {
     const agencHome = tmpRoot("skills-home");
     const workspaceRoot = tmpRoot("skills-workspace");

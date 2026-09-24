@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { listInstalledPlugins } from "../../../src/plugins/cli/pluginOperations.js";
 import { pluginSignaturePayloadBytes } from "../../../src/plugins/resolution.js";
+import { loadPlugins } from "../../../src/plugins/loader.js";
+import { loadPluginCommands, loadPluginSkills } from "../../../src/plugins/registration/load-plugin-commands.js";
+import { loadPluginAgents } from "../../../src/plugins/registration/load-plugin-agents.js";
 
 const race = vi.hoisted(() => ({
   restore: undefined as undefined | (() => Promise<void>),
@@ -26,6 +29,49 @@ vi.mock("../../../src/plugins/registration/load-plugin-commands.js", async (impo
 });
 
 describe("installed plugin inventory snapshot", () => {
+  it("does not register nested VCS metadata commands in a verified plugin", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-plugin-vcs-"));
+    const workspaceRoot = join(home, "workspace");
+    const pluginStorageRoot = join(home, "plugins");
+    const pluginRoot = join(pluginStorageRoot, "alpha");
+    await mkdir(join(pluginRoot, ".agenc-plugin"), { recursive: true });
+    await mkdir(join(pluginRoot, "commands", ".git"), { recursive: true });
+    await mkdir(join(pluginRoot, "agents", ".svn"), { recursive: true });
+    await mkdir(join(pluginRoot, "skills", ".hg"), { recursive: true });
+    await mkdir(workspaceRoot);
+    const manifest = Buffer.from(JSON.stringify({ name: "alpha", version: "1.0.0", commands: "./commands" }));
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    await writeFile(join(home, "plugin-publishers.json"), JSON.stringify({ publishers: {
+      team: { publicKey: publicKey.export({ type: "spki", format: "der" }).toString("base64") },
+    } }));
+    await writeFile(join(home, "config.toml"), "config_version = 2\n[plugins]\nenabled = true\n");
+    await writeFile(join(pluginRoot, ".agenc-plugin", "plugin.json"), manifest);
+    await writeFile(join(pluginRoot, ".agenc-plugin", "signature.json"), JSON.stringify({
+      publisher: "team", files: {},
+      signature: sign(null, pluginSignaturePayloadBytes(manifest, {}), privateKey).toString("base64"),
+    }));
+    await writeFile(join(pluginRoot, ".agenc-plugin", "agenc-install.json"), JSON.stringify({
+      source: pluginRoot, resolutionKind: "local", signatureRequired: true,
+    }));
+    await writeFile(join(pluginRoot, "commands", ".git", "injected.md"),
+      "---\nargument-hint: ATTACKER\n---\n# injected\n");
+    await writeFile(join(pluginRoot, "agents", ".svn", "injected.md"), "# injected agent\n");
+    await writeFile(join(pluginRoot, "skills", ".hg", "SKILL.md"), "# injected skill\n");
+    const options = { agencHome: home, pluginStorageRoot, workspaceRoot,
+      sessionTempRoot: join(home, "temp"), env: {} };
+    const listed = await listInstalledPlugins(options);
+    expect(listed.plugins[0]?.verificationState).toBe("verified");
+    expect(listed.plugins[0]?.commands).toEqual([]);
+    expect(listed.plugins[0]?.skills).toBeUndefined();
+    const loaded = await loadPlugins({ pluginStorageRoot, workspaceRoot,
+      config: { plugins: { enabled: true } } });
+    const registered = await loadPluginCommands({ pluginStorageRoot, workspaceRoot,
+      plugins: loaded.enabled });
+    expect(registered).toEqual([]);
+    expect(await loadPluginSkills({ pluginStorageRoot, workspaceRoot, plugins: loaded.enabled })).toEqual([]);
+    expect(await loadPluginAgents({ pluginStorageRoot, workspaceRoot, cwd: workspaceRoot,
+      plugins: loaded.enabled })).toEqual([]);
+  });
   it("never labels the earlier tampered manifest as verified after a signed version is restored", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-plugin-inventory-race-"));
     const workspaceRoot = join(home, "workspace");

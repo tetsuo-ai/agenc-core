@@ -49,6 +49,7 @@ import {
 import { parsePluginIdentifier } from "../identifier.js";
 import { skillDisplayNameFromMarkdown } from "../skill-display-metadata.js";
 import { loadPluginCommands } from "../registration/load-plugin-commands.js";
+import { isExcludedPluginPayloadDirectory } from "../payload-paths.js";
 import type { AgencPluginInventoryProvenance } from "./pluginInventoryProtocol.js";
 
 export type PluginScope = "user" | "project" | "local";
@@ -917,6 +918,7 @@ async function describeSkills(
       continue;
     }
     for (const child of [...children].sort((a, b) => a.localeCompare(b))) {
+      if (isExcludedPluginPayloadDirectory(child)) continue;
       const childDir = join(skillPath, child);
       try {
         if (!(await stat(join(childDir, "SKILL.md"))).isFile()) continue;

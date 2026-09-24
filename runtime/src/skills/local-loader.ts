@@ -257,6 +257,8 @@ const SKILL_LISTING_CONTEXT_PERCENT = 0.01;
 const CHARS_PER_TOKEN = 4;
 const SKIP_DIRS = new Set([
   ".git",
+  ".hg",
+  ".svn",
   "node_modules",
   "dist",
   "build",

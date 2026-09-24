@@ -212,6 +212,30 @@ describe("agenc plugin CLI", () => {
     expect(compared.plugins[0]?.updateAvailable).toBe(true);
   });
 
+  it("finds an unsigned local marketplace update from the changed manifest", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const source = join(root, "market");
+    const pluginRoot = await writePlugin(source, "alpha");
+    await mkdir(join(source, ".agenc-plugin"), { recursive: true });
+    await writeFile(join(source, ".agenc-plugin", "marketplace.json"), JSON.stringify({
+      metadata: { name: "team" }, plugins: [{ name: "alpha", source: "./alpha",
+        policy: { installation: "AVAILABLE", authentication: "ON_USE" } }],
+    }));
+    const opts = options(agencHome, workspaceRoot, createIo());
+    await addMarketplaceOp({ ...opts, source, name: "team" });
+    expect(await runAgenCPluginCli({ kind: "marketplace-install", pluginId: "alpha@team",
+      scope: "user", force: false, json: true }, opts)).toBe(0);
+    await writeFile(join(pluginRoot, ".agenc-plugin", "plugin.json"), JSON.stringify({
+      name: "alpha", version: "2.0.0", commands: "./commands",
+    }));
+    await addMarketplaceOp({ ...opts, source, name: "team", force: true });
+    const io = createIo();
+    expect(await runAgenCPluginCli({ kind: "list", json: true }, { ...opts, io })).toBe(0);
+    expect(JSON.parse(io.stdoutText()).plugins[0]).toMatchObject({
+      version: "1.0.0", verificationState: "unsigned-local", updateAvailable: true,
+    });
+  });
+
   it("refreshes an already configured official marketplace from installed list", async () => {
     const { agencHome, workspaceRoot } = await tempRuntime();
     const t0 = Date.parse("2026-09-23T00:00:00Z");

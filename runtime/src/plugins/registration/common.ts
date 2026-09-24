@@ -26,6 +26,7 @@ import {
   resolvePluginStorageAuthority,
 } from "../directories.js";
 import { isRecord } from "../manifest-schema.js";
+import { isExcludedPluginPayloadDirectory } from "../payload-paths.js";
 import { isBareMode } from "../../utils/envUtils.js";
 import {
   loadPluginOptions,
@@ -191,7 +192,7 @@ export async function collectMarkdownFiles(root: string): Promise<readonly strin
     for (const entry of entries) {
       if (out.length >= MAX_PLUGIN_REGISTRATION_MARKDOWN_FILES) break;
       const path = join(current.path, entry.name);
-      if (entry.isDirectory()) {
+      if (entry.isDirectory() && !isExcludedPluginPayloadDirectory(entry.name)) {
         queue.push({ path, depth: current.depth + 1 });
       } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
         out.push(path);

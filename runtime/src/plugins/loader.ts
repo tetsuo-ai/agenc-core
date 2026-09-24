@@ -12,6 +12,7 @@ import type {
   PluginMcpServerConfig,
 } from "../config/schema.js";
 import { pluginDependencyIdentityFromSource, verifyPluginDependencyState } from "./resolution.js";
+import { isExcludedPluginPayloadDirectory } from "./payload-paths.js";
 import {
   createPluginStorageAuthority,
   isReservedPluginStorageChildName,
@@ -1164,7 +1165,7 @@ async function collectMarkdownFiles(root: string): Promise<string[]> {
     for (const entry of entries) {
       if (out.length >= MAX_PLUGIN_MARKDOWN_FILES) break;
       const path = join(current.path, entry.name);
-      if (entry.isDirectory()) {
+      if (entry.isDirectory() && !isExcludedPluginPayloadDirectory(entry.name)) {
         queue.push({ path, depth: current.depth + 1 });
       } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
         out.push(path);
