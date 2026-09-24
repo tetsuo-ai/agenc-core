@@ -595,6 +595,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     if (isCurrentAgentContextError(current)) return confirmedNoSpawn(current);
     const caller = current.threadId === rootSession.conversationId
       ? undefined : control.getLive(current.threadId);
+    const inheritedConsentPlan = caller?.metadata?.executionPlan;
     const session = current.threadId === rootSession.conversationId
       ? rootSession : caller === undefined ? undefined : liveAgentSession(caller);
     const callerIsCurrent = (): boolean => session !== undefined &&
@@ -786,6 +787,14 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     if (!callerIsCurrent()) {
       return failSpawn("invalid-runtime-identity: calling agent session is no longer live");
     }
+    if (!crossProviderRequested && inheritedConsentPlan?.crossProvider === true) {
+      try {
+        selection = await resolveChildSelection(session, requestedProvider, effectiveModel);
+        targetModelInfo = await childModelInfo(session, selection);
+      } catch (error) {
+        return failSpawn(error instanceof Error ? error.message : String(error));
+      }
+    }
     let thread: AgentThread | undefined;
     let rejectedEffectDisposition: ToolResult["effectDisposition"];
     try {
@@ -800,6 +809,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
             ? { toolAllowlist: resolvedRole.config.allowlist } : {}),
           ...(selectedReasoningEffort !== undefined ? { reasoningEffort: selectedReasoningEffort } : {}),
           ...(serviceTierResult.serviceTier !== undefined ? { serviceTier: serviceTierResult.serviceTier } : {}),
+          ...(inheritedConsentPlan !== undefined ? { inheritedConsentPlan } : {}),
         });
         const consent = await authorizeChildExecutionPlan(session, proposedPlan);
         if (consent.kind !== "granted") {

@@ -47,6 +47,37 @@ function completion(label: string): Response {
 }
 
 describe("SessionProviderService", () => {
+  test("preview selects saved BYOK over eligible managed billing", async () => {
+    const readSavedApiKey = vi.fn(async (provider: string) => provider === "deepseek" ? "saved-deepseek-key" : undefined);
+    const authBackend = { kind: "local" as const, vendKey: vi.fn() } as never;
+    const service = new SessionProviderService({
+      initialProvider: createProvider("openai", { model: "gpt-5.4", apiKey: "parent-key" }),
+      readSavedApiKey, authBackend, sessionId: "signed-in-session", subscriptionTier: "pro",
+      resolvePreparationRequest: ({ model }) => ({ requested: { model }, runtime: { managedKeysEnabled: true } }),
+    });
+    const selection = { provider: "deepseek", model: "deepseek-v4-pro" };
+    const preview = await service.previewChildDestination(selection);
+    expect(preview).toMatchObject({ authProfile: "api_key", billingSource: "byok" });
+    expect(authBackend.vendKey).not.toHaveBeenCalled();
+    const prepared = await service.prepareChild(selection);
+    expect(prepared).toMatchObject({ authProfile: preview.authProfile, billingSource: preview.billingSource });
+    expect(prepared.binding.factoryOptions.apiKey).toBe("saved-deepseek-key");
+    await prepared.binding.instance.dispose?.();
+  });
+
+  test("preview applies the same managed entitlement decision as preparation", async () => {
+    const service = new SessionProviderService({
+      initialProvider: createProvider("openai", { model: "gpt-5.4", apiKey: "parent-key" }),
+      environment: {},
+      authBackend: { kind: "remote" } as never,
+      sessionId: "signed-in-session", subscriptionTier: "free",
+      resolvePreparationRequest: ({ model }) => ({ requested: { model }, runtime: { managedKeysEnabled: true } }),
+    });
+    const selection = { provider: "openrouter", model: "openai/gpt-5" };
+    await expect(service.previewChildDestination(selection)).rejects.toThrow(/active AgenC subscription/u);
+    await expect(service.prepareChild(selection)).rejects.toThrow(/active AgenC subscription/u);
+  });
+
   test.each([
     {
       label: "captured environment",

@@ -99,15 +99,20 @@ export async function handleMessageStringTool(
   if (!receiverAgentPath) {
     return agentValidationError("target agent is missing an agent_path");
   }
+  const targetPlan = live?.metadata.executionPlan ?? metadata?.executionPlan;
+  if ((live?.metadata.crossProvider !== undefined || metadata?.crossProvider !== undefined) &&
+      targetPlan?.crossProvider !== true) {
+    return agentValidationError("consent_unavailable: destination has no consent provenance");
+  }
   let assignedPlan: ChildExecutionPlan | undefined;
-  if (mode === "queue_only" && live?.metadata.executionPlan?.crossProvider) {
+  if (mode === "queue_only" && targetPlan?.crossProvider) {
     // A passive message is prepended to a later assignment. Obtain a fresh
     // disclosure for its text before it enters the child's mailbox, even if
     // the worker has a reusable session grant for assignments.
     const caller = current.threadId === sessionOrError.conversationId
       ? sessionOrError : liveAgentSession(control.getLive(current.threadId)!);
     if (caller === undefined) return agentValidationError("consent_unavailable: calling session is no longer live");
-    const previous = live.metadata.executionPlan;
+    const previous = targetPlan;
     const proposed: ChildExecutionPlan = { ...previous,
       task: { id: callId, name: previous.task.name, text: message, attachments: [] },
       consentGrant: null,
@@ -118,11 +123,11 @@ export async function handleMessageStringTool(
         action: "Keep this message on the current provider or request consent again for a new task." }, true));
     }
   }
-  if (mode === "trigger_turn" && live?.metadata.executionPlan?.crossProvider) {
+  if (mode === "trigger_turn" && targetPlan?.crossProvider) {
     const caller = current.threadId === sessionOrError.conversationId
       ? sessionOrError : liveAgentSession(control.getLive(current.threadId)!);
     if (caller === undefined) return agentValidationError("consent_unavailable: calling session is no longer live; continue this task yourself");
-    const previous = live.metadata.executionPlan;
+    const previous = targetPlan;
     const proposed: ChildExecutionPlan = { ...previous,
       task: { id: callId, name: previous.task.name, text: message, attachments: [] },
       consentGrant: null,

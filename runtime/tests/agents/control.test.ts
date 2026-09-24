@@ -1186,7 +1186,7 @@ describe("AgentControl", () => {
         providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }) },
         services: { ...session.services, configStore: { current: config } },
       });
-      const control = new AgentControl({ session, registry: new AgentRegistry() });
+      const control = new AgentControl({ session, registry: new AgentRegistry(), maxDepth: 3 });
       registerDurableSessionRoot(control, cwd, "plan-root");
       Object.assign(session.services, { crossProviderConsent: {
         ownerSessionId: "plan-root", sessionEpoch: "test-interactive-session",
@@ -1208,6 +1208,8 @@ describe("AgentControl", () => {
       const plan = authorized.plan;
       const live = await control.spawn({ parentPath: "/root", agentName: "worker",
         providerSelection: plan.route, executionPlan: plan });
+      await expect(control.spawn({ parentPath: live.agentPath }))
+        .rejects.toThrow(/consent provenance/u);
       expect(rolloutStore.getThreadSpawnEdge(live.agentId)?.metadata.executionPlan).toEqual(plan);
       expect(control.getAgentConfigSnapshot(live.agentId)?.executionPlan).toEqual(plan);
       expect(control.listAgents().find((agent) => agent.agentName === live.agentPath))

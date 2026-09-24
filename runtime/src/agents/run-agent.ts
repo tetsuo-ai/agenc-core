@@ -3576,6 +3576,23 @@ export async function* runAgent(
     }
     return disposition;
   };
+  const publishTerminalReceipt = (receipt: TaskTurnReceipt): void => {
+    if (receipt.terminal?.reason === "insufficient_funds") {
+      const provider = receipt.terminal.provider;
+      const model = receipt.terminal.model;
+      parent.emit({
+        id: parent.nextInternalSubId(),
+        msg: { type: "subagent_funds_notice", payload: {
+          agentPath: live.agentPath,
+          taskId: receipt.taskId,
+          taskText: currentTaskText,
+          terminal: projectTaskReceiptForParent(receipt).terminal!,
+          message: `${provider}/${model} ran out of credits. The child stopped; ask before switching providers.`,
+        } },
+      }, { durable: true });
+    }
+    sendParentNotification(receipt);
+  };
   const commitTaskReceipt = async (
     receipt: TaskTurnReceipt,
     options: { readonly deferParentNotification?: boolean } = {},
@@ -3724,19 +3741,7 @@ export async function* runAgent(
       reuseBlockedReason = `worktree evidence is ${evidence.state}`;
     }
     if (!options.deferParentNotification) {
-      if (receiptToCommit.terminal?.reason === "insufficient_funds") {
-        parent.emit({
-          id: parent.nextInternalSubId(),
-          msg: { type: "subagent_funds_notice", payload: {
-            agentPath: live.agentPath,
-            taskId: receiptToCommit.taskId,
-            taskText: currentTaskText,
-            terminal: projectTaskReceiptForParent(receiptToCommit).terminal!,
-            message: `${provider}/${model} ran out of credits. The child stopped; ask before switching providers.`,
-          } },
-        }, { durable: true });
-      }
-      sendParentNotification(receiptToCommit);
+      publishTerminalReceipt(receiptToCommit);
     }
     return true;
   };
@@ -4891,6 +4896,8 @@ export async function* runAgent(
         if (rolloutPath !== null) live.rolloutPath = rolloutPath;
         if (pendingPreconstructionReceipt !== undefined) {
           const committedReceipt = pendingPreconstructionReceipt;
+          currentCommittedReceipt = committedReceipt;
+          currentReceiptWorktreeEvidence = committedReceipt.worktreeEvidence;
           live.lastTaskReceipt = {
             turnId: committedReceipt.turnId,
             outcome: committedReceipt.outcome,
@@ -4902,7 +4909,7 @@ export async function* runAgent(
           ) {
             live.assignment = undefined;
           }
-          sendParentNotification(committedReceipt);
+          publishTerminalReceipt(committedReceipt);
           pendingPreconstructionReceipt = undefined;
         }
       } catch (error) {

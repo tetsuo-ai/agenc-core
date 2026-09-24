@@ -133,9 +133,12 @@ export async function createChildExecutionPlan(params: {
   readonly reasoningEffort?: ReasoningEffort;
   readonly serviceTier?: string;
   readonly toolAllowlist?: readonly string[];
+  /** Destination provenance inherited through a same-provider child. */
+  readonly inheritedConsentPlan?: ChildExecutionPlan;
 }, preliminaryManaged = false): Promise<ChildExecutionPlan> {
   const { session, selection } = params;
-  const crossProvider = selection.provider !== currentChildProvider(session).provider;
+  const crossProvider = selection.provider !== currentChildProvider(session).provider ||
+    params.inheritedConsentPlan?.crossProvider === true;
   if (crossProvider) assertCrossProviderAllowed(session, selection.provider);
   if (crossProvider && selection.provider === "agenc" && !preliminaryManaged) {
     // Concrete managed routing may contact the authenticated AgenC backend.

@@ -106,6 +106,7 @@ function makeOptions(
         roleWorkspace: ROLE_WORKSPACE,
         assertRoleWorkspace: () => {},
         getLive: (id: string) => liveById[id],
+        getAgentMetadata: (id: string) => (liveById[id] as { metadata?: unknown } | undefined)?.metadata,
       },
       registry: {},
     }),
@@ -420,6 +421,34 @@ describe("spawn_agent isolation", () => {
     }));
     expect(mockDelegate.mock.calls[0]?.[0].parent.services.sandboxExecutionBroker)
       .toBe(fixture.child.services.sandboxExecutionBroker);
+    fixture.revoke();
+  });
+
+  it("keeps consent destination provenance on a same-provider grandchild", async () => {
+    const fixture = callerFixture();
+    const config = { ...defaultConfig(), model_provider: "deepseek", model: "deepseek-v4-pro",
+      agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] } };
+    const request = vi.fn(async (_requester: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+      kind: "granted" as const, grant: { kind: "once" as const,
+        ownerSessionId: "conv-1", sessionEpoch: "epoch", taskId: disclosure.taskId,
+        scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey },
+    }));
+    Object.assign(fixture.live, { metadata: { executionPlan: { crossProvider: true,
+      destination: { provider: "deepseek", model: "deepseek-v4-pro" } } } });
+    Object.assign(fixture.child, { modelInfo: { slug: "deepseek-v4-pro", provider: "deepseek", supportsToolUse: true },
+      sessionConfiguration: { ...fixture.child.sessionConfiguration,
+        collaborationMode: { model: "deepseek-v4-pro" } },
+      providerService: { current: () => ({ provider: "deepseek", model: "deepseek-v4-pro" }) },
+      services: { ...fixture.child.services, configStore: { current: () => config },
+        modelsManager: new StaticModelsManager({ config, fallbackProvider: "deepseek" }),
+        crossProviderConsent: { ownerSessionId: "conv-1", sessionEpoch: "epoch", request } } });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(fixture.opts).execute(fixture.args);
+    expect(result.isError).not.toBe(true);
+    expect(request).toHaveBeenCalledOnce();
+    expect(mockDelegate.mock.calls[0]?.[0].plan).toMatchObject({ crossProvider: true,
+      destination: { provider: "deepseek", model: "deepseek-v4-pro" },
+      consentGrant: { ownerSessionId: "conv-1" } });
     fixture.revoke();
   });
 

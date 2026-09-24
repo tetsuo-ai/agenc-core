@@ -771,6 +771,20 @@ describe("OpenAIProvider", () => {
     ).rejects.not.toThrow(/d1c7a95e8d4f|user_3FtLIoOmu|openrouter\.ai\/workspaces|128000/);
   });
 
+  test("maps an OpenRouter monthly limit response to a typed funds stop", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(
+      JSON.stringify({ error: { message: "Monthly limit exceeded", code: 429 } }),
+      { status: 429, headers: { "content-type": "application/json" } },
+    ));
+    const provider = new OpenAIProvider({
+      apiKey: "managed-key", providerName: "openrouter", model: "openrouter/openai/gpt-5-nano",
+      baseURL: "https://llm.agenc.tech/v1", useResponsesApi: false, fetchImpl,
+    });
+
+    await expect(provider.chat([{ role: "user", content: "hello" }]))
+      .rejects.toMatchObject({ name: "LLMFundsError", statusCode: 429 });
+  });
+
   test("rejects chat-completions non-stream tool calls with invalid JSON", async () => {
     const emitWarning = vi.fn();
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(

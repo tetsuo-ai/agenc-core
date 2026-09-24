@@ -11,7 +11,7 @@ import {
 } from "../llm/provider.js";
 import {
   requireProviderRuntimeCredential,
-  resolveProviderCredentialAuthority,
+  resolveProviderLocalCredentialAuthority,
   resolveProviderRuntimeAuthority,
   snapshotProviderEnvironment,
   type ProviderEnvironment,
@@ -304,13 +304,19 @@ export class SessionProviderService {
     if (preparation === undefined) throw new Error(`${provider} provider switch has no canonical preparation request`);
     const requested = preparation.requested;
     const credentialHome = requested.credentialHome ?? this.#credentialHome;
-    const authority = resolveProviderCredentialAuthority(provider, {
+    const authority = await resolveProviderLocalCredentialAuthority(provider, {
       ...requested, ...(credentialHome !== undefined ? { credentialHome } : {}), model: selection.model,
-    }, this.#environment);
-    const managed = authority.credential.status === "missing" &&
-      preparation.runtime?.managedKeysEnabled === true &&
-      this.#authBackend !== undefined && this.#sessionId !== undefined;
-    const authProfile = managed ? "managed" as const
+    }, this.#environment, {
+      ...(this.#readSavedApiKey !== undefined ? { readSavedApiKey: this.#readSavedApiKey } : {}),
+      ...(this.#authBackend !== undefined ? { authBackend: this.#authBackend } : {}),
+      ...(this.#sessionId !== undefined ? { sessionId: this.#sessionId } : {}),
+      ...(this.#subscriptionTier !== undefined ? { subscriptionTier: this.#subscriptionTier } : {}),
+      ...(preparation.runtime?.managedKeysEnabled !== undefined
+        ? { managedKeysEnabled: preparation.runtime.managedKeysEnabled } : {}),
+      ...(preparation.runtime?.freeManagedCredential !== undefined
+        ? { freeManagedCredential: preparation.runtime.freeManagedCredential } : {}),
+    });
+    const authProfile = authority.managedCredential ? "managed" as const
       : authority.factoryOptions.extra?.authMode === "oauth" ? "sign_in" as const
       : provider === "amazon-bedrock" ? "aws_sigv4" as const
       : provider === "ollama" || provider === "lmstudio" ||

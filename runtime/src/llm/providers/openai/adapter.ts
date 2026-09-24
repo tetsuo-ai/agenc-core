@@ -226,12 +226,9 @@ function isOpenRouterBudgetLimitFailure(args: {
   const nested = readNestedProviderMessage(args.body);
   const text = `${args.message}\n${nested ?? ""}\n${providerHttpBodyToString(args.body)}`;
   const lower = text.toLowerCase();
-  return (
-    lower.includes("requires more credits") ||
-    lower.includes("insufficient credits") ||
-    lower.includes("monthly limit") ||
-    (lower.includes("can only afford") && lower.includes("max_tokens"))
-  );
+  // A request can exceed its output reservation even when the account still
+  // has funds. Keep that redacted guidance separate from exhausted billing.
+  return lower.includes("can only afford") && lower.includes("max_tokens");
 }
 
 function readNestedProviderCode(

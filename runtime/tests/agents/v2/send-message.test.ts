@@ -3,10 +3,12 @@ import type { Session } from "../../../src/session/session.js";
 import type { AgentStatus } from "../../../src/agents/status.js";
 import type { MultiAgentV2Options } from "../../../src/agents/v2/common.js";
 import { createSendMessageTool } from "../../../src/agents/v2/send-message.js";
+import { handleMessageStringTool } from "../../../src/agents/v2/message-tool.js";
 
 function fixture(initialStatus: AgentStatus, onBegin?: () => void, crossProvider = false) {
   let status = initialStatus;
   const sendInterAgentCommunication = vi.fn(async () => {});
+  const assignTask = vi.fn(() => ({ taskId: "task-1", turnId: "turn-1" }));
   const live = {
     agentId: "child-1",
     agentPath: "/root/child",
@@ -22,6 +24,7 @@ function fixture(initialStatus: AgentStatus, onBegin?: () => void, crossProvider
     resolveAgentReference: vi.fn(() => live.agentId),
     getStatus: vi.fn(async () => status),
     sendInterAgentCommunication,
+    assignTask,
     sendPassiveMessageToActiveAgent: vi.fn((id: string, communication: unknown) => {
       const currentStatus = status;
       if (currentStatus.status !== "running" && currentStatus.status !== "pending_init") {
@@ -49,11 +52,23 @@ function fixture(initialStatus: AgentStatus, onBegin?: () => void, crossProvider
     const result = await tool.execute({ target: live.agentPath, message: "hello" });
     return { result, body: JSON.parse(result.content) as Record<string, unknown> };
   };
-  return { send, sendInterAgentCommunication, session, live,
+  return { send, sendInterAgentCommunication, assignTask, session, live,
+    assign: () => handleMessageStringTool({ target: live.agentPath, message: "new task" }, opts, "trigger_turn"),
     setStatus: (next: AgentStatus) => { status = next; }, tool };
 }
 
 describe("send_message delivery report", () => {
+  it("refuses messages and assignments to a cross-provider grandchild with missing consent provenance", async () => {
+    const f = fixture({ status: "running", turnId: "turn-1", startedAtMs: 1 });
+    f.live.agentPath = "/root/child/grandchild";
+    Object.assign(f.live.metadata, { crossProvider: { provider: "deepseek", model: "deepseek-v4-pro",
+      policy: "user-or-managed-agents-v1" } });
+    expect((await f.send()).result.isError).toBe(true);
+    expect((await f.assign()).isError).toBe(true);
+    expect(f.sendInterAgentCommunication).not.toHaveBeenCalled();
+    expect(f.assignTask).not.toHaveBeenCalled();
+  });
+
   it("does not enqueue text for a cross-provider child without separate consent", async () => {
     const f = fixture({ status: "running", turnId: "turn-1", startedAtMs: 1 }, undefined, true);
     const { result } = await f.send();

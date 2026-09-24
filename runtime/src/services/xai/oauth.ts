@@ -26,6 +26,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 
 import { asRecord } from '../../utils/record.js'
 import { BUILT_IN_PROVIDER_BASE_URLS } from '../../llm/registry/provider-info.js'
+import { fetchTrustedTokenEndpoint } from '../../llm/trusted-token-endpoint.js'
 
 /** xAI's shared Grok-CLI OAuth client (public client, no secret). */
 export const XAI_OAUTH_CLIENT_ID = 'b1a00492-073a-47ea-816f-4c329264a828'
@@ -301,14 +302,14 @@ async function postTokenEndpoint(
   }
   let attempt = 0
   for (;;) {
-    const res = await fetchFn(tokenEndpoint, {
+    const res = await fetchTrustedTokenEndpoint(tokenEndpoint, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/x-www-form-urlencoded',
       },
       body: body.toString(),
-    })
+    }, fetchFn)
     const text = await res.text().catch(() => '')
     if (
       options?.retryCloudflareChallenges === true &&

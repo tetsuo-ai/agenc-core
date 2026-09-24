@@ -940,13 +940,8 @@ function withRuntimeAuthExtra(
   };
 }
 
-/**
- * Resolve the complete credential authority for a live provider binding.
- * Saved BYOK is normally read after other credentials are absent. A custom
- * Grok URL needs it before the OAuth endpoint check. Subscription credentials
- * remain lazy and are vended when the first model operation starts.
- */
-export async function resolveProviderRuntimeAuthority(
+/** Local credential choice shared by consent preview and live preparation. */
+export async function resolveProviderLocalCredentialAuthority(
   provider: ProviderName,
   requested: ProviderFactoryOptions,
   env: ProviderEnvironment,
@@ -1006,6 +1001,21 @@ export async function resolveProviderRuntimeAuthority(
       "Managed provider keys require an active AgenC subscription; configure BYOK provider credentials instead",
     );
   }
+  return Object.freeze({
+    ...resolved,
+    managedCredential,
+  });
+}
+
+/** Resolve the complete authority for a live provider binding. */
+export async function resolveProviderRuntimeAuthority(
+  provider: ProviderName,
+  requested: ProviderFactoryOptions,
+  env: ProviderEnvironment,
+  runtime: ProviderRuntimeCredentialOptions = {},
+): Promise<ResolvedProviderRuntimeAuthority> {
+  const selected = await resolveProviderLocalCredentialAuthority(provider, requested, env, runtime);
+  const sessionId = nonEmpty(runtime.sessionId);
   await assertHostedAgencModelAuthority({
     provider,
     model: requested.model,
@@ -1014,19 +1024,19 @@ export async function resolveProviderRuntimeAuthority(
     subscriptionTier: runtime.subscriptionTier,
   });
 
-  const needsAuthBackend = managedCredential || provider === "agenc";
+  const needsAuthBackend = selected.managedCredential || provider === "agenc";
   const factoryOptions = needsAuthBackend
     ? withRuntimeAuthExtra(
         provider,
-        resolved.factoryOptions,
+        selected.factoryOptions,
         runtime,
-        managedCredential,
+        selected.managedCredential,
       )
-    : resolved.factoryOptions;
+    : selected.factoryOptions;
   return Object.freeze({
     factoryOptions,
-    credential: resolved.credential,
-    managedCredential,
+    credential: selected.credential,
+    managedCredential: selected.managedCredential,
   });
 }
 

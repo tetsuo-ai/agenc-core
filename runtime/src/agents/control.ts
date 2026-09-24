@@ -491,6 +491,11 @@ export class AgentControl {
       "agentRole" | "agentRoleWorkspaceId" | "agentRoleFingerprint" | "executionConstraint"
     >;
   }): Promise<LiveAgent> {
+    const parentMetadata = this.getLiveByPath(opts.parentPath)?.metadata;
+    if ((parentMetadata?.executionPlan?.crossProvider === true || parentMetadata?.crossProvider !== undefined) &&
+        opts.executionPlan?.crossProvider !== true) {
+      throw new Error("consent_unavailable: descendant spawn has no destination consent provenance");
+    }
     if (opts.providerSelection !== undefined && opts.executionPlan?.crossProvider !== true) {
       throw new Error("consent_unavailable: cross-provider child construction requires a granted execution plan");
     }

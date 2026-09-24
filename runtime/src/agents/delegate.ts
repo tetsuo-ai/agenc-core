@@ -50,7 +50,7 @@ import type {
 import type { ReasoningEffort } from "../session/turn-context.js";
 import type { ModelInfo } from "../session/turn-context.js";
 import type { ProviderSelection } from "../session/provider-service.js";
-import { assertCrossProviderAllowed, assertChildExecutionPlan, assertPreparedChildMatchesPlan, resolveChildSelection, type ChildExecutionPlan } from "./cross-provider.js";
+import { assertCrossProviderAllowed, assertChildExecutionPlan, assertPreparedChildMatchesPlan, currentChildProvider, resolveChildSelection, type ChildExecutionPlan } from "./cross-provider.js";
 import type { AssistantOutputStreamSink } from "../contracts/assistant-output-stream.js";
 import { emitWarning } from "../session/event-log.js";
 import { AgentThread as AgentThreadClass } from "./thread.js";
@@ -230,7 +230,8 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
           opts.plan.task.id !== (opts.taskId ?? opts.plan.task.id)) {
         throw new Error("child execution plan task identity changed");
       }
-      if (opts.plan.crossProvider && forkMode !== undefined) {
+      if (opts.plan.crossProvider && forkMode !== undefined &&
+          opts.plan.route.provider !== currentChildProvider(opts.parent).provider) {
         throw new Error("Cross-provider subagents require fork_turns = none. Omit fork_turns or set it to none.");
       }
     } catch (error) {
