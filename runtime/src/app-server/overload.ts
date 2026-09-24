@@ -120,14 +120,47 @@ export function isDaemonCausalRoutineMessage(message: JsonObject): boolean {
 /** Both methods run a session's streaming turn (Desktop uses message.send). */
 const DAEMON_STREAMING_TURN_METHODS: ReadonlySet<string> = new Set(["message.send", "message.stream"]);
 
-export function isDaemonCausalRoutineForStream(message: JsonObject, head: JsonObject | undefined): boolean {
+export type ResolveRoutineSessionId = (id: string) => string | undefined;
+
+// A parsed message object is unique to one transport dispatch. This metadata
+// is deliberately never placed in JSON-RPC params or serialized to the peer.
+const causalRoutineHeads = new WeakMap<JsonObject, string>();
+
+export function tagDaemonCausalRoutineHead(message: JsonObject, headSessionId: string): void {
+  causalRoutineHeads.set(message, headSessionId);
+}
+
+export function daemonCausalRoutineHead(message: JsonObject): string | undefined {
+  return causalRoutineHeads.get(message);
+}
+
+export function isDaemonCausalRoutineForStream(
+  message: JsonObject,
+  head: JsonObject | undefined,
+  resolveSessionId?: ResolveRoutineSessionId,
+): boolean {
   if (!isDaemonCausalRoutineMessage(message) || typeof head?.method !== "string" ||
     !DAEMON_STREAMING_TURN_METHODS.has(head.method)) return false;
   const authority = daemonObjectParams(message)?.permissionAuthority;
   if (authority === null || typeof authority !== "object" || Array.isArray(authority)) return false;
-  const sessionId = (authority as JsonObject).sessionId;
-  return typeof sessionId === "string" && sessionId.length > 0 &&
-    daemonObjectParams(head)?.sessionId === sessionId;
+  const authorityId = (authority as JsonObject).sessionId;
+  const headId = daemonObjectParams(head)?.sessionId;
+  if (typeof authorityId !== "string" || authorityId.length === 0 ||
+    typeof headId !== "string" || headId.length === 0) return false;
+  if (resolveSessionId === undefined) return authorityId === headId;
+  try {
+    const authoritySessionId = resolveSessionId(authorityId);
+    const headSessionId = resolveSessionId(headId);
+    return typeof authoritySessionId === "string" && authoritySessionId.length > 0 &&
+      authoritySessionId === headSessionId;
+  } catch {
+    return false;
+  }
+}
+
+export function daemonStreamHeadSessionId(head: JsonObject): string | undefined {
+  const sessionId = daemonObjectParams(head)?.sessionId;
+  return typeof sessionId === "string" && sessionId.length > 0 ? sessionId : undefined;
 }
 
 function daemonObjectParams(message: JsonObject): JsonObject | undefined {

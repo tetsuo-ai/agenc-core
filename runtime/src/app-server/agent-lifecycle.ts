@@ -477,6 +477,19 @@ interface AgentLifecycleState {
   agents: Map<string, MutableAgent>;
 }
 
+function canonicalSessionForOwner(
+  state: Readonly<AgentLifecycleState>,
+  ownerId: string,
+): { readonly sessionId: string; readonly expectedAgentId?: string } {
+  const canonicalAgent = state.agents.get(ownerId);
+  if (canonicalAgent === undefined) return { sessionId: ownerId };
+  const sessionId = latestSessionIdForAgentRun(canonicalAgent);
+  if (sessionId === undefined) {
+    throw new AgenCDaemonAgentLifecycleError("AGENT_NOT_FOUND", `AgenC daemon session not found or closed: ${ownerId}`);
+  }
+  return { sessionId, expectedAgentId: canonicalAgent.agentId };
+}
+
 interface PendingRunnerTermination {
   readonly snapshot: AgenCBackgroundAgentSnapshot;
   readonly transitionAt: string;
@@ -2576,6 +2589,7 @@ export class AgenCDaemonAgentManager {
    */
   async getLiveSessionPermission(
     sessionId: string,
+    expectedRoutineHeadId?: string,
   ): Promise<{ readonly sessionId: string; readonly mode: string }> {
     if (this.#runner?.getAgentPermissionMode === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
@@ -2583,7 +2597,7 @@ export class AgenCDaemonAgentManager {
         "session permission mode requires a background runner",
       );
     }
-    const owner = await this.#resolvePermissionOwner(sessionId, false, true);
+    const owner = await this.#resolvePermissionOwner(sessionId, false, true, expectedRoutineHeadId);
     const mode = await this.#runner.getAgentPermissionMode(owner.agentId);
     if (mode === null) {
       throw new AgenCDaemonAgentLifecycleError(
@@ -2592,6 +2606,15 @@ export class AgenCDaemonAgentManager {
       );
     }
     return { sessionId: owner.sessionId, mode };
+  }
+
+  /** Best-effort canonical id for transport scheduling only; never grants authority. */
+  peekRoutineSessionId(id: string): string | undefined {
+    try {
+      return this.#state.peek((state) => canonicalSessionForOwner(state, id).sessionId);
+    } catch {
+      return undefined;
+    }
   }
 
   /** Resolve either session or agent ID, then inspect the live turn's tool calls. */
@@ -4425,15 +4448,15 @@ export class AgenCDaemonAgentManager {
     ownerId: string,
     allowListPermissions = false,
     allowPermissionMode = false,
+    expectedRoutineHeadId?: string,
   ): Promise<{ readonly agentId: string; readonly sessionId: string }> {
     const resolvedOwner = await this.#state.with((state) => {
-      const canonicalAgent = state.agents.get(ownerId);
-      if (canonicalAgent === undefined) return { sessionId: ownerId };
-      const latestSessionId = latestSessionIdForAgentRun(canonicalAgent);
-      if (latestSessionId === undefined) {
-        throw new AgenCDaemonAgentLifecycleError("AGENT_NOT_FOUND", `AgenC daemon session not found or closed: ${ownerId}`);
+      const owner = canonicalSessionForOwner(state, ownerId);
+      if (expectedRoutineHeadId !== undefined &&
+          owner.sessionId !== canonicalSessionForOwner(state, expectedRoutineHeadId).sessionId) {
+        throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", "Routine authority is not executing in the FIFO head's session");
       }
-      return { sessionId: latestSessionId, expectedAgentId: canonicalAgent.agentId };
+      return owner;
     });
     const { sessionId } = resolvedOwner;
     const agentId = await this.#resolveActiveAgentIdForSession(sessionId, { allowListPermissions, allowPermissionMode });

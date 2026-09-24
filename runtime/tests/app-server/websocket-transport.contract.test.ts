@@ -8,6 +8,7 @@ import {
   parseJsonObjectPayload as publicParseJsonObjectPayload,
 } from "../index.js";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
+import { holdAgentLifecycleLock } from "./held-agent-lifecycle-lock.js";
 import {
   AgenCWebSocketServer,
   type AgenCWebSocketMessageContext,
@@ -318,6 +319,44 @@ describe("AgenC websocket app-server transport", () => {
     client.close();
     await nextClose(client);
     await server.close();
+  });
+
+  it("dispatches an alias write, controls and priority work while the scheduling state lock is held", async () => {
+    const seen: string[] = [];
+    let releaseTurn!: () => void;
+    let turnStarted!: () => void;
+    const turnDone = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    const enteredTurn = new Promise<void>((resolve) => { turnStarted = resolve; });
+    let heldLock: Awaited<ReturnType<typeof holdAgentLifecycleLock>> | undefined;
+    const server = new AgenCWebSocketServer({
+      resolveRoutineSessionId: (id) => heldLock?.manager.peekRoutineSessionId(id),
+      onMessage: async (message) => {
+        seen.push(String(message.method));
+        if (message.method === "message.stream") { turnStarted(); await turnDone; }
+      },
+    });
+    const address = await server.listen();
+    const client = new WebSocket(address.url);
+    await once(client, "open");
+    const send = (id: number, method: string, params: object = {}) => client.send(JSON.stringify({
+      jsonrpc: JSON_RPC_VERSION, id, method, params,
+    }));
+    try {
+      send(1, "message.stream", { sessionId: "session-a" });
+      await enteredTurn;
+      heldLock = await holdAgentLifecycleLock();
+      send(2, "routine.create", { permissionAuthority: { kind: "session", sessionId: "agent-a", toolCallId: "call" } });
+      send(3, "request.cancel");
+      send(4, "health.ping");
+      await vi.waitFor(() => {
+        expect(seen).toHaveLength(4);
+        expect(seen).toContain("routine.create");
+        expect(seen).toContain("request.cancel");
+        expect(seen).toContain("health.ping");
+      });
+    } finally {
+      await heldLock?.release(); releaseTurn(); client.close(); await nextClose(client); await server.close();
+    }
   });
 
   it("dispatches session.cancelTurn ahead of an in-flight stream request", async () => {

@@ -4109,8 +4109,10 @@ async function runAgenCDaemonForegroundLocked(
     const nativePeerCredentialAddonPath =
       options.nativePeerCredentialAddonPath ??
       systemNativePeerCredentialAddonPath;
+    const resolveRoutineSessionId = (id: string) => agentManager.peekRoutineSessionId(id);
     const socketServer = new AgenCUnixSocketServer({
       socketPath,
+      resolveRoutineSessionId,
       nativePeerCredentialAddonPath,
       requireRootOwnedNativePeerCredentialAddon:
         options.nativePeerCredentialAddonPath === undefined &&
@@ -4177,6 +4179,7 @@ async function runAgenCDaemonForegroundLocked(
     });
     const webSocketServer = new AgenCWebSocketServer({
       ...webSocketListenOptions,
+      resolveRoutineSessionId,
       ready: () => !shuttingDown,
       validateOrigin: validateAgenCDaemonWebSocketOrigin,
       // gaphunt3 #47: mirror the Unix socket accept-auth gate, but the ws path

@@ -3,6 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
 import { isDaemonCausalRoutineMessage } from "./overload.js";
+import { holdAgentLifecycleLock } from "./held-agent-lifecycle-lock.js";
 import {
   AGENC_STDIO_DEFAULT_MAX_LINE_BYTES,
   AgenCStdioTransport,
@@ -122,6 +123,75 @@ describe("AgenC stdio transport", () => {
   });
 
   // Desktop runs turns with message.send; both methods stream a session's turn.
+  it.each(["message.stream", "message.send"])("resolves an aliased %s head before placing later requests", async (turnMethod) => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const seen: string[] = [];
+    let releaseTurn!: () => void;
+    let turnStarted!: () => void;
+    const turnDone = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    const entered = new Promise<void>((resolve) => { turnStarted = resolve; });
+    const transport = new AgenCStdioTransport({
+      input, output,
+      resolveRoutineSessionId: (id) =>
+        id === "agent-a" || id === "session-a" ? "session-a" : undefined,
+      onMessage: async (message) => {
+        seen.push(String(message.id));
+        if (message.id === 1) { turnStarted(); await turnDone; }
+      },
+    });
+    transport.start();
+    const send = (id: number, method: string, params: object) => input.write(JSON.stringify({
+      jsonrpc: JSON_RPC_VERSION, id, method, params,
+    }) + "\n");
+    try {
+      send(1, turnMethod, { sessionId: "agent-a" });
+      await entered;
+      send(2, "routine.create", { permissionAuthority: { kind: "session", sessionId: "session-a", toolCallId: "call" } });
+      send(3, "routine.get", {});
+      await vi.waitFor(() => expect(seen).toEqual(["1", "2"]));
+      releaseTurn();
+      await vi.waitFor(() => expect(seen).toEqual(["1", "2", "3"]));
+    } finally { releaseTurn(); await transport.close(); }
+  });
+
+  it("dispatches an alias write, controls and priority work while the scheduling state lock is held", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const seen: string[] = [];
+    let releaseTurn!: () => void;
+    let turnStarted!: () => void;
+    const turnDone = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    const enteredTurn = new Promise<void>((resolve) => { turnStarted = resolve; });
+    let heldLock: Awaited<ReturnType<typeof holdAgentLifecycleLock>> | undefined;
+    const transport = new AgenCStdioTransport({
+      input, output,
+      resolveRoutineSessionId: (id) => heldLock?.manager.peekRoutineSessionId(id),
+      onMessage: async (message) => {
+        seen.push(String(message.method));
+        if (message.method === "message.stream") { turnStarted(); await turnDone; }
+      },
+    });
+    transport.start();
+    const send = (id: number, method: string, params: object = {}) => input.write(JSON.stringify({
+      jsonrpc: JSON_RPC_VERSION, id, method, params,
+    }) + "\n");
+    try {
+      send(1, "message.stream", { sessionId: "session-a" });
+      await enteredTurn;
+      heldLock = await holdAgentLifecycleLock();
+      send(2, "routine.create", { permissionAuthority: { kind: "session", sessionId: "agent-a", toolCallId: "call" } });
+      send(3, "request.cancel");
+      send(4, "health.ping");
+      await vi.waitFor(() => {
+        expect(seen).toHaveLength(4);
+        expect(seen).toContain("routine.create");
+        expect(seen).toContain("request.cancel");
+        expect(seen).toContain("health.ping");
+      });
+    } finally { await heldLock?.release(); releaseTurn(); await transport.close(); }
+  });
+
   it.each(["message.stream", "message.send"])("answers a tool call's routine.create during a blocked %s turn while ordinary work stays queued", async (turnMethod) => {
     const input = new PassThrough();
     const output = new PassThrough();

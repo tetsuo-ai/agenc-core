@@ -75,6 +75,7 @@ import {
 } from "./realtime.js";
 import {
   AgenCDaemonConnectionLimiter,
+  daemonCausalRoutineHead,
   type AgenCDaemonOverloadLimitOptions,
 } from "./overload.js";
 import {
@@ -984,7 +985,7 @@ export class AgenCDaemonJsonRpcDispatcher {
 
       if (methodSupportsRequestCancellation(method)) {
         return await connection.runCancellableRequest(id, (signal) =>
-          this.#dispatchKnownMethod(connection, id, method, params, signal),
+          this.#dispatchKnownMethod(connection, id, method, params, signal, message),
         );
       }
 
@@ -994,6 +995,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         method,
         params,
         INERT_ABORT_SIGNAL,
+        message,
       );
     } catch (error) {
       return mapDispatchError(id, error);
@@ -1011,7 +1013,12 @@ export class AgenCDaemonJsonRpcDispatcher {
   async #routinePermissionGrant(
     connection: AgenCDaemonJsonRpcConnection,
     authority: RoutinePermissionAuthority | undefined,
+    priorityHeadSessionId?: string,
   ): Promise<RoutinePermissionGrant> {
+    if (priorityHeadSessionId !== undefined &&
+        (authority?.kind !== "session" || authority.toolCallId === undefined)) {
+      throw new RoutineError("ROUTINE_PERMISSION_DENIED", "A bypassed routine write requires its executing session tool call.");
+    }
     if (authority === undefined) return LEGACY_ROUTINE_GRANT;
     const agentManager = this.#agentManager;
     const multiplexer = this.#clientMultiplexer;
@@ -1027,7 +1034,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       operator,
       async liveSession(sessionId) {
         if (agentManager.getLiveSessionPermission === undefined) return undefined;
-        return await agentManager.getLiveSessionPermission(sessionId);
+        return await agentManager.getLiveSessionPermission(sessionId, priorityHeadSessionId);
       },
       async holdsSession(liveSessionId) {
         if (multiplexer?.deliveryHoldsSession === undefined) return false;
@@ -1080,6 +1087,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     method: AgenCDaemonKnownMethod,
     params: JsonObject,
     signal: AbortSignal,
+    message: JsonObject,
   ): Promise<AgenCDaemonResponse> {
     switch (method) {
       case "audio.whisper.status":
@@ -1115,13 +1123,13 @@ export class AgenCDaemonJsonRpcDispatcher {
       case "routine.create": {
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
         const request = this.#routineRequest(connection, params);
-        const grant = await this.#routinePermissionGrant(connection, request.authority);
+        const grant = await this.#routinePermissionGrant(connection, request.authority, daemonCausalRoutineHead(message));
         return successResponse(id, this.#routines.create(request.params, grant));
       }
       case "routine.update": {
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
         const request = this.#routineRequest(connection, params);
-        const grant = await this.#routinePermissionGrant(connection, request.authority);
+        const grant = await this.#routinePermissionGrant(connection, request.authority, daemonCausalRoutineHead(message));
         // Checked after the grant's await so nothing interleaves before the update.
         this.#assertRoutineVisible(connection, params);
         return successResponse(id, this.#routines.update(request.params, grant));

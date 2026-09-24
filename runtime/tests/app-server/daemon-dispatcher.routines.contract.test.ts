@@ -1,8 +1,10 @@
 import { lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync } from "node:fs";
+import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import WebSocket from "ws";
 
 import { AgenCDaemonAgentManager } from "../../src/app-server/agent-lifecycle.js";
 import type {
@@ -15,6 +17,7 @@ import type {
 } from "../../src/app-server/background-agent-runner.js";
 import { AgenCDaemonClientMultiplexer } from "../../src/app-server/client-multiplexer.js";
 import { AgenCDaemonJsonRpcDispatcher } from "../../src/app-server/daemon-dispatcher.js";
+import type { ResolveRoutineSessionId } from "../../src/app-server/overload.js";
 import {
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
   AGENC_DAEMON_PROTOCOL_VERSION,
@@ -23,6 +26,7 @@ import {
 } from "../../src/app-server/protocol/index.js";
 import { AgenCDaemonSessionManager } from "../../src/app-server/session-lifecycle.js";
 import { AgenCStdioTransport } from "../../src/app-server/transport/stdio.js";
+import { AgenCWebSocketServer } from "../../src/app-server/transport/websocket.js";
 import { RemoteAccessBoundary } from "../../src/remote/access.js";
 import type { PermissionAuditLogger } from "../../src/permissions/permission-audit-log.js";
 import { createDaemonRoutineExecutor } from "../../src/routines/daemon-executor.js";
@@ -36,6 +40,8 @@ const withoutDesktopTools = (instructions: string): string =>
   `Desktop tools (browser, terminal, windows) are unavailable in this run: No Desktop client is connected.\n${instructions}`;
 
 const NOW = "2026-09-06T12:00:00.000Z";
+const routineTransportCases = (["stdio", "websocket"] as const).flatMap((transport) =>
+  (["message.stream", "message.send"] as const).map((turnMethod) => ({ transport, turnMethod })));
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
@@ -58,7 +64,7 @@ function result<T>(response: { readonly result?: unknown; readonly error?: unkno
   return response.result as T;
 }
 
-function stdioConnection(connection: ReturnType<AgenCDaemonJsonRpcDispatcher["createConnection"]>) {
+function stdioConnection(connection: ReturnType<AgenCDaemonJsonRpcDispatcher["createConnection"]>, agents?: AgenCDaemonAgentManager, schedulingResolver?: ResolveRoutineSessionId) {
   const input = new PassThrough();
   const output = new PassThrough();
   const responses = new Map<string, JsonObject>();
@@ -70,6 +76,8 @@ function stdioConnection(connection: ReturnType<AgenCDaemonJsonRpcDispatcher["cr
   });
   const transport = new AgenCStdioTransport({
     input, output,
+    resolveRoutineSessionId: schedulingResolver ?? (agents === undefined ? undefined : (id) =>
+      agents.peekRoutineSessionId(id)),
     onMessage: async (message) => { await transport.send(await connection.dispatch(message)); },
   });
   transport.start();
@@ -81,6 +89,30 @@ function stdioConnection(connection: ReturnType<AgenCDaemonJsonRpcDispatcher["cr
       return responses.get(id)!;
     },
     close: () => transport.close(),
+  };
+}
+
+async function websocketConnection(connection: ReturnType<AgenCDaemonJsonRpcDispatcher["createConnection"]>, agents: AgenCDaemonAgentManager) {
+  const responses = new Map<string, JsonObject>();
+  const server = new AgenCWebSocketServer({
+    resolveRoutineSessionId: (id) => agents.peekRoutineSessionId(id),
+    onMessage: async (message, context) => { await context.send(await connection.dispatch(message)); },
+  });
+  const address = await server.listen();
+  const client = new WebSocket(address.url);
+  await once(client, "open");
+  client.on("message", (data) => {
+    const response = JSON.parse(data.toString()) as JsonObject;
+    responses.set(String(response.id), response);
+  });
+  return {
+    responses,
+    send: (id: string, method: string, params: JsonObject = {}) => client.send(JSON.stringify(request(id, method, params))),
+    async response(id: string) {
+      await vi.waitFor(() => expect(responses.has(id)).toBe(true), { timeout: 2_000 });
+      return responses.get(id)!;
+    },
+    close: () => server.close(),
   };
 }
 
@@ -326,6 +358,107 @@ describe("routine dispatcher and daemon execution contract", () => {
       h.terminal.resolve(0);
       await transport.close();
     }
+  });
+
+  it.each(routineTransportCases)("grants agent-id routine.create via $transport during a blocked $turnMethod turn", async ({ transport, turnMethod }) => {
+    const h = await harness();
+    const chat = await h.chat("acceptEdits");
+    await h.hold(h.connection, chat.sessionId);
+    const wire = transport === "stdio" ? stdioConnection(h.connection, h.agents) : await websocketConnection(h.connection, h.agents);
+    const { permissionMode: _unset, ...fields } = h.createParams;
+    try {
+      wire.send("turn", turnMethod, { sessionId: chat.sessionId, content: "Create a routine" });
+      await h.submission.promise;
+      h.executingToolCalls.set(chat.agentId, new Set(["create-call"]));
+      wire.send("write", "routine.create", {
+        ...fields, permissionAuthority: { kind: "session", sessionId: chat.agentId, toolCallId: "create-call" },
+      });
+      const created = result<{ routine: Routine }>(await wire.response("write")).routine;
+      expect(created.permissionMode).toBe("acceptEdits");
+      expect(wire.responses.has("turn")).toBe(false);
+    } finally { h.terminal.resolve(0); await wire.close(); }
+  });
+
+  it.each(routineTransportCases)("grants agent-id routine.update via $transport during a blocked $turnMethod turn", async ({ transport, turnMethod }) => {
+    const h = await harness();
+    const chat = await h.chat("acceptEdits");
+    await h.hold(h.connection, chat.sessionId);
+    const routine = await h.create();
+    const wire = transport === "stdio" ? stdioConnection(h.connection, h.agents) : await websocketConnection(h.connection, h.agents);
+    try {
+      wire.send("turn", turnMethod, { sessionId: chat.sessionId, content: "Update a routine" });
+      await h.submission.promise;
+      h.executingToolCalls.set(chat.agentId, new Set(["update-call"]));
+      wire.send("write", "routine.update", {
+        id: routine.id, patch: { name: "During call" },
+        permissionAuthority: { kind: "session", sessionId: chat.agentId, toolCallId: "update-call" },
+      });
+      expect(result<{ routine: Routine }>(await wire.response("write")).routine.name).toBe("During call");
+      expect(wire.responses.has("turn")).toBe(false);
+    } finally { h.terminal.resolve(0); await wire.close(); }
+  });
+
+  it.each(routineTransportCases)("keeps a different session's agent-id routine.create behind a $transport $turnMethod turn", async ({ transport, turnMethod }) => {
+    const h = await harness();
+    const chat = await h.chat("acceptEdits");
+    const other = await h.chat("default");
+    await h.hold(h.connection, chat.sessionId);
+    await h.hold(h.connection, other.sessionId);
+    const wire = transport === "stdio" ? stdioConnection(h.connection, h.agents) : await websocketConnection(h.connection, h.agents);
+    try {
+      wire.send("turn", turnMethod, { sessionId: chat.sessionId, content: "Create a routine" });
+      await h.submission.promise;
+      h.executingToolCalls.set(other.agentId, new Set(["other-call"]));
+      wire.send("write", "routine.create", {
+        ...h.createParams,
+        permissionAuthority: { kind: "session", sessionId: other.agentId, toolCallId: "other-call" },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(wire.responses.has("write")).toBe(false);
+      h.terminal.resolve(0);
+      expect(result<{ routine: Routine }>(await wire.response("write")).routine.permissionMode).toBe("default");
+    } finally { h.terminal.resolve(0); await wire.close(); }
+  });
+
+  it("refuses a bypassed routine write when the scheduling read disagrees with the locked owner", async () => {
+    const h = await harness();
+    const chat = await h.chat("acceptEdits");
+    const other = await h.chat("default");
+    await h.hold(h.connection, chat.sessionId);
+    await h.hold(h.connection, other.sessionId);
+    const wire = stdioConnection(h.connection, h.agents, () => chat.sessionId);
+    const before = h.service.list().routines;
+    try {
+      wire.send("turn", "message.stream", { sessionId: chat.sessionId, content: "Create a routine" });
+      await h.submission.promise;
+      h.executingToolCalls.set(other.agentId, new Set(["other-call"]));
+      wire.send("write", "routine.create", {
+        ...h.createParams,
+        permissionAuthority: { kind: "session", sessionId: other.agentId, toolCallId: "other-call" },
+      });
+      expect(await wire.response("write")).toMatchObject({ error: { data: { code: "ROUTINE_PERMISSION_DENIED" } } });
+      expect(h.service.list().routines).toEqual(before);
+      expect(wire.responses.has("turn")).toBe(false);
+    } finally { h.terminal.resolve(0); await wire.close(); }
+  });
+
+  it("keeps an unresolved routine authority behind its connection's streaming turn", async () => {
+    const h = await harness();
+    const chat = await h.chat("acceptEdits");
+    await h.hold(h.connection, chat.sessionId);
+    const wire = stdioConnection(h.connection, h.agents);
+    try {
+      wire.send("turn", "message.send", { sessionId: chat.sessionId, content: "Create a routine" });
+      await h.submission.promise;
+      wire.send("unknown", "routine.create", {
+        ...h.createParams,
+        permissionAuthority: { kind: "session", sessionId: "unknown-agent", toolCallId: "call" },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(wire.responses.has("unknown")).toBe(false);
+      h.terminal.resolve(0);
+      expect(await wire.response("unknown")).toMatchObject({ error: { data: { code: "ROUTINE_PERMISSION_DENIED" } } });
+    } finally { h.terminal.resolve(0); await wire.close(); }
   });
 
   it("refuses finished, other-session and invented tool calls during a streaming turn", async () => {

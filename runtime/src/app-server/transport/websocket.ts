@@ -32,7 +32,10 @@ import {
   isDaemonCausalRoutineMessage,
   isDaemonPreemptiveMessage,
   isDaemonPriorityMessage,
+  daemonStreamHeadSessionId,
   maxQueuedRequestsFromOptions,
+  tagDaemonCausalRoutineHead,
+  type ResolveRoutineSessionId,
 } from "../overload.js";
 import { isRecord } from "../../utils/record.js";
 import { drainAgenCTransportRequests, type AgenCTransportCloseOptions } from "./request-drain.js";
@@ -91,6 +94,7 @@ export interface AgenCWebSocketServerOptions {
   ) => boolean | Promise<boolean>;
   readonly acceptAuthenticationTimeoutMs?: number;
   readonly maxQueuedRequests?: number;
+  readonly resolveRoutineSessionId?: ResolveRoutineSessionId;
   readonly onAuthenticationFailed?: (
     message: JsonObject,
     context: AgenCWebSocketMessageContext,
@@ -506,9 +510,19 @@ export class AgenCWebSocketServer {
       return;
     }
 
+    this.#dispatchMessage(message, active, context);
+  }
+
+  #dispatchMessage(
+    message: JsonObject,
+    active: ActiveWebSocketConnection,
+    context: AgenCWebSocketMessageContext,
+  ): void {
     const causalRoutine = isDaemonCausalRoutineMessage(message);
     const sameStreamingHead = causalRoutine &&
-      isDaemonCausalRoutineForStream(message, active.normalQueue[0]);
+      isDaemonCausalRoutineForStream(
+        message, active.normalQueue[0], this.#options.resolveRoutineSessionId,
+      );
     if (isDaemonPriorityMessage(message) && (!causalRoutine || sameStreamingHead)) {
       const lane = isDaemonPreemptiveMessage(message) ? "control" : "priority";
       const maxQueuedRequests = maxQueuedRequestsFromOptions(this.#options);
@@ -519,6 +533,10 @@ export class AgenCWebSocketServer {
         return;
       }
       active.queuedPriorityMessages[lane] += 1;
+      if (causalRoutine) {
+        const headSessionId = daemonStreamHeadSessionId(active.normalQueue[0]!);
+        if (headSessionId !== undefined) tagDaemonCausalRoutineHead(message, headSessionId);
+      }
       // Control-plane requests must NOT queue behind a full model stream.
       // Dispatch them off-chain while keeping ordinary, order-dependent work
       // FIFO. The promise is still tracked so close() drains it.

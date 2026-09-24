@@ -20,7 +20,10 @@ import {
   isDaemonCausalRoutineMessage,
   isDaemonPreemptiveMessage,
   isDaemonPriorityMessage,
+  daemonStreamHeadSessionId,
   maxQueuedRequestsFromOptions,
+  tagDaemonCausalRoutineHead,
+  type ResolveRoutineSessionId,
 } from "../overload.js";
 import { isRecord } from "../../utils/record.js";
 import { BoundedJsonLineReader } from "../../utils/bounded-json-lines.js";
@@ -35,6 +38,7 @@ export interface AgenCStdioTransportOptions {
   readonly onClose?: () => void;
   readonly maxLineBytes?: number;
   readonly maxQueuedRequests?: number;
+  readonly resolveRoutineSessionId?: ResolveRoutineSessionId;
 }
 
 export class AgenCStdioTransport {
@@ -100,9 +104,15 @@ export class AgenCStdioTransport {
       return;
     }
 
+    this.#dispatchMessage(message, line);
+  }
+
+  #dispatchMessage(message: JsonObject, line: string): void {
     const causalRoutine = isDaemonCausalRoutineMessage(message);
     const sameStreamingHead = causalRoutine &&
-      isDaemonCausalRoutineForStream(message, this.#normalQueue[0]);
+      isDaemonCausalRoutineForStream(
+        message, this.#normalQueue[0], this.#options.resolveRoutineSessionId,
+      );
     if (isDaemonPriorityMessage(message) && (!causalRoutine || sameStreamingHead)) {
       const lane = isDaemonPreemptiveMessage(message) ? "control" : "priority";
       const maxQueuedRequests = maxQueuedRequestsFromOptions(this.#options);
@@ -113,6 +123,10 @@ export class AgenCStdioTransport {
         return;
       }
       this.#queuedPriorityMessages[lane] += 1;
+      if (causalRoutine) {
+        const headSessionId = daemonStreamHeadSessionId(this.#normalQueue[0]!);
+        if (headSessionId !== undefined) tagDaemonCausalRoutineHead(message, headSessionId);
+      }
       // Control-plane requests must NOT queue behind a full model stream.
       // Dispatch them off-chain while keeping ordinary, order-dependent work
       // FIFO. The promise is still tracked so close() drains it.
