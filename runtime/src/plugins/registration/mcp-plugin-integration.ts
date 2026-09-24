@@ -365,6 +365,7 @@ async function extractMcpServerRegistrationsFromPlugins(
         : server,
     ]));
     const scoped = addPluginScopeToServers({ ...plugin, root: snapshotRoot }, snapshotServers, options);
+    const lifecycleEntry = plugin.configEntry ?? options.config?.plugins?.plugins?.[plugin.id];
     for (const serverName of Object.keys(plugin.mcpServers)) {
       const name = pluginScopedServerIdentifier(plugin.id, serverName);
       const server = scoped[name];
@@ -382,8 +383,8 @@ async function extractMcpServerRegistrationsFromPlugins(
         digest,
         eager: plugin.manifest.channels?.some(channel => channel.server === serverName) === true ||
           plugin.manifest.mcpEagerServers?.includes(serverName) === true ||
-          options.config?.plugins?.plugins?.[plugin.id]?.mcp_servers?.[serverName]?.eager === true,
-        idleTimeoutMs: options.config?.plugins?.plugins?.[plugin.id]?.mcp_servers?.[serverName]?.idle_timeout_ms ??
+          lifecycleEntry?.mcp_servers?.[serverName]?.eager === true,
+        idleTimeoutMs: lifecycleEntry?.mcp_servers?.[serverName]?.idle_timeout_ms ??
           options.config?.plugins?.mcp_idle_timeout_ms ?? 600_000,
         maxProcesses: options.config?.plugins?.mcp_max_processes ?? 8,
       });

@@ -105,6 +105,31 @@ it("rejects CLI disable before a lazy plugin's first use", async () => {
   } finally { await manager.stopStrict(); }
 });
 
+it("rejects both first use and explicit reconnect after canonical disable", async () => {
+  const { home, workspace, storage, config } = await fixture();
+  const manager = new MCPManager([config]);
+  try {
+    await manager.start();
+    await setPluginEnabledOp({ pluginId: "sample", enabled: false, agencHome: home,
+      pluginStorageRoot: storage, sessionTempRoot: home, workspaceRoot: workspace });
+    expect(await manager.callTool(config.name, "ping", {})).toMatchObject({ isError: true });
+    await expect(manager.reconnectServer(config.name)).resolves.toMatchObject({ success: false });
+    expect(spawn).not.toHaveBeenCalled();
+  } finally { await manager.stopStrict(); }
+});
+
+it("rejects explicit reconnect as the first route after canonical disable", async () => {
+  const { home, workspace, storage, config } = await fixture();
+  const manager = new MCPManager([config]);
+  try {
+    await manager.start();
+    await setPluginEnabledOp({ pluginId: "sample", enabled: false, agencHome: home,
+      pluginStorageRoot: storage, sessionTempRoot: home, workspaceRoot: workspace });
+    await expect(manager.reconnectServer(config.name)).resolves.toMatchObject({ success: false });
+    expect(spawn).not.toHaveBeenCalled();
+  } finally { await manager.stopStrict(); }
+});
+
 it("rejects disable through the installation directory alias before first use", async () => {
   const { home, config } = await fixture("directory-alias");
   const manager = new MCPManager([config]);
@@ -149,6 +174,69 @@ it("restarts a lazy server that already ran after CLI disable", async () => {
     expect((await manager.callTool(config.name, "ping", {})).isError).not.toBe(true);
     expect(spawn).toHaveBeenCalledTimes(2);
   } finally { await manager.stopStrict(); }
+});
+
+it("resumes a launched lazy server from its retained snapshot after installation changes", async () => {
+  const { config } = await fixture();
+  const manager = new MCPManager([config]);
+  try {
+    await manager.start();
+    expect((await manager.callTool(config.name, "ping", {})).isError).not.toBe(true);
+    await manager.stopStrict();
+    await writeFile(join(config.origin!.pluginServer!.pluginRoot!, "entry.js"), "updated");
+    await manager.start();
+    expect((await manager.callTool(config.name, "ping", {})).isError).not.toBe(true);
+    expect(spawn).toHaveBeenCalledTimes(2);
+  } finally { await manager.stopStrict(); }
+});
+
+it("resumes a launched lazy server through sandbox transition after installation changes", async () => {
+  const { home, workspace, config } = await fixture();
+  const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd: workspace });
+  const manager = new MCPManager([config]);
+  manager.setSandboxExecutionBroker(broker);
+  try {
+    await manager.start();
+    expect((await manager.callTool(config.name, "ping", {})).isError).not.toBe(true);
+    await writeFile(join(config.origin!.pluginServer!.pluginRoot!, "entry.js"), "updated");
+    const nextWorkspace = join(home, "next-workspace");
+    await mkdir(nextWorkspace);
+    await transitionSandboxExecutionBroker(broker, nextWorkspace);
+    expect((await manager.callTool(config.name, "ping", {})).isError).not.toBe(true);
+    expect(spawn).toHaveBeenCalledTimes(2);
+  } finally { await manager.stopStrict(); manager.setSandboxExecutionBroker(undefined); }
+});
+
+it("first launches unchanged effective config after session disable and re-enable", async () => {
+  const { config } = await fixture();
+  const manager = new MCPManager([config]);
+  try {
+    await manager.start();
+    await manager.refreshServers([{ ...config, enabled: false }]);
+    await manager.refreshServers([{ ...config, enabled: true }]);
+    expect((await manager.callTool(config.name, "ping", {})).isError).not.toBe(true);
+    expect(spawn).toHaveBeenCalledTimes(1);
+  } finally { await manager.stopStrict(); }
+});
+
+it("registration uses the loader's installation-directory alias for lifecycle settings", async () => {
+  const { workspace, storage } = await fixture("directory-alias");
+  const registrations = await loadPluginMcpServerRegistrations({
+    pluginStorageRoot: storage, workspaceRoot: workspace, fresh: true,
+    config: { plugins: { enabled: true, mcp_idle_timeout_ms: 120_000, plugins: {
+      "directory-alias": { mcp_servers: { main: { eager: true, idle_timeout_ms: 0 } } },
+    } } },
+  });
+  expect(registrations).toHaveLength(1);
+  expect(registrations[0]).toMatchObject({ eager: true, idleTimeoutMs: 0 });
+  const manifestPrecedence = await loadPluginMcpServerRegistrations({
+    pluginStorageRoot: storage, workspaceRoot: workspace, fresh: true,
+    config: { plugins: { enabled: true, plugins: {
+      sample: { mcp_servers: { main: { eager: false, idle_timeout_ms: 9_000 } } },
+      "directory-alias": { mcp_servers: { main: { eager: true, idle_timeout_ms: 0 } } },
+    } } },
+  });
+  expect(manifestPrecedence[0]).toMatchObject({ eager: false, idleTimeoutMs: 9_000 });
 });
 
 it("keeps a running plugin across CLI disable and stop/resume, as eager servers do", async () => {

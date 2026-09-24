@@ -903,7 +903,7 @@ export class MCPManager {
       transport: config.transport ?? "stdio", command: config.command, args: config.args,
       env: config.env, env_vars: config.env_vars, cwd: config.cwd,
       endpoint: config.endpoint, headers: config.headers, pluginSandbox: config.pluginSandbox,
-      enabled: config.enabled, required: config.required, timeout: config.timeout,
+      enabled: config.enabled !== false, required: config.required, timeout: config.timeout,
       container: config.container, oauth: config.oauth,
       default_tools_approval_mode: config.default_tools_approval_mode,
       enabled_tools: config.enabled_tools, disabled_tools: config.disabled_tools,
@@ -923,7 +923,11 @@ export class MCPManager {
       const plugin = config.origin?.pluginServer;
       if (!plugin?.pluginRoot || !plugin.digest || config.enabled === false) return;
       try {
-        const state = await acquireVerifiedPluginGeneration(plugin.pluginRoot, plugin.snapshotRoot, plugin.digest);
+        // A launched server retains its immutable execution snapshot across
+        // stop/resume, even when the mutable installation has since changed.
+        const root = this.launchedPluginNames.has(config.name) && plugin.snapshotRoot
+          ? plugin.snapshotRoot : plugin.pluginRoot;
+        const state = await acquireVerifiedPluginGeneration(root, plugin.snapshotRoot, plugin.digest);
         const version = state.version;
         const unsubscribe = state.subscribe(() => { this.installedSnapshotCurrent(config); });
         const release = () => { unsubscribe(); state.release(); };
@@ -1373,7 +1377,7 @@ export class MCPManager {
               owner = await this.reserve(config, budgetSignal);
               budgetSignal.throwIfAborted();
               if (this.lifecycleGeneration !== generation || !this.configIsCurrent(config)) throw new Error(`MCP server "${config.name}" configuration changed`);
-              attempt = this.beginConnection(config);
+              attempt = await this.beginConnection(config, budgetSignal);
               return await raceWithSignal(attempt.promise, budgetSignal, serverTimeout,
                 `MCP server "${config.name}" connect`, attempt.gate);
             } catch (error) {
@@ -1764,20 +1768,10 @@ export class MCPManager {
     let owner: object | undefined;
     try {
       this.commitSurfaceMutation(() => this.connectionStates.set(config.name, { type: "pending" }));
-      if (!this.launchedPluginNames.has(config.name) && config.pluginWorkspaceRoot &&
-          config.origin?.pluginServer?.snapshotRoot) {
-        let matches = false;
-        try { matches = await this.firstPluginLaunchStillMatches(config); }
-        catch { /* A failed reload or resolution cannot authorize a first launch. */ }
-        if (!matches) {
-          throw new Error(`Plugin ${config.origin.pluginServer.pluginName} changed; restart this session before using it`);
-        }
-      }
       owner = await this.reserve(config, startSignal);
       startSignal.throwIfAborted();
       if (this.lifecycleGeneration !== generation || !this.configIsCurrent(config) || this.shutdownTask) throw new Error(`MCP plugin ${config.name} configuration changed or session stopped`);
-      attempt = this.beginConnection(config);
-      this.launchedPluginNames.add(config.name);
+      attempt = await this.beginConnection(config, startSignal);
       await raceWithSignal(attempt.promise, startSignal, timeoutMs,
         `MCP plugin ${config.name} startup`, attempt.gate);
       if (!attempt.isCurrent()) throw new Error(`MCP plugin ${config.name} closed during discovery`);
@@ -2187,7 +2181,7 @@ export class MCPManager {
         if (!this.configIsCurrent(config) || !this.isReconnectLifecycleCurrent(lifecycleGeneration, running)) {
           throw new Error(`MCP server "${config.name}" reconnect configuration changed`);
         }
-        attempt = this.beginConnection(config);
+        attempt = await this.beginConnection(config, startSignal);
         bridge = await raceWithSignal(attempt.promise, startSignal, timeoutMs,
           `MCP server "${config.name}" reconnect`, attempt.gate);
       } catch (error) {
@@ -2806,7 +2800,17 @@ export class MCPManager {
     }
   }
 
-  private beginConnection(config: MCPServerConfig): ManagedConnectionAttempt {
+  private async beginConnection(config: MCPServerConfig, signal?: AbortSignal): Promise<ManagedConnectionAttempt> {
+    if (this.isLazyPlugin(config) && !this.launchedPluginNames.has(config.name) &&
+        config.pluginWorkspaceRoot && config.origin?.pluginServer?.snapshotRoot) {
+      let matches = false;
+      try { matches = await this.firstPluginLaunchStillMatches(config); }
+      catch { /* A failed reload or resolution cannot authorize a first launch. */ }
+      if (!matches) {
+        throw new Error(`Plugin ${config.origin.pluginServer.pluginName} changed; restart this session before using it`);
+      }
+    }
+    signal?.throwIfAborted();
     if (!this.configIsCurrent(config)) {
       throw new Error(`MCP server "${config.name}" configuration changed or was disabled`);
     }
@@ -2829,6 +2833,7 @@ export class MCPManager {
       this.serverEpochs.get(config.name) === serverEpoch &&
       this.configIsCurrent(config);
     const promise = this.connectServer(config, gate, isCurrent);
+    if (config.origin?.scope === "plugin") this.launchedPluginNames.add(config.name);
     const attempt: ManagedConnectionAttempt = {
       serverName: config.name,
       gate,
