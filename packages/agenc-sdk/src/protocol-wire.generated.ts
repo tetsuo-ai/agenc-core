@@ -1159,8 +1159,11 @@ export type AgenCDaemonMethodCapabilities = JsonObject & {
     readonly [Method in AgenCDaemonKnownMethod]: boolean;
 };
 
+export const AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY = "routine.sessionAuthority.v1" as const;
+
 export type AgenCDaemonServerCapabilities = JsonObject & {
     readonly [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: AgenCDaemonMethodCapabilities;
+    readonly [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]?: true;
 };
 
 export interface DaemonInstanceIdentity extends JsonObject {

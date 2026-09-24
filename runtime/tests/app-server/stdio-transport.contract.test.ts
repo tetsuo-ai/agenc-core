@@ -1,6 +1,6 @@
 import { PassThrough } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
 import {
   AGENC_STDIO_DEFAULT_MAX_LINE_BYTES,
@@ -33,6 +33,46 @@ const RESPONSIVE_CONTROL_METHODS = [
 ] as const;
 
 describe("AgenC stdio transport", () => {
+  it("answers routine.create during a blocked turn while ordinary work stays queued", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const events: string[] = [];
+    const responses: number[] = [];
+    output.on("data", (chunk: Buffer) => {
+      for (const line of chunk.toString("utf8").trim().split("\n")) responses.push(JSON.parse(line).id as number);
+    });
+    let releaseTurn!: () => void;
+    let turnStarted!: () => void;
+    const started = new Promise<void>((resolve) => { turnStarted = resolve; });
+    const turnFinished = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    let transport!: AgenCStdioTransport;
+    transport = new AgenCStdioTransport({
+      input, output,
+      onMessage: async (message) => {
+        events.push(`${message.method}:start`);
+        if (message.method === "message.stream") {
+          turnStarted();
+          await turnFinished;
+        }
+        await transport.send({ jsonrpc: JSON_RPC_VERSION, id: message.id!, result: {} });
+        events.push(`${message.method}:end`);
+      },
+    });
+    transport.start();
+    try {
+      input.write('{"jsonrpc":"2.0","id":1,"method":"message.stream"}\n');
+      await started;
+      input.write('{"jsonrpc":"2.0","id":2,"method":"routine.create"}\n');
+      input.write('{"jsonrpc":"2.0","id":3,"method":"session.clear"}\n');
+      await vi.waitFor(() => expect(responses).toEqual([2]), { timeout: 2_000 });
+      expect(events).toEqual(["message.stream:start", "routine.create:start", "routine.create:end"]);
+      releaseTurn();
+      await vi.waitFor(() => expect(responses).toEqual([2, 1, 3]), { timeout: 2_000 });
+    } finally {
+      releaseTurn();
+      await transport.close();
+    }
+  });
   it("encodes one compact JSON message per newline", () => {
     const line = encodeJsonLine({
       jsonrpc: JSON_RPC_VERSION,

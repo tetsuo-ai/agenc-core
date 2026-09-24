@@ -86,6 +86,22 @@ describe("AgenC daemon overload control messages", () => {
     expect(isDaemonControlMessage(review)).toBe(false);
   });
 
+  it("prioritizes routine writes without exempting them from connection limits", () => {
+    for (const method of ["routine.create", "routine.update"]) {
+      expect(isDaemonPriorityMessage(request(method))).toBe(true);
+      expect(isDaemonPreemptiveMessage(request(method))).toBe(false);
+      expect(isDaemonControlMessage(request(method))).toBe(false);
+    }
+    const limiter = new AgenCDaemonConnectionLimiter({ maxInFlightRequests: 1 });
+    const turn = limiter.tryStart(request("message.stream"), 0);
+    expect(turn.admitted).toBe(true);
+    expect(limiter.tryStart(request("routine.create"), 0)).toMatchObject({
+      admitted: false,
+      response: { error: { data: { code: "TOO_MANY_IN_FLIGHT_REQUESTS" } } },
+    });
+    turn.release();
+  });
+
   it("keeps preemptive interactive decisions subject to normal overload limits", () => {
     const limiter = new AgenCDaemonConnectionLimiter({
       maxInFlightRequests: 1,

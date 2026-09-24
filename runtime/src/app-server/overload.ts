@@ -58,6 +58,10 @@ const DAEMON_PRIORITY_METHODS = new Set<string>([
   // An operator effect review unblocks the turn that may be streaming on
   // the same connection; it must not wait behind that turn.
   "session.resolveToolCall",
+  // A chat may issue a routine write through a tool call while its streaming
+  // turn on this connection waits for that tool call's answer.
+  "routine.create",
+  "routine.update",
   // Bounded file reads and one locked write. A client may be answering an
   // approval that the streaming turn is waiting on, and trust is part of it.
   "project.trustStatus",

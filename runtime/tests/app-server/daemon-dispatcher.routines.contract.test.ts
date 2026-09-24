@@ -1,6 +1,7 @@
 import { lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AgenCDaemonAgentManager } from "../../src/app-server/agent-lifecycle.js";
@@ -21,6 +22,8 @@ import {
   type JsonObject,
 } from "../../src/app-server/protocol/index.js";
 import { AgenCDaemonSessionManager } from "../../src/app-server/session-lifecycle.js";
+import { AgenCStdioTransport } from "../../src/app-server/transport/stdio.js";
+import { RemoteAccessBoundary } from "../../src/remote/access.js";
 import { createDaemonRoutineExecutor } from "../../src/routines/daemon-executor.js";
 import { RoutineService } from "../../src/routines/service.js";
 import type { Routine, RoutineRun } from "../../src/routines/types.js";
@@ -223,7 +226,7 @@ async function harness(options: { enabled?: boolean } = {}) {
   }
   return {
     ...client, connect, hold, dispatcher, service, sessions, agents, starts, bindings, liveModes, chat,
-    terminal, submission, cancellationOrder, cwd, authority, createParams, create, run, history,
+    terminal, submission, cancellationOrder, cwd, home, authority, createParams, create, run, history,
   };
 }
 
@@ -232,6 +235,7 @@ describe("routine dispatcher and daemon execution contract", () => {
     const h = await harness();
     const initialized = result<{ capabilities: Record<string, Record<string, boolean>> }>(h.initialized);
     expect(initialized.capabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY]["routine.create"]).toBe(true);
+    expect(initialized.capabilities["routine.sessionAuthority.v1"]).toBe(true);
     const ordinary = await h.connect();
     const routine = await h.create();
     await vi.waitFor(() => expect(h.notifications).toHaveLength(1));
@@ -248,7 +252,62 @@ describe("routine dispatcher and daemon execution contract", () => {
     const unavailable = await harness({ enabled: false });
     const absent = result<{ capabilities: Record<string, Record<string, boolean>> }>(unavailable.initialized);
     expect(absent.capabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY]["routine.create"]).toBe(false);
+    expect(absent.capabilities).not.toHaveProperty("routine.sessionAuthority.v1");
     expect(await unavailable.connection.dispatch(request("unavailable", "routine.list"))).toHaveProperty("error");
+  });
+
+  it("creates with the held chat's mode while its streamed turn waits for the routine tool answer", async () => {
+    const h = await harness();
+    const chat = await h.chat("acceptEdits");
+    await h.hold(h.connection, chat.sessionId);
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const responses = new Map<string, JsonObject>();
+    output.on("data", (chunk: Buffer) => {
+      for (const line of chunk.toString("utf8").trim().split("\n")) {
+        const response = JSON.parse(line) as JsonObject;
+        responses.set(String(response.id), response);
+      }
+    });
+    const transport = new AgenCStdioTransport({
+      input, output,
+      onMessage: async (message) => { await transport.send(await h.connection.dispatch(message)); },
+    });
+    transport.start();
+    try {
+      input.write(JSON.stringify(request("turn", "message.stream", { sessionId: chat.sessionId, content: "Create a routine" })) + "\n");
+      await h.submission.promise; // Keep the scripted turn open until its routine tool result arrives.
+      const { permissionMode: _unset, ...fields } = h.createParams;
+      input.write(JSON.stringify(request("tool", "routine.create", {
+        ...fields, permissionAuthority: { kind: "session", sessionId: chat.sessionId },
+      })) + "\n");
+      await vi.waitFor(() => expect(responses.has("tool")).toBe(true), { timeout: 2_000 });
+      expect(responses.has("turn")).toBe(false);
+      const routine = result<{ routine: Routine }>(responses.get("tool")!).routine;
+      expect(routine.permissionMode).toBe("acceptEdits");
+      expect(h.service.get({ id: routine.id }).routine.permissionMode).toBe("acceptEdits");
+    } finally {
+      h.terminal.resolve(0);
+      await transport.close();
+    }
+  });
+
+  it("removes session routine authority from a remote view whose method map denies routine writes", async () => {
+    const h = await harness();
+    const boundary = new RemoteAccessBoundary(
+      { workspaceId: "workspace", workspacePath: h.cwd, sessionIds: [], role: "control", allowFiles: false, allowApprovals: false },
+      () => true, async () => null, h.home,
+    );
+    const remote = h.dispatcher.createConnection({ remoteAccess: boundary });
+    try {
+      const initialized = result<{ capabilities: Record<string, unknown> }>(await remote.dispatch(request("remote-init", "initialize", {
+        protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION }, capabilities: {},
+      })));
+      expect((initialized.capabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY] as Record<string, boolean>)["routine.create"]).toBe(false);
+      expect(initialized.capabilities).not.toHaveProperty("routine.sessionAuthority.v1");
+    } finally {
+      await h.dispatcher.closeConnection(remote);
+    }
   });
 
   it.each([
