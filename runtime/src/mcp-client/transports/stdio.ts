@@ -60,6 +60,7 @@ import {
 import { connectMCPClientWithCleanup } from "./connect-with-cleanup.js";
 import type { ProviderEnvironment } from "../../llm/provider-options.js";
 import { EMPTY_MCP_REQUEST_ENVIRONMENT } from "../environment.js";
+import { assertMcpTransportToolDispatch } from "../local-control.js";
 
 const PROCESS_GROUP_TERM_GRACE_MS = 2_000;
 /**
@@ -420,6 +421,7 @@ export class AgenCStdioClientTransport implements Transport {
     }
 
     const serialized = serializeMessage(message);
+    assertMcpTransportToolDispatch(message);
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error) => {
         stdin.off("error", onError);

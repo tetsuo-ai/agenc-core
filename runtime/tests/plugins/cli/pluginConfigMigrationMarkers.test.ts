@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseToml } from "../../../src/config/loader.js";
+import { acquireVerifiedPluginGeneration, hashInstalledPlugin } from "../../../src/mcp-client/plugin-catalog-cache.js";
 import {
   pluginDataDirPath,
   pluginFilesystemKey,
@@ -64,6 +65,36 @@ function pluginAuthority(agencHome: string, workspaceRoot: string) {
 }
 
 describe("plugin entries in canonical config", () => {
+  it("retires the affected MCP generation for force install, update, disable, enable, and uninstall", async () => {
+    const { root, agencHome, workspaceRoot } = await tempRuntime();
+    const source = await writePlugin(root, "alpha");
+    const authority = pluginAuthority(agencHome, workspaceRoot);
+    const installed = await installPluginOp({ ...authority, source });
+    const current = async () => {
+      const lease = await acquireVerifiedPluginGeneration(installed.destination, undefined, hashInstalledPlugin(installed.destination), "alpha", agencHome);
+      return { lease, version: lease.version };
+    };
+    let held = await current();
+    await installPluginOp({ ...authority, source, force: true });
+    expect(held.lease.isCurrent(held.version)).toBe(false);
+    held.lease.release();
+    held = await current();
+    await updatePluginOp({ ...authority, pluginId: "alpha", source });
+    expect(held.lease.isCurrent(held.version)).toBe(false);
+    held.lease.release();
+    held = await current();
+    await setPluginEnabledOp({ ...authority, pluginId: "alpha", enabled: false });
+    expect(held.lease.isCurrent(held.version)).toBe(false);
+    held.lease.release();
+    held = await current();
+    await setPluginEnabledOp({ ...authority, pluginId: "alpha", enabled: true });
+    expect(held.lease.isCurrent(held.version)).toBe(false);
+    held.lease.release();
+    held = await current();
+    await uninstallPluginOp({ ...authority, pluginId: "alpha" });
+    expect(held.lease.isCurrent(held.version)).toBe(false);
+    held.lease.release();
+  });
   it("install patches the exact canonical document without replacing existing plugin fields", async () => {
     const { root, agencHome, workspaceRoot } = await tempRuntime();
     const alphaSource = await writePlugin(root, "alpha");

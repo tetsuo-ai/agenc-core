@@ -1,6 +1,6 @@
 /** Persistent, content-addressed MCP discovery for installed plugins. */
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, mkdirSync, renameSync, rmSync, writeFileSync, watch, watchFile, unwatchFile, type FSWatcher } from "node:fs";
+import { chmodSync, cpSync, existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { Worker } from "node:worker_threads";
 
@@ -76,16 +76,30 @@ export function snapshotInstalledPlugin(root: string, storageRoot: string, diges
       for (const child of readdirSync(path).filter(isPluginPayloadEntry)) checkLinks(join(path, child));
     }
   };
+  // Files are sealed read-only; directories stay writable so Core's pruning,
+  // plugin removal and a user deleting the cache can always remove them.
   const seal = (path: string): void => {
     const stat = lstatSync(path);
     if (stat.isDirectory()) for (const child of readdirSync(path)) seal(join(path, child));
     if (stat.isFile()) chmodSync(path, stat.mode & 0o555);
+  };
+  const removeTemporary = (path: string): void => {
+    if (!existsSync(path)) return;
+    const reopen = (entry: string): void => {
+      const stat = lstatSync(entry);
+      if (!stat.isDirectory()) return;
+      chmodSync(entry, stat.mode | 0o700);
+      for (const child of readdirSync(entry)) reopen(join(entry, child));
+    };
+    reopen(path);
+    rmSync(path, { recursive: true, force: true });
   };
   checkLinks(root);
   const directory = join(storageRoot, "cache", "mcp-install-snapshots");
   const destination = join(directory, digest);
   if (existsSync(destination)) {
     if (hashInstalledPlugin(destination) !== digest) throw new Error("Installed plugin snapshot changed");
+    seal(destination);
     return destination;
   }
   mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -93,15 +107,15 @@ export function snapshotInstalledPlugin(root: string, storageRoot: string, diges
   try {
     cpSync(root, temporary, { recursive: true, dereference: false, verbatimSymlinks: true, errorOnExist: true,
       filter: (source) => source === root || isPluginPayloadEntry(source) });
-    seal(temporary);
     if (hashInstalledPlugin(temporary) !== digest || hashInstalledPlugin(root) !== digest) {
       throw new Error("Installed plugin changed while creating its snapshot");
     }
+    seal(temporary);
     try { renameSync(temporary, destination); }
     catch (error) {
       if (!existsSync(destination) || hashInstalledPlugin(destination) !== digest) throw error;
     }
-  } finally { rmSync(temporary, { recursive: true, force: true }); }
+  } finally { removeTemporary(temporary); }
   return destination;
 }
 
@@ -161,11 +175,23 @@ const snapshotInstalledPlugin = (root, storageRoot, digest) => {
     if (stat.isDirectory()) for (const child of readdirSync(path)) seal(join(path, child));
     if (stat.isFile()) chmodSync(path, stat.mode & 0o555);
   };
+  const removeTemporary = (path) => {
+    if (!existsSync(path)) return;
+    const reopen = (entry) => {
+      const stat = lstatSync(entry);
+      if (!stat.isDirectory()) return;
+      chmodSync(entry, stat.mode | 0o700);
+      for (const child of readdirSync(entry)) reopen(join(entry, child));
+    };
+    reopen(path);
+    rmSync(path, { recursive: true, force: true });
+  };
   checkLinks(root);
   const directory = join(storageRoot, "cache", "mcp-install-snapshots");
   const destination = join(directory, digest);
   if (existsSync(destination)) {
     if (hashInstalledPlugin(destination) !== digest) throw new Error("Installed plugin snapshot changed");
+    seal(destination);
     return destination;
   }
   mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -173,41 +199,22 @@ const snapshotInstalledPlugin = (root, storageRoot, digest) => {
   try {
     cpSync(root, temporary, { recursive: true, dereference: false, verbatimSymlinks: true, errorOnExist: true,
       filter: (source) => source === root || isPluginPayloadEntry(source) });
-    seal(temporary);
     if (hashInstalledPlugin(temporary) !== digest || hashInstalledPlugin(root) !== digest) throw new Error("Installed plugin changed while creating its snapshot");
+    seal(temporary);
     try { renameSync(temporary, destination); }
     catch (error) { if (!existsSync(destination) || hashInstalledPlugin(destination) !== digest) throw error; }
-  } finally { rmSync(temporary, { recursive: true, force: true }); }
+  } finally { removeTemporary(temporary); }
   return destination;
-};
-const directoryEntries = (path) => readdirSync(path).filter(isPluginPayloadEntry).sort().map(name => {
-  const stat = lstatSync(join(path, name));
-  return [name, stat.ino, stat.mode];
-});
-const payloadPaths = (root) => {
-  const paths = [];
-  const visit = (path) => {
-    const stat = lstatSync(path);
-    const isDirectory = stat.isDirectory();
-    paths.push({ path, isDirectory, children: isDirectory ? directoryEntries(path) : undefined });
-    if (isDirectory) for (const child of readdirSync(path).filter(isPluginPayloadEntry)) visit(join(path, child));
-  };
-  visit(root);
-  return paths;
 };
 try {
   if (workerData.kind === "snapshot") {
     const digest = hashInstalledPlugin(workerData.root);
     const snapshotRoot = snapshotInstalledPlugin(workerData.root, workerData.storageRoot, digest);
     parentPort.postMessage({ digest, snapshotRoot });
-  } else if (workerData.kind === "directory") {
-    parentPort.postMessage({ children: directoryEntries(workerData.path) });
   } else {
     const actualRoot = hashInstalledPlugin(workerData.root);
     const actualSnapshot = workerData.snapshotRoot ? hashInstalledPlugin(workerData.snapshotRoot) : undefined;
-    parentPort.postMessage({ valid: actualRoot === workerData.digest && (!actualSnapshot || actualSnapshot === workerData.digest), paths: [
-      ...payloadPaths(workerData.root), ...(workerData.snapshotRoot ? payloadPaths(workerData.snapshotRoot) : [])
-    ] });
+    parentPort.postMessage({ valid: actualRoot === workerData.digest && (!actualSnapshot || actualSnapshot === workerData.digest) });
   }
 } catch (error) { parentPort.postMessage({ error: error instanceof Error ? error.message : String(error) }); }
 `;
@@ -242,152 +249,88 @@ export interface VerifiedPluginGeneration {
   readonly version: number;
   isCurrent(version: number): boolean;
   subscribe(listener: () => void): () => void;
+  /** An acquisition owns this lease from before verification begins. */
+  release(): void;
 }
 
-interface GenerationState extends VerifiedPluginGeneration {
+interface GenerationState {
+  readonly root: string;
+  readonly pluginName: string | undefined;
+  readonly cacheHome: string | undefined;
   version: number;
   invalidated: boolean;
+  owners: number;
   listeners: Set<() => void>;
-  watchers: FSWatcher[];
-  verified?: Promise<void>;
-  verifying: boolean;
-  dirty: boolean;
-  fallbackRequested: boolean;
-  fallbackClosers: Array<() => void>;
+  verified: Promise<void>;
 }
 
 const generations = new Map<string, GenerationState>();
 
-/** Atomic installation replacement changes the inode before watch delivers. */
-function installationRootToken(path: string): string {
-  const stat = lstatSync(path);
-  return `${stat.dev}:${stat.ino}`;
-}
-
-/** Share one verified installation generation across concurrent managers. */
-export async function acquireVerifiedPluginGeneration(root: string, snapshotRoot: string | undefined, digest: string): Promise<VerifiedPluginGeneration> {
-  const key = JSON.stringify([root, snapshotRoot, digest]);
-  let state = generations.get(key);
-  if (!state) {
-    const roots = [root, ...(snapshotRoot ? [snapshotRoot] : [])];
-    const rootTokens = roots.map(installationRootToken);
-    const created: GenerationState = {
-      version: 0, invalidated: false, verifying: true, dirty: false, fallbackRequested: false,
-      fallbackClosers: [], listeners: new Set(), watchers: [],
-      isCurrent(version) {
-        if (this.invalidated || this.version !== version) return false;
-        try { return roots.every((path, index) => installationRootToken(path) === rootTokens[index]); }
-        catch { return false; }
-      },
-      subscribe(listener) {
-        this.listeners.add(listener);
-        return () => {
-          this.listeners.delete(listener);
-          if (this.listeners.size === 0 && generations.get(key) === this) {
-            for (const watcher of this.watchers) watcher.close();
-            for (const close of this.fallbackClosers) close();
-            generations.delete(key);
-          }
-        };
-      },
-    };
-    state = created;
-    generations.set(key, created);
-    const invalidate = (): void => {
-      if (created.invalidated) return;
-      created.invalidated = true;
-      created.version++;
-      for (const listener of [...created.listeners]) listener();
-    };
-    let checkingUnknownEvent = false;
-    let pendingUnknownEvent = false;
-    const checkUnknownEvent = (): void => {
-      if (created.invalidated) return;
-      if (checkingUnknownEvent) { pendingUnknownEvent = true; return; }
-      checkingUnknownEvent = true;
-      void installationWorker<{ valid: boolean }>({ kind: "verify", root, snapshotRoot, digest })
-        .then(({ valid }) => { if (!valid) invalidate(); }, invalidate)
-        .finally(() => {
-          checkingUnknownEvent = false;
-          if (pendingUnknownEvent) { pendingUnknownEvent = false; checkUnknownEvent(); }
-        });
-    };
-    const installFallback = (paths: Array<{ path: string; isDirectory: boolean; children?: unknown[] }>): void => {
-      if (created.fallbackClosers.length > 0) return;
-      for (const entry of paths) {
-        if (entry.isDirectory) {
-          let checking = false;
-          let pending = false;
-          const listener = (): void => {
-            if (created.invalidated) return;
-            if (checking) { pending = true; return; }
-            checking = true;
-            void installationWorker<{ children: unknown[] }>({ kind: "directory", path: entry.path })
-              .then(({ children }) => { if (JSON.stringify(children) !== JSON.stringify(entry.children)) invalidate(); }, invalidate)
-              .finally(() => {
-                checking = false;
-                if (pending) { pending = false; listener(); }
-              });
-          };
-          watchFile(entry.path, { interval: 50, persistent: false }, listener);
-          created.fallbackClosers.push(() => unwatchFile(entry.path, listener));
-        } else {
-          const listener = (current: { mtimeMs: number; ctimeMs: number; size: number; ino: number; mode: number }, previous: { mtimeMs: number; ctimeMs: number; size: number; ino: number; mode: number }): void => {
-            if (current.mtimeMs !== previous.mtimeMs || current.ctimeMs !== previous.ctimeMs ||
-              current.size !== previous.size || current.ino !== previous.ino || current.mode !== previous.mode) invalidate();
-          };
-          watchFile(entry.path, { interval: 50, persistent: false }, listener);
-          created.fallbackClosers.push(() => unwatchFile(entry.path, listener));
-        }
-      }
-    };
-    try {
-      for (const path of [root, ...(snapshotRoot ? [snapshotRoot] : [])]) {
-        let watcher: FSWatcher;
-        try {
-          watcher = watch(path, { recursive: true }, (_event, filename) => {
-            if (filename !== null && !isPluginPayloadEntry(String(filename))) return;
-            if (created.verifying) { created.dirty = true; return; }
-            if (filename === null) { checkUnknownEvent(); return; }
-            invalidate();
-          });
-        } catch { created.fallbackRequested = true; continue; }
-        watcher.on("error", () => {
-          created.fallbackRequested = true;
-          watcher.close();
-          if (!created.verifying && created.fallbackClosers.length === 0) invalidate();
-        });
-        watcher.unref();
-        created.watchers.push(watcher);
-      }
-      created.verified = (async () => {
-        for (;;) {
-          created.dirty = false;
-          const { valid, paths } = await installationWorker<{ valid: boolean; paths: Array<{ path: string; isDirectory: boolean; children?: unknown[] }> }>({ kind: "verify", root, snapshotRoot, digest });
-          if (!valid || !created.isCurrent(created.version)) throw new Error("Installed plugin changed during verification");
-          if (created.fallbackRequested && created.fallbackClosers.length === 0) {
-            installFallback(paths);
-            created.dirty = true;
-          }
-          if (!created.dirty) break;
-        }
-        created.verifying = false;
-      })();
-    } catch (error) {
-      for (const watcher of created.watchers) watcher.close();
-      generations.delete(key);
-      throw error;
+/**
+ * The plugin lifecycle is the revocation authority. A local process editing
+ * Core's snapshot or an installation in place is outside this protection,
+ * just as editing any installed executable is. Updates use plugin commands.
+ * There is deliberately no filesystem watcher or polling on either tree.
+ */
+export function retireVerifiedPluginGenerations(pluginName: string | undefined, root?: string, cacheHome?: string): void {
+  for (const [key, state] of generations) {
+    if ((pluginName !== undefined && state.pluginName !== pluginName) || (root !== undefined && state.root !== root) ||
+      (cacheHome !== undefined && state.cacheHome !== cacheHome)) continue;
+    state.invalidated = true;
+    state.version++;
+    generations.delete(key);
+    for (const listener of [...state.listeners]) {
+      try { listener(); }
+      catch { /* The invalidated state still blocks dispatch in every owner. */ }
     }
   }
-  try { await state.verified; }
-  catch (error) {
-    for (const watcher of state.watchers) watcher.close();
-    for (const close of state.fallbackClosers) close();
-    if (generations.get(key) === state) generations.delete(key);
+}
+
+/** Share one off-thread verification across managers, with a lease per caller. */
+export async function acquireVerifiedPluginGeneration(
+  root: string, snapshotRoot: string | undefined, digest: string, pluginName?: string, cacheHome?: string,
+): Promise<VerifiedPluginGeneration> {
+  const key = JSON.stringify([root, snapshotRoot, digest, pluginName, cacheHome]);
+  let state = generations.get(key);
+  if (!state) {
+    state = {
+      root, pluginName, cacheHome, version: 0, invalidated: false, owners: 0,
+      listeners: new Set(), verified: Promise.resolve(),
+    };
+    const created = state;
+    created.verified = installationWorker<{ valid: boolean }>({ kind: "verify", root, snapshotRoot, digest })
+      .then(({ valid }) => {
+        if (!valid) throw new Error("Installed plugin changed during verification");
+      });
+    generations.set(key, created);
+  }
+  // Increment before the first await: another manager cannot release the
+  // shared verification while this acquisition is still pending.
+  state.owners++;
+  const owned = state;
+  let released = false;
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    owned.owners--;
+    if (owned.owners === 0 && generations.get(key) === owned) generations.delete(key);
+  };
+  try {
+    await owned.verified;
+    if (owned.invalidated) throw new Error("Installed plugin generation changed");
+  } catch (error) {
+    release();
     throw error;
   }
-  if (!state.isCurrent(state.version)) throw new Error("Installed plugin generation changed");
-  return state;
+  return {
+    get version() { return owned.version; },
+    isCurrent: version => !owned.invalidated && owned.version === version,
+    subscribe(listener) {
+      owned.listeners.add(listener);
+      return () => { owned.listeners.delete(listener); };
+    },
+    release,
+  };
 }
 
 /** One-way identity: cache filenames never reveal resolved environment values. */

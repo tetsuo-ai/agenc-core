@@ -46,6 +46,7 @@ import {
 } from "../resolution.js";
 import { parsePluginIdentifier } from "../identifier.js";
 import { skillDisplayNameFromMarkdown } from "../skill-display-metadata.js";
+import { retireVerifiedPluginGenerations } from "../../mcp-client/plugin-catalog-cache.js";
 
 export type PluginScope = "user" | "project" | "local";
 
@@ -462,6 +463,7 @@ export async function installPluginOp(
       );
     }
     const destination = existingRoots[0] ?? join(installRoot, safeName);
+    retireVerifiedPluginGenerations(pluginId, destination);
     await copyDirectoryAtomically(source, destination, {
       force: input.force === true,
     });
@@ -541,6 +543,7 @@ export async function uninstallPluginOp(
     throw new Error(`plugin is not installed in ${scope} scope: ${input.pluginId}`);
   }
   for (const root of targetRoots) {
+    retireVerifiedPluginGenerations(pluginId, root);
     await rm(root, { recursive: true, force: true });
   }
   const remainsInstalled = await pluginIdRemainsInstalled(pluginId, input);
@@ -1054,6 +1057,7 @@ async function writePluginConfigEntry(
   entry: PluginEntryConfig,
   options: PluginOperationOptions,
 ): Promise<string> {
+  retireVerifiedPluginGenerations(pluginId, undefined, resolvePluginAgencHome(options));
   const path = pluginConfigPath(options);
   mutateCanonicalUserConfigSync(path, (raw) => {
     const plugins = isRecord(raw.plugins) ? raw.plugins : {};

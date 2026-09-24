@@ -27,6 +27,7 @@ import { enterCanonicalSettingsAuthority } from "../utils/settings/canonicalAuth
 import { RuntimeStateRepository } from "./runtime-state-repository.js";
 import type { CanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 import { mergeProviderModelLayer } from "./provider-model-authority.js";
+import { retireVerifiedPluginGenerations } from "../mcp-client/plugin-catalog-cache.js";
 import {
   resolveManagedPathContext,
   type ManagedPathContext,
@@ -54,6 +55,28 @@ export const COORDINATED_CONFIG_STORE_PUBLICATION = Object.freeze({
 const DIRECT_CONFIG_STORE_PUBLICATION = Object.freeze({
   permissionAuthority: "requires_subscriber_publication" as const,
 });
+
+/** Revoke only plugins whose canonical config changed at publication. */
+function retireChangedPluginConfigurations(previous: AgenCConfig, next: AgenCConfig, cacheHome: string): void {
+  if (previous.plugins?.enabled !== next.plugins?.enabled) {
+    retireVerifiedPluginGenerations(undefined, undefined, cacheHome);
+    return;
+  }
+  const beforeEntries = previous.plugins?.plugins ?? {};
+  const afterEntries = next.plugins?.plugins ?? {};
+  const beforePreferences = previous.pluginConfigs ?? {};
+  const afterPreferences = next.pluginConfigs ?? {};
+  const names = new Set([
+    ...Object.keys(beforeEntries), ...Object.keys(afterEntries),
+    ...Object.keys(beforePreferences), ...Object.keys(afterPreferences),
+  ]);
+  for (const name of names) {
+    if (JSON.stringify(beforeEntries[name]) !== JSON.stringify(afterEntries[name]) ||
+      JSON.stringify(beforePreferences[name]) !== JSON.stringify(afterPreferences[name])) {
+      retireVerifiedPluginGenerations(name, undefined, cacheHome);
+    }
+  }
+}
 
 export type ConfigStoreListener = (
   config: AgenCConfig,
@@ -511,6 +534,7 @@ export class ConfigStore {
             ? COORDINATED_CONFIG_STORE_PUBLICATION
             : DIRECT_CONFIG_STORE_PUBLICATION;
         state = "published";
+        retireChangedPluginConfigurations(previous.snapshot, staged.snapshot, this.resolvedHomeContext.path);
         for (const message of warningMessages) this.emitWarning(message);
         this.notifyListeners(
           staged.snapshot,
@@ -530,6 +554,7 @@ export class ConfigStore {
           this.stateRepository.invalidate();
           this.reloadGeneration += 1;
           if (notifyRestoredAuthority) {
+            retireChangedPluginConfigurations(staged.snapshot, previous.snapshot, this.resolvedHomeContext.path);
             this.notifyListeners(
               previous.snapshot,
               this.warningMessages,

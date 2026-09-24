@@ -327,6 +327,16 @@ merge those registrations into the live `MCPManager`
 user-scoped plugins then appear in `/mcp` as `plugin:<id>:<server>` and
 as model tools `mcp.plugin:<id>:<server>.<tool>`.
 
+Core runs plugin MCP servers from a content-addressed snapshot of the
+installation. It verifies the snapshot off the event loop before publishing
+the server and makes snapshot files read-only for the user where the platform
+permits; directories stay writable so the cache can always be removed. `plugin install`, `update`, `uninstall`, `enable`,
+`disable`, and changes to that plugin's configuration retire the active
+execution generation through the plugin lifecycle. Filesystem watchers and
+polling are not revocation authorities. Another local process changing Core's
+snapshot or a plugin's installed files in place is outside this protection,
+as with any installed program. Use `agenc plugin update` to replace a plugin.
+
 Project- and local-scope installs are **repository-controlled**
 (`isRepositoryControlledPlugin`). The loader strips their `mcpServers`,
 hooks, and `lspServers` so workspace-resident packages cannot become a second

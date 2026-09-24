@@ -115,6 +115,11 @@ connection is then stopped. A tool call or resource/prompt read starts the
 server again. Idle plugin servers show as `stopped` in MCP status; startup
 errors show as `failed`.
 
+Plugin MCP processes launch from Core-owned, verified snapshots. Plugin
+lifecycle commands and configuration changes revoke the affected generation;
+see [skills-plugins.md](skills-plugins.md#plugin-mcp-servers) for the local
+file modification boundary and update procedure.
+
 Manifest `mcpEagerServers` lists server names that receive notifications or
 run listeners without a tool call. Servers named by manifest `channels` are
 eager automatically. Operators can also set

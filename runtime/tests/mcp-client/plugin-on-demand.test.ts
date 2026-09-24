@@ -1,11 +1,11 @@
-import { mkdir, mkdtemp, readlink, rm, symlink } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readlink, rm, stat, symlink } from "node:fs/promises";
 import { renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MCPManager } from "./manager.js";
 import { writePluginCatalog } from "./plugin-catalog-cache.js";
-import { fingerprintPluginCatalogConfig, hashInstalledPlugin, readPluginCatalog, snapshotInstalledPlugin, snapshotInstalledPluginOffThread } from "./plugin-catalog-cache.js";
+import { fingerprintPluginCatalogConfig, hashInstalledPlugin, readPluginCatalog, retireVerifiedPluginGenerations, snapshotInstalledPlugin, snapshotInstalledPluginOffThread } from "./plugin-catalog-cache.js";
 import * as pluginCatalogCache from "./plugin-catalog-cache.js";
 import { projectMcpManagerToConnections } from "./tui-connections.js";
 import { writeFile } from "node:fs/promises";
@@ -14,6 +14,8 @@ import type { LoadedPlugin } from "../plugins/loader.js";
 import { buildToolRegistry } from "../tool-registry.js";
 import { validatePluginsConfig } from "../config/schema.js";
 import type { MCPServerConfig } from "./types.js";
+import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
+import { transitionSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
 
 vi.mock("./transports/stdio.js", () => ({ createStdioMCPConnection: vi.fn() }));
 import { createStdioMCPConnection } from "./transports/stdio.js";
@@ -78,9 +80,95 @@ async function waitFor(check: () => boolean): Promise<void> {
 }
 
 beforeEach(() => { spawn.mockReset(); clients.length = 0; setupTransport(); });
-afterEach(async () => { for (const path of homes.splice(0)) await rm(path, { recursive: true, force: true }); });
+async function unlockDirectories(path: string): Promise<void> {
+  let status; try { status = await lstat(path); } catch { return; }
+  if (!status.isDirectory()) return;
+  await chmod(path, 0o700);
+  for (const child of await readdir(path)) await unlockDirectories(join(path, child));
+}
+afterEach(async () => { for (const path of homes.splice(0)) { await unlockDirectories(path); await rm(path, { recursive: true, force: true }); } });
 
 describe("plugin MCP on-demand lifecycle", () => {
+  it("checks revocation after onBegin before stdio dispatch", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const cfg = config(cacheHome, "plugin:sample:begin", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "begin", digest: hashInstalledPlugin(root), pluginRoot: root, eager: true } } });
+    const manager = new MCPManager([cfg]);
+    let shutdown: Promise<void> | undefined;
+    manager.setCallObserver({ onBegin: () => { shutdown = manager.stopStrict(); } });
+    await manager.start();
+    const result = await manager.getToolsByServer(cfg.name)[0]!.execute({});
+    expect(result.isError).toBe(true);
+    expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    expect(clients[0]!.callTool).not.toHaveBeenCalled();
+    await shutdown;
+  });
+
+  it("keeps a second manager's generation leased while the first stops during verification", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "x".repeat(8 * 1024 * 1024));
+    const cfg = config(cacheHome, "plugin:sample:concurrent", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "concurrent", digest: hashInstalledPlugin(root), pluginRoot: root, eager: true } } });
+    const first = new MCPManager([cfg]); const second = new MCPManager([cfg]);
+    const firstStart = first.start(); const secondStart = second.start();
+    const stopping = first.stopStrict();
+    try {
+      await Promise.all([firstStart, secondStart, stopping]);
+      expect(second.getConnectionState(cfg.name)?.type).toBe("connected");
+      const held = (second as unknown as { installationGenerations: Map<MCPServerConfig, { state: { release?: () => void } }> }).installationGenerations.values().next().value;
+      expect(typeof held?.state.release).toBe("function");
+      expect((await second.callTool(cfg.name, "ping", {})).isError).not.toBe(true);
+    } finally { await first.stopStrict(); await second.stopStrict(); }
+  });
+
+  it("gives a restarted plugin fresh revocation authority while retained tools stay revoked", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const cfg = config(cacheHome, "plugin:sample:restart", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "restart", digest: hashInstalledPlugin(root), pluginRoot: root, eager: true } } });
+    const manager = new MCPManager([cfg]);
+    await manager.start();
+    const retained = manager.getToolsByServer(cfg.name)[0]!;
+    expect((await retained.execute({})).isError).not.toBe(true);
+    await manager.stopStrict();
+    await manager.start();
+    try {
+      expect((await retained.execute({})).isError).toBe(true);
+      expect((await manager.callTool(cfg.name, "ping", {})).isError).not.toBe(true);
+    } finally { await manager.stopStrict(); }
+  });
+
+  it("renews plugin authority on sandbox resume", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const cfg = config(cacheHome, "plugin:sample:sandbox-resume", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "sandbox-resume", digest: hashInstalledPlugin(root), pluginRoot: root, eager: true } } });
+    const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd: cacheHome });
+    const nextCwd = join(cacheHome, "next-workspace");
+    await mkdir(nextCwd);
+    const manager = new MCPManager([cfg]);
+    manager.setSandboxExecutionBroker(broker);
+    try {
+      await manager.start();
+      const retained = manager.getToolsByServer(cfg.name)[0]!;
+      await transitionSandboxExecutionBroker(broker, nextCwd);
+      expect(manager.getConnectionState(cfg.name)?.type).toBe("connected");
+      expect((await retained.execute({})).isError).toBe(true);
+      expect((await manager.callTool(cfg.name, "ping", {})).isError).not.toBe(true);
+    } finally { await manager.stopStrict(); manager.setSandboxExecutionBroker(undefined); }
+  });
+
+  it("retires a shared plugin generation on configuration refresh", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const cfg = config(cacheHome, "plugin:sample:config-refresh", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "config-refresh", digest: hashInstalledPlugin(root), pluginRoot: root, eager: true } } });
+    const first = new MCPManager([cfg]); const second = new MCPManager([cfg]);
+    try {
+      await Promise.all([first.start(), second.start()]);
+      const retained = second.getToolsByServer(cfg.name)[0]!;
+      await first.refreshServers([{ ...cfg, command: "fixture-updated" }]);
+      await waitFor(() => second.getConnectionState(cfg.name)?.type === "failed");
+      expect((await retained.execute({})).isError).toBe(true);
+      expect((await first.callTool(cfg.name, "ping", {})).isError).not.toBe(true);
+    } finally { await Promise.all([first.stopStrict(), second.stopStrict()]); }
+  });
   it.each(["eager", "lazy"])("cancels a %s plugin authorization after its installation is revoked", async kind => {
     const cacheHome = await home(); const root = join(cacheHome, "installed");
     await mkdir(root); await writeFile(join(root, "entry.js"), "old");
@@ -98,6 +186,7 @@ describe("plugin MCP on-demand lifecycle", () => {
       const call = manager.callTool(cfg.name, "ping", {});
       await waitFor(() => request.mock.calls.length > 0);
       await writeFile(join(root, "entry.js"), "changed");
+      retireVerifiedPluginGenerations("sample", root);
       await waitFor(() => manager.getConnectionState(cfg.name)?.type === "failed");
       const result = await Promise.race([call, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("authorization was not cancelled")), 200))]);
       expect(result.isError).toBe(true);
@@ -126,6 +215,7 @@ describe("plugin MCP on-demand lifecycle", () => {
       const call = manager.callTool(cfg.name, "ping", {});
       await waitFor(() => clients[0]!.callTool.mock.calls.length >= (kind === "lazy" ? 2 : 1));
       await writeFile(join(root, "entry.js"), "changed");
+      retireVerifiedPluginGenerations("sample", root);
       await waitFor(() => manager.getConnectionState(cfg.name)?.type === "failed");
       const owner = (manager as unknown as { pluginLifecycles: Map<string, { reservation?: object }> }).pluginLifecycles.get(cfg.name)!.reservation;
       const shutdown = manager.stopStrict();
@@ -180,9 +270,14 @@ describe("plugin MCP on-demand lifecycle", () => {
     expect(hashInstalledPlugin(snapshot)).toBe(digest);
     expect(await (await import("node:fs/promises")).readdir(snapshot)).toEqual(["entry.js"]);
     expect(((await (await import("node:fs/promises")).stat(join(snapshot, "entry.js"))).mode & 0o222)).toBe(0);
+    // Files are sealed; the directory stays writable so the cache can be removed.
+    expect((await stat(snapshot)).mode & 0o200).toBe(0o200);
     const workerSnapshot = await snapshotInstalledPluginOffThread(root, join(cacheHome, "worker-storage"));
     expect(workerSnapshot.digest).toBe(digest);
     expect(await (await import("node:fs/promises")).readdir(workerSnapshot.snapshotRoot)).toEqual(["entry.js"]);
+    expect(((await stat(join(workerSnapshot.snapshotRoot, "entry.js"))).mode & 0o222)).toBe(0);
+    expect((await stat(workerSnapshot.snapshotRoot)).mode & 0o200).toBe(0o200);
+    await rm(workerSnapshot.snapshotRoot, { recursive: true });
   });
 
   it.each(["eager", "lazy"])("keeps a live %s plugin authorized when .DS_Store is added and removed", async kind => {
@@ -217,6 +312,7 @@ describe("plugin MCP on-demand lifecycle", () => {
     const manager = new MCPManager([cfg]);
     try {
       await manager.start();
+      retireVerifiedPluginGenerations("sample", root);
       await rm(root, { recursive: true });
       expect((await manager.callTool(cfg.name, "ping", {})).isError).toBe(true);
       await waitFor(() => manager.getConnectionState(cfg.name)?.type === "failed");
@@ -234,13 +330,14 @@ describe("plugin MCP on-demand lifecycle", () => {
     try {
       await manager.start();
       await writeFile(join(root, "schema.json"), "{}");
+      retireVerifiedPluginGenerations("sample", root);
       await waitFor(() => manager.getConnectionState(cfg.name)?.type === "failed");
       expect((await manager.callTool(cfg.name, "ping", {})).isError).toBe(true);
       await waitFor(() => clients[0]!.close.mock.calls.length > 0);
     } finally { await manager.stop(); }
   });
 
-  it("rejects an atomic plugin update before a watcher callback runs", async () => {
+  it("rejects an atomic plugin update after lifecycle retirement", async () => {
     const cacheHome = await home(); const root = join(cacheHome, "installed");
     const replacement = join(cacheHome, "replacement");
     await mkdir(root); await writeFile(join(root, "entry.js"), "old");
@@ -251,6 +348,7 @@ describe("plugin MCP on-demand lifecycle", () => {
     const manager = new MCPManager([cfg]);
     try {
       await manager.start();
+      retireVerifiedPluginGenerations("sample", root);
       renameSync(root, join(cacheHome, "old-install"));
       renameSync(replacement, root);
       expect((await manager.callTool(cfg.name, "ping", {})).isError).toBe(true);
@@ -274,6 +372,7 @@ describe("plugin MCP on-demand lifecycle", () => {
       const call = manager.callTool(cfg.name, "ping", {});
       await waitFor(() => clients[0]!.callTool.mock.calls.length >= (kind === "lazy" ? 2 : 1));
       await writeFile(join(root, "entry.js"), "changed");
+      retireVerifiedPluginGenerations("sample", root);
       await waitFor(() => manager.getConnectionState(cfg.name)?.type === "failed");
       pending.resolve({ content: [{ type: "text", text: "completed operation" }] });
       const result = await call;
@@ -720,6 +819,7 @@ describe("plugin MCP on-demand lifecycle", () => {
     try {
       await manager.start();
       await writeFile(join(root, "entry.js"), "replacement");
+      retireVerifiedPluginGenerations("sample", root);
       await waitFor(() => manager.getConnectionState(cfg.name)?.type === "failed");
       const result = await manager.callTool(cfg.name, "ping", {});
       expect(result.isError).toBe(true);
@@ -728,7 +828,7 @@ describe("plugin MCP on-demand lifecycle", () => {
     } finally { await manager.stop(); }
   });
 
-  it.each(["eager", "required"])("revokes a retained %s plugin tool and retires its owner when installed bytes change", async kind => {
+  it.each(["eager", "required"])("revokes a retained %s plugin tool and retires its owner when its lifecycle retires", async kind => {
     const cacheHome = await home(); const root = join(cacheHome, "installed");
     await mkdir(root); await writeFile(join(root, "entry.js"), "old");
     const digest = hashInstalledPlugin(root);
@@ -742,6 +842,7 @@ describe("plugin MCP on-demand lifecycle", () => {
       const retained = manager.getToolsByServer(cfg.name)[0]!;
       expect((await retained.execute({})).isError).not.toBe(true);
       await writeFile(join(root, "entry.js"), "changed");
+      retireVerifiedPluginGenerations("sample", root);
       await waitFor(() => manager.getConnectionState(cfg.name)?.type === "failed");
       expect(manager.getConnectionState(cfg.name)?.type).toBe("failed");
       expect(manager.getToolsByServer(cfg.name)).toEqual([]);
@@ -766,6 +867,7 @@ describe("plugin MCP on-demand lifecycle", () => {
       const retained = manager.getToolsByServer(cfg.name)[0]!;
       clients[0]!.close.mockRejectedValueOnce(new Error("close failed"));
       await writeFile(join(root, "entry.js"), "changed");
+      retireVerifiedPluginGenerations("sample", root);
       await waitFor(() => manager.getConnectionState(cfg.name)?.type === "failed");
       expect((await retained.execute({})).isError).toBe(true);
       const cleanup = (manager as unknown as { retainedCleanup: Map<string, unknown> }).retainedCleanup;

@@ -8,7 +8,7 @@
  */
 
 import type { Tool, ToolResult, JSONSchema } from "./_deps/tools-types.js";
-import { hasLocalMcpAccess, redactMcpAttachmentText, redactMcpAttachmentValue, desktopControlEffectReceipt, withDesktopMcpDispatchGuard, DesktopMcpPreflightRefusal } from "./local-control.js";
+import { hasLocalMcpAccess, redactMcpAttachmentText, redactMcpAttachmentValue, desktopControlEffectReceipt, withDesktopMcpDispatchGuard, assertDesktopMcpDispatchGuard, DesktopMcpPreflightRefusal } from "./local-control.js";
 import { desktopToolClassification, hasDesktopAuthority } from "./desktop-authority.js";
 import { preEffectRefusal } from "../tools/results.js";
 import { createToolEffectDispositionEvidence } from "../tools/effect-boundary.js";
@@ -614,6 +614,17 @@ async function authorizeMcpClientToolCall(
   return { ok: true, args: executionArgs };
 }
 
+/** Cancel the whole authorization wait, including a stalled canUseTool evaluator. */
+function awaitAuthorization<T>(task: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return task;
+  if (signal.aborted) return Promise.reject(new DesktopMcpPreflightRefusal("MCP authorization was revoked."));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new DesktopMcpPreflightRefusal("MCP authorization was revoked."));
+    signal.addEventListener("abort", onAbort, { once: true });
+    void task.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
 /** Reuse only the executor's exact, already-approved invocation. JSON/model
  * arguments cannot mint the private runtime-context marker. Rechecking the
  * same approval in an MCP bridge otherwise asks twice with the same call ID,
@@ -1097,14 +1108,14 @@ export async function createToolBridge(
           const authorization: PermissionResolution =
             exactMcpInvocation(args, callId, namespacedName, options.permissions)?.approvalResolved === true
             ? { ok: true, args }
-            : await authorizeMcpClientToolCall(
+            : await awaitAuthorization(authorizeMcpClientToolCall(
             bridgeTool,
             serverName,
             mcpTool,
             callId,
             args,
             permissions,
-          );
+          ), permissions?.signal);
           if (!authorization.ok) {
             if (options.revocationGuard?.() === false || options.revocationSignal?.aborted) {
               return preEffectRefusal(namespacedName, "The owning MCP plugin was revoked during authorization.");
@@ -1147,6 +1158,9 @@ export async function createToolBridge(
               if (nativeTerminal && !nativeDesktopTerminalAllowed(args, callId, namespacedName, options.permissions)) throw new DesktopMcpPreflightRefusal("The visible terminal no longer has full-access authority.");
               if (routineMutation && !desktopRoutineMutationAllowed(args, callId, namespacedName, options.permissions)) throw new DesktopMcpPreflightRefusal("The Desktop Routine call no longer has writable local authority.");
             }, () => {
+              // The SDK can dispatch synchronously on stdio. Check here after
+              // observers; HTTP checks again after its asynchronous binding work.
+              assertDesktopMcpDispatchGuard(false, false);
               dispatched = true;
               return client.callTool(
                 {

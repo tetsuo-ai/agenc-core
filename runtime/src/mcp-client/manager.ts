@@ -59,7 +59,7 @@ import { registerSandboxExecutionLifecycleParticipant } from "../sandbox/executi
 import { MCPTransportCleanupError } from "./transports/connect-with-cleanup.js";
 import { assertValidMcpServerName } from "./server-name.js";
 import { isMcpAuthenticationError } from "../services/mcp/auth-errors.js";
-import { acquireVerifiedPluginGeneration, fingerprintPluginCatalogConfig, primePluginCatalogSingleFlight, readPluginCatalog, writePluginCatalog, type PluginCatalog, type PluginCatalogIdentity, type VerifiedPluginGeneration } from "./plugin-catalog-cache.js";
+import { acquireVerifiedPluginGeneration, retireVerifiedPluginGenerations, fingerprintPluginCatalogConfig, primePluginCatalogSingleFlight, readPluginCatalog, writePluginCatalog, type PluginCatalog, type PluginCatalogIdentity, type VerifiedPluginGeneration } from "./plugin-catalog-cache.js";
 import { reservePluginProcess, releasePluginProcess, touchPluginProcess, notifyPluginProcessIdle } from "./plugin-process-budget.js";
 
 /** I-50: cancellable MCP startup wait; 30s default. */
@@ -475,7 +475,7 @@ export class MCPManager {
   private readonly cachedTools = new Map<string, Tool[]>();
   private readonly cachedCatalogs = new Map<string, PluginCatalog>();
   private readonly revokedPluginConfigs = new WeakSet<MCPServerConfig>();
-  private readonly pluginRevocations = new WeakMap<MCPServerConfig, AbortController>();
+  private pluginRevocations = new WeakMap<MCPServerConfig, AbortController>();
   private readonly installationGenerations = new Map<MCPServerConfig, { state: VerifiedPluginGeneration; version: number; release: () => void }>();
   private readonly preparingInstallations = new WeakSet<MCPServerConfig>();
   private readonly pluginLifecycles = new Map<string, PluginServerLifecycle>();
@@ -865,9 +865,10 @@ export class MCPManager {
       const plugin = config.origin?.pluginServer;
       if (!plugin?.pluginRoot || !plugin.digest || config.enabled === false) return;
       try {
-        const state = await acquireVerifiedPluginGeneration(plugin.pluginRoot, plugin.snapshotRoot, plugin.digest);
+        const state = await acquireVerifiedPluginGeneration(plugin.pluginRoot, plugin.snapshotRoot, plugin.digest, plugin.pluginName, config.pluginCatalogHome);
         const version = state.version;
-        const release = state.subscribe(() => { this.installedSnapshotCurrent(config); });
+        const unsubscribe = state.subscribe(() => { this.installedSnapshotCurrent(config); });
+        const release = () => { unsubscribe(); state.release(); };
         if (!this.running || !this.configs.includes(config) || this.revokedPluginConfigs.has(config)) {
           release();
           return;
@@ -1266,6 +1267,9 @@ export class MCPManager {
       );
     }
     const generation = ++this.lifecycleGeneration;
+    // Bridges retain the controller captured by their execution generation.
+    // A later start must not inherit the signal aborted by stopStrict/quiesce.
+    this.pluginRevocations = new WeakMap();
     this.running = true;
     this.resetConnectionStates();
     await this.prepareInstallationGenerations();
@@ -1575,6 +1579,11 @@ export class MCPManager {
       throw this.sandboxExecutionAuthorityClosedError("server refresh");
     }
     const nextConfigs = Object.freeze(configs.map(immutableMcpServerConfig));
+    for (const previous of this.configs) {
+      const plugin = previous.origin?.pluginServer;
+      if (!plugin || JSON.stringify(previous) === JSON.stringify(nextConfigs.find(next => next.name === previous.name))) continue;
+      retireVerifiedPluginGenerations(plugin.pluginName, plugin.pluginRoot, previous.pluginCatalogHome);
+    }
     let deferred: DeferredMcpRefresh | undefined;
     let deferralNotified = false;
     const notifyDeferral = (): void => {

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHttpMCPConnection } from "./http.js";
+import { withDesktopMcpDispatchGuard, DesktopMcpPreflightRefusal } from "../local-control.js";
 
 const observed = vi.hoisted(() => ({ options: undefined as unknown, proxy: vi.fn(() => ({ dispatcher: "direct-dispatcher" })) }));
 vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({ Client: class {} }));
@@ -32,8 +33,16 @@ describe("private HTTP MCP transport", () => {
 
   it("keeps ordinary HTTP MCP proxy and authentication behavior unchanged", async () => {
     const environment = { HTTPS_PROXY: "http://proxy.example:80" };
+    const fetch = vi.fn(async () => new Response("ok"));
+    vi.stubGlobal("fetch", fetch);
     await createHttpMCPConnection({ name: "ordinary", endpoint: "https://service.example/mcp", headers: { Authorization: "Bearer ordinary" } }, undefined, undefined, undefined, environment);
     expect(observed.proxy).toHaveBeenCalledWith({ environment });
-    expect((observed.options as Record<string, unknown>).fetch).toBeUndefined();
+    const guardedFetch = (observed.options as { fetch: (input: string, init?: RequestInit) => Promise<Response> }).fetch;
+    await guardedFetch("https://service.example/mcp", { method: "POST", body: JSON.stringify({ method: "tools/call" }) });
+    expect(fetch).toHaveBeenCalledOnce();
+    await expect(withDesktopMcpDispatchGuard(() => { throw new DesktopMcpPreflightRefusal("revoked"); },
+      () => guardedFetch("https://service.example/mcp", { method: "POST", body: JSON.stringify({ method: "tools/call" }) })))
+      .rejects.toThrow("revoked");
+    expect(fetch).toHaveBeenCalledOnce();
   });
 });
