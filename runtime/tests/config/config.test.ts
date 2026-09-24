@@ -2310,6 +2310,7 @@ snapshot_max_count = 0
         cross_provider_enabled: false,
         allowed_providers: ["deepseek", "openai"],
         cross_provider_ask_each_spawn: false,
+        cross_provider_auto: false,
       });
       for (const key of Object.keys(before) as (keyof AgenCConfig)[]) {
         if (key !== "agents") expect(after[key]).toBe(before[key]);
@@ -2355,6 +2356,7 @@ snapshot_max_count = 0
         cross_provider_enabled: true,
         allowed_providers: ["openai"],
         cross_provider_ask_each_spawn: true,
+        cross_provider_auto: false,
       };
       expect(store.current().agents).toEqual(operatorAgents);
 
@@ -2432,12 +2434,13 @@ snapshot_max_count = 0
         cross_provider_enabled: true,
         allowed_providers: ["deepseek"],
         cross_provider_ask_each_spawn: true,
+        cross_provider_auto: false,
       });
       // A wider limit adds nothing, and either side turns the feature off.
       expect(narrowAgentsConfig(current, {
         cross_provider_enabled: true,
         allowed_providers: ["deepseek", "openai", "grok"],
-      })).toEqual({ ...current, cross_provider_ask_each_spawn: false });
+      })).toEqual({ ...current, cross_provider_ask_each_spawn: false, cross_provider_auto: false });
       expect(narrowAgentsConfig(
         { ...current, cross_provider_enabled: false },
         { cross_provider_enabled: true, allowed_providers: ["deepseek"] },
@@ -2455,7 +2458,36 @@ snapshot_max_count = 0
         cross_provider_enabled: false,
         allowed_providers: [],
         cross_provider_ask_each_spawn: false,
+        cross_provider_auto: false,
       });
+    });
+
+    test("narrowing and revoking cover automatic choice and sub-agent limits", () => {
+      const own = { cross_provider_enabled: true, allowed_providers: ["deepseek"], cross_provider_auto: true,
+        subagent_limits: { deepseek: { effort: "high" as const, speed: "fast" as const }, openai: { effort: "medium" as const } } };
+      // Each limit ends no higher than both, and automatic choice needs both.
+      expect(narrowAgentsConfig(own, { ...own, cross_provider_auto: false, subagent_limits: { deepseek: { effort: "low" } } }))
+        .toEqual({ cross_provider_enabled: true, allowed_providers: ["deepseek"], cross_provider_ask_each_spawn: false,
+          cross_provider_auto: false, subagent_limits: { deepseek: { effort: "low" } } });
+      expect(narrowAgentsConfig(own, { ...own, subagent_limits: { deepseek: { effort: "max", speed: "fast" }, openai: { effort: "max" } } }))
+        .toEqual({ ...own, cross_provider_ask_each_spawn: false });
+      // A save that lowered DeepSeek's effort takes only that away.
+      const lowered = { previous: own, next: { ...own,
+        subagent_limits: { ...own.subagent_limits, deepseek: { effort: "low" as const, speed: "fast" as const } } } };
+      expect(agentsChangeRevokes(lowered)).toBe(true);
+      expect(revokeAgentsConfig(own, lowered).subagent_limits)
+        .toEqual({ deepseek: { effort: "low", speed: "fast" }, openai: { effort: "medium" } });
+      // Raising a limit takes nothing away, and grants nothing to a session that cannot read it.
+      const raised = { previous: own, next: { ...own, subagent_limits: { ...own.subagent_limits, openai: { effort: "max" as const } } } };
+      expect(agentsChangeRevokes(raised)).toBe(false);
+      expect(revokeAgentsConfig(own, raised).subagent_limits).toEqual(own.subagent_limits);
+      // Removing a limit returns that provider to the lowest.
+      const removed = { previous: own, next: { ...own, subagent_limits: { deepseek: own.subagent_limits.deepseek } } };
+      expect(revokeAgentsConfig(own, removed).subagent_limits).toEqual({ deepseek: { effort: "high", speed: "fast" } });
+      // Turning automatic choice off takes it away.
+      const manual = { previous: own, next: { ...own, cross_provider_auto: false } };
+      expect(agentsChangeRevokes(manual)).toBe(true);
+      expect(revokeAgentsConfig(own, manual).cross_provider_auto).toBe(false);
     });
 
     test("revokeAgentsConfig takes away only what the daemon's view lost and never widens", () => {
@@ -2480,6 +2512,7 @@ snapshot_max_count = 0
         expect(revokeAgentsConfig(own, change)).toEqual({
           ...own,
           cross_provider_ask_each_spawn: false,
+          cross_provider_auto: false,
         });
       }
       // The user removed openai: only openai goes.
@@ -2489,6 +2522,7 @@ snapshot_max_count = 0
         cross_provider_enabled: true,
         allowed_providers: ["deepseek", "grok"],
         cross_provider_ask_each_spawn: false,
+        cross_provider_auto: false,
       });
       // Turning the feature off, or asking at each spawn, reaches it too.
       const disabled = { previous: before, next: { ...before, cross_provider_enabled: false } };
@@ -2504,6 +2538,7 @@ snapshot_max_count = 0
         cross_provider_enabled: false,
         allowed_providers: ["deepseek"],
         cross_provider_ask_each_spawn: false,
+        cross_provider_auto: false,
       });
       // Without the view before the save, it keeps only what both allow.
       expect(agentsChangeRevokes({ next: before })).toBe(true);
@@ -2536,6 +2571,7 @@ snapshot_max_count = 0
         cross_provider_enabled: true,
         allowed_providers: ["deepseek"],
         cross_provider_ask_each_spawn: false,
+        cross_provider_auto: false,
       });
       expect(store.current().model).toBe(before.model);
       expect(store.authoritySnapshot().config).toBe(store.current());
@@ -2701,7 +2737,7 @@ snapshot_max_count = 0
       // current().agents. The store itself commits and publishes a prepared
       // read within the limit.
       const preparedRead = /\.prepareReload\(|\.readSourceAuthority\(|\bPreparedConfigStoreReload\b/u;
-      const agentsRead = /\b(?:cross_provider_enabled|allowed_providers|cross_provider_ask_each_spawn)\b|["'`]agents[."'`]|\.agents\b/u;
+      const agentsRead = /\b(?:cross_provider_enabled|allowed_providers|cross_provider_ask_each_spawn|cross_provider_auto|subagent_limits)\b|["'`]agents[."'`]|\.agents\b/u;
       // Comment lines read nothing.
       const code = (source: string): string =>
         source.split("\n").filter((line) => !/^\s*(?:\/\/|\/\*|\*)/u.test(line)).join("\n");

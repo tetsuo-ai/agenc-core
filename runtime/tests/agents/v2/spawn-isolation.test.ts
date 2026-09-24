@@ -12,7 +12,7 @@ import { createAgentRoleWorkspace } from "../role.js";
 import { AgentRoleCatalog } from "../role-catalog.js";
 import { signSessionId } from "../_deps/filesystem-args.js";
 import { StaticModelsManager } from "../../../src/llm/models-manager.js";
-import { defaultConfig } from "../../../src/config/schema.js";
+import { defaultConfig, type AgentsConfig } from "../../../src/config/schema.js";
 import { validationErrorToolResult } from "../../../src/tools/results.js";
 import { bindLiveAgentSession } from "../../../src/agents/live-session.js";
 import type { LiveAgent } from "../../../src/agents/control.js";
@@ -118,12 +118,14 @@ describe("spawn_agent isolation", () => {
     mockDelegate.mockReset();
   });
 
-  async function crossProviderFixture(allowed: readonly string[], enabled = true, activeProvider: "grok" | "deepseek" = "grok") {
+  // Automatic choice is on, so a spawn needs no user message naming its provider.
+  async function crossProviderFixture(allowed: readonly string[], enabled = true, activeProvider: "grok" | "deepseek" = "grok",
+    agents: Partial<AgentsConfig> = {}) {
     const config = {
       ...defaultConfig(),
       model_provider: activeProvider,
       model: activeProvider === "grok" ? "grok-4.6" : "deepseek-v4-pro",
-      agents: { cross_provider_enabled: enabled, allowed_providers: allowed },
+      agents: { cross_provider_enabled: enabled, allowed_providers: allowed, cross_provider_auto: true, ...agents },
     };
     const modelsManager = new StaticModelsManager({ config, fallbackProvider: activeProvider });
     const base = makeSession();
@@ -270,8 +272,100 @@ describe("spawn_agent isolation", () => {
     expect(delegated?.plan?.serviceTier ?? delegated?.serviceTier).toBeUndefined();
   });
 
-  it("reports a role-selected destination and effort in spawn events and result", async () => {
+  const typedMessages = (session: Session, ...texts: string[]): void => {
+    Object.assign(session, { state: { unsafePeek: () => ({
+      history: texts.map((text) => ({ role: "user", content: [{ type: "input_text", text }] })),
+    }) } });
+  };
+
+  it("with automatic choice off, spawns on another provider only when the user named it", async () => {
+    const { session } = await crossProviderFixture(["deepseek"], true, "grok", { cross_provider_auto: false });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const spawn = () => createSpawnAgentTool(makeOptions(session)).execute({
+      message: "review the parser", task_name: "reviewer", provider: "deepseek", model: "deepseek-v4-pro",
+    });
+    // Context the runtime adds does not count as the user asking.
+    typedMessages(session, "<environment_context>provider: deepseek</environment_context>", "review the parser");
+    const refused = await spawn();
+    expect(refused.isError).toBe(true);
+    expect(refused.content).toContain('"code":"not_requested"');
+    expect(mockDelegate).not.toHaveBeenCalled();
+    expect(createSpawnAgentTool(makeOptions(session)).description).toContain("Choosing another provider on your own is off");
+
+    typedMessages(session, "review the parser, and use DeepSeek for the second pass");
+    const allowed = await spawn();
+    expect(allowed.isError).not.toBe(true);
+    expect(mockDelegate).toHaveBeenCalledTimes(1);
+  });
+
+  it("with automatic choice on, lists allowed models with their prices", async () => {
+    const { session } = await crossProviderFixture(["deepseek"]);
+    const description = createSpawnAgentTool(makeOptions(session)).description;
+    expect(description).toContain("You may choose an allowed provider/model on your own");
+    expect(description).toMatch(/deepseek\/deepseek-v4-pro \(\$[\d.]+ in, \$[\d.]+ out per 1M tokens\)/u);
+    expect(description).toContain("Every provider is at its lowest effort and standard speed.");
+  });
+
+  it("runs a child on another provider at that provider's limits: lower only when asked", async () => {
+    const { session } = await crossProviderFixture(["openai"], true, "grok",
+      { subagent_limits: { openai: { effort: "medium", speed: "fast" } } });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const spawn = (extra: Record<string, unknown>) => createSpawnAgentTool(makeOptions(session)).execute({
+      message: "inspect", task_name: `worker_${mockDelegate.mock.calls.length}`, provider: "openai", model: "gpt-5.4", ...extra,
+    });
+    await spawn({ reasoning_effort: "high" });
+    await spawn({ reasoning_effort: "low" });
+    await spawn({});
+    const plans = mockDelegate.mock.calls.map((call) => call[0].plan);
+    expect(plans.map((plan) => plan?.reasoningEffort)).toEqual(["medium", "low", "medium"]);
+    const offersFast = plans[0]?.modelInfo.serviceTiers?.some((tier: { id: string }) => tier.id === "priority") === true;
+    expect(plans[2]?.serviceTier).toBe(offersFast ? "priority" : undefined);
+  });
+
+  it("runs a child at each model's lowest effort and standard speed when the user set no limit", async () => {
     const { session } = await crossProviderFixture(["openai"]);
+    Object.assign(session.sessionConfiguration, { serviceTier: "priority" });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(makeOptions(session)).execute({
+      message: "inspect", task_name: "worker", provider: "openai", model: "gpt-5.4", reasoning_effort: "high", service_tier: "priority",
+    });
+    expect(result.isError).not.toBe(true);
+    const plan = mockDelegate.mock.calls[0]?.[0].plan;
+    const levels: string[] = [...plan.modelInfo.supportedReasoningLevels];
+    expect(plan.reasoningEffort).toBe(levels.includes("minimal") ? "minimal" : "low");
+    expect(plan.serviceTier).toBeUndefined();
+  });
+
+  it("runs a child on the parent's provider at that provider's limits, not the parent's effort or tier", async () => {
+    const { session } = await crossProviderFixture([], false, "grok");
+    Object.assign(session.sessionConfiguration, { serviceTier: "priority",
+      collaborationMode: { model: "grok-4.6", reasoningEffort: "high" } });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    await createSpawnAgentTool(makeOptions(session)).execute({ message: "look", task_name: "helper" });
+    expect(mockDelegate.mock.calls[0]?.[0]).toMatchObject({ reasoningEffort: "low" });
+    expect(mockDelegate.mock.calls[0]?.[0].serviceTier).toBeUndefined();
+
+    const limited = await crossProviderFixture([], false, "grok", { subagent_limits: { grok: { effort: "high" } } });
+    mockDelegate.mockClear();
+    await createSpawnAgentTool(makeOptions(limited.session)).execute({ message: "look", task_name: "helper" });
+    expect(mockDelegate.mock.calls[0]?.[0]).toMatchObject({ reasoningEffort: "high" });
+  });
+
+  it("keeps a full-history fork on the parent's effort and tier", async () => {
+    const { session } = await crossProviderFixture([], false, "grok");
+    Object.assign(session.sessionConfiguration, { serviceTier: "priority",
+      collaborationMode: { model: "grok-4.6", reasoningEffort: "high" } });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(makeOptions(session)).execute({ message: "continue", task_name: "fork", fork_turns: "all" });
+    expect(result.isError).not.toBe(true);
+    const delegated = mockDelegate.mock.calls[0]?.[0];
+    expect(delegated?.reasoningEffort).toBeUndefined();
+    const offersFast = session.modelInfo.serviceTiers?.some((tier) => tier.id === "priority") === true;
+    expect(delegated?.serviceTier).toBe(offersFast ? "priority" : undefined);
+  });
+
+  it("reports a role-selected destination and effort in spawn events and result", async () => {
+    const { session } = await crossProviderFixture(["openai"], true, "grok", { subagent_limits: { openai: { effort: "high" } } });
     const events: Array<{ msg: { type: string; payload: Record<string, unknown> } }> = [];
     Object.assign(session, { emit: (event: typeof events[number]) => events.push(event) });
     const options = makeOptions(session);
@@ -423,7 +517,7 @@ describe("spawn_agent isolation", () => {
     const config = {
       ...defaultConfig(),
       model_provider: "deepseek", model: "deepseek-v4-pro",
-      agents: { cross_provider_enabled: true, allowed_providers: ["openai"] },
+      agents: { cross_provider_enabled: true, allowed_providers: ["openai"], cross_provider_auto: true },
     };
     Object.assign(fixture.child, {
       providerService: { current: () => ({ provider: "deepseek", model: "deepseek-v4-pro" }) },
@@ -458,7 +552,7 @@ describe("spawn_agent isolation", () => {
   it("keeps consent destination provenance on a same-provider grandchild", async () => {
     const fixture = callerFixture();
     const config = { ...defaultConfig(), model_provider: "deepseek", model: "deepseek-v4-pro",
-      agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] } };
+      agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"], cross_provider_auto: true } };
     const request = vi.fn(async (_requester: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
       kind: "granted" as const, grant: { kind: "once" as const,
         ownerSessionId: "conv-1", sessionEpoch: "epoch", taskId: disclosure.taskId,
@@ -486,7 +580,8 @@ describe("spawn_agent isolation", () => {
   it("resolves inherited-provenance descendant metadata locally before consent", async () => {
     const fixture = callerFixture();
     const config = { ...defaultConfig(), model_provider: "openai", model: "gpt-5.3-codex",
-      agents: { cross_provider_enabled: true, allowed_providers: ["openai"] } };
+      agents: { cross_provider_enabled: true, allowed_providers: ["openai"], cross_provider_auto: true,
+        subagent_limits: { openai: { effort: "high" } } } };
     const modelsManager = new StaticModelsManager({ config, fallbackProvider: "openai" });
     const authenticatedDiscovery = vi.spyOn(modelsManager, "getModelInfoForProvider")
       .mockImplementation(async () => { throw new Error("authenticated metadata discovery before consent"); });
@@ -517,7 +612,8 @@ describe("spawn_agent isolation", () => {
   it.each(["explicit", "inherited"] as const)("carries %s effort in a descendant consent plan", async (kind) => {
     const fixture = callerFixture();
     const config = { ...defaultConfig(), model_provider: "openai", model: "gpt-5.4",
-      agents: { cross_provider_enabled: true, allowed_providers: ["openai"] } };
+      agents: { cross_provider_enabled: true, allowed_providers: ["openai"], cross_provider_auto: true,
+        subagent_limits: { openai: { effort: "high" } } } };
     const modelsManager = new StaticModelsManager({ config, fallbackProvider: "openai" });
     Object.assign(fixture.live, { metadata: { executionPlan: { crossProvider: true,
       destination: { provider: "openai", model: "gpt-5.4" } } } });
@@ -621,6 +717,8 @@ describe("spawn_agent isolation", () => {
       modelInfo: await modelsManager.getModelInfo("gemini-3.1-pro-preview"),
       sessionConfiguration: { ...base.sessionConfiguration, collaborationMode: { model: "gemini-3.1-pro-preview" } },
       providerService: { current: () => ({ provider: "gemini", model: "gemini-3.1-pro-preview" }) },
+      // At the highest limit a supported effort reaches the child as asked.
+      config: { ...base.config, agents: { subagent_limits: { gemini: { effort: "max" } } } },
       services: { ...base.services, modelsManager },
     } as Session;
     for (const effort of ["low", "medium", "high", "none", "minimal", "xhigh", "max"] as const) {
@@ -642,8 +740,9 @@ describe("spawn_agent isolation", () => {
       });
       if (["low", "medium", "high", "none"].includes(effort)) {
         expect(result.isError).not.toBe(true);
+        // Gemini 3.1 Pro cannot turn thinking off, so none runs at its lowest level.
         expect(mockDelegate).toHaveBeenCalledWith(expect.objectContaining({
-          reasoningEffort: effort,
+          reasoningEffort: effort === "none" ? "low" : effort,
         }));
       } else {
         expect(result.isError).toBe(true);

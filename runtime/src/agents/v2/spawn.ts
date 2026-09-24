@@ -27,7 +27,16 @@ import {
   currentChildProvider,
   resolveChildSelection,
 } from "../cross-provider.js";
+import type { SubagentSpeed } from "../../config/schema.js";
 import { CROSS_PROVIDER_AUTH_DESCRIPTION } from "../../llm/cross-provider-auth.js";
+import { DEFAULT_MODEL_COSTS, resolveModelCostEntry } from "../../session/cost.js";
+import {
+  describeSubagentLimits,
+  limitedReasoningEffort,
+  limitedServiceTier,
+  subagentLimit,
+  userNamedProvider,
+} from "../subagent-limits.js";
 import { resolveBuiltInProviderSlug } from "../../llm/registry/provider-info.js";
 import {
   assertValidAgentName,
@@ -115,6 +124,18 @@ function ownTaskStatusProjection(session: Session): {
   };
 }
 
+function usdPerMillion(usdPer1K: number): string {
+  return `$${(usdPer1K * 1000).toFixed(2)}`;
+}
+
+/** An allowed pair, with its price per million tokens when the agent picks providers itself. */
+function describePair(pair: { readonly provider: string; readonly model: string }, withPrice: boolean): string {
+  const name = `${pair.provider}/${pair.model}`;
+  const cost = withPrice ? resolveModelCostEntry(pair, DEFAULT_MODEL_COSTS) : null;
+  return cost === null ? name
+    : `${name} (${usdPerMillion(cost.entry.inputUsdPer1K)} in, ${usdPerMillion(cost.entry.outputUsdPer1K)} out per 1M tokens)`;
+}
+
 function buildSpawnAgentDescription(session: Session | null): string {
   const base = `Spawns an agent to work on the specified task.
 
@@ -134,9 +155,16 @@ The new agent's canonical task name will be provided to it along with the messag
   const consentClause = session != null && crossProviderConsentFromSettings(session)
     ? "The user enabled them in settings, so a spawn to an allowed provider/model pair runs without asking. Once any child reports insufficient_funds, every later cross-provider spawn in this session asks the user, and a run no one can answer gets consent_unavailable."
     : "Using one asks the user for consent at the moment of use, even when enabled.";
-  const pairList = pairs.map(({ provider, model }) => provider + "/" + model).join(", ") || "none";
+  const auto = policy?.cross_provider_auto === true;
+  const pairList = pairs.map((pair) => describePair(pair, auto)).join(", ") || "none";
   const allowedPairs = policy?.cross_provider_enabled === true ? ` Allowed provider/model pairs: ${pairList}.` : "";
-  const policyDescription = `Cross-provider subagents are controlled by [agents] cross_provider_enabled (off by default) and allowed_providers in user config.toml. ${consentClause} If consent_denied or consent_unavailable is returned, continue the subtask yourself and do not retry the same request. If a child reports insufficient_funds, tell the user exactly what work finished and what remains, then ask before trying another provider. Never retry that child on the exhausted provider. ${CROSS_PROVIDER_AUTH_DESCRIPTION}${allowedPairs}`;
+  const routingClause = policy?.cross_provider_enabled !== true ? ""
+    : auto
+      ? " You may choose an allowed provider/model on your own when it fits the subtask better, for example a cheaper model for simple bulk work or a stronger one for hard reasoning."
+      : " Choosing another provider on your own is off: spawn on another provider only when the user named that provider or one of its models in this conversation. Any other cross-provider spawn returns not_requested.";
+  const limitsClause = policy === undefined ? ""
+    : ` Every sub-agent runs at the effort and speed the user set for its provider; reasoning_effort and service_tier can only lower them. ${describeSubagentLimits(policy)}`;
+  const policyDescription = `Cross-provider subagents are controlled by [agents] cross_provider_enabled (off by default) and allowed_providers in user config.toml. ${consentClause}${routingClause} If consent_denied, consent_unavailable or not_requested is returned, continue the subtask yourself and do not retry the same request. If a child reports insufficient_funds, tell the user exactly what work finished and what remains, then ask before trying another provider. Never retry that child on the exhausted provider. ${CROSS_PROVIDER_AUTH_DESCRIPTION}${allowedPairs}${limitsClause}`;
   if (sessionIsPlanning(session) || sessionReadOnlyDelegation(session) !== undefined) {
     return `${base}\n${policyDescription}\n\n${READ_ONLY_DELEGATION_PROMPT}\nDelegate bounded independent inspection tasks in parallel. Use isolation none, list_agents, wait_agent, and close_agent for your constrained workers.`;
   }
@@ -328,15 +356,23 @@ async function validateSpawnModelOverrides(opts: {
   return null;
 }
 
+/**
+ * The service tier of a child on the parent's provider. A fork of the full
+ * conversation keeps the parent's tier (`inheritParent`); every other child
+ * gets its provider's speed limit (`limitedServiceTier`).
+ */
 async function resolveSameProviderServiceTier(opts: {
   readonly session: Session;
   readonly model?: string;
   readonly localModelInfo?: ModelInfo;
   readonly requestedServiceTier?: string;
   readonly roleServiceTier?: string;
+  readonly inheritParent: boolean;
+  readonly speedLimit?: SubagentSpeed;
 }): Promise<{ readonly serviceTier?: string } | ToolResult> {
-  const parentServiceTier = opts.session.sessionConfiguration.serviceTier;
-  if (opts.requestedServiceTier === undefined && opts.roleServiceTier === undefined && parentServiceTier === undefined) return {};
+  const parentServiceTier = opts.inheritParent ? opts.session.sessionConfiguration.serviceTier : undefined;
+  if (opts.requestedServiceTier === undefined && opts.roleServiceTier === undefined &&
+      parentServiceTier === undefined && opts.speedLimit !== "fast") return {};
   const model = opts.model ?? opts.session.sessionConfiguration.collaborationMode.model ?? opts.session.modelInfo.slug;
   if (!model) return agentValidationError("spawn_agent could not resolve the child model for service tier validation");
   const modelInfo = opts.localModelInfo ?? (model === opts.session.modelInfo.slug
@@ -346,27 +382,24 @@ async function resolveSameProviderServiceTier(opts: {
       `Service tier \`${opts.requestedServiceTier}\` is not supported for model \`${model}\`. Supported service tiers: ${formatSupportedServiceTiers(modelInfo)}`,
     );
   }
+  if (!opts.inheritParent) return tierResult(limitedServiceTier(modelInfo, opts.roleServiceTier ?? opts.requestedServiceTier, opts.speedLimit));
   for (const candidate of [opts.roleServiceTier, opts.requestedServiceTier, parentServiceTier]) {
     if (candidate !== undefined && modelSupportsServiceTier(modelInfo, candidate)) return { serviceTier: candidate };
   }
   return {};
 }
 
+function tierResult(serviceTier: string | undefined): { readonly serviceTier?: string } {
+  return serviceTier === undefined ? {} : { serviceTier };
+}
+
+/** The service tier of a child on another provider: its speed limit, never the parent's tier. */
 function resolveCrossProviderServiceTier(opts: {
-  readonly session: Session;
   readonly modelInfo: ModelInfo;
-  readonly crossProvider: boolean;
   readonly requestedServiceTier?: string;
   readonly roleServiceTier?: string;
+  readonly speedLimit?: SubagentSpeed;
 }): { readonly serviceTier?: string } | ToolResult {
-  const parentServiceTier = opts.session.sessionConfiguration.serviceTier;
-  if (
-    opts.requestedServiceTier === undefined &&
-    opts.roleServiceTier === undefined &&
-    parentServiceTier === undefined
-  ) {
-    return {};
-  }
   const modelInfo = opts.modelInfo;
   const model = modelInfo.slug;
   if (
@@ -383,19 +416,7 @@ function resolveCrossProviderServiceTier(opts: {
       `Role service tier \`${opts.roleServiceTier}\` is not supported for model \`${model}\`. Supported service tiers: ${formatSupportedServiceTiers(modelInfo)}`,
     );
   }
-  for (const candidate of [
-    opts.roleServiceTier,
-    opts.requestedServiceTier,
-    ...(opts.crossProvider ? [] : [parentServiceTier]),
-  ]) {
-    if (
-      candidate !== undefined &&
-      modelSupportsServiceTier(modelInfo, candidate)
-    ) {
-      return { serviceTier: candidate };
-    }
-  }
-  return {};
+  return tierResult(limitedServiceTier(modelInfo, opts.roleServiceTier ?? opts.requestedServiceTier, opts.speedLimit));
 }
 
 function buildSpawnModelSchema(
@@ -747,15 +768,27 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       if (targetModelInfo.supportsToolUse === false && args.tool_free !== true) {
         return failSpawn(`Model \`${selection.provider}/${selection.model}\` does not support client-side tool calling. Set tool_free = true for an explicitly tool-free task.`);
       }
-      selectedReasoningEffort = effectiveReasoningEffort ?? targetModelInfo.defaultReasoningLevel;
-      reportedEffort = selectedReasoningEffort;
+      const policy = childProviderPolicy(session);
+      // Settings are the consent, and with automatic choice off only the
+      // user picks a provider: it must be one they named in this chat.
+      if (policy.cross_provider_auto !== true &&
+          !userNamedProvider(rootSession, selection.provider, selection.model)) {
+        const reason = `The user has not asked for ${selection.provider} in this conversation, and choosing other providers automatically is off in settings.`;
+        emitSpawnFailureEnd(reason);
+        return confirmedNoSpawn(json({ code: "not_requested", error: reason,
+          action: "Continue this subtask yourself on the current provider. Use another provider only when the user names it or one of its models." }, true));
+      }
       const effortError = validateCrossProviderModelOverrides({ modelInfo: targetModelInfo,
-        ...(selectedReasoningEffort !== undefined ? { reasoningEffort: selectedReasoningEffort } : {}) });
+        ...(effectiveReasoningEffort !== undefined ? { reasoningEffort: effectiveReasoningEffort } : {}) });
       if (effortError !== null) {
         emitSpawnFailureEnd(overrideReason(effortError));
         return confirmedNoSpawn(effortError);
       }
-      serviceTierResult = resolveCrossProviderServiceTier({ session, modelInfo: targetModelInfo, crossProvider: true,
+      const limit = subagentLimit(policy, selection.provider);
+      selectedReasoningEffort = limitedReasoningEffort(targetModelInfo, effectiveReasoningEffort, limit.effort);
+      reportedEffort = selectedReasoningEffort;
+      serviceTierResult = resolveCrossProviderServiceTier({ modelInfo: targetModelInfo,
+        ...(limit.speed !== undefined ? { speedLimit: limit.speed } : {}),
         ...(requestedServiceTier !== undefined ? { requestedServiceTier } : {}),
         ...(roleConfiguredServiceTier !== undefined ? { roleServiceTier: roleConfiguredServiceTier } : {}) });
     } else {
@@ -766,14 +799,14 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         } catch (error) {
           return failSpawn(error instanceof Error ? error.message : String(error));
         }
-        selectedReasoningEffort = effectiveReasoningEffort ??
-          session.sessionConfiguration.collaborationMode.reasoningEffort;
         const effortError = validateCrossProviderModelOverrides({ modelInfo: targetModelInfo,
-          ...(selectedReasoningEffort !== undefined ? { reasoningEffort: selectedReasoningEffort } : {}) });
+          ...(effectiveReasoningEffort !== undefined ? { reasoningEffort: effectiveReasoningEffort } : {}) });
         if (effortError !== null) {
           emitSpawnFailureEnd(overrideReason(effortError));
           return confirmedNoSpawn(effortError);
         }
+        selectedReasoningEffort = limitedReasoningEffort(targetModelInfo, effectiveReasoningEffort,
+          subagentLimit(childProviderPolicy(session), selection.provider).effort);
       }
       if (!provenancedDescendant) for (const overrides of [
         { model, reasoningEffort },
@@ -798,8 +831,20 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           return failSpawn(error instanceof Error ? error.message : String(error));
         }
       }
+      // A fork of the full conversation keeps the parent's model, effort and
+      // tier, so it can reuse the parent's prompt cache. Every other child
+      // runs at its provider's limits.
+      const fullHistoryFork = forkMode?.kind === "full_history";
+      const limit = subagentLimit(childProviderPolicy(session), selection?.provider ?? activeProvider);
+      if (!provenancedDescendant && !fullHistoryFork) {
+        selectedReasoningEffort = limitedReasoningEffort(targetModelInfo ?? session.modelInfo,
+          effectiveReasoningEffort, limit.effort);
+        reportedEffort = selectedReasoningEffort ?? reportedEffort;
+      }
       try {
         serviceTierResult = await resolveSameProviderServiceTier({ session, model: effectiveModel,
+          inheritParent: fullHistoryFork,
+          ...(limit.speed !== undefined ? { speedLimit: limit.speed } : {}),
           ...(provenancedDescendant && targetModelInfo !== undefined
             ? { localModelInfo: targetModelInfo } : {}),
           ...(requestedServiceTier !== undefined ? { requestedServiceTier } : {}),
@@ -888,8 +933,8 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         ...(plan === undefined && effectiveModel !== undefined ? { model: effectiveModel } : {}),
         ...(plan === undefined && targetModelInfo !== undefined
           ? { modelInfo: targetModelInfo } : {}),
-        ...(plan === undefined && effectiveReasoningEffort !== undefined
-          ? { reasoningEffort: effectiveReasoningEffort } : {}),
+        ...(plan === undefined && (selectedReasoningEffort ?? effectiveReasoningEffort) !== undefined
+          ? { reasoningEffort: selectedReasoningEffort ?? effectiveReasoningEffort } : {}),
         ...(plan === undefined && serviceTierResult.serviceTier !== undefined
           ? { serviceTier: serviceTierResult.serviceTier } : {}),
         ...(isolation !== undefined
