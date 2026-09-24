@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -117,10 +117,16 @@ async function remoteAdvertFixture(manifestText: string, trusted = false) {
   if (trusted) await writeFile(join(base.root, "plugin-publishers.json"), JSON.stringify({ publishers: {
     team: { publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64") },
   } }));
-  const manifest = Buffer.from(manifestText);
-  const signature = Buffer.from(JSON.stringify({ publisher: "team", files: {},
+  let manifest = Buffer.from(manifestText);
+  let signature = Buffer.from(JSON.stringify({ publisher: "team", files: {},
     signature: sign(null, pluginSignaturePayloadBytes(manifest, {}), privateKey).toString("base64"),
   }));
+  const updateManifest = (text: string) => {
+    manifest = Buffer.from(text);
+    signature = Buffer.from(JSON.stringify({ publisher: "team", files: {},
+      signature: sign(null, pluginSignaturePayloadBytes(manifest, {}), privateKey).toString("base64"),
+    }));
+  };
   let requests = 0;
   const fetcher = async (url: string) => {
     requests++;
@@ -128,7 +134,8 @@ async function remoteAdvertFixture(manifestText: string, trusted = false) {
     return { ok: true, status: 200, statusText: "OK", text: async () => bytes.toString(),
       arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer };
   };
-  return { options: { ...base, agencHome: base.root, fetcher }, fetches: () => requests };
+  return { options: { ...base, agencHome: base.root, fetcher }, fetches: () => requests,
+    updateManifest };
 }
 
 describe("marketplace catalog CLI surface", () => {
@@ -311,12 +318,92 @@ describe("marketplace catalog CLI surface", () => {
     const sidecarPathB = join(options.pluginStorageRoot, "marketplaces", ".logo-cache", `${keyB}.meta.json`);
     await writeFile(sidecarPathB, JSON.stringify({ cardMetadataVersion: 1, version: "2.0.0",
       signedManifestSha256: createHash("sha256").update(manifestA).digest("hex"),
-      signedSignature: signatureA.toString("base64") }));
+      signedSignature: signatureA.toString("base64"),
+      manifestRetryAfter: new Date(Date.now() + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString(),
+      authRetryAfter: new Date(Date.now() + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString() }));
+    const manifestUrlA = `https://raw.githubusercontent.com/team/plugins/${pinA}/.agenc-plugin/plugin.json`;
+    const keyA = createHash("sha256").update(manifestUrlA).digest("hex").slice(0, 24);
+    const cacheRoot = join(options.pluginStorageRoot, "marketplaces", ".logo-cache");
+    const copied = JSON.parse(await readFile(join(cacheRoot, `${keyA}.authenticated.json`), "utf8"));
+    await writeFile(join(cacheRoot, `${keyB}.authenticated.json`), JSON.stringify({
+      ...copied, manifestUrl: manifestUrlB,
+    }));
     requests.length = 0;
-    const second = await buildMarketplaceCatalog(catalogOptions, undefined, true);
+    vi.resetModules();
+    const fresh = await import("./catalog-cli.js");
+    const second = await fresh.buildMarketplaceCatalog(catalogOptions, undefined, true);
     expect(requests).toContain(manifestUrlB);
     expect(second.marketplaces[0]?.plugins[0]?.payloadDigest).toBeDefined();
     expect(second.marketplaces[0]?.plugins[0]?.payloadDigest).not.toBe(digestA);
+  });
+
+  it("retains a signed advert through an expired offline refresh and rechecks trust", async () => {
+    const { options, fetches, updateManifest } = await remoteAdvertFixture(JSON.stringify({ name: "remote", version: "2.0.0" }), true);
+    let now = Date.parse("2026-09-23T00:00:00Z");
+    let offline = false;
+    const fetcher = options.fetcher;
+    const runtime = { ...options, now: () => new Date(now), fetcher: async (url: string) => {
+      if (offline) throw new Error("offline");
+      return fetcher(url);
+    } };
+    const first = await buildMarketplaceCatalog(runtime, undefined, true);
+    const digest = first.marketplaces[0]?.plugins[0]?.payloadDigest;
+    expect(digest).toMatch(/^sha256:/u);
+    now += OFFICIAL_MARKETPLACE_REFRESH_MS + 1;
+    offline = true;
+    vi.resetModules();
+    const fresh = await import("./catalog-cli.js");
+    const expired = await fresh.buildMarketplaceCatalog(runtime, undefined, true);
+    expect(expired.marketplaces[0]?.plugins[0]?.payloadDigest).toBe(digest);
+    expect(fetches()).toBe(2);
+    const trustPath = join(options.root, "plugin-publishers.json");
+    const trust = await readFile(trustPath);
+    await writeFile(trustPath, JSON.stringify({ publishers: {} }));
+    const untrusted = await fresh.buildMarketplaceCatalog(runtime, undefined, true);
+    expect(untrusted.marketplaces[0]?.plugins[0]?.payloadDigest).toBeUndefined();
+    await writeFile(trustPath, trust);
+    updateManifest(JSON.stringify({ name: "remote", version: "3.0.0" }));
+    now += OFFICIAL_MARKETPLACE_REFRESH_MS + 1;
+    offline = false;
+    const replaced = await fresh.buildMarketplaceCatalog(runtime, undefined, true);
+    expect(replaced.marketplaces[0]?.plugins[0]?.payloadDigest).toMatch(/^sha256:/u);
+    expect(replaced.marketplaces[0]?.plugins[0]?.payloadDigest).not.toBe(digest);
+  });
+
+  it("bounds persisted authenticated adverts across distinct pinned commits", async () => {
+    const base = await tempRuntime();
+    const market = join(base.root, "remote-market");
+    await mkdir(join(market, ".agenc-plugin"), { recursive: true });
+    const plugins = Array.from({ length: 130 }, (_, index) => ({
+      name: `remote-${index}`, source: { source: "git", url: "https://github.com/team/plugins.git",
+        sha: index.toString(16).padStart(40, "0") },
+      policy: { installation: "AVAILABLE", authentication: "ON_USE" },
+    }));
+    await writeFile(join(market, ".agenc-plugin", "marketplace.json"), JSON.stringify({
+      metadata: { name: "team" }, plugins,
+    }));
+    await addMarketplaceOp({ ...base, source: market, name: "team" });
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    await writeFile(join(base.root, "plugin-publishers.json"), JSON.stringify({ publishers: {
+      team: { publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64") },
+    } }));
+    const manifest = Buffer.from(JSON.stringify({ name: "remote" }));
+    const signature = Buffer.from(JSON.stringify({ publisher: "team", files: {},
+      signature: sign(null, pluginSignaturePayloadBytes(manifest, {}), privateKey).toString("base64"),
+    }));
+    const fetcher = async (url: string) => {
+      const bytes = url.endsWith("/plugin.json") ? manifest : signature;
+      return { ok: true, status: 200, statusText: "OK", text: async () => bytes.toString(),
+        arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer };
+    };
+    await buildMarketplaceCatalog({ ...base, agencHome: base.root, fetcher }, undefined, true);
+    const entries = await readdir(join(base.pluginStorageRoot, "marketplaces", ".logo-cache"));
+    expect(entries.filter((name) => name.endsWith(".authenticated.json")).length).toBeLessThanOrEqual(128);
+    const cacheKey = (sha: string) => createHash("sha256").update(
+      `https://raw.githubusercontent.com/team/plugins/${sha}/.agenc-plugin/plugin.json`,
+    ).digest("hex").slice(0, 24);
+    expect(entries).not.toContain(`${cacheKey(plugins[0]!.source.sha)}.authenticated.json`);
+    expect(entries).toContain(`${cacheKey(plugins.at(-1)!.source.sha)}.authenticated.json`);
   });
 
   it("does not turn an unsigned 99.0.0 remote manifest into a signed installed update", async () => {

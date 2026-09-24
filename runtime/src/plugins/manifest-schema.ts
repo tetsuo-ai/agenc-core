@@ -3,7 +3,7 @@ import { isAbsolute, normalize, resolve, sep } from "node:path";
 import { validateHooksConfig } from "../config/schema.js";
 import { isRecord } from "../utils/record.js";
 import { isCanonicalPluginName } from "./identifier.js";
-import { isExcludedPluginPayloadDirectory, isExcludedPluginPayloadPath } from "./payload-paths.js";
+import { isExcludedPluginPayloadDirectory, isExcludedPluginPayloadPath, isUnsignedPluginMetadataPath } from "./payload-paths.js";
 
 export { isRecord };
 
@@ -265,7 +265,9 @@ export function resolveManifestRelativePath(
     physicalPath = realpathSync.native(resolved);
   } catch { /* Missing paths are handled by the loader; lexical checks still apply. */ }
   if (isExcludedPluginPayloadPath(root, resolved) ||
-    isExcludedPluginPayloadPath(physicalRoot, physicalPath)) {
+    isExcludedPluginPayloadPath(physicalRoot, physicalPath) ||
+    isUnsignedPluginMetadataPath(root, resolved) ||
+    isUnsignedPluginMetadataPath(physicalRoot, physicalPath)) {
     throw new PluginManifestError(`${field} path names excluded plugin metadata`, [
       { path: field, message: "Path must not name an excluded metadata directory" },
     ]);

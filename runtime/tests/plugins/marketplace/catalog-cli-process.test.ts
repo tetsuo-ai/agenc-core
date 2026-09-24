@@ -50,6 +50,7 @@ describe("pinned advert refresh across CLI processes", () => {
       const compared = pluginListWithCatalog({ plugins: [{ id: 'remote@team', name: 'remote',
         version: '1.0.0', enabled: true, root: '/installed', source: 'remote@team',
         sourceKind: 'marketplace', marketplace: 'team', verificationState: 'verified',
+        sourceLocation: 'https://github.com/team/plugins.git',
         payloadDigest: 'sha256:old' }], errors: [] }, result).plugins[0];
       process.stdout.write(JSON.stringify({ digest: result.marketplaces[0]?.plugins[0]?.payloadDigest,
         updateAvailable: compared.updateAvailable,

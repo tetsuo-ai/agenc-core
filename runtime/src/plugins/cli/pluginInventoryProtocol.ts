@@ -2,6 +2,7 @@
 export interface AgencPluginInventoryProvenance {
   readonly sourceKind?: "marketplace" | "git" | "local";
   readonly sourceLocation?: string;
+  readonly sourcePath?: string;
   readonly sourceCommit?: string;
   readonly verificationState?: "verified" | "unsigned-local" | "failed";
   readonly publisherKeyId?: string;

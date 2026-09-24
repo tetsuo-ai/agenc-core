@@ -1061,7 +1061,7 @@ async function installedPluginProvenance(
   installedId: string,
   sourceRoot = pluginRoot,
 ): Promise<Pick<InstalledPluginSummary,
-  "sourceKind" | "sourceLocation" | "sourceCommit" | "verificationState" |
+  "sourceKind" | "sourceLocation" | "sourcePath" | "sourceCommit" | "verificationState" |
   "publisherKeyId" | "payloadDigest" | "marketplace">> {
   const raw = await readJsonFile<unknown>(
     join(pluginRoot, ".agenc-plugin", INSTALL_METADATA_FILE), null,
@@ -1087,6 +1087,8 @@ async function installedPluginProvenance(
     return {
       sourceKind,
       sourceLocation,
+      ...(gitSource !== undefined && typeof gitSource.path === "string"
+        ? { sourcePath: gitSource.path } : {}),
       ...(marketplace !== undefined ? { marketplace } : {}),
       ...(gitSource !== undefined && typeof gitSource.sha === "string"
         ? { sourceCommit: gitSource.sha } : {}),
@@ -1099,6 +1101,8 @@ async function installedPluginProvenance(
     };
   } catch {
     return { sourceKind, sourceLocation,
+      ...(gitSource !== undefined && typeof gitSource.path === "string"
+        ? { sourcePath: gitSource.path } : {}),
       ...(marketplace !== undefined ? { marketplace } : {}),
       ...(gitSource !== undefined && typeof gitSource.sha === "string"
         ? { sourceCommit: gitSource.sha } : {}),

@@ -12,6 +12,7 @@ import {
   validatePluginPath,
   type PluginCliIo,
   type PluginListResult,
+  type InstalledPluginSummary,
   type PluginScope,
 } from "./pluginOperations.js";
 import {
@@ -30,6 +31,7 @@ import {
   PLUGIN_MARKETPLACE_CATALOG_SCHEMA_VERSION,
   PLUGIN_MARKETPLACE_INSTALL_KIND,
   type MarketplaceCatalogDocument,
+  type MarketplaceCatalogPluginRow,
 } from "../marketplace/catalog-cli.js";
 import {
   redactPluginInstallSource,
@@ -78,9 +80,7 @@ export function pluginListWithCatalog(
     const matches = catalog.marketplaces.flatMap((marketplace) =>
       marketplace.plugins.filter((row) => {
         if (row.name !== plugin.name) return false;
-        if (plugin.marketplace !== undefined) return plugin.marketplace === marketplace.name;
-        const location = row.source.type === "git" ? row.source.url : row.source.path;
-        return plugin.sourceLocation === location;
+        return marketplaceRowMatchesInstalledPlugin(plugin, marketplace.name, row);
       }),
     );
     const current = matches.length === 1 ? matches[0] : undefined;
@@ -98,6 +98,24 @@ export function pluginListWithCatalog(
           plugin.version !== current.version,
     };
   }) };
+}
+
+function marketplaceRowMatchesInstalledPlugin(
+  plugin: InstalledPluginSummary,
+  marketplaceName: string,
+  row: Pick<MarketplaceCatalogPluginRow, "source">,
+): boolean {
+  // Recorded provenance follows its marketplace, even when the marketplace
+  // moves the plugin to another source. Only an install without it falls
+  // back to matching the exact source: repository and subdirectory.
+  if (plugin.marketplace !== undefined) return plugin.marketplace === marketplaceName;
+  if (row.source.type === "git") {
+    const normalizePath = (path: string | undefined): string =>
+      path?.replace(/^\.\//u, "").replace(/\/$/u, "") ?? "";
+    return plugin.sourceLocation === row.source.url &&
+      normalizePath(plugin.sourcePath) === normalizePath(row.source.path);
+  }
+  return plugin.sourceLocation === row.source.path;
 }
 
 export function formatAgenCPluginCliHelpText(): string {
@@ -222,10 +240,8 @@ export async function runAgenCPluginCli(
           freshResult = pluginListWithCatalog(result,
             await buildMarketplaceCatalog(options, undefined, true, true,
               (marketplaceName, row) => result.plugins.some((plugin) => {
-                if (row.name !== plugin.name) return false;
-                if (plugin.marketplace !== undefined) return plugin.marketplace === marketplaceName;
-                const location = row.source.type === "git" ? row.source.url : row.source.path;
-                return plugin.sourceLocation === location;
+                return row.name === plugin.name &&
+                  marketplaceRowMatchesInstalledPlugin(plugin, marketplaceName, row);
               })));
         } catch {
           // Local installed inventory remains usable if a marketplace is broken.

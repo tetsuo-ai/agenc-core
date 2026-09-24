@@ -16,9 +16,9 @@
  * its own trusted scheme instead of guessing.
  */
 
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
-import { mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import * as lockfile from "../../utils/lockfile.js";
 import { writeDurableAtomicFile } from "../../utils/durable-atomic-file.js";
 import { isExcludedPluginPayloadDirectory } from "../payload-paths.js";
@@ -496,13 +496,37 @@ function metaFromSidecar(value: unknown, logoPath: string | undefined): Prefetch
 
 const cardFetches = new Map<string, Promise<PrefetchedCardMeta | undefined>>();
 const authenticatedAdverts = new Map<string, { readonly manifest: Uint8Array; readonly signature: Uint8Array }>();
+const MAX_PERSISTED_AUTHENTICATED_ADVERTS = 128;
+
+function advertBinding(key: Uint8Array, manifestUrl: string, manifest: Uint8Array,
+  signature: Uint8Array): Buffer {
+  return createHmac("sha256", key).update(manifestUrl).update("\0")
+    .update(manifest).update("\0").update(signature).digest();
+}
+
+async function readAdvertBindingKey(cacheRoot: string): Promise<Buffer | undefined> {
+  try {
+    const key = await readFile(join(cacheRoot, ".advert-binding-key"), "utf8");
+    return /^[a-f0-9]{64}$/u.test(key) ? Buffer.from(key, "hex") : undefined;
+  } catch { return undefined; }
+}
+
+async function ensureAdvertBindingKey(cacheRoot: string): Promise<Buffer> {
+  const existing = await readAdvertBindingKey(cacheRoot);
+  if (existing !== undefined) return existing;
+  const keyPath = join(cacheRoot, ".advert-binding-key");
+  const key = randomBytes(32);
+  await writeDurableAtomicFile(keyPath, `${keyPath}.tmp-${process.pid}-${randomUUID()}`,
+    key.toString("hex"), 0o600);
+  return key;
+}
 
 function authenticatedAdvertPath(cacheRoot: string, key: string): string {
   return join(cacheRoot, `${key}.authenticated.json`);
 }
 
 async function readAuthenticatedAdvert(
-  path: string, manifestUrl: string,
+  path: string, manifestUrl: string, cacheRoot: string,
 ): Promise<{ readonly manifest: Uint8Array; readonly signature: Uint8Array } | undefined> {
   try {
     if ((await stat(path)).size > 720_000) return undefined;
@@ -511,6 +535,7 @@ async function readAuthenticatedAdvert(
     const record = value as Record<string, unknown>;
     if (record.manifestUrl !== manifestUrl ||
       typeof record.manifest !== "string" || typeof record.signature !== "string" ||
+      typeof record.binding !== "string" || !/^[a-f0-9]{64}$/u.test(record.binding) ||
       record.manifest.length > 350_000 || record.signature.length > 350_000 ||
       !/^[A-Za-z0-9+/]*={0,2}$/u.test(record.manifest) ||
       !/^[A-Za-z0-9+/]*={0,2}$/u.test(record.signature)) return undefined;
@@ -518,6 +543,9 @@ async function readAuthenticatedAdvert(
     const signature = Buffer.from(record.signature, "base64");
     if (manifest.length === 0 || manifest.length > MANIFEST_PREFETCH_MAX_BYTES ||
       signature.length === 0 || signature.length > 256 * 1024) return undefined;
+    const key = await readAdvertBindingKey(cacheRoot);
+    if (key === undefined || !timingSafeEqual(Buffer.from(record.binding, "hex"),
+      advertBinding(key, manifestUrl, manifest, signature))) return undefined;
     return { manifest, signature };
   } catch { return undefined; }
 }
@@ -525,9 +553,27 @@ async function readAuthenticatedAdvert(
 async function writeAuthenticatedAdvert(
   path: string, manifestUrl: string, manifest: Uint8Array, signature: Uint8Array,
 ): Promise<void> {
-  await writeDurableAtomicFile(path, `${path}.tmp-${process.pid}-${randomUUID()}`,
-    `${JSON.stringify({ manifestUrl, manifest: Buffer.from(manifest).toString("base64"),
-      signature: Buffer.from(signature).toString("base64") })}\n`, 0o600);
+  const cacheRoot = dirname(path);
+  await mkdir(cacheRoot, { recursive: true, mode: 0o700 });
+  await withAdvertSidecarLock(join(cacheRoot, ".authenticated-budget"), async () => {
+    const key = await ensureAdvertBindingKey(cacheRoot);
+    const entries = (await readdir(cacheRoot)).filter((name) => name.endsWith(".authenticated.json"));
+    const currentName = path.slice(cacheRoot.length + 1);
+    const older = await Promise.all(entries.filter((name) => name !== currentName).map(async (name) => ({
+      name, mtimeMs: (await stat(join(cacheRoot, name))).mtimeMs,
+    })));
+    older.sort((a, b) => a.mtimeMs - b.mtimeMs || a.name.localeCompare(b.name));
+    const keepOthers = MAX_PERSISTED_AUTHENTICATED_ADVERTS - 1;
+    for (const entry of older.slice(0, Math.max(0, older.length - keepOthers))) {
+      await rm(join(cacheRoot, entry.name), { force: true });
+      await rm(join(cacheRoot, entry.name.replace(/\.authenticated\.json$/u, ".meta.json")),
+        { force: true });
+    }
+    await writeDurableAtomicFile(path, `${path}.tmp-${process.pid}-${randomUUID()}`,
+      `${JSON.stringify({ manifestUrl, manifest: Buffer.from(manifest).toString("base64"),
+        signature: Buffer.from(signature).toString("base64"),
+        binding: advertBinding(key, manifestUrl, manifest, signature).toString("hex") })}\n`, 0o600);
+  });
 }
 
 function advertSidecarPath(cacheRoot: string, key: string): string {
@@ -589,11 +635,11 @@ async function finishAdvertRefresh(path: string, claim: string, metadata: Record
 }
 
 /** A display-only catalog may have claimed the manifest window first. */
-async function claimAdvertAuthentication(path: string, now: number): Promise<boolean> {
+async function claimAdvertAuthentication(path: string, now: number, force = false): Promise<boolean> {
   try {
     return await withAdvertSidecarLock(path, async () => {
       const cached = await readAdvertSidecar(path);
-      if (typeof cached.authRetryAfter === "string" && Date.parse(cached.authRetryAfter) > now) {
+      if (!force && typeof cached.authRetryAfter === "string" && Date.parse(cached.authRetryAfter) > now) {
         return false;
       }
       await writeAdvertSidecar(path, { ...cached,
@@ -615,14 +661,16 @@ async function authenticatedDigestDuringWindow(
 ): Promise<string | undefined> {
   if (options.agencHome === undefined) return undefined;
   const authenticated = authenticatedAdverts.get(cacheIdentity) ??
-    await readAuthenticatedAdvert(authenticatedPath, manifestUrl);
+    await readAuthenticatedAdvert(authenticatedPath, manifestUrl, dirname(authenticatedPath));
   if (authenticated !== undefined) {
     try {
       return await verifiedAdvertisedPluginPayloadDigest(
         authenticated.manifest, authenticated.signature, { agencHome: options.agencHome });
     } catch { /* Current publisher trust may reject formerly signed bytes. */ }
   }
-  if (!(await claimAdvertAuthentication(sidecarPath, now))) return undefined;
+  const unboundEntry = authenticated === undefined && await stat(authenticatedPath)
+    .then(() => true, () => false);
+  if (!(await claimAdvertAuthentication(sidecarPath, now, unboundEntry))) return undefined;
   const signatureUrl = pinnedRawUrl(source, ".agenc-plugin/signature.json");
   if (signatureUrl === undefined) return undefined;
   const manifest = await fetchBounded(fetcher, manifestUrl, MANIFEST_PREFETCH_MAX_BYTES);
@@ -774,15 +822,19 @@ async function prefetchPinnedCardMetaOnce(
     }
     return display;
   }
-  authenticatedAdverts.delete(cacheIdentity);
-  await rm(authenticatedPath, { force: true }).catch(() => {});
+  const lastAuthenticated = async (): Promise<PrefetchedCardMeta> => {
+    if (!includePayloadDigest) return staleCached;
+    const payloadDigest = await authenticatedDigestDuringWindow(options, plugin.source,
+      fetcher, manifestUrl, sidecarPath, authenticatedPath, cacheIdentity, now);
+    return payloadDigest === undefined ? staleCached : { ...staleCached, payloadDigest };
+  };
   const manifestBytes = await fetchBounded(
     fetcher,
     manifestUrl,
     MANIFEST_PREFETCH_MAX_BYTES,
   );
   if (manifestBytes === undefined) {
-    return staleCached;
+    return lastAuthenticated();
   }
   const signatureUrl = includePayloadDigest
     ? pinnedRawUrl(plugin.source, ".agenc-plugin/signature.json") : undefined;
@@ -800,10 +852,14 @@ async function prefetchPinnedCardMetaOnce(
     const parsed: unknown = JSON.parse(
       Buffer.from(manifestBytes).toString("utf8"),
     );
-    if (typeof parsed !== "object" || parsed === null) return staleCached;
+    if (typeof parsed !== "object" || parsed === null) return lastAuthenticated();
     manifest = parsed as Record<string, unknown>;
   } catch {
-    return staleCached;
+    return lastAuthenticated();
+  }
+  if (includePayloadDigest && payloadDigest === undefined) {
+    const previous = await lastAuthenticated();
+    if (previous.payloadDigest !== undefined) return previous;
   }
   if (payloadDigest !== undefined && signatureBytes !== undefined) {
     authenticatedAdverts.set(cacheIdentity, { manifest: manifestBytes, signature: signatureBytes });
