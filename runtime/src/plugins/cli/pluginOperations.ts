@@ -54,6 +54,7 @@ import type { AgencPluginInventoryProvenance } from "./pluginInventoryProtocol.j
 import { runWithCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
 import { inspectPluginOptions } from "../../utils/plugins/pluginOptionsStorage.js";
 import { validateUserConfig } from "../../utils/plugins/mcpbHandler.js";
+import { removePluginCatalogs } from "../../mcp-client/plugin-catalog-cache.js";
 
 export type PluginScope = "user" | "project" | "local";
 
@@ -697,6 +698,8 @@ export async function uninstallPluginOp(
       removedData = !(await pathExists(dataDir));
     }
   }
+  // The plugin's discovered MCP catalogs are derived data and go with it.
+  removePluginCatalogs(resolvePluginAgencHome(input), pluginId);
   const result = { pluginId, removedRoots: targetRoots, removedConfig, removedData };
   await input.configStore?.reload();
   return result;

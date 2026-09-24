@@ -8,7 +8,7 @@ import { writePluginCatalog } from "./plugin-catalog-cache.js";
 import { fingerprintPluginCatalogConfig, hashInstalledPlugin, readPluginCatalog, snapshotInstalledPlugin, snapshotInstalledPluginOffThread } from "./plugin-catalog-cache.js";
 import * as pluginCatalogCache from "./plugin-catalog-cache.js";
 import { projectMcpManagerToConnections } from "./tui-connections.js";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { loadPluginMcpServerRegistrations } from "../plugins/registration/mcp-plugin-integration.js";
 import type { LoadedPlugin } from "../plugins/loader.js";
 import { buildToolRegistry } from "../tool-registry.js";
@@ -39,9 +39,22 @@ function config(cacheHome: string, name = "plugin:sample:main", overrides: Parti
   };
 }
 
-function warm(cfg: MCPServerConfig, tools = [descriptor()]): void {
+function catalogIdentity(cfg: MCPServerConfig) {
   const plugin = cfg.origin!.pluginServer!;
-  writePluginCatalog({ pluginName: plugin.pluginName, serverName: plugin.serverName, version: plugin.version, digest: plugin.digest!, cacheHome: cfg.pluginCatalogHome!, configFingerprint: fingerprintPluginCatalogConfig({ transport: cfg.transport ?? "stdio", command: cfg.command, args: cfg.args, env: cfg.env, env_vars: cfg.env_vars, cwd: cfg.cwd, endpoint: cfg.endpoint, headers: cfg.headers, pluginSandbox: cfg.pluginSandbox, userConfigDigest: plugin.userConfigDigest, parentEnvironment: {} }) }, { format: 1, tools });
+  return { pluginName: plugin.pluginName, serverName: plugin.serverName, version: plugin.version, digest: plugin.digest!, cacheHome: cfg.pluginCatalogHome!, configFingerprint: fingerprintPluginCatalogConfig({ transport: cfg.transport ?? "stdio", command: cfg.command, args: cfg.args, env: cfg.env, env_vars: cfg.env_vars, cwd: cfg.cwd, endpoint: cfg.endpoint, headers: cfg.headers, pluginSandbox: cfg.pluginSandbox, userConfigDigest: plugin.userConfigDigest, parentEnvironment: {} }) };
+}
+
+function warm(cfg: MCPServerConfig, tools = [descriptor()], extras: { prompts?: readonly unknown[]; resources?: readonly unknown[] } = {}): void {
+  writePluginCatalog(catalogIdentity(cfg), { format: 1, tools, ...extras });
+}
+
+async function catalogText(cacheHome: string): Promise<string> {
+  const directory = join(cacheHome, "cache", "plugin-mcp-catalogs");
+  let entries;
+  try { entries = await readdir(directory, { recursive: true, withFileTypes: true }); }
+  catch { return ""; }
+  const files = entries.filter(entry => entry.isFile()).map(entry => join(entry.parentPath, entry.name));
+  return (await Promise.all(files.map(file => readFile(file, "utf8")))).join("\n");
 }
 
 function setupTransport(
@@ -1234,6 +1247,93 @@ describe("plugin MCP on-demand lifecycle", () => {
       const resources = await manager.getResourcesByServer(cfg.name);
       await manager.readResource(resources[0]!.namespacedName);
       expect(spawn).toHaveBeenCalledTimes(2);
+    } finally { await manager.stop(); }
+  });
+
+  it("fills the catalog cache from every tools and prompts page", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome, "plugin:sample:pages");
+    spawn.mockImplementation(async () => ({
+      getServerCapabilities: () => ({ prompts: {} }),
+      listTools: vi.fn(async (params?: { cursor?: string }) => {
+        const page = Number(params?.cursor ?? 0);
+        return { tools: [descriptor(`tool${page}`)], ...(page < 2 ? { nextCursor: String(page + 1) } : {}) };
+      }),
+      listPrompts: vi.fn(async (params?: { cursor?: string }) => {
+        const page = Number(params?.cursor ?? 0);
+        return { prompts: [{ name: `prompt${page}` }], ...(page < 1 ? { nextCursor: String(page + 1) } : {}) };
+      }),
+      callTool: vi.fn().mockResolvedValue({ content: [{ type: "text", text: "pong" }] }),
+      close: vi.fn().mockResolvedValue(undefined),
+    }) as never);
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      await manager.primeCatalogs();
+      await waitFor(() => manager.getConnectionState(cfg.name)?.type === "stopped");
+      const names = ["tool0", "tool1", "tool2"];
+      expect(manager.getToolsByServer(cfg.name).map(tool => tool.name)).toEqual(names.map(name => `mcp.${cfg.name}.${name}`));
+      expect((await manager.listPromptsByServer(cfg.name)).map(prompt => prompt.name)).toEqual(["prompt0", "prompt1"]);
+      const persisted = readPluginCatalog(catalogIdentity(cfg));
+      expect(persisted?.tools.map(tool => tool.name)).toEqual(names);
+      expect(persisted?.prompts).toHaveLength(2);
+      expect(spawn).toHaveBeenCalledTimes(1);
+    } finally { await manager.stop(); }
+  });
+
+  it("keeps the cached prompts when a later prompt listing fails", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome, "plugin:sample:prompts");
+    const hello = { serverName: cfg.name, name: "hello", namespacedName: `mcp.${cfg.name}.hello`, description: "hello" };
+    warm(cfg, [descriptor()], { prompts: [hello] });
+    spawn.mockImplementation(async () => ({
+      getServerCapabilities: () => ({ prompts: {} }),
+      listTools: vi.fn().mockResolvedValue({ tools: [descriptor()] }),
+      // A repeated cursor fails the whole listing.
+      listPrompts: vi.fn().mockResolvedValue({ prompts: [{ name: "hello" }], nextCursor: "again" }),
+      callTool: vi.fn().mockResolvedValue({ content: [{ type: "text", text: "pong" }] }),
+      close: vi.fn().mockResolvedValue(undefined),
+    }) as never);
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      expect(await manager.listPromptsByServer(cfg.name)).toMatchObject([{ name: "hello" }]);
+      expect((await manager.callTool(cfg.name, "ping", {})).isError).not.toBe(true);
+      await waitFor(() => manager.getConnectionState(cfg.name)?.type === "stopped");
+      expect(await manager.listPromptsByServer(cfg.name)).toMatchObject([{ name: "hello" }]);
+      expect(readPluginCatalog(catalogIdentity(cfg))?.prompts).toMatchObject([{ name: "hello" }]);
+    } finally { await manager.stop(); }
+  });
+
+  it("keeps a discovered catalog that echoes a saved secret out of the disk cache", async () => {
+    const cacheHome = await home();
+    const cfg = config(cacheHome, "plugin:sample:echo", { pluginSecretValues: ["echo-private-phrase"] });
+    setupTransport([{ ...descriptor(), description: "Uses echo-private-phrase" }]);
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      await manager.primeCatalogs();
+      await waitFor(() => manager.getConnectionState(cfg.name)?.type === "stopped");
+      expect(manager.getToolsByServer(cfg.name).map(tool => tool.name)).toEqual([`mcp.${cfg.name}.ping`]);
+      expect(JSON.stringify(manager.getToolsByServer(cfg.name))).not.toContain("echo-private-phrase");
+      expect(readPluginCatalog(catalogIdentity(cfg))).toBeUndefined();
+      expect(await catalogText(cacheHome)).not.toContain("echo-private-phrase");
+    } finally { await manager.stop(); }
+  });
+
+  it("redacts every plugin's saved values from a lazy startup failure", async () => {
+    const cacheHome = await home();
+    const alpha = config(cacheHome, "plugin:sample:alpha", { pluginSecretValues: ["alpha-private-phrase"] }); warm(alpha);
+    const beta = config(cacheHome, "plugin:sample:beta", { pluginSecretValues: ["beta-private-phrase"] });
+    spawn.mockRejectedValue(new Error("spawn failed: alpha-private-phrase beta-private-phrase"));
+    const manager = new MCPManager([alpha, beta]);
+    try {
+      await manager.start();
+      const result = await manager.callTool(alpha.name, "ping", {});
+      expect(result.metadata?.errorCode).toBe("MCP_PLUGIN_STARTUP_FAILED");
+      expect(String(result.content)).toContain("spawn failed");
+      for (const secret of ["alpha-private-phrase", "beta-private-phrase"]) {
+        expect(JSON.stringify(result)).not.toContain(secret);
+        expect(JSON.stringify(manager.getConnectionState(alpha.name))).not.toContain(secret);
+      }
     } finally { await manager.stop(); }
   });
 

@@ -104,11 +104,16 @@ Names are scoped as `plugin:<plugin-id>:<server>`
 with a SHA-256 suffix. Tools appear as
 `mcp.plugin:<plugin-id>:<server>.<tool>`.
 
-Plugin tool catalogs are stored at `AGENC_HOME/cache/plugin-mcp-catalogs/<sha256>.json`.
-Each format-1 record contains the raw `tools/list` descriptors, including
-input schemas and annotations, and any listed prompts and resources. The key
-includes plugin ID, server name, version, and a SHA-256 hash of the installed
-plugin files. An update or reinstall with changed bytes gets a new key.
+Plugin tool catalogs are stored at
+`AGENC_HOME/cache/plugin-mcp-catalogs/<plugin-sha256>/<sha256>.json`, one
+directory per plugin. Each format-1 record contains the `tools/list`
+descriptors, including input schemas and annotations, and any listed prompts
+and resources. The key includes plugin ID, server name, version, a SHA-256
+hash of the installed plugin files, and a hash of the resolved launch
+configuration and settings. An update or reinstall with changed bytes gets a
+new key. A catalog that contains a saved secret is never written to disk; the
+session keeps it in memory. Resetting a plugin's settings or uninstalling the
+plugin removes its catalogs.
 Warm catalogs let tool search list tools while the process is stopped. A
 missing catalog is primed on the first tool search by one connection and that
 connection is then stopped. A tool call or resource/prompt read starts the

@@ -65,9 +65,9 @@ import { listInstalledPlugins } from '../../src/plugins/cli/pluginOperations.js'
 import { pluginSignaturePayloadBytes } from '../../src/plugins/resolution.js'
 import { ConfigStore } from '../../src/config/store.js'
 import { loadPlugins } from '../../src/plugins/loader.js'
-import { loadPluginMcpServers } from '../../src/plugins/registration/mcp-plugin-integration.js'
+import { loadPluginMcpServerRegistrations, loadPluginMcpServers } from '../../src/plugins/registration/mcp-plugin-integration.js'
 import { runWithCanonicalSettingsAuthority } from '../../src/utils/settings/canonicalAuthority.js'
-import { resolveSessionMcpPlan } from '../../src/session/mcp-startup.js'
+import { createSessionMcpManager, createSessionMcpService, resolveSessionMcpPlan } from '../../src/session/mcp-startup.js'
 import { projectMcpManagerToConnections } from '../../src/mcp-client/tui-connections.js'
 import { createSavedPluginSecretRedactor, redactSavedPluginSecrets } from '../../src/plugins/secret-redaction.js'
 import { decodeStoredPluginSecret } from '../../src/utils/plugins/plugin-secret-codec.js'
@@ -108,6 +108,44 @@ function files(root: string): string[] {
     const path = join(root, name)
     return statSync(path).isDirectory() ? files(path) : [path]
   })
+}
+function catalogFiles(home: string): string[] {
+  try { return files(join(home, 'cache', 'plugin-mcp-catalogs')) } catch { return [] }
+}
+async function waitForConnectionState(manager: MCPManager, name: string, type: string): Promise<void> {
+  for (let attempt = 0; attempt < 300; attempt++) {
+    if (manager.getConnectionState(name)?.type === type) return
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  throw new Error(`${name} did not reach ${type}`)
+}
+async function lazyPluginSession(options: { readonly idleTimeoutMs?: number; readonly description?: (token: string) => string } = {}) {
+  const context = fixture()
+  writeFileSync(join(context.home, 'config.toml'), `config_version = 2\n[plugins]\nenabled = true\n${options.idleTimeoutMs === undefined ? '' : `mcp_idle_timeout_ms = ${options.idleTimeoutMs}\n`}`)
+  const manifestPath = join(context.plugins, 'demo', '.agenc-plugin', 'plugin.json')
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+  manifest.mcpServers.edgar.env.TOKEN = '${user_config.token}'
+  writeFileSync(manifestPath, JSON.stringify(manifest))
+  await context.service.set({ pluginId: 'demo', values: { contact: 'owner@example.test', token: 'old-private-phrase' } })
+  const store = new ConfigStore({ home: context.home, cwd: context.workspace, projectRoot: context.workspace, env: { AGENC_HOME: context.home, HOME: context.root } })
+  await store.reload()
+  const plan = await resolveSessionMcpPlan(store, {}, {}, new Map(), { pluginStorageRoot: context.plugins })
+  const config = plan.configs.find(item => item.name === 'plugin:demo:edgar')!
+  const launches: Array<Readonly<Record<string, string>> | undefined> = []
+  vi.mocked(createMCPConnection).mockImplementation(async launched => {
+    const env = (launched as { env?: Readonly<Record<string, string>> }).env
+    launches.push(env)
+    return {
+      listTools: async () => ({ tools: [{ name: 'lookup', description: options.description?.(env?.TOKEN ?? '') ?? 'Look up a filing', inputSchema: { type: 'object' } }] }),
+      callTool: async () => ({ content: [{ type: 'text', text: 'found' }] }),
+      listResources: async () => ({ resources: [] }),
+      listPrompts: async () => ({ prompts: [] }),
+      close: async () => {},
+    } as never
+  })
+  const manager = new MCPManager([config], { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() })
+  manager.setPluginFirstLaunchContext(store, context.plugins)
+  return { ...context, store, config, manager, launches }
 }
 afterEach(() => { vi.mocked(createMCPConnection).mockReset(); secureStore.clear(); nativeUnavailable.value = false; nativeUnreadable.value = false; staleNativeRead.value = null; freshReadHook.run = null; discoveryPause.wait = null; validationPause.wait = null; for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
@@ -318,6 +356,7 @@ describe('plugin settings API', () => {
     manifest.userConfig.scopes = { type: 'string', title: 'Scopes', description: 'Scopes', sensitive: true, multiple: true }
     manifest.mcpServers.edgar.env.OPTIONS = 'prefix-${user_config.token}-suffix'
     manifest.mcpServers.edgar.headers = { Authorization: 'Bearer ${user_config.scopes}' }
+    manifest.mcpEagerServers = ['edgar']
     writeFileSync(manifestPath, JSON.stringify(manifest))
     await service.set({ pluginId: 'demo', values: { contact: 'owner@example.test', token: 'old-private-phrase', scopes: ['array-secret-one', 'array-secret-two'] } })
     const store = new ConfigStore({ home, cwd: workspace, projectRoot: workspace, env: { AGENC_HOME: home, HOME: root } })
@@ -334,7 +373,7 @@ describe('plugin settings API', () => {
     const manager = new MCPManager([config], logger)
     manager.setPluginFirstLaunchContext(store, plugins)
     await manager.start()
-    expect(manager.getConnectionState(config.name)?.type).toBe('stopped')
+    expect(manager.getConnectionState(config.name)?.type).toBe('connected')
     for (const secret of ['old-private-phrase', 'array-secret-one', 'array-secret-two']) {
       expect(manager.redactPluginSecrets(`Authentication failed: ${secret}`)).not.toContain(secret)
     }
@@ -342,13 +381,98 @@ describe('plugin settings API', () => {
     await service.reset({ pluginId: 'demo' })
     expect(manager.redactPluginSecrets('Authentication failed: old-private-phrase')).not.toContain('old-private-phrase')
     expect(manager.redactPluginSecrets('Authentication failed: array-secret-two')).not.toContain('array-secret-two')
+    vi.mocked(createMCPConnection).mockImplementationOnce(async (_config, connectionLogger) => {
+      connectionLogger.error('stderr: old-private-phrase')
+      throw new Error('Authentication failed: old-private-phrase')
+    })
     const failed = await manager.reconnectServer(config.name)
-    expect(failed.success).toBe(false)
-    expect(createMCPConnection).not.toHaveBeenCalled()
+    expect(createMCPConnection).toHaveBeenCalledTimes(2)
     expect(JSON.stringify(failed)).not.toContain('old-private-phrase')
     expect(JSON.stringify(manager.getConnectionState(config.name))).not.toContain('old-private-phrase')
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain('old-private-phrase')
     await manager.stopStrict()
+  })
+
+  test('retains decoded sensitive substitutions for a lazy server launched before rotation and reset', async () => {
+    const { service, home, plugins, workspace, root } = fixture()
+    writeFileSync(join(home, 'config.toml'), 'config_version = 2\n[plugins]\nenabled = true\n')
+    const manifestPath = join(plugins, 'demo', '.agenc-plugin', 'plugin.json')
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    manifest.userConfig.scopes = { type: 'string', title: 'Scopes', description: 'Scopes', sensitive: true, multiple: true }
+    manifest.mcpServers.edgar.env.OPTIONS = 'prefix-${user_config.token}-suffix'
+    manifest.mcpServers.edgar.headers = { Authorization: 'Bearer ${user_config.scopes}' }
+    writeFileSync(manifestPath, JSON.stringify(manifest))
+    await service.set({ pluginId: 'demo', values: { contact: 'owner@example.test', token: 'old-private-phrase', scopes: ['array-secret-one', 'array-secret-two'] } })
+    const store = new ConfigStore({ home, cwd: workspace, projectRoot: workspace, env: { AGENC_HOME: home, HOME: root } })
+    await store.reload()
+    const plan = await resolveSessionMcpPlan(store, {}, {}, new Map(), { pluginStorageRoot: plugins })
+    const config = plan.configs.find(item => item.name === 'plugin:demo:edgar')!
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    vi.mocked(createMCPConnection).mockResolvedValue({
+      listTools: async () => ({ tools: [{ name: 'lookup', inputSchema: { type: 'object' } }] }),
+      callTool: async () => ({ content: [{ type: 'text', text: 'found' }] }),
+      listResources: async () => ({ resources: [] }),
+      listPrompts: async () => ({ prompts: [] }),
+      close: async () => {},
+    } as never)
+    const manager = new MCPManager([config], logger)
+    manager.setPluginFirstLaunchContext(store, plugins)
+    await manager.start()
+    expect(manager.getConnectionState(config.name)?.type).toBe('stopped')
+    expect((await manager.callTool(config.name, 'lookup', {})).isError).not.toBe(true)
+    await service.set({ pluginId: 'demo', values: { token: 'new-private-phrase' } })
+    await service.reset({ pluginId: 'demo' })
+    vi.mocked(createMCPConnection).mockImplementationOnce(async (_config, connectionLogger) => {
+      connectionLogger.error('stderr: old-private-phrase')
+      throw new Error('Authentication failed: old-private-phrase')
+    })
+    const failed = await manager.reconnectServer(config.name)
+    expect(failed.success).toBe(false)
+    expect(createMCPConnection).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(failed)).not.toContain('old-private-phrase')
+    expect(JSON.stringify(manager.getConnectionState(config.name))).not.toContain('old-private-phrase')
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain('old-private-phrase')
+    await manager.stopStrict()
+  })
+
+  test('redacts a lazy server relaunch that fails after an idle stop and reset', async () => {
+    const { service, home, plugins, workspace, root } = fixture()
+    writeFileSync(join(home, 'config.toml'), 'config_version = 2\n[plugins]\nenabled = true\nmcp_idle_timeout_ms = 30\n')
+    const manifestPath = join(plugins, 'demo', '.agenc-plugin', 'plugin.json')
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    manifest.mcpServers.edgar.env.OPTIONS = 'prefix-${user_config.token}-suffix'
+    writeFileSync(manifestPath, JSON.stringify(manifest))
+    await service.set({ pluginId: 'demo', values: { contact: 'owner@example.test', token: 'old-private-phrase' } })
+    const store = new ConfigStore({ home, cwd: workspace, projectRoot: workspace, env: { AGENC_HOME: home, HOME: root } })
+    await store.reload()
+    const plan = await resolveSessionMcpPlan(store, {}, {}, new Map(), { pluginStorageRoot: plugins })
+    const config = plan.configs.find(item => item.name === 'plugin:demo:edgar')!
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    vi.mocked(createMCPConnection).mockResolvedValue({
+      listTools: async () => ({ tools: [{ name: 'lookup', inputSchema: { type: 'object' } }] }),
+      callTool: async () => ({ content: [{ type: 'text', text: 'found' }] }),
+      listResources: async () => ({ resources: [] }),
+      listPrompts: async () => ({ prompts: [] }),
+      close: async () => {},
+    } as never)
+    const manager = new MCPManager([config], logger)
+    manager.setPluginFirstLaunchContext(store, plugins)
+    try {
+      await manager.start()
+      expect((await manager.callTool(config.name, 'lookup', {})).isError).not.toBe(true)
+      await waitForConnectionState(manager, config.name, 'stopped')
+      await service.reset({ pluginId: 'demo' })
+      vi.mocked(createMCPConnection).mockImplementationOnce(async (_config, connectionLogger) => {
+        connectionLogger.error('stderr: old-private-phrase')
+        throw new Error('Authentication failed: old-private-phrase')
+      })
+      const result = await manager.callTool(config.name, 'lookup', {})
+      expect(result.isError).toBe(true)
+      expect(createMCPConnection).toHaveBeenCalledTimes(2)
+      expect(JSON.stringify(result)).not.toContain('old-private-phrase')
+      expect(JSON.stringify(manager.getConnectionState(config.name))).not.toContain('old-private-phrase')
+      expect(JSON.stringify(logger.error.mock.calls)).not.toContain('old-private-phrase')
+    } finally { await manager.stopStrict() }
   })
   test('keeps an inherited top-level secret sensitive when a channel declares the same ordinary key', async () => {
     const { service, home, plugins, workspace, root } = fixture()
@@ -793,5 +917,111 @@ describe('plugin settings API', () => {
     const inventory = await listInstalledPlugins({ agencHome: home, pluginStorageRoot: plugins, sessionTempRoot: home, workspaceRoot: workspace, env: { AGENC_HOME: home, HOME: root } })
     expect(inventory.plugins[0]?.needsSetup?.filter(key => key.startsWith('danger'))).toHaveLength(20)
     expect(performance.now() - inventoryStart).toBeLessThan(250)
+  })
+})
+
+describe('plugin settings for on-demand MCP servers', () => {
+  test('first launches a lazy server with the settings its session resolved after a save', async () => {
+    const session = await lazyPluginSession()
+    const earlier = new MCPManager([session.config])
+    earlier.setPluginFirstLaunchContext(session.store, session.plugins)
+    await earlier.start()
+    expect((await earlier.callTool(session.config.name, 'lookup', {})).isError).not.toBe(true)
+    await earlier.stopStrict()
+    const { manager, config } = session
+    try {
+      await manager.start()
+      expect(manager.getToolsByServer(config.name).map(tool => tool.name)).toEqual([`mcp.${config.name}.lookup`])
+      await session.service.set({ pluginId: 'demo', values: { token: 'new-private-phrase' } })
+      expect((await manager.callTool(config.name, 'lookup', {})).isError).not.toBe(true)
+      expect(session.launches.map(env => env?.TOKEN)).toEqual(['old-private-phrase', 'old-private-phrase'])
+      expect(manager.getToolsByServer(config.name).map(tool => tool.name)).toEqual([`mcp.${config.name}.lookup`])
+    } finally { await manager.stopStrict() }
+  })
+
+  test('first launches a lazy server with its session settings after a reset removes a required value', async () => {
+    const { manager, config, service, launches } = await lazyPluginSession()
+    try {
+      await manager.start()
+      await service.reset({ pluginId: 'demo' })
+      expect((await manager.callTool(config.name, 'lookup', {})).isError).not.toBe(true)
+      expect(launches.map(env => env?.STONKS_EDGAR_USER_AGENT)).toEqual(['owner@example.test'])
+    } finally { await manager.stopStrict() }
+  })
+
+  test('keeps session settings for a lazy server until that session reconnects it', async () => {
+    const session = await lazyPluginSession()
+    const manager = createSessionMcpManager([])
+    const service = createSessionMcpService(manager, { authority: session.store, environment: {}, pluginStorageRoot: session.plugins })
+    try {
+      await service.refreshFromAuthority?.()
+      expect(manager.getConnectionState(session.config.name)?.type).toBe('stopped')
+      await session.service.set({ pluginId: 'demo', values: { token: 'new-private-phrase' } })
+      expect((await manager.callTool(session.config.name, 'lookup', {})).isError).not.toBe(true)
+      await expect(service.reconnectServer?.(session.config.name)).resolves.toMatchObject({ success: true })
+      expect(session.launches.map(env => env?.TOKEN)).toEqual(['old-private-phrase', 'new-private-phrase'])
+    } finally { await service.dispose?.() }
+  })
+
+  test('reads saved settings once per plugin server and never for a first launch', async () => {
+    const session = await lazyPluginSession()
+    let reads = 0
+    freshReadHook.run = () => { reads++ }
+    await runWithCanonicalSettingsAuthority(session.store, () => loadPluginMcpServerRegistrations({
+      pluginStorageRoot: session.plugins, workspaceRoot: session.workspace, config: session.store.current(), env: {},
+    }))
+    expect(reads).toBe(1)
+    reads = 0
+    const { manager, config } = session
+    try {
+      await manager.start()
+      expect((await manager.callTool(config.name, 'lookup', {})).isError).not.toBe(true)
+      expect(reads).toBe(0)
+    } finally { await manager.stopStrict() }
+  })
+
+  test.each(['unavailable', 'unreadable'] as const)('first launches a lazy server while secure storage is %s', async failure => {
+    const { manager, config } = await lazyPluginSession()
+    try {
+      await manager.start()
+      if (failure === 'unavailable') nativeUnavailable.value = true
+      else nativeUnreadable.value = true
+      expect((await manager.callTool(config.name, 'lookup', {})).isError).not.toBe(true)
+    } finally {
+      nativeUnavailable.value = false
+      nativeUnreadable.value = false
+      await manager.stopStrict()
+    }
+  })
+
+  test('never writes a discovered catalog that echoes a saved secret', async () => {
+    const { manager, config, home } = await lazyPluginSession({ idleTimeoutMs: 30, description: token => `Uses ${token}` })
+    try {
+      await manager.start()
+      expect((await manager.callTool(config.name, 'lookup', {})).isError).not.toBe(true)
+      await waitForConnectionState(manager, config.name, 'stopped')
+      expect(manager.getToolsByServer(config.name).map(tool => tool.name)).toEqual([`mcp.${config.name}.lookup`])
+      expect(JSON.stringify(manager.getToolsByServer(config.name))).not.toContain('old-private-phrase')
+      expect(catalogFiles(home).map(path => readFileSync(path, 'utf8')).join('\n')).not.toContain('old-private-phrase')
+    } finally { await manager.stopStrict() }
+  })
+
+  test('removes the plugin catalogs discovered with earlier settings on reset', async () => {
+    const { manager, config, service, home } = await lazyPluginSession()
+    try {
+      await manager.start()
+      expect((await manager.callTool(config.name, 'lookup', {})).isError).not.toBe(true)
+      expect(catalogFiles(home)).toHaveLength(1)
+      await service.reset({ pluginId: 'demo' })
+      expect(catalogFiles(home)).toEqual([])
+    } finally { await manager.stopStrict() }
+  })
+
+  test('keeps resolved plugin secrets out of configured server projections', async () => {
+    const { manager, config } = await lazyPluginSession()
+    expect(JSON.stringify(config.origin?.pluginServer)).toContain('old-private-phrase')
+    const configured = JSON.stringify(manager.getConfiguredServers())
+    expect(configured).toContain(config.name)
+    expect(configured).not.toContain('old-private-phrase')
   })
 })

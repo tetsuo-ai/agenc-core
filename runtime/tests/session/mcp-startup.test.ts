@@ -2724,8 +2724,7 @@ describe("session MCP mutation transactions", () => {
       expect(firstBridge.dispose).not.toHaveBeenCalled();
       expect(firstManager.getToolsByServer('alpha')[0]).toBe(firstTool);
       await expect(second.reconnectServer?.('alpha')).resolves.toMatchObject({ success: true });
-      // Session reconciliation restarts this manager before the explicit reconnect.
-      expect(bridges).toHaveLength(4);
+      expect(bridges).toHaveLength(3);
       expect(firstBridge.dispose).not.toHaveBeenCalled();
       expect(firstManager.getToolsByServer('alpha')[0]).toBe(firstTool);
     } finally {
@@ -2782,16 +2781,10 @@ describe("session MCP mutation transactions", () => {
       const oldProjection = () => projectMcpManagerToConnections(otherManager, value => otherManager.redactPluginSecrets(value));
       expect(JSON.stringify(oldProjection())).not.toContain('old-private-phrase');
       expect(JSON.stringify(await otherSession.effectiveServers({}, null))).not.toContain('old-private-phrase');
-      // Reconciliation starts both plugin servers before the explicit retry.
-      // Fail the target on each attempt without failing the unrelated server.
-      mockCreateMCPConnection.mockImplementation(async config => {
-        if (config.name === 'plugin:demo:alpha') throw new Error('spawn failed: new-private-phrase');
-        return {} as never;
-      });
+      mockCreateMCPConnection.mockRejectedValueOnce(new Error('spawn failed: new-private-phrase'));
       const failedReconnect = await service.reconnectServer?.('plugin:demo:alpha');
       expect(failedReconnect?.success).toBe(false);
       expect(JSON.stringify(failedReconnect)).not.toContain('new-private-phrase');
-      mockCreateMCPConnection.mockResolvedValue({} as never);
       await expect(service.reconnectServer?.('plugin:demo:alpha')).resolves.toMatchObject({ success: true });
       expect(manager.getServerConfig('plugin:demo:alpha')?.env?.CONTACT).toBe('second@example.test');
       expect(otherManager.getServerConfig('plugin:demo:alpha')?.env?.CONTACT).toBe('first@example.test');

@@ -1,10 +1,10 @@
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { MCPManager } from "./manager.js";
 import { loadPluginMcpServerRegistrations } from "../plugins/registration/mcp-plugin-integration.js";
-import { setPluginEnabledOp } from "../plugins/cli/pluginOperations.js";
+import { setPluginEnabledOp, uninstallPluginOp } from "../plugins/cli/pluginOperations.js";
 import { mutateCanonicalUserConfigSync } from "../config/update-sync.js";
 import type { MCPServerConfig } from "./types.js";
 import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
@@ -14,9 +14,21 @@ import { createSessionMcpService } from "../session/mcp-startup.js";
 
 vi.mock("./transports/stdio.js", () => ({ createStdioMCPConnection: vi.fn() }));
 import { createStdioMCPConnection } from "./transports/stdio.js";
+vi.mock("./plugin-catalog-cache.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("./plugin-catalog-cache.js")>();
+  return { ...actual, snapshotInstalledPluginOffThread: vi.fn(actual.snapshotInstalledPluginOffThread) };
+});
+import { snapshotInstalledPluginOffThread } from "./plugin-catalog-cache.js";
 
 const spawn = vi.mocked(createStdioMCPConnection);
 const roots: string[] = [];
+
+async function catalogFiles(home: string): Promise<string[]> {
+  try {
+    const entries = await readdir(join(home, "cache", "plugin-mcp-catalogs"), { recursive: true, withFileTypes: true });
+    return entries.filter(entry => entry.isFile()).map(entry => join(entry.parentPath, entry.name));
+  } catch { return []; }
+}
 
 afterEach(async () => {
   spawn.mockReset();
@@ -237,7 +249,7 @@ it("cancels a stalled first-launch source read during strict sandbox shutdown", 
     // The cancelled check must not be reported as a changed plugin.
     const [outcome] = await Promise.allSettled([call]);
     const reported = outcome.status === "fulfilled" ? JSON.stringify(outcome.value) : String(outcome.reason);
-    expect(reported).not.toContain("changed; restart this session");
+    expect(reported).not.toContain("changed; reconnect this server");
   } finally {
     read.mockRestore();
     await Promise.allSettled([transition, shutdown, call].filter((task): task is Promise<unknown> => task !== undefined));
@@ -254,9 +266,58 @@ it("rejects a changed installation snapshot before first launch", async () => {
     await writeFile(join(config.origin!.pluginServer!.pluginRoot!, "entry.js"), "changed");
     const result = await manager.callTool(config.name, "ping", {});
     expect(result).toMatchObject({ isError: true });
-    expect(String(result.content)).toMatch(/changed; restart this session/);
+    expect(String(result.content)).toMatch(/changed; reconnect this server or start a new session/);
     expect(spawn).not.toHaveBeenCalled();
   } finally { await manager.stopStrict(); }
+});
+
+it("keeps cached tools listed when a changed installation refuses the first launch", async () => {
+  const { config } = await fixture();
+  const earlier = directManager(config);
+  try {
+    await earlier.start();
+    expect((await earlier.callTool(config.name, "ping", {})).isError).not.toBe(true);
+  } finally { await earlier.stopStrict(); }
+  const manager = directManager(config);
+  try {
+    await manager.start();
+    expect(manager.getToolsByServer(config.name)).toHaveLength(1);
+    await writeFile(join(config.origin!.pluginServer!.pluginRoot!, "entry.js"), "changed");
+    const result = await manager.callTool(config.name, "ping", {});
+    expect(manager.getToolsByServer(config.name)).toHaveLength(1);
+    expect(String(result.content)).toMatch(/changed; reconnect this server or start a new session/);
+    expect(spawn).toHaveBeenCalledTimes(1);
+  } finally { await manager.stopStrict(); }
+});
+
+it("hashes only the target plugin before a first launch", async () => {
+  const { storage, config } = await fixture();
+  const other = join(storage, "other");
+  await mkdir(join(other, ".agenc-plugin"), { recursive: true });
+  await writeFile(join(other, ".agenc-plugin", "plugin.json"), JSON.stringify({
+    name: "other", mcpServers: { aux: { command: "fixture" } },
+  }));
+  const manager = directManager(config);
+  try {
+    await manager.start();
+    const snapshot = vi.mocked(snapshotInstalledPluginOffThread);
+    snapshot.mockClear();
+    expect((await manager.callTool(config.name, "ping", {})).isError).not.toBe(true);
+    expect(snapshot.mock.calls.map(([root]) => root)).toEqual([config.origin!.pluginServer!.pluginRoot]);
+  } finally { await manager.stopStrict(); }
+});
+
+it("removes the plugin's discovered catalogs on uninstall", async () => {
+  const { home, workspace, storage, config } = await fixture();
+  const manager = directManager(config);
+  try {
+    await manager.start();
+    expect((await manager.callTool(config.name, "ping", {})).isError).not.toBe(true);
+  } finally { await manager.stopStrict(); }
+  expect(await catalogFiles(home)).toHaveLength(1);
+  await uninstallPluginOp({ pluginId: "sample", agencHome: home, env: { HOME: home, AGENC_HOME: home },
+    pluginStorageRoot: storage, sessionTempRoot: home, workspaceRoot: workspace });
+  expect(await catalogFiles(home)).toEqual([]);
 });
 
 it("rejects CLI disable before a lazy plugin's first use", async () => {
@@ -270,7 +331,7 @@ it("rejects CLI disable before a lazy plugin's first use", async () => {
       .rejects.toMatchObject({ code: "ENOENT" });
     const result = await manager.callTool(config.name, "ping", {});
     expect(result).toMatchObject({ isError: true });
-    expect(String(result.content)).toMatch(/changed; restart this session/);
+    expect(String(result.content)).toMatch(/changed; reconnect this server or start a new session/);
     expect(spawn).not.toHaveBeenCalled();
   } finally { await manager.stopStrict(); }
 });
@@ -310,7 +371,7 @@ it("rejects disable through the installation directory alias before first use", 
     });
     const result = await manager.callTool(config.name, "ping", {});
     expect(result).toMatchObject({ isError: true });
-    expect(String(result.content)).toMatch(/changed; restart this session/);
+    expect(String(result.content)).toMatch(/changed; reconnect this server or start a new session/);
     expect(spawn).not.toHaveBeenCalled();
   } finally { await manager.stopStrict(); }
 });

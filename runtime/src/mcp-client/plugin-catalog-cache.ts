@@ -297,12 +297,39 @@ export function fingerprintPluginCatalogConfig(config: unknown): string {
   return createHash("sha256").update(JSON.stringify(config)).digest("hex");
 }
 
+function catalogRoot(cacheHome: string): string {
+  return join(cacheHome, "cache", "plugin-mcp-catalogs");
+}
+
+/** Each plugin's catalogs share one directory, so they can be removed together. */
+function pluginCatalogDirectory(cacheHome: string, pluginName: string): string {
+  const key = createHash("sha256").update(JSON.stringify(["catalog-plugin-v1", pluginName])).digest("hex");
+  return join(catalogRoot(cacheHome), key);
+}
+
 function cachePath(identity: PluginCatalogIdentity): string {
   const key = createHash("sha256").update(JSON.stringify([
     "catalog-v2", identity.pluginName, identity.serverName, identity.version ?? "", identity.digest,
     identity.configFingerprint ?? "",
   ])).digest("hex");
-  return join(identity.cacheHome, "cache", "plugin-mcp-catalogs", `${key}.json`);
+  return join(pluginCatalogDirectory(identity.cacheHome, identity.pluginName), `${key}.json`);
+}
+
+/**
+ * Remove every catalog discovered for a plugin, and catalogs from the earlier
+ * flat layout, which cannot be attributed to a plugin.
+ */
+export function removePluginCatalogs(cacheHome: string, pluginName: string): void {
+  rmSync(pluginCatalogDirectory(cacheHome, pluginName), { recursive: true, force: true });
+  let entries;
+  try { entries = readdirSync(catalogRoot(cacheHome), { withFileTypes: true }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  for (const entry of entries) {
+    if (entry.isFile()) rmSync(join(catalogRoot(cacheHome), entry.name), { force: true });
+  }
 }
 
 const discoveries = new Map<string, Promise<void>>();
@@ -330,7 +357,7 @@ export function readPluginCatalog(identity: PluginCatalogIdentity): PluginCatalo
 
 export function writePluginCatalog(identity: PluginCatalogIdentity, catalog: PluginCatalog): void {
   const path = cachePath(identity);
-  const directory = join(identity.cacheHome, "cache", "plugin-mcp-catalogs");
+  const directory = pluginCatalogDirectory(identity.cacheHome, identity.pluginName);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
   writeFileSync(temporary, JSON.stringify(catalog), { mode: 0o600 });

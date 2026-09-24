@@ -2466,6 +2466,9 @@
         "sessionId": {
           "type": "string",
           "minLength": 1
+        },
+        "includeStoppedState": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -2508,6 +2511,7 @@
             "failed",
             "disabled",
             "needs-auth",
+            "stopped",
             "disconnected"
           ]
         },

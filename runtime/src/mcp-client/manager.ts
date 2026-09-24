@@ -64,7 +64,7 @@ import { acquireVerifiedPluginGeneration, fingerprintPluginCatalogConfig, primeP
 import { reservePluginProcess, releasePluginProcess, touchPluginProcess, notifyPluginProcessBusy, notifyPluginProcessIdle } from "./plugin-process-budget.js";
 import type { ConfigStore } from "../config/store.js";
 import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
-import { loadPluginMcpServerRegistrations } from "../plugins/registration/mcp-plugin-integration.js";
+import { loadPluginMcpServerInstallation } from "../plugins/registration/mcp-plugin-integration.js";
 import { assertPluginSnapshotLaunchSafe } from "./plugin-launch.js";
 
 /** I-50: cancellable MCP startup wait; 30s default. */
@@ -921,9 +921,10 @@ export class MCPManager {
               }));
             }
           }).catch(error => {
-            this.logger.warn?.(`Could not retire invalidated plugin MCP server ${config.name}`, error);
+            const safeError = this.redactPluginDiagnostic(error);
+            this.logger.warn?.(`Could not retire invalidated plugin MCP server ${config.name}`, safeError);
             this.commitSurfaceMutation(() => this.connectionStates.set(config.name, {
-              type: "failed", error: `Installed plugin ${plugin.pluginName} changed; cleanup remains unproven: ${errMessage(error)}`,
+              type: "failed", error: `Installed plugin ${plugin.pluginName} changed; cleanup remains unproven: ${errMessage(safeError)}`,
             }));
           });
         }
@@ -936,8 +937,10 @@ export class MCPManager {
    * Eager servers use the session's resolved configuration until its own refresh.
    * Before a lazy server's first launch, re-read the installation through the
    * session's ConfigStore sources and check only installation identity and the
-   * effective enabled state after session overrides. Its policy and lifecycle
-   * settings remain those already resolved by the session, including on restart.
+   * effective enabled state after session overrides. Settings and secure storage
+   * are not read: like an eager server, a lazy server launches with the settings
+   * its session resolved. Its policy and lifecycle settings also remain those
+   * already resolved by the session, including on restart.
    */
   private async firstPluginLaunchStillMatches(config: MCPServerConfig, signal?: AbortSignal): Promise<boolean> {
     const plugin = config.origin?.pluginServer;
@@ -948,21 +951,19 @@ export class MCPManager {
       const authority = await context.store.readSourceAuthority();
       signal?.throwIfAborted();
       return runWithCanonicalSettingsAuthority(authority, async () => {
-        const registrations = await loadPluginMcpServerRegistrations({
+        const installed = await loadPluginMcpServerInstallation({
           pluginStorageRoot: context.pluginStorageRoot,
           workspaceRoot: authority.projectRoot,
           config: authority.current(),
-          env: { ...this.environment },
           readOnly: true,
           fresh: true,
+          name: config.name,
+          pluginName: plugin.pluginName,
+          serverName: plugin.serverName,
         });
-        const resolved = registrations.find(entry =>
-          entry.name === config.name && entry.pluginName === plugin.pluginName &&
-          entry.serverName === plugin.serverName);
-        if (!resolved || resolved.pluginRoot !== plugin.pluginRoot ||
-            resolved.digest !== plugin.digest || resolved.snapshotRoot !== plugin.snapshotRoot ||
-            resolved.userConfigDigest !== plugin.userConfigDigest) return false;
-        const enabled = context.enabledOverride(config.name) ?? (resolved.server.enabled !== false);
+        if (!installed || installed.pluginRoot !== plugin.pluginRoot ||
+            installed.digest !== plugin.digest || installed.snapshotRoot !== plugin.snapshotRoot) return false;
+        const enabled = context.enabledOverride(config.name) ?? installed.enabled;
         return enabled === (config.enabled !== false);
       });
     })();
@@ -1095,8 +1096,9 @@ export class MCPManager {
     void this.enqueuePluginTransition(name, async () => {
       await this.retireCrashNow(name);
     }).catch(error => {
-      this.commitSurfaceMutation(() => this.connectionStates.set(name, { type: "failed", error: errMessage(error) }));
-      this.logger.warn?.(`Could not retire crashed plugin MCP server ${name}`, error);
+      const safeError = this.redactPluginDiagnostic(error);
+      this.commitSurfaceMutation(() => this.connectionStates.set(name, { type: "failed", error: errMessage(safeError) }));
+      this.logger.warn?.(`Could not retire crashed plugin MCP server ${name}`, safeError);
     }).finally(() => {
       if (lifecycle.crash === crash) delete lifecycle.crash;
       crash.resolve();
@@ -1182,8 +1184,9 @@ export class MCPManager {
     const owner = lifecycle.reservation;
     const generation = this.lifecycleGeneration;
     const timer = setTimeout(() => { void this.evictPlugin(config.name, owner, config, generation).catch(error => {
-      this.logger.warn?.(`Could not retire idle plugin MCP server ${config.name}`, error);
-      this.commitSurfaceMutation(() => this.connectionStates.set(config.name, { type: "failed", error: errMessage(error) }));
+      const safeError = this.redactPluginDiagnostic(error);
+      this.logger.warn?.(`Could not retire idle plugin MCP server ${config.name}`, safeError);
+      this.commitSurfaceMutation(() => this.connectionStates.set(config.name, { type: "failed", error: errMessage(safeError) }));
     }); }, ms);
     timer.unref?.();
     lifecycle.idleTimer = timer;
@@ -1290,9 +1293,10 @@ export class MCPManager {
           await primePluginCatalogSingleFlight(identity, async () => {
             await this.ensurePluginConnected(config);
             void this.evictPlugin(config.name, this.pluginLifecycle(config.name).reservation, config, generation).catch(error => {
-              this.logger.warn?.(`Could not retire discovered plugin MCP server ${config.name}`, error);
+              const safeError = this.redactPluginDiagnostic(error);
+              this.logger.warn?.(`Could not retire discovered plugin MCP server ${config.name}`, safeError);
               if (this.running && this.lifecycleGeneration === generation && this.configs.includes(config)) {
-                this.commitSurfaceMutation(() => this.connectionStates.set(config.name, { type: "failed", error: errMessage(error) }));
+                this.commitSurfaceMutation(() => this.connectionStates.set(config.name, { type: "failed", error: errMessage(safeError) }));
               }
             });
           });
@@ -1301,10 +1305,11 @@ export class MCPManager {
             if (discovered) await this.publishCachedCatalog(config, discovered, false);
           }
         } catch (error) {
+          const safeError = this.redactPluginDiagnostic(error);
           if (this.running && this.lifecycleGeneration === generation) {
-            this.commitSurfaceMutation(() => this.connectionStates.set(config.name, { type: "failed", error: errMessage(error) }));
+            this.commitSurfaceMutation(() => this.connectionStates.set(config.name, { type: "failed", error: errMessage(safeError) }));
           }
-          this.logger.warn?.(`Plugin MCP catalog discovery failed for ${config.name}`, error);
+          this.logger.warn?.(`Plugin MCP catalog discovery failed for ${config.name}`, safeError);
         }
       })).then(() => undefined);
     this.catalogPrimeTask = task;
@@ -1335,7 +1340,11 @@ export class MCPManager {
     if (!this.running || this.lifecycleGeneration !== generation || !this.configIsCurrent(config) || !canPublish()) return;
     this.cachedCatalogs.set(config.name, catalog);
     this.cachedTools.set(config.name, tools);
-    if (persist) {
+    // Only a catalog that carries no saved secret reaches the disk. One that
+    // redaction would change stays in this session's memory.
+    const sensitiveHeaders = pluginSensitiveHeaders(config);
+    if (persist && (sensitiveHeaders === undefined ||
+        JSON.stringify(redactMcpAttachmentValue(catalog, sensitiveHeaders)) === JSON.stringify(catalog))) {
       try { writePluginCatalog(this.pluginIdentity(config)!, catalog); }
       catch (error) { this.logger.warn?.(`Could not write plugin MCP catalog for ${config.name}`, error); }
     }
@@ -1843,7 +1852,7 @@ export class MCPManager {
     } catch (error) {
       if (this.running && this.lifecycleGeneration === generation) {
         this.commitSurfaceMutation(() => this.connectionStates.set(config.name, {
-          type: "failed", error: errMessage(error),
+          type: "failed", error: errMessage(this.redactPluginDiagnostic(error)),
         }));
       }
       if (attempt) await this.trackAbandonedAttempt(attempt, owner);
@@ -1976,7 +1985,7 @@ export class MCPManager {
         try { await this.ensurePluginConnectedWithSignal(config, executionArgs.__abortSignal instanceof AbortSignal ? executionArgs.__abortSignal : undefined); }
         catch (error) {
           return {
-            content: `MCP plugin startup failed for ${JSON.stringify(serverName)}: ${errMessage(error)}`,
+            content: `MCP plugin startup failed for ${JSON.stringify(serverName)}: ${errMessage(this.redactPluginDiagnostic(error))}`,
             isError: true,
             metadata: { errorCode: "MCP_PLUGIN_STARTUP_FAILED" },
           };
@@ -2068,7 +2077,11 @@ export class MCPManager {
     return this.configs.map(config => {
       if (config.origin?.scope === "plugin") {
         const { env: _env, headers: _headers, pluginSecretValues: _secrets, ...publicConfig } = config;
-        return publicConfig;
+        const pluginServer = config.origin.pluginServer;
+        if (pluginServer?.snapshotLaunch === undefined) return publicConfig;
+        // The snapshot launch environment holds the same resolved secrets as env.
+        const { snapshotLaunch: _launch, ...identity } = pluginServer;
+        return { ...publicConfig, origin: { ...config.origin, pluginServer: identity } };
       }
       if (config.origin?.scope !== "session" || config.headers === undefined) return config;
       const { headers: _headers, desktopAuthority: _proof, desktopAuthorityGrant: _grant, ...publicConfig } = config;
@@ -2716,13 +2729,16 @@ export class MCPManager {
             );
             if (!companionIsCurrent() || !reconnectIsCurrent()) return;
             if (this.isLazyPlugin(config) && reconnectCatalogTools !== undefined) {
+              const resources = snapshot.capabilities.resources && refreshed.resourceBridge
+                ? await refreshed.resourceBridge.listResources().catch(() => []) : undefined;
+              const prompts = snapshot.capabilities.prompts && refreshed.promptBridge
+                ? await refreshed.promptBridge.listPrompts().catch(() => this.cachedCatalogs.get(config.name)?.prompts)
+                : undefined;
               const next: PluginCatalog = {
                 format: 1,
                 tools: reconnectCatalogTools,
-                ...(snapshot.capabilities.resources && refreshed.resourceBridge
-                  ? { resources: await refreshed.resourceBridge.listResources().catch(() => []) } : {}),
-                ...(snapshot.capabilities.prompts && refreshed.promptBridge
-                  ? { prompts: await refreshed.promptBridge.listPrompts().catch(() => []) } : {}),
+                ...(resources !== undefined ? { resources } : {}),
+                ...(prompts !== undefined ? { prompts } : {}),
               };
               if (JSON.stringify(next) !== JSON.stringify(this.cachedCatalogs.get(config.name))) {
                 await this.publishCachedCatalog(config, next, true, reconnectIsCurrent);
@@ -2783,8 +2799,11 @@ export class MCPManager {
         const resources = snapshot.capabilities.resources && companions.resourceBridge
           ? await companions.resourceBridge.listResources().catch(() => []) : undefined;
         assertRefreshOpen(config.name, startupGate, isCurrent);
+        // A failed listing leaves the prompts unknown, not empty. Keep the
+        // previously cached entry rather than caching "no prompts".
         const prompts = snapshot.capabilities.prompts && companions.promptBridge
-          ? await companions.promptBridge.listPrompts().catch(() => []) : undefined;
+          ? await companions.promptBridge.listPrompts().catch(() => this.cachedCatalogs.get(config.name)?.prompts)
+          : undefined;
         assertRefreshOpen(config.name, startupGate, isCurrent);
         const catalog: PluginCatalog = {
           format: 1, tools: catalogTools,
@@ -2865,12 +2884,7 @@ export class MCPManager {
       // A cancelled or timed-out check reports the cancellation, not a change.
       signal?.throwIfAborted();
       if (!matches) {
-        this.commitSurfaceMutation(() => {
-          this.cachedCatalogs.delete(config.name);
-          this.cachedTools.delete(config.name);
-          this.connectionStates.set(config.name, { type: "failed", error: `Plugin ${config.origin!.pluginServer!.pluginName} changed; restart this session before using it` });
-        });
-        throw new Error(`Plugin ${config.origin.pluginServer.pluginName} changed; restart this session before using it`);
+        throw new Error(`Plugin ${config.origin.pluginServer.pluginName} changed; reconnect this server or start a new session`);
       }
     }
     signal?.throwIfAborted();

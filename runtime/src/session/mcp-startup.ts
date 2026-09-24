@@ -1716,9 +1716,13 @@ export function createSessionMcpService(
         new Error(`MCP server "${name}" is disabled in config.`),
       );
     }
-    const reconnect = await manager.reconnectServer(name);
-    if (!reconnect.success) {
-      return mcpMutationFailure(name, new Error(reconnect.error ?? `MCP server "${name}" did not become ready.`));
+    // Reconciliation has already restarted every eager server. Only an
+    // on-demand server it left stopped still needs an explicit start.
+    if (manager.getConnectionState(name)?.type === "stopped") {
+      const reconnect = await manager.reconnectServer(name);
+      if (!reconnect.success) {
+        return mcpMutationFailure(name, new Error(reconnect.error ?? `MCP server "${name}" did not become ready.`));
+      }
     }
     const state = manager.getConnectionState(name);
     if (state?.type !== "connected") {
