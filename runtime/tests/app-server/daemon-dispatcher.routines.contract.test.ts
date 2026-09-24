@@ -56,6 +56,32 @@ function result<T>(response: { readonly result?: unknown; readonly error?: unkno
   return response.result as T;
 }
 
+function stdioConnection(connection: ReturnType<AgenCDaemonJsonRpcDispatcher["createConnection"]>) {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const responses = new Map<string, JsonObject>();
+  output.on("data", (chunk: Buffer) => {
+    for (const line of chunk.toString("utf8").trim().split("\n")) {
+      const response = JSON.parse(line) as JsonObject;
+      responses.set(String(response.id), response);
+    }
+  });
+  const transport = new AgenCStdioTransport({
+    input, output,
+    onMessage: async (message) => { await transport.send(await connection.dispatch(message)); },
+  });
+  transport.start();
+  return {
+    responses,
+    send: (id: string, method: string, params: JsonObject = {}) => input.write(JSON.stringify(request(id, method, params)) + "\n"),
+    async response(id: string) {
+      await vi.waitFor(() => expect(responses.has(id)).toBe(true), { timeout: 2_000 });
+      return responses.get(id)!;
+    },
+    close: () => transport.close(),
+  };
+}
+
 async function harness(options: { enabled?: boolean } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "agenc-routine-dispatch-")));
   const home = join(root, "home");
@@ -225,7 +251,7 @@ async function harness(options: { enabled?: boolean } = {}) {
     return { ...created, sessionId: created.sessionId! };
   }
   return {
-    ...client, connect, hold, dispatcher, service, sessions, agents, starts, bindings, liveModes, chat,
+    ...client, connect, hold, dispatcher, multiplexer, service, sessions, agents, starts, bindings, liveModes, chat,
     terminal, submission, cancellationOrder, cwd, home, authority, createParams, create, run, history,
   };
 }
@@ -290,6 +316,154 @@ describe("routine dispatcher and daemon execution contract", () => {
       h.terminal.resolve(0);
       await transport.close();
     }
+  });
+
+  it("keeps update before delete when the update's session grant is delayed", async () => {
+    const h = await harness();
+    const chat = await h.chat("acceptEdits");
+    await h.hold(h.connection, chat.sessionId);
+    const routine = await h.create();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const original = h.agents.getLiveSessionPermission.bind(h.agents);
+    vi.spyOn(h.agents, "getLiveSessionPermission").mockImplementation(async (id) => {
+      entered.resolve(); await release.promise; return original(id);
+    });
+    const wire = stdioConnection(h.connection);
+    try {
+      wire.send("update", "routine.update", {
+        id: routine.id, patch: { name: "Updated first" }, expectedUpdatedAt: routine.updatedAt,
+        permissionAuthority: { kind: "session", sessionId: chat.sessionId },
+      });
+      await entered.promise;
+      wire.send("delete", "routine.delete", { id: routine.id, expectedUpdatedAt: routine.updatedAt });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(wire.responses.has("delete")).toBe(false);
+      release.resolve();
+      result(await wire.response("update"));
+      expect(await wire.response("delete")).toMatchObject({ error: { data: { code: "ROUTINE_CONFLICT" } } });
+      expect(h.service.get({ id: routine.id }).routine.name).toBe("Updated first");
+    } finally { release.resolve(); await wire.close(); }
+  });
+
+  it("answers an update during its chat turn even after an earlier routine read", async () => {
+    const h = await harness();
+    const chat = await h.chat("acceptEdits");
+    await h.hold(h.connection, chat.sessionId);
+    const routine = await h.create();
+    const wire = stdioConnection(h.connection);
+    try {
+      wire.send("turn", "message.stream", { sessionId: chat.sessionId, content: "Update the routine" });
+      await h.submission.promise;
+      wire.send("read", "routine.get", { id: routine.id });
+      wire.send("write", "routine.update", {
+        id: routine.id, patch: { name: "Changed by chat" },
+        permissionAuthority: { kind: "session", sessionId: chat.sessionId },
+      });
+      result(await wire.response("read"));
+      result(await wire.response("write"));
+      expect(wire.responses.has("turn")).toBe(false);
+      expect(h.service.get({ id: routine.id }).routine.name).toBe("Changed by chat");
+    } finally { h.terminal.resolve(0); await wire.close(); }
+  });
+
+  it("does not hold a chat's routine write behind another attachment queued after its turn", async () => {
+    const h = await harness();
+    const chat = await h.chat("acceptEdits");
+    const other = await h.chat("default");
+    await h.hold(h.connection, chat.sessionId);
+    const routine = await h.create();
+    const wire = stdioConnection(h.connection);
+    try {
+      wire.send("turn", "message.stream", { sessionId: chat.sessionId, content: "Update the routine" });
+      await h.submission.promise;
+      wire.send("attach", "session.attach", { sessionId: other.sessionId, clientId: "other-holder" });
+      wire.send("write", "routine.update", {
+        id: routine.id, patch: { name: "Updated despite attach" },
+        permissionAuthority: { kind: "session", sessionId: chat.sessionId },
+      });
+      result(await wire.response("write"));
+      expect(wire.responses.has("turn")).toBe(false);
+      expect(wire.responses.has("attach")).toBe(false);
+    } finally { h.terminal.resolve(0); await wire.close(); }
+  });
+
+  it("keeps two updates in arrival order across a delayed session grant", async () => {
+    const h = await harness();
+    const chat = await h.chat("acceptEdits");
+    await h.hold(h.connection, chat.sessionId);
+    const routine = await h.create();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const original = h.agents.getLiveSessionPermission.bind(h.agents);
+    let first = true;
+    vi.spyOn(h.agents, "getLiveSessionPermission").mockImplementation(async (id) => {
+      if (first) { first = false; entered.resolve(); await release.promise; }
+      return original(id);
+    });
+    const wire = stdioConnection(h.connection);
+    const permissionAuthority = { kind: "session", sessionId: chat.sessionId };
+    try {
+      wire.send("older", "routine.update", { id: routine.id, patch: { name: "Older" }, permissionAuthority });
+      await entered.promise;
+      wire.send("newer", "routine.update", { id: routine.id, patch: { name: "Newer" }, permissionAuthority });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(wire.responses.has("newer")).toBe(false);
+      release.resolve();
+      result(await wire.response("older"));
+      result(await wire.response("newer"));
+      expect(h.service.get({ id: routine.id }).routine.name).toBe("Newer");
+    } finally { release.resolve(); await wire.close(); }
+  });
+
+  it("keeps create ahead of a later update while the create grant is delayed", async () => {
+    const h = await harness();
+    const chat = await h.chat("acceptEdits");
+    await h.hold(h.connection, chat.sessionId);
+    const routine = await h.create();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const original = h.agents.getLiveSessionPermission.bind(h.agents);
+    vi.spyOn(h.agents, "getLiveSessionPermission").mockImplementation(async (id) => {
+      entered.resolve(); await release.promise; return original(id);
+    });
+    const wire = stdioConnection(h.connection);
+    const { permissionMode: _unset, ...fields } = h.createParams;
+    try {
+      wire.send("create", "routine.create", { ...fields, name: "Created first", permissionAuthority: { kind: "session", sessionId: chat.sessionId } });
+      await entered.promise;
+      wire.send("update", "routine.update", { id: routine.id, patch: { name: "Updated second" } });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(wire.responses.has("update")).toBe(false);
+      release.resolve();
+      result(await wire.response("create"));
+      result(await wire.response("update"));
+      expect(h.service.list().routines.map((entry) => entry.name)).toEqual(["Updated second", "Created first"]);
+    } finally { release.resolve(); await wire.close(); }
+  });
+
+  it("denies an operator write while an earlier pipelined attachment is pending", async () => {
+    const h = await harness();
+    const screen = await h.connect({ v2: true, operator: true });
+    const chat = await h.chat("default");
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const original = h.multiplexer.attachClientToSession.bind(h.multiplexer);
+    vi.spyOn(h.multiplexer, "attachClientToSession").mockImplementation(async (...args) => {
+      entered.resolve(); await release.promise; return original(...args);
+    });
+    const wire = stdioConnection(screen.connection);
+    try {
+      wire.send("attach", "session.attach", { sessionId: chat.sessionId, clientId: "screen-holder" });
+      await entered.promise;
+      wire.send("operator", "routine.create", {
+        ...h.createParams, permissionMode: "bypassPermissions", permissionAuthority: { kind: "operator" },
+      });
+      expect(await wire.response("operator")).toMatchObject({ error: { data: { code: "ROUTINE_PERMISSION_DENIED" } } });
+      release.resolve();
+      result(await wire.response("attach"));
+      expect(h.service.list().routines).toEqual([]);
+    } finally { release.resolve(); await wire.close(); }
   });
 
   it("removes session routine authority from a remote view whose method map denies routine writes", async () => {

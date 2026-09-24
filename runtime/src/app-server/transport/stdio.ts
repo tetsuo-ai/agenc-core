@@ -18,6 +18,9 @@ import {
   daemonOverloadErrorResponse,
   isDaemonPreemptiveMessage,
   isDaemonPriorityMessage,
+  isDaemonRoutineMessage,
+  isDaemonSessionAttachmentMessage,
+  markDaemonRoutineAfterPendingAttachment,
   maxQueuedRequestsFromOptions,
 } from "../overload.js";
 import { isRecord } from "../../utils/record.js";
@@ -38,12 +41,10 @@ export interface AgenCStdioTransportOptions {
 export class AgenCStdioTransport {
   readonly #options: AgenCStdioTransportOptions;
   readonly #pendingMessages = new Set<Promise<void>>();
-  // Per-connection dispatch is serialized on this chain so that pipelined,
-  // order-dependent requests on a single connection are handed to
-  // onMessage in arrival order (rather than racing as fire-and-forget
-  // promises). Cross-connection concurrency is preserved because each
-  // transport instance owns its own chain.
+  // Ordinary requests keep their existing per-connection FIFO. Routine
+  // requests have a separate FIFO so one waiting chat turn cannot hold them.
   #dispatchChain: Promise<void> = Promise.resolve();
+  #routineChain: Promise<void> = Promise.resolve();
   // Priority requests may bypass a streaming turn, but never the initialize
   // request that authenticates and establishes connection state.
   #initializeBarrier: Promise<void> = Promise.resolve();
@@ -53,6 +54,8 @@ export class AgenCStdioTransport {
   // Both are bounded before initialize can release dispatcher admission.
   readonly #queuedPriorityMessages = { priority: 0, control: 0 };
   #queuedNormalMessages = 0;
+  #queuedRoutineMessages = 0;
+  #pendingSessionAttachments = 0;
   #reader: BoundedJsonLineReader | null = null;
 
   constructor(options: AgenCStdioTransportOptions) {
@@ -97,6 +100,32 @@ export class AgenCStdioTransport {
       message = parseJsonObjectLine(line);
     } catch (error) {
       this.#options.onError?.(asError(error), line);
+      return;
+    }
+
+    if (isDaemonRoutineMessage(message)) {
+      const maxQueuedRequests = maxQueuedRequestsFromOptions(this.#options);
+      if (this.#queuedRoutineMessages >= maxQueuedRequests) {
+        void this.send(daemonOverloadErrorResponse(
+          message, "TOO_MANY_QUEUED_REQUESTS", { maxQueuedRequests, lane: "routine" },
+        )).catch((error) => this.#options.onError?.(asError(error), line));
+        return;
+      }
+      if (this.#pendingSessionAttachments > 0) markDaemonRoutineAfterPendingAttachment(message);
+      this.#queuedRoutineMessages += 1;
+      const initializeBarrier = this.#initializeBarrier;
+      const pending = (this.#routineChain = this.#routineChain.then(async () => {
+        try {
+          await initializeBarrier;
+          await this.#options.onMessage(message);
+        } catch (error) {
+          this.#options.onError?.(asError(error), line);
+        } finally {
+          this.#queuedRoutineMessages -= 1;
+        }
+      }));
+      this.#pendingMessages.add(pending);
+      pending.finally(() => { this.#pendingMessages.delete(pending); });
       return;
     }
 
@@ -149,6 +178,8 @@ export class AgenCStdioTransport {
       return;
     }
     this.#queuedNormalMessages += 1;
+    const attachment = isDaemonSessionAttachmentMessage(message);
+    if (attachment) this.#pendingSessionAttachments += 1;
 
     // Chain dispatch on a per-connection promise so pipelined,
     // order-dependent requests are handed to onMessage in arrival order
@@ -161,6 +192,7 @@ export class AgenCStdioTransport {
         } catch (error) {
           this.#options.onError?.(asError(error), line);
         } finally {
+          if (attachment) this.#pendingSessionAttachments -= 1;
           this.#queuedNormalMessages = Math.max(
             0,
             this.#queuedNormalMessages - 1,

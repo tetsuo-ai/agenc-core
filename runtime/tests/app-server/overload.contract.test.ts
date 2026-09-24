@@ -4,6 +4,8 @@ import {
   isDaemonControlMessage,
   isDaemonPreemptiveMessage,
   isDaemonPriorityMessage,
+  isDaemonRoutineMessage,
+  isDaemonSessionAttachmentMessage,
 } from "./overload.js";
 import { JSON_RPC_VERSION, type JsonObject } from "./protocol/index.js";
 
@@ -86,11 +88,16 @@ describe("AgenC daemon overload control messages", () => {
     expect(isDaemonControlMessage(review)).toBe(false);
   });
 
-  it("prioritizes routine writes without exempting them from connection limits", () => {
-    for (const method of ["routine.create", "routine.update"]) {
-      expect(isDaemonPriorityMessage(request(method))).toBe(true);
+  it("routes every routine request to its own FIFO without exempting it from connection limits", () => {
+    for (const method of ["routine.capabilities", "routine.list", "routine.get", "routine.create", "routine.update", "routine.delete", "routine.run", "routine.runs", "routine.cancel", "routine.session.prepare.respond"]) {
+      expect(isDaemonRoutineMessage(request(method))).toBe(true);
+      expect(isDaemonPriorityMessage(request(method))).toBe(false);
       expect(isDaemonPreemptiveMessage(request(method))).toBe(false);
       expect(isDaemonControlMessage(request(method))).toBe(false);
+    }
+    expect(isDaemonRoutineMessage(request("routine.unknown"))).toBe(false);
+    for (const method of ["session.attach", "agent.attach", "session.resume"]) {
+      expect(isDaemonSessionAttachmentMessage(request(method))).toBe(true);
     }
     const limiter = new AgenCDaemonConnectionLimiter({ maxInFlightRequests: 1 });
     const turn = limiter.tryStart(request("message.stream"), 0);

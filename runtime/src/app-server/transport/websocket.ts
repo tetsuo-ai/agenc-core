@@ -30,6 +30,9 @@ import {
   daemonOverloadErrorResponse,
   isDaemonPreemptiveMessage,
   isDaemonPriorityMessage,
+  isDaemonRoutineMessage,
+  isDaemonSessionAttachmentMessage,
+  markDaemonRoutineAfterPendingAttachment,
   maxQueuedRequestsFromOptions,
 } from "../overload.js";
 import { isRecord } from "../../utils/record.js";
@@ -104,11 +107,10 @@ export interface AgenCWebSocketServerOptions {
 interface ActiveWebSocketConnection {
   readonly socket: WebSocket;
   readonly pendingMessages: Set<Promise<void>>;
-  // Per-connection dispatch chain. Pipelined, order-dependent requests on a
-  // single connection are handed to onMessage in arrival order rather than
-  // racing as fire-and-forget promises. Each connection owns its own chain so
-  // cross-connection concurrency is preserved.
+  // Ordinary and routine requests each keep arrival order on this connection.
+  // The routine chain can answer a turn waiting on its own routine tool call.
   dispatchChain: Promise<void>;
+  routineChain: Promise<void>;
   // Priority requests can bypass model turns only after initialize/auth state
   // for this connection has settled.
   initializeBarrier: Promise<void>;
@@ -128,6 +130,8 @@ interface ActiveWebSocketConnection {
   // dispatch chain, mirroring the Unix socket transport.
   authResolution: Promise<void>;
   queuedNormalMessages: number;
+  queuedRoutineMessages: number;
+  pendingSessionAttachments: number;
 }
 
 // gaphunt3 #47: sentinel for "no auth decision in flight" on a connection.
@@ -351,6 +355,7 @@ export class AgenCWebSocketServer {
       socket,
       pendingMessages: new Set(),
       dispatchChain: Promise.resolve(),
+      routineChain: Promise.resolve(),
       initializeBarrier: Promise.resolve(),
       hasInitializeBarrier: false,
       queuedPriorityMessages: { priority: 0, control: 0 },
@@ -361,6 +366,8 @@ export class AgenCWebSocketServer {
       authTimeout: undefined,
       authResolution: resolvedWebSocketAuth,
       queuedNormalMessages: 0,
+      queuedRoutineMessages: 0,
+      pendingSessionAttachments: 0,
     };
     this.#connections.set(connectionId, active);
 
@@ -503,6 +510,34 @@ export class AgenCWebSocketServer {
       return;
     }
 
+    if (isDaemonRoutineMessage(message)) {
+      const maxQueuedRequests = maxQueuedRequestsFromOptions(this.#options);
+      if (active.queuedRoutineMessages >= maxQueuedRequests) {
+        void context.send(daemonOverloadErrorResponse(
+          message, "TOO_MANY_QUEUED_REQUESTS", { maxQueuedRequests, lane: "routine" },
+        )).catch((error) => this.#options.onError?.(asError(error), context.connectionId));
+        return;
+      }
+      if (active.pendingSessionAttachments > 0) markDaemonRoutineAfterPendingAttachment(message);
+      active.queuedRoutineMessages += 1;
+      const initializeBarrier = active.initializeBarrier;
+      const pending = (active.routineChain = active.routineChain.then(async () => {
+        try {
+          await initializeBarrier;
+          if (active.accepted && !active.closingUnauthenticated && active.socket.readyState === WebSocket.OPEN) {
+            await this.#options.onMessage(message, context);
+          }
+        } catch (error) {
+          this.#options.onError?.(asError(error), context.connectionId);
+        } finally {
+          active.queuedRoutineMessages -= 1;
+        }
+      }));
+      active.pendingMessages.add(pending);
+      pending.finally(() => { active.pendingMessages.delete(pending); });
+      return;
+    }
+
     if (isDaemonPriorityMessage(message)) {
       const lane = isDaemonPreemptiveMessage(message) ? "control" : "priority";
       const maxQueuedRequests = maxQueuedRequestsFromOptions(this.#options);
@@ -563,6 +598,8 @@ export class AgenCWebSocketServer {
       return;
     }
     active.queuedNormalMessages += 1;
+    const attachment = isDaemonSessionAttachmentMessage(message);
+    if (attachment) active.pendingSessionAttachments += 1;
 
     const pending = (active.dispatchChain = active.dispatchChain.then(
       async () => {
@@ -573,6 +610,7 @@ export class AgenCWebSocketServer {
           if (!proceed || active.socket.readyState !== WebSocket.OPEN) return;
           await this.#options.onMessage(message, context);
         } finally {
+          if (attachment) active.pendingSessionAttachments -= 1;
           active.queuedNormalMessages = Math.max(
             0,
             active.queuedNormalMessages - 1,

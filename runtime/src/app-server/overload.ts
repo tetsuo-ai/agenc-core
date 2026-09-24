@@ -58,10 +58,6 @@ const DAEMON_PRIORITY_METHODS = new Set<string>([
   // An operator effect review unblocks the turn that may be streaming on
   // the same connection; it must not wait behind that turn.
   "session.resolveToolCall",
-  // A chat may issue a routine write through a tool call while its streaming
-  // turn on this connection waits for that tool call's answer.
-  "routine.create",
-  "routine.update",
   // Bounded file reads and one locked write. A client may be answering an
   // approval that the streaming turn is waiting on, and trust is part of it.
   "project.trustStatus",
@@ -69,6 +65,19 @@ const DAEMON_PRIORITY_METHODS = new Set<string>([
   "health.ping",
   "health.ready",
   "health.stats",
+]);
+
+const DAEMON_ROUTINE_METHODS = new Set<string>([
+  "routine.capabilities",
+  "routine.list",
+  "routine.get",
+  "routine.create",
+  "routine.update",
+  "routine.delete",
+  "routine.run",
+  "routine.runs",
+  "routine.cancel",
+  "routine.session.prepare.respond",
 ]);
 
 export function isDaemonControlMessage(message: JsonObject): boolean {
@@ -96,9 +105,11 @@ export function isDaemonPreemptiveMessage(message: JsonObject): boolean {
 /**
  * Requests that use the connection's priority lane instead of waiting behind
  * a full streaming model turn. Abort/decision messages are included, along
- * with bounded agent creation, health, status, and session lookup operations. Attach requests
- * remain in the normal FIFO because they commonly depend on a preceding
- * create request from the same connection.
+ * with bounded agent creation, health, status, and session lookup operations.
+ * Routine requests use their own FIFO so a chat's routine write can answer a
+ * streaming turn without overtaking an earlier routine request. Attach
+ * requests remain in the normal FIFO because they commonly depend on a
+ * preceding create request from the same connection.
  *
  * Priority requests remain subject to the normal connection
  * limiter. Only {@link isDaemonControlMessage} operations are overload-exempt.
@@ -108,6 +119,33 @@ export function isDaemonPriorityMessage(message: JsonObject): boolean {
     typeof message.method === "string" &&
     DAEMON_PRIORITY_METHODS.has(message.method)
   );
+}
+
+/** Routine operations share one connection FIFO, independent of a streaming turn. */
+export function isDaemonRoutineMessage(message: JsonObject): boolean {
+  return typeof message.method === "string" && DAEMON_ROUTINE_METHODS.has(message.method);
+}
+
+/** Requests that can attach a session to a delivery key, including resume. */
+export function isDaemonSessionAttachmentMessage(message: JsonObject): boolean {
+  return message.method === "session.attach" ||
+    message.method === "agent.attach" ||
+    message.method === "session.resume";
+}
+
+// A transport marks the request at arrival, before an earlier attachment can
+// finish. The dispatcher uses this only to refuse operator authority; session
+// authority never waits for an attachment queued behind a streaming turn.
+const ROUTINE_AFTER_PENDING_ATTACHMENT = new WeakSet<object>();
+
+export function markDaemonRoutineAfterPendingAttachment(message: JsonObject): void {
+  if (message.params !== null && typeof message.params === "object") {
+    ROUTINE_AFTER_PENDING_ATTACHMENT.add(message.params);
+  }
+}
+
+export function routineHasPriorPendingAttachment(params: JsonObject): boolean {
+  return ROUTINE_AFTER_PENDING_ATTACHMENT.has(params);
 }
 
 export function requestIdFromJsonRpcMessage(message: JsonObject): RequestId | null {

@@ -287,7 +287,7 @@ describe("AgenC stdio transport", () => {
     await transport.close();
   });
 
-  it("does not let a priority request overtake connection initialization", async () => {
+  it.each(["health.ping", "routine.create"])("does not let %s overtake connection initialization", async (method) => {
     const input = new PassThrough();
     const output = new PassThrough();
     const events: string[] = [];
@@ -312,7 +312,7 @@ describe("AgenC stdio transport", () => {
     input.write(
       '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1.0.0"}}\n',
     );
-    input.write('{"jsonrpc":"2.0","id":2,"method":"health.ping"}\n');
+    input.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method }) + "\n");
     await delay(20);
     expect(events).toEqual(["initialize:start"]);
 
@@ -321,7 +321,7 @@ describe("AgenC stdio transport", () => {
     expect(events).toEqual([
       "initialize:start",
       "initialize:end",
-      "health.ping",
+      method,
     ]);
     await transport.close();
   });

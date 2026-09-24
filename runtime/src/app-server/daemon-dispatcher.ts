@@ -75,6 +75,7 @@ import {
 } from "./realtime.js";
 import {
   AgenCDaemonConnectionLimiter,
+  routineHasPriorPendingAttachment,
   type AgenCDaemonOverloadLimitOptions,
 } from "./overload.js";
 import {
@@ -1009,6 +1010,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   async #routinePermissionGrant(
     connection: AgenCDaemonJsonRpcConnection,
     authority: RoutinePermissionAuthority | undefined,
+    priorAttachmentPending: boolean,
   ): Promise<RoutinePermissionGrant> {
     if (authority === undefined) return LEGACY_ROUTINE_GRANT;
     const agentManager = this.#agentManager;
@@ -1019,7 +1021,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       connection.remoteAccess === undefined;
     // Only multiplexed attachments exist on a connection, so a daemon without
     // a multiplexer has no session held anywhere.
-    const operator = declaredOperator &&
+    const operator = declaredOperator && !priorAttachmentPending &&
       !(await (multiplexer?.deliveryHoldsSession?.(deliveryKey) ?? Promise.resolve(false)));
     return await resolveRoutinePermissionGrant(authority, {
       operator,
@@ -1106,13 +1108,13 @@ export class AgenCDaemonJsonRpcDispatcher {
       case "routine.create": {
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
         const request = this.#routineRequest(connection, params);
-        const grant = await this.#routinePermissionGrant(connection, request.authority);
+        const grant = await this.#routinePermissionGrant(connection, request.authority, routineHasPriorPendingAttachment(params));
         return successResponse(id, this.#routines.create(request.params, grant));
       }
       case "routine.update": {
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
         const request = this.#routineRequest(connection, params);
-        const grant = await this.#routinePermissionGrant(connection, request.authority);
+        const grant = await this.#routinePermissionGrant(connection, request.authority, routineHasPriorPendingAttachment(params));
         // Checked after the grant's await so nothing interleaves before the update.
         this.#assertRoutineVisible(connection, params);
         return successResponse(id, this.#routines.update(request.params, grant));
