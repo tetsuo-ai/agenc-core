@@ -123,7 +123,7 @@ export function snapshotInstalledPlugin(root: string, storageRoot: string, diges
 // lockstep with the synchronous admin API; parity is covered by snapshot tests.
 const installationWorkerSource = `
 const { parentPort, workerData } = require("node:worker_threads");
-const { createHash } = require("node:crypto");
+const { createHash, randomUUID } = require("node:crypto");
 const { chmodSync, cpSync, existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, mkdirSync, renameSync, rmSync } = require("node:fs");
 const { isAbsolute, join, relative, sep } = require("node:path");
 const isPluginPayloadEntry = (name) => {
@@ -195,7 +195,7 @@ const snapshotInstalledPlugin = (root, storageRoot, digest) => {
     return destination;
   }
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const temporary = destination + "." + process.pid + "." + Math.random().toString(16).slice(2) + ".tmp";
+  const temporary = destination + "." + process.pid + "." + randomUUID() + ".tmp";
   try {
     cpSync(root, temporary, { recursive: true, dereference: false, verbatimSymlinks: true, errorOnExist: true,
       filter: (source) => source === root || isPluginPayloadEntry(source) });
