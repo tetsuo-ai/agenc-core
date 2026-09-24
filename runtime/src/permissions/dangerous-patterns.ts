@@ -209,9 +209,28 @@ const SHELL_SCRIPT_COMMANDS: ReadonlySet<string> = new Set([
   "rbash",
   "rksh",
   "ksh93",
+  // Windows shells already treated as input evaluators by the bash tool.
+  // Their -c / -Command / /c forms must hit the same removal floor.
   "powershell",
   "pwsh",
+  "cmd",
 ]);
+
+const WINDOWS_COMMAND_SHELLS: ReadonlySet<string> = new Set([
+  "powershell",
+  "pwsh",
+  "cmd",
+]);
+
+function normalizedCommandName(command: string): string {
+  return basename(stripShellQuotes(command))
+    .toLowerCase()
+    .replace(/\.(?:exe|com|cmd|bat)$/u, "");
+}
+
+function isShellScriptCommand(command: string): boolean {
+  return SHELL_SCRIPT_COMMANDS.has(normalizedCommandName(command));
+}
 
 function isRecursiveForceRemove(command: string): boolean {
   const fragments = splitShellFragments(command);
@@ -427,7 +446,7 @@ function xargsShellCommandRemovesSuppliedArgs(
   replacementTokens: readonly string[],
 ): boolean {
   const command = basename(stripShellQuotes(nestedWords[0] ?? ""));
-  if (!SHELL_SCRIPT_COMMANDS.has(command)) return false;
+  if (!isShellScriptCommand(command)) return false;
 
   const scriptIndex = shellCommandStringIndex(nestedWords, 0);
   if (scriptIndex === null) return false;
@@ -477,7 +496,7 @@ function shellCommandStringContainsDangerousCommand(command: string): boolean {
   if (shellIndex === null) return false;
   const shell = basename(stripShellQuotes(words[shellIndex] ?? ""));
   return (
-    SHELL_SCRIPT_COMMANDS.has(shell) &&
+    isShellScriptCommand(shell) &&
     shellScriptContainsDanger(words, shellIndex, isDangerousShellCommand)
   );
 }
@@ -647,7 +666,7 @@ function shellExecutesDownloadedContent(command: string): boolean {
         words.slice(commandIndex + 1).join(" "),
       ) || rawEvalUsesDownloadSubstitution(command);
     }
-    if (SHELL_SCRIPT_COMMANDS.has(commandName)) {
+    if (isShellScriptCommand(commandName)) {
       if (shellCommandStringContainsDownloadSubstitution(words, commandIndex)) {
         return true;
       }
@@ -664,10 +683,11 @@ function shellCommandStringContainsDownloadSubstitution(
   words: readonly string[],
   shellIndex: number,
 ): boolean {
+  const shellName = normalizedCommandName(words[shellIndex] ?? "");
   for (let i = shellIndex + 1; i < words.length - 1; i++) {
     const flag = stripShellQuotes(words[i]!);
     if (flag === "--") continue;
-    if (!isShellCommandStringFlag(flag)) continue;
+    if (!isShellScriptIntroducer(shellName, flag)) continue;
     let scriptIndex = i + 1;
     if (stripShellQuotes(words[scriptIndex] ?? "") === "--") {
       scriptIndex++;
@@ -800,7 +820,9 @@ function isShellSinkCommand(command: string): boolean {
   let commandIndex = firstCommandIndex(words, 0);
   while (commandIndex !== null) {
     const commandName = basename(stripShellQuotes(words[commandIndex] ?? ""));
-    if (SHELL_PIPE_SINK_COMMANDS.has(commandName)) return true;
+    if (SHELL_PIPE_SINK_COMMANDS.has(normalizedCommandName(commandName))) {
+      return true;
+    }
     if (commandName === "env") {
       const splitCommand = envSplitStringCommand(words, commandIndex + 1);
       if (splitCommand !== null) return isShellSinkCommand(splitCommand);
@@ -869,7 +891,7 @@ function commandAtIndexContainsRecursiveForceRemove(
     return rmArgsHaveRecursiveAndForce(words.slice(commandIndex + 1));
   }
   if (
-    SHELL_SCRIPT_COMMANDS.has(command) &&
+    isShellScriptCommand(command) &&
     shellScriptContainsDanger(
       words,
       commandIndex,
@@ -895,7 +917,7 @@ function commandAtIndexContainsForceRemove(
     return rmArgsHaveForceWithoutRecursive(words.slice(commandIndex + 1));
   }
   if (
-    SHELL_SCRIPT_COMMANDS.has(command) &&
+    isShellScriptCommand(command) &&
     shellScriptContainsDanger(words, commandIndex, isForceRemove)
   ) {
     return true;
@@ -923,7 +945,7 @@ function commandAtIndexRemovesPlaceholder(
       );
   }
   if (
-    SHELL_SCRIPT_COMMANDS.has(command) &&
+    isShellScriptCommand(command) &&
     shellScriptContainsDanger(
       words,
       commandIndex,
@@ -1306,14 +1328,28 @@ function shellScriptContainsDanger(
     : matchesDanger(stripShellQuotes(words[scriptIndex]!));
 }
 
+function isWindowsCommandStringFlag(shellName: string, flag: string): boolean {
+  if (!WINDOWS_COMMAND_SHELLS.has(shellName)) return false;
+  const normalized = flag.toLowerCase();
+  return normalized === "/c" || normalized === "/k";
+}
+
+function isShellScriptIntroducer(shellName: string, flag: string): boolean {
+  return (
+    isShellCommandStringFlag(flag) ||
+    isWindowsCommandStringFlag(shellName, flag)
+  );
+}
+
 function shellCommandStringIndex(
   words: readonly string[],
   shellIndex: number,
 ): number | null {
+  const shellName = normalizedCommandName(words[shellIndex] ?? "");
   for (let i = shellIndex + 1; i < words.length - 1; i++) {
     const flag = stripShellQuotes(words[i]!);
     if (flag === "--") continue;
-    if (isShellCommandStringFlag(flag)) {
+    if (isShellScriptIntroducer(shellName, flag)) {
       let scriptIndex = i + 1;
       if (stripShellQuotes(words[scriptIndex] ?? "") === "--") {
         scriptIndex++;
@@ -1617,7 +1653,7 @@ function shellCommandHasShellConstruct(command: string, depth: number): boolean 
     ) {
       return true;
     }
-    if (SHELL_SCRIPT_COMMANDS.has(commandName)) {
+    if (isShellScriptCommand(commandName)) {
       const scriptIndex = shellCommandStringIndex(words, commandIndex);
       return scriptIndex === null
         ? shellInputContainsShellConstruct(normalized)
