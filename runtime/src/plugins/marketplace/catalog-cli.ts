@@ -640,24 +640,52 @@ async function writeAdvertSidecar(path: string, sidecar: Record<string, unknown>
     `${JSON.stringify(sidecar)}\n`);
 }
 
+/** Fold previous sidecar deadlines into one source-wide deadline on first claim. */
+function migratedAdvertSidecar(cached: Record<string, unknown>): Record<string, unknown> {
+  const { manifestRetryAfter, authRetryAfter, authRecoveryAfter, authRefreshPending,
+    ...current } = cached;
+  const legacy = [manifestRetryAfter, authRetryAfter, authRecoveryAfter]
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => Date.parse(value)).filter(Number.isFinite);
+  const existing = typeof current.advertRetryAfter === "string"
+    ? Date.parse(current.advertRetryAfter) : NaN;
+  const deadline = Math.max(...legacy, ...(Number.isFinite(existing) ? [existing] : []));
+  if (Number.isFinite(deadline)) current.advertRetryAfter = new Date(deadline).toISOString();
+  return current;
+}
+
+/** Caller holds the sidecar lock. Persist every claim before fetching. */
+async function claimAdvertDeadline(path: string, cached: Record<string, unknown>,
+  now: number, recovery: boolean): Promise<string | undefined> {
+  const current = migratedAdvertSidecar(cached);
+  const migrated = JSON.stringify(current) !== JSON.stringify(cached);
+  const deadline = typeof current.advertRetryAfter === "string"
+    ? Date.parse(current.advertRetryAfter) : NaN;
+  if (deadline > now + OFFICIAL_MARKETPLACE_REFRESH_MS) {
+    await writeAdvertSidecar(path, { ...current,
+      advertRetryAfter: new Date(now + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString() });
+    return undefined;
+  }
+  if (deadline > now && !(recovery && current.advertRecoveryEligible === true)) {
+    if (migrated) await writeAdvertSidecar(path, current);
+    return undefined;
+  }
+  const claim = randomUUID();
+  const { payloadDigest: _digest, signedManifestSha256: _hash,
+    signedSignature: _signature, ...display } = current;
+  await writeAdvertSidecar(path, { ...display, advertClaim: claim,
+    advertRetryAfter: new Date(now + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString(),
+    advertRecoveryEligible: false });
+  return claim;
+}
+
 /** Persist the deadline before any network fetch; the lock spans CLI processes. */
-async function claimAdvertRefresh(path: string, now: number, authenticate: boolean): Promise<string | undefined> {
+async function claimAdvertRefresh(path: string, now: number): Promise<string | undefined> {
   try {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     return await withAdvertSidecarLock(path, async () => {
       const cached = await readAdvertSidecar(path);
-      if (typeof cached.manifestRetryAfter === "string" &&
-        Date.parse(cached.manifestRetryAfter) > now) return undefined;
-      const claim = randomUUID();
-      const { payloadDigest: _digest, signedManifestSha256: _hash,
-        signedSignature: _signature, ...display } = cached;
-      await writeAdvertSidecar(path, { ...display, advertClaim: claim,
-        manifestRetryAfter: new Date(now + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString(),
-        ...(authenticate ? {
-          authRetryAfter: new Date(now + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString(),
-          authRefreshPending: true,
-        } : {}) });
-      return claim;
+      return claimAdvertDeadline(path, cached, now, false);
     });
   } catch { return undefined; }
 }
@@ -669,8 +697,8 @@ async function finishAdvertRefresh(path: string, claim: string, metadata: Record
       const cached = await readAdvertSidecar(path);
       if (cached.advertClaim !== claim) return;
       const { advertClaim: _claim, ...rest } = cached;
-      if (authenticated) delete rest.authRefreshPending;
-      await writeAdvertSidecar(path, { ...rest, ...metadata });
+      await writeAdvertSidecar(path, { ...rest, ...metadata,
+        ...(authenticated ? { advertRecoveryEligible: true } : {}) });
     });
   } catch { /* The claimed deadline remains in force after cache write failures. */ }
 }
@@ -679,7 +707,7 @@ async function finishAdvertRefresh(path: string, claim: string, metadata: Record
 async function claimAdvertAuthentication(
   path: string, now: number, recovery: boolean, authenticatedPath: string,
   manifestUrl: string, agencHome: string,
-): Promise<{ readonly claimed: boolean; readonly digest?: string }> {
+): Promise<{ readonly claim?: string; readonly digest?: string }> {
   try {
     return await withAdvertSidecarLock(path, async () => {
       const cached = await readAdvertSidecar(path);
@@ -690,24 +718,13 @@ async function claimAdvertAuthentication(
         try {
           const digest = await verifiedAdvertisedPluginPayloadDigest(
             rebound.manifest, rebound.signature, { agencHome });
-          return { claimed: false, digest };
+          return { digest };
         } catch { /* Current publisher trust still requires a fresh attempt. */ }
       }
-      const authDeadlineActive = typeof cached.authRetryAfter === "string" &&
-        Date.parse(cached.authRetryAfter) > now;
-      const recoveryDeadlineActive = typeof cached.authRecoveryAfter === "string" &&
-        Date.parse(cached.authRecoveryAfter) > now;
-      // Only the first loss of a previously bound key can bypass an ordinary
-      // deadline. A failed ordinary refresh owns the deadline it just wrote.
-      if (recovery ? recoveryDeadlineActive || (authDeadlineActive && cached.authRefreshPending === true)
-        : authDeadlineActive) return { claimed: false };
-      const { authRefreshPending: _pending, ...rest } = cached;
-      await writeAdvertSidecar(path, { ...rest,
-        ...(recovery ? { authRecoveryAfter: new Date(now + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString() } : {}),
-        authRetryAfter: new Date(now + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString() });
-      return { claimed: true };
+      const claim = await claimAdvertDeadline(path, cached, now, recovery);
+      return { claim };
     });
-  } catch { return { claimed: false }; }
+  } catch { return {}; }
 }
 
 async function authenticatedDigestDuringWindow(
@@ -734,7 +751,7 @@ async function authenticatedDigestDuringWindow(
   const claim = await claimAdvertAuthentication(sidecarPath, now, unboundEntry,
     authenticatedPath, manifestUrl, options.agencHome);
   if (claim.digest !== undefined) return claim.digest;
-  if (!claim.claimed) return undefined;
+  if (claim.claim === undefined) return undefined;
   const signatureUrl = pinnedRawUrl(source, ".agenc-plugin/signature.json");
   if (signatureUrl === undefined) return undefined;
   const manifest = await fetchBounded(fetcher, manifestUrl, MANIFEST_PREFETCH_MAX_BYTES);
@@ -745,10 +762,13 @@ async function authenticatedDigestDuringWindow(
       manifest, signature, { agencHome: options.agencHome });
     authenticatedAdverts.set(cacheIdentity, { manifest, signature });
     if (authenticatedAdverts.size > 128) authenticatedAdverts.delete(authenticatedAdverts.keys().next().value!);
+    let persistedAuthentication = false;
     try {
       await writeAuthenticatedAdvert(authenticatedPath, manifestUrl, manifest, signature,
         options.agencHome);
+      persistedAuthentication = true;
     } catch { /* The in-memory verified advert is still safe to use. */ }
+    await finishAdvertRefresh(sidecarPath, claim.claim, {}, persistedAuthentication && !unboundEntry);
     return digest;
   } catch { return undefined; }
 }
@@ -778,10 +798,17 @@ async function retryIncompleteSkillMetadata(
     claim = await withAdvertSidecarLock(path, async () => {
       const current = await readAdvertSidecar(path);
       if (JSON.stringify(current.pendingSkillFetches) !== JSON.stringify(cached.pendingSkillFetches) ||
-        current.manifestRetryAfter !== cached.manifestRetryAfter ||
-        (typeof current.skillRetryAfter === "string" && Date.parse(current.skillRetryAfter) > now)) {
+        current.advertRetryAfter !== cached.advertRetryAfter) {
         return undefined;
       }
+      const skillDeadline = typeof current.skillRetryAfter === "string"
+        ? Date.parse(current.skillRetryAfter) : NaN;
+      if (skillDeadline > now + OFFICIAL_MARKETPLACE_REFRESH_MS) {
+        await writeAdvertSidecar(path, { ...current,
+          skillRetryAfter: new Date(now + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString() });
+        return undefined;
+      }
+      if (skillDeadline > now) return undefined;
       const next = randomUUID();
       await writeAdvertSidecar(path, { ...current, skillClaim: next,
         skillRetryAfter: new Date(now + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString() });
@@ -859,30 +886,20 @@ async function prefetchPinnedCardMetaOnce(
   // bytes fetched for this exact URL in this process can yield a cached digest.
   const { payloadDigest: _untrustedDigest, ...staleCached } = metaFromSidecar(cached, cachedLogoPath);
   const now = (options.now ?? (() => new Date()))().getTime();
-  const deadline = typeof cached.manifestRetryAfter === "string"
-    ? Date.parse(cached.manifestRetryAfter) : NaN;
-  if (deadline > now) {
-    const displaySidecar = await retryIncompleteSkillMetadata(
-      sidecarPath, cached, fetcher, plugin.source, now);
-    const { payloadDigest: _displayDigest, ...display } =
-      metaFromSidecar(displaySidecar, cachedLogoPath);
-    if (includePayloadDigest) {
-      const payloadDigest = await authenticatedDigestDuringWindow(options, plugin.source,
-        fetcher, manifestUrl, sidecarPath, authenticatedPath, cacheIdentity, now);
-      if (payloadDigest !== undefined) return { ...display, payloadDigest };
-    }
-    return display;
-  }
   // Legacy complete display sidecars predate advert deadlines. They are still
   // reusable for card copy; signed update comparisons must claim a fresh fetch.
-  if (cached.manifestRetryAfter === undefined &&
+  if (cached.advertRetryAfter === undefined && cached.manifestRetryAfter === undefined &&
+    cached.authRetryAfter === undefined && cached.authRecoveryAfter === undefined &&
     cached.cardMetadataVersion === CARD_METADATA_VERSION && !includePayloadDigest) {
     return staleCached;
   }
-  const claim = await claimAdvertRefresh(sidecarPath, now, includePayloadDigest);
+  const claim = await claimAdvertRefresh(sidecarPath, now);
   if (claim === undefined) {
     const current = await readAdvertSidecar(sidecarPath);
-    const { payloadDigest: _currentDigest, ...display } = metaFromSidecar(current, cachedLogoPath);
+    const displaySidecar = await retryIncompleteSkillMetadata(
+      sidecarPath, current, fetcher, plugin.source, now);
+    const { payloadDigest: _currentDigest, ...display } =
+      metaFromSidecar(displaySidecar, cachedLogoPath);
     if (includePayloadDigest) {
       const payloadDigest = await authenticatedDigestDuringWindow(options, plugin.source,
         fetcher, manifestUrl, sidecarPath, authenticatedPath, cacheIdentity, now);

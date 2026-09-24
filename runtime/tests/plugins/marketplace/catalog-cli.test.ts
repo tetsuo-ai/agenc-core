@@ -196,16 +196,22 @@ describe("marketplace catalog CLI surface", () => {
     expect(fetches()).toBe(2);
   });
 
-  it("authenticates an advert after a display-only catalog claimed its manifest window", async () => {
+  it("authenticates an advert after a display-only catalog's deadline expires", async () => {
     const { options, fetches } = await remoteAdvertFixture(JSON.stringify({ name: "remote", version: "2.0.0" }), true);
-    const display = await buildMarketplaceCatalog(options);
+    let now = Date.parse("2026-09-23T00:00:00Z");
+    const runtime = { ...options, now: () => new Date(now) };
+    const display = await buildMarketplaceCatalog(runtime);
     expect(display.marketplaces[0]?.plugins[0]?.payloadDigest).toBeUndefined();
     vi.resetModules();
     const fresh = await import("./catalog-cli.js");
-    const inventory = await fresh.buildMarketplaceCatalog(options, undefined, true);
+    expect((await fresh.buildMarketplaceCatalog(runtime, undefined, true)).marketplaces[0]?.plugins[0]?.payloadDigest)
+      .toBeUndefined();
+    expect(fetches()).toBe(1);
+    now += OFFICIAL_MARKETPLACE_REFRESH_MS + 1;
+    const inventory = await fresh.buildMarketplaceCatalog(runtime, undefined, true);
     expect(inventory.marketplaces[0]?.plugins[0]?.payloadDigest).toMatch(/^sha256:/u);
     const calls = fetches();
-    await fresh.buildMarketplaceCatalog(options, undefined, true);
+    await fresh.buildMarketplaceCatalog(runtime, undefined, true);
     expect(fetches()).toBe(calls);
   });
   it("exposes only a cryptographically verified advertised payload digest", async () => {
@@ -319,8 +325,8 @@ describe("marketplace catalog CLI surface", () => {
     await writeFile(sidecarPathB, JSON.stringify({ cardMetadataVersion: 1, version: "2.0.0",
       signedManifestSha256: createHash("sha256").update(manifestA).digest("hex"),
       signedSignature: signatureA.toString("base64"),
-      manifestRetryAfter: new Date(Date.now() + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString(),
-      authRetryAfter: new Date(Date.now() + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString() }));
+      manifestRetryAfter: new Date(Date.now() - 1).toISOString(),
+      authRetryAfter: new Date(Date.now() - 1).toISOString() }));
     const manifestUrlA = `https://raw.githubusercontent.com/team/plugins/${pinA}/.agenc-plugin/plugin.json`;
     const keyA = createHash("sha256").update(manifestUrlA).digest("hex").slice(0, 24);
     const cacheRoot = join(options.pluginStorageRoot, "marketplaces", ".logo-cache");
@@ -391,8 +397,8 @@ describe("marketplace catalog CLI surface", () => {
     await writeFile(join(cacheRoot, `${cacheKey(pinB)}.authenticated.json`),
       JSON.stringify({ ...copied, manifestUrl: url(pinB), binding }));
     await writeFile(join(cacheRoot, `${cacheKey(pinB)}.meta.json`), JSON.stringify({
-      manifestRetryAfter: new Date(Date.now() + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString(),
-      authRetryAfter: new Date(Date.now() + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString(),
+      manifestRetryAfter: new Date(Date.now() - 1).toISOString(),
+      authRetryAfter: new Date(Date.now() - 1).toISOString(),
     }));
     requests.length = 0;
     vi.resetModules();
@@ -424,6 +430,100 @@ describe("marketplace catalog CLI surface", () => {
       now += 1000;
     }
     expect(attempts).toBe(1);
+  });
+
+  it("does not start an ordinary fetch at the old deadline after recovery near its expiry", async () => {
+    const { options } = await remoteAdvertFixture(JSON.stringify({ name: "remote", version: "2.0.0" }), true);
+    const start = Date.parse("2026-09-23T00:00:00Z");
+    let now = start;
+    const requests: string[] = [];
+    const runtime = { ...options, now: () => new Date(now), fetcher: async (url: string) => {
+      requests.push(url);
+      return options.fetcher(url);
+    } };
+    expect((await buildMarketplaceCatalog(runtime, undefined, true)).marketplaces[0]?.plugins[0]?.payloadDigest)
+      .toMatch(/^sha256:/u);
+    expect(requests).toHaveLength(2);
+    await rm(join(options.root, "private", "plugin-adverts", "binding-key"), { force: true });
+    vi.resetModules();
+    const fresh = await import("./catalog-cli.js");
+    now = start + OFFICIAL_MARKETPLACE_REFRESH_MS - 1000;
+    expect((await fresh.buildMarketplaceCatalog(runtime, undefined, true)).marketplaces[0]?.plugins[0]?.payloadDigest)
+      .toMatch(/^sha256:/u);
+    expect(requests).toHaveLength(4);
+    now = start + OFFICIAL_MARKETPLACE_REFRESH_MS + 1;
+    expect((await fresh.buildMarketplaceCatalog(runtime, undefined, true)).marketplaces[0]?.plugins[0]?.payloadDigest)
+      .toMatch(/^sha256:/u);
+    expect(requests).toHaveLength(4);
+  });
+
+  it("rebases a failed authentication deadline after clock correction", async () => {
+    const { options } = await remoteAdvertFixture(JSON.stringify({ name: "remote", version: "2.0.0" }), true);
+    const corrected = Date.parse("2026-09-23T00:00:00Z");
+    let now = corrected + 7 * 24 * OFFICIAL_MARKETPLACE_REFRESH_MS;
+    let offline = true;
+    const requests: string[] = [];
+    const runtime = { ...options, now: () => new Date(now), fetcher: async (url: string) => {
+      requests.push(url);
+      if (offline && url.endsWith("/signature.json")) throw new Error("offline");
+      return options.fetcher(url);
+    } };
+    expect((await buildMarketplaceCatalog(runtime, undefined, true)).marketplaces[0]?.plugins[0]?.payloadDigest)
+      .toBeUndefined();
+    expect(requests).toHaveLength(2);
+    now = corrected;
+    offline = false;
+    await buildMarketplaceCatalog(runtime, undefined, true);
+    expect(requests).toHaveLength(2);
+    const manifestUrl = `https://raw.githubusercontent.com/team/plugins/${"a".repeat(40)}/.agenc-plugin/plugin.json`;
+    const key = createHash("sha256").update(manifestUrl).digest("hex").slice(0, 24);
+    const sidecar = JSON.parse(await readFile(join(options.pluginStorageRoot, "marketplaces",
+      ".logo-cache", `${key}.meta.json`), "utf8"));
+    expect(sidecar.advertRetryAfter).toBe(new Date(corrected + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString());
+    now += OFFICIAL_MARKETPLACE_REFRESH_MS + 1;
+    expect((await buildMarketplaceCatalog(runtime, undefined, true)).marketplaces[0]?.plugins[0]?.payloadDigest)
+      .toMatch(/^sha256:/u);
+    expect(requests).toHaveLength(4);
+    await buildMarketplaceCatalog(runtime, undefined, true);
+    expect(requests).toHaveLength(4);
+    now += OFFICIAL_MARKETPLACE_REFRESH_MS + 1;
+    await buildMarketplaceCatalog(runtime, undefined, true);
+    expect(requests).toHaveLength(6);
+  });
+
+  it("migrates legacy advert deadlines to the latest source deadline", async () => {
+    const { options } = await remoteAdvertFixture(JSON.stringify({ name: "remote", version: "2.0.0" }), true);
+    const start = Date.parse("2026-09-23T00:00:00Z");
+    let now = start;
+    const requests: string[] = [];
+    const runtime = { ...options, now: () => new Date(now), fetcher: async (url: string) => {
+      requests.push(url);
+      return options.fetcher(url);
+    } };
+    const manifestUrl = `https://raw.githubusercontent.com/team/plugins/${"a".repeat(40)}/.agenc-plugin/plugin.json`;
+    const key = createHash("sha256").update(manifestUrl).digest("hex").slice(0, 24);
+    const sidecarPath = join(options.pluginStorageRoot, "marketplaces", ".logo-cache", `${key}.meta.json`);
+    await mkdir(join(options.pluginStorageRoot, "marketplaces", ".logo-cache"), { recursive: true });
+    await writeFile(sidecarPath, JSON.stringify({ version: "old",
+      manifestRetryAfter: new Date(start + 10 * 60_000).toISOString(),
+      authRetryAfter: new Date(start + 30 * 60_000).toISOString(),
+      authRecoveryAfter: new Date(start + 40 * 60_000).toISOString(),
+      authRefreshPending: true }));
+    await buildMarketplaceCatalog(runtime, undefined, true);
+    expect(requests).toHaveLength(0);
+    const migrated = JSON.parse(await readFile(sidecarPath, "utf8"));
+    expect(migrated).toMatchObject({ version: "old",
+      advertRetryAfter: new Date(start + 40 * 60_000).toISOString() });
+    for (const field of ["manifestRetryAfter", "authRetryAfter", "authRecoveryAfter", "authRefreshPending"]) {
+      expect(migrated).not.toHaveProperty(field);
+    }
+    now = start + 30 * 60_000 + 1;
+    await buildMarketplaceCatalog(runtime, undefined, true);
+    expect(requests).toHaveLength(0);
+    now = start + 40 * 60_000 + 1;
+    expect((await buildMarketplaceCatalog(runtime, undefined, true)).marketplaces[0]?.plugins[0]?.payloadDigest)
+      .toMatch(/^sha256:/u);
+    expect(requests).toHaveLength(2);
   });
 
   it("lets only one independent catalog module claim recovery concurrently", async () => {

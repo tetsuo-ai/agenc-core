@@ -357,7 +357,7 @@ describe("agenc plugin CLI", () => {
     const key = createHash("sha256").update(requests[0]!).digest("hex").slice(0, 24);
     const sidecar = JSON.parse(await readFile(join(opts.pluginStorageRoot, "marketplaces",
       ".logo-cache", `${key}.meta.json`), "utf8"));
-    expect(Date.parse(sidecar.manifestRetryAfter)).toBeGreaterThan(opts.now!().getTime());
+    expect(Date.parse(sidecar.advertRetryAfter)).toBeGreaterThan(opts.now!().getTime());
   });
 
   it("reports a valid unsigned local-marketplace install as unsigned-local", async () => {
