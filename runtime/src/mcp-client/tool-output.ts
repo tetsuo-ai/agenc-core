@@ -19,7 +19,7 @@ import {
 } from "../utils/toolResultStorage.js";
 import type { Logger } from "./_deps/logger.js";
 import type { ToolResult } from "./_deps/tools-types.js";
-import { DISPLAY_ATTACHMENT_LIMIT, DISPLAY_BINARY_LIMIT, DISPLAY_WORK_LIMIT, DisplayValidationError, validateDisplayBlock, type DisplayAttachment } from "./display-attachments.js";
+import { DISPLAY_ATTACHMENT_LIMIT, DISPLAY_BINARY_LIMIT, DISPLAY_WORK_LIMIT, DisplayValidationError, peekDisplayArtifactBytes, releaseDisplayArtifactBytes, validateDisplayBlock, type DisplayAttachment } from "./display-attachments.js";
 import {
   consumeMcpSanitizationBudget,
   createMcpSanitizationBudget,
@@ -69,10 +69,22 @@ export interface NormalizeMcpToolOutputOptions {
 function containsLiteralSecret(bytes: Buffer, headers?: Readonly<Record<string, string>>): boolean {
   for (const value of Object.values(headers ?? {})) {
     for (const secret of [value, value.replace(/^Bearer\s+/i, "")]) {
-      if (secret.length >= 4 && bytes.includes(Buffer.from(secret, "utf8"))) return true;
+      if (secret.length < 4) continue;
+      // JSON bytes (a chart or table, a .json file) hold the escaped form.
+      for (const form of new Set([secret, JSON.stringify(secret).slice(1, -1)])) {
+        if (bytes.includes(Buffer.from(form, "utf8"))) return true;
+      }
     }
   }
   return false;
+}
+
+/** A display attachment is stored and shown as is, so it is checked whole. */
+function displayContainsLiteralSecret(attachment: DisplayAttachment, caption: string, headers?: Readonly<Record<string, string>>): boolean {
+  if (headers === undefined) return false;
+  const bytes = peekDisplayArtifactBytes(attachment);
+  return (bytes !== undefined && containsLiteralSecret(bytes, headers)) ||
+    containsLiteralSecret(Buffer.from(`${attachment.title}\n${caption}`, "utf8"), headers);
 }
 
 function containsEncodedLiteralSecret(encoded: unknown, headers?: Readonly<Record<string, string>>): boolean {
@@ -648,6 +660,10 @@ export async function normalizeMcpToolOutput(
         }
         try {
           const shown = await validateDisplayBlock(displayRecord ?? {}, options.displayRoots ?? [], undefined, options.displayDataRoot, displayBudget);
+          if (displayContainsLiteralSecret(shown.attachment, shown.caption, options.sensitiveHeaders)) {
+            releaseDisplayArtifactBytes(shown.attachment);
+            throw new DisplayValidationError("contained a saved secret");
+          }
           const imageBytes = state.displayAttachments.filter(item => item.kind === "image").reduce((sum, item) => sum + item.size, 0);
           if (shown.attachment.kind === "image" && imageBytes + shown.attachment.size > DISPLAY_BINARY_LIMIT) throw new DisplayValidationError("images exceed 5 MiB per result");
           const inlineBytes = [...state.displayAttachments, shown.attachment].reduce((sum, item) => sum + Buffer.byteLength(JSON.stringify(item), "utf8"), 0);

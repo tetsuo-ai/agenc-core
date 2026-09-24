@@ -53,6 +53,25 @@ const resource = (mimeType: string, data: unknown) => ({ type: "resource", annot
 const normalize = (content: unknown[], displayRoots: string[] = []) => normalizeMcpToolOutput({ raw: { content }, serverName: "fixture", toolName: "show", callId: "call-1", environment: { MAX_MCP_OUTPUT_TOKENS: "100000" }, logger, displayRoots, displayDataRoot: displayRoots[0] });
 const attachments = (result: Awaited<ReturnType<typeof normalize>>) => result.metadata?.displayAttachments as Array<{ id: string; kind: string; title: string; data?: unknown }> | undefined;
 
+describe("display attachments and saved plugin secrets", () => {
+  const secret = "s3cret-\"quoted\"-value";
+  const normalizeWithSecret = (content: unknown[]) => normalizeMcpToolOutput({ raw: { content }, serverName: "plugin:demo:show", toolName: "show", callId: "call-secret", environment: { MAX_MCP_OUTPUT_TOKENS: "100000" }, logger, displayRoots: [], sensitiveHeaders: { token: secret } });
+  it.each([
+    ["a chart series name", resource("application/vnd.agenc.chart+json", { ...chart, series: [{ ...chart.series[0], name: `Close ${secret}` }] })],
+    ["a table cell", resource("application/vnd.agenc.table+json", { ...table, rows: [{ symbol: secret }] })],
+    ["an embedded file", { type: "resource", annotations: user, resource: { uri: "agenc:test", name: "notes.txt", mimeType: "text/plain", blob: Buffer.from(`token=${secret}`).toString("base64") } }],
+  ])("does not show or store an attachment when %s holds a saved secret", async (_where, block) => {
+    const result = await normalizeWithSecret([block]);
+    expect(attachments(result)).toBeUndefined();
+    expect(result.content).toContain("[Display attachment could not be shown: contained a saved secret]");
+    expect(JSON.stringify(result)).not.toContain("s3cret-");
+  });
+  it("still shows an attachment without a saved secret", async () => {
+    const result = await normalizeWithSecret([resource("application/vnd.agenc.chart+json", chart)]);
+    expect(attachments(result)).toHaveLength(1);
+  });
+});
+
 describe("MCP user audience display attachments", () => {
   it("does not treat a user configured AGENC_PLUGIN_DATA variable as an AgenC created plugin directory", () => {
     expect(toToolCatalogPolicyConfig({ name: "configured", env: { AGENC_PLUGIN_DATA: "/workspace/untrusted" } })?.displayDataRoot).toBeUndefined();
