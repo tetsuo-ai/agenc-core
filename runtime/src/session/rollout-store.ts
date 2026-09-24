@@ -3224,11 +3224,6 @@ export class RolloutStore {
     });
   }
 
-  /** Resume event still awaiting a canonical first-input activation. */
-  pendingStartupActivationResumeEventId(): string | undefined {
-    return this.runDurabilityRepo.getPendingStartupActivation(this.sessionId)?.resumeEventId;
-  }
-
   /** Project an already-fsync-committed first-input startup activation. */
   recordRunStartupActivationEvent(event: Event): void {
     if (

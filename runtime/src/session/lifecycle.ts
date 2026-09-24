@@ -30,6 +30,7 @@ import { drainPendingExtraction } from "../services/extractMemories/extractMemor
 import { monotonicMs } from "./_deps/utils.js";
 import { emitWarning } from "./event-log.js";
 import type { Session } from "./session.js";
+import type { TurnAbortReason } from "./tasks.js";
 
 /** Outer monotonic budget for the full lifecycle teardown (ms). */
 export const SESSION_LIFECYCLE_SHUTDOWN_BUDGET_MS = 5_000;
@@ -126,12 +127,19 @@ export async function shutdownSessionLifecycle(
   // continuations, before a background-run terminal can seal the journal.
   const abortAllTasks = (
     opts.session as Session & {
-      abortAllTasks?: (reason: "daemon_shutdown" | "session_shutdown") => Promise<void>;
+      abortAllTasks?: (reason: TurnAbortReason) => Promise<void>;
     }
   ).abortAllTasks;
   if (typeof abortAllTasks === "function") {
     await raceBudget(
-      abortAllTasks.call(opts.session, opts.shutdownReason ?? "daemon_shutdown"),
+      // Only a daemon shutdown leaves the turn resumable. Any other shutdown
+      // ends it as an interruption, a reason every client already knows.
+      abortAllTasks.call(
+        opts.session,
+        (opts.shutdownReason ?? "daemon_shutdown") === "daemon_shutdown"
+          ? "daemon_shutdown"
+          : "interrupted",
+      ),
       deadlineMs,
       "session_active_task_shutdown",
       opts.session,

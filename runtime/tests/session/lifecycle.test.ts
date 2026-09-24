@@ -110,7 +110,7 @@ describe("shutdownSessionLifecycle", () => {
     await shutdownSessionLifecycle({ session, agentControl: agentControl as any,
       shutdownReason: "session_shutdown" });
     expect(session.abortController.abort).toHaveBeenCalledWith("session_shutdown");
-    expect(session.abortAllTasks).toHaveBeenCalledWith("session_shutdown");
+    expect(session.abortAllTasks).toHaveBeenCalledWith("interrupted");
     expect(agentControl.shutdownAll).toHaveBeenCalledWith("session_shutdown");
   });
 
