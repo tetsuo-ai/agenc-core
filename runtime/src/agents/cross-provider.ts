@@ -2,14 +2,12 @@ import type { Session } from "../session/session.js";
 import { createHash } from "node:crypto";
 import type { AgenCConfig, AgentsConfig } from "../config/schema.js";
 import { buildProviderModelCatalog } from "../config/provider-model-authority.js";
-import { resolveBuiltInProviderSlug } from "../llm/registry/provider-info.js";
 import { ModelRegistry, modelRegistryEntryToModelInfo } from "../llm/model-registry.js";
-import type { ModelInfo } from "../session/turn-context.js";
 import type { PreparedProviderBinding, ProviderSelection } from "../session/provider-service.js";
-import { resolveBuiltInProviderInfo } from "../llm/registry/provider-info.js";
+import { resolveBuiltInProviderInfo, resolveBuiltInProviderSlug } from "../llm/registry/provider-info.js";
 import { assertSupportedCrossProviderAuth, type ChildAuthProfile, type ChildBillingSource } from "../llm/cross-provider-auth.js";
 import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
-import type { ReasoningEffort } from "../session/turn-context.js";
+import type { ModelInfo, ReasoningEffort } from "../session/turn-context.js";
 import { DEFAULT_MODEL_COSTS, resolveModelCostEntry } from "../session/cost.js";
 
 export interface CrossProviderConsentGrant {

@@ -128,12 +128,14 @@ ${SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
 The new agent's canonical task name will be provided to it along with the message.`;
   const cfg = session?.config?.multiAgentV2;
-  const policy = session == null || session.services == null ? undefined : childProviderPolicy(session);
+  const policy = session?.services == null ? undefined : childProviderPolicy(session);
   const pairs = policy?.cross_provider_enabled === true ? allowedChildPairs(session!) : [];
   const consentClause = policy?.cross_provider_enabled === true && policy.cross_provider_ask_each_spawn !== true
     ? "The user enabled them in settings, so a spawn to an allowed provider/model pair runs without asking; after a child reports insufficient_funds, the next cross-provider spawn asks the user."
     : "Using one asks the user for consent at the moment of use, even when enabled.";
-  const policyDescription = `Cross-provider subagents are controlled by [agents] cross_provider_enabled (off by default) and allowed_providers in user config.toml. ${consentClause} If consent_denied or consent_unavailable is returned, continue the subtask yourself and do not retry the same request. If a child reports insufficient_funds, tell the user exactly what work finished and what remains, then ask before trying another provider. Never retry that child on the exhausted provider. ${CROSS_PROVIDER_AUTH_DESCRIPTION}${policy?.cross_provider_enabled === true ? ` Allowed provider/model pairs: ${pairs.map(({ provider, model }) => `${provider}/${model}`).join(", ") || "none"}.` : ""}`;
+  const pairList = pairs.map(({ provider, model }) => provider + "/" + model).join(", ") || "none";
+  const allowedPairs = policy?.cross_provider_enabled === true ? ` Allowed provider/model pairs: ${pairList}.` : "";
+  const policyDescription = `Cross-provider subagents are controlled by [agents] cross_provider_enabled (off by default) and allowed_providers in user config.toml. ${consentClause} If consent_denied or consent_unavailable is returned, continue the subtask yourself and do not retry the same request. If a child reports insufficient_funds, tell the user exactly what work finished and what remains, then ask before trying another provider. Never retry that child on the exhausted provider. ${CROSS_PROVIDER_AUTH_DESCRIPTION}${allowedPairs}`;
   if (sessionIsPlanning(session) || sessionReadOnlyDelegation(session) !== undefined) {
     return `${base}\n${policyDescription}\n\n${READ_ONLY_DELEGATION_PROMPT}\nDelegate bounded independent inspection tasks in parallel. Use isolation none, list_agents, wait_agent, and close_agent for your constrained workers.`;
   }
@@ -232,7 +234,7 @@ function requestsOtherProvider(
   const activeProvider = currentChildProvider(session).provider;
   if (requestedProvider !== undefined &&
       resolveBuiltInProviderSlug(requestedProvider) !== activeProvider) return true;
-  if (requestedModel === undefined || !requestedModel.includes("/")) return false;
+  if (!requestedModel?.includes("/")) return false;
   const isLocalModel = requestedModel === session.modelInfo.slug ||
     (session.services.modelsManager?.tryListModels() ?? []).some((candidate) =>
       candidate.slug === requestedModel &&
