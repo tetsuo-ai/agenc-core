@@ -659,6 +659,12 @@ export async function normalizeMcpToolOutput(
           continue;
         }
         try {
+          // The bridge redacts before normalizing: a block whose bytes held a
+          // saved secret arrives emptied and marked omitted. Never show it.
+          if (options.sensitiveHeaders !== undefined &&
+              (displayRecord?.omitted === true || asRecord(displayRecord?.resource)?.omitted === true)) {
+            throw new DisplayValidationError("contained a saved secret");
+          }
           const shown = await validateDisplayBlock(displayRecord ?? {}, options.displayRoots ?? [], undefined, options.displayDataRoot, displayBudget);
           if (displayContainsLiteralSecret(shown.attachment, shown.caption, options.sensitiveHeaders)) {
             releaseDisplayArtifactBytes(shown.attachment);

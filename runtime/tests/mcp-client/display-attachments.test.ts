@@ -42,6 +42,7 @@ import { redactSecretsInValue } from "../../src/secrets/sanitizer.js";
 import { sessionTranscriptV2FromRollout } from "../../src/app-server/background-agent-runner.js";
 import { adaptTranscriptEvents } from "../../src/tui/session-transcript.js";
 import { toToolCatalogPolicyConfig } from "../../src/mcp-client/resilient-client.js";
+import { redactMcpAttachmentValue } from "../../src/mcp-client/local-control.js";
 
 const directories: string[] = [];
 afterEach(async () => { fsyncFailure.enabled = false; fsyncFailure.directoryCalls = 0; fileOpens.count = 0; fileRace.target = ""; fileRace.switched = false; fileRace.restored = false; fileRace.switchAncestor = undefined; fileRace.restoreAncestor = undefined; vi.restoreAllMocks(); await Promise.all(directories.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
@@ -65,6 +66,18 @@ describe("display attachments and saved plugin secrets", () => {
     expect(attachments(result)).toBeUndefined();
     expect(result.content).toContain("[Display attachment could not be shown: contained a saved secret]");
     expect(JSON.stringify(result)).not.toContain("s3cret-");
+  });
+  it.each([
+    ["an embedded file", { type: "resource", annotations: user, resource: { uri: "agenc:test", name: "notes.txt", mimeType: "text/plain", blob: Buffer.from(`notes ${secret}`).toString("base64") } }],
+    ["an image", { type: "image", annotations: user, mimeType: "image/png", data: Buffer.from(`png ${secret}`).toString("base64") }],
+  ])("does not show %s the bridge already emptied for holding a saved secret", async (_what, block) => {
+    // Same order as the MCP bridge: redact the raw result, then normalize it.
+    const headers = { token: secret };
+    const raw = redactMcpAttachmentValue({ content: [block] }, headers, undefined, "tool-result");
+    const result = await normalizeMcpToolOutput({ raw, serverName: "plugin:demo:show", toolName: "show", callId: "call-secret", environment: { MAX_MCP_OUTPUT_TOKENS: "100000" }, logger, displayRoots: [], sensitiveHeaders: headers });
+    expect(attachments(result)).toBeUndefined();
+    expect(result.content).toContain("[Display attachment could not be shown: contained a saved secret]");
+    expect(result.content).not.toContain("0 bytes");
   });
   it("still shows an attachment without a saved secret", async () => {
     const result = await normalizeWithSecret([resource("application/vnd.agenc.chart+json", chart)]);
