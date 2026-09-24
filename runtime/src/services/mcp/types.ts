@@ -187,6 +187,12 @@ export type PluginMcpServerIdentity = {
   digest?: string
   pluginRoot?: string
   snapshotRoot?: string
+  snapshotLaunch?: {
+    command?: string
+    args?: readonly string[]
+    cwd?: string
+    env?: Readonly<Record<string, string>>
+  }
   userConfigDigest?: string
   eager?: boolean
   idleTimeoutMs?: number

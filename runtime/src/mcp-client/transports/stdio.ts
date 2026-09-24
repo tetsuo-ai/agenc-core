@@ -52,15 +52,13 @@ import {
   type SandboxExecutionBrokerLike,
 } from "../../sandbox/execution-broker.js";
 import { terminateProcessTreeAndWait } from "../../utils/supervisedProcess.js";
-import {
-  isChildTempAuthorityKey,
-  subprocessEnv,
-  withChildTempAuthority,
-} from "../../utils/subprocessEnv.js";
+import { withChildTempAuthority } from "../../utils/subprocessEnv.js";
 import { connectMCPClientWithCleanup } from "./connect-with-cleanup.js";
 import type { ProviderEnvironment } from "../../llm/provider-options.js";
 import { EMPTY_MCP_REQUEST_ENVIRONMENT } from "../environment.js";
 import { assertMcpTransportToolDispatch } from "../local-control.js";
+import { createStdioMCPEnvironment } from "./stdio-environment.js";
+export { createStdioMCPEnvironment, DEFAULT_STDIO_ENV_VARS } from "./stdio-environment.js";
 
 const PROCESS_GROUP_TERM_GRACE_MS = 2_000;
 /**
@@ -89,34 +87,6 @@ const STDERR_BUFFER_MAX_BYTES = 1024 * 1024;
  */
 const RECENT_STDERR_MAX_LINES = 8;
 const RECENT_STDERR_LINE_MAX_CHARS = 400;
-export const DEFAULT_STDIO_ENV_VARS: readonly string[] =
-  process.platform === "win32"
-    ? [
-        "APPDATA",
-        "HOMEDRIVE",
-        "HOMEPATH",
-        "LOCALAPPDATA",
-        "PATH",
-        "PATHEXT",
-        "PROCESSOR_ARCHITECTURE",
-        "SYSTEMDRIVE",
-        "SYSTEMROOT",
-        "USERNAME",
-        "USERPROFILE",
-        "PROGRAMFILES",
-      ]
-    : [
-        "HOME",
-        "LOGNAME",
-        "PATH",
-        "SHELL",
-        "USER",
-        "__CF_USER_TEXT_ENCODING",
-        "LANG",
-        "LC_ALL",
-        "TERM",
-        "TZ",
-      ];
 
 export interface MCPServerStdioConfig {
   readonly name: string;
@@ -140,34 +110,6 @@ export interface StdioTransportServerParameters {
 }
 
 type NodeProcessEnv = ProviderEnvironment;
-
-export function createStdioMCPEnvironment(
-  extraEnv: Readonly<Record<string, string>> | undefined,
-  envVars: readonly string[] | undefined,
-  parentEnv: NodeProcessEnv = EMPTY_MCP_REQUEST_ENVIRONMENT,
-): Record<string, string> {
-  const env: Record<string, string> = {};
-  const sanitizedParent = subprocessEnv({ ...parentEnv });
-  const names = new Set<string>(DEFAULT_STDIO_ENV_VARS);
-  for (const name of envVars ?? []) {
-    if (name.trim().length > 0) names.add(name);
-  }
-
-  for (const name of names) {
-    if (isChildTempAuthorityKey(name)) continue;
-    const value = sanitizedParent[name];
-    if (value === undefined || value.startsWith("()")) continue;
-    env[name] = value;
-  }
-
-  if (extraEnv !== undefined) {
-    Object.assign(env, extraEnv);
-  }
-  for (const name of Object.keys(env)) {
-    if (isChildTempAuthorityKey(name)) delete env[name];
-  }
-  return env;
-}
 
 function pathContainsOrEquals(root: string, candidate: string): boolean {
   const relativeCandidate = relative(root, candidate);

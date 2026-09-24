@@ -64,6 +64,7 @@ import { reservePluginProcess, releasePluginProcess, touchPluginProcess, notifyP
 import type { ConfigStore } from "../config/store.js";
 import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 import { loadPluginMcpServerRegistrations } from "../plugins/registration/mcp-plugin-integration.js";
+import { assertPluginSnapshotLaunchSafe } from "./plugin-launch.js";
 
 /** I-50: cancellable MCP startup wait; 30s default. */
 const MCP_STARTUP_TIMEOUT_MS = 30_000;
@@ -287,6 +288,17 @@ function immutableMcpServerConfig(config: MCPServerConfig): MCPServerConfig {
               ? {
                   pluginServer: Object.freeze({
                     ...config.origin.pluginServer,
+                    ...(config.origin.pluginServer.snapshotLaunch !== undefined ? {
+                      snapshotLaunch: Object.freeze({
+                        ...config.origin.pluginServer.snapshotLaunch,
+                        ...(config.origin.pluginServer.snapshotLaunch.args !== undefined ? {
+                          args: Object.freeze([...config.origin.pluginServer.snapshotLaunch.args]),
+                        } : {}),
+                        ...(config.origin.pluginServer.snapshotLaunch.env !== undefined ? {
+                          env: Object.freeze({ ...config.origin.pluginServer.snapshotLaunch.env }),
+                        } : {}),
+                      }),
+                    } : {}),
                   }),
                 }
               : {}),
@@ -959,30 +971,20 @@ export class MCPManager {
   private pluginLaunchConfig(config: MCPServerConfig): MCPServerConfig {
     const plugin = config.origin?.pluginServer;
     if (!plugin?.pluginRoot || !plugin.snapshotRoot) return config;
-    const remap = (value: string): string => {
-      // Templates are resolved at registration. Also handle launch strings
-      // supplied by retained callers, including shell -c arguments.
-      const root = plugin.pluginRoot!;
-      const rewritten = value.replaceAll(root, (match, offset: number) => {
-        const before = value[offset - 1];
-        const after = value[offset + root.length];
-        return (before === undefined || /[\s=:,("']/.test(before)) &&
-          (after === undefined || /[\\/\s:;,)("']/.test(after))
-          ? plugin.snapshotRoot! : match;
-      });
-      if (rewritten.includes(plugin.pluginRoot!)) {
-        throw new Error(`MCP plugin ${config.name} launch references its mutable installation`);
-      }
-      return rewritten;
-    };
-    return {
+    const launch = plugin.snapshotLaunch;
+    const launched: MCPServerConfig = {
       ...config,
-      ...(config.command !== undefined ? { command: remap(config.command) } : {}),
-      ...(config.args !== undefined ? { args: config.args.map(remap) } : {}),
-      ...(config.cwd !== undefined ? { cwd: remap(config.cwd) } : {}),
-      ...(config.env !== undefined ? { env: Object.fromEntries(Object.entries(config.env).map(([key, value]) => [key, remap(value)])) } : {}),
-      ...(config.pluginSandbox !== undefined ? { pluginSandbox: { ...config.pluginSandbox, pluginRoot: plugin.snapshotRoot } } : {}),
+      ...(launch?.command !== undefined ? { command: launch.command } : {}),
+      ...(launch?.args !== undefined ? { args: launch.args } : {}),
+      ...(launch?.cwd !== undefined ? { cwd: launch.cwd } : {}),
+      ...(launch?.env !== undefined ? { env: launch.env } : {}),
+      ...(config.pluginSandbox !== undefined ? {
+        pluginSandbox: { ...config.pluginSandbox, pluginRoot: plugin.snapshotRoot },
+      } : {}),
     };
+    assertPluginSnapshotLaunchSafe(config.name, plugin.pluginRoot, launched, this.environment,
+      process.platform, this.sandboxExecutionBroker?.cwd ?? process.cwd());
+    return launched;
   }
 
   private pluginLifecycle(name: string): PluginServerLifecycle {
@@ -2569,6 +2571,7 @@ export class MCPManager {
       bridge = new ResilientMCPBridge(this.pluginLaunchConfig(config), rawBridge, logger, {
         beforeReconnect: () => {
           if (!isCurrent()) throw new Error(`MCP server "${config.name}" configuration changed`);
+          this.pluginLaunchConfig(config);
         },
         ...(this.isLazyPlugin(config) ? { onCatalog: (tools: readonly Record<string, unknown>[]) => { reconnectCatalogTools = tools; } } : {}),
         ...(this.permissionOptions !== undefined

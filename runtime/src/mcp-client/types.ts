@@ -46,6 +46,8 @@ export interface MCPServerOrigin {
     readonly digest?: string;
     readonly pluginRoot?: string;
     readonly snapshotRoot?: string;
+    /** Snapshot-resolved stdio fields, separate from the installed policy identity. */
+    readonly snapshotLaunch?: Pick<MCPServerConfig, "command" | "args" | "cwd" | "env">;
     readonly userConfigDigest?: string;
     readonly eager?: boolean;
     readonly idleTimeoutMs?: number;

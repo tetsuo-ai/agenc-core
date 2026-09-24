@@ -1,7 +1,7 @@
 import { chmod, lstat, mkdir, mkdtemp, readdir, readlink, rm, stat, symlink } from "node:fs/promises";
 import { renameSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MCPManager } from "./manager.js";
 import { writePluginCatalog } from "./plugin-catalog-cache.js";
@@ -449,7 +449,8 @@ describe("plugin MCP on-demand lifecycle", () => {
     await mkdir(root); await writeFile(join(root, "entry.js"), "old");
     const digest = hashInstalledPlugin(root); const snapshotRoot = snapshotInstalledPlugin(root, cacheHome, digest);
     const cfg = config(cacheHome, "plugin:sample:shell", { command: "sh", args: ["-c", `exec node ${root}/entry.js`], cwd: root,
-      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "shell", digest, pluginRoot: root, snapshotRoot } } });
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "shell", digest, pluginRoot: root, snapshotRoot,
+        snapshotLaunch: { command: "sh", args: ["-c", `exec node ${snapshotRoot}/entry.js`], cwd: snapshotRoot } } } });
     warm(cfg); const manager = new MCPManager([cfg]);
     try { await manager.start(); await manager.callTool(cfg.name, "ping", {});
       expect(spawn.mock.calls[0]?.[0].args?.[1]).toBe(`exec node ${snapshotRoot}/entry.js`);
@@ -469,7 +470,7 @@ describe("plugin MCP on-demand lifecycle", () => {
     expect(registrations).toHaveLength(1);
     expect(registrations[0]!.server.args?.[1]).toBe(`exec node ${registrations[0]!.snapshotRoot}/entry.js`);
     const cfg = config(cacheHome, "plugin:sample:unresolved", {
-      args: [`--file=${root}ish/entry.js`],
+      args: [`--file=${root}/entry.js`],
       origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "unresolved",
         digest: registrations[0]!.digest, pluginRoot: root, snapshotRoot: registrations[0]!.snapshotRoot } },
     });
@@ -692,7 +693,9 @@ describe("plugin MCP on-demand lifecycle", () => {
     const cfg = config(cacheHome, "plugin:sample:pinned", {
       command: join(root, "entry.js"), args: [join(root, "entry.js")], cwd: root,
       env: { AGENC_PLUGIN_ROOT: root },
-      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "pinned", digest, pluginRoot: root, snapshotRoot } },
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "pinned", digest, pluginRoot: root, snapshotRoot,
+        snapshotLaunch: { command: join(snapshotRoot, "entry.js"), args: [join(snapshotRoot, "entry.js")], cwd: snapshotRoot,
+          env: { AGENC_PLUGIN_ROOT: snapshotRoot } } } },
     });
     warm(cfg);
     const original = spawn.getMockImplementation()!;
@@ -710,6 +713,100 @@ describe("plugin MCP on-demand lifecycle", () => {
       });
       expect(await (await import("node:fs/promises")).readFile(join(snapshotRoot, "entry.js"), "utf8")).toBe("old");
     } finally { await manager.stop(); }
+  });
+
+  it("uses snapshot fields for a Windows-spelled installed root and forward-slash argument", async () => {
+    const cacheHome = await home();
+    const root = win32.join("C:\\plugins", "sample");
+    const snapshotRoot = win32.join("D:\\snapshots", "sample");
+    const cfg = config(cacheHome, "plugin:sample:windows-launch", {
+      command: "node", args: [root.replaceAll("\\", "/") + "/server.mjs"], cwd: root,
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "windows-launch",
+        pluginRoot: root, snapshotRoot, snapshotLaunch: {
+          command: "node", args: [snapshotRoot.replaceAll("\\", "/") + "/server.mjs"], cwd: snapshotRoot,
+        } } },
+    });
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start({ requireOneReady: true });
+      expect(spawn.mock.calls[0]?.[0]).toMatchObject({
+        args: [snapshotRoot.replaceAll("\\", "/") + "/server.mjs"], cwd: snapshotRoot,
+      });
+    } finally { await manager.stop(); }
+  });
+
+  it("launches a file URL import from the snapshot", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    const snapshotRoot = join(cacheHome, "snapshot");
+    const cfg = config(cacheHome, "plugin:sample:file-url", {
+      command: "node", args: ["--import", `file://${root}/bootstrap.mjs`, "server.mjs"], cwd: root,
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "file-url",
+        pluginRoot: root, snapshotRoot, snapshotLaunch: {
+          command: "node", args: ["--import", `file://${snapshotRoot}/bootstrap.mjs`, "server.mjs"], cwd: snapshotRoot,
+        } } },
+    });
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start({ requireOneReady: true });
+      expect(spawn.mock.calls[0]?.[0].args).toEqual(["--import", `file://${snapshotRoot}/bootstrap.mjs`, "server.mjs"]);
+    } finally { await manager.stop(); }
+  });
+
+  it("refuses inherited PATH and requested env_vars that point into the installation", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    const bin = join(root, "bin"); await mkdir(bin, { recursive: true });
+    await writeFile(join(bin, "sample-server"), "#!/bin/sh\nexit 0\n");
+    await chmod(join(bin, "sample-server"), 0o755);
+    const snapshotRoot = join(cacheHome, "snapshot");
+    for (const [name, environment, env_vars] of [
+      ["path", { PATH: `${bin}:${process.env.PATH ?? "/usr/bin"}` }, undefined],
+      ["requested", { REQUESTED_PATH: join(root, "config.json") }, ["REQUESTED_PATH"]],
+    ] as const) {
+      const cfg = config(cacheHome, `plugin:sample:${name}`, {
+        command: name === "path" ? "sample-server" : "node", env_vars,
+        origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: name,
+          pluginRoot: root, snapshotRoot, snapshotLaunch: { command: name === "path" ? "sample-server" : "node", cwd: snapshotRoot },
+        } },
+      });
+      const manager = new MCPManager([cfg], undefined, environment);
+      try {
+        await manager.start();
+        expect(spawn).not.toHaveBeenCalled();
+        expect(manager.getConnectionState(cfg.name)).toMatchObject({ type: "failed", error: expect.stringContaining("launch references its mutable installation") });
+      } finally { await manager.stop(); }
+    }
+  });
+
+  it("still launches an ordinary server with the system node", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    const manager = new MCPManager([{ name: "ordinary", command: process.execPath }], undefined,
+      { PATH: `${join(root, "bin")}:${process.env.PATH ?? "/usr/bin"}` });
+    try {
+      await manager.start({ requireOneReady: true });
+      expect(spawn.mock.calls[0]?.[0].command).toBe(process.execPath);
+    } finally { await manager.stop(); }
+  });
+
+  it("uses the snapshot launch fields again on automatic reconnect", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    const snapshotRoot = join(cacheHome, "snapshot");
+    const cfg = config(cacheHome, "plugin:sample:auto-reconnect-snapshot", {
+      command: "node", args: [join(root, "server.mjs")], cwd: root,
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "auto-reconnect-snapshot",
+        pluginRoot: root, snapshotRoot, snapshotLaunch: { command: "node", args: [join(snapshotRoot, "server.mjs")], cwd: snapshotRoot },
+      } },
+    });
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start({ requireOneReady: true });
+      vi.useFakeTimers();
+      const bridge = (manager as unknown as { bridges: Map<string, { notifyTransportClosed(): void }> }).bridges.get(cfg.name)!;
+      bridge.notifyTransportClosed();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(spawn.mock.calls.map(call => call[0].args)).toEqual([
+        [join(snapshotRoot, "server.mjs")], [join(snapshotRoot, "server.mjs")],
+      ]);
+    } finally { await manager.stop(); vi.useRealTimers(); }
   });
 
   it("separates trees whose raw concatenations collide", async () => {
