@@ -353,11 +353,12 @@ export class ConfigStore {
     }
   }
 
-  private async prepareReloadUnlocked(
-    release: () => void,
-  ): Promise<PreparedConfigStoreReload> {
-    const previous = this.captureState();
-    const generation = this.reloadGeneration;
+  /** Re-read this store's captured sources without entering publication. */
+  async readSourceAuthority(): Promise<ConfigStoreAuthority> {
+    return this.authorityForState(await this.loadStateFromSources());
+  }
+
+  private async loadStateFromSources(): Promise<ConfigStoreState> {
     const base = mergeProviderModelLayer(
       defaultConfig(),
       this.opts.base ?? {},
@@ -371,7 +372,7 @@ export class ConfigStore {
       Object.freeze({});
     let ignored: readonly IgnoredConfigValue[] = Object.freeze([]);
     let sources: readonly ConfigLayerSnapshot[] = Object.freeze([]);
-    let projectRoot = previous.projectRoot;
+    let projectRoot = this.resolvedProjectRoot;
     if (this.opts.loader) {
       const loaded = await this.opts.loader({
         home: this.opts.home,
@@ -434,7 +435,7 @@ export class ConfigStore {
       sources = loaded.sources;
       projectRoot = loaded.projectRoot;
     }
-    const staged: ConfigStoreState = {
+    return {
       snapshot: next,
       warnings: warningMessages,
       provenance,
@@ -442,8 +443,11 @@ export class ConfigStore {
       sources,
       projectRoot,
     };
+  }
+
+  private authorityForState(staged: ConfigStoreState): ConfigStoreAuthority {
     const thisStore = this;
-    const authority: ConfigStoreAuthority = Object.freeze({
+    return Object.freeze({
       current: () => staged.snapshot,
       authoritySnapshot: () => Object.freeze({
         config: staged.snapshot,
@@ -465,15 +469,24 @@ export class ConfigStore {
         return thisStore.stateRepository;
       },
       reload: async () => {
-        throw new Error("a prepared config authority cannot reload itself");
+        throw new Error("a read-only config authority cannot reload itself");
       },
       subscribe: () => {
-        throw new Error("a prepared config authority cannot add subscribers");
+        throw new Error("a read-only config authority cannot add subscribers");
       },
       warnings: () => [...staged.warnings],
       provenance: (key: string) => staged.provenance[key],
       ignored: () => staged.ignored,
     });
+  }
+
+  private async prepareReloadUnlocked(
+    release: () => void,
+  ): Promise<PreparedConfigStoreReload> {
+    const previous = this.captureState();
+    const generation = this.reloadGeneration;
+    const staged = await this.loadStateFromSources();
+    const authority = this.authorityForState(staged);
     let state: "prepared" | "committed" | "published" | "rolled_back" =
       "prepared";
     let publicationMetadata: ConfigStorePublicationMetadata =
@@ -513,7 +526,7 @@ export class ConfigStore {
             ? COORDINATED_CONFIG_STORE_PUBLICATION
             : DIRECT_CONFIG_STORE_PUBLICATION;
         state = "published";
-        for (const message of warningMessages) this.emitWarning(message);
+        for (const message of staged.warnings) this.emitWarning(message);
         this.notifyListeners(
           staged.snapshot,
           this.warningMessages,

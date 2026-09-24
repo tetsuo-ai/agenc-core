@@ -148,6 +148,104 @@ it("launches an unchanged plugin on first use", async () => {
   } finally { await manager.stopStrict(); }
 });
 
+it.each(["commit", "rollback"] as const)(
+  "settles first lazy startup during sandbox quiescence with a held %s reload",
+  async disposition => {
+    const { home, workspace, storage, config } = await fixture();
+    const store = await sessionStore(home, workspace);
+    const manager = new MCPManager([{ ...config, timeout: 80 }]);
+    manager.setPluginFirstLaunchContext(store, storage);
+    const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd: workspace });
+    manager.setSandboxExecutionBroker(broker);
+    await manager.start();
+    const prepared = await store.prepareReload();
+    let transition: Promise<void> | undefined;
+    let shutdown: Promise<void> | undefined;
+    let call: Promise<unknown> | undefined;
+    try {
+      call = manager.callTool(config.name, "ping", {});
+      // Wait until the first-launch transition owns startup, then ask the
+      // sandbox to quiesce while the daemon-style reload remains prepared.
+      const lifecycles = (manager as unknown as {
+        pluginLifecycles: Map<string, { transitions: number }>;
+      }).pluginLifecycles;
+      for (let i = 0; i < 100; i++) {
+        if ((lifecycles.get(config.name)?.transitions ?? 0) > 0) break;
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+      expect(lifecycles.get(config.name)?.transitions).toBeGreaterThan(0);
+      const nextWorkspace = join(home, "next-workspace");
+      await mkdir(nextWorkspace);
+      transition = transitionSandboxExecutionBroker(broker, nextWorkspace);
+      shutdown = manager.stopStrict();
+      const completed = Promise.allSettled([transition, shutdown]);
+      const results = await Promise.race([
+        completed,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("quiescence and strict shutdown exceeded first-startup timeout")), 500)),
+      ]);
+      expect(results).toEqual([{ status: "fulfilled", value: undefined }, { status: "fulfilled", value: undefined }]);
+      expect(prepared.state).toBe("prepared");
+      expect(prepared.settled).toBe(false);
+    } finally {
+      if (prepared.state === "prepared") {
+        if (disposition === "commit") {
+          prepared.commit();
+          prepared.publish();
+        }
+        else prepared.rollback();
+      }
+      if (!prepared.settled) prepared.settle();
+      await Promise.allSettled([transition, shutdown, call].filter((task): task is Promise<unknown> => task !== undefined));
+      await manager.stopStrict();
+      manager.setSandboxExecutionBroker(undefined);
+    }
+  },
+);
+
+it("cancels a stalled first-launch source read during strict sandbox shutdown", async () => {
+  const { home, workspace, storage, config } = await fixture();
+  const store = await sessionStore(home, workspace);
+  const manager = new MCPManager([{ ...config, timeout: 80 }]);
+  manager.setPluginFirstLaunchContext(store, storage);
+  const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd: workspace });
+  manager.setSandboxExecutionBroker(broker);
+  await manager.start();
+  let readStarted!: () => void;
+  const enteredRead = new Promise<void>(resolve => { readStarted = resolve; });
+  const read = vi.spyOn(store, "readSourceAuthority").mockImplementationOnce(async () => {
+    readStarted();
+    return new Promise<never>(() => {});
+  });
+  let transition: Promise<void> | undefined;
+  let shutdown: Promise<void> | undefined;
+  let call: Promise<unknown> | undefined;
+  try {
+    call = manager.callTool(config.name, "ping", {});
+    await Promise.race([
+      enteredRead,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("first-launch source read did not start")), 500)),
+    ]);
+    const nextWorkspace = join(home, "next-workspace");
+    await mkdir(nextWorkspace);
+    transition = transitionSandboxExecutionBroker(broker, nextWorkspace);
+    shutdown = manager.stopStrict();
+    const results = await Promise.race([
+      Promise.allSettled([transition, shutdown]),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("stalled source read blocked shutdown")), 500)),
+    ]);
+    expect(results).toEqual([{ status: "fulfilled", value: undefined }, { status: "fulfilled", value: undefined }]);
+    // The cancelled check must not be reported as a changed plugin.
+    const [outcome] = await Promise.allSettled([call]);
+    const reported = outcome.status === "fulfilled" ? JSON.stringify(outcome.value) : String(outcome.reason);
+    expect(reported).not.toContain("changed; restart this session");
+  } finally {
+    read.mockRestore();
+    await Promise.allSettled([transition, shutdown, call].filter((task): task is Promise<unknown> => task !== undefined));
+    await manager.stopStrict();
+    manager.setSandboxExecutionBroker(undefined);
+  }
+});
+
 it("rejects a changed installation snapshot before first launch", async () => {
   const { config } = await fixture();
   const manager = directManager(config);

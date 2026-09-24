@@ -880,17 +880,19 @@ export class MCPManager {
    * effective enabled state after session overrides. Its policy and lifecycle
    * settings remain those already resolved by the session, including on restart.
    */
-  private async firstPluginLaunchStillMatches(config: MCPServerConfig): Promise<boolean> {
+  private async firstPluginLaunchStillMatches(config: MCPServerConfig, signal?: AbortSignal): Promise<boolean> {
     const plugin = config.origin?.pluginServer;
     const context = this.pluginFirstLaunchContext;
     if (!plugin?.pluginRoot || !plugin.digest || !context) return false;
-    const prepared = await context.store.prepareReload();
-    try {
-      return await runWithCanonicalSettingsAuthority(prepared.authority, async () => {
+    signal?.throwIfAborted();
+    const validation = (async () => {
+      const authority = await context.store.readSourceAuthority();
+      signal?.throwIfAborted();
+      return runWithCanonicalSettingsAuthority(authority, async () => {
         const registrations = await loadPluginMcpServerRegistrations({
           pluginStorageRoot: context.pluginStorageRoot,
-          workspaceRoot: prepared.authority.projectRoot,
-          config: prepared.config,
+          workspaceRoot: authority.projectRoot,
+          config: authority.current(),
           env: { ...this.environment },
           readOnly: true,
           fresh: true,
@@ -903,10 +905,8 @@ export class MCPManager {
         const enabled = context.enabledOverride(config.name) ?? (resolved.server.enabled !== false);
         return enabled === (config.enabled !== false);
       });
-    } finally {
-      prepared.rollback();
-      prepared.settle();
-    }
+    })();
+    return raceWithAbort(validation, signal);
   }
 
   private async prepareInstallationGenerations(): Promise<void> {
@@ -2800,8 +2800,10 @@ export class MCPManager {
     if (this.isLazyPlugin(config) && !this.launchedPluginNames.has(config.name) &&
         config.pluginWorkspaceRoot && config.origin?.pluginServer?.snapshotRoot) {
       let matches = false;
-      try { matches = await this.firstPluginLaunchStillMatches(config); }
-      catch { /* A failed reload or resolution cannot authorize a first launch. */ }
+      try { matches = await this.firstPluginLaunchStillMatches(config, signal); }
+      catch { /* A failed source read or resolution cannot authorize a first launch. */ }
+      // A cancelled or timed-out check reports the cancellation, not a change.
+      signal?.throwIfAborted();
       if (!matches) {
         throw new Error(`Plugin ${config.origin.pluginServer.pluginName} changed; restart this session before using it`);
       }
