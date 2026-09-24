@@ -53,6 +53,7 @@ import {
 } from "../llm/provider.js";
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 import type { CanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
+import { ConfigStore } from "../config/store.js";
 import {
   createUnavailableSamplingResult,
   type McpSamplingHandlers,
@@ -989,6 +990,17 @@ export function createSessionMcpService(
     servers: new Map(),
     enabledOverrides: new Map(),
   };
+  let committedDefinitions: ReadonlyMap<string, ResolvedMcpServerDefinition> = new Map();
+  if (options.authority instanceof ConfigStore) {
+    runtimeManager.setPluginFirstLaunchContext?.(
+      options.authority,
+      options.pluginStorageRoot,
+      name => {
+        const id = committedDefinitions.get(name)?.id;
+        return id === undefined ? undefined : overlay.enabledOverrides.get(id)?.enabled;
+      },
+    );
+  }
   let mutationTail: Promise<void> = Promise.resolve();
   let serviceMutationActive = false;
   let managerSurfaceDirty = false;
@@ -1351,6 +1363,7 @@ export function createSessionMcpService(
         // apply. Callers may await this promise without opening a stale-overlay
         // assignment window after authority invalidation.
         overlay = committedOverlay;
+        committedDefinitions = plan.definitions;
         appliedAuthorityGeneration = authorityGeneration;
         lastCommittedRefreshResult = result;
         return {
@@ -1378,6 +1391,7 @@ export function createSessionMcpService(
   ): Promise<AggregateError> => {
     const errors = [...causes];
     overlay = { servers: new Map(), enabledOverrides: new Map() };
+    committedDefinitions = new Map();
     appliedAuthorityGeneration = -1;
     lastCommittedRefreshResult = {
       configuredServers: [],

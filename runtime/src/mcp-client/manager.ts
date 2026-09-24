@@ -61,10 +61,9 @@ import { assertValidMcpServerName } from "./server-name.js";
 import { isMcpAuthenticationError } from "../services/mcp/auth-errors.js";
 import { acquireVerifiedPluginGeneration, fingerprintPluginCatalogConfig, primePluginCatalogSingleFlight, readPluginCatalog, writePluginCatalog, type PluginCatalog, type PluginCatalogIdentity, type VerifiedPluginGeneration } from "./plugin-catalog-cache.js";
 import { reservePluginProcess, releasePluginProcess, touchPluginProcess, notifyPluginProcessIdle } from "./plugin-process-budget.js";
-import { ConfigStore } from "../config/store.js";
-import { getCanonicalSettingsAuthority, runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
+import type { ConfigStore } from "../config/store.js";
+import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 import { loadPluginMcpServerRegistrations } from "../plugins/registration/mcp-plugin-integration.js";
-import { dirname, join } from "node:path";
 
 /** I-50: cancellable MCP startup wait; 30s default. */
 const MCP_STARTUP_TIMEOUT_MS = 30_000;
@@ -475,6 +474,11 @@ export class MCPManager {
   private configs: readonly MCPServerConfig[];
   private readonly logger: Logger;
   private readonly environment: ProviderEnvironment;
+  private pluginFirstLaunchContext?: {
+    readonly store: ConfigStore;
+    readonly pluginStorageRoot: string;
+    readonly enabledOverride: (name: string) => boolean | undefined;
+  };
   private readonly bridges: Map<string, MCPToolBridge> = new Map();
   private readonly cachedTools = new Map<string, Tool[]>();
   private readonly cachedCatalogs = new Map<string, PluginCatalog>();
@@ -537,6 +541,15 @@ export class MCPManager {
     this.logger = logger;
     this.environment = snapshotMcpRequestEnvironment(environment);
     this.resetConnectionStates();
+  }
+
+  /** Bind the session's configuration sources and definition-bound enable overlay. */
+  setPluginFirstLaunchContext(
+    store: ConfigStore,
+    pluginStorageRoot: string,
+    enabledOverride: (name: string) => boolean | undefined = () => undefined,
+  ): void {
+    this.pluginFirstLaunchContext = { store, pluginStorageRoot, enabledOverride };
   }
 
   private enqueueLifecycle<T>(operation: () => Promise<T>): Promise<T> {
@@ -862,55 +875,38 @@ export class MCPManager {
 
   /**
    * Eager servers use the session's resolved configuration until its own refresh.
-   * A lazy server has not yet launched, so check that same loader resolution once
-   * before its first launch. Later restarts retain the session's configuration.
+   * Before a lazy server's first launch, re-read the installation through the
+   * session's ConfigStore sources and check only installation identity and the
+   * effective enabled state after session overrides. Its policy and lifecycle
+   * settings remain those already resolved by the session, including on restart.
    */
   private async firstPluginLaunchStillMatches(config: MCPServerConfig): Promise<boolean> {
     const plugin = config.origin?.pluginServer;
-    const home = config.pluginCatalogHome;
-    if (!plugin?.pluginRoot || !plugin.digest || !home) return false;
-    const active = getCanonicalSettingsAuthority();
-    const projectRoot = config.pluginWorkspaceRoot ??
-      (active?.homeContext.path === home ? active.projectRoot : process.cwd());
-    const store = new ConfigStore({ home, cwd: projectRoot, projectRoot, env: { ...process.env, AGENC_HOME: home } });
-    return runWithCanonicalSettingsAuthority(store, async () => {
-      await store.reload();
-      const registrations = await loadPluginMcpServerRegistrations({
-        pluginStorageRoot: plugin.snapshotRoot === undefined
-          ? join(home, "plugins")
-          : dirname(dirname(dirname(plugin.snapshotRoot))),
-        workspaceRoot: projectRoot,
-        config: store.current(),
-        env: { ...this.environment },
-        readOnly: true,
-        fresh: true,
+    const context = this.pluginFirstLaunchContext;
+    if (!plugin?.pluginRoot || !plugin.digest || !context) return false;
+    const prepared = await context.store.prepareReload();
+    try {
+      return await runWithCanonicalSettingsAuthority(prepared.authority, async () => {
+        const registrations = await loadPluginMcpServerRegistrations({
+          pluginStorageRoot: context.pluginStorageRoot,
+          workspaceRoot: prepared.authority.projectRoot,
+          config: prepared.config,
+          env: { ...this.environment },
+          readOnly: true,
+          fresh: true,
+        });
+        const resolved = registrations.find(entry =>
+          entry.name === config.name && entry.pluginName === plugin.pluginName &&
+          entry.serverName === plugin.serverName);
+        if (!resolved || resolved.pluginRoot !== plugin.pluginRoot ||
+            resolved.digest !== plugin.digest || resolved.snapshotRoot !== plugin.snapshotRoot) return false;
+        const enabled = context.enabledOverride(config.name) ?? (resolved.server.enabled !== false);
+        return enabled === (config.enabled !== false);
       });
-      const resolved = registrations.find(entry => entry.name === config.name && entry.pluginName === plugin.pluginName);
-      if (!resolved || resolved.server.enabled === false || resolved.pluginRoot !== plugin.pluginRoot ||
-          resolved.digest !== plugin.digest || resolved.snapshotRoot !== plugin.snapshotRoot) return false;
-      if ((plugin.version !== undefined && resolved.version !== plugin.version) ||
-          (plugin.eager !== undefined && resolved.eager !== plugin.eager) ||
-          (plugin.idleTimeoutMs !== undefined && resolved.idleTimeoutMs !== plugin.idleTimeoutMs) ||
-          (plugin.maxProcesses !== undefined && resolved.maxProcesses !== plugin.maxProcesses)) return false;
-      const server = resolved.server as MCPServerConfig;
-      return this.pluginExecutionFingerprint(server, resolved.userConfigDigest) ===
-        this.pluginExecutionFingerprint(config, plugin.userConfigDigest);
-    });
-  }
-
-  private pluginExecutionFingerprint(config: MCPServerConfig, userConfigDigest: string | undefined): string {
-    return fingerprintPluginCatalogConfig({
-      transport: config.transport ?? "stdio", command: config.command, args: config.args,
-      env: config.env, env_vars: config.env_vars, cwd: config.cwd,
-      endpoint: config.endpoint, headers: config.headers, pluginSandbox: config.pluginSandbox,
-      enabled: config.enabled !== false, required: config.required, timeout: config.timeout,
-      container: config.container, oauth: config.oauth,
-      default_tools_approval_mode: config.default_tools_approval_mode,
-      enabled_tools: config.enabled_tools, disabled_tools: config.disabled_tools,
-      virtual_no_fs_write_tools: config.virtual_no_fs_write_tools,
-      tools: config.tools, pinnedCatalogSha256: config.pinnedCatalogSha256,
-      supplyChain: config.supplyChain, userConfigDigest,
-    });
+    } finally {
+      prepared.rollback();
+      prepared.settle();
+    }
   }
 
   private async prepareInstallationGenerations(): Promise<void> {

@@ -334,10 +334,13 @@ permits; directories stay writable so the cache can always be removed.
 Plugin changes apply to new sessions. A running session keeps
 the plugin configuration it resolved, as with eager servers; its own config
 refresh restarts affected servers. Before a lazy server's first launch in that
-session, Core re-resolves the installed plugin through the session loader,
-including aliases, enabled state, configuration, and tool policy. If it changed,
-the launch fails and the session must be restarted. Once launched, that server
-restarts with the session's resolved configuration. A session refresh retires
+session, Core re-resolves the installed plugin with that session's ConfigStore
+sources (including an explicit `--config` path), captured environment, and
+`/mcp` enable or disable overrides. It checks only that the installation still
+matches the session's verified snapshot and that the plugin server is effectively
+enabled. If either check fails, the launch fails and the session must be
+restarted. Tool policy and lifecycle settings remain those resolved by the
+session, including after that server restarts. A session refresh retires
 only its own superseded verified generation. There are no lifecycle revision
 files, cross-process revocation checks, installation watchers, or pollers.
 
