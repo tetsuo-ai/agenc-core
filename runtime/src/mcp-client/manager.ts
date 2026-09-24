@@ -59,7 +59,7 @@ import { registerSandboxExecutionLifecycleParticipant } from "../sandbox/executi
 import { MCPTransportCleanupError } from "./transports/connect-with-cleanup.js";
 import { assertValidMcpServerName } from "./server-name.js";
 import { isMcpAuthenticationError } from "../services/mcp/auth-errors.js";
-import { fingerprintPluginCatalogConfig, hashInstalledPlugin, primePluginCatalogSingleFlight, readPluginCatalog, writePluginCatalog, type PluginCatalog, type PluginCatalogIdentity } from "./plugin-catalog-cache.js";
+import { acquireVerifiedPluginGeneration, fingerprintPluginCatalogConfig, primePluginCatalogSingleFlight, readPluginCatalog, writePluginCatalog, type PluginCatalog, type PluginCatalogIdentity, type VerifiedPluginGeneration } from "./plugin-catalog-cache.js";
 import { reservePluginProcess, releasePluginProcess, touchPluginProcess, notifyPluginProcessIdle } from "./plugin-process-budget.js";
 
 /** I-50: cancellable MCP startup wait; 30s default. */
@@ -475,6 +475,9 @@ export class MCPManager {
   private readonly cachedTools = new Map<string, Tool[]>();
   private readonly cachedCatalogs = new Map<string, PluginCatalog>();
   private readonly revokedPluginConfigs = new WeakSet<MCPServerConfig>();
+  private readonly pluginRevocations = new WeakMap<MCPServerConfig, AbortController>();
+  private readonly installationGenerations = new Map<MCPServerConfig, { state: VerifiedPluginGeneration; version: number; release: () => void }>();
+  private readonly preparingInstallations = new WeakSet<MCPServerConfig>();
   private readonly pluginLifecycles = new Map<string, PluginServerLifecycle>();
   private catalogPrimeTask: Promise<void> | undefined;
   private readonly resourceBridges: Map<string, MCPResourceBridge> = new Map();
@@ -811,13 +814,15 @@ export class MCPManager {
     const plugin = config.origin?.pluginServer;
     if (!plugin?.pluginRoot || !plugin.digest) return true;
     if (this.revokedPluginConfigs.has(config)) return false;
-    let current = false;
-    try {
-      current = hashInstalledPlugin(plugin.pluginRoot) === plugin.digest &&
-        (!plugin.snapshotRoot || hashInstalledPlugin(plugin.snapshotRoot) === plugin.digest);
+    const generation = this.installationGenerations.get(config);
+    if (!generation && (!this.running || this.preparingInstallations.has(config))) {
+      // Status reads before/during verification cannot latch a revocation.
+      // Execution still fails closed while startup has no published bridge.
+      return !this.running;
     }
-    catch { /* A missing or unreadable install is revoked as well. */ }
+    const current = generation !== undefined && generation.state.isCurrent(generation.version);
     if (!current) {
+      this.revokePluginController(config);
       const changed = this.cachedCatalogs.has(config.name) || this.cachedTools.has(config.name) ||
         this.connectionStates.get(config.name)?.type !== "failed";
       this.cachedCatalogs.delete(config.name);
@@ -829,7 +834,7 @@ export class MCPManager {
         if (this.configs.includes(config) && this.running) {
           void this.enqueuePluginTransition(config.name, async () => {
             const lifecycle = this.pluginLifecycle(config.name);
-            while (lifecycle.active > 0) {
+            while (lifecycle.active > 0 && this.running) {
               await new Promise<void>(resolve => lifecycle.activeWaiters.push(resolve));
             }
             await this.disconnectServer(config.name, "after installed plugin changed", true);
@@ -848,6 +853,46 @@ export class MCPManager {
       }
     }
     return current;
+  }
+
+  private async prepareInstallationGenerations(): Promise<void> {
+    for (const config of this.configs) {
+      if (config.origin?.pluginServer?.pluginRoot && config.origin.pluginServer.digest && config.enabled !== false) {
+        this.preparingInstallations.add(config);
+      }
+    }
+    await Promise.all(this.configs.map(async config => {
+      const plugin = config.origin?.pluginServer;
+      if (!plugin?.pluginRoot || !plugin.digest || config.enabled === false) return;
+      try {
+        const state = await acquireVerifiedPluginGeneration(plugin.pluginRoot, plugin.snapshotRoot, plugin.digest);
+        const version = state.version;
+        const release = state.subscribe(() => { this.installedSnapshotCurrent(config); });
+        if (!this.running || !this.configs.includes(config) || this.revokedPluginConfigs.has(config)) {
+          release();
+          return;
+        }
+        this.installationGenerations.set(config, { state, version, release });
+        this.installedSnapshotCurrent(config);
+      } catch {
+        this.preparingInstallations.delete(config);
+        this.installedSnapshotCurrent(config);
+      } finally { this.preparingInstallations.delete(config); }
+    }));
+  }
+
+  private pluginRevocationSignal(config: MCPServerConfig): AbortSignal {
+    let controller = this.pluginRevocations.get(config);
+    if (!controller) {
+      controller = new AbortController();
+      this.pluginRevocations.set(config, controller);
+    }
+    return controller.signal;
+  }
+
+  private revokePluginController(config: MCPServerConfig): void {
+    const controller = this.pluginRevocations.get(config);
+    if (controller && !controller.signal.aborted) controller.abort(new Error(`MCP plugin ${config.name} was revoked`));
   }
 
   private pluginLaunchConfig(config: MCPServerConfig): MCPServerConfig {
@@ -1223,6 +1268,7 @@ export class MCPManager {
     const generation = ++this.lifecycleGeneration;
     this.running = true;
     this.resetConnectionStates();
+    await this.prepareInstallationGenerations();
     await this.loadCachedCatalogs();
     if (!this.running || this.lifecycleGeneration !== generation) return;
     const enabledConfigs = this.configs.filter((c) => c.enabled !== false && (!this.isLazyPlugin(c) || opts.requiredServers?.includes(c.name)));
@@ -1401,11 +1447,15 @@ export class MCPManager {
     if (this.shutdownTask !== undefined) return this.shutdownTask;
 
     this.running = false;
+    for (const { release } of this.installationGenerations.values()) release();
+    this.installationGenerations.clear();
     for (const lifecycle of this.pluginLifecycles.values()) {
       delete lifecycle.client;
       if (lifecycle.idleTimer) clearTimeout(lifecycle.idleTimer);
       delete lifecycle.idleTimer;
+      for (const resolve of lifecycle.activeWaiters.splice(0)) resolve();
     }
+    for (const config of this.configs) this.revokePluginController(config);
     this.cachedTools.clear();
     this.cachedCatalogs.clear();
     this.lifecycleGeneration++;
@@ -1450,8 +1500,9 @@ export class MCPManager {
     this.serverInstructions.clear();
     this.resetConnectionStates();
 
-    const ownerDisposals = publishedOwners.map(owner =>
-      this.enqueuePluginTransition(owner.serverName, () => owner.dispose()));
+    // Closing a published owner must not queue behind a retirement that is
+    // waiting for an outstanding request. Disposal itself is idempotent.
+    const ownerDisposals = publishedOwners.map(owner => owner.dispose());
     const retainedRetries = retainedNames.map(name =>
       this.enqueuePluginTransition(name, () => this.retryRetainedCleanup(name, "during shutdown")));
     const disposalCount = ownerDisposals.length + retainedRetries.length;
@@ -1828,9 +1879,7 @@ export class MCPManager {
     touchPluginProcess(this.owner(serverName));
     try {
       const result = await tool.execute(executionArgs);
-      return this.configIsCurrent(config)
-        ? result
-        : { content: `MCP server ${JSON.stringify(serverName)} configuration changed`, isError: true };
+      return result;
     }
     finally {
       this.finishPluginActivity(serverName, config);
@@ -2429,6 +2478,10 @@ export class MCPManager {
           ...(this.permissionOptions !== undefined
             ? { permissions: this.permissionOptions }
             : {}),
+          ...(config.origin?.scope === "plugin" ? {
+            revocationGuard: () => this.configIsCurrent(config),
+            revocationSignal: this.pluginRevocationSignal(config),
+          } : {}),
         },
       );
       assertRefreshOpen(config.name, startupGate, isCurrent);
@@ -2446,6 +2499,10 @@ export class MCPManager {
         ...(this.permissionOptions !== undefined
           ? { permissions: this.permissionOptions }
           : {}),
+        ...(config.origin?.scope === "plugin" ? {
+          revocationGuard: () => this.configIsCurrent(config),
+          revocationSignal: this.pluginRevocationSignal(config),
+        } : {}),
         // Reconnect parity: forward the same call observer the initial
         // `createToolBridge` above received so reconnected bridges keep
         // emitting local `mcp_tool_call_*` events.
@@ -2548,7 +2605,7 @@ export class MCPManager {
               this.pluginLifecycle(config.name).active++;
               try {
                 const result = await execute(args);
-                return current() ? result : { content: `MCP plugin ${config.name} proxy configuration changed`, isError: true };
+                return result;
               } finally { this.finishPluginActivity(config.name, config); }
             },
           };
@@ -2987,7 +3044,7 @@ export class MCPManager {
     }
     if (cleanupErrors.length > 0) {
       this.notifySurfaceChanged();
-    } else if (processOwner) {
+    } else if (processOwner && this.running) {
       this.releaseOwner(name, processOwner);
     }
     if (strictCleanup && cleanupErrors.length > 0) {

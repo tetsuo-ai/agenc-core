@@ -1,10 +1,12 @@
 import { mkdir, mkdtemp, readlink, rm, symlink } from "node:fs/promises";
+import { renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MCPManager } from "./manager.js";
 import { writePluginCatalog } from "./plugin-catalog-cache.js";
-import { fingerprintPluginCatalogConfig, hashInstalledPlugin, readPluginCatalog, snapshotInstalledPlugin } from "./plugin-catalog-cache.js";
+import { fingerprintPluginCatalogConfig, hashInstalledPlugin, readPluginCatalog, snapshotInstalledPlugin, snapshotInstalledPluginOffThread } from "./plugin-catalog-cache.js";
+import * as pluginCatalogCache from "./plugin-catalog-cache.js";
 import { projectMcpManagerToConnections } from "./tui-connections.js";
 import { writeFile } from "node:fs/promises";
 import { loadPluginMcpServerRegistrations } from "../plugins/registration/mcp-plugin-integration.js";
@@ -79,6 +81,217 @@ beforeEach(() => { spawn.mockReset(); clients.length = 0; setupTransport(); });
 afterEach(async () => { for (const path of homes.splice(0)) await rm(path, { recursive: true, force: true }); });
 
 describe("plugin MCP on-demand lifecycle", () => {
+  it.each(["eager", "lazy"])("cancels a %s plugin authorization after its installation is revoked", async kind => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const cfg = config(cacheHome, `plugin:sample:${kind}-approval`, {
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: `${kind}-approval`, digest: hashInstalledPlugin(root), pluginRoot: root, eager: kind === "eager" } },
+    });
+    warm(cfg);
+    const approval = deferred<{ kind: "approved" }>();
+    const request = vi.fn(() => approval.promise);
+    const manager = new MCPManager([cfg]);
+    manager.setPermissionOptions({ approvalResolver: { request } });
+    try {
+      await manager.start();
+      expect(manager.getConnectionState(cfg.name)?.type).not.toBe("failed");
+      const call = manager.callTool(cfg.name, "ping", {});
+      await waitFor(() => request.mock.calls.length > 0);
+      await writeFile(join(root, "entry.js"), "changed");
+      await waitFor(() => manager.getConnectionState(cfg.name)?.type === "failed");
+      const result = await Promise.race([call, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("authorization was not cancelled")), 200))]);
+      expect(result.isError).toBe(true);
+      expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+      expect(clients[0]!.callTool).not.toHaveBeenCalled();
+    } finally { approval.resolve({ kind: "approved" }); await manager.stop(); }
+  });
+
+  it.each(["eager", "lazy"])("finishes strict shutdown with a pending %s request after content revocation", async kind => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const cfg = config(cacheHome, `plugin:sample:${kind}-shutdown`, {
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: `${kind}-shutdown`, digest: hashInstalledPlugin(root), pluginRoot: root, eager: kind === "eager" } },
+    });
+    warm(cfg);
+    const manager = new MCPManager([cfg]);
+    const pending = deferred<{ content: { type: "text"; text: string }[] }>();
+    const closing = deferred();
+    try {
+      await manager.start();
+      expect(manager.getConnectionState(cfg.name)?.type).not.toBe("failed");
+      if (kind === "lazy") await manager.callTool(cfg.name, "ping", {});
+      expect(clients[0]!.close).not.toHaveBeenCalled();
+      clients[0]!.callTool.mockImplementation(() => pending.promise);
+      clients[0]!.close.mockImplementation(() => closing.promise);
+      const call = manager.callTool(cfg.name, "ping", {});
+      await waitFor(() => clients[0]!.callTool.mock.calls.length >= (kind === "lazy" ? 2 : 1));
+      await writeFile(join(root, "entry.js"), "changed");
+      await waitFor(() => manager.getConnectionState(cfg.name)?.type === "failed");
+      const owner = (manager as unknown as { pluginLifecycles: Map<string, { reservation?: object }> }).pluginLifecycles.get(cfg.name)!.reservation;
+      const shutdown = manager.stopStrict();
+      await waitFor(() => clients[0]!.close.mock.calls.length > 0);
+      expect((manager as unknown as { pluginLifecycles: Map<string, { reservation?: object }> }).pluginLifecycles.get(cfg.name)!.reservation).toBe(owner);
+      closing.resolve();
+      await Promise.race([shutdown, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("strict shutdown waited behind active call")), 200))]);
+      expect((manager as unknown as { pluginLifecycles: Map<string, { reservation?: object }> }).pluginLifecycles.get(cfg.name)!.reservation).toBeUndefined();
+      pending.resolve({ content: [{ type: "text", text: "late" }] });
+      await call;
+    } finally { closing.resolve(); pending.resolve({ content: [{ type: "text", text: "late" }] }); await manager.stop(); }
+  });
+
+  it("does not scan installed trees during a warm plugin call", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const cfg = config(cacheHome, "plugin:sample:scan", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "scan", digest: hashInstalledPlugin(root), pluginRoot: root, eager: true } } });
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      const scan = vi.spyOn(pluginCatalogCache, "hashInstalledPlugin");
+      try { await manager.callTool(cfg.name, "ping", {}); expect(scan).toHaveBeenCalledTimes(0); }
+      finally { scan.mockRestore(); }
+    } finally { await manager.stop(); }
+  });
+
+  it("does not revoke a verified plugin when status is read before startup", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const cfg = config(cacheHome, "plugin:sample:prestart", {
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "prestart", digest: hashInstalledPlugin(root), pluginRoot: root, eager: true } },
+    });
+    const manager = new MCPManager([cfg]);
+    try {
+      expect(manager.getConnectionState(cfg.name)?.type).toBe("pending");
+      const starting = manager.start();
+      expect(manager.getConnectionState(cfg.name)?.type).toBe("pending");
+      await starting;
+      expect(manager.getConnectionState(cfg.name)?.type).toBe("connected");
+    } finally { await manager.stop(); }
+  });
+
+  it("excludes filesystem bookkeeping from the digest and published snapshot", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const digest = hashInstalledPlugin(root);
+    await writeFile(join(root, ".DS_Store"), "metadata");
+    await writeFile(join(root, "Thumbs.db"), "metadata");
+    await writeFile(join(root, ".entry.js.swp"), "metadata");
+    expect(hashInstalledPlugin(root)).toBe(digest);
+    const snapshot = snapshotInstalledPlugin(root, cacheHome, digest);
+    expect(hashInstalledPlugin(snapshot)).toBe(digest);
+    expect(await (await import("node:fs/promises")).readdir(snapshot)).toEqual(["entry.js"]);
+    expect(((await (await import("node:fs/promises")).stat(join(snapshot, "entry.js"))).mode & 0o222)).toBe(0);
+    const workerSnapshot = await snapshotInstalledPluginOffThread(root, join(cacheHome, "worker-storage"));
+    expect(workerSnapshot.digest).toBe(digest);
+    expect(await (await import("node:fs/promises")).readdir(workerSnapshot.snapshotRoot)).toEqual(["entry.js"]);
+  });
+
+  it.each(["eager", "lazy"])("keeps a live %s plugin authorized when .DS_Store is added and removed", async kind => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const cfg = config(cacheHome, `plugin:sample:${kind}-metadata`, {
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: `${kind}-metadata`, digest: hashInstalledPlugin(root), pluginRoot: root, eager: kind === "eager", idleTimeoutMs: 10_000 } },
+    });
+    warm(cfg);
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      expect((await manager.callTool(cfg.name, "ping", {})).isError).not.toBe(true);
+      await writeFile(join(root, ".DS_Store"), "metadata");
+      await new Promise(resolve => setTimeout(resolve, 120));
+      expect(manager.getConnectionState(cfg.name)?.type).toBe("connected");
+      expect((await manager.callTool(cfg.name, "ping", {})).isError).not.toBe(true);
+      await rm(join(root, ".DS_Store"));
+      await new Promise(resolve => setTimeout(resolve, 120));
+      expect(manager.getConnectionState(cfg.name)?.type).toBe("connected");
+      expect((await manager.callTool(cfg.name, "ping", {})).isError).not.toBe(true);
+      expect(spawn).toHaveBeenCalledTimes(1);
+    } finally { await manager.stop(); }
+  });
+
+  it("bumps the verified generation when an installed plugin is removed", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const cfg = config(cacheHome, "plugin:sample:removed", {
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "removed", digest: hashInstalledPlugin(root), pluginRoot: root, eager: true } },
+    });
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      await rm(root, { recursive: true });
+      expect((await manager.callTool(cfg.name, "ping", {})).isError).toBe(true);
+      await waitFor(() => manager.getConnectionState(cfg.name)?.type === "failed");
+      await waitFor(() => clients[0]!.close.mock.calls.length > 0);
+    } finally { await manager.stop(); }
+  });
+
+  it("bumps the verified generation when a payload file is installed", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const cfg = config(cacheHome, "plugin:sample:added", {
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "added", digest: hashInstalledPlugin(root), pluginRoot: root, eager: true } },
+    });
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      await writeFile(join(root, "schema.json"), "{}");
+      await waitFor(() => manager.getConnectionState(cfg.name)?.type === "failed");
+      expect((await manager.callTool(cfg.name, "ping", {})).isError).toBe(true);
+      await waitFor(() => clients[0]!.close.mock.calls.length > 0);
+    } finally { await manager.stop(); }
+  });
+
+  it("rejects an atomic plugin update before a watcher callback runs", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    const replacement = join(cacheHome, "replacement");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    await mkdir(replacement); await writeFile(join(replacement, "entry.js"), "new");
+    const cfg = config(cacheHome, "plugin:sample:atomic-update", {
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "atomic-update", digest: hashInstalledPlugin(root), pluginRoot: root, eager: true } },
+    });
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      renameSync(root, join(cacheHome, "old-install"));
+      renameSync(replacement, root);
+      expect((await manager.callTool(cfg.name, "ping", {})).isError).toBe(true);
+      expect(clients[0]!.callTool).not.toHaveBeenCalled();
+    } finally { await manager.stop(); }
+  });
+
+  it.each(["eager", "lazy"])("reports a completed %s call honestly after its owner is revoked", async kind => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const cfg = config(cacheHome, `plugin:sample:${kind}-receipt`, {
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: `${kind}-receipt`, digest: hashInstalledPlugin(root), pluginRoot: root, eager: kind === "eager" } },
+    });
+    warm(cfg);
+    const manager = new MCPManager([cfg]);
+    const pending = deferred<{ content: { type: "text"; text: string }[] }>();
+    try {
+      await manager.start();
+      if (kind === "lazy") await manager.callTool(cfg.name, "ping", {});
+      clients[0]!.callTool.mockImplementation(() => pending.promise);
+      const call = manager.callTool(cfg.name, "ping", {});
+      await waitFor(() => clients[0]!.callTool.mock.calls.length >= (kind === "lazy" ? 2 : 1));
+      await writeFile(join(root, "entry.js"), "changed");
+      await waitFor(() => manager.getConnectionState(cfg.name)?.type === "failed");
+      pending.resolve({ content: [{ type: "text", text: "completed operation" }] });
+      const result = await call;
+      expect(result.content).toContain("completed operation");
+      expect(result.isError).not.toBe(true);
+    } finally { pending.resolve({ content: [{ type: "text", text: "completed operation" }] }); await manager.stop(); }
+  });
+
+  it("verifies snapshot creation on a worker while the event loop advances", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "x".repeat(16 * 1024 * 1024));
+    let timerFired = false;
+    const timer = new Promise<void>(resolve => setTimeout(() => { timerFired = true; resolve(); }, 0));
+    const result = await snapshotInstalledPluginOffThread(root, cacheHome);
+    expect(timerFired).toBe(true);
+    await timer;
+    expect(hashInstalledPlugin(result.snapshotRoot)).toBe(result.digest);
+  });
   it("serializes a call queued behind eviction before a later reconnect", async () => {
     const cacheHome = await home();
     const cfg = config(cacheHome, "plugin:sample:evict-reconnect", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "evict-reconnect", digest: "a".repeat(64), maxProcesses: 1, idleTimeoutMs: 0 } } });
@@ -507,6 +720,7 @@ describe("plugin MCP on-demand lifecycle", () => {
     try {
       await manager.start();
       await writeFile(join(root, "entry.js"), "replacement");
+      await waitFor(() => manager.getConnectionState(cfg.name)?.type === "failed");
       const result = await manager.callTool(cfg.name, "ping", {});
       expect(result.isError).toBe(true);
       expect(spawn).toHaveBeenCalledTimes(0);
@@ -528,6 +742,7 @@ describe("plugin MCP on-demand lifecycle", () => {
       const retained = manager.getToolsByServer(cfg.name)[0]!;
       expect((await retained.execute({})).isError).not.toBe(true);
       await writeFile(join(root, "entry.js"), "changed");
+      await waitFor(() => manager.getConnectionState(cfg.name)?.type === "failed");
       expect(manager.getConnectionState(cfg.name)?.type).toBe("failed");
       expect(manager.getToolsByServer(cfg.name)).toEqual([]);
       expect((await retained.execute({})).isError).toBe(true);
@@ -551,6 +766,7 @@ describe("plugin MCP on-demand lifecycle", () => {
       const retained = manager.getToolsByServer(cfg.name)[0]!;
       clients[0]!.close.mockRejectedValueOnce(new Error("close failed"));
       await writeFile(join(root, "entry.js"), "changed");
+      await waitFor(() => manager.getConnectionState(cfg.name)?.type === "failed");
       expect((await retained.execute({})).isError).toBe(true);
       const cleanup = (manager as unknown as { retainedCleanup: Map<string, unknown> }).retainedCleanup;
       await waitFor(() => cleanup.has(cfg.name));

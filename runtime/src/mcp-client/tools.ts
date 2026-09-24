@@ -252,6 +252,9 @@ interface ToolBridgeOptions {
   environment: ProviderEnvironment;
   /** Raw, unfiltered descriptors for the installed-plugin catalog cache. */
   onCatalog?: (tools: readonly Record<string, unknown>[]) => void;
+  /** Revokes an owning configuration across authorization and RPC dispatch. */
+  revocationGuard?: () => boolean;
+  revocationSignal?: AbortSignal;
 }
 
 interface MCPToolDescriptor {
@@ -1083,8 +1086,14 @@ export async function createToolBridge(
           return callRequestPermissionsTool(args, callId, options.permissions);
         }
         const startedAtMs = Date.now();
+        let dispatched = false;
 
         try {
+          const permissions = options.revocationSignal && options.permissions
+            ? { ...options.permissions, signal: options.permissions.signal
+                ? AbortSignal.any([options.permissions.signal, options.revocationSignal])
+                : options.revocationSignal }
+            : options.permissions;
           const authorization: PermissionResolution =
             exactMcpInvocation(args, callId, namespacedName, options.permissions)?.approvalResolved === true
             ? { ok: true, args }
@@ -1094,10 +1103,16 @@ export async function createToolBridge(
             mcpTool,
             callId,
             args,
-            options.permissions,
+            permissions,
           );
           if (!authorization.ok) {
+            if (options.revocationGuard?.() === false || options.revocationSignal?.aborted) {
+              return preEffectRefusal(namespacedName, "The owning MCP plugin was revoked during authorization.");
+            }
             return authorization.result;
+          }
+          if (options.revocationGuard?.() === false || options.revocationSignal?.aborted) {
+            return preEffectRefusal(namespacedName, "The owning MCP plugin was revoked during authorization.");
           }
           // Approval can outlive the originating turn. A captured proxy must
           // not carry a revoked local lease across that asynchronous boundary.
@@ -1125,12 +1140,15 @@ export async function createToolBridge(
             `MCP tool "${mcpTool.name}" callTool`,
             callToolTimeoutMs,
             (signal) => withDesktopMcpDispatchGuard(() => {
+              if (options.revocationGuard?.() === false || options.revocationSignal?.aborted) throw new DesktopMcpPreflightRefusal("The owning MCP plugin was revoked before dispatch.");
               if (options.serverConfig?.localOnly === true && !hasLocalMcpAccess()) throw new DesktopMcpPreflightRefusal("The local app-control turn has ended.");
               if (options.serverConfig?.desktopAuthorityGrant && !hasDesktopAuthority(options.serverConfig.desktopAuthorityGrant)) throw new DesktopMcpPreflightRefusal("Desktop host authority expired before dispatch.");
               if (signal.aborted || effectSignal?.aborted) throw new DesktopMcpPreflightRefusal("The app-control operation was cancelled before dispatch.");
               if (nativeTerminal && !nativeDesktopTerminalAllowed(args, callId, namespacedName, options.permissions)) throw new DesktopMcpPreflightRefusal("The visible terminal no longer has full-access authority.");
               if (routineMutation && !desktopRoutineMutationAllowed(args, callId, namespacedName, options.permissions)) throw new DesktopMcpPreflightRefusal("The Desktop Routine call no longer has writable local authority.");
-            }, () => client.callTool(
+            }, () => {
+              dispatched = true;
+              return client.callTool(
                 {
                   name: mcpTool.name,
                   arguments: executionArgs,
@@ -1163,7 +1181,8 @@ export async function createToolBridge(
                       }
                     : {}),
                 },
-              )),
+              );
+            }),
             effectSignal,
           );
           const result = await normalizeMcpToolOutput({
@@ -1218,7 +1237,10 @@ export async function createToolBridge(
             isError: true,
             durationMs,
           });
-          if (error instanceof DesktopMcpPreflightRefusal) return preEffectRefusal(namespacedName, errMessage);
+          if (error instanceof DesktopMcpPreflightRefusal ||
+              (!dispatched && (options.revocationSignal?.aborted || options.revocationGuard?.() === false))) {
+            return preEffectRefusal(namespacedName, errMessage);
+          }
           effectSignal?.throwIfAborted();
           return {
             content: errMessage,

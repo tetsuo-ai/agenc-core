@@ -28,7 +28,7 @@ import {
 import type { PluginConfigStoredValue } from "../../utils/plugins/pluginConfigAuthority.js";
 import type { PluginUserConfigOption } from "../manifest-schema.js";
 import { getPluginDataDir } from "../directories.js";
-import { fingerprintPluginCatalogConfig, hashInstalledPlugin, snapshotInstalledPlugin } from "../../mcp-client/plugin-catalog-cache.js";
+import { fingerprintPluginCatalogConfig, snapshotInstalledPluginOffThread } from "../../mcp-client/plugin-catalog-cache.js";
 
 export interface PluginMcpRegistrationOptions extends PluginRuntimeLoadOptions {
   readonly plugins?: readonly LoadedPlugin[];
@@ -345,8 +345,7 @@ async function extractMcpServerRegistrationsFromPlugins(
     let digest: string;
     let snapshotRoot: string;
     try {
-      digest = hashInstalledPlugin(plugin.root);
-      snapshotRoot = snapshotInstalledPlugin(plugin.root, options.pluginStorageRoot, digest);
+      ({ digest, snapshotRoot } = await snapshotInstalledPluginOffThread(plugin.root, options.pluginStorageRoot));
     }
     catch (error) {
       options.errors?.push({

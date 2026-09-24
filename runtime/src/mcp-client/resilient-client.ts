@@ -147,6 +147,8 @@ export class MCPReconnectCleanupError extends AggregateError {
 interface ResilientMCPBridgeOptions {
   /** Revalidate manager generation and installation before an automatic spawn. */
   readonly beforeReconnect?: () => void;
+  readonly revocationGuard?: () => boolean;
+  readonly revocationSignal?: AbortSignal;
   readonly onCatalog?: (tools: readonly Record<string, unknown>[]) => void;
   readonly permissions?: MCPToolBridgePermissionOptions;
   /**
@@ -467,6 +469,8 @@ export class ResilientMCPBridge implements MCPToolBridge {
           ...(this.options.permissions !== undefined
             ? { permissions: this.options.permissions }
             : {}),
+          ...(this.options.revocationGuard ? { revocationGuard: this.options.revocationGuard } : {}),
+          ...(this.options.revocationSignal ? { revocationSignal: this.options.revocationSignal } : {}),
           // Keep the rebuilt bridge emitting the same local call events.
           ...(this.options.callObserver !== undefined
             ? { callObserver: this.options.callObserver }
