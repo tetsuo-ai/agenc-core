@@ -326,16 +326,6 @@ otherwise.
 | `providers.grok.enable_image_search` | `true` |
 | `providers.grok.enable_image_understanding` | `true` |
 | `providers.grok.enable_video_understanding` | `true` |
-| `buffer.provider` | `auto` |
-| `buffer.show_tabs` | `auto` |
-| `buffer.neovim.init` | `auto` |
-| `buffer.neovim.startup_timeout_ms` | `10000` |
-| `buffer.neovim.operation_timeout_ms` | `10000` |
-| `buffer.neovim.cleanup_timeout_ms` | `1000` |
-| `buffer.prediction.enabled` | `ask` |
-| `buffer.prediction.debounce_ms` | `160` |
-| `buffer.prediction.timeout_ms` | `2500` |
-| `buffer.prediction.max_output_tokens` | `256` |
 | `tui.theme` | `dark` |
 | `tui.showTurnDuration` | `true` |
 | `tui.terminalProgressBarEnabled` | `true` |
@@ -350,6 +340,8 @@ otherwise.
 | `transcriptPersistenceEnabled` | `true` |
 | `promptSuggestionEnabled` | `false` |
 | `agent.budget` | no caps |
+| `agents.cross_provider_enabled` | `false`. User or managed config may enable cross-provider subagents. |
+| `agents.allowed_providers` | `[]`. Built-in provider names permitted for cross-provider subagents. |
 | `agent.retention.completed_days` | `30` |
 | `agent.retention.failed_days` | `90` |
 | `agent.retention.snapshot_days` | `3` |
@@ -503,7 +495,7 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `reasoning_summary` | `auto`, `concise`, `detailed`, or `none`. |
 | `approvals_reviewer` | `user` or `auto_review`. |
 | `model_verbosity` | `low`, `medium`, or `high`. |
-| `service_tier` | `priority` or `flex`. `priority` is the one "Fast" dial: OpenAI priority processing (`service_tier`, GPT-5 family and GPT-4.1/4o/o-series, 2x standard price) and Anthropic fast mode on Claude Opus 5 and Opus 4.8 (`speed: "fast"` plus the `fast-mode-2026-02-01` beta header, 2x price, research preview access from Anthropic). Providers and models without a fast tier ignore it; the model info `serviceTiers` list says which ones have it. |
+| `service_tier` | `priority` or `flex`. `priority` is the one "Fast" dial: OpenAI priority processing (`service_tier`, GPT-5 family and GPT-4.1/4o/o-series, 2x standard price) and Anthropic fast mode on Claude Opus 5.5, Opus 5 and Opus 4.8 (`speed: "fast"` plus the `fast-mode-2026-02-01` beta header, 2x price, research preview access from Anthropic). Providers and models without a fast tier ignore it; the model info `serviceTiers` list says which ones have it. |
 | `personality` | `none`, `friendly`, or `pragmatic`. |
 | `agent_max_threads` | Positive concurrent-agent thread cap. |
 | `agent_max_depth` | Non-negative subagent nesting cap. |
@@ -765,28 +757,19 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `lsp_servers.<server>.startupTimeout`, `lsp_servers.<server>.maxRestarts` | Startup/restart limits. |
 | `attachments`, `attachments.allowedRoots` | Extra roots allowed for `@file` attachment reads. |
 
-### TUI, editor, commands, and presentation
+### TUI, commands, and presentation
 
 | Paths | Type / meaning |
 | --- | --- |
-| `tui`, `tui.vimMode` | TUI block and vim-keybinding switch. |
+| `tui` | TUI block. |
 | `tui.theme` | `auto`, `dark`, `light`, one of the daltonized palettes, or one of the ANSI palettes. |
 | `tui.showTurnDuration`, `tui.terminalProgressBarEnabled`, `tui.copyOnSelect` | Turn-duration display, terminal progress, and selection-copy switches. |
 | `tui.flickerFreeMode`, `tui.prStatusFooterEnabled` | Flicker reduction and pull-request footer switches. |
 | `tui.keybindings`, `tui.keybindings[]` | Ordered canonical keybinding override blocks. This is operator-only: user config may set it and the final managed layer may replace and lock the complete array; plugin/project/local layers are ignored with diagnostics. |
-| `tui.keybindings[].context` | Required registered TUI context such as `Chat`, `Global`, `Buffer`, or `BufferHost`. |
+| `tui.keybindings[].context` | Required registered TUI context such as `Chat` or `Global`. |
 | `tui.keybindings[].bindings` | Chord-to-action map. `command:<name>` is accepted only in `Chat`. |
 | `tui.keybindings[].bindings.<name>` | Operator-chosen chord mapped to a registered action or a `command:<name>` binding. |
 | `tui.keybindings[].unbind` | Chords to unbind explicitly. A chord cannot also occur in `bindings`, including through aliases. |
-| `buffer` | Embedded editor block. |
-| `buffer.provider` | `auto`, `neovim`, `inline`, or `external`. |
-| `buffer.show_tabs` | `auto`, `always`, or `never`. |
-| `buffer.neovim` | Neovim process block. |
-| `buffer.neovim.executable`, `buffer.neovim.init`, `buffer.neovim.discovery_timeout_ms` | Executable, `auto`/`user`/`clean` init, and discovery timeout. |
-| `buffer.neovim.startup_timeout_ms`, `buffer.neovim.operation_timeout_ms`, `buffer.neovim.cleanup_timeout_ms` | Process timeouts. |
-| `buffer.prediction` | Code prediction block. |
-| `buffer.prediction.enabled`, `buffer.prediction.debounce_ms`, `buffer.prediction.timeout_ms`, `buffer.prediction.max_output_tokens` | `ask`/`on`/`off` and limits. |
-| `buffer.prediction.provider`, `buffer.prediction.model` | Optional independent route. |
 | `statusLine`, `statusLine.type`, `statusLine.command`, `statusLine.padding` | Operator-owned status command; `type` is literal `command`. Project/local layers cannot install it. Execution follows session command-hook policy and `--bare` suppression. |
 | `fileSuggestion`, `fileSuggestion.type`, `fileSuggestion.command` | Operator-owned file suggestion command; `type` is literal `command`. Project/local layers cannot install it. Execution follows session command-hook policy and `--bare` suppression. |
 | `attribution`, `attribution.commit`, `attribution.pr` | Commit and pull-request attribution strings. |
@@ -802,8 +785,8 @@ Commands have a five-second deadline including admission wait, accept at most
 command at a time. Cancelling a refresh or closing the session stops its process
 tree before releasing execution capacity. Before a live session exists, the
 custom status line remains unavailable; rendering never starts a model turn.
-Protected Editor workspaces block status commands. An executing command also
-blocks Editor acquisition until its process cleanup finishes.
+An executing status command holds its workspace operation open until its
+process cleanup finishes.
 
 The daemon reports current context usage from its own token records. If no
 recent record is available, `context_window.current_usage`, both context
@@ -844,6 +827,7 @@ keybinding file or watcher.
 | `durableTurns.checkpoint`, `durableTurns.checkpoint.enabled`, `durableTurns.checkpoint.minIntervalMs` | Checkpoint switch and throttle. `enabled` defaults to `true`. When false, restart reports `no-checkpoint` and opens a fresh turn. `minIntervalMs` throttles ordinary `iteration` and `postAssistant` writes. It does not defer the forced pre-admission checkpoint after `modelSampleOrdinal` advances. |
 | `durableTurns.resume`, `durableTurns.resume.onRestart` | Resume-on-restart switch. Default `true`. When false, startup opens a fresh turn with reason `disabled`. The removed `resume.policy` key is stripped on migrate; it is not an operator setting. |
 | `completion_gate`, `completion_gate.mode`, `completion_gate.max_rounds` | Non-interactive verification round. `mode` is `auto` (default: only sessions created with `runtimeOptions.nonInteractive`), `always`, or `never`; `max_rounds` is `1..10`, default `3`. See [Built-in defaults](#built-in-defaults). |
+| `goal`, `goal.max_rounds`, `goal.stall_rounds`, `goal.judge_model`, `goal.verify_timeout_ms` | Policy for `/goal`. `max_rounds` is how many continuations a goal may use before it stops as `budget_exhausted` (`1..100`, default `20`); `stall_rounds` is how many rounds in a row may end without a successful tool call before the goal stalls (default `3`); `judge_model` pins the independent reviewer's model (default: the session model); `verify_timeout_ms` bounds each verification command the runtime runs (default `600000`). See [goal.md](goal.md). |
 | `durableTurns.resume.requireLease`, `durableTurns.resume.buildPinning` | Lease and build-pinning guards. Both default `true`. Resume fail-closes when an enabled guard finds a lease or build-id mismatch. The switches enable or disable individual guards. They do not select an idempotent replay policy. |
 
 ### Gateway

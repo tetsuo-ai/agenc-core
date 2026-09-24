@@ -284,6 +284,21 @@ export interface LLMUsage {
   cacheCreationInputTokens?: number;
   reasoningOutputTokens?: number;
   webSearchRequests?: number;
+  /**
+   * The wire this usage came from cannot report prompt-cache writes: it has
+   * no field equivalent to Responses' `input_tokens_details.cache_write_tokens`
+   * (OpenAI Chat Completions folds real cache writes into `promptTokens` with
+   * no way to tell them apart from ordinary input). Budget reconciliation
+   * uses this to avoid under-pricing those writes as ordinary input on models
+   * that bill cache writes above the input rate.
+   */
+  readonly cacheWritesUnreported?: boolean;
+  /**
+   * Speed the provider reports it served the call at (Anthropic
+   * `usage.speed`). Fast mode bills at its own rates, so cost accounting
+   * follows this rather than the speed that was requested.
+   */
+  readonly speed?: "fast" | "standard";
 }
 
 /**
@@ -424,7 +439,11 @@ type LLMReasoningEffort =
   | "max";
 type LLMReasoningSummary = "auto" | "concise" | "detailed" | "none";
 type LLMModelVerbosity = "low" | "medium" | "high";
-type LLMServiceTier = "priority" | "flex";
+/**
+ * "default" names OpenAI's Standard tier explicitly; admission sends it under
+ * a hard USD cap so a project-level Fast default cannot apply.
+ */
+type LLMServiceTier = "priority" | "flex" | "default";
 
 export type LLMProviderNativeServerToolType =
   | "web_search"
@@ -970,24 +989,6 @@ export interface LLMProviderSessionForkOptions {
   readonly sandboxExecutionBroker: SandboxExecutionBrokerLike;
 }
 
-/** Provider-native fill-in-the-middle request for editor prediction. */
-export interface LLMCodePredictionRequest {
-  readonly prefix: string;
-  readonly suffix: string;
-  readonly language?: string;
-  readonly path: string;
-  readonly cursor: {
-    readonly line: number;
-    readonly byteColumn: number;
-  };
-}
-
-export interface LLMCodePredictionResponse {
-  readonly text: string;
-  readonly model?: string;
-  readonly usage?: LLMUsage;
-}
-
 /**
  * Core LLM provider interface that all adapters implement
  */
@@ -1006,14 +1007,6 @@ export interface LLMProvider {
    * unconfigured streams remain unbounded.
    */
   readonly suggestedStreamIdleTimeoutMs?: number;
-  /**
-   * Optional low-latency fill-in-the-middle path. Implementations must remain
-   * tool-free and transcript-free; callers fall back to `chat` when absent.
-   */
-  predictCode?(
-    request: LLMCodePredictionRequest,
-    options?: LLMChatOptions,
-  ): Promise<LLMCodePredictionResponse>;
   chat(messages: LLMMessage[], options?: LLMChatOptions): Promise<LLMResponse>;
   chatStream(
     messages: LLMMessage[],

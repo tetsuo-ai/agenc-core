@@ -13,6 +13,7 @@
  * provider + rollout on disk). These tests cover the extracted units
  * that back the integration.
  */
+import { notificationFromDaemonEvent } from "../../src/app-server/background-agent-runner/daemon-events.js";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import * as memoryPrompt from "../../src/memory/memdir.js";
 import { VERSION } from "../../src/version.js";
@@ -36,6 +37,7 @@ import {
   main,
   maybeReloadConfigBetweenTurns,
   oneShotCLI,
+  parsePrintModeGoal,
   oneShotFinalMessageRemainder,
   parseStreamJsonPrompt,
   prepareTurnRuntimeInputs,
@@ -226,6 +228,10 @@ function installDaemonCliDepsForTest(
       };
       readonly emit: (event: unknown) => void;
     }) => void;
+    /** The `terminal` a protocol 1.2 daemon returns with `message.stream`. */
+    readonly messageStreamTerminal?: { readonly code: number; readonly message?: string };
+    /** Answers `session.goal` (print-mode `/goal`). */
+    readonly onSessionGoal?: (params: Record<string, unknown>) => unknown;
     readonly createConnectedTuiClientError?: Error;
     readonly liveAgent?: boolean;
     readonly liveAgentMetadata?: Readonly<Record<string, unknown>>;
@@ -428,6 +434,9 @@ function installDaemonCliDepsForTest(
           decision: method === "tool.deny" ? "denied" : "approved",
         };
       }
+      if (method === "session.goal" && options.onSessionGoal !== undefined) {
+        return options.onSessionGoal(params ?? {});
+      }
       if (method === "message.stream") {
         options.onMessageStream?.({
           params: (params ?? {}) as {
@@ -445,6 +454,9 @@ function installDaemonCliDepsForTest(
               ? params.streamId
               : "stream_test",
           acceptedAt: "2026-05-06T00:00:01.000Z",
+          ...(options.messageStreamTerminal !== undefined
+            ? { terminal: options.messageStreamTerminal }
+            : {}),
         };
       }
       throw new Error(`unexpected daemon request: ${method}`);
@@ -2098,6 +2110,84 @@ describe("main() smoke", () => {
     }
   });
 
+  describe("print-mode /goal", () => {
+    const agentId = "agent_goal";
+    const sessionId = "session_goal";
+    const turnEvents = (streamId: string) => [
+      { method: "event.session_event", params: { sessionId, agentId, turnId: streamId, eventId: "g-start", event: { id: "g-start", type: "turn_started", payload: { turnId: streamId } } } },
+      { method: "event.message_chunk", params: { sessionId, eventId: "g-delta", agentId, delta: "clear() added" } },
+      { method: "event.session_event", params: { sessionId, agentId, turnId: streamId, eventId: "g-done", event: { id: "g-done", type: "turn_complete", payload: { turnId: streamId, lastAgentMessage: "clear() added" } } } },
+    ];
+    const finalGoal = (status: string, reason: string) => ({
+      ok: true,
+      goal: { objective: "add clear()", status, rounds: 1, budget: { maxRounds: 20 }, verification: [], lastVerdict: { verdict: status, reason, at: "2026-09-19T00:00:00.000Z" } },
+    });
+
+    it("sets the goal before the kickoff turn exists and exits 0 only when it is met", async () => {
+      await withOneShotTestEnvironment("agenc-goal-met-", async ({ cwd, run, stderr }) => {
+        const daemon = installDaemonCliDepsForTest({
+          agentId, sessionId, cwd, oneShotEvents: [],
+          onSessionGoal: (params) => (params.action === "set" ? { ok: true } : finalGoal("met", "clear() exists and is tested")),
+          onMessageStream: ({ params, emit }) => {
+            for (const event of turnEvents(params.streamId!)) emit(event);
+          },
+        });
+        expect(await run(() => oneShotCLI('/goal add clear() --verify "tests=npm test"'), 4000)).toBe(0);
+        const create = daemon.requests.find((request) => request.method === "agent.create")?.params as Record<string, unknown>;
+        expect(create).toMatchObject({ deferInitialTurn: true });
+        expect(create).not.toHaveProperty("initialContent");
+        const methods = daemon.requests.map((request) => request.method);
+        expect(methods.indexOf("session.goal")).toBeLessThan(methods.indexOf("message.stream"));
+        expect(daemon.requests.find((request) => request.method === "session.goal")?.params).toEqual({
+          sessionId, action: "set",
+          request: { objective: "add clear()", verify: [{ label: "tests", script: "npm test" }], noVerify: false },
+        });
+        const stream = daemon.requests.find((request) => request.method === "message.stream")?.params as { content?: string };
+        expect(stream.content).toContain("Work toward this goal");
+        expect(stream.content).toContain("add clear()");
+        expect(stderr()).toContain("agenc: goal met after 1 round: clear() exists and is tested");
+      });
+    });
+
+    it("exits 1 with the reviewer's reason when the goal stops without being met", async () => {
+      await withOneShotTestEnvironment("agenc-goal-impossible-", async ({ cwd, run, stderr }) => {
+        installDaemonCliDepsForTest({
+          agentId, sessionId, cwd, oneShotEvents: [],
+          onSessionGoal: (params) => (params.action === "set" ? { ok: true } : finalGoal("impossible", "the tests contradict each other")),
+          onMessageStream: ({ params, emit }) => {
+            for (const event of turnEvents(params.streamId!)) emit(event);
+          },
+        });
+        expect(await run(() => oneShotCLI("/goal make npm test pass"), 4000)).toBe(1);
+        expect(stderr()).toContain("agenc: goal impossible after 1 round: the tests contradict each other");
+      });
+    });
+
+    it("a refused goal starts no turn", async () => {
+      await withOneShotTestEnvironment("agenc-goal-refused-", async ({ cwd, run, stderr }) => {
+        const daemon = installDaemonCliDepsForTest({
+          agentId, sessionId, cwd, oneShotEvents: [],
+          onSessionGoal: () => ({ ok: false, message: "No checks were found. Add --verify or --no-verify." }),
+        });
+        expect(await run(() => oneShotCLI("/goal make it faster"), 4000)).toBe(1);
+        expect(daemon.requests.some((request) => request.method === "message.stream")).toBe(false);
+        expect(stderr()).toContain("No checks were found");
+        expect(daemon.requests.find((request) => request.method === "agent.stop")?.params).toMatchObject({ agentId });
+      });
+    });
+
+    it("recognizes only a leading /goal, and only the form that starts one", () => {
+      expect(parsePrintModeGoal("fix the /goal parser")).toEqual({ kind: "none" });
+      expect(parsePrintModeGoal("/goals are nice")).toEqual({ kind: "none" });
+      expect(parsePrintModeGoal("  /goal add clear() --no-verify\n")).toMatchObject({
+        kind: "set", request: { objective: "add clear()", verify: [], noVerify: true },
+      });
+      for (const prompt of ["/goal", "/goal pause", "/goal clear"]) {
+        expect(parsePrintModeGoal(prompt)).toMatchObject({ kind: "error" });
+      }
+    });
+  });
+
   describe("compact_failed continuation (#2497)", () => {
     const continuationPrompt =
       "The previous turn stopped because context compaction failed; it did not " +
@@ -2276,6 +2366,69 @@ describe("main() smoke", () => {
       } finally {
         process.argv = previousArgv;
       }
+    });
+  });
+
+  describe("approval-denied stop", () => {
+    // The denial terminal as the daemon projects it: event.agent_status with
+    // the embedded turn_aborted, not a bare session event.
+    const deniedStatus = (sessionId: string, agentId: string, turnId: string) =>
+      notificationFromDaemonEvent(sessionId, agentId, {
+        id: `denied-${turnId}`, eventId: `denied-${turnId}`, type: "turn_aborted",
+        payload: { turnId, reason: "approval_denied" },
+      });
+
+    it("exits 2 with the tool-denied marker when the projected denial status settles the run", async () => {
+      const agentId = "agent_denied_stop";
+      const sessionId = "session_denied_stop";
+      const permissionRequestId = "req-denied-stop";
+      await withOneShotTestEnvironment("agenc-denied-stop-", async ({ cwd, run, stdout, stderr }) => {
+        const daemon = installDaemonCliDepsForTest({
+          agentId, sessionId, cwd,
+          oneShotEvents: [
+            { method: "event.permission_request", params: {
+              sessionId, eventId: "perm_evt", agentId, requestId: permissionRequestId,
+              toolName: "Write", permissions: ["tool.use"],
+            } },
+          ],
+          onToolDecision: ({ method, requestId, emit }) => {
+            if (method === "tool.deny" && requestId === permissionRequestId) {
+              emit(deniedStatus(sessionId, agentId, "turn-1"));
+            }
+          },
+        });
+        expect(await run(() => oneShotCLI("write the notes"), 4000)).toBe(2);
+        expect(daemon.requests.some((request) => request.method === "tool.deny")).toBe(true);
+        expect(stderr()).toContain("tool denied in non-interactive mode");
+        // Read as a stop, not as a completed turn whose answer is the reason.
+        expect(stdout()).not.toContain("approval_denied");
+        expect(stderr()).not.toContain("approval_denied");
+      });
+    });
+
+    it.each(["notification", "rpc"] as const)("exits 2 on a continued session when the denial arrives by %s first", async (first) => {
+      await withOneShotTestEnvironment(`agenc-denied-${first}-`, async ({ cwd, run, stderr }) => {
+        const home = process.env.AGENC_HOME!;
+        const sessionId = `conv-denied-${first}`;
+        const sessionDir = join(getProjectDir(cwd, undefined, home), "sessions", sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        await writeFile(
+          join(sessionDir, `rollout-2026-09-12T10-00-00-000Z-${sessionId}.jsonl`),
+          `${JSON.stringify({ type: "session_meta", payload: { sessionId, timestamp: "2026-09-12T10:00:00.000Z", cwd, originator: "agenc-cli", agencVersion: VERSION, rolloutSchemaVersion: 3 } })}\n` +
+            `${JSON.stringify({ type: "response_item", payload: { role: "user", content: "first step" } })}\n`,
+        );
+        installDaemonCliDepsForTest({
+          agentId: "agent_denied_continue", sessionId, cwd, liveAgent: false, oneShotEvents: [],
+          // RPC first: the message.stream response carries the terminal and no
+          // notification settles the run before it.
+          ...(first === "rpc" ? { messageStreamTerminal: { code: 130, message: "approval_denied" } } : {}),
+          onMessageStream: ({ params, emit }) => {
+            if (first === "notification") emit(deniedStatus(sessionId, "agent_denied_continue", params.streamId!));
+          },
+        });
+        expect(await run(() => oneShotCLI("second step", [], undefined, { kind: "latest" }), 4000)).toBe(2);
+        expect(stderr()).toContain("tool denied in non-interactive mode");
+      });
     });
   });
 

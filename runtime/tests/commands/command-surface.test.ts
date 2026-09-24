@@ -47,6 +47,7 @@ const MINIMAL_NAMES = [
   "help",
   "hello",
   "status",
+  "goal",
   "login",
   "logout",
   "whoami",

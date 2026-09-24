@@ -18,6 +18,7 @@
  * @module
  */
 
+import type { SessionGoal } from "../goal/goal.js";
 import type { LLMContentPart, LLMMessage, LLMUsage } from "../llm/types.js";
 import type { AgentStatus, NativeWorkerTiming } from "../agents/status.js";
 import type { AdmissionJournalEvent, AdmissionUsageSummary } from "../budget/admission-types.js";
@@ -172,6 +173,7 @@ export interface SubagentTurnOutcomeEvent {
   readonly toolCallCount: number;
   readonly message?: string;
   readonly reason?: string;
+  readonly terminal?: import("../agents/child-terminal.js").ChildTerminalOutcome;
   readonly worktreeEvidence?:
     | {
         readonly state: "unverifiable";
@@ -200,6 +202,15 @@ export interface SubagentTurnOutcomeEvent {
         readonly baseIsAncestor: boolean;
         readonly integrationRef?: string;
       };
+}
+
+/** Core-owned user notice, emitted even if the parent model never relays it. */
+export interface SubagentFundsNoticeEvent {
+  readonly agentPath: string;
+  readonly taskId?: string;
+  readonly taskText: string;
+  readonly terminal: import("../agents/child-terminal.js").ChildTerminalOutcome;
+  readonly message: string;
 }
 
 export interface TurnAbortedEvent {
@@ -301,6 +312,24 @@ export interface TurnResumedEvent {
  * accepted because the rounds ran out, or the turn was not gated.
  * `verified` is structural compliance, not a benchmark pass.
  */
+/**
+ * The session goal changed (`/goal`, or a goal-gate round). The payload is
+ * the full snapshot so a resumed session restores the goal from the last
+ * event alone; the goal lives outside the conversation on purpose, so
+ * compaction cannot lose or paraphrase it.
+ */
+export interface GoalChangedEvent {
+  readonly goal: SessionGoal;
+  readonly cause:
+    | "set"
+    | "round"
+    | "settled"
+    | "paused"
+    | "resumed"
+    | "cleared";
+  readonly turnId?: string;
+}
+
 export interface CompletionGateEvent {
   readonly turnId: string;
   /** Gate prompts injected so far in this turn, after this decision. */
@@ -361,6 +390,11 @@ export interface TokenCountEvent {
   readonly model?: string;
   /** Optional provider override for this usage payload. */
   readonly provider?: string;
+  /**
+   * Present when the provider reports the call was served in fast mode
+   * (Anthropic `usage.speed: "fast"`), which bills at fast-mode rates.
+   */
+  readonly speed?: "fast";
 }
 
 export interface McpToolCallBeginEvent {
@@ -411,6 +445,8 @@ export type FileWriteApprovalPreview =
 export interface RequestPermissionsEvent {
   readonly callId: string;
   readonly toolName: string;
+  readonly kind?: "cross_provider_spawn";
+  readonly crossProvider?: Readonly<Record<string, unknown>>;
   readonly permissions: ReadonlyArray<string>;
   readonly turnId?: string;
   readonly reason?: string;
@@ -451,6 +487,12 @@ export interface PermissionDecisionEvent {
     | "cache"
     | "aborted";
   readonly reason?: string;
+  /**
+   * For a resolver denial: `user` when a person chose Deny, `runtime` when
+   * the resolver refused on its own. Absent in journals written before the
+   * distinction, where a resolver denial was taken as the user's.
+   */
+  readonly decidedBy?: "user" | "runtime";
   readonly recordedAt: string;
 }
 
@@ -844,6 +886,7 @@ export interface CollabAgentSpawnBeginEvent {
   readonly taskName?: string;
   readonly agentType?: string;
   readonly model: string;
+  readonly provider?: string;
   readonly reasoningEffort?: string;
 }
 
@@ -860,8 +903,10 @@ export interface CollabAgentSpawnEndEvent {
   readonly taskName?: string;
   readonly agentType?: string;
   readonly model: string;
+  readonly provider?: string;
   readonly reasoningEffort?: string;
   readonly status: AgentStatus;
+  readonly terminal?: import("../agents/child-terminal.js").ChildTerminalOutcome;
 }
 
 /**
@@ -890,6 +935,7 @@ export interface CollabAgentStatusEvent {
   readonly agentRoleDisplayName?: string;
   readonly prompt?: string;
   readonly model?: string;
+  readonly provider?: string;
   readonly reasoningEffort?: string;
   readonly status: AgentStatus | CollabAgentTaskStatus;
   /**
@@ -905,6 +951,7 @@ export interface CollabAgentStatusEvent {
    */
   readonly tokenCount?: number;
   readonly error?: string;
+  readonly terminal?: import("../agents/child-terminal.js").ChildTerminalOutcome;
 }
 
 export interface CollabAgentInteractionBeginEvent {
@@ -1157,12 +1204,6 @@ export type EventMsg =
          * compatibility with historical rollout events.
          */
         readonly toolName?: string;
-        /**
-         * Runtime-authored Editor authority identity when the tool completed
-         * inside an Editor interaction. Historical and ordinary Agent events
-         * omit it.
-         */
-        readonly editorInteractionId?: string;
         readonly result: string;
         readonly isError: boolean;
         readonly metadata?: Record<string, unknown>;
@@ -1213,6 +1254,7 @@ export type EventMsg =
       readonly type: "subagent_turn_outcome";
       readonly payload: SubagentTurnOutcomeEvent;
     }
+  | { readonly type: "subagent_funds_notice"; readonly payload: SubagentFundsNoticeEvent }
   | { readonly type: "turn_complete"; readonly payload: TurnCompleteEvent }
   | { readonly type: "turn_aborted"; readonly payload: TurnAbortedEvent }
   | { readonly type: "turn_failed"; readonly payload: TurnFailedEvent }
@@ -1222,6 +1264,7 @@ export type EventMsg =
     }
   | { readonly type: "turn_resumed"; readonly payload: TurnResumedEvent }
   | { readonly type: "completion_gate"; readonly payload: CompletionGateEvent }
+  | { readonly type: "goal_changed"; readonly payload: GoalChangedEvent }
   | {
       readonly type: "thread_rolled_back";
       readonly payload: ThreadRolledBackEvent;
@@ -1477,12 +1520,14 @@ export const KNOWN_EVENT_TYPES = Object.freeze(
     "mcp_elicitation_complete",
     "context_compacted",
     "subagent_turn_outcome",
+    "subagent_funds_notice",
     "turn_complete",
     "turn_aborted",
     "turn_failed",
     "turn_checkpoint",
     "turn_resumed",
     "completion_gate",
+    "goal_changed",
     "thread_rolled_back",
     "error",
     "stream_error",
@@ -1554,6 +1599,7 @@ const DURABLE_EVENT_TYPES = Object.freeze(
     "error",
     "context_compacted",
     "subagent_turn_outcome",
+    "subagent_funds_notice",
     "protocol_claim",
     "protocol_settle",
     "protocol_slash",

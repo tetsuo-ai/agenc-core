@@ -361,8 +361,7 @@ export type UserInput = unknown;
  * the same immutable interaction id.
  */
 export interface IdleInputOwnership {
-  readonly workspaceView: "agent" | "editor";
-  readonly editorInteractionId?: string;
+  readonly workspaceView: "agent";
 }
 
 /**
@@ -430,39 +429,20 @@ function idleInputOwnershipFromMessage(
   ) {
     return undefined;
   }
-  const record = candidate as {
-    readonly workspaceView?: unknown;
-    readonly editorInteractionId?: unknown;
-  };
-  if (record.workspaceView !== "agent" && record.workspaceView !== "editor") {
-    return undefined;
-  }
-  return {
-    workspaceView: record.workspaceView,
-    ...(typeof record.editorInteractionId === "string"
-      ? { editorInteractionId: record.editorInteractionId }
-      : {}),
-  };
+  const record = candidate as { readonly workspaceView?: unknown };
+  // Historical envelopes may carry the retired "editor" view; they belong to
+  // no live surface and are never drained.
+  return record.workspaceView === "agent" ? { workspaceView: "agent" } : undefined;
 }
 
 function mailboxMessageEligibleForOwnership(
   message: InterAgentCommunication,
-  ownership?: IdleInputOwnership,
 ): boolean {
   const isIdle = message.metadata?.source === MAILBOX_SOURCE_IDLE_INPUT;
-  if (ownership?.workspaceView === "editor") {
-    if (!isIdle) return false;
-    const interactionId = ownership.editorInteractionId;
-    const candidate = idleInputOwnershipFromMessage(message);
-    return (
-      typeof interactionId === "string" &&
-      interactionId.length > 0 &&
-      candidate?.workspaceView === "editor" &&
-      candidate.editorInteractionId === interactionId
-    );
-  }
   if (!isIdle) return true;
-  return idleInputOwnershipFromMessage(message)?.workspaceView !== "editor";
+  // Idle input written by a retired surface is never drained into a turn.
+  const ownership = idleInputOwnershipFromMessage(message);
+  return ownership === undefined || ownership.workspaceView === "agent";
 }
 
 export interface Mailbox<T = InterAgentCommunication> {
@@ -1057,6 +1037,7 @@ export interface RolloutRecorder {
 /** Runtime provider/model catalog. */
 export interface ModelsManager {
   getModelInfo(modelSlug: string, config?: unknown): Promise<ModelInfo>;
+  getModelInfoForProvider?(provider: string, model: string): Promise<ModelInfo>;
   tryListModels(): ReadonlyArray<ModelInfo> | undefined;
   listModels(
     strategy?: "online_if_uncached",
@@ -1472,6 +1453,7 @@ export interface SessionServices {
   readonly querySource?: QuerySource;
   readonly permissionRequestHooks?: ReadonlyArray<PermissionRequestHook>;
   readonly approvalResolver?: ApprovalResolver;
+  readonly crossProviderConsent?: import("../agents/cross-provider.js").CrossProviderConsentService;
   /** Maintenance may use existing grants but must defer new interactive approval. */
   readonly deferInteractiveApprovals?: (toolName: string) => void;
   readonly permissionAuditLogger?: PermissionAuditLogger;
@@ -2548,6 +2530,7 @@ export class Session {
    *  When present, every emitted event is appended; durable events
    *  (I-4) force an immediate fsync. */
   rolloutStore: RolloutStore | null = null;
+  private shutdownResourceRelease?: () => void | Promise<void>;
 
   private outOfBandElicitationPauseCount = 0;
 
@@ -3753,6 +3736,11 @@ export class Session {
     };
   }
 
+  /** Release daemon-shared leases after the session has sealed its journal. */
+  registerShutdownResourceRelease(release: () => void | Promise<void>): void {
+    this.shutdownResourceRelease = release;
+  }
+
   async submit(
     message: string | readonly LLMContentPart[],
     opts: SessionSubmitOptions = {},
@@ -3799,16 +3787,12 @@ export class Session {
       if (this.pendingCompactionCleanups.size > 0) {
         await this.repairPendingCompactionCleanups();
       }
-      if (
-        opts.editorInteraction === undefined &&
-        this.deferredSessionStartHook !== null
-      ) {
+      if (this.deferredSessionStartHook !== null) {
         await this.flushDeferredSessionStartHook();
       }
       if (
-        opts.editorInteraction === undefined &&
-        (this.deferredOrdinarySubmitHooks.length > 0 ||
-          this.deferredOrdinarySubmitHookPromise !== null)
+        this.deferredOrdinarySubmitHooks.length > 0 ||
+        this.deferredOrdinarySubmitHookPromise !== null
       ) {
         await this.flushDeferredOrdinarySubmitHooks();
       }
@@ -4893,9 +4877,9 @@ export class Session {
    * the next turn. This is the only state `run-turn.ts` needs to decide
    * whether an empty submission is a no-op or should continue.
    */
-  hasPendingInput(ownership?: IdleInputOwnership): boolean {
+  hasPendingInput(_ownership?: IdleInputOwnership): boolean {
     return this.sessionMailbox.some((message) =>
-      mailboxMessageEligibleForOwnership(message, ownership),
+      mailboxMessageEligibleForOwnership(message),
     );
   }
 
@@ -5001,11 +4985,6 @@ export class Session {
             ? {
                 idleInputOwnership: {
                   workspaceView: ownership.workspaceView,
-                  ...(ownership.editorInteractionId !== undefined
-                    ? {
-                        editorInteractionId: ownership.editorInteractionId,
-                      }
-                    : {}),
                 },
               }
             : {}),
@@ -5057,38 +5036,17 @@ export class Session {
    * Returns the original `UserInput` payloads in FIFO order — the
    * session-local `InterAgentCommunication` envelope is stripped.
    */
-  drainIdleInput(ownership?: IdleInputOwnership): UserInput[] {
+  drainIdleInput(_ownership?: IdleInputOwnership): UserInput[] {
     return this.sessionMailbox
       .extractWhere(
         (message) =>
           message.metadata?.source === MAILBOX_SOURCE_IDLE_INPUT &&
-          mailboxMessageEligibleForOwnership(message, ownership),
+          mailboxMessageEligibleForOwnership(message),
       )
       .map((message) => message.metadata?.payload);
   }
 
-  drainPendingInputMessages(ownership?: IdleInputOwnership): LLMMessage[] {
-    if (ownership?.workspaceView === "editor") {
-      return this.sessionMailbox
-        .extractWhere((message) =>
-          mailboxMessageEligibleForOwnership(message, ownership),
-        )
-        .flatMap((message): LLMMessage[] => {
-          const payload = message.metadata?.payload;
-          if (
-            payload !== null &&
-            typeof payload === "object" &&
-            "role" in payload &&
-            "content" in payload
-          ) {
-            return [payload as LLMMessage];
-          }
-          return typeof payload === "string" && payload.trim().length > 0
-            ? [{ role: "user", content: payload }]
-            : [];
-        });
-    }
-
+  drainPendingInputMessages(_ownership?: IdleInputOwnership): LLMMessage[] {
     const projectedEntries: Array<{
       readonly seq: number;
       readonly message: LLMMessage;
@@ -5132,14 +5090,14 @@ export class Session {
       snapshot.find(
         (candidate) =>
           candidate.seq > seq &&
-          mailboxMessageEligibleForOwnership(candidate, ownership) &&
+          mailboxMessageEligibleForOwnership(candidate) &&
           (candidate.triggerTurn ||
             candidate.metadata?.source === MAILBOX_SOURCE_IDLE_INPUT),
       );
 
     const processed = this.sessionMailbox.processPrefix((msg) => {
       if (msg.metadata?.source === MAILBOX_SOURCE_IDLE_INPUT) {
-        if (!mailboxMessageEligibleForOwnership(msg, ownership)) {
+        if (!mailboxMessageEligibleForOwnership(msg)) {
           return "retain";
         }
         const payload = msg.metadata?.payload;
@@ -5319,7 +5277,8 @@ export class Session {
         event.type === "permission_decision" &&
         event.payload.runId === this.conversationId &&
         event.payload.decision === "denied" &&
-        event.payload.source === "resolver"
+        event.payload.source === "resolver" &&
+        event.payload.decidedBy !== "runtime"
       ) {
         if (!stopped) generation += 1;
         stopped = true;
@@ -6001,6 +5960,10 @@ export class Session {
    * provider_switched re-entry).
    */
   abortTerminal(reason: AbortReason): void {
+    if (reason === "provider_switched") {
+      this.abortActiveTurnForProviderSwitch();
+      return;
+    }
     if (this.abortController.signal.aborted) return;
     const activeTurnId = this.activeTurn.unsafePeek()?.turnId;
     this.abortController.abort(reason);
@@ -6018,6 +5981,34 @@ export class Session {
   }
 
   /**
+   * I-13: a mid-turn provider switch cancels only the turn in flight. The
+   * session-level controller is the lifetime shutdown token; tripping it for a
+   * switch left every later prompt aborting with `provider_switched` before
+   * the staged selection could apply. Phases observe the merged turn signal,
+   * so the same reason reaches them through the turn's own controller.
+   */
+  private abortActiveTurnForProviderSwitch(): void {
+    const active = this.activeTurn.unsafePeek();
+    if (active === null || active.abortController.signal.aborted) return;
+    active.abortController.abort("provider_switched");
+    for (const task of active.tasks.values()) {
+      if (!task.abortController.signal.aborted) {
+        task.abortController.abort("provider_switched");
+      }
+    }
+    this.emit({
+      id: this.nextInternalSubId(),
+      msg: {
+        type: "turn_aborted",
+        payload: {
+          turnId: active.turnId,
+          reason: "provider_switched",
+        },
+      },
+    });
+  }
+
+  /**
    * I-33 + I-87: gracefully shut down the session.
    *
    *   - Drain every per-child mailbox under a `MAX_DRAIN_MS` race
@@ -6026,6 +6017,36 @@ export class Session {
    *   - Emit final shutdown status.
    */
   async shutdown(): Promise<void> {
+    let shutdownError: unknown;
+    try {
+      await this.shutdownCore();
+    } catch (error) {
+      shutdownError = error;
+    }
+    let resourceReleaseError: unknown;
+    try {
+      await this.shutdownResourceRelease?.();
+    } catch (error) {
+      resourceReleaseError = error;
+    }
+    try {
+      this.services.executionAdmission?.release?.();
+    } catch (error) {
+      resourceReleaseError = resourceReleaseError === undefined
+        ? error
+        : new AggregateError([resourceReleaseError, error], "session resource release failed");
+    }
+    if (shutdownError !== undefined && resourceReleaseError !== undefined) {
+      throw new AggregateError(
+        [shutdownError, resourceReleaseError],
+        "session shutdown and resource release failed",
+      );
+    }
+    if (shutdownError !== undefined) throw shutdownError;
+    if (resourceReleaseError !== undefined) throw resourceReleaseError;
+  }
+
+  private async shutdownCore(): Promise<void> {
     const MAX_DRAIN_MS = 2_000;
     this.beginShutdown();
     const mcpDisposeTask = this.prepareOwnedMcpDisposalForShutdown(

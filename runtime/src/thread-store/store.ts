@@ -909,6 +909,11 @@ export class FileThreadStore implements ThreadStore {
     return this.projectDir;
   }
 
+  /** A daemon may evict this project's read cache once no writer uses it. */
+  hasLiveRecorders(): boolean {
+    return this.liveRecorders.size > 0;
+  }
+
   // ── internal helpers ────────────────────────────────────────────────
 
   private assertOpen(): void {

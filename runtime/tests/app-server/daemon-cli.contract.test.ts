@@ -5,6 +5,7 @@ import {
   fstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   utimesSync,
   writeFileSync,
@@ -16,6 +17,7 @@ import {
   rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { createConnection, createServer, type Socket } from "node:net";
@@ -78,6 +80,7 @@ import {
   type AgenCDaemonCliIo,
   validateAgenCDaemonWebSocketOrigin,
   writeAgenCDaemonPid,
+  resolveAgenCDaemonSpawnStderrPath,
 } from "./daemon-cli.js";
 import {
   AgenCDelegateBackgroundAgentRunner,
@@ -493,6 +496,9 @@ function createHost(agencHome: string): AgenCDaemonCliHost & {
 function inspectLegacyTestDaemon(pid: number) {
   return { pid, processStart: `test-process:${pid}:start` };
 }
+
+// The injected native peer binding is loaded only on Linux (SO_PEERCRED).
+const linuxNativePeerTest = process.platform === "linux" ? it : it.skip;
 
 function recordTestDaemon(
   agencHome: string,
@@ -910,6 +916,17 @@ function expectSameUserDaemonSocketIdentity(identity: unknown): void {
     expect(daemonIdentity.peerUid).toBe(currentUid);
     return;
   }
+  if (process.platform !== "linux") {
+    // Private socket ownership is proven only on Linux; elsewhere, without a
+    // native peer uid, the cookie is the proof.
+    expect(daemonIdentity).toEqual({
+      transport: "daemon",
+      verifiedBy: "cookie",
+      cookie: "verified",
+      peerUid: null,
+    });
+    return;
+  }
   expect(daemonIdentity).toEqual({
     transport: "daemon",
     verifiedBy: "privateSocketOwner",
@@ -1057,33 +1074,36 @@ describe("AgenC daemon readiness timeout resolution", () => {
 
 describe("AgenC daemon CLI", () => {
   it("resolves the required pid file path", () => {
+    // /home and /tmp can be symlinks on macOS; daemon paths use canonical homes.
+    const defaultHome = join(realpathSync("/home"), "test", ".agenc");
+    const configuredHome = join(realpathSync("/tmp"), "agenc-home");
     expect(defaultAgenCDaemonPidPath("/home/test")).toBe(
-      "/home/test/.agenc/daemon.pid",
+      join(defaultHome, "daemon.pid"),
     );
     expect(resolveAgenCDaemonPidPath({}, "/home/test")).toBe(
-      "/home/test/.agenc/daemon.pid",
+      join(defaultHome, "daemon.pid"),
     );
     expect(resolveAgenCDaemonPidPath({ AGENC_HOME: "/tmp/agenc-home" })).toBe(
-      "/tmp/agenc-home/daemon.pid",
+      join(configuredHome, "daemon.pid"),
     );
     expect(resolveAgenCDaemonSocketPath({}, "/home/test")).toBe(
-      "/home/test/.agenc/daemon.sock",
+      join(defaultHome, "daemon.sock"),
     );
     expect(
       resolveAgenCDaemonSocketPath({ AGENC_HOME: "/tmp/agenc-home" }),
-    ).toBe("/tmp/agenc-home/daemon.sock");
+    ).toBe(join(configuredHome, "daemon.sock"));
     expect(resolveAgenCDaemonCookiePath({}, "/home/test")).toBe(
-      "/home/test/.agenc/daemon.cookie",
+      join(defaultHome, "daemon.cookie"),
     );
     expect(
       resolveAgenCDaemonCookiePath({ AGENC_HOME: "/tmp/agenc-home" }),
-    ).toBe("/tmp/agenc-home/daemon.cookie");
+    ).toBe(join(configuredHome, "daemon.cookie"));
     expect(resolveAgenCDaemonSnapshotPath({}, "/home/test")).toBe(
-      "/home/test/.agenc/daemon-snapshot.json",
+      join(defaultHome, "daemon-snapshot.json"),
     );
     expect(
       resolveAgenCDaemonSnapshotPath({ AGENC_HOME: "/tmp/agenc-home" }),
-    ).toBe("/tmp/agenc-home/daemon-snapshot.json");
+    ).toBe(join(configuredHome, "daemon-snapshot.json"));
   });
 
   it("configures daemon realtime provider base URL and auth headers", async () => {
@@ -1468,6 +1488,75 @@ describe("AgenC daemon CLI", () => {
     await rm(agencHome, { recursive: true, force: true });
   });
 
+  it("keeps waiting for a spawned daemon whose startup log is still advancing", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const ready = createReadyPublishedDaemonOptions(agencHome, host);
+    let probes = 0;
+    const waitForDaemonReady = async (probeHost: AgenCDaemonCliHost, singleShot: boolean) => {
+      probes += 1;
+      if (probes < 3) {
+        // Hydration in progress: the spawn stderr capture keeps growing.
+        await writeFile(
+          resolveAgenCDaemonSpawnStderrPath(host.env, host.userHome),
+          `agenc: daemon opened state DB ${probes}\n`,
+        );
+        return false;
+      }
+      return ready.waitForDaemonReady(probeHost, singleShot);
+    };
+
+    try {
+      await expect(
+        runAgenCDaemonCli(
+          { kind: "command", action: "start" },
+          { host, io, ...ready, waitForDaemonReady },
+        ),
+      ).resolves.toBe(0);
+      expect(probes).toBe(3);
+      expect(io.stderrText()).toContain("daemon process (pid 4201) is still starting");
+      expect(io.stderrText()).not.toContain("did not become ready before timeout");
+      expect(host.terminatedPids).toEqual([]);
+      expect(io.stdoutText()).toContain("AgenC daemon started (pid 4201)");
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("gives up on a spawned daemon whose startup log went quiet", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const stderrPath = resolveAgenCDaemonSpawnStderrPath(host.env, host.userHome);
+    await writeFile(stderrPath, "agenc: daemon opened state DB 1\n");
+    const quietSince = new Date(Date.now() - 5 * 60_000);
+    await utimes(stderrPath, quietSince, quietSince);
+    let probes = 0;
+
+    try {
+      await expect(
+        runAgenCDaemonCli(
+          { kind: "command", action: "start" },
+          {
+            host,
+            io,
+            inspectLegacyDaemonProcess: inspectLegacyTestDaemon,
+            waitForDaemonReady: async () => {
+              probes += 1;
+              return false;
+            },
+          },
+        ),
+      ).resolves.toBe(1);
+      expect(probes).toBe(1);
+      expect(io.stderrText()).not.toContain("is still starting");
+      expect(io.stderrText()).toContain("did not become ready before timeout");
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("leaves canonical config validation to the spawned daemon", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
@@ -1566,7 +1655,7 @@ describe("AgenC daemon CLI", () => {
 
   it("status enriches the running line with health.stats over the socket", async () => {
     const agencHome = await tempAgencHome();
-    const host = createHost(agencHome);
+    const host = { ...createHost(agencHome), platform: "linux" as const };
     const io = createIo();
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
     host.runningPids.add(4555);
@@ -1625,7 +1714,7 @@ describe("AgenC daemon CLI", () => {
 
   it("status falls back to the pid-only line when health.stats is unreachable", async () => {
     const agencHome = await tempAgencHome();
-    const host = createHost(agencHome);
+    const host = { ...createHost(agencHome), platform: "linux" as const };
     const io = createIo();
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
     host.runningPids.add(4556);
@@ -1731,7 +1820,7 @@ describe("AgenC daemon CLI", () => {
 
   it("stops a running daemon and removes the pid file", async () => {
     const agencHome = await tempAgencHome();
-    const host = createHost(agencHome);
+    const host = { ...createHost(agencHome), platform: "linux" as const };
     const io = createIo();
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
     host.runningPids.add(4300);
@@ -1847,7 +1936,7 @@ describe("AgenC daemon CLI", () => {
 
   it("releases the lifecycle lock after TERM so cooperative cleanup avoids KILL", async () => {
     const agencHome = await tempAgencHome();
-    const baseHost = createHost(agencHome);
+    const baseHost = { ...createHost(agencHome), platform: "linux" as const };
     const io = createIo();
     const pid = 4314;
     const pidPath = resolveAgenCDaemonPidPath(baseHost.env, baseHost.userHome);
@@ -2117,7 +2206,7 @@ describe("AgenC daemon CLI", () => {
 
   it("allows a running daemon more than two seconds to stop by default", async () => {
     const agencHome = await tempAgencHome();
-    const baseHost = createHost(agencHome);
+    const baseHost = { ...createHost(agencHome), platform: "linux" as const };
     const io = createIo();
     const pidPath = resolveAgenCDaemonPidPath(baseHost.env, baseHost.userHome);
     const pid = 4301;
@@ -2158,7 +2247,7 @@ describe("AgenC daemon CLI", () => {
 
   it("force-stops a daemon that ignores graceful termination", async () => {
     const agencHome = await tempAgencHome();
-    const baseHost = createHost(agencHome);
+    const baseHost = { ...createHost(agencHome), platform: "linux" as const };
     const io = createIo();
     const pidPath = resolveAgenCDaemonPidPath(baseHost.env, baseHost.userHome);
     const pid = 4302;
@@ -3094,7 +3183,7 @@ describe("AgenC daemon CLI", () => {
 
   it("status flags a live pid whose control socket is not ready", async () => {
     const agencHome = await tempAgencHome();
-    const host = createHost(agencHome);
+    const host = { ...createHost(agencHome), platform: "linux" as const };
     const io = createIo();
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
     host.runningPids.add(4600);
@@ -4700,10 +4789,18 @@ backend = "local"
         socketAcceptAuthenticationTimeoutMs: 20,
       },
     );
-    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+    // Real daemon startup is allowed the same cold-start window as the CLI.
+    // Watching the run reports a bind failure instead of a blind PID timeout.
+    await expect(waitForPid(pidPath, DEFAULT_DAEMON_READY_TIMEOUT_MS, {
+      running,
+      stderrText: io.stderrText,
+    })).resolves.toBe(4100);
 
     const authCookie = (await readFile(cookiePath, "utf8")).trim();
-    const sameUserProofAvailable = typeof process.getuid === "function";
+    // Same-user proof without the cookie is the private socket owner check,
+    // which exists only on Linux.
+    const sameUserProofAvailable =
+      process.platform === "linux" && typeof process.getuid === "function";
     const sameUserClient = createAgenCJsonLineDaemonRequestClient({
       socketPath,
       authCookie: "wrong-daemon-cookie",
@@ -4834,10 +4931,12 @@ backend = "local"
     await expect(running).resolves.toBe(0);
 
     await rm(agencHome, { recursive: true, force: true });
-  });
+  }, 90_000);
 
-  it("foreground daemon rejects mismatched native peer uid without cookie", async () => {
-    if (typeof process.getuid !== "function") return;
+  linuxNativePeerTest("foreground daemon rejects mismatched native peer uid without cookie (Linux SO_PEERCRED only)", async () => {
+    if (typeof process.getuid !== "function") {
+      throw new Error("Linux native peer credential test requires process.getuid");
+    }
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
     const io = createIo();
@@ -4886,8 +4985,7 @@ backend = "local"
     await rm(agencHome, { recursive: true, force: true });
   });
 
-  it("required native peer lookup failure shuts the daemon down nonzero", async () => {
-    if (typeof process.getuid !== "function") return;
+  linuxNativePeerTest("required native peer lookup failure shuts the daemon down nonzero (Linux SO_PEERCRED only)", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
     const io = createIo();
@@ -5264,13 +5362,6 @@ backend = "local"
         authCookie,
         timeoutMs: 1000,
       });
-
-      await expect(
-        client.request("workspace.editor.acquire", {
-          workspaceRoot: process.cwd(),
-          editorInstanceId: "editor_boot_injection",
-        }),
-      ).resolves.toMatchObject({ sequence: -1 });
 
       const created = await client.request("agent.create", {
         cwd: process.cwd(),

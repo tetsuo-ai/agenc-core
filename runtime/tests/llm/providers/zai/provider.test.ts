@@ -26,6 +26,7 @@ import {
 import { ZaiCodingPlanProvider, ZaiProvider } from "./index.js";
 import {
   LLMInvalidResponseError,
+  LLMFundsError,
   LLMProviderError,
   LLMRateLimitError,
   LLMStreamTruncatedError,
@@ -1104,7 +1105,7 @@ describe("ZaiProvider", () => {
       const error = await provider.chat([{ role: "user", content: "go" }])
         .then(() => undefined, (caught: unknown) => caught);
       expect(error).toMatchObject({
-        name: "LLMProviderError",
+        name: "LLMFundsError",
         providerName,
       });
       expect(error).not.toMatchObject({ name: "LLMRateLimitError" });
@@ -1362,6 +1363,7 @@ describe("Z.AI billing refusal on a streaming request", () => {
       ? new ZaiProvider({ apiKey: "payg-test", model: "glm-5.3", fetchImpl })
       : new ZaiCodingPlanProvider({ apiKey: "coding-plan-test", model: "glm-5.3", fetchImpl });
     const error = await failureOf(provider, { singleWireAttempt });
+    expect(error).toBeInstanceOf(LLMFundsError);
     expect(error).toBeInstanceOf(LLMProviderError);
     expect(error).not.toBeInstanceOf(LLMRateLimitError);
     expect(String(error)).toMatch(/code 1113.*billing/i);
@@ -1404,6 +1406,7 @@ describe("Z.AI billing refusal on a streaming request", () => {
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
       refusal(JSON.stringify({ error: { code, message } })));
     const error = await failureOf(planProvider(fetchImpl));
+    expect(error).toBeInstanceOf(LLMFundsError);
     expect(error).toBeInstanceOf(LLMProviderError);
     expect(error).not.toBeInstanceOf(LLMRateLimitError);
     expect(fetchImpl).toHaveBeenCalledOnce();

@@ -55,6 +55,16 @@ describe("strict canonical journal contract", () => {
     expect(isCanonicalRolloutPayload("turn_context", invalidContext)).toBe(false);
   });
 
+  it("keeps a fast-mode token_count replayable and rejects any other speed", () => {
+    const usage = {
+      promptTokens: 1000, completionTokens: 100, totalTokens: 1100,
+      model: "claude-opus-5-5", provider: "anthropic",
+    };
+    expect(isCanonicalEventPayload("token_count", usage)).toBe(true);
+    expect(isCanonicalEventPayload("token_count", { ...usage, speed: "fast" })).toBe(true);
+    expect(isCanonicalEventPayload("token_count", { ...usage, speed: "turbo" })).toBe(false);
+  });
+
   it("accepts sequenced and explicit legacy format lanes", async () => {
     const catalog = await openFndFixtureCatalog();
     const sequenced = validateCanonicalJournalBytes(
@@ -952,7 +962,7 @@ describe("strict canonical journal contract", () => {
   });
 
   it("keeps an exhaustive fail-closed schema for every known event discriminant", () => {
-    expect(KNOWN_EVENT_TYPES.size).toBe(85);
+    expect(KNOWN_EVENT_TYPES.size).toBe(87);
     expect(CANONICAL_EVENT_SCHEMA_TYPES).toEqual([...KNOWN_EVENT_TYPES].sort());
     expect(CANONICAL_EVENT_SCHEMA_TYPES).toEqual(
       expect.arrayContaining(["run_suspended", "run_resumed", "session_usage"]),

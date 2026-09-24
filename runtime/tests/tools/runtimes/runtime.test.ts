@@ -1261,6 +1261,87 @@ describe("tools/runtimes", () => {
     ).not.toThrow();
   });
 
+  /** Direct-dispatch attempt context under /repo for a targetless tool call. */
+  function repoAttempt(callId: string, toolName: string) {
+    const invocation = {
+      session: { services: TEST_RUNTIME_SERVICES } as never,
+      turn: { cwd: "/repo" } as never,
+      tracker: tracker() as never,
+      callId,
+      toolName: { name: toolName },
+      payload: { kind: "function", arguments: "{}" },
+      source: "direct",
+    } as const;
+    const base = callContext(callId, EXCLUSIVE, false);
+    return (sandboxMode: "read_only" | "workspace_write") => ({
+      ...base,
+      approvalPolicy: "never" as const,
+      requestedSandboxMode: sandboxMode,
+      sandboxMode,
+      approvalResolved: false,
+      rawArgs: "{}",
+      invocation,
+    });
+  }
+
+  test("fixedWriteTargets are verified like path arguments instead of denied as unverifiable", () => {
+    const attempt = repoAttempt("call-fixed-write-targets", "ImagineImage");
+    const stub = (name: string, metadata: Tool["metadata"]): Tool => ({
+      name,
+      description: "",
+      inputSchema: { type: "object" },
+      metadata,
+      execute: async () => ({ content: "not reached" }),
+    });
+    const mediaTool = (outputDir: string): Tool =>
+      stub("ImagineImage", { mutating: true, fixedWriteTargets: () => [outputDir] });
+
+    // The declared output directory under the workspace is a verified write.
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: attempt("workspace_write"),
+        tool: mediaTool("/repo/.agenc/imagine"),
+        args: { prompt: "a cat" },
+      }),
+    ).not.toThrow();
+
+    // A relative declaration resolves against the turn cwd.
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: attempt("workspace_write"),
+        tool: mediaTool(".agenc/imagine"),
+        args: { prompt: "a cat" },
+      }),
+    ).not.toThrow();
+
+    // read_only still refuses the write.
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: attempt("read_only"),
+        tool: mediaTool("/repo/.agenc/imagine"),
+        args: { prompt: "a cat" },
+      }),
+    ).toThrow(/read_only blocked write-capable operation ImagineImage/);
+
+    // A model-directed path into the protected .agenc directory stays denied.
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: attempt("workspace_write"),
+        tool: stub("Write", { mutating: true }),
+        args: { file_path: "/repo/.agenc/config.toml", contents: "x" },
+      }),
+    ).toThrow(/blocked write outside workspace: \/repo\/\.agenc\/config\.toml/);
+
+    // A declaration outside the workspace is blocked as such, not hidden.
+    expect(() =>
+      enforceRuntimeSandboxAttempt({
+        context: attempt("workspace_write"),
+        tool: mediaTool("/elsewhere/.agenc/imagine"),
+        args: { prompt: "a cat" },
+      }),
+    ).toThrow(/blocked write outside workspace: \/elsewhere\/\.agenc\/imagine/);
+  });
+
   test("real planning tools advertise virtualNoFsWrites while file writers do not", () => {
     const planningTools = createPlanningTools();
     const byName = new Map(planningTools.map((tool) => [tool.name, tool] as const));

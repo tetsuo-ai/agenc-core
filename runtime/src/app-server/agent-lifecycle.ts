@@ -7,6 +7,7 @@
  * available for follow-up inspection.
  */
 
+import type { AgenCSessionEventDelivery } from "./approval-delivery.js";
 import {
   closeSync,
   constants as fsConstants,
@@ -48,6 +49,7 @@ import {
 } from "./operation-deadline.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
 import {
+  createOperatorAttestationEvidence,
   createOperatorEffectReviewResolution,
   resolveDurableEffectReview,
 } from "../state/effect-review.js";
@@ -110,6 +112,8 @@ import type {
   SessionMcpServerMutationResult,
   SessionSnapshotParams,
   SessionSnapshotResult,
+  SessionGoalParams,
+  SessionGoalResult,
   SessionProcessesListParams,
   SessionProcessesListResult,
   SessionProcessesStopParams,
@@ -124,6 +128,7 @@ import type {
   SessionRollbackCompactionResult,
   SessionExtendCompactionRollbackRetentionParams,
   SessionExtendCompactionRollbackRetentionResult,
+  SessionResolveToolCallAttestationParams,
   SessionResolveToolCallEvidenceParams,
   SessionResolveToolCallParams,
   SessionResolveToolCallResult,
@@ -158,7 +163,6 @@ import {
   validateAgentRuntimeOptions,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
-import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
 import {
   getAgencHomeDir,
   createResumeRolloutDescriptorLease,
@@ -217,7 +221,11 @@ import type { Event } from "../session/event-log.js";
 import type { ResponseItem } from "../session/rollout-item.js";
 import type { AgenCStateAgentRunRecord } from "../state/agent-runs.js";
 import type { CancelAgentRunTreeReport } from "../state/run-cancellation.js";
-import type { CodePredictionSource } from "../services/code-prediction/types.js";
+
+type SessionEventDeliveryResult =
+  | void
+  | AgenCSessionEventDelivery
+  | Promise<void | AgenCSessionEventDelivery>;
 
 export type AgenCDaemonAgentLifecycleErrorCode =
   | "AGENT_NOT_FOUND"
@@ -293,16 +301,20 @@ export interface AgenCDaemonAgentManagerOptions {
   readonly threadStoreForAgentLogs?: (
     route: AgenCDaemonAgentLogThreadStoreRoute,
   ) => ThreadStore | undefined;
+  readonly releaseThreadStoreForAgentLogs?: (
+    route: AgenCDaemonAgentLogThreadStoreRoute,
+  ) => void;
   readonly readAgentToolOutputs?: (
     params: AgenCDaemonAgentToolOutputReadParams,
   ) => Promise<readonly AgentToolOutputLog[]> | readonly AgentToolOutputLog[];
   readonly snapshotFlush?: (
     snapshot: AgenCDaemonAgentSnapshotFlush,
   ) => void | Promise<void>;
+  /** Resolves to the delivery result, which the approval broker reads. */
   readonly broadcastSessionEvent?: (
     sessionId: string,
     event: JsonObject,
-  ) => void | Promise<void>;
+  ) => SessionEventDeliveryResult;
   readonly recordMessageExchange?: (
     exchange: AgenCDaemonMessageExchangeSnapshot,
   ) => void | Promise<void>;
@@ -454,10 +466,28 @@ interface AgenCDaemonSnapshotRoute {
 interface AgentAttachmentTarget {
   readonly agentId: string;
   readonly sessionIds: readonly string[];
+  /**
+   * The daemon restored this agent's records at startup but not its runtime
+   * (see `isRecoveredRuntimeUnavailable`); only a client resume revives it.
+   */
+  readonly recoveredRuntimeUnavailable: boolean;
 }
 
 interface AgentLifecycleState {
   agents: Map<string, MutableAgent>;
+}
+
+function canonicalSessionForOwner(
+  state: Readonly<AgentLifecycleState>,
+  ownerId: string,
+): { readonly sessionId: string; readonly expectedAgentId?: string } {
+  const canonicalAgent = state.agents.get(ownerId);
+  if (canonicalAgent === undefined) return { sessionId: ownerId };
+  const sessionId = latestSessionIdForAgentRun(canonicalAgent);
+  if (sessionId === undefined) {
+    throw new AgenCDaemonAgentLifecycleError("AGENT_NOT_FOUND", `AgenC daemon session not found or closed: ${ownerId}`);
+  }
+  return { sessionId, expectedAgentId: canonicalAgent.agentId };
 }
 
 interface PendingRunnerTermination {
@@ -482,8 +512,18 @@ interface RunnerTerminationTarget {
 
 function isEvidenceToolCallResolution(
   params: SessionResolveToolCallParams,
-): params is SessionResolveToolCallEvidenceParams {
+): params is
+  | SessionResolveToolCallEvidenceParams
+  | SessionResolveToolCallAttestationParams {
   return Object.prototype.hasOwnProperty.call(params, "disposition");
+}
+
+function isOperatorAttestation(
+  params:
+    | SessionResolveToolCallEvidenceParams
+    | SessionResolveToolCallAttestationParams,
+): params is SessionResolveToolCallAttestationParams {
+  return params.attestation === "operator";
 }
 
 const AGENT_LIFECYCLE_OPERATION_TIMEOUT_MS = 30_000;
@@ -499,6 +539,9 @@ export class AgenCDaemonAgentManager {
   readonly #threadStoreForAgentLogs:
     | ((route: AgenCDaemonAgentLogThreadStoreRoute) => ThreadStore | undefined)
     | undefined;
+  readonly #releaseThreadStoreForAgentLogs:
+    | ((route: AgenCDaemonAgentLogThreadStoreRoute) => void)
+    | undefined;
   readonly #readAgentToolOutputs:
     | ((
         params: AgenCDaemonAgentToolOutputReadParams,
@@ -509,7 +552,7 @@ export class AgenCDaemonAgentManager {
     | ((snapshot: AgenCDaemonAgentSnapshotFlush) => void | Promise<void>)
     | undefined;
   readonly #broadcastSessionEvent:
-    | ((sessionId: string, event: JsonObject) => void | Promise<void>)
+    | ((sessionId: string, event: JsonObject) => SessionEventDeliveryResult)
     | undefined;
   readonly #recordMessageExchange:
     | ((exchange: AgenCDaemonMessageExchangeSnapshot) => void | Promise<void>)
@@ -579,6 +622,7 @@ export class AgenCDaemonAgentManager {
       : (params) => sessionManager.terminateSession(params));
     this.#threadStore = options.threadStore;
     this.#threadStoreForAgentLogs = options.threadStoreForAgentLogs;
+    this.#releaseThreadStoreForAgentLogs = options.releaseThreadStoreForAgentLogs;
     this.#readAgentToolOutputs = options.readAgentToolOutputs;
     this.#snapshotFlush = options.snapshotFlush;
     this.#broadcastSessionEvent = options.broadcastSessionEvent;
@@ -714,7 +758,6 @@ export class AgenCDaemonAgentManager {
           params.initialContent !== undefined ||
           params.deferInitialTurn !== undefined ||
           params.initialDisplayUserMessage !== undefined ||
-          params.initialEditorInteraction !== undefined ||
           params.metadata !== undefined ||
           params.unattendedAllow !== undefined ||
           params.unattendedDeny !== undefined)
@@ -996,11 +1039,6 @@ export class AgenCDaemonAgentManager {
               ...(params.initialDisplayUserMessage !== undefined
                 ? {
                     initialDisplayUserMessage: params.initialDisplayUserMessage,
-                  }
-                : {}),
-              ...(params.initialEditorInteraction !== undefined
-                ? {
-                    initialEditorInteraction: params.initialEditorInteraction,
                   }
                 : {}),
               metadata,
@@ -1643,6 +1681,17 @@ export class AgenCDaemonAgentManager {
         `daemon session ${session.sessionId} has no valid runtime-options authority`,
       );
     }
+    // A daemon restart restores the records of a run whose runtime it could
+    // not bring back, for example a provider whose credential only the client
+    // holds. Say so the way message.send, permission.list and every session
+    // request do, before opening an attachment: clients resume the runtime on
+    // this code, and an INVALID_ARGUMENT here reads as a bad request instead.
+    if (target.recoveredRuntimeUnavailable) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        `AgenC daemon agent recovered without a live runtime: ${target.agentId}`,
+      );
+    }
     if (this.#runner?.getAgentSnapshot === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
         "INVALID_ARGUMENT",
@@ -1727,6 +1776,11 @@ export class AgenCDaemonAgentManager {
     }
   }
 
+  /** The daemon session ids clients attach to for this agent. */
+  async sessionIdsForAgent(agentId: string): Promise<readonly string[]> {
+    return await this.#state.with((state) => state.agents.get(agentId)?.sessionIds.slice() ?? []);
+  }
+
   async getAgent(agentId: string): Promise<AgentSummary | null> {
     await this.#refreshAgentFromRunner(agentId);
     return this.#state.with((state) => {
@@ -1809,26 +1863,30 @@ export class AgenCDaemonAgentManager {
     if (threadStore === undefined) return [];
     const sessions: AgentLogSession[] = [];
     const seen = new Set<string>();
-    for (const sessionId of route.sessionIds) {
-      if (seen.has(sessionId)) continue;
-      seen.add(sessionId);
-      try {
-        const thread = threadStore.readThread({
-          threadId: sessionId,
-          includeArchived: true,
-          includeHistory: true,
-        });
-        sessions.push(storedThreadToAgentLogSession(thread));
-      } catch (error) {
-        if (isThreadLogReadMiss(error)) continue;
-        throw error;
+    try {
+      for (const sessionId of route.sessionIds) {
+        if (seen.has(sessionId)) continue;
+        seen.add(sessionId);
+        try {
+          const thread = threadStore.readThread({
+            threadId: sessionId,
+            includeArchived: true,
+            includeHistory: true,
+          });
+          sessions.push(storedThreadToAgentLogSession(thread));
+        } catch (error) {
+          if (isThreadLogReadMiss(error)) continue;
+          throw error;
+        }
       }
+    } finally {
+      this.#releaseThreadStoreForAgentLogs?.(route);
     }
     return sessions;
   }
 
   /** Internal routine owner seam; this is deliberately not a standalone RPC. */
-  async finishRoutineRun(agentId: string, messageId: string): Promise<"completed" | "failed" | "cancelled" | undefined> {
+  async finishRoutineRun(agentId: string, messageId: string): Promise<"completed" | "failed" | "cancelled" | "permission_denied" | undefined> {
     if (this.#runner?.finishAgentRun === undefined) {
       throw new AgenCDaemonAgentLifecycleError("BACKGROUND_RUNNER_UNAVAILABLE", "Routine finalization requires the owning Core runner.");
     }
@@ -2522,11 +2580,62 @@ export class AgenCDaemonAgentManager {
     return result;
   }
 
+  /**
+   * Internal routine-authority seam, deliberately not a standalone RPC: the
+   * canonical live session id behind `sessionId` (a session or agent id) and
+   * that session's CURRENT permission mode, read by its owning runner from the
+   * session's own permission registry. A closed, unknown or
+   * recovered-without-runtime session has no mode to lend and throws.
+   */
+  async getLiveSessionPermission(
+    sessionId: string,
+    expectedRoutineHeadId?: string,
+  ): Promise<{ readonly sessionId: string; readonly mode: string }> {
+    if (this.#runner?.getAgentPermissionMode === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session permission mode requires a background runner",
+      );
+    }
+    const owner = await this.#resolvePermissionOwner(sessionId, false, true, expectedRoutineHeadId);
+    const mode = await this.#runner.getAgentPermissionMode(owner.agentId);
+    if (mode === null) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "AGENT_NOT_FOUND",
+        `AgenC daemon agent not found: ${owner.agentId}`,
+      );
+    }
+    return { sessionId: owner.sessionId, mode };
+  }
+
+  /** Best-effort canonical id for transport scheduling only; never grants authority. */
+  peekRoutineSessionId(id: string): string | undefined {
+    try {
+      return this.#state.peek((state) => canonicalSessionForOwner(state, id).sessionId);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Resolve either session or agent ID, then inspect the live turn's tool calls. */
+  async isLiveSessionToolCallExecuting(sessionId: string, toolCallId: string): Promise<boolean> {
+    if (this.#runner?.isAgentToolCallExecuting === undefined) return false;
+    try {
+      const owner = await this.#resolvePermissionOwner(sessionId, false, true);
+      return await this.#runner.isAgentToolCallExecuting(owner.agentId, toolCallId);
+    } catch {
+      return false;
+    }
+  }
+
   async approveTool(params: ToolApproveParams): Promise<ToolDecisionResult> {
     if (this.#approvalBroker?.isWorkflowOwner(params.sessionId)) {
       return this.#approveWorkflowTool(params);
     }
     const { agentId, sessionId } = await this.#resolvePermissionOwner(params.sessionId);
+    if (this.#approvalBroker?.pending(agentId, params.requestId)?.ctx.approvalKind === "cross_provider_spawn") {
+      return this.#approveCrossProviderConsent(agentId, params);
+    }
     const responseKey = this.#approvalBroker?.pending(agentId, params.requestId)?.responseKey ?? params.requestId;
     const allowAllToolsForSession = params.allowAllToolsForSession === true;
     if (allowAllToolsForSession && params.scope !== "session") {
@@ -2637,6 +2746,9 @@ export class AgenCDaemonAgentManager {
     if (pending === undefined) {
       throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", `AgenC daemon tool request is not pending: ${params.requestId}`);
     }
+    if (pending.ctx.approvalKind === "cross_provider_spawn") {
+      return this.#approveCrossProviderConsent(params.sessionId, params);
+    }
     if (params.allowAllToolsForSession === true) {
       throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", "Workflow permission mode is frozen; approve the requested tool without promoting the run mode");
     }
@@ -2667,6 +2779,22 @@ export class AgenCDaemonAgentManager {
         : "rpc_approved_once",
       ...(params.scope !== undefined ? { scope: params.scope } : {}),
     });
+    return { requestId: params.requestId, decision: "approved" };
+  }
+
+  #approveCrossProviderConsent(ownerRunId: string, params: ToolApproveParams): ToolDecisionResult {
+    if (params.approvalKind !== "cross_provider_spawn" ||
+        params.allowAllToolsForSession === true || params.scope === "agent" ||
+        params.exitPlan !== undefined) {
+      throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT",
+        "cross_provider_spawn requires a consent-aware client, once or session scope, and cannot enable tool bypass");
+    }
+    const decision = params.scope === "session" ? APPROVED_FOR_SESSION : APPROVED;
+    if (!this.#approvalBroker?.resolve(ownerRunId, params.requestId, decision,
+      { approvalKind: "cross_provider_spawn" })) {
+      throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT",
+        `AgenC daemon cross-provider consent is not pending: ${params.requestId}`);
+    }
     return { requestId: params.requestId, decision: "approved" };
   }
 
@@ -2701,6 +2829,11 @@ export class AgenCDaemonAgentManager {
   async denyTool(params: ToolDenyParams): Promise<ToolDecisionResult> {
     const reason = normalizeNonEmpty(params.reason);
     const decision = reason === undefined ? DENIED : { kind: "denied" as const, reason };
+    const consentOwner = this.#approvalBroker?.pending(params.sessionId, params.requestId);
+    if (consentOwner?.ctx.approvalKind === "cross_provider_spawn") {
+      this.#approvalBroker!.resolve(params.sessionId, params.requestId, decision);
+      return { requestId: params.requestId, decision: "denied" };
+    }
     if (this.#approvalBroker?.isWorkflowOwner(params.sessionId)) {
       if (!this.#approvalBroker.resolve(params.sessionId, params.requestId, decision)) {
         throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", `AgenC daemon tool request is not pending: ${params.requestId}`);
@@ -2712,6 +2845,10 @@ export class AgenCDaemonAgentManager {
       return { requestId: params.requestId, decision: "denied" };
     }
     const { agentId } = await this.#resolvePermissionOwner(params.sessionId);
+    if (this.#approvalBroker?.pending(agentId, params.requestId)?.ctx.approvalKind === "cross_provider_spawn") {
+      this.#approvalBroker.resolve(agentId, params.requestId, decision);
+      return { requestId: params.requestId, decision: "denied" };
+    }
     const resolved = await this.#runner!.resolveToolDecision!(agentId, {
       requestId: params.requestId,
       decision,
@@ -2768,19 +2905,28 @@ export class AgenCDaemonAgentManager {
         `AgenC daemon session has no working directory: ${params.sessionId}`,
       );
     }
+    // Clients address the daemon session (`session_...`), but the durable
+    // effect rows and the live runtime session belong to the agent's
+    // conversation (`conv-...`). The live runner resolves only its own
+    // conversation, so review against that id. Injected runners without a
+    // live journal keep the legacy daemon-session keying.
+    const reviewSessionId =
+      this.#runner?.resolveLiveEffectReview !== undefined
+        ? session.agentId
+        : params.sessionId;
     const driver = openStateDatabases({ cwd: session.cwd, agencHome: this.#agencHome });
     try {
       const candidates =
         params.toolCallId !== undefined
           ? [
               {
-                sessionId: params.sessionId,
+                sessionId: reviewSessionId,
                 toolCallId: params.toolCallId,
                 toolName: "",
                 startedAt: "",
               },
             ]
-          : [...listUnresolvedUnknownOutcomeEffects(driver, params.sessionId)];
+          : [...listUnresolvedUnknownOutcomeEffects(driver, reviewSessionId)];
       const resolved: SessionResolveToolCallResult["resolved"][number][] = [];
 
       if (!isEvidenceToolCallResolution(params)) {
@@ -2791,7 +2937,7 @@ export class AgenCDaemonAgentManager {
           // v1/v2 effect stays pending until an evidence-bearing request arrives.
           if (
             durableEffects.getEffectBySessionCall(
-              params.sessionId,
+              reviewSessionId,
               effect.toolCallId,
             ) !== undefined
           ) {
@@ -2799,7 +2945,7 @@ export class AgenCDaemonAgentManager {
           }
           if (
             resolveUnknownOutcomeEffect(driver, {
-              sessionId: params.sessionId,
+              sessionId: reviewSessionId,
               toolCallId: effect.toolCallId,
             })
           ) {
@@ -2814,7 +2960,7 @@ export class AgenCDaemonAgentManager {
           resolved,
           remaining: listUnresolvedUnknownOutcomeEffects(
             driver,
-            params.sessionId,
+            reviewSessionId,
           ).length,
         };
       }
@@ -2824,13 +2970,23 @@ export class AgenCDaemonAgentManager {
       const resolution = createOperatorEffectReviewResolution({
         disposition: params.disposition,
         actorId: reviewedBy,
-        evidenceRef: params.evidenceRef,
-        evidenceSha256: params.evidenceSha256,
+        ...(isOperatorAttestation(params)
+          ? createOperatorAttestationEvidence({
+              sessionId: reviewSessionId,
+              toolCallId: params.toolCallId,
+              disposition: params.disposition,
+              actorId: reviewedBy,
+              attestedAt: reviewedAt,
+            })
+          : {
+              evidenceRef: params.evidenceRef,
+              evidenceSha256: params.evidenceSha256,
+            }),
         reviewedAt,
       });
       for (const effect of candidates) {
         const reviewOptions = {
-          sessionId: params.sessionId,
+          sessionId: reviewSessionId,
           toolCallId: effect.toolCallId,
           resolution,
         } as const;
@@ -2855,7 +3011,7 @@ export class AgenCDaemonAgentManager {
       }
       const remaining = listUnresolvedUnknownOutcomeEffects(
         driver,
-        params.sessionId,
+        reviewSessionId,
       ).length;
       return { sessionId: params.sessionId, resolved, remaining };
     } finally {
@@ -2948,6 +3104,20 @@ export class AgenCDaemonAgentManager {
       );
     }
     return { requestId: params.requestId, decision: "cancelled" };
+  }
+
+  async updateSessionGoal(params: SessionGoalParams): Promise<SessionGoalResult> {
+    if (this.#runner?.updateAgentSessionGoal === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.goal requires a live daemon runtime",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowSessionGoal: true },
+    );
+    return this.#runner.updateAgentSessionGoal(agentId, params);
   }
 
   async executeSessionStatusLine(
@@ -3287,7 +3457,7 @@ export class AgenCDaemonAgentManager {
     // persisted thread from the same thread store `agenc agent logs` uses,
     // rather than throwing. The live-agent path below is unchanged.
     if (this.#runner?.getAgentSessionTranscript === undefined) {
-      const persisted = this.#readPersistedSessionTranscript(params.sessionId);
+      const persisted = await this.#readPersistedSessionTranscript(params.sessionId);
       if (persisted !== undefined) return persisted;
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",
@@ -3301,7 +3471,7 @@ export class AgenCDaemonAgentManager {
       });
     } catch (error) {
       if (isNoLiveAgentError(error)) {
-        const persisted = this.#readPersistedSessionTranscript(
+        const persisted = await this.#readPersistedSessionTranscript(
           params.sessionId,
         );
         if (persisted !== undefined) return persisted;
@@ -3317,7 +3487,7 @@ export class AgenCDaemonAgentManager {
       // runner has no live in-memory agent for it (e.g. a recovered terminal
       // session). Fall back to the persisted thread for the same reason.
       if (isNoLiveAgentRunnerError(error)) {
-        const persisted = this.#readPersistedSessionTranscript(
+        const persisted = await this.#readPersistedSessionTranscript(
           params.sessionId,
         );
         if (persisted !== undefined) return persisted;
@@ -3336,7 +3506,7 @@ export class AgenCDaemonAgentManager {
       );
     }
     if (this.#runner?.getAgentSessionTranscriptV2 === undefined) {
-      const persisted = this.#readPersistedSessionTranscriptV2(
+      const persisted = await this.#readPersistedSessionTranscriptV2(
         params.sessionId,
       );
       if (persisted !== undefined) return persisted;
@@ -3352,7 +3522,7 @@ export class AgenCDaemonAgentManager {
       });
     } catch (error) {
       if (isNoLiveAgentError(error)) {
-        const persisted = this.#readPersistedSessionTranscriptV2(
+        const persisted = await this.#readPersistedSessionTranscriptV2(
           params.sessionId,
         );
         if (persisted !== undefined) return persisted;
@@ -3365,7 +3535,7 @@ export class AgenCDaemonAgentManager {
       });
     } catch (error) {
       if (isNoLiveAgentRunnerError(error)) {
-        const persisted = this.#readPersistedSessionTranscriptV2(
+        const persisted = await this.#readPersistedSessionTranscriptV2(
           params.sessionId,
         );
         if (persisted !== undefined) return persisted;
@@ -3383,44 +3553,74 @@ export class AgenCDaemonAgentManager {
    * `undefined` when there is no persisted thread to read so callers can
    * decide whether to surface the original no-live-agent error.
    */
-  #readPersistedSessionTranscript(
+  /**
+   * Thread ids under which a session's persisted transcript may be filed. A
+   * terminal session's id is its own thread id. A daemon session record
+   * (`session_<uuid>`) belongs to an agent whose rollout is filed under the
+   * agent id, and that record id is how the desktop addresses a session it
+   * attached. The fallback used to look the session id up as a thread and
+   * missed for every such session, so after a daemon restart the app got
+   * "recovered without a live runtime" for its history until a prompt
+   * revived the runtime.
+   */
+  async #persistedThreadIdsForSession(
     sessionId: string,
-  ): SessionTranscriptResult | undefined {
+  ): Promise<readonly string[]> {
+    const threadIds = [sessionId];
+    if (this.#sessionManager !== undefined) {
+      try {
+        const session = await this.#sessionManager.getSession(sessionId);
+        const agentId = session?.agentId;
+        if (
+          typeof agentId === "string" &&
+          agentId.length > 0 &&
+          agentId !== sessionId
+        ) {
+          threadIds.push(agentId);
+        }
+      } catch {
+        // The session record is extra evidence; the direct lookup still runs.
+      }
+    }
+    return threadIds;
+  }
+
+  async #readPersistedThreadForSession(
+    sessionId: string,
+  ): Promise<StoredThread | undefined> {
     const threadStore = this.#threadStore;
     if (threadStore === undefined) return undefined;
-    let thread: StoredThread;
-    try {
-      thread = threadStore.readThread({
-        threadId: sessionId,
-        includeArchived: true,
-        includeHistory: true,
-      });
-    } catch (error) {
-      if (isThreadLogReadMiss(error)) return undefined;
-      throw error;
+    for (const threadId of await this.#persistedThreadIdsForSession(sessionId)) {
+      try {
+        return threadStore.readThread({
+          threadId,
+          includeArchived: true,
+          includeHistory: true,
+        });
+      } catch (error) {
+        if (isThreadLogReadMiss(error)) continue;
+        throw error;
+      }
     }
+    return undefined;
+  }
+
+  async #readPersistedSessionTranscript(
+    sessionId: string,
+  ): Promise<SessionTranscriptResult | undefined> {
+    const thread = await this.#readPersistedThreadForSession(sessionId);
+    if (thread === undefined) return undefined;
     const messages = transcriptMessagesFromRolloutItems(
       thread.history?.items ?? [],
     );
     return { sessionId, messages };
   }
 
-  #readPersistedSessionTranscriptV2(
+  async #readPersistedSessionTranscriptV2(
     sessionId: string,
-  ): SessionTranscriptV2Result | undefined {
-    const threadStore = this.#threadStore;
-    if (threadStore === undefined) return undefined;
-    let thread: StoredThread;
-    try {
-      thread = threadStore.readThread({
-        threadId: sessionId,
-        includeArchived: true,
-        includeHistory: true,
-      });
-    } catch (error) {
-      if (isThreadLogReadMiss(error)) return undefined;
-      throw error;
-    }
+  ): Promise<SessionTranscriptV2Result | undefined> {
+    const thread = await this.#readPersistedThreadForSession(sessionId);
+    if (thread === undefined) return undefined;
     return sessionTranscriptV2FromRollout(
       thread.history?.items ?? [],
       sessionId,
@@ -3804,22 +4004,6 @@ export class AgenCDaemonAgentManager {
     };
   }
 
-  async resolveCodePredictionSource(
-    sessionId: string,
-  ): Promise<CodePredictionSource> {
-    const agentId = await this.#resolveActiveAgentIdForSession(sessionId, {
-      allowCodePrediction: true,
-    });
-    const resolveSource = this.#runner?.resolveCodePredictionSource;
-    if (resolveSource === undefined) {
-      throw new AgenCDaemonAgentLifecycleError(
-        "BACKGROUND_RUNNER_UNAVAILABLE",
-        "editor prediction requires a live daemon runtime",
-      );
-    }
-    return await resolveSource.call(this.#runner, agentId);
-  }
-
   async streamAgentMessage(params: {
     readonly sessionId: string;
     readonly content: MessageContent;
@@ -3828,7 +4012,6 @@ export class AgenCDaemonAgentManager {
     readonly acceptedAt: string;
     readonly ifBusy?: "reject";
     readonly displayUserMessage?: string | null;
-    readonly editorInteraction?: SessionEditorInteraction;
     readonly methodName?: "message.send" | "message.stream";
     /** Set only by authenticated daemon ingress, never by RPC payload metadata. */
     readonly localMcpAccess?: boolean;
@@ -3897,9 +4080,6 @@ export class AgenCDaemonAgentManager {
         ...(params.localMcpAccess !== undefined ? { localMcpAccess: params.localMcpAccess } : {}),
         ...(params.displayUserMessage !== undefined
           ? { displayUserMessage: params.displayUserMessage }
-          : {}),
-        ...(params.editorInteraction !== undefined
-          ? { editorInteraction: params.editorInteraction }
           : {}),
         ...(params.ifBusy !== undefined ? { ifBusy: params.ifBusy } : {}),
         messageId: params.messageId,
@@ -4048,9 +4228,10 @@ export class AgenCDaemonAgentManager {
       readonly allowHooksStatus?: boolean;
       readonly allowSetHooksDisabled?: boolean;
       readonly allowApplyConfig?: boolean;
-      readonly allowCodePrediction?: boolean;
       readonly allowExecuteShell?: boolean;
       readonly allowExecuteStatusLine?: boolean;
+      readonly allowSessionGoal?: boolean;
+      readonly allowPermissionMode?: boolean;
     } = {},
   ): Promise<string> {
     if (this.#sessionManager === undefined) {
@@ -4122,16 +4303,21 @@ export class AgenCDaemonAgentManager {
     const hasApplyConfigRunner =
       options.allowApplyConfig === true &&
       this.#runner?.applyAgentConfig !== undefined;
-    const hasCodePredictionRunner =
-      options.allowCodePrediction === true &&
-      this.#runner?.resolveCodePredictionSource !== undefined;
     const hasExecuteShellRunner =
       options.allowExecuteShell === true &&
       this.#runner?.executeAgentShell !== undefined;
     const hasExecuteStatusLineRunner =
       options.allowExecuteStatusLine === true &&
       this.#runner?.executeAgentStatusLine !== undefined;
+    const hasSessionGoalRunner =
+      options.allowSessionGoal === true &&
+      this.#runner?.updateAgentSessionGoal !== undefined;
+    const hasPermissionModeRunner =
+      options.allowPermissionMode === true &&
+      this.#runner?.getAgentPermissionMode !== undefined;
     if (
+      !hasSessionGoalRunner &&
+      !hasPermissionModeRunner &&
       !hasToolDecisionRunner &&
       !hasCancelRunner &&
       !hasElicitationRunner &&
@@ -4153,7 +4339,6 @@ export class AgenCDaemonAgentManager {
       !hasHooksStatusRunner &&
       !hasSetHooksDisabledRunner &&
       !hasApplyConfigRunner &&
-      !hasCodePredictionRunner &&
       !hasExecuteShellRunner &&
       !hasExecuteStatusLineRunner
     ) {
@@ -4262,18 +4447,19 @@ export class AgenCDaemonAgentManager {
   async #resolvePermissionOwner(
     ownerId: string,
     allowListPermissions = false,
+    allowPermissionMode = false,
+    expectedRoutineHeadId?: string,
   ): Promise<{ readonly agentId: string; readonly sessionId: string }> {
     const resolvedOwner = await this.#state.with((state) => {
-      const canonicalAgent = state.agents.get(ownerId);
-      if (canonicalAgent === undefined) return { sessionId: ownerId };
-      const latestSessionId = latestSessionIdForAgentRun(canonicalAgent);
-      if (latestSessionId === undefined) {
-        throw new AgenCDaemonAgentLifecycleError("AGENT_NOT_FOUND", `AgenC daemon session not found or closed: ${ownerId}`);
+      const owner = canonicalSessionForOwner(state, ownerId);
+      if (expectedRoutineHeadId !== undefined &&
+          owner.sessionId !== canonicalSessionForOwner(state, expectedRoutineHeadId).sessionId) {
+        throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", "Routine authority is not executing in the FIFO head's session");
       }
-      return { sessionId: latestSessionId, expectedAgentId: canonicalAgent.agentId };
+      return owner;
     });
     const { sessionId } = resolvedOwner;
-    const agentId = await this.#resolveActiveAgentIdForSession(sessionId, { allowListPermissions });
+    const agentId = await this.#resolveActiveAgentIdForSession(sessionId, { allowListPermissions, allowPermissionMode });
     if (resolvedOwner.expectedAgentId !== undefined && resolvedOwner.expectedAgentId !== agentId) {
       throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", `Permission owner changed while resolving session: ${ownerId}`);
     }
@@ -4439,6 +4625,7 @@ export class AgenCDaemonAgentManager {
           return {
             agentId: persisted.agentId,
             sessionIds: [...persisted.sessionIds],
+            recoveredRuntimeUnavailable: false,
           };
         }
         throw new AgenCDaemonAgentLifecycleError(
@@ -4449,6 +4636,7 @@ export class AgenCDaemonAgentManager {
       return {
         agentId: refreshed.agentId,
         sessionIds: [...refreshed.sessionIds],
+        recoveredRuntimeUnavailable: isRecoveredRuntimeUnavailable(refreshed),
       };
     });
   }

@@ -6,6 +6,8 @@ import {
 } from "../control.js";
 import { createMailboxMetadataRecord } from "../mailbox.js";
 import type { ThreadId } from "../registry.js";
+import { authorizeChildExecutionPlan, type ChildExecutionPlan } from "../cross-provider.js";
+import { liveAgentSession } from "../live-session.js";
 import {
   agentValidationError,
   callIdFromArgs,
@@ -97,6 +99,50 @@ export async function handleMessageStringTool(
   if (!receiverAgentPath) {
     return agentValidationError("target agent is missing an agent_path");
   }
+  const targetPlan = live?.metadata.executionPlan ?? metadata?.executionPlan;
+  if ((live?.metadata.crossProvider !== undefined || metadata?.crossProvider !== undefined) &&
+      targetPlan?.crossProvider !== true) {
+    return agentValidationError("consent_unavailable: destination has no consent provenance");
+  }
+  let assignedPlan: ChildExecutionPlan | undefined;
+  if (mode === "queue_only" && targetPlan?.crossProvider) {
+    // A passive message is prepended to a later assignment. Obtain a fresh
+    // disclosure for its text before it enters the child's mailbox, even if
+    // the worker has a reusable session grant for assignments.
+    const caller = current.threadId === sessionOrError.conversationId
+      ? sessionOrError : liveAgentSession(control.getLive(current.threadId)!);
+    if (caller === undefined) return agentValidationError("consent_unavailable: calling session is no longer live");
+    const previous = targetPlan;
+    const parentTurnId = caller.activeTurn?.unsafePeek()?.turnId;
+    const proposed: ChildExecutionPlan = { ...previous,
+      task: { id: callId, name: previous.task.name, text: message, attachments: [],
+        ...(parentTurnId !== undefined ? { parentTurnId } : {}) },
+      consentGrant: null,
+    };
+    const consent = await authorizeChildExecutionPlan(caller, proposed, { fresh: true });
+    if (consent.kind !== "granted") {
+      return confirmedNoAgentEffect(json({ code: consent.kind, error: consent.reason,
+        action: "Keep this message on the current provider or request consent again for a new task." }, true));
+    }
+  }
+  if (mode === "trigger_turn" && targetPlan?.crossProvider) {
+    const caller = current.threadId === sessionOrError.conversationId
+      ? sessionOrError : liveAgentSession(control.getLive(current.threadId)!);
+    if (caller === undefined) return agentValidationError("consent_unavailable: calling session is no longer live; continue this task yourself");
+    const previous = targetPlan;
+    const parentTurnId = caller.activeTurn?.unsafePeek()?.turnId;
+    const proposed: ChildExecutionPlan = { ...previous,
+      task: { id: callId, name: previous.task.name, text: message, attachments: [],
+        ...(parentTurnId !== undefined ? { parentTurnId } : {}) },
+      consentGrant: null,
+    };
+    const consent = await authorizeChildExecutionPlan(caller, proposed);
+    if (consent.kind !== "granted") {
+      return confirmedNoAgentEffect(json({ code: consent.kind, error: consent.reason,
+        action: "Continue this subtask yourself on the current provider; do not retry the same cross-provider request." }, true));
+    }
+    assignedPlan = consent.plan;
+  }
   emit(sessionOrError, {
     type: "collab_agent_interaction_begin",
     payload: {
@@ -109,6 +155,8 @@ export async function handleMessageStringTool(
   let deliveryError: unknown;
   let acceptedTask:
     { readonly taskId: string; readonly turnId: string } | undefined;
+  let passiveAdmission:
+    ReturnType<typeof control.sendPassiveMessageToActiveAgent> | undefined;
   try {
     if (mode === "trigger_turn") {
       acceptedTask = control.assignTask(agentId, {
@@ -116,9 +164,20 @@ export async function handleMessageStringTool(
         recipient: receiverAgentPath,
         content: message,
         taskId: callId,
+        ...(assignedPlan !== undefined ? { executionPlan: assignedPlan } : {}),
+      });
+    } else if (agentId === sessionOrError.conversationId) {
+      await control.sendInterAgentCommunication(agentId, {
+        author: current.agentPath,
+        recipient: receiverAgentPath,
+        content: message,
+        triggerTurn: false,
+        metadata: createMailboxMetadataRecord("inter_agent_communication", [
+          ["deliveryMode", mode],
+        ]),
       });
     } else {
-      await control.sendInterAgentCommunication(agentId, {
+      passiveAdmission = control.sendPassiveMessageToActiveAgent(agentId, {
         author: current.agentPath,
         recipient: receiverAgentPath,
         content: message,
@@ -158,11 +217,32 @@ export async function handleMessageStringTool(
       true,
     );
   }
+  if (passiveAdmission?.accepted === false) {
+    return confirmedNoAgentEffect(
+      json({
+        ok: false,
+        delivered: false,
+        mode: "send_message",
+        target: receiverAgentPath,
+        status: passiveAdmission.status,
+        hint: "This child is idle or finished. Use assign_task to start an idle worker's next turn.",
+      }),
+    );
+  }
   return json({
     ok: true,
     mode: mode === "trigger_turn" ? "assign_task" : "send_message",
     target: receiverAgentPath,
     status,
+    ...(mode === "queue_only"
+      ? {
+          delivered: false,
+          delivery: "accepted_unconfirmed",
+          hint: agentId === sessionOrError.conversationId
+            ? "Queued for the root mailbox's next drain."
+            : "Queued for the child's next turn. If the child finishes first, the message is lost.",
+        }
+      : {}),
     ...(acceptedTask !== undefined
       ? {
           task_id: acceptedTask.taskId,

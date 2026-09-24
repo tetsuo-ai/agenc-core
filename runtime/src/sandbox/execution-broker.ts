@@ -49,6 +49,7 @@ import type { UnifiedExecRuntimeSandbox } from "../unified-exec/types.js";
 import { UnifiedExecError } from "../unified-exec/types.js";
 import type { SandboxMode } from "../tools/orchestrator.js";
 import {
+  confineRoutineProfile,
   permissionProfileForSandboxMode,
   sandboxModeRequiresPlatformIsolation,
 } from "../tools/runtimes/sandboxing.js";
@@ -57,6 +58,7 @@ import {
   isAppArmorUserNamespaceDenial,
 } from "./apparmor.js";
 import { sanitizeSandboxLauncherEnvironment } from "./launcher-environment.js";
+import { withChildTempAuthority } from "../utils/subprocessEnv.js";
 import {
   SandboxExecutionLeaseCleanupError,
   registerSandboxPreparedSpawn,
@@ -132,6 +134,9 @@ export interface SandboxExecutionStatus {
 }
 
 export interface SandboxSpawnCommand {
+  /** Browser-owned CDP pipes; the Linux launcher carries these on standard IO. */
+  readonly browserCdp?: boolean;
+  readonly browserCdpOverStdio?: boolean;
   readonly program: string;
   readonly args: readonly string[];
   readonly cwd: string;
@@ -276,7 +281,19 @@ export interface SandboxExecutionBrokerOptions {
   }) => SandboxExecutionStatus;
   /** Injectable Landlock plan seam for deterministic pre-flight tests. */
   readonly planLandlockPolicy?: typeof planLandlockConfinement;
+  /**
+   * Set on a scheduled routine run: its command surfaces write only inside the
+   * workspace (see confineRoutineProfile) and get this folder, inside the
+   * workspace, as TMPDIR. Service surfaces (MCP servers, LSP, hooks, the
+   * browser, providers) keep the session profile.
+   */
+  readonly routineChildTempRoot?: string;
 }
+
+/** Surfaces that run services, not a model's commands; a routine run leaves them as configured. */
+const ROUTINE_SERVICE_SURFACES: ReadonlySet<SandboxExecutionSurface> = new Set([
+  "startup", "hook", "mcp_stdio", "lsp", "browser", "provider", "powershell_parser",
+]);
 
 export interface SandboxExecutionBrokerAuthority {
   readonly mode: SandboxMode;
@@ -532,6 +549,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
   readonly #cronAuthorityRoots: readonly string[];
   #allowGpu: boolean;
   #permissionProfile: PermissionProfile | undefined;
+  readonly #routineChildTempRoot: string | undefined;
   readonly #probe: NonNullable<SandboxExecutionBrokerOptions["probe"]>;
   readonly #planLandlockPolicy: typeof planLandlockConfinement;
   #status: SandboxExecutionStatus | undefined;
@@ -569,6 +587,15 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     this.#permissionProfile = immutablePermissionProfile(
       options.permissionProfile,
     );
+    if (
+      options.routineChildTempRoot !== undefined &&
+      !path.isAbsolute(options.routineChildTempRoot)
+    ) {
+      throw new Error("routine child temp root must be an absolute path");
+    }
+    this.#routineChildTempRoot = options.routineChildTempRoot === undefined
+      ? undefined
+      : path.normalize(options.routineChildTempRoot);
     this.#probe = options.probe ?? probeSandboxExecutionStatus;
     this.#planLandlockPolicy =
       options.planLandlockPolicy ?? planLandlockConfinement;
@@ -591,6 +618,11 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
 
   get sessionTempRoot(): string {
     return this.#sessionTempRoot;
+  }
+
+  /** Whether this broker belongs to a scheduled routine run. */
+  get routineRun(): boolean {
+    return this.#routineChildTempRoot !== undefined;
   }
 
   get mode(): SandboxMode {
@@ -944,6 +976,9 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       planLandlockPolicy: this.#planLandlockPolicy,
       forkDepth: this.forkDepth + 1,
       lifecycleLeaseDrainTimeoutMs: this.#lifecycleLeaseDrainTimeoutMs,
+      ...(this.#routineChildTempRoot !== undefined
+        ? { routineChildTempRoot: this.#routineChildTempRoot }
+        : {}),
     });
   }
 
@@ -1033,21 +1068,28 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     return this.#runtimeSandboxAfterLifecycleAdmission(surface);
   }
 
+  #routineConfines(surface: SandboxExecutionSurface): boolean {
+    return this.#routineChildTempRoot !== undefined &&
+      !ROUTINE_SERVICE_SURFACES.has(surface);
+  }
+
   #runtimeSandboxAfterLifecycleAdmission(
     surface: SandboxExecutionSurface,
   ): UnifiedExecRuntimeSandbox | undefined {
     if (!this.required) return undefined;
     const status = this.#assertReadyAfterLifecycleAdmission(surface);
+    const profile = protectCronAuthority(protectDesktopAuthority(
+      this.#permissionProfile ??
+      permissionProfileForSandboxMode(this.mode, {
+        cwd: this.#cwd,
+      }),
+      this.#desktopAuthorityRoot,
+    ), this.#cronAuthorityRoots);
+    const confined = this.#routineConfines(surface);
     return {
-      permissionProfile: protectCronAuthority(protectDesktopAuthority(
-        this.#permissionProfile ??
-        permissionProfileForSandboxMode(this.mode, {
-          cwd: this.#cwd,
-        }),
-        this.#desktopAuthorityRoot,
-      ), this.#cronAuthorityRoots),
+      permissionProfile: confined ? confineRoutineProfile(profile) : profile,
       sandboxPolicyCwd: this.#cwd,
-      sessionTempRoot: this.#sessionTempRoot,
+      sessionTempRoot: confined ? this.#routineChildTempRoot! : this.#sessionTempRoot,
       preference: "require",
       ...(status.helperPath !== undefined
         ? { agencLinuxSandboxExe: status.helperPath }
@@ -1060,9 +1102,19 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
 
   prepareSpawn(
     surface: SandboxExecutionSurface,
-    command: SandboxSpawnCommand,
+    requestedCommand: SandboxSpawnCommand,
     options: SandboxPrepareSpawnOptions = {},
   ): SandboxPreparedSpawn {
+    // A routine run's commands get their scratch folder inside the workspace
+    // as TMPDIR: the session temp root is not writable for them.
+    const command: SandboxSpawnCommand = this.#routineConfines(surface)
+      ? { ...requestedCommand, env: withChildTempAuthority(requestedCommand.env, this.#routineChildTempRoot!) }
+      : requestedCommand;
+    // CDP over stdio takes over the child's stdin and stdout; only the browser
+    // speaks it.
+    if (command.browserCdp === true && surface !== "browser") {
+      throw new Error(`browserCdp is only valid for the browser surface, not ${surface}`);
+    }
     try {
       const participantName = options.lifecycleParticipant;
       const requiresLifecyclePermit =
@@ -1135,8 +1187,9 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       };
       const preparedCommand = (() => {
         if (runtimeSandbox === undefined) return resolvedCommand;
+        // A routine run's commands never widen their sandbox.
         const sandboxWithSurfacePermissions =
-          command.additionalPermissions === undefined
+          command.additionalPermissions === undefined || this.#routineConfines(surface)
             ? runtimeSandbox
             : {
                 ...runtimeSandbox,
@@ -1928,6 +1981,14 @@ export function transformSandboxedCommand(params: SandboxSpawnCommand & {
       ...(params.runtimeSandbox.allowGpu === true ? { allowGpu: true } : {}),
     });
     const [program, ...args] = transformed.command;
+    const browserCdpOverStdio = params.browserCdp === true && sandbox === "linux_seccomp";
+    if (browserCdpOverStdio) {
+      const separator = args.indexOf("--");
+      if (separator < 0) {
+        throw new Error("Linux browser sandbox command separator missing");
+      }
+      args.splice(separator, 0, "--browser-cdp-over-stdio");
+    }
     if (program === undefined) {
       throw new UnifiedExecError(
         "create_process",
@@ -1940,6 +2001,7 @@ export function transformSandboxedCommand(params: SandboxSpawnCommand & {
       cwd: transformed.cwd,
       env: { ...transformed.env },
       argv0: transformed.arg0 ?? basename(program),
+      ...(browserCdpOverStdio ? { browserCdpOverStdio: true } : {}),
     };
   } catch (error) {
     if (error instanceof UnifiedExecError) throw error;

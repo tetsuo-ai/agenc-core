@@ -61,14 +61,16 @@ const runGit: GitRunner = (args, cwd) =>
       const child = spawn("git", [...args], { cwd });
       let stdout = "";
       let stderr = "";
-      child.stdout.on("data", data => {
-        stdout += data.toString("utf8");
-      });
-      child.stderr.on("data", data => {
-        stderr += data.toString("utf8");
-      });
+      // A failed spawn reports on the next tick, and EMFILE or ENFILE also
+      // leave stdout and stderr undefined: listen before touching them.
       child.on("error", error => {
         resolve({ stdout, stderr: stderr + String(error), code: -1 });
+      });
+      child.stdout?.on("data", data => {
+        stdout += data.toString("utf8");
+      });
+      child.stderr?.on("data", data => {
+        stderr += data.toString("utf8");
       });
       child.on("close", code => {
         resolve({ stdout, stderr, code });

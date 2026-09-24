@@ -923,8 +923,7 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
     expect(result).toMatchObject({ isError: false });
     expect(result.content).toContain("null\n7\nloose string");
     expect(result.content).toContain("Invalid MCP text content omitted");
-    expect(result.content).toContain("Invalid or oversized MCP binary content omitted");
-    expect(result.content).toContain("aggregate safety budget exhausted");
+    expect(result.content).toContain("MCP image omitted: invalid, unsupported, or oversized image");
     expect(JSON.stringify(result)).not.toContain("not-base64!");
     expect(result.codeModeResult).toBeDefined();
     expect(observedResults).toEqual([result.content]);

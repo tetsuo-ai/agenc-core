@@ -240,6 +240,24 @@ describe("provider discovery", () => {
     expect(requestedUrls).toContain("http://10.0.0.5:11434/api/tags");
   });
 
+  it("does not send the OpenAI key to the default compatible server", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      new Response("{}", { status: 200 }));
+    const report = await collectProviderAvailability({
+      config: defaultConfig(),
+      env: { OPENAI_API_KEY: "hosted-openai-key" },
+      fetchImpl,
+    });
+    const compatible = byProvider(report.entries).get("openai-compatible");
+    const call = fetchImpl.mock.calls.find(([url]) =>
+      String(url) === "http://localhost:8000/v1/models");
+
+    expect(call).toBeDefined();
+    expect(new Headers(call?.[1]?.headers).get("authorization")).toBeNull();
+    expect(compatible).toMatchObject({ credentialStatus: "optional" });
+    expect(compatible).not.toHaveProperty("credentialProvenance");
+  });
+
   it("reports the actual env aliases that supplied provider keys", async () => {
     const report = await collectProviderAvailability({
       authBackend: authBackend("local", "free"),
@@ -248,6 +266,7 @@ describe("provider discovery", () => {
       env: {
         GROK_API_KEY: "grok-key",
         OPENAI_API_KEY: "shared-local-key",
+        OPENAI_COMPATIBLE_BASE_URL: "http://127.0.0.1:9000/v1",
         GOOGLE_API_KEY: "google-key",
         MISTRAL_API_KEY: "mistral-key",
         NVIDIA_API_KEY: "nvidia-key",
@@ -571,6 +590,33 @@ describe("provider discovery", () => {
         provider: "grok",
       });
       expect(grok?.detail).not.toContain("BYOK");
+
+      const custom = await collectProviderAvailability({
+        authBackend: authBackend("local", "free"),
+        checkLocal: false,
+        config: defaultConfig(),
+        env: { ...env, XAI_BASE_URL: "https://gateway.example.test/v1" },
+      });
+      expect(byProvider(custom.entries).get("grok")).toMatchObject({
+        usable: true,
+        credentialStatus: "present",
+      });
+      expect(byProvider(custom.entries).get("grok")?.credentialProvenance).not.toEqual({
+        kind: "oauth",
+        provider: "grok",
+      });
+
+      const forcedOauth = await collectProviderAvailability({
+        authBackend: authBackend("local", "free"),
+        checkLocal: false,
+        config: defaultConfig(),
+        env: { ...env, GROK_AUTH_MODE: "oauth", XAI_BASE_URL: "https://gateway.example.test/v1" },
+      });
+      expect(byProvider(forcedOauth.entries).get("grok")).toMatchObject({
+        usable: false,
+        credentialStatus: "unavailable",
+      });
+      expect(byProvider(forcedOauth.entries).get("grok")?.detail).toContain("custom Grok base URL");
     } finally {
       clearXaiOauthCredentials(home);
       rmSync(root, { recursive: true, force: true });

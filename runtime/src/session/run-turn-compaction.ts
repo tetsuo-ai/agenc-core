@@ -508,8 +508,6 @@ async function runAutoCompact(
   // none of those Agent-side effects belong inside the Editor trust boundary.
   // Keep the guard at the common dispatcher so pre-turn, model-downshift,
   // mid-turn, and post-tool compaction all fail closed together.
-  if (ctx.editorInteraction !== undefined) return false;
-
   // The compaction source is the durable history, never the query
   // projection. `messagesForQuery` is what the model sees: attachments are
   // inserted at its head, oversized tool results are swapped for pointers,

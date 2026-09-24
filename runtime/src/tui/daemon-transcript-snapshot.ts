@@ -47,6 +47,9 @@ export function daemonTranscriptSnapshotEvents(
   }
   const seenEventIds = new Set<string>();
   for (const notice of snapshot.events ?? []) {
+    // A denied call is named by the transcript's own assistant text in the
+    // TUI; the notice exists for clients that render the denial as a row.
+    if (notice.type === "approval_denied") continue;
     if (
       typeof notice.eventId !== "string" || notice.eventId.length === 0 ||
       !Number.isSafeInteger(notice.committedSequence) ||

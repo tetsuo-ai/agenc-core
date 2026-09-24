@@ -216,6 +216,9 @@ function transcriptNoticesFromRollout(
   const seenEventIds = new Set<string>();
   const closedTurnIds = new Set<string>();
   let currentTurnId: string | undefined;
+  // The arguments of calls in this epoch, so a denied call can be named on
+  // reopen. Only the bounded identifying fields ever leave this map.
+  const callInputs = new Map<string, { readonly toolName: string; readonly input?: DeniedCallInput }>();
   for (const [index, item] of items.entries()) {
     if (item.type !== "event_msg") continue;
     const event = item.payload;
@@ -252,6 +255,45 @@ function transcriptNoticesFromRollout(
       currentTurnId = event.msg.payload.turnId;
       continue;
     }
+    if (event.msg.type === "tool_call_started") {
+      const input = deniedCallInput(parseJsonObject(event.msg.payload.args));
+      callInputs.set(event.msg.payload.callId, {
+        toolName: event.msg.payload.toolName,
+        ...(input !== undefined ? { input } : {}),
+      });
+      continue;
+    }
+    if (event.msg.type === "request_permissions") {
+      const known = callInputs.get(event.msg.payload.callId);
+      const input = deniedCallInput(event.msg.payload.input);
+      if (known?.input === undefined) {
+        callInputs.set(event.msg.payload.callId, {
+          toolName: event.msg.payload.toolName,
+          ...(input !== undefined ? { input } : {}),
+        });
+      }
+      continue;
+    }
+    if (event.msg.type === "tool_call_completed") {
+      const metadata = event.msg.payload.metadata;
+      if (metadata?.approvalDenied !== true) continue;
+      const call = callInputs.get(event.msg.payload.callId);
+      const toolName = event.msg.payload.toolName ?? call?.toolName;
+      if (toolName === undefined) continue;
+      notices.push({
+        eventId, committedSequence, type: "approval_denied",
+        payload: {
+          ...(currentTurnId !== undefined ? { turnId: currentTurnId } : {}),
+          callId: event.msg.payload.callId,
+          toolName,
+          ...(call?.input !== undefined ? { input: call.input } : {}),
+          stage: metadata.approvalDeniedStage === "sandbox_escalation"
+            ? "sandbox_escalation"
+            : "before_execution",
+        },
+      });
+      continue;
+    }
     const terminal = classifyTurnTerminal(event.msg, {
       expectedTurnId: currentTurnId,
       legacyJournal: true,
@@ -277,16 +319,28 @@ function transcriptNoticesFromRollout(
   return notices;
 }
 
+/**
+ * `activeTurn` names the turn the runtime is executing now. Its client
+ * message id may be unknown to the caller (a turn continued after a daemon
+ * restart); the rollout's own open turn supplies it when the ids match.
+ */
 export function sessionTranscriptV2FromRollout(
   items: readonly RolloutItem[],
   sessionId: string,
   runId: string,
-  activeTurn?: { readonly turnId: string; readonly clientMessageId: string },
+  activeTurn?: { readonly turnId: string; readonly clientMessageId?: string },
 ): SessionTranscriptV2Result {
   const boundary = latestTranscriptBoundary(items);
   const boundaryIndex = boundary?.index ?? -1;
   const boundaryId = boundary?.id ?? "initial";
   let asOfSequence = 0;
+  // The latest runtime-settings event decides plan mode. Reporting it from
+  // this pass spares clients a second walk over the same history: the desktop
+  // used to page the whole run journal through run.replay on every transcript
+  // open just to recover this one boolean, ~45 s on a 22k-event session.
+  let planMode:
+    | { readonly active: boolean; readonly sequence: number }
+    | undefined;
   for (const item of items) {
     if (item.type !== "event_msg") continue;
     const event = item.payload;
@@ -296,6 +350,18 @@ export function sessionTranscriptV2FromRollout(
       event.seq > asOfSequence
     ) {
       asOfSequence = event.seq;
+    }
+    if (
+      event.msg.type === "run_runtime_settings_changed" &&
+      event.seq !== undefined &&
+      Number.isSafeInteger(event.seq) &&
+      typeof event.msg.payload.permissionMode === "string" &&
+      (planMode === undefined || event.seq > planMode.sequence)
+    ) {
+      planMode = {
+        active: event.msg.payload.permissionMode === "plan",
+        sequence: event.seq,
+      };
     }
   }
 
@@ -483,6 +549,13 @@ export function sessionTranscriptV2FromRollout(
     }
   }
 
+  const liveTurn =
+    activeTurn === undefined ||
+    activeTurn.clientMessageId !== undefined ||
+    currentTurnId !== activeTurn.turnId ||
+    currentClientMessageId === undefined
+      ? activeTurn
+      : { turnId: activeTurn.turnId, clientMessageId: currentClientMessageId };
   return {
     schemaVersion: 2,
     sessionId,
@@ -491,9 +564,41 @@ export function sessionTranscriptV2FromRollout(
     asOfSequence,
     messages,
     events: transcriptNoticesFromRollout(items, boundaryIndex, runId),
-    ...(activeTurn !== undefined ? { activeTurn } : {}),
+    ...(liveTurn !== undefined ? { activeTurn: liveTurn } : {}),
     ...(turnResults.length > 0 ? { turnResults } : {}),
+    ...(planMode !== undefined
+      ? {
+          planModeActive: planMode.active,
+          planModeSequence: planMode.sequence,
+        }
+      : {}),
   };
+}
+
+/** The fields that say what a call would act on, for "You denied: ...". */
+const DENIED_CALL_INPUT_KEYS = ["command", "cmd", "file_path", "path", "url", "pattern", "query"] as const;
+const DENIED_CALL_INPUT_MAX_CHARS = 1_000;
+
+type DeniedCallInput = { readonly [key: string]: string };
+
+function deniedCallInput(input: unknown): DeniedCallInput | undefined {
+  if (!isJsonObject(input)) return undefined;
+  const bounded: Record<string, string> = {};
+  for (const key of DENIED_CALL_INPUT_KEYS) {
+    const value = input[key];
+    if (typeof value === "string" && value.length > 0) {
+      bounded[key] = value.slice(0, DENIED_CALL_INPUT_MAX_CHARS);
+    }
+  }
+  return Object.keys(bounded).length > 0 ? bounded : undefined;
+}
+
+function parseJsonObject(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
 }
 
 function maxEventSequence(items: readonly RolloutItem[]): number {

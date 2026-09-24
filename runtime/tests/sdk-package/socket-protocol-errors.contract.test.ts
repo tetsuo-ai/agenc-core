@@ -33,26 +33,31 @@ describe("SDK socket protocol failures", () => {
   let server: Server;
   let peer: Socket;
   let root: string;
+  let socketPath: string;
   let onClose: ReturnType<typeof vi.fn>;
   let onNotification: ReturnType<typeof vi.fn>;
 
-  beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), "agenc-sdk-protocol-"));
-    const socketPath = process.platform === "win32"
-      ? `\\\\.\\pipe\\agenc-sdk-protocol-${randomUUID()}`
-      : join(root, "daemon.sock");
-    server = createServer();
+  async function connect(requestTimeoutMs: number): Promise<void> {
     const accepted = once(server, "connection");
-    server.listen(socketPath);
-    await once(server, "listening");
-    onClose = vi.fn();
-    onNotification = vi.fn();
     transport = await AgencSocketTransport.connect({
-      socketPath, requestTimeoutMs: 5000, onClose, onNotification,
+      socketPath, requestTimeoutMs, onClose, onNotification,
     });
     [peer] = await accepted;
     peer.on("error", () => {});
     peer.resume();
+  }
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "agenc-sdk-protocol-"));
+    socketPath = process.platform === "win32"
+      ? `\\\\.\\pipe\\agenc-sdk-protocol-${randomUUID()}`
+      : join(root, "daemon.sock");
+    server = createServer();
+    server.listen(socketPath);
+    await once(server, "listening");
+    onClose = vi.fn();
+    onNotification = vi.fn();
+    await connect(5000);
   });
 
   afterEach(async () => {
@@ -166,16 +171,28 @@ describe("SDK socket protocol failures", () => {
   });
 
   it("still rejects incomplete-buffer overflow and closes once", async () => {
+    // 16 MiB has to cross a real socket before the overflow can be detected,
+    // which can take seconds on a loaded machine. The requests must outlive
+    // that wait, or their own timeout settles them first with another error.
+    await transport.close();
+    peer.destroy();
+    onClose = vi.fn();
+    onNotification = vi.fn();
+    await connect(120_000);
+    const overflowWait = { timeout: 60_000 } as const;
     const pending = startPendingRequests(transport);
     peer.write("x".repeat(16 * 1024 * 1024 + 1));
-    await vi.waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(onClose).toHaveBeenCalledTimes(1), overflowWait);
     await pending.settled;
-    expect(pending.outcomes.every((outcome) => outcome.status === "rejected")).toBe(true);
-    expect((pending.outcomes[0]?.value as Error).message).toContain("exceeded 16777216 bytes");
-    await vi.waitFor(() => expect(peer.destroyed).toBe(true));
+    expect(pending.outcomes).toHaveLength(3);
+    for (const outcome of pending.outcomes) {
+      expect(outcome.status).toBe("rejected");
+      expect((outcome.value as Error).message).toContain("exceeded 16777216 bytes");
+    }
+    await vi.waitFor(() => expect(peer.destroyed).toBe(true), overflowWait);
     await transport.close();
     expect(onClose).toHaveBeenCalledTimes(1);
-  });
+  }, 180_000);
 
   it("keeps deliberate local closure silent and settles pending work", async () => {
     const pending = startPendingRequests(transport);

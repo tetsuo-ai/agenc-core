@@ -1,6 +1,6 @@
 # Providers reference
 
-Built-in model providers for AgenC **0.17.0**. Source of truth:
+Built-in model providers for AgenC **0.18.0**. Source of truth:
 `runtime/src/llm/registry/provider-info.ts`
 (`BUILT_IN_PROVIDER_DEFINITIONS`). Each row owns the display name, defaults,
 ordered credential and endpoint environment ingress names, and first-run
@@ -106,11 +106,18 @@ catalog for Grok 4.6 exposes:
 | Reasoning effort | `low`, `medium`, `high`, `xhigh`; model default `high` |
 | Standard token rates below 200k prompt tokens | $2.00 / 1M input, $0.50 / 1M cached input, $6.00 / 1M output |
 
+| Selectable model | Context | Input | Reasoning effort | Base rates per 1M input / cached / output |
+| --- | --- | --- | --- | --- |
+| `grok-4.7` | 500,000 | text and image | `low`, `medium`, `high`, `xhigh`; default `high` | $2 / $0.50 / $6 |
+
+Grok 4.7 preserves encrypted reasoning on Responses resends and durable history.
+The session default remains `grok-4.6`.
+
 `grok-4.5` remains a selectable 500k-context catalog entry with the same input
 modalities and runtime features. Its short-context cached-input rate is
 $0.30 / 1M, versus $0.50 / 1M for Grok 4.6; it supports
 `low`/`medium`/`high` reasoning and is still the managed OpenRouter paid
-default. The xAI reasoning gate is fail-closed: Grok 4.3, Grok 4.5, Grok 4.6,
+default. The xAI reasoning gate is fail-closed: Grok 4.3, Grok 4.5, Grok 4.6, Grok 4.7,
 and the documented 4.20 multi-agent family may receive the provider parameter;
 unknown variants have it stripped instead of inheriting support from a name
 prefix. Grok 4.3's catalog default effort is `low`; Grok 4.5 and Grok 4.6
@@ -134,7 +141,7 @@ they run only through the Grok Build CLI ACP path. See
 | --- | --- | --- | --- | --- | --- | --- |
 | `grok` | xAI Grok | `grok-4.6` | `https://api.x.ai/v1` | `XAI_API_KEY`, `GROK_API_KEY` | `XAI_BASE_URL`, `GROK_BASE_URL` | `api-key` |
 | `openai` | OpenAI | `gpt-5` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `OPENAI_BASE_URL`, `OPENAI_API_BASE` | `api-key` |
-| `anthropic` | Anthropic | `claude-opus-4-7` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL` | `api-key` |
+| `anthropic` | Anthropic | `claude-opus-5-5` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL` | `api-key` |
 | `ollama` | Ollama | `llama3.3` | `http://localhost:11434` | _(none)_ | `OLLAMA_BASE_URL` | `local` |
 | `lmstudio` | LM Studio | `gpt-4o-mini` | `http://localhost:1234/v1` | `LMSTUDIO_API_KEY` (optional) | `LMSTUDIO_BASE_URL` | `local` |
 | `openai-compatible` | OpenAI-compatible | `local-model` | `http://localhost:8000/v1` | `OPENAI_COMPATIBLE_API_KEY`, `OPENAI_API_KEY` | `OPENAI_COMPATIBLE_BASE_URL`, `OPENAI_BASE_URL`, `OPENAI_API_BASE` | `local` |
@@ -264,11 +271,17 @@ reasoning provider slug.
 
 Muse Spark is registered with a 1,048,576-token context window and a
 131,072-token maximum output. Its supported reasoning levels are `minimal`,
-`low`, `medium`, `high`, and `xhigh` (default `medium`); `none` and `max` are
-rejected by the API. The chat models accept image input, JSON-schema structured
+`low`, `medium`, `high`, and `xhigh` (default `medium`); standard-tier
+`muse-spark-1.3` also accepts `max`. The API rejects `none`, and `max` is not
+available on the other registered models. See Meta's
+[reasoning guide](https://dev.meta.ai/docs/reasoning). The chat models accept image input, JSON-schema structured
 output, and parallel function calls. Meta accepts only `tool_choice: "auto"`
 and rejects `stop`, so AgenC normalizes those controls before sending a
-request. Exact per-token pricing is not published in the authoritative
+request. Streams must include a terminal `finish_reason`; malformed or cut
+streams fail instead of being accepted as completed answers, and tool calls
+require `finish_reason: "tool_calls"` before dispatch. This follows Meta's
+[Chat Completions contract](https://dev.meta.ai/docs/protocols/chat-completions).
+Exact per-token pricing is not published in the authoritative
 provider documentation, so AgenC reports the cost as unknown instead of
 treating its conservative fallback estimate as authoritative.
 
@@ -790,12 +803,23 @@ single "Fast" dial. What it does depends on the provider:
 
 | Provider | Wire | Models | Price | Notes |
 | --- | --- | --- | --- | --- |
-| OpenAI | `service_tier: "priority"` on chat completions and Responses (OpenAI also accepts `"fast"`, its new name for the same tier) | GPT-6 Astra, GPT-5.6 Sol/Terra/Luna, GPT-5.5, 5.4, 5.4 Mini, 5.3 Codex, 5.2, 5, plus the GPT-4.1/4o/o3/o4-mini rows on the pricing page | 2x standard on GPT-5.6 and later; see the pricing page per model | The response reports the served tier; requests over the fast-mode rate limit fall back per OpenAI's rules. |
-| Anthropic | `speed: "fast"` plus the `anthropic-beta: fast-mode-2026-02-01` header | Claude Opus 5, Claude Opus 4.8 only | $10 input / $50 output per MTok (2x) | Research preview: the organization needs access from Anthropic; without it the API returns an error. `usage.speed` reports `fast` or `standard`; AgenC warns when a request asked for fast and was served standard. Switching speeds invalidates the prompt cache. Not sent to other Claude models, which reject the field. |
+| OpenAI | `service_tier: "priority"` on chat completions and Responses (OpenAI also accepts `"fast"`, its new name for the same tier) | GPT-6 Astra/Sol/Luna, GPT-5.6 Sol/Terra/Luna, GPT-5.5, 5.4, 5.4 Mini, 5.3 Codex, 5.2, 5, plus the GPT-4.1/4o/o3/o4-mini rows on the pricing page | 2x standard on GPT-5.6 and later; see the pricing page per model | The response reports the served tier; requests over the fast-mode rate limit fall back per OpenAI's rules. |
+| Anthropic | `speed: "fast"` plus the `anthropic-beta: fast-mode-2026-02-01` header | Claude Opus 5.5, Claude Opus 5, Claude Opus 4.8 only | 2x standard: $8 input / $40 output per MTok on Opus 5.5, $10 / $50 on Opus 5 and 4.8 | Research preview: the organization needs access from Anthropic; without it the API returns an error. `usage.speed` reports `fast` or `standard`; AgenC warns when a request asked for fast and was served standard. Switching speeds invalidates the prompt cache. Not sent to other Claude models, which reject the field. |
 | Cerebras, Azure OpenAI | `service_tier` passthrough | per provider | per provider | Documented `service_tier` support; other chat-completions providers have the field stripped. |
 
 `flex` is OpenAI's lower-priority tier and is only sent to providers that
 document `service_tier`.
+
+OpenAI cost follows the tier the response reports it served (`priority` or
+`fast` is Fast, `default` a downgraded Fast request), the long-context rates
+when one request's input passes 272K tokens, and cache writes (1.25x input on
+GPT-5.6 and later). Under a hard USD cap a Fast request is reserved at Fast
+rates, a reservation that could pass 272K input is priced at the long-context
+rates, and a call without Fast sends `service_tier: "default"` so a
+project-level Fast default cannot apply. A Fast request on a model or context
+length with no published Fast price (Pro and nano models, GPT-5.5 and 5.4
+above 272K) is refused under a hard USD cap with
+`unpriced_service_tier_under_hard_cap`.
 
 ## Zero data retention
 

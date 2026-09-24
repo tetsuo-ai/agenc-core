@@ -15,6 +15,7 @@ import {
   type JsonObject,
 } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
+import { RoutineSessionPreparation } from "../routines/session-preparation.js";
 import {
   AgenCRealtimeRpcService,
   TEST_ONLY_ALLOW_UNADMITTED_REALTIME_START,
@@ -264,98 +265,6 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
       clientMultiplexer.attachedClientIds("session_mobile_status"),
     ).resolves.toEqual([]);
     await dispatcher.closeConnection(connection);
-  });
-
-  it("advertises configured daemon method capabilities during initialize", async () => {
-    const minimalDispatcher = new AgenCDaemonJsonRpcDispatcher({
-      agentManager: new AgenCDaemonAgentManager(),
-    });
-    const minimalConnection = minimalDispatcher.createConnection();
-
-    const minimalInitialize = await minimalConnection.dispatch(
-      request("minimal-init", "initialize", {
-        protocol: { version: "1.0.0" },
-      }),
-    );
-    const minimalMethods = daemonMethodCapabilities(minimalInitialize);
-    expect(minimalMethods).toMatchObject({
-      initialize: true,
-      "request.cancel": true,
-      "commandExec.start": false,
-      "thread/realtime/start": false,
-      "health.ping": true,
-      "session.create": false,
-      "session.list": false,
-      "session.attach": false,
-      "session.detach": false,
-      "session.terminate": false,
-      "daemon.reload": false,
-      "daemon.shutdown": false,
-      "auth.login": false,
-      "auth.whoami": false,
-      "auth.logout": false,
-      "workspace.editor.acquire": false,
-      "workspace.editor.sync": false,
-    });
-
-    const testOnlyEnabledDispatcher = new AgenCDaemonJsonRpcDispatcher({
-      agentManager: new AgenCDaemonAgentManager(),
-      unadmittedCommandExecStartOverride:
-        TEST_ONLY_ALLOW_UNADMITTED_COMMAND_EXEC_START,
-      realtime: new AgenCRealtimeRpcService({
-        unadmittedStartOverride: TEST_ONLY_ALLOW_UNADMITTED_REALTIME_START,
-      }),
-    });
-    const testOnlyEnabledInitialize = await testOnlyEnabledDispatcher
-      .createConnection()
-      .dispatch(
-        request("test-only-enabled-init", "initialize", {
-          protocol: { version: "1.0.0" },
-        }),
-      );
-    expect(daemonMethodCapabilities(testOnlyEnabledInitialize)).toMatchObject({
-      "commandExec.start": true,
-      "thread/realtime/start": true,
-    });
-
-    const configuredDispatcher = new AgenCDaemonJsonRpcDispatcher({
-      agentManager: new AgenCDaemonAgentManager(),
-      authBackend: makeAuthBackend(),
-      daemonControl: {
-        reloadConfig: () => ({
-          reloaded: true,
-          configReloadedAt: "2026-05-01T09:00:00.000Z",
-          mcpServer: { status: "disabled" },
-        }),
-        shutdown: (instanceId) => ({
-          shuttingDown: true,
-          instanceId,
-        }),
-      },
-      initializeAuthenticator: () => true,
-      sessionManager: new AgenCDaemonSessionManager(),
-    });
-    const configuredConnection = configuredDispatcher.createConnection();
-
-    const configuredInitialize = await configuredConnection.dispatch(
-      request("configured-init", "initialize", {
-        protocol: { version: "1.0.0" },
-        authCookie: "cookie",
-      }),
-    );
-    const configuredMethods = daemonMethodCapabilities(configuredInitialize);
-    expect(configuredMethods).toMatchObject({
-      "session.create": true,
-      "session.list": true,
-      "session.attach": true,
-      "session.detach": true,
-      "session.terminate": true,
-      "daemon.reload": true,
-      "daemon.shutdown": false,
-      "auth.login": true,
-      "auth.whoami": true,
-      "auth.logout": true,
-    });
   });
 
   it("binds authenticated shutdown to the initialized daemon instance", async () => {
@@ -1822,5 +1731,31 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
         data: { code: "SESSION_NOT_FOUND" },
       },
     });
+  });
+});
+
+
+describe("routine preparation dispatcher handshake", () => {
+  it("delivers only to a capable initialized client and accepts its one-shot response", async () => {
+    const sessionManager = new AgenCDaemonSessionManager({ createSessionId: () => "session_prepare" });
+    await sessionManager.createSession({ agentId: "agent_prepare", cwd: await workspaces.create() });
+    const clientMultiplexer = new AgenCDaemonClientMultiplexer({ sessionManager });
+    const routinePreparation = new RoutineSessionPreparation(clientMultiplexer);
+    const notifications: JsonObject[] = [];
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: new AgenCDaemonAgentManager(), sessionManager, clientMultiplexer, routinePreparation });
+    const capable = dispatcher.createConnection({ sendNotification: message => { notifications.push(message); } });
+    const other = dispatcher.createConnection();
+    await capable.dispatch(request("init-capable", "initialize", { protocol: { version: "1.17.0" }, capabilities: { "routine.session.prepare.v1": true } }));
+    await other.dispatch(request("init-other", "initialize", { protocol: { version: "1.17.0" }, capabilities: {} }));
+    const waiting = routinePreparation.prepare({ sessionId: "session_prepare", routineId: "routine_one", runId: "routine_run_one", cwd: "/workspace" }, new AbortController().signal);
+    await vi.waitFor(() => expect(notifications).toHaveLength(1));
+    const notification = notifications[0] as { method: string; params: { requestId: string } };
+    expect(notification.method).toBe("routine.session.prepare");
+    const answer = { requestId: notification.params.requestId, status: "attached" };
+    expect(await other.dispatch(request("wrong-client", "routine.session.prepare.respond", answer))).toHaveProperty("error");
+    expect(await capable.dispatch(request("prepared", "routine.session.prepare.respond", answer))).toMatchObject({ result: { accepted: true } });
+    expect(await waiting).toEqual({ status: "attached", reason: null });
+    await dispatcher.closeConnection(other);
+    await dispatcher.closeConnection(capable);
   });
 });

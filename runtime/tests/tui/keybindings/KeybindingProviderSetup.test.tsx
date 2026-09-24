@@ -81,19 +81,6 @@ function parseInputEvent(sequence: string): InputEvent {
 }
 
 describe("KeybindingProviderSetup", () => {
-  test("leaves destructive confirmation letters alone while keeping the explicit diff chord", () => {
-    const bindings = parseBindings(DEFAULT_BINDINGS);
-    for (const character of "delete") {
-      expect(resolveKeyWithChordState(character, key(), ["Confirmation"], bindings, null).type).toBe("none");
-    }
-    const prefix = resolveKeyWithChordState("w", key({ ctrl: true }), ["Confirmation"], bindings, null);
-    expect(prefix.type).toBe("chord_started");
-    if (prefix.type !== "chord_started") throw new Error("expected the full-diff chord prefix");
-    expect(resolveKeyWithChordState("d", key(), ["Confirmation"], bindings, prefix.pending)).toEqual({
-      type: "match",
-      action: "workbench:openDiff",
-    });
-  });
 
   test("summarizes warning counts without upstream utility dependencies", () => {
     expect(
@@ -161,50 +148,6 @@ describe("KeybindingProviderSetup", () => {
     expect(completionEvent.stopped).toBe(true);
     expect(pendingChordRef.current).toBeNull();
     expect(invoked).toBe(1);
-  });
-
-  test("consumes completed workbench chords even before an action handler is registered", () => {
-    const bindings = parseBindings([
-      {
-        context: "Workbench",
-        bindings: {
-          "ctrl+w d": "workbench:openDiff",
-        },
-      },
-    ]);
-    const pendingChordRef = { current: null as ParsedKeystroke[] | null };
-    const captured: string[] = [];
-    const handler = createChordInputHandler({
-      bindings,
-      pendingChordRef,
-      setPendingChord: pending => {
-        pendingChordRef.current = pending;
-      },
-      activeContexts: new Set(["Workbench"]),
-      handlerRegistryRef: { current: new Map() },
-      inputCaptureRegistryRef: {
-        current: new Set([
-          {
-            context: "Workbench",
-            handler: input => {
-              captured.push(input);
-              return true;
-            },
-          },
-        ]),
-      },
-    });
-
-    const prefixEvent = inputEvent();
-    handler("w", key({ ctrl: true }), prefixEvent);
-    expect(prefixEvent.stopped).toBe(true);
-
-    const completionEvent = inputEvent();
-    handler("d", key(), completionEvent);
-
-    expect(completionEvent.stopped).toBe(true);
-    expect(pendingChordRef.current).toBeNull();
-    expect(captured).toEqual([]);
   });
 
   test("runs active input captures before child input handlers", () => {

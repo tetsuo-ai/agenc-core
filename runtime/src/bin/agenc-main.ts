@@ -36,7 +36,11 @@ import { isAbsolute, resolve } from "node:path";
 import { cwd as processCwd } from "node:process";
 import { isDeepStrictEqual } from "node:util";
 import { VERSION } from "../index.js";
-import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
+import {
+  APPROVAL_DENIED_ABORT_REASON,
+  classifyTurnTerminal,
+  type TurnTerminal,
+} from "../contracts/turn-terminal.js";
 import { applyBestEffortPreMainProcessHardening } from "../sandbox/hardening/index.js";
 import {
   classifyCLI,
@@ -77,7 +81,6 @@ import {
 } from "../session/runtime-options.js";
 import { assertCanonicalEnvironmentIngress } from "../config/environment-ingress.js";
 import { runTurn } from "../session/run-turn.js";
-import { editorInteractionSystemPrompt } from "../session/editor-interaction.js";
 import type { Terminal } from "../session/turn-state.js";
 import {
   hasSupportedFileIdentity,
@@ -86,6 +89,9 @@ import {
 } from "../session/session-store.js";
 import { runSlashCommand } from "./slash.js";
 import type { SlashCommandAppStateBridge } from "../commands/types.js";
+import { goalKickoffPrompt, goalSetRequestParams } from "../commands/goal.js";
+import type { ResolveDaemonToolCallParams } from "../commands/resolve.js";
+import { parseGoalCommand } from "../goal/intake.js";
 import type { ProviderModelSelectionOutcome } from "../contracts/provider-model-selection.js";
 import { ConfigStore } from "../config/store.js";
 import {
@@ -169,6 +175,7 @@ import type {
   JsonObject,
   MessageContentBlock,
   MessageStreamResult,
+  SessionGoalSetRequest,
 } from "../app-server/protocol/index.js";
 import {
   ensureAgenCDaemonAutostart,
@@ -1079,14 +1086,8 @@ export async function* runSingleTurn(
     deferPermissionInstructions: opts.ctx.permissionInstructionsDeferred === true,
   });
 
-  const editorPolicyPrompt =
-    opts.ctx.editorInteraction === undefined
-      ? ""
-      : editorInteractionSystemPrompt(opts.ctx.editorInteraction);
   const iter = drive(opts.session, opts.ctx, opts.input, {
-    systemPrompt: [assembled.text, editorPolicyPrompt]
-      .filter((part) => part.length > 0)
-      .join("\n\n"),
+    systemPrompt: assembled.text,
     systemPromptReplacesBase: true,
     displayUserMessage: opts.displayInput,
     userStopGenerationToRelease: opts.userStopGenerationToRelease,
@@ -1266,31 +1267,15 @@ function installTuiSessionContract(params: {
         prompt: string | readonly LLMContentPart[],
         opts: {
           readonly displayInput?: string | null;
-          readonly editorInteraction?: SessionSubmitOptions["editorInteraction"];
         } = {},
       ): Promise<void> => {
-        const preparedPrompt =
-          opts.editorInteraction === undefined
-            ? await prepareUserPromptForTurn({
-                session: params.session,
-                configStore: params.configStore,
-                input: prompt,
-              })
-            : {
-                blocked: false as const,
-                input: prompt,
-                displayInput:
-                  typeof prompt === "string" ? prompt : opts.displayInput,
-              };
+        const preparedPrompt = await prepareUserPromptForTurn({
+          session: params.session,
+          configStore: params.configStore,
+          input: prompt,
+        });
         if (preparedPrompt.blocked) return;
-        const baseCtx = params.session.newDefaultTurn();
-        const ctx =
-          opts.editorInteraction === undefined
-            ? baseCtx
-            : {
-                ...baseCtx,
-                editorInteraction: opts.editorInteraction,
-              };
+        const ctx = params.session.newDefaultTurn();
         // The task-dispatch subsystem (see session/tasks.ts) owns the
         // activeTurn lifecycle now. `runTurnKernel` calls
         // `session.spawnTask` at entry (which aborts any prior turn
@@ -1329,8 +1314,7 @@ function installTuiSessionContract(params: {
         completedPromptTurn = true;
         autonomousKeepalive.setContextBlocked(
           lastTurnStopReason === "error" ||
-            lastTurnStopReason === "compact_failed" ||
-            lastTurnStopReason === "editor_request_failed",
+            lastTurnStopReason === "compact_failed",
         );
       };
 
@@ -1436,9 +1420,6 @@ function installTuiSessionContract(params: {
             : isAutonomousTick
               ? null
               : undefined,
-        ...(submitOpts?.editorInteraction !== undefined
-          ? { editorInteraction: submitOpts.editorInteraction }
-          : {}),
       });
       if (shouldScheduleNextAutonomousTick()) {
         autonomousKeepalive.scheduleNext();
@@ -1516,6 +1497,8 @@ type DaemonOneShotFinalStatus = {
   readonly message?: string;
   /** `turn_failed` code (`compact_failed`, `max_turns`, …); absent for run death. */
   readonly failureCode?: string;
+  /** The turn ended because a permission request was denied. */
+  readonly approvalDenied?: true;
 };
 
 type OneShotJsonResult = {
@@ -1856,20 +1839,35 @@ function daemonOneShotFinalStatus(
   const notificationTurnId = typeof params?.turnId === "string" ? params.turnId : undefined;
   if (expectedTurnId !== undefined && notificationTurnId !== undefined && notificationTurnId !== expectedTurnId) return null;
   if (event.method === "event.agent_status" && params !== null) {
+    // The projected turn terminal is the authority: an idle agent says
+    // nothing about whether its turn completed or was stopped.
+    const turnEvent = params.turnEvent;
+    if (isJsonRecord(turnEvent) && typeof turnEvent.type === "string") {
+      const embedded = classifyTurnTerminal({
+        type: turnEvent.type,
+        payload: turnEvent.payload,
+        turnId: notificationTurnId,
+      }, {
+        expectedTurnId: expectedTurnId ?? notificationTurnId,
+      });
+      if (embedded !== undefined) return oneShotStatusForTerminal(embedded);
+    }
     const runStatus =
       typeof params.runStatus === "string" ? params.runStatus : undefined;
     const status =
       typeof params.status === "string" ? params.status : undefined;
     const message =
       typeof params.message === "string" ? params.message : undefined;
-    if (runStatus === "completed" || status === "idle") {
-      return { code: 0, ...(message !== undefined ? { message } : {}) };
-    }
-    if (runStatus === "stopped" || status === "stopped") {
-      return { code: 130, ...(message !== undefined ? { message } : {}) };
-    }
-    if (runStatus === "errored" || status === "error") {
-      return { code: 1, ...(message !== undefined ? { message } : {}) };
+    const code =
+      runStatus === "stopped" ? 130
+        : runStatus === "errored" ? 1
+          : runStatus === "completed" ? 0
+            : status === "stopped" ? 130
+              : status === "error" ? 1
+                : status === "idle" ? 0
+                  : undefined;
+    if (code !== undefined) {
+      return oneShotStatusForRpcTerminal({ code, ...(message !== undefined ? { message } : {}) });
     }
   }
   const transcriptEvent = daemonNestedTranscriptEvent(event);
@@ -1881,10 +1879,37 @@ function daemonOneShotFinalStatus(
   }, {
     expectedTurnId: expectedTurnId ?? notificationTurnId,
   });
-  return terminal === undefined ? null : {
+  return terminal === undefined ? null : oneShotStatusForTerminal(terminal);
+}
+
+function oneShotStatusForTerminal(terminal: TurnTerminal): DaemonOneShotFinalStatus {
+  // A denial ends the turn as an abort, but it is not an interrupt: the run
+  // reports it as a denied tool, with no reason code as its message.
+  if (terminal.outcome === "aborted" && terminal.message === APPROVAL_DENIED_ABORT_REASON) {
+    return { code: terminal.code, approvalDenied: true };
+  }
+  return {
     code: oneShotExitCodeForTerminal(terminal),
     ...(terminal.message !== undefined ? { message: terminal.message } : {}),
     ...(terminal.outcome === "errored" ? { failureCode: terminal.failureCode } : {}),
+  };
+}
+
+/**
+ * A terminal known only by its exit code and message: the `message.stream`
+ * RPC result, or a status without its turn event. The denial is recognized
+ * there too, so the run's outcome does not depend on which arrives first.
+ */
+function oneShotStatusForRpcTerminal(terminal: {
+  readonly code: number;
+  readonly message?: string;
+}): DaemonOneShotFinalStatus {
+  if (terminal.code === 130 && terminal.message === APPROVAL_DENIED_ABORT_REASON) {
+    return { code: terminal.code, approvalDenied: true };
+  }
+  return {
+    code: terminal.code,
+    ...(terminal.message !== undefined ? { message: terminal.message } : {}),
   };
 }
 
@@ -2101,7 +2126,11 @@ async function awaitDaemonOneShotRun(params: {
         // from a tool-blocked giveup, and surface a clear stderr marker. A run
         // that denied nothing keeps its normal exit code, so genuine no-tool
         // answers still exit 0 and genuine daemon errors still exit non-zero.
-        if (finalStatus.code === 0 && deniedPermissionRequestIds.size > 0) {
+        // A turn the denial itself ended is the same tool-blocked outcome.
+        if (
+          (finalStatus.code === 0 && deniedPermissionRequestIds.size > 0) ||
+          finalStatus.approvalDenied === true
+        ) {
           process.stderr.write(`${ONE_SHOT_TOOL_DENIED_MARKER}\n`);
           await writeFinalResult({
             exitCode: ONE_SHOT_TOOL_DENIED_EXIT_CODE,
@@ -2257,10 +2286,7 @@ async function awaitDaemonOneShotRun(params: {
                 return;
               }
               return finalize({
-                code: result.terminal.code,
-                ...(result.terminal.message !== undefined
-                  ? { message: result.terminal.message }
-                  : {}),
+                ...oneShotStatusForRpcTerminal(result.terminal),
                 ...(lastFailureCode !== undefined
                   ? { failureCode: lastFailureCode }
                   : {}),
@@ -2321,6 +2347,86 @@ function oneShotCompactFailedContinuation(params: {
   };
 }
 
+/**
+ * `agenc -p "/goal <objective> [flags]"`. Print mode has no slash dispatcher,
+ * so the one goal action that makes sense without a person attached, starting
+ * a goal, is recognized here and parsed by the same intake as the TUI.
+ */
+export type PrintModeGoal =
+  | { readonly kind: "none" }
+  | {
+      readonly kind: "set";
+      readonly request: SessionGoalSetRequest;
+      readonly kickoff: string;
+    }
+  | { readonly kind: "error"; readonly message: string };
+
+export function parsePrintModeGoal(prompt: string): PrintModeGoal {
+  const match = /^\s*\/goal(?:\s+([\s\S]*))?$/u.exec(prompt);
+  if (match === null) return { kind: "none" };
+  const parsed = parseGoalCommand(match[1] ?? "");
+  if (parsed.kind === "error") return { kind: "error", message: parsed.message };
+  if (parsed.kind !== "set") {
+    return {
+      kind: "error",
+      message: `print mode can only start a goal: /goal <objective> [flags]. Use the TUI for /goal ${parsed.kind}.`,
+    };
+  }
+  return {
+    kind: "set",
+    request: goalSetRequestParams(parsed.request),
+    kickoff: goalKickoffPrompt(parsed.request),
+  };
+}
+
+type PrintModeGoalSet = Extract<PrintModeGoal, { kind: "set" }>;
+
+/** Set the goal before the first turn, so no answer can outrun it. */
+async function setPrintModeGoal(
+  daemonClient: OneShotContinueDaemonClient,
+  sessionId: string,
+  goal: PrintModeGoalSet,
+  signal: AbortSignal,
+): Promise<boolean> {
+  const result = await daemonClient.request(
+    "session.goal",
+    { sessionId, action: "set", request: goal.request },
+    { signal },
+  );
+  if (!result.ok) {
+    process.stderr.write(`agenc: ${result.message ?? "the goal was refused"}\n`);
+  }
+  return result.ok;
+}
+
+/**
+ * A goal run succeeds only when the goal was met. Budget, stall, impossible
+ * and blocked are reported with the reviewer's reason and exit 1, so a script
+ * can tell "the agent stopped" from "the goal holds".
+ */
+async function printModeGoalExitCode(
+  daemonClient: OneShotContinueDaemonClient,
+  sessionId: string,
+  runCode: number,
+  signal: AbortSignal,
+): Promise<number> {
+  if (runCode !== 0) return runCode;
+  const { goal } = await daemonClient.request(
+    "session.goal",
+    { sessionId, action: "get" },
+    { signal },
+  );
+  if (goal === undefined) {
+    process.stderr.write("agenc: the goal's final state is unavailable\n");
+    return 1;
+  }
+  const reason = goal.pauseReason ?? goal.lastVerdict?.reason;
+  process.stderr.write(
+    `agenc: goal ${goal.status.replace("_", " ")} ${goal.rounds === 0 ? "on the first check" : `after ${goal.rounds} ${goal.rounds === 1 ? "round" : "rounds"}`}${reason !== undefined ? `: ${reason}` : ""}\n`,
+  );
+  return goal.status === "met" ? 0 : 1;
+}
+
 async function runDaemonOneShotPrompt(params: {
   readonly deps: AgenCDaemonCliDeps;
   readonly prompt: string;
@@ -2335,6 +2441,7 @@ async function runDaemonOneShotPrompt(params: {
   readonly addDirs?: readonly string[];
   readonly initialContent?: string | readonly MessageContentBlock[];
   readonly permissionMode?: AgentCreateParams["permissionMode"];
+  readonly goal?: PrintModeGoalSet;
   readonly signal: AbortSignal;
 }): Promise<number> {
   if (params.signal.aborted) {
@@ -2372,9 +2479,13 @@ async function runDaemonOneShotPrompt(params: {
       ...(params.addDirs !== undefined
         ? { addDirs: [...params.addDirs] }
         : {}),
-      ...(params.initialContent !== undefined
-        ? { initialContent: params.initialContent }
-        : {}),
+      // A goal run provisions the session first: the goal must be set before
+      // the kickoff turn can produce an answer.
+      ...(params.goal !== undefined
+        ? { deferInitialTurn: true }
+        : params.initialContent !== undefined
+          ? { initialContent: params.initialContent }
+          : {}),
       ...(params.permissionMode !== undefined
         ? { permissionMode: params.permissionMode }
         : {}),
@@ -2413,6 +2524,13 @@ async function runDaemonOneShotPrompt(params: {
         `daemon agent has no attached session: ${started.agentId}`,
       );
     }
+    const goal = params.goal;
+    if (
+      goal !== undefined &&
+      !(await setPrintModeGoal(daemonClient, sessionId, goal, params.signal))
+    ) {
+      return 1;
+    }
 
     const run = await awaitDaemonOneShotRun({
       daemonClient,
@@ -2423,6 +2541,21 @@ async function runDaemonOneShotPrompt(params: {
       ...(params.runtimeOptions.deadlineAt !== undefined
         ? { deadlineAt: params.runtimeOptions.deadlineAt }
         : {}),
+      ...(goal !== undefined
+        ? {
+            startTurn: (streamId: string) =>
+              daemonClient.request(
+                "message.stream",
+                {
+                  sessionId,
+                  content: goal.kickoff,
+                  clientMessageId: randomUUID(),
+                  streamId,
+                },
+                { signal: params.signal },
+              ),
+          }
+        : {}),
       ...oneShotCompactFailedContinuation({
         daemonClient,
         sessionId,
@@ -2432,7 +2565,9 @@ async function runDaemonOneShotPrompt(params: {
     });
     cancelled = run.cancelled;
     completed = !cancelled;
-    return run.code;
+    return goal !== undefined && !cancelled
+      ? await printModeGoalExitCode(daemonClient, sessionId, run.code, params.signal)
+      : run.code;
   } catch (error) {
     if (params.signal.aborted) cancelled = true;
     throw error;
@@ -2629,6 +2764,7 @@ async function runDaemonOneShotContinue(params: OneShotContinueResumeOptions & {
   readonly continueSession: OneShotContinueSession;
   readonly outputFormat?: OneShotOutputFormat;
   readonly initialContent?: string | readonly MessageContentBlock[];
+  readonly goal?: PrintModeGoalSet;
   readonly signal: AbortSignal;
 }): Promise<number> {
   if (params.signal.aborted) {
@@ -2683,7 +2819,14 @@ async function runDaemonOneShotContinue(params: OneShotContinueResumeOptions & {
     );
     const sessionId = attachment.sessionIds[0] ?? acquired.descriptor.sessionId;
     const client = daemonClient;
-    const content = params.initialContent ?? params.prompt;
+    const goal = params.goal;
+    if (
+      goal !== undefined &&
+      !(await setPrintModeGoal(client, sessionId, goal, params.signal))
+    ) {
+      return 1;
+    }
+    const content = goal?.kickoff ?? params.initialContent ?? params.prompt;
     const run = await awaitDaemonOneShotRun({
       daemonClient,
       sessionId,
@@ -2708,7 +2851,9 @@ async function runDaemonOneShotContinue(params: OneShotContinueResumeOptions & {
     });
     cancelled = run.cancelled;
     completed = !cancelled;
-    return run.code;
+    return goal !== undefined && !cancelled
+      ? await printModeGoalExitCode(client, sessionId, run.code, params.signal)
+      : run.code;
   } catch (error) {
     if (params.signal.aborted) {
       cancelled = true;
@@ -2881,6 +3026,12 @@ export async function oneShotCLI(
     // to the daemon-accepted subset (agent.create rejects dontAsk/auto); other
     // user-addressable modes fall back to the unattended default as before.
     const oneShotPermissionMode = startupPermissionMode(startupCliFlags);
+    const printGoal = parsePrintModeGoal(resolvedUserMessage);
+    if (printGoal.kind === "error") {
+      process.stderr.write(`agenc: ${printGoal.message}\n`);
+      return 2;
+    }
+    const goalOption = printGoal.kind === "set" ? { goal: printGoal } : {};
     if (continueSession !== undefined) {
       // Headless -c / --resume: the prompt is one more turn of a prior session.
       // Like the TUI resume path, only explicit startup overrides travel; the
@@ -2913,6 +3064,7 @@ export async function oneShotCLI(
         ...(oneShotPermissionMode !== undefined
           ? { permissionMode: oneShotPermissionMode }
           : {}),
+        ...goalOption,
         signal: lifecycleAbort.signal,
       });
     }
@@ -2938,6 +3090,7 @@ export async function oneShotCLI(
       ...(oneShotPermissionMode !== undefined
         ? { permissionMode: oneShotPermissionMode }
         : {}),
+      ...goalOption,
       signal: lifecycleAbort.signal,
     });
   } catch (error) {
@@ -3306,29 +3459,9 @@ function messageContentBlocksFromUnknown(
   });
 }
 
-type DeferredWorkspaceEditorSessionSurface = Pick<
+type TuiSessionShape = Pick<
   AgenCTuiBridgeSession,
-  | "acquireWorkspaceEditor"
-  | "syncWorkspaceEditor"
-  | "refreshWorkspaceEditorStaleAuthority"
-  | "heartbeatWorkspaceEditor"
-  | "releaseWorkspaceEditor"
-  | "reserveWorkspaceEditorTopology"
-  | "completeWorkspaceEditorTopology"
-  | "releaseWorkspaceEditorTopology"
-  | "getWorkspaceEditorProposal"
-  | "getWorkspaceEditorProposalStatus"
-  | "applyWorkspaceEditorProposal"
-  | "discardWorkspaceEditorProposal"
-  | "listWorkspaceEditorChanges"
-  | "predictEditorCode"
-  | "cancelEditorPrediction"
-  | "reportEditorPredictionFeedback"
->;
-
-type TuiSessionShape = DeferredWorkspaceEditorSessionSurface & Pick<
-  AgenCTuiBridgeSession,
-  "listDaemonSessionProcesses" | "stopDaemonSessionProcess"
+  "listDaemonSessionProcesses" | "stopDaemonSessionProcess" | "updateDaemonSessionGoal"
 > & {
   readonly workflowApprovalControls?: WorkflowApprovalControls;
   executeShellCommand?: AgenCTuiBridgeSession["executeShellCommand"];
@@ -3354,14 +3487,9 @@ type TuiSessionShape = DeferredWorkspaceEditorSessionSurface & Pick<
   emitPhaseEvent?: (event: PhaseEvent) => void;
   cancelActiveTurn?: (reason?: string) => Promise<void>;
   clearDaemonSession?: () => Promise<void>;
-  resolveDaemonToolCall?: (params: {
-    readonly toolCallId: string;
-    readonly disposition:
-      "confirmed_committed" | "confirmed_no_effect" | "remains_unknown";
-    readonly evidenceRef: string;
-    readonly evidenceSha256: string;
-    readonly reviewer?: string;
-  }) => Promise<unknown>;
+  resolveDaemonToolCall?: (
+    params: ResolveDaemonToolCallParams,
+  ) => Promise<unknown>;
   getDaemonSessionSnapshot?: () => Promise<unknown>;
   partialCompactFromMessage?: (params: {
     readonly messageOrdinal: number;
@@ -3508,7 +3636,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
   type ConnectedDaemonTuiClient = Awaited<
     ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
   >;
-  type WorkspaceEditorControlClient = Omit<
+  type DaemonControlClient = Omit<
     ConnectedDaemonTuiClient,
     "request"
   > & {
@@ -3518,8 +3646,8 @@ async function createDeferredDaemonPromptTuiSession(params: {
       options?: { readonly signal?: AbortSignal },
     ): Promise<AgenCDaemonKnownResultByMethod[Method]>;
   };
-  let workspaceEditorControlClient: WorkspaceEditorControlClient | null = null;
-  let workspaceEditorControlClientPromise: Promise<WorkspaceEditorControlClient> | null =
+  let daemonControlClient: DaemonControlClient | null = null;
+  let daemonControlClientPromise: Promise<DaemonControlClient> | null =
     null;
   let deferredSessionClosed = false;
   const MAX_DEFERRED_QUEUED_INPUTS = 512;
@@ -3823,14 +3951,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
         bytes: queuedBlocksBytes(blocks),
         ...(ownership !== undefined
           ? {
-              ownership: {
-                workspaceView: ownership.workspaceView,
-                ...(ownership.editorInteractionId !== undefined
-                  ? {
-                      editorInteractionId: ownership.editorInteractionId,
-                    }
-                  : {}),
-              },
+              ownership: { workspaceView: ownership.workspaceView },
             }
           : {}),
       }));
@@ -3915,52 +4036,40 @@ async function createDeferredDaemonPromptTuiSession(params: {
     return true;
   };
 
-  const queuedInputsForSubmission = (
-    submitOptions?: SessionSubmitOptions,
-  ): DeferredQueuedInput[] => {
-    const interaction = submitOptions?.editorInteraction;
-    if (interaction === undefined) {
-      return queuedInputs.filter(
-        (entry) => entry.ownership?.workspaceView !== "editor",
-      );
-    }
-    return queuedInputs.filter(
-      (entry) =>
-        entry.ownership?.workspaceView === "editor" &&
-        entry.ownership.editorInteractionId === interaction.interactionId,
-    );
-  };
+  const queuedInputsForSubmission = (): DeferredQueuedInput[] => [
+    ...queuedInputs,
+  ];
 
-  const ensureWorkspaceEditorControlClient =
-    (): Promise<WorkspaceEditorControlClient> => {
+  const ensureDaemonControlClient =
+    (): Promise<DaemonControlClient> => {
       if (deferredSessionClosed) {
         return Promise.reject(
           new Error("Deferred TUI session is already closed."),
         );
       }
-      if (workspaceEditorControlClient !== null) {
-        return Promise.resolve(workspaceEditorControlClient);
+      if (daemonControlClient !== null) {
+        return Promise.resolve(daemonControlClient);
       }
-      if (workspaceEditorControlClientPromise !== null) {
-        return workspaceEditorControlClientPromise;
+      if (daemonControlClientPromise !== null) {
+        return daemonControlClientPromise;
       }
       const pending = (async () => {
         const client = (await params.deps.createConnectedTuiClient({
           env: params.env,
-        })) as unknown as WorkspaceEditorControlClient;
+        })) as unknown as DaemonControlClient;
         if (deferredSessionClosed) {
           await client.close().catch(() => {
             /* best effort */
           });
           throw new Error("Deferred TUI session is already closed.");
         }
-        workspaceEditorControlClient = client;
+        daemonControlClient = client;
         return client;
       })();
-      workspaceEditorControlClientPromise = pending;
+      daemonControlClientPromise = pending;
       void pending.catch(() => {
-        if (workspaceEditorControlClientPromise === pending) {
-          workspaceEditorControlClientPromise = null;
+        if (daemonControlClientPromise === pending) {
+          daemonControlClientPromise = null;
         }
       });
       return pending;
@@ -4004,7 +4113,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
     const startupPromise = (async () => {
       const submittedQueuedInputs = deferInitialTurn
         ? []
-        : queuedInputsForSubmission(firstSubmitOptions);
+        : queuedInputsForSubmission();
       const submittedInputCount = submittedQueuedInputs.length;
       const submittedInputBytes = submittedQueuedInputs.reduce(
         (sum, entry) => sum + entry.bytes,
@@ -4019,9 +4128,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
         preparedFirstMessage = deferInitialTurn
           ? ""
           : firstMessage.length > 0
-            ? firstSubmitOptions?.editorInteraction !== undefined
-              ? firstMessage
-              : await (params.preparePrompt ?? prepareDaemonTuiPrompt)({
+            ? await (params.preparePrompt ?? prepareDaemonTuiPrompt)({
                   message: firstMessage,
                   configStore,
                   agencHome: params.agencHome,
@@ -4096,11 +4203,6 @@ async function createDeferredDaemonPromptTuiSession(params: {
                   firstSubmitOptions.displayUserMessage,
               }
             : {}),
-          ...(firstSubmitOptions?.editorInteraction !== undefined
-            ? {
-                initialEditorInteraction: firstSubmitOptions.editorInteraction,
-              }
-            : {}),
           // Pre-first-turn `/permissions mode` / `/plan` stage their choice in
           // `pendingPermissionMode`; an explicit `--dangerously-bypass-approvals-and-sandbox` argv still wins so the
           // bootTUI-parity bypass behavior is preserved.
@@ -4166,9 +4268,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
         );
         liveAgentId = started.agentId;
         liveSessionAwaitingFirstTurn = deferInitialTurn;
-        liveSessionStartupDeferred =
-          deferInitialTurn ||
-          firstSubmitOptions?.editorInteraction !== undefined;
+        liveSessionStartupDeferred = deferInitialTurn;
         if (deferredSessionClosed) {
           throw new Error("Deferred TUI session is already closed.");
         }
@@ -4245,7 +4345,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
       throw new Error("Deferred daemon session is not ready for submission.");
     }
     const completesDeferredFirstTurn = liveSessionAwaitingFirstTurn;
-    const submittedQueuedInputs = queuedInputsForSubmission(opts);
+    const submittedQueuedInputs = queuedInputsForSubmission();
     const submittedInputCount = submittedQueuedInputs.length;
     const submittedInputBytes = submittedQueuedInputs.reduce(
       (sum, entry) => sum + entry.bytes,
@@ -4363,7 +4463,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
     workflowApprovalControls: createWorkflowApprovalControls({
       async request(method, requestParams, options) {
         options.signal.throwIfAborted();
-        const client = await ensureWorkspaceEditorControlClient();
+        const client = await ensureDaemonControlClient();
         options.signal.throwIfAborted();
         if (deferredSessionClosed) throw new Error("Deferred TUI session is already closed.");
         return client.request(method, requestParams, options);
@@ -4379,6 +4479,22 @@ async function createDeferredDaemonPromptTuiSession(params: {
     // agent or consume the first model-turn slot in an idle deferred TUI.
     listDaemonSessionProcesses: async () =>
       deferredSessionClosed ? undefined : liveSession?.listDaemonSessionProcesses?.(),
+    // `/goal`: reading or dropping a goal never provisions a session (a cold
+    // TUI simply has none). Setting one does, turn-deferred like a composer
+    // shell command, because the goal must exist before its first turn runs.
+    updateDaemonSessionGoal: async (goalParams) => {
+      if (deferredSessionClosed) throw new Error("Deferred TUI session is already closed.");
+      const live =
+        liveSession ??
+        (goalParams.action === "set"
+          ? await ensureLiveSession("", undefined, true)
+          : null);
+      if (live === null) return { ok: false, message: "No goal is set." };
+      if (typeof live.updateDaemonSessionGoal !== "function") {
+        throw new Error("This daemon session does not support /goal.");
+      }
+      return live.updateDaemonSessionGoal(goalParams);
+    },
     stopDaemonSessionProcess: async (taskId) => {
       const live = liveSession;
       if (deferredSessionClosed || typeof live?.stopDaemonSessionProcess !== "function") {
@@ -4403,75 +4519,8 @@ async function createDeferredDaemonPromptTuiSession(params: {
         liveMcpSurfaceUnsubscribers.delete(cb);
       };
     },
-    // Editor coherence and proposal recovery are workspace-scoped, not
-    // conversation-scoped. Keep them on one auxiliary daemon connection so
-    // authoritative Neovim fencing works before the first Agent turn and
-    // survives live agent replacement without releasing the workspace lease.
-    acquireWorkspaceEditor: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.acquire",
-        editorParams,
-      ),
-    syncWorkspaceEditor: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.sync",
-        editorParams,
-      ),
-    refreshWorkspaceEditorStaleAuthority: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.staleAuthority.refresh",
-        editorParams,
-      ),
-    heartbeatWorkspaceEditor: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.heartbeat",
-        editorParams,
-      ),
-    releaseWorkspaceEditor: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.release",
-        editorParams,
-      ),
-    reserveWorkspaceEditorTopology: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.topology.reserve",
-        editorParams,
-      ),
-    completeWorkspaceEditorTopology: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.topology.complete",
-        editorParams,
-      ),
-    releaseWorkspaceEditorTopology: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.topology.release",
-        editorParams,
-      ),
-    getWorkspaceEditorProposal: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.proposal.get",
-        editorParams,
-      ),
-    getWorkspaceEditorProposalStatus: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.proposal.status",
-        editorParams,
-      ),
-    applyWorkspaceEditorProposal: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.proposal.apply",
-        editorParams,
-      ),
-    discardWorkspaceEditorProposal: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.proposal.discard",
-        editorParams,
-      ),
-    listWorkspaceEditorChanges: async (editorParams) =>
-      (await ensureWorkspaceEditorControlClient()).request(
-        "workspace.editor.changes.list",
-        editorParams,
-      ),
+    // Workspace-scoped controls (workflow approvals, daemon reload) use one
+    // auxiliary daemon connection that survives live agent replacement.
     // Direct composer shell commands are session-scoped side effects. A cold
     // TUI provisions one turn-deferred live session, then forwards exactly
     // once. The command does not consume the first model-turn slot, and an
@@ -4487,77 +4536,6 @@ async function createDeferredDaemonPromptTuiSession(params: {
         );
       }
       return execute.call(live, shellParams);
-    },
-    // Prediction routing is conversation-scoped because it borrows the live
-    // session's provider/model. The first cold prediction provisions a
-    // deferred, turn-free daemon session; no model turn, hook, MCP process,
-    // or Agent startup work runs. The same attached session then owns the
-    // first real Editor/Agent turn and every later prediction.
-    predictEditorCode: async (predictionParams) => {
-      const live =
-        liveSession ?? (await ensureLiveSession("", undefined, true));
-      const predict = live?.predictEditorCode;
-      if (live === null || typeof predict !== "function") {
-        return {
-          status: "suppressed",
-          requestId: predictionParams.requestId,
-          generation: predictionParams.generation,
-          changedtick: predictionParams.changedtick,
-          reason: "disabled",
-        };
-      }
-      const predictionUsesStartupDeferredSession =
-        liveSession === live && liveSessionStartupDeferred;
-      try {
-        return await predict.call(live, predictionParams);
-      } catch (error) {
-        if (
-          !predictionUsesStartupDeferredSession ||
-          !isDaemonSessionGoneError(error)
-        ) {
-          throw error;
-        }
-        if (liveSession === live) {
-          // An ordinary Agent turn may have activated this same session while
-          // the prediction RPC was in flight. Preserve ordinary live-session
-          // failure semantics in that case; submit owns its replacement path.
-          if (!liveSessionStartupDeferred) throw error;
-          await detachLiveSession();
-        }
-        // Concurrent failures from the same dead deferred session converge on
-        // one detach. The next prediction single-flights through
-        // ensureLiveSession, so Editor recovery cannot double-provision agents.
-        return {
-          status: "suppressed",
-          requestId: predictionParams.requestId,
-          generation: predictionParams.generation,
-          changedtick: predictionParams.changedtick,
-          reason: "stale",
-        };
-      }
-    },
-    cancelEditorPrediction: async (predictionParams) => {
-      const live = liveSession;
-      const cancel = live?.cancelEditorPrediction;
-      if (live === null || typeof cancel !== "function") {
-        return {
-          ...(predictionParams.requestId !== undefined
-            ? { requestId: predictionParams.requestId }
-            : {}),
-          cancelled: false,
-        };
-      }
-      return cancel.call(live, predictionParams);
-    },
-    reportEditorPredictionFeedback: async (predictionParams) => {
-      const live = liveSession;
-      const report = live?.reportEditorPredictionFeedback;
-      if (live === null || typeof report !== "function") {
-        throw new Error(
-          "Prediction feedback is unavailable until a conversation starts.",
-        );
-      }
-      return report.call(live, predictionParams);
     },
     // The Ink TUI's slash dispatcher in `App.tsx` calls `dispatchSlashCommand`
     // directly against `props.session` (this outer deferred wrapper) instead
@@ -4576,14 +4554,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
     // session.resolveToolCall RPC. The deferred session attaches LAZILY on
     // the first real turn, so before that there is nothing to resolve —
     // report a clean empty result instead of throwing.
-    resolveDaemonToolCall: async (params: {
-      readonly toolCallId: string;
-      readonly disposition:
-        "confirmed_committed" | "confirmed_no_effect" | "remains_unknown";
-      readonly evidenceRef: string;
-      readonly evidenceSha256: string;
-      readonly reviewer?: string;
-    }) => {
+    resolveDaemonToolCall: async (params: ResolveDaemonToolCallParams) => {
       if (liveSession === null) {
         return {
           sessionId: "pending",
@@ -4786,11 +4757,10 @@ async function createDeferredDaemonPromptTuiSession(params: {
           pendingProfile = configParams.profile;
         }
         if (configParams.reload === true) {
-          // Predictions are daemon-global and may be enabled from Editor
-          // before a conversation exists. Reload that global snapshot without
-          // manufacturing a session.applyConfig call or starting an agent.
+          // Reload the daemon-global config snapshot without manufacturing a
+          // session.applyConfig call or starting an agent.
           await (
-            await ensureWorkspaceEditorControlClient()
+            await ensureDaemonControlClient()
           ).request("daemon.reload", {});
         }
         const staged = [
@@ -4834,7 +4804,6 @@ async function createDeferredDaemonPromptTuiSession(params: {
         throw new Error("Deferred TUI session is already closed.");
       }
       const activatesAgentStartup =
-        opts?.editorInteraction === undefined &&
         opts?.source !== AUTONOMOUS_SUBMIT_SOURCE &&
         !isLocalSlashCommandInput(message);
       // User-message rendering is driven entirely by daemon events:
@@ -4850,7 +4819,6 @@ async function createDeferredDaemonPromptTuiSession(params: {
       // because the transcript reducer's dedup keys on `event.id`.
       if (liveSession !== null && liveSessionAwaitingFirstTurn) {
         const firstMessage =
-          opts?.editorInteraction === undefined &&
           isLocalSlashCommandInput(message)
             ? await handleLocalTuiSlashCommand({
                 message,
@@ -4955,7 +4923,6 @@ async function createDeferredDaemonPromptTuiSession(params: {
         }
       }
       const firstMessage =
-        opts?.editorInteraction === undefined &&
         isLocalSlashCommandInput(message)
           ? await handleLocalTuiSlashCommand({
               message,
@@ -5179,15 +5146,15 @@ async function createDeferredDaemonPromptTuiSession(params: {
         });
       }
       await detachLiveSession();
-      const pendingControlClient = workspaceEditorControlClientPromise;
+      const pendingControlClient = daemonControlClientPromise;
       if (pendingControlClient !== null) {
         await pendingControlClient.catch(() => {
           /* connection failure or close-during-connect */
         });
       }
-      const controlClient = workspaceEditorControlClient;
-      workspaceEditorControlClient = null;
-      workspaceEditorControlClientPromise = null;
+      const controlClient = daemonControlClient;
+      daemonControlClient = null;
+      daemonControlClientPromise = null;
       await controlClient?.close().catch(() => {
         /* best effort */
       });
@@ -5261,16 +5228,6 @@ function wrapDaemonTuiSessionWithPromptPreparation<
   wrapped = {
     ...session,
     submit: async (message, opts) => {
-      // Editor-native prompts already contain the exact live-buffer snapshot
-      // wrapped as untrusted data. Most importantly, their read_only /
-      // proposal_only policy begins at daemon admission. Running local slash
-      // commands, @ expansion, or UserPromptSubmit hooks here would create a
-      // mutating pre-policy side channel (especially under --dangerously-bypass-approvals-and-sandbox), so submit
-      // the exact prompt directly and let the daemon validate the interaction.
-      if (opts?.editorInteraction !== undefined) {
-        await originalSubmit(message, opts);
-        return;
-      }
       const nextMessage = isLocalSlashCommandInput(message)
         ? await handleLocalTuiSlashCommand({
             message,

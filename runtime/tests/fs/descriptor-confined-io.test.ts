@@ -22,22 +22,27 @@ const controls = vi.hoisted(() => ({
   maximumReadBytes: undefined as number | undefined,
   handles: [] as FileHandle[],
   requestedBytes: [] as number[],
+  aroundPath: undefined as (<T>(path: string, run: () => Promise<T>) => Promise<T>) | undefined,
+  canonicalChild: undefined as string | undefined,
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
+    lstat: vi.fn(async (...args: Parameters<typeof actual.lstat>) =>
+      controls.aroundPath?.(String(args[0]), () => actual.lstat(...args)) ?? actual.lstat(...args)),
     realpath: vi.fn(async (...args: Parameters<typeof actual.realpath>) => {
       await controls.beforeRealpath?.(String(args[0]));
+      if (String(args[0]) === controls.canonicalChild) return controls.canonicalChild;
       if (controls.hideAliases && /^\/(?:proc\/self\/fd|dev\/fd)\//u.test(String(args[0]))) {
         throw Object.assign(new Error("descriptor aliases unavailable"), { code: "ENOENT" });
       }
-      return actual.realpath(...args);
+      return controls.aroundPath?.(String(args[0]), () => actual.realpath(...args)) ?? actual.realpath(...args);
     }),
     open: vi.fn(async (...args: Parameters<typeof actual.open>) => {
       await controls.beforeOpen?.(String(args[0]));
-      const handle = await actual.open(...args);
+      const handle = await (controls.aroundPath?.(String(args[0]), () => actual.open(...args)) ?? actual.open(...args));
       controls.handles.push(handle);
       const read = handle.read.bind(handle);
       Object.defineProperty(handle, "read", {
@@ -67,6 +72,10 @@ const privatePolicy: ConfinedIoPolicy = Object.freeze({
   privateFile: true,
   unavailableAlias: "reject",
 });
+const darwinPrivatePolicy: ConfinedIoPolicy = Object.freeze({
+  ...privatePolicy,
+  unavailableAlias: "identity-checked-path",
+});
 let temporaryDirectory: string;
 let root: string;
 let candidate: string;
@@ -79,6 +88,8 @@ beforeEach(async () => {
   controls.maximumReadBytes = undefined;
   controls.handles = [];
   controls.requestedBytes = [];
+  controls.aroundPath = undefined;
+  controls.canonicalChild = undefined;
   temporaryDirectory = await mkdtemp(join(tmpdir(), "agenc-confined-io-"));
   root = join(temporaryDirectory, "root");
   candidate = join(root, "candidate");
@@ -90,6 +101,8 @@ afterEach(async () => {
   controls.beforeOpen = undefined;
   controls.beforeRealpath = undefined;
   controls.afterRead = undefined;
+  controls.aroundPath = undefined;
+  controls.canonicalChild = undefined;
   for (const handle of controls.handles) {
     if (handle.fd !== -1) await handle.close();
   }
@@ -106,7 +119,7 @@ function readCandidate(
   ), hooks);
 }
 
-describe("descriptor-confined I/O", () => {
+describe.skipIf(process.platform !== "linux")("descriptor-confined I/O with traversable aliases", () => {
   it("preserves an operational failure during post-read verification", async () => {
     const failure = Object.assign(new Error("temporary verification failure"), { code: "EIO" });
     controls.afterRead = async () => {
@@ -164,7 +177,7 @@ describe("descriptor-confined I/O", () => {
     expect(controls.requestedBytes).toEqual([]);
   });
 
-  it.each([false, true])("detects root replacement before child I/O with path fallback=%s", async (fallback) => {
+  it.each([false, true])("rejects root replacement or missing descriptor aliases before child I/O, alias unavailable=%s", async (fallback) => {
     controls.hideAliases = fallback;
     await expect(readCandidate(sharedPolicy, {
       async afterRootOpen() {
@@ -172,7 +185,7 @@ describe("descriptor-confined I/O", () => {
         await mkdir(root);
         await writeFile(candidate, "evil");
       },
-    })).rejects.toMatchObject({ code: "ROOT_CHANGED" });
+    })).rejects.toMatchObject({ code: fallback ? "DESCRIPTOR_UNSUPPORTED" : "ROOT_CHANGED" });
     expect(controls.requestedBytes).toEqual([]);
   });
 
@@ -258,14 +271,14 @@ describe("descriptor-confined I/O", () => {
     }
     await chmod(role === "directory" ? root : candidate, 0o755);
     expect(await readCandidate(sharedPolicy)).toEqual(Buffer.from("safe"));
-    await expect(readCandidate(privatePolicy)).rejects.toMatchObject({
+    await expect(readCandidate(process.platform === "darwin" ? darwinPrivatePolicy : privatePolicy)).rejects.toMatchObject({
       code: role === "directory" ? "ROOT_UNSAFE" : "CHILD_UNSAFE",
     });
   });
 
-  it("names the descriptor-alias fallback and fail-closed policies", async () => {
+  it("fails closed when descriptor aliases are unavailable", async () => {
     controls.hideAliases = true;
-    expect(await readCandidate(sharedPolicy)).toEqual(Buffer.from("safe"));
+    await expect(readCandidate(sharedPolicy)).rejects.toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
     await expect(readCandidate({ ...sharedPolicy, unavailableAlias: "reject" }))
       .rejects.toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
   });
@@ -292,8 +305,63 @@ describe("descriptor-confined I/O", () => {
   );
 });
 
+describe("descriptor admission regressions", () => {
+  it("never accepts a swap-and-restore child read when a descriptor alias is unavailable", async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const held = `${root}.held`;
+    const outside = join(temporaryDirectory, "outside");
+    await mkdir(outside, { mode: 0o700 });
+    await writeFile(join(outside, "candidate"), "evil", { mode: 0o600 });
+    controls.hideAliases = true;
+    controls.canonicalChild = candidate;
+    let swapped = false;
+    controls.aroundPath = async (path, run) => {
+      if (path !== candidate) return run();
+      if (swapped) return run();
+      await rename(root, held);
+      await symlink(outside, root);
+      swapped = true;
+      try { return await run(); }
+      finally { await unlink(root); await rename(held, root); swapped = false; }
+    };
+    Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
+    try {
+      await expect(readCandidate()).rejects.toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
+      expect(controls.requestedBytes).toEqual([]);
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
+  });
+
+  it("accepts a literal backslash in a POSIX root when checking path anchors", async () => {
+    const escapedRoot = join(temporaryDirectory, "project\\name");
+    await mkdir(escapedRoot, { mode: 0o700 });
+    await writeFile(join(escapedRoot, "candidate"), "safe", { mode: 0o600 });
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+    try {
+      const policy: ConfinedIoPolicy = {
+        ...privatePolicy,
+        unavailableAlias: "windows-private-path",
+        verifyWindowsPrivatePath: () => {},
+      };
+      const bytes = await withConfinedDirectory(escapedRoot, policy, (directory) =>
+        withRegularChild(directory, "candidate", { maximumBytes: 4 }, readConfinedFile));
+      expect(bytes).toEqual(Buffer.from("safe"));
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
+  });
+
+
+  it.runIf(process.platform === "darwin")("refuses private child reads before opening them", async () => {
+    await expect(readCandidate(darwinPrivatePolicy)).rejects.toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
+    expect(controls.requestedBytes).toEqual([]);
+  });
+});
+
 describe("workflow consumer filesystem policies", () => {
-  it.each([
+  it.skipIf(process.platform === "darwin").each([
     ["read", "EMFILE"], ["read", "EACCES"], ["read", "EIO"],
     ["cleanup", "EMFILE"], ["cleanup", "EACCES"], ["cleanup", "EIO"],
     ["recovery", "EMFILE"], ["recovery", "EACCES"], ["recovery", "EIO"],
@@ -359,7 +427,7 @@ describe("workflow consumer filesystem policies", () => {
     }
   });
 
-  it("rejects an oversized handoff cleanup candidate before opening it", async () => {
+  it.skipIf(process.platform === "darwin")("rejects an oversized handoff cleanup candidate before opening it", async () => {
     const driver = openStateDatabases({
       cwd: temporaryDirectory,
       agencHome: join(temporaryDirectory, "home"),
@@ -393,13 +461,13 @@ describe("workflow consumer filesystem policies", () => {
     }
   });
 
-  it("loads a shared hard-linked manifest when descriptor aliases are unavailable", async () => {
+  it("refuses a shared hard-linked manifest when descriptor aliases are unavailable", async () => {
     const manifest = '{"format_version":2,"kind":"agent_dag","steps":[{"id":"step","message":"work"}]}';
     await writeFile(candidate, manifest);
     await link(candidate, join(root, "example.json"));
     controls.hideAliases = true;
-    const loaded = await loadNamedWorkflowManifest({ name: "example", roots: [root] });
-    expect(loaded.document.manifest.steps[0]?.id).toBe("step");
+    await expect(loadNamedWorkflowManifest({ name: "example", roots: [root] }))
+      .rejects.toMatchObject({ code: "WORKFLOW_ROOT_OPEN" });
   });
 
   it("keeps handoff reads fail-closed without POSIX descriptor aliases", async () => {

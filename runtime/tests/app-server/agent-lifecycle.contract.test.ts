@@ -25,8 +25,12 @@ import {
   type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
 import { StateRunDurabilityRepository } from "../state/run-durability.js";
-import { listUnresolvedUnknownOutcomeEffects } from "../state/unknown-outcome-gate.js";
+import {
+  listUnresolvedUnknownOutcomeEffects,
+  resolveUnknownOutcomeEffect,
+} from "../state/unknown-outcome-gate.js";
 import { recordInFlightToolCallUnknownOutcome } from "../state/tool-output-rotation.js";
+import type { ResolveDurableEffectReviewOptions } from "../state/effect-review.js";
 import {
   __setAgentLifecycleResumeSourceTestHooksForTest,
   AgenCDaemonAgentLifecycleError,
@@ -40,6 +44,7 @@ import {
   AGENC_DAEMON_PROTOCOL_VERSION,
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
   JSON_RPC_VERSION,
+  type SessionResolveToolCallParams,
 } from "./protocol/index.js";
 import {
   AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS,
@@ -121,6 +126,54 @@ function openRollout(
     modelProvider: "grok",
   });
   return rollout;
+}
+
+type LifecycleRunner = NonNullable<
+  ConstructorParameters<typeof AgenCDaemonAgentManager>[0]["runner"]
+>;
+
+/** A runner whose live-agent transcript methods all say the agent is not running. */
+function noLiveAgentRunner(agentId: string): LifecycleRunner {
+  return {
+    startAgent: async () => ({
+      agentId: "unused",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      status: "running",
+    }),
+    getAgentSessionTranscript: async () => {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    },
+    getAgentSessionTranscriptV2: async () => {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    },
+  };
+}
+
+/** Persist one user/assistant exchange as sequenced daemon events. */
+function appendSequencedExchange(
+  rollout: ReturnType<typeof openRollout>,
+  user: string,
+  assistant: string,
+  startSeq = 1,
+): void {
+  rollout.appendRollout({
+    type: "event_msg",
+    payload: {
+      id: `user-event-${startSeq}`,
+      eventId: `user-event-${startSeq}`,
+      seq: startSeq,
+      msg: { type: "user_message", payload: { message: user, displayText: user } },
+    },
+  });
+  rollout.appendRollout({
+    type: "event_msg",
+    payload: {
+      id: `agent-event-${startSeq + 1}`,
+      eventId: `agent-event-${startSeq + 1}`,
+      seq: startSeq + 1,
+      msg: { type: "agent_message", payload: { message: assistant } },
+    },
+  });
 }
 
 const resumeFixtureCleanups: Array<() => void> = [];
@@ -684,16 +737,7 @@ describe("AgenC background agent lifecycle", () => {
       const liveCapableRunner = new AgenCDaemonAgentManager({
         threadStore,
         sessionManager: sessions,
-        runner: {
-          startAgent: async () => ({
-            agentId: "unused",
-            startedAt: "2026-05-01T12:00:00.000Z",
-            status: "running",
-          }),
-          getAgentSessionTranscript: async () => {
-            throw new Error("AgenC daemon agent not running: agent_default");
-          },
-        },
+        runner: noLiveAgentRunner("agent_default"),
       });
       await expect(
         liveCapableRunner.getSessionTranscript({
@@ -705,6 +749,67 @@ describe("AgenC background agent lifecycle", () => {
           { role: "user", text: "build the parser" },
           { role: "assistant", text: "parser done" },
         ]),
+      });
+    } finally {
+      threadStore.close();
+      rollout.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("serves the persisted transcript for a daemon session addressed by its session id", async () => {
+    // The desktop attaches a session and then addresses it by the daemon's
+    // session record id (session_<uuid>), while the rollout is filed under
+    // the agent id. After a daemon restart the agent row is recovered without
+    // a runtime, so the transcript must come from the persisted thread; the
+    // fallback used to look the session id up as a thread id and miss.
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const rollout = openRollout(cwd, "conv-desktop-thread");
+    const threadStore = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      threadStore.createThread({
+        threadId: "conv-desktop-thread",
+        rolloutStore: rollout,
+        source: "cli_main",
+        cwd,
+      });
+      // Sequenced events, as a daemon session writes them: the v2 snapshot
+      // reconstruction keys its messages on eventId and seq.
+      appendSequencedExchange(rollout, "sleep for a while", "starting");
+      threadStore.shutdownThread("conv-desktop-thread");
+
+      const sessions = new AgenCDaemonSessionManager({ threadStore });
+      const created = await sessions.createSession({
+        agentId: "conv-desktop-thread",
+        cwd,
+      });
+      expect(created.sessionId).not.toBe("conv-desktop-thread");
+
+      const manager = new AgenCDaemonAgentManager({
+        threadStore,
+        sessionManager: sessions,
+        runner: noLiveAgentRunner("conv-desktop-thread"),
+      });
+      await expect(
+        manager.getSessionTranscriptV2({ sessionId: created.sessionId }),
+      ).resolves.toMatchObject({
+        sessionId: created.sessionId,
+        runId: "conv-desktop-thread",
+        messages: expect.arrayContaining([
+          expect.objectContaining({ role: "user", text: "sleep for a while" }),
+          expect.objectContaining({ role: "assistant", text: "starting" }),
+        ]),
+      });
+      await expect(
+        manager.getSessionTranscript({ sessionId: created.sessionId }),
+      ).resolves.toEqual({
+        sessionId: created.sessionId,
+        messages: [
+          { role: "user", text: "sleep for a while" },
+          { role: "assistant", text: "starting" },
+        ],
       });
     } finally {
       threadStore.close();
@@ -2071,8 +2176,9 @@ describe("AgenC background agent lifecycle", () => {
         registerNoopSessionRoute,
       ),
     ).rejects.toMatchObject({
-      code: "INVALID_ARGUMENT",
-      message: expect.stringContaining("live runtime-settings authority"),
+      code: "BACKGROUND_RUNNER_UNAVAILABLE",
+      message:
+        "AgenC daemon agent recovered without a live runtime: agent-cancel-recovered",
     });
     await expect(
       agents.cancelSessionTurn({
@@ -5245,21 +5351,6 @@ describe("AgenC background agent lifecycle", () => {
       runner,
       sessionManager: sessions,
     });
-    const initialEditorInteraction = {
-      interactionId: "interaction-startup-explain",
-      kind: "explain" as const,
-      policy: "read_only" as const,
-      editorInstanceId: "editor-startup",
-      bufferHandle: 4,
-      changedtick: 9,
-      contentSha256: "b".repeat(64),
-      path: "/workspace/src/main.ts",
-      range: {
-        start: { line: 1, column: 0 },
-        end: { line: 2, column: 0 },
-      },
-      selectionMode: "line" as const,
-    };
 
     await expect(
       createTestAgent(agents, {
@@ -5273,7 +5364,6 @@ describe("AgenC background agent lifecycle", () => {
           },
         ],
         initialDisplayUserMessage: "Explain the selected code",
-        initialEditorInteraction,
       }),
     ).resolves.toMatchObject({
       agentId: "agent_image",
@@ -5291,7 +5381,6 @@ describe("AgenC background agent lifecycle", () => {
           },
         ],
         initialDisplayUserMessage: "Explain the selected code",
-        initialEditorInteraction,
       }),
     ]);
     await expect(sessions.getSession("session_image")).resolves.toMatchObject({
@@ -5997,6 +6086,131 @@ describe("AgenC background agent lifecycle", () => {
     }
   });
 
+  // Stands in for the live runner's journal append: project the operator
+  // review onto the durable effect row the way the canonical event would.
+  const projectLiveReview = (driver: StateSqliteDriver, params: ResolveDurableEffectReviewOptions) => {
+    const repository = new StateRunDurabilityRepository(driver);
+    const effect = repository.getEffectBySessionCall(params.sessionId, params.toolCallId);
+    if (effect === undefined) return { kind: "not_found" as const };
+    repository.resolveEffectReview({ runId: effect.runId, stepId: effect.stepId, resolution: params.resolution, eventId: `${effect.stepId}:review` });
+    resolveUnknownOutcomeEffect(driver, { sessionId: params.sessionId, toolCallId: params.toolCallId });
+    return { kind: "resolved" as const, durable: false as const, resolution: params.resolution };
+  };
+
+  // Seeds a durable effect row left at an unknown outcome for a tool call,
+  // then starts the agent's daemon session: the fixture both /resolve-by
+  // -daemon-session-id tests below start from.
+  const seedUnknownEffectSession = async (
+    driver: StateSqliteDriver,
+    sessions: AgenCDaemonSessionManager,
+    params: { readonly cwd: string; readonly agentId: string; readonly callId: string; readonly toolName: string },
+  ) => {
+    const effects = new StateRunDurabilityRepository(driver);
+    effects.ensureInitialEpoch({ runId: params.agentId, openedAt: "2026-09-22T00:00:00.000Z", openedEventId: `${params.agentId}:opened` });
+    effects.beginEffect({
+      runId: params.agentId, epoch: 1, stepId: `tool:turn:${params.callId}`, sessionId: params.agentId,
+      callId: params.callId, toolName: params.toolName, recoveryCategory: "side-effecting",
+      intentDigest: "intent-digest", eventId: "intent", eventSequence: 1,
+      intentAt: "2026-09-22T00:00:01.000Z", effectFormatVersion: 2,
+    });
+    effects.markEffectUnknown({
+      runId: params.agentId, stepId: `tool:turn:${params.callId}`, eventId: "unknown", eventSequence: 2,
+      reason: "caller_abort_after_effect_boundary", observedAt: "2026-09-22T00:00:02.000Z",
+    });
+    await sessions.createSession({ cwd: params.cwd, agentId: params.agentId });
+    return effects;
+  };
+
+  it("resolves a live Desktop session by its daemon session id against the agent's durable effects", async () => {
+    // A Desktop sends the daemon session id (`session_...`); the durable
+    // effect rows and the live runtime session are keyed by the agent's
+    // conversation id (`conv-...`). /resolve must translate, not compare.
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const daemonSessionId = "session_desktop_review";
+    const agentId = "conv-desktop-review";
+    const sessions = new AgenCDaemonSessionManager({ createSessionId: () => daemonSessionId });
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      const effects = await seedUnknownEffectSession(driver, sessions, {
+        cwd, agentId, callId: "call_mcp_fail", toolName: "mcp.lane.lane_fail",
+      });
+      const seen: { agentId: string; sessionId: string }[] = [];
+      const runner = {
+        // Mirrors the production runner's ownership rule: the live session
+        // it owns is the agent's conversation, never a daemon session id.
+        resolveLiveEffectReview: vi.fn(async (owner: string, params: ResolveDurableEffectReviewOptions) => {
+          seen.push({ agentId: owner, sessionId: params.sessionId });
+          if (params.sessionId !== owner) {
+            throw new Error(`AgenC daemon agent ${owner} does not own session ${params.sessionId}`);
+          }
+          return projectLiveReview(driver, params);
+        }),
+      } as unknown as AgenCBackgroundAgentRunner;
+      const agents = new AgenCDaemonAgentManager({ sessionManager: sessions, runner, agencHome: home });
+      await expect(agents.resolveSessionToolCall({
+        sessionId: daemonSessionId,
+        toolCallId: "call_mcp_fail",
+        disposition: "confirmed_no_effect",
+        evidenceRef: "operator-note",
+        evidenceSha256: "a".repeat(64),
+        reviewer: "desktop_user",
+      })).resolves.toMatchObject({
+        sessionId: daemonSessionId,
+        resolved: [{ toolCallId: "call_mcp_fail" }],
+        remaining: 0,
+      });
+      expect(seen).toEqual([{ agentId, sessionId: agentId }]);
+      expect(effects.getEffect(agentId, "tool:turn:call_mcp_fail")).toMatchObject({ reviewStatus: "resolved" });
+    } finally {
+      driver.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("records an operator attestation when /resolve carries a disposition without an evidence file", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const daemonSessionId = "session_desktop_attest";
+    const agentId = "conv-desktop-attest";
+    const sessions = new AgenCDaemonSessionManager({ createSessionId: () => daemonSessionId });
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      const effects = await seedUnknownEffectSession(driver, sessions, {
+        cwd, agentId, callId: "call_hang", toolName: "mcp.lane.lane_hang",
+      });
+      const runner = {
+        resolveLiveEffectReview: vi.fn(async (_owner: string, params: ResolveDurableEffectReviewOptions) =>
+          projectLiveReview(driver, params)),
+      } as unknown as AgenCBackgroundAgentRunner;
+      const agents = new AgenCDaemonAgentManager({ sessionManager: sessions, runner, agencHome: home });
+      await expect(agents.resolveSessionToolCall({
+        sessionId: daemonSessionId,
+        toolCallId: "call_hang",
+        disposition: "confirmed_no_effect",
+        attestation: "operator",
+        reviewer: "desktop_user",
+      } as SessionResolveToolCallParams)).resolves.toMatchObject({
+        resolved: [{ toolCallId: "call_hang" }],
+        remaining: 0,
+      });
+      const review = effects.getEffect(agentId, "tool:turn:call_hang")?.review;
+      expect(review).toMatchObject({
+        disposition: "confirmed_no_effect",
+        actorKind: "operator",
+        actorId: "desktop_user",
+        evidenceKind: "operator_evidence",
+        evidenceRef: `operator-attestation:${agentId}:call_hang`,
+      });
+      expect(review?.evidenceSha256).toMatch(/^[0-9a-f]{64}$/u);
+    } finally {
+      driver.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("stops a launched agent when lifecycle session creation fails", async () => {
     const stopAgent = vi.fn(async () => {});
     const agents = new AgenCDaemonAgentManager({
@@ -6106,6 +6320,7 @@ describe("AgenC background agent lifecycle", () => {
   });
 
   it("requires initialize before agent.create on a daemon JSON-RPC connection", async () => {
+    const futureProtocolVersion = `1.${Number(AGENC_DAEMON_PROTOCOL_VERSION.split(".")[1]) + 1}.0`;
     const startAgent = vi.fn(async () => ({
       agentId: "agent_rpc",
       startedAt: "2026-05-01T12:00:00.500Z",
@@ -6184,7 +6399,7 @@ describe("AgenC background agent lifecycle", () => {
         id: "future-protocol",
         method: "initialize",
         params: {
-          protocol: { version: "1.14.0" },
+          protocol: { version: futureProtocolVersion },
           clientName: "contract-test",
         },
       }),
@@ -6196,8 +6411,8 @@ describe("AgenC background agent lifecycle", () => {
         message: "Unsupported protocol version",
         data: {
           code: "PROTOCOL_VERSION_UNSUPPORTED",
-          clientVersion: "1.14.0",
-          serverVersion: "1.13.0",
+          clientVersion: futureProtocolVersion,
+          serverVersion: AGENC_DAEMON_PROTOCOL_VERSION,
         },
       },
     });
@@ -6262,16 +6477,15 @@ describe("AgenC background agent lifecycle", () => {
       id: 1,
       result: {
         type: "initialized",
-        protocolVersion: "1.13.0",
-        protocol: { version: "1.13.0" },
+        protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+        protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
         capabilities: {},
       },
     });
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.13.0");
     expect(connection.initializeState).toMatchObject({
-      protocol: { version: "1.13.0" },
+      protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
       clientProtocol: { version: "1.0.0" },
-      serverProtocol: { version: "1.13.0" },
+      serverProtocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
       clientCapabilities: { experimentalApi: true },
     });
     expect(

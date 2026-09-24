@@ -126,6 +126,8 @@ const expectedMethods = [
   "tool.cancel",
   "elicitation.respond",
   "permission.list",
+  "project.trustStatus",
+  "project.trust",
   "fs.fuzzy_search",
   "commandExec.start",
   "commandExec.write",
@@ -544,6 +546,27 @@ describe("AgenC daemon protocol surface", () => {
         }),
       ),
     ).toBe(false);
+    expect(
+      validate(
+        request("attestation", {
+          sessionId: "session_1",
+          toolCallId: "call_v2",
+          disposition: "confirmed_no_effect",
+          attestation: "operator",
+          reviewer: "desktop_user",
+        }),
+      ),
+      JSON.stringify(validate.errors),
+    ).toBe(true);
+    for (const params of [
+      { disposition: "confirmed_no_effect", attestation: "system" },
+      { disposition: "confirmed_no_effect", attestation: "operator", evidenceRef: "x", evidenceSha256: "a".repeat(64) },
+      { attestation: "operator" },
+    ]) {
+      expect(
+        validate(request("attestation-invalid", { sessionId: "session_1", toolCallId: "call_v2", ...params })),
+      ).toBe(false);
+    }
   });
 
   it("publishes the private Desktop attachment without loosening other request fields", () => {
@@ -1046,6 +1069,18 @@ describe("AgenC daemon protocol surface", () => {
       },
       {
         jsonrpc: JSON_RPC_VERSION,
+        id: "trust-status",
+        method: "project.trustStatus",
+        params: { cwd: "/workspace/packages/web" },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: "trust",
+        method: "project.trust",
+        params: { cwd: "/workspace/packages/web" },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
         id: 16,
         method: "fs.fuzzy_search",
         params: {
@@ -1183,6 +1218,14 @@ describe("AgenC daemon protocol surface", () => {
 
   it("rejects unlisted methods and malformed payloads outside the F-03a surface", () => {
     const validate = compileRequestValidator(readProtocolSchema());
+
+    for (const method of ["project.trustStatus", "project.trust"]) {
+      for (const params of [{}, { cwd: "" }, { cwd: "/workspace", projectRoot: "/" }]) {
+        expect(
+          validate({ jsonrpc: JSON_RPC_VERSION, id: method, method, params }),
+        ).toBe(false);
+      }
+    }
 
     expect(
       validate({

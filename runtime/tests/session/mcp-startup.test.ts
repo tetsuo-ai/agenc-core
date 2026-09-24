@@ -43,6 +43,7 @@ import {
   startMcpManagerForSession,
 } from "./mcp-startup.js";
 import type { Session } from "./session.js";
+import { OpenAIProvider } from "../llm/providers/openai/adapter.js";
 import { ConfigStore } from "../config/store.js";
 import { withLocalMcpAccess } from "../mcp-client/local-control.js";
 import { verifyDesktopAuthority } from "../mcp-client/desktop-authority.js";
@@ -371,6 +372,62 @@ describe("mcp-startup.attachMcpManagerToSession", () => {
         type: "text",
         text: "sampled response",
       },
+    });
+  });
+
+  it("keeps an MCP sampling temperature off the OpenAI reasoning model's Responses request", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: "completed",
+          model: "gpt-6-luna",
+          output: [
+            { type: "message", content: [{ type: "output_text", text: "ok" }] },
+          ],
+          usage: { input_tokens: 3, output_tokens: 1, total_tokens: 4 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-6-luna",
+      fetchImpl,
+    });
+    const session = {
+      provider,
+      services: { provider, admissionRequired: false },
+      emit: vi.fn(),
+      nextInternalSubId: vi.fn(() => "sub-0"),
+      sessionConfiguration: { approvalPolicy: { value: "never" } },
+    } as unknown as Session;
+
+    const result = await createSessionMcpSamplingHandlers(session).createMessage({
+      serverName: "srv",
+      requestId: 9,
+      request: {
+        id: 9,
+        method: "sampling/createMessage",
+        params: {
+          messages: [
+            { role: "user", content: { type: "text", text: "Summarize this" } },
+          ],
+          temperature: 0.2,
+          maxTokens: 32,
+        },
+      } as never,
+    });
+
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(
+      "https://api.openai.com/v1/responses",
+    );
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as
+      Record<string, unknown>;
+    expect(body.model).toBe("gpt-6-luna");
+    expect(body).not.toHaveProperty("temperature");
+    expect(result).toMatchObject({
+      model: "gpt-6-luna",
+      content: { type: "text", text: "ok" },
     });
   });
 

@@ -33,11 +33,16 @@
 
 import { isWorkflowApprovalSession } from "../../permissions/approval-failure.js";
 import {
+  approvalRootForDispatch,
   filesystemRootsForDispatch,
   type FilesystemRootSessionLike,
 } from "../../tools/filesystem-dispatch-roots.js";
 import type { LLMToolCall } from "../../llm/types.js";
 import { signedSessionPlanFileArgs } from "../../agents/_deps/filesystem-args.js";
+import {
+  EXIT_PLAN_APPROVED_PLAN_ARG,
+  exitPlanApprovedPlan,
+} from "../../planning/exit-plan-approval.js";
 import { sessionPlanFileAuthority } from "../../planning/session-plan-authority.js";
 import {
   getPlan,
@@ -435,7 +440,9 @@ function approvalRejectedResult(err: ApprovalRejectedError, session?: object): T
           ? { reason: err.decision.reason }
           : {}),
       },
-      ...(approvalDenialEndsTurn(err) ? { approvalDenied: true } : {}),
+      ...(approvalDenialEndsTurn(err)
+        ? { approvalDenied: true, approvalDeniedStage: err.stage }
+        : {}),
     },
     ...(approvalDenialEndsTurn(err) || isWorkflowApprovalSession(session)
       ? { preventContinuation: true }
@@ -855,6 +862,11 @@ export class StreamingToolExecutor {
         };
 
         try {
+          // Fixed before any prompt: an approval grants this root and no other.
+          const approvalRoot = approvalRootForDispatch(
+            tool.toolCall.name,
+            effectiveArgs,
+          );
           const approvalArgs = withPlanApprovalPreview(
             tool.toolCall.name,
             effectiveArgs,
@@ -949,6 +961,7 @@ export class StreamingToolExecutor {
                 effectiveArgs,
                 {
                   approvalResolved: dispatchContext.approvalResolved,
+                  approvalRoot,
                   sandboxMode: sandbox,
                   session: session as FilesystemRootSessionLike | undefined,
                 },
@@ -966,6 +979,10 @@ export class StreamingToolExecutor {
                 __onProgress: onProgress,
                 __abortSignal: this.abortSignal,
                 __callId: tool.toolCall.id,
+                // ExitPlanMode executes the plan its approval request showed.
+                ...(tool.toolCall.name === "ExitPlanMode"
+                  ? { [EXIT_PLAN_APPROVED_PLAN_ARG]: exitPlanApprovedPlan(approvalArgs) }
+                  : {}),
                 ...(this.liveOptions?.agencHome !== undefined
                   ? { [SESSION_AGENC_HOME_ARG]: this.liveOptions.agencHome }
                   : {}),

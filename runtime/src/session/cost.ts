@@ -26,6 +26,7 @@ import type { BudgetTracker } from "../conversation/token-budget.js";
 import type { Event } from "./event-log.js";
 import type { Sidecar } from "./sidecar.js";
 import { normalizeProviderMetadataIdentity } from "../provider-identity.js";
+import { parseClaudeModelId } from "../utils/model/claudeModelId.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Cost registry — USD per 1K tokens.
@@ -43,6 +44,13 @@ export interface ModelCostEntry {
   readonly cachedInputIncludedInInputTokens?: boolean;
   readonly cacheCreationUsdPer1K?: number;
   /**
+   * OpenAI reports cache writes as a subset of input tokens
+   * (`input_tokens_details.cache_write_tokens`). When true, they are
+   * subtracted from the full-rate input portion and billed at
+   * cacheCreationUsdPer1K instead.
+   */
+  readonly cacheCreationIncludedInInputTokens?: boolean;
+  /**
    * Per-1K rate for reasoning output tokens. Reasoning tokens are reported as
    * a SUBSET of output tokens (OpenAI/xAI Responses convention), so when this
    * is set computeUsdCost charges the full output rate only on the
@@ -51,6 +59,28 @@ export interface ModelCostEntry {
    */
   readonly reasoningOutputUsdPer1K?: number;
   readonly webSearchUsdPerRequest?: number;
+  /**
+   * Rates for calls the provider reports as served in fast mode (Anthropic
+   * `usage.speed: "fast"`). Absent when the model has no fast mode; a fast
+   * call on such a model is billed at the entry's own rates.
+   */
+  readonly fastMode?: Readonly<ModelCostEntry>;
+  /**
+   * True when a fast-served call on a tier without `fastMode` rates has no
+   * documented price (OpenAI lists Fast rates per model and context length).
+   * Without it a fast call on such a tier bills at the tier's own rates.
+   */
+  readonly fastModeRequiresOwnRate?: boolean;
+  /**
+   * Rates for one request whose input exceeds `aboveInputTokens` (OpenAI
+   * long context: the whole request moves to these rates). They may carry
+   * their own `fastMode`. Applied only to usage marked `singleCall`, because
+   * the threshold is per request, not per session.
+   */
+  readonly longContext?: Readonly<{
+    readonly aboveInputTokens: number;
+    readonly rates: Readonly<ModelCostEntry>;
+  }>;
   /** Free-form label for display. */
   readonly label?: string;
   /**
@@ -89,31 +119,6 @@ export const DEFAULT_UNKNOWN_MODEL_COST: Readonly<ModelCostEntry> =
     label: "fallback",
   });
 
-function openAiCachedInputTier(
-  inputUsdPer1M: number,
-  outputUsdPer1M: number,
-  cachedInputUsdPer1M: number,
-): Readonly<ModelCostEntry> {
-  return Object.freeze({
-    inputUsdPer1K: inputUsdPer1M / 1000,
-    outputUsdPer1K: outputUsdPer1M / 1000,
-    cachedInputUsdPer1K: cachedInputUsdPer1M / 1000,
-    cachedInputIncludedInInputTokens: true,
-    webSearchUsdPerRequest: 0.01,
-  });
-}
-
-function openAiUncachedInputTier(
-  inputUsdPer1M: number,
-  outputUsdPer1M: number,
-): Readonly<ModelCostEntry> {
-  return Object.freeze({
-    inputUsdPer1K: inputUsdPer1M / 1000,
-    outputUsdPer1K: outputUsdPer1M / 1000,
-    webSearchUsdPerRequest: 0.01,
-  });
-}
-
 function openAiCostAliases(
   model: string,
   entry: ModelCostEntry,
@@ -127,25 +132,192 @@ function openAiCostAliases(
   };
 }
 
-const COST_TIER_GPT_5_4 = openAiCachedInputTier(2.5, 15, 0.25);
-const COST_TIER_GPT_5_4_MINI = openAiCachedInputTier(0.75, 4.5, 0.075);
-const COST_TIER_GPT_5_4_NANO = openAiCachedInputTier(0.2, 1.25, 0.02);
-const COST_TIER_GPT_5_2 = openAiCachedInputTier(1.75, 14, 0.175);
-const COST_TIER_GPT_5_1 = openAiCachedInputTier(1.25, 10, 0.125);
-const COST_TIER_GPT_5 = openAiCachedInputTier(1.25, 10, 0.125);
-const COST_TIER_GPT_5_MINI = openAiCachedInputTier(0.25, 2, 0.025);
-const COST_TIER_GPT_5_NANO = openAiCachedInputTier(0.05, 0.4, 0.005);
-const COST_TIER_GPT_4_1 = openAiCachedInputTier(2, 8, 0.5);
-const COST_TIER_GPT_4_1_MINI = openAiCachedInputTier(0.4, 1.6, 0.1);
-const COST_TIER_GPT_4_1_NANO = openAiCachedInputTier(0.1, 0.4, 0.025);
-const COST_TIER_GPT_4O = openAiCachedInputTier(2.5, 10, 1.25);
-const COST_TIER_GPT_4O_MINI = openAiCachedInputTier(0.15, 0.6, 0.075);
-const COST_TIER_O1 = openAiCachedInputTier(15, 60, 7.5);
-const COST_TIER_O1_MINI = openAiCachedInputTier(1.1, 4.4, 0.55);
-const COST_TIER_O1_PRO = openAiUncachedInputTier(150, 600);
-const COST_TIER_O3 = openAiCachedInputTier(2, 8, 0.5);
-const COST_TIER_O3_MINI = openAiCachedInputTier(1.1, 4.4, 0.55);
-const COST_TIER_O4_MINI = openAiCachedInputTier(1.1, 4.4, 0.275);
+/** Per 1M tokens: input, output, cached input, cache writes. */
+type OpenAiRateRow = readonly [
+  input: number,
+  output: number,
+  cachedInput?: number,
+  cacheWrite?: number,
+];
+
+/** OpenAI bills a request over this many input tokens at long-context rates. */
+const OPENAI_LONG_CONTEXT_ABOVE_INPUT_TOKENS = 272_000;
+
+function openAiRates(
+  [input, output, cachedInput, cacheWrite]: OpenAiRateRow,
+  fast?: OpenAiRateRow,
+): Readonly<ModelCostEntry> {
+  return Object.freeze({
+    inputUsdPer1K: input / 1000,
+    outputUsdPer1K: output / 1000,
+    ...(cachedInput !== undefined
+      ? {
+          cachedInputUsdPer1K: cachedInput / 1000,
+          cachedInputIncludedInInputTokens: true,
+        }
+      : {}),
+    ...(cacheWrite !== undefined
+      ? {
+          cacheCreationUsdPer1K: cacheWrite / 1000,
+          cacheCreationIncludedInInputTokens: true,
+        }
+      : {}),
+    webSearchUsdPerRequest: 0.01,
+    ...(fast !== undefined ? { fastMode: openAiRates(fast) } : {}),
+    fastModeRequiresOwnRate: true,
+  });
+}
+
+/**
+ * One OpenAI model's rows from the Standard and Fast tables of
+ * developers.openai.com/api/docs/pricing. A missing Fast row, or a missing
+ * Fast long-context row, is a tier OpenAI publishes no price for: a call
+ * served there is unpriced, and a hard USD cap refuses to request it.
+ */
+function openAiTier(spec: {
+  readonly standard: OpenAiRateRow;
+  readonly fast?: OpenAiRateRow;
+  readonly longContext?: {
+    readonly standard: OpenAiRateRow;
+    readonly fast?: OpenAiRateRow;
+  };
+}): Readonly<ModelCostEntry> {
+  return Object.freeze({
+    ...openAiRates(spec.standard, spec.fast),
+    ...(spec.longContext !== undefined
+      ? {
+          longContext: Object.freeze({
+            aboveInputTokens: OPENAI_LONG_CONTEXT_ABOVE_INPUT_TOKENS,
+            rates: openAiRates(
+              spec.longContext.standard,
+              spec.longContext.fast,
+            ),
+          }),
+        }
+      : {}),
+  });
+}
+
+// OpenAI rows from the Standard and Fast tables of
+// developers.openai.com/api/docs/pricing, read 2026-09-23. A prompt over 272K
+// input tokens bills the whole request at the long-context rates, cache
+// writes on GPT-5.6 and later cost 1.25x input, and Fast mode (formerly
+// priority processing) has its own table. GPT-5.6 Sol's rate is promotional,
+// available at least through 2026-11-21. GPT-5.3 Codex is in the grouped
+// Codex table. o1-mini is no longer on the page and keeps its old rate.
+const COST_TIER_GPT_6_ASTRA = openAiTier({
+  standard: [10, 50, 1, 12.5],
+  fast: [20, 100, 2, 25],
+  longContext: { standard: [20, 75, 2, 25], fast: [40, 150, 4, 50] },
+});
+const COST_TIER_GPT_6_SOL = openAiTier({
+  standard: [2, 10, 0.2, 2.5],
+  fast: [4, 20, 0.4, 5],
+  longContext: { standard: [4, 15, 0.4, 5], fast: [8, 30, 0.8, 10] },
+});
+const COST_TIER_GPT_6_LUNA = openAiTier({
+  standard: [0.1, 0.5, 0.01, 0.125],
+  fast: [0.2, 1, 0.02, 0.25],
+  longContext: { standard: [0.2, 0.75, 0.02, 0.25], fast: [0.4, 1.5, 0.04, 0.5] },
+});
+const COST_TIER_GPT_5_6_SOL = openAiTier({
+  standard: [4, 20, 0.4, 5],
+  fast: [8, 40, 0.8, 10],
+  longContext: { standard: [8, 30, 0.8, 10], fast: [16, 60, 1.6, 20] },
+});
+const COST_TIER_GPT_5_6_TERRA = openAiTier({
+  standard: [2, 12, 0.2, 2.5],
+  fast: [4, 24, 0.4, 5],
+  longContext: { standard: [4, 18, 0.4, 5], fast: [8, 36, 0.8, 10] },
+});
+const COST_TIER_GPT_5_6_LUNA = openAiTier({
+  standard: [0.2, 1.2, 0.02, 0.25],
+  fast: [0.4, 2.4, 0.04, 0.5],
+  longContext: { standard: [0.4, 1.8, 0.04, 0.5], fast: [0.8, 3.6, 0.08, 1] },
+});
+const COST_TIER_GPT_5_5 = openAiTier({
+  standard: [5, 30, 0.5],
+  fast: [12.5, 75, 1.25],
+  longContext: { standard: [10, 45, 1] },
+});
+const COST_TIER_GPT_5_5_PRO = openAiTier({
+  standard: [30, 180],
+  longContext: { standard: [60, 270] },
+});
+const COST_TIER_GPT_5_3_CODEX = openAiTier({
+  standard: [1.75, 14, 0.175],
+  fast: [3.5, 28, 0.35],
+});
+const COST_TIER_GPT_5_4 = openAiTier({
+  standard: [2.5, 15, 0.25],
+  fast: [5, 30, 0.5],
+  longContext: { standard: [5, 22.5, 0.5] },
+});
+const COST_TIER_GPT_5_4_MINI = openAiTier({
+  standard: [0.75, 4.5, 0.075],
+  fast: [1.5, 9, 0.15],
+});
+const COST_TIER_GPT_5_4_NANO = openAiTier({ standard: [0.2, 1.25, 0.02] });
+const COST_TIER_GPT_5_4_PRO = openAiTier({
+  standard: [30, 180],
+  longContext: { standard: [60, 270] },
+});
+const COST_TIER_GPT_5_2 = openAiTier({
+  standard: [1.75, 14, 0.175],
+  fast: [3.5, 28, 0.35],
+});
+const COST_TIER_GPT_5_2_PRO = openAiTier({ standard: [21, 168] });
+const COST_TIER_GPT_5_1 = openAiTier({
+  standard: [1.25, 10, 0.125],
+  fast: [2.5, 20, 0.25],
+});
+const COST_TIER_GPT_5 = openAiTier({
+  standard: [1.25, 10, 0.125],
+  fast: [2.5, 20, 0.25],
+});
+const COST_TIER_GPT_5_MINI = openAiTier({
+  standard: [0.25, 2, 0.025],
+  fast: [0.45, 3.6, 0.045],
+});
+const COST_TIER_GPT_5_NANO = openAiTier({ standard: [0.05, 0.4, 0.005] });
+const COST_TIER_GPT_5_PRO = openAiTier({ standard: [15, 120] });
+const COST_TIER_GPT_4_1 = openAiTier({
+  standard: [2, 8, 0.5],
+  fast: [3.5, 14, 0.875],
+});
+const COST_TIER_GPT_4_1_MINI = openAiTier({
+  standard: [0.4, 1.6, 0.1],
+  fast: [0.7, 2.8, 0.175],
+});
+const COST_TIER_GPT_4_1_NANO = openAiTier({
+  standard: [0.1, 0.4, 0.025],
+  fast: [0.2, 0.8, 0.05],
+});
+const COST_TIER_GPT_4O = openAiTier({
+  standard: [2.5, 10, 1.25],
+  fast: [4.25, 17, 2.125],
+});
+const COST_TIER_GPT_4O_2024_05_13 = openAiTier({
+  standard: [5, 15],
+  fast: [8.75, 26.25],
+});
+const COST_TIER_GPT_4O_MINI = openAiTier({
+  standard: [0.15, 0.6, 0.075],
+  fast: [0.25, 1, 0.125],
+});
+const COST_TIER_O1 = openAiTier({ standard: [15, 60, 7.5] });
+const COST_TIER_O1_MINI = openAiTier({ standard: [1.1, 4.4, 0.55] });
+const COST_TIER_O1_PRO = openAiTier({ standard: [150, 600] });
+const COST_TIER_O3 = openAiTier({
+  standard: [2, 8, 0.5],
+  fast: [3.5, 14, 0.875],
+});
+const COST_TIER_O3_PRO = openAiTier({ standard: [20, 80] });
+const COST_TIER_O3_MINI = openAiTier({ standard: [1.1, 4.4, 0.55] });
+const COST_TIER_O4_MINI = openAiTier({
+  standard: [1.1, 4.4, 0.275],
+  fast: [2, 8, 0.5],
+});
 
 // Official DeepSeek API prices retrieved 2026-08-24:
 // https://api-docs.deepseek.com/quick_start/pricing/
@@ -334,6 +506,40 @@ const COST_TIER_OPUS_5_25: Readonly<ModelCostEntry> = Object.freeze({
   webSearchUsdPerRequest: 0.01,
 });
 
+// Fast mode (platform.claude.com fast-mode and pricing docs, 2026-09-22):
+// Claude Opus 5 and Opus 4.8 at $10/$50, Opus 5.5 at $8/$40, each 2x its
+// standard price. Prompt-caching multipliers apply on top, so cache reads
+// and 5-minute writes keep each model's ratio to base input.
+const COST_TIER_OPUS_5_25_FAST_10_50: Readonly<ModelCostEntry> = Object.freeze({
+  ...COST_TIER_OPUS_5_25,
+  fastMode: Object.freeze({
+    inputUsdPer1K: 0.01,
+    outputUsdPer1K: 0.05,
+    cachedInputUsdPer1K: 0.001,
+    cacheCreationUsdPer1K: 0.0125,
+    webSearchUsdPerRequest: 0.01,
+  }),
+});
+
+// Claude Opus 5.5 at $4/$20 (platform.claude.com pricing, 2026-09-22). Cache
+// reads cost 0.05x base input ($0.20/MTok), not the usual 0.1x; the 5-minute
+// cache write is the standard 1.25x ($5/MTok). Like the other tiers, the
+// 1-hour write ($8/MTok) has no separate rate here.
+const COST_TIER_OPUS_5_5_4_20: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.004,
+  outputUsdPer1K: 0.02,
+  cachedInputUsdPer1K: 0.0002,
+  cacheCreationUsdPer1K: 0.005,
+  webSearchUsdPerRequest: 0.01,
+  fastMode: Object.freeze({
+    inputUsdPer1K: 0.008,
+    outputUsdPer1K: 0.04,
+    cachedInputUsdPer1K: 0.0004,
+    cacheCreationUsdPer1K: 0.01,
+    webSearchUsdPerRequest: 0.01,
+  }),
+});
+
 // Claude Fable 5 / 5.1 at $10/$50 and Claude Sonnet 5 at $2/$10
 // (platform.claude.com models overview, 2026-09-11).
 const COST_TIER_FABLE_10_50: Readonly<ModelCostEntry> = Object.freeze({
@@ -434,6 +640,8 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     // ($4 / $1 / $12); this table has no prompt-size tier, so a >200k turn is
     // under-counted. Under-counting is the deliberate side to err on — the
     // alternative trips dollar_cap budgets early on every short turn.
+    // Grok 4.7 launch pricing has the same base rates and long-context caveat.
+    ...grokCostAliases("grok-4.7", COST_TIER_GROK_45),
     ...grokCostAliases("grok-4.6", COST_TIER_GROK_45),
     ...grokCostAliases("grok-4.5", COST_TIER_GROK_45),
     ...grokCostAliases("grok-4.3", COST_TIER_GROK_4X_NON_REASONING),
@@ -446,32 +654,48 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       "grok-4.20-multi-agent-0309",
       COST_TIER_GROK_4X_NON_REASONING,
     ),
+    ...openAiCostAliases("gpt-6-astra", COST_TIER_GPT_6_ASTRA),
+    ...openAiCostAliases("gpt-6-sol", COST_TIER_GPT_6_SOL),
+    ...openAiCostAliases("gpt-6-luna", COST_TIER_GPT_6_LUNA),
+    ...openAiCostAliases("gpt-5.6-sol", COST_TIER_GPT_5_6_SOL),
+    ...openAiCostAliases("gpt-5.6-terra", COST_TIER_GPT_5_6_TERRA),
+    ...openAiCostAliases("gpt-5.6-luna", COST_TIER_GPT_5_6_LUNA),
+    ...openAiCostAliases("gpt-5.5", COST_TIER_GPT_5_5),
+    ...openAiCostAliases("gpt-5.5-pro", COST_TIER_GPT_5_5_PRO),
+    ...openAiCostAliases("gpt-5.3-codex", COST_TIER_GPT_5_3_CODEX),
     ...openAiCostAliases("gpt-5.4", COST_TIER_GPT_5_4),
     ...openAiCostAliases("gpt-5.4-mini", COST_TIER_GPT_5_4_MINI),
     ...openAiCostAliases("gpt-5.4-nano", COST_TIER_GPT_5_4_NANO),
+    ...openAiCostAliases("gpt-5.4-pro", COST_TIER_GPT_5_4_PRO),
     ...openAiCostAliases("gpt-5.2", COST_TIER_GPT_5_2),
+    ...openAiCostAliases("gpt-5.2-pro", COST_TIER_GPT_5_2_PRO),
     ...openAiCostAliases("gpt-5.1", COST_TIER_GPT_5_1),
     ...openAiCostAliases("gpt-5", COST_TIER_GPT_5),
     ...openAiCostAliases("gpt-5-mini", COST_TIER_GPT_5_MINI),
     ...openAiCostAliases("gpt-5-nano", COST_TIER_GPT_5_NANO),
+    ...openAiCostAliases("gpt-5-pro", COST_TIER_GPT_5_PRO),
     ...openAiCostAliases("gpt-4.1", COST_TIER_GPT_4_1),
     ...openAiCostAliases("gpt-4.1-mini", COST_TIER_GPT_4_1_MINI),
     ...openAiCostAliases("gpt-4.1-nano", COST_TIER_GPT_4_1_NANO),
     ...openAiCostAliases("gpt-4o", COST_TIER_GPT_4O),
+    ...openAiCostAliases("gpt-4o-2024-05-13", COST_TIER_GPT_4O_2024_05_13),
     ...openAiCostAliases("gpt-4o-mini", COST_TIER_GPT_4O_MINI),
     ...openAiCostAliases("o1", COST_TIER_O1),
     ...openAiCostAliases("o1-preview", COST_TIER_O1),
     ...openAiCostAliases("o1-mini", COST_TIER_O1_MINI),
     ...openAiCostAliases("o1-pro", COST_TIER_O1_PRO),
     ...openAiCostAliases("o3", COST_TIER_O3),
+    ...openAiCostAliases("o3-pro", COST_TIER_O3_PRO),
     ...openAiCostAliases("o3-mini", COST_TIER_O3_MINI),
     ...openAiCostAliases("o4-mini", COST_TIER_O4_MINI),
     "anthropic:claude-fable-5-1": COST_TIER_FABLE_10_50,
     "claude-fable-5-1": COST_TIER_FABLE_10_50,
     "anthropic:claude-fable-5": COST_TIER_FABLE_10_50,
     "claude-fable-5": COST_TIER_FABLE_10_50,
-    "anthropic:claude-opus-5": COST_TIER_OPUS_5_25,
-    "claude-opus-5": COST_TIER_OPUS_5_25,
+    "anthropic:claude-opus-5-5": COST_TIER_OPUS_5_5_4_20,
+    "claude-opus-5-5": COST_TIER_OPUS_5_5_4_20,
+    "anthropic:claude-opus-5": COST_TIER_OPUS_5_25_FAST_10_50,
+    "claude-opus-5": COST_TIER_OPUS_5_25_FAST_10_50,
     "anthropic:claude-sonnet-5": COST_TIER_SONNET_2_10,
     "claude-sonnet-5": COST_TIER_SONNET_2_10,
     "anthropic:claude-sonnet-4-6": COST_TIER_SONNET,
@@ -481,8 +705,8 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     // Current Opus generation (4.5-4.8) at $5/$25. canonicalModel routes the
     // whole modern family to claude-opus-4-8; the explicit slugs below keep the
     // exact-match lookup (which precedes canonical) on the same tier.
-    "anthropic:claude-opus-4-8": COST_TIER_OPUS_5_25,
-    "claude-opus-4-8": COST_TIER_OPUS_5_25,
+    "anthropic:claude-opus-4-8": COST_TIER_OPUS_5_25_FAST_10_50,
+    "claude-opus-4-8": COST_TIER_OPUS_5_25_FAST_10_50,
     "anthropic:claude-opus-4-7": COST_TIER_OPUS_5_25,
     "claude-opus-4-7": COST_TIER_OPUS_5_25,
     "anthropic:claude-opus-4-7-1m": COST_TIER_OPUS_5_25,
@@ -624,6 +848,18 @@ export interface ModelUsage {
   totalTokens: number;
   /** Number of completed turns attributed to this model. */
   turns: number;
+  /**
+   * Set when every token here was served in fast mode, so the entry's
+   * `fastMode` rates apply. Accumulated per-model usage leaves it unset and
+   * records fast turns as explicit cost instead.
+   */
+  readonly speed?: "fast";
+  /**
+   * Set when these tokens are one provider request, so per-request pricing
+   * (OpenAI long context above 272K input) can apply. Accumulated usage
+   * leaves it unset and records such requests as explicit cost instead.
+   */
+  readonly singleCall?: true;
 }
 
 export interface TokenUsageDelta {
@@ -700,10 +936,19 @@ export function computeUsdCostWithResolution(
   registry: Readonly<Record<string, ModelCostEntry>>,
 ): CostResolution {
   const match = resolveModelCostEntry(usage, registry);
-  const entry = match?.entry ?? DEFAULT_UNKNOWN_MODEL_COST;
-  const fullRateInputTokens = entry.cachedInputIncludedInInputTokens
-    ? Math.max(0, usage.inputTokens - usage.cachedInputTokens)
-    : usage.inputTokens;
+  const standardEntry = match?.entry ?? DEFAULT_UNKNOWN_MODEL_COST;
+  const { rates: entry, documented } = selectCallRates(
+    standardEntry,
+    callPricingOf(usage),
+  );
+  const fullRateInputTokens = Math.max(
+    0,
+    usage.inputTokens -
+      (entry.cachedInputIncludedInInputTokens ? usage.cachedInputTokens : 0) -
+      (entry.cacheCreationIncludedInInputTokens
+        ? usage.cacheCreationInputTokens
+        : 0),
+  );
   const inputCost = (fullRateInputTokens / 1000) * entry.inputUsdPer1K;
   // gaphunt3 #12: reasoning tokens are reported as a SUBSET of output tokens
   // (OpenAI/xAI Responses convention: output_tokens_details.reasoning_tokens
@@ -740,9 +985,50 @@ export function computeUsdCostWithResolution(
       cacheCreationCost +
       reasoningCost +
       webSearchCost,
-    known: match !== null,
+    known: match !== null && documented,
     ...(match ? { matchedKey: match.key } : {}),
   };
+}
+
+/** What one call's price depends on besides its token counts. */
+export interface CallPricing {
+  /** The call was served in fast mode. */
+  readonly speed?: "fast";
+  /** Input tokens of this one request; absent for accumulated usage. */
+  readonly singleCallInputTokens?: number;
+}
+
+function callPricingOf(usage: ModelUsage): CallPricing {
+  return {
+    ...(usage.speed === "fast" ? { speed: "fast" as const } : {}),
+    ...(usage.singleCall === true
+      ? { singleCallInputTokens: usage.inputTokens }
+      : {}),
+  };
+}
+
+/**
+ * The rates one call bills at: the long-context rates when a single
+ * request's input passes the entry's threshold, then that tier's fast-mode
+ * rates when the call was served fast. `documented` is false when the
+ * provider publishes no rate for the combination (for example GPT-5.5 Fast
+ * above 272K input), so callers can treat the call as unpriced.
+ */
+export function selectCallRates(
+  entry: Readonly<ModelCostEntry>,
+  call: CallPricing,
+): { readonly rates: Readonly<ModelCostEntry>; readonly documented: boolean } {
+  const tier =
+    entry.longContext !== undefined &&
+    call.singleCallInputTokens !== undefined &&
+    call.singleCallInputTokens > entry.longContext.aboveInputTokens
+      ? entry.longContext.rates
+      : entry;
+  if (call.speed !== "fast") return { rates: tier, documented: true };
+  if (tier.fastMode !== undefined) {
+    return { rates: tier.fastMode, documented: true };
+  }
+  return { rates: tier, documented: tier.fastModeRequiresOwnRate !== true };
 }
 
 export function resolveModelCostEntry(
@@ -754,6 +1040,45 @@ export function resolveModelCostEntry(
     if (entry) return { key, entry };
   }
   return null;
+}
+
+/**
+ * OpenAI models priced by exact id: the id itself or one of its dated
+ * snapshots (`<id>-YYYY-MM-DD`) share its price, but a sibling such as
+ * gpt-5.4-pro or gpt-5.6-cyber does not. Every GPT-5 and GPT-6 model is here,
+ * because a Pro sibling costs many times its base model.
+ */
+const OPENAI_EXACTLY_PRICED_MODELS = Object.freeze([
+  "gpt-6-astra",
+  "gpt-6-sol",
+  "gpt-6-luna",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+  "gpt-5.5",
+  "gpt-5.5-pro",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.4-nano",
+  "gpt-5.4-pro",
+  "gpt-5.3-codex",
+  "gpt-5.2",
+  "gpt-5.2-pro",
+  "gpt-5.1",
+  "gpt-5-mini",
+  "gpt-5-nano",
+  "gpt-5-pro",
+  "gpt-4o-2024-05-13",
+  "o1-pro",
+  "o3-pro",
+]);
+
+function isModelOrDatedSnapshot(candidate: string, model: string): boolean {
+  return (
+    candidate === model ||
+    (candidate.startsWith(`${model}-`) &&
+      /^\d{4}-\d{2}-\d{2}$/u.test(candidate.slice(model.length + 1)))
+  );
 }
 
 /**
@@ -769,6 +1094,16 @@ function canonicalModel(model: string): string {
   const unqualified = pathUnqualified.includes(":")
     ? pathUnqualified.slice(pathUnqualified.lastIndexOf(":") + 1)
     : pathUnqualified;
+  // The Claude 5 generation prices by exact identity through the shared
+  // parser, tried on the whole id first because a Bedrock `-v1:0` suffix
+  // would otherwise be cut at its colon. Opus 5 and Opus 5.5 bill
+  // differently, so an unknown minor (claude-opus-5-50) stays unpriced
+  // rather than inheriting either one.
+  const claude =
+    parseClaudeModelId(normalized) ??
+    parseClaudeModelId(pathUnqualified) ??
+    parseClaudeModelId(unqualified);
+  if (claude !== undefined && claude.major >= 5) return claude.canonical;
   if (unqualified.startsWith("grok-4-fast")) return "grok-4-fast";
   // Non-reasoning grok-4.x variants are priced explicitly below; route them to
   // their own keys so they are NOT collapsed onto the reasoning entry (which
@@ -787,17 +1122,26 @@ function canonicalModel(model: string): string {
   if (unqualified.startsWith("grok-4") && unqualified.includes("reasoning")) {
     return "grok-4.20-0309-reasoning";
   }
-  if (unqualified.startsWith("gpt-5.4-mini")) return "gpt-5.4-mini";
-  if (unqualified.startsWith("gpt-5.4-nano")) return "gpt-5.4-nano";
-  if (unqualified.startsWith("gpt-5.4")) return "gpt-5.4";
-  if (unqualified.startsWith("gpt-5.2")) return "gpt-5.2";
-  if (unqualified.startsWith("gpt-5.1")) return "gpt-5.1";
-  if (unqualified.startsWith("gpt-5-mini")) return "gpt-5-mini";
-  if (unqualified.startsWith("gpt-5-nano")) return "gpt-5-nano";
-  if (unqualified.startsWith("gpt-5")) return "gpt-5";
+  const exactlyPricedOpenAiModel = OPENAI_EXACTLY_PRICED_MODELS.find(
+    (priced) => isModelOrDatedSnapshot(unqualified, priced),
+  );
+  if (exactlyPricedOpenAiModel !== undefined) return exactlyPricedOpenAiModel;
+  // Any other OpenAI Pro variant stays unpriced instead of reaching a cheaper
+  // base model through the prefix routes below.
+  if (/^(?:gpt-|o\d)[^/]*-pro(?:$|-)/u.test(unqualified)) return normalized;
+  // OpenAI documents the gpt-5.6 alias as routing to gpt-5.6-sol.
+  if (unqualified === "gpt-5.6") return "gpt-5.6-sol";
+  // gpt-5 itself, its dated snapshots and gpt-5-codex, which OpenAI prices
+  // the same. A dotted minor (gpt-5.5, gpt-5.6-sol) is another model and
+  // stays unpriced unless it has its own entry above.
+  if (
+    unqualified === "gpt-5-codex" ||
+    isModelOrDatedSnapshot(unqualified, "gpt-5")
+  ) {
+    return "gpt-5";
+  }
   if (unqualified.startsWith("o1-mini")) return "o1-mini";
   if (unqualified.startsWith("o1-preview")) return "o1-preview";
-  if (unqualified.startsWith("o1-pro")) return "o1-pro";
   if (unqualified.startsWith("o1")) return "o1";
   if (unqualified.startsWith("o3-mini")) return "o3-mini";
   if (unqualified.startsWith("o3")) return "o3";
@@ -1391,6 +1735,36 @@ export class CostSidecar implements Sidecar {
         this.currentModel = model;
         this.currentProvider = provider ?? null;
         this.lastUsageKey = key;
+        {
+          // A call served in fast mode, or one long enough for per-request
+          // long-context rates, is priced at its own rates and recorded as
+          // explicit cost, so the per-model bucket (priced at standard
+          // rates) never counts its tokens a second time.
+          const callDelta: ModelUsage = {
+            model,
+            ...(provider !== undefined ? { provider } : {}),
+            inputTokens: msg.payload.promptTokens ?? 0,
+            outputTokens: msg.payload.completionTokens ?? 0,
+            cachedInputTokens: msg.payload.cachedInputTokens ?? 0,
+            cacheCreationInputTokens: msg.payload.cacheCreationInputTokens ?? 0,
+            reasoningOutputTokens: msg.payload.reasoningOutputTokens ?? 0,
+            webSearchRequests: msg.payload.webSearchRequests ?? 0,
+            totalTokens: msg.payload.totalTokens ?? 0,
+            turns: 0,
+            singleCall: true,
+            ...(msg.payload.speed === "fast" ? { speed: "fast" as const } : {}),
+          };
+          const standardEntry = resolveModelCostEntry(callDelta, this.registry)?.entry;
+          if (
+            standardEntry !== undefined &&
+            selectCallRates(standardEntry, callPricingOf(callDelta)).rates !== standardEntry
+          ) {
+            this.recordExplicitCost(key, callDelta, computeUsdCost(callDelta, this.registry));
+          }
+          if (!computeUsdCostWithResolution(callDelta, this.registry).known) {
+            this.unknownCostModels.add(key);
+          }
+        }
         if (!computeUsdCostWithResolution(usage, this.registry).known) {
           this.unknownCostModels.add(key);
         }
@@ -1616,27 +1990,55 @@ export class CostSidecar implements Sidecar {
 
     const costUsd = normalizeCost(delta.costUsd);
     if (costUsd > 0) {
-      const explicit =
-        this.explicitPerModelUsage.get(key) ?? emptyModelUsage(delta.model, provider);
-      explicit.inputTokens += promptTokens;
-      explicit.outputTokens += completionTokens;
-      explicit.cachedInputTokens += normalizeCounter(delta.cachedInputTokens);
-      explicit.cacheCreationInputTokens += normalizeCounter(
-        delta.cacheCreationInputTokens,
-      );
-      explicit.reasoningOutputTokens += reasoningOutputTokens;
-      explicit.webSearchRequests += normalizeCounter(delta.webSearchRequests);
-      explicit.totalTokens += totalTokens;
-      this.explicitPerModelUsage.set(key, explicit);
-      this.explicitPerModelCostUsd.set(
+      this.recordExplicitCost(
         key,
-        (this.explicitPerModelCostUsd.get(key) ?? 0) + costUsd,
+        {
+          model: delta.model,
+          ...(provider !== undefined ? { provider } : {}),
+          inputTokens: promptTokens,
+          outputTokens: completionTokens,
+          cachedInputTokens: normalizeCounter(delta.cachedInputTokens),
+          cacheCreationInputTokens: normalizeCounter(
+            delta.cacheCreationInputTokens,
+          ),
+          reasoningOutputTokens,
+          webSearchRequests: normalizeCounter(delta.webSearchRequests),
+          totalTokens,
+          turns: 0,
+        },
+        costUsd,
       );
     }
 
     if (!computeUsdCostWithResolution(usage, this.registry).known) {
       this.unknownCostModels.add(key);
     }
+  }
+
+  /**
+   * Attribute `costUsd` to these tokens directly: getModelUsageCostUsd adds
+   * it and prices only the model's remaining tokens from the registry.
+   */
+  private recordExplicitCost(
+    key: string,
+    delta: ModelUsage,
+    costUsd: number,
+  ): void {
+    const explicit =
+      this.explicitPerModelUsage.get(key) ??
+      emptyModelUsage(delta.model, delta.provider);
+    explicit.inputTokens += delta.inputTokens;
+    explicit.outputTokens += delta.outputTokens;
+    explicit.cachedInputTokens += delta.cachedInputTokens;
+    explicit.cacheCreationInputTokens += delta.cacheCreationInputTokens;
+    explicit.reasoningOutputTokens += delta.reasoningOutputTokens;
+    explicit.webSearchRequests += delta.webSearchRequests;
+    explicit.totalTokens += delta.totalTokens;
+    this.explicitPerModelUsage.set(key, explicit);
+    this.explicitPerModelCostUsd.set(
+      key,
+      (this.explicitPerModelCostUsd.get(key) ?? 0) + costUsd,
+    );
   }
 
   getTotalLinesAdded(): number {

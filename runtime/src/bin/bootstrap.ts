@@ -121,6 +121,7 @@ import {
 import {
   resolveCommandExecutionAuthority,
   resolveAgentRuntimeOptions,
+  routineRunOptions,
   runWithAgentRuntimeOptions,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
@@ -517,6 +518,7 @@ function buildDeferredConfig(
   const maxBudgetUsd = maxBudgetUsdFromAgenCConfig(config);
   return {
     model,
+    ...(config.agents !== undefined ? { agents: config.agents } : {}),
     ...(config.model_verbosity !== undefined
       ? { modelVerbosity: config.model_verbosity }
       : {}),
@@ -545,6 +547,7 @@ function buildDeferredConfig(
     ...(config.completion_gate !== undefined
       ? { completionGate: config.completion_gate }
       : {}),
+    ...(config.goal !== undefined ? { goal: config.goal } : {}),
     ...(config.compaction !== undefined ? { compaction: config.compaction } : {}),
     ...(config.approvals_reviewer !== undefined
       ? { approvalsReviewer: config.approvals_reviewer }
@@ -633,6 +636,12 @@ export interface BootstrapLocalRuntimeSessionOptions {
   >;
   /** Production daemon entrypoints require a healthy boundary before startup. */
   readonly requireSandboxReadyAtStartup?: boolean;
+  /**
+   * Print the CLI cost summary when the process exits (default). Daemon-hosted
+   * sessions pass `false`: one multiplexed process must not register an exit
+   * hook per session nor write per-session summaries to its own stdout.
+   */
+  readonly costSummaryOnExit?: boolean;
   /** Shared daemon authority. Omit only for an independently owned session. */
   readonly executionAdmissionKernel?: ExecutionAdmissionKernel;
   /** Shared daemon authority. Omit only for an independently owned session. */
@@ -1158,11 +1167,17 @@ async function bootstrapLocalRuntimeSessionScoped(
       ),
       workspaceRoot,
     );
+  const routineRun = routineRunOptions({ services: { runtimeOptions } });
   const sandboxExecutionBroker = new SandboxExecutionBroker({
     mode: initialSandboxExecutionAuthority.mode,
     cwd: workspaceRoot,
     env,
     sessionTempRoot,
+    // A scheduled routine run: its commands write only in the workspace and
+    // get a scratch folder there (or the workspace itself) as TMPDIR.
+    ...(routineRun !== undefined
+      ? { routineChildTempRoot: routineRun.scratchRoot ?? workspaceRoot }
+      : {}),
     ...(initialSandboxExecutionAuthority.permissionProfile !== undefined
       ? {
           permissionProfile:
@@ -1298,6 +1313,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       : null;
   const csvAgentJobsRepositories =
     options.csvAgentJobsRepositories ?? ownedCsvAgentJobsRepositories!;
+  const releaseCsvWorkspace = csvAgentJobsRepositories.retainWorkspace?.(workspaceRoot);
   const configuredToolsConfig =
     options.toolRegistryOptions?.toolsConfig ?? startup.config.tools_config;
   // A session nobody can answer (one-shot `agenc -p`) must not offer tools
@@ -1323,6 +1339,9 @@ async function bootstrapLocalRuntimeSessionScoped(
       ...(startup.config.browser !== undefined
         ? { browserConfig: startup.config.browser }
         : {}),
+      projectRootMarkers: startup.config.project_root_markers,
+      projectRootMarkersProvider: () => configStore.current().project_root_markers,
+      subscribeProjectRootMarkers: (listener) => configStore.subscribe(() => listener()),
       // Coordinator mode restricts the LIVE surface to orchestration +
       // user-interaction tools: the coordinator directs workers, it
       // does not edit files or run commands itself.
@@ -1741,6 +1760,16 @@ async function bootstrapLocalRuntimeSessionScoped(
       } catch (error) {
         errors.push(error);
       }
+      try {
+        executionAdmission.release?.();
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        await releaseCsvWorkspace?.();
+      } catch (error) {
+        errors.push(error);
+      }
       if (ownedExecutionAdmissionKernel !== null) {
         try {
           ownedExecutionAdmissionKernel.close();
@@ -2072,9 +2101,13 @@ async function bootstrapLocalRuntimeSessionScoped(
         const costSidecar = new CostSidecar({
           defaultModel: model,
           defaultProvider: resolvedProvider,
-          exitSummary: {
-            shouldPrint: () => process.env.AGENC_DISABLE_COST_SUMMARY !== "1",
-          },
+          exitSummary:
+            options.costSummaryOnExit === false
+              ? false
+              : {
+                  shouldPrint: () =>
+                    process.env.AGENC_DISABLE_COST_SUMMARY !== "1",
+                },
           budgetTracker: s.budgetTracker,
           projectDir,
           sessionId: conversationId,
@@ -2183,13 +2216,16 @@ async function bootstrapLocalRuntimeSessionScoped(
               }
             } catch (error) {
               if (!startupWasCancelled()) {
-                s.emit({
-                  id: s.nextInternalSubId(),
-                  msg: { type: "warning", payload: {
-                    cause: "cron_storage_unavailable",
-                    message: `Durable scheduled tasks could not be restored: ${error instanceof Error ? error.message : String(error)}`,
-                  } },
-                });
+                const { cronRestoreFailureNeedsWarning } = await import("../utils/cronTasks.js");
+                if (await cronRestoreFailureNeedsWarning(error, workspaceRoot)) {
+                  s.emit({
+                    id: s.nextInternalSubId(),
+                    msg: { type: "warning", payload: {
+                      cause: "cron_storage_unavailable",
+                      message: `Durable scheduled tasks could not be restored: ${error instanceof Error ? error.message : String(error)}`,
+                    } },
+                  });
+                }
               }
             }
             assertStartupActive();
@@ -2266,6 +2302,9 @@ async function bootstrapLocalRuntimeSessionScoped(
 
     sessionRef = session;
     sessionForShutdown = session;
+    session.registerShutdownResourceRelease(async () => {
+      await releaseCsvWorkspace?.();
+    });
 
     if (rolloutStoreForReturn === null || ctxForReturn === null) {
       // This is unreachable — `onBeforeSessionConfigured` always

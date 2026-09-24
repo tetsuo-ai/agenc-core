@@ -15,6 +15,7 @@ const CREDENTIAL_HOME = resolveHomeContext(
 )
 
 let storedAccessToken: string | undefined
+let previousAccessTokens = new Set<string>()
 let requiresRelogin = true
 const forceRefreshMock = vi.fn()
 
@@ -23,7 +24,7 @@ async function importProviderModule() {
   vi.doMock(credentialsModulePath, () => ({
     readXaiOauthAccessToken: () => storedAccessToken,
     isXaiOauthBearer: (_home: unknown, key: string | undefined) =>
-      key !== undefined && key === storedAccessToken,
+      key !== undefined && (key === storedAccessToken || previousAccessTokens.has(key)),
     forceRefreshXaiOauthCredentials: forceRefreshMock,
     xaiOauthRequiresRelogin: () => requiresRelogin,
   }))
@@ -50,6 +51,7 @@ async function importProviderModule() {
 
 beforeEach(() => {
   storedAccessToken = undefined
+  previousAccessTokens = new Set()
   requiresRelogin = true
   forceRefreshMock.mockReset()
 })
@@ -69,6 +71,8 @@ test('grok without apiKey falls back to the stored OAuth bearer', async () => {
     credentialHome: CREDENTIAL_HOME,
   })
   expect(provider.name).toBe('grok')
+  expect((provider as unknown as { config: { apiKey: string; baseURL: string } }).config)
+    .toMatchObject({ apiKey: 'oauth-bearer-1', baseURL: 'https://api.x.ai/v1' })
 })
 
 test('grok without apiKey and without stored OAuth still requires a key', async () => {
@@ -86,19 +90,18 @@ test('grok without apiKey and without stored OAuth still requires a key', async 
 test('/grok-login OAuth wins over an explicit env-style apiKey', async () => {
   // Product rule: signing in with X means subscription access — leftover
   // XAI_API_KEY / factory apiKey must not shadow the OAuth bearer.
-  // Prove OAuth is active: non-xAI base URL is refused even when apiKey is set
-  // (pure BYOK mode would allow custom gateways).
   storedAccessToken = 'oauth-bearer-1'
   const { createProvider } = await importProviderModule()
 
-  expect(() =>
-    createProvider('grok', {
-      apiKey: 'xai-real-key',
-      model: 'grok-4.5',
-      credentialHome: CREDENTIAL_HOME,
-      baseURL: 'https://attacker.example/v1',
-    }),
-  ).toThrow(/refusing to send the xAI OAuth bearer/)
+  const custom = createProvider('grok', {
+    apiKey: 'xai-real-key',
+    model: 'grok-4.5',
+    credentialHome: CREDENTIAL_HOME,
+    baseURL: 'https://gateway.example.test/v1',
+    extra: { authMode: 'api_key' },
+  }) as unknown as { config: { apiKey: string; baseURL: string } }
+  expect(custom.config.apiKey).toBe('xai-real-key')
+  expect(custom.config.baseURL).toBe('https://gateway.example.test/v1')
 
   const provider = createProvider('grok', {
     apiKey: 'xai-real-key',
@@ -118,19 +121,28 @@ test('OAuth bearer is refused for non-xAI base URLs', async () => {
       credentialHome: CREDENTIAL_HOME,
       baseURL: 'https://attacker.example/v1',
     }),
-  ).toThrow(/refusing to send the xAI OAuth bearer/)
+  ).toThrow(/xAI sign-in credentials.*custom Grok base URL/)
 })
 
-test('OAuth bearer is allowed for the grok.com CLI proxy base URL', async () => {
+test('OAuth bearer is refused for the grok.com CLI proxy base URL', async () => {
   storedAccessToken = 'oauth-bearer-1'
   const { createProvider } = await importProviderModule()
 
-  const provider = createProvider('grok', {
+  expect(() => createProvider('grok', {
     model: 'grok-4.5',
     credentialHome: CREDENTIAL_HOME,
     baseURL: 'https://cli-chat-proxy.grok.com/v1',
-  })
-  expect(provider.name).toBe('grok')
+  })).toThrow(/xAI sign-in credentials.*custom Grok base URL/)
+})
+
+test('OAuth bearer is refused for a lookalike xAI path', async () => {
+  storedAccessToken = 'oauth-bearer-1'
+  const { createProviderRaw } = await importProviderModule()
+  expect(() => createProviderRaw('grok', {
+    model: 'grok-4.5',
+    credentialHome: CREDENTIAL_HOME,
+    baseURL: 'https://api.x.ai/proxy/v1',
+  })).toThrow(/refusing to send the xAI OAuth bearer/)
 })
 
 test('API-key mode is exempt from the OAuth base URL pin', async () => {
@@ -144,6 +156,76 @@ test('API-key mode is exempt from the OAuth base URL pin', async () => {
     baseURL: 'https://my-gateway.example/v1',
   })
   expect(provider.name).toBe('grok')
+})
+
+test('custom gateway requests carry the API key instead of the stored sign-in token', async () => {
+  storedAccessToken = 'fake-xai-sign-in-token'
+  const { createProvider } = await importProviderModule()
+  const { runWithStartupProviderSelection } = await import('../../src/utils/model/providers.js')
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    new Response('{}', { status: 400 }))
+  vi.stubGlobal('fetch', fetchMock)
+  try {
+    const provider = createProvider('grok', {
+      apiKey: 'fake-xai-api-key',
+      model: 'grok-4.5',
+      credentialHome: CREDENTIAL_HOME,
+      baseURL: 'https://gateway.example.test/v1',
+      extra: { authMode: 'api_key' },
+    })
+    const error = await runWithStartupProviderSelection(
+      { provider: 'grok', model: 'grok-4.5', environment: {} },
+      () => provider.chat([{ role: 'user', content: 'hi' }]).catch((failure: unknown) => failure),
+    )
+    expect(fetchMock.mock.calls.length, String(error)).toBeGreaterThan(0)
+    for (const [url, init] of fetchMock.mock.calls) {
+      expect(String(url)).toContain('gateway.example.test')
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer fake-xai-api-key')
+      expect(new Headers(init?.headers).get('authorization')).not.toContain('fake-xai-sign-in-token')
+    }
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})
+
+test('composer never passes a stored sign-in token as its CLI API key', async () => {
+  storedAccessToken = 'fake-xai-sign-in-token'
+  const { createProviderRaw } = await importProviderModule()
+  expect(() => createProviderRaw('grok', {
+    apiKey: 'fake-xai-sign-in-token',
+    model: 'grok-composer-2.5-fast',
+    credentialHome: CREDENTIAL_HOME,
+    extra: { grokAcp: { environment: {} } },
+  })).toThrow(/refusing to pass the xAI sign-in token/)
+})
+
+test('composer rejects a rotated sign-in token selected from the environment for a custom URL', async () => {
+  storedAccessToken = 'oauth-bearer-1'
+  const { createProviderRaw, resolveProviderFactoryOptions } = await importProviderModule()
+  previousAccessTokens.add(storedAccessToken)
+  storedAccessToken = 'oauth-bearer-2'
+  const options = resolveProviderFactoryOptions('grok', {
+    model: 'grok-composer-2.5-fast',
+    credentialHome: CREDENTIAL_HOME,
+    extra: { grokAcp: { environment: {
+      XAI_API_KEY: 'oauth-bearer-1',
+      XAI_BASE_URL: 'https://gateway.example.test/v1',
+    } } },
+  }, { XAI_API_KEY: 'oauth-bearer-1', XAI_BASE_URL: 'https://gateway.example.test/v1' })
+  expect(options.apiKey).toBe('oauth-bearer-1')
+  expect(() => createProviderRaw('grok', options)).toThrow(/refusing to pass the xAI sign-in token/)
+})
+
+test('API-key mode cannot re-label the stored sign-in token as a gateway key', async () => {
+  storedAccessToken = 'fake-xai-sign-in-token'
+  const { createProviderRaw } = await importProviderModule()
+  expect(() => createProviderRaw('grok', {
+    apiKey: 'fake-xai-sign-in-token',
+    model: 'grok-4.5',
+    credentialHome: CREDENTIAL_HOME,
+    baseURL: 'https://gateway.example.test/v1',
+    extra: { authMode: 'api_key' },
+  })).toThrow(/refusing to use the stored xAI sign-in token as an API key/)
 })
 
 test('OAuth mode installs a working 401 refresh callback', async () => {
@@ -290,13 +372,35 @@ test('a provider re-created from recorded factory options after a refresh carrie
   ).toBe(true)
 })
 
+test('a stale OAuth snapshot cannot become a gateway API key', async () => {
+  storedAccessToken = 'fake-xai-sign-in-token-1'
+  const { createProviderRaw, readProviderFactoryOptions, resolveProviderFactoryOptions } =
+    await importProviderModule()
+  const first = createProviderRaw('grok', {
+    model: 'grok-4.5',
+    credentialHome: CREDENTIAL_HOME,
+  })
+  previousAccessTokens.add(storedAccessToken)
+  storedAccessToken = 'fake-xai-sign-in-token-2'
+  expect(() => resolveProviderFactoryOptions('grok', {
+    ...readProviderFactoryOptions(first),
+    baseURL: 'https://gateway.example.test/v1',
+  }, {})).toThrow(/xAI sign-in credentials.*custom Grok base URL/)
+  expect(() => resolveProviderFactoryOptions('grok', {
+    apiKey: 'fake-xai-sign-in-token-1',
+    model: 'grok-4.5',
+    credentialHome: CREDENTIAL_HOME,
+    baseURL: 'https://gateway.example.test/v1',
+  }, {})).toThrow(/xAI sign-in credentials.*custom Grok base URL/)
+})
+
 test('a session fork preserves configuration and refreshes only its own OAuth client', async () => {
   storedAccessToken = 'oauth-bearer-1'
   const { createProviderRaw, readProviderFactoryOptions } = await importProviderModule()
   const parent = createProviderRaw('grok', {
     model: 'grok-4.5',
     credentialHome: CREDENTIAL_HOME,
-    baseURL: 'https://cli-chat-proxy.grok.com/v1',
+    baseURL: 'https://api.x.ai/v1',
     timeoutMs: 12000,
     tools: [{
       type: 'function',
@@ -339,7 +443,7 @@ test('a session fork preserves configuration and refreshes only its own OAuth cl
     expect(readProviderFactoryOptions(child)).toMatchObject({
       credentialHome: CREDENTIAL_HOME,
       model: 'grok-4.5',
-      baseURL: 'https://cli-chat-proxy.grok.com/v1',
+      baseURL: 'https://api.x.ai/v1',
       timeoutMs: 12000,
       tools: [{ function: { name: 'inspect_file' } }],
       extra: {
@@ -362,7 +466,7 @@ test('a session fork preserves configuration and refreshes only its own OAuth cl
     })
 
     expect(outcome).toEqual({ kind: 'refreshed', bearer: 'oauth-bearer-3' })
-    expect(forceRefreshMock).toHaveBeenCalledExactlyOnceWith(CREDENTIAL_HOME)
+    expect(forceRefreshMock).toHaveBeenCalledExactlyOnceWith(CREDENTIAL_HOME, 'oauth-bearer-2')
     expect(childClient.apiKey).toBe('oauth-bearer-3')
     expect(childState.config.apiKey).toBe('oauth-bearer-3')
     expect(parentClient.apiKey).toBe('oauth-bearer-1')

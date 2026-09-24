@@ -18,6 +18,7 @@ import {
   buildStructuredOutputTextFormat,
   parseStructuredOutputText,
 } from "../structured-output.js";
+import { openAiAcceptsSamplingTemperature } from "../registry/openai-reasoning-models.js";
 import { DEFAULT_MAX_OUTPUT_TOKENS } from "../openai-compatible-token-limits.js";
 import {
   assistantTextFromContentBlocks,
@@ -27,6 +28,7 @@ import {
   messageTextContent,
   normalizeFinishReason,
   normalizeToolCallsStrict,
+  openAiServedSpeed,
   parseOpenAIToolChoice,
   prepareMessagesForWire,
   serializeProviderToolArguments,
@@ -298,9 +300,13 @@ function toChatCompletionsMessages(
   } else if (acceptsDirectImageInput === false) {
     imageSafeMessages = assertNoDirectImageInput(normalized);
   }
+  // Kimi's global wire accepts image arrays in tool results. Keep those
+  // intact; other unspecified Chat Completions wires strip unsupported images.
+  const defaultToolResultImagePolicy =
+    imageInputContract === "kimi_global" ? undefined : "strip";
   const prepared = applyToolResultImagePolicyForWire(
     imageSafeMessages,
-    toolResultImagePolicy,
+    toolResultImagePolicy ?? defaultToolResultImagePolicy,
   );
   let systemPrompt = systemPromptParts(prepared, options).join("\n\n");
   if (systemSuffix !== undefined && systemSuffix.length > 0) {
@@ -684,7 +690,14 @@ export function buildChatCompletionsRequest(
   }
   if (
     input.options?.temperature !== undefined &&
-    input.providerCapabilityHints?.acceptsTemperature !== false
+    input.providerCapabilityHints?.acceptsTemperature !== false &&
+    !(
+      input.providerCapabilityHints?.gatesTemperatureOnOpenAiReasoning === true &&
+      !openAiAcceptsSamplingTemperature(
+        input.model,
+        input.options.reasoningEffort,
+      )
+    )
   ) {
     body.temperature = input.options.temperature;
   }
@@ -842,12 +855,15 @@ export function parseChatCompletionsResponse(
     (request.providerCapabilityHints.rejectsPartialToolCalls === true ||
       finishReason === "stop" ||
       finishReason === "tool_calls") &&
-    choice.finish_reason !== "tool_calls"
+    choice.finish_reason !== "tool_calls" &&
+    // An output-limit cutoff is a known truncation: its tool calls are dropped
+    // below and the turn takes max-output recovery.
+    choice.finish_reason !== "length"
   ) {
     throw new LLMInvalidResponseError(
       request.providerCapabilityHints?.reasoningContentProvenance?.provider ??
         "zai",
-      "Tool calls arrived without finish_reason=tool_calls",
+      `Tool calls arrived without finish_reason=tool_calls (received ${JSON.stringify(choice.finish_reason ?? null)})`,
     );
   }
   if (
@@ -1005,6 +1021,18 @@ export function parseChatCompletionsResponse(
         promptDetails.cached_tokens ??
         (isKimiResponse ? usageRecord.cached_tokens : undefined),
       reasoningOutputTokens: completionDetails.reasoning_tokens,
+      // Unlike Responses' input_tokens_details.cache_write_tokens, Chat
+      // Completions has no field for prompt-cache writes: a real cache write
+      // is folded into prompt_tokens with no way to tell it apart from
+      // ordinary input. Flag it so budget reconciliation
+      // (admitted-model-call.ts) does not under-price it as ordinary input on
+      // models that bill cache writes above the input rate.
+      cacheWritesUnreported: true,
+      // Only providers documented to take service_tier report the tier that
+      // served the request; Fast mode bills at its own rates.
+      ...(request.providerCapabilityHints?.acceptsServiceTier === true
+        ? { speed: openAiServedSpeed(response.service_tier) }
+        : {}),
     }),
     model:
       typeof response.model === "string" ? response.model : model,

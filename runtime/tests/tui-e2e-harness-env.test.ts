@@ -11,10 +11,7 @@ import {
   tempDaemonEnv,
   tuiE2eGateEnv,
 } from "../scripts/check-tui-e2e/harness.mjs";
-import {
-  runScenario,
-  shouldSeedTuiGateDefaultConfig,
-} from "../scripts/check-tui-e2e/runner.mjs";
+import { runScenario } from "../scripts/check-tui-e2e/runner.mjs";
 import {
   createTuiGateState,
   teardownTuiGateState,
@@ -27,16 +24,6 @@ describe("TUI E2E harness state isolation", () => {
       hasRenderedAssistantReply([
         "                               │ AGENC",
         "                               │ OK",
-      ]),
-    ).toBe(true);
-  });
-
-  it("recognizes a compact workbench reply aligned below its user prompt", () => {
-    expect(
-      hasRenderedAssistantReply([
-        " │ ▾ project                         ❯ hi                                                        │",
-        " │     package.json                                                                                │",
-        " │     README.md                       OK                                                         │",
       ]),
     ).toBe(true);
   });
@@ -143,61 +130,6 @@ describe("TUI E2E harness state isolation", () => {
     expect(runner).not.toContain("restartDaemon()");
   });
 
-  it("removes embedded-Neovim workspaces only after PTY cleanup", () => {
-    const runner = readFileSync(
-      new URL("../scripts/check-tui-e2e/runner.mjs", import.meta.url),
-      "utf8",
-    );
-    const runScenarioStart = runner.indexOf(
-      "export async function runScenario(",
-    );
-    const sessionCleanup = runner.indexOf(
-      "await session.cleanup();",
-      runScenarioStart,
-    );
-    const scenarioReturn = runner.indexOf("\n  return {", sessionCleanup);
-    const runScenarioEntryStart = runner.indexOf(
-      "async function runScenarioEntry(",
-      scenarioReturn,
-    );
-    const scenarioRun = runner.indexOf(
-      "result = await runScenario(",
-      runScenarioEntryStart,
-    );
-    const gateTeardown = runner.indexOf(
-      "await teardownTuiGateState(gateState, BIN_AGENC);",
-      scenarioRun,
-    );
-
-    expect(runScenarioStart).toBeGreaterThan(-1);
-    expect(sessionCleanup).toBeGreaterThan(runScenarioStart);
-    expect(scenarioReturn).toBeGreaterThan(sessionCleanup);
-    expect(runScenarioEntryStart).toBeGreaterThan(scenarioReturn);
-    expect(scenarioRun).toBeGreaterThan(runScenarioEntryStart);
-    expect(gateTeardown).toBeGreaterThan(scenarioRun);
-
-    for (const scenario of [
-      "120-workbench-buffer-neovim.mjs",
-      "121-workbench-buffer-neovim-missing-fallback.mjs",
-      "122-workbench-buffer-neovim-kill-cleanup.mjs",
-      "123-workbench-buffer-neovim-runtime-exit.mjs",
-      "124-workbench-buffer-neovim-visual-render.mjs",
-      "130-workbench-buffer-neovim-platform-gate.mjs",
-      "131-workbench-buffer-neovim-platform-kill-cleanup.mjs",
-    ]) {
-      const source = readFileSync(
-        new URL(
-          `../scripts/check-tui-e2e/scenarios/${scenario}`,
-          import.meta.url,
-        ),
-        "utf8",
-      );
-      expect(source).toContain("mkdtemp(join(tmpdir(),");
-      expect(source).toContain("Windows cannot delete a live process cwd.");
-      expect(source).not.toMatch(/\brm\s*\(/u);
-    }
-  });
-
   it("forces deterministic gate controls after scenario overrides", () => {
     const env = tuiGateEnvironment(
       "/private/gate",
@@ -277,77 +209,6 @@ describe("TUI E2E harness state isolation", () => {
 
     expect(configIndex).toBeGreaterThan(-1);
     expect(daemonIndex).toBeGreaterThan(configIndex);
-  });
-
-  it("seeds prediction-off state before ordinary scenario daemons while preserving first-use consent coverage", () => {
-    const runner = readFileSync(
-      new URL("../scripts/check-tui-e2e/runner.mjs", import.meta.url),
-      "utf8",
-    );
-    const scenarioEntryIndex = runner.indexOf(
-      "async function runScenarioEntry(",
-    );
-    const environmentIndex = runner.indexOf(
-      "gateState.env = environmentForTuiGateState(",
-      scenarioEntryIndex,
-    );
-    const configIndex = runner.indexOf(
-      "await writeTuiGateDefaultConfig(gateState);",
-      scenarioEntryIndex,
-    );
-    const sandboxIndex = runner.indexOf(
-      "await configureTuiGateSandbox(",
-      scenarioEntryIndex,
-    );
-    const daemonIndex = runner.indexOf(
-      "await startTuiGateDaemon(gateState, BIN_AGENC)",
-      scenarioEntryIndex,
-    );
-
-    expect(scenarioEntryIndex).toBeGreaterThan(-1);
-    expect(environmentIndex).toBeGreaterThan(scenarioEntryIndex);
-    expect(configIndex).toBeGreaterThan(environmentIndex);
-    expect(sandboxIndex).toBeGreaterThan(configIndex);
-    expect(daemonIndex).toBeGreaterThan(sandboxIndex);
-    expect(shouldSeedTuiGateDefaultConfig({})).toBe(true);
-    expect(
-      shouldSeedTuiGateDefaultConfig({ firstUsePredictionConsent: false }),
-    ).toBe(true);
-    expect(
-      shouldSeedTuiGateDefaultConfig({ firstUsePredictionConsent: true }),
-    ).toBe(false);
-    expect(() =>
-      shouldSeedTuiGateDefaultConfig({
-        firstUsePredictionConsent: "yes",
-      }),
-    ).toThrow(/must be boolean/u);
-
-    const ordinaryScenarios = [
-      "130-workbench-buffer-neovim-platform-gate.mjs",
-      "131-workbench-buffer-neovim-platform-kill-cleanup.mjs",
-    ].map((scenario) =>
-      readFileSync(
-        new URL(
-          `../scripts/check-tui-e2e/scenarios/${scenario}`,
-          import.meta.url,
-        ),
-        "utf8",
-      ),
-    );
-    const consentScenario = readFileSync(
-      new URL(
-        "../scripts/check-tui-e2e/scenarios/133-editor-code-prediction.mjs",
-        import.meta.url,
-      ),
-      "utf8",
-    );
-
-    for (const source of ordinaryScenarios) {
-      expect(source).not.toContain("firstUsePredictionConsent");
-    }
-    expect(consentScenario).toContain("firstUsePredictionConsent: true");
-    expect(consentScenario).toContain("Enable editor code predictions");
-    expect(consentScenario).toContain('session.send("\\x1by")');
   });
 
   it("keeps /init writes out of the source checkout", () => {

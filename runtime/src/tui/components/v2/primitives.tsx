@@ -14,10 +14,6 @@ import ThemedText from '../design-system/ThemedText.js'
 import { ToolStateGlyph } from '../ToolStateGlyph.js'
 import { stringWidth } from '../../ink/stringWidth.js'
 import {
-  useAssistantMessageMetadata,
-  useWorkbenchTranscriptLayout,
-} from '../../workbench/transcriptLayoutContext.js'
-import {
   AGENC_LOGO_BRAILLE_COMPACT_LINES,
   AGENC_LOGO_BRAILLE_LINES,
   AGENC_LOGO_RASTER_SIZE,
@@ -1231,9 +1227,6 @@ export function Msg({
   children,
 }: {
   readonly role: 'user' | 'agenc' | 'worker' | 'system'
-  // Plain user prompts pass no label. In the workbench they use the composer
-  // chevron instead of a "YOU" heading, keeping prompts visually distinct
-  // without adding another speaker name to the transcript.
   readonly label?: string
   readonly time?: string
   readonly children: ReactNode
@@ -1245,8 +1238,6 @@ export function Msg({
     system: 'subtle',
   }
   const inheritedWidth = useContentWidth()
-  const useWorkbenchLayout = useWorkbenchTranscriptLayout()
-  const assistantMetadata = useAssistantMessageMetadata()
   // Queued previews carry no real per-item enqueue time, so they pass no
   // `time` (see PromptInputQueuedCommands). Show a quiet neutral "queued"
   // marker in the header slot instead of a misleading render-time clock.
@@ -1264,71 +1255,6 @@ export function Msg({
   // for the content column; keep the inset in sync with the gap so wrapped body
   // text measures against the right width.
   const contentWidth = insetContentWidth(inheritedWidth, 2 + queuedPaddingWidth)
-  if (useWorkbenchLayout) {
-    const labelWidth = 7
-    const isWorkbenchUserPrompt = role === 'user' && label === undefined
-    const isWorkbenchAssistant = role === 'agenc'
-    const workbenchContentWidth = insetContentWidth(
-      inheritedWidth,
-      labelWidth + queuedPaddingWidth,
-    )
-    const workbenchLabel =
-      label ?? (isWorkbenchUserPrompt ? '❯' : role === 'agenc' ? 'agenc' : role)
-    const workbenchTime =
-      time ?? (isWorkbenchAssistant ? assistantMetadata?.timestamp : undefined)
-
-    if (isWorkbenchAssistant) {
-      return (
-        <Box flexDirection="column" flexGrow={1} width="100%">
-          {workbenchTime ? (
-            <Box flexDirection="row" width="100%">
-              <Box width={labelWidth} flexShrink={0} />
-              <Box flexDirection="row" flexGrow={1} minWidth={0}>
-                <Box flexGrow={1} />
-                <ThemedText color="inactive">{workbenchTime}</ThemedText>
-              </Box>
-            </Box>
-          ) : null}
-          <Box flexDirection="row" width="100%">
-            <Box width={labelWidth} flexShrink={0} />
-            <Box flexDirection="column" flexGrow={1} minWidth={0}>
-              <ContentWidthProvider width={workbenchContentWidth}>
-                <Content color="text">{children}</Content>
-              </ContentWidthProvider>
-            </Box>
-          </Box>
-        </Box>
-      )
-    }
-
-    return (
-      <Box flexDirection="row" flexGrow={1} width="100%">
-        <Box
-          width={labelWidth}
-          flexShrink={0}
-          justifyContent={isWorkbenchUserPrompt ? 'flex-end' : undefined}
-          paddingRight={isWorkbenchUserPrompt ? 1 : 0}
-        >
-          <ThemedText
-            color={isWorkbenchUserPrompt ? 'text' : 'inactive'}
-            bold={isWorkbenchUserPrompt}
-          >
-            {isWorkbenchUserPrompt ? workbenchLabel : workbenchLabel.toUpperCase()}
-          </ThemedText>
-        </Box>
-        <Box flexDirection="column" flexGrow={1} minWidth={0}>
-          {workbenchTime ? (
-            <ThemedText color="inactive">{workbenchTime}</ThemedText>
-          ) : isQueued ? (
-            <ThemedText color="inactive">queued</ThemedText>
-          ) : null}
-          <ContentWidthProvider width={workbenchContentWidth}>
-            <Content color="text">{children}</Content>
-          </ContentWidthProvider>
-        </Box>
-      </Box>
-    )
-  }
   return (
     // Gutter identity: a role-colored left border runs the FULL height of the
     // message (header + body), replacing the old single-row ▮ marker — the
@@ -1819,7 +1745,7 @@ export function ApprovalCard({
   // The action picker below owns the "1/2/3 + confirm" affordance — keep the
   // summary line to identity only (no repeated confirm text, no `{}` inputs).
   const approvalSummary = `${risk === 'high' ? 'high-risk approval' : 'needs approval'} · ${primaryFact}`
-  // The approval popup is rendered into a fixed-height slot (the workbench
+  // The approval popup is rendered into a fixed-height slot (the layout
   // overlay row, or the modal context). Without a height cap the body grows
   // past the popup's own bottom border and bleeds onto the footer below it.
   // Cap the popup to the rows actually available and let Popup clip the body

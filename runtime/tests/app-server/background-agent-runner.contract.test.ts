@@ -1,3 +1,7 @@
+import { ModelRegistry, modelRegistryEntryToModelInfo } from "../../src/llm/model-registry.js";
+import { resolveSessionReasoningEffort } from "../../src/phases/stream-model.js";
+import { buildAnthropicMessagesRequest } from "../../src/llm/wire/messages-anthropic.js";
+import desktopEffortCatalog from "../llm/desktop-effort-catalog.json";
 import {
   mkdirSync,
   mkdtempSync,
@@ -6,6 +10,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,11 +35,11 @@ import { collectDaemonClientEnvOverrides } from "./agent-cli.js";
 import { createDaemonTuiSessionFixture } from "../helpers/daemon-tui-session.js";
 import { getDefaultAppState } from "../../src/tui/state/AppStateStore.js";
 import { startDaemonWorkerTaskPolling } from "../../src/tui/state/daemonWorkerTasks.js";
-import { formatTaskElapsed } from "../../src/tui/workbench/agents/activity.js";
 import type { NativeWorkerSnapshot } from "../../src/agents/control.js";
 import type { AgenCDaemonTuiClient } from "../../src/tui/daemon-session.js";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
+import { AgenCProjectTrustService } from "./project-trust.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import type { AgentStatus } from "../agents/status.js";
 import type { AuthBackend } from "../auth/backend.js";
@@ -52,6 +57,10 @@ import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
 import { AGENC_DAEMON_PROTOCOL_VERSION, JSON_RPC_VERSION } from "./protocol/index.js";
 import { UnifiedExecProcessManager } from "../unified-exec/process-manager.js";
 import { requestApproval } from "../tools/orchestrator.js";
+import { runToolUse } from "../tools/execution.js";
+import { StreamingToolExecutor } from "../tools/streaming-executor.js";
+import { queueStreamingToolCall } from "../phases/execute-tools.js";
+import { resolveRoutinePermissionGrant } from "../routines/permission-authority.js";
 import type { CsvAgentJobsRepositoryProvider } from "./csv-agent-jobs-authority.js";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
@@ -97,11 +106,19 @@ import {
   runWithCanonicalSettingsAuthority,
   type CanonicalSettingsAuthority,
 } from "../utils/settings/canonicalAuthority.js";
-import { workspaceMutationCoordinators } from "../workspace/mutation-coordinator.js";
 import {
+  ConfigStore,
   COORDINATED_CONFIG_STORE_PUBLICATION,
   type CoordinatedConfigStorePublishOptions,
 } from "../config/store.js";
+import { resolveHomeContext } from "../config/home.js";
+import { RuntimeStateRepository } from "../config/runtime-state-repository.js";
+import { initializeToolPermissionContext } from "../permissions/settings.js";
+import { loadBypassPermissionsConsent } from "../permissions/bypass-consent-state.js";
+import {
+  resolveProjectTrustStateSync,
+  trustedProjectsPath,
+} from "../permissions/trust/project-trust.js";
 import {
   registerSandboxExecutionLifecycleParticipant,
   transitionSandboxExecutionBroker,
@@ -394,6 +411,8 @@ function makeTopLevelRunner(opts: {
   readonly canonicalRuntimeSettings?: boolean;
   readonly workspaceRoot?: string;
   readonly persistedBypassConsent?: readonly string[];
+  /** A real runtime-state repository, read from disk as after a restart. */
+  readonly stateRepository?: RuntimeStateRepository;
   readonly userPromptSubmitHooks?: readonly UserPromptSubmitHook[];
   readonly flushDeferredSessionStartHook?: ReturnType<typeof vi.fn>;
   readonly runtimeSimpleMode?: boolean;
@@ -616,7 +635,7 @@ function makeTopLevelRunner(opts: {
       : {}),
     syncCanonicalTail: opts.syncCanonicalTail ?? vi.fn(() => {}),
   };
-  let activeTurnValue: { readonly turnId: string } | null = null;
+  let activeTurnValue: { readonly turnId: string; readonly abortController: AbortController } | null = null;
   const abortTurnIfActive = vi.fn(async (turnId: string) => {
     if (activeTurnValue?.turnId !== turnId) return false;
     activeTurnValue = null;
@@ -631,7 +650,7 @@ function makeTopLevelRunner(opts: {
   const workspaceRoot = opts.workspaceRoot ?? process.cwd();
   const persistedBypassConsent = new Set(opts.persistedBypassConsent ?? []);
   const runtimeStateNamespaces = new Map<string, JsonRecord>();
-  const stateRepository = {
+  const stateRepository = opts.stateRepository ?? {
     reload: vi.fn(() => ({})),
     getNamespace: vi.fn((namespace: string): JsonRecord =>
       runtimeStateNamespaces.get(namespace) ?? (namespace === "permissions" && persistedBypassConsent.size > 0
@@ -994,9 +1013,16 @@ function makeTopLevelRunner(opts: {
     sendInput: vi.fn(async () => {}),
     interrupt: vi.fn(),
     openThreadSpawnChildren: vi.fn(() => []),
+    liveThreadSpawnDescendants: vi.fn((): string[] => []),
+    stopOpenSpawnChildren: vi.fn(),
     liveThreadSpawnChildren: vi.fn(() => new Map()),
     clearConversationHistory: vi.fn(async () => {}),
   };
+  control.stopOpenSpawnChildren.mockImplementation((parentThreadId: string, reason: string) => {
+    for (const [childThreadId] of control.openThreadSpawnChildren(parentThreadId)) {
+      control.interrupt(childThreadId, reason);
+    }
+  });
   const bootstrap = vi.fn(async () => ({
     workspaceRoot,
     modelInfo: { slug: "base-model", contextWindow: 65_536 },
@@ -1087,7 +1113,7 @@ function makeTopLevelRunner(opts: {
     abortTurnIfActive,
     activeTurn,
     setActiveTurn(turnId: string | null) {
-      activeTurnValue = turnId === null ? null : { turnId };
+      activeTurnValue = turnId === null ? null : { turnId, abortController: new AbortController() };
     },
     forcePermissionContextForTesting(next: ToolPermissionContext) {
       permissionContext = next;
@@ -1291,7 +1317,199 @@ function configureSessionShellHarness(
   };
 }
 
+async function startRoutineToolRunner(agentId: string) {
+  const h = makeTopLevelRunner({ conversationId: agentId, scopedTurnCancellation: true });
+  await h.runner.startAgent({ objective: "routine tool", deferInitialTurn: true, unattendedAllow: [], unattendedDeny: [] });
+  h.setActiveTurn("routine-turn");
+  return h;
+}
+
+function recordRoutineToolStart(h: Awaited<ReturnType<typeof startRoutineToolRunner>>, callId: string) {
+  h.session.emit({ id: callId, msg: { type: "tool_call_started", payload: {
+    callId, toolName: "RoutineTool", args: "{}",
+  } } });
+}
+
 describe("AgenC delegate background-agent runner", () => {
+  it("does not grant a queued call behind a running executor call", async () => {
+    const agentId = "routine-executor-queue";
+    const h = await startRoutineToolRunner(agentId);
+    let firstStarted!: () => void;
+    let secondStarted!: () => void;
+    let releaseFirst!: () => void;
+    let releaseSecond!: () => void;
+    const firstEntered = new Promise<void>((resolve) => { firstStarted = resolve; });
+    const secondEntered = new Promise<void>((resolve) => { secondStarted = resolve; });
+    const firstDone = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const secondDone = new Promise<void>((resolve) => { releaseSecond = resolve; });
+    const tools = ["FirstTool", "RoutineTool"].map((name) => ({
+      name, description: "", isReadOnly: false, inputSchema: { type: "object" },
+      execute: async () => {
+        if (name === "FirstTool") { firstStarted(); await firstDone; }
+        else { secondStarted(); await secondDone; }
+        return { content: "done" };
+      },
+    }));
+    const executor = new StreamingToolExecutor({
+      registry: { tools, toLLMTools: () => [] } as never,
+      maxConcurrency: 1,
+      runToolUseFn: async (call, signal) => runToolUse(call.arguments, {
+        currentTurnId: "routine-turn",
+        invocation: { session: h.session, turn: {} as never, tracker: {} as never,
+          callId: call.id, toolName: { name: call.name },
+          payload: { kind: "function", arguments: call.arguments }, source: "direct" } as never,
+        tool: tools.find((tool) => tool.name === call.name)!, signal,
+      }),
+    });
+    try {
+      queueStreamingToolCall(executor, {} as never,
+        { id: "first-call", name: "FirstTool", arguments: "{}" }, h.session);
+      executor.dispatchPending();
+      await firstEntered;
+      queueStreamingToolCall(executor, {} as never,
+        { id: "queued-call", name: "RoutineTool", arguments: "{}" }, h.session);
+      executor.dispatchPending();
+      expect(executor.getToolStates().find((call) => call.id === "queued-call")?.status).toBe("queued");
+      expect(h.runner.isAgentToolCallExecuting(agentId, "queued-call")).toBe(false);
+      releaseFirst();
+      await secondEntered;
+      expect(h.runner.isAgentToolCallExecuting(agentId, "queued-call")).toBe(true);
+    } finally {
+      releaseFirst(); releaseSecond();
+      executor.close();
+      for await (const _ of executor.getRemainingResults()) { /* drain */ }
+      h.setActiveTurn(null);
+      await h.runner.stopAgent(agentId);
+    }
+  });
+
+  it("does not grant a call while its approval is pending", async () => {
+    const agentId = "routine-pending-approval";
+    const h = await startRoutineToolRunner(agentId);
+    recordRoutineToolStart(h, "approval-call");
+    let approvalEntered!: () => void;
+    let approve!: () => void;
+    let executionEntered!: () => void;
+    let releaseExecution!: () => void;
+    const awaitingApproval = new Promise<void>((resolve) => { approvalEntered = resolve; });
+    const approval = new Promise<void>((resolve) => { approve = resolve; });
+    const executing = new Promise<void>((resolve) => { executionEntered = resolve; });
+    const executionDone = new Promise<void>((resolve) => { releaseExecution = resolve; });
+    const pending = runToolUse("{}", {
+      currentTurnId: "routine-turn", getActiveTurnId: () => "routine-turn",
+      invocation: { session: h.session, turn: {} as never, tracker: {} as never,
+        callId: "approval-call", toolName: { name: "RoutineTool" },
+        payload: { kind: "function", arguments: "{}" }, source: "direct" } as never,
+      tool: { name: "RoutineTool", description: "", isReadOnly: false,
+        inputSchema: { type: "object" }, execute: async () => {
+          executionEntered(); await executionDone; return { content: "done" };
+        } },
+      requestApproval: async () => {
+        approvalEntered(); await approval;
+        return { behavior: "allow", decisionAtTurnId: "routine-turn" };
+      },
+    });
+    try {
+      await awaitingApproval;
+      expect(h.runner.isAgentToolCallExecuting(agentId, "approval-call")).toBe(false);
+      approve();
+      await executing;
+      expect(h.runner.isAgentToolCallExecuting(agentId, "approval-call")).toBe(true);
+    } finally {
+      approve(); releaseExecution();
+      await pending;
+      h.setActiveTurn(null);
+      await h.runner.stopAgent(agentId);
+    }
+  });
+
+  it("grants a routine only while the named call has crossed the physical execution boundary", async () => {
+    const agentId = "routine-executing-boundary";
+    const h = await startRoutineToolRunner(agentId);
+    recordRoutineToolStart(h, "queued-call");
+    const grant = () => resolveRoutinePermissionGrant(
+      { kind: "session", sessionId: agentId, toolCallId: "queued-call" },
+      { operator: false, liveSession: async () => ({ sessionId: agentId, mode: "acceptEdits" }),
+        holdsSession: async () => true,
+        executingToolCall: async (_, callId) => h.runner.isAgentToolCallExecuting(agentId, callId) },
+    );
+    let release = () => {};
+    let execution: Promise<unknown> | undefined;
+    try {
+      // The transcript start precedes executor admission and may wait behind
+      // another call or an approval. It must not lend routine authority.
+      expect(h.runner.isAgentToolCallExecuting(agentId, "queued-call")).toBe(false);
+      await expect(grant()).rejects.toMatchObject({ code: "ROUTINE_PERMISSION_DENIED" });
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => { entered = resolve; });
+      const hold = new Promise<void>((resolve) => { release = resolve; });
+      const callAbort = new AbortController();
+      execution = runToolUse("{}", {
+        currentTurnId: "routine-turn",
+        invocation: { session: h.session, turn: {} as never, tracker: {} as never,
+          callId: "queued-call", toolName: { name: "RoutineTool" },
+          payload: { kind: "function", arguments: "{}" }, source: "direct" } as never,
+        tool: { name: "RoutineTool", description: "", isReadOnly: true,
+          inputSchema: { type: "object" }, execute: async () => {
+            entered(); await hold; return { content: "done" };
+          } },
+        signal: callAbort.signal,
+      });
+      await started;
+      expect(h.runner.isAgentToolCallExecuting(agentId, "queued-call")).toBe(true);
+      await expect(grant()).resolves.toMatchObject({ source: "session", ceiling: "acceptEdits" });
+      callAbort.abort("call cancelled");
+      expect(h.runner.isAgentToolCallExecuting(agentId, "queued-call")).toBe(false);
+      await expect(grant()).rejects.toMatchObject({ code: "ROUTINE_PERMISSION_DENIED" });
+      release();
+      await execution;
+      expect(h.runner.isAgentToolCallExecuting(agentId, "queued-call")).toBe(false);
+    } finally {
+      release();
+      await execution;
+      h.setActiveTurn(null);
+      await h.runner.stopAgent(agentId);
+    }
+  });
+
+  it.each(["turn", "session"] as const)("revokes a routine grant as soon as its %s aborts, before cleanup finishes", async (scope) => {
+    const agentId = `routine-aborting-${scope}-boundary`;
+    const h = await startRoutineToolRunner(agentId);
+    recordRoutineToolStart(h, "running-call");
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const execution = runToolUse("{}", {
+      currentTurnId: "routine-turn",
+      invocation: { session: h.session, turn: {} as never, tracker: {} as never,
+        callId: "running-call", toolName: { name: "RoutineTool" },
+        payload: { kind: "function", arguments: "{}" }, source: "direct" } as never,
+      tool: { name: "RoutineTool", description: "", isReadOnly: true,
+        inputSchema: { type: "object" }, execute: async () => {
+          entered(); await hold; return { content: "done" };
+        } },
+    });
+    try {
+      await started;
+      expect(h.runner.isAgentToolCallExecuting(agentId, "running-call")).toBe(true);
+      if (scope === "turn") h.activeTurn.unsafePeek()?.abortController.abort("cancelled");
+      else h.session.abortController.abort("cancelled");
+      expect(h.runner.isAgentToolCallExecuting(agentId, "running-call")).toBe(false);
+      await expect(resolveRoutinePermissionGrant(
+        { kind: "session", sessionId: agentId, toolCallId: "running-call" },
+        { operator: false, liveSession: async () => ({ sessionId: agentId, mode: "acceptEdits" }),
+          holdsSession: async () => true,
+          executingToolCall: async (_, callId) => h.runner.isAgentToolCallExecuting(agentId, callId) },
+      )).rejects.toMatchObject({ code: "ROUTINE_PERMISSION_DENIED" });
+    } finally {
+      release();
+      await execution;
+      h.setActiveTurn(null);
+      await h.runner.stopAgent(agentId);
+    }
+  });
+
   it("[status-line] reaches the bound deferred owner's executor without a model turn", async () => {
     const agentId = "status-line-deferred-agent";
     const sessionId = "status-line-bound-session";
@@ -1760,168 +1978,6 @@ describe("AgenC delegate background-agent runner", () => {
       }),
     ]);
     expect(shell.bashExecute).not.toHaveBeenCalled();
-  });
-
-  it("[managed-thread] denies direct shell while Editor owns the workspace", async () => {
-    const workspaceRoot = mkdtempSync(
-      join(tmpdir(), "agenc-direct-shell-editor-owned-workspace-"),
-    );
-    const settingsHome = mkdtempSync(
-      join(tmpdir(), "agenc-direct-shell-editor-owned-home-"),
-    );
-    try {
-      const harness = makeTopLevelRunner({
-        conversationId: "session-direct-shell-editor-owned",
-        threadInitialStatus: { status: "pending_init" } as AgentStatus,
-        workspaceRoot,
-      });
-      const shell = configureSessionShellHarness(harness, { settingsHome });
-      const settingsAuthority =
-        harness.configStore as unknown as CanonicalSettingsAuthority;
-      await harness.runner.startAgent({
-        objective: "deferred direct shell",
-        deferInitialTurn: true,
-        unattendedAllow: [],
-        unattendedDeny: [],
-      });
-      harness.forcePermissionContextForTesting(
-        createEmptyToolPermissionContext({
-          mode: "bypassPermissions",
-          isBypassPermissionsModeAvailable: true,
-        }),
-      );
-      const lease = runWithCanonicalSettingsAuthority(settingsAuthority, () =>
-        workspaceMutationCoordinators.acquireEditor(workspaceRoot, {
-          workspaceRoot,
-          editorInstanceId: "editor-before-direct-shell",
-        }),
-      );
-
-      const result = await harness.runner.executeAgentShell(
-        "session-direct-shell-editor-owned",
-        {
-          sessionId: "session-direct-shell-editor-owned",
-          commandId: "shell-editor-owned-1",
-          command: "printf blocked-by-editor",
-        },
-      );
-
-      expect(result).toMatchObject({
-        commandId: "shell-editor-owned-1",
-        isError: true,
-        stdout: "",
-        exitCode: null,
-      });
-      expect(`${result.content}\n${result.stderr}`).toMatch(
-        /Tool 'system\.bash' is blocked while this workspace has protected Editor authority/u,
-      );
-      expect(shell.bashExecute).not.toHaveBeenCalled();
-      expect(shell.acquire).not.toHaveBeenCalled();
-
-      await runWithCanonicalSettingsAuthority(settingsAuthority, () =>
-        workspaceMutationCoordinators.getOrCreate(workspaceRoot).release({
-          workspaceRoot,
-          editorInstanceId: lease.editorInstanceId,
-          leaseToken: lease.leaseToken,
-          epoch: lease.epoch,
-        }),
-      );
-    } finally {
-      workspaceMutationCoordinators.clearForTests();
-      rmSync(workspaceRoot, { recursive: true, force: true });
-      rmSync(settingsHome, { recursive: true, force: true });
-    }
-  });
-
-  it("[managed-thread] keeps Editor acquisition fenced until direct shell cleanup", async () => {
-    const workspaceRoot = mkdtempSync(
-      join(tmpdir(), "agenc-direct-shell-inflight-workspace-"),
-    );
-    const settingsHome = mkdtempSync(
-      join(tmpdir(), "agenc-direct-shell-inflight-home-"),
-    );
-    const resultGate = Promise.withResolvers<ToolResult>();
-    let execution: Promise<unknown> | undefined;
-    try {
-      const harness = makeTopLevelRunner({
-        conversationId: "session-direct-shell-inflight",
-        threadInitialStatus: { status: "pending_init" } as AgentStatus,
-        workspaceRoot,
-      });
-      const shell = configureSessionShellHarness(harness, {
-        settingsHome,
-        execute: async () => resultGate.promise,
-      });
-      const settingsAuthority =
-        harness.configStore as unknown as CanonicalSettingsAuthority;
-      const acquireEditor = (editorInstanceId: string) =>
-        runWithCanonicalSettingsAuthority(settingsAuthority, () =>
-          workspaceMutationCoordinators.acquireEditor(workspaceRoot, {
-            workspaceRoot,
-            editorInstanceId,
-          }),
-        );
-      await harness.runner.startAgent({
-        objective: "deferred direct shell",
-        deferInitialTurn: true,
-        unattendedAllow: [],
-        unattendedDeny: [],
-      });
-      harness.forcePermissionContextForTesting(
-        createEmptyToolPermissionContext({
-          mode: "bypassPermissions",
-          isBypassPermissionsModeAvailable: true,
-        }),
-      );
-
-      execution = harness.runner.executeAgentShell(
-        "session-direct-shell-inflight",
-        {
-          sessionId: "session-direct-shell-inflight",
-          commandId: "shell-inflight-1",
-          command: "printf held-open",
-        },
-      );
-      await vi.waitFor(() => expect(shell.bashExecute).toHaveBeenCalledOnce());
-      expect(() => acquireEditor("editor-during-direct-shell")).toThrow(
-        /waiting for active tool 'system\.bash'/u,
-      );
-
-      resultGate.resolve({
-        content: "shell completed",
-        metadata: {
-          stdout: "shell completed",
-          stderr: "",
-          exitCode: 0,
-          timedOut: false,
-        },
-      });
-      await expect(execution).resolves.toMatchObject({
-        commandId: "shell-inflight-1",
-        isError: false,
-        stdout: "shell completed",
-      });
-
-      const lease = acquireEditor("editor-after-direct-shell");
-      expect(lease).toMatchObject({
-        workspaceRoot,
-        editorInstanceId: "editor-after-direct-shell",
-      });
-      await runWithCanonicalSettingsAuthority(settingsAuthority, () =>
-        workspaceMutationCoordinators.getOrCreate(workspaceRoot).release({
-          workspaceRoot,
-          editorInstanceId: lease.editorInstanceId,
-          leaseToken: lease.leaseToken,
-          epoch: lease.epoch,
-        }),
-      );
-    } finally {
-      resultGate.resolve({ content: "test cleanup" });
-      await execution?.catch(() => {});
-      workspaceMutationCoordinators.clearForTests();
-      rmSync(workspaceRoot, { recursive: true, force: true });
-      rmSync(settingsHome, { recursive: true, force: true });
-    }
   });
 
   it("[managed-thread] deduplicates identical shell command ids and rejects conflicting reuse", async () => {
@@ -4235,6 +4291,47 @@ describe("AgenC delegate background-agent runner", () => {
     expect(emitted).toHaveLength(emittedAfterRetirement);
   });
 
+  it("session.goal sets, reports, pauses, resumes and clears the session goal, journaling each change", async () => {
+    const emptyWorkspace = mkdtempSync(join(tmpdir(), "agenc-goal-runner-"));
+    const { runner, session } = makeTopLevelRunner({ conversationId: "session-goal", workspaceRoot: emptyWorkspace });
+    const started = await runner.startAgent({ objective: "goal host", unattendedAllow: [], unattendedDeny: [] });
+    const call = (params: Record<string, unknown>) =>
+      runner.updateAgentSessionGoal!(started.agentId, { sessionId: "session-goal", ...params } as never);
+    const request = { objective: "npm test passes", verify: [{ label: "tests", script: "npm test" }], noVerify: false };
+    try {
+      expect(await call({ action: "get" })).toMatchObject({ ok: true });
+      expect((await call({ action: "get" })).goal).toBeUndefined();
+      expect(await call({ action: "pause" })).toMatchObject({ ok: false, message: "No goal is set." });
+
+      // Nothing can check this one: the workspace has no test entry point.
+      const refused = await call({ action: "set", request: { objective: "make it nicer", verify: [], noVerify: false } });
+      expect(refused).toMatchObject({ ok: false, message: expect.stringContaining("--verify") });
+
+      const set = await call({ action: "set", request });
+      expect(set).toMatchObject({
+        ok: true, detectedVerification: false,
+        goal: { objective: "npm test passes", status: "active", rounds: 0, verification: [{ script: "npm test" }] },
+      });
+      expect(await call({ action: "resume" })).toMatchObject({ ok: false, message: "The goal is already active." });
+      expect(await call({ action: "pause" })).toMatchObject({ ok: true, goal: { status: "paused", pauseReason: "paused by the user" } });
+      const resumed = await call({ action: "resume" });
+      expect(resumed).toMatchObject({ ok: true, goal: { status: "active" } });
+      expect(resumed.goal?.pauseReason).toBeUndefined();
+
+      expect(await call({ action: "clear" })).toMatchObject({ ok: true, message: "Goal cleared: npm test passes" });
+      expect((await call({ action: "get" })).goal).toBeUndefined();
+
+      const causes = session.emit.mock.calls
+        .map(([event]) => event as { msg?: { type?: string; payload?: { cause?: string } } })
+        .filter((event) => event.msg?.type === "goal_changed")
+        .map((event) => event.msg!.payload!.cause);
+      expect(causes).toEqual(["set", "paused", "resumed", "cleared"]);
+    } finally {
+      await runner.stopAgent(started.agentId).catch(() => undefined);
+      rmSync(emptyWorkspace, { recursive: true, force: true });
+    }
+  });
+
   it("binds the owning session while a partial compaction runs in a multi-session daemon", async () => {
     // Compaction samples the provider through the ambient "current session"
     // the way a turn does. With two sessions live the unscoped fallback
@@ -5012,7 +5109,7 @@ describe("AgenC delegate background-agent runner", () => {
     });
     await runner.submitAgentMessage(agentId, { sessionId: agentId, content: "inspect", originalContent: "inspect", messageId: "routine-message", streamId: "routine-stream", acceptedAt: "2026-05-09T00:00:00.000Z" });
     const status = stopReason === "cancelled" ? "cancelled" : "failed";
-    expect(await runner.finishAgentRun(agentId, "routine-message")).toBe(status);
+    expect(await runner.finishAgentRun(agentId, "routine-message")).toBe(status === "cancelled" ? "cancelled" : "permission_denied");
     const terminals = rolloutItems.flatMap(item => {
       const event = (item as { payload?: { msg?: { type?: string; payload?: unknown } } }).payload?.msg;
       return event?.type === "run_terminal" ? [event.payload] : [];
@@ -5823,6 +5920,7 @@ describe("AgenC delegate background-agent runner", () => {
         argv: ["/usr/bin/node", "/opt/agenc/bin/agenc.js", "--model", "grok-4"],
         cwd: "/workspace",
         executionAdmissionAutonomous: true,
+        costSummaryOnExit: false,
         csvAgentJobsRepositories,
       }),
     );
@@ -7444,6 +7542,107 @@ describe("AgenC delegate background-agent runner", () => {
     expect(setDisabled).toHaveBeenNthCalledWith(2, false);
   });
 
+  it.each(["claude-opus-4-6", "claude-sonnet-4-6"])(
+    "forwards every accepted literal applyConfig effort on %s", async model => {
+      const h = makeTopLevelRunner({ conversationId: "older-claude-effort", canonicalRuntimeSettings: true });
+      const row = { provider: "anthropic", model };
+      h.sessionState.sessionConfiguration.provider.slug = row.provider;
+      h.sessionState.sessionConfiguration.collaborationMode.model = model;
+      // This is the historical configured max seed. applyConfig must replace it.
+      h.sessionState.sessionConfiguration.collaborationMode.reasoningEffort = "xhigh";
+      await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
+      const disk = h.configStore.current();
+      const registry = new ModelRegistry({ config: {} });
+      const info = modelRegistryEntryToModelInfo(registry.resolveSync(row));
+      for (const reasoningEffort of ["max", "low", "medium", "high"] as const) {
+        await expect(h.runner.applyAgentConfig("older-claude-effort", { sessionId: "session_1", reasoningEffort }))
+          .resolves.toMatchObject({ applied: true, ...row });
+        const sessionEffort = h.sessionState.sessionConfiguration.collaborationMode.reasoningEffort;
+        expect(sessionEffort).toBe(reasoningEffort);
+        expect((await h.runner.getAgentSnapshot("older-claude-effort"))?.runtimeSettings?.reasoningEffort).toBe(reasoningEffort);
+        expect(recordedRuntimeSettingsEvents(h.rolloutItems).at(-1)?.msg?.payload?.reasoningEffort).toBe(reasoningEffort);
+        const effort = resolveSessionReasoningEffort(sessionEffort, info.supportedReasoningLevels, row);
+        const body = buildAnthropicMessagesRequest({
+          model, messages: [], tools: [], maxTokens: 4096, options: { reasoningEffort: effort },
+        });
+        expect(body.output_config).toEqual({ effort: reasoningEffort });
+      }
+      const before = structuredClone(h.sessionState.sessionConfiguration);
+      const events = recordedRuntimeSettingsEvents(h.rolloutItems);
+      for (const reasoningEffort of ["none", "minimal", "xhigh"]) {
+        await expect(h.runner.applyAgentConfig("older-claude-effort", { sessionId: "session_1", reasoningEffort }))
+          .rejects.toThrow("does not support");
+      }
+      expect(h.sessionState.sessionConfiguration).toEqual(before);
+      expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toEqual(events);
+      expect(h.configStore.current()).toEqual(disk);
+    });
+
+  it.each(desktopEffortCatalog.filter(row => row.levels.length > 0))(
+    "accepts Desktop session efforts for $provider/$model", async row => {
+      const h = makeTopLevelRunner({ conversationId: "desktop-effort", canonicalRuntimeSettings: true });
+      h.sessionState.sessionConfiguration.provider.slug = row.provider;
+      h.sessionState.sessionConfiguration.collaborationMode.model = row.model;
+      await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
+      const disk = h.configStore.current();
+      for (const reasoningEffort of row.levels) {
+        await expect(h.runner.applyAgentConfig("desktop-effort", {sessionId: "session_1", reasoningEffort}))
+          .resolves.toMatchObject({ applied: true, provider: row.provider, model: row.model });
+        expect(h.sessionState.sessionConfiguration.collaborationMode.reasoningEffort).toBe(reasoningEffort);
+        expect((await h.runner.getAgentSnapshot("desktop-effort"))?.runtimeSettings?.reasoningEffort).toBe(reasoningEffort);
+      }
+      const events = recordedRuntimeSettingsEvents(h.rolloutItems);
+      const invalid = ["minimal", "low", "medium", "high", "xhigh", "max"].find(level => !row.levels.includes(level)) ?? "invalid";
+      await expect(h.runner.applyAgentConfig("desktop-effort", {sessionId: "session_1", reasoningEffort: invalid})).rejects.toThrow();
+      Object.assign(h.session, { activeTurn: h.activeTurn });
+      h.setActiveTurn("running-turn");
+      await expect(h.runner.applyAgentConfig("desktop-effort", {sessionId: "session_1", reasoningEffort: row.levels[0]})).rejects.toThrow("between turns");
+      expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toEqual(events);
+      expect(h.configStore.current()).toEqual(disk);
+    });
+
+  it.each([
+    { provider: "anthropic", model: "claude-opus-4-6", levels: ["xhigh"] },
+    { provider: "anthropic", model: "claude-sonnet-4-6", levels: ["xhigh"] },
+    { provider: "anthropic", model: "claude-opus-4-5", levels: ["xhigh", "max"] },
+    ...["gpt-5.6-sol-unverified", "gpt-5.6-terra-unverified", "o3-unverified"].map(model => ({
+      provider: "openai", model, levels: ["minimal", "low", "medium", "high", "xhigh", "max"],
+    })),
+    { provider: "grok", model: "grok-4-20-multi-agent-unverified", levels: ["minimal", "low", "medium", "high", "xhigh", "max"] },
+  ])("rejects unverified session efforts for $provider/$model", async row => {
+    const h = makeTopLevelRunner({ conversationId: "rejected-effort", canonicalRuntimeSettings: true });
+    h.sessionState.sessionConfiguration.provider.slug = row.provider;
+    h.sessionState.sessionConfiguration.collaborationMode.model = row.model;
+    await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const before = structuredClone(h.sessionState.sessionConfiguration);
+    const disk = h.configStore.current();
+    const events = recordedRuntimeSettingsEvents(h.rolloutItems);
+    for (const reasoningEffort of row.levels) {
+      await expect(h.runner.applyAgentConfig("rejected-effort", { sessionId: "session_1", reasoningEffort }))
+        .rejects.toThrow("does not support");
+    }
+    expect(h.sessionState.sessionConfiguration).toEqual(before);
+    expect(h.configStore.current()).toEqual(disk);
+    expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toEqual(events);
+  });
+
+  it("rolls back a NIM effort after a live session mutation fails", async () => {
+    const h = makeTopLevelRunner({ conversationId: "nim-rollback", canonicalRuntimeSettings: true });
+    h.sessionState.sessionConfiguration.provider.slug = "nvidia-nim";
+    h.sessionState.sessionConfiguration.collaborationMode.model = "openai/gpt-oss-120b";
+    await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const before = h.sessionState.sessionConfiguration;
+    const settings = (await h.runner.getAgentSnapshot("nim-rollback"))?.runtimeSettings;
+    vi.mocked(h.session.state.with).mockImplementationOnce(async apply => {
+      await apply(h.sessionState);
+      throw new Error("injected effort failure");
+    });
+    await expect(h.runner.applyAgentConfig("nim-rollback", { sessionId: "session_1", reasoningEffort: "high" })).rejects.toThrow("injected effort failure");
+    expect(h.sessionState.sessionConfiguration).toEqual(before);
+    expect((await h.runner.getAgentSnapshot("nim-rollback"))?.runtimeSettings).toEqual(settings);
+    expect(recordedRuntimeSettingsEvents(h.rolloutItems).at(-1)?.msg?.payload).toMatchObject({ reason: "compensating_rollback" });
+  });
+
   it("applies native effort between turns without changing model, permissions, or disk config", async () => {
     const h = makeTopLevelRunner({ conversationId: "direct-deepseek-effort", canonicalRuntimeSettings: true });
     h.sessionState.sessionConfiguration.provider.slug = "deepseek";
@@ -8605,61 +8804,6 @@ describe("AgenC delegate background-agent runner", () => {
         input: [{ type: "text", text: "actual raw initial model input" }],
       }),
     );
-  });
-
-  it("[managed-thread] carries validated Editor policy into the atomic first turn", async () => {
-    const { runner, stub, session, bootstrap } = makeTopLevelRunner({
-      conversationId: "session-editor-first-turn",
-    });
-    const initialEditorInteraction = {
-      interactionId: "interaction-first-fix",
-      kind: "fix" as const,
-      policy: "proposal_only" as const,
-      editorInstanceId: "editor-first-turn",
-      bufferHandle: 7,
-      changedtick: 12,
-      contentSha256: "a".repeat(64),
-      path: "/workspace/src/main.ts",
-      range: {
-        start: { line: 2, column: 3 },
-        end: { line: 4, column: 0 },
-      },
-      selectionMode: "character" as const,
-    };
-
-    await runner.startAgent({
-      objective: "internal editor prompt",
-      initialContent: "internal editor prompt",
-      initialDisplayUserMessage: "Fix the selected code",
-      initialEditorInteraction,
-      unattendedAllow: [],
-      unattendedDeny: [],
-    });
-
-    expect(stub.thread.submit).toHaveBeenCalledWith({
-      type: "user_input",
-      input: [{ type: "text", text: "internal editor prompt" }],
-      submitOptions: {
-        displayUserMessage: "Fix the selected code",
-        editorInteraction: initialEditorInteraction,
-      },
-    });
-    expect(bootstrap).toHaveBeenCalledWith(
-      expect.objectContaining({
-        deferSessionStartHooks: true,
-        deferAgentStartupSideEffects: true,
-      }),
-    );
-    expect(session.emit).toHaveBeenCalledWith({
-      id: "user-initial-session-editor-first-turn",
-      msg: {
-        type: "user_message",
-        payload: {
-          message: "internal editor prompt",
-          displayText: "Fix the selected code",
-        },
-      },
-    });
   });
 
   it("[managed-thread] empty initialContent provisions a passive agent with no turn-1 submit", async () => {
@@ -10811,7 +10955,7 @@ describe("AgenC delegate background-agent runner", () => {
           method: "event.agent_status",
           params: expect.objectContaining({
             status: "idle",
-            runStatus: "completed",
+            runStatus: "stopped",
             turnId: "turn-interrupted",
             message: "user_cancel",
             eventId: "turn-interrupted",
@@ -10865,7 +11009,7 @@ describe("AgenC delegate background-agent runner", () => {
           method: "event.agent_status",
           params: expect.objectContaining({
             status: "idle",
-            runStatus: "completed",
+            runStatus: "stopped",
             message: "cancelled",
             eventId: "turn-cancelled",
             sequence: expect.any(Number),
@@ -10973,7 +11117,7 @@ describe("AgenC delegate background-agent runner", () => {
           method: "event.agent_status",
           params: expect.objectContaining({
             status: "idle",
-            runStatus: "completed",
+            runStatus: "stopped",
             message: "cancelled",
           }),
         }),
@@ -11255,12 +11399,10 @@ describe("AgenC delegate background-agent runner", () => {
       closeProjection = startDaemonWorkerTaskPolling(bridge, update => { state = update(state); }, message => errors.push(message));
       await vi.waitFor(() => expect(Object.keys(state.tasks)).toHaveLength(3));
       expect(Object.values(state.tasks).map(task => task.status)).toEqual(["completed", "completed", "completed"]);
-      expect(formatTaskElapsed(state.tasks["worker-backend"]!, 300_000)).toBe("1m00s");
       closeProjection();
       vi.setSystemTime(Date.now() + 600_000);
       closeProjection = startDaemonWorkerTaskPolling(bridge, update => { state = update(state); }, message => errors.push(message));
       await vi.waitFor(() => expect(Object.keys(state.tasks)).toHaveLength(3));
-      expect(formatTaskElapsed(state.tasks["worker-backend"]!, 900_000)).toBe("1m00s");
       expect(nativeSnapshot).toHaveBeenCalledWith(agentId);
       workers = [{ ...workers[0]!, status: "running", timing: { turnId: "backend-next", startedAt: 500_000 } },
         { ...workers[1]!, status: "errored", error: "failed" }];
@@ -11268,12 +11410,10 @@ describe("AgenC delegate background-agent runner", () => {
       await vi.waitFor(() => expect(Object.keys(state.tasks)).toHaveLength(2));
       expect(state.tasks["worker-backend"]?.status).toBe("running");
       expect(state.tasks["worker-backend"]?.endTime).toBeUndefined();
-      expect(formatTaskElapsed(state.tasks["worker-backend"]!, 515_000)).toBe("0m15s");
       expect(state.tasks["worker-frontend"]?.status).toBe("failed");
       workers = [{ ...workers[0]!, status: "idle", timing: { turnId: "backend-next", startedAt: 500_000, endedAt: 520_000 } }];
       await vi.advanceTimersByTimeAsync(5_000);
       await vi.waitFor(() => expect(state.tasks["worker-backend"]?.status).toBe("completed"));
-      expect(formatTaskElapsed(state.tasks["worker-backend"]!, 900_000)).toBe("0m20s");
       expect(errors).toEqual([]);
     } finally {
       closeProjection?.();
@@ -11379,6 +11519,66 @@ describe("AgenC delegate background-agent runner", () => {
     );
   });
 
+  it.each([false, true])("owner Stop keeps child IDs captured before root cancellation settles (scoped=%s)", async (scoped) => {
+    const { runner, session, control, setActiveTurn, abortTurnIfActive } = makeTopLevelRunner({
+      conversationId: "session-stop-closing-child-edge",
+      scopedTurnCancellation: scoped,
+    });
+    await runner.startAgent({ objective: "hi", unattendedAllow: [], unattendedDeny: [] });
+    if (scoped) setActiveTurn("turn-stop-closing-child-edge");
+
+    let edgeOpen = true;
+    control.liveThreadSpawnDescendants.mockImplementation(() => edgeOpen ? ["child-agent"] : []);
+    const terminated = vi.fn();
+    control.stopOpenSpawnChildren.mockImplementation((parentThreadId: string, _reason: string, earlyDescendants: ReadonlySet<string>) => {
+      for (const childThreadId of new Set([
+        ...earlyDescendants,
+        ...control.liveThreadSpawnDescendants(parentThreadId),
+      ])) terminated(childThreadId);
+    });
+    let releaseAbort!: () => void;
+    const abortPending = new Promise<void>((resolve) => { releaseAbort = resolve; });
+    if (scoped) {
+      abortTurnIfActive.mockImplementationOnce(async () => {
+        await abortPending;
+        return true;
+      });
+    } else {
+      session.abortAllTasks.mockImplementationOnce(async () => { await abortPending; });
+    }
+
+    const stopping = scoped
+      ? runner.interruptAgentTurnIfMatches("session-stop-closing-child-edge", "user_cancel", "turn-stop-closing-child-edge")
+      : runner.interruptAgentTurn("session-stop-closing-child-edge", "user_cancel");
+    expect(control.liveThreadSpawnDescendants).toHaveBeenCalledTimes(1);
+    expect(control.stopOpenSpawnChildren).not.toHaveBeenCalled();
+    edgeOpen = false;
+    releaseAbort();
+    await stopping;
+
+    expect(control.stopOpenSpawnChildren).toHaveBeenCalledWith(
+      "session-stop-closing-child-edge",
+      "user_cancel",
+      new Set(["child-agent"]),
+    );
+    expect(terminated).toHaveBeenCalledExactlyOnceWith("child-agent");
+  });
+
+  it("a stale scoped Stop leaves child sessions alone", async () => {
+    const { runner, control, setActiveTurn } = makeTopLevelRunner({
+      conversationId: "session-stale-stop-child",
+      scopedTurnCancellation: true,
+    });
+    await runner.startAgent({ objective: "hi", unattendedAllow: [], unattendedDeny: [] });
+    setActiveTurn("replacement-turn");
+
+    await expect(runner.interruptAgentTurnIfMatches(
+      "session-stale-stop-child", "user_cancel", "stale-turn",
+    )).resolves.toEqual({ cancelled: false, activeTurnId: "replacement-turn", stale: true });
+    expect(control.liveThreadSpawnDescendants).not.toHaveBeenCalled();
+    expect(control.stopOpenSpawnChildren).not.toHaveBeenCalled();
+  });
+
   it("[managed-thread] scoped cancellation cannot interrupt a replacement turn", async () => {
     const { runner, stub, setActiveTurn, abortTurnIfActive, activeTurn } =
       makeTopLevelRunner({
@@ -11408,7 +11608,9 @@ describe("AgenC delegate background-agent runner", () => {
       ),
     ).resolves.toEqual({ cancelled: true, activeTurnId: "turn-old" });
     expect(abortTurnIfActive).toHaveBeenCalledWith("turn-old", "interrupted");
-    expect(activeTurn.unsafePeek()).toEqual({ turnId: "turn-new" });
+    // The replacement turn keeps its own, still-live abort controller.
+    expect(activeTurn.unsafePeek()).toEqual({ turnId: "turn-new", abortController: expect.any(AbortController) });
+    expect((activeTurn.unsafePeek() as { abortController: AbortController }).abortController.signal.aborted).toBe(false);
     expect(stub.thread.submit).not.toHaveBeenCalled();
   });
 
@@ -11428,6 +11630,154 @@ describe("AgenC delegate background-agent runner", () => {
     expect(shutdown).toHaveBeenCalledOnce();
     expect(stub.thread.shutdown).not.toHaveBeenCalled();
     expect(control.shutdown).not.toHaveBeenCalled();
+  });
+});
+
+describe("bypass continuation in a folder inside a repository", () => {
+  // Live suite scenario s14: a Bypass session started in a folder inside a
+  // git repository could not be continued after a daemon restart.
+  async function startBypassSessionInSubfolder(
+    recordTrust: (paths: { readonly home: string; readonly sub: string }) => Promise<void>,
+  ) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "agenc-bypass-subfolder-")));
+    const home = join(root, "home");
+    const repo = join(root, "repo");
+    const sub = join(repo, "packages", "web");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    mkdirSync(sub, { recursive: true });
+    const env = { ...process.env, AGENC_HOME: home };
+    const openState = () => new RuntimeStateRepository(
+      resolveHomeContext({ AGENC_HOME: home, HOME: root }, { platformHome: root }),
+      { storage: "disk" },
+    );
+    await recordTrust({ home, sub });
+
+    // Startup, the way bootstrap does it: resolve trust for the session cwd,
+    // then build the permission context with the explicit bypass choice.
+    const startupState = openState();
+    const configStore = new ConfigStore({
+      home,
+      cwd: sub,
+      env,
+      managedConfigPath: join(root, "managed", "config.toml"),
+      managedDropInDir: join(root, "managed", "config.d"),
+      stateRepository: startupState,
+    });
+    await configStore.reload();
+    const projectTrust = resolveProjectTrustStateSync({
+      agencHome: home,
+      env,
+      cwd: sub,
+      projectRootMarkers: configStore.current().project_root_markers,
+    });
+    const { toolPermissionContext } = await initializeToolPermissionContext({
+      env: { home, cwd: sub, configStore },
+      permissionMode: "bypassPermissions",
+      allowDangerouslySkipPermissions: true,
+      projectTrust,
+    });
+    startupState.close();
+
+    // The daemon restarts: only what reached disk survives.
+    const restartedState = openState();
+    const runId = `session-bypass-subfolder-${projectTrust}`;
+    const settings = bypassRestoreSettings("bypassPermissions", sub);
+    const harness = makeTopLevelRunner({
+      conversationId: runId,
+      canonicalRuntimeSettings: true,
+      rolloutItems: [runtimeSettingsRolloutItem(runId, settings)],
+      workspaceRoot: sub,
+      stateRepository: restartedState,
+    });
+    return {
+      sub,
+      projectTrust,
+      toolPermissionContext,
+      restartedState,
+      harness,
+      restore: () =>
+        harness.runner.restoreAgent({
+          agentId: runId,
+          objective: "continue the bypass session",
+          explicitColdResume: true,
+          runtimeSettings: settings,
+        }),
+      cleanup: () => {
+        restartedState.close();
+        rmSync(root, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it("refuses to continue when only the picked folder was recorded as trusted", async () => {
+    const started = await startBypassSessionInSubfolder(async ({ home, sub }) => {
+      // What AgenC Desktop recorded before it asked Core: the exact folder.
+      writeFileSync(
+        trustedProjectsPath({ agencHome: home }),
+        `${JSON.stringify({
+          version: 1,
+          trustedProjects: [{ path: sub, trustedAt: "2026-09-23T00:00:00.000Z" }],
+        })}\n`,
+      );
+    });
+    try {
+      expect(started.projectTrust).toBe("untrusted");
+      // The explicit bypass flag still starts the session, but consent is
+      // never persisted for an untrusted project.
+      expect(started.toolPermissionContext.mode).toBe("bypassPermissions");
+      expect(
+        loadBypassPermissionsConsent(started.restartedState, started.sub, { reload: true }),
+      ).toEqual([]);
+      await expect(started.restore()).rejects.toThrow(
+        /restored bypass permission mode requires persisted exact-cwd consent/u,
+      );
+    } finally {
+      started.cleanup();
+    }
+  });
+
+  it("continues after project.trust records the repository root", async () => {
+    const started = await startBypassSessionInSubfolder(async ({ home, sub }) => {
+      const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+        agentManager: {} as never,
+        initializeAuthenticator: () => true,
+        projectTrust: new AgenCProjectTrustService({
+          agencHome: home,
+          projectRootMarkers: () => undefined,
+        }),
+      });
+      const connection = dispatcher.createConnection();
+      await connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "init",
+        method: "initialize",
+        params: { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION } },
+      });
+      await expect(
+        connection.dispatch({
+          jsonrpc: JSON_RPC_VERSION,
+          id: "trust",
+          method: "project.trust",
+          params: { cwd: sub },
+        }),
+      ).resolves.toMatchObject({ result: { trusted: true } });
+    });
+    try {
+      expect(started.projectTrust).toBe("trusted");
+      // Trust is keyed to the repository root; consent stays keyed to the
+      // exact folder the session runs in, which is what restore checks.
+      expect(
+        loadBypassPermissionsConsent(started.restartedState, started.sub, { reload: true }),
+      ).toEqual([started.sub]);
+      await expect(started.restore()).resolves.toBe(true);
+      expect(started.harness.permissionModeRegistry.current()).toMatchObject({
+        mode: "bypassPermissions",
+        bypassPermissionsAcceptedIn: [started.sub],
+      });
+    } finally {
+      started.cleanup();
+    }
   });
 });
 

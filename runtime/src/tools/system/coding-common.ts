@@ -38,6 +38,8 @@ function isPlanFileWriteAllowed(
 }
 
 export const SESSION_ADVERTISED_TOOL_NAMES_ARG = "__agencAdvertisedToolNames";
+/** Runtime-injected names a narrower registry (a subagent's) can dispatch. */
+export const SESSION_TOOL_CATALOG_SCOPE_ARG = "__agencToolCatalogScope";
 
 export interface CodingToolConfig {
   readonly allowedPaths: readonly string[];

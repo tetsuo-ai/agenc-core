@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
 import type { Tool, ToolExecutionInjectedArgs, ToolPreflightFailure, ToolResult } from "../types.js";
@@ -51,9 +51,11 @@ import { parseSandboxPermissionsArgs } from "../../sandbox/escalation/sandboxing
 import { readReadOnlyInspectionInvocation } from "../../permissions/readonly-inspection.js";
 import {
   permissionProfileForRuntimeContext,
+  runtimeChildTempRoot,
   runtimePlatformSandboxStatus,
   sandboxModeRequiresPlatformIsolation,
 } from "../runtimes/sandboxing.js";
+import { routineRunOptions } from "../../session/runtime-options.js";
 
 export interface ExecCommandToolConfig extends BashToolConfig {
   readonly allowedPaths?: readonly string[];
@@ -219,16 +221,19 @@ export function runtimeSandboxForExec(
   }
   const network = networkPolicy(turn.networkSandboxPolicy);
   const networkInterfaces = networkPolicyInterfaces(turn.network);
+  const routineRun = routineRunOptions(context.invocation.session) !== undefined;
   return {
     permissionProfile: permissionProfileForRuntimeContext(context, {
       cwd: sandboxPolicyCwd,
       ...(network !== undefined ? { network } : {}),
     }),
-    ...(context.additionalPermissions !== undefined
+    // A routine run never widens its sandbox: the profile above already
+    // folded in (and confined) anything granted.
+    ...(context.additionalPermissions !== undefined && !routineRun
       ? { additionalPermissions: context.additionalPermissions }
       : {}),
     sandboxPolicyCwd,
-    sessionTempRoot,
+    sessionTempRoot: runtimeChildTempRoot(context, sessionTempRoot, sandboxPolicyCwd),
     preference: "require",
     ...(booleanValue(turn.config?.sandboxAllowGpu) === true
       ? { allowGpu: true }
@@ -320,12 +325,16 @@ function windowsSandboxLevel(value: unknown): WindowsSandboxLevel {
 
 function errorResult(error: unknown): ToolResult {
   const message = error instanceof Error ? error.message : String(error);
+  const ttyUnavailable = error instanceof UnifiedExecError &&
+    error.code === "tty_unavailable_in_contained_operation";
   return {
     content: safeStringify({
       error: message,
       ...(error instanceof UnifiedExecError ? { code: error.code } : {}),
+      ...(ttyUnavailable ? { retryable: false } : {}),
     }),
     isError: true,
+    ...(ttyUnavailable ? { metadata: { retryable: false } } : {}),
     ...(error instanceof UnifiedExecError || error instanceof SandboxExecutionError
       ? {
           effectDisposition: confirmedNoEffectDisposition(
@@ -573,7 +582,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         tty: {
           type: "boolean",
           description:
-            "Allocate an interactive PTY. Required for persistent shells and write_stdin.",
+            "Allocate an interactive PTY. Required for persistent shells and write_stdin. Unavailable inside a contained tool operation; use tty=false with non-interactive flags, or ask the user to run it with the app's Run button.",
         },
         shell: {
           type: "string",
@@ -610,17 +619,66 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         };
       }
       const cmd = asString(args.cmd)!;
-      const workdir = asString(args.workdir);
+      const requestedWorkdir = asString(args.workdir);
+      // One absolute directory for the existence check, the write policy and
+      // the launch. Validation resolves a relative workdir against the
+      // workspace, but the process manager would resolve the raw string
+      // against the daemon's own cwd.
+      const workdir =
+        requestedWorkdir !== undefined && requestedWorkdir.trim().length > 0
+          ? resolve(config?.cwd ?? process.cwd(), requestedWorkdir)
+          : undefined;
       const timeoutMs = asNumber(args.timeoutMs);
       const tty = asBoolean(args.tty);
       const detach = asBoolean(args.detach) === true;
+      // A read-only child launches in the cwd its trusted inspection resolved
+      // against the child session, not the registry's workspace. Check, gate
+      // and record that same directory.
+      let inspection: ReturnType<typeof readReadOnlyInspectionInvocation>;
+      try {
+        inspection = readReadOnlyInspectionInvocation(args);
+      } catch (error) {
+        // The trusted executable changed after inspection. Nothing has started.
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: safeStringify({ error: message }),
+          isError: true,
+          effectDisposition: confirmedNoEffectDisposition(
+            "tool:system.exec-command:inspection-authority",
+            message,
+          ),
+        };
+      }
+      const effectiveWorkdir = inspection?.cwd ?? workdir;
+
+      // Checked here, not in preflight: an earlier call in the same turn may
+      // create the directory. Nothing has started, so the refusal is no effect.
+      if (effectiveWorkdir !== undefined) {
+        let isDirectory = false;
+        try {
+          isDirectory = statSync(effectiveWorkdir).isDirectory();
+        } catch {
+          isDirectory = false;
+        }
+        if (!isDirectory) {
+          const message = `workdir does not exist: ${requestedWorkdir ?? effectiveWorkdir}. It must exist before the command starts; create it in an earlier command, or run from an existing directory and cd inside the command.`;
+          return {
+            content: safeStringify({ error: message }),
+            isError: true,
+            effectDisposition: confirmedNoEffectDisposition(
+              "tool:system.exec-command:workdir-missing",
+              message,
+            ),
+          };
+        }
+      }
 
       if (!(tty === true && isPlainInteractiveShellCommand(cmd))) {
         const workspaceWriteDecision = classifyShellWorkspaceWritePolicy({
           toolName: "exec_command",
           args: {
             command: cmd,
-            ...(workdir !== undefined ? { cwd: workdir } : {}),
+            ...(effectiveWorkdir !== undefined ? { cwd: effectiveWorkdir } : {}),
           },
           workspaceRoot: config?.cwd ?? config?.allowedPaths?.[0],
           ...shellWorkspaceMutationPermission(args),
@@ -644,7 +702,6 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
       }
 
       try {
-        const inspection = readReadOnlyInspectionInvocation(args);
         const runtimeSandbox = inspection?.runtimeSandbox ?? runtimeSandboxForExec(
           args,
           config?.cwd ?? process.cwd(),
@@ -734,12 +791,12 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           codeModeResult: unifiedExecCodeModeResult(output),
           effectDisposition: processObservationDisposition(
             cmd,
-            workdir ?? config?.cwd ?? process.cwd(),
+            effectiveWorkdir ?? config?.cwd ?? process.cwd(),
             output,
           ),
           metadata: {
             command: cmd,
-            cwd: workdir ?? config?.cwd ?? process.cwd(),
+            cwd: effectiveWorkdir ?? config?.cwd ?? process.cwd(),
             tty: tty ?? false,
             exitCode: output.exitCode,
             stdout: output.stdout,

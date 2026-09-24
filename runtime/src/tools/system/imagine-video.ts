@@ -35,7 +35,7 @@ import {
 } from "../../llm/provider.js";
 import {
   isDirectXaiInferenceHost,
-  resolveXaiBearerToken,
+  tryResolveXaiBearerTokenForBaseUrl,
 } from "../../llm/xai-capability-config.js";
 import {
   resolveProviderApiKeyEnvironment,
@@ -213,12 +213,14 @@ type VideoBackendResolution =
 function environmentVideoBackend(
   kind: "openai" | "minimax",
   env: NodeJS.ProcessEnv,
+  sessionBaseURL?: string,
 ): VideoBackend | undefined {
   const credential = resolveProviderApiKeyEnvironment(kind, env);
   if (credential === undefined) return undefined;
-  const baseURL =
-    resolveProviderBaseURLEnvironment(kind, env)?.value ??
-    (kind === "openai" ? DEFAULT_OPENAI_BASE_URL : DEFAULT_MINIMAX_BASE_URL);
+  const environmentBaseURL = resolveProviderBaseURLEnvironment(kind, env)?.value;
+  const baseURL = kind === "openai"
+    ? environmentBaseURL ?? sessionBaseURL ?? DEFAULT_OPENAI_BASE_URL
+    : environmentBaseURL ?? sessionBaseURL ?? DEFAULT_MINIMAX_BASE_URL;
   try {
     new URL(baseURL);
   } catch {
@@ -247,36 +249,49 @@ function resolveVideoBackend(
   const env = opts.env ?? process.env;
   const provider = opts.getSession()?.services?.provider;
   const providerIdentity = readProviderIdentity(provider as never);
+  let oauthBaseUrlError: string | undefined;
 
   if (providerIdentity === "openai" || providerIdentity === "minimax") {
-    const backend = environmentVideoBackend(providerIdentity, env);
+    const backend = environmentVideoBackend(
+      providerIdentity,
+      env,
+      provider === undefined
+        ? undefined
+        : readProviderFactoryOptions(provider as never).baseURL,
+    );
     if (backend !== undefined) return { backend };
   }
 
   if (providerIdentity === "grok" && provider !== undefined) {
     const factory = readProviderFactoryOptions(provider as never);
-    if (isDirectXaiInferenceHost(factory.baseURL)) {
-      const sessionKey =
-        typeof factory.apiKey === "string" ? factory.apiKey : undefined;
-      const bearer = resolveXaiBearerToken(opts.home, env, sessionKey);
-      if (bearer !== undefined) {
-        return {
-          backend: {
-            kind: "xai",
-            baseURL: (factory.baseURL ?? DEFAULT_XAI_BASE_URL).replace(
-              /\/$/,
-              "",
-            ),
-            bearer,
-          },
-        };
-      }
+    const sessionKey =
+      typeof factory.apiKey === "string" ? factory.apiKey : undefined;
+    const xaiResolution = tryResolveXaiBearerTokenForBaseUrl(
+      opts.home, env, factory.baseURL ?? DEFAULT_XAI_BASE_URL, sessionKey,
+    );
+    oauthBaseUrlError = xaiResolution.oauthBaseUrlError;
+    const bearer = xaiResolution.bearer;
+    if (bearer !== undefined) {
+      return {
+        backend: {
+          kind: "xai",
+          baseURL: (factory.baseURL ?? DEFAULT_XAI_BASE_URL).replace(
+            /\/$/,
+            "",
+          ),
+          bearer,
+        },
+      };
     }
   }
 
-  // Never pass a non-Grok session key/base URL. A non-direct Grok session
-  // also lands here and must supply independent xAI authority.
-  const bearer = resolveXaiBearerToken(opts.home, env);
+  // Without a usable Grok session key, use only independent xAI authority.
+  const xaiResolution = tryResolveXaiBearerTokenForBaseUrl(
+    opts.home, env,
+    resolveProviderBaseURLEnvironment("grok", env)?.value ?? DEFAULT_XAI_BASE_URL,
+  );
+  oauthBaseUrlError ??= xaiResolution.oauthBaseUrlError;
+  const bearer = xaiResolution.bearer;
   if (bearer !== undefined) {
     const baseURL =
       resolveProviderBaseURLEnvironment("grok", env)?.value ??
@@ -302,7 +317,7 @@ function resolveVideoBackend(
   if (independent !== undefined) return { backend: independent };
 
   return {
-    error:
+    error: oauthBaseUrlError ??
       "ImagineVideo needs a media credential: OPENAI_API_KEY for Sora, " +
       "MINIMAX_API_KEY for Hailuo, or an independent xAI media credential " +
       "via /grok-login, XAI_API_KEY, or GROK_API_KEY.",
@@ -1287,6 +1302,10 @@ export function createImagineVideoTool(opts: ImagineVideoToolOptions): Tool {
       hiddenByDefault: false,
       mutating: true,
       deferred: deferredUntilDiscovered,
+      // The only write is the generated media file under this fixed
+      // directory; no argument names a path, so the sandbox must be told
+      // where the output lands or it denies the call as unverifiable.
+      fixedWriteTargets: () => [join(opts.workspaceRoot, ".agenc", "imagine")],
       keywords: ["video", "generate", "media"],
       preferredProfiles: ["coding", "operator", "general"],
     },

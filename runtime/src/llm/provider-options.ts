@@ -25,6 +25,7 @@ import {
   resolveStoredChatGptSubscriptionCredentials,
 } from "./providers/openai/chatgpt-backend.js";
 import {
+  allowsOpenAICompatibleKeyFallback,
   resolveProviderBaseURLEnvironment,
   resolveProviderCredentialEnvironment,
   missingProviderCredentialEnvironmentLabel,
@@ -37,6 +38,7 @@ import {
   resolveBuiltInProviderInfo,
 } from "./registry/provider-info.js";
 import { resolveGrokProviderCredential } from "./xai-capability-config.js";
+import { isXaiOauthBearer } from "../utils/xaiOauthCredentials.js";
 import { providerAuthPreference } from "./provider-auth-selection.js";
 import type { ProviderFactoryOptions, ProviderName } from "./provider.js";
 import {
@@ -46,8 +48,13 @@ import {
 } from "./providers/gemini/runtime-options.js";
 import { createGeminiEndpointPlan } from "./providers/gemini/endpoint-plan.js";
 import { isGrokComposerModel } from "./providers/grok/acp-adapter.js";
+import {
+  assertXaiOauthBaseUrl,
+  isTrustedXaiOauthInferenceBaseUrl,
+} from "../services/xai/oauth.js";
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import { hasActivePilotModelAccess } from "../auth/pilot-access.js";
+import { LLMMissingCredentialsError } from "./errors.js";
 
 export type ProviderEnvironment = Readonly<Record<string, string | undefined>>;
 
@@ -474,28 +481,78 @@ function resolveProviderCredentialAuthorityCore(
     throw new Error("OpenAI API-key selection conflicts with OAuth factory options");
   }
   const home = requested.credentialHome;
+  const requestedBaseURL = nonEmpty(requested.baseURL);
+  const configuredBaseURL = requestedBaseURL ??
+    resolveProviderBaseURLEnvironment(provider, snapshot)?.value;
+  const credentialEnv =
+    provider === "openai-compatible" &&
+    !allowsOpenAICompatibleKeyFallback(configuredBaseURL)
+      ? { ...snapshot, OPENAI_API_KEY: undefined }
+      : snapshot;
   const credentialEnvironment =
     provider === "gemini"
       ? undefined
-      : resolveProviderCredentialEnvironment(provider, snapshot);
+      : resolveProviderCredentialEnvironment(provider, credentialEnv);
   const environmentApiKey =
     credentialEnvironment?.kind === "api-key"
       ? credentialEnvironment.apiKey?.value
       : undefined;
   const explicitApiKey = nonEmpty(requested.apiKey);
+  if (
+    provider === "grok" &&
+    home !== undefined &&
+    authPreference === "api-key" &&
+    isXaiOauthBearer(home, explicitApiKey)
+  ) {
+    throw new Error("Grok API-key mode cannot use an xAI sign-in token");
+  }
   const explicitAuthToken = nonEmpty(requested.authToken);
   const environmentAuthToken =
     provider === "anthropic" && explicitApiKey === undefined
       ? nonEmpty(snapshot.ANTHROPIC_AUTH_TOKEN)
       : undefined;
   const authToken = explicitAuthToken ?? environmentAuthToken;
-  const grokCredential =
+  let grokCredential =
     provider === "grok" && home !== undefined
       ? resolveGrokProviderCredential(home, requested.apiKey, snapshot)
       : undefined;
+  let baseURL =
+    requestedBaseURL ??
+    resolveProviderBaseURLEnvironment(provider, snapshot)?.value;
+  const grokComposer =
+    provider === "grok" && isGrokComposerModel(requested.model);
+  let grokCustomApiKey = false;
+  if (
+    provider === "grok" &&
+    grokCredential?.isOAuth === true &&
+    !grokComposer &&
+    baseURL !== undefined &&
+    !isTrustedXaiOauthInferenceBaseUrl(baseURL)
+  ) {
+    const fallbackApiKey = authPreference === "auto"
+      ? [
+          explicitApiKey,
+          environmentApiKey,
+          nonEmpty(candidates.savedApiKey),
+        ]
+          .find(
+            (key) => key !== undefined &&
+              (home === undefined || !isXaiOauthBearer(home, key)),
+          )
+      : undefined;
+    if (fallbackApiKey === undefined) {
+      assertXaiOauthBaseUrl(baseURL);
+    }
+    grokCredential = { value: fallbackApiKey, isOAuth: false };
+    grokCustomApiKey = true;
+  }
   let apiKey =
     provider === "grok" && home !== undefined
-      ? (grokCredential?.value ??
+      ? ((grokComposer && grokCredential?.isOAuth === true
+          ? (isXaiOauthBearer(home, explicitApiKey)
+              ? undefined : explicitApiKey) ??
+            environmentApiKey ?? nonEmpty(candidates.savedApiKey)
+          : grokCredential?.value) ??
         (authPreference === "oauth" ? undefined : nonEmpty(candidates.savedApiKey)))
       : (explicitApiKey ??
         environmentApiKey ??
@@ -506,17 +563,17 @@ function resolveProviderCredentialAuthorityCore(
   if (authToken !== undefined) {
     apiKey = undefined;
   }
-  const requestedBaseURL = nonEmpty(requested.baseURL);
-  let baseURL =
-    requestedBaseURL ??
-    resolveProviderBaseURLEnvironment(provider, snapshot)?.value;
-
   const resolvedExtra: Record<string, unknown> = {};
   const forcedExtra: Record<string, unknown> = {};
-  if (provider === "grok" && authPreference !== "auto") {
+  if (
+    provider === "grok" &&
+    (authPreference !== "auto" || grokCustomApiKey ||
+      (grokCredential?.isOAuth === true && !grokComposer))
+  ) {
     // Preserve the captured selection when providers are recreated from their
     // recorded options; the raw factory must not reinterpret API-key intent.
-    forcedExtra.authMode = authPreference === "api-key" ? "api_key" : "oauth";
+    forcedExtra.authMode =
+      authPreference === "api-key" || grokCustomApiKey ? "api_key" : "oauth";
   }
   let chatGptSubscription = false;
   let openAiNativeAuthMode: "api-key" | "oauth" | undefined;
@@ -543,6 +600,7 @@ function resolveProviderCredentialAuthorityCore(
           resolveStoredChatGptSubscriptionCredentials(stored);
         if (home !== undefined && subscription !== undefined) {
           const initialAccessToken = subscription.bearerToken;
+          let activeAccessToken = initialAccessToken;
           apiKey = undefined;
           baseURL = CHATGPT_BACKEND_BASE_URL;
           chatGptSubscription = true;
@@ -558,7 +616,7 @@ function resolveProviderCredentialAuthorityCore(
                 const refreshed = await refreshOpenAiSubscriptionIfNeeded(
                   home,
                   snapshot,
-                  { force: true },
+                  { force: true, rejectedAccessToken: activeAccessToken },
                 );
                 const credentials = refreshed.credentials;
                 if (
@@ -571,6 +629,7 @@ function resolveProviderCredentialAuthorityCore(
                     reason: "OpenAI subscription token refresh is unavailable",
                   };
                 }
+                activeAccessToken = credentials.accessToken;
                 return {
                   kind: "refreshed" as const,
                   accessToken: credentials.accessToken,
@@ -882,13 +941,8 @@ function withRuntimeAuthExtra(
   };
 }
 
-/**
- * Resolve the complete credential authority for a live provider binding.
- * Saved BYOK is read only when explicit, native, and environment credentials
- * are absent. Subscription credentials remain lazy and are vended only by the
- * provider wrapper when the first model operation starts.
- */
-export async function resolveProviderRuntimeAuthority(
+/** Local credential choice shared by consent preview and live preparation. */
+export async function resolveProviderLocalCredentialAuthority(
   provider: ProviderName,
   requested: ProviderFactoryOptions,
   env: ProviderEnvironment,
@@ -899,13 +953,28 @@ export async function resolveProviderRuntimeAuthority(
   const authPreference = provider === "openai" || provider === "grok"
     ? providerAuthPreference(provider, env)
     : "auto";
-  let resolved = resolveProviderCredentialAuthority(provider, requested, env);
   const info = resolveBuiltInProviderInfo(provider);
+  const requestedBaseURL = nonEmpty(requested.baseURL) ??
+    resolveProviderBaseURLEnvironment(provider, env)?.value;
+  const customGrokBaseURL = provider === "grok" &&
+    requestedBaseURL !== undefined &&
+    !isTrustedXaiOauthInferenceBaseUrl(requestedBaseURL);
+  const savedApiKey = customGrokBaseURL &&
+    authPreference !== "oauth" &&
+    runtime.readSavedApiKey !== undefined
+      ? nonEmpty(await runtime.readSavedApiKey(provider))
+      : undefined;
+  let resolved = resolveProviderCredentialAuthority(
+    provider, requested, env,
+    savedApiKey === undefined ? {} : { savedApiKey },
+  );
   if (
     resolved.credential.status === "missing" &&
     authPreference !== "oauth" &&
     info?.onboarding.access === "api-key" &&
-    runtime.readSavedApiKey !== undefined
+    runtime.readSavedApiKey !== undefined &&
+    savedApiKey === undefined &&
+    !customGrokBaseURL
   ) {
     const savedApiKey = nonEmpty(await runtime.readSavedApiKey(provider));
     if (savedApiKey !== undefined) {
@@ -933,6 +1002,22 @@ export async function resolveProviderRuntimeAuthority(
       "Managed provider keys require an active AgenC subscription; configure BYOK provider credentials instead",
     );
   }
+  return Object.freeze({
+    ...resolved,
+    managedCredential,
+  });
+}
+
+/** Resolve the complete authority for a live provider binding. */
+export async function resolveProviderRuntimeAuthority(
+  provider: ProviderName,
+  requested: ProviderFactoryOptions,
+  env: ProviderEnvironment,
+  runtime: ProviderRuntimeCredentialOptions = {},
+  selectedAuthority?: ResolvedProviderRuntimeAuthority,
+): Promise<ResolvedProviderRuntimeAuthority> {
+  const selected = selectedAuthority ?? await resolveProviderLocalCredentialAuthority(provider, requested, env, runtime);
+  const sessionId = nonEmpty(runtime.sessionId);
   await assertHostedAgencModelAuthority({
     provider,
     model: requested.model,
@@ -941,19 +1026,19 @@ export async function resolveProviderRuntimeAuthority(
     subscriptionTier: runtime.subscriptionTier,
   });
 
-  const needsAuthBackend = managedCredential || provider === "agenc";
+  const needsAuthBackend = selected.managedCredential || provider === "agenc";
   const factoryOptions = needsAuthBackend
     ? withRuntimeAuthExtra(
         provider,
-        resolved.factoryOptions,
+        selected.factoryOptions,
         runtime,
-        managedCredential,
+        selected.managedCredential,
       )
-    : resolved.factoryOptions;
+    : selected.factoryOptions;
   return Object.freeze({
     factoryOptions,
-    credential: resolved.credential,
-    managedCredential,
+    credential: selected.credential,
+    managedCredential: selected.managedCredential,
   });
 }
 
@@ -973,7 +1058,7 @@ export function requireProviderRuntimeCredential(
       .supportsManagedKeyAccess === true
       ? " or sign in and enable auth.managedKeys.enabled"
       : "";
-  throw new Error(
+  throw new LLMMissingCredentialsError(provider,
     `${provider} provider requires credentials. Set ${authority.credential.missingLabel}${managedHint}.`,
   );
 }

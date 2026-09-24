@@ -91,6 +91,18 @@ describe("daemon browser remote lifecycle", () => {
     await expect(start).rejects.toMatchObject({ code: "REMOTE_OPERATION_CANCELLED" });
     expect(f.service.status()).toMatchObject({ enabled: true, pairing: null, error: null });
   });
+  it("returns a refused invitation to its caller without putting the service in an error state", async () => {
+    const f = fixture(); f.service.start();
+    await expect(f.service.begin({ ...f.params, sessionIds: ["outside"] })).rejects.toBeInstanceOf(Error);
+    expect(f.service.status()).toMatchObject({ enabled: true, state: "idle", pairing: null, error: null });
+    vi.mocked(f.backend.start).mockRejectedValueOnce(new Error("backend down"));
+    await expect(f.service.begin(f.params)).rejects.toMatchObject({ code: "REMOTE_PAIRING_FAILED" });
+    expect(f.service.status()).toMatchObject({ state: "idle", error: null });
+    // The next invitation still works.
+    await f.service.begin(f.params);
+    expect(f.service.status().pairing?.pairingId).toBe("pair-1");
+  });
+
   it("rejects forged relay identity and replay after reconnect, with bounded request processing", async () => {
     const f = fixture(); await f.approve(); const socket = f.sockets[0]!;
     socket.emit("message", f.frame("forged").replace('"deviceId":"device-1"', '"deviceId":"forged"'));
@@ -149,7 +161,7 @@ describe("browser workspace boundary", () => {
   it("denies all daemon, config and unscoped methods even to a controller", async () => {
     const f = fixture(); const grant = { ...f.params, workspaceId: "workspace", allowFiles: true, allowApprovals: true };
     const access = new RemoteAccessBoundary(grant, () => true, f.lookup, f.privateHome);
-    for (const method of ["remote.approve", "auth.whoami", "agent.attach", "session.applyConfig", "permission.list", "commandExec.start", "session.create"]) await expect(access.authorize(method, { sessionId: "allowed" })).rejects.toMatchObject({ code: "REMOTE_METHOD_DENIED" });
+    for (const method of ["remote.approve", "auth.whoami", "agent.attach", "session.applyConfig", "permission.list", "commandExec.start", "session.create", "project.trustStatus", "project.trust"]) await expect(access.authorize(method, { sessionId: "allowed" })).rejects.toMatchObject({ code: "REMOTE_METHOD_DENIED" });
     await expect(access.authorize("session.transcript.v2", { sessionId: "outside" })).rejects.toMatchObject({ code: "REMOTE_SESSION_DENIED" });
     expect(JSON.stringify(await access.sessions())).not.toMatch(/cwd|credentials|runtimeOptions/);
   });

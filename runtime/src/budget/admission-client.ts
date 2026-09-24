@@ -60,6 +60,8 @@ export interface AdmissionRunCancellationSummary {
 
 export interface ExecutionAdmissionClient {
   readonly scope: AdmissionClientScope;
+  /** Release this session's daemon-owned workspace lease after its last child drains. */
+  release?(): void;
   /**
    * Enqueue and wait for an allow decision. Queue/deny/approval decisions are
    * journaled before this promise settles. Abort/deadline cancellation is

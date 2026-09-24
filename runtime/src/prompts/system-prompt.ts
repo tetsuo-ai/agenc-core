@@ -577,13 +577,11 @@ export function buildEnvInfoSection(inputs: EnvInfoInputs): string {
   // I-82: wall-clock OK here — display only, not a deadline.
   const now = new Date().toISOString();
   // The first two lines below carry an explicit <cwd>...</cwd> anchor and a
-  // disambiguation note. Tool descriptions elsewhere mention agent-namespace
-  // pseudo-paths like `/root/task1`; without this anchor, smaller / local
-  // models confuse the agent-tree pseudo-path with a filesystem path and
-  // try to read `/root/<file>` instead of resolving against the actual cwd.
+  // disambiguation note. Agent-tree identifiers such as `/root/task1` are
+  // not files; absolute Linux paths under `/root` are filesystem paths.
   const items: string[] = [
     `Filesystem working directory: <cwd>${cwd}</cwd>`,
-    `All relative file paths in tool calls resolve against <cwd>. Do NOT use \`/root\` as a filesystem path — it is the agent-tree namespace prefix and is unrelated to the filesystem.`,
+    `All relative file paths in tool calls resolve against <cwd>. Absolute filesystem paths, including Linux paths under /root, are valid file paths. Agent-tree identifiers such as /root/task1 are agent addresses, not files.`,
     `Primary working directory: ${cwd}`,
     `Platform: ${osPlatform()}`,
     `OS: ${osType()} ${osRelease()}`,
@@ -752,6 +750,7 @@ Do not narrate each step, list every file you read, or explain routine actions. 
 // ─────────────────────────────────────────────────────────────────────
 
 export interface SystemPromptSessionSnapshot {
+  readonly providerService?: { current(): { readonly provider: string; readonly model: string } };
   readonly services?: {
     readonly runtimeOptions?: Partial<AgentRuntimeOptions>;
     readonly configStore?: ConfigStore;
@@ -1108,11 +1107,14 @@ export async function assembleSystemPrompt(
     session.services?.providerEnvironment,
   );
 
-  const model = ctx.config.model;
+  // The turn config can inherit the root model in a delegated child. Its
+  // session binding is the authority for the actual destination.
+  const childBinding = session.providerService?.current();
+  const model = childBinding?.model ?? ctx.modelInfo?.slug ?? ctx.config.model;
   const cwd = ctx.cwd;
   const envInfoInputs: EnvInfoInputs = {
     model,
-    provider: opts.provider,
+    provider: childBinding?.provider ?? opts.provider,
     cwd,
     ...(session.services?.sandboxExecutionBroker !== undefined
       ? { sandboxExecutionBroker: session.services.sandboxExecutionBroker }

@@ -45,6 +45,7 @@ import {
   createToolResultIntegrity,
   verifyToolResultIntegrity,
 } from "../../src/session/tool-result-integrity.js";
+import { HARD_MAX_RECOVERY_LINE_BYTES } from "../../src/state/recovery-contract.js";
 import {
   openStateDatabases,
   type StateSqliteDriver,
@@ -82,6 +83,129 @@ afterEach(() => {
 });
 
 describe("A3b history and provider boundary", () => {
+  it("keeps an image and accompanying text within the recovery line limit", () => {
+    const image = `data:image/png;base64,${Buffer.alloc(2_900_000, 0xaa).toString("base64")}`;
+    const text = "x".repeat(400_000);
+    const content: LLMMessage["content"] = [
+      { type: "text", text },
+      { type: "image_url", image_url: { url: image } },
+    ];
+    const message: LLMMessage = {
+      role: "tool",
+      toolCallId: "mcp-image-and-text",
+      toolName: "mcp__server__screenshot",
+      content,
+      runtimeOnly: {
+        toolResultIntegrity: createToolResultIntegrity({
+          runId: "mcp-image-and-text-run",
+          toolCallId: "mcp-image-and-text",
+          content,
+        }),
+      },
+    };
+    expect(Buffer.byteLength(image, "utf8")).toBeLessThan(5 * 1024 * 1024);
+    const durable = llmMessageToDurableResponseItem(message);
+    const line = serializeRolloutItem({ type: "response_item", payload: durable });
+    expect(Buffer.byteLength(line, "utf8") - 1).toBeLessThanOrEqual(
+      HARD_MAX_RECOVERY_LINE_BYTES,
+    );
+    expect(durable.content).toContainEqual({ type: "text", text });
+    expect(durable.content).toContainEqual({
+      type: "text",
+      text: "[Image omitted from durable history: image byte limit reached]",
+    });
+    expect(verifyToolResultIntegrity({
+      integrity: durable.toolResultIntegrity!,
+      toolCallId: "mcp-image-and-text",
+      content: durable.content,
+    }).status).toBe("valid");
+    expect(llmMessageToCheckpointResponseItem({
+      ...message,
+      runtimeOnly: {
+        toolResultIntegrity: {
+          ...message.runtimeOnly!.toolResultIntegrity!,
+          persisted: durable.toolResultIntegrity!.persisted,
+        },
+      },
+    })).toEqual(durable);
+  });
+
+  it("trims accompanying text when omitting the image is insufficient", () => {
+    const content: LLMMessage["content"] = [
+      { type: "text", text: "x".repeat(HARD_MAX_RECOVERY_LINE_BYTES + 1_024) },
+      { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+    ];
+    const message: LLMMessage = {
+      role: "tool",
+      toolCallId: "mcp-oversized-text",
+      content,
+      runtimeOnly: {
+        toolResultIntegrity: createToolResultIntegrity({
+          runId: "mcp-oversized-text-run",
+          toolCallId: "mcp-oversized-text",
+          content,
+        }),
+      },
+    };
+    const durable = llmMessageToDurableResponseItem(message);
+    const line = serializeRolloutItem({ type: "response_item", payload: durable });
+    expect(Buffer.byteLength(line, "utf8") - 1).toBeLessThanOrEqual(
+      HARD_MAX_RECOVERY_LINE_BYTES,
+    );
+    expect(durable.content).toContainEqual({
+      type: "text",
+      text: "[Image omitted from durable history: image byte limit reached]",
+    });
+    expect((durable.content[0] as { text: string }).text).toContain(
+      "[Tool result text truncated for durable history]",
+    );
+    expect(verifyToolResultIntegrity({
+      integrity: durable.toolResultIntegrity!,
+      toolCallId: "mcp-oversized-text",
+      content: durable.content,
+    }).status).toBe("valid");
+  });
+
+  it("bounds inline MCP images in a durable tool record and replays the bounded body", () => {
+    const image = `data:image/png;base64,${Buffer.alloc(3 * 1024 * 1024, 0xaa).toString("base64")}`;
+    const content: LLMMessage["content"] = [
+      { type: "text", text: "first" },
+      { type: "image_url", image_url: { url: image } },
+      { type: "text", text: "second" },
+      { type: "image_url", image_url: { url: image } },
+    ];
+    const message: LLMMessage = {
+      role: "tool",
+      toolCallId: "mcp-images",
+      toolName: "mcp__server__screenshot",
+      content,
+      runtimeOnly: {
+        toolResultIntegrity: createToolResultIntegrity({
+          runId: "mcp-images-run",
+          toolCallId: "mcp-images",
+          content,
+        }),
+      },
+    };
+    const durable = llmMessageToDurableResponseItem(message);
+    const line = serializeRolloutItem({ type: "response_item", payload: durable });
+    expect(Buffer.byteLength(line, "utf8")).toBeLessThanOrEqual(5 * 1024 * 1024);
+    const parsed = parseRolloutLine(line);
+    expect(parsed?.type).toBe("response_item");
+    if (parsed?.type !== "response_item") return;
+    const resumed = responseItemToLlmMessage(parsed.payload);
+    expect(resumed.content).toEqual(durable.content);
+    expect(resumed.content).toContainEqual({
+      type: "text",
+      text: "[Image omitted from durable history: image byte limit reached]",
+    });
+    expect(verifyToolResultIntegrity({
+      integrity: durable.toolResultIntegrity!,
+      toolCallId: "mcp-images",
+      content: resumed.content,
+    }).status).toBe("valid");
+  });
+
   it("preserves original identity across replacement history and strips it from provider wire", () => {
     const originalContent = "full tool output";
     const integrity = createToolResultIntegrity({

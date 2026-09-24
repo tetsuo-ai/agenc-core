@@ -26,6 +26,7 @@ import {
   resolvePluginStorageAuthority,
 } from "../directories.js";
 import { isRecord } from "../manifest-schema.js";
+import { isExcludedPluginPayloadDirectory, isExcludedPluginPayloadPath } from "../payload-paths.js";
 import { isBareMode } from "../../utils/envUtils.js";
 import {
   loadPluginOptions,
@@ -169,7 +170,7 @@ export async function readMarkdownFile(
   }
 }
 
-export async function collectMarkdownFiles(root: string): Promise<readonly string[]> {
+export async function collectMarkdownFiles(root: string, pluginRoot = dirname(root)): Promise<readonly string[]> {
   const out: string[] = [];
   const queue: Array<{ readonly path: string; readonly depth: number }> = [
     { path: root, depth: 0 },
@@ -180,6 +181,8 @@ export async function collectMarkdownFiles(root: string): Promise<readonly strin
     const current = queue.shift()!;
     if (current.depth > MAX_PLUGIN_REGISTRATION_SCAN_DEPTH) continue;
     const identity = await maybeRealpath(current.path);
+    if (isExcludedPluginPayloadPath(pluginRoot, current.path) ||
+      isExcludedPluginPayloadPath(await maybeRealpath(pluginRoot), identity)) continue;
     if (visited.has(identity)) continue;
     visited.add(identity);
     let entries;
@@ -191,7 +194,7 @@ export async function collectMarkdownFiles(root: string): Promise<readonly strin
     for (const entry of entries) {
       if (out.length >= MAX_PLUGIN_REGISTRATION_MARKDOWN_FILES) break;
       const path = join(current.path, entry.name);
-      if (entry.isDirectory()) {
+      if (entry.isDirectory() && !isExcludedPluginPayloadDirectory(entry.name)) {
         queue.push({ path, depth: current.depth + 1 });
       } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
         out.push(path);

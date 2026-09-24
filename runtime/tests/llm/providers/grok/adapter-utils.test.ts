@@ -255,4 +255,15 @@ describe("grok adapter utils", () => {
     // required array preserved.
     expect(params.required).toEqual(["field_0"]);
   });
+
+  it("keeps an object-valued const literal intact", () => {
+    const schema = {
+      type: "object", properties: {
+        choice: { type: "string", enum: ["a", "b", "c"] },
+        literal: { const: { description: "a literal value", title: "kept" } },
+      },
+    };
+    const tool: LLMTool = { type: "function", function: { name: "fixture", description: "fixture", parameters: schema } };
+    expect(slimTools([tool]).tools[0]?.function.parameters).toMatchObject(schema);
+  });
 });

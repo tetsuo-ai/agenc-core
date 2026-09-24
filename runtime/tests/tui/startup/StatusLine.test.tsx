@@ -75,12 +75,15 @@ vi.mock('../../permissions/trust/project-trust.js', () => ({
 }))
 
 vi.mock('../../utils/config.js', () => ({
-  getRuntimeState: () => ({ tui: { vimMode: true } }),
+  getRuntimeState: () => ({ tui: {} }),
 }))
 
-vi.mock('../../utils/settings/canonicalAuthority.js', () => ({
+vi.mock('../../utils/settings/canonicalAuthority.js', async importOriginal => ({
+  ...(await importOriginal<
+    typeof import('../../utils/settings/canonicalAuthority.js')
+  >()),
   getCanonicalSettingsAuthority: () => ({
-    current: () => ({ tui: { vimMode: true } }),
+    current: () => ({ tui: {} }),
   }),
 }))
 
@@ -180,7 +183,7 @@ function createTestStreams(): {
   return { stdout, stdin, output: () => rendered }
 }
 
-describe('StatusLine vim mode display', () => {
+describe('StatusLine daemon rendering', () => {
   afterEach(() => vi.unstubAllGlobals())
   beforeEach(() => {
     vi.stubGlobal('MACRO', { VERSION: '99.0.0-test' })
@@ -195,36 +198,6 @@ describe('StatusLine vim mode display', () => {
     mocks.getTotalCost.mockClear()
     mocks.addNotification.mockClear()
   })
-
-  test.each(['NORMAL', 'INSERT'] as const)(
-    'renders current %s vim mode when vim mode is active',
-    async vimMode => {
-      const { stdout, stdin, output } = createTestStreams()
-      const root = await createRoot({
-        stdout: stdout as unknown as NodeJS.WriteStream,
-        stdin: stdin as unknown as NodeJS.ReadStream,
-        patchConsole: false,
-      })
-
-      try {
-        root.render(
-          <StatusLine
-            messagesRef={{ current: [] }}
-            lastAssistantMessageId={null}
-            providerContext={TEST_REMOTE_AUTH_SESSION_CONTEXT}
-            vimMode={vimMode}
-          />,
-        )
-        await sleep(25)
-      } finally {
-        root.unmount()
-        stdin.end()
-        stdout.end()
-      }
-
-      expect(output()).toContain(`-- ${vimMode} --`)
-    },
-  )
 
   test.each([
     [{ costUsd: 0, hasUnknownCost: false }, 0, false],
@@ -291,10 +264,10 @@ describe('StatusLine vim mode display', () => {
     try {
       root.render(<StatusLineExecutionContext value={execute}>
         <StatusLine messagesRef={{ current: [] }} lastAssistantMessageId={null}
-          providerContext={TEST_REMOTE_AUTH_SESSION_CONTEXT} vimMode="NORMAL" />
+          providerContext={TEST_REMOTE_AUTH_SESSION_CONTEXT} />
       </StatusLineExecutionContext>)
       await sleep(25)
-      expect(execute).toHaveBeenCalledWith({ vimMode: 'NORMAL' }, expect.any(AbortSignal))
+      expect(execute).toHaveBeenCalledWith({}, expect.any(AbortSignal))
       expect(mocks.appState.statusLineText).toBe('daemon-status')
       expect(mocks.executeStatusLineCommand).not.toHaveBeenCalled()
       expect(mocks.getTotalCost).not.toHaveBeenCalled()

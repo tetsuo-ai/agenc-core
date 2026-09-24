@@ -256,7 +256,7 @@ function messageContentToLlmParts(
 type TerminalThreadStatus = Extract<
   ThreadAgentStatus,
   { readonly status: "completed" | "errored" | "shutdown" | "not_found" }
->;
+> | "shutdown" | "not_found";
 
 function commitDurableRunStartupActivation(
   active: ActiveBackgroundAgent,
@@ -702,11 +702,12 @@ function terminalResultFromThread(
   status: TerminalThreadStatus,
 ): RunTerminalResult {
   const usage = terminalUsageForActiveAgent(active);
+  const statusName = typeof status === "string" ? status : status.status;
   const finishedAt =
-    "endedAtMs" in status && Number.isFinite(status.endedAtMs)
+    typeof status === "object" && "endedAtMs" in status && Number.isFinite(status.endedAtMs)
       ? new Date(status.endedAtMs).toISOString()
       : active.lastActiveAt;
-  if (status.status === "completed") {
+  if (typeof status === "object" && status.status === "completed") {
     return {
       runId,
       status: "completed",
@@ -718,7 +719,7 @@ function terminalResultFromThread(
       finishedAt,
     };
   }
-  if (status.status === "errored") {
+  if (typeof status === "object" && status.status === "errored") {
     return {
       runId,
       status: "failed",
@@ -734,7 +735,7 @@ function terminalResultFromThread(
     runId,
     status: "cancelled",
     exitCode: null,
-    stopReason: status.status === "shutdown" ? "shutdown" : "not_found",
+    stopReason: statusName === "shutdown" ? "shutdown" : "not_found",
     finalMessage: null,
     usage,
     lastSequence: null,

@@ -49,10 +49,6 @@ vi.mock('../state/AppState.js', () => ({
   },
 }))
 
-vi.mock('../components/PromptInput/utils.js', () => ({
-  isVimModeEnabled: () => false,
-}))
-
 vi.mock('../context/notifications', () => ({
   useNotifications: () => ({
     addNotification: fixture.addNotification,

@@ -84,12 +84,15 @@ vi.mock('../../hooks/execution-authority.js', () => ({
 }))
 
 vi.mock('../../utils/config.js', () => ({
-  getRuntimeState: () => ({ tui: { vimMode: true } }),
+  getRuntimeState: () => ({ tui: {} }),
 }))
 
-vi.mock('../../utils/settings/canonicalAuthority.js', () => ({
+vi.mock('../../utils/settings/canonicalAuthority.js', async importOriginal => ({
+  ...(await importOriginal<
+    typeof import('../../utils/settings/canonicalAuthority.js')
+  >()),
   getCanonicalSettingsAuthority: () => ({
-    current: () => ({ tui: { vimMode: true } }),
+    current: () => ({ tui: {} }),
   }),
 }))
 
@@ -251,7 +254,6 @@ describe('StatusLine wave200-093 coverage', () => {
           messagesRef={{ current: [{ uuid: 'assistant-093' }] as any[] }}
           lastAssistantMessageId="assistant-093"
           providerContext={TEST_REMOTE_AUTH_SESSION_CONTEXT}
-          vimMode="NORMAL"
         />,
       )
       await waitForCommand()
@@ -261,7 +263,6 @@ describe('StatusLine wave200-093 coverage', () => {
       stdout.end()
     }
 
-    expect(output()).toContain('-- NORMAL --')
     expect(output()).toContain('seed-status')
     expect(mocks.logForDebugging).toHaveBeenCalledWith(
       'Status line is configured but disableAllHooks is true',
@@ -311,9 +312,6 @@ describe('StatusLine wave200-093 coverage', () => {
         remaining_percentage: 98,
       },
       exceeds_200k_tokens: true,
-      vim: {
-        mode: 'NORMAL',
-      },
       agent: {
         name: 'reviewer',
       },

@@ -29,6 +29,7 @@ import { ollamaTemplateRequiresTextTools } from "./template-tool-support.js";
 import { createOllamaToolNameProjection, projectOllamaHistoryToolNames } from "./tool-naming.js";
 import { LLMProviderError, mapLLMError } from "../../errors.js";
 import { ensureLazyImport } from "../../lazy-import.js";
+import { fetchProviderRequest } from "../../credential-redirect-fetch.js";
 import {
   buildUnsupportedCompactionDiagnostics,
   resolveLLMCompactionConfig,
@@ -960,9 +961,9 @@ export class OllamaProvider implements LLMProvider {
           const url = input instanceof Request ? input.url : String(input);
           if (new URL(url).pathname.endsWith("/api/show")) {
             const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
-            return fetch(input, { ...init, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(3_000)]) : AbortSignal.timeout(3_000) });
+            return fetchProviderRequest(input, { ...init, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(3_000)]) : AbortSignal.timeout(3_000) }, this.config.fetchImpl ?? fetch);
           }
-          return fetch(input, init);
+          return fetchProviderRequest(input, init ?? {}, this.config.fetchImpl ?? fetch);
         }) as typeof fetch,
       });
     });
@@ -1211,13 +1212,23 @@ export class OllamaProvider implements LLMProvider {
   }
 
   private mapError(err: unknown, timeoutMs?: number): Error {
-    // Ollama-specific: connection refused means server isn't running
+    // Ollama-specific: connection refused means the server isn't running. The
+    // ollama SDK calls global fetch, and undici rejects a refused connection
+    // with TypeError("fetch failed") and the code on its cause, so the code is
+    // looked for on both. Checking only the error itself meant this message
+    // was never shown, and a stopped Ollama read as "ollama error: fetch
+    // failed".
     const e = err as any;
-    if (e?.code === "ECONNREFUSED") {
-      return new LLMProviderError(
+    if (e?.code === "ECONNREFUSED" || e?.cause?.code === "ECONNREFUSED") {
+      const mapped = new LLMProviderError(
         this.name,
         `Cannot connect to Ollama at ${this.config.host}. Is the server running?`,
       );
+      // Keep the transport error underneath, as mapLLMError does, so the
+      // turn's transient classifier still finds ECONNREFUSED and waits the
+      // outage out instead of ending the turn.
+      (mapped as { cause?: unknown }).cause = err;
+      return mapped;
     }
 
     return mapLLMError(this.name, err, timeoutMs ?? this.config.timeoutMs ?? 0);
