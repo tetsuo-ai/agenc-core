@@ -164,6 +164,10 @@ interface PluginServerLifecycle {
   reservation?: object;
   /** Every transition owns the server until its cleanup has settled. */
   transitionTail?: Promise<void>;
+  /** Failure-bearing results, separate from the error-absorbing scheduling tail. */
+  transitionResults?: Set<Promise<unknown>>;
+  startupTask?: Promise<void>;
+  startupConfig?: MCPServerConfig;
   transitions: number;
   startController?: AbortController;
   idleTimer?: ReturnType<typeof setTimeout>;
@@ -872,6 +876,12 @@ export class MCPManager {
     const lifecycle = this.pluginLifecycle(name);
     lifecycle.transitions++;
     const task = (lifecycle.transitionTail ?? Promise.resolve()).then(work);
+    lifecycle.transitionResults ??= new Set();
+    lifecycle.transitionResults.add(task);
+    void task.then(
+      () => { lifecycle.transitionResults?.delete(task); },
+      () => { lifecycle.transitionResults?.delete(task); },
+    );
     const tail = task.then(() => undefined, () => undefined).then(() => {
       lifecycle.transitions--;
       const config = this.getServerConfig(name);
@@ -1037,7 +1047,9 @@ export class MCPManager {
       startupGate.cancel(`MCP server "${config.name}" transport closed`);
       if (lifecycle.client !== client || !this.running || this.lifecycleGeneration !== generation) return;
       if (!this.isLazyPlugin(config)) {
-        this.invalidateServerAuthority(config.name);
+        // Transport loss revokes the published client. The bridge still owns
+        // this configuration and must be allowed to reconnect it.
+        this.companionEpochs.set(config.name, (this.companionEpochs.get(config.name) ?? 0) + 1);
         this.commitSurfaceMutation(() => {
           this.connectedConnections.delete(config.name);
           this.connectionStates.set(config.name, { type: "failed", error: `MCP server "${config.name}" transport closed` });
@@ -1384,6 +1396,7 @@ export class MCPManager {
     const promptBridges = Array.from(this.promptBridges.values());
     const attempts = Array.from(this.connectionAttempts);
     const pluginTransitions = Array.from(this.pluginLifecycles.values()).flatMap(lifecycle => lifecycle.transitionTail ? [lifecycle.transitionTail] : []);
+    const pluginTransitionResults = Array.from(this.pluginLifecycles.values()).flatMap(lifecycle => [...(lifecycle.transitionResults ?? [])]);
     const catalogPrimeTask = this.catalogPrimeTask;
     const reconnectOperations = Array.from(this.reconnectOperations);
     const publishedOwners: ServerCleanupOwner[] = [
@@ -1417,6 +1430,7 @@ export class MCPManager {
       ...retainedRetries,
       ...attempts.map((attempt) => attempt.promise),
       ...pluginTransitions,
+      ...pluginTransitionResults,
       ...(catalogPrimeTask ? [catalogPrimeTask] : []),
       ...reconnectOperations.map((operation) => operation.promise),
     ]).then((results): ReadonlyArray<unknown> => {
@@ -1436,6 +1450,14 @@ export class MCPManager {
         ) {
           errors.push(result.reason);
         }
+      }
+      // A transition may have unpublished its owner before shutdown took the
+      // bridge snapshot. Its cleanup failure still belongs to this shutdown.
+      for (const [name, retained] of this.retainedCleanup) {
+        errors.push(new MCPConnectionCleanupError(name, "during shutdown", [
+          ...retained.unownedErrors,
+          ...Array.from(retained.owners.values(), owner => owner.error),
+        ]));
       }
       for (const error of errors) {
         this.logger.warn?.("Error disconnecting MCP server:", error);
@@ -1540,36 +1562,48 @@ export class MCPManager {
     const timeoutMs = Math.min(config.timeout ?? 5_000, 10_000);
     const deadline = AbortSignal.timeout(timeoutMs);
     const waitSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
-    let active = false;
+    const lifecycle = this.pluginLifecycle(config.name);
+    let task = lifecycle.startupConfig === config ? lifecycle.startupTask : undefined;
+    if (task === undefined) {
+      // The transition owns startup and cleanup; an individual caller owns
+      // only its wait. Every caller joining this attempt sees its result.
+      task = this.enqueuePluginTransition(config.name, () => this.startPluginNow(config, deadline));
+      lifecycle.startupTask = task;
+      lifecycle.startupConfig = config;
+      const current = task;
+      const clear = (): void => {
+        if (lifecycle.startupTask === current) {
+          delete lifecycle.startupTask;
+          delete lifecycle.startupConfig;
+        }
+      };
+      void task.then(clear, clear);
+    }
+    const current = task;
     const markTimedOut = (): void => {
-      if (active && this.configIsCurrent(config)) {
+      if (lifecycle.startupTask === current && this.configIsCurrent(config) &&
+          this.connectionStates.get(config.name)?.type === "pending") {
         this.commitSurfaceMutation(() => this.connectionStates.set(config.name, {
-          type: "failed", error: `MCP plugin ${config.name} startup cancelled or timed out`,
+          type: "failed", error: `MCP plugin ${config.name} startup timed out`,
         }));
       }
     };
-    waitSignal.addEventListener("abort", markTimedOut, { once: true });
-    const task = this.enqueuePluginTransition(config.name, async () => {
-      waitSignal.throwIfAborted();
-      active = true;
-      try { await this.startPluginNow(config, waitSignal); }
-      finally { active = false; }
-    });
+    deadline.addEventListener("abort", markTimedOut, { once: true });
     try { await raceWithAbort(task, waitSignal); }
-    finally { waitSignal.removeEventListener("abort", markTimedOut); }
+    finally { deadline.removeEventListener("abort", markTimedOut); }
   }
 
-  private async startPluginNow(config: MCPServerConfig, callerSignal?: AbortSignal): Promise<void> {
+  private async startPluginNow(config: MCPServerConfig, attemptDeadline: AbortSignal): Promise<void> {
     if (!this.configIsCurrent(config)) throw new Error(`MCP plugin ${config.name} configuration changed`);
     await this.retireCrashNow(config.name);
-    callerSignal?.throwIfAborted();
+    attemptDeadline.throwIfAborted();
     if (!this.configIsCurrent(config)) throw new Error(`MCP plugin ${config.name} configuration changed`);
     if (this.bridges.has(config.name) && this.connectedConnections.has(config.name)) return;
     const timeoutMs = Math.min(config.timeout ?? 5_000, 10_000);
     const generation = this.lifecycleGeneration;
     const lifecycle = this.pluginLifecycle(config.name);
     const controller = new AbortController();
-    const startSignal = callerSignal ? AbortSignal.any([controller.signal, callerSignal]) : controller.signal;
+    const startSignal = AbortSignal.any([controller.signal, attemptDeadline]);
     lifecycle.startController = controller;
     const timeout = setTimeout(() => controller.abort(new Error(`MCP plugin ${config.name} startup timed out after ${timeoutMs} ms`)), timeoutMs);
     let attempt: ManagedConnectionAttempt | undefined;
@@ -2436,8 +2470,25 @@ export class MCPManager {
           }
           if (reconnectIsCurrent()) {
             this.watchIdlePluginClient(config, newClient, createStartupGate());
-            const connected = this.connectedConnections.get(config.name);
-            if (connected) this.connectedConnections.set(config.name, { ...connected, client: newClient as never });
+            const replacementInstructions = readClientInstructions(newClient);
+            const instructions = replacementInstructions === undefined ? undefined :
+              redactMcpAttachmentText(replacementInstructions, sensitiveHeaders);
+            const serverInfo = readClientServerInfo(newClient);
+            this.connectedConnections.set(config.name, {
+              type: "connected",
+              name: config.name,
+              client: newClient as never,
+              capabilities: readClientCapabilities(newClient),
+              ...(serverInfo !== undefined ? { serverInfo } : {}),
+              ...(instructions !== undefined ? { instructions } : {}),
+              config: toScopedMcpServerConfig(sensitiveHeaders === undefined ? config : { ...config, headers: undefined }),
+              cleanup: async () => {
+                await this.disconnectServer(config.name, "via connected connection cleanup");
+              },
+            });
+            if (instructions !== undefined) this.serverInstructions.set(config.name, instructions);
+            else this.serverInstructions.delete(config.name);
+            this.connectionStates.set(config.name, { type: "connected" });
           }
           if (reconnectIsCurrent()) {
             // The resilient tool bridge and its optional companions now expose

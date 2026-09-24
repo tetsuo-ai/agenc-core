@@ -1232,6 +1232,34 @@ describe("MCPManager", () => {
     }
   });
 
+  it.each(["ordinary", "eager plugin"])("reconnects an %s server when closing the old client emits onclose", async (kind) => {
+    vi.useFakeTimers();
+    const name = kind === "ordinary" ? "ordinary-close" : "plugin:sample:eager-close";
+    const firstClient: { onclose?: () => void; close: ReturnType<typeof vi.fn> } = {
+      close: vi.fn(async () => { firstClient.onclose?.(); }),
+    };
+    const nextClient = { close: vi.fn().mockResolvedValue(undefined) };
+    const initialBridge = makeMockBridge(name, ["tool"]);
+    initialBridge.tools[0]!.execute = vi.fn().mockResolvedValue({ content: "transport closed", isError: true });
+    initialBridge.dispose.mockImplementation(() => firstClient.close());
+    const nextBridge = makeMockBridge(name, ["tool"]);
+    nextBridge.tools[0]!.execute = vi.fn().mockResolvedValue({ content: "from replacement" });
+    mockCreateMCPConnection.mockResolvedValueOnce(firstClient as never).mockResolvedValueOnce(nextClient as never);
+    mockCreateToolBridge.mockResolvedValueOnce(initialBridge).mockResolvedValueOnce(nextBridge);
+    const cfg = makeConfig(name, kind === "ordinary" ? {} : {
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "eager-close", eager: true } },
+    });
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      await manager.callTool(name, "tool", {});
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(firstClient.close).toHaveBeenCalledOnce();
+      expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+      await expect(manager.callTool(name, "tool", {})).resolves.toEqual({ content: "from replacement" });
+    } finally { await manager.stop(); vi.useRealTimers(); }
+  });
+
   it("fails closed when a manager-owned MCP call has no exact live tool", async () => {
     const bridge = makeMockBridge("srv1", ["known"]);
     const execute = vi.mocked(bridge.tools[0]!.execute);

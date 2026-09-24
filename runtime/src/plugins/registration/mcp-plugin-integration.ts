@@ -1,4 +1,5 @@
 import type { McpServerConfig } from "../../config/schema.js";
+import { join, relative } from "node:path";
 import { pluginScopedServerIdentifier } from "../identifier-normalization.js";
 import {
   isRepositoryControlledPlugin,
@@ -6,6 +7,7 @@ import {
   type PluginLoadIssue,
 } from "../loader.js";
 import {
+  pathInsideOrEqual,
   resolvePluginMcpSandboxedServer,
   type PluginMcpSandboxIssue,
 } from "../sandbox.js";
@@ -355,7 +357,15 @@ async function extractMcpServerRegistrationsFromPlugins(
     }
     // Resolve launch templates against the immutable bytes, before a shell
     // argument can embed an absolute path to the mutable installation.
-    const scoped = addPluginScopeToServers({ ...plugin, root: snapshotRoot }, plugin.mcpServers, options);
+    // The loader has already resolved an explicit cwd against the install
+    // root. Rebase that path before sandbox containment checks the snapshot.
+    const snapshotServers = Object.fromEntries(Object.entries(plugin.mcpServers).map(([name, server]) => [
+      name,
+      server.cwd !== undefined && pathInsideOrEqual(plugin.root, server.cwd)
+        ? { ...server, cwd: join(snapshotRoot, relative(plugin.root, server.cwd)) }
+        : server,
+    ]));
+    const scoped = addPluginScopeToServers({ ...plugin, root: snapshotRoot }, snapshotServers, options);
     for (const serverName of Object.keys(plugin.mcpServers)) {
       const name = pluginScopedServerIdentifier(plugin.id, serverName);
       const server = scoped[name];

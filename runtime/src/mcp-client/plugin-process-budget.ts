@@ -39,21 +39,28 @@ function awaitOrAbort<T>(task: Promise<T>, signal?: AbortSignal): Promise<T> {
   });
 }
 
-function waitForWake(signal?: AbortSignal): Promise<void> {
+function subscribeToWake(signal?: AbortSignal): { promise: Promise<void>; cancel: () => void } {
   signal?.throwIfAborted();
-  return new Promise<void>((resolve, reject) => {
+  let cancel = (): void => undefined;
+  const promise = new Promise<void>((resolve, reject) => {
     const onAbort = (): void => {
       waiters.delete(onWake);
       signal?.removeEventListener("abort", onAbort);
       reject(signal?.reason ?? new Error("Plugin process budget wait cancelled"));
     };
     const onWake = (): void => {
+      waiters.delete(onWake);
       signal?.removeEventListener("abort", onAbort);
       resolve();
+    };
+    cancel = (): void => {
+      waiters.delete(onWake);
+      signal?.removeEventListener("abort", onAbort);
     };
     waiters.add(onWake);
     signal?.addEventListener("abort", onAbort, { once: true });
   });
+  return { promise, cancel };
 }
 
 export async function reservePluginProcess(
@@ -65,15 +72,20 @@ export async function reservePluginProcess(
 ): Promise<void> {
   while (!slots.has(owner)) {
     signal?.throwIfAborted();
+    // Subscribe before reading capacity or busy state. An idle notification
+    // cannot fall between that check and the wait below.
+    const wakeup = subscribeToWake(signal);
     const limit = Math.min(maxProcesses,
       ...[...slots.values()].map(slot => slot.maxProcesses));
     if (slots.size < limit) {
+      wakeup.cancel();
       slots.set(owner, { owner, busy, evict, lastUsed: ++tick, maxProcesses });
       return;
     }
     const oldest = [...slots.values()].filter(slot => !pendingEvictions.has(slot) && !slot.busy())
       .sort((a, b) => a.lastUsed - b.lastUsed)[0];
     if (oldest) {
+      wakeup.cancel();
       pendingEvictions.add(oldest);
       // The slot remains occupied while disposal is in progress. A timed-out
       // requester leaves the eviction task owned by the budget until it settles.
@@ -82,10 +94,11 @@ export async function reservePluginProcess(
         wake();
       });
       await awaitOrAbort(disposal, signal);
-      if (slots.has(oldest.owner)) await waitForWake(signal);
+      // Eviction may have declined because the candidate became busy. Recheck
+      // capacity and candidates even if its idle notice has already fired.
       continue;
     }
-    await waitForWake(signal);
+    await wakeup.promise;
   }
   touchPluginProcess(owner);
 }

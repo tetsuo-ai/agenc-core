@@ -423,6 +423,25 @@ describe("plugin MCP on-demand lifecycle", () => {
     } finally { close.resolve(); await manager.stop(); }
   });
 
+  it("reports an eviction cleanup failure that settles during strict shutdown", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome, "plugin:sample:strict-eviction", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "strict-eviction", digest: "a".repeat(64), idleTimeoutMs: 0 } } }); warm(cfg);
+    const close = deferred(); const manager = new MCPManager([cfg]);
+    try {
+      await manager.start(); await manager.callTool(cfg.name, "ping", {});
+      clients[0]!.close.mockImplementation(() => close.promise);
+      const eviction = (manager as never as { evictPlugin: (name: string) => Promise<void> }).evictPlugin(cfg.name);
+      void eviction.catch(() => undefined);
+      await waitFor(() => clients[0]!.close.mock.calls.length > 0);
+      const shutdown = manager.stopStrict();
+      close.reject(new Error("eviction disposal failed"));
+      await expect(eviction).rejects.toThrow(/connection cleanup failed/);
+      await expect(shutdown).rejects.toThrow(/strict shutdown failed/);
+    } finally {
+      clients[0]?.close.mockResolvedValue(undefined);
+      await manager.stopStrict();
+    }
+  });
+
   it("does not complete shutdown while an idle timer is closing a process", async () => {
     const cacheHome = await home(); const cfg = config(cacheHome); warm(cfg);
     const close = deferred(); const manager = new MCPManager([cfg]);
@@ -732,6 +751,53 @@ describe("plugin MCP on-demand lifecycle", () => {
       await manager.callTool(cfg.name, "ping", {});
       expect(spawn).toHaveBeenCalledTimes(2);
     } finally { await manager.stop(); }
+  });
+
+  it("shares a failed startup across concurrent first calls", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome, "plugin:sample:failed-flight", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "failed-flight", digest: "a".repeat(64), idleTimeoutMs: 10_000 } } }); warm(cfg);
+    const discovery = deferred<{ tools: ReturnType<typeof descriptor>[] }>();
+    const original = spawn.getMockImplementation()!;
+    spawn.mockImplementation(async (...args) => {
+      const client = await original(...args);
+      (client as never as { listTools: ReturnType<typeof vi.fn> }).listTools.mockImplementation(() => discovery.promise);
+      return client;
+    });
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      const calls = Array.from({ length: 5 }, () => manager.callTool(cfg.name, "ping", {}));
+      await waitFor(() => spawn.mock.calls.length === 1);
+      discovery.reject(new Error("catalog discovery failed"));
+      const results = await Promise.all(calls);
+      expect(results.every(result => result.metadata?.errorCode === "MCP_PLUGIN_STARTUP_FAILED")).toBe(true);
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(clients[0]!.close).toHaveBeenCalledTimes(1);
+    } finally { discovery.reject(new Error("test cleanup")); await manager.stop(); }
+  });
+
+  it("keeps a shared startup alive when one caller cancels its wait", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome, "plugin:sample:cancelled-joiner", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "cancelled-joiner", digest: "a".repeat(64), idleTimeoutMs: 10_000 } } }); warm(cfg);
+    const discovery = deferred<{ tools: ReturnType<typeof descriptor>[] }>();
+    const original = spawn.getMockImplementation()!;
+    spawn.mockImplementation(async (...args) => {
+      const client = await original(...args);
+      (client as never as { listTools: ReturnType<typeof vi.fn> }).listTools.mockImplementation(() => discovery.promise);
+      return client;
+    });
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      const controller = new AbortController();
+      const cancelled = manager.callTool(cfg.name, "ping", {}, { signal: controller.signal });
+      const joined = manager.callTool(cfg.name, "ping", {});
+      await waitFor(() => spawn.mock.calls.length === 1);
+      controller.abort(new Error("caller left"));
+      expect((await cancelled).isError).toBe(true);
+      discovery.resolve({ tools: [descriptor()] });
+      expect((await joined).isError).not.toBe(true);
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(manager.getConnectionState(cfg.name)?.type).toBe("connected");
+    } finally { discovery.resolve({ tools: [descriptor()] }); await manager.stop(); }
   });
 
   it("preserves trusted registry call metadata through the cached proxy", async () => {
