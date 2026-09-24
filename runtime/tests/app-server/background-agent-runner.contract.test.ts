@@ -1317,12 +1317,23 @@ function configureSessionShellHarness(
   };
 }
 
+async function startRoutineToolRunner(agentId: string) {
+  const h = makeTopLevelRunner({ conversationId: agentId, scopedTurnCancellation: true });
+  await h.runner.startAgent({ objective: "routine tool", deferInitialTurn: true, unattendedAllow: [], unattendedDeny: [] });
+  h.setActiveTurn("routine-turn");
+  return h;
+}
+
+function recordRoutineToolStart(h: Awaited<ReturnType<typeof startRoutineToolRunner>>, callId: string) {
+  h.session.emit({ id: callId, msg: { type: "tool_call_started", payload: {
+    callId, toolName: "RoutineTool", args: "{}",
+  } } });
+}
+
 describe("AgenC delegate background-agent runner", () => {
   it("does not grant a queued call behind a running executor call", async () => {
     const agentId = "routine-executor-queue";
-    const h = makeTopLevelRunner({ conversationId: agentId, scopedTurnCancellation: true });
-    await h.runner.startAgent({ objective: "routine tool", deferInitialTurn: true, unattendedAllow: [], unattendedDeny: [] });
-    h.setActiveTurn("routine-turn");
+    const h = await startRoutineToolRunner(agentId);
     let firstStarted!: () => void;
     let secondStarted!: () => void;
     let releaseFirst!: () => void;
@@ -1374,12 +1385,8 @@ describe("AgenC delegate background-agent runner", () => {
 
   it("does not grant a call while its approval is pending", async () => {
     const agentId = "routine-pending-approval";
-    const h = makeTopLevelRunner({ conversationId: agentId, scopedTurnCancellation: true });
-    await h.runner.startAgent({ objective: "routine tool", deferInitialTurn: true, unattendedAllow: [], unattendedDeny: [] });
-    h.setActiveTurn("routine-turn");
-    h.session.emit({ id: "approval-call", msg: { type: "tool_call_started", payload: {
-      callId: "approval-call", toolName: "RoutineTool", args: "{}",
-    } } });
+    const h = await startRoutineToolRunner(agentId);
+    recordRoutineToolStart(h, "approval-call");
     let approvalEntered!: () => void;
     let approve!: () => void;
     let executionEntered!: () => void;
@@ -1418,12 +1425,8 @@ describe("AgenC delegate background-agent runner", () => {
 
   it("grants a routine only while the named call has crossed the physical execution boundary", async () => {
     const agentId = "routine-executing-boundary";
-    const h = makeTopLevelRunner({ conversationId: agentId, scopedTurnCancellation: true });
-    await h.runner.startAgent({ objective: "routine tool", deferInitialTurn: true, unattendedAllow: [], unattendedDeny: [] });
-    h.setActiveTurn("routine-turn");
-    h.session.emit({ id: "queued-call", msg: { type: "tool_call_started", payload: {
-      callId: "queued-call", toolName: "RoutineTool", args: "{}",
-    } } });
+    const h = await startRoutineToolRunner(agentId);
+    recordRoutineToolStart(h, "queued-call");
     const grant = () => resolveRoutinePermissionGrant(
       { kind: "session", sessionId: agentId, toolCallId: "queued-call" },
       { operator: false, liveSession: async () => ({ sessionId: agentId, mode: "acceptEdits" }),
@@ -1471,12 +1474,8 @@ describe("AgenC delegate background-agent runner", () => {
 
   it.each(["turn", "session"] as const)("revokes a routine grant as soon as its %s aborts, before cleanup finishes", async (scope) => {
     const agentId = `routine-aborting-${scope}-boundary`;
-    const h = makeTopLevelRunner({ conversationId: agentId, scopedTurnCancellation: true });
-    await h.runner.startAgent({ objective: "routine tool", deferInitialTurn: true, unattendedAllow: [], unattendedDeny: [] });
-    h.setActiveTurn("routine-turn");
-    h.session.emit({ id: "running-call", msg: { type: "tool_call_started", payload: {
-      callId: "running-call", toolName: "RoutineTool", args: "{}",
-    } } });
+    const h = await startRoutineToolRunner(agentId);
+    recordRoutineToolStart(h, "running-call");
     let entered!: () => void;
     let release!: () => void;
     const started = new Promise<void>((resolve) => { entered = resolve; });

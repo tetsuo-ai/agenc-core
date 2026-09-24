@@ -3,43 +3,18 @@ import { describe, expect, it, vi } from "vitest";
 import { AgenCDaemonAgentManager } from "../../src/app-server/agent-lifecycle.js";
 import { AgenCDaemonSessionManager } from "../../src/app-server/session-lifecycle.js";
 import type { AgenCBackgroundAgentSnapshot } from "../../src/app-server/background-agent-runner.js";
-import { AsyncLock } from "../../src/utils/async-lock.js";
+import { holdAgentLifecycleLock } from "./held-agent-lifecycle-lock.js";
 
 const timestamp = "2026-09-07T00:00:00.000Z";
 
 describe("daemon lifecycle lock boundaries", () => {
   it("projects an agent-id alias synchronously while the lifecycle state lock is held", async () => {
-    const manager = new AgenCDaemonAgentManager({
-      runner: {
-        startAgent: async () => { throw new Error("unexpected start"); },
-        getAgentPermissionMode: async () => "default",
-      },
-    });
-    await manager.restoreAgent({ agentId: "agent-a", objective: "chat", sessionIds: ["session-a"] });
-    const entered = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    const originalWith = AsyncLock.prototype.with;
-    let hold = true;
-    const spy = vi.spyOn(AsyncLock.prototype, "with").mockImplementation(function (fn) {
-      return originalWith.call(this, async (value) => {
-        if (hold && value !== null && typeof value === "object" &&
-            "agents" in value && value.agents instanceof Map && value.agents.has("agent-a")) {
-          hold = false;
-          entered.resolve();
-          await release.promise;
-        }
-        return fn(value);
-      });
-    });
-    const pending = manager.getLiveSessionPermission("agent-a").catch(() => undefined);
+    const { manager, release } = await holdAgentLifecycleLock();
     try {
-      await entered.promise;
       expect(manager.peekRoutineSessionId("agent-a")).toBe("session-a");
       expect(manager.peekRoutineSessionId("session-a")).toBe("session-a");
     } finally {
-      release.resolve();
-      await pending;
-      spy.mockRestore();
+      await release();
     }
   });
 

@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
 import { isDaemonCausalRoutineMessage } from "./overload.js";
 import { holdAgentLifecycleLock } from "./held-agent-lifecycle-lock.js";
+import { assertAliasControlDispatch, blockedControlHandler } from "./transport-contract-helpers.js";
 import {
   AGENC_STDIO_DEFAULT_MAX_LINE_BYTES,
   AgenCStdioTransport,
@@ -177,18 +178,7 @@ describe("AgenC stdio transport", () => {
       jsonrpc: JSON_RPC_VERSION, id, method, params,
     }) + "\n");
     try {
-      send(1, "message.stream", { sessionId: "session-a" });
-      await enteredTurn;
-      heldLock = await holdAgentLifecycleLock();
-      send(2, "routine.create", { permissionAuthority: { kind: "session", sessionId: "agent-a", toolCallId: "call" } });
-      send(3, "request.cancel");
-      send(4, "health.ping");
-      await vi.waitFor(() => {
-        expect(seen).toHaveLength(4);
-        expect(seen).toContain("routine.create");
-        expect(seen).toContain("request.cancel");
-        expect(seen).toContain("health.ping");
-      });
+      await assertAliasControlDispatch(send, enteredTurn, seen, (lock) => { heldLock = lock; });
     } finally { await heldLock?.release(); releaseTurn(); await transport.close(); }
   });
 
@@ -500,28 +490,14 @@ describe("AgenC stdio transport", () => {
     // flight, while normal requests stay FIFO (guarded by the test above).
     const input = new PassThrough();
     const output = new PassThrough();
-    const events: string[] = [];
-    let releaseLong: (() => void) | undefined;
-    let resolveStarted: () => void = () => {};
-    const longStarted = new Promise<void>((resolve) => {
-      resolveStarted = resolve;
-    });
+    const { events, longStarted, releaseLong, onMessage } = blockedControlHandler(
+      "session.partialCompactFromMessage", "long", "request.cancel", "cancel",
+    );
 
     const transport = new AgenCStdioTransport({
       input,
       output,
-      onMessage: async (message) => {
-        if (message.method === "session.partialCompactFromMessage") {
-          events.push("long:start");
-          resolveStarted();
-          await new Promise<void>((resolve) => {
-            releaseLong = resolve;
-          });
-          events.push("long:end");
-        } else if (message.method === "request.cancel") {
-          events.push("cancel");
-        }
-      },
+      onMessage,
     });
     transport.start();
 
@@ -545,28 +521,14 @@ describe("AgenC stdio transport", () => {
   it("dispatches session.cancelTurn ahead of an in-flight stream request", async () => {
     const input = new PassThrough();
     const output = new PassThrough();
-    const events: string[] = [];
-    let releaseLong: (() => void) | undefined;
-    let resolveStarted: () => void = () => {};
-    const longStarted = new Promise<void>((resolve) => {
-      resolveStarted = resolve;
-    });
+    const { events, longStarted, releaseLong, onMessage } = blockedControlHandler(
+      "message.stream", "stream", "session.cancelTurn", "turn:cancel",
+    );
 
     const transport = new AgenCStdioTransport({
       input,
       output,
-      onMessage: async (message) => {
-        if (message.method === "message.stream") {
-          events.push("stream:start");
-          resolveStarted();
-          await new Promise<void>((resolve) => {
-            releaseLong = resolve;
-          });
-          events.push("stream:end");
-        } else if (message.method === "session.cancelTurn") {
-          events.push("turn:cancel");
-        }
-      },
+      onMessage,
     });
     transport.start();
 
