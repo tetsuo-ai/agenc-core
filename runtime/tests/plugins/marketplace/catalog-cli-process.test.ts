@@ -9,29 +9,40 @@ import { describe, expect, it } from "vitest";
 import { addMarketplaceOp } from "./marketplace.js";
 import { pluginSignaturePayloadBytes } from "../resolution.js";
 
+async function processMarket(prefix: string) {
+  const root = await mkdtemp(join(tmpdir(), prefix));
+  const pluginStorageRoot = join(root, "plugins");
+  const workspaceRoot = join(root, "workspace");
+  const market = join(root, "market");
+  await mkdir(join(market, ".agenc-plugin"), { recursive: true });
+  await mkdir(workspaceRoot);
+  await writeFile(join(market, ".agenc-plugin", "marketplace.json"), JSON.stringify({
+    metadata: { name: "team" }, plugins: [{ name: "remote",
+      source: { source: "git", url: "https://github.com/team/plugins.git", sha: "a".repeat(40) },
+      policy: { installation: "AVAILABLE", authentication: "ON_USE" } }],
+  }));
+  await addMarketplaceOp({ pluginStorageRoot, workspaceRoot, source: market, name: "team" });
+  return { root, pluginStorageRoot, workspaceRoot };
+}
+
+async function signedProcessMarket(prefix: string) {
+  const fixture = await processMarket(prefix);
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  await writeFile(join(fixture.root, "plugin-publishers.json"), JSON.stringify({ publishers: {
+    team: { publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64") },
+  } }));
+  const manifest = Buffer.from(JSON.stringify({ name: "remote", version: "2.0.0" }));
+  await writeFile(join(fixture.root, "manifest.json"), manifest);
+  await writeFile(join(fixture.root, "signature.json"), JSON.stringify({ publisher: "team", files: {},
+    signature: sign(null, pluginSignaturePayloadBytes(manifest, {}), privateKey).toString("base64"),
+  }));
+  return fixture;
+}
+
 describe("pinned advert refresh across CLI processes", () => {
   it("keeps a verified update visible to later CLI processes", async () => {
-    const root = await mkdtemp(join(tmpdir(), "agenc-signed-advert-process-"));
-    const pluginStorageRoot = join(root, "plugins");
-    const workspaceRoot = join(root, "workspace");
-    const market = join(root, "market");
-    await mkdir(join(market, ".agenc-plugin"), { recursive: true });
-    await mkdir(workspaceRoot);
-    await writeFile(join(market, ".agenc-plugin", "marketplace.json"), JSON.stringify({
-      metadata: { name: "team" }, plugins: [{ name: "remote",
-        source: { source: "git", url: "https://github.com/team/plugins.git", sha: "a".repeat(40) },
-        policy: { installation: "AVAILABLE", authentication: "ON_USE" } }],
-    }));
-    await addMarketplaceOp({ pluginStorageRoot, workspaceRoot, source: market, name: "team" });
-    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-    await writeFile(join(root, "plugin-publishers.json"), JSON.stringify({ publishers: {
-      team: { publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64") },
-    } }));
-    const manifest = Buffer.from(JSON.stringify({ name: "remote", version: "2.0.0" }));
-    await writeFile(join(root, "manifest.json"), manifest);
-    await writeFile(join(root, "signature.json"), JSON.stringify({ publisher: "team", files: {},
-      signature: sign(null, pluginSignaturePayloadBytes(manifest, {}), privateKey).toString("base64"),
-    }));
+    const { root, pluginStorageRoot, workspaceRoot } =
+      await signedProcessMarket("agenc-signed-advert-process-");
     const testDir = dirname(fileURLToPath(import.meta.url));
     const catalogModule = pathToFileURL(resolve(testDir,
       "../../../src/plugins/marketplace/catalog-cli.ts")).href;
@@ -77,18 +88,8 @@ describe("pinned advert refresh across CLI processes", () => {
   }, 20_000);
 
   it("claims one deadline before two processes fetch the same failing pin", async () => {
-    const root = await mkdtemp(join(tmpdir(), "agenc-advert-process-"));
-    const pluginStorageRoot = join(root, "plugins");
-    const workspaceRoot = join(root, "workspace");
-    const market = join(root, "market");
-    await mkdir(join(market, ".agenc-plugin"), { recursive: true });
-    await mkdir(workspaceRoot);
-    await writeFile(join(market, ".agenc-plugin", "marketplace.json"), JSON.stringify({
-      metadata: { name: "team" }, plugins: [{ name: "remote",
-        source: { source: "git", url: "https://github.com/team/plugins.git", sha: "a".repeat(40) },
-        policy: { installation: "AVAILABLE", authentication: "ON_USE" } }],
-    }));
-    await addMarketplaceOp({ pluginStorageRoot, workspaceRoot, source: market, name: "team" });
+    const { root, pluginStorageRoot, workspaceRoot } =
+      await processMarket("agenc-advert-process-");
     let requests = 0;
     const server = createServer((_request, response) => {
       requests++;
@@ -128,27 +129,8 @@ describe("pinned advert refresh across CLI processes", () => {
   }, 20_000);
 
   it("claims one recovery fetch across processes after the binding key disappears", async () => {
-    const root = await mkdtemp(join(tmpdir(), "agenc-advert-recovery-process-"));
-    const pluginStorageRoot = join(root, "plugins");
-    const workspaceRoot = join(root, "workspace");
-    const market = join(root, "market");
-    await mkdir(join(market, ".agenc-plugin"), { recursive: true });
-    await mkdir(workspaceRoot);
-    await writeFile(join(market, ".agenc-plugin", "marketplace.json"), JSON.stringify({
-      metadata: { name: "team" }, plugins: [{ name: "remote",
-        source: { source: "git", url: "https://github.com/team/plugins.git", sha: "a".repeat(40) },
-        policy: { installation: "AVAILABLE", authentication: "ON_USE" } }],
-    }));
-    await addMarketplaceOp({ pluginStorageRoot, workspaceRoot, source: market, name: "team" });
-    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-    await writeFile(join(root, "plugin-publishers.json"), JSON.stringify({ publishers: {
-      team: { publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64") },
-    } }));
-    const manifest = Buffer.from(JSON.stringify({ name: "remote", version: "2.0.0" }));
-    await writeFile(join(root, "manifest.json"), manifest);
-    await writeFile(join(root, "signature.json"), JSON.stringify({ publisher: "team", files: {},
-      signature: sign(null, pluginSignaturePayloadBytes(manifest, {}), privateKey).toString("base64"),
-    }));
+    const { root, pluginStorageRoot, workspaceRoot } =
+      await signedProcessMarket("agenc-advert-recovery-process-");
     const testDir = dirname(fileURLToPath(import.meta.url));
     const catalogModule = pathToFileURL(resolve(testDir,
       "../../../src/plugins/marketplace/catalog-cli.ts")).href;

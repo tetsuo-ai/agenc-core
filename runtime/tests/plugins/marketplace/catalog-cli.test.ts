@@ -138,6 +138,88 @@ async function remoteAdvertFixture(manifestText: string, trusted = false) {
     updateManifest };
 }
 
+async function registeredRemoteMarket(
+  base: Awaited<ReturnType<typeof tempRuntime>>,
+  directory: string,
+  initialSha: string,
+) {
+  const market = join(base.root, directory);
+  const marketManifest = join(market, ".agenc-plugin", "marketplace.json");
+  await mkdir(join(market, ".agenc-plugin"), { recursive: true });
+  const writeMarket = (sha: string) => writeFile(marketManifest, JSON.stringify({
+    metadata: { name: "team" }, plugins: [{ name: "remote",
+      source: { source: "git", url: "https://github.com/team/plugins.git", sha },
+      policy: { installation: "AVAILABLE", authentication: "ON_USE" } }],
+  }));
+  await writeMarket(initialSha);
+  await addMarketplaceOp({ ...base, source: market, name: "team" });
+  return { market, writeMarket };
+}
+
+async function pinnedPairFixture() {
+  const base = await tempRuntime();
+  const pinA = "a".repeat(40);
+  const pinB = "b".repeat(40);
+  const { market, writeMarket } = await registeredRemoteMarket(base, "remote-market", pinA);
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  await writeFile(join(base.root, "plugin-publishers.json"), JSON.stringify({ publishers: {
+    team: { publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64") },
+  } }));
+  const manifestA = Buffer.from(JSON.stringify({ name: "remote", version: "1.0.0" }));
+  const manifestB = Buffer.from(JSON.stringify({ name: "remote", version: "2.0.0" }));
+  const signed = (manifest: Buffer) => Buffer.from(JSON.stringify({ publisher: "team", files: {},
+    signature: sign(null, pluginSignaturePayloadBytes(manifest, {}), privateKey).toString("base64"),
+  }));
+  const signatureA = signed(manifestA);
+  const signatureB = signed(manifestB);
+  const requests: string[] = [];
+  const fetcher = async (url: string) => {
+    requests.push(url);
+    const bytes = url.includes(`/${pinA}/`)
+      ? url.endsWith("plugin.json") ? manifestA : signatureA
+      : url.endsWith("plugin.json") ? manifestB : signatureB;
+    return { ok: true, status: 200, statusText: "OK", text: async () => bytes.toString(),
+      arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer };
+  };
+  return { base, market, pinA, pinB, writeMarket, manifestA, signatureA, requests, fetcher };
+}
+
+async function bulkSignedPins(count: number) {
+  const base = await tempRuntime();
+  const market = join(base.root, "remote-market");
+  await mkdir(join(market, ".agenc-plugin"), { recursive: true });
+  const plugins = Array.from({ length: count }, (_, index) => ({
+    name: `remote-${index}`, source: { source: "git", url: "https://github.com/team/plugins.git",
+      sha: index.toString(16).padStart(40, "0") },
+    policy: { installation: "AVAILABLE", authentication: "ON_USE" },
+  }));
+  await writeFile(join(market, ".agenc-plugin", "marketplace.json"), JSON.stringify({
+    metadata: { name: "team" }, plugins,
+  }));
+  await addMarketplaceOp({ ...base, source: market, name: "team" });
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  await writeFile(join(base.root, "plugin-publishers.json"), JSON.stringify({ publishers: {
+    team: { publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64") },
+  } }));
+  const manifest = Buffer.from(JSON.stringify({ name: "remote" }));
+  const signature = Buffer.from(JSON.stringify({ publisher: "team", files: {},
+    signature: sign(null, pluginSignaturePayloadBytes(manifest, {}), privateKey).toString("base64"),
+  }));
+  return { base, plugins, manifest, signature };
+}
+
+function trackedAdvertRuntime(
+  options: Awaited<ReturnType<typeof remoteAdvertFixture>>["options"],
+  time: () => number,
+) {
+  const requests: string[] = [];
+  const runtime = { ...options, now: () => new Date(time()), fetcher: async (url: string) => {
+    requests.push(url);
+    return options.fetcher(url);
+  } };
+  return { requests, runtime };
+}
+
 describe("marketplace catalog CLI surface", () => {
   it("does not fetch an encoded traversal from a different commit", async () => {
     const options = await tempRuntime();
@@ -240,14 +322,7 @@ describe("marketplace catalog CLI surface", () => {
   });
   it("rechecks cached remote adverts against signed bytes and the current publisher keyring", async () => {
     const options = await tempRuntime();
-    const market = join(options.root, "remote-market");
-    await mkdir(join(market, ".agenc-plugin"), { recursive: true });
-    await writeFile(join(market, ".agenc-plugin", "marketplace.json"), JSON.stringify({
-      metadata: { name: "team" }, plugins: [{ name: "remote",
-        source: { source: "git", url: "https://github.com/team/plugins.git", sha: "a".repeat(40) },
-        policy: { installation: "AVAILABLE", authentication: "ON_USE" } }],
-    }));
-    await addMarketplaceOp({ ...options, source: market, name: "team" });
+    await registeredRemoteMarket(options, "remote-market", "a".repeat(40));
     const manifest = Buffer.from(JSON.stringify({ name: "remote", version: "1.0.0" }));
     const files = {};
     const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -280,39 +355,8 @@ describe("marketplace catalog CLI surface", () => {
   });
 
   it("does not accept signed material from another commit's cache entry", async () => {
-    const options = await tempRuntime();
-    const market = join(options.root, "remote-market");
-    const marketManifest = join(market, ".agenc-plugin", "marketplace.json");
-    await mkdir(join(market, ".agenc-plugin"), { recursive: true });
-    const pinA = "a".repeat(40);
-    const pinB = "b".repeat(40);
-    const writeMarket = (sha: string) => writeFile(marketManifest, JSON.stringify({
-      metadata: { name: "team" }, plugins: [{ name: "remote",
-        source: { source: "git", url: "https://github.com/team/plugins.git", sha },
-        policy: { installation: "AVAILABLE", authentication: "ON_USE" } }],
-    }));
-    await writeMarket(pinA);
-    await addMarketplaceOp({ ...options, source: market, name: "team" });
-    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-    await writeFile(join(options.root, "plugin-publishers.json"), JSON.stringify({ publishers: {
-      team: { publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64") },
-    } }));
-    const manifestA = Buffer.from(JSON.stringify({ name: "remote", version: "1.0.0" }));
-    const manifestB = Buffer.from(JSON.stringify({ name: "remote", version: "2.0.0" }));
-    const signed = (manifest: Buffer) => Buffer.from(JSON.stringify({ publisher: "team", files: {},
-      signature: sign(null, pluginSignaturePayloadBytes(manifest, {}), privateKey).toString("base64"),
-    }));
-    const signatureA = signed(manifestA);
-    const signatureB = signed(manifestB);
-    const requests: string[] = [];
-    const fetcher = async (url: string) => {
-      requests.push(url);
-      const bytes = url.includes(`/${pinA}/`)
-        ? url.endsWith("plugin.json") ? manifestA : signatureA
-        : url.endsWith("plugin.json") ? manifestB : signatureB;
-      return { ok: true, status: 200, statusText: "OK", text: async () => bytes.toString(),
-        arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer };
-    };
+    const { base: options, market, pinA, pinB, writeMarket, manifestA, signatureA, requests, fetcher } =
+      await pinnedPairFixture();
     const catalogOptions = { ...options, agencHome: options.root, fetcher };
     const first = await buildMarketplaceCatalog(catalogOptions, undefined, true);
     const digestA = first.marketplaces[0]?.plugins[0]?.payloadDigest;
@@ -344,39 +388,8 @@ describe("marketplace catalog CLI surface", () => {
   });
 
   it("ignores a cache-supplied binding key when an advert is copied to another source", async () => {
-    const base = await tempRuntime();
-    const market = join(base.root, "remote-market");
-    const marketManifest = join(market, ".agenc-plugin", "marketplace.json");
-    await mkdir(join(market, ".agenc-plugin"), { recursive: true });
-    const pinA = "a".repeat(40);
-    const pinB = "b".repeat(40);
-    const writeMarket = (sha: string) => writeFile(marketManifest, JSON.stringify({
-      metadata: { name: "team" }, plugins: [{ name: "remote",
-        source: { source: "git", url: "https://github.com/team/plugins.git", sha },
-        policy: { installation: "AVAILABLE", authentication: "ON_USE" } }],
-    }));
-    await writeMarket(pinA);
-    await addMarketplaceOp({ ...base, source: market, name: "team" });
-    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-    await writeFile(join(base.root, "plugin-publishers.json"), JSON.stringify({ publishers: {
-      team: { publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64") },
-    } }));
-    const manifestA = Buffer.from(JSON.stringify({ name: "remote", version: "1.0.0" }));
-    const manifestB = Buffer.from(JSON.stringify({ name: "remote", version: "2.0.0" }));
-    const signed = (manifest: Buffer) => Buffer.from(JSON.stringify({ publisher: "team", files: {},
-      signature: sign(null, pluginSignaturePayloadBytes(manifest, {}), privateKey).toString("base64"),
-    }));
-    const signatureA = signed(manifestA);
-    const signatureB = signed(manifestB);
-    const requests: string[] = [];
-    const fetcher = async (url: string) => {
-      requests.push(url);
-      const bytes = url.includes(`/${pinA}/`)
-        ? url.endsWith("plugin.json") ? manifestA : signatureA
-        : url.endsWith("plugin.json") ? manifestB : signatureB;
-      return { ok: true, status: 200, statusText: "OK", text: async () => bytes.toString(),
-        arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer };
-    };
+    const { base, market, pinA, pinB, writeMarket, manifestA, signatureA, requests, fetcher } =
+      await pinnedPairFixture();
     const options = { ...base, agencHome: base.root, fetcher };
     const first = await buildMarketplaceCatalog(options, undefined, true);
     const digestA = first.marketplaces[0]?.plugins[0]?.payloadDigest;
@@ -436,11 +449,7 @@ describe("marketplace catalog CLI surface", () => {
     const { options } = await remoteAdvertFixture(JSON.stringify({ name: "remote", version: "2.0.0" }), true);
     const start = Date.parse("2026-09-23T00:00:00Z");
     let now = start;
-    const requests: string[] = [];
-    const runtime = { ...options, now: () => new Date(now), fetcher: async (url: string) => {
-      requests.push(url);
-      return options.fetcher(url);
-    } };
+    const { requests, runtime } = trackedAdvertRuntime(options, () => now);
     expect((await buildMarketplaceCatalog(runtime, undefined, true)).marketplaces[0]?.plugins[0]?.payloadDigest)
       .toMatch(/^sha256:/u);
     expect(requests).toHaveLength(2);
@@ -495,11 +504,7 @@ describe("marketplace catalog CLI surface", () => {
     const { options } = await remoteAdvertFixture(JSON.stringify({ name: "remote", version: "2.0.0" }), true);
     const start = Date.parse("2026-09-23T00:00:00Z");
     let now = start;
-    const requests: string[] = [];
-    const runtime = { ...options, now: () => new Date(now), fetcher: async (url: string) => {
-      requests.push(url);
-      return options.fetcher(url);
-    } };
+    const { requests, runtime } = trackedAdvertRuntime(options, () => now);
     const manifestUrl = `https://raw.githubusercontent.com/team/plugins/${"a".repeat(40)}/.agenc-plugin/plugin.json`;
     const key = createHash("sha256").update(manifestUrl).digest("hex").slice(0, 24);
     const sidecarPath = join(options.pluginStorageRoot, "marketplaces", ".logo-cache", `${key}.meta.json`);
@@ -677,26 +682,7 @@ describe("marketplace catalog CLI surface", () => {
   });
 
   it("bounds persisted authenticated adverts across distinct pinned commits", async () => {
-    const base = await tempRuntime();
-    const market = join(base.root, "remote-market");
-    await mkdir(join(market, ".agenc-plugin"), { recursive: true });
-    const plugins = Array.from({ length: 130 }, (_, index) => ({
-      name: `remote-${index}`, source: { source: "git", url: "https://github.com/team/plugins.git",
-        sha: index.toString(16).padStart(40, "0") },
-      policy: { installation: "AVAILABLE", authentication: "ON_USE" },
-    }));
-    await writeFile(join(market, ".agenc-plugin", "marketplace.json"), JSON.stringify({
-      metadata: { name: "team" }, plugins,
-    }));
-    await addMarketplaceOp({ ...base, source: market, name: "team" });
-    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-    await writeFile(join(base.root, "plugin-publishers.json"), JSON.stringify({ publishers: {
-      team: { publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64") },
-    } }));
-    const manifest = Buffer.from(JSON.stringify({ name: "remote" }));
-    const signature = Buffer.from(JSON.stringify({ publisher: "team", files: {},
-      signature: sign(null, pluginSignaturePayloadBytes(manifest, {}), privateKey).toString("base64"),
-    }));
+    const { base, plugins, manifest, signature } = await bulkSignedPins(130);
     const requests = new Map<string, number>();
     const fetcher = async (url: string) => {
       requests.set(url, (requests.get(url) ?? 0) + 1);
@@ -723,26 +709,7 @@ describe("marketplace catalog CLI surface", () => {
   });
 
   it("keeps an in-flight source claim when authenticated bytes are evicted", async () => {
-    const base = await tempRuntime();
-    const market = join(base.root, "remote-market");
-    await mkdir(join(market, ".agenc-plugin"), { recursive: true });
-    const plugins = Array.from({ length: 129 }, (_, index) => ({
-      name: `remote-${index}`, source: { source: "git", url: "https://github.com/team/plugins.git",
-        sha: index.toString(16).padStart(40, "0") },
-      policy: { installation: "AVAILABLE", authentication: "ON_USE" },
-    }));
-    await writeFile(join(market, ".agenc-plugin", "marketplace.json"), JSON.stringify({
-      metadata: { name: "team" }, plugins,
-    }));
-    await addMarketplaceOp({ ...base, source: market, name: "team" });
-    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-    await writeFile(join(base.root, "plugin-publishers.json"), JSON.stringify({ publishers: {
-      team: { publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64") },
-    } }));
-    const manifest = Buffer.from(JSON.stringify({ name: "remote" }));
-    const signature = Buffer.from(JSON.stringify({ publisher: "team", files: {},
-      signature: sign(null, pluginSignaturePayloadBytes(manifest, {}), privateKey).toString("base64"),
-    }));
+    const { base, plugins, manifest, signature } = await bulkSignedPins(129);
     const sourceA = `/${plugins[0]!.source.sha}/`;
     let now = Date.parse("2026-09-23T00:00:00Z");
     let holdRefresh = false;
@@ -797,14 +764,7 @@ describe("marketplace catalog CLI surface", () => {
 
   it("does not turn an unsigned 99.0.0 remote manifest into a signed installed update", async () => {
     const options = await tempRuntime();
-    const market = join(options.root, "unsigned-market");
-    await mkdir(join(market, ".agenc-plugin"), { recursive: true });
-    await writeFile(join(market, ".agenc-plugin", "marketplace.json"), JSON.stringify({
-      metadata: { name: "team" }, plugins: [{ name: "remote",
-        source: { source: "git", url: "https://github.com/team/plugins.git", sha: "b".repeat(40) },
-        policy: { installation: "AVAILABLE", authentication: "ON_USE" } }],
-    }));
-    await addMarketplaceOp({ ...options, source: market, name: "team" });
+    await registeredRemoteMarket(options, "unsigned-market", "b".repeat(40));
     const manifest = Buffer.from(JSON.stringify({ name: "remote", version: "99.0.0" }));
     const signature = Buffer.from(JSON.stringify({ publisher: "team", files: {}, signature: "AAAA" }));
     const fetcher = async (url: string) => {

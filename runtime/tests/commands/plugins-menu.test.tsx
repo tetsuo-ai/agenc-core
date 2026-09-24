@@ -185,6 +185,19 @@ function pluginAuthority(agencHome: string, workspaceRoot: string) {
   };
 }
 
+async function localTeamMarketplace() {
+  const { root, agencHome, workspaceRoot } = await tempRuntime();
+  const authority = pluginAuthority(agencHome, workspaceRoot);
+  const marketplaceRoot = join(root, "marketplace-team");
+  await mkdir(join(marketplaceRoot, ".agenc-plugin"), { recursive: true });
+  await writePlugin(marketplaceRoot, "gamma");
+  await writeFile(join(marketplaceRoot, ".agenc-plugin", "marketplace.json"), JSON.stringify({
+    metadata: { name: "team" }, plugins: [{ name: "gamma", source: "./gamma" }],
+  }));
+  await addMarketplaceOp({ ...authority, source: marketplaceRoot, name: "team" });
+  return { root, authority, marketplaceRoot };
+}
+
 async function readPluginConfigEntry(
   agencHome: string,
   pluginId: string,
@@ -611,15 +624,7 @@ describe("interactive /plugins menu", () => {
   });
 
   it("compares a menu install after its marketplace moves the plugin to another repository", async () => {
-    const { root, agencHome, workspaceRoot } = await tempRuntime();
-    const authority = pluginAuthority(agencHome, workspaceRoot);
-    const marketplaceRoot = join(root, "marketplace-team");
-    await mkdir(join(marketplaceRoot, ".agenc-plugin"), { recursive: true });
-    await writePlugin(marketplaceRoot, "gamma");
-    await writeFile(join(marketplaceRoot, ".agenc-plugin", "marketplace.json"), JSON.stringify({
-      metadata: { name: "team" }, plugins: [{ name: "gamma", source: "./gamma" }],
-    }));
-    await addMarketplaceOp({ ...authority, source: marketplaceRoot, name: "team" });
+    const { authority, marketplaceRoot } = await localTeamMarketplace();
     const actions = createPluginMenuActions(authority);
     const marketplace = (await actions.listMarketplaces()).marketplaces.find((row) => row.name === "team");
     expect(marketplace).toBeDefined();
@@ -658,15 +663,7 @@ describe("interactive /plugins menu", () => {
   });
 
   it("keeps a menu install detached after an explicit source update", async () => {
-    const { root, agencHome, workspaceRoot } = await tempRuntime();
-    const authority = pluginAuthority(agencHome, workspaceRoot);
-    const marketplaceRoot = join(root, "marketplace-team");
-    await mkdir(join(marketplaceRoot, ".agenc-plugin"), { recursive: true });
-    await writePlugin(marketplaceRoot, "gamma");
-    await writeFile(join(marketplaceRoot, ".agenc-plugin", "marketplace.json"), JSON.stringify({
-      metadata: { name: "team" }, plugins: [{ name: "gamma", source: "./gamma" }],
-    }));
-    await addMarketplaceOp({ ...authority, source: marketplaceRoot, name: "team" });
+    const { root, authority, marketplaceRoot } = await localTeamMarketplace();
     const actions = createPluginMenuActions(authority);
     const marketplace = (await actions.listMarketplaces()).marketplaces.find((row) => row.name === "team")!;
     await actions.installFromMarketplace(marketplace, "gamma");
