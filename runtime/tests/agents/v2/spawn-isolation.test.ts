@@ -238,6 +238,26 @@ describe("spawn_agent isolation", () => {
     expect(mockDelegate.mock.calls[0]?.[0].plan?.scope.tools).toEqual([]);
   });
 
+  it("keeps every tool for a model that can call tools, even when the parent asks for tool_free", async () => {
+    const { tool } = await crossProviderFixture(["deepseek"]);
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await tool.execute({ message: "research this", task_name: "researcher", provider: "deepseek", model: "deepseek-v4-pro", tool_free: true });
+    expect(result.isError).not.toBe(true);
+    const delegated = mockDelegate.mock.calls[0]?.[0];
+    expect(delegated?.plan?.scope.tools).not.toEqual([]);
+    expect(delegated?.toolAllowlist).toBeUndefined();
+  });
+
+  it("keeps a same-provider child's tools when the parent asks for tool_free", async () => {
+    const { session } = await crossProviderFixture(["openai"]);
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(makeOptions(session)).execute({
+      message: "research this", task_name: "researcher", tool_free: true,
+    });
+    expect(result.isError).not.toBe(true);
+    expect(mockDelegate.mock.calls[0]?.[0].toolAllowlist).toBeUndefined();
+  });
+
   it("does not inherit a same-named service tier across providers", async () => {
     const { session } = await crossProviderFixture(["openai"]);
     Object.assign(session.sessionConfiguration, { serviceTier: "priority" });
