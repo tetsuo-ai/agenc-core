@@ -70,6 +70,22 @@ export const OFFICIAL_MARKETPLACE_URL =
  */
 export const OFFICIAL_MARKETPLACE_REFRESH_MS = 60 * 60_000;
 
+/** A successful update or attempted refresh cannot have happened after the current clock. */
+function marketplaceFreshnessTime(value: string | undefined, now: number): number {
+  const parsed = value === undefined ? NaN : Date.parse(value);
+  return Number.isFinite(parsed) ? Math.min(parsed, now) : 0;
+}
+
+/** A read-only shortcut may skip the lock only when both persisted times are valid and in the past. */
+function marketplaceFreshnessNeedsClaim(updatedAt: string, checkedAt: string | undefined,
+  now: number): boolean {
+  const updated = Date.parse(updatedAt);
+  const checked = checkedAt === undefined ? 0 : Date.parse(checkedAt);
+  return !Number.isFinite(updated) || !Number.isFinite(checked) ||
+    updated > now || checked > now ||
+    now - Math.max(updated, checked) > OFFICIAL_MARKETPLACE_REFRESH_MS;
+}
+
 async function claimMarketplaceRefresh(
   options: MarketplaceOperationOptions,
   name: string,
@@ -77,13 +93,23 @@ async function claimMarketplaceRefresh(
   const now = (options.now ?? (() => new Date()))().getTime();
   return updateMarketplaceInventory({ pluginsDirectory: options.pluginStorageRoot }, (current) => {
     const record = current[name];
-    if (record === undefined || record.refreshable === false || record.autoUpdate === false ||
-      now - Math.max(Date.parse(record.lastUpdated), Date.parse(record.lastChecked ?? "") || 0)
-        <= OFFICIAL_MARKETPLACE_REFRESH_MS) {
+    if (record === undefined || record.refreshable === false || record.autoUpdate === false) {
       return { inventory: current, result: false };
     }
+    const updated = marketplaceFreshnessTime(record.lastUpdated, now);
+    const checked = marketplaceFreshnessTime(record.lastChecked, now);
+    const rebased = {
+      ...record,
+      ...(updated !== Date.parse(record.lastUpdated)
+        ? { lastUpdated: new Date(updated).toISOString() } : {}),
+      ...(record.lastChecked !== undefined && checked !== Date.parse(record.lastChecked)
+        ? { lastChecked: new Date(checked).toISOString() } : {}),
+    };
+    if (now - Math.max(updated, checked) <= OFFICIAL_MARKETPLACE_REFRESH_MS) {
+      return { inventory: { ...current, [name]: rebased }, result: false };
+    }
     return { inventory: { ...current,
-      [name]: { ...record, lastChecked: new Date(now).toISOString() } }, result: true };
+      [name]: { ...rebased, lastChecked: new Date(now).toISOString() } }, result: true };
   });
 }
 
@@ -96,8 +122,7 @@ export async function refreshStaleMarketplaces(
   const now = (options.now ?? (() => new Date()))().getTime();
   for (const record of Object.values(index.marketplaces)) {
     if (record.refreshable === false || record.autoUpdate === false) continue;
-    if (now - Math.max(Date.parse(record.updatedAt), Date.parse(record.lastCheckedAt ?? "") || 0)
-      <= OFFICIAL_MARKETPLACE_REFRESH_MS) continue;
+    if (!marketplaceFreshnessNeedsClaim(record.updatedAt, record.lastCheckedAt, now)) continue;
     if (!(await claimMarketplaceRefresh(options, record.name))) continue;
     try { await upgrade({ ...options, name: record.name }); }
     catch { /* Keep the verified cached marketplace while offline. */ }
@@ -122,15 +147,14 @@ export async function ensureOfficialMarketplace(
   const index = await readMarketplaceIndex(options);
   const official = index.marketplaces[OFFICIAL_MARKETPLACE_NAME];
   const hasAny = Object.keys(index.marketplaces).length > 0;
+  const now = (options.now ?? (() => new Date()))().getTime();
   // A manifest older than the window is fetched again in place. Failure keeps
   // the cached copy: a stale catalog is a catalog, an empty one is an outage.
-  const stale =
-    official !== undefined && official.autoUpdate !== false &&
-    (options.now ?? (() => new Date()))().getTime() -
-      Math.max(Date.parse(official.updatedAt), Date.parse(official.lastCheckedAt ?? "") || 0) >
-      OFFICIAL_MARKETPLACE_REFRESH_MS;
+  const stale = official !== undefined && official.autoUpdate !== false &&
+    official.refreshable !== false &&
+    marketplaceFreshnessNeedsClaim(official.updatedAt, official.lastCheckedAt, now) &&
+    await claimMarketplaceRefresh(options, OFFICIAL_MARKETPLACE_NAME);
   if (hasAny && !stale) return false;
-  if (stale && !(await claimMarketplaceRefresh(options, OFFICIAL_MARKETPLACE_NAME))) return false;
   try {
     await addMarketplace({
       ...options,
@@ -603,9 +627,13 @@ async function writeAuthenticatedAdvert(
     older.sort((a, b) => a.mtimeMs - b.mtimeMs || a.name.localeCompare(b.name));
     const keepOthers = MAX_PERSISTED_AUTHENTICATED_ADVERTS - 1;
     for (const entry of older.slice(0, Math.max(0, older.length - keepOthers))) {
-      await rm(join(cacheRoot, entry.name), { force: true });
-      await rm(join(cacheRoot, entry.name.replace(/\.authenticated\.json$/u, ".meta.json")),
-        { force: true });
+      const sourceSidecar = join(cacheRoot,
+        entry.name.replace(/\.authenticated\.json$/u, ".meta.json"));
+      await withAdvertSidecarLock(sourceSidecar, async () => {
+        // The sidecar owns the deadline and any in-flight advert or skill claim.
+        // Eviction removes only the authenticated bytes, under that source's lock.
+        await rm(join(cacheRoot, entry.name), { force: true });
+      });
     }
     await writeDurableAtomicFile(path, `${path}.tmp-${process.pid}-${randomUUID()}`,
       `${JSON.stringify({ manifestUrl, manifest: Buffer.from(manifest).toString("base64"),
