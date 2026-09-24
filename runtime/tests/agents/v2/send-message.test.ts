@@ -74,6 +74,9 @@ describe("send_message delivery report", () => {
       } });
       let humanTurnId = "human-turn-1";
       Object.assign(f.session, {
+        // The user asks at each spawn, so messages to the child ask too.
+        config: { agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"],
+          cross_provider_ask_each_spawn: true } },
         abortController: new AbortController(),
         activeTurn: { unsafePeek: () => ({ turnId: humanTurnId }) },
         currentRootHumanTurn: () => ({ turnId: humanTurnId }),

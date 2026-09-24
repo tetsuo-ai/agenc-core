@@ -135,6 +135,7 @@ import {
   type ValidatedMailboxMetadata,
 } from "./mailbox-metadata.js";
 import type { AgentRoleConfig } from "./role.js";
+import type { AgenCConfig } from "../config/schema.js";
 import {
   captureWorktreeTurnEvidence,
   type WorktreeHandle,
@@ -4048,14 +4049,22 @@ export async function* runAgent(
         assertPreparedChildMatchesPlan(params.plan, prepared);
         await assertChildExecutionPlan(parent, params.plan);
       }
+      const crossPolicyRevoked = (config: AgenCConfig): boolean =>
+        config.agents?.cross_provider_enabled !== true ||
+        !(config.agents.allowed_providers ?? []).includes(params.providerSelection!.provider) ||
+        (params.plan?.route.provider === "agenc" &&
+         !(config.agents.allowed_providers ?? []).includes(params.plan.destination.provider));
+      const stopForPolicy = (): void => {
+        live.abortController.abort("cross-provider subagent policy was disabled or provider removed");
+      };
+      // Also when a daemon reload refreshes only the [agents] section.
       unsubscribeCrossPolicy = parent.services.configStore?.subscribe((config) => {
-        if (config.agents?.cross_provider_enabled !== true ||
-            !(config.agents.allowed_providers ?? []).includes(params.providerSelection!.provider) ||
-            (params.plan?.route.provider === "agenc" &&
-             !(config.agents.allowed_providers ?? []).includes(params.plan.destination.provider))) {
-          live.abortController.abort("cross-provider subagent policy was disabled or provider removed");
-        }
-      }) ?? null;
+        if (crossPolicyRevoked(config)) stopForPolicy();
+      }, { sections: ["agents"] }) ?? null;
+      // A change published after the check above passed and before this
+      // subscription reached no listener. The live snapshot has it.
+      const policyNow = parent.services.configStore?.current();
+      if (policyNow !== undefined && crossPolicyRevoked(policyNow)) stopForPolicy();
     } else if (provider && isFactoryProvider(provider)) {
       const selectedModel = params.model ?? live.role.config.model ??
         parent.providerService.current().model;

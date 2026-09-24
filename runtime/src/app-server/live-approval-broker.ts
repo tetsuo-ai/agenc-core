@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import type { AgentsConfig } from "../config/schema.js";
+import { nextConfigReadMark, type ConfigStore } from "../config/store.js";
+import { redactSecrets } from "../secrets/sanitizer.js";
 import type { Session } from "../session/session.js";
 import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
 import {
@@ -51,6 +54,33 @@ interface ApprovalOwner {
    */
   fundsStopObserved: boolean | undefined;
   readonly deniedConsentPayloads: Set<string>;
+  /**
+   * Reading the owner's cross-provider settings again because it registered
+   * after a daemon reload began. Consent decisions wait for it.
+   */
+  policyRefresh: Promise<void> | undefined;
+}
+
+/** One daemon reload's refresh of the cross-provider settings. */
+interface PolicyRefresh {
+  /** `nextConfigReadMark()` when it began: a read before it missed the save. */
+  readonly startedAt: number;
+  readonly daemonAgents: AgentsConfig | undefined;
+}
+
+/**
+ * How long one session's settings may take to read on a daemon reload. A
+ * session busy with a config reload of its own holds its store's lock.
+ */
+const CROSS_PROVIDER_REFRESH_TIMEOUT_MS = 1_000;
+
+/** Longest reason reported for a session that could not read its settings. */
+const REFRESH_REASON_MAX_CHARS = 500;
+
+class CrossProviderRefreshTimeout extends Error {
+  constructor(timeoutMs: number) {
+    super(`Reading its settings took longer than ${timeoutMs} ms.`);
+  }
 }
 
 export interface LivePendingApproval {
@@ -58,6 +88,25 @@ export interface LivePendingApproval {
   readonly responseKey: string;
   readonly projection: PendingToolApproval;
   readonly settle: (decision: ReviewDecision) => void;
+}
+
+/** A session that could not read its cross-provider settings again. */
+export interface CrossProviderPolicyFailure {
+  readonly sessionId: string;
+  /** Why, in plain words, with secrets redacted. */
+  readonly reason: string;
+}
+
+/** What a daemon reload did to the cross-provider settings of open sessions. */
+export interface CrossProviderPolicyRefresh {
+  /** Sessions whose `[agents]` settings changed and now apply. */
+  readonly changed: readonly string[];
+  /**
+   * Sessions whose settings could not be read again, or not in time. Each now
+   * allows only what both its earlier settings and the daemon's allow, until
+   * a later read of its own settings succeeds.
+   */
+  readonly failed: readonly CrossProviderPolicyFailure[];
 }
 
 /**
@@ -79,9 +128,19 @@ export function crossProviderConsentAvailability(deps: {
 
 export class LiveApprovalBroker {
   readonly #owners = new Map<string, ApprovalOwner>();
+  /** The last daemon reload's refresh, for sessions that register after it began. */
+  #lastPolicyRefresh: PolicyRefresh | undefined;
 
   constructor(private readonly options: {
     readonly canAnswerCrossProviderConsent?: (ownerRunId: string) => boolean | Promise<boolean>;
+    /** How long one session's settings may take to read. Defaults to 1 s. */
+    readonly crossProviderRefreshTimeoutMs?: number;
+    /**
+     * A session that registered after a daemon reload began could not read its
+     * cross-provider settings again. It is narrowed as in
+     * `refreshCrossProviderPolicy`; no reload result can name it.
+     */
+    readonly onCrossProviderRefreshFailed?: (failure: CrossProviderPolicyFailure) => void;
   } = {}) {}
 
   register(
@@ -114,8 +173,26 @@ export class LiveApprovalBroker {
       consentSessionGrants: new Set(),
       fundsStopObserved: undefined,
       deniedConsentPayloads: new Set(),
+      policyRefresh: undefined,
     };
     this.#owners.set(session.conversationId, owner);
+    // A session still starting when a daemon reload began read its settings
+    // before the save, and that reload did not see it: read them again now.
+    const store = session.services.configStore;
+    const lastRefresh = this.#lastPolicyRefresh;
+    if (lastRefresh !== undefined && typeof store?.agentsReadStartedAt === "function" &&
+        store.agentsReadStartedAt() < lastRefresh.startedAt) {
+      const refresh: Promise<void> = this.#refreshStore(store, lastRefresh).then((outcome) => {
+        if (owner.policyRefresh === refresh) owner.policyRefresh = undefined;
+        if (outcome.failed === undefined) return;
+        try {
+          this.options.onCrossProviderRefreshFailed?.({ sessionId: session.conversationId, reason: outcome.failed });
+        } catch {
+          // Reporting is an observer; the session is already narrowed.
+        }
+      });
+      owner.policyRefresh = refresh;
+    }
     const observeFundsStop = (): void => {
       owner.fundsStopObserved = true;
       owner.consentSessionGrants.clear();
@@ -129,9 +206,10 @@ export class LiveApprovalBroker {
       })
       : () => {};
     const unsubscribePolicy = session.services.configStore?.subscribe?.(() => {
-      // Revoking or changing the operator allowlist retires session grants.
+      // Revoking or changing the operator allowlist retires session grants,
+      // also when a daemon reload refreshes only that section.
       owner.consentSessionGrants.clear();
-    });
+    }, { sections: ["agents"] });
     const services = session.services as { approvalResolver?: ApprovalResolver; crossProviderConsent?: CrossProviderConsentService };
     const previousResolver = services.approvalResolver;
     const previousConsent = services.crossProviderConsent;
@@ -326,7 +404,7 @@ export class LiveApprovalBroker {
     owner: ApprovalOwner,
     requestingSession: Session,
     disclosure: CrossProviderSpawnDisclosure,
-    options: { readonly fresh?: boolean } = {},
+    options: { readonly fresh?: boolean; readonly routeProvider?: string } = {},
   ): Promise<CrossProviderConsentOutcome> {
     const unavailable = (reason: string): CrossProviderConsentOutcome => ({
       kind: "consent_unavailable", reason: `${reason} Continue this task yourself.`,
@@ -335,10 +413,15 @@ export class LiveApprovalBroker {
     const turnId = activeTurnAtRequest ?? disclosure.requestingTurnId ?? disclosure.taskId;
     const denialKey = crossProviderDenialKey(disclosure, turnId);
     const cardDisclosure = { ...disclosure, requestingTurnId: turnId, denialKey };
+    // An owner that registered after a daemon reload began decides with the
+    // settings that reload brought, not the ones it read while starting.
+    if (owner.policyRefresh !== undefined) await owner.policyRefresh;
     if (this.#owners.get(owner.session.conversationId) !== owner || !owner.isActive() ||
         !isApprovalSessionOwnedBy(requestingSession, owner.session)) {
       return unavailable("The interactive session is no longer active.");
     }
+    const refusal = providerRefusal(owner.session, disclosure.provider, options.routeProvider);
+    if (refusal !== undefined) return unavailable(refusal);
     const grant = (kind: "once" | "session") => ({
       kind, ownerSessionId: owner.session.conversationId,
       sessionEpoch: owner.sessionEpoch, taskId: disclosure.taskId,
@@ -347,13 +430,6 @@ export class LiveApprovalBroker {
     // Enabling the allowed providers in settings is the consent, also for
     // unattended runs. After a funds stop the user decides every later spawn.
     if (crossProviderConsentFromSettings(owner.session) && !fundsStopped(owner)) {
-      // The consent covers only the providers the settings allow now; a
-      // message to an existing child reuses a plan made under older settings.
-      try {
-        assertCrossProviderAllowed(owner.session, disclosure.provider);
-      } catch (error) {
-        return unavailable(error instanceof Error ? error.message : String(error));
-      }
       return { kind: "granted", grant: grant("session") };
     }
     if (owner.workflow || isNonInteractiveSession(owner.session) ||
@@ -407,6 +483,12 @@ export class LiveApprovalBroker {
          (result.decision.kind !== "denied" || result.decision.decidedBy !== "user"))) {
       return unavailable("Human consent could not be obtained.");
     }
+    if (result.decision.kind !== "denied") {
+      // The card may have been open across a daemon reload that removed its
+      // provider or turned the feature off. Approving it grants nothing.
+      const refusalNow = providerRefusal(owner.session, disclosure.provider, options.routeProvider);
+      if (refusalNow !== undefined) return unavailable(refusalNow);
+    }
     if (result.decision.kind === "approved_for_session") {
       owner.consentSessionGrants.add(disclosure.scopeKey);
       return { kind: "granted", grant: grant("session") };
@@ -419,6 +501,84 @@ export class LiveApprovalBroker {
   abort(ownerRunId: string): void {
     for (const pending of this.#owners.get(ownerRunId)?.pending.values() ?? []) {
       pending.settle(ABORT);
+    }
+  }
+
+  /**
+   * Reads the cross-provider subagent settings (`[agents]`) again for every
+   * session registered here: interactive, background and routine runs, and
+   * workflow runs. A session that is not registered cannot get cross-provider
+   * consent at all, and its children share its config. Each session reads
+   * its own config sources, and nothing else in its config changes
+   * (`ConfigStore.reloadAgentsSection`). When the settings changed, the store
+   * tells this broker, which retires the session's grants, and the session's
+   * running children, which stop if their provider is no longer allowed.
+   *
+   * A session whose read fails, or does not finish within the timeout, fails
+   * closed: it is narrowed to what both its current settings and
+   * `daemonAgents` allow (`ConfigStore.limitAgentsSection`), which never
+   * widens its consent, and it is listed in `failed`. `daemonAgents` is the
+   * daemon's own view, read from user, profile and managed config, which no
+   * workspace file can make unreadable. Omitted, it allows nothing. A session
+   * that registers after this began reads its settings again then.
+   */
+  async refreshCrossProviderPolicy(daemonAgents?: AgentsConfig): Promise<CrossProviderPolicyRefresh> {
+    const refresh: PolicyRefresh = { startedAt: nextConfigReadMark(), daemonAgents };
+    this.#lastPolicyRefresh = refresh;
+    const stores = new Map<ConfigStore, string[]>();
+    for (const owner of this.#owners.values()) {
+      const store = owner.session.services.configStore;
+      if (store === undefined) continue;
+      const sessionIds = stores.get(store);
+      if (sessionIds === undefined) stores.set(store, [owner.session.conversationId]);
+      else sessionIds.push(owner.session.conversationId);
+    }
+    const sessions = [...stores];
+    const outcomes = await Promise.all(sessions.map(([store]) => this.#refreshStore(store, refresh)));
+    const changed: string[] = [];
+    const failed: CrossProviderPolicyFailure[] = [];
+    outcomes.forEach((outcome, index) => {
+      const sessionIds = sessions[index]![1];
+      if (outcome.failed !== undefined) {
+        const reason = outcome.failed;
+        failed.push(...sessionIds.map((sessionId) => ({ sessionId, reason })));
+      } else if (outcome.changed) {
+        changed.push(...sessionIds);
+      }
+    });
+    return { changed, failed };
+  }
+
+  /**
+   * Reads one store's `[agents]` settings again for `refresh`, bounded by the
+   * timeout, and narrows the store when that fails. Never rejects.
+   */
+  async #refreshStore(store: ConfigStore, refresh: PolicyRefresh): Promise<{
+    readonly changed: boolean;
+    readonly failed?: string;
+  }> {
+    const timeoutMs = this.options.crossProviderRefreshTimeoutMs ?? CROSS_PROVIDER_REFRESH_TIMEOUT_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const timedOut = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new CrossProviderRefreshTimeout(timeoutMs)), timeoutMs);
+        timer.unref?.();
+      });
+      // A read that times out keeps waiting for the store's lock and applies
+      // what it reads when it gets there.
+      return { changed: await Promise.race([store.reloadAgentsSection(), timedOut]) };
+    } catch (error) {
+      let changed = false;
+      try {
+        if (typeof store.limitAgentsSection === "function") {
+          changed = store.limitAgentsSection(refresh.daemonAgents, refresh.startedAt);
+        }
+      } catch {
+        // Its listeners are isolated by the store; nothing else can fail here.
+      }
+      return { changed, failed: refreshFailureReason(error) };
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 
@@ -518,6 +678,38 @@ function isNonInteractiveSession(session: Session): boolean {
   return (
     session.services as { readonly runtimeOptions?: { readonly nonInteractive?: unknown } } | undefined
   )?.runtimeOptions?.nonInteractive === true;
+}
+
+/**
+ * Why the settings do not allow this provider now, if they do not. Neither
+ * the settings nor the user can consent to it: a message to an existing child
+ * reuses a plan made under older settings, and an approved card for it would
+ * fail at dispatch. A managed child also needs its route provider (agenc).
+ */
+function providerRefusal(session: Session, provider: string, routeProvider: string | undefined): string | undefined {
+  try {
+    if (routeProvider !== undefined) assertCrossProviderAllowed(session, routeProvider);
+    assertCrossProviderAllowed(session, provider);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+/**
+ * Why a session could not read its settings again: the loader's message as
+ * plain text on one line (a project file can supply part of it), with
+ * secrets redacted and its length bounded.
+ */
+function refreshFailureReason(error: unknown): string {
+  const message = redactSecrets(error instanceof Error ? error.message : String(error))
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\s\u0000-\u001f\u007f-\u009f]+/gu, " ")
+    .trim();
+  const characters = Array.from(message);
+  return characters.length <= REFRESH_REASON_MAX_CHARS
+    ? message
+    : `${characters.slice(0, REFRESH_REASON_MAX_CHARS - 3).join("")}...`;
 }
 
 /**
