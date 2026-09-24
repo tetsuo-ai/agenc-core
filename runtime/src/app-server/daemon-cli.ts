@@ -3984,7 +3984,7 @@ async function runAgenCDaemonForegroundLocked(
       home: authStartup.daemonHome,
       backend: createRemoteBackend({ backendUrl: host.env.AGENC_BACKEND_URL || "https://id.agenc.ag", token: () => remoteAuthSessionTokenSync(remoteContext) }),
       lookupSession: (sessionId) => sessionManager.getSession(sessionId),
-      createConnection: (remoteAccess) => dispatcher.createConnection({ remoteAccess }),
+      createConnection: (remoteAccess, remoteCid) => dispatcher.createConnection({ remoteAccess, remoteCid }),
       createSession: createRemoteSession,
       assertControlSession: assertRemoteControlSession,
     });

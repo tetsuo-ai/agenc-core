@@ -1,4 +1,4 @@
-const artifactCleanupFailure = vi.hoisted(() => ({ path: "", failOnce: false }));
+const artifactCleanupFailure = vi.hoisted(() => ({ path: "", failOnce: false, beforeRemove: undefined as undefined | (() => void), afterRemove: undefined as undefined | (() => void) }));
 vi.mock("node:fs", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs")>();
   return { ...fs, rmSync: ((path: Parameters<typeof fs.rmSync>[0], options?: Parameters<typeof fs.rmSync>[1]) => {
@@ -6,7 +6,10 @@ vi.mock("node:fs", async (importOriginal) => {
       artifactCleanupFailure.failOnce = false;
       throw Object.assign(new Error("injected artifact cleanup failure"), { code: "EIO" });
     }
-    return fs.rmSync(path, options);
+    if (String(path) === artifactCleanupFailure.path) artifactCleanupFailure.beforeRemove?.();
+    const result = fs.rmSync(path, options);
+    if (String(path) === artifactCleanupFailure.path) artifactCleanupFailure.afterRemove?.();
+    return result;
   }) as typeof fs.rmSync };
 });
 import {
@@ -117,6 +120,8 @@ beforeEach(() => {
 afterEach(() => {
   artifactCleanupFailure.path = "";
   artifactCleanupFailure.failOnce = false;
+  artifactCleanupFailure.beforeRemove = undefined;
+  artifactCleanupFailure.afterRemove = undefined;
   if (originalAgencHome) process.env.AGENC_HOME = originalAgencHome;
   else delete process.env.AGENC_HOME;
   if (agencHome) rmSync(agencHome, { recursive: true, force: true });
@@ -429,6 +434,78 @@ describe("FileThreadStore.archiveThread / listThreads", () => {
       expect(restarted.readThread({ threadId: "unarchive-startup", includeArchived: false, includeHistory: false }).archivedAt).toBeUndefined();
       restarted.close();
     } finally { rollout.close(); rmSync(cwd, { recursive: true, force: true }); }
+  });
+  it("does not clear a newer unarchive cursor after startup removed the old artifacts", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-unarchive-cursor-race-"));
+    const rollout = openStore({ cwd, sessionId: "cursor-race" });
+    const store = new FileThreadStore({ agencHome, cwd });
+    const newer = new FileThreadStore({ agencHome, cwd });
+    let restarted: FileThreadStore | undefined;
+    try {
+      store.createThread({ threadId: "cursor-race", rolloutStore: rollout });
+      store.shutdownThread("cursor-race");
+      rollout.close();
+      store.archiveThread({ threadId: "cursor-race" });
+      const archived = store.readThread({ threadId: "cursor-race", includeArchived: true, includeHistory: false });
+      const artifacts = join(dirname(archived.rolloutPath!), "display-artifacts");
+      mkdirSync(artifacts);
+      artifactCleanupFailure.path = artifacts;
+      artifactCleanupFailure.failOnce = true;
+      expect(() => store.unarchiveThread({ threadId: "cursor-race" })).toThrow("injected artifact cleanup failure");
+      const makeNewCursor = () => {
+        newer.archiveThread({ threadId: "cursor-race" });
+        mkdirSync(artifacts);
+        writeFileSync(join(artifacts, "new"), "new generation");
+        artifactCleanupFailure.failOnce = true;
+        expect(() => newer.unarchiveThread({ threadId: "cursor-race" })).toThrow("injected artifact cleanup failure");
+      };
+      let heldLock = false;
+      artifactCleanupFailure.afterRemove = () => {
+        artifactCleanupFailure.afterRemove = undefined;
+        if (existsSync(`${store.registryFilePath}.lock`)) heldLock = true;
+        else makeNewCursor();
+      };
+      restarted = new FileThreadStore({ agencHome, cwd });
+      if (heldLock) makeNewCursor();
+      expect(existsSync(join(artifacts, "new"))).toBe(true);
+      newer.unarchiveThread({ threadId: "cursor-race" });
+      expect(existsSync(artifacts)).toBe(false);
+      expect(heldLock).toBe(true);
+    } finally { restarted?.close(); newer.close(); store.close(); rollout.close(); rmSync(cwd, { recursive: true, force: true }); }
+  });
+  it("does not delete artifacts reconstructed by a newer archive during startup cleanup", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-unarchive-artifact-race-"));
+    const rollout = openStore({ cwd, sessionId: "artifact-race" });
+    const store = new FileThreadStore({ agencHome, cwd });
+    const newer = new FileThreadStore({ agencHome, cwd });
+    let restarted: FileThreadStore | undefined;
+    try {
+      store.createThread({ threadId: "artifact-race", rolloutStore: rollout });
+      store.shutdownThread("artifact-race");
+      rollout.close();
+      store.archiveThread({ threadId: "artifact-race" });
+      const archived = store.readThread({ threadId: "artifact-race", includeArchived: true, includeHistory: false });
+      const artifacts = join(dirname(archived.rolloutPath!), "display-artifacts");
+      mkdirSync(artifacts);
+      artifactCleanupFailure.path = artifacts;
+      artifactCleanupFailure.failOnce = true;
+      expect(() => store.unarchiveThread({ threadId: "artifact-race" })).toThrow("injected artifact cleanup failure");
+      const rearchive = () => {
+        newer.archiveThread({ threadId: "artifact-race" });
+        mkdirSync(artifacts);
+        writeFileSync(join(artifacts, "new"), "reconstructed archive artifact");
+      };
+      let heldLock = false;
+      artifactCleanupFailure.beforeRemove = () => {
+        artifactCleanupFailure.beforeRemove = undefined;
+        if (existsSync(`${store.registryFilePath}.lock`)) heldLock = true;
+        else rearchive();
+      };
+      restarted = new FileThreadStore({ agencHome, cwd });
+      if (heldLock) rearchive();
+      expect(readFileSync(join(artifacts, "new"), "utf8")).toBe("reconstructed archive artifact");
+      expect(heldLock).toBe(true);
+    } finally { restarted?.close(); newer.close(); store.close(); rollout.close(); rmSync(cwd, { recursive: true, force: true }); }
   });
   it("archived threads do not appear in listThreads() without archived=true", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));

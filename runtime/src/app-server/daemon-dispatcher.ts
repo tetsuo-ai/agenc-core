@@ -1331,19 +1331,17 @@ export class AgenCDaemonJsonRpcDispatcher {
           );
           const clientMinor = Number(connection.initializeState?.clientProtocol.version.split(".")[1] ?? 0);
           if (clientMinor >= 18) return successResponse(id, transcript);
-          // Protocol 1.17 has no artifact RPC. Rehydrate text inside its
-          // existing transcript response while the whole reply fits the
-          // remote envelope. An error leaves reconciliation uncovered.
-          const maxLegacyBytes = 768 * 1024;
+          // Protocol 1.17 has no artifact RPC. Restore the complete reply
+          // inline, then measure the actual serialized transport frame.
+          const maxLegacyBytes = connection.remoteAccess === undefined
+            ? 16 * 1024 * 1024
+            : 1024 * 1024;
           const messages: Array<(typeof transcript.messages)[number]> = [];
-          let artifactBytes = 0;
           for (const { textArtifact, ...message } of transcript.messages) {
             if (textArtifact === undefined) {
               messages.push(message);
               continue;
             }
-            artifactBytes += textArtifact.size;
-            if (artifactBytes > maxLegacyBytes) throw new Error("legacy transcript answer exceeds transport limit");
             const chunks: Buffer[] = [];
             let offset = 0;
             while (offset < textArtifact.size) {
@@ -1360,8 +1358,13 @@ export class AgenCDaemonJsonRpcDispatcher {
             messages.push({ ...message, text: bytes.toString("utf8") });
           }
           const legacy = { ...transcript, messages, events: transcript.events?.filter(event => event.type !== "tool_call_completed") };
-          if (Buffer.byteLength(JSON.stringify(legacy), "utf8") > maxLegacyBytes) throw new Error("legacy transcript exceeds transport limit");
-          return successResponse(id, legacy);
+          const response = successResponse(id, legacy);
+          const payload = JSON.stringify(response);
+          const transportFrame = connection.remoteAccess === undefined
+            ? payload
+            : JSON.stringify({ t: "data", cid: connection.remoteCid ?? "", payload });
+          if (Buffer.byteLength(transportFrame, "utf8") > maxLegacyBytes) throw new Error("legacy transcript exceeds transport limit");
+          return response;
         }
       case "session.artifact.read":
         {
@@ -2297,6 +2300,8 @@ export class AgenCDaemonJsonRpcDispatcher {
 export interface AgenCDaemonJsonRpcConnectionOptions {
   /** In-process browser authority. No JSON-RPC field can populate this. */
   readonly remoteAccess?: RemoteAccessBoundary;
+  /** Remote peer identity used in the relay's outbound JSON envelope. */
+  readonly remoteCid?: string;
   readonly sendNotification?: (message: JsonObject) => void | Promise<void>;
   readonly overloadLimits?: AgenCDaemonOverloadLimitOptions;
 }
@@ -2305,6 +2310,7 @@ let nextConnectionId = 0;
 
 export class AgenCDaemonJsonRpcConnection {
   readonly remoteAccess: RemoteAccessBoundary | undefined;
+  readonly remoteCid: string | undefined;
   readonly #dispatcher: AgenCDaemonJsonRpcDispatcher;
   readonly #sendNotification:
     ((message: JsonObject) => void | Promise<void>) | undefined;
@@ -2324,6 +2330,7 @@ export class AgenCDaemonJsonRpcConnection {
   ) {
     this.#dispatcher = dispatcher;
     this.remoteAccess = options.remoteAccess;
+    this.remoteCid = options.remoteCid;
     this.#sendNotification = options.sendNotification;
     this.#limiter = new AgenCDaemonConnectionLimiter(options.overloadLimits);
     nextConnectionId += 1;

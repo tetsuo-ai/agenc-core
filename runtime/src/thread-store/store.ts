@@ -16,7 +16,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { removeDisplayArtifacts } from "../session/display-artifact-store.js";
 import {
   basename,
@@ -306,6 +306,7 @@ interface RegistryEntry {
   readonly forkedFromId?: ThreadId;
   readonly rolloutPath?: string;
   readonly archivedRolloutPath?: string;
+  readonly archiveCleanupGeneration?: string;
 }
 
 interface RegistrySnapshot {
@@ -453,6 +454,9 @@ export class FileThreadStore implements ThreadStore {
         ...(existing?.archivedRolloutPath !== undefined
           ? { archivedRolloutPath: existing.archivedRolloutPath }
           : {}),
+        ...(existing?.archiveCleanupGeneration !== undefined
+          ? { archiveCleanupGeneration: existing.archiveCleanupGeneration }
+          : {}),
         rolloutPath: params.rolloutStore.rolloutPath,
       };
       registry.set(threadId, entry);
@@ -511,6 +515,9 @@ export class FileThreadStore implements ThreadStore {
         ...(existing?.archivedRolloutPath !== undefined
           ? { archivedRolloutPath: existing.archivedRolloutPath }
           : {}),
+        ...(existing?.archiveCleanupGeneration !== undefined
+          ? { archiveCleanupGeneration: existing.archiveCleanupGeneration }
+          : {}),
         rolloutPath:
           params.rolloutPath ??
           existing?.rolloutPath ??
@@ -549,7 +556,8 @@ export class FileThreadStore implements ThreadStore {
     recorder.flushDurable();
     this.unbindLiveRecorder(threadId, recorder);
     let archivedSessionDir: string | undefined;
-    this.updateRegistry((registry) => {
+    this.withRegistryLock(() => {
+      const registry = this.readRegistryUnlocked(true);
       const existing = registry.get(threadId);
       if (
         existing === undefined ||
@@ -570,8 +578,9 @@ export class FileThreadStore implements ThreadStore {
         archivedRolloutPath,
         updatedAt: new Date().toISOString(),
       });
+      this.writeRegistryUnlocked(registry);
+      if (archivedSessionDir !== undefined) removeDisplayArtifacts(archivedSessionDir);
     });
-    if (archivedSessionDir !== undefined) removeDisplayArtifacts(archivedSessionDir);
   }
 
   discardThread(threadId: ThreadId): void {
@@ -844,7 +853,8 @@ export class FileThreadStore implements ThreadStore {
     let archivedSessionDir: string | undefined;
     let archiveArtifactDir: string | undefined;
     timed("thread_archive", () =>
-      this.updateRegistry((registry) => {
+      this.withRegistryLock(() => {
+        const registry = this.readRegistryUnlocked(true);
         const existing = registry.get(params.threadId);
         if (existing === undefined) {
           throw new ThreadNotFoundError(params.threadId);
@@ -861,6 +871,9 @@ export class FileThreadStore implements ThreadStore {
             }
             if (existing.rolloutPath && (archivedRolloutPath !== undefined || !existsSync(existing.rolloutPath))) archivedSessionDir = dirname(existing.rolloutPath);
           }
+          this.writeRegistryUnlocked(registry);
+          if (archivedSessionDir !== undefined) removeDisplayArtifacts(archivedSessionDir);
+          if (archiveArtifactDir !== undefined && archiveArtifactDir !== archivedSessionDir) removeDisplayArtifacts(archiveArtifactDir);
           return;
         }
         const now = new Date().toISOString();
@@ -878,10 +891,11 @@ export class FileThreadStore implements ThreadStore {
           archivedAt: now,
           ...(archivedRolloutPath !== undefined ? { archivedRolloutPath } : {}),
         });
+        this.writeRegistryUnlocked(registry);
+        if (archivedSessionDir !== undefined) removeDisplayArtifacts(archivedSessionDir);
+        if (archiveArtifactDir !== undefined && archiveArtifactDir !== archivedSessionDir) removeDisplayArtifacts(archiveArtifactDir);
       }),
     );
-    if (archivedSessionDir !== undefined) removeDisplayArtifacts(archivedSessionDir);
-    if (archiveArtifactDir !== undefined && archiveArtifactDir !== archivedSessionDir) removeDisplayArtifacts(archiveArtifactDir);
   }
 
   unarchiveThread(params: ArchiveThreadParams): StoredThread {
@@ -916,6 +930,9 @@ export class FileThreadStore implements ThreadStore {
       const updated: RegistryEntry = {
         ...rest,
         updatedAt: now,
+        ...(existing.archivedRolloutPath !== undefined
+          ? { archiveCleanupGeneration: randomUUID() }
+          : {}),
         ...(restoredRolloutPath !== undefined
           ? { rolloutPath: restoredRolloutPath }
           : {}),
@@ -923,17 +940,7 @@ export class FileThreadStore implements ThreadStore {
       registry.set(params.threadId, updated);
       result = toStoredThread(updated, this.defaultModelProviderId);
     });
-    if (archiveArtifactDir !== undefined) {
-      removeDisplayArtifacts(archiveArtifactDir);
-      this.updateRegistry(registry => {
-        const existing = registry.get(params.threadId);
-        if (existing?.archivedAt !== undefined || existing?.archivedRolloutPath === undefined) return;
-        if (dirname(existing.archivedRolloutPath) !== archiveArtifactDir) return;
-        const { archivedRolloutPath: _drop, ...cleaned } = existing;
-        void _drop;
-        registry.set(params.threadId, cleaned);
-      });
-    }
+    if (archiveArtifactDir !== undefined) this.finishPendingUnarchiveCleanup(params.threadId);
     return result!;
   }
 
@@ -943,14 +950,16 @@ export class FileThreadStore implements ThreadStore {
       : [this.threadIndex.getThread(threadId)];
     for (const entry of entries) {
       if (entry === undefined || entry.archivedAt !== undefined || entry.archivedRolloutPath === undefined) continue;
-      const archiveArtifactDir = dirname(entry.archivedRolloutPath);
-      removeDisplayArtifacts(archiveArtifactDir);
-      this.updateRegistry(registry => {
+      this.withRegistryLock(() => {
+        const registry = this.readRegistryUnlocked(true);
         const current = registry.get(entry.threadId);
-        if (current === undefined || current.archivedAt !== undefined || current.archivedRolloutPath !== entry.archivedRolloutPath) return;
-        const { archivedRolloutPath: _drop, ...cleaned } = current;
+        if (current === undefined || current.archivedAt !== undefined || current.archivedRolloutPath === undefined || current.archivedRolloutPath !== entry.archivedRolloutPath || current.archiveCleanupGeneration !== entry.archiveCleanupGeneration) return;
+        removeDisplayArtifacts(dirname(current.archivedRolloutPath));
+        const { archivedRolloutPath: _drop, archiveCleanupGeneration: _generation, ...cleaned } = current;
         void _drop;
+        void _generation;
         registry.set(entry.threadId, cleaned);
+        this.writeRegistryUnlocked(registry);
       });
     }
   }
@@ -1820,6 +1829,9 @@ function normalizeRegistryEntry(value: unknown): RegistryEntry | undefined {
       : {}),
     ...(typeof value.archivedRolloutPath === "string"
       ? { archivedRolloutPath: value.archivedRolloutPath }
+      : {}),
+    ...(typeof value.archiveCleanupGeneration === "string"
+      ? { archiveCleanupGeneration: value.archiveCleanupGeneration }
       : {}),
   };
 }

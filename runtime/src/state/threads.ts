@@ -18,6 +18,7 @@ export interface IndexedThreadRecord {
   readonly forkedFromId?: ThreadId;
   readonly rolloutPath?: string;
   readonly archivedRolloutPath?: string;
+  readonly archiveCleanupGeneration?: string;
 }
 
 export interface IndexedThreadPage {
@@ -41,6 +42,7 @@ interface ThreadRow {
   readonly memory_mode: string | null;
   readonly rollout_path: string | null;
   readonly archived_rollout_path: string | null;
+  readonly archive_cleanup_generation: string | null;
 }
 
 export class StateThreadRepository {
@@ -112,8 +114,9 @@ export class StateThreadRepository {
           model_provider,
           memory_mode,
           rollout_path,
-          archived_rollout_path
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          archived_rollout_path,
+          archive_cleanup_generation
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(thread_id) DO UPDATE SET
           name = excluded.name,
           created_at = excluded.created_at,
@@ -126,7 +129,8 @@ export class StateThreadRepository {
           model_provider = excluded.model_provider,
           memory_mode = excluded.memory_mode,
           rollout_path = excluded.rollout_path,
-          archived_rollout_path = excluded.archived_rollout_path`,
+          archived_rollout_path = excluded.archived_rollout_path,
+          archive_cleanup_generation = excluded.archive_cleanup_generation`,
       )
       .run(
         record.threadId,
@@ -142,6 +146,7 @@ export class StateThreadRepository {
         record.memoryMode ?? null,
         record.rolloutPath ?? null,
         record.archivedRolloutPath ?? null,
+        record.archiveCleanupGeneration ?? null,
       );
   }
 
@@ -187,6 +192,12 @@ export class StateThreadRepository {
       ...(record.archivedRolloutPath !== undefined
         ? { archivedRolloutPath: record.archivedRolloutPath }
         : {}),
+      ...(!replaceArchiveState && existing?.archiveCleanupGeneration !== undefined
+        ? { archiveCleanupGeneration: existing.archiveCleanupGeneration }
+        : {}),
+      ...(record.archiveCleanupGeneration !== undefined
+        ? { archiveCleanupGeneration: record.archiveCleanupGeneration }
+        : {}),
     };
     this.upsertThread(merged);
   }
@@ -196,7 +207,7 @@ export class StateThreadRepository {
       .prepareState<[ThreadId], ThreadRow>(
         `SELECT thread_id, name, created_at, updated_at, archived_at, cwd, originator,
           source_json, forked_from_id, model, model_provider, memory_mode,
-          rollout_path, archived_rollout_path,
+          rollout_path, archived_rollout_path, archive_cleanup_generation,
           (SELECT edge.parent_thread_id FROM thread_spawn_edges AS edge
            WHERE edge.child_thread_id = threads.thread_id) AS parent_thread_id
          FROM threads
@@ -211,7 +222,7 @@ export class StateThreadRepository {
       .prepareState<[], ThreadRow>(
         `SELECT thread_id, name, created_at, updated_at, archived_at, cwd, originator,
           source_json, forked_from_id, model, model_provider, memory_mode,
-          rollout_path, archived_rollout_path,
+          rollout_path, archived_rollout_path, archive_cleanup_generation,
           (SELECT edge.parent_thread_id FROM thread_spawn_edges AS edge
            WHERE edge.child_thread_id = threads.thread_id) AS parent_thread_id
          FROM threads`,
@@ -263,7 +274,7 @@ export class StateThreadRepository {
     const statement = this.driver.prepareState(
       `SELECT thread_id, name, created_at, updated_at, archived_at, cwd, originator,
           source_json, forked_from_id, model, model_provider, memory_mode,
-          rollout_path, archived_rollout_path,
+          rollout_path, archived_rollout_path, archive_cleanup_generation,
           (SELECT edge.parent_thread_id FROM thread_spawn_edges AS edge
            WHERE edge.child_thread_id = threads.thread_id) AS parent_thread_id
          FROM threads
@@ -621,6 +632,9 @@ function rowToThread(row: ThreadRow): IndexedThreadRecord {
     ...(row.rollout_path !== null ? { rolloutPath: row.rollout_path } : {}),
     ...(row.archived_rollout_path !== null
       ? { archivedRolloutPath: row.archived_rollout_path }
+      : {}),
+    ...(row.archive_cleanup_generation !== null
+      ? { archiveCleanupGeneration: row.archive_cleanup_generation }
       : {}),
   };
   return record;
