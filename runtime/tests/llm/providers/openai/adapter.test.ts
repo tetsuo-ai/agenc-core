@@ -9,6 +9,7 @@ import {
 import { LMStudioProvider } from "../lmstudio/index.js";
 import { BUILT_IN_PROVIDER_BASE_URLS } from "../../registry/provider-info.js";
 import { OpenAIProvider } from "./adapter.js";
+import { childTerminalOutcome } from "../../../agents/child-terminal.js";
 
 const PROVIDER_TEST_LABEL = "Open" + "AI";
 
@@ -51,6 +52,35 @@ function expectNoRequestMetadataWarning(emitWarning: ReturnType<typeof vi.fn>): 
 }
 
 describe("OpenAIProvider", () => {
+  test.each([
+    "insufficient_quota",
+    "credit_balance_exhausted",
+    "organization_usage_limit_exceeded",
+    "organization_spend_limit_exceeded",
+    "project_spend_limit_exceeded",
+    "usage_limit_reached",
+    "usage_limit_exceeded",
+    "usage_not_included",
+    "usage_limit",
+  ])("classifies response.failed billing code %s with or without HTTP status", async (code) => {
+    for (const status of [undefined, 429]) {
+      const error = { code, message: "Billing is unavailable", ...(status === undefined ? {} : { status }) };
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(sseResponse([
+        `event: response.failed\ndata: ${JSON.stringify({ type: "response.failed", response: { error } })}\n\n`,
+      ]));
+      const provider = new OpenAIProvider({ apiKey: "sk-test", model: "gpt-5",
+        useResponsesApi: true, fetchImpl,
+        providerFallback: { provider: "openai", model: "gpt-5",
+          targets: [{ provider: "grok", model: "grok-4-fast" }] } });
+      const failure = await provider.chatStream([{ role: "user", content: "go" }], () => {})
+        .then(() => undefined, (caught: unknown) => caught);
+      expect(failure).toBeInstanceOf(Error);
+      expect(childTerminalOutcome({ provider: "openai", model: "gpt-5", error: failure,
+        dispatch: "sent" })).toMatchObject({ reason: "insufficient_funds", retryable: false });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    }
+  });
+
   test("uses the registry endpoint for registered provider identities", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(

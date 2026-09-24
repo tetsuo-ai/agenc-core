@@ -614,6 +614,14 @@ function mapOpenAIStreamError(args: {
             }).error.message,
           )
         : args.fallbackMessage;
+  if (isProviderFundsFailure(args.providerName, {
+    status, body: args.errorBody, message,
+  })) {
+    const error = new LLMFundsError(args.providerName, status);
+    const retryAfterMs = readRetryAfterMs(args.errorBody);
+    if (retryAfterMs !== undefined) Object.assign(error, { retryAfterMs });
+    return error;
+  }
   if (typeof status === "number") {
     return mapOpenAIHttpFailureToError({
       providerName: args.providerName,
@@ -1507,7 +1515,8 @@ export class OpenAIProvider implements LLMProvider {
             errorBody,
             fallbackMessage: message,
           });
-          if (streamedContent.length === 0 && streamedToolCalls.size === 0) {
+          if (!isProviderFundsFailure(this.name, streamError) &&
+            streamedContent.length === 0 && streamedToolCalls.size === 0) {
             const fallbackDecision = this.evaluateConfiguredFallback(
               openAIStreamFallbackCandidate(errorBody, message),
               consecutiveFallbackFailures,
@@ -1699,7 +1708,8 @@ export class OpenAIProvider implements LLMProvider {
             errorBody: chunk.error,
             fallbackMessage: OPENAI_STREAM_FAILED_MESSAGE,
           });
-          if (content.length === 0 && toolCallAccumulator.size === 0) {
+          if (!isProviderFundsFailure(this.name, streamError) &&
+            content.length === 0 && toolCallAccumulator.size === 0) {
             const fallbackDecision = this.evaluateConfiguredFallback(
               openAIStreamFallbackCandidate(
                 chunk.error,
