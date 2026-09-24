@@ -15,7 +15,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   createHash,
   createPublicKey,
@@ -1605,7 +1605,7 @@ async function collectPluginPayloadDigests(
   const maxDepth = options.maxExtractDepth ?? DEFAULT_MAX_EXTRACT_DEPTH;
   const maxFiles = options.maxExtractedFiles ?? DEFAULT_MAX_EXTRACTED_FILES;
   const maxBytes = options.maxExtractedBytes ?? DEFAULT_MAX_EXTRACTED_BYTES;
-  const out: Record<string, string> = {};
+  const out: Record<string, string> = Object.create(null);
   let fileCount = 0;
   let byteCount = 0;
 
@@ -1629,8 +1629,11 @@ async function collectPluginPayloadDigests(
       }
       if (!childStat.isFile()) continue;
       if (childReal === manifestReal || childReal === signatureReal) continue;
-      const relPath = relative(pluginRoot, child).replace(/\\/g, "/");
+      const relPath = relative(pluginRoot, child).split(sep).join("/");
       if (relPath === PLUGIN_INSTALL_METADATA_RELATIVE_PATH) continue;
+      if (Object.hasOwn(out, relPath)) {
+        throw new Error(`plugin signature payload path collision: ${relPath}`);
+      }
       fileCount += 1;
       byteCount += childStat.size;
       if (fileCount > maxFiles) throw new Error(`plugin signature payload exceeds maximum file count: ${fileCount} > ${maxFiles}`);

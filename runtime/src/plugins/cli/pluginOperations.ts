@@ -365,7 +365,7 @@ export async function listInstalledPlugins(
         let provenance: Awaited<ReturnType<typeof installedPluginProvenance>>;
         let error: string | undefined;
         try {
-          provenance = await installedPluginProvenance(snapshotRoot, options, plugin.root);
+          provenance = await installedPluginProvenance(snapshotRoot, options, plugin.id, plugin.root);
         } catch {
           provenance = { verificationState: "failed" };
           error = `${plugin.id}: invalid .agenc-plugin/${INSTALL_METADATA_FILE}`;
@@ -716,7 +716,7 @@ export async function updatePluginOp(
     throw new Error(`plugin resolves to multiple install roots in ${scope} scope: ${input.pluginId}`);
   }
   const previousRoot = roots[0]!;
-  const recordedSource = await readInstalledPluginSource(previousRoot);
+  const recordedSource = await readInstalledPluginSource(previousRoot, pluginId);
   const source = input.source ?? recordedSource.source;
   if (source === undefined) {
     throw new Error(
@@ -1056,6 +1056,7 @@ async function writeInstallMetadata(
 async function installedPluginProvenance(
   pluginRoot: string,
   options: PluginOperationOptions,
+  installedId: string,
   sourceRoot = pluginRoot,
 ): Promise<Pick<InstalledPluginSummary,
   "sourceKind" | "sourceLocation" | "sourceCommit" | "verificationState" |
@@ -1066,7 +1067,9 @@ async function installedPluginProvenance(
   const metadata = isRecord(raw) ? raw : {};
   const source = metadata.source;
   const gitSource = isRecord(source) && source.type === "git" ? source : undefined;
-  const sourceKind = typeof metadata.marketplace === "string"
+  const marketplace = installedMarketplace(metadata, installedId);
+  const signatureRequired = installedSignatureRequired(metadata);
+  const sourceKind = marketplace !== undefined
     ? "marketplace" : gitSource !== undefined || metadata.resolutionKind === "git"
       ? "git" : "local";
   const sourceLocation = redactPluginSource(
@@ -1076,17 +1079,17 @@ async function installedPluginProvenance(
   try {
     const signature = await verifyResolvedPluginSignature(pluginRoot, {
       agencHome: resolvePluginAgencHome(options),
-      requireSignature: metadata.signatureRequired === true,
+      requireSignature: signatureRequired,
       ...(options.publishersPath !== undefined ? { publishersPath: options.publishersPath } : {}),
     });
     return {
       sourceKind,
       sourceLocation,
-      ...(typeof metadata.marketplace === "string" ? { marketplace: metadata.marketplace } : {}),
+      ...(marketplace !== undefined ? { marketplace } : {}),
       ...(gitSource !== undefined && typeof gitSource.sha === "string"
         ? { sourceCommit: gitSource.sha } : {}),
       verificationState: signature.verified ? "verified" :
-        metadata.signatureRequired === true ||
+        signatureRequired ||
         (typeof metadata.resolutionKind === "string" && metadata.resolutionKind !== "local") ||
         gitSource !== undefined ? "failed" : "unsigned-local",
       ...(signature.publisher !== undefined ? { publisherKeyId: signature.publisher } : {}),
@@ -1094,15 +1097,26 @@ async function installedPluginProvenance(
     };
   } catch {
     return { sourceKind, sourceLocation,
-      ...(typeof metadata.marketplace === "string" ? { marketplace: metadata.marketplace } : {}),
+      ...(marketplace !== undefined ? { marketplace } : {}),
       ...(gitSource !== undefined && typeof gitSource.sha === "string"
         ? { sourceCommit: gitSource.sha } : {}),
       verificationState: "failed" };
   }
 }
 
+function installedSignatureRequired(metadata: Record<string, unknown>): boolean {
+  return metadata.signatureRequired === true ||
+    (metadata.signatureRequired === undefined && metadata.signatureVerified === true);
+}
+
+function installedMarketplace(metadata: Record<string, unknown>, installedId: string): string | undefined {
+  return typeof metadata.marketplace === "string"
+    ? metadata.marketplace : parsePluginIdentifier(installedId).marketplace;
+}
+
 async function readInstalledPluginSource(
   pluginRoot: string,
+  installedId: string,
 ): Promise<{
   readonly source?: PluginInstallSource;
   readonly signatureRequired: boolean;
@@ -1113,16 +1127,15 @@ async function readInstalledPluginSource(
     null,
   );
   if (!isRecord(metadata)) return { signatureRequired: false };
-  const signatureRequired = metadata.signatureRequired === true ||
-    (metadata.signatureRequired === undefined &&
-      metadata.signatureVerified === true);
+  const signatureRequired = installedSignatureRequired(metadata);
+  const marketplace = installedMarketplace(metadata, installedId);
   const source = metadata.sourceRedacted !== true
     ? parsePluginInstallSource(metadata.source)
     : undefined;
   return {
     ...(source !== undefined ? { source } : {}),
     signatureRequired,
-    ...(typeof metadata.marketplace === "string" ? { marketplace: metadata.marketplace } : {}),
+    ...(marketplace !== undefined ? { marketplace } : {}),
   };
 }
 

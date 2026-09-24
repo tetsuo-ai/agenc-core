@@ -76,7 +76,7 @@ async function claimMarketplaceRefresh(
   const now = (options.now ?? (() => new Date()))().getTime();
   return updateMarketplaceInventory({ pluginsDirectory: options.pluginStorageRoot }, (current) => {
     const record = current[name];
-    if (record === undefined || record.refreshable === false ||
+    if (record === undefined || record.refreshable === false || record.autoUpdate === false ||
       now - Math.max(Date.parse(record.lastUpdated), Date.parse(record.lastChecked ?? "") || 0)
         <= OFFICIAL_MARKETPLACE_REFRESH_MS) {
       return { inventory: current, result: false };
@@ -94,7 +94,7 @@ export async function refreshStaleMarketplaces(
   const index = await readMarketplaceIndex(options);
   const now = (options.now ?? (() => new Date()))().getTime();
   for (const record of Object.values(index.marketplaces)) {
-    if (record.refreshable === false) continue;
+    if (record.refreshable === false || record.autoUpdate === false) continue;
     if (now - Math.max(Date.parse(record.updatedAt), Date.parse(record.lastCheckedAt ?? "") || 0)
       <= OFFICIAL_MARKETPLACE_REFRESH_MS) continue;
     if (!(await claimMarketplaceRefresh(options, record.name))) continue;
@@ -124,7 +124,7 @@ export async function ensureOfficialMarketplace(
   // A manifest older than the window is fetched again in place. Failure keeps
   // the cached copy: a stale catalog is a catalog, an empty one is an outage.
   const stale =
-    official !== undefined &&
+    official !== undefined && official.autoUpdate !== false &&
     (options.now ?? (() => new Date()))().getTime() -
       Math.max(Date.parse(official.updatedAt), Date.parse(official.lastCheckedAt ?? "") || 0) >
       OFFICIAL_MARKETPLACE_REFRESH_MS;

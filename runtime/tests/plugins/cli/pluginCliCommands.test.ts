@@ -166,6 +166,28 @@ describe("agenc plugin CLI", () => {
       updateVerificationState: "unavailable" });
   });
 
+  it("keeps legacy signed metadata signature-required when the signature disappears", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const pluginRoot = await writePlugin(root, "alpha");
+    const opts = options(agencHome, workspaceRoot, createIo());
+    const installed = await installPluginOp({ ...opts, source: pluginRoot });
+    await writeFile(join(installed.destination, ".agenc-plugin", "agenc-install.json"), JSON.stringify({
+      name: "alpha", source: pluginRoot, resolutionKind: "local", signatureVerified: true,
+    }));
+    const listed = await listInstalledPlugins(opts);
+    expect(listed.plugins[0]?.verificationState).toBe("failed");
+    const compared = pluginListWithCatalog(listed, { schemaVersion: 1,
+      kind: "agenc.plugin.marketplace.catalog", errors: [], marketplaces: [{
+        name: "team", sourceType: "local", source: root, plugins: [{
+          id: "alpha@team", name: "alpha", marketplace: "team",
+          source: { type: "local", path: pluginRoot }, root,
+          policy: { installation: "AVAILABLE", authentication: "ON_USE" }, version: "2.0.0",
+        }],
+      }] });
+    expect(compared.plugins[0]).toMatchObject({ updateAvailable: false,
+      updateVerificationState: "unavailable" });
+  });
+
   it("contains corrupt install metadata per plugin and still removes that install", async () => {
     const { agencHome, workspaceRoot, root } = await tempRuntime();
     const io = createIo();

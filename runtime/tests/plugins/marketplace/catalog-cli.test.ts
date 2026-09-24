@@ -14,7 +14,7 @@ import {
   OFFICIAL_MARKETPLACE_REFRESH_MS,
   OFFICIAL_MARKETPLACE_URL,
 } from "./catalog-cli.js";
-import { addMarketplaceOp } from "./marketplace.js";
+import { addMarketplaceOp, upgradeMarketplaceOp, readMarketplaceIndex } from "./marketplace.js";
 import { pluginSignaturePayloadBytes } from "../resolution.js";
 import { pluginListWithCatalog } from "../cli/pluginCliCommands.js";
 
@@ -339,6 +339,39 @@ describe("marketplace catalog CLI surface", () => {
     await refreshStaleMarketplaces(opts, upgrade);
     await refreshStaleMarketplaces(opts, upgrade);
     expect(attempts).toEqual([OFFICIAL_MARKETPLACE_NAME]);
+  });
+  it("honors automatic refresh opt-out before claiming team and official marketplaces", async () => {
+    const { pluginStorageRoot, workspaceRoot } = await tempRuntime();
+    const t0 = Date.parse("2026-09-23T00:00:00Z");
+    let fetches = 0;
+    const fetcher = async (url: string) => {
+      fetches += 1;
+      const name = url.includes("official") ? OFFICIAL_MARKETPLACE_NAME : "team";
+      const bytes = Buffer.from(JSON.stringify({ metadata: { name }, plugins: [] }));
+      return { ok: true, status: 200, statusText: "OK", text: async () => bytes.toString(),
+        arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer };
+    };
+    const base = { pluginStorageRoot, workspaceRoot, fetcher };
+    for (const [name, source] of [["team", "https://example.test/team.json"],
+      [OFFICIAL_MARKETPLACE_NAME, "https://example.test/official.json"]] as const) {
+      await addMarketplaceOp({ ...base, source, name, autoUpdate: false, now: () => new Date(t0) });
+    }
+    expect(fetches).toBe(2);
+    const stale = { ...base, now: () => new Date(t0 + OFFICIAL_MARKETPLACE_REFRESH_MS + 1) };
+    const attempts: string[] = [];
+    await refreshStaleMarketplaces(stale, async (input) => {
+      attempts.push(input.name ?? "");
+      return { upgraded: [], skipped: [] };
+    });
+    expect(attempts).toEqual([]);
+    expect(await ensureOfficialMarketplace(stale, async () => { fetches += 1; })).toBe(false);
+    expect(fetches).toBe(2);
+    const index = await readMarketplaceIndex(stale);
+    expect(index.marketplaces.team?.lastCheckedAt).toBeUndefined();
+    expect(index.marketplaces[OFFICIAL_MARKETPLACE_NAME]?.lastCheckedAt).toBeUndefined();
+    const explicit = await upgradeMarketplaceOp({ ...stale, name: "team" });
+    expect(explicit.upgraded).toHaveLength(1);
+    expect(fetches).toBe(3);
   });
   it("rate limits marketplace refresh from its persisted update time", async () => {
     const { root, pluginStorageRoot, workspaceRoot } = await tempRuntime();

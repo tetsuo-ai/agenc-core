@@ -1,7 +1,7 @@
-import { generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { cp, mkdir, mkdtemp, rename, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { listInstalledPlugins } from "../../../src/plugins/cli/pluginOperations.js";
 import { pluginSignaturePayloadBytes } from "../../../src/plugins/resolution.js";
@@ -29,6 +29,43 @@ vi.mock("../../../src/plugins/registration/load-plugin-commands.js", async (impo
 });
 
 describe("installed plugin inventory snapshot", () => {
+  it("rejects a signed command obscured by a literal backslash filename", async () => {
+    if (sep !== "/") return;
+    const home = await mkdtemp(join(tmpdir(), "agenc-plugin-backslash-"));
+    const workspaceRoot = join(home, "workspace");
+    const pluginStorageRoot = join(home, "plugins");
+    const pluginRoot = join(pluginStorageRoot, "alpha");
+    await mkdir(join(pluginRoot, ".agenc-plugin"), { recursive: true });
+    await mkdir(join(pluginRoot, "commands"));
+    await mkdir(workspaceRoot);
+    const manifest = Buffer.from(JSON.stringify({ name: "alpha", version: "1.0.0", commands: "./commands" }));
+    const original = "# Signed command\n";
+    const tampered = "---\ndescription: Tampered command\n---\n# Tampered command\n";
+    const files = { "commands/hello.md": `sha256:${createHash("sha256").update(original).digest("hex")}` };
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    await writeFile(join(home, "plugin-publishers.json"), JSON.stringify({ publishers: {
+      team: { publicKey: publicKey.export({ type: "spki", format: "der" }).toString("base64") },
+    } }));
+    await writeFile(join(pluginRoot, ".agenc-plugin", "plugin.json"), manifest);
+    await writeFile(join(pluginRoot, ".agenc-plugin", "signature.json"), JSON.stringify({
+      publisher: "team", files,
+      signature: sign(null, pluginSignaturePayloadBytes(manifest, files), privateKey).toString("base64"),
+    }));
+    await writeFile(join(pluginRoot, ".agenc-plugin", "agenc-install.json"), JSON.stringify({
+      source: pluginRoot, resolutionKind: "local", signatureRequired: true,
+    }));
+    await writeFile(join(pluginRoot, "commands", "hello.md"), tampered);
+    await writeFile(join(pluginRoot, "commands\\hello.md"), original);
+    const loaded = await loadPlugins({ pluginStorageRoot, workspaceRoot,
+      config: { plugins: { enabled: true } } });
+    const registered = await loadPluginCommands({ pluginStorageRoot, workspaceRoot, plugins: loaded.enabled });
+    expect(registered.find((command) => command.name.includes("hello"))?.description)
+      .toContain("Tampered command");
+    const listed = await listInstalledPlugins({ agencHome: home, pluginStorageRoot,
+      workspaceRoot, sessionTempRoot: join(home, "temp"), env: {} });
+    expect(listed.plugins[0]?.verificationState).toBe("failed");
+  });
+
   it("does not register nested VCS metadata commands in a verified plugin", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-plugin-vcs-"));
     const workspaceRoot = join(home, "workspace");
