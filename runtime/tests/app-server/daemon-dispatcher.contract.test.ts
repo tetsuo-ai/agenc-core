@@ -1386,6 +1386,11 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
         ),
       }),
     });
+    await expect(connection.dispatch(request("bad-stopped-opt-in", "session.mcp.status", {
+      sessionId: "session_mcp_status", includeStoppedState: "yes",
+    }))).resolves.toMatchObject({
+      error: expect.objectContaining({ message: expect.stringContaining("includeStoppedState") }),
+    });
   });
 
   it("routes session.mcp.addServer through the active daemon agent runtime", async () => {

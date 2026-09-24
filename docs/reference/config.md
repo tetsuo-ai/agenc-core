@@ -735,10 +735,14 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | --- | --- |
 | `plugins` | Plugin discovery and registration. |
 | `plugins.dirs`, `plugins.enabled`, `plugins.allowlist` | Search directories, global switch, and allowlist. An empty or blank-only allowlist applies no filter. Discovered and installed plugins match their canonical ID, which may be a manifest name, an unqualified install alias, or `name@marketplace`. Path-configured plugins match the manifest name. The unqualified portion of `name@marketplace` also matches. Discovery paths, directory names, and `plugins.plugins` keys are not authorization aliases. |
+| `plugins.mcp_idle_timeout_ms` | Plugin MCP idle lifetime in milliseconds; default `600000` (10 minutes). `0` disables idle eviction. |
+| `plugins.mcp_max_processes` | Daemon-wide plugin MCP process budget; default `8`. Busy and eager servers cannot be evicted. |
 | `plugins.plugins`, `plugins.plugins.<plugin>` | Named plugin map of plugin blocks. |
 | `plugins.plugins.<plugin>.enabled`, `plugins.plugins.<plugin>.path` | Plugin enablement and local path. |
 | `plugins.plugins.<plugin>.mcp_servers`, `plugins.plugins.<plugin>.mcp_servers.<name>` | Plugin-owned MCP server map. |
 | `plugins.plugins.<plugin>.mcp_servers.<name>.enabled`, `plugins.plugins.<plugin>.mcp_servers.<name>.default_tools_approval_mode` | Server switch and approval default. |
+| `plugins.plugins.<plugin>.mcp_servers.<name>.eager` | Start this server with the session and keep it connected. Channel servers are eager automatically. |
+| `plugins.plugins.<plugin>.mcp_servers.<name>.idle_timeout_ms` | Override the global plugin MCP idle lifetime for this server. |
 | `plugins.plugins.<plugin>.mcp_servers.<name>.enabled_tools`, `plugins.plugins.<plugin>.mcp_servers.<name>.disabled_tools` | Tool arrays. |
 | `plugins.plugins.<plugin>.mcp_servers.<name>.tools`, `plugins.plugins.<plugin>.mcp_servers.<name>.tools.<name>` | Per-tool blocks. |
 | `plugins.plugins.<plugin>.mcp_servers.<name>.tools.<name>.default_permission_mode` | Per-tool approval default. Enablement belongs only in the server lists. |

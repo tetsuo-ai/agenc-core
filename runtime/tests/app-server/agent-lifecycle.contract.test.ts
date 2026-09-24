@@ -1633,7 +1633,7 @@ describe("AgenC background agent lifecycle", () => {
           transport: "stdio" as const,
           enabled: true,
           required: false,
-          state: "connected" as const,
+          state: "stopped" as const,
           displayTarget: "node",
           toolCount: 1,
           error: "https://operator:hunter2@example.test/private",
@@ -1686,7 +1686,7 @@ describe("AgenC background agent lifecycle", () => {
           transport: "stdio",
           enabled: true,
           required: false,
-          state: "connected",
+          state: "disconnected",
           displayTarget: "node",
           toolCount: 1,
         },
@@ -1697,6 +1697,11 @@ describe("AgenC background agent lifecycle", () => {
           name: "mcp.audit-ping.check",
         },
       ],
+    });
+    await expect(agents.getMcpStatusForSession({
+      sessionId: "session-mcp-status", includeStoppedState: true,
+    })).resolves.toMatchObject({
+      servers: [expect.objectContaining({ state: "stopped" })],
     });
     expect(getMcpStatus).toHaveBeenCalledWith("agent-mcp-status");
   });

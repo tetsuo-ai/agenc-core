@@ -5717,10 +5717,11 @@ export async function applyConfigV2Migration(
   }
   const dir = await secureJournalDirectory(plan.home, plan.id);
   const journalPath = join(dir, "journal.json");
-  const outcome = await runWithConfigAuthorityLocks(
+  const apply = () => runWithConfigAuthorityLocks(
     migrationPlanAuthorityPaths(plan, journalPath),
     () => applyConfigV2MigrationLocked(plan, dir),
   );
+  const outcome = await apply();
   reportMigrationAuthorityReleaseErrors(
     "Configuration migration",
     outcome.postOperationReleaseErrors,
@@ -7775,7 +7776,7 @@ export async function rollbackConfigV2Migration(
     snapshot: initialSnapshot,
     journal: initialJournal,
   } = discoveryOutcome.value;
-  const outcome = await runWithConfigAuthorityLocks(
+  const rollback = () => runWithConfigAuthorityLocks(
     [
       migrationLockAnchor(home),
       journalPath,
@@ -7825,6 +7826,7 @@ export async function rollbackConfigV2Migration(
       });
     },
   );
+  const outcome = await rollback();
   reportMigrationAuthorityReleaseErrors(
     "Configuration migration rollback",
     outcome.postOperationReleaseErrors,

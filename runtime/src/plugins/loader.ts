@@ -136,6 +136,8 @@ export interface LoadedPlugin {
   readonly contentProvenance: PluginContentProvenance;
   readonly enabled: boolean;
   readonly manifest: PluginManifest;
+  /** Configuration selected using the loader's source and directory alias precedence. */
+  readonly configEntry?: PluginEntryConfig;
   readonly manifestPath?: string;
   readonly commandsPath?: string;
   readonly commandsPaths: readonly string[];
@@ -871,10 +873,8 @@ export async function createPluginFromPath(
         opts.source,
         manifest.name,
       );
-  const configuredMcpServers = applyPluginMcpServerConfig(
-    mcpServers,
-    opts.configEntry?.(manifest.name),
-  );
+  const configEntry = opts.configEntry?.(manifest.name);
+  const configuredMcpServers = applyPluginMcpServerConfig(mcpServers, configEntry);
   const lspServers = repositoryControlled
     ? nullProtoRecord<LspServerConfigInput>()
     : await loadServers<LspServerConfigInput>(
@@ -916,6 +916,7 @@ export async function createPluginFromPath(
     contentProvenance,
     enabled: opts.enabled,
     manifest: loadedManifest,
+    ...(configEntry !== undefined ? { configEntry } : {}),
     ...(manifestPath !== undefined ? { manifestPath } : {}),
     ...(await pathIsDirectory(join(pluginPath, DEFAULT_COMPONENT_DIRS.commands))
       ? { commandsPath: join(pluginPath, DEFAULT_COMPONENT_DIRS.commands) }

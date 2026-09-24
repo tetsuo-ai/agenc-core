@@ -1103,7 +1103,7 @@ describe("AgenC TUI daemon session adapter", () => {
     ]);
     expect(client.requests).toContainEqual({
       method: "session.mcp.status",
-      params: { sessionId: "session_1" },
+      params: { sessionId: "session_1", includeStoppedState: true },
     });
     expect(localAddServer).not.toHaveBeenCalled();
     expect(session.listMcpClients).toBeUndefined();
@@ -1168,6 +1168,29 @@ describe("AgenC TUI daemon session adapter", () => {
       servers: [],
       tools: [],
     });
+  });
+
+  it("accepts a stopped plugin status and keeps effective server projection usable", async () => {
+    const client = createClient();
+    client.request = async (method, params) => {
+      client.requests.push({ method, params });
+      if (method === "session.mcp.status") return {
+        sessionId: "session_1", revision: 1,
+        servers: [{ name: "plugin:sample:lazy", transport: "stdio", enabled: true,
+          required: false, state: "stopped", toolCount: 1 }],
+        tools: [{ serverName: "plugin:sample:lazy", name: "mcp.plugin:sample:lazy.ping" }],
+      } as never;
+      return {} as never;
+    };
+    const session = await attachDaemonTuiSession({
+      baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1",
+    });
+    await expect(session.refreshMcpSurface?.()).resolves.toMatchObject({
+      servers: [expect.objectContaining({ state: "stopped" })],
+    });
+    expect(session.mcpSurfaceSnapshot?.().servers[0]?.state).toBe("stopped");
+    expect(client.requests.find(request => request.method === "session.mcp.status")?.params)
+      .toMatchObject({ includeStoppedState: true });
   });
 
   it("rejects non-canonical daemon MCP server identities before caching them", async () => {

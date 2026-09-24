@@ -266,6 +266,7 @@ function isToolRecoveryCategory(value: unknown): value is ToolRecoveryCategory {
 
 type ToolListProvider = {
   readonly getTools: () => readonly Tool[];
+  readonly primeCatalogs?: () => Promise<void>;
 };
 
 type ToolListInput = readonly Tool[] | (() => readonly Tool[]);
@@ -693,6 +694,9 @@ export function buildToolRegistry(
         .filter((spec) => spec.unavailable !== true)
         .map((spec) => catalogEntryForTool(spec.tool, spec)),
     onDiscoverTools: markDiscovered,
+    ...(options.mcpToolsProvider?.primeCatalogs !== undefined
+      ? { onBeforeSearch: () => options.mcpToolsProvider!.primeCatalogs!() }
+      : {}),
   });
   const shellTools = [
     createExecCommandTool({

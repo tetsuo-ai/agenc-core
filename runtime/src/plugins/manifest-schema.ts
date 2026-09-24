@@ -113,6 +113,8 @@ export interface PluginManifest {
   readonly apps?: PluginPathDeclaration;
   readonly hooks?: PluginHookDeclaration;
   readonly mcpServers?: PluginServerDeclaration;
+  /** MCP servers that must receive notifications while no tool is running. */
+  readonly mcpEagerServers?: readonly string[];
   readonly lspServers?: PluginServerDeclaration;
   readonly channels?: readonly PluginManifestChannel[];
   readonly settings?: Readonly<Record<string, unknown>>;
@@ -168,6 +170,7 @@ export function normalizePluginManifest(
     ...normalizePathDeclarationProperty("apps", pluginRoot, value.apps, issues, [".json"]),
     ...normalizeHooks(pluginRoot, value.hooks, issues),
     ...normalizeServerDeclaration("mcpServers", pluginRoot, value.mcpServers, issues),
+    ...optionalStringArrayProperty(value, "mcpEagerServers"),
     ...normalizeServerDeclaration("lspServers", pluginRoot, value.lspServers, issues),
     ...normalizeChannels(value.channels, issues),
     ...optionalRecordProperty(value, "settings"),
@@ -516,6 +519,7 @@ function validateManifestFieldTypes(
     "apps",
     "hooks",
     "mcpServers",
+    "mcpEagerServers",
     "lspServers",
     "channels",
     "settings",
@@ -535,7 +539,7 @@ function validateManifestFieldTypes(
   if (typeof record.homepage === "string" && !isValidUrl(record.homepage)) {
     issues.push({ path: "homepage", message: "Homepage must be a URL" });
   }
-  for (const key of ["keywords"] as const) {
+  for (const key of ["keywords", "mcpEagerServers"] as const) {
     if (record[key] !== undefined && (
       !Array.isArray(record[key]) ||
       !(record[key] as unknown[]).every((entry) => typeof entry === "string")

@@ -1548,7 +1548,7 @@ export function resolveSpawnExecutable(options: {
           ? candidate
           : path.resolve(options.cwd, candidate)
       )
-    : executableSearchDirectories(options.env, options.cwd).flatMap((directory) =>
+    : executableSearchDirectories(options.env, options.cwd, platform).flatMap((directory) =>
         candidateNames.map((candidate) => path.join(directory, candidate))
       );
   for (const candidate of candidates) {
@@ -1568,10 +1568,13 @@ export function resolveSpawnExecutable(options: {
 function executableSearchDirectories(
   env: Readonly<Record<string, string | undefined>>,
   cwd: string,
+  platform: NodeJS.Platform,
 ): string[] {
-  return (env.PATH ?? "")
-    .split(delimiter)
+  const directories = (env.PATH ?? "")
+    .split(platform === "win32" ? ";" : delimiter)
     .map((entry) => entry.length === 0 ? cwd : path.resolve(cwd, entry));
+  // Windows resolves a bare executable in the launch directory before PATH.
+  return platform === "win32" ? [cwd, ...directories] : directories;
 }
 
 function executableCandidateNames(
@@ -1582,6 +1585,7 @@ function executableCandidateNames(
   if (platform !== "win32") return [program];
   const extensions = (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
     .split(";")
+    .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
   const lower = program.toLowerCase();
   if (extensions.some((extension) => lower.endsWith(extension.toLowerCase()))) {

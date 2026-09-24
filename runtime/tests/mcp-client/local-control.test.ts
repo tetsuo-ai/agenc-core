@@ -38,6 +38,15 @@ describe("ephemeral local MCP authority", () => {
     expect(additional.additionalProperties.description).toBe("[REDACTED]");
     expect(redactMcpAttachmentValue({ additionalProperties: true }, { token: "true" }, undefined, "schema").additionalProperties).toBe(true);
   });
+  it("redacts a DOMException and keeps its native name", () => {
+    const error = new DOMException("Timed out waiting for private-phrase", "TimeoutError");
+    const safe = redactMcpAttachmentValue(error, { token: "private-phrase" });
+    expect(safe).toBeInstanceOf(DOMException);
+    expect(safe.name).toBe("TimeoutError");
+    expect(safe.message).toBe("Timed out waiting for [REDACTED]");
+    expect(String(safe)).toBe("TimeoutError: Timed out waiting for [REDACTED]");
+    expect(error.message).toContain("private-phrase");
+  });
   it("does not claim no effect for a refused retry after a request was already sent", async () => {
     let revoked = false;
     await withDesktopMcpDispatchGuard(() => { if (revoked) throw new DesktopMcpPreflightRefusal("expired"); }, async () => {

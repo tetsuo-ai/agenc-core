@@ -42,6 +42,16 @@ export interface MCPServerOrigin {
   readonly pluginServer?: {
     readonly pluginName: string;
     readonly serverName: string;
+    readonly version?: string;
+    readonly digest?: string;
+    readonly pluginRoot?: string;
+    readonly snapshotRoot?: string;
+    /** Snapshot-resolved stdio fields, separate from the installed policy identity. */
+    readonly snapshotLaunch?: Pick<MCPServerConfig, "command" | "args" | "cwd" | "env">;
+    readonly userConfigDigest?: string;
+    readonly eager?: boolean;
+    readonly idleTimeoutMs?: number;
+    readonly maxProcesses?: number;
   };
 }
 
@@ -113,6 +123,10 @@ export interface MCPServerConfig {
   };
   /** Metadata for plugin-owned stdio servers isolated as child processes. */
   readonly pluginSandbox?: PluginMcpSandboxMetadata;
+  /** Runtime home authority used only for content-addressed plugin catalogs. */
+  readonly pluginCatalogHome?: string;
+  /** Workspace captured by the session's plugin loader for first lazy launch. */
+  readonly pluginWorkspaceRoot?: string;
   /** Canonical source identity used by status and policy projections. */
   readonly origin?: MCPServerOrigin;
 }

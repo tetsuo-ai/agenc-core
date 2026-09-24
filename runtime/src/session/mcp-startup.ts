@@ -53,6 +53,7 @@ import {
 } from "../llm/provider.js";
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 import type { CanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
+import { ConfigStore } from "../config/store.js";
 import {
   createUnavailableSamplingResult,
   type McpSamplingHandlers,
@@ -854,6 +855,10 @@ export async function resolveSessionMcpPlan(
   );
   const configs: MCPServerConfig[] = Object.entries(servers).map(([name, config]) => ({
       ...toRuntimeMcpServerConfig(name, config),
+      ...(config.pluginServer !== undefined ? {
+        pluginCatalogHome: authority.homeContext.path,
+        pluginWorkspaceRoot: authority.projectRoot,
+      } : {}),
       // This restriction is runtime-owned, not a configurable permission grant.
       ...(sessionDispositions[name] === "active" && sessionServers[name]?.localOnly === true
         ? { localOnly: true, ...(sessionServers[name]?.desktopAuthorityGrant ? { desktopAuthorityGrant: sessionServers[name].desktopAuthorityGrant } : {}) } : {}),
@@ -1000,6 +1005,17 @@ export function createSessionMcpService(
     servers: new Map(),
     enabledOverrides: new Map(),
   };
+  let committedDefinitions: ReadonlyMap<string, ResolvedMcpServerDefinition> = new Map();
+  if (options.authority instanceof ConfigStore) {
+    runtimeManager.setPluginFirstLaunchContext?.(
+      options.authority,
+      options.pluginStorageRoot,
+      name => {
+        const id = committedDefinitions.get(name)?.id;
+        return id === undefined ? undefined : overlay.enabledOverrides.get(id)?.enabled;
+      },
+    );
+  }
   let mutationTail: Promise<void> = Promise.resolve();
   let serviceMutationActive = false;
   let managerSurfaceDirty = false;
@@ -1362,6 +1378,7 @@ export function createSessionMcpService(
         // apply. Callers may await this promise without opening a stale-overlay
         // assignment window after authority invalidation.
         overlay = committedOverlay;
+        committedDefinitions = plan.definitions;
         appliedAuthorityGeneration = authorityGeneration;
         lastCommittedRefreshResult = result;
         return {
@@ -1389,6 +1406,7 @@ export function createSessionMcpService(
   ): Promise<AggregateError> => {
     const errors = [...causes];
     overlay = { servers: new Map(), enabledOverrides: new Map() };
+    committedDefinitions = new Map();
     appliedAuthorityGeneration = -1;
     lastCommittedRefreshResult = {
       configuredServers: [],
@@ -1532,7 +1550,7 @@ export function createSessionMcpService(
     }
     const state = manager.getConnectionState(name);
     const ready = enabled
-      ? state?.type === "connected"
+      ? state?.type === "connected" || state?.type === "stopped"
       : state?.type === "disabled";
     if (!ready) {
       const error =
@@ -1697,6 +1715,14 @@ export function createSessionMcpService(
         name,
         new Error(`MCP server "${name}" is disabled in config.`),
       );
+    }
+    // Reconciliation has already restarted every eager server. Only an
+    // on-demand server it left stopped still needs an explicit start.
+    if (manager.getConnectionState(name)?.type === "stopped") {
+      const reconnect = await manager.reconnectServer(name);
+      if (!reconnect.success) {
+        return mcpMutationFailure(name, new Error(reconnect.error ?? `MCP server "${name}" did not become ready.`));
+      }
     }
     const state = manager.getConnectionState(name);
     if (state?.type !== "connected") {

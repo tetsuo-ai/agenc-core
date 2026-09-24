@@ -1,4 +1,5 @@
 import type { McpServerConfig } from "../../config/schema.js";
+import { join, relative } from "node:path";
 
 /**
  * A plugin server config as the runtime carries it: the canonical config plus
@@ -13,6 +14,7 @@ import {
   type PluginLoadIssue,
 } from "../loader.js";
 import {
+  pathInsideOrEqual,
   resolvePluginMcpSandboxedServer,
   type PluginMcpSandboxIssue,
 } from "../sandbox.js";
@@ -33,6 +35,7 @@ import {
 import type { PluginConfigStoredValue } from "../../utils/plugins/pluginConfigAuthority.js";
 import type { PluginUserConfigOption } from "../manifest-schema.js";
 import { getPluginDataDir } from "../directories.js";
+import { fingerprintPluginCatalogConfig, snapshotInstalledPluginOffThread } from "../../mcp-client/plugin-catalog-cache.js";
 
 export interface PluginMcpRegistrationOptions extends PluginRuntimeLoadOptions {
   readonly plugins?: readonly LoadedPlugin[];
@@ -328,6 +331,8 @@ function addPluginScopeToServers(
   plugin: LoadedPlugin,
   servers: Readonly<Record<string, McpServerConfig>>,
   options: PluginMcpRegistrationOptions,
+  userConfigFor: (serverName: string) => SchemaOwnedServerUserConfig | undefined =
+    serverName => schemaOwnedServerUserConfig(plugin, serverName),
 ): Readonly<Record<string, McpServerConfig>> {
   const scoped: Record<string, McpServerConfig> = {};
   const scopedCounts = new Map<string, number>();
@@ -341,7 +346,7 @@ function addPluginScopeToServers(
       options.errors?.push({ type: "mcp", source: `plugin:${plugin.id}`, plugin: plugin.id, message: "Plugin MCP server names have an ambiguous runtime identity." });
       continue;
     }
-    const userConfig = schemaOwnedServerUserConfig(plugin, name);
+    const userConfig = userConfigFor(name);
     const resolved = resolvePluginMcpEnvironmentWithIssues(
       plugin,
       server,
@@ -377,8 +382,18 @@ export interface PluginMcpServerRegistration {
   readonly name: string;
   readonly pluginName: string;
   readonly pluginSource: string;
+  readonly pluginRoot: string;
+  readonly snapshotRoot: string;
+  readonly userConfigDigest?: string;
   readonly serverName: string;
   readonly server: McpServerConfig;
+  /** Resolved against the installed root, as command policy saw it before snapshots. */
+  readonly installationIdentity?: Pick<McpServerConfig, "command" | "args" | "cwd">;
+  readonly version?: string;
+  readonly digest: string;
+  readonly eager: boolean;
+  readonly idleTimeoutMs: number;
+  readonly maxProcesses: number;
 }
 
 async function extractMcpServerRegistrationsFromPlugins(
@@ -389,17 +404,70 @@ async function extractMcpServerRegistrationsFromPlugins(
   for (const plugin of plugins.filter(
     (candidate) => !isRepositoryControlledPlugin(candidate)
   )) {
-    const scoped = addPluginScopeToServers(plugin, plugin.mcpServers, options);
+    let digest: string;
+    let snapshotRoot: string;
+    try {
+      ({ digest, snapshotRoot } = await snapshotInstalledPluginOffThread(plugin.root, options.pluginStorageRoot));
+    }
+    catch (error) {
+      options.errors?.push({
+        type: "mcp", source: `plugin:${plugin.id}`, plugin: plugin.id,
+        message: `Could not hash installed plugin content: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      continue;
+    }
+    // Resolve launch templates against the immutable bytes, before a shell
+    // argument can embed an absolute path to the mutable installation.
+    // The loader has already resolved an explicit cwd against the install
+    // root. Rebase that path before sandbox containment checks the snapshot.
+    const snapshotServers = Object.fromEntries(Object.entries(plugin.mcpServers).map(([name, server]) => [
+      name,
+      server.cwd !== undefined && pathInsideOrEqual(plugin.root, server.cwd)
+        ? { ...server, cwd: join(snapshotRoot, relative(plugin.root, server.cwd)) }
+        : server,
+    ]));
+    // Each settings read reaches secure storage. The launch values, the
+    // installed-path identity and the catalog digest share one read per server.
+    const userConfigs = new Map<string, SchemaOwnedServerUserConfig | undefined>();
+    const userConfigFor = (serverName: string): SchemaOwnedServerUserConfig | undefined => {
+      if (!userConfigs.has(serverName)) userConfigs.set(serverName, schemaOwnedServerUserConfig(plugin, serverName));
+      return userConfigs.get(serverName);
+    };
+    const scoped = addPluginScopeToServers({ ...plugin, root: snapshotRoot }, snapshotServers, options, userConfigFor);
+    const lifecycleEntry = plugin.configEntry ?? options.config?.plugins?.plugins?.[plugin.id];
     for (const serverName of Object.keys(plugin.mcpServers)) {
       const name = pluginScopedServerIdentifier(plugin.id, serverName);
       const server = scoped[name];
       if (server === undefined) continue;
+      const userConfig = userConfigFor(serverName);
+      const installation = resolvePluginMcpEnvironmentWithIssues(
+        plugin,
+        plugin.mcpServers[serverName]!,
+        options,
+        userConfig,
+      ).server;
       registrations.push({
         name,
         pluginName: plugin.id,
         pluginSource: plugin.source,
+        pluginRoot: plugin.root,
+        snapshotRoot,
+        userConfigDigest: fingerprintPluginCatalogConfig(userConfig?.values ?? {}),
         serverName,
         server,
+        installationIdentity: {
+          ...(installation.command !== undefined ? { command: installation.command } : {}),
+          ...(installation.args !== undefined ? { args: installation.args } : {}),
+          ...(installation.cwd !== undefined ? { cwd: installation.cwd } : {}),
+        },
+        ...(plugin.version !== undefined ? { version: plugin.version } : {}),
+        digest,
+        eager: plugin.manifest.channels?.some(channel => channel.server === serverName) === true ||
+          plugin.manifest.mcpEagerServers?.includes(serverName) === true ||
+          lifecycleEntry?.mcp_servers?.[serverName]?.eager === true,
+        idleTimeoutMs: lifecycleEntry?.mcp_servers?.[serverName]?.idle_timeout_ms ??
+          options.config?.plugins?.mcp_idle_timeout_ms ?? 600_000,
+        maxProcesses: options.config?.plugins?.mcp_max_processes ?? 8,
       });
     }
   }
@@ -411,6 +479,39 @@ export async function loadPluginMcpServerRegistrations(
 ): Promise<readonly PluginMcpServerRegistration[]> {
   const plugins = await resolvePlugins(options);
   return extractMcpServerRegistrationsFromPlugins(plugins, options);
+}
+
+export interface PluginMcpServerInstallation {
+  readonly pluginRoot: string;
+  readonly snapshotRoot: string;
+  readonly digest: string;
+  /** The plugin server's own enabled flag, before session overrides. */
+  readonly enabled: boolean;
+}
+
+/**
+ * Identify one installed plugin MCP server without resolving settings: only
+ * the target plugin is hashed, and no plugin settings or secure storage are read.
+ */
+export async function loadPluginMcpServerInstallation(
+  options: PluginMcpRegistrationOptions & {
+    readonly name: string;
+    readonly pluginName: string;
+    readonly serverName: string;
+  },
+): Promise<PluginMcpServerInstallation | undefined> {
+  for (const plugin of await resolvePlugins(options)) {
+    if (isRepositoryControlledPlugin(plugin) || plugin.id !== options.pluginName) continue;
+    const server = Object.hasOwn(plugin.mcpServers, options.serverName)
+      ? plugin.mcpServers[options.serverName] : undefined;
+    // Registration skips a server whose scoped name is ambiguous.
+    const scopedNames = Object.keys(plugin.mcpServers).filter(serverName =>
+      pluginScopedServerIdentifier(plugin.id, serverName) === options.name);
+    if (server === undefined || scopedNames.length !== 1 || scopedNames[0] !== options.serverName) continue;
+    const { digest, snapshotRoot } = await snapshotInstalledPluginOffThread(plugin.root, options.pluginStorageRoot);
+    return { pluginRoot: plugin.root, snapshotRoot, digest, enabled: server.enabled !== false };
+  }
+  return undefined;
 }
 
 export async function loadPluginMcpServers(

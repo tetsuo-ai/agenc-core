@@ -11,6 +11,8 @@ import { requirePluginConfigAuthority } from '../utils/plugins/pluginConfigAutho
 import { readNativeSecureStorageFresh, NativeSecureStorageError, NativeSecureStorageUnavailableError } from '../utils/secureStorage/native.js'
 import { validateUserConfig, type UserConfigValues } from '../utils/plugins/mcpbHandler.js'
 import { loadPlugins } from './loader.js'
+import { removePluginCatalogs } from '../mcp-client/plugin-catalog-cache.js'
+import { logForDebugging } from '../utils/debug.js'
 import type { PluginUserConfigOption } from './manifest-schema.js'
 
 export interface PluginSettingsParams { readonly pluginId: string }
@@ -130,7 +132,15 @@ export class PluginSettingsService {
 
   async reset({ pluginId }: PluginSettingsParams): Promise<PluginSettingsResult> {
     return this.withMutation(pluginId, async () => {
-      await this.withPlugin(pluginId, async schema => { await resetPluginOptions(pluginId, Object.keys(schema)) })
+      await this.withPlugin(pluginId, async schema => {
+        await resetPluginOptions(pluginId, Object.keys(schema))
+        // MCP catalogs discovered with the cleared settings are not kept. They
+        // are derived data, so a failed removal is logged and the reset stands.
+        try { removePluginCatalogs(requirePluginConfigAuthority().homeContext.path, pluginId) }
+        catch (error) {
+          logForDebugging(`Could not remove the MCP catalogs of plugin ${pluginId}: ${(error as NodeJS.ErrnoException | undefined)?.code ?? 'unknown error'}`, { level: 'warn' })
+        }
+      })
       return this.get({ pluginId })
     })
   }

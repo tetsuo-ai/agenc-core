@@ -3662,6 +3662,7 @@ function validateSessionMcpStatusParams(
   const validated = validateObjectShape(params, {
     methodName: "session.mcp.status",
     stringFields: ["sessionId"],
+    booleanFields: ["includeStoppedState"],
   });
   validateRequiredString(validated, "session.mcp.status", "sessionId");
   return validated as SessionMcpStatusParams;
@@ -4806,6 +4807,7 @@ function validateObjectShape(
   options: {
     readonly methodName: string;
     readonly stringFields?: readonly string[];
+    readonly booleanFields?: readonly string[];
     readonly numberFields?: readonly string[];
     readonly stringArrayFields?: readonly string[];
     readonly objectFields?: readonly string[];
@@ -4814,6 +4816,7 @@ function validateObjectShape(
 ): JsonObject {
   const allowed = new Set([
     ...(options.stringFields ?? []),
+    ...(options.booleanFields ?? []),
     ...(options.numberFields ?? []),
     ...(options.stringArrayFields ?? []),
     ...(options.objectFields ?? []),
@@ -4830,6 +4833,9 @@ function validateObjectShape(
       throw invalidParams(
         `${options.methodName} param '${key}' must be a string`,
       );
+    }
+    if (options.booleanFields?.includes(key) && typeof value !== "boolean") {
+      throw invalidParams(`${options.methodName} param '${key}' must be a boolean`);
     }
     if (options.numberFields?.includes(key) && typeof value !== "number") {
       throw invalidParams(

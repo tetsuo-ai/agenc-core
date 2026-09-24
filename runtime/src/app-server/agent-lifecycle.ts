@@ -3279,7 +3279,8 @@ export class AgenCDaemonAgentManager {
         transport: server.transport,
         enabled: server.enabled,
         required: server.required,
-        state: server.state,
+        state: server.state === "stopped" && params.includeStoppedState !== true
+          ? "disconnected" : server.state,
         ...(server.displayTarget !== undefined
           ? { displayTarget: server.displayTarget }
           : {}),

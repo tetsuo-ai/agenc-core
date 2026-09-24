@@ -1121,12 +1121,14 @@ export interface McpSurfaceServer {
   readonly transport: "stdio" | "sse" | "http" | "websocket";
   readonly enabled: boolean;
   readonly required: boolean;
+  /** Idle plugin process; render as “Stopped (on demand)”, not a failure. */
   readonly state:
     | "connected"
     | "pending"
     | "failed"
     | "disabled"
     | "needs-auth"
+    | "stopped"
     | "disconnected";
   readonly displayTarget?: string;
   readonly toolCount: number;

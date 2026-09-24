@@ -3,7 +3,7 @@ import { toScopedMcpServerConfig } from "./manager.js";
 import type { MCPServerConfig } from "./types.js";
 
 export type McpConnectionProjection =
-  | { readonly type: "connected" | "pending" | "disabled" | "needs-auth" }
+  | { readonly type: "connected" | "pending" | "disabled" | "needs-auth" | "stopped" }
   | { readonly type: "failed"; readonly error?: string };
 
 export interface McpManagerLike {
@@ -66,6 +66,10 @@ export function projectMcpManagerToConnections(
         name: config.name,
         config: projectedConfig,
       });
+      continue;
+    }
+    if (state?.type === "stopped") {
+      result.push({ type: "stopped", name: config.name, config: projectedConfig });
       continue;
     }
     if (state?.type === "connected" || manager.isConnected(config.name)) {

@@ -71,7 +71,7 @@ import {
 } from "./registration/load-plugin-commands.js";
 import { loadPluginHooks } from "./registration/load-plugin-hooks.js";
 import { loadPluginLspServers } from "./registration/lsp-plugin-integration.js";
-import { getUnconfiguredChannels, loadPluginMcpServers } from "./registration/mcp-plugin-integration.js";
+import { getUnconfiguredChannels, loadPluginMcpServerRegistrations, loadPluginMcpServers } from "./registration/mcp-plugin-integration.js";
 import {
   clearPluginRegistrationCaches,
   refreshActivePlugins,
@@ -183,12 +183,15 @@ describe("plugin registration", () => {
         pluginStorageRoot: options.pluginStorageRoot,
         plugins,
       });
+      // MCP launch paths are pinned to the immutable install snapshot.
+      const snapshotRoot = mcpServers["plugin:sample:local"]?.pluginSandbox?.pluginRoot;
+      expect(snapshotRoot).toBeDefined();
       expect(mcpServers["plugin:sample:local"]).toMatchObject({
         command: "node",
-        args: [`${pluginRoot}/server.js`],
-        cwd: pluginRoot,
+        args: [`${snapshotRoot}/server.js`],
+        cwd: snapshotRoot,
         env: expect.objectContaining({
-          AGENC_PLUGIN_ROOT: pluginRoot,
+          AGENC_PLUGIN_ROOT: snapshotRoot,
           AGENC_PLUGIN_DATA: pluginDataDirPath(
             "sample",
             createPluginStorageAuthority(options.pluginStorageRoot),
@@ -203,7 +206,7 @@ describe("plugin registration", () => {
         pluginSandbox: {
           mode: "stdio-child-process",
           pluginName: "sample",
-          pluginRoot,
+          pluginRoot: snapshotRoot,
           pluginDataDir: pluginDataDirPath(
             "sample",
             createPluginStorageAuthority(options.pluginStorageRoot),
@@ -589,8 +592,10 @@ describe("plugin registration", () => {
         "plugin:sample:admin:local_server",
         "plugin:sample:cmd_123_escape_server",
       ]);
+      // MCP arguments resolve against the pinned snapshot; LSP still uses the install root.
+      const snapshotRoot = mcpServers["plugin:sample:cmd_123_escape_server"]?.pluginSandbox?.pluginRoot;
       expect(mcpServers["plugin:sample:cmd_123_escape_server"]).toMatchObject({
-        args: [`${pluginRoot}/server.js`],
+        args: [`${snapshotRoot}/server.js`],
         env: expect.objectContaining({
           AGENC_PLUGIN_MCP_SERVER: "123/../Escape Server!",
         }),
@@ -611,6 +616,36 @@ describe("plugin registration", () => {
       expect(lspServers["plugin:sample:system-reminder_typescript"]).toMatchObject({
         args: [`${pluginRoot}/lsp.js`],
         extensionToLanguage: { ".ts": "typescript" },
+      });
+    });
+  });
+
+  test("keeps the installed command identity beside snapshot launch paths", async () => {
+    await withTempPlugin(async ({ pluginRoot, options }) => {
+      await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+        name: "sample",
+        mcpServers: {
+          local: {
+            command: "${AGENC_PLUGIN_ROOT}/bin/node",
+            args: ["${AGENC_PLUGIN_ROOT}/server.js"],
+            cwd: "./work",
+          },
+        },
+      });
+      const plugins = (await loadPlugins(options)).enabled;
+      const [registration] = await loadPluginMcpServerRegistrations({
+        pluginStorageRoot: options.pluginStorageRoot,
+        plugins,
+      });
+      expect(registration?.installationIdentity).toEqual({
+        command: join(pluginRoot, "bin", "node"),
+        args: [join(pluginRoot, "server.js")],
+        cwd: join(pluginRoot, "work"),
+      });
+      expect(registration?.server).toMatchObject({
+        command: join(registration!.snapshotRoot, "bin", "node"),
+        args: [join(registration!.snapshotRoot, "server.js")],
+        cwd: join(registration!.snapshotRoot, "work"),
       });
     });
   });
@@ -671,12 +706,14 @@ describe("plugin registration", () => {
       });
 
       expect(errors).toEqual([]);
+      // Explicit relative MCP cwd is rebased to the snapshot before sandbox validation.
+      const snapshotRoot = mcpServers["plugin:sample:local"]?.pluginSandbox?.pluginRoot;
       expect(mcpServers["plugin:sample:local"]).toMatchObject({
         command: "node",
         args: ["--flag=expanded-arg", "fallback"],
         env: expect.objectContaining({ EXPANDED: "expanded-arg" }),
         headers: { Authorization: "Bearer expanded-arg" },
-        cwd: join(pluginRoot, "cwd-workspace"),
+        cwd: join(snapshotRoot!, "cwd-workspace"),
       });
       expect(lspServers["plugin:sample:typescript"]).toMatchObject({
         command: "node",
@@ -712,8 +749,9 @@ describe("plugin registration", () => {
       });
       const server = mcpServers["plugin:sample:local"];
 
+      // Reserved launch environment identifies the immutable executable tree.
       expect(server?.env).toMatchObject({
-        AGENC_PLUGIN_ROOT: pluginRoot,
+        AGENC_PLUGIN_ROOT: server?.pluginSandbox?.pluginRoot,
         AGENC_PLUGIN_DATA: pluginDataDirPath(
           "sample",
           createPluginStorageAuthority(options.pluginStorageRoot),
@@ -785,6 +823,7 @@ describe("plugin registration", () => {
         pluginStorageRoot: options.pluginStorageRoot,
         plugins: result.enabled,
       });
+      const snapshotRoot = mcpServers["plugin:sample:local"]?.pluginSandbox?.pluginRoot;
       const manager = new MCPManager(
         Object.entries(mcpServers).map(([name, config]) => ({
           name,
@@ -804,9 +843,10 @@ describe("plugin registration", () => {
         expect(manager.getTools().map((tool) => tool.name)).toContain(
           "mcp.plugin:sample:local.ping",
         );
-        expect(info.cwd).toBe(serverCwd);
+        // The child executes from the pinned copy of its declared cwd.
+        expect(info.cwd).toBe(join(snapshotRoot!, "server-cwd"));
         expect(info.env).toMatchObject({
-          AGENC_PLUGIN_ROOT: pluginRoot,
+          AGENC_PLUGIN_ROOT: snapshotRoot,
           AGENC_PLUGIN_DATA: pluginDataDirPath(
             "sample",
             createPluginStorageAuthority(options.pluginStorageRoot),

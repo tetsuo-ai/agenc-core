@@ -209,6 +209,7 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
       additionalProperties: false,
     },
     async execute(args) {
+      await config.onBeforeSearch?.();
       // A subagent shares this tool with its parent's registry but cannot call
       // MCP, disabled or out-of-allowlist tools. Never offer or load those.
       const scope = Array.isArray(args[SESSION_TOOL_CATALOG_SCOPE_ARG])

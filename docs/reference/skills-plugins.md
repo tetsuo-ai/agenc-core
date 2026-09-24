@@ -306,6 +306,7 @@ of becoming a second authority.
 | `skills` | Skill roots / files |
 | `hooks` | Lifecycle hooks map |
 | `mcpServers` | Outbound MCP server configs |
+| `mcpEagerServers` | Array of MCP server names that must remain connected for notifications or listeners |
 | `lspServers` | LSP server configs |
 | `outputStyles` | Output styles |
 | `apps` / `channels` / `userConfig` | Extended packaging metadata |
@@ -325,6 +326,26 @@ merge those registrations into the live `MCPManager`
 (`getAllMcpConfigs` in `runtime/src/services/mcp/config.ts`). Enabled
 user-scoped plugins then appear in `/mcp` as `plugin:<id>:<server>` and
 as model tools `mcp.plugin:<id>:<server>.<tool>`.
+
+Core runs plugin MCP servers from a content-addressed snapshot of the
+installation. It verifies the snapshot off the event loop before publishing
+the server and makes snapshot files read-only for the user where the platform
+permits; directories stay writable so the cache can always be removed.
+Plugin changes apply to new sessions. A running session keeps
+the plugin configuration and settings it resolved, as with eager servers. Its
+own config refresh, or a reconnect of the server, reads them again and
+restarts affected servers. Before a lazy server's first launch in that
+session, Core re-reads the installed plugin with that session's ConfigStore
+sources (including an explicit `--config` path) and `/mcp` enable or disable
+overrides. It checks only that the installation still matches the session's
+verified snapshot and that the plugin server is effectively enabled. It does
+not read plugin settings or secure storage, so saving or resetting settings
+never makes a server fail before its first launch. If either check fails, the
+launch fails; reconnect the server or start a new session. Tool policy,
+lifecycle settings and plugin settings remain those resolved by the session,
+including after that server restarts. A session refresh retires only its own
+superseded verified generation. There are no lifecycle revision files,
+cross-process revocation checks, installation watchers, or pollers.
 
 Project- and local-scope installs are **repository-controlled**
 (`isRepositoryControlledPlugin`). The loader strips their `mcpServers`,
@@ -452,9 +473,12 @@ deletion or clearing the ordinary settings. `agenc plugin list --json` also incl
 plugins when settings need setup. These app-server methods are
 available only on authenticated local connections.
 
-MCP server configuration is resolved when the server starts. A settings change
-does not alter a running process. Reconnect that plugin server in the active
-session, or start a new session, to use the new value.
+A session resolves each plugin MCP server's configuration, including its
+settings, when the session starts and again when it refreshes or reconnects
+that server. An on-demand server that launches later uses the values its
+session already resolved. A settings change does not alter a running process
+or a session that resolved the earlier value. Reconnect that plugin server in
+the active session, or start a new session, to use the new value.
 
 A plugin MCP server receives its saved secrets by design. Redaction protects
 against a non-malicious plugin accidentally disclosing them. Core covers its

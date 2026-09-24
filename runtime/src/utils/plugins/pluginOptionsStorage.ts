@@ -166,6 +166,16 @@ export async function savePluginOptions(
     schema,
     values,
   )
+  return savePluginOptionsLocked(pluginId, values, schema, authority, expected)
+}
+
+async function savePluginOptionsLocked(
+  pluginId: string,
+  values: PluginOptionValues,
+  schema: PluginOptionSchema,
+  authority: ReturnType<typeof requirePluginConfigAuthority>,
+  expected?: PluginSettingsValidatedSnapshot,
+): Promise<void> {
   const nonSensitive: PluginOptionValues = {}
   const sensitive: Record<string, string> = {}
   const sensitiveFormats: Record<string, PluginSecretFormat> = {}
@@ -234,7 +244,6 @@ export async function savePluginOptions(
     logError(safe)
     throw safe
   }
-
 }
 
 /** Clear declared values without changing plugin enablement or MCP overrides. */
@@ -287,6 +296,13 @@ export async function resetPluginOptions(pluginId: string, keys: readonly string
  */
 export async function deletePluginOptions(pluginId: string): Promise<void> {
   const authority = requirePluginConfigAuthority()
+  return deletePluginOptionsLocked(pluginId, authority)
+}
+
+async function deletePluginOptionsLocked(
+  pluginId: string,
+  authority: ReturnType<typeof requirePluginConfigAuthority>,
+): Promise<void> {
   // Config side—also wipes the plugin-scoped mcpServers sub-key so uninstall
   // cannot leave an orphaned override.
   //
@@ -350,7 +366,6 @@ export async function deletePluginOptions(pluginId: string): Promise<void> {
       { level: 'warn' },
     )
   }
-
 }
 
 /**

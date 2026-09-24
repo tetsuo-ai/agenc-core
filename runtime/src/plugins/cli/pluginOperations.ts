@@ -54,6 +54,8 @@ import type { AgencPluginInventoryProvenance } from "./pluginInventoryProtocol.j
 import { runWithCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
 import { inspectPluginOptions } from "../../utils/plugins/pluginOptionsStorage.js";
 import { validateUserConfig } from "../../utils/plugins/mcpbHandler.js";
+import { removePluginCatalogs } from "../../mcp-client/plugin-catalog-cache.js";
+import { logForDebugging } from "../../utils/debug.js";
 
 export type PluginScope = "user" | "project" | "local";
 
@@ -569,6 +571,7 @@ export async function installPluginOp(
         `plugin source failed validation: ${loaded.errors.map((issue) => issue.message).join("; ")}`,
       );
     }
+    const validatedPlugin = loaded.plugin;
     const pluginId = resolveInstallPluginId(
       input.name,
       (typeof input.source === "string"
@@ -605,7 +608,7 @@ export async function installPluginOp(
     });
     await writeInstallMetadata(destination, {
       provenanceVersion: 1,
-      name: loaded.plugin.name,
+      name: validatedPlugin.name,
       dependencyIdentity: pluginId,
       source: resolutionKind === "local"
         ? source
@@ -632,13 +635,15 @@ export async function installPluginOp(
       );
     }
     await writePluginConfigEntry(pluginId, { enabled: true }, input);
-    return {
+    const result = {
       plugin: summarizeLoadedPlugin({ ...plugin.plugin, id: pluginId }),
       destination,
       scope,
       resolutionKind,
       signatureVerified,
     };
+    await input.configStore?.reload();
+    return result;
   } finally {
     await resolved?.cleanup();
   }
@@ -680,30 +685,29 @@ export async function uninstallPluginOp(
   if (targetRoots.length === 0) {
     throw new Error(`plugin is not installed in ${scope} scope: ${input.pluginId}`);
   }
-  for (const root of targetRoots) {
-    await rm(root, { recursive: true, force: true });
-  }
+  for (const root of targetRoots) await rm(root, { recursive: true, force: true });
   const remainsInstalled = await pluginIdRemainsInstalled(pluginId, input);
   const removedConfig = remainsInstalled
     ? false
     : await removePluginConfigEntry(pluginId, input);
   let removedData = false;
   if (!remainsInstalled && input.keepData !== true) {
-    const authority = {
-      pluginStorageRoot: input.pluginStorageRoot,
-    };
+    const authority = { pluginStorageRoot: input.pluginStorageRoot };
     const dataDir = pluginDataDirPath(pluginId, authority);
     if (await pathExists(dataDir)) {
       await deletePluginDataDir(pluginId, authority);
       removedData = !(await pathExists(dataDir));
     }
   }
-  return {
-    pluginId,
-    removedRoots: targetRoots,
-    removedConfig,
-    removedData,
-  };
+  // The plugin's discovered MCP catalogs are derived data and go with it. The
+  // plugin is already removed, so a failed removal is logged, not reported.
+  try { removePluginCatalogs(resolvePluginAgencHome(input), pluginId); }
+  catch (error) {
+    logForDebugging(`Could not remove the MCP catalogs of plugin ${pluginId}: ${(error as NodeJS.ErrnoException | undefined)?.code ?? "unknown error"}`, { level: "warn" });
+  }
+  const result = { pluginId, removedRoots: targetRoots, removedConfig, removedData };
+  await input.configStore?.reload();
+  return result;
 }
 
 export async function setPluginEnabledOp(
@@ -714,6 +718,7 @@ export async function setPluginEnabledOp(
     ...(input.path ? { path: resolvePath(input.path, resolvePluginWorkspaceRoot(input)) } : {}),
   };
   const configPath = await writePluginConfigEntry(input.pluginId, entry, input);
+  await input.configStore?.reload();
   return {
     pluginId: input.pluginId,
     enabled: input.enabled,
@@ -730,6 +735,7 @@ export async function disableAllPluginsOp(
   for (const name of names) {
     configPath = await writePluginConfigEntry(name, { enabled: false }, options);
   }
+  await options.configStore?.reload();
   return {
     disabled: names,
     configPath,
@@ -1290,7 +1296,6 @@ async function writePluginConfigEntry(
     });
     if (entry.enabled !== false) plugins.enabled = true;
   });
-  await options.configStore?.reload();
   return path;
 }
 
@@ -1309,6 +1314,5 @@ async function removePluginConfigEntry(
       delete raw.plugins.plugins;
     }
   });
-  await options.configStore?.reload();
   return removed;
 }

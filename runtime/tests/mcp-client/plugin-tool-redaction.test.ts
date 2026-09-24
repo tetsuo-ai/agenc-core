@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, expect, test, vi } from 'vitest'
 import { MCPManager } from '../../src/mcp-client/manager.js'
 
@@ -102,6 +105,39 @@ test.each(['message', 'progress'])('progress notification still renders when %s 
     expect(JSON.stringify(progress.mock.calls)).toContain('2/5')
     expect(JSON.stringify(progress.mock.calls)).not.toContain(secret)
   } finally { await manager.stop() }
+})
+
+test('an on-demand plugin server redacts its results, cached tools and catalog cache', async () => {
+  const secret = 'private-phrase'
+  const cacheHome = mkdtempSync(join(tmpdir(), 'agenc-lazy-redaction-'))
+  vi.mocked(createMCPConnection).mockResolvedValue(client(secret, async () => ({
+    content: [{ type: 'text', text: `result 1 info ${secret}` }],
+  })) as never)
+  const name = 'plugin:demo:lazy'
+  const manager = new MCPManager([{
+    name, command: 'node', env: { TOKEN: secret }, pluginSecretValues: [secret], pluginCatalogHome: cacheHome,
+    origin: { scope: 'plugin', pluginServer: { pluginName: 'demo', serverName: 'lazy', digest: 'a'.repeat(64), idleTimeoutMs: 10 } },
+  }])
+  try {
+    await manager.start()
+    expect(manager.getConnectionState(name)?.type).toBe('stopped')
+    const result = JSON.stringify(await manager.callTool(name, 'echo', {}))
+    expect(result).toContain('1 info')
+    expect(result).not.toContain(secret)
+    for (let attempt = 0; attempt < 100 && manager.getConnectionState(name)?.type !== 'stopped'; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    expect(manager.getConnectionState(name)?.type).toBe('stopped')
+    const cached = JSON.stringify(manager.getTools().map(tool => ({ description: tool.description, inputSchema: tool.inputSchema })))
+    expect(cached).toContain('1 info')
+    expect(cached).not.toContain(secret)
+    const written = readdirSync(cacheHome, { recursive: true, withFileTypes: true }).filter(entry => entry.isFile())
+      .map(entry => readFileSync(join(entry.parentPath, entry.name), 'utf8')).join('\n')
+    expect(written).not.toContain(secret)
+  } finally {
+    await manager.stop()
+    rmSync(cacheHome, { recursive: true, force: true })
+  }
 })
 
 test('plugin values without sensitive template substitutions remain visible in tool output', async () => {

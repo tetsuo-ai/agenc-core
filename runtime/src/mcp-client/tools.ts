@@ -8,7 +8,7 @@
  */
 
 import type { Tool, ToolResult, JSONSchema } from "./_deps/tools-types.js";
-import { hasLocalMcpAccess, redactMcpAttachmentText, redactMcpAttachmentValue, desktopControlEffectReceipt, withDesktopMcpDispatchGuard, DesktopMcpPreflightRefusal } from "./local-control.js";
+import { hasLocalMcpAccess, redactMcpAttachmentText, redactMcpAttachmentValue, desktopControlEffectReceipt, withDesktopMcpDispatchGuard, assertDesktopMcpDispatchGuard, DesktopMcpPreflightRefusal } from "./local-control.js";
 import { desktopToolClassification, hasDesktopAuthority } from "./desktop-authority.js";
 import { preEffectRefusal } from "../tools/results.js";
 import { createToolEffectDispositionEvidence } from "../tools/effect-boundary.js";
@@ -258,6 +258,11 @@ interface ToolBridgeOptions {
   serverOrigin?: string;
   transport?: "stdio" | "sse" | "http" | "streamable_http";
   environment: ProviderEnvironment;
+  /** Raw, unfiltered descriptors for the installed-plugin catalog cache. */
+  onCatalog?: (tools: readonly Record<string, unknown>[]) => void;
+  /** Revokes an owning configuration across authorization and RPC dispatch. */
+  revocationGuard?: () => boolean;
+  revocationSignal?: AbortSignal;
   /** Optional abort for the catalog-list pagination walk. */
   signal?: AbortSignal;
   /** Test seam; production remains bounded by `MAX_MCP_LIST_PAGES`. */
@@ -621,6 +626,17 @@ async function authorizeMcpClientToolCall(
   return { ok: true, args: executionArgs };
 }
 
+/** Cancel the whole authorization wait, including a stalled canUseTool evaluator. */
+function awaitAuthorization<T>(task: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return task;
+  if (signal.aborted) return Promise.reject(new DesktopMcpPreflightRefusal("MCP authorization was revoked."));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new DesktopMcpPreflightRefusal("MCP authorization was revoked."));
+    signal.addEventListener("abort", onAbort, { once: true });
+    void task.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
 /** Reuse only the executor's exact, already-approved invocation. JSON/model
  * arguments cannot mint the private runtime-context marker. Rechecking the
  * same approval in an MCP bridge otherwise asks twice with the same call ID,
@@ -970,15 +986,12 @@ export async function createToolBridge(
       ? Math.max(1, Math.floor(options.callToolTimeoutMs))
       : undefined;
 
-  const rawTools = normalizeMCPToolCatalog(
-    await listMcpToolsCatalog(
-      client,
-      serverName,
-      listToolsTimeoutMs,
-      logger,
-      options,
-    ),
+  const listedTools = await listMcpToolsCatalog(
+    client, serverName, listToolsTimeoutMs, logger, options,
   );
+  const rawTools = normalizeMCPToolCatalog(listedTools);
+  options.onCatalog?.(listedTools.filter((tool): tool is Record<string, unknown> =>
+    typeof tool === "object" && tool !== null && !Array.isArray(tool)));
   const mcpTools: MCPToolDescriptorLike[] = options.serverConfig
     ? (filterMCPToolCatalog(
         options.serverConfig,
@@ -1103,21 +1116,33 @@ export async function createToolBridge(
           return callRequestPermissionsTool(args, callId, options.permissions);
         }
         const startedAtMs = Date.now();
+        let dispatched = false;
 
         try {
+          const permissions = options.revocationSignal && options.permissions
+            ? { ...options.permissions, signal: options.permissions.signal
+                ? AbortSignal.any([options.permissions.signal, options.revocationSignal])
+                : options.revocationSignal }
+            : options.permissions;
           const authorization: PermissionResolution =
             exactMcpInvocation(args, callId, namespacedName, options.permissions)?.approvalResolved === true
             ? { ok: true, args }
-            : await authorizeMcpClientToolCall(
+            : await awaitAuthorization(authorizeMcpClientToolCall(
             bridgeTool,
             serverName,
             mcpTool,
             callId,
             args,
-            options.permissions,
-          );
+            permissions,
+          ), permissions?.signal);
           if (!authorization.ok) {
+            if (options.revocationGuard?.() === false || options.revocationSignal?.aborted) {
+              return preEffectRefusal(namespacedName, "The owning MCP plugin was revoked during authorization.");
+            }
             return authorization.result;
+          }
+          if (options.revocationGuard?.() === false || options.revocationSignal?.aborted) {
+            return preEffectRefusal(namespacedName, "The owning MCP plugin was revoked during authorization.");
           }
           // Approval can outlive the originating turn. A captured proxy must
           // not carry a revoked local lease across that asynchronous boundary.
@@ -1145,12 +1170,18 @@ export async function createToolBridge(
             `MCP tool "${mcpTool.name}" callTool`,
             callToolTimeoutMs,
             (signal) => withDesktopMcpDispatchGuard(() => {
+              if (options.revocationGuard?.() === false || options.revocationSignal?.aborted) throw new DesktopMcpPreflightRefusal("The owning MCP plugin was revoked before dispatch.");
               if (options.serverConfig?.localOnly === true && !hasLocalMcpAccess()) throw new DesktopMcpPreflightRefusal("The local app-control turn has ended.");
               if (options.serverConfig?.desktopAuthorityGrant && !hasDesktopAuthority(options.serverConfig.desktopAuthorityGrant)) throw new DesktopMcpPreflightRefusal("Desktop host authority expired before dispatch.");
               if (signal.aborted || effectSignal?.aborted) throw new DesktopMcpPreflightRefusal("The app-control operation was cancelled before dispatch.");
               if (nativeTerminal && !nativeDesktopTerminalAllowed(args, callId, namespacedName, options.permissions)) throw new DesktopMcpPreflightRefusal("The visible terminal no longer has full-access authority.");
               if (routineMutation && !desktopRoutineMutationAllowed(args, callId, namespacedName, options.permissions)) throw new DesktopMcpPreflightRefusal("The Desktop Routine call no longer has writable local authority.");
-            }, () => client.callTool(
+            }, () => {
+              // The SDK can dispatch synchronously on stdio. Check here after
+              // observers; HTTP checks again after its asynchronous binding work.
+              assertDesktopMcpDispatchGuard(false, false);
+              dispatched = true;
+              return client.callTool(
                 {
                   name: mcpTool.name,
                   arguments: executionArgs,
@@ -1184,7 +1215,8 @@ export async function createToolBridge(
                       }
                     : {}),
                 },
-              )),
+              );
+            }),
             effectSignal,
           );
           const result = await normalizeMcpToolOutput({
@@ -1248,7 +1280,10 @@ export async function createToolBridge(
             isError: true,
             durationMs,
           });
-          if (error instanceof DesktopMcpPreflightRefusal) return preEffectRefusal(namespacedName, errMessage);
+          if (error instanceof DesktopMcpPreflightRefusal ||
+              (!dispatched && (options.revocationSignal?.aborted || options.revocationGuard?.() === false))) {
+            return preEffectRefusal(namespacedName, errMessage);
+          }
           effectSignal?.throwIfAborted();
           const failure: ToolResult = {
             content: errMessage,

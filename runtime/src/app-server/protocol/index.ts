@@ -1743,6 +1743,8 @@ export interface SessionCancelTurnParams extends JsonObject {
 
 export interface SessionMcpStatusParams extends JsonObject {
   readonly sessionId: string;
+  /** Opt in to the on-demand `stopped` state. Older clients receive `disconnected`. */
+  readonly includeStoppedState?: boolean;
 }
 
 export interface PluginSettingsParams extends JsonObject {
@@ -3608,12 +3610,14 @@ export interface SessionMcpStatusServer extends JsonObject {
   readonly transport: "stdio" | "sse" | "http" | "websocket";
   readonly enabled: boolean;
   readonly required: boolean;
+  /** `stopped` means an idle plugin server will start on the next call. */
   readonly state:
     | "connected"
     | "pending"
     | "failed"
     | "disabled"
     | "needs-auth"
+    | "stopped"
     | "disconnected";
   /** Sanitized executable basename or URL origin; never connection authority. */
   readonly displayTarget?: string;

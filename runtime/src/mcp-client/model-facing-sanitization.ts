@@ -10,7 +10,6 @@ export const MCP_MODEL_FACING_METADATA_LIMITS = Object.freeze({
   toolTitleBytes: 256,
   schemaStringBytes: 1_024,
   schemaJsonBytes: 32 * 1_024,
-  schemaArrayItems: 64,
   schemaDepth: 16,
 });
 
@@ -204,9 +203,10 @@ export function sanitizeMcpInputSchemaForModel(
       return undefined;
     }
 
+    // Arrays stay whole: a shortened enum, required list or anyOf changes the
+    // tool's contract. The byte budget below bounds the whole schema.
     if (Array.isArray(value)) {
       return value
-        .slice(0, MCP_MODEL_FACING_METADATA_LIMITS.schemaArrayItems)
         .map((item, index) => visit(item, depth + 1, parentKey, `${path}/${index}`))
         .filter((item) => item !== undefined);
     }

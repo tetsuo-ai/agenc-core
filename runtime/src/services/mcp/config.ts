@@ -1352,11 +1352,33 @@ export async function getAllMcpConfigs(
   for (const registration of registrations) {
     pluginMcpServers[registration.name] = {
       ...canonicalMcpServerToServiceConfig(registration.server),
+      // Policy, deduplication, definition IDs, status and catalog fingerprints
+      // use the historical installed-path command identity.
+      ...(registration.installationIdentity?.command !== undefined
+        ? { command: registration.installationIdentity.command } : {}),
+      ...(registration.installationIdentity?.args !== undefined
+        ? { args: [...registration.installationIdentity.args] } : {}),
+      ...(registration.installationIdentity?.cwd !== undefined
+        ? { cwd: registration.installationIdentity.cwd } : {}),
       scope: 'dynamic',
       pluginSource: registration.pluginSource,
       pluginServer: {
         pluginName: registration.pluginName,
         serverName: registration.serverName,
+        ...(registration.version !== undefined ? { version: registration.version } : {}),
+        digest: registration.digest,
+        pluginRoot: registration.pluginRoot,
+        snapshotRoot: registration.snapshotRoot,
+        snapshotLaunch: {
+          ...(registration.server.command !== undefined ? { command: registration.server.command } : {}),
+          ...(registration.server.args !== undefined ? { args: [...registration.server.args] } : {}),
+          ...(registration.server.cwd !== undefined ? { cwd: registration.server.cwd } : {}),
+          ...(registration.server.env !== undefined ? { env: { ...registration.server.env } } : {}),
+        },
+        ...(registration.userConfigDigest !== undefined ? { userConfigDigest: registration.userConfigDigest } : {}),
+        eager: registration.eager,
+        idleTimeoutMs: registration.idleTimeoutMs,
+        maxProcesses: registration.maxProcesses,
       },
     }
   }

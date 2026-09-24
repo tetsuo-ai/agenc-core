@@ -14,7 +14,7 @@ export function withDesktopMcpDispatchGuard<T>(guard: () => void, run: () => Pro
   return dispatchGuard.run({ check: guard, sent: false }, run);
 }
 /** Transport calls this after async socket checks, immediately before fetch. */
-export function assertDesktopMcpDispatchGuard(required = false): void {
+export function assertDesktopMcpDispatchGuard(required = false, markSent = true): void {
   const guard = dispatchGuard.getStore();
   if (!guard && required) throw new DesktopMcpPreflightRefusal("Desktop tools require a currently admitted local runtime call.");
   if (guard) {
@@ -25,8 +25,23 @@ export function assertDesktopMcpDispatchGuard(required = false): void {
       if (guard.sent && error instanceof DesktopMcpPreflightRefusal) throw new Error(error.message);
       throw error;
     }
-    guard.sent = true;
+    if (markSent) guard.sent = true;
   }
+}
+
+/** Recheck at transports that may yield between bridge entry and I/O. */
+export function assertMcpTransportToolDispatch(message: unknown, required = false): void {
+  if (typeof message === "object" && message !== null && "method" in message && message.method === "tools/call") {
+    assertDesktopMcpDispatchGuard(required);
+  }
+}
+
+export function assertMcpFetchToolDispatch(body: BodyInit | null | undefined, required = false): void {
+  if (typeof body !== "string") return;
+  let message: unknown;
+  try { message = JSON.parse(body); }
+  catch { return; } // SDK validates protocol bodies.
+  assertMcpTransportToolDispatch(message, required);
 }
 
 export function hasLocalMcpAccess(): boolean {
@@ -256,6 +271,13 @@ export function redactMcpAttachmentValue<T>(
       }
     }
     if (value instanceof Error) {
+      // DOMException accessors require native internal slots. A prototype
+      // clone loses those slots and throws when callers inspect its name.
+      if (value instanceof DOMException) {
+        return new DOMException(
+          redactMcpAttachmentText(value.message, headers), value.name,
+        ) as T;
+      }
       // Preserve cleanup-error prototypes/ownership fields, including frozen
       // errors, while keeping the original object untouched.
       const result = Object.create(Object.getPrototypeOf(value)) as Error;

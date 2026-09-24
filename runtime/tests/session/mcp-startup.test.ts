@@ -1156,6 +1156,82 @@ describe("mcp-startup session-owned manager helpers", () => {
     }
   });
 
+  it.each([false, true])("denies an installed-path plugin command with eager=%s", async eager => {
+    const fixture = await createMcpAuthorityFixture();
+    const installedRoot = join(fixture.cwd, "installed-plugin");
+    const snapshotRoot = join(fixture.cwd, "plugin-snapshot");
+    const installedEntry = join(installedRoot, "server.js");
+    const snapshotEntry = join(snapshotRoot, "server.js");
+    const managed = `deniedMcpServers = [{ serverCommand = ["node", ${JSON.stringify(installedEntry)}] }]`;
+    try {
+      writeCanonicalFixtureConfig(fixture.managedConfigPath, [managed]);
+      await fixture.store.reload();
+      const registrations = [{
+        name: "plugin:sample:local", pluginName: "sample", pluginSource: "sample@registry",
+        serverName: "local", pluginRoot: installedRoot, snapshotRoot,
+        digest: "a".repeat(64), eager, idleTimeoutMs: 600_000, maxProcesses: 8,
+        server: { transport: "stdio" as const, command: "node", args: [snapshotEntry], cwd: snapshotRoot },
+        installationIdentity: { command: "node", args: [installedEntry], cwd: installedRoot },
+      }];
+      mockLoadPluginMcpServerRegistrations.mockResolvedValueOnce(registrations).mockResolvedValueOnce(registrations);
+      expect(await resolveSessionMcpConfig(fixture.store, {})).toEqual([]);
+      expect(await resolveSessionMcpConfig(fixture.store, {})).toEqual([]);
+    } finally { fixture.cleanup(); }
+  });
+
+  it("admits an allowed installed-path command and preserves its visible identity", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const installedRoot = join(fixture.cwd, "installed-plugin");
+    const snapshotRoot = join(fixture.cwd, "plugin-snapshot");
+    const installedEntry = join(installedRoot, "server.js");
+    const snapshotEntry = join(snapshotRoot, "server.js");
+    try {
+      writeCanonicalFixtureConfig(fixture.managedConfigPath, [
+        `allowedMcpServers = [{ serverCommand = ["node", ${JSON.stringify(installedEntry)}] }]`,
+      ]);
+      await fixture.store.reload();
+      const registrations = [{
+        name: "plugin:sample:local", pluginName: "sample", pluginSource: "sample@registry",
+        serverName: "local", pluginRoot: installedRoot, snapshotRoot,
+        digest: "a".repeat(64), eager: false, idleTimeoutMs: 600_000, maxProcesses: 8,
+        server: { transport: "stdio" as const, command: "node", args: [snapshotEntry], cwd: snapshotRoot },
+        installationIdentity: { command: "node", args: [installedEntry], cwd: installedRoot },
+      }];
+      mockLoadPluginMcpServerRegistrations.mockResolvedValueOnce(registrations).mockResolvedValueOnce(registrations);
+      for (let resolution = 0; resolution < 2; resolution++) {
+        expect(await resolveSessionMcpConfig(fixture.store, {})).toEqual([
+          expect.objectContaining({
+            name: "plugin:sample:local", command: "node", args: [installedEntry], cwd: installedRoot,
+          }),
+        ]);
+      }
+    } finally { fixture.cleanup(); }
+  });
+
+  it("deduplicates a plugin against the installed-path manual command and cwd", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const installedRoot = join(fixture.cwd, "installed-plugin");
+    const snapshotRoot = join(fixture.cwd, "plugin-snapshot");
+    const installedEntry = join(installedRoot, "server.js");
+    const snapshotEntry = join(snapshotRoot, "server.js");
+    try {
+      writeCanonicalFixtureConfig(fixture.userConfigPath, [
+        "[mcp_servers.manual]", 'command = "node"',
+        `args = [${JSON.stringify(installedEntry)}]`,
+        `cwd = ${JSON.stringify(installedRoot)}`,
+      ]);
+      await fixture.store.reload();
+      mockLoadPluginMcpServerRegistrations.mockResolvedValueOnce([{
+        name: "plugin:sample:local", pluginName: "sample", pluginSource: "sample@registry",
+        serverName: "local", pluginRoot: installedRoot, snapshotRoot,
+        digest: "a".repeat(64), eager: false, idleTimeoutMs: 600_000, maxProcesses: 8,
+        server: { transport: "stdio", command: "node", args: [snapshotEntry], cwd: snapshotRoot },
+        installationIdentity: { command: "node", args: [installedEntry], cwd: installedRoot },
+      }]);
+      expect((await resolveSessionMcpConfig(fixture.store, {})).map(config => config.name)).toEqual(["manual"]);
+    } finally { fixture.cleanup(); }
+  });
+
   it("deduplicates plugins against the final manual precedence winner", async () => {
     const fixture = await createMcpAuthorityFixture({
       user: [
@@ -2603,6 +2679,27 @@ describe("private Desktop session legacy migration", () => {
 });
 
 describe("session MCP mutation transactions", () => {
+  it("enables a stopped plugin and explicitly starts it on session reconnect", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const name = "plugin:sample:lazy";
+    mockLoadPluginMcpServerRegistrations.mockResolvedValue([{
+      name, pluginName: "sample", pluginSource: "sample@registry", serverName: "lazy",
+      digest: "a".repeat(64), eager: false, idleTimeoutMs: 10_000, maxProcesses: 8,
+      server: { transport: "stdio", command: "node", args: ["lazy.js"] },
+    } as never]);
+    const manager = createSessionMcpManager([]);
+    const service = createSessionMcpService(manager, { authority: fixture.store, environment: {} });
+    try {
+      await service.refreshFromAuthority?.();
+      expect(manager.getConnectionState(name)?.type).toBe("stopped");
+      await expect(service.disableServer?.(name)).resolves.toMatchObject({ success: true });
+      await expect(service.enableServer?.(name)).resolves.toMatchObject({ success: true });
+      expect(manager.getConnectionState(name)?.type).toBe("stopped");
+      await expect(service.reconnectServer?.(name)).resolves.toMatchObject({ success: true });
+      expect(manager.getConnectionState(name)?.type).toBe("connected");
+      expect(mockCreateMCPConnection).toHaveBeenCalledTimes(1);
+    } finally { await service.dispose?.(); fixture.cleanup(); }
+  });
   it("leaves another session's bridges intact when a session starts or reconnects on the same store", async () => {
     const fixture = await createMcpAuthorityFixture({ user: [
       '[mcp_servers.alpha]', 'command = "alpha-cmd"',

@@ -724,6 +724,10 @@ export interface PluginEntryConfig {
 
 export interface PluginMcpServerConfig {
   readonly enabled?: boolean;
+  /** Keep this plugin MCP process connected for channels or notifications. */
+  readonly eager?: boolean;
+  /** Idle process lifetime. Zero disables idle eviction. */
+  readonly idle_timeout_ms?: number;
   readonly default_tools_approval_mode?: PermissionDefaultMode;
   readonly enabled_tools?: readonly string[];
   readonly disabled_tools?: readonly string[];
@@ -734,6 +738,8 @@ export interface PluginsConfig {
   readonly dirs?: readonly string[];
   readonly enabled?: boolean;
   readonly allowlist?: readonly string[];
+  readonly mcp_idle_timeout_ms?: number;
+  readonly mcp_max_processes?: number;
   readonly plugins?: Readonly<Record<string, PluginEntryConfig>>;
 }
 
@@ -2222,6 +2228,8 @@ function validatePerToolConfig(raw: unknown, field: string): PerToolConfig {
 
 const PLUGIN_MCP_SERVER_KEYS: ReadonlySet<string> = new Set([
   "enabled",
+  "eager",
+  "idle_timeout_ms",
   "default_tools_approval_mode",
   "enabled_tools",
   "disabled_tools",
@@ -2252,6 +2260,12 @@ function validatePluginMcpServerConfig(
     (path, detail) => new InvalidPluginsConfigError(path, detail),
   );
   if (enabled !== undefined) out.enabled = enabled;
+  const eager = optionalBoolean(record.eager, fieldPath(field, "eager"), (path, detail) => new InvalidPluginsConfigError(path, detail));
+  if (eager !== undefined) out.eager = eager;
+  if (record.idle_timeout_ms !== undefined) {
+    if (!Number.isSafeInteger(record.idle_timeout_ms) || (record.idle_timeout_ms as number) < 0) throw new InvalidPluginsConfigError(fieldPath(field, "idle_timeout_ms"), "must be a non-negative integer");
+    out.idle_timeout_ms = record.idle_timeout_ms as number;
+  }
   if (record.default_tools_approval_mode !== undefined) {
     if (!isValidPermissionDefaultMode(record.default_tools_approval_mode)) {
       throw new InvalidPluginsConfigError(
@@ -2368,6 +2382,8 @@ const PLUGINS_KEYS: ReadonlySet<string> = new Set([
   "enabled",
   "allowlist",
   "plugins",
+  "mcp_idle_timeout_ms",
+  "mcp_max_processes",
 ]);
 
 export function validatePluginsConfig(raw: unknown): PluginsConfig | undefined {
@@ -2400,6 +2416,13 @@ export function validatePluginsConfig(raw: unknown): PluginsConfig | undefined {
       throw new InvalidPluginsConfigError("enabled", "must be a boolean");
     }
     out.enabled = record.enabled;
+  }
+  for (const key of ["mcp_idle_timeout_ms", "mcp_max_processes"] as const) {
+    if (record[key] === undefined) continue;
+    if (!Number.isSafeInteger(record[key]) || (key === "mcp_max_processes" ? (record[key] as number) < 1 : (record[key] as number) < 0)) {
+      throw new InvalidPluginsConfigError(key, key === "mcp_max_processes" ? "must be a positive integer" : "must be a non-negative integer");
+    }
+    out[key] = record[key];
   }
   const plugins = validatePluginEntryMap(record.plugins, "plugins");
   if (plugins !== undefined) out.plugins = plugins;

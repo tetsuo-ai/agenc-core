@@ -164,12 +164,14 @@ export function mcpServerDefinitionId(
     pluginServer,
     ...definition
   } = config
+  // Runtime launch material must not change the installed definition identity.
+  const { snapshotLaunch: _snapshotLaunch, ...pluginIdentity } = pluginServer ?? {}
   const canonical = canonicalApprovalValue({
     name,
     origin: {
       scope: mcpServerDefinitionOrigin(config),
       pluginSource,
-      pluginServer,
+      pluginServer: pluginServer === undefined ? undefined : pluginIdentity,
     },
     definition,
   })
