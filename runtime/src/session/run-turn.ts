@@ -2561,26 +2561,6 @@ async function* runTurnKernelInner(
       },
     });
   };
-  try {
-    await runPreSamplingCompact(session, ctx, turnQuerySource, state, {
-      onAdvisoryRefusal: deferCompactionRefusal,
-    });
-  } catch (error) {
-    const underlying = compactFailureError(error);
-    emitTurnWarning(
-      session,
-      PRE_SAMPLING_COMPACT_FAILED_CAUSE,
-      underlying.message,
-    );
-    // Pre-compact failure ends the turn; the daemon session must stay
-    // promptable.
-    await syncSessionState();
-    emitTurnComplete("", "compact_failed", underlying);
-    const terminal: Terminal = { reason: "completed", error: underlying };
-    yield compactFailedTurnComplete("", EMPTY_SYNTHETIC_USAGE, underlying);
-    return terminal;
-  }
-
   // Merge external opts.signal, the session-level abort, and the
   // task-local abort from `spawnTask`. `startTask` gives the running
   // task its own abort controller, which `abortAllTasks` trips; the
@@ -2598,13 +2578,45 @@ async function* runTurnKernelInner(
   // first merge can leave a listener on the long-lived session signal.
   // Hand the disposers to the outer kernel's finally so they run on every
   // exit path (completed, aborted, error, abandoned generator).
-  // A run with a deadline (#2503) aborts its running turn when it passes;
-  // the abort reason turns the cancellation into `deadline_reached`.
   commons.signalCleanups.push(
     mergedSession.dispose,
     mergedTask.dispose,
-    armRunDeadline(session, runningTask.abortController),
   );
+  try {
+    await runPreSamplingCompact(session, ctx, turnQuerySource, state, {
+      onAdvisoryRefusal: deferCompactionRefusal,
+    });
+  } catch (error) {
+    const underlying = compactFailureError(error);
+    if (signal.aborted) {
+      await drainInFlight(state, ctx, session);
+      await syncSessionState();
+      emitTurnAborted(turnSignalAbortReason(signal.reason));
+      const terminal: Terminal = { reason: "cancelled" };
+      yield {
+        type: "turn_complete",
+        content: "",
+        usage: EMPTY_SYNTHETIC_USAGE,
+        stopReason: "cancelled",
+        error: underlying,
+      };
+      return terminal;
+    }
+    emitTurnWarning(
+      session,
+      PRE_SAMPLING_COMPACT_FAILED_CAUSE,
+      underlying.message,
+    );
+    // Pre-compact failure ends the turn; the daemon session must stay
+    // promptable.
+    await syncSessionState();
+    emitTurnComplete("", "compact_failed", underlying);
+    const terminal: Terminal = { reason: "completed", error: underlying };
+    yield compactFailedTurnComplete("", EMPTY_SYNTHETIC_USAGE, underlying);
+    return terminal;
+  }
+  // Keep the deadline's existing start point after pre-request compaction.
+  commons.signalCleanups.push(armRunDeadline(session, runningTask.abortController));
   let deadlineTurnReminderInjected = false;
 
   let usage: LLMUsage = {
@@ -2642,15 +2654,18 @@ async function* runTurnKernelInner(
       },
     };
   };
-  const finishCancelledIfAborted = async (): Promise<{
+  const finishCancelledIfAborted = async (
+    error?: Error,
+    abortReason?: TurnAbortReason,
+  ): Promise<{
     readonly terminal: Terminal;
     readonly event: PhaseEvent;
   } | null> => {
     if (!signal.aborted) return null;
     await drainInFlight(state, ctx, session);
     await syncSessionState();
-    if (isDeadlineAbort(signal)) return finishDeadlineReached();
-    emitTurnAborted(turnSignalAbortReason(signal.reason));
+    if (abortReason === undefined && isDeadlineAbort(signal)) return finishDeadlineReached();
+    emitTurnAborted(abortReason ?? turnSignalAbortReason(signal.reason));
     return {
       terminal: { reason: "cancelled" },
       event: {
@@ -2658,6 +2673,7 @@ async function* runTurnKernelInner(
         content: lastContent,
         usage,
         stopReason: "cancelled",
+        ...(error !== undefined ? { error } : {}),
       },
     };
   };
@@ -3162,6 +3178,13 @@ async function* runTurnKernelInner(
           },
         );
       } catch (error) {
+        const cancelled = await finishCancelledIfAborted(
+          compactFailureError(error),
+        );
+        if (cancelled !== null) {
+          yield cancelled.event;
+          return cancelled.terminal;
+        }
         // Mid-turn compact failure: end
         // the turn with a warning plus compact_failed so rollout
         // reducers see a closed boundary without killing the run.
@@ -3517,20 +3540,32 @@ async function* runTurnKernelInner(
       // the transaction can summarize them along with everything else,
       // instead of finding them unmapped and refusing to compact.
       persistNewResponseItems();
-      const midTurnCompacted = await runAutoCompact(
-        session,
-        ctx,
-        "before_last_user_message",
-        "context_limit",
-        "in_turn",
-        state,
-        {
-          querySource: turnQuerySource,
-          durableMessageCount: compactionDurableCount(),
-          onDurableHistoryReplaced: onCompactionReplacedHistory,
-          onAdvisoryRefusal: deferCompactionRefusal,
-        },
-      );
+      let midTurnCompacted: boolean;
+      try {
+        midTurnCompacted = await runAutoCompact(
+          session,
+          ctx,
+          "before_last_user_message",
+          "context_limit",
+          "in_turn",
+          state,
+          {
+            querySource: turnQuerySource,
+            durableMessageCount: compactionDurableCount(),
+            onDurableHistoryReplaced: onCompactionReplacedHistory,
+            onAdvisoryRefusal: deferCompactionRefusal,
+          },
+        );
+      } catch (error) {
+        const cancelled = await finishCancelledIfAborted(
+          compactFailureError(error),
+        );
+        if (cancelled !== null) {
+          yield cancelled.event;
+          return cancelled.terminal;
+        }
+        throw error;
+      }
       if (midTurnCompacted) {
         session.bindProviderConversation();
         continue;
