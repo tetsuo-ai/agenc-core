@@ -13,7 +13,8 @@ describe("Grok 4.7 documented catalog", () => {
       supportsParallelToolCalls: true, supportsStructuredOutput: true, supportsSearchTool: true,
       webSearchToolType: "none", supportsVerbosity: false, supportsReasoningSummaries: false,
       supportedReasoningLevels: ["low", "medium", "high", "xhigh"], defaultReasoningLevel: "high",
-      additionalSpeedTiers: [], visibility: "list" });
+      // The Fast tier is xAI priority processing (service_tier "priority").
+      additionalSpeedTiers: ["fast"], visibility: "list" });
     expect(entry?.maxOutputTokens).toBeUndefined();
     expect(entry?.maxOutputTokensUpperLimit).toBeUndefined();
     expect(getContextWindowForModel("grok-4.7")).toBe(500_000);

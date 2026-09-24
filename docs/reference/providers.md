@@ -113,6 +113,10 @@ catalog for Grok 4.6 exposes:
 Grok 4.7 preserves encrypted reasoning on Responses resends and durable history.
 The session default remains `grok-4.6`.
 
+Grok 4.7 and Grok 4.6 have a Fast tier: xAI priority processing at 2x the
+token rates, on API-key billing only. See
+[Fast mode and service tiers](#fast-mode-and-service-tiers).
+
 `grok-4.5` remains a selectable 500k-context catalog entry with the same input
 modalities and runtime features. Its short-context cached-input rate is
 $0.30 / 1M, versus $0.50 / 1M for Grok 4.6; it supports
@@ -805,6 +809,7 @@ single "Fast" dial. What it does depends on the provider:
 | --- | --- | --- | --- | --- |
 | OpenAI | `service_tier: "priority"` on chat completions and Responses (OpenAI also accepts `"fast"`, its new name for the same tier) | GPT-6 Astra/Sol/Luna, GPT-5.6 Sol/Terra/Luna, GPT-5.5, 5.4, 5.4 Mini, 5.3 Codex, 5.2, 5, plus the GPT-4.1/4o/o3/o4-mini rows on the pricing page | 2x standard on GPT-5.6 and later; see the pricing page per model | The response reports the served tier; requests over the fast-mode rate limit fall back per OpenAI's rules. |
 | Anthropic | `speed: "fast"` plus the `anthropic-beta: fast-mode-2026-02-01` header | Claude Opus 5.5, Claude Opus 5, Claude Opus 4.8 only | 2x standard: $8 input / $40 output per MTok on Opus 5.5, $10 / $50 on Opus 5 and 4.8 | Research preview: the organization needs access from Anthropic; without it the API returns an error. `usage.speed` reports `fast` or `standard`; AgenC warns when a request asked for fast and was served standard. Switching speeds invalidates the prompt cache. Not sent to other Claude models, which reject the field. |
+| xAI Grok | `service_tier: "priority"` on the Responses API, the only xAI wire AgenC uses (xAI documents the same field on Chat Completions) | Grok 4.7 and Grok 4.6 | 2x standard on every token type, cache discount first: $4 input / $1 cached input / $12 output per MTok below 200K prompt tokens | Priority processing: higher scheduling priority, not a faster model. API-key billing only: a session signed in with X (`/grok-login`) never sends it, because xAI does not document priority for the sign-in grant; set `GROK_AUTH_MODE=api-key` to use Fast while signed in. The response `service_tier` reports `priority` or `default`, and only `priority` bills the higher rates. This is not the Grok 4.7 Fast model, which xAI serves only in Cursor and Grok Build. |
 | Cerebras, Azure OpenAI | `service_tier` passthrough | per provider | per provider | Documented `service_tier` support; other chat-completions providers have the field stripped. |
 
 `flex` is OpenAI's lower-priority tier and is only sent to providers that
@@ -820,6 +825,14 @@ project-level Fast default cannot apply. A Fast request on a model or context
 length with no published Fast price (Pro and nano models, GPT-5.5 and 5.4
 above 272K) is refused under a hard USD cap with
 `unpriced_service_tier_under_hard_cap`.
+
+xAI cost also follows the tier the response reports: `priority` bills every
+token rate at 2x, and `default` (the request ran at the default tier) bills
+standard. Server-side tool calls such as web search keep their own rate.
+AgenC's Grok prices do not model xAI's long-context rates for prompts of 200K
+tokens or more, on either tier. Under a hard USD cap a priority request is
+reserved at the priority rates. xAI documents an omitted `service_tier` as
+its default tier, so a call without Fast sends none.
 
 ## Zero data retention
 

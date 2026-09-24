@@ -61,8 +61,9 @@ export interface ModelCostEntry {
   readonly webSearchUsdPerRequest?: number;
   /**
    * Rates for calls the provider reports as served in fast mode (Anthropic
-   * `usage.speed: "fast"`). Absent when the model has no fast mode; a fast
-   * call on such a model is billed at the entry's own rates.
+   * `usage.speed: "fast"`, an OpenAI or xAI `service_tier` of "priority" or
+   * "fast"). Absent when the model has no fast mode; a fast call on such a
+   * model is billed at the entry's own rates.
    */
   readonly fastMode?: Readonly<ModelCostEntry>;
   /**
@@ -579,6 +580,23 @@ const COST_TIER_GROK_45: Readonly<ModelCostEntry> = Object.freeze({
   webSearchUsdPerRequest: 0.01,
 });
 
+// Grok 4.7 and 4.6 bill $2 / $0.50 / $6 per 1M below 200K prompt tokens.
+// Priority processing (the Fast tier, service_tier "priority") bills every
+// token type at 2x (input, cached input, output and reasoning, which these
+// models bill at the output rate), with the cache discount applied first,
+// and only when the response reports "priority" (docs.x.ai/developers/pricing,
+// Priority Processing Pricing, 2026-09-24). Server-side tool calls are not
+// tokens and keep their own rate.
+const COST_TIER_GROK_4_6_AND_4_7: Readonly<ModelCostEntry> = Object.freeze({
+  ...COST_TIER_GROK_45,
+  fastMode: Object.freeze({
+    inputUsdPer1K: 0.004,
+    outputUsdPer1K: 0.012,
+    cachedInputUsdPer1K: 0.001,
+    webSearchUsdPerRequest: 0.01,
+  }),
+});
+
 /** Register a grok model under both its `xai:`-qualified and bare slug. */
 function grokCostAliases(
   model: string,
@@ -640,9 +658,10 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     // ($4 / $1 / $12); this table has no prompt-size tier, so a >200k turn is
     // under-counted. Under-counting is the deliberate side to err on — the
     // alternative trips dollar_cap budgets early on every short turn.
-    // Grok 4.7 launch pricing has the same base rates and long-context caveat.
-    ...grokCostAliases("grok-4.7", COST_TIER_GROK_45),
-    ...grokCostAliases("grok-4.6", COST_TIER_GROK_45),
+    // Grok 4.7 launch pricing has the same base rates and long-context caveat,
+    // which applies to their priority-processing rates too.
+    ...grokCostAliases("grok-4.7", COST_TIER_GROK_4_6_AND_4_7),
+    ...grokCostAliases("grok-4.6", COST_TIER_GROK_4_6_AND_4_7),
     ...grokCostAliases("grok-4.5", COST_TIER_GROK_45),
     ...grokCostAliases("grok-4.3", COST_TIER_GROK_4X_NON_REASONING),
     ...grokCostAliases("grok-build-0.1", COST_TIER_GROK_4X_NON_REASONING),

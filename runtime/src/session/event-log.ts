@@ -392,7 +392,8 @@ export interface TokenCountEvent {
   readonly provider?: string;
   /**
    * Present when the provider reports the call was served in fast mode
-   * (Anthropic `usage.speed: "fast"`), which bills at fast-mode rates.
+   * (Anthropic `usage.speed: "fast"`, an OpenAI or xAI `service_tier` of
+   * "priority" or "fast"), which bills at fast-mode rates.
    */
   readonly speed?: "fast";
 }

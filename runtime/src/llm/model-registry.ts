@@ -120,7 +120,11 @@ function inferServiceTiers(
       tiers.set("priority", {
         id: "priority",
         name: "Fast",
-        description: "1.5x speed, increased usage",
+        // xAI priority processing promises scheduling priority, not a speed
+        // multiple, at 2x every token rate (providers/grok/priority-processing.ts).
+        description: entry.provider === "grok"
+          ? "Higher scheduling priority at 2x price"
+          : "1.5x speed, increased usage",
       });
     } else if (tier === "flex") {
       tiers.set("flex", {

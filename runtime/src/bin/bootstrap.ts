@@ -5,9 +5,11 @@ import { join } from "node:path";
 
 import {
   createProvider,
+  readProviderFactoryOptions,
   resolveBuiltInProviderSlug,
   type ProviderName,
 } from "../llm/provider.js";
+import { withoutXaiSignInFastTier } from "../llm/providers/grok/priority-processing.js";
 import { isFreeSubscriptionManagedModel } from "../commands/subscription-managed-models.js";
 import type { LLMProvider } from "../llm/types.js";
 import { StaticModelsManager } from "../llm/models-manager.js";
@@ -1513,7 +1515,15 @@ async function bootstrapLocalRuntimeSessionScoped(
         }),
     },
   });
-  const rawModelInfo = await modelsManager.getModelInfo(model);
+  // A Grok session on the xAI sign-in route never sends priority processing,
+  // so its model info does not offer the Fast tier.
+  const rawModelInfo = withoutXaiSignInFastTier(
+    await modelsManager.getModelInfo(model),
+    {
+      provider: resolvedProvider,
+      factoryOptions: readProviderFactoryOptions(provider),
+    },
+  );
   const modelInfo =
     hasManagedCredential &&
     initialPreparation.runtime.applyManagedDefaultOutputCap

@@ -1179,7 +1179,10 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       defaultReasoningSummary: "none",
       supportedReasoningLevels: GROK_4_6_AND_4_7_REASONING_LEVELS,
       defaultReasoningLevel: "high",
-      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      // The Fast tier is xAI priority processing (service_tier "priority",
+      // 2x every token rate), not the Grok 4.7 Fast model, which xAI serves
+      // only in Cursor and Grok Build. See providers/grok/priority-processing.ts.
+      additionalSpeedTiers: FAST_SPEED_TIER,
       priority: 28,
       visibility: "list",
     },
@@ -1200,7 +1203,8 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       defaultReasoningSummary: "none",
       supportedReasoningLevels: GROK_4_6_AND_4_7_REASONING_LEVELS,
       defaultReasoningLevel: "high",
-      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      // xAI priority processing, priced at 2x its $2 / $0.50 / $6 rates.
+      additionalSpeedTiers: FAST_SPEED_TIER,
       priority: 29,
       visibility: "list",
     },

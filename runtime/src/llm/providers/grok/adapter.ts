@@ -112,6 +112,11 @@ import {
   BUILT_IN_PROVIDER_BASE_URLS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
 } from "../../registry/provider-info.js";
+import {
+  XAI_PRIORITY_SERVICE_TIER,
+  xaiSendsPriorityProcessing,
+  xaiServedSpeed,
+} from "./priority-processing.js";
 
 const DEFAULT_VISION_MODEL = "grok-4-0709";
 
@@ -2309,6 +2314,7 @@ export class GrokProvider implements LLMProvider {
       maxTurns: options?.maxTurns,
       model: options?.model?.trim() || undefined,
       reasoningEffort: options?.reasoningEffort,
+      serviceTier: options?.serviceTier,
       includeEncryptedReasoning: options?.includeEncryptedReasoning,
       structuredOutput: options?.structuredOutput,
       toolSelection,
@@ -2356,6 +2362,7 @@ export class GrokProvider implements LLMProvider {
       maxOutputTokens?: number;
       maxTurns?: number;
       reasoningEffort?: LLMChatOptions["reasoningEffort"];
+      serviceTier?: LLMChatOptions["serviceTier"];
       includeEncryptedReasoning?: boolean;
       structuredOutput?: LLMChatOptions["structuredOutput"];
       toolSelection?: ToolSelectionDiagnostics;
@@ -2439,6 +2446,19 @@ export class GrokProvider implements LLMProvider {
     // inherited config cannot hard-fail an otherwise valid request.
     if (reasoningEffort && supportsXaiReasoningEffortParam(model)) {
       params.reasoning = { effort: reasoningEffort };
+    }
+    // Priority processing rides the session's "priority" service tier on the
+    // model this request names, when its catalog row lists a Fast tier. The
+    // xAI sign-in route never sends it (priority-processing.ts). The response
+    // reports the tier it applied (parseUsage).
+    if (
+      xaiSendsPriorityProcessing({
+        model,
+        serviceTier: options?.serviceTier,
+        authMode: this.config.authMode,
+      })
+    ) {
+      params.service_tier = XAI_PRIORITY_SERVICE_TIER;
     }
     const includeEncryptedReasoning =
       options?.includeEncryptedReasoning ?? this.config.includeEncryptedReasoning;
@@ -2961,6 +2981,9 @@ export class GrokProvider implements LLMProvider {
       cachedInputTokens: inputDetails.cached_tokens,
       reasoningOutputTokens: outputDetails.reasoning_tokens,
       webSearchRequests: serverSideToolUsage.SERVER_SIDE_TOOL_WEB_SEARCH,
+      // The tier xAI applied: priority rates are billed only when the
+      // response says "priority", so cost follows this, not the request.
+      speed: xaiServedSpeed(response.service_tier),
     });
   }
 
