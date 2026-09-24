@@ -55,7 +55,6 @@ import type { ProviderEnvironment } from "../../llm/provider-options.js";
 import { EMPTY_MCP_REQUEST_ENVIRONMENT } from "../environment.js";
 import { assertMcpTransportToolDispatch } from "../local-control.js";
 import { createStdioMCPEnvironment } from "./stdio-environment.js";
-import { resolveStdioProgram } from "./stdio-program.js";
 export { createStdioMCPEnvironment, DEFAULT_STDIO_ENV_VARS } from "./stdio-environment.js";
 
 const PROCESS_GROUP_TERM_GRACE_MS = 2_000;
@@ -240,11 +239,10 @@ export class AgenCStdioClientTransport implements Transport {
       this.server.env ?? {},
       childTempRoot,
     );
-    const command = resolveStdioProgram(this.server.command, env, cwd);
     const preparedSpawn = broker.prepareSpawn(
       "mcp_stdio",
       {
-        program: command,
+        program: this.server.command,
         args: this.server.args ?? [],
         cwd,
         env,

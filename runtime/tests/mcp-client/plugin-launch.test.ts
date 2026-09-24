@@ -3,8 +3,8 @@ import { tmpdir } from "node:os";
 import { join, relative, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it } from "vitest";
+import { resolveSpawnExecutable } from "../../src/sandbox/execution-broker.js";
 import { assertPluginSnapshotLaunchSafe } from "./plugin-launch.js";
-import { resolveStdioProgram } from "./transports/stdio-program.js";
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -74,6 +74,31 @@ it("resolves relative argument and environment paths from the launch cwd", async
   }
 });
 
+it("rejects complete relative filenames with punctuation in argv and environment", async () => {
+  const home = await mkdtemp(join(tmpdir(), "agenc-plugin-punctuation-")); roots.push(home);
+  const installed = join(home, "sample");
+  const snapshot = join(home, "cache", "mcp-install-snapshots", "digest");
+  await mkdir(installed); await mkdir(snapshot, { recursive: true });
+  for (const name of ["server(1).mjs", "server,1.mjs", "server's.mjs", "server copy.mjs"]) {
+    const operand = relative(snapshot, join(installed, name));
+    for (const launch of [
+      { command: "node", args: [operand], cwd: snapshot },
+      { command: "node", args: [`--import=${operand}`], cwd: snapshot },
+      { command: "node", env: { ENTRY: operand }, cwd: snapshot },
+    ]) {
+      expect(() => assertPluginSnapshotLaunchSafe("sample", installed, launch, {}))
+        .toThrow(/launch references its mutable installation/);
+    }
+  }
+});
+
+it("keeps the UNC host when checking a Windows file URL", () => {
+  expect(() => assertPluginSnapshotLaunchSafe("sample", "\\\\fileserver\\share\\plugins\\sample",
+    { command: "node", args: ["--import=file://fileserver/share/plugins/sample/server.mjs"],
+      cwd: "C:\\snapshot" }, {}, "win32", "C:\\snapshot"))
+    .toThrow(/launch references its mutable installation/);
+});
+
 it("keeps spaces in sibling paths and file URLs while comparing components", async () => {
   const home = await mkdtemp(join(tmpdir(), "agenc-plugin-sibling-")); roots.push(home);
   const installed = join(home, "sample");
@@ -87,25 +112,25 @@ it("keeps spaces in sibling paths and file URLs while comparing components", asy
   }
 });
 
-it.skipIf(process.platform === "win32")("rejects the Windows executable selected after PATHEXT trimming", async () => {
+it.skipIf(process.platform === "win32")("rejects the path-qualified Windows executable selected by the broker after PATHEXT", async () => {
   const home = await mkdtemp(join(tmpdir(), "agenc-plugin-win-program-")); roots.push(home);
   const installed = join(home, "installed"); await mkdir(installed);
   const executable = join(installed, "server.EXE");
   await writeFile(executable, "program");
-  const command = `agenc-win-program-${process.pid}`;
-  const link = `C:\\bin\\${command}.EXE`;
+  // POSIX treats the Windows spellings as literal names. Mirror the broker's
+  // host-path lookup under a temporary fixture directory for this probe.
+  const baseCwd = `\\snapshot-${process.pid}`;
+  const shimDir = join(process.cwd(), baseCwd); roots.push(shimDir);
+  await mkdir(shimDir);
+  const command = `C:\\bin\\agenc-win-program-${process.pid}`;
+  const link = join(shimDir, `${command}.EXE`);
   await symlink(executable, link);
   try {
+    expect(resolveSpawnExecutable({ program: command, cwd: baseCwd, env: { PATHEXT: ".COM;.EXE" },
+      platform: "win32" })).toBe(executable);
     expect(() => assertPluginSnapshotLaunchSafe("sample", installed,
       { command, env_vars: ["PATHEXT"] },
-      { PATH: "C:\\bin", PATHEXT: ".COM; .EXE;.BAT;.CMD" }, "win32", "."))
+      { PATH: "C:\\bin", PATHEXT: ".COM;.EXE;.BAT;.CMD" }, "win32", baseCwd))
       .toThrow(/launch references its mutable installation/);
   } finally { await rm(link, { force: true }); }
-});
-
-it("uses trimmed, case-insensitive PATHEXT entries in the stdio program search", () => {
-  const selected = "C:\\bin\\server.EXE";
-  expect(resolveStdioProgram("server", { PATH: "C:\\bin", PATHEXT: ".COM; .EXE;.BAT;.CMD" },
-    "D:\\snapshot", "win32", candidate => candidate.toLowerCase() === selected.toLowerCase()))
-    .toBe(selected);
 });

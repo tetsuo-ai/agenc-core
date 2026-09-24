@@ -1,7 +1,7 @@
 import { chmod, lstat, mkdir, mkdtemp, readdir, readlink, rm, stat, symlink } from "node:fs/promises";
 import { renameSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, win32 } from "node:path";
+import { join, relative, win32 } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MCPManager } from "./manager.js";
 import { writePluginCatalog } from "./plugin-catalog-cache.js";
@@ -773,6 +773,38 @@ describe("plugin MCP on-demand lifecycle", () => {
         await manager.start();
         expect(spawn).not.toHaveBeenCalled();
         expect(manager.getConnectionState(cfg.name)).toMatchObject({ type: "failed", error: expect.stringContaining("launch references its mutable installation") });
+      } finally { await manager.stop(); }
+    }
+  });
+
+  it("rejects punctuation-named installed entrypoints at startup and restart", async () => {
+    const cacheHome = await home();
+    const root = join(cacheHome, "sample");
+    const snapshotRoot = join(cacheHome, "cache", "mcp-install-snapshots", "digest");
+    await mkdir(root); await mkdir(snapshotRoot, { recursive: true });
+    for (const [index, name] of ["server(1).mjs", "server,1.mjs", "server's.mjs"].entries()) {
+      const installedEntry = join(root, name);
+      await writeFile(installedEntry, "original");
+      const cfg = config(cacheHome, `plugin:sample:punctuation-${index}`, {
+        command: "node",
+        origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: name,
+          pluginRoot: root, snapshotRoot, snapshotLaunch: {
+            command: "node", args: [relative(snapshotRoot, installedEntry)], cwd: snapshotRoot,
+          } } },
+      });
+      const manager = new MCPManager([cfg]);
+      try {
+        await manager.start();
+        expect(manager.getConnectionState(cfg.name)).toMatchObject({
+          type: "failed", error: expect.stringContaining("launch references its mutable installation"),
+        });
+        await manager.stop();
+        await writeFile(installedEntry, "changed installed bytes");
+        await manager.start();
+        expect(manager.getConnectionState(cfg.name)).toMatchObject({
+          type: "failed", error: expect.stringContaining("launch references its mutable installation"),
+        });
+        expect(spawn).not.toHaveBeenCalled();
       } finally { await manager.stop(); }
     }
   });
