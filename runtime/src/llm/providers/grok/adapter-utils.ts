@@ -433,7 +433,7 @@ export function isContinuationRetrievalFailure(error: unknown): boolean {
 
 function sanitizeSchema(value: unknown): unknown {
   if (Array.isArray(value)) {
-    return value.slice(0, 64).map((item) => sanitizeSchema(item));
+    return value.map((item) => sanitizeSchema(item));
   }
   if (value && typeof value === "object") {
     const input = value as Record<string, unknown>;
@@ -453,7 +453,8 @@ function sanitizeSchema(value: unknown): unknown {
         continue;
       }
       if (key === "enum" && Array.isArray(field)) {
-        output[key] = field.slice(0, 64);
+        // Enum members are literal values, not schema nodes.
+        output[key] = field;
         continue;
       }
       if (key === "const") {

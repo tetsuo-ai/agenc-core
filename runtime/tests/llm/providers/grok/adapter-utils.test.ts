@@ -256,6 +256,40 @@ describe("grok adapter utils", () => {
     expect(params.required).toEqual(["field_0"]);
   });
 
+  it("keeps enums and other schema arrays longer than 64 entries", () => {
+    // An array cap silently removed choices the tool accepts: the model could
+    // not pick an enum value past the 64th, and a long required list lost
+    // fields.
+    const values = Array.from({ length: 80 }, (_, index) => `v${String(index).padStart(2, "0")}`);
+    const required = Array.from({ length: 70 }, (_, index) => `field_${index}`);
+    const tool: LLMTool = {
+      type: "function",
+      function: {
+        name: "mcp.enum80.pick",
+        description: "Pick one value.",
+        parameters: {
+          type: "object",
+          properties: {
+            value: { type: "string", enum: values },
+            ...Object.fromEntries(required.map((name) => [name, { type: "string" }])),
+          },
+          required,
+          anyOf: values.map((value) => ({ properties: { value: { const: value } } })),
+        },
+      },
+    };
+
+    const params = toSlimTool(tool).tool.function.parameters as {
+      readonly properties: { readonly value: { readonly enum: readonly string[] } };
+      readonly required: readonly string[];
+      readonly anyOf: readonly unknown[];
+    };
+
+    expect(params.properties.value.enum).toEqual(values);
+    expect(params.required).toEqual(required);
+    expect(params.anyOf).toHaveLength(80);
+  });
+
   it("keeps an object-valued const literal intact", () => {
     const schema = {
       type: "object", properties: {
