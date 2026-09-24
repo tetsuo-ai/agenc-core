@@ -965,6 +965,7 @@ export class MCPManager {
     const config = this.getServerConfig(name);
     const lifecycle = this.pluginLifecycle(name);
     return (config !== undefined && !this.isLazyPlugin(config)) ||
+      this.retainedCleanup.has(name) ||
       lifecycle.active > 0 || lifecycle.pending > 0 ||
       (!ignoreTransition && lifecycle.transitions > 0) || lifecycle.crash !== undefined ||
       [...this.connectionAttempts].some(attempt => attempt.serverName === name);
@@ -1017,6 +1018,9 @@ export class MCPManager {
     if (expectedConfig && !this.configs.includes(expectedConfig)) return;
     const lifecycle = this.pluginLifecycle(name);
     if (expectedOwner && lifecycle.reservation !== expectedOwner) return;
+    if (this.retainedCleanup.has(name)) {
+      await this.retryRetainedCleanup(name, "after idle eviction");
+    }
     if (this.busy(name, true)) return;
     if (!this.bridges.has(name)) {
       const owner = lifecycle.reservation;
@@ -1054,6 +1058,8 @@ export class MCPManager {
           this.connectedConnections.delete(config.name);
           this.connectionStates.set(config.name, { type: "failed", error: `MCP server "${config.name}" transport closed` });
         });
+        const bridge = this.bridges.get(config.name);
+        if (bridge instanceof ResilientMCPBridge) bridge.notifyTransportClosed();
         return;
       }
       if (lifecycle.crash?.client === client) return;
@@ -2405,6 +2411,7 @@ export class MCPManager {
       // whole bridge — the caller can re-configure the namespace.
       this.assertNoNameShadowing(config.name, rawBridge);
       let reconnectCatalogTools: readonly Record<string, unknown>[] | undefined;
+      let reconnectIsAlive = (): boolean => false;
       bridge = new ResilientMCPBridge(this.pluginLaunchConfig(config), rawBridge, logger, {
         beforeReconnect: () => {
           if (!isCurrent()) throw new Error(`MCP server "${config.name}" configuration changed`);
@@ -2436,6 +2443,12 @@ export class MCPManager {
         onCleanupFailure: (error) => {
           this.failClosedAutomaticReconnect(config.name, bridge, error);
         },
+        onReconnectClient: (newClient: unknown, isAlive: () => boolean) => {
+          reconnectIsAlive = isAlive;
+          if (isCurrent() && this.bridges.get(config.name) === bridge) {
+            this.watchIdlePluginClient(config, newClient, createStartupGate());
+          }
+        },
         // On automatic reconnect the resilient bridge rebuilds only the
         // tool surface and spawns a fresh client. Rebuild the resource +
         // prompt bridges against that new client too — otherwise they keep
@@ -2443,8 +2456,8 @@ export class MCPManager {
         // `renderPrompt` would talk to a dead connection.
         onReconnect: async (newClient: unknown) => {
           const reconnectIsCurrent = (): boolean =>
-            isCurrent() && this.bridges.get(config.name) === bridge;
-          if (!reconnectIsCurrent()) return;
+            reconnectIsAlive() && isCurrent() && this.bridges.get(config.name) === bridge;
+          if (!reconnectIsCurrent()) throw new Error(`MCP server "${config.name}" replacement closed or changed`);
           const companionIsCurrent = this.beginCompanionRefresh(
             config.name,
             reconnectIsCurrent,
@@ -2469,7 +2482,6 @@ export class MCPManager {
             }
           }
           if (reconnectIsCurrent()) {
-            this.watchIdlePluginClient(config, newClient, createStartupGate());
             const replacementInstructions = readClientInstructions(newClient);
             const instructions = replacementInstructions === undefined ? undefined :
               redactMcpAttachmentText(replacementInstructions, sensitiveHeaders);

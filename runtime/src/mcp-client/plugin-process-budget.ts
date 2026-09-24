@@ -70,11 +70,25 @@ export async function reservePluginProcess(
   evict: () => Promise<void>,
   signal?: AbortSignal,
 ): Promise<void> {
+  const declined = new Set<Slot>();
+  const retriedAfterWake = new Set<Slot>();
+  const declinedWhileBusy = new Set<Slot>();
   while (!slots.has(owner)) {
     signal?.throwIfAborted();
     // Subscribe before reading capacity or busy state. An idle notification
     // cannot fall between that check and the wait below.
     const wakeup = subscribeToWake(signal);
+    for (const slot of declined) {
+      if (!slots.has(slot.owner)) {
+        declined.delete(slot);
+        declinedWhileBusy.delete(slot);
+      } else if (slot.busy()) {
+        declinedWhileBusy.add(slot);
+      } else if (declinedWhileBusy.delete(slot)) {
+        declined.delete(slot);
+        retriedAfterWake.delete(slot);
+      }
+    }
     const limit = Math.min(maxProcesses,
       ...[...slots.values()].map(slot => slot.maxProcesses));
     if (slots.size < limit) {
@@ -82,20 +96,35 @@ export async function reservePluginProcess(
       slots.set(owner, { owner, busy, evict, lastUsed: ++tick, maxProcesses });
       return;
     }
-    const oldest = [...slots.values()].filter(slot => !pendingEvictions.has(slot) && !slot.busy())
+    const oldest = [...slots.values()].filter(slot => !pendingEvictions.has(slot) && !declined.has(slot) && !slot.busy())
       .sort((a, b) => a.lastUsed - b.lastUsed)[0];
     if (oldest) {
       wakeup.cancel();
       pendingEvictions.add(oldest);
+      let becameBusy = false;
       // The slot remains occupied while disposal is in progress. A timed-out
       // requester leaves the eviction task owned by the budget until it settles.
-      const disposal = Promise.resolve().then(() => oldest.evict()).finally(() => {
+      const disposal = Promise.resolve().then(() => {
+        becameBusy = oldest.busy();
+        return oldest.evict();
+      }).finally(() => {
         pendingEvictions.delete(oldest);
         wake();
       });
       await awaitOrAbort(disposal, signal);
-      // Eviction may have declined because the candidate became busy. Recheck
-      // capacity and candidates even if its idle notice has already fired.
+      // A no-op eviction cannot make this same slot available. A candidate
+      // that was busy when eviction ran may have become idle and notified us
+      // before the task settled; allow that one recheck, then wait for a new
+      // wake if it still cannot release anything.
+      if (slots.has(oldest.owner)) {
+        const busyNow = oldest.busy();
+        if (becameBusy && !busyNow && !retriedAfterWake.has(oldest)) {
+          retriedAfterWake.add(oldest);
+        } else {
+          declined.add(oldest);
+          if (busyNow) declinedWhileBusy.add(oldest);
+        }
+      }
       continue;
     }
     await wakeup.promise;

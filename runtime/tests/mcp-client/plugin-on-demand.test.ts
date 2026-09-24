@@ -686,6 +686,41 @@ describe("plugin MCP on-demand lifecycle", () => {
     } finally { close.resolve(); await manager.stop(); }
   });
 
+  it("bounds a new startup after the only owner's eviction leaves cleanup unproven", async () => {
+    const cacheHome = await home();
+    const a = config(cacheHome, "plugin:sample:failed-eviction-a", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "failed-eviction-a", digest: "a".repeat(64), maxProcesses: 1, idleTimeoutMs: 10_000 } } });
+    const b = config(cacheHome, "plugin:sample:failed-eviction-b", { timeout: 25, origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "failed-eviction-b", digest: "a".repeat(64), maxProcesses: 1, idleTimeoutMs: 10_000 } } });
+    warm(a); warm(b);
+    const manager = new MCPManager([a, b]);
+    const lifecycle = manager as never as { evictPlugin: (name: string) => Promise<void> };
+    const originalEvict = lifecycle.evictPlugin.bind(manager);
+    let attempts = 0;
+    const guard = vi.spyOn(lifecycle, "evictPlugin").mockImplementation((name: string) => {
+      if (++attempts > 8) throw new Error("budget retried an unreleasable slot");
+      return originalEvict(name);
+    });
+    try {
+      await manager.start();
+      await manager.callTool(a.name, "ping", {});
+      clients[0]!.close.mockRejectedValue(new Error("disposal failed"));
+      await expect(lifecycle.evictPlugin(a.name)).rejects.toThrow(/connection cleanup failed/);
+      await expect(lifecycle.evictPlugin(a.name)).rejects.toThrow(/connection cleanup failed/);
+      attempts = 0;
+      let timerFired = false;
+      const timer = new Promise<void>(resolve => setTimeout(() => { timerFired = true; resolve(); }, 60));
+      const result = await manager.callTool(b.name, "ping", {});
+      await timer;
+      expect(result.metadata?.errorCode).toBe("MCP_PLUGIN_STARTUP_FAILED");
+      expect(timerFired).toBe(true);
+      expect(attempts).toBeLessThanOrEqual(1);
+      expect(spawn).toHaveBeenCalledTimes(1);
+    } finally {
+      guard.mockRestore();
+      clients[0]?.close.mockResolvedValue(undefined);
+      await manager.stop();
+    }
+  });
+
   it("reserves the budget and schedules idle cleanup on explicit reconnect", async () => {
     const cacheHome = await home();
     const configs = ["reconnect-a", "reconnect-b"].map(name => config(cacheHome, `plugin:sample:${name}`, { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: name, digest: "a".repeat(64), maxProcesses: 1, idleTimeoutMs: 20 } } }));

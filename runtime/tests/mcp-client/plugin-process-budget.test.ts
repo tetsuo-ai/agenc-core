@@ -33,4 +33,26 @@ describe("plugin process budget", () => {
       releasePluginProcess(second);
     }
   });
+
+  it("does not retry a slot that stays idle and reserved after a declined eviction", async () => {
+    const first = {}; const second = {};
+    let evictions = 0;
+    await reservePluginProcess(first, 1, () => false, async () => {
+      if (++evictions > 8) throw new Error("budget spun on a declined eviction");
+      notifyPluginProcessIdle();
+    });
+    const controller = new AbortController();
+    let timerFired = false;
+    const timer = setTimeout(() => { timerFired = true; controller.abort(new Error("budget deadline")); }, 25);
+    try {
+      await expect(reservePluginProcess(second, 1, () => false, async () => undefined, controller.signal))
+        .rejects.toThrow("budget deadline");
+      expect(timerFired).toBe(true);
+      expect(evictions).toBe(1);
+    } finally {
+      clearTimeout(timer);
+      releasePluginProcess(first);
+      releasePluginProcess(second);
+    }
+  });
 });

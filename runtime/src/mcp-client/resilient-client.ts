@@ -168,6 +168,8 @@ interface ResilientMCPBridgeOptions {
    * tool reconnect.
    */
   readonly onReconnect?: (client: unknown) => void | Promise<void>;
+  /** Install the manager's close observer before replacement discovery. */
+  readonly onReconnectClient?: (client: unknown, isAlive: () => boolean) => void;
   /**
    * Notifies the manager before a poisoned reconnect task settles. The outer
    * bridge retains the exact nested owners and remains their retry boundary.
@@ -289,6 +291,11 @@ export class ResilientMCPBridge implements MCPToolBridge {
       if (this.disposal === task) this.disposal = undefined;
     });
     return task;
+  }
+
+  /** A transport close can occur while no tool call is in flight. */
+  notifyTransportClosed(): void {
+    this.scheduleReconnect();
   }
 
   // --------------------------------------------------------------------------
@@ -415,6 +422,17 @@ export class ResilientMCPBridge implements MCPToolBridge {
         this.options.sandboxExecutionBroker,
         this.options.environment ?? EMPTY_MCP_REQUEST_ENVIRONMENT,
       );
+      let closed = false;
+      if (typeof client === "object" && client !== null) {
+        const observed = client as { onclose?: () => void };
+        const previous = observed.onclose;
+        observed.onclose = () => {
+          closed = true;
+          previous?.();
+        };
+      }
+      const isAlive = (): boolean => !closed && this.isReconnectCurrent(epoch);
+      this.options.onReconnectClient?.(client, isAlive);
       if (!this.isReconnectCurrent(epoch)) {
         await closeClientForAbandonedReconnect(client, this.serverName);
         client = undefined;
@@ -451,6 +469,8 @@ export class ResilientMCPBridge implements MCPToolBridge {
         },
       );
 
+      if (!isAlive()) throw new Error(`MCP server "${this.serverName}" replacement closed during discovery`);
+
       if (!this.isReconnectCurrent(epoch)) {
         await disposeAbandonedReconnectBridge(newBridge, this.serverName);
         newBridge = undefined;
@@ -458,10 +478,6 @@ export class ResilientMCPBridge implements MCPToolBridge {
         this.reconnecting = false;
         return;
       }
-
-      this.inner = newBridge;
-      this.reconnecting = false;
-      this.backoffMs = 0;
 
       // (a) Rebuild the manager's resource + prompt bridges against the new
       // client. The resilient bridge owns only the tool surface; without
@@ -472,11 +488,17 @@ export class ResilientMCPBridge implements MCPToolBridge {
         try {
           await this.options.onReconnect(client);
         } catch (hookError) {
+          if (!isAlive()) throw hookError;
           this.logger.warn?.(
             `MCP server "${this.serverName}" reconnect resource/prompt refresh failed: ${(hookError as Error).message}`,
           );
         }
       }
+
+      if (!isAlive()) throw new Error(`MCP server "${this.serverName}" replacement closed during initialization`);
+      this.inner = newBridge;
+      this.reconnecting = false;
+      this.backoffMs = 0;
 
       this.logger.info(`MCP server "${this.serverName}" reconnected (${newBridge.tools.length} tools)`);
     } catch (error) {
