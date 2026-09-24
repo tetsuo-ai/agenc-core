@@ -190,8 +190,12 @@ export interface RunAgentParams {
   readonly plan?: ChildExecutionPlan;
   /** Optional child reasoning-effort override. */
   readonly reasoningEffort?: ReasoningEffort;
-  /** Optional child service-tier override. */
-  readonly serviceTier?: string;
+  /**
+   * Optional child service-tier override. Null is standard: the child sends
+   * no tier, and takes neither its parent's nor its role's. Omitted, it takes
+   * its role's tier, else its parent's on the parent's provider.
+   */
+  readonly serviceTier?: string | null;
   /** Optional AbortSignal merged with the live agent's controller. */
   readonly externalSignal?: AbortSignal;
   /** Optional per-call child tool policy layered after allowlist filtering. */
@@ -3091,18 +3095,17 @@ function cloneSessionConfiguration(
   overrides: {
     readonly model?: string;
     readonly reasoningEffort?: ReasoningEffort;
-    readonly serviceTier?: string;
+    /** Null sends no tier; omitted keeps the parent's on its own provider. */
+    readonly serviceTier?: string | null;
     readonly crossProvider?: boolean;
   } = {},
 ): Session["sessionConfiguration"] {
   const base = parent.sessionConfiguration;
   const cwd = worktree?.path ?? base.cwd;
-  const serviceTier = overrides.crossProvider === true
-    ? overrides.serviceTier
-    :
-    overrides.serviceTier !== undefined
-      ? overrides.serviceTier
-      : base.serviceTier;
+  // A child on another provider, or one decided to run at standard speed,
+  // never keeps the parent's tier.
+  const replacesParentTier = overrides.crossProvider === true || overrides.serviceTier !== undefined;
+  const serviceTier = replacesParentTier ? overrides.serviceTier ?? undefined : base.serviceTier;
   const { reasoningEffort: _parentReasoningEffort, ...withoutParentReasoningEffort } = base.collaborationMode;
   const collaborationMode = {
     ...(overrides.crossProvider === true ? withoutParentReasoningEffort : base.collaborationMode),
@@ -3114,7 +3117,7 @@ function cloneSessionConfiguration(
   return {
     ...base,
     cwd,
-    ...(serviceTier !== undefined || overrides.crossProvider === true ? { serviceTier } : {}),
+    ...(serviceTier !== undefined || replacesParentTier ? { serviceTier } : {}),
     collaborationMode,
     sessionSource: {
       kind: "subagent",
@@ -3300,7 +3303,11 @@ function prepareChildSessionAuthority(
     params.parent.providerService.current().model;
   const childReasoningEffort =
     params.reasoningEffort ?? roleConfig.reasoningEffort;
-  const childServiceTier = params.serviceTier ?? roleConfig.serviceTier;
+  // A null tier was decided by the caller (standard); only an omitted one
+  // falls back to the role's.
+  const childServiceTier = params.serviceTier !== undefined
+    ? params.serviceTier
+    : roleConfig.serviceTier;
   const sessionConfiguration = cloneSessionConfiguration(
     params.parent,
     params.live,
@@ -3941,7 +3948,9 @@ export async function* runAgent(
         modelInfo: plan.modelInfo,
         providerSelection: plan.crossProvider ? plan.route : undefined,
         reasoningEffort: plan.reasoningEffort,
-        serviceTier: plan.serviceTier,
+        // spawn_agent decides a plan's tier, so none there is standard, not
+        // the role's or the parent's.
+        serviceTier: plan.serviceTier ?? null,
         toolAllowlist: plan.scope.tools === "parent_filtered" ? params.toolAllowlist : plan.scope.tools,
       };
     } else {

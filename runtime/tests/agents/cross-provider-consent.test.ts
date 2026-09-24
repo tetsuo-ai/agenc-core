@@ -843,6 +843,7 @@ describe("settings changed while a session is open", () => {
       });
       expect(store.current().agents).toEqual({
         cross_provider_enabled: true, allowed_providers: ["deepseek"], cross_provider_ask_each_spawn: false,
+        cross_provider_auto: false,
       });
       expect((await authorizeChildExecutionPlan(fixture.session, second)).kind).toBe("granted");
       // The removed provider stops, and the added one is not gained.
@@ -865,7 +866,7 @@ describe("settings changed while a session is open", () => {
       rmSync(join(project, ".mcp.json"));
       await expect(fixture.broker.refreshCrossProviderPolicy({ previous: askEachSpawn, next: askEachSpawn }))
         .resolves.toEqual({ changed: ["root-session"], failed: [] });
-      expect(store.current().agents).toEqual(askEachSpawn);
+      expect(store.current().agents).toEqual({ ...askEachSpawn, cross_provider_auto: false });
     } finally {
       fixture.close();
       rmSync(root, { recursive: true, force: true });
@@ -905,6 +906,7 @@ describe("settings changed while a session is open", () => {
       });
       expect(store.current().agents).toEqual({
         cross_provider_enabled: true, allowed_providers: ["openai"], cross_provider_ask_each_spawn: false,
+        cross_provider_auto: false,
       });
       expect(heard).not.toHaveBeenCalled();
       const next = { ...openaiPlan, task: { ...openaiPlan.task, id: "openai-two" } } as ChildExecutionPlan;
@@ -993,6 +995,7 @@ describe("settings changed while a session is open", () => {
       });
       expect(settings.store.current().agents).toEqual({
         cross_provider_enabled: true, allowed_providers: ["deepseek", "grok"], cross_provider_ask_each_spawn: false,
+        cross_provider_auto: false,
       });
       expect(openaiChild.signal.aborted).toBe(true);
       await expect(authorizeChildExecutionPlan(fixture.session, openaiPlan, { fresh: true })).resolves.toMatchObject({

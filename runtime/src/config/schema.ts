@@ -216,6 +216,24 @@ export interface AgentConfig {
   readonly retention?: AgentRunRetentionConfig;
 }
 
+/** Sub-agent effort limits, lowest first. */
+export const SUBAGENT_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type SubagentEffort = (typeof SUBAGENT_EFFORTS)[number];
+/** Sub-agent speed limits, lowest first. `fast` is the priority service tier. */
+export const SUBAGENT_SPEEDS = ["standard", "fast"] as const;
+export type SubagentSpeed = (typeof SUBAGENT_SPEEDS)[number];
+
+/**
+ * The effort and speed sub-agents on one provider run at. A model may ask
+ * for less, never more. Unset, effort is each model's lowest level other than
+ * none, and speed is standard. "minimal" and "standard" run sub-agents the
+ * same way as unset; the config store ranks them together.
+ */
+export interface SubagentLimit {
+  readonly effort?: SubagentEffort;
+  readonly speed?: SubagentSpeed;
+}
+
 /** Operator authority for routing subagents to another provider. */
 export interface AgentsConfig {
   readonly cross_provider_enabled?: boolean;
@@ -225,6 +243,14 @@ export interface AgentsConfig {
    * cross_provider_enabled with allowed_providers is the user's consent.
    */
   readonly cross_provider_ask_each_spawn?: boolean;
+  /**
+   * Let the agent choose an allowed provider on its own. Off by default: a
+   * sub-agent then runs on another provider only when the user named that
+   * provider or one of its models in the conversation.
+   */
+  readonly cross_provider_auto?: boolean;
+  /** Per built-in provider, the limits for every sub-agent that runs on it. */
+  readonly subagent_limits?: Readonly<Record<string, SubagentLimit>>;
 }
 
 /**
@@ -1189,6 +1215,7 @@ export function defaultConfig(): AgenCConfig {
       cross_provider_enabled: false,
       allowed_providers: Object.freeze([]),
       cross_provider_ask_each_spawn: false,
+      cross_provider_auto: false,
     }) as AgentsConfig,
     agent: Object.freeze({
       // Default budget is intentionally empty: caps are designed for
@@ -2172,9 +2199,13 @@ export function validateAgentsConfig(raw: unknown): AgentsConfig | undefined {
     new InvalidAgentsConfigError(field, detail);
   const record = requirePlainObject(raw, "", fail);
   rejectUnknownFields(record,
-    new Set(["cross_provider_enabled", "allowed_providers", "cross_provider_ask_each_spawn"]), fail);
+    new Set(["cross_provider_enabled", "allowed_providers", "cross_provider_ask_each_spawn",
+      "cross_provider_auto", "subagent_limits"]), fail);
   const enabled = optionalAgentsBoolean(record, "cross_provider_enabled", fail);
   const askEachSpawn = optionalAgentsBoolean(record, "cross_provider_ask_each_spawn", fail);
+  const auto = optionalAgentsBoolean(record, "cross_provider_auto", fail);
+  const limits = record.subagent_limits === undefined
+    ? undefined : validateSubagentLimits(record.subagent_limits, fail);
   const allowed = record.allowed_providers;
   if (allowed !== undefined && !Array.isArray(allowed)) {
     throw fail("allowed_providers", "expected array of provider names");
@@ -2194,7 +2225,42 @@ export function validateAgentsConfig(raw: unknown): AgentsConfig | undefined {
     ...(enabled !== undefined ? { cross_provider_enabled: enabled } : {}),
     ...(allowed !== undefined ? { allowed_providers: Object.freeze(providers) } : {}),
     ...(askEachSpawn !== undefined ? { cross_provider_ask_each_spawn: askEachSpawn } : {}),
+    ...(auto !== undefined ? { cross_provider_auto: auto } : {}),
+    ...(limits !== undefined ? { subagent_limits: limits } : {}),
   });
+}
+
+function oneOf<T extends string>(values: readonly T[], value: unknown): value is T {
+  return (values as readonly unknown[]).includes(value);
+}
+
+/** `[agents.subagent_limits.<provider>]` tables, keyed by built-in provider name. */
+function validateSubagentLimits(
+  raw: unknown,
+  fail: (field: string, detail: string) => InvalidAgentsConfigError,
+): Readonly<Record<string, SubagentLimit>> {
+  const record = requirePlainObject(raw, "subagent_limits", fail);
+  const limits: Record<string, SubagentLimit> = {};
+  for (const [name, value] of Object.entries(record)) {
+    const field = `subagent_limits.${name}`;
+    const provider = resolveBuiltInProviderSlug(name);
+    if (provider === undefined) throw fail(field, "unknown provider");
+    if (Object.hasOwn(limits, provider)) throw fail(field, `duplicate provider ${JSON.stringify(provider)}`);
+    const entry = requirePlainObject(value, field, fail);
+    rejectUnknownFields(entry, new Set(["effort", "speed"]), fail, field);
+    const { effort, speed } = entry;
+    if (effort !== undefined && !oneOf(SUBAGENT_EFFORTS, effort)) {
+      throw fail(`${field}.effort`, `expected one of ${SUBAGENT_EFFORTS.join(", ")}`);
+    }
+    if (speed !== undefined && !oneOf(SUBAGENT_SPEEDS, speed)) {
+      throw fail(`${field}.speed`, `expected one of ${SUBAGENT_SPEEDS.join(", ")}`);
+    }
+    limits[provider] = Object.freeze({
+      ...(effort !== undefined ? { effort } : {}),
+      ...(speed !== undefined ? { speed } : {}),
+    });
+  }
+  return Object.freeze(limits);
 }
 
 const PER_TOOL_CONFIG_KEYS: ReadonlySet<string> = new Set([

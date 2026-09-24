@@ -378,7 +378,7 @@ function createScenario(options: ScenarioOptions): Scenario {
   const configStore = new ConfigStore({
     home, cwd,
     ...(options.crossProvider ? {
-      base: { agents: { cross_provider_enabled: true, allowed_providers: ["openrouter"] } },
+      base: { agents: { cross_provider_enabled: true, allowed_providers: ["openrouter"], cross_provider_auto: true } },
     } : {}),
   });
   const targetProvider = options.crossProvider

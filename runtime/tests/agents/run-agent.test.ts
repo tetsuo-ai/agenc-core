@@ -2867,6 +2867,112 @@ describe("runAgent", () => {
     });
   });
 
+  /**
+   * Spawns a child of a parent on openai/gpt-5.4 at high effort through the
+   * spawn_agent tool, the real delegate and the real runAgent, and returns
+   * the options of the child's first model call.
+   */
+  async function childCallThroughSpawn(opts: {
+    readonly parentServiceTier?: string;
+    readonly limits?: Record<string, unknown>;
+    readonly args?: Record<string, unknown>;
+  }): Promise<LLMChatOptions> {
+    const childCalls: LLMChatOptions[] = [];
+    const provider = {
+      ...makeProvider([]),
+      chatStream: vi.fn(async (messages: LLMMessage[], _onChunk: StreamProgressCallback,
+        options?: LLMChatOptions): Promise<LLMResponse> => {
+        if (options !== undefined && JSON.stringify(messages).includes("limited child task")) childCalls.push(options);
+        return { content: "done", toolCalls: [], usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          model: "gpt-5.4", finishReason: "stop" };
+      }),
+    } satisfies LLMProvider;
+    const parent = makeStubSession({
+      roleWorkspace: ROLE_WORKSPACE,
+      services: { provider, configStore: new ConfigStore({ cwd: "/tmp", base: {
+        agents: { subagent_limits: opts.limits ?? {} } } }) },
+      sessionConfiguration: mkSessionConfiguration({
+        provider: { slug: "openai" } as unknown as SessionConfiguration["provider"],
+        collaborationMode: { model: "gpt-5.4", reasoningEffort: "high" },
+        ...(opts.parentServiceTier !== undefined ? { serviceTier: opts.parentServiceTier } : {}),
+      }),
+      config: { ...mkConfig(), model: "gpt-5.4" },
+      modelInfo: { ...mkModelInfo(), slug: "gpt-5.4", supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+        serviceTiers: [{ id: "priority", name: "Fast", description: "1.5x speed, increased usage" }] },
+    });
+    const registry = new AgentRegistry();
+    const control = new AgentControl({
+      session: parent as unknown as ConstructorParameters<typeof AgentControl>[0]["session"],
+      registry,
+    });
+    const spawn = createSpawnAgentTool({
+      getSession: () => parent,
+      workspace: ROLE_WORKSPACE,
+      roleCatalog: new AgentRoleCatalog(ROLE_WORKSPACE),
+      ensureAgentControl: () => ({ control, registry }),
+    } as unknown as MultiAgentV2Options);
+    try {
+      const result = await spawn.execute({ message: "limited child task", task_name: "worker", ...opts.args });
+      expect(result.isError, result.content).not.toBe(true);
+      await vi.waitFor(() => expect(childCalls).toHaveLength(1));
+      return childCalls[0]!;
+    } finally {
+      await control.shutdownAll("test cleanup");
+    }
+  }
+
+  it("sends no tier for a child at standard speed, even under a parent on priority", async () => {
+    const call = await childCallThroughSpawn({ parentServiceTier: "priority" });
+    expect(call.serviceTier).toBeUndefined();
+    expect(call.reasoningEffort).toBe("low");
+  });
+
+  it("sends priority for a child whose limit is fast, under a parent at standard speed", async () => {
+    const call = await childCallThroughSpawn({ limits: { openai: { effort: "medium", speed: "fast" } } });
+    expect(call.serviceTier).toBe("priority");
+    expect(call.reasoningEffort).toBe("medium");
+  });
+
+  it("does not let a role's tier or effort take a child above its limits", async () => {
+    registerAgentRole(ROLE_WORKSPACE, {
+      name: "priority-reviewer",
+      config: {
+        description: "Review quickly.",
+        configToml: ['reasoning_effort = "high"', 'service_tier = "priority"'].join("\n"),
+      },
+    });
+    const call = await childCallThroughSpawn({ args: { agent_type: "priority-reviewer" } });
+    expect(call.serviceTier).toBeUndefined();
+    expect(call.reasoningEffort).toBe("low");
+  });
+
+  it("does not let a role's tier override a cross-provider plan's standard speed", async () => {
+    registerAgentRole(ROLE_WORKSPACE, {
+      name: "priority-reviewer",
+      config: { description: "Review quickly.", configToml: 'service_tier = "priority"' },
+    });
+    const seen: LLMChatOptions[] = [];
+    const target = { ...makeProvider([]), name: "deepseek",
+      chatStream: vi.fn(async (_messages: LLMMessage[], _onChunk: StreamProgressCallback,
+        options?: LLMChatOptions): Promise<LLMResponse> => {
+        if (options !== undefined) seen.push(options);
+        return { content: "done", toolCalls: [], usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          model: "deepseek-v4-pro", finishReason: "stop" };
+      }),
+    } satisfies LLMProvider;
+    const configStore = new ConfigStore({ cwd: "/tmp", base: {
+      agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] },
+    } });
+    const { parent, modelInfo } = crossProviderRuntime(target, configStore);
+    const plan = await authorizedCrossProviderPlan(parent, modelInfo);
+    expect(plan.serviceTier).toBeUndefined();
+    const { live } = await spawnLive(parent, "priority-reviewer");
+    const { result } = await collectRun(runAgent({ live, parent,
+      initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", plan }));
+    expect(result.outcome).toBe("completed");
+    expect(seen[0]?.serviceTier).toBeUndefined();
+  });
+
   it("captures matching session and child tool metadata from the same registry", async () => {
     const toolName = "system.echo";
     const provider = makeProvider([{ content: "summary seed" }]);

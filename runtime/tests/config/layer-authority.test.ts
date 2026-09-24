@@ -89,7 +89,8 @@ const MANAGED_VALUES = {
 } as const satisfies Record<ManagedOnlyConfigKey, unknown>;
 
 const OPERATOR_VALUES = {
-  agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"], cross_provider_ask_each_spawn: false },
+  agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"], cross_provider_ask_each_spawn: false,
+    cross_provider_auto: false },
   gateway: { defaultAgent: "operator", hooks: { enabled: false } },
   modelOverrides: { "grok-4.6": "grok-4.6-enterprise" },
   allowedMcpServers: [{ serverName: "internal" }],
@@ -104,6 +105,7 @@ describe("canonical config layer authority", () => {
       cross_provider_enabled: false,
       allowed_providers: [],
       cross_provider_ask_each_spawn: false,
+      cross_provider_auto: false,
     });
     expect(() => validateAgentsConfig({ allowed_providers: ["not-a-provider"] }))
       .toThrow(/unknown provider/u);
@@ -124,7 +126,7 @@ describe("canonical config layer authority", () => {
     });
     const loaded = await loadLayeredConfig(repositoryOptions(root));
     expect(loaded.config.agents).toEqual({ cross_provider_enabled: false, allowed_providers: [],
-      cross_provider_ask_each_spawn: false });
+      cross_provider_ask_each_spawn: false, cross_provider_auto: false });
     expect(loaded.ignored).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: "agents", scope: "project" }),
     ]));
@@ -132,6 +134,25 @@ describe("canonical config layer authority", () => {
       .toThrow(/operator-only key agents/u);
     // A repository cannot turn off the per-spawn question a user asked for.
     expect(() => assertConfigPatchAuthority("project", { agents: { cross_provider_ask_each_spawn: false } }))
+      .toThrow(/operator-only key agents/u);
+  });
+  test("validates automatic provider choice and sub-agent limits, which repository config cannot set", () => {
+    expect(validateAgentsConfig({ cross_provider_auto: true,
+      subagent_limits: { deepseek: { effort: "high", speed: "fast" }, openai: {} } }))
+      .toEqual({ cross_provider_auto: true, subagent_limits: { deepseek: { effort: "high", speed: "fast" }, openai: {} } });
+    // Written values stay as written, so `agenc config get` shows them; the
+    // store ranks "minimal" and "standard" with unset.
+    expect(validateAgentsConfig({ subagent_limits: { openai: { effort: "minimal", speed: "standard" } } }))
+      .toEqual({ subagent_limits: { openai: { effort: "minimal", speed: "standard" } } });
+    expect(() => validateAgentsConfig({ cross_provider_auto: "yes" })).toThrow(/cross_provider_auto/u);
+    expect(() => validateAgentsConfig({ subagent_limits: { "not-a-provider": {} } })).toThrow(/subagent_limits\.not-a-provider/u);
+    expect(() => validateAgentsConfig({ subagent_limits: { deepseek: { effort: "extreme" } } })).toThrow(/effort/u);
+    expect(() => validateAgentsConfig({ subagent_limits: { deepseek: { speed: "turbo" } } })).toThrow(/speed/u);
+    expect(() => validateAgentsConfig({ subagent_limits: { deepseek: { model: "deepseek-v4-pro" } } })).toThrow(/unknown field/u);
+    expect(() => validateAgentsConfig({ subagent_limits: ["deepseek"] })).toThrow(/subagent_limits/u);
+    expect(() => assertConfigPatchAuthority("project", { agents: { cross_provider_auto: true } }))
+      .toThrow(/operator-only key agents/u);
+    expect(() => assertConfigPatchAuthority("project", { agents: { subagent_limits: { deepseek: { effort: "max" } } } }))
       .toThrow(/operator-only key agents/u);
   });
   test("keeps the three registries exact, disjoint, and classified", () => {

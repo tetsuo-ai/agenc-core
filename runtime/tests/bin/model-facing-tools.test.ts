@@ -249,6 +249,20 @@ function addSessionAgentDefinition(
   session.agentDefinitions.activeAgents.push(definition);
 }
 
+/**
+ * Sets the user's sub-agent limits for the fake session's provider (grok:
+ * it has no provider service or config store). Without them a child runs at
+ * the model's lowest effort and standard speed.
+ */
+function withSubagentLimits(
+  session: Session,
+  limit: { readonly effort?: string; readonly speed?: string },
+): void {
+  (session.config as { agents?: unknown }).agents = {
+    subagent_limits: { grok: limit },
+  };
+}
+
 async function writeTestSkill(
   root: string,
   name: string,
@@ -3415,8 +3429,10 @@ describe("model-facing tools", () => {
     const delegated = delegateMock.mock.calls.at(-1)?.[0];
     expect(delegated).not.toHaveProperty("role");
     expect(delegated).not.toHaveProperty("model");
-    expect(delegated).not.toHaveProperty("reasoningEffort");
-    expect(delegated).not.toHaveProperty("serviceTier");
+    // Blank overrides ask for nothing: the child runs at its provider's
+    // limits, the model's lowest effort at standard speed (null: no tier).
+    expect(delegated.reasoningEffort).toBe("low");
+    expect(delegated.serviceTier).toBeNull();
     expect(delegated).not.toHaveProperty("forkMode");
     expect(delegated).not.toHaveProperty("isolation");
   });
@@ -3570,6 +3586,8 @@ describe("model-facing tools", () => {
       serviceTiers: [],
     };
     const session = fakeSession();
+    // Only a fast speed limit lets a child ask for the priority tier.
+    withSubagentLimits(session, { speed: "fast" });
     (
       session.services as unknown as {
         modelsManager: {
@@ -3709,6 +3727,8 @@ describe("model-facing tools", () => {
       baseDir: "programmatic",
       getSystemPrompt: () => "",
     });
+    // Limits above the role's, so its effort and tier apply as configured.
+    withSubagentLimits(session, { effort: "xhigh", speed: "fast" });
     delegateMock.mockResolvedValue({
       kind: "async_launched",
       thread: {
@@ -3823,7 +3843,7 @@ describe("model-facing tools", () => {
     expect(delegateMock).not.toHaveBeenCalled();
   });
 
-  it("allows explicit service_tier on full-history spawn_agent forks", async () => {
+  it("refuses an explicit service_tier on full-history spawn_agent forks, which keep the parent's", async () => {
     const session = fakeSession();
     delegateMock.mockResolvedValue({
       kind: "async_launched",
@@ -3862,13 +3882,11 @@ describe("model-facing tools", () => {
         service_tier: "priority",
       });
 
-    expect(result.isError).not.toBe(true);
-    expect(delegateMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        forkMode: { kind: "full_history" },
-        serviceTier: "priority",
-      }),
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content).error).toBe(
+      "Full-history forked agents inherit the parent agent type, model, reasoning effort, and service tier; omit agent_type, model, reasoning_effort, and service_tier, or spawn without a full-history fork.",
     );
+    expect(delegateMock).not.toHaveBeenCalled();
   });
 
   // Shared by the Opus 5.5 registry-validation tests below: a session wired
@@ -4046,6 +4064,8 @@ describe("model-facing tools", () => {
       },
     });
 
+    // A limit at xhigh, so the requested effort applies as asked.
+    withSubagentLimits(session, { effort: "xhigh" });
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
       getSession: () => session,
@@ -4220,6 +4240,8 @@ describe("model-facing tools", () => {
       },
     });
 
+    // A limit at xhigh, so the requested effort applies as asked.
+    withSubagentLimits(session, { effort: "xhigh" });
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
       getSession: () => session,
@@ -4510,9 +4532,11 @@ describe("model-facing tools", () => {
 
       expect(resultA.isError).not.toBe(true);
       expect(resultB.isError).not.toBe(true);
+      // Neither role sets an effort: each child runs at its provider's
+      // limit, the model's lowest level.
       expect(observed).toEqual([
-        { effort: undefined, prompt: "Workspace A prompt." },
-        { effort: undefined, prompt: "Workspace B prompt." },
+        { effort: "low", prompt: "Workspace A prompt." },
+        { effort: "low", prompt: "Workspace B prompt." },
       ]);
 
       const coldMismatchedSession = fakeSession(workspaceB);

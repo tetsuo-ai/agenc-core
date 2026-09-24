@@ -12,8 +12,8 @@
 import { dirname, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
-import type { AgenCConfig, AgentsConfig } from "./schema.js";
-import { defaultConfig } from "./schema.js";
+import type { AgenCConfig, AgentsConfig, SubagentEffort, SubagentLimit, SubagentSpeed } from "./schema.js";
+import { defaultConfig, SUBAGENT_EFFORTS, SUBAGENT_SPEEDS } from "./schema.js";
 import type { EnvSnapshot } from "./env.js";
 import { applyEnvOverrides } from "./env.js";
 import { type HomeContext, resolveHomeContext } from "./home.js";
@@ -97,9 +97,10 @@ export function nextConfigReadMark(): number {
 
 /**
  * The cross-provider subagent policy that both `current` and `limit` allow:
- * on only if both are on, only the providers both allow, and asking at each
- * spawn if either asks. It is never wider than `current`. An omitted `limit`
- * allows nothing.
+ * on only if both are on, only the providers both allow, asking at each
+ * spawn if either asks, choosing providers automatically only if both do,
+ * and each sub-agent limit no higher than either. It is never wider than
+ * `current`. An omitted `limit` allows nothing.
  */
 export function narrowAgentsConfig(
   current: AgentsConfig | undefined,
@@ -118,7 +119,69 @@ export function narrowAgentsConfig(
     cross_provider_ask_each_spawn:
       current?.cross_provider_ask_each_spawn === true ||
       limit?.cross_provider_ask_each_spawn === true,
+    cross_provider_auto:
+      current?.cross_provider_auto === true && limit?.cross_provider_auto === true,
+    ...withSubagentLimits(lowerSubagentLimits(current?.subagent_limits, limit?.subagent_limits)),
   });
+}
+
+/** The `subagent_limits` entry of an `[agents]` section, left out when every limit is the lowest. */
+function withSubagentLimits(
+  limits: Readonly<Record<string, SubagentLimit>>,
+): { readonly subagent_limits?: Readonly<Record<string, SubagentLimit>> } {
+  return Object.keys(limits).length > 0 ? { subagent_limits: limits } : {};
+}
+
+/**
+ * Unset effort and speed are the lowest: each model's lowest level, standard.
+ * They rank with "minimal" and "standard", which run sub-agents the same way.
+ */
+function effortRank(effort: SubagentEffort | undefined): number {
+  return effort === undefined ? 0 : SUBAGENT_EFFORTS.indexOf(effort);
+}
+
+function speedRank(speed: SubagentSpeed | undefined): number {
+  return speed === undefined ? 0 : SUBAGENT_SPEEDS.indexOf(speed);
+}
+
+function lowerEffort(a: SubagentEffort | undefined, b: SubagentEffort | undefined): SubagentEffort | undefined {
+  return effortRank(a) <= effortRank(b) ? a : b;
+}
+
+function lowerSpeed(a: SubagentSpeed | undefined, b: SubagentSpeed | undefined): SubagentSpeed | undefined {
+  return speedRank(a) <= speedRank(b) ? a : b;
+}
+
+/**
+ * Sub-agent limits as a frozen map, without limits at the lowest ("minimal",
+ * "standard") or providers left with none.
+ */
+function subagentLimitMap(
+  entries: Iterable<readonly [string, SubagentEffort | undefined, SubagentSpeed | undefined]>,
+): Readonly<Record<string, SubagentLimit>> {
+  const out: Record<string, SubagentLimit> = {};
+  for (const [provider, effort, speed] of entries) {
+    const raisedEffort = effortRank(effort) > 0 ? effort : undefined;
+    const raisedSpeed = speedRank(speed) > 0 ? speed : undefined;
+    if (raisedEffort === undefined && raisedSpeed === undefined) continue;
+    out[provider] = Object.freeze({
+      ...(raisedEffort !== undefined ? { effort: raisedEffort } : {}),
+      ...(raisedSpeed !== undefined ? { speed: raisedSpeed } : {}),
+    });
+  }
+  return Object.freeze(out);
+}
+
+/** Each of `current`'s sub-agent limits, no higher than `limit`'s for that provider. */
+function lowerSubagentLimits(
+  current: Readonly<Record<string, SubagentLimit>> | undefined,
+  limit: Readonly<Record<string, SubagentLimit>> | undefined,
+): Readonly<Record<string, SubagentLimit>> {
+  return subagentLimitMap(Object.entries(current ?? {}).map(([provider, own]) => [
+    provider,
+    lowerEffort(own.effort, limit?.[provider]?.effort),
+    lowerSpeed(own.speed, limit?.[provider]?.speed),
+  ] as const));
 }
 
 /**
@@ -133,7 +196,8 @@ export interface AgentsConfigChange {
 
 /**
  * Whether `change` took anything away: a provider `previous` allowed and
- * `next` does not, the feature turned off, or asking at each spawn turned on.
+ * `next` does not, the feature or automatic choice turned off, asking at each
+ * spawn turned on, or a sub-agent limit lowered.
  * An unknown `previous` counts as taking away all that `next` does not allow.
  */
 export function agentsChangeRevokes(change: AgentsConfigChange): boolean {
@@ -147,7 +211,9 @@ export function agentsChangeRevokes(change: AgentsConfigChange): boolean {
 /**
  * `current` without what `change` took away (`agentsChangeRevokes`): the
  * providers `previous` allowed and `next` does not, the feature if `next`
- * turned it off, and not asking at each spawn if `next` started asking.
+ * turned it off, not asking at each spawn if `next` started asking,
+ * automatic choice if `next` turned it off, and any sub-agent limit above
+ * one that `next` lowered.
  * Everything else in `current` stays, such as what a session's own
  * `--config` file, profile or `-c` allows. With an unknown `previous` it is
  * `narrowAgentsConfig(current, next)`. It is never wider than `current`.
@@ -176,6 +242,22 @@ export function revokeAgentsConfig(
       current?.cross_provider_ask_each_spawn === true ||
       (previous.cross_provider_ask_each_spawn !== true &&
         next?.cross_provider_ask_each_spawn === true),
+    cross_provider_auto:
+      current?.cross_provider_auto === true &&
+      (previous.cross_provider_auto !== true || next?.cross_provider_auto === true),
+    ...withSubagentLimits(subagentLimitMap(
+      Object.entries(current?.subagent_limits ?? {}).map(([provider, own]) => {
+        const before = previous.subagent_limits?.[provider];
+        const after = next?.subagent_limits?.[provider];
+        return [
+          provider,
+          effortRank(after?.effort) < effortRank(before?.effort)
+            ? lowerEffort(own.effort, after?.effort) : own.effort,
+          speedRank(after?.speed) < speedRank(before?.speed)
+            ? lowerSpeed(own.speed, after?.speed) : own.speed,
+        ] as const;
+      }),
+    )),
   });
 }
 
@@ -188,7 +270,13 @@ function sameAgentsPolicy(
       (b?.cross_provider_enabled === true) &&
     (a?.cross_provider_ask_each_spawn === true) ===
       (b?.cross_provider_ask_each_spawn === true) &&
-    isDeepStrictEqual(a?.allowed_providers ?? [], b?.allowed_providers ?? []);
+    (a?.cross_provider_auto === true) === (b?.cross_provider_auto === true) &&
+    isDeepStrictEqual(a?.allowed_providers ?? [], b?.allowed_providers ?? []) &&
+    // Lowering a map by itself normalizes it: providers at the lowest drop out.
+    isDeepStrictEqual(
+      lowerSubagentLimits(a?.subagent_limits, a?.subagent_limits),
+      lowerSubagentLimits(b?.subagent_limits, b?.subagent_limits),
+    );
 }
 
 export type ConfigStoreListener = (
