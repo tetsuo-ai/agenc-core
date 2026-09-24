@@ -133,6 +133,26 @@ function rolloutLineCount(rolloutPath: string): number {
     .filter((line) => line.length > 0).length;
 }
 
+function failArchivedArtifactCleanup(
+  store: FileThreadStore,
+  rollout: RolloutStore,
+  threadId: string,
+  artifactContent?: string,
+) {
+  store.createThread({ threadId, rolloutStore: rollout });
+  store.shutdownThread(threadId);
+  rollout.close();
+  store.archiveThread({ threadId });
+  const archived = store.readThread({ threadId, includeArchived: true, includeHistory: false });
+  const artifacts = join(dirname(archived.rolloutPath!), "display-artifacts");
+  mkdirSync(artifacts);
+  if (artifactContent !== undefined) writeFileSync(join(artifacts, "held"), artifactContent);
+  artifactCleanupFailure.path = artifacts;
+  artifactCleanupFailure.failOnce = true;
+  expect(() => store.unarchiveThread({ threadId })).toThrow("injected artifact cleanup failure");
+  return { archived, artifacts };
+}
+
 beforeEach(() => {
   agencHome = mkdtempSync(join(tmpdir(), "agenc-thread-store-home-"));
   originalAgencHome = process.env.AGENC_HOME ?? "";
@@ -423,17 +443,7 @@ describe("FileThreadStore.archiveThread / listThreads", () => {
     const rollout = openStore({ cwd, sessionId: "unarchive-retry" });
     try {
       const store = new FileThreadStore({ agencHome, cwd });
-      store.createThread({ threadId: "unarchive-retry", rolloutStore: rollout });
-      store.shutdownThread("unarchive-retry");
-      rollout.close();
-      store.archiveThread({ threadId: "unarchive-retry" });
-      const archived = store.readThread({ threadId: "unarchive-retry", includeArchived: true, includeHistory: false });
-      const artifacts = join(dirname(archived.rolloutPath!), "display-artifacts");
-      mkdirSync(artifacts);
-      writeFileSync(join(artifacts, "held"), "A".repeat(400_000));
-      artifactCleanupFailure.path = artifacts;
-      artifactCleanupFailure.failOnce = true;
-      expect(() => store.unarchiveThread({ threadId: "unarchive-retry" })).toThrow("injected artifact cleanup failure");
+      const { artifacts } = failArchivedArtifactCleanup(store, rollout, "unarchive-retry", "A".repeat(400_000));
       expect(existsSync(artifacts)).toBe(true);
       store.unarchiveThread({ threadId: "unarchive-retry" });
       expect(existsSync(artifacts)).toBe(false);
@@ -444,17 +454,7 @@ describe("FileThreadStore.archiveThread / listThreads", () => {
     const rollout = openStore({ cwd, sessionId: "unarchive-startup" });
     try {
       const store = new FileThreadStore({ agencHome, cwd });
-      store.createThread({ threadId: "unarchive-startup", rolloutStore: rollout });
-      store.shutdownThread("unarchive-startup");
-      rollout.close();
-      store.archiveThread({ threadId: "unarchive-startup" });
-      const archived = store.readThread({ threadId: "unarchive-startup", includeArchived: true, includeHistory: false });
-      const artifacts = join(dirname(archived.rolloutPath!), "display-artifacts");
-      mkdirSync(artifacts);
-      writeFileSync(join(artifacts, "held"), "A".repeat(400_000));
-      artifactCleanupFailure.path = artifacts;
-      artifactCleanupFailure.failOnce = true;
-      expect(() => store.unarchiveThread({ threadId: "unarchive-startup" })).toThrow("injected artifact cleanup failure");
+      const { artifacts } = failArchivedArtifactCleanup(store, rollout, "unarchive-startup", "A".repeat(400_000));
       store.close();
       const restarted = new FileThreadStore({ agencHome, cwd });
       expect(existsSync(artifacts)).toBe(false);
@@ -467,17 +467,7 @@ describe("FileThreadStore.archiveThread / listThreads", () => {
     const rollout = openStore({ cwd, sessionId: "unarchive-backfill" });
     const store = new FileThreadStore({ agencHome, cwd });
     try {
-      store.createThread({ threadId: "unarchive-backfill", rolloutStore: rollout });
-      store.shutdownThread("unarchive-backfill");
-      rollout.close();
-      store.archiveThread({ threadId: "unarchive-backfill" });
-      const archived = store.readThread({ threadId: "unarchive-backfill", includeArchived: true, includeHistory: false });
-      const artifacts = join(dirname(archived.rolloutPath!), "display-artifacts");
-      mkdirSync(artifacts);
-      writeFileSync(join(artifacts, "held"), "held artifact");
-      artifactCleanupFailure.path = artifacts;
-      artifactCleanupFailure.failOnce = true;
-      expect(() => store.unarchiveThread({ threadId: "unarchive-backfill" })).toThrow("injected artifact cleanup failure");
+      const { archived, artifacts } = failArchivedArtifactCleanup(store, rollout, "unarchive-backfill", "held artifact");
       const active = store.readThread({ threadId: "unarchive-backfill", includeArchived: false, includeHistory: false });
       const driver = openStateDatabases({ cwd, agencHome });
       try {
@@ -502,16 +492,7 @@ describe("FileThreadStore.archiveThread / listThreads", () => {
     const newer = new FileThreadStore({ agencHome, cwd });
     let restarted: FileThreadStore | undefined;
     try {
-      store.createThread({ threadId: "cursor-race", rolloutStore: rollout });
-      store.shutdownThread("cursor-race");
-      rollout.close();
-      store.archiveThread({ threadId: "cursor-race" });
-      const archived = store.readThread({ threadId: "cursor-race", includeArchived: true, includeHistory: false });
-      const artifacts = join(dirname(archived.rolloutPath!), "display-artifacts");
-      mkdirSync(artifacts);
-      artifactCleanupFailure.path = artifacts;
-      artifactCleanupFailure.failOnce = true;
-      expect(() => store.unarchiveThread({ threadId: "cursor-race" })).toThrow("injected artifact cleanup failure");
+      const { artifacts } = failArchivedArtifactCleanup(store, rollout, "cursor-race");
       const makeNewCursor = () => {
         newer.archiveThread({ threadId: "cursor-race" });
         mkdirSync(artifacts);
@@ -540,16 +521,7 @@ describe("FileThreadStore.archiveThread / listThreads", () => {
     const newer = new FileThreadStore({ agencHome, cwd });
     let restarted: FileThreadStore | undefined;
     try {
-      store.createThread({ threadId: "artifact-race", rolloutStore: rollout });
-      store.shutdownThread("artifact-race");
-      rollout.close();
-      store.archiveThread({ threadId: "artifact-race" });
-      const archived = store.readThread({ threadId: "artifact-race", includeArchived: true, includeHistory: false });
-      const artifacts = join(dirname(archived.rolloutPath!), "display-artifacts");
-      mkdirSync(artifacts);
-      artifactCleanupFailure.path = artifacts;
-      artifactCleanupFailure.failOnce = true;
-      expect(() => store.unarchiveThread({ threadId: "artifact-race" })).toThrow("injected artifact cleanup failure");
+      const { artifacts } = failArchivedArtifactCleanup(store, rollout, "artifact-race");
       const rearchive = () => {
         newer.archiveThread({ threadId: "artifact-race" });
         mkdirSync(artifacts);

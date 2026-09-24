@@ -107,6 +107,12 @@ function createThreadStoreTestDirs(): {
   };
 }
 
+function cleanupThreadStoreTestDirs(cwd: string, home: string, restoreEnv: () => void): void {
+  restoreEnv();
+  rmSync(home, { recursive: true, force: true });
+  rmSync(cwd, { recursive: true, force: true });
+}
+
 function openRollout(
   cwd: string,
   sessionId: string,
@@ -130,6 +136,19 @@ function openRollout(
     modelProvider: "grok",
   });
   return rollout;
+}
+
+function appendOversizedSnapshotAnswer(
+  store: FileThreadStore,
+  rollout: RolloutStore,
+  threadId: string,
+  cwd: string,
+): string {
+  const answer = "A".repeat(400_000);
+  store.createThread({ threadId, rolloutStore: rollout, source: "cli_main", cwd });
+  rollout.appendRollout({ type: "event_msg", payload: { id: "answer", eventId: "answer", seq: 1, msg: { type: "agent_message", payload: { message: answer } } } });
+  rollout.flushDurable();
+  return answer;
 }
 
 type LifecycleRunner = NonNullable<
@@ -694,9 +713,8 @@ describe("AgenC background agent lifecycle", () => {
       threadStore.archiveThread({ threadId: "conv-display-one" });
       expect(() => readDisplayArtifact(first.store.sessionDir, id)).toThrow();
     } finally {
-      threadStore.close(); first.close(); second.close(); restoreEnv();
-      rmSync(home, { recursive: true, force: true });
-      rmSync(cwd, { recursive: true, force: true });
+      threadStore.close(); first.close(); second.close();
+      cleanupThreadStoreTestDirs(cwd, home, restoreEnv);
     }
   });
 
@@ -873,13 +891,10 @@ describe("AgenC background agent lifecycle", () => {
   it("publishes an oversized persisted snapshot in the archived location after lookup", async () => {
     const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
     const threadId = "conv-snapshot-archive-race";
-    const answer = "A".repeat(400_000);
     const rollout = openRollout(cwd, threadId);
     const threadStore = new FileThreadStore({ cwd, agencHome: home });
     try {
-      threadStore.createThread({ threadId, rolloutStore: rollout, source: "cli_main", cwd });
-      rollout.appendRollout({ type: "event_msg", payload: { id: "answer", eventId: "answer", seq: 1, msg: { type: "agent_message", payload: { message: answer } } } });
-      rollout.flushDurable();
+      const answer = appendOversizedSnapshotAnswer(threadStore, rollout, threadId, cwd);
       threadStore.shutdownThread(threadId);
       rollout.close();
       const oldArtifacts = join(dirname(rollout.rolloutPath), "display-artifacts");
@@ -916,23 +931,19 @@ describe("AgenC background agent lifecycle", () => {
       } finally { driver.close(); }
       expect(existsSync(oldArtifacts)).toBe(false);
     } finally {
-      threadStore.close(); rollout.close(); restoreEnv();
-      rmSync(home, { recursive: true, force: true });
-      rmSync(cwd, { recursive: true, force: true });
+      threadStore.close(); rollout.close();
+      cleanupThreadStoreTestDirs(cwd, home, restoreEnv);
     }
   });
 
   it("publishes an oversized persisted snapshot while a separate store owns the writer lease", async () => {
     const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
     const threadId = "conv-snapshot-foreign-writer";
-    const answer = "A".repeat(400_000);
     const rollout = openRollout(cwd, threadId);
     const owner = new FileThreadStore({ cwd, agencHome: home });
     const reader = new FileThreadStore({ cwd, agencHome: home });
     try {
-      owner.createThread({ threadId, rolloutStore: rollout, source: "cli_main", cwd });
-      rollout.appendRollout({ type: "event_msg", payload: { id: "answer", eventId: "answer", seq: 1, msg: { type: "agent_message", payload: { message: answer } } } });
-      rollout.flushDurable();
+      const answer = appendOversizedSnapshotAnswer(owner, rollout, threadId, cwd);
       expect(existsSync(`${rollout.rolloutPath}.lock`)).toBe(true);
 
       const sessions = new AgenCDaemonSessionManager({ threadStore: reader, createSessionId: () => threadId });
@@ -945,9 +956,8 @@ describe("AgenC background agent lifecycle", () => {
       expect(Buffer.from(read.data, "base64").toString()).toBe(answer);
       expect(existsSync(`${rollout.rolloutPath}.lock`)).toBe(true);
     } finally {
-      reader.close(); owner.close(); rollout.close(); restoreEnv();
-      rmSync(home, { recursive: true, force: true });
-      rmSync(cwd, { recursive: true, force: true });
+      reader.close(); owner.close(); rollout.close();
+      cleanupThreadStoreTestDirs(cwd, home, restoreEnv);
     }
   });
 

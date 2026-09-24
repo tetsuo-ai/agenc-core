@@ -94,14 +94,30 @@ function daemonMethodCapabilities(
   >;
 }
 
+async function legacyTranscriptConnection(manager: AgenCDaemonAgentManager) {
+  const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: new AgenCDaemonSessionManager() });
+  const older = dispatcher.createConnection({ sendNotification: () => {} });
+  await initialize(older, "1.17.0");
+  return { dispatcher, older };
+}
+
+async function mockArtifactAnswer(manager: AgenCDaemonAgentManager, answer: string) {
+  const snapshot = sessionTranscriptV2FromRollout([{ type: "event_msg", payload: { id: "answer", eventId: "answer", seq: 1, msg: { type: "agent_message", payload: { message: answer } } } }], "one", "run", undefined, await workspaces.create());
+  const bytes = Buffer.from(answer);
+  const read = vi.spyOn(manager, "readSessionArtifact").mockImplementation(async ({ sessionId, id, offset = 0, length = 512 * 1024 }) => {
+    const end = Math.min(offset + length, bytes.length);
+    return { sessionId, id, encoding: "base64", data: bytes.subarray(offset, end).toString("base64"), size: bytes.length, offset, nextOffset: end < bytes.length ? end : null };
+  });
+  vi.spyOn(manager, "getSessionTranscriptV2").mockResolvedValue(snapshot);
+  return { snapshot, read };
+}
+
 describe("session.artifact.read wire contract", () => {
   it("omits attachment transcript events for a client negotiating 1.17", async () => {
     const manager = new AgenCDaemonAgentManager();
     const snapshot = sessionTranscriptV2FromRollout([{ type: "event_msg", payload: { id: "event", eventId: "event", seq: 1, msg: { type: "tool_call_completed", payload: { callId: "c", result: "shown", isError: false, displayAttachments: [{ id: "a".repeat(64), digest: "a".repeat(64), kind: "file", title: "F", mimeType: "text/plain", size: 1 }] } } } }], "one", "run");
     vi.spyOn(manager, "getSessionTranscriptV2").mockResolvedValue(snapshot);
-    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: new AgenCDaemonSessionManager() });
-    const older = dispatcher.createConnection({ sendNotification: () => {} });
-    await initialize(older, "1.17.0");
+    const { dispatcher, older } = await legacyTranscriptConnection(manager);
     const oldResult = await older.dispatch(request("old", "session.transcript.v2", { sessionId: "one" }));
     expect((oldResult.result as typeof snapshot).events).toEqual([]);
     const current = dispatcher.createConnection({ sendNotification: () => {} });
@@ -112,16 +128,8 @@ describe("session.artifact.read wire contract", () => {
   it("gives a 1.17 client the complete 400,000-byte answer", async () => {
     const manager = new AgenCDaemonAgentManager();
     const answer = `${"A".repeat(399_988)}FINAL_MARKER`;
-    const snapshot = sessionTranscriptV2FromRollout([{ type: "event_msg", payload: { id: "answer", eventId: "answer", seq: 1, msg: { type: "agent_message", payload: { message: answer } } } }], "one", "run", undefined, await workspaces.create());
-    const bytes = Buffer.from(answer);
-    vi.spyOn(manager, "readSessionArtifact").mockImplementation(async ({ sessionId, id, offset = 0, length = 512 * 1024 }) => {
-      const end = Math.min(offset + length, bytes.length);
-      return { sessionId, id, encoding: "base64", data: bytes.subarray(offset, end).toString("base64"), size: bytes.length, offset, nextOffset: end < bytes.length ? end : null };
-    });
-    vi.spyOn(manager, "getSessionTranscriptV2").mockResolvedValue(snapshot);
-    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: new AgenCDaemonSessionManager() });
-    const older = dispatcher.createConnection({ sendNotification: () => {} });
-    await initialize(older, "1.17.0");
+    const { snapshot } = await mockArtifactAnswer(manager, answer);
+    const { older } = await legacyTranscriptConnection(manager);
     const response = await older.dispatch(request("old", "session.transcript.v2", { sessionId: "one" }));
     const message = (response.result as typeof snapshot).messages.at(-1)!;
     expect(message.text).toBe(answer);
@@ -136,9 +144,7 @@ describe("session.artifact.read wire contract", () => {
     vi.spyOn(manager, "getSessionTranscriptV2").mockImplementation(async (_params, options) =>
       sessionTranscriptV2FromRollout(items, "one", "run", undefined, sessionDir, { includeCompleteMessages: options?.includeCompleteMessages }),
     );
-    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: new AgenCDaemonSessionManager() });
-    const older = dispatcher.createConnection({ sendNotification: () => {} });
-    await initialize(older, "1.17.0");
+    const { older } = await legacyTranscriptConnection(manager);
     const response = await older.dispatch(request("old", "session.transcript.v2", { sessionId: "one" }));
     const restored = (response.result as { messages: Array<{ text: string }>; asOfSequence: number }).messages;
     expect(restored).toHaveLength(2);
@@ -158,9 +164,7 @@ describe("session.artifact.read wire contract", () => {
       schemaVersion: 2, sessionId: "one", runId: "run", historyEpoch: "epoch",
       asOfSequence: 1_000, messages,
     });
-    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: new AgenCDaemonSessionManager() });
-    const older = dispatcher.createConnection({ sendNotification: () => {} });
-    await initialize(older, "1.17.0");
+    const { dispatcher, older } = await legacyTranscriptConnection(manager);
     const stringify = JSON.stringify;
     let completeSerializations = 0;
     let messageSerializations = 0;
@@ -186,16 +190,8 @@ describe("session.artifact.read wire contract", () => {
   it("restores the complete 800,000-byte answer for 1.17 when its wrapped reply fits", async () => {
     const manager = new AgenCDaemonAgentManager();
     const answer = "A".repeat(800_000);
-    const snapshot = sessionTranscriptV2FromRollout([{ type: "event_msg", payload: { id: "answer", eventId: "answer", seq: 1, msg: { type: "agent_message", payload: { message: answer } } } }], "one", "run", undefined, await workspaces.create());
-    vi.spyOn(manager, "getSessionTranscriptV2").mockResolvedValue(snapshot);
-    const bytes = Buffer.from(answer);
-    const read = vi.spyOn(manager, "readSessionArtifact").mockImplementation(async ({ sessionId, id, offset = 0, length = 512 * 1024 }) => {
-      const end = Math.min(offset + length, bytes.length);
-      return { sessionId, id, encoding: "base64", data: bytes.subarray(offset, end).toString("base64"), size: bytes.length, offset, nextOffset: end < bytes.length ? end : null };
-    });
-    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: new AgenCDaemonSessionManager() });
-    const older = dispatcher.createConnection({ sendNotification: () => {} });
-    await initialize(older, "1.17.0");
+    const { snapshot, read } = await mockArtifactAnswer(manager, answer);
+    const { older } = await legacyTranscriptConnection(manager);
     const response = await older.dispatch(request("old", "session.transcript.v2", { sessionId: "one" }));
     expect((response.result as typeof snapshot).messages.at(-1)?.text).toBe(answer);
     expect((response.result as typeof snapshot).messages.at(-1)?.textArtifact).toBeUndefined();
@@ -204,16 +200,8 @@ describe("session.artifact.read wire contract", () => {
   it("uses the local 16 MiB line limit for a 1.17 artifact answer", async () => {
     const manager = new AgenCDaemonAgentManager();
     const answer = `${"L".repeat(1_199_988)}FINAL_MARKER`;
-    const snapshot = sessionTranscriptV2FromRollout([{ type: "event_msg", payload: { id: "answer", eventId: "answer", seq: 1, msg: { type: "agent_message", payload: { message: answer } } } }], "one", "run", undefined, await workspaces.create());
-    const bytes = Buffer.from(answer);
-    vi.spyOn(manager, "readSessionArtifact").mockImplementation(async ({ sessionId, id, offset = 0, length = 512 * 1024 }) => {
-      const end = Math.min(offset + length, bytes.length);
-      return { sessionId, id, encoding: "base64", data: bytes.subarray(offset, end).toString("base64"), size: bytes.length, offset, nextOffset: end < bytes.length ? end : null };
-    });
-    vi.spyOn(manager, "getSessionTranscriptV2").mockResolvedValue(snapshot);
-    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: new AgenCDaemonSessionManager() });
-    const older = dispatcher.createConnection({ sendNotification: () => {} });
-    await initialize(older, "1.17.0");
+    const { snapshot } = await mockArtifactAnswer(manager, answer);
+    const { older } = await legacyTranscriptConnection(manager);
     const response = await older.dispatch(request("old", "session.transcript.v2", { sessionId: "one" }));
     expect((response.result as typeof snapshot).messages.at(-1)?.text).toBe(answer);
     expect(Buffer.byteLength(JSON.stringify(response))).toBeLessThanOrEqual(16 * 1024 * 1024);
