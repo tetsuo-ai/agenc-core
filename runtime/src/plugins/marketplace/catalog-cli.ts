@@ -655,51 +655,59 @@ async function claimAdvertRefresh(path: string, now: number, authenticate: boole
         manifestRetryAfter: new Date(now + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString(),
         ...(authenticate ? {
           authRetryAfter: new Date(now + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString(),
+          authRefreshPending: true,
         } : {}) });
       return claim;
     });
   } catch { return undefined; }
 }
 
-async function finishAdvertRefresh(path: string, claim: string, metadata: Record<string, unknown>): Promise<void> {
+async function finishAdvertRefresh(path: string, claim: string, metadata: Record<string, unknown>,
+  authenticated: boolean): Promise<void> {
   try {
     await withAdvertSidecarLock(path, async () => {
       const cached = await readAdvertSidecar(path);
       if (cached.advertClaim !== claim) return;
       const { advertClaim: _claim, ...rest } = cached;
+      if (authenticated) delete rest.authRefreshPending;
       await writeAdvertSidecar(path, { ...rest, ...metadata });
     });
   } catch { /* The claimed deadline remains in force after cache write failures. */ }
 }
 
 /** A display-only catalog may have claimed the manifest window first. */
-async function claimAdvertAuthentication(path: string, now: number, force = false): Promise<boolean> {
+async function claimAdvertAuthentication(
+  path: string, now: number, recovery: boolean, authenticatedPath: string,
+  manifestUrl: string, agencHome: string,
+): Promise<{ readonly claimed: boolean; readonly digest?: string }> {
   try {
     return await withAdvertSidecarLock(path, async () => {
       const cached = await readAdvertSidecar(path);
-      // A previously bound entry may need one immediate recovery when its key
-      // disappears or rotates. Persist that claim before fetching so other
-      // processes and subsequent offline polls honor the same deadline.
-      if (force && typeof cached.authRecoveryAfter === "string" &&
-        Date.parse(cached.authRecoveryAfter) > now) return false;
-      if (!force && typeof cached.authRetryAfter === "string" && Date.parse(cached.authRetryAfter) > now) {
-        return false;
+      // Another process may have rebound the advert after this caller observed
+      // an unbound file. Recheck it while holding the same lock as both claims.
+      const rebound = await readAuthenticatedAdvert(authenticatedPath, manifestUrl, agencHome);
+      if (rebound !== undefined) {
+        try {
+          const digest = await verifiedAdvertisedPluginPayloadDigest(
+            rebound.manifest, rebound.signature, { agencHome });
+          return { claimed: false, digest };
+        } catch { /* Current publisher trust still requires a fresh attempt. */ }
       }
-      await writeAdvertSidecar(path, { ...cached,
-        ...(force ? { authRecoveryAfter: new Date(now + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString() } : {}),
+      const authDeadlineActive = typeof cached.authRetryAfter === "string" &&
+        Date.parse(cached.authRetryAfter) > now;
+      const recoveryDeadlineActive = typeof cached.authRecoveryAfter === "string" &&
+        Date.parse(cached.authRecoveryAfter) > now;
+      // Only the first loss of a previously bound key can bypass an ordinary
+      // deadline. A failed ordinary refresh owns the deadline it just wrote.
+      if (recovery ? recoveryDeadlineActive || (authDeadlineActive && cached.authRefreshPending === true)
+        : authDeadlineActive) return { claimed: false };
+      const { authRefreshPending: _pending, ...rest } = cached;
+      await writeAdvertSidecar(path, { ...rest,
+        ...(recovery ? { authRecoveryAfter: new Date(now + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString() } : {}),
         authRetryAfter: new Date(now + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString() });
-      return true;
+      return { claimed: true };
     });
-  } catch { return false; }
-}
-
-async function clearAdvertRecoveryClaim(path: string): Promise<void> {
-  await withAdvertSidecarLock(path, async () => {
-    const cached = await readAdvertSidecar(path);
-    if (cached.authRecoveryAfter === undefined) return;
-    const { authRecoveryAfter: _recovery, ...rest } = cached;
-    await writeAdvertSidecar(path, rest);
-  });
+  } catch { return { claimed: false }; }
 }
 
 async function authenticatedDigestDuringWindow(
@@ -723,7 +731,10 @@ async function authenticatedDigestDuringWindow(
   }
   const unboundEntry = authenticated === undefined && await stat(authenticatedPath)
     .then(() => true, () => false);
-  if (!(await claimAdvertAuthentication(sidecarPath, now, unboundEntry))) return undefined;
+  const claim = await claimAdvertAuthentication(sidecarPath, now, unboundEntry,
+    authenticatedPath, manifestUrl, options.agencHome);
+  if (claim.digest !== undefined) return claim.digest;
+  if (!claim.claimed) return undefined;
   const signatureUrl = pinnedRawUrl(source, ".agenc-plugin/signature.json");
   if (signatureUrl === undefined) return undefined;
   const manifest = await fetchBounded(fetcher, manifestUrl, MANIFEST_PREFETCH_MAX_BYTES);
@@ -737,7 +748,6 @@ async function authenticatedDigestDuringWindow(
     try {
       await writeAuthenticatedAdvert(authenticatedPath, manifestUrl, manifest, signature,
         options.agencHome);
-      await clearAdvertRecoveryClaim(sidecarPath);
     } catch { /* The in-memory verified advert is still safe to use. */ }
     return digest;
   } catch { return undefined; }
@@ -919,13 +929,14 @@ async function prefetchPinnedCardMetaOnce(
     const previous = await lastAuthenticated();
     if (previous.payloadDigest !== undefined) return previous;
   }
+  let persistedAuthentication = false;
   if (payloadDigest !== undefined && signatureBytes !== undefined && options.agencHome !== undefined) {
     authenticatedAdverts.set(cacheIdentity, { manifest: manifestBytes, signature: signatureBytes });
     if (authenticatedAdverts.size > 128) authenticatedAdverts.delete(authenticatedAdverts.keys().next().value!);
     try {
       await writeAuthenticatedAdvert(authenticatedPath, manifestUrl, manifestBytes, signatureBytes,
         options.agencHome);
-      await clearAdvertRecoveryClaim(sidecarPath);
+      persistedAuthentication = true;
     }
     catch { /* Current invocation can still use its authenticated bytes. */ }
   }
@@ -998,7 +1009,7 @@ async function prefetchPinnedCardMetaOnce(
     ...(commands !== undefined ? { commands } : {}),
     ...(logoExt !== undefined ? { logoExt } : {}),
   };
-  await finishAdvertRefresh(sidecarPath, claim, sidecar);
+  await finishAdvertRefresh(sidecarPath, claim, sidecar, persistedAuthentication);
   return { ...metaFromSidecar(sidecar, logoPath),
     ...(payloadDigest !== undefined ? { payloadDigest } : {}) };
 }

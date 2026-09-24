@@ -446,6 +446,103 @@ describe("marketplace catalog CLI surface", () => {
     expect(attempts).toBe(1);
   });
 
+  it("uses one authentication fetch per window after recovery and ordinary refresh both fail", async () => {
+    const { options } = await remoteAdvertFixture(JSON.stringify({ name: "remote", version: "2.0.0" }), true);
+    let now = Date.parse("2026-09-23T00:00:00Z");
+    let offline = false;
+    const requests: string[] = [];
+    const runtime = { ...options, now: () => new Date(now), fetcher: async (url: string) => {
+      if (offline) {
+        requests.push(url);
+        if (url.endsWith("/signature.json")) throw new Error("offline");
+      }
+      return options.fetcher(url);
+    } };
+    await buildMarketplaceCatalog(runtime, undefined, true);
+    await rm(join(options.root, "private", "plugin-adverts", "binding-key"), { force: true });
+    offline = true;
+    vi.resetModules();
+    const fresh = await import("./catalog-cli.js");
+    await fresh.buildMarketplaceCatalog(runtime, undefined, true);
+    expect(requests).toHaveLength(2);
+    for (let window = 0; window < 3; window++) {
+      now += OFFICIAL_MARKETPLACE_REFRESH_MS + 1;
+      requests.length = 0;
+      for (let poll = 0; poll < 3; poll++) {
+        const result = await fresh.buildMarketplaceCatalog(runtime, undefined, true);
+        expect(result.marketplaces[0]?.plugins[0]?.payloadDigest).toBeUndefined();
+      }
+      expect(requests.filter((url) => url.endsWith("/plugin.json"))).toHaveLength(1);
+      expect(requests.filter((url) => url.endsWith("/signature.json"))).toHaveLength(1);
+    }
+  });
+
+  it("does not refetch when another module recovers an advert after a stale unbound observation", async () => {
+    const { options } = await remoteAdvertFixture(JSON.stringify({ name: "remote", version: "2.0.0" }), true);
+    let recovering = false;
+    let recoveryRequests = 0;
+    let unblockFirstFetch!: () => void;
+    let signalFirstFetch!: () => void;
+    const firstFetchStarted = new Promise<void>((resolve) => { signalFirstFetch = resolve; });
+    const firstFetchGate = new Promise<void>((resolve) => { unblockFirstFetch = resolve; });
+    let firstFetchBlocked = false;
+    const runtime = { ...options, fetcher: async (url: string) => {
+      if (recovering) {
+        recoveryRequests++;
+        if (!firstFetchBlocked && url.endsWith("/plugin.json")) {
+          firstFetchBlocked = true;
+          signalFirstFetch();
+          await firstFetchGate;
+        }
+      }
+      return options.fetcher(url);
+    } };
+    await buildMarketplaceCatalog(runtime, undefined, true);
+    await rm(join(options.root, "private", "plugin-adverts", "binding-key"), { force: true });
+    recovering = true;
+    vi.resetModules();
+    const first = await import("./catalog-cli.js");
+    const firstPoll = first.buildMarketplaceCatalog(runtime, undefined, true);
+    await firstFetchStarted;
+
+    const manifestUrl = `https://raw.githubusercontent.com/team/plugins/${"a".repeat(40)}/.agenc-plugin/plugin.json`;
+    const key = createHash("sha256").update(manifestUrl).digest("hex").slice(0, 24);
+    const authenticatedPath = join(options.pluginStorageRoot, "marketplaces", ".logo-cache", `${key}.authenticated.json`);
+    let statCalls = 0;
+    let signalSecondObserved!: () => void;
+    const secondObserved = new Promise<void>((resolve) => { signalSecondObserved = resolve; });
+    vi.doMock("node:fs/promises", async (importOriginal) => {
+      const fs = await importOriginal<typeof import("node:fs/promises")>();
+      return { ...fs, stat: async (...args: Parameters<typeof fs.stat>) => {
+        const result = await fs.stat(...args);
+        if (String(args[0]) === authenticatedPath && ++statCalls === 2) {
+          signalSecondObserved();
+          await firstPoll;
+        }
+        return result;
+      } };
+    });
+    try {
+      vi.resetModules();
+      const second = await import("./catalog-cli.js");
+      const secondPoll = second.buildMarketplaceCatalog(runtime, undefined, true);
+      await secondObserved;
+      unblockFirstFetch();
+      const [firstResult, secondResult] = await Promise.all([firstPoll, secondPoll]);
+      expect(firstResult.marketplaces[0]?.plugins[0]?.payloadDigest).toMatch(/^sha256:/u);
+      expect(secondResult.marketplaces[0]?.plugins[0]?.payloadDigest).toMatch(/^sha256:/u);
+      expect(recoveryRequests).toBe(2);
+    } finally {
+      unblockFirstFetch();
+      vi.doUnmock("node:fs/promises");
+      vi.resetModules();
+    }
+    await rm(join(options.root, "private", "plugin-adverts", "binding-key"), { force: true });
+    const third = await import("./catalog-cli.js");
+    await third.buildMarketplaceCatalog(runtime, undefined, true);
+    expect(recoveryRequests).toBe(2);
+  });
+
   it("retains a signed advert through an expired offline refresh and rechecks trust", async () => {
     const { options, fetches, updateManifest } = await remoteAdvertFixture(JSON.stringify({ name: "remote", version: "2.0.0" }), true);
     let now = Date.parse("2026-09-23T00:00:00Z");
