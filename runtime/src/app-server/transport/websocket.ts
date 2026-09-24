@@ -28,12 +28,16 @@ import WebSocket, { WebSocketServer, type RawData } from "ws";
 import type { JsonObject, JsonValue } from "../protocol/index.js";
 import {
   daemonOverloadErrorResponse,
+  daemonAttachmentSessionId,
+  daemonPermissionMutationSessionId,
   isDaemonPreemptiveMessage,
   isDaemonPriorityMessage,
   isDaemonRoutineMessage,
   isDaemonSessionAttachmentMessage,
   markDaemonRoutineAfterPendingAttachment,
+  markDaemonRoutineAfterPermissionChange,
   maxQueuedRequestsFromOptions,
+  routineAuthoritySessionId,
 } from "../overload.js";
 import { isRecord } from "../../utils/record.js";
 import { drainAgenCTransportRequests, type AgenCTransportCloseOptions } from "./request-drain.js";
@@ -132,12 +136,20 @@ interface ActiveWebSocketConnection {
   queuedNormalMessages: number;
   queuedRoutineMessages: number;
   pendingSessionAttachments: number;
+  attachmentBarriers: Map<string, Promise<void>>;
+  pendingPermissionChanges: Map<string, number>;
 }
 
 // gaphunt3 #47: sentinel for "no auth decision in flight" on a connection.
 // Identity equality against it marks the first message that should claim the
 // auth slot (mirrors the Unix socket transport's `resolvedAuth`).
 const resolvedWebSocketAuth: Promise<void> = Promise.resolve();
+
+function releasePermissionChange(pending: Map<string, number>, sessionId: string): void {
+  const remaining = (pending.get(sessionId) ?? 1) - 1;
+  if (remaining === 0) pending.delete(sessionId);
+  else pending.set(sessionId, remaining);
+}
 
 export class AgenCWebSocketServer {
   readonly #options: AgenCWebSocketServerOptions;
@@ -368,6 +380,8 @@ export class AgenCWebSocketServer {
       queuedNormalMessages: 0,
       queuedRoutineMessages: 0,
       pendingSessionAttachments: 0,
+      attachmentBarriers: new Map(),
+      pendingPermissionChanges: new Map(),
     };
     this.#connections.set(connectionId, active);
 
@@ -518,7 +532,13 @@ export class AgenCWebSocketServer {
         )).catch((error) => this.#options.onError?.(asError(error), context.connectionId));
         return;
       }
-      if (active.pendingSessionAttachments > 0) markDaemonRoutineAfterPendingAttachment(message);
+      const authoritySessionId = routineAuthoritySessionId(message);
+      if (active.pendingSessionAttachments > 0) {
+        markDaemonRoutineAfterPendingAttachment(message, authoritySessionId === undefined ? undefined : active.attachmentBarriers.get(authoritySessionId));
+      }
+      if (authoritySessionId !== undefined && (active.pendingPermissionChanges.get(authoritySessionId) ?? 0) > 0) {
+        markDaemonRoutineAfterPermissionChange(message);
+      }
       active.queuedRoutineMessages += 1;
       const initializeBarrier = active.initializeBarrier;
       const pending = (active.routineChain = active.routineChain.then(async () => {
@@ -548,6 +568,8 @@ export class AgenCWebSocketServer {
         return;
       }
       active.queuedPriorityMessages[lane] += 1;
+      const permissionSessionId = daemonPermissionMutationSessionId(message);
+      if (permissionSessionId !== undefined) active.pendingPermissionChanges.set(permissionSessionId, (active.pendingPermissionChanges.get(permissionSessionId) ?? 0) + 1);
       // Control-plane requests must NOT queue behind a full model stream.
       // Dispatch them off-chain while keeping ordinary, order-dependent work
       // FIFO. The promise is still tracked so close() drains it.
@@ -576,6 +598,7 @@ export class AgenCWebSocketServer {
       }
       active.pendingMessages.add(pending);
       pending.finally(() => {
+        if (permissionSessionId !== undefined) releasePermissionChange(active.pendingPermissionChanges, permissionSessionId);
         active.queuedPriorityMessages[lane] -= 1;
         active.pendingMessages.delete(pending);
       });
@@ -600,6 +623,9 @@ export class AgenCWebSocketServer {
     active.queuedNormalMessages += 1;
     const attachment = isDaemonSessionAttachmentMessage(message);
     if (attachment) active.pendingSessionAttachments += 1;
+    const attachmentId = attachment ? daemonAttachmentSessionId(message) : undefined;
+    const permissionSessionId = daemonPermissionMutationSessionId(message);
+    if (permissionSessionId !== undefined) active.pendingPermissionChanges.set(permissionSessionId, (active.pendingPermissionChanges.get(permissionSessionId) ?? 0) + 1);
 
     const pending = (active.dispatchChain = active.dispatchChain.then(
       async () => {
@@ -611,6 +637,7 @@ export class AgenCWebSocketServer {
           await this.#options.onMessage(message, context);
         } finally {
           if (attachment) active.pendingSessionAttachments -= 1;
+          if (permissionSessionId !== undefined) releasePermissionChange(active.pendingPermissionChanges, permissionSessionId);
           active.queuedNormalMessages = Math.max(
             0,
             active.queuedNormalMessages - 1,
@@ -620,12 +647,14 @@ export class AgenCWebSocketServer {
     ).catch((error) => {
       this.#options.onError?.(asError(error), context.connectionId);
     }));
+    if (attachmentId !== undefined) active.attachmentBarriers.set(attachmentId, pending);
     active.pendingMessages.add(pending);
     if (message.method === "initialize" && !active.hasInitializeBarrier) {
       active.hasInitializeBarrier = true;
       active.initializeBarrier = pending;
     }
     pending.finally(() => {
+      if (attachmentId !== undefined && active.attachmentBarriers.get(attachmentId) === pending) active.attachmentBarriers.delete(attachmentId);
       active.pendingMessages.delete(pending);
     });
   }

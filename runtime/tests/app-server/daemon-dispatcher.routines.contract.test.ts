@@ -26,6 +26,7 @@ import { AgenCStdioTransport } from "../../src/app-server/transport/stdio.js";
 import { RemoteAccessBoundary } from "../../src/remote/access.js";
 import { createDaemonRoutineExecutor } from "../../src/routines/daemon-executor.js";
 import { RoutineService } from "../../src/routines/service.js";
+import { RoutineSessionPreparation } from "../../src/routines/session-preparation.js";
 import type { Routine, RoutineRun } from "../../src/routines/types.js";
 import type { AgentRuntimeOptions } from "../../src/session/runtime-options.js";
 
@@ -188,8 +189,10 @@ async function harness(options: { enabled?: boolean } = {}) {
   // Session attachments are tracked per connection by the multiplexer, as in
   // daemon-cli: routine authority reads them.
   const multiplexer = new AgenCDaemonClientMultiplexer({ sessionManager: sessions });
+  const routinePreparation = new RoutineSessionPreparation(multiplexer);
   const dispatcher = new AgenCDaemonJsonRpcDispatcher({
     agentManager: agents, sessionManager: sessions, clientMultiplexer: multiplexer,
+    routinePreparation,
     ...(options.enabled === false ? {} : { routines: service }),
   });
   const connections: ReturnType<AgenCDaemonJsonRpcDispatcher["createConnection"]>[] = [];
@@ -197,8 +200,8 @@ async function harness(options: { enabled?: boolean } = {}) {
    * A daemon client. `v2` negotiates the wider routine contract and
    * `operator` declares a Routines screen connection.
    */
-  async function connect(options: { subscribe?: boolean; v2?: boolean; operator?: boolean } | boolean = {}) {
-    const { subscribe = false, v2 = false, operator = false } = typeof options === "boolean" ? { subscribe: options } : options;
+  async function connect(options: { subscribe?: boolean; v2?: boolean; operator?: boolean; prepare?: boolean } | boolean = {}) {
+    const { subscribe = false, v2 = false, operator = false, prepare = false } = typeof options === "boolean" ? { subscribe: options } : options;
     const notifications: JsonObject[] = [];
     const connection = dispatcher.createConnection({ sendNotification: (event) => { notifications.push(event); } });
     connections.push(connection);
@@ -208,6 +211,7 @@ async function harness(options: { enabled?: boolean } = {}) {
         ...(subscribe ? { "routine.updated.v1": true } : {}),
         ...(v2 ? { "routine.permissionModes.v2": true } : {}),
         ...(operator ? { "routine.operator.v1": true } : {}),
+        ...(prepare ? { "routine.session.prepare.v1": true } : {}),
       },
     }));
     return { connection, notifications, initialized };
@@ -251,7 +255,7 @@ async function harness(options: { enabled?: boolean } = {}) {
     return { ...created, sessionId: created.sessionId! };
   }
   return {
-    ...client, connect, hold, dispatcher, multiplexer, service, sessions, agents, starts, bindings, liveModes, chat,
+    ...client, connect, hold, dispatcher, multiplexer, routinePreparation, service, sessions, agents, starts, bindings, liveModes, chat,
     terminal, submission, cancellationOrder, cwd, home, authority, createParams, create, run, history,
   };
 }
@@ -463,6 +467,134 @@ describe("routine dispatcher and daemon execution contract", () => {
       release.resolve();
       result(await wire.response("attach"));
       expect(h.service.list().routines).toEqual([]);
+    } finally { release.resolve(); await wire.close(); }
+  });
+
+  it.each(["session.setPermissionMode", "session.permissions.mutateRule", "tool.approve", "tool.approve session rule"])("refuses a stale session grant while %s is pending", async (method) => {
+    const h = await harness();
+    const chat = await h.chat("bypassPermissions");
+    await h.hold(h.connection, chat.sessionId);
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    if (method === "session.setPermissionMode") {
+      vi.spyOn(h.agents, "setSessionPermissionMode").mockImplementation(async () => {
+        entered.resolve(); await release.promise;
+        h.liveModes.set(chat.agentId, "default");
+        return { sessionId: chat.sessionId, applied: true, previousMode: "bypassPermissions", mode: "default" };
+      });
+    } else if (method === "session.permissions.mutateRule") {
+      vi.spyOn(h.agents, "mutateSessionPermissionRule").mockImplementation(async () => {
+        entered.resolve(); await release.promise;
+        return { sessionId: chat.sessionId, applied: true, operation: "add", behavior: "deny", rule: "echo test", sessionRules: [] } as never;
+      });
+    } else {
+      vi.spyOn(h.agents, "approveTool").mockImplementation(async () => {
+        entered.resolve(); await release.promise;
+        h.liveModes.set(chat.agentId, "default");
+        return { requestId: "approval", decision: "approved" };
+      });
+    }
+    const wire = stdioConnection(h.connection);
+    const { permissionMode: _unset, ...fields } = h.createParams;
+    try {
+      wire.send("change", method.startsWith("tool.approve") ? "tool.approve" : method, method === "session.setPermissionMode"
+        ? { sessionId: chat.sessionId, mode: "default" }
+        : method === "session.permissions.mutateRule"
+          ? { sessionId: chat.sessionId, operation: "add", behavior: "deny", rule: "echo test" }
+          : { sessionId: chat.sessionId, requestId: "approval", ...(method === "tool.approve" ? { allowAllToolsForSession: true } : {}), scope: "session" });
+      await entered.promise;
+      wire.send("write", "routine.create", { ...fields, permissionAuthority: { kind: "session", sessionId: chat.sessionId } });
+      expect(await wire.response("write")).toMatchObject({ error: { data: { code: "ROUTINE_PERMISSION_DENIED" }, message: expect.stringContaining("permission mode is changing") } });
+      expect(h.service.list().routines).toEqual([]);
+    } finally { release.resolve(); await wire.close(); }
+  });
+
+  it("refuses a permission change queued behind the chat turn without waiting for that turn", async () => {
+    const h = await harness();
+    const chat = await h.chat("bypassPermissions");
+    await h.hold(h.connection, chat.sessionId);
+    const wire = stdioConnection(h.connection);
+    const { permissionMode: _unset, ...fields } = h.createParams;
+    try {
+      wire.send("turn", "message.stream", { sessionId: chat.sessionId, content: "Create a routine" });
+      await h.submission.promise;
+      wire.send("change", "session.setPermissionMode", { sessionId: chat.sessionId, mode: "default" });
+      wire.send("write", "routine.create", { ...fields, permissionAuthority: { kind: "session", sessionId: chat.sessionId } });
+      expect(await wire.response("write")).toMatchObject({ error: { data: { code: "ROUTINE_PERMISSION_DENIED" }, message: expect.stringContaining("permission mode is changing") } });
+      expect(wire.responses.has("turn")).toBe(false);
+      expect(wire.responses.has("change")).toBe(false);
+      expect(h.service.list().routines).toEqual([]);
+    } finally { h.terminal.resolve(0); await wire.close(); }
+  });
+
+  it("does not refuse a held chat because another session's permission is changing", async () => {
+    const h = await harness();
+    const chat = await h.chat("acceptEdits");
+    const other = await h.chat("default");
+    await h.hold(h.connection, chat.sessionId);
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    vi.spyOn(h.agents, "setSessionPermissionMode").mockImplementation(async () => {
+      entered.resolve(); await release.promise;
+      return { sessionId: other.sessionId, applied: true, previousMode: "default", mode: "plan" };
+    });
+    const wire = stdioConnection(h.connection);
+    const { permissionMode: _unset, ...fields } = h.createParams;
+    try {
+      wire.send("change", "session.setPermissionMode", { sessionId: other.sessionId, mode: "plan" });
+      await entered.promise;
+      wire.send("write", "routine.create", { ...fields, permissionAuthority: { kind: "session", sessionId: chat.sessionId } });
+      expect(result<{ routine: Routine }>(await wire.response("write")).routine.permissionMode).toBe("acceptEdits");
+    } finally { release.resolve(); await wire.close(); }
+  });
+
+  it("waits for its own earlier attach before resolving a session grant", async () => {
+    const h = await harness();
+    const chat = await h.chat("acceptEdits");
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const original = h.multiplexer.attachClientToSession.bind(h.multiplexer);
+    vi.spyOn(h.multiplexer, "attachClientToSession").mockImplementation(async (...args) => {
+      entered.resolve(); await release.promise; return original(...args);
+    });
+    const wire = stdioConnection(h.connection);
+    const { permissionMode: _unset, ...fields } = h.createParams;
+    try {
+      wire.send("attach", "session.attach", { sessionId: chat.sessionId, clientId: "new-holder" });
+      await entered.promise;
+      wire.send("write", "routine.create", { ...fields, permissionAuthority: { kind: "session", sessionId: chat.sessionId } });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(wire.responses.has("write")).toBe(false);
+      release.resolve();
+      result(await wire.response("attach"));
+      expect(result<{ routine: Routine }>(await wire.response("write")).routine.permissionMode).toBe("acceptEdits");
+    } finally { release.resolve(); await wire.close(); }
+  });
+
+  it("keeps preparation response behind an earlier MCP server install", async () => {
+    const h = await harness();
+    const chat = await h.chat("default");
+    const desktop = await h.connect({ prepare: true });
+    const pending = h.routinePreparation.prepare({ sessionId: chat.sessionId, routineId: "routine", runId: "run", cwd: h.cwd }, new AbortController().signal);
+    await vi.waitFor(() => expect(desktop.notifications).toHaveLength(1));
+    const requestId = (desktop.notifications[0]!.params as { requestId: string }).requestId;
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    vi.spyOn(h.agents, "addMcpServerToSession").mockImplementation(async () => {
+      entered.resolve(); await release.promise;
+      return { sessionId: chat.sessionId, serverName: "desktop", success: true, toolCount: 1 };
+    });
+    const wire = stdioConnection(desktop.connection);
+    try {
+      wire.send("install", "session.mcp.addServer", { sessionId: chat.sessionId, config: { name: "desktop", transport: "stdio", command: "node" } });
+      await entered.promise;
+      wire.send("prepared", "routine.session.prepare.respond", { requestId, status: "attached" });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(wire.responses.has("prepared")).toBe(false);
+      release.resolve();
+      result(await wire.response("install"));
+      expect(await wire.response("prepared")).toMatchObject({ result: { accepted: true } });
+      expect(await pending).toEqual({ status: "attached", reason: null });
     } finally { release.resolve(); await wire.close(); }
   });
 

@@ -77,7 +77,6 @@ const DAEMON_ROUTINE_METHODS = new Set<string>([
   "routine.run",
   "routine.runs",
   "routine.cancel",
-  "routine.session.prepare.respond",
 ]);
 
 export function isDaemonControlMessage(message: JsonObject): boolean {
@@ -133,19 +132,65 @@ export function isDaemonSessionAttachmentMessage(message: JsonObject): boolean {
     message.method === "session.resume";
 }
 
-// A transport marks the request at arrival, before an earlier attachment can
-// finish. The dispatcher uses this only to refuse operator authority; session
-// authority never waits for an attachment queued behind a streaming turn.
+// Arrival metadata lives outside JSON params, so clients cannot forge it and
+// the wire request remains unchanged through transport and dispatcher.
 const ROUTINE_AFTER_PENDING_ATTACHMENT = new WeakSet<object>();
+const ROUTINE_ATTACHMENT_BARRIER = new WeakMap<object, Promise<void>>();
+const ROUTINE_AFTER_PERMISSION_CHANGE = new WeakSet<object>();
 
-export function markDaemonRoutineAfterPendingAttachment(message: JsonObject): void {
+export function markDaemonRoutineAfterPendingAttachment(message: JsonObject, barrier?: Promise<void>): void {
   if (message.params !== null && typeof message.params === "object") {
     ROUTINE_AFTER_PENDING_ATTACHMENT.add(message.params);
+    if (barrier !== undefined) ROUTINE_ATTACHMENT_BARRIER.set(message.params, barrier);
   }
 }
 
 export function routineHasPriorPendingAttachment(params: JsonObject): boolean {
   return ROUTINE_AFTER_PENDING_ATTACHMENT.has(params);
+}
+
+export function routinePriorAttachmentBarrier(params: JsonObject): Promise<void> | undefined {
+  return ROUTINE_ATTACHMENT_BARRIER.get(params);
+}
+
+/** All RPC routes that can mutate a live session's permission context. */
+export function daemonPermissionMutationSessionId(message: JsonObject): string | undefined {
+  const params = daemonObjectParams(message);
+  if (message.method !== "session.setPermissionMode" &&
+      message.method !== "session.permissions.mutateRule" &&
+      !(message.method === "tool.approve" &&
+        (params?.allowAllToolsForSession === true || params?.scope === "session" || params?.scope === "agent"))) return undefined;
+  return typeof params?.sessionId === "string" ? params.sessionId : undefined;
+}
+
+export function routineAuthoritySessionId(message: JsonObject): string | undefined {
+  const params = daemonObjectParams(message);
+  if (params === undefined) return undefined;
+  const authority = params.permissionAuthority;
+  if (authority === null || typeof authority !== "object" || Array.isArray(authority)) return undefined;
+  const record = authority as JsonObject;
+  return record.kind === "session" && typeof record.sessionId === "string" ? record.sessionId : undefined;
+}
+
+export function daemonAttachmentSessionId(message: JsonObject): string | undefined {
+  const params = daemonObjectParams(message);
+  if (params === undefined) return undefined;
+  return typeof params.sessionId === "string" ? params.sessionId
+    : typeof params.agentId === "string" ? params.agentId : undefined;
+}
+
+function daemonObjectParams(message: JsonObject): JsonObject | undefined {
+  const params = message.params;
+  return params !== null && typeof params === "object" && !Array.isArray(params)
+    ? params as JsonObject : undefined;
+}
+
+export function markDaemonRoutineAfterPermissionChange(message: JsonObject): void {
+  if (message.params !== null && typeof message.params === "object") ROUTINE_AFTER_PERMISSION_CHANGE.add(message.params);
+}
+
+export function routineHasPriorPermissionChange(params: JsonObject): boolean {
+  return ROUTINE_AFTER_PERMISSION_CHANGE.has(params);
 }
 
 export function requestIdFromJsonRpcMessage(message: JsonObject): RequestId | null {

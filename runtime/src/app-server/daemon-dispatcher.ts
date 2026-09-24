@@ -76,6 +76,8 @@ import {
 import {
   AgenCDaemonConnectionLimiter,
   routineHasPriorPendingAttachment,
+  routineHasPriorPermissionChange,
+  routinePriorAttachmentBarrier,
   type AgenCDaemonOverloadLimitOptions,
 } from "./overload.js";
 import {
@@ -1011,8 +1013,13 @@ export class AgenCDaemonJsonRpcDispatcher {
     connection: AgenCDaemonJsonRpcConnection,
     authority: RoutinePermissionAuthority | undefined,
     priorAttachmentPending: boolean,
+    priorPermissionChange: boolean,
+    attachmentBarrier: Promise<void> | undefined,
   ): Promise<RoutinePermissionGrant> {
     if (authority === undefined) return LEGACY_ROUTINE_GRANT;
+    if (authority.kind === "session" && priorPermissionChange) {
+      throw new RoutineError("ROUTINE_PERMISSION_DENIED", "The chat's permission mode is changing; try again.");
+    }
     const agentManager = this.#agentManager;
     const multiplexer = this.#clientMultiplexer;
     const deliveryKey = connection.cancellationScope;
@@ -1023,6 +1030,10 @@ export class AgenCDaemonJsonRpcDispatcher {
     // a multiplexer has no session held anywhere.
     const operator = declaredOperator && !priorAttachmentPending &&
       !(await (multiplexer?.deliveryHoldsSession?.(deliveryKey) ?? Promise.resolve(false)));
+    if (authority.kind === "session" && attachmentBarrier !== undefined &&
+        !(await (multiplexer?.deliveryHoldsSession?.(deliveryKey, authority.sessionId) ?? Promise.resolve(false)))) {
+      await attachmentBarrier;
+    }
     return await resolveRoutinePermissionGrant(authority, {
       operator,
       async liveSession(sessionId) {
@@ -1108,13 +1119,13 @@ export class AgenCDaemonJsonRpcDispatcher {
       case "routine.create": {
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
         const request = this.#routineRequest(connection, params);
-        const grant = await this.#routinePermissionGrant(connection, request.authority, routineHasPriorPendingAttachment(params));
+        const grant = await this.#routinePermissionGrant(connection, request.authority, routineHasPriorPendingAttachment(params), routineHasPriorPermissionChange(params), routinePriorAttachmentBarrier(params));
         return successResponse(id, this.#routines.create(request.params, grant));
       }
       case "routine.update": {
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
         const request = this.#routineRequest(connection, params);
-        const grant = await this.#routinePermissionGrant(connection, request.authority, routineHasPriorPendingAttachment(params));
+        const grant = await this.#routinePermissionGrant(connection, request.authority, routineHasPriorPendingAttachment(params), routineHasPriorPermissionChange(params), routinePriorAttachmentBarrier(params));
         // Checked after the grant's await so nothing interleaves before the update.
         this.#assertRoutineVisible(connection, params);
         return successResponse(id, this.#routines.update(request.params, grant));

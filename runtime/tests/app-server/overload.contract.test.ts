@@ -89,12 +89,13 @@ describe("AgenC daemon overload control messages", () => {
   });
 
   it("routes every routine request to its own FIFO without exempting it from connection limits", () => {
-    for (const method of ["routine.capabilities", "routine.list", "routine.get", "routine.create", "routine.update", "routine.delete", "routine.run", "routine.runs", "routine.cancel", "routine.session.prepare.respond"]) {
+    for (const method of ["routine.capabilities", "routine.list", "routine.get", "routine.create", "routine.update", "routine.delete", "routine.run", "routine.runs", "routine.cancel"]) {
       expect(isDaemonRoutineMessage(request(method))).toBe(true);
       expect(isDaemonPriorityMessage(request(method))).toBe(false);
       expect(isDaemonPreemptiveMessage(request(method))).toBe(false);
       expect(isDaemonControlMessage(request(method))).toBe(false);
     }
+    expect(isDaemonRoutineMessage(request("routine.session.prepare.respond"))).toBe(false);
     expect(isDaemonRoutineMessage(request("routine.unknown"))).toBe(false);
     for (const method of ["session.attach", "agent.attach", "session.resume"]) {
       expect(isDaemonSessionAttachmentMessage(request(method))).toBe(true);

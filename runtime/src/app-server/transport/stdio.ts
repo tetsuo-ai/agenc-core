@@ -16,12 +16,16 @@ import type { Readable, Writable } from "node:stream";
 import type { JsonObject, JsonValue } from "../protocol/index.js";
 import {
   daemonOverloadErrorResponse,
+  daemonAttachmentSessionId,
+  daemonPermissionMutationSessionId,
   isDaemonPreemptiveMessage,
   isDaemonPriorityMessage,
   isDaemonRoutineMessage,
   isDaemonSessionAttachmentMessage,
   markDaemonRoutineAfterPendingAttachment,
+  markDaemonRoutineAfterPermissionChange,
   maxQueuedRequestsFromOptions,
+  routineAuthoritySessionId,
 } from "../overload.js";
 import { isRecord } from "../../utils/record.js";
 import { BoundedJsonLineReader } from "../../utils/bounded-json-lines.js";
@@ -56,6 +60,8 @@ export class AgenCStdioTransport {
   #queuedNormalMessages = 0;
   #queuedRoutineMessages = 0;
   #pendingSessionAttachments = 0;
+  readonly #attachmentBarriers = new Map<string, Promise<void>>();
+  readonly #pendingPermissionChanges = new Map<string, number>();
   #reader: BoundedJsonLineReader | null = null;
 
   constructor(options: AgenCStdioTransportOptions) {
@@ -111,7 +117,13 @@ export class AgenCStdioTransport {
         )).catch((error) => this.#options.onError?.(asError(error), line));
         return;
       }
-      if (this.#pendingSessionAttachments > 0) markDaemonRoutineAfterPendingAttachment(message);
+      const authoritySessionId = routineAuthoritySessionId(message);
+      if (this.#pendingSessionAttachments > 0) {
+        markDaemonRoutineAfterPendingAttachment(message, authoritySessionId === undefined ? undefined : this.#attachmentBarriers.get(authoritySessionId));
+      }
+      if (authoritySessionId !== undefined && (this.#pendingPermissionChanges.get(authoritySessionId) ?? 0) > 0) {
+        markDaemonRoutineAfterPermissionChange(message);
+      }
       this.#queuedRoutineMessages += 1;
       const initializeBarrier = this.#initializeBarrier;
       const pending = (this.#routineChain = this.#routineChain.then(async () => {
@@ -139,6 +151,8 @@ export class AgenCStdioTransport {
         return;
       }
       this.#queuedPriorityMessages[lane] += 1;
+      const permissionSessionId = daemonPermissionMutationSessionId(message);
+      if (permissionSessionId !== undefined) this.#pendingPermissionChanges.set(permissionSessionId, (this.#pendingPermissionChanges.get(permissionSessionId) ?? 0) + 1);
       // Control-plane requests must NOT queue behind a full model stream.
       // Dispatch them off-chain while keeping ordinary, order-dependent work
       // FIFO. The promise is still tracked so close() drains it.
@@ -158,6 +172,7 @@ export class AgenCStdioTransport {
       }
       this.#pendingMessages.add(pending);
       pending.finally(() => {
+        if (permissionSessionId !== undefined) this.#releasePermissionChange(permissionSessionId);
         this.#queuedPriorityMessages[lane] -= 1;
         this.#pendingMessages.delete(pending);
       });
@@ -180,6 +195,9 @@ export class AgenCStdioTransport {
     this.#queuedNormalMessages += 1;
     const attachment = isDaemonSessionAttachmentMessage(message);
     if (attachment) this.#pendingSessionAttachments += 1;
+    const attachmentId = attachment ? daemonAttachmentSessionId(message) : undefined;
+    const permissionSessionId = daemonPermissionMutationSessionId(message);
+    if (permissionSessionId !== undefined) this.#pendingPermissionChanges.set(permissionSessionId, (this.#pendingPermissionChanges.get(permissionSessionId) ?? 0) + 1);
 
     // Chain dispatch on a per-connection promise so pipelined,
     // order-dependent requests are handed to onMessage in arrival order
@@ -193,6 +211,7 @@ export class AgenCStdioTransport {
           this.#options.onError?.(asError(error), line);
         } finally {
           if (attachment) this.#pendingSessionAttachments -= 1;
+          if (permissionSessionId !== undefined) this.#releasePermissionChange(permissionSessionId);
           this.#queuedNormalMessages = Math.max(
             0,
             this.#queuedNormalMessages - 1,
@@ -200,14 +219,22 @@ export class AgenCStdioTransport {
         }
       },
     ));
+    if (attachmentId !== undefined) this.#attachmentBarriers.set(attachmentId, pending);
     if (message.method === "initialize" && !this.#hasInitializeBarrier) {
       this.#hasInitializeBarrier = true;
       this.#initializeBarrier = pending;
     }
     this.#pendingMessages.add(pending);
     pending.finally(() => {
+      if (attachmentId !== undefined && this.#attachmentBarriers.get(attachmentId) === pending) this.#attachmentBarriers.delete(attachmentId);
       this.#pendingMessages.delete(pending);
     });
+  }
+
+  #releasePermissionChange(sessionId: string): void {
+    const remaining = (this.#pendingPermissionChanges.get(sessionId) ?? 1) - 1;
+    if (remaining === 0) this.#pendingPermissionChanges.delete(sessionId);
+    else this.#pendingPermissionChanges.set(sessionId, remaining);
   }
 }
 
