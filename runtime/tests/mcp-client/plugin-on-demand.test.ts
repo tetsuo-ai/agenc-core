@@ -777,6 +777,21 @@ describe("plugin MCP on-demand lifecycle", () => {
     }
   });
 
+  it("skips stdio launch checks for remote plugin transports", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    const snapshotRoot = join(cacheHome, "snapshot");
+    for (const transport of ["http", "sse", "websocket"] as const) {
+      const cfg = config(cacheHome, `plugin:sample:${transport}`, {
+        transport, endpoint: "https://example.test/mcp",
+        origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: transport,
+          pluginRoot: root, snapshotRoot } },
+      });
+      const manager = new MCPManager([cfg], undefined, { PATH: join(root, "bin") });
+      const launchConfig = manager as unknown as { pluginLaunchConfig(config: MCPServerConfig): MCPServerConfig };
+      expect(launchConfig.pluginLaunchConfig(cfg).transport).toBe(transport);
+    }
+  });
+
   it("still launches an ordinary server with the system node", async () => {
     const cacheHome = await home(); const root = join(cacheHome, "installed");
     const manager = new MCPManager([{ name: "ordinary", command: process.execPath }], undefined,

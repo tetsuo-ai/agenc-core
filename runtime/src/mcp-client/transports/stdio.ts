@@ -15,14 +15,11 @@ import { VERSION } from "../../version.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   chmodSync,
-  existsSync,
   lstatSync,
   mkdirSync,
   realpathSync,
-  statSync,
 } from "node:fs";
 import {
-  delimiter,
   isAbsolute,
   join,
   relative,
@@ -58,6 +55,7 @@ import type { ProviderEnvironment } from "../../llm/provider-options.js";
 import { EMPTY_MCP_REQUEST_ENVIRONMENT } from "../environment.js";
 import { assertMcpTransportToolDispatch } from "../local-control.js";
 import { createStdioMCPEnvironment } from "./stdio-environment.js";
+import { resolveStdioProgram } from "./stdio-program.js";
 export { createStdioMCPEnvironment, DEFAULT_STDIO_ENV_VARS } from "./stdio-environment.js";
 
 const PROCESS_GROUP_TERM_GRACE_MS = 2_000;
@@ -169,50 +167,6 @@ function preparePluginMcpTempAuthority(
     throw new Error("plugin MCP temp authority escapes its data directory");
   }
   return { dataRoot, tempRoot };
-}
-
-function resolveStdioProgram(
-  command: string,
-  env: Readonly<Record<string, string>>,
-  cwd: string = process.cwd(),
-): string {
-  if (process.platform !== "win32") {
-    return command;
-  }
-  if (command.includes("/") || command.includes("\\") || isAbsolute(command)) {
-    return command;
-  }
-
-  const pathValue = env.PATH ?? "";
-  const pathExtValue = env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD";
-  const extensions = pathExtValue
-    .split(";")
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
-  const commandLower = command.toLowerCase();
-  const alreadyHasExecutableExtension = extensions.some((extension) =>
-    commandLower.endsWith(extension.toLowerCase()),
-  );
-  const candidateNames = alreadyHasExecutableExtension
-    ? [command]
-    : [command, ...extensions.map((extension) => `${command}${extension}`)];
-
-  for (const searchDir of [cwd, ...pathValue.split(delimiter)]) {
-    if (searchDir.length === 0) continue;
-    for (const candidateName of candidateNames) {
-      const candidate = join(searchDir, candidateName);
-      if (isExecutableFile(candidate)) return candidate;
-    }
-  }
-  return command;
-}
-
-function isExecutableFile(path: string): boolean {
-  try {
-    return existsSync(path) && statSync(path).isFile();
-  } catch {
-    return false;
-  }
 }
 
 export class AgenCStdioClientTransport implements Transport {

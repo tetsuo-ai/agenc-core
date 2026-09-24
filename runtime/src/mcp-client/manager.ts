@@ -982,8 +982,10 @@ export class MCPManager {
         pluginSandbox: { ...config.pluginSandbox, pluginRoot: plugin.snapshotRoot },
       } : {}),
     };
-    assertPluginSnapshotLaunchSafe(config.name, plugin.pluginRoot, launched, this.environment,
-      process.platform, this.sandboxExecutionBroker?.cwd ?? process.cwd());
+    if ((launched.transport ?? "stdio") === "stdio") {
+      assertPluginSnapshotLaunchSafe(config.name, plugin.pluginRoot, launched, this.environment,
+        process.platform, this.sandboxExecutionBroker?.cwd ?? process.cwd());
+    }
     return launched;
   }
 

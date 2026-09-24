@@ -119,6 +119,10 @@ Plugin MCP processes launch from Core-owned, verified snapshots. Plugin
 lifecycle commands and configuration changes revoke the affected generation;
 see [skills-plugins.md](skills-plugins.md#plugin-mcp-servers) for the local
 file modification boundary and update procedure.
+The snapshot pins bytes for launches described by manifest command, args, cwd,
+env, requested env vars, templates, and relative paths. It is not a sandbox:
+plugin code can deliberately read its installed copy at runtime with the
+user's permissions. Signatures and update checks establish trust in that code.
 
 Manifest `mcpEagerServers` lists server names that receive notifications or
 run listeners without a tool call. Servers named by manifest `channels` are
