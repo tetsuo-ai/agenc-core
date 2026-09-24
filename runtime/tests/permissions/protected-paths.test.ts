@@ -38,7 +38,7 @@ describe("isDangerousFilePathToAutoEdit", () => {
     expect(isDangerousFilePathToAutoEdit("/tmp/project/.agenc/commands/review.md")).toBe(false);
     expect(isDangerousFilePathToAutoEdit("/tmp/project/.agenc/worktrees/x/file.ts")).toBe(false);
     expect(isDangerousFilePathToAutoEdit("/tmp/project/.agenc/Commands/review.md")).toBe(false);
-    expect(isDangerousFilePathToAutoEdit("/tmp/project/.agenc/settings.json")).toBe(true);
+    expect(isDangerousFilePathToAutoEdit("/tmp/project/.agenc/config.toml")).toBe(true);
     expect(isDangerousFilePathToAutoEdit("/tmp/project/.agenc")).toBe(true);
   });
 
