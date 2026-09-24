@@ -71,6 +71,34 @@ describe("display attachments and saved plugin secrets", () => {
     expect(attachments(result)).toBeUndefined();
     expect(result.content).toContain("contained a saved secret");
   });
+  it("redacts an unknown chart kind in a model-facing resource", async () => {
+    const secret = "private-phrase";
+    const raw = redactMcpAttachmentValue({ content: [{
+      type: "resource",
+      resource: { uri: "agenc:chart", mimeType: "application/vnd.agenc.chart+json", text: JSON.stringify({ kind: secret }) },
+    }] }, { token: secret }, undefined, "tool-result");
+    const result = await normalizeMcpToolOutput({ raw, serverName: "plugin:demo:show", toolName: "show", callId: "call-kind", environment: {}, logger });
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(result.content).toContain("[REDACTED]");
+  });
+  it.each([
+    ["series type", "application/vnd.agenc.chart+json", { ...chart, series: [{ ...chart.series[0], type: "private-phrase" }] }],
+    ["series scale", "application/vnd.agenc.chart+json", { ...chart, series: [{ ...chart.series[0], scale: "private-phrase" }] }],
+    ["currency", "application/vnd.agenc.chart+json", { ...chart, currency: "private-phrase" }],
+    ["table column key", "application/vnd.agenc.table+json", { ...table, columns: [{ key: "private-phrase", label: "Symbol" }], rows: [{ "private-phrase": "NVDA" }] }],
+    ["table column format", "application/vnd.agenc.table+json", { ...table, columns: [{ key: "symbol", label: "Symbol", format: "private-phrase" }] }],
+  ])("redacts plugin payload in %s on a model-facing resource", async (_field, mimeType, data) => {
+    const secret = "private-phrase";
+    const raw = redactMcpAttachmentValue({ content: [{ type: "resource", resource: { uri: "agenc:data", mimeType, text: JSON.stringify(data) } }] }, { token: secret }, undefined, "tool-result");
+    const result = await normalizeMcpToolOutput({ raw, serverName: "plugin:demo:show", toolName: "show", callId: "call-payload", environment: {}, logger });
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(result.content).toContain("[REDACTED]");
+  });
+  it("does not treat a timeseries type as structure in a category chart", () => {
+    const input = { type: "resource", resource: { mimeType: "application/vnd.agenc.chart+json", text: JSON.stringify({ kind: "category", series: [{ type: "line" }] }) } };
+    const safe = redactMcpAttachmentValue(input, { token: "line" }, undefined, "content-block");
+    expect(safe.resource.text).toContain('"type":"[REDACTED]"');
+  });
   it.each(["title", "rows", "line", "price"])("keeps display schema and Core defaults when the saved secret is %s", async value => {
     const headers = { token: value };
     const chartInput = value === "title" ? { ...chart, title: value } : chart;

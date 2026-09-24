@@ -32,6 +32,13 @@ export type DisplayAttachment = {
 const pendingArtifactBytes = new WeakMap<DisplayAttachment, Buffer>();
 export function peekDisplayArtifactBytes(item: DisplayAttachment): Buffer | undefined { return pendingArtifactBytes.get(item); }
 export function releaseDisplayArtifactBytes(item: DisplayAttachment): void { pendingArtifactBytes.delete(item); }
+export function withDisplayAttachmentTitle(item: DisplayAttachment, title: string): DisplayAttachment {
+  const renamed = { ...item, title };
+  const bytes = pendingArtifactBytes.get(item);
+  if (bytes !== undefined) pendingArtifactBytes.set(renamed, bytes);
+  pendingArtifactBytes.delete(item);
+  return renamed;
+}
 
 // Keep the timeseries rules identical to Desktop chartSpec.ts. Any change to
 // these rules must be mirrored there before a new chart version is accepted.
@@ -46,12 +53,32 @@ const ohlcPoint = z.object({ time, open: number, high: number, low: number, clos
   if (point.high < Math.max(point.open, point.close, point.low)) ctx.addIssue({ code: "custom", path: ["high"], message: "high must be at least open, close and low" });
   if (point.low > Math.min(point.open, point.close, point.high)) ctx.addIssue({ code: "custom", path: ["low"], message: "low must be at most open, close and high" });
 });
-const common = { name: z.string().trim().min(1), scale: z.enum(["price", "volume", "percent"]).default("price"), precision: z.number().int().min(0).max(8).optional() };
-const valueSeries = z.object({ ...common, type: z.enum(["line", "area", "histogram"]), data: z.array(valuePoint).min(1).max(5000) }).strict();
-const ohlcSeries = z.object({ ...common, type: z.enum(["candlestick", "bar"]), data: z.array(ohlcPoint).min(1).max(5000) }).strict();
+const seriesScale = z.enum(["price", "volume", "percent"]);
+const valueSeriesType = z.enum(["line", "area", "histogram"]);
+const ohlcSeriesType = z.enum(["candlestick", "bar"]);
+const timeseriesKind = z.literal("timeseries");
+const categoryKind = z.literal("category");
+const xyKind = z.literal("xy");
+const pieKind = z.literal("pie");
+const ISO_CURRENCIES = new Set([...Intl.supportedValuesOf("currency"), "XAU", "XAG", "XPT", "XPD", "XDR", "XTS", "XXX"]);
+const currency = z.string().regex(/^[A-Z]{3}$/, "use a three-letter ISO 4217 currency code").refine(value => ISO_CURRENCIES.has(value), "use an ISO 4217 currency code");
+/** Display JSON can be model-facing without schema validation. Only values accepted by these same validators are routing structure. */
+export function isDisplayStructuralValue(path: readonly string[], value: string, chartKind: unknown): boolean {
+  if (path.length === 1 && path[0] === "kind") return [timeseriesKind, categoryKind, xyKind, pieKind].some(schema => schema.safeParse(value).success);
+  if (!timeseriesKind.safeParse(chartKind).success) return false;
+  if (path.length === 1 && path[0] === "currency") return currency.safeParse(value).success;
+  if (path.length === 3 && path[0] === "series" && path[1] === "*") {
+    if (path[2] === "type") return valueSeriesType.safeParse(value).success || ohlcSeriesType.safeParse(value).success;
+    if (path[2] === "scale") return seriesScale.safeParse(value).success;
+  }
+  return false;
+}
+const common = { name: z.string().trim().min(1), scale: seriesScale.default("price"), precision: z.number().int().min(0).max(8).optional() };
+const valueSeries = z.object({ ...common, type: valueSeriesType, data: z.array(valuePoint).min(1).max(5000) }).strict();
+const ohlcSeries = z.object({ ...common, type: ohlcSeriesType, data: z.array(ohlcPoint).min(1).max(5000) }).strict();
 const timeseries = z.object({
-  version: z.literal(1), kind: z.literal("timeseries"), title: z.string().trim().min(1),
-  subtitle: z.string().optional(), currency: z.string().regex(/^[A-Z]{3}$/, "use a three-letter ISO 4217 currency code").refine(value => ISO_CURRENCIES.has(value), "use an ISO 4217 currency code").optional(),
+  version: z.literal(1), kind: timeseriesKind, title: z.string().trim().min(1),
+  subtitle: z.string().optional(), currency: currency.optional(),
   series: z.array(z.union([valueSeries, ohlcSeries])).min(1).max(8),
   markers: z.array(z.object({ time, text: z.string().trim().min(1) }).strict()).max(50).optional(),
 }).strict().superRefine((chart, ctx) => {
@@ -73,12 +100,11 @@ const timeseries = z.object({
     if (!all.has(String(marker.time))) ctx.addIssue({ code: "custom", path: ["markers", index, "time"], message: "marker time must match a data point" });
   });
 });
-const ISO_CURRENCIES = new Set([...Intl.supportedValuesOf("currency"), "XAU", "XAG", "XPT", "XPD", "XDR", "XTS", "XXX"]);
-const category = z.object({ version: z.literal(1), kind: z.literal("category"), title: z.string().trim().min(1), categories: z.array(z.string().min(1)).min(1).max(5000), series: z.array(z.object({ name: z.string().min(1), values: z.array(number).min(1).max(5000) }).strict()).min(1).max(8) }).strict().superRefine((chart, ctx) => {
+const category = z.object({ version: z.literal(1), kind: categoryKind, title: z.string().trim().min(1), categories: z.array(z.string().min(1)).min(1).max(5000), series: z.array(z.object({ name: z.string().min(1), values: z.array(number).min(1).max(5000) }).strict()).min(1).max(8) }).strict().superRefine((chart, ctx) => {
   chart.series.forEach((series, index) => { if (series.values.length !== chart.categories.length) ctx.addIssue({ code: "custom", path: ["series", index, "values"], message: "values must match categories" }); });
 });
-const xy = z.object({ version: z.literal(1), kind: z.literal("xy"), title: z.string().trim().min(1), series: z.array(z.object({ name: z.string().min(1), data: z.array(z.object({ x: number, y: number }).strict()).min(1).max(5000) }).strict()).min(1).max(8) }).strict();
-const pie = z.object({ version: z.literal(1), kind: z.literal("pie"), title: z.string().trim().min(1), slices: z.array(z.object({ label: z.string().min(1), value: number.nonnegative() }).strict()).min(1).max(100) }).strict();
+const xy = z.object({ version: z.literal(1), kind: xyKind, title: z.string().trim().min(1), series: z.array(z.object({ name: z.string().min(1), data: z.array(z.object({ x: number, y: number }).strict()).min(1).max(5000) }).strict()).min(1).max(8) }).strict();
+const pie = z.object({ version: z.literal(1), kind: pieKind, title: z.string().trim().min(1), slices: z.array(z.object({ label: z.string().min(1), value: number.nonnegative() }).strict()).min(1).max(100) }).strict();
 const chartSchema = z.union([timeseries, category, xy, pie]);
 const tableSchema = z.object({ version: z.literal(1), title: z.string().trim().min(1), columns: z.array(z.object({ key: z.string().min(1), label: z.string().min(1), format: z.string().max(64).optional() }).strict()).min(1).max(32), rows: z.array(z.record(z.string(), z.union([z.string(), number, z.boolean(), z.null()]))).max(1000) }).strict().superRefine((table, ctx) => {
   const keys = table.columns.map(column => column.key);

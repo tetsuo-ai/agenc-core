@@ -4,6 +4,7 @@ import type { Logger } from "./_deps/logger.js";
 import { createToolEffectDispositionEvidence } from "../tools/effect-boundary.js";
 import type { ToolEffectDispositionEvidence } from "../contracts/run-contracts.js";
 import { desktopAuthorityProofIssue, hasDesktopAuthority, type DesktopAuthorityGrant } from "./desktop-authority.js";
+import { isDisplayStructuralValue } from "./display-attachments.js";
 
 /** Runtime-owned turn provenance; never populated from model arguments or metadata. */
 const localTurn = new AsyncLocalStorage<{ allowed: boolean; active: boolean }>();
@@ -142,6 +143,20 @@ const DISPLAY_SCHEMA_KEYS = new Set([
   "name", "scale", "precision", "type", "data", "time", "value", "open", "high", "low", "close",
   "text", "values", "x", "y", "label", "columns", "rows", "key", "format",
 ]);
+function displaySchemaKey(chart: boolean, path: readonly string[], key: string): boolean {
+  if (!DISPLAY_SCHEMA_KEYS.has(key)) return false;
+  if (path.length === 0) return chart
+    ? ["version", "kind", "title", "subtitle", "currency", "series", "markers", "categories", "slices"].includes(key)
+    : ["version", "title", "columns", "rows"].includes(key);
+  if (!chart) return path.length === 2 && path[0] === "columns" && path[1] === "*" && ["key", "label", "format"].includes(key);
+  if (path.length === 2 && path[1] === "*") {
+    if (path[0] === "series") return ["name", "scale", "precision", "type", "data", "values"].includes(key);
+    if (path[0] === "markers") return ["time", "text"].includes(key);
+    if (path[0] === "slices") return ["label", "value"].includes(key);
+  }
+  return path.length === 4 && path[0] === "series" && path[1] === "*" && path[2] === "data" && path[3] === "*" &&
+    ["time", "value", "open", "high", "low", "close", "x", "y"].includes(key);
+}
 /** Parse display JSON while its schema is still intact; redact plugin payload leaves. */
 function redactDisplayJsonText(text: string, mimeType: string, headers: Readonly<Record<string, string>>): string {
   const displayMime = mimeType.toLowerCase();
@@ -151,14 +166,13 @@ function redactDisplayJsonText(text: string, mimeType: string, headers: Readonly
   let parsed: unknown;
   try { parsed = JSON.parse(text); } catch { return redactMcpAttachmentText(text, headers); }
   const chart = displayMime === "application/vnd.agenc.chart+json";
+  const chartKind = chart && parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>).kind : undefined;
   const walk = (value: unknown, path: readonly string[] = []): unknown => {
     if (path.length > 64) return redactMcpAttachmentText(JSON.stringify(value), headers);
     if (typeof value === "string") {
       const field = path.at(-1);
-      const chartEnum = chart && (path.length === 1 && (field === "kind" || field === "currency") ||
-        path.length === 3 && path[0] === "series" && path[1] === "*" && (field === "type" || field === "scale"));
-      const columnIdentifier = !chart && path.length === 3 && path[0] === "columns" && path[1] === "*" && field === "key";
-      if (chartEnum || columnIdentifier) return value;
+      if (chart && field !== undefined && isDisplayStructuralValue(path, value, chartKind)) return value;
       return redactMcpAttachmentText(value, headers);
     }
     if (Array.isArray(value)) return value.map(item => walk(item, [...path, "*"]));
@@ -166,8 +180,7 @@ function redactDisplayJsonText(text: string, mimeType: string, headers: Readonly
     if (value === null || typeof value !== "object") return value;
     const output: Record<string, unknown> = Object.create(null);
     for (const [childKey, child] of Object.entries(value)) {
-      const rowIdentifier = !chart && path.length === 2 && path[0] === "rows" && path[1] === "*";
-      const safeKey = rowIdentifier || DISPLAY_SCHEMA_KEYS.has(childKey)
+      const safeKey = displaySchemaKey(chart, path, childKey)
         ? childKey : redactMcpAttachmentText(childKey, headers);
       output[safeKey] = walk(child, [...path, childKey]);
     }

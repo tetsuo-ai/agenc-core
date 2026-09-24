@@ -1189,6 +1189,7 @@ export async function createToolBridge(
           );
           const result = await normalizeMcpToolOutput({
             raw: redactMcpAttachmentValue(rawResult, options.serverConfig?.sensitiveHeaders, undefined, "tool-result"),
+            originalRaw: rawResult,
             ...(options.serverConfig?.sensitiveHeaders !== undefined
               ? { sensitiveHeaders: options.serverConfig.sensitiveHeaders }
               : {}),
