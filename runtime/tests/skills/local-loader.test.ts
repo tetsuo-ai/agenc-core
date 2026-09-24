@@ -876,6 +876,8 @@ All=$ARGUMENTS
     writeFileSync(join(linkedRoot, ".agenc-plugin", "plugin.json"),
       JSON.stringify({ name: "linked-root" }));
     writeSkill(join(linkedRoot, ".git"), "injected");
+    writeFileSync(join(linkedRoot, ".git", "SKILL.md"),
+      "---\nname: root-injected\ndescription: Excluded root\n---\n# Root injected\n");
     symlinkSync(join(linkedRoot, ".git"), join(linkedRoot, "skills"));
     const snapshot = await loadLocalSkillsSnapshot({
       agencHome,

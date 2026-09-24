@@ -18,9 +18,10 @@
 
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
-import { mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import * as lockfile from "../../utils/lockfile.js";
 import { writeDurableAtomicFile } from "../../utils/durable-atomic-file.js";
+import { readStableFile } from "../../config/stable-file.js";
 import { isExcludedPluginPayloadDirectory } from "../payload-paths.js";
 import { normalizeSkillDisplayName, skillDisplayNameFromMarkdown } from "../skill-display-metadata.js";
 import { verifiedAdvertisedPluginPayloadDigest } from "../resolution.js";
@@ -504,21 +505,57 @@ function advertBinding(key: Uint8Array, manifestUrl: string, manifest: Uint8Arra
     .update(manifest).update("\0").update(signature).digest();
 }
 
-async function readAdvertBindingKey(cacheRoot: string): Promise<Buffer | undefined> {
+/** The binding secret belongs to Core's private home state, outside plugin stores. */
+async function advertBindingKeyPath(agencHome: string): Promise<string> {
+  const home = await realpath(agencHome);
+  const directory = join(home, "private", "plugin-adverts");
+  await mkdir(join(home, "private"), { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "EEXIST") throw error;
+  });
+  await mkdir(directory, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "EEXIST") throw error;
+  });
+  for (const path of [join(home, "private"), directory]) {
+    const info = await lstat(path);
+    if (!info.isDirectory() || info.isSymbolicLink() ||
+      (process.platform !== "win32" &&
+        ((info.mode & 0o777) !== 0o700 ||
+          (typeof process.getuid === "function" && info.uid !== process.getuid())))) {
+      throw new Error(`advert binding directory is not owner-only: ${path}`);
+    }
+  }
+  return join(directory, "binding-key");
+}
+
+async function readAdvertBindingKey(agencHome: string): Promise<Buffer | undefined> {
   try {
-    const key = await readFile(join(cacheRoot, ".advert-binding-key"), "utf8");
+    const path = await advertBindingKeyPath(agencHome);
+    const snapshot = await readStableFile(path);
+    if (snapshot === null) return undefined;
+    const info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 ||
+      info.dev !== snapshot.dev || info.ino !== snapshot.ino ||
+      (process.platform !== "win32" &&
+        (snapshot.mode !== 0o600 || (info.mode & 0o777) !== 0o600 ||
+          (typeof process.getuid === "function" && info.uid !== process.getuid())))) return undefined;
+    const key = snapshot.bytes.toString("utf8");
     return /^[a-f0-9]{64}$/u.test(key) ? Buffer.from(key, "hex") : undefined;
   } catch { return undefined; }
 }
 
-async function ensureAdvertBindingKey(cacheRoot: string): Promise<Buffer> {
-  const existing = await readAdvertBindingKey(cacheRoot);
-  if (existing !== undefined) return existing;
-  const keyPath = join(cacheRoot, ".advert-binding-key");
-  const key = randomBytes(32);
-  await writeDurableAtomicFile(keyPath, `${keyPath}.tmp-${process.pid}-${randomUUID()}`,
-    key.toString("hex"), 0o600);
-  return key;
+async function ensureAdvertBindingKey(agencHome: string): Promise<Buffer> {
+  const keyPath = await advertBindingKeyPath(agencHome);
+  return withAdvertSidecarLock(keyPath, async () => {
+    const existing = await readAdvertBindingKey(agencHome);
+    if (existing !== undefined) return existing;
+    if (await lstat(keyPath).then(() => true, () => false)) {
+      throw new Error("advert binding key failed owner or mode validation");
+    }
+    const key = randomBytes(32);
+    await writeDurableAtomicFile(keyPath, `${keyPath}.tmp-${process.pid}-${randomUUID()}`,
+      key.toString("hex"), 0o600);
+    return key;
+  });
 }
 
 function authenticatedAdvertPath(cacheRoot: string, key: string): string {
@@ -526,7 +563,7 @@ function authenticatedAdvertPath(cacheRoot: string, key: string): string {
 }
 
 async function readAuthenticatedAdvert(
-  path: string, manifestUrl: string, cacheRoot: string,
+  path: string, manifestUrl: string, agencHome: string,
 ): Promise<{ readonly manifest: Uint8Array; readonly signature: Uint8Array } | undefined> {
   try {
     if ((await stat(path)).size > 720_000) return undefined;
@@ -543,7 +580,7 @@ async function readAuthenticatedAdvert(
     const signature = Buffer.from(record.signature, "base64");
     if (manifest.length === 0 || manifest.length > MANIFEST_PREFETCH_MAX_BYTES ||
       signature.length === 0 || signature.length > 256 * 1024) return undefined;
-    const key = await readAdvertBindingKey(cacheRoot);
+    const key = await readAdvertBindingKey(agencHome);
     if (key === undefined || !timingSafeEqual(Buffer.from(record.binding, "hex"),
       advertBinding(key, manifestUrl, manifest, signature))) return undefined;
     return { manifest, signature };
@@ -552,11 +589,12 @@ async function readAuthenticatedAdvert(
 
 async function writeAuthenticatedAdvert(
   path: string, manifestUrl: string, manifest: Uint8Array, signature: Uint8Array,
+  agencHome: string,
 ): Promise<void> {
   const cacheRoot = dirname(path);
   await mkdir(cacheRoot, { recursive: true, mode: 0o700 });
   await withAdvertSidecarLock(join(cacheRoot, ".authenticated-budget"), async () => {
-    const key = await ensureAdvertBindingKey(cacheRoot);
+    const key = await ensureAdvertBindingKey(agencHome);
     const entries = (await readdir(cacheRoot)).filter((name) => name.endsWith(".authenticated.json"));
     const currentName = path.slice(cacheRoot.length + 1);
     const older = await Promise.all(entries.filter((name) => name !== currentName).map(async (name) => ({
@@ -639,14 +677,29 @@ async function claimAdvertAuthentication(path: string, now: number, force = fals
   try {
     return await withAdvertSidecarLock(path, async () => {
       const cached = await readAdvertSidecar(path);
+      // A previously bound entry may need one immediate recovery when its key
+      // disappears or rotates. Persist that claim before fetching so other
+      // processes and subsequent offline polls honor the same deadline.
+      if (force && typeof cached.authRecoveryAfter === "string" &&
+        Date.parse(cached.authRecoveryAfter) > now) return false;
       if (!force && typeof cached.authRetryAfter === "string" && Date.parse(cached.authRetryAfter) > now) {
         return false;
       }
       await writeAdvertSidecar(path, { ...cached,
+        ...(force ? { authRecoveryAfter: new Date(now + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString() } : {}),
         authRetryAfter: new Date(now + OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString() });
       return true;
     });
   } catch { return false; }
+}
+
+async function clearAdvertRecoveryClaim(path: string): Promise<void> {
+  await withAdvertSidecarLock(path, async () => {
+    const cached = await readAdvertSidecar(path);
+    if (cached.authRecoveryAfter === undefined) return;
+    const { authRecoveryAfter: _recovery, ...rest } = cached;
+    await writeAdvertSidecar(path, rest);
+  });
 }
 
 async function authenticatedDigestDuringWindow(
@@ -661,7 +714,7 @@ async function authenticatedDigestDuringWindow(
 ): Promise<string | undefined> {
   if (options.agencHome === undefined) return undefined;
   const authenticated = authenticatedAdverts.get(cacheIdentity) ??
-    await readAuthenticatedAdvert(authenticatedPath, manifestUrl, dirname(authenticatedPath));
+    await readAuthenticatedAdvert(authenticatedPath, manifestUrl, options.agencHome);
   if (authenticated !== undefined) {
     try {
       return await verifiedAdvertisedPluginPayloadDigest(
@@ -681,7 +734,11 @@ async function authenticatedDigestDuringWindow(
       manifest, signature, { agencHome: options.agencHome });
     authenticatedAdverts.set(cacheIdentity, { manifest, signature });
     if (authenticatedAdverts.size > 128) authenticatedAdverts.delete(authenticatedAdverts.keys().next().value!);
-    await writeAuthenticatedAdvert(authenticatedPath, manifestUrl, manifest, signature).catch(() => {});
+    try {
+      await writeAuthenticatedAdvert(authenticatedPath, manifestUrl, manifest, signature,
+        options.agencHome);
+      await clearAdvertRecoveryClaim(sidecarPath);
+    } catch { /* The in-memory verified advert is still safe to use. */ }
     return digest;
   } catch { return undefined; }
 }
@@ -771,9 +828,10 @@ async function prefetchPinnedCardMetaOnce(
   includePayloadDigest: boolean,
   manifestUrl: string,
 ): Promise<PrefetchedCardMeta | undefined> {
+  const cacheRoot = logoCacheRoot(options);
+  await rm(join(cacheRoot, ".advert-binding-key"), { force: true }).catch(() => {});
   const fetcher = options.fetcher ?? (globalThis.fetch as unknown as Fetcher);
   if (typeof fetcher !== "function") return undefined;
-  const cacheRoot = logoCacheRoot(options);
   const key = createHash("sha256").update(manifestUrl).digest("hex").slice(0, 24);
   const sidecarPath = advertSidecarPath(cacheRoot, key);
   const authenticatedPath = authenticatedAdvertPath(cacheRoot, key);
@@ -861,10 +919,14 @@ async function prefetchPinnedCardMetaOnce(
     const previous = await lastAuthenticated();
     if (previous.payloadDigest !== undefined) return previous;
   }
-  if (payloadDigest !== undefined && signatureBytes !== undefined) {
+  if (payloadDigest !== undefined && signatureBytes !== undefined && options.agencHome !== undefined) {
     authenticatedAdverts.set(cacheIdentity, { manifest: manifestBytes, signature: signatureBytes });
     if (authenticatedAdverts.size > 128) authenticatedAdverts.delete(authenticatedAdverts.keys().next().value!);
-    try { await writeAuthenticatedAdvert(authenticatedPath, manifestUrl, manifestBytes, signatureBytes); }
+    try {
+      await writeAuthenticatedAdvert(authenticatedPath, manifestUrl, manifestBytes, signatureBytes,
+        options.agencHome);
+      await clearAdvertRecoveryClaim(sidecarPath);
+    }
     catch { /* Current invocation can still use its authenticated bytes. */ }
   }
   const surface = cardInterface(manifest.interface);

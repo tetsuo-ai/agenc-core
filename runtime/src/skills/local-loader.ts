@@ -585,6 +585,7 @@ interface SkillFileScan {
   readonly files: readonly ScannedSkillFile[];
   readonly droppedCount: number;
   readonly rootRealPath: string;
+  readonly rejectedRoot?: boolean;
   readonly unsafeRoot?: boolean;
   readonly emptyDirectories: readonly EmptySkillDirectory[];
   readonly warnings: readonly SkillLoadWarning[];
@@ -654,7 +655,8 @@ async function findSkillFiles(root: SkillRoot): Promise<SkillFileScan> {
     (isExcludedPluginPayloadPath(root.pluginRoot, lexical) ||
       isExcludedPluginPayloadPath(physicalPluginRoot, physical));
   if (excludedPluginPath(root.path, rootRealPath)) {
-    return { files: [], droppedCount: 0, rootRealPath, warnings: [], emptyDirectories: [] };
+    return { files: [], droppedCount: 0, rootRealPath, rejectedRoot: true,
+      warnings: [], emptyDirectories: [] };
   }
   const visited = new Set<string>([rootRealPath]);
   const loaded: Array<ScannedSkillFile & { readonly depth: number }> = [];
@@ -1217,7 +1219,7 @@ async function loadSkillsFromRoot(root: SkillRoot): Promise<LoadedSkillRoot> {
   // dir individually (skills: ["./skills/flash-board"]), so the root
   // itself carries the SKILL.md instead of holding child skill dirs.
   let leafRoot = false;
-  if (files.length === 0 && !scan.unsafeRoot) {
+  if (files.length === 0 && !scan.unsafeRoot && !scan.rejectedRoot) {
     const leaf = join(root.path, SKILL_FILE_NAME);
     try {
       const stats = await lstat(leaf);
