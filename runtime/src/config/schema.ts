@@ -220,6 +220,11 @@ export interface AgentConfig {
 export interface AgentsConfig {
   readonly cross_provider_enabled?: boolean;
   readonly allowed_providers?: readonly string[];
+  /**
+   * Ask before every cross-provider spawn. Off by default: enabling
+   * cross_provider_enabled with allowed_providers is the user's consent.
+   */
+  readonly cross_provider_ask_each_spawn?: boolean;
 }
 
 /**
@@ -1183,6 +1188,7 @@ export function defaultConfig(): AgenCConfig {
     agents: Object.freeze({
       cross_provider_enabled: false,
       allowed_providers: Object.freeze([]),
+      cross_provider_ask_each_spawn: false,
     }) as AgentsConfig,
     agent: Object.freeze({
       // Default budget is intentionally empty: caps are designed for
@@ -2150,16 +2156,25 @@ export function validateAgentConfig(raw: unknown): AgentConfig | undefined {
   return Object.freeze(out as AgentConfig);
 }
 
+function optionalAgentsBoolean(
+  record: Record<string, unknown>,
+  field: string,
+  fail: (field: string, detail: string) => InvalidAgentsConfigError,
+): boolean | undefined {
+  const value = record[field];
+  if (value !== undefined && typeof value !== "boolean") throw fail(field, "expected boolean");
+  return value as boolean | undefined;
+}
+
 export function validateAgentsConfig(raw: unknown): AgentsConfig | undefined {
   if (raw === undefined) return undefined;
   const fail = (field: string, detail: string): InvalidAgentsConfigError =>
     new InvalidAgentsConfigError(field, detail);
   const record = requirePlainObject(raw, "", fail);
-  rejectUnknownFields(record, new Set(["cross_provider_enabled", "allowed_providers"]), fail);
-  const enabled = record.cross_provider_enabled;
-  if (enabled !== undefined && typeof enabled !== "boolean") {
-    throw fail("cross_provider_enabled", "expected boolean");
-  }
+  rejectUnknownFields(record,
+    new Set(["cross_provider_enabled", "allowed_providers", "cross_provider_ask_each_spawn"]), fail);
+  const enabled = optionalAgentsBoolean(record, "cross_provider_enabled", fail);
+  const askEachSpawn = optionalAgentsBoolean(record, "cross_provider_ask_each_spawn", fail);
   const allowed = record.allowed_providers;
   if (allowed !== undefined && !Array.isArray(allowed)) {
     throw fail("allowed_providers", "expected array of provider names");
@@ -2178,6 +2193,7 @@ export function validateAgentsConfig(raw: unknown): AgentsConfig | undefined {
   return Object.freeze({
     ...(enabled !== undefined ? { cross_provider_enabled: enabled } : {}),
     ...(allowed !== undefined ? { allowed_providers: Object.freeze(providers) } : {}),
+    ...(askEachSpawn !== undefined ? { cross_provider_ask_each_spawn: askEachSpawn } : {}),
   });
 }
 

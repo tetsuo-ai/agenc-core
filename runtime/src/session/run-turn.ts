@@ -167,6 +167,7 @@ import type {
   SessionTaskAbortContext,
   SessionTaskRunContext,
   RunningTask,
+  TurnAbortReason,
 } from "./tasks.js";
 import { emitError, emitWarning } from "./event-log.js";
 import {
@@ -1413,6 +1414,18 @@ function samplingAbortError(signal: AbortSignal, fallback: unknown): StreamModel
   );
 }
 
+function turnSignalAbortReason(reason: unknown): TurnAbortReason {
+  switch (reason) {
+    case "daemon_shutdown":
+    case "interrupted":
+    case "replaced":
+    case "review_ended":
+      return reason;
+    default:
+      return "interrupted";
+  }
+}
+
 function errorSummary(err: unknown): string {
   const text = err instanceof Error ? err.message : String(err);
   return text.length > 160 ? `${text.slice(0, 157)}...` : text;
@@ -1738,6 +1751,7 @@ export async function* runTurnKernel(
   userMessage: string | readonly LLMContentPart[],
   opts: RunTurnOptions = {},
 ): AsyncGenerator<PhaseEvent, Terminal> {
+  session.rolloutStore?.assertModelExecutionAllowed?.();
   // T6 gap #119: canonical turn-lifecycle emits. Each `runTurn`
   // invocation must flank its work with a `turn_started` +
   // `turn_context` pair and either a matching `turn_complete` (happy
@@ -2154,6 +2168,9 @@ async function* runTurnKernelInner(
   // allowing an in-flight admission row to reattach after restart.
   if (opts.resume !== undefined) {
     state.messages = [...priorFull];
+    const lastUserIndex = state.messages.findLastIndex((message) => message.role === "user");
+    const completedToolResults = state.messages.slice(lastUserIndex + 1)
+      .filter((message) => message.role === "tool").length;
     // The reconstructed prefix is already on disk → anchor the persist
     // cursor at its length so it is not re-persisted.
     persistedMessageCount = state.messages.length;
@@ -2185,8 +2202,17 @@ async function* runTurnKernelInner(
           : {}),
       });
     }
+    state.messages.push({
+      role: "developer",
+      content: `The previous turn was interrupted by an app or daemon restart. ${completedToolResults} completed tool result(s) from that turn are already recorded in the conversation. Continue the unfinished user request from the recorded state and pending plan. Check the workspace before further writes. Do not repeat completed work. A tool without a settled result may have executed; check its outcome before any side-effecting retry.`,
+      runtimeOnly: { excludeFromDurableHistory: true },
+    });
     restoreFromCheckpoint(state, opts.resume.restoreSlice);
     restoreModelSampleResumePrompt(state);
+    // The request in flight at shutdown owns its original admission row.
+    // A continuation is a new physical request, even when the old row is
+    // held_unknown, so reserve its next identity before dispatch.
+    advanceModelSampleOrdinal(state);
   }
   // Phase 4b eligibility is a per-turn decision; the checkpointed round
   // counter restored above keeps a resumed turn's verification loop bounded.
@@ -2226,6 +2252,11 @@ async function* runTurnKernelInner(
       : state.messages.length;
   const onCompactionReplacedHistory = (durableCount: number): void => {
     if (rolloutPersistenceActive()) persistedMessageCount = durableCount;
+    // The replacement is already durable. Seal any unsent image turn carried
+    // across a pre-request compact, then fsync a checkpoint for this exact
+    // prefix before the compaction ladder can await its next tier.
+    persistNewResponseItems();
+    emitTurnCheckpoint("iteration", { force: true });
   };
   const persistTurnRolloutBaseline = (): void => {
     if (rolloutPersistenceSuspended()) return;
@@ -2352,7 +2383,8 @@ async function* runTurnKernelInner(
   let checkpointSeq = opts.resume?.fromCheckpointSeq ?? 0;
   let iterationIndex = opts.resume?.fromIteration ?? 0;
   let lastCheckpointAtMs = 0;
-  let checkpointedModelSampleOrdinal = state.modelSampleOrdinal;
+  let checkpointedModelSampleOrdinal =
+    opts.resume === undefined ? state.modelSampleOrdinal : state.modelSampleOrdinal - 1;
   const emitTurnCheckpoint = (
     boundary: "iteration" | "postAssistant",
     options: { readonly force?: boolean } = {},
@@ -2534,26 +2566,6 @@ async function* runTurnKernelInner(
       },
     });
   };
-  try {
-    await runPreSamplingCompact(session, ctx, turnQuerySource, state, {
-      onAdvisoryRefusal: deferCompactionRefusal,
-    });
-  } catch (error) {
-    const underlying = compactFailureError(error);
-    emitTurnWarning(
-      session,
-      PRE_SAMPLING_COMPACT_FAILED_CAUSE,
-      underlying.message,
-    );
-    // Pre-compact failure ends the turn; the daemon session must stay
-    // promptable.
-    await syncSessionState();
-    emitTurnComplete("", "compact_failed", underlying);
-    const terminal: Terminal = { reason: "completed", error: underlying };
-    yield compactFailedTurnComplete("", EMPTY_SYNTHETIC_USAGE, underlying);
-    return terminal;
-  }
-
   // Merge external opts.signal, the session-level abort, and the
   // task-local abort from `spawnTask`. `startTask` gives the running
   // task its own abort controller, which `abortAllTasks` trips; the
@@ -2571,13 +2583,46 @@ async function* runTurnKernelInner(
   // first merge can leave a listener on the long-lived session signal.
   // Hand the disposers to the outer kernel's finally so they run on every
   // exit path (completed, aborted, error, abandoned generator).
-  // A run with a deadline (#2503) aborts its running turn when it passes;
-  // the abort reason turns the cancellation into `deadline_reached`.
   commons.signalCleanups.push(
     mergedSession.dispose,
     mergedTask.dispose,
-    armRunDeadline(session, runningTask.abortController),
   );
+  try {
+    await runPreSamplingCompact(session, ctx, turnQuerySource, state, {
+      onAdvisoryRefusal: deferCompactionRefusal,
+      onDurableHistoryReplaced: onCompactionReplacedHistory,
+    });
+  } catch (error) {
+    const underlying = compactFailureError(error);
+    if (signal.aborted) {
+      await drainInFlight(state, ctx, session);
+      await syncSessionState();
+      emitTurnAborted(turnSignalAbortReason(signal.reason));
+      const terminal: Terminal = { reason: "cancelled" };
+      yield {
+        type: "turn_complete",
+        content: "",
+        usage: EMPTY_SYNTHETIC_USAGE,
+        stopReason: "cancelled",
+        error: underlying,
+      };
+      return terminal;
+    }
+    emitTurnWarning(
+      session,
+      PRE_SAMPLING_COMPACT_FAILED_CAUSE,
+      underlying.message,
+    );
+    // Pre-compact failure ends the turn; the daemon session must stay
+    // promptable.
+    await syncSessionState();
+    emitTurnComplete("", "compact_failed", underlying);
+    const terminal: Terminal = { reason: "completed", error: underlying };
+    yield compactFailedTurnComplete("", EMPTY_SYNTHETIC_USAGE, underlying);
+    return terminal;
+  }
+  // Keep the deadline's existing start point after pre-request compaction.
+  commons.signalCleanups.push(armRunDeadline(session, runningTask.abortController));
   let deadlineTurnReminderInjected = false;
 
   let usage: LLMUsage = {
@@ -2615,19 +2660,18 @@ async function* runTurnKernelInner(
       },
     };
   };
-  const finishCancelledIfAborted = async (): Promise<{
+  const finishCancelledIfAborted = async (
+    error?: Error,
+    abortReason?: TurnAbortReason,
+  ): Promise<{
     readonly terminal: Terminal;
     readonly event: PhaseEvent;
   } | null> => {
     if (!signal.aborted) return null;
     await drainInFlight(state, ctx, session);
     await syncSessionState();
-    if (isDeadlineAbort(signal)) return finishDeadlineReached();
-    emitTurnAborted(
-      String(
-        (signal as AbortSignal & { reason?: unknown }).reason ?? "cancelled",
-      ),
-    );
+    if (abortReason === undefined && isDeadlineAbort(signal)) return finishDeadlineReached();
+    emitTurnAborted(abortReason ?? turnSignalAbortReason(signal.reason));
     return {
       terminal: { reason: "cancelled" },
       event: {
@@ -2635,6 +2679,7 @@ async function* runTurnKernelInner(
         content: lastContent,
         usage,
         stopReason: "cancelled",
+        ...(error !== undefined ? { error } : {}),
       },
     };
   };
@@ -2967,13 +3012,7 @@ async function* runTurnKernelInner(
           yield stopped.event;
           return stopped.terminal;
         }
-        emitTurnAborted(
-          String(
-            (signal as AbortSignal & { reason?: unknown }).reason ??
-              underlying.message ??
-              "cancelled",
-          ),
-        );
+        emitTurnAborted(turnSignalAbortReason(signal.reason));
         const terminal: Terminal = { reason: "cancelled" };
         yield {
           type: "turn_complete",
@@ -3145,6 +3184,13 @@ async function* runTurnKernelInner(
           },
         );
       } catch (error) {
+        const cancelled = await finishCancelledIfAborted(
+          compactFailureError(error),
+        );
+        if (cancelled !== null) {
+          yield cancelled.event;
+          return cancelled.terminal;
+        }
         // Mid-turn compact failure: end
         // the turn with a warning plus compact_failed so rollout
         // reducers see a closed boundary without killing the run.
@@ -3500,20 +3546,32 @@ async function* runTurnKernelInner(
       // the transaction can summarize them along with everything else,
       // instead of finding them unmapped and refusing to compact.
       persistNewResponseItems();
-      const midTurnCompacted = await runAutoCompact(
-        session,
-        ctx,
-        "before_last_user_message",
-        "context_limit",
-        "in_turn",
-        state,
-        {
-          querySource: turnQuerySource,
-          durableMessageCount: compactionDurableCount(),
-          onDurableHistoryReplaced: onCompactionReplacedHistory,
-          onAdvisoryRefusal: deferCompactionRefusal,
-        },
-      );
+      let midTurnCompacted: boolean;
+      try {
+        midTurnCompacted = await runAutoCompact(
+          session,
+          ctx,
+          "before_last_user_message",
+          "context_limit",
+          "in_turn",
+          state,
+          {
+            querySource: turnQuerySource,
+            durableMessageCount: compactionDurableCount(),
+            onDurableHistoryReplaced: onCompactionReplacedHistory,
+            onAdvisoryRefusal: deferCompactionRefusal,
+          },
+        );
+      } catch (error) {
+        const cancelled = await finishCancelledIfAborted(
+          compactFailureError(error),
+        );
+        if (cancelled !== null) {
+          yield cancelled.event;
+          return cancelled.terminal;
+        }
+        throw error;
+      }
       if (midTurnCompacted) {
         session.bindProviderConversation();
         continue;

@@ -399,6 +399,17 @@ continues that turn only when every gate holds. A gate rejection may open a
 fresh turn only when no provider state changed or compensation proved that the
 original state was restored. The existing checkpoint remains unchanged.
 
+Daemon restart automatically continues a root checkpointed turn only when
+every descendant edge is closed and its outcome is durably recorded as
+terminal. A root whose workers finished earlier remains eligible. Otherwise
+bootstrap follows the ordinary path: it closes dangling calls, does not
+restore descendant sessions, and waits for an explicit new root turn.
+Resuming turns with workers remains follow-up work.
+Bootstrap reconciles durable effect acknowledgements before pairing the
+checkpoint's dangling calls. It leaves unknown outcomes unresolved. A retry
+placeholder written by an older bootstrap is not effect evidence; automatic
+continuation defers when one follows the checkpoint.
+
 When the checkpoint carries `pendingAdmissionFallback`, resume first prepares
 that fallback's provider and model as one route. Publication covers the
 provider binding, session configuration, model metadata, runtime config,

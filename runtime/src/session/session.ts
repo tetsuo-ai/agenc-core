@@ -1950,6 +1950,7 @@ export function normalizeHistoryMessages(
   for (const item of history) {
     if (!item || typeof item !== "object") continue;
     const candidate = item as {
+      id?: unknown;
       role?: unknown;
       content?: unknown;
       phase?: unknown;
@@ -1971,6 +1972,7 @@ export function normalizeHistoryMessages(
       agentInvocation?: AgentInvocationChannelMetadata;
       compactionHistory?: CompactionHistoryMarkerV1;
       runtimeOnly?: {
+        responseItemId?: unknown;
         userMessageId?: unknown;
         toolResultIntegrity?: ToolResultIntegrity;
         agentInvocation?: AgentInvocationChannelMetadata;
@@ -2011,15 +2013,23 @@ export function normalizeHistoryMessages(
         ? { toolName: candidate.toolName }
         : {}),
       ...providerReasoning,
-      // Preserve the file-history join key and durable integrity metadata.
+      // Preserve response-item identity, the file-history join key, and
+      // durable integrity metadata across turn-start and checkpoint copies.
       // The invocation merge boundary is derived from authenticated channel
       // metadata instead of accepting a transient serialized flag.
-      ...(typeof candidate.runtimeOnly?.userMessageId === "string" ||
+      ...(typeof candidate.runtimeOnly?.responseItemId === "string" ||
+      typeof candidate.id === "string" ||
+      typeof candidate.runtimeOnly?.userMessageId === "string" ||
       durable.toolResultIntegrity !== undefined ||
       durable.agentInvocation !== undefined ||
       durable.compactionHistory !== undefined
         ? {
             runtimeOnly: {
+              ...(typeof candidate.runtimeOnly?.responseItemId === "string"
+                ? { responseItemId: candidate.runtimeOnly.responseItemId }
+                : typeof candidate.id === "string"
+                  ? { responseItemId: candidate.id }
+                  : {}),
               ...(typeof candidate.runtimeOnly?.userMessageId === "string"
                 ? { userMessageId: candidate.runtimeOnly.userMessageId }
                 : {}),
@@ -2571,6 +2581,8 @@ export class Session {
 
   /** Bootstrap-owned submit hook used by the TUI contract. */
   private turnDriverHooks: SessionTurnDriverHooks | null = null;
+  private interruptedTurnHandoff: (() => Promise<void>) | null = null;
+  private interruptedTurnHandoffInFlight: Promise<void> | null = null;
   private readonly turnDriverReadyListeners = new Set<() => void>();
   /**
    * SessionStart hooks may be deferred when the atomic first turn is an
@@ -3492,6 +3504,27 @@ export class Session {
     }
   }
 
+  /** Run recovery pairing inside the serialized submit lifecycle, before history append. */
+  installInterruptedTurnHandoff(handoff: (() => Promise<void>) | null): void {
+    this.interruptedTurnHandoff = handoff;
+  }
+
+  /** Settle a recovered turn's open calls before new history or a history boundary. */
+  async settleInterruptedTurnHandoff(): Promise<void> {
+    const handoff = this.interruptedTurnHandoff;
+    if (handoff === null) return;
+    const inFlight = this.interruptedTurnHandoffInFlight ?? handoff();
+    this.interruptedTurnHandoffInFlight = inFlight;
+    try {
+      await inFlight;
+      if (this.interruptedTurnHandoff === handoff) this.interruptedTurnHandoff = null;
+    } finally {
+      if (this.interruptedTurnHandoffInFlight === inFlight) {
+        this.interruptedTurnHandoffInFlight = null;
+      }
+    }
+  }
+
   onTurnDriverReady(listener: () => void): () => void {
     if (this.lifecycleState !== "open") {
       throw new Error("cannot schedule a turn after shutdown");
@@ -3818,6 +3851,9 @@ export class Session {
         }
       }
       if (!permitted()) return false;
+      if (this.interruptedTurnHandoff !== null) {
+        await this.settleInterruptedTurnHandoff();
+      }
       if (generation === undefined) {
         await this.childFollowupAdmission.exit(() => hooks.submit(message, opts));
         return true;
@@ -3935,6 +3971,7 @@ export class Session {
 
     try {
       this.throwIfPartialCompactAborted(abortController.signal);
+      await this.settleInterruptedTurnHandoff();
       const sourceHistory = this.snapshotHistoryMessages();
       const { prefixBeforeActive, activeHistory } =
         splitActiveHistory(sourceHistory);
@@ -4058,6 +4095,7 @@ export class Session {
     }
 
     try {
+      await this.settleInterruptedTurnHandoff();
       const sourceHistory = this.snapshotHistoryMessages();
       const { prefixBeforeActive, activeHistory } =
         splitActiveHistory(sourceHistory);
@@ -4153,6 +4191,7 @@ export class Session {
     }
 
     try {
+      await this.settleInterruptedTurnHandoff();
       let result: SessionRollbackCompactionResult | null = null;
       await this.taskDispatchLock.with(async () => {
         const ownsTask = await this.activeTurn.with(

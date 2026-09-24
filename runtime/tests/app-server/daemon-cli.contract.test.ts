@@ -6570,6 +6570,68 @@ snapshot_max_bytes = 64
     await rm(agencHome, { recursive: true, force: true });
   });
 
+  it("SIGTERM mid-turn suspends the run and restores its completed tool history", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const runId = "run-g3-sigterm";
+    seedRecoverableCompletedToolState(agencHome, {
+      cwd: process.cwd(), runId, sessionId: "session-g3-sigterm",
+      result: "File created successfully at: one.txt",
+    });
+    const restoredSessions: Array<ReturnType<typeof createRecoveredSession>> = [];
+    const permissionModeRegistry = new PermissionModeRegistry(createEmptyToolPermissionContext());
+    const makeRunner = (activeTurn: boolean): AgenCBackgroundAgentRunner =>
+      new AgenCDelegateBackgroundAgentRunner({
+        bootstrap: (async options => {
+          const rolloutStore = openRecoveredRolloutStore(agencHome, options);
+          const session = createRecoveredSession(runId, permissionModeRegistry, {
+            runtimeOptions: options.runtimeOptions, rolloutStore, enableDurableClose: true,
+            ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+          });
+          restoredSessions.push(session);
+          Object.assign(session, { activeTurn: { unsafePeek: () =>
+            activeTurn ? { turnId: "turn-g3-sigterm" } : null } });
+          const bootstrap = session.createBootstrap();
+          return { ...bootstrap, shutdown: async () => {
+            if (activeTurn) session.emit({ id: "shutdown-interrupted", msg: {
+              type: "turn_aborted", payload: { turnId: "turn-g3-sigterm", reason: "daemon_shutdown" },
+            } });
+            await bootstrap.shutdown();
+          } };
+        }) as AgenCBootstrapFunction,
+        ensureAgentControl: (() => ({ control: {
+          sendInput: async () => {}, shutdown: async () => {},
+          liveThreadSpawnChildren: () => new Map(), openThreadSpawnChildren: () => new Map(),
+        }, registry: {} })) as AgenCEnsureAgentControlFunction,
+      });
+    const firstSignal = createSignalProcess();
+    const first = runAgenCDaemonCli({ kind: "command", action: "run" }, {
+      host, io: createIo(), signalProcess: firstSignal, runner: makeRunner(true),
+    });
+    await expect(waitForPid(resolveAgenCDaemonPidPath(host.env, host.userHome))).resolves.toBe(4100);
+    expect(restoredSessions[0]?.state.unsafePeek().history).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "tool", toolCallId: "tool-completed" }),
+    ]));
+    restoredSessions[0]?.emit({ id: "started-g3", msg: {
+      type: "turn_started", payload: { turnId: "turn-g3-sigterm" },
+    } });
+    firstSignal.emit("SIGTERM");
+    await expect(first).resolves.toBe(0);
+    expect(readAgentRunStatus(agencHome, process.cwd(), runId)).toBe("suspended");
+
+    const secondSignal = createSignalProcess();
+    const second = runAgenCDaemonCli({ kind: "command", action: "run" }, {
+      host, io: createIo(), signalProcess: secondSignal, runner: makeRunner(false),
+    });
+    await expect(waitForPid(resolveAgenCDaemonPidPath(host.env, host.userHome))).resolves.toBe(4100);
+    expect(restoredSessions[1]?.state.unsafePeek().history).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "tool", toolCallId: "tool-completed" }),
+    ]));
+    secondSignal.emit("SIGTERM");
+    await expect(second).resolves.toBe(0);
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
   it("foreground daemon poisons replay when current tool registration is not idempotent", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);

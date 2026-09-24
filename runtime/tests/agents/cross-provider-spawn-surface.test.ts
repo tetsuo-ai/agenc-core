@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../../src/config/schema.js";
+import { crossProviderConsentFromSettings } from "../../src/agents/cross-provider.js";
 import { buildToolRegistry } from "../../src/tool-registry.js";
 import { createSpawnAgentTool } from "../../src/agents/v2/spawn.js";
 import { createAgentRoleWorkspace } from "../../src/agents/role.js";
@@ -13,12 +14,19 @@ import { buildFilteredRegistry } from "../../src/agents/run-agent.js";
 // spawn_agent tool must still show the session's allowed provider/model pairs:
 // without them the model searched source files for valid model names.
 
-function crossProviderSession(allowedProviders: string[]): Session {
+// A pass-through spy: the spawn description must take its consent wording
+// from the same settings check the approval broker applies.
+vi.mock("../../src/agents/cross-provider.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/agents/cross-provider.js")>();
+  return { ...actual, crossProviderConsentFromSettings: vi.fn(actual.crossProviderConsentFromSettings) };
+});
+
+function crossProviderSession(allowedProviders: string[], agents: Record<string, unknown> = {}): Session {
   const config = {
     ...defaultConfig(),
     model_provider: "grok",
     model: "grok-4.7",
-    agents: { cross_provider_enabled: true, allowed_providers: allowedProviders },
+    agents: { cross_provider_enabled: true, allowed_providers: allowedProviders, ...agents },
   };
   return {
     modelInfo: { slug: "grok-4.7" },
@@ -114,5 +122,35 @@ describe("spawn_agent cross-provider surface", () => {
     const advertised = registry.toLLMTools().find((tool) => tool.function.name === "spawn_agent");
     expect(advertised?.function.description).not.toContain("Allowed provider/model pairs");
     expect(advertised?.function.parameters).toBeDefined();
+  });
+});
+
+describe("spawn_agent cross-provider consent text", () => {
+  const description = (session: Session) => buildToolRegistry({ workspaceRoot: "/tmp",
+    modelFacingTools: [spawnTool(() => session)] }).toLLMTools()
+    .find((tool) => tool.function.name === "spawn_agent")?.function.description ?? "";
+
+  it("says settings consent ends for the session at a funds stop, and asks when the user opted into it", () => {
+    const settings = description(crossProviderSession(["deepseek"]));
+    expect(settings).toContain("runs without asking");
+    expect(settings).toContain("Once any child reports insufficient_funds, every later cross-provider spawn in this session asks the user");
+    expect(settings).toContain("a run no one can answer gets consent_unavailable");
+    const askEachSpawn = description(crossProviderSession(["deepseek"], { cross_provider_ask_each_spawn: true }));
+    expect(askEachSpawn).toContain("Using one asks the user for consent at the moment of use");
+    expect(askEachSpawn).not.toContain("runs without asking");
+  });
+
+  it("takes its consent wording from the settings check the broker applies", async () => {
+    const actual = await vi.importActual<typeof import("../../src/agents/cross-provider.js")>(
+      "../../src/agents/cross-provider.js");
+    const settingsCheck = vi.mocked(crossProviderConsentFromSettings);
+    settingsCheck.mockReturnValue(false);
+    try {
+      expect(description(crossProviderSession(["deepseek"])))
+        .toContain("Using one asks the user for consent at the moment of use");
+    } finally {
+      settingsCheck.mockImplementation(actual.crossProviderConsentFromSettings);
+    }
+    expect(description(crossProviderSession(["deepseek"]))).toContain("runs without asking");
   });
 });

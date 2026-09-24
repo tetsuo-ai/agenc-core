@@ -2,14 +2,12 @@ import type { Session } from "../session/session.js";
 import { createHash } from "node:crypto";
 import type { AgenCConfig, AgentsConfig } from "../config/schema.js";
 import { buildProviderModelCatalog } from "../config/provider-model-authority.js";
-import { resolveBuiltInProviderSlug } from "../llm/registry/provider-info.js";
 import { ModelRegistry, modelRegistryEntryToModelInfo } from "../llm/model-registry.js";
-import type { ModelInfo } from "../session/turn-context.js";
 import type { PreparedProviderBinding, ProviderSelection } from "../session/provider-service.js";
-import { resolveBuiltInProviderInfo } from "../llm/registry/provider-info.js";
+import { resolveBuiltInProviderInfo, resolveBuiltInProviderSlug } from "../llm/registry/provider-info.js";
 import { assertSupportedCrossProviderAuth, type ChildAuthProfile, type ChildBillingSource } from "../llm/cross-provider-auth.js";
 import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
-import type { ReasoningEffort } from "../session/turn-context.js";
+import type { ModelInfo, ReasoningEffort } from "../session/turn-context.js";
 import { DEFAULT_MODEL_COSTS, resolveModelCostEntry } from "../session/cost.js";
 
 export interface CrossProviderConsentGrant {
@@ -114,7 +112,8 @@ function endpointIdentity(value: string): string {
 
 function policyRevision(session: Session): string {
   const policy = childProviderPolicy(session);
-  return `agents-v1:${fingerprint({ enabled: policy.cross_provider_enabled === true, allowed: policy.allowed_providers ?? [] })}`;
+  return `agents-v1:${fingerprint({ enabled: policy.cross_provider_enabled === true, allowed: policy.allowed_providers ?? [],
+    ...(policy.cross_provider_ask_each_spawn === true ? { askEachSpawn: true } : {}) })}`;
 }
 
 function catalogRevision(session: Session): string {
@@ -398,6 +397,30 @@ export function assertPreparedChildMatchesPlan(plan: ChildExecutionPlan, prepare
 export function childProviderPolicy(session: Session): AgentsConfig {
   if (session.services == null) return {};
   return session.services?.configStore?.current().agents ?? session.config?.agents ?? {};
+}
+
+/**
+ * Enabling cross-provider subagents in user or managed config is the user's
+ * consent for the allowed providers, unless they asked to confirm each spawn.
+ */
+export function crossProviderConsentFromSettings(session: Session): boolean {
+  const policy = childProviderPolicy(session);
+  return policy.cross_provider_enabled === true && policy.cross_provider_ask_each_spawn !== true;
+}
+
+/**
+ * Whether a conversation's journal records a child's funds stop. Settings
+ * consent ends at the first one, so a restored or resumed owner reads it back.
+ */
+export function fundsStopFromRolloutItems(items: Iterable<unknown>): boolean {
+  for (const item of items) {
+    const record = item as {
+      readonly type?: unknown;
+      readonly payload?: { readonly msg?: { readonly type?: unknown } };
+    } | null;
+    if (record?.type === "event_msg" && record.payload?.msg?.type === "subagent_funds_notice") return true;
+  }
+  return false;
 }
 
 export function childCatalogConfig(session: Session): AgenCConfig {

@@ -711,7 +711,7 @@ export interface LocalRuntimeBootstrap {
   readonly authSubscriptionTier: AuthSubscriptionTier;
   readonly memoryDir: string;
   readonly memoryMdPath: string;
-  readonly shutdown: () => Promise<void>;
+  readonly shutdown: (reason?: "session_shutdown" | "daemon_shutdown") => Promise<void>;
   readonly autonomousModeEnabled: boolean;
   /**
    * Drive the durable-turn resume that `deferDurableTurnResume` withheld from
@@ -1684,7 +1684,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       admissionRequired: true,
     });
 
-  const shutdown = (): Promise<void> => {
+  const shutdown = (reason: "session_shutdown" | "daemon_shutdown" = "session_shutdown"): Promise<void> => {
     if (shutdownComplete) return Promise.resolve();
     if (shutdownTask !== null) return shutdownTask;
     // Close startup admission synchronously. The task body intentionally
@@ -1729,6 +1729,7 @@ async function bootstrapLocalRuntimeSessionScoped(
         if (sessionForShutdown !== null) {
           await shutdownSessionLifecycle({
             session: sessionForShutdown,
+            shutdownReason: reason,
             ...(agentControlForShutdown !== null
               ? { agentControl: agentControlForShutdown }
               : {}),

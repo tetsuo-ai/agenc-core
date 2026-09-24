@@ -63,6 +63,9 @@ import {
 } from "./session-store.js";
 import {
   openStateDatabases,
+  StateSqliteReader,
+  STATE_DATABASE_FILENAME,
+  LOGS_DATABASE_FILENAME,
   type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
 import {
@@ -3067,9 +3070,6 @@ export class RolloutStore {
     }
     if (message.type === "effect_unknown_outcome") {
       const payload = message.payload;
-      if (payload.recoveryCategory === "idempotent") {
-        throw new Error("idempotent effects cannot have unknown outcome");
-      }
       this.runDurabilityRepo.markEffectUnknown({
         runId: payload.runId,
         stepId: payload.stepId,
@@ -3090,14 +3090,16 @@ export class RolloutStore {
         },
         observedAt: payload.recordedAt,
       });
-      recordInFlightToolCallUnknownOutcome(this.stateDriver, {
-        sessionId: this.sessionId,
-        agentId: payload.runId,
-        toolCallId: payload.callId,
-        toolName: payload.toolName,
-        observedAt: payload.recordedAt,
-        recoveryCategory: payload.recoveryCategory,
-      });
+      if (payload.recoveryCategory !== "idempotent") {
+        recordInFlightToolCallUnknownOutcome(this.stateDriver, {
+          sessionId: this.sessionId,
+          agentId: payload.runId,
+          toolCallId: payload.callId,
+          toolName: payload.toolName,
+          observedAt: payload.recordedAt,
+          recoveryCategory: payload.recoveryCategory,
+        });
+      }
       return;
     }
     if (message.type === "effect_review_resolved") {
@@ -3136,8 +3138,8 @@ export class RolloutStore {
     }
   }
 
-  /** Fail closed unless this writer can relinquish a clean, effect-free epoch. */
-  assertRunSuspendable(): void {
+  /** Refuse suspension over an intent with no recorded outcome. */
+  assertRunSuspendable(options: { readonly allowUnsettledEffects?: boolean } = {}): void {
     const epoch = this.runEpoch;
     if (this.currentEpochIsTerminal(this.sessionId, epoch)) {
       throw new Error(
@@ -3149,18 +3151,57 @@ export class RolloutStore {
     ) {
       throw new Error(`run ${this.sessionId} is already suspended`);
     }
-    const unsettled = this.runDurabilityRepo
+    const blocking = this.runDurabilityRepo
       .listEffects(this.sessionId)
       .filter(
         (effect) =>
-          effect.outcome === undefined || effect.reviewStatus === "pending",
+          effect.outcome === undefined ||
+          (effect.reviewStatus === "pending" &&
+            options.allowUnsettledEffects !== true),
       );
-    if (unsettled.length > 0) {
+    if (blocking.length > 0) {
       throw new Error(
-        `run ${this.sessionId} cannot suspend with unsettled effect(s): ${unsettled
+        `run ${this.sessionId} cannot suspend with unsettled effect(s): ${blocking
           .map((effect) => effect.stepId)
           .join(", ")}`,
       );
+    }
+  }
+
+  hasPendingEffectReviews(): boolean {
+    if (!this.stateDriver.state.open) return false;
+    try {
+      // An outcome-less intent also describes a tool executing right now.
+      // Recovery journals an unknown outcome and marks its review pending;
+      // only that evidence (or a poisoned legacy call) stops model dispatch.
+      const durable = this.stateDriver.prepareState<
+        [string], { readonly present: number }
+      >(`SELECT 1 AS present FROM run_effects
+         WHERE session_id = ? AND review_status = 'pending'
+           AND recovery_category IN ('side-effecting', 'interactive')
+         LIMIT 1`).get(this.sessionId);
+      if (durable !== undefined) return true;
+      return this.stateDriver.prepareState<
+        [string], { readonly present: number }
+      >(`SELECT 1 AS present FROM in_flight_tool_calls
+         WHERE session_id = ? AND status = 'poisoned'
+         LIMIT 1`).get(this.sessionId) !== undefined;
+    } catch {
+      // A broken projection cannot prove that this conversation is safe.
+      return true;
+    }
+  }
+
+  private rootReviewGateActive = true;
+
+  /** Main's ordinary recovery path does not wait for root effect review. */
+  useOrdinaryRootBootstrapAfterWorkers(): void {
+    this.rootReviewGateActive = false;
+  }
+
+  assertModelExecutionAllowed(): void {
+    if (this.rootReviewGateActive && this.hasPendingEffectReviews()) {
+      throw new Error(`run ${this.sessionId} requires effect review before model execution`);
     }
   }
 
@@ -3181,6 +3222,7 @@ export class RolloutStore {
       eventSequence: event.seq,
       reason: event.msg.payload.reason,
       suspendedAt: event.msg.payload.suspendedAt,
+      allowUnsettledEffects: true,
     });
   }
 
@@ -3630,6 +3672,77 @@ export class RolloutStore {
     return this.listThreadSpawnDescendantsMatching(rootThreadId, status);
   }
 
+  /**
+   * Check only eligibility for root checkpoint continuation. Worker turns are
+   * not restored after restart; any open edge or missing terminal outcome
+   * keeps the root on the ordinary bootstrap path. Worker continuation is
+   * follow-up work.
+   */
+  rootHasOnlyTerminalDescendants(rootThreadId: ThreadId): boolean {
+    try {
+      return this.listThreadSpawnDescendants(rootThreadId).every((edge) => {
+        if (edge.status !== "closed") return false;
+        const epoch = this.runDurabilityRepo.currentEpoch(edge.childThreadId);
+        if (epoch !== undefined &&
+          this.currentEpochIsTerminal(edge.childThreadId, epoch.epoch)) return true;
+        return this.terminalDescendantInAnotherProject(edge.childThreadId);
+      });
+    } catch {
+      return false;
+    }
+  }
+
+  private terminalDescendantInAnotherProject(runId: ThreadId): boolean {
+    // A finished worktree worker writes under its own project. Read only the
+    // terminal evidence; never mount or restore its session. Ambiguous or
+    // oversized discovery withholds root continuation.
+    const projectsDir = join(this.store.agencHome, "projects");
+    const rootProjectDir = getProjectDir(this.store.cwd,
+      this.projectRootMarkers, this.store.agencHome);
+    const dir = opendirSync(projectsDir);
+    let discovered = false;
+    let visited = 0;
+    try {
+      for (let entry = dir.readSync(); entry !== null; entry = dir.readSync()) {
+        if (++visited > MAX_BOUND_ROLLOUT_DIRECTORY_ENTRIES) return false;
+        if (!entry.isDirectory()) continue;
+        const projectDir = join(projectsDir, entry.name);
+        if (projectDir === rootProjectDir || !lstatSync(projectDir).isDirectory()) continue;
+        const stateDbPath = join(projectDir, STATE_DATABASE_FILENAME);
+        const logsDbPath = join(projectDir, LOGS_DATABASE_FILENAME);
+        if (!existsSync(stateDbPath) || !existsSync(logsDbPath)) continue;
+        const reader = new StateSqliteReader({ projectDir, stateDbPath, logsDbPath });
+        try {
+          const epoch = reader.prepareState<[string], { epoch: number }>(
+            `SELECT epoch FROM run_lifecycle_epochs WHERE run_id = ? ORDER BY epoch DESC LIMIT 1`,
+          ).get(runId)?.epoch;
+          if (epoch === undefined) continue;
+          if (discovered) return false;
+          discovered = true;
+          if (reader.prepareState<[string, number], { event_id: string }>(
+            `SELECT event_id FROM run_terminal_results WHERE run_id = ? AND epoch = ?`,
+          ).get(runId, epoch) !== undefined) continue;
+          const bindings = reader.prepareState<[string, number], {
+            session_id: string; source_path: string }>(
+            `SELECT session_id, source_path FROM run_journal_bindings
+             WHERE run_id = ? AND epoch = ? ORDER BY source_path ASC`,
+          ).all(runId, epoch);
+          if (!bindings.some((binding) => withPinnedOfflineRolloutLease({
+            projectDir, sessionId: binding.session_id,
+            sourcePath: resolveCurrentBoundRolloutPath(binding.source_path),
+          }, (rollout) => rolloutContentContainsTerminal(rollout.readUtf8(), runId, epoch)))) {
+            return false;
+          }
+        } finally {
+          reader.close();
+        }
+      }
+      return discovered;
+    } finally {
+      dir.closeSync();
+    }
+  }
+
   findThreadSpawnChildByPath(
     parentThreadId: ThreadId,
     agentPath: AgentPath,
@@ -3903,15 +4016,14 @@ export class RolloutStore {
         `cannot resume run ${runId}: canonical suspension has no matching durable projection`,
       );
     }
-    const pendingEffects = this.runDurabilityRepo
+    const danglingEffects = this.runDurabilityRepo
       .listEffects(runId)
       .filter(
-        (effect) =>
-          effect.outcome === undefined || effect.reviewStatus === "pending",
+        (effect) => effect.outcome === undefined,
       );
-    if (pendingEffects.length > 0) {
+    if (danglingEffects.length > 0) {
       throw new Error(
-        `cannot resume run ${runId}: ${pendingEffects.length} effect(s) remain unresolved`,
+        `cannot resume run ${runId}: ${danglingEffects.length} effect(s) remain unresolved`,
       );
     }
     const items = this.store.readAll();
@@ -3996,6 +4108,7 @@ export class RolloutStore {
           eventSequence: event.seq,
           reason: event.msg.payload.reason,
           suspendedAt: event.msg.payload.suspendedAt,
+          allowUnsettledEffects: true,
         });
         continue;
       }
@@ -4150,7 +4263,12 @@ export class RolloutStore {
         } else if (event.msg.type === "effect_result") {
           effectBoundaryState.delete(event.msg.payload.stepId);
         } else if (event.msg.type === "effect_unknown_outcome") {
-          effectBoundaryState.set(event.msg.payload.stepId, "review_required");
+          effectBoundaryState.set(
+            event.msg.payload.stepId,
+            event.msg.payload.recoveryCategory === "idempotent"
+              ? "retry_safe"
+              : "review_required",
+          );
         } else if (
           typeof event.msg.payload.resolution !== "string" &&
           event.msg.payload.resolution.workflowStatus !== "pending"

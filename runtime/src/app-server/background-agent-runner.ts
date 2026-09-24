@@ -37,7 +37,7 @@ import {
 } from "../hooks/user-prompt-ingress.js";
 import type { AgentPath } from "../agents/registry.js";
 import type { ManagedThread } from "../agents/thread-manager.js";
-import { ConversationThreadManager } from "../conversation/thread-manager.js";
+import { ConversationThreadManager, withoutSyntheticProcessKilledAborts } from "../conversation/thread-manager.js";
 import type { RunAgentProgressEvent } from "../agents/run-agent.js";
 import type { AuthBackend } from "../auth/backend.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
@@ -274,6 +274,7 @@ import {
   sessionTranscriptV2FromRollout,
   currentRunEpochFromRollout,
 } from "./background-agent-runner/journal-reconstruction.js";
+import { reconstructFromRollout } from "../session/rollout-reconstruction.js";
 import {
   isRunnableActiveAgent,
   isInterruptibleActiveAgent,
@@ -872,7 +873,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           authorityOwner.thread.threadId, authorityOwner,
         ).catch(() => {});
       } else {
-        await withTimeout(bootstrap.shutdown(), this.#agentStopTimeoutMs,
+        await withTimeout(bootstrap.shutdown("daemon_shutdown"), this.#agentStopTimeoutMs,
           "failed agent bootstrap cleanup timed out").catch(() => {});
       }
       throw error;
@@ -888,6 +889,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       const control = bootstrap.session.services.agentControl;
       void withTimeout(shutdownSessionLifecycle({
         session: bootstrap.session,
+        shutdownReason: "daemon_shutdown",
         ...(control instanceof AgentControl ? { agentControl: control } : {}),
         mcpManager: bootstrap.mcpManager,
         skipMemoryExtractionDrain: true,
@@ -1088,29 +1090,15 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
               }
             : {}),
           deferSessionStartHooks: true,
-          // The two deferrals are mutually exclusive (#2239).
-          //
-          // Without `deferAgentStartupSideEffects`, bootstrap runs the startup
-          // prewarm inline and would resume-continue the orphaned turn before
-          // either prerequisite exists, so that ONE step is withheld here for
-          // `#driveDeferredDurableResume` below.
-          //
-          // With it, `bin/bootstrap.ts` gates the whole prewarm block on the
-          // same flag from INSIDE the function it defers, so
-          // `runStartupPrewarm` runs for those restores neither at bootstrap
-          // nor on the first ordinary submit — the orphan is not resumed at
-          // all today, before or after this change. That gap is pre-existing
-          // and out of scope here. Not setting `deferDurableTurnResume` on top
-          // of it is therefore a no-op right now, and deliberately so: if the
-          // prewarm is ever moved onto the deferred submit hook, the flag
-          // would mark the resume pending long after `#driveDeferredDurableResume`
-          // has already run and returned, and the orphan is single-shot
-          // (bootstrap's replay persists its `turn_aborted{process_killed}`),
-          // so it would be lost rather than merely late.
+          // Both deferred paths still need the checkpoint continuation after
+          // the approval bridge and active generation have been installed.
+          // The manager arms that one-shot continuation when it registers the
+          // restored root, even when ordinary startup prewarm is deferred.
           ...(params.resumeSuspendedRun === true ||
           params.resumeStartupActivationPending === true
             ? {
                 deferAgentStartupSideEffects: true,
+                deferDurableTurnResume: true,
               }
             : { deferDurableTurnResume: true }),
           argv: buildBootstrapArgv(
@@ -1446,8 +1434,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         // Last: this generation now owns `#active`, the approval bridge, and
         // the canonical event bridge, so a resumed turn that needs approval
         // reaches a client instead of the arbiter default deny.
-        await this.#driveDeferredDurableResume(
-          active,
+        const reapplyRecoveredHistory =
           // The resumed turn republishes `session.state.history` from the
           // checkpoint prefix it continues (`syncSessionState`), which erases
           // the recovered conversation hydrated just above. Re-apply it once
@@ -1459,12 +1446,43 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
                   initialMessages: recoveredInitialMessages,
                   replayedMessages: recoveredReplayedMessages,
                 })
-            : undefined,
+            : undefined;
+        // A worker turn is not restored after restart. The root may continue
+        // only when every descendant edge is closed with a terminal outcome;
+        // worker continuation remains follow-up work. Ineligible roots used
+        // the ordinary bootstrap dangling-call pairing during replay.
+        const rootCanContinue = bootstrap.rolloutStore.rootHasOnlyTerminalDescendants(
+          bootstrap.session.conversationId,
+        );
+        if (!rootCanContinue) {
+          active.reapplyRecoveredHistoryAfterReview = undefined;
+          active.deferredDurableResumePendingReview = false;
+        } else if (bootstrap.rolloutStore.hasPendingEffectReviews?.()) {
+          active.reapplyRecoveredHistoryAfterReview = reapplyRecoveredHistory;
+          active.deferredDurableResumePendingReview = true;
+          active.deferredDurableResumeReviewBarrier = new Promise<void>((resolve) => {
+            active.releaseDeferredDurableResumeReviewBarrier = resolve;
+          });
+        } else {
+          active.deferredDurableResumeStarting = true;
+          active.deferredDurableResumeReviewBarrier = new Promise<void>((resolve) => {
+            active.releaseDeferredDurableResumeReviewBarrier = resolve;
+          });
+          try {
+            await this.#driveDeferredDurableResume(
+              active,
+              reapplyRecoveredHistory,
           // Callers that own a restore deadline (the on-demand lifecycle path)
           // release the wait immediately on abort; the daemon-startup path
           // passes none, which is why that wait is also bounded by a timeout.
-          params.signal,
-        );
+              params.signal,
+            );
+          } finally {
+            active.deferredDurableResumeStarting = false;
+            active.releaseDeferredDurableResumeReviewBarrier?.();
+            active.releaseDeferredDurableResumeReviewBarrier = undefined;
+          }
+        }
         // Waiting for the recovered turn to start is a new suspension point,
         // so an abort raised during it must still fail the restore rather
         // than publish this generation.
@@ -1490,7 +1508,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           try {
             bootstrap?.session.beginShutdown?.();
             bootstrap?.session.abortController?.abort(error);
-            await withTimeout(Promise.resolve(bootstrap?.shutdown()),
+            await withTimeout(Promise.resolve(bootstrap?.shutdown("daemon_shutdown")),
               this.#agentStopTimeoutMs, "failed restore cleanup timed out");
           } catch (cleanupError) {
             cleanupErrors.push(cleanupError);
@@ -1558,7 +1576,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
 
     const errors: unknown[] = [];
     try {
-      await this.#quiesceAgent(agentId, active);
+      await this.#quiesceAgent(agentId, active, "daemon_shutdown");
     } catch (error) {
       errors.push(error);
     }
@@ -1696,7 +1714,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       // Bootstrap lifecycle quiesces the root turn, descendants, execs, hooks,
       // and tracked durable continuations before Session's close-boundary
       // callback appends the terminal as the canonical tail.
-      await this.#quiesceAgent(agentId, active);
+      await this.#quiesceAgent(agentId, active, "session_shutdown");
     } catch (error) {
       stopError ??= error;
     }
@@ -1736,22 +1754,44 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
   }
 
-  #quiesceAgent(agentId: string, active: ActiveBackgroundAgent, initialError?: unknown): Promise<void> {
+  #quiesceAgent(agentId: string, active: ActiveBackgroundAgent,
+    disposition: "session_shutdown" | "daemon_shutdown",
+    initialError?: unknown): Promise<void> {
     const pending = this.#quiescing.get(active);
     if (pending !== undefined) return pending;
-    const task = this.#performQuiescence(agentId, active, initialError);
+    const task = this.#performQuiescence(agentId, active, disposition, initialError);
     this.#quiescing.set(active, task);
     return task;
   }
 
-  async #performQuiescence(agentId: string, active: ActiveBackgroundAgent, initialError?: unknown): Promise<void> {
+  async #performQuiescence(agentId: string, active: ActiveBackgroundAgent,
+    disposition: "session_shutdown" | "daemon_shutdown", initialError?: unknown): Promise<void> {
+    active.releaseDeferredDurableResumeReviewBarrier?.();
+    active.releaseDeferredDurableResumeReviewBarrier = undefined;
     const graceful = new DaemonOperationScope(
       `stopAgent ${agentId} quiescence`, this.#agentStopTimeoutMs,
     );
     try {
+      if (disposition === "session_shutdown" &&
+        active.bootstrap.rolloutStore.rootHasOnlyTerminalDescendants(agentId)) {
+        const pendingTurnIds = new Set<string>();
+        const activeTurnId = runtimeActiveTurnId(active.bootstrap.session);
+        if (activeTurnId !== undefined) pendingTurnIds.add(activeTurnId);
+        // A recovered turn waiting for effect review has no active runtime
+        // slot. Retire its checkpoint before the terminal run is committed.
+        for (const candidate of reconstructFromRollout(
+          withoutSyntheticProcessKilledAborts(active.bootstrap.rolloutStore.readAll()),
+        ).resumableTurns) {
+          pendingTurnIds.add(candidate.turnId);
+        }
+        for (const turnId of pendingTurnIds) active.bootstrap.session.emit({
+          id: active.bootstrap.session.nextInternalSubId(),
+          msg: { type: "turn_aborted", payload: { turnId, reason: "interrupted" } },
+        }, { durable: true });
+      }
       if (initialError !== undefined) throw initialError;
       await graceful.wait(() => this.#drainDispatchChain(active));
-      await graceful.wait(() => active.bootstrap.shutdown());
+      await graceful.wait(() => active.bootstrap.shutdown(disposition));
       await graceful.wait(() => this.#drainDispatchChain(active));
     } catch (error) {
       active.ingressClosed = true;
@@ -1768,6 +1808,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         // own session-shutdown step (for example in sidecar cleanup).
         await hard.wait(() => shutdownSessionLifecycle({
           session,
+          shutdownReason: disposition,
           agentControl: active.control,
           mcpManager: active.bootstrap.mcpManager,
           skipMemoryExtractionDrain: true,
@@ -1802,14 +1843,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     try {
       await drain.wait(() => this.#drainDispatchChain(active));
     } catch (error) {
-      await this.#quiesceAgent(agentId, active, error).catch(() => undefined);
+      await this.#quiesceAgent(agentId, active, "daemon_shutdown", error).catch(() => undefined);
       await this.stopAgent(agentId, "daemon_shutdown_dispatch_timeout");
       throw error;
     } finally {
       drain.dispose();
     }
 
-    if (!this.#canSuspendIdleAgent(agentId, active)) {
+    const runningTurn = hasRuntimeActiveTurn(active.bootstrap.session);
+    if (!active.bootstrap.rolloutStore.rootHasOnlyTerminalDescendants(agentId) ||
+        (!runningTurn && !this.#canSuspendIdleAgent(agentId, active))) {
       await this.stopAgent(agentId, "daemon_shutdown_not_idle");
       return {
         disposition: "cancelled",
@@ -1821,10 +1864,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       eventId: `run-suspended:${agentId}:${active.runEpoch}:${randomUUID()}`,
       reason: "daemon_shutdown_idle",
       suspendedAt: this.#now(),
+      ...(runningTurn ? { interruptedTurnId: runtimeActiveTurnId(active.bootstrap.session) } : {}),
     };
     const shutdownErrors: unknown[] = [];
     try {
-      await this.#quiesceAgent(agentId, active);
+      await this.#quiesceAgent(agentId, active, "daemon_shutdown");
     } catch (error) {
       shutdownErrors.push(error);
     }
@@ -1902,13 +1946,34 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       ) ||
       hasRuntimeActiveTurn(active.bootstrap.session) ||
       hasOpenAgentDescendants(active.control, active.thread.threadId) ||
-      active.activeToolCallIds.size !== 0 ||
+      !active.bootstrap.rolloutStore.rootHasOnlyTerminalDescendants(agentId) ||
       this.#approvalBroker.hasPending(agentId)
     ) {
       return false;
     }
     try {
-      active.bootstrap.rolloutStore.assertRunSuspendable();
+      // Shutdown retains the whole conversation tree. Every effect must have
+      // an outcome record; unknown mutations remain fenced for review.
+      active.bootstrap.rolloutStore.assertRunSuspendable({ allowUnsettledEffects: true });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  #canSuspendInterruptedAgent(active: ActiveBackgroundAgent): boolean {
+    if (
+      active.pendingSuspension?.interruptedTurnId === undefined ||
+      !active.bootstrap.rolloutStore.rootHasOnlyTerminalDescendants(active.thread.threadId) ||
+      active.terminal !== undefined ||
+      active.pendingTerminal !== undefined ||
+      active.cancellationRequest !== undefined ||
+      this.#approvalBroker.hasPending(active.thread.threadId)
+    ) return false;
+    try {
+      // The turn was quiesced by bootstrap.shutdown. Unknown outcomes retain
+      // review evidence, while outcome-less intents refuse suspension.
+      active.bootstrap.rolloutStore.assertRunSuspendable({ allowUnsettledEffects: true });
       return true;
     } catch {
       return false;
@@ -2099,6 +2164,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       params.ifBusy === "reject" &&
       (active.pendingMessageSubmissionCount > 0 ||
         active.pendingShellExecutionCount > 0 ||
+        active.deferredDurableResumePendingReview === true ||
+        active.deferredDurableResumeStarting === true ||
         hasRuntimeActiveTurn(active.bootstrap.session))
     ) {
       // A stop the user asked for is still unwinding: a swarm's children each
@@ -2119,6 +2186,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             `stop lands`
           : `session ${params.sessionId} already has an active or queued turn`,
       );
+    }
+    if (!active.deferredDurableResumePendingReview &&
+        !active.deferredDurableResumeStarting) {
+      active.bootstrap.rolloutStore.assertModelExecutionAllowed?.();
     }
     // A history the live tool-pair validator has closed cannot take the user
     // message this turn would start with. Refusing here gives the client the
@@ -2156,9 +2227,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
 
     const execute = active.messageSubmissionQueue.then(() =>
       runWithCurrentRuntimeSession(active.bootstrap.session, async () => {
+        await active.deferredDurableResumeReviewBarrier;
         if (!isRunnableActiveAgent(active)) {
           throw new Error(`AgenC daemon agent not running: ${agentId}`);
         }
+        active.bootstrap.rolloutStore.assertModelExecutionAllowed?.();
         active.messageSubmission = submission;
         try {
           return await this.#executeAgentMessageSubmission(
@@ -2400,6 +2473,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     ) {
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
     }
+    active.bootstrap.rolloutStore.assertModelExecutionAllowed?.();
     throwIfShellRequestAborted(signal);
 
     const session = active.bootstrap.session;
@@ -3225,6 +3299,22 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             ...(outcome.runId !== undefined ? { runId: outcome.runId } : {}),
             ...(outcome.stepId !== undefined ? { stepId: outcome.stepId } : {}),
           });
+        }
+        if (active.deferredDurableResumePendingReview &&
+          outcome.kind !== "not_found" &&
+          !active.bootstrap.rolloutStore.hasPendingEffectReviews?.()) {
+          const reapply = active.reapplyRecoveredHistoryAfterReview;
+          active.reapplyRecoveredHistoryAfterReview = undefined;
+          active.deferredDurableResumePendingReview = false;
+          // Put the resume-start barrier ahead of any new message submission.
+          // The turn itself owns result pairing and ifBusy sees its live slot.
+          active.deferredDurableResumeStarting = true;
+          const resumeStart = this.#driveDeferredDurableResume(active, reapply, undefined)
+            .finally(() => { active.deferredDurableResumeStarting = false; });
+          void resumeStart.finally(() => {
+            active.releaseDeferredDurableResumeReviewBarrier?.();
+            active.releaseDeferredDurableResumeReviewBarrier = undefined;
+          }).catch(() => undefined);
         }
         return outcome;
       } finally {
@@ -4683,6 +4773,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     reapplyRecoveredHistory: (() => Promise<void>) | undefined,
     signal: AbortSignal | undefined,
   ): Promise<void> {
+    if (!active.bootstrap.rolloutStore.rootHasOnlyTerminalDescendants(
+      active.bootstrap.session.conversationId,
+    )) return;
     const runDeferredDurableTurnResume =
       active.bootstrap.runDeferredDurableTurnResume;
     if (typeof runDeferredDurableTurnResume !== "function") return;
@@ -4843,7 +4936,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           return;
         }
         if (active.pendingSuspension !== undefined) {
-          if (this.#canSuspendIdleAgent(agentId, active)) {
+          if (this.#canSuspendInterruptedAgent(active) || this.#canSuspendIdleAgent(agentId, active)) {
             try {
               commitDurableRunSuspension(active, agentId);
               return;
@@ -5046,7 +5139,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         // journaled, while daemon delivery is intentionally serialized on an
         // async chain. Drain that already-committed turn tail before shutdown
         // can close the writer or lifecycle teardown can retire its route.
-        await this.#quiesceAgent(agentId, active).catch(() => {});
+        await this.#quiesceAgent(agentId, active, "session_shutdown").catch(() => {});
         // The durable close finalizer appends run_terminal during shutdown.
         // Keep the session route live until that new canonical tail has also
         // crossed the same ordered delivery chain.

@@ -421,9 +421,9 @@ interface RunAutoCompactOptions {
    */
   readonly durableMessageCount?: number;
   /**
-   * Called after a compaction replaced the history, with its new length,
-   * so the caller can move its persist cursor: everything in the
-   * replacement is canonical already and must not be written again.
+   * Called synchronously after each committed projection, before another
+   * tier can start. The caller moves its persist cursor and checkpoints the
+   * replacement while the new history is already canonical.
    */
   readonly onDurableHistoryReplaced?: (durableCount: number) => void;
 }
@@ -650,7 +650,6 @@ async function runAutoCompact(
         if (unsentImageTurn) {
           state.messagesForQuery.push({ ...unsentImageTurn });
         }
-        options.onDurableHistoryReplaced?.(compacted.length);
         // A commit ends the ladder episode: the next decline may climb again.
         state.compactionLadder = undefined;
         unsentImageTurnKept = unsentImageTurn !== undefined;
@@ -662,6 +661,7 @@ async function runAutoCompact(
           turnCounter: 0,
           consecutiveFailures: 0,
         };
+        options.onDurableHistoryReplaced?.(compacted.length);
       };
       if (cr.transaction !== undefined) {
         const rolloutStore = session.rolloutStore;
@@ -842,6 +842,7 @@ export async function maybeRunPreviousModelInlineCompact(
   ctx: TurnContext,
   _totalUsageTokens: number,
   state?: TurnState,
+  options: Pick<RunAutoCompactOptions, "onDurableHistoryReplaced"> = {},
 ): Promise<boolean> {
   // A1 fix: there is no models-manager lookup for the previous model's
   // context window yet, so
@@ -904,7 +905,7 @@ export async function maybeRunPreviousModelInlineCompact(
     "model_downshift",
     "pre_turn",
     state,
-    { propagateErrors: true },
+    { propagateErrors: true, ...options },
   );
 }
 
@@ -971,7 +972,7 @@ async function runPreSamplingCompact(
   ctx: TurnContext,
   querySource: string,
   state?: TurnState,
-  options: Pick<RunAutoCompactOptions, "onAdvisoryRefusal"> = {},
+  options: Pick<RunAutoCompactOptions, "onAdvisoryRefusal" | "onDurableHistoryReplaced"> = {},
 ): Promise<boolean> {
   const activeContextTokensBefore = getActiveContextTokenUsage(
     session,
@@ -986,6 +987,7 @@ async function runPreSamplingCompact(
       ? getActiveContextTokenUsage(session, ctx, state, { includeOutput: true })
       : activeContextTokensBefore,
     state,
+    options,
   );
   const autoCompactLimit = getPreSamplingAutoCompactTokenLimit(ctx);
   if (

@@ -89,6 +89,11 @@ import {
 import type { Session } from "../session/session.js";
 import type { JsonRecord } from "../config/json.js";
 import { EventLog, type Event } from "../../src/session/event-log.js";
+import { reconstructFromRollout } from "../../src/session/rollout-reconstruction.js";
+import { computeCheckpointPrefixHashV3 } from "../../src/session/durable-checkpoint-reader.js";
+import { currentBuildId } from "../../src/session/durable-turns.js";
+import type { RolloutItem } from "../../src/session/rollout-item.js";
+import { RolloutStore } from "../../src/session/rollout-store.js";
 import { openStateDatabases } from "../../src/state/sqlite-driver.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
 import { createOperatorEffectReviewResolution } from "../../src/state/effect-review.js";
@@ -626,6 +631,10 @@ function makeTopLevelRunner(opts: {
   const rolloutStore = {
     rolloutPath: `/tmp/${opts.conversationId}.jsonl`,
     readAll: () => [...rolloutItems],
+    listThreadSpawnChildrenWithStatus: vi.fn(() => []),
+    listThreadSpawnChildren: vi.fn(() => []),
+    rootHasOnlyTerminalDescendants: vi.fn(() => true),
+    hasPendingEffectReviews: vi.fn(() => false),
     liveHistoryBlockedReason: vi.fn((): string | undefined => undefined),
     assertRunSuspendable: vi.fn(() => {}),
     recordRunSuspensionEvent: vi.fn(() => {}),
@@ -1010,6 +1019,7 @@ function makeTopLevelRunner(opts: {
   });
   const control = {
     shutdown: vi.fn(async () => {}),
+    resumeSingleAgentFromRollout: vi.fn(async () => null),
     sendInput: vi.fn(async () => {}),
     interrupt: vi.fn(),
     openThreadSpawnChildren: vi.fn(() => []),
@@ -2035,6 +2045,100 @@ describe("AgenC delegate background-agent runner", () => {
     expect(duplicateResult).toEqual(firstResult);
     expect(shell.bashExecute).toHaveBeenCalledOnce();
   });
+
+  it.each(["reject", "queue"] as const)(
+    "[managed-thread] keeps %s message admission in main's order during a live Bash effect",
+    async (mode) => {
+      const sessionId = "session-live-bash-message";
+      const root = mkdtempSync(join(tmpdir(), "agenc-live-bash-message-"));
+      const cwd = join(root, "workspace");
+      const home = join(root, "home");
+      mkdirSync(cwd);
+      const store = new RolloutStore({ cwd, sessionId, agencHome: home,
+        agencVersion: "0.2.0", sessionTempRoot: join(root, "temp"),
+        autoStartScheduler: false });
+      store.open({ sessionId, timestamp: "2026-09-24T00:00:00.000Z", cwd,
+        originator: "runner-test", agencVersion: "0.2.0",
+        model: "test-model", modelProvider: "test-provider" });
+      const enteredShell = Promise.withResolvers<void>();
+      const releaseShell = Promise.withResolvers<void>();
+      const harness = makeTopLevelRunner({ conversationId: sessionId,
+        workspaceRoot: cwd, threadInitialStatus: { status: "pending_init" } as AgentStatus });
+      configureSessionShellHarness(harness, { settingsHome: home,
+        execute: async () => {
+          enteredShell.resolve();
+          await releaseShell.promise;
+          return { content: "done", metadata: { stdout: "done", stderr: "",
+            exitCode: 0, timedOut: false } };
+        } });
+      Object.assign(harness.rolloutStore, {
+        assertModelExecutionAllowed: () => store.assertModelExecutionAllowed(),
+      });
+      let execution: Promise<unknown> | undefined;
+      try {
+        await harness.runner.startAgent({ objective: "deferred shell",
+          deferInitialTurn: true, unattendedAllow: [], unattendedDeny: [] });
+        harness.forcePermissionContextForTesting(createEmptyToolPermissionContext({
+          mode: "bypassPermissions", isBypassPermissionsModeAvailable: true,
+        }));
+        execution = harness.runner.executeAgentShell(sessionId, {
+          sessionId, commandId: "live-bash", command: "printf done",
+        });
+        await enteredShell.promise;
+        const intent: Event = { eventId: "live-bash-intent", id: "live-bash-intent", seq: 1,
+          msg: { type: "effect_intent", payload: { formatVersion: 2,
+            minimumReaderRuntime: "0.14.0", runId: sessionId,
+            stepId: "tool:live-bash", callId: "live-bash", toolName: "Bash",
+            recoveryCategory: "side-effecting", intentDigest: "bash-digest",
+            attempt: 1, recordedAt: "2026-09-24T00:00:01.000Z" } } };
+        expect(store.append(intent, { durable: true })).toBe(true);
+        store.recordEffectEvent(intent);
+        const message = (messageId: string) => ({ sessionId,
+          content: "Next", originalContent: "Next", messageId, streamId: messageId,
+          acceptedAt: "2026-09-24T00:00:02.000Z" });
+        const queued = mode === "reject" ? undefined
+          : harness.runner.submitAgentMessage(sessionId, message("queue-during-bash"));
+        void queued?.catch(() => undefined);
+        const duplicate = queued === undefined ? undefined
+          : harness.runner.submitAgentMessage(sessionId, {
+            ...message("queue-during-bash"), ifBusy: "reject",
+          });
+        void duplicate?.catch(() => undefined);
+        if (mode === "reject") {
+          await expect(harness.runner.submitAgentMessage(sessionId, {
+            ...message("reject-during-bash"), ifBusy: "reject",
+          })).rejects.toMatchObject({ code: "TURN_IN_PROGRESS" });
+        }
+        expect(store.hasPendingEffectReviews()).toBe(false);
+        expect(harness.control.sendInput).not.toHaveBeenCalled();
+        const result: Event = { eventId: "live-bash-result", id: "live-bash-result", seq: 2,
+          msg: { type: "effect_result", payload: { formatVersion: 2,
+            minimumReaderRuntime: "0.14.0", runId: sessionId,
+            stepId: "tool:live-bash", callId: "live-bash", toolName: "Bash",
+            recoveryCategory: "side-effecting", intentEventSeq: 1,
+            outcome: "committed", effectBoundary: "crossed",
+            recordedAt: "2026-09-24T00:00:03.000Z" } } };
+        expect(store.append(result, { durable: true })).toBe(true);
+        store.recordEffectEvent(result);
+        releaseShell.resolve();
+        await expect(execution).resolves.toMatchObject({ isError: false });
+        if (queued !== undefined) {
+          await expect(queued).resolves.toMatchObject({ disposition: "started" });
+          await expect(duplicate).resolves.toMatchObject({ disposition: "duplicate" });
+          expect(harness.control.sendInput).toHaveBeenCalledOnce();
+        } else {
+          expect(harness.control.sendInput).not.toHaveBeenCalled();
+        }
+        expect(store.hasPendingEffectReviews()).toBe(false);
+      } finally {
+        releaseShell.resolve();
+        await execution?.catch(() => undefined);
+        await harness.runner.stopAgent(sessionId).catch(() => undefined);
+        store.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("[managed-thread] rejects direct shell while the session owns an active model turn", async () => {
     const harness = makeTopLevelRunner({
@@ -5172,6 +5276,18 @@ describe("AgenC delegate background-agent runner", () => {
     expect(rolloutStore.recordRunSuspensionEvent).toHaveBeenCalledOnce();
   });
 
+  it("suspends a running turn at daemon shutdown for checkpoint recovery", async () => {
+    const { runner, setActiveTurn, session, rolloutItems, rolloutStore } =
+      makeTopLevelRunner({ conversationId: "session-daemon-running-turn", scopedTurnCancellation: true });
+    await runner.startAgent({ objective: "finish a long task", initialContent: [], unattendedAllow: [], unattendedDeny: [] });
+    setActiveTurn("turn-in-progress");
+    session.emit({ id: "started", msg: { type: "turn_started", payload: { turnId: "turn-in-progress" } } });
+    const result = await runner.suspendIdleAgentForDaemonShutdown("session-daemon-running-turn");
+    expect(result.disposition).toBe("suspended");
+    expect(rolloutStore.assertRunSuspendable).toHaveBeenCalledWith({ allowUnsettledEffects: true });
+    expect(rolloutItems.some(item => (item as { payload?: { msg?: { type?: string } } }).payload?.msg?.type === "run_terminal")).toBe(false);
+  });
+
   it("keeps committed suspension durable but rejects and retires authority when shutdown cleanup fails", async () => {
     const bootstrapShutdownAfterFinalizers = vi.fn(async () => {
       throw new Error("helper cleanup failed");
@@ -5343,7 +5459,8 @@ describe("AgenC delegate background-agent runner", () => {
     expect(lifecycle).toEqual(["run_runtime_settings_changed", "run_terminal"]);
   });
 
-  it("cancels and quiesces when the root is idle but a child remains open", async () => {
+  it.each(["active", "fenced"] as const)(
+    "cancels an idle parent during daemon shutdown with a %s child", async (childState) => {
     const bootstrapShutdown = vi.fn(async () => {});
     const { runner, stub, control, rolloutItems, shutdown } =
       makeTopLevelRunner({
@@ -5365,7 +5482,7 @@ describe("AgenC delegate background-agent runner", () => {
       new Map([
         [
           "session-daemon-suspend-child",
-          [["child-running", { agentPath: "/root/child" }]],
+          [[`child-${childState}`, { agentPath: "/root/child" }]],
         ],
       ]),
     );
@@ -10464,6 +10581,92 @@ describe("AgenC delegate background-agent runner", () => {
     expect(control.sendInput).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { name: "continued and open", finalEvent: undefined, state: "incomplete", terminal: undefined },
+    { name: "continued and completed", finalEvent: { type: "turn_complete", payload: { turnId: "continued-turn", lastAgentMessage: "final answer" } }, state: "completed", terminal: { code: 0, message: "final answer" } },
+    { name: "continued and interrupted", finalEvent: { type: "turn_aborted", payload: { turnId: "continued-turn", reason: "interrupted" } }, state: "completed", terminal: { code: 130, message: "interrupted" } },
+    { name: "continued and failed", finalEvent: { type: "turn_failed", payload: { turnId: "continued-turn", code: "provider_error", message: "provider failed" } }, state: "completed", terminal: { code: 1, message: "provider failed" } },
+    { name: "shutdown without continuation", finalEvent: null, state: "completed", terminal: { code: 130, message: "daemon_shutdown" } },
+  ] as const)("[managed-thread] reconstructs a $name retry from the full journal", async ({ name, finalEvent, state, terminal }) => {
+    const event = (sequence: number, msg: JsonObject) => ({
+      type: "event_msg", payload: { id: `persisted-${sequence}`, eventId: `persisted-${sequence}`, seq: sequence, msg },
+    });
+    const agentId = `session-continuation-${name.replaceAll(" ", "-")}`;
+    const { runner, control } = makeTopLevelRunner({ conversationId: agentId, rolloutItems: [
+      event(1, { type: "user_message", payload: { message: "retry me", messageId: "original-message", acceptedAt: "2026-09-08T00:00:00.000Z" } }),
+      event(2, { type: "turn_started", payload: { turnId: "continued-turn" } }),
+      event(3, { type: "turn_aborted", payload: { turnId: "continued-turn", reason: "daemon_shutdown" } }),
+      ...(finalEvent === null ? [] : [
+        event(4, { type: "turn_started", payload: { turnId: "continued-turn" } }),
+        ...(finalEvent === undefined ? [] : [event(5, finalEvent)]),
+      ]),
+      ...(finalEvent === undefined ? [] : [
+        event(6, { type: "user_message", payload: { message: "later prompt", messageId: "later-message", acceptedAt: "2026-09-08T00:01:00.000Z" } }),
+        event(7, { type: "turn_started", payload: { turnId: "later-turn" } }),
+        event(8, { type: "turn_complete", payload: { turnId: "later-turn", lastAgentMessage: "later answer" } }),
+      ]),
+    ] });
+    await runner.startAgent({ objective: "restored", initialContent: [], unattendedAllow: [], unattendedDeny: [] });
+    const submit = (messageId: string, content: string) => runner.submitAgentMessage(agentId, {
+      sessionId: "session_1", content, originalContent: content, messageId, streamId: messageId,
+      acceptedAt: "2026-09-08T02:00:00.000Z",
+    });
+    const original = await submit("original-message", "retry me");
+    expect(original).toMatchObject({ disposition: "duplicate", duplicateState: state, turnId: "continued-turn", acceptedAt: "2026-09-08T00:00:00.000Z" });
+    expect(original.terminal).toEqual(terminal);
+    if (finalEvent !== undefined) {
+      await expect(submit("later-message", "later prompt")).resolves.toMatchObject({
+        disposition: "duplicate", duplicateState: "completed", turnId: "later-turn", terminal: { code: 0, message: "later answer" },
+      });
+    }
+    expect(control.sendInput).not.toHaveBeenCalled();
+  });
+
+  it("[managed-thread] keeps the TUI turn active when a retry finds a continued open turn", async () => {
+    const agentId = "session-tui-open-continuation";
+    const sessionId = "session-tui-open-continuation-client";
+    const clientMessageId = "original-message";
+    const event = (sequence: number, msg: JsonObject) => ({ type: "event_msg", payload: { id: `event-${sequence}`, eventId: `event-${sequence}`, seq: sequence, msg } });
+    const { runner, control, stub } = makeTopLevelRunner({ conversationId: agentId, rolloutItems: [
+      event(1, { type: "user_message", payload: { message: "retry me", messageId: clientMessageId, acceptedAt: "2026-09-08T00:00:00.000Z" } }),
+      event(2, { type: "turn_started", payload: { turnId: "continued-turn" } }),
+      event(3, { type: "turn_aborted", payload: { turnId: "continued-turn", reason: "daemon_shutdown" } }),
+      event(4, { type: "turn_started", payload: { turnId: "continued-turn" } }),
+    ] });
+    const sessions = new AgenCDaemonSessionManager();
+    const manager = new AgenCDaemonAgentManager({ runner, sessionManager: sessions });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: sessions });
+    const connection = dispatcher.createConnection();
+    let emit: ((event: JsonObject) => void) | undefined;
+    const client = {
+      request: async (method: string, params: JsonObject) => {
+        const response = await connection.dispatch({ jsonrpc: "2.0", id: "retry", method, params });
+        expect(response).not.toHaveProperty("error");
+        return response.result;
+      },
+      subscribeToSessionEvents: (_sessionId: string, callback: (event: JsonObject) => void) => { emit = callback; return () => {}; },
+    } as unknown as AgenCDaemonTuiClient;
+    try {
+      const started = await runner.startAgent({ objective: "passive", initialContent: [], unattendedAllow: [], unattendedDeny: [] });
+      await sessions.restoreSession({ sessionId, agentId, status: "waiting", createdAt: started.startedAt });
+      await manager.restoreAgent({ agentId, objective: "passive", startedAt: started.startedAt, lastActiveAt: started.startedAt, sessionIds: [sessionId], runtimeAvailable: true });
+      await connection.dispatch({ jsonrpc: "2.0", id: "initialize", method: "initialize", params: { protocol: { version: "1.2.0" } } });
+      const adapter = createDaemonTuiSessionFixture({ baseSession: { conversationId: sessionId }, client, sessionId, clientId: "persisted-tui" });
+      const unsubscribe = adapter.subscribeToEvents(() => undefined);
+      emit!({ type: "turn_started", payload: { turnId: "continued-turn" } });
+      expect(adapter.activeTurn.unsafePeek()).toEqual({ turnId: "continued-turn" });
+      await expect(adapter.submit("retry me", { clientMessageId })).rejects.toThrow("already admitted, but its terminal outcome is unknown");
+      expect(adapter.activeTurn.unsafePeek()).toEqual({ turnId: "continued-turn" });
+      expect(control.sendInput).not.toHaveBeenCalled();
+      expect(stub.thread.submit).not.toHaveBeenCalled();
+      unsubscribe();
+    } finally {
+      await connection.close();
+      await dispatcher.close();
+      await runner.stopAgent(agentId, "test_cleanup");
+    }
+  });
+
   it("[managed-thread] does not treat a mid-turn error as the persisted terminal", async () => {
     const event = (id: string, seq: number, msg: Record<string, unknown>) => ({
       type: "event_msg",
@@ -11630,6 +11833,80 @@ describe("AgenC delegate background-agent runner", () => {
     expect(shutdown).toHaveBeenCalledOnce();
     expect(stub.thread.shutdown).not.toHaveBeenCalled();
     expect(control.shutdown).not.toHaveBeenCalled();
+  });
+
+  it("[managed-thread] explicit stop retires an active turn with terminal cancellation", async () => {
+    const { runner, session, rolloutItems, shutdown, setActiveTurn } = makeTopLevelRunner({
+      conversationId: "session-explicit-stop-active-turn",
+      scopedTurnCancellation: true,
+    });
+    await runner.startAgent({ objective: "cancel this turn", unattendedAllow: [],
+      unattendedDeny: [] });
+    session.emit({ id: "cancelled-turn-started", msg: { type: "turn_started",
+      payload: { turnId: "cancelled-checkpoint-turn", buildId: currentBuildId() } } });
+    session.emit({ id: "cancelled-turn-checkpoint", msg: { type: "turn_checkpoint",
+      payload: { turnId: "cancelled-checkpoint-turn", checkpointVersion: 4,
+        prefixHashVersion: 3, toolResultIntegrityVersion: 1, iterationIndex: 1,
+        boundary: "iteration", checkpointSeq: 1, persistedMessageCount: 0,
+        prefixHash: computeCheckpointPrefixHashV3([], 0),
+        resumableState: { turnCount: 1, recoveryReentryCount: 0,
+          maxOutputTokensRecoveryCount: 0, continuationNudgeCount: 0,
+          stopHookBlockingCount: 0 } } } });
+    setActiveTurn("cancelled-checkpoint-turn");
+    await runner.stopAgent("session-explicit-stop-active-turn", "agent.stop");
+    expect(rolloutItems).toContainEqual(expect.objectContaining({ type: "event_msg",
+      payload: expect.objectContaining({ msg: { type: "turn_aborted",
+        payload: { turnId: "cancelled-checkpoint-turn", reason: "interrupted" } } }) }));
+    expect(shutdown).toHaveBeenCalledWith("session_shutdown");
+    const reopened = reconstructFromRollout(rolloutItems as RolloutItem[]);
+    expect(reopened.resumableTurns).toEqual([]);
+    expect(reopened.orphanedTurnIds).not.toContain("cancelled-checkpoint-turn");
+  });
+
+  it("[managed-thread] explicit stop retires a recovered checkpoint awaiting review", async () => {
+    const agentId = "session-explicit-stop-pending-review";
+    const turnId = "fenced-checkpoint-turn";
+    const { runner, session, rolloutItems, shutdown, activeTurn } = makeTopLevelRunner({
+      conversationId: agentId,
+    });
+    await runner.startAgent({ objective: "cancel fenced work", unattendedAllow: [],
+      unattendedDeny: [] });
+    session.emit({ id: "fenced-turn-started", msg: { type: "turn_started",
+      payload: { turnId, buildId: currentBuildId() } } });
+    session.emit({ id: "fenced-turn-checkpoint", msg: { type: "turn_checkpoint",
+      payload: { turnId, checkpointVersion: 4, prefixHashVersion: 3,
+        toolResultIntegrityVersion: 1, iterationIndex: 1, boundary: "iteration",
+        checkpointSeq: 1, persistedMessageCount: 0,
+        prefixHash: computeCheckpointPrefixHashV3([], 0),
+        resumableState: { turnCount: 1, recoveryReentryCount: 0,
+          maxOutputTokensRecoveryCount: 0, continuationNudgeCount: 0,
+          stopHookBlockingCount: 0 } } } });
+    // Bootstrap persists this synthetic marker after SIGKILL. It must not
+    // hide the recovered checkpoint from an explicit stop.
+    session.emit({ id: "fenced-process-killed", msg: { type: "turn_aborted",
+      payload: { turnId, reason: "process_killed" } } });
+    session.emit({ id: "fenced-effect-intent", msg: { type: "effect_intent",
+      payload: { formatVersion: 2, minimumReaderRuntime: "0.14.0", runId: agentId,
+        stepId: `tool:${turnId}:write`, callId: "write", toolName: "Write",
+        recoveryCategory: "side-effecting", intentDigest: "write-intent", attempt: 1,
+        recordedAt: "2026-09-22T00:00:00.000Z" } } });
+    session.emit({ id: "fenced-effect-unknown", msg: { type: "effect_unknown_outcome",
+      payload: { formatVersion: 2, minimumReaderRuntime: "0.14.0", runId: agentId,
+        stepId: `tool:${turnId}:write`, callId: "write", toolName: "Write",
+        recoveryCategory: "side-effecting", intentEventSeq: 3,
+        outcome: "unknown_outcome", reason: "acknowledgement_lost",
+        requiresReview: true, recordedAt: "2026-09-22T00:00:01.000Z" } } });
+    expect(activeTurn.unsafePeek()).toBeNull();
+    expect(reconstructFromRollout((rolloutItems as RolloutItem[]).filter((item) =>
+      !(item.type === "event_msg" && item.payload.msg.type === "turn_aborted" &&
+        item.payload.msg.payload.reason === "process_killed"))).resumableTurns)
+      .toEqual([expect.objectContaining({ turnId })]);
+    await runner.stopAgent(agentId, "agent.stop");
+    expect(shutdown).toHaveBeenCalledWith("session_shutdown");
+    expect(rolloutItems).toContainEqual(expect.objectContaining({ type: "event_msg",
+      payload: expect.objectContaining({ msg: { type: "turn_aborted",
+        payload: { turnId, reason: "interrupted" } } }) }));
+    expect(reconstructFromRollout(rolloutItems as RolloutItem[]).resumableTurns).toEqual([]);
   });
 });
 

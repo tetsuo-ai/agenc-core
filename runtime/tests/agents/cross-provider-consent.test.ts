@@ -10,6 +10,7 @@ import {
 import { LiveApprovalBroker } from "../../src/app-server/live-approval-broker.js";
 import type { Session } from "../../src/session/session.js";
 import { registerChildApprovalSession } from "../../src/agents/child-approval-context.js";
+import { childTerminalOutcome } from "../../src/agents/child-terminal.js";
 import { restoreSessionGoal } from "../../src/goal/session-goal.js";
 
 const plan = {
@@ -80,10 +81,21 @@ describe("cross-provider consent grants", () => {
   });
 });
 
-function interactiveFixture(options: { answerable?: boolean; nonInteractive?: boolean; workflow?: boolean; goal?: boolean; autonomousTick?: boolean; activeTurnId?: string } = {}) {
+/** The user enabled cross-provider subagents and asked to confirm each spawn. */
+const ASK_EACH_SPAWN = { cross_provider_enabled: true, allowed_providers: ["deepseek"], cross_provider_ask_each_spawn: true };
+/** The user enabled cross-provider subagents, so settings are the consent. */
+const SETTINGS_CONSENT = { cross_provider_enabled: true, allowed_providers: ["deepseek"] };
+
+function interactiveFixture(options: { answerable?: boolean; nonInteractive?: boolean; workflow?: boolean; goal?: boolean; autonomousTick?: boolean; activeTurnId?: string; agents?: Record<string, unknown>; journal?: unknown[] } = {}) {
   let stopped = false;
   let answerable = options.answerable !== false;
   const eventListeners = new Set<(event: unknown) => void>();
+  const publish = (event: unknown) => { for (const listener of eventListeners) listener(event); };
+  // With a journal the owner is canonical: like Session.emit, a durable event
+  // is stamped and journaled before listeners see it. A second fixture given
+  // the same journal is the conversation restored after a daemon restart.
+  const journal = options.journal;
+  let sequence = journal?.length ?? 0;
   const session = {
     conversationId: "root-session",
     services: { runtimeOptions: { nonInteractive: options.nonInteractive === true } },
@@ -92,7 +104,19 @@ function interactiveFixture(options: { answerable?: boolean; nonInteractive?: bo
     eventLog: { subscribe: (listener: (event: unknown) => void) => {
       eventListeners.add(listener); return () => { eventListeners.delete(listener); };
     } },
+    ...(journal !== undefined ? {
+      rolloutStore: { readAll: () => [...journal] },
+      nextInternalSubId: () => `root-internal-${sequence + 1}`,
+      emit: (event: { readonly eventId?: string }) => {
+        sequence += 1;
+        const stamped = { ...event, eventId: event.eventId ?? `event:${sequence}`, seq: sequence };
+        journal.push({ type: "event_msg", payload: stamped });
+        publish(stamped);
+        return stamped;
+      },
+    } : {}),
     onBeforeDurableClose: () => () => {},
+    config: { agents: options.agents ?? ASK_EACH_SPAWN },
     ...(options.autonomousTick ? { activeTurn: { unsafePeek: () => ({ turnId: "tick" }) }, currentRootHumanTurn: () => null } : {}),
     ...(options.activeTurnId !== undefined ? {
       activeTurn: { unsafePeek: () => ({ turnId: options.activeTurnId }) },
@@ -102,9 +126,51 @@ function interactiveFixture(options: { answerable?: boolean; nonInteractive?: bo
   const broker = new LiveApprovalBroker({ canAnswerCrossProviderConsent: () => answerable });
   const close = broker.register(session, { isActive: () => true, workflow: options.workflow === true });
   if (options.goal) restoreSessionGoal(session, { objective: "unattended work", status: "active" } as never);
-  return { session, broker, close, stopped: () => stopped, setAnswerable: (value: boolean) => { answerable = value; },
+  return { session, broker, close, journal: journal ?? [], stopped: () => stopped,
+    setAnswerable: (value: boolean) => { answerable = value; },
+    /** A live event on the owner's log that is not journaled. */
+    emit: publish,
+    /** A durable event on the owner's log, as a direct child's funds notice is. */
+    emitDurable: (event: unknown) => { (session as unknown as { emit(event: unknown): unknown }).emit(event); },
   };
 }
+
+/** The funds notices in an owner's journal. */
+function journaledFundsNotices(journal: readonly unknown[]): unknown[] {
+  return journal.filter((item) =>
+    (item as { payload?: { msg?: { type?: unknown } } }).payload?.msg?.type === "subagent_funds_notice");
+}
+
+/** A child session under the fixture's owner, with an event log of its own. */
+function childOf(fixture: ReturnType<typeof interactiveFixture>) {
+  const listeners = new Set<(event: unknown) => void>();
+  const session = {
+    conversationId: "child-session", services: { ...fixture.session.services },
+    abortController: new AbortController(),
+    eventLog: { subscribe: (listener: (event: unknown) => void) => {
+      listeners.add(listener); return () => { listeners.delete(listener); };
+    } },
+    onBeforeDurableClose: () => () => {},
+    sessionConfiguration: { sessionSource: { kind: "subagent", source: { kind: "thread_spawn",
+      parentThreadId: "root-session", depth: 1, agentPath: "/root/worker" } } },
+  } as unknown as Session;
+  registerChildApprovalSession(session, fixture.session);
+  return { session, emit: (event: unknown) => { for (const listener of listeners) listener(event); } };
+}
+
+/** The durable notice run-agent emits on a parent whose child stopped for funds. */
+function fundsNotice(agentPath: string) {
+  return { id: `funds:${agentPath}`, msg: { type: "subagent_funds_notice", payload: {
+    agentPath, taskId: "task-one", taskText: "Read the design",
+    terminal: childTerminalOutcome({ provider: "deepseek", model: "deepseek-v4-pro",
+      reason: "insufficient_funds", dispatch: "sent", unfinishedWork: "Read the design" }),
+    message: "deepseek/deepseek-v4-pro ran out of credits. The child stopped; ask before switching providers.",
+  } } };
+}
+
+/** A spawn by the child session at the next depth. */
+const nestedPlan = { ...plan, parent: { sessionId: "child-session", agentPath: "/root/worker" },
+  task: { id: "grandchild", name: "grandchild", text: "Research", attachments: [] } } as ChildExecutionPlan;
 
 async function pendingDecision(fixture: ReturnType<typeof interactiveFixture>, task: ChildExecutionPlan = plan) {
   const promise = authorizeChildExecutionPlan(fixture.session, task);
@@ -153,6 +219,7 @@ describe("live cross-provider consent", () => {
       currentRootHumanTurn: () => ({ turnId: activeTurnId }),
       eventLog: { subscribe: () => () => {} },
       onBeforeDurableClose: () => () => {},
+      config: { agents: ASK_EACH_SPAWN },
     } as unknown as Session;
     const broker = new LiveApprovalBroker({ canAnswerCrossProviderConsent: () => capability });
     const close = broker.register(session, { isActive: () => true });
@@ -298,7 +365,7 @@ describe("live cross-provider consent", () => {
 
   it.each([{ answerable: false }, { nonInteractive: true }, { workflow: true },
     { goal: true }, { autonomousTick: true }])(
-    "fails immediately when consent is unavailable: %j", async (options) => {
+    "fails immediately when the user asks at each spawn and consent is unavailable: %j", async (options) => {
       const fixture = interactiveFixture(options);
       try {
         await expect(authorizeChildExecutionPlan(fixture.session, plan)).resolves.toMatchObject({ kind: "consent_unavailable" });
@@ -333,6 +400,176 @@ describe("live cross-provider consent", () => {
       expect(pending.crossProvider).toMatchObject({ provider: "openai", model: "gpt-5.4" });
       fixture.broker.resolve("root-session", pending.requestId, { kind: "denied" });
       expect((await next).kind).toBe("consent_denied");
+    } finally { fixture.close(); }
+  });
+});
+
+describe("consent from settings", () => {
+  const second = { ...plan, task: { ...plan.task, id: "task-two", text: "Another task" } } as ChildExecutionPlan;
+
+  it("grants an allowed provider without asking, even with no client that could answer", async () => {
+    const fixture = interactiveFixture({ agents: SETTINGS_CONSENT, answerable: false });
+    try {
+      const outcome = await authorizeChildExecutionPlan(fixture.session, plan);
+      expect(outcome.kind).toBe("granted");
+      expect(fixture.broker.list("root-session")).toHaveLength(0);
+    } finally { fixture.close(); }
+  });
+
+  it("grants unattended workflow and goal runs from settings", async () => {
+    for (const unattended of [{ workflow: true }, { goal: true }]) {
+      const fixture = interactiveFixture({ agents: SETTINGS_CONSENT, ...unattended });
+      try {
+        expect((await authorizeChildExecutionPlan(fixture.session, plan)).kind).toBe("granted");
+      } finally { fixture.close(); }
+    }
+  });
+
+  it("covers a fresh message to an existing child without asking", async () => {
+    const fixture = interactiveFixture({ agents: SETTINGS_CONSENT });
+    try {
+      expect((await authorizeChildExecutionPlan(fixture.session, plan, { fresh: true })).kind).toBe("granted");
+      expect(fixture.broker.list("root-session")).toHaveLength(0);
+    } finally { fixture.close(); }
+  });
+
+  it("covers a nested child's spawn without asking", async () => {
+    const fixture = interactiveFixture({ agents: SETTINGS_CONSENT });
+    const child = childOf(fixture);
+    try {
+      expect((await authorizeChildExecutionPlan(child.session, nestedPlan)).kind).toBe("granted");
+      expect(fixture.broker.list("root-session")).toHaveLength(0);
+    } finally { fixture.close(); }
+  });
+
+  it("does not grant a provider the settings no longer allow, also for a message to an existing child", async () => {
+    const fixture = interactiveFixture({ agents: { cross_provider_enabled: true, allowed_providers: ["openai"] } });
+    try {
+      for (const options of [{}, { fresh: true }]) {
+        await expect(authorizeChildExecutionPlan(fixture.session, plan, options)).resolves.toMatchObject({
+          kind: "consent_unavailable", reason: expect.stringContaining("Provider `deepseek` is not allowed"),
+        });
+      }
+      expect(fixture.broker.list("root-session")).toHaveLength(0);
+    } finally { fixture.close(); }
+  });
+
+  it("asks at every spawn when the user opted into it", async () => {
+    const fixture = interactiveFixture({ agents: ASK_EACH_SPAWN });
+    try {
+      const { promise, pending } = await pendingDecision(fixture);
+      expect(pending.kind).toBe("cross_provider_spawn");
+      expect(fixture.broker.resolve("root-session", pending.requestId, { kind: "denied" })).toBe(true);
+      expect(await promise).toMatchObject({ kind: "consent_denied" });
+    } finally { fixture.close(); }
+  });
+
+  it("asks the user again after a child hits a funds stop", async () => {
+    const fixture = interactiveFixture({ agents: SETTINGS_CONSENT });
+    try {
+      expect((await authorizeChildExecutionPlan(fixture.session, plan)).kind).toBe("granted");
+      fixture.emit(fundsNotice("/root/worker"));
+      const { promise, pending } = await pendingDecision(fixture, second);
+      expect(pending.kind).toBe("cross_provider_spawn");
+      expect(fixture.broker.resolve("root-session", pending.requestId, { kind: "denied" })).toBe(true);
+      expect(await promise).toMatchObject({ kind: "consent_denied" });
+    } finally { fixture.close(); }
+  });
+
+  it("asks again after a nested child's funds stop and journals that stop with the owner", async () => {
+    const fixture = interactiveFixture({ agents: SETTINGS_CONSENT, journal: [] });
+    const child = childOf(fixture);
+    try {
+      expect((await authorizeChildExecutionPlan(child.session, nestedPlan)).kind).toBe("granted");
+      // run-agent emits a grandchild's notice on its parent, the child.
+      const notice = fundsNotice("/root/worker/researcher");
+      child.emit(notice);
+      expect(journaledFundsNotices(fixture.journal)).toEqual([
+        { type: "event_msg", payload: expect.objectContaining({ msg: notice.msg }) },
+      ]);
+      const next = authorizeChildExecutionPlan(child.session, { ...nestedPlan,
+        task: { ...nestedPlan.task, id: "grandchild-2" } });
+      await vi.waitFor(() => expect(fixture.broker.list("root-session")).toHaveLength(1));
+      const pending = fixture.broker.list("root-session")[0]!;
+      expect(pending.kind).toBe("cross_provider_spawn");
+      fixture.broker.resolve("root-session", pending.requestId, { kind: "denied" });
+      expect((await next).kind).toBe("consent_denied");
+    } finally { fixture.close(); }
+  });
+
+  it("journals a nested funds stop once for a workflow owner, which also watches its own log", async () => {
+    const fixture = interactiveFixture({ agents: SETTINGS_CONSENT, workflow: true, journal: [] });
+    const child = childOf(fixture);
+    try {
+      child.emit(fundsNotice("/root/worker/researcher"));
+      expect(journaledFundsNotices(fixture.journal)).toHaveLength(1);
+      await expect(authorizeChildExecutionPlan(child.session, nestedPlan)).resolves
+        .toMatchObject({ kind: "consent_unavailable" });
+    } finally { fixture.close(); }
+  });
+
+  it.each([{ workflow: true }, { goal: true }, { nonInteractive: true }, { autonomousTick: true },
+    { answerable: false }])(
+    "refuses a run nobody can answer after a funds stop instead of granting it: %j", async (options) => {
+      const fixture = interactiveFixture({ agents: SETTINGS_CONSENT, journal: [], ...options });
+      try {
+        expect((await authorizeChildExecutionPlan(fixture.session, plan)).kind).toBe("granted");
+        fixture.emitDurable(fundsNotice("/root/worker"));
+        await expect(authorizeChildExecutionPlan(fixture.session, second)).resolves
+          .toMatchObject({ kind: "consent_unavailable" });
+        expect(fixture.broker.list("root-session")).toHaveLength(0);
+      } finally { fixture.close(); }
+    },
+  );
+
+  it.each([
+    ["a direct child's", (fixture: ReturnType<typeof interactiveFixture>) => {
+      fixture.emitDurable(fundsNotice("/root/worker"));
+    }],
+    ["a nested child's", (fixture: ReturnType<typeof interactiveFixture>) => {
+      childOf(fixture).emit(fundsNotice("/root/worker/researcher"));
+    }],
+  ] as const)("keeps settings consent off after a restart once %s funds stop is journaled", async (_label, stop) => {
+    const first = interactiveFixture({ agents: SETTINGS_CONSENT, journal: [] });
+    try {
+      expect((await authorizeChildExecutionPlan(first.session, plan)).kind).toBe("granted");
+      stop(first);
+    } finally { first.close(); }
+    // After a daemon restart a new broker registers the restored owner, which
+    // shares only its journal with the first run.
+    const restored = interactiveFixture({ agents: SETTINGS_CONSENT, journal: first.journal });
+    try {
+      const { promise, pending } = await pendingDecision(restored, second);
+      expect(pending.kind).toBe("cross_provider_spawn");
+      restored.broker.resolve("root-session", pending.requestId, { kind: "denied" });
+      expect((await promise).kind).toBe("consent_denied");
+    } finally { restored.close(); }
+    // A turn resumed with no client that can answer is refused, not granted.
+    const resumed = interactiveFixture({ agents: SETTINGS_CONSENT, journal: first.journal, answerable: false });
+    try {
+      await expect(authorizeChildExecutionPlan(resumed.session, second)).resolves
+        .toMatchObject({ kind: "consent_unavailable" });
+    } finally { resumed.close(); }
+  });
+
+  it("asks when the owner's journal cannot be read", async () => {
+    const fixture = interactiveFixture({ agents: SETTINGS_CONSENT, journal: [] });
+    Object.assign(fixture.session, { rolloutStore: { readAll: () => { throw new Error("journal unavailable"); } } });
+    try {
+      const { promise, pending } = await pendingDecision(fixture);
+      expect(pending.kind).toBe("cross_provider_spawn");
+      fixture.broker.resolve("root-session", pending.requestId, { kind: "denied" });
+      expect((await promise).kind).toBe("consent_denied");
+    } finally { fixture.close(); }
+  });
+
+  it("does not treat a disabled feature as consent", async () => {
+    const fixture = interactiveFixture({ agents: { cross_provider_enabled: false, allowed_providers: ["deepseek"] } });
+    try {
+      const { promise, pending } = await pendingDecision(fixture);
+      expect(pending.kind).toBe("cross_provider_spawn");
+      expect(fixture.broker.resolve("root-session", pending.requestId, { kind: "denied" })).toBe(true);
+      expect(await promise).toMatchObject({ kind: "consent_denied" });
     } finally { fixture.close(); }
   });
 });

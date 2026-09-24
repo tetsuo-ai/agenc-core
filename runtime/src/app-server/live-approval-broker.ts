@@ -22,8 +22,9 @@ import { isUndeliverableApproval } from "./approval-delivery.js";
 import type { BackgroundAgentDaemonEvent } from "./background-agent-runner/shared.js";
 import { AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY, type PendingToolApproval, type JsonObject } from "./protocol/index.js";
 import { requestApproval } from "../permissions/guardian/arbiter.js";
-import { crossProviderDenialKey, type CrossProviderConsentService, type CrossProviderSpawnDisclosure, type CrossProviderConsentOutcome } from "../agents/cross-provider.js";
+import { assertCrossProviderAllowed, crossProviderConsentFromSettings, crossProviderDenialKey, fundsStopFromRolloutItems, type CrossProviderConsentService, type CrossProviderSpawnDisclosure, type CrossProviderConsentOutcome } from "../agents/cross-provider.js";
 import { getSessionGoal } from "../goal/session-goal.js";
+import type { SubagentFundsNoticeEvent } from "../session/event-log.js";
 
 /**
  * A runtime refusal, not the person's decision (no `decidedBy`): the child's
@@ -44,7 +45,11 @@ interface ApprovalOwner {
   readonly undeliverable: Set<string>;
   readonly sessionEpoch: string;
   readonly consentSessionGrants: Set<string>;
-  fundsStopObserved: boolean;
+  /**
+   * Whether a child in this conversation stopped for funds. Unknown until the
+   * first consent request reads the owner's journal (`fundsStopped`).
+   */
+  fundsStopObserved: boolean | undefined;
   readonly deniedConsentPayloads: Set<string>;
 }
 
@@ -107,19 +112,20 @@ export class LiveApprovalBroker {
       undeliverable: new Set(),
       sessionEpoch: randomUUID(),
       consentSessionGrants: new Set(),
-      fundsStopObserved: false,
+      fundsStopObserved: undefined,
       deniedConsentPayloads: new Set(),
     };
     this.#owners.set(session.conversationId, owner);
+    const observeFundsStop = (): void => {
+      owner.fundsStopObserved = true;
+      owner.consentSessionGrants.clear();
+    };
     // A restored or test session may carry an event log without live
     // subscriptions; registration must not fail because of it.
     const rootEventLog = session.eventLog;
     const unsubscribeRootFunds = typeof rootEventLog?.subscribe === "function"
       ? rootEventLog.subscribe((event) => {
-        if (event.msg.type === "subagent_funds_notice") {
-          owner.fundsStopObserved = true;
-          owner.consentSessionGrants.clear();
-        }
+        if (event.msg.type === "subagent_funds_notice") observeFundsStop();
       })
       : () => {};
     const unsubscribePolicy = session.services.configStore?.subscribe?.(() => {
@@ -146,8 +152,10 @@ export class LiveApprovalBroker {
       requestIds.set(requestingSession, ids);
       const unsubscribe = requestingSession.eventLog.subscribe((event) => {
         if (event.msg.type === "subagent_funds_notice") {
-          owner.fundsStopObserved = true;
-          owner.consentSessionGrants.clear();
+          observeFundsStop();
+          // A nested child's notice is journaled with its parent child, which
+          // a restored owner does not read. Copy it into the owner's journal.
+          if (requestingSession !== session) journalFundsStop(session, event.msg.payload);
           return;
         }
         if (
@@ -331,6 +339,23 @@ export class LiveApprovalBroker {
         !isApprovalSessionOwnedBy(requestingSession, owner.session)) {
       return unavailable("The interactive session is no longer active.");
     }
+    const grant = (kind: "once" | "session") => ({
+      kind, ownerSessionId: owner.session.conversationId,
+      sessionEpoch: owner.sessionEpoch, taskId: disclosure.taskId,
+      scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey,
+    });
+    // Enabling the allowed providers in settings is the consent, also for
+    // unattended runs. After a funds stop the user decides every later spawn.
+    if (crossProviderConsentFromSettings(owner.session) && !fundsStopped(owner)) {
+      // The consent covers only the providers the settings allow now; a
+      // message to an existing child reuses a plan made under older settings.
+      try {
+        assertCrossProviderAllowed(owner.session, disclosure.provider);
+      } catch (error) {
+        return unavailable(error instanceof Error ? error.message : String(error));
+      }
+      return { kind: "granted", grant: grant("session") };
+    }
     if (owner.workflow || isNonInteractiveSession(owner.session) ||
         getSessionGoal(owner.session)?.status === "active" ||
         (owner.session.activeTurn?.unsafePeek() !== undefined &&
@@ -351,15 +376,10 @@ export class LiveApprovalBroker {
     if (owner.deniedConsentPayloads.has(denialKey)) {
       return { kind: "consent_denied", reason: "This task's equivalent cross-provider request was already denied. Continue it yourself; do not retry the same request." };
     }
-    const grant = (kind: "once" | "session") => ({
-      kind, ownerSessionId: owner.session.conversationId,
-      sessionEpoch: owner.sessionEpoch, taskId: disclosure.taskId,
-      scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey,
-    });
     // Once any child hits a funds stop, task text cannot identify a retry.
     // Session-wide fresh approval is intentionally stricter than lineage-only
     // invalidation and cannot be evaded by changing the model's task wording.
-    if (options.fresh !== true && !owner.fundsStopObserved &&
+    if (options.fresh !== true && !fundsStopped(owner) &&
         owner.consentSessionGrants.has(disclosure.scopeKey)) {
       return { kind: "granted", grant: grant("session") };
     }
@@ -498,6 +518,47 @@ function isNonInteractiveSession(session: Session): boolean {
   return (
     session.services as { readonly runtimeOptions?: { readonly nonInteractive?: unknown } } | undefined
   )?.runtimeOptions?.nonInteractive === true;
+}
+
+/**
+ * Whether a child in the owner's conversation stopped for funds, including
+ * before a daemon restart. The owner's journal is read once, when consent
+ * first needs it; live notices set the flag after that.
+ */
+function fundsStopped(owner: ApprovalOwner): boolean {
+  owner.fundsStopObserved ??= journaledFundsStop(owner.session);
+  return owner.fundsStopObserved;
+}
+
+/**
+ * Whether the owner's journal records a child's funds stop. A journal that
+ * cannot be read cannot show that no child stopped, so it counts as a stop.
+ */
+function journaledFundsStop(session: Session): boolean {
+  const journal = session.rolloutStore;
+  if (typeof journal?.readAll !== "function") return false;
+  try {
+    return fundsStopFromRolloutItems(journal.readAll());
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Journals a nested child's funds notice durably with the owner, as the same
+ * event a direct child writes there, so the owner reads it after a restart.
+ */
+function journalFundsStop(owner: Session, notice: SubagentFundsNoticeEvent): void {
+  if (typeof owner.emit !== "function" || typeof owner.nextInternalSubId !== "function") return;
+  try {
+    owner.emit({
+      id: owner.nextInternalSubId(),
+      msg: { type: "subagent_funds_notice", payload: notice },
+    }, { durable: true });
+  } catch {
+    // A sealed or failed journal cannot take the copy; the live flag still
+    // holds while this owner stays registered.
+  }
 }
 
 /**

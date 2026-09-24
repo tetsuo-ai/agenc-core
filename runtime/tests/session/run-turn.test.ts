@@ -64,6 +64,12 @@ import {
 import type { QueuedCommand } from "../types/textInputTypes.js";
 import { createToolResultIntegrity } from "./tool-result-integrity.js";
 import { buildInitialTurnState } from "./turn-state.js";
+import { RolloutStore } from "./rollout-store.js";
+import { reconstructFromRollout } from "./rollout-reconstruction.js";
+import { resumeTurnFromCheckpoint } from "../conversation/thread-manager.js";
+import { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
+import { bindExecutionAdmissionJournal } from "./execution-admission-journal.js";
+import { shutdownSessionLifecycle } from "./lifecycle.js";
 
 function enqueue(command: QueuedCommand): void {
   enqueueCommand({
@@ -3254,6 +3260,36 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       ),
     ).toBe(false);
     expect(getState().previousTurnSettings?.personality).toBe("friendly");
+  });
+
+  test.each([
+    ["session_shutdown", "interrupted"],
+    ["daemon_shutdown", "daemon_shutdown"],
+  ] as const)("emits %s shutdown as turn_aborted reason %s", async (shutdownReason, expectedReason) => {
+    const entered = Promise.withResolvers<void>();
+    const provider = mkProvider({});
+    provider.chatStream = async (_messages, _onChunk, options) => {
+      entered.resolve();
+      await new Promise<void>((_resolve, reject) => {
+        const signal = options?.signal;
+        if (signal?.aborted) {
+          reject(new Error("sample aborted"));
+        } else {
+          signal?.addEventListener("abort", () => reject(new Error("sample aborted")), { once: true });
+        }
+      });
+      throw new Error("unreachable");
+    };
+    const { session, events } = mkSession({ provider, registry: mkRegistry() });
+    const running = drain(session.runTurn("keep working", { ctx: mkCtx() }));
+    await entered.promise;
+    await shutdownSessionLifecycle({ session, shutdownReason });
+    await running;
+    expect(events.filter((event) => event.msg.type === "turn_aborted")).toEqual([
+      expect.objectContaining({
+        msg: { type: "turn_aborted", payload: expect.objectContaining({ reason: expectedReason }) },
+      }),
+    ]);
   });
 
   test("emits token_count after streamModel completes", async () => {
@@ -7343,6 +7379,185 @@ describe("runTurn — runAutoCompact dispatcher", () => {
 });
 
 describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
+  test("real kernel and admission restart continue after a completed effect exactly once", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-kernel-restart-cwd-"));
+    const home = mkdtempSync(join(tmpdir(), "agenc-kernel-restart-home-"));
+    const conversationId = "kernel-restart-effect-once";
+    const kernel = new ExecutionAdmissionKernel({ agencHome: home,
+      ownerId: "kernel-restart-test", ownerPid: process.pid });
+    const enteredSecondSample = Promise.withResolvers<void>();
+    let providerCalls = 0;
+    let completedEffects = 0;
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      getExecutionProfile: async () => ({ provider: "stub-provider", model: "test-model",
+        usageReporting: "authoritative", supportsMaxOutputTokens: true }),
+      chatStream: vi.fn(async (_messages, _onChunk, options) => {
+        providerCalls += 1;
+        if (providerCalls === 1) return {
+          content: "", toolCalls: [{ id: "write-once", name: "WriteOnce", arguments: "{}" }],
+          usage: { promptTokens: 8, completionTokens: 4, totalTokens: 12,
+            availability: "reported" as const, provenance: "provider" as const },
+          model: "test-model", finishReason: "tool_calls" as const,
+        };
+        if (providerCalls === 2) {
+          enteredSecondSample.resolve();
+          return await new Promise<LLMResponse>((_resolve, reject) => {
+            options?.signal?.addEventListener("abort", () => reject(new Error("daemon stopped")), { once: true });
+          });
+        }
+        return { content: "finished remaining work", toolCalls: [],
+          usage: { promptTokens: 8, completionTokens: 4, totalTokens: 12,
+            availability: "reported" as const, provenance: "provider" as const },
+          model: "test-model", finishReason: "stop" as const };
+      }),
+    };
+    const tool = { name: "WriteOnce", description: "record one effect",
+      inputSchema: { type: "object", additionalProperties: false },
+      requiresApproval: false, recoveryCategory: "side-effecting",
+      execute: vi.fn(async () => { completedEffects += 1;
+        return { content: "effect completed", isError: false }; }),
+    } as unknown as Tool;
+    const registry = { tools: [tool], toLLMTools: () => [],
+      dispatch: async () => tool.execute({} as never, {} as never),
+    } as unknown as ToolRegistry;
+    const config = { ...mkConfig(), durableTurns: { resume: { requireLease: false } } } as Config;
+    const open = (resume: boolean) => {
+      const store = new RolloutStore({ cwd, agencHome: home, sessionId: conversationId,
+        agencVersion: "0.2.0", sessionTempRoot: tmpdir(), ...(resume ? { resume: true } : {}) });
+      store.open({ sessionId: conversationId, timestamp: new Date().toISOString(), cwd,
+        originator: "kernel-restart-test", agencVersion: "0.2.0",
+        model: "test-model", modelProvider: provider.name });
+      return store;
+    };
+    let first: Session | undefined;
+    let second: Session | undefined;
+    try {
+      const firstStore = open(false);
+      const firstHarness = mkSession({ conversationId, provider, registry, config,
+        sessionConfiguration: { cwd, sandboxPolicy: { value: "danger_full_access" } } });
+      first = firstHarness.session;
+      Object.assign(first.modelInfo, { maxOutputTokens: 32 });
+      Object.assign(first.services, { executionAdmission: kernel.bindClient({ cwd,
+        scope: { runId: conversationId, sessionId: conversationId, autonomous: false } }),
+        admissionRequired: true });
+      first.mountRolloutStore(firstStore);
+      first.onBeforeDurableClose(bindExecutionAdmissionJournal(first, first.services.executionAdmission!));
+      const interrupted = drain(first.runTurn("write then finish", { subId: "restart-turn" }));
+      const firstPhase = await Promise.race([
+        enteredSecondSample.promise.then(() => "entered"),
+        interrupted.then(() => "ended"),
+        new Promise<string>(resolve => setTimeout(() => resolve("timed-out"), 3_000)),
+      ]);
+      expect({ firstPhase, providerCalls, completedEffects,
+        eventTypes: firstHarness.events.map(event => event.msg.type) })
+        .toMatchObject({ firstPhase: "entered", providerCalls: 2, completedEffects: 1 });
+      first.abortController.abort("daemon_shutdown");
+      await interrupted;
+      await first.shutdown();
+      expect(completedEffects).toBe(1);
+
+      const secondAdmission = kernel.bindClient({ cwd,
+        scope: { runId: conversationId, sessionId: conversationId, autonomous: false } });
+      const secondStore = open(true);
+      second = mkSession({ conversationId, provider, registry, config,
+        sessionConfiguration: { cwd, sandboxPolicy: { value: "danger_full_access" } } }).session;
+      Object.assign(second.modelInfo, { maxOutputTokens: 32 });
+      Object.assign(second.services, { executionAdmission: secondAdmission,
+        admissionRequired: true });
+      second.mountRolloutStore(secondStore);
+      second.eventLog.seedCanonicalHistory(secondStore.readAll()
+        .filter(item => item.type === "event_msg").map(item => item.payload));
+      second.onBeforeDurableClose(bindExecutionAdmissionJournal(second, second.services.executionAdmission!));
+      const reconstruction = reconstructFromRollout(secondStore.readAll(), {
+        checkpointProjection: secondStore.checkpointProjectionContext("kernel-restart-test"),
+      });
+      expect(reconstruction.resumableTurns).toHaveLength(1);
+      await expect(resumeTurnFromCheckpoint(second, reconstruction)).resolves.toMatchObject({ resumed: true });
+      expect(completedEffects).toBe(1);
+      expect(providerCalls).toBe(3);
+      expect(secondStore.readAll().filter(item => item.type === "response_item" &&
+        item.payload.role === "tool" && item.payload.toolCallId === "write-once")).toHaveLength(1);
+    } finally {
+      await second?.shutdown().catch(() => undefined);
+      await first?.shutdown().catch(() => undefined);
+      kernel.close();
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a restarted physical model sample checkpoints a fresh admission identity", async () => {
+    const { session, events } = mkSession({
+      provider: mkProvider({ content: "finished", toolCalls: [] }),
+      registry: { tools: [], toLLMTools: () => [], dispatch: vi.fn() } as unknown as ToolRegistry,
+    });
+    session.rolloutStore = {
+      assertCompactionProjectionReady: () => {}, append: vi.fn(), appendRollout: vi.fn(),
+      rolloutPath: "/tmp/does-not-matter.jsonl",
+    } as unknown as Session["rolloutStore"];
+    await drain(session.runTurn("", {
+      subId: "physical-sample-restart",
+      history: [{ role: "user", content: "Continue" }],
+      displayUserMessage: null,
+      resume: {
+        turnId: "physical-sample-restart", fromIteration: 1,
+        fromCheckpointSeq: 1, persistedMessageCount: 1,
+        restoreSlice: { turnCount: 2, recoveryReentryCount: 0,
+          maxOutputTokensRecoveryCount: 0, continuationNudgeCount: 0,
+          stopHookBlockingCount: 0, modelSampleOrdinal: 0 },
+      },
+    }));
+    const firstContinuationCheckpoint = events.find(event => event.msg.type === "turn_checkpoint");
+    expect(firstContinuationCheckpoint?.msg).toMatchObject({
+      type: "turn_checkpoint",
+      payload: { resumableState: { modelSampleOrdinal: 1 } },
+    });
+  });
+
+  test("continuation tells the model about completed tool results without persisting the nudge", async () => {
+    const seen: LLMMessage[][] = [];
+    const provider: LLMProvider = {
+      ...mkProvider({ content: "finished", toolCalls: [] }),
+      chatStream: async (messages) => {
+        seen.push(messages);
+        return { content: "finished", toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "test-model", finishReason: "stop" };
+      },
+    };
+    const registry = { tools: [], toLLMTools: () => [],
+      dispatch: vi.fn() } as unknown as ToolRegistry;
+    const { session } = mkSession({ provider, registry });
+    const appendRollout = vi.fn();
+    session.rolloutStore = {
+      assertCompactionProjectionReady: () => {}, append: vi.fn(), appendRollout,
+      rolloutPath: "/tmp/does-not-matter.jsonl",
+    } as unknown as Session["rolloutStore"];
+    const history: LLMMessage[] = [
+      { role: "user", content: "Write twelve files" },
+      { role: "assistant", content: "", toolCalls: [{ id: "write-1", name: "Write", arguments: "{}" }] },
+      { role: "tool", content: "Wrote file one", toolCallId: "write-1", toolName: "Write",
+        runtimeOnly: { toolResultIntegrity: createToolResultIntegrity({ runId: "conv-test", toolCallId: "write-1", content: "Wrote file one" }) } },
+    ];
+    await drain(session.runTurn("", { subId: "turn-restart-context", history,
+      displayUserMessage: null,
+      resume: { turnId: "turn-restart-context", fromIteration: 1,
+        fromCheckpointSeq: 1, persistedMessageCount: history.length,
+        restoreSlice: { turnCount: 2, recoveryReentryCount: 0,
+          maxOutputTokensRecoveryCount: 0, continuationNudgeCount: 0,
+          stopHookBlockingCount: 0 } },
+    }));
+    const modelMessages = seen[0] ?? [];
+    expect(modelMessages.filter(message => message.role === "tool" && message.toolCallId === "write-1")).toHaveLength(1);
+    expect(modelMessages.some(message => message.role === "developer" &&
+      testMessageText(message).includes("1 completed tool result(s)") &&
+      testMessageText(message).includes("Do not repeat completed work"))).toBe(true);
+    expect(appendRollout.mock.calls.some(([item]) => item.type === "response_item" &&
+      item.payload?.role === "developer" &&
+      String(item.payload.content).includes("previous turn was interrupted"))).toBe(false);
+  });
+
   /**
    * A resumed turn whose checkpoint prefix ends in one dangling side-effecting
    * `settle` call. The provider answers without new tool calls, so the resume

@@ -631,6 +631,7 @@ function commitDurableRunSuspension(
 
   const committed = acceptCommitted(true);
   if (committed !== undefined) return committed;
+  active.bootstrap.rolloutStore.assertRunSuspendable({ allowUnsettledEffects: true });
   try {
     const event = active.bootstrap.session.emit({
       eventId,

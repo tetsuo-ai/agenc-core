@@ -44,6 +44,40 @@ afterEach(() => {
 });
 
 describe("openStateDatabases", () => {
+  it("upgrades a populated v34 effect table for idempotent unknown outcomes", () => {
+    const paths = resolveStateDatabasePaths({ cwd });
+    mkdirSync(paths.projectDir, { recursive: true, mode: 0o700 });
+    const raw = new Database(paths.stateDbPath);
+    try {
+      applyMigrations(raw, STATE_DB_MIGRATIONS.filter((migration) => migration.version < 35));
+      raw.prepare("INSERT INTO run_lifecycle_epochs (run_id, epoch, opened_at) VALUES (?, ?, ?)")
+        .run("upgrade-run", 1, "2026-09-24T00:00:00.000Z");
+      raw.prepare(`INSERT INTO run_effects (
+        run_id, step_id, epoch, session_id, call_id, tool_name,
+        recovery_category, idempotency_key, intent_digest, intent_event_id,
+        intent_sequence, intent_at, effect_format_version, minimum_reader_runtime
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+        "upgrade-run", "tool:turn:call", 1, "upgrade-run", "call", "read",
+        "idempotent", "sha256:key", "sha256:intent", "intent-event", 1,
+        "2026-09-24T00:00:00.000Z", 2, "0.14.0",
+      );
+    } finally { raw.close(); }
+    const driver = openStateDatabases({ cwd });
+    try {
+      driver.prepareState(`UPDATE run_effects SET
+        outcome = 'unknown_outcome', result_event_id = 'unknown-event',
+        result_sequence = 2, unknown_reason = 'forced_shutdown',
+        completed_at = '2026-09-24T00:00:01.000Z', review_status = 'pending'
+        WHERE run_id = 'upgrade-run' AND step_id = 'tool:turn:call'`).run();
+      expect(driver.prepareState<[], { outcome: string; idempotency_key: string }>(
+        "SELECT outcome, idempotency_key FROM run_effects WHERE run_id = 'upgrade-run'",
+      ).get()).toEqual({ outcome: "unknown_outcome", idempotency_key: "sha256:key" });
+      expect(() => driver.prepareState(
+        "UPDATE run_effects SET idempotency_key = 'changed' WHERE run_id = 'upgrade-run'",
+      ).run()).toThrow();
+    } finally { driver.close(); }
+  });
+
   it("creates project-scoped state and logs databases with migrations", () => {
     const driver = openStateDatabases({ cwd });
     try {

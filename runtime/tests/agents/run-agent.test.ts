@@ -29,7 +29,9 @@ import { authorizeChildExecutionPlan, createChildExecutionPlan } from "./cross-p
 import type { AgentThread } from "./thread.js";
 import { buildToolRegistry as buildProductionToolRegistry } from "../../src/tool-registry.js";
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
-import { childApprovalRevocationSignal, isApprovalSessionOwnedBy, observeChildApprovalSessions } from "../../src/agents/child-approval-context.js";
+import { childApprovalRevocationSignal, isApprovalSessionOwnedBy, observeChildApprovalSessions, registerChildApprovalSession } from "../../src/agents/child-approval-context.js";
+import { childTerminalOutcome } from "../../src/agents/child-terminal.js";
+import { validateCanonicalJournalText } from "../../src/state/recovery-journal-contract.js";
 import { AgentRegistry } from "./registry.js";
 import { createMultiAgentV2Tools } from "./v2/index.js";
 import { createSpawnAgentTool } from "./v2/spawn.js";
@@ -3464,7 +3466,9 @@ describe("runAgent", () => {
   }) {
     const cwd = mkdtempSync(join(tmpdir(), `agenc-${options.label}-`));
     const configStore = new ConfigStore({ cwd, base: { model_provider: "grok", model: "grok-4.6",
-      agents: { cross_provider_enabled: true, allowed_providers: [options.provider, "openrouter"] } } });
+      // These cases approve through the prompt, so they opt into per-spawn consent.
+      agents: { cross_provider_enabled: true, allowed_providers: [options.provider, "openrouter"],
+        cross_provider_ask_each_spawn: true } } });
     const session = makeStubSession({ conversationId: `${options.label}-root`, services: { configStore },
       sessionConfiguration: mkSessionConfiguration({ cwd }), config: { ...mkConfig(), cwd } });
     const parentRollout = new RolloutStore({ cwd, sessionId: session.conversationId,
@@ -3566,6 +3570,136 @@ describe("runAgent", () => {
     expect(notices).toHaveLength(1);
     expect(live.status.value).toMatchObject({ status: "errored",
       terminal: { reason: "insufficient_funds", retryable: false } });
+  });
+
+  /**
+   * A root conversation with a real rollout whose settings are the
+   * cross-provider consent (no per-spawn opt-in). `restart` shuts it down and
+   * restores it from its rollout under a new broker, as a daemon restart does.
+   */
+  function settingsConsentConversation(label: string) {
+    const cwd = mkdtempSync(join(tmpdir(), `agenc-${label}-`));
+    const configStore = new ConfigStore({ cwd, base: { model_provider: "grok", model: "grok-4.6",
+      agents: { cross_provider_enabled: true, allowed_providers: ["deepseek", "openrouter"] } } });
+    const sessionId = `${label}-root`;
+    const open = (resume: boolean) => {
+      const session = makeStubSession({ conversationId: sessionId, services: { configStore },
+        sessionConfiguration: mkSessionConfiguration({ cwd }), config: { ...mkConfig(), cwd } });
+      const rollout = new RolloutStore({ cwd, sessionId, agencVersion: "0.2.0",
+        sessionTempRoot: tmpdir(), ...(resume ? { resume: true } : {}) });
+      rollout.open({ sessionId, timestamp: new Date().toISOString(), cwd, originator: `${label}-test`,
+        agencVersion: "0.2.0", model: session.modelInfo.slug, modelProvider: "grok" });
+      session.mountRolloutStore(rollout);
+      // Bootstrap seeds a resumed session's event log from its rollout.
+      session.eventLog.seedCanonicalHistory(rollout.readAll().flatMap((item) =>
+        item.type === "event_msg" ? [item.payload] : []));
+      Object.assign(session, { activeTurn: { unsafePeek: () => ({ turnId: "human-turn",
+        rootHumanTurn: { turnId: "human-turn" } }) },
+        currentRootHumanTurn: () => ({ turnId: "human-turn" }) });
+      const broker = new LiveApprovalBroker({ canAnswerCrossProviderConsent: () => true });
+      return { session, broker, unregister: broker.register(session, { isActive: () => true }) };
+    };
+    let current = open(false);
+    const childPlan = (session: Session, taskId: string) => createChildExecutionPlan({
+      session: { conversationId: session.conversationId, sessionConfiguration: session.sessionConfiguration,
+        services: session.services, config: session.config, modelInfo: session.modelInfo,
+        providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }) } } as Session,
+      selection: { provider: "deepseek", model: "deepseek-v4-pro" },
+      modelInfo: { ...mkModelInfo(), slug: "deepseek-v4-pro", provider: "deepseek" },
+      parentPath: "/root", taskId, taskName: "worker", taskText: "build parser",
+      toolFree: false, forkedHistory: false,
+    });
+    return {
+      configStore, cwd, childPlan,
+      get session() { return current.session; },
+      get broker() { return current.broker; },
+      restart: async () => {
+        current.unregister();
+        await current.session.shutdown();
+        current = open(true);
+      },
+      /** Requests consent, expects a question, and denies it. */
+      denyNextQuestion: async (proposed: Awaited<ReturnType<typeof createChildExecutionPlan>>) => {
+        const { session, broker } = current;
+        const pending = authorizeChildExecutionPlan(session, proposed);
+        await vi.waitFor(() => expect(broker.list(session.conversationId)).toHaveLength(1));
+        broker.resolve(session.conversationId, broker.list(session.conversationId)[0]!.requestId,
+          { kind: "denied" }, { approvalKind: "cross_provider_spawn" });
+        return (await pending).kind;
+      },
+      dispose: async () => {
+        current.unregister();
+        await current.session.shutdown();
+        rmSync(cwd, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it("ends settings consent at a funds stop without the per-spawn opt-in, also after a daemon restart", async () => {
+    const conversation = settingsConsentConversation("settings-funds");
+    try {
+      const session = conversation.session;
+      const { live } = await spawnLive(session);
+      const proposed = await conversation.childPlan(session, "settings-funds");
+      // Settings are the consent: the spawn runs without a question.
+      const granted = await authorizeChildExecutionPlan(session, proposed);
+      if (granted.kind !== "granted") throw new Error(granted.reason);
+      expect(conversation.broker.list(session.conversationId)).toHaveLength(0);
+      vi.spyOn(session.providerService, "prepareChild").mockRejectedValue(new LLMFundsError("deepseek", 402));
+      const notices: unknown[] = [];
+      session.eventLog.subscribe((event) => {
+        if (event.msg.type === "subagent_funds_notice") notices.push(event.msg.payload);
+      });
+      const { result } = await collectRun(runAgent({ live, parent: session, plan: granted.plan,
+        taskPrompt: "build parser", taskId: "settings-funds", onTerminalFundsStop: vi.fn(async () => {}),
+        initialMessages: [{ role: "user", content: "build parser" }] }));
+      expect(result.outcome).toBe("errored");
+      expect(notices).toHaveLength(1);
+      const other = { ...proposed,
+        route: { provider: "openrouter", model: "openai/gpt-5" },
+        destination: { ...proposed.destination, provider: "openrouter", model: "openai/gpt-5",
+          endpoint: "https://openrouter.ai/api/v1" },
+        task: { ...proposed.task, id: "after-stop", text: "other work" },
+      };
+      expect(await conversation.denyNextQuestion(other)).toBe("consent_denied");
+      await conversation.restart();
+      expect(await conversation.denyNextQuestion({ ...other,
+        task: { ...other.task, id: "after-restart" } })).toBe("consent_denied");
+    } finally {
+      await conversation.dispose();
+    }
+  });
+
+  it("journals a nested child's funds stop with the root owner, in a valid journal read back after a restart", async () => {
+    const conversation = settingsConsentConversation("nested-funds");
+    const root = conversation.session;
+    const child = makeStubSession({ conversationId: "nested-funds-child",
+      services: { configStore: conversation.configStore },
+      sessionConfiguration: mkSessionConfiguration({ cwd: conversation.cwd }),
+      config: { ...mkConfig(), cwd: conversation.cwd } });
+    try {
+      registerChildApprovalSession(child, root);
+      const notice = {
+        agentPath: "/root/worker/researcher", taskId: "grandchild-task", taskText: "research the parser",
+        terminal: childTerminalOutcome({ provider: "deepseek", model: "deepseek-v4-pro",
+          reason: "insufficient_funds", dispatch: "sent", unfinishedWork: "research the parser" }),
+        message: "deepseek/deepseek-v4-pro ran out of credits. The child stopped; ask before switching providers.",
+      };
+      // run-agent emits a grandchild's notice on its parent, this child.
+      child.emit({ id: child.nextInternalSubId(), msg: { type: "subagent_funds_notice", payload: notice } },
+        { durable: true });
+      const rolloutPath = root.rolloutStore!.rolloutPath;
+      expect(root.rolloutStore!.readAll().flatMap((item) =>
+        item.type === "event_msg" && item.payload.msg.type === "subagent_funds_notice"
+          ? [item.payload.msg.payload] : [])).toEqual([notice]);
+      await conversation.restart();
+      expect(() => validateCanonicalJournalText(readFileSync(rolloutPath, "utf8"))).not.toThrow();
+      const proposed = await conversation.childPlan(conversation.session, "after-nested-stop");
+      expect(await conversation.denyNextQuestion(proposed)).toBe("consent_denied");
+    } finally {
+      await child.shutdown();
+      await conversation.dispose();
+    }
   });
 
   it("keeps parallel funds and completed child receipts distinct", async () => {

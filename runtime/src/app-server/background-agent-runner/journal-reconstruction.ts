@@ -129,13 +129,32 @@ function findPersistedMessageSubmission(
     ) {
       return match;
     }
-    if (event.msg.type === "turn_started" && match.turnId === undefined) {
-      match = { ...match, turnId: event.msg.payload.turnId };
+    if (event.msg.type === "turn_started") {
+      if (match.turnId === undefined) {
+        match = { ...match, turnId: event.msg.payload.turnId };
+      } else if (
+        event.msg.payload.turnId === match.turnId &&
+        match.terminal?.code === 130 &&
+        match.terminal.message === "daemon_shutdown"
+      ) {
+        // The daemon resumed the same logical turn. Its shutdown abort is no
+        // longer the submission's outcome; wait for the continuation's end.
+        match = { ...match, terminal: undefined };
+      }
       continue;
     }
     if (match.turnId === undefined) continue;
     const terminal = messageTerminalFromEvent(event.msg, match.turnId);
     if (terminal !== undefined) {
+      if (
+        event.msg.type === "turn_aborted" &&
+        event.msg.payload.reason === "daemon_shutdown"
+      ) {
+        // A shutdown abort remains the outcome only if no continuation of
+        // this turn appears before the next submission boundary.
+        match = { ...match, terminal };
+        continue;
+      }
       return { ...match, terminal };
     }
   }
@@ -254,6 +273,9 @@ function transcriptNoticesFromRollout(
     if (index <= boundaryIndex) continue;
     if (event.msg.type === "turn_started") {
       currentTurnId = event.msg.payload.turnId;
+      // Checkpoint continuation reopens the same turn id after the shutdown
+      // interruption. Its later terminal is a distinct durable notice.
+      closedTurnIds.delete(currentTurnId);
       continue;
     }
     if (event.msg.type === "tool_call_started") {

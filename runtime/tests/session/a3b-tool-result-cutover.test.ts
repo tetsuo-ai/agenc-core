@@ -464,7 +464,7 @@ describe("A3b raw checkpoint validation", () => {
     });
     const successSession = {
       config: durableResumeConfig(),
-      rolloutStore: { rolloutPath: successPath },
+      rolloutStore: { rolloutPath: successPath, rootHasOnlyTerminalDescendants: () => true },
       services: { registry: { tools: [] } },
       runTurn: successRunTurn,
     } as unknown as Session;
@@ -482,7 +482,7 @@ describe("A3b raw checkpoint validation", () => {
     const failureRunTurn = vi.fn();
     const failureSession = {
       config: durableResumeConfig(),
-      rolloutStore: { rolloutPath: failurePath },
+      rolloutStore: { rolloutPath: failurePath, rootHasOnlyTerminalDescendants: () => true },
       pendingProviderSwitch: null,
       providerBinding: { provider: "grok", model: "grok-4.5" },
       prepareProviderSwitch: vi
@@ -517,7 +517,7 @@ describe("A3b raw checkpoint validation", () => {
     const thrownTurnId = "lease-thrown-turn";
     const thrownSession = {
       config: durableResumeConfig(),
-      rolloutStore: { rolloutPath: thrownPath },
+      rolloutStore: { rolloutPath: thrownPath, rootHasOnlyTerminalDescendants: () => true },
       services: { registry: { tools: [] } },
       runTurn: vi.fn(async function* () {
         throw new Error("resumed turn failed");

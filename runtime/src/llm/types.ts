@@ -102,6 +102,8 @@ export interface LLMMessage {
    * provider serialization. This must be stripped before adapter payloads.
    */
   runtimeOnly?: {
+    /** Durable response-item identity retained across compaction replay. */
+    readonly responseItemId?: string;
     readonly mergeBoundary?: "user_context";
     readonly permissionModeReminder?: "plan" | "plan_exit" | "auto" | "auto_exit";
     readonly excludeFromDurableHistory?: true;
