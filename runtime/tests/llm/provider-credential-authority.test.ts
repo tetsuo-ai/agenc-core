@@ -807,10 +807,13 @@ describe("provider credential authority", () => {
       provider: "grok", factoryOptions: readProviderFactoryOptions(apiKeyProvider),
     }).serviceTiers?.map((tier) => tier.id)).toEqual(["priority"]);
 
-    xaiCredentials.saveXaiOauthCredentials(home, {
+    // A home of its own, so no read made for the API-key provider can stand
+    // in front of the sign-in saved here.
+    const signedInHome = await createHome("grok-priority-route-signed-in");
+    expect(xaiCredentials.saveXaiOauthCredentials(signedInHome, {
       accessToken: "xai-oauth", expiresAt: Date.now() + 6 * 60 * 60 * 1000,
-    });
-    const signedIn = createProvider("grok", { credentialHome: home, model: "grok-4.7" });
+    })).toMatchObject({ success: true });
+    const signedIn = createProvider("grok", { credentialHome: signedInHome, model: "grok-4.7" });
     expect(readProviderFactoryOptions(signedIn).extra?.authMode).toBe("oauth");
     expect(await sentTier(signedIn)).toBeUndefined();
     expect(withoutXaiSignInFastTier(fastInfo, {
