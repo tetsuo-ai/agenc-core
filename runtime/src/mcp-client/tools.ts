@@ -72,6 +72,7 @@ import {
   MAX_MCP_LIST_PAGES,
 } from "./list-pagination.js";
 import { normalizeMcpToolOutput } from "./tool-output.js";
+import { isMcpConnectionError, markMcpConnectionFailure } from "./connection-errors.js";
 import {
   sanitizeMcpOutputText,
   truncateMcpUtf8,
@@ -80,6 +81,7 @@ import {
   buildModelFacingMcpToolDescription,
   sanitizeMcpInputSchemaForModel,
 } from "./model-facing-sanitization.js";
+
 
 /**
  * Policy knobs forwarded from server config to the bridge. `allowedTools`
@@ -897,14 +899,12 @@ function trustedCallIdFromArgs(
     : undefined;
 }
 
-function renderMcpProgress(raw: unknown): string | undefined {
+function renderMcpProgress(raw: unknown, sensitiveHeaders?: Readonly<Record<string, string>>): string | undefined {
   const record = asRecord(raw);
   if (!record) return undefined;
   const parts: string[] = [];
   if (typeof record.message === "string") {
-    parts.push(
-      sanitizeMcpOutputText(truncateMcpUtf8(record.message, 896)),
-    );
+    parts.push(sanitizeMcpOutputText(truncateMcpUtf8(redactMcpAttachmentText(record.message, sensitiveHeaders), 896)));
   }
   if (typeof record.progress === "number" && Number.isFinite(record.progress)) {
     const progress = String(record.progress);
@@ -914,7 +914,7 @@ function renderMcpProgress(raw: unknown): string | undefined {
     parts.push(`progress ${progress}${total}`);
   }
   if (parts.length === 0) return undefined;
-  return truncateMcpUtf8(parts.join(" — "), 1_024);
+  return parts.join(" — ");
 }
 
 function forwardMcpProgress(
@@ -922,9 +922,11 @@ function forwardMcpProgress(
   callback: MCPProgressCallback | undefined,
   logger: Logger,
   toolName: string,
+  sensitiveHeaders?: Readonly<Record<string, string>>,
 ): void {
   if (callback === undefined) return;
-  const chunk = renderMcpProgress(raw);
+  const rendered = renderMcpProgress(raw, sensitiveHeaders);
+  const chunk = rendered === undefined ? undefined : truncateMcpUtf8(sanitizeMcpOutputText(redactMcpAttachmentText(rendered, sensitiveHeaders)), 1_024);
   if (chunk === undefined || chunk.length === 0) return;
   try {
     callback({ chunk, stream: "status" });
@@ -1172,10 +1174,11 @@ export async function createToolBridge(
                     ? {
                         onprogress: (progress: unknown) => {
                           forwardMcpProgress(
-                            redactMcpAttachmentValue(progress, options.serverConfig?.sensitiveHeaders),
+                            progress,
                             progressCallback,
                             logger,
                             mcpTool.name,
+                            options.serverConfig?.sensitiveHeaders,
                           );
                         },
                       }
@@ -1246,10 +1249,12 @@ export async function createToolBridge(
           });
           if (error instanceof DesktopMcpPreflightRefusal) return preEffectRefusal(namespacedName, errMessage);
           effectSignal?.throwIfAborted();
-          return {
+          const failure: ToolResult = {
             content: errMessage,
             isError: true,
           };
+          markMcpConnectionFailure(failure, isMcpConnectionError(rawErrorMessage));
+          return failure;
         }
       },
     };

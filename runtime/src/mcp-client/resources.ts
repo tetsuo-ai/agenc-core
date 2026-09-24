@@ -158,15 +158,19 @@ export async function createResourceBridge(
   let disposed = false;
   const rawUriByPublicUri = new Map<string, string>();
   const publicUriByRawUri = new Map<string, string>();
+  const issuedAliases = new Set<string>();
   const redact = <T>(value: T): T => redactMcpAttachmentValue(value, opts.sensitiveHeaders, undefined, "resource");
+  const redactIssued = <T>(value: T): T => redactMcpAttachmentValue(value, opts.sensitiveHeaders, undefined, "resource", "payload", issuedAliases);
   const publicUriForRaw = (raw: string): string => {
     const existing = publicUriByRawUri.get(raw);
     if (existing !== undefined) return existing;
     const redacted = redactMcpAttachmentText(raw, opts.sensitiveHeaders, "uri");
-    let publicUri = redacted === raw ? raw : `agenc-redacted-resource:${createHash("sha256").update(raw).digest("hex")}`;
+    let generated = redacted !== raw;
+    let publicUri = generated ? `agenc-redacted-resource:${createHash("sha256").update(raw).digest("hex")}` : raw;
     if (!fitsUtf8(publicUri, MAX_RESOURCE_URI_BYTES) ||
         (rawUriByPublicUri.has(publicUri) && rawUriByPublicUri.get(publicUri) !== raw)) {
       publicUri = `agenc-redacted-resource:${createHash("sha256").update(raw).digest("hex")}`;
+      generated = true;
     }
     if (rawUriByPublicUri.size >= 2 * MAX_RESOURCE_DESCRIPTORS) {
       const oldest = rawUriByPublicUri.keys().next().value;
@@ -174,10 +178,12 @@ export async function createResourceBridge(
         const oldRaw = rawUriByPublicUri.get(oldest)!;
         rawUriByPublicUri.delete(oldest);
         publicUriByRawUri.delete(oldRaw);
+        issuedAliases.delete(oldest);
       }
     }
     rawUriByPublicUri.set(publicUri, raw);
     publicUriByRawUri.set(raw, publicUri);
+    if (generated) issuedAliases.add(publicUri);
     return publicUri;
   };
 
@@ -273,8 +279,8 @@ export async function createResourceBridge(
             ),
           signal,
         );
-        return redact(normalizeResourceContents(response, rawUriByPublicUri.get(uri) ?? uri, logger,
-          (text, position) => redactMcpAttachmentText(text, opts.sensitiveHeaders, position), publicUriForRaw,
+        return redactIssued(normalizeResourceContents(response, rawUriByPublicUri.get(uri) ?? uri, logger,
+          (text, position) => redactMcpAttachmentText(text, opts.sensitiveHeaders, position, issuedAliases), publicUriForRaw,
           blob => binaryContainsSecret(blob, opts.sensitiveHeaders)));
       } catch (error) {
         throw redact(error);
@@ -284,6 +290,7 @@ export async function createResourceBridge(
       disposed = true;
       rawUriByPublicUri.clear();
       publicUriByRawUri.clear();
+      issuedAliases.clear();
     },
   };
 }

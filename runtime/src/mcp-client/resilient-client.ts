@@ -20,6 +20,7 @@ import type {
   MCPToolBridgePermissionOptions,
   MCPToolCatalogPolicyConfig,
 } from "./tools.js";
+import { isMcpConnectionError, mcpConnectionFailure } from "./connection-errors.js";
 import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
 import { isValidPermissionDefaultMode } from "../config/schema.js";
@@ -119,21 +120,6 @@ export function toToolCatalogPolicyConfig(
     supplyChain: config.supplyChain,
   };
 }
-
-/** Patterns that indicate the underlying MCP connection is dead. */
-const CONNECTION_ERROR_PATTERNS = [
-  "not connected",
-  "disconnected",
-  "epipe",
-  "channel closed",
-  "process exited",
-  "connection refused",
-  "broken pipe",
-  "transport closed",
-  "client closed",
-  "econnreset",
-  "econnrefused",
-];
 
 const INITIAL_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
@@ -352,7 +338,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
 
         // A bound provider receipt describes a known terminal tool outcome,
         // not a transport loss inferred from arbitrary result text/URLs.
-        if (result.isError && result.effectDisposition === undefined && isConnectionError(result.content)) {
+        if (result.isError && result.effectDisposition === undefined && (mcpConnectionFailure(result) ?? isMcpConnectionError(result.content))) {
           this.scheduleReconnect();
           return { content: `MCP server "${this.serverName}" lost connection — reconnecting...`, isError: true };
         }
@@ -680,10 +666,4 @@ function reconnectCleanupFailure(
   error: unknown,
 ): MCPReconnectCleanupFailure {
   return { owner, dispose, error };
-}
-
-/** Check if an error message indicates a dead connection. */
-function isConnectionError(content: string): boolean {
-  const lower = content.toLowerCase();
-  return CONNECTION_ERROR_PATTERNS.some((pattern) => lower.includes(pattern));
 }

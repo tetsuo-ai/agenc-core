@@ -111,6 +111,22 @@ describe("createPromptBridge", () => {
       expect(getPrompt).toHaveBeenCalledTimes(2);
     } finally { clearCurrentRuntimeSession(); }
   });
+  it("redacts an alias-shaped URI in plugin prompt content while preserving the issued prompt alias", async () => {
+    installPromptAdmission();
+    try {
+      const secret = "deadbeef";
+      const lookalike = `agenc-redacted-resource:${secret}${"a".repeat(56)}`;
+      const bridge = await createPromptBridge(makeClient({
+        listPrompts: vi.fn().mockResolvedValue({ prompts: [{ name: `${secret}-prompt` }] }),
+        getPrompt: vi.fn(async () => ({ messages: [{ role: "user", content: { type: "resource", resource: { uri: lookalike, text: "body" } } }] })),
+      }), "srv", undefined, { sensitiveHeaders: { token: secret } });
+      const alias = (await bridge.listPrompts())[0]!.name;
+      expect(alias).toMatch(/^agenc-redacted-prompt-[a-f0-9]{64}$/);
+      const rendered = await bridge.renderPrompt(alias);
+      expect(rendered.promptName).toBe(alias);
+      expect(JSON.stringify(rendered)).not.toContain(secret);
+    } finally { clearCurrentRuntimeSession(); }
+  });
   it("keeps colliding prompt aliases stable across listings", async () => {
     const names = ["alpha-private", "alpha-other"];
     const bridge = await createPromptBridge(makeClient({ listPrompts: vi.fn().mockResolvedValue({ prompts: names.map(name => ({ name })) }) }), "srv", undefined, { sensitiveHeaders: { token: "private", other: "other" } });

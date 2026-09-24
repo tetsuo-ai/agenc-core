@@ -60,12 +60,33 @@ describe("display attachments and saved plugin secrets", () => {
   it.each([
     ["a chart series name", resource("application/vnd.agenc.chart+json", { ...chart, series: [{ ...chart.series[0], name: `Close ${secret}` }] })],
     ["a table cell", resource("application/vnd.agenc.table+json", { ...table, rows: [{ symbol: secret }] })],
-    ["an embedded file", { type: "resource", annotations: user, resource: { uri: "agenc:test", name: "notes.txt", mimeType: "text/plain", blob: Buffer.from(`token=${secret}`).toString("base64") } }],
-  ])("does not show or store an attachment when %s holds a saved secret", async (_where, block) => {
+  ])("redacts %s while retaining a valid display attachment", async (_where, block) => {
     const result = await normalizeWithSecret([block]);
-    expect(attachments(result)).toBeUndefined();
-    expect(result.content).toContain("[Display attachment could not be shown: contained a saved secret]");
+    expect(attachments(result)).toHaveLength(1);
+    expect(JSON.stringify(attachments(result))).toContain("[REDACTED]");
     expect(JSON.stringify(result)).not.toContain("s3cret-");
+  });
+  it("omits an embedded file containing a saved secret", async () => {
+    const result = await normalizeWithSecret([{ type: "resource", annotations: user, resource: { uri: "agenc:test", name: "notes.txt", mimeType: "text/plain", blob: Buffer.from(`token=${secret}`).toString("base64") } }]);
+    expect(attachments(result)).toBeUndefined();
+    expect(result.content).toContain("contained a saved secret");
+  });
+  it.each(["title", "rows", "line", "price"])("keeps display schema and Core defaults when the saved secret is %s", async value => {
+    const headers = { token: value };
+    const chartInput = value === "title" ? { ...chart, title: value } : chart;
+    const tableInput = value === "line" ? { ...table, columns: [{ key: "type", label: "Type" }], rows: [{ type: value }] }
+      : value === "rows" ? { ...table, rows: [{ symbol: value }] }
+      : value === "title" ? { ...table, title: value } : table;
+    const content = [resource("application/vnd.agenc.chart+json", chartInput), resource("application/vnd.agenc.table+json", tableInput)];
+    const raw = redactMcpAttachmentValue({ content }, headers, undefined, "tool-result");
+    const result = await normalizeMcpToolOutput({ raw, serverName: "plugin:demo:show", toolName: "show", callId: `call-${value}`, environment: {}, logger, sensitiveHeaders: headers });
+    expect(attachments(result)?.map(item => item.kind)).toEqual(["chart", "table"]);
+    expect(result.content).not.toContain("could not be shown");
+    expect((attachments(result)?.[0]?.data as typeof chart).series[0]?.type).toBe("line");
+    expect((attachments(result)?.[0]?.data as typeof chart).series[0]?.scale).toBe("price");
+    if (value === "line") expect((attachments(result)?.[1]?.data as typeof tableInput).rows[0]?.type).toBe("[REDACTED]");
+    if (value === "rows") expect((attachments(result)?.[1]?.data as typeof table).rows[0]?.symbol).toBe("[REDACTED]");
+    if (value === "title") expect(attachments(result)?.map(item => item.title)).toEqual(["[REDACTED]", "[REDACTED]"]);
   });
   it.each([
     ["an embedded file", { type: "resource", annotations: user, resource: { uri: "agenc:test", name: "notes.txt", mimeType: "text/plain", blob: Buffer.from(`notes ${secret}`).toString("base64") } }],

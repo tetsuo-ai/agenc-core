@@ -100,7 +100,7 @@ export function sessionMcpAttachmentIssue(config: {
 
 export type McpTextPosition = "payload" | "mime" | "uri" | "prompt-alias" | "content-type" | "role" | "audience" | "encoding";
 
-export function redactMcpAttachmentText(text: string, headers?: Readonly<Record<string, string>>, position: McpTextPosition = "payload"): string {
+export function redactMcpAttachmentText(text: string, headers?: Readonly<Record<string, string>>, position: McpTextPosition = "payload", issuedAliases?: ReadonlySet<string>): string {
   const secrets = attachmentSecrets(headers);
   const redact = (value: string) => redactLiteralSecrets(value, secrets);
   if (position === "mime") {
@@ -114,11 +114,11 @@ export function redactMcpAttachmentText(text: string, headers?: Readonly<Record<
   if (position === "uri") {
     // A generated alias is an opaque Core identity, while a file URI's path
     // can still contain a saved secret.
-    if (/^agenc-redacted-resource:[a-f0-9]{64}$/u.test(text)) return text;
+    if (issuedAliases?.has(text)) return text;
     const scheme = /^([A-Za-z][A-Za-z0-9+.-]*:)([\s\S]*)$/u.exec(text);
     if (scheme?.[1]?.toLowerCase() === "file:") return scheme[1] + redact(scheme[2] ?? "");
   }
-  if (position === "prompt-alias" && /^agenc-redacted-prompt-[a-f0-9]{64}$/u.test(text)) return text;
+  if (position === "prompt-alias" && issuedAliases?.has(text)) return text;
   // Only known wire markers are structure; a matching word in payload text
   // still goes through literal redaction.
   if (position === "content-type" && CONTENT_TYPES.has(text) ||
@@ -134,6 +134,46 @@ const ENCODING_MARKERS = new Set(["base64", "utf8", "utf-8", "binary", "text"]);
 function attachmentSecrets(headers?: Readonly<Record<string, string>>): string[] {
   return [...new Set(Object.values(headers ?? {}).flatMap(value => [value, value.replace(/^Bearer\s+/i, "")]))]
     .filter(secret => secret.length >= 4);
+}
+
+const DISPLAY_MIMES = new Set(["application/vnd.agenc.chart+json", "application/vnd.agenc.table+json"]);
+const DISPLAY_SCHEMA_KEYS = new Set([
+  "version", "kind", "title", "subtitle", "currency", "series", "markers", "categories", "slices",
+  "name", "scale", "precision", "type", "data", "time", "value", "open", "high", "low", "close",
+  "text", "values", "x", "y", "label", "columns", "rows", "key", "format",
+]);
+/** Parse display JSON while its schema is still intact; redact plugin payload leaves. */
+function redactDisplayJsonText(text: string, mimeType: string, headers: Readonly<Record<string, string>>): string {
+  const displayMime = mimeType.toLowerCase();
+  if (!DISPLAY_MIMES.has(displayMime) || Buffer.byteLength(text, "utf8") > 512 * 1024) {
+    return redactMcpAttachmentText(text, headers);
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { return redactMcpAttachmentText(text, headers); }
+  const chart = displayMime === "application/vnd.agenc.chart+json";
+  const walk = (value: unknown, path: readonly string[] = []): unknown => {
+    if (path.length > 64) return redactMcpAttachmentText(JSON.stringify(value), headers);
+    if (typeof value === "string") {
+      const field = path.at(-1);
+      const chartEnum = chart && (path.length === 1 && (field === "kind" || field === "currency") ||
+        path.length === 3 && path[0] === "series" && path[1] === "*" && (field === "type" || field === "scale"));
+      const columnIdentifier = !chart && path.length === 3 && path[0] === "columns" && path[1] === "*" && field === "key";
+      if (chartEnum || columnIdentifier) return value;
+      return redactMcpAttachmentText(value, headers);
+    }
+    if (Array.isArray(value)) return value.map(item => walk(item, [...path, "*"]));
+    if (typeof value === "number" || typeof value === "boolean") return redactMcpAttachmentValue(value, headers);
+    if (value === null || typeof value !== "object") return value;
+    const output: Record<string, unknown> = Object.create(null);
+    for (const [childKey, child] of Object.entries(value)) {
+      const rowIdentifier = !chart && path.length === 2 && path[0] === "rows" && path[1] === "*";
+      const safeKey = rowIdentifier || DISPLAY_SCHEMA_KEYS.has(childKey)
+        ? childKey : redactMcpAttachmentText(childKey, headers);
+      output[safeKey] = walk(child, [...path, childKey]);
+    }
+    return output;
+  };
+  return JSON.stringify(walk(parsed));
 }
 
 /**
@@ -152,13 +192,14 @@ function redactedDataKey(
   shape: McpRedactionShape,
   headers: Readonly<Record<string, string>>,
   used: Set<string>,
+  issuedAliases?: ReadonlySet<string>,
 ): string {
   // Only runtime data holds dynamic keys. Keys of protocol-shaped objects
   // (prompt, content, resource, schema) are structure and are never renamed,
   // even when a saved secret happens to equal one of them.
   const dataKey = shape === "data" ||
     shape === "tool-result" && !["content", "structuredContent", "_meta", "isError"].includes(key);
-  const base = dataKey ? redactMcpAttachmentText(key, headers) : key;
+  const base = dataKey ? redactMcpAttachmentText(key, headers, "payload", issuedAliases) : key;
   let result = base;
   for (let number = 2; used.has(result); number += 1) result = `${base}#${number}`;
   used.add(result);
@@ -171,9 +212,10 @@ export function redactMcpAttachmentValue<T>(
   seen = new WeakMap<object, unknown>(),
   shape: McpRedactionShape = "data",
   position: McpTextPosition = "payload",
+  issuedAliases?: ReadonlySet<string>,
 ): T {
   if (!headers) return value;
-  if (typeof value === "string") return redactMcpAttachmentText(value, headers, position) as T;
+  if (typeof value === "string") return redactMcpAttachmentText(value, headers, position, issuedAliases) as T;
   if (typeof value === "number" || typeof value === "boolean") {
     const literal = String(value);
     return Object.values(headers).some(secret => secret.length >= 4 && (secret === literal || secret.replace(/^Bearer\s+/i, "") === literal))
@@ -190,9 +232,9 @@ export function redactMcpAttachmentValue<T>(
         seen.set(value, omitted);
         const used = new Set<string>(["omitted"]);
         for (const [key, item] of Object.entries(block)) {
-          Object.defineProperty(omitted, redactedDataKey(key, shape, headers, used), {
+          Object.defineProperty(omitted, redactedDataKey(key, shape, headers, used, issuedAliases), {
             value: key === "data" || key === "blob" ? "" :
-              protocolField(key, shape, item) ? item : redactMcpAttachmentValue(item, headers, seen, childShape(shape, key), fieldPosition(shape, key)),
+              protocolField(key, shape, item) ? item : redactMcpAttachmentValue(item, headers, seen, childShape(shape, key), fieldPosition(shape, key), issuedAliases),
             enumerable: true, configurable: true, writable: true,
           });
         }
@@ -207,8 +249,8 @@ export function redactMcpAttachmentValue<T>(
       seen.set(value, result);
       const used = new Set<string>(["name", "message", "stack", "cause"]);
       for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
-        Object.defineProperty(result, ["name", "message", "stack", "cause"].includes(key) ? key : redactedDataKey(key, shape, headers, used), "value" in descriptor
-          ? { ...descriptor, value: protocolField(key, shape, descriptor.value) ? descriptor.value : redactMcpAttachmentValue(descriptor.value, headers, seen, childShape(shape, key), fieldPosition(shape, key)) }
+        Object.defineProperty(result, ["name", "message", "stack", "cause"].includes(key) ? key : redactedDataKey(key, shape, headers, used, issuedAliases), "value" in descriptor
+          ? { ...descriptor, value: protocolField(key, shape, descriptor.value) ? descriptor.value : redactMcpAttachmentValue(descriptor.value, headers, seen, childShape(shape, key), fieldPosition(shape, key), issuedAliases) }
           : descriptor);
       }
       return result as T;
@@ -216,8 +258,10 @@ export function redactMcpAttachmentValue<T>(
     const result: Record<string, unknown> | unknown[] = Array.isArray(value) ? [] : {};
     seen.set(value, result);
     const used = new Set<string>();
-    for (const [key, item] of Object.entries(value)) Object.defineProperty(result, Array.isArray(value) ? key : redactedDataKey(key, shape, headers, used), {
-      value: protocolField(key, shape, item) ? item : redactMcpAttachmentValue(item, headers, seen, Array.isArray(value) && (shape === "content-block" || shape === "resource") ? shape : childShape(shape, key), Array.isArray(value) ? position : fieldPosition(shape, key)), enumerable: true, configurable: true, writable: true,
+    for (const [key, item] of Object.entries(value)) Object.defineProperty(result, Array.isArray(value) ? key : redactedDataKey(key, shape, headers, used, issuedAliases), {
+      value: shape === "resource" && key === "text" && typeof item === "string" && typeof (value as Record<string, unknown>).mimeType === "string"
+        ? redactDisplayJsonText(item, (value as Record<string, string>).mimeType, headers)
+        : protocolField(key, shape, item) ? item : redactMcpAttachmentValue(item, headers, seen, Array.isArray(value) && (shape === "content-block" || shape === "resource") ? shape : childShape(shape, key), Array.isArray(value) ? position : fieldPosition(shape, key), issuedAliases), enumerable: true, configurable: true, writable: true,
     });
     return result as T;
   }

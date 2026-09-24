@@ -54,7 +54,7 @@ test('plugin outputs pass through the real bridge redactor before normalization 
 
 test('automatic reconnect retains plugin output redaction in the rebuilt real bridge', async () => {
   vi.useFakeTimers()
-  const secret = 'reconnect-private-phrase'
+  const secret = 'connected'
   const observer = { onBegin: vi.fn(), onEnd: vi.fn() }
   const progress = vi.fn()
   vi.mocked(createMCPConnection)
@@ -67,7 +67,9 @@ test('automatic reconnect retains plugin output redaction in the rebuilt real br
   manager.setCallObserver(observer)
   try {
     await manager.start()
-    await manager.getTools()[0]!.execute({})
+    const first = await manager.getTools()[0]!.execute({})
+    expect(first.content).toContain('reconnecting')
+    expect(first.content).not.toContain(secret)
     await vi.advanceTimersByTimeAsync(1_000)
     const tool = manager.getTools()[0]!
     expect(tool.description).toContain('1 info')
@@ -80,6 +82,25 @@ test('automatic reconnect retains plugin output redaction in the rebuilt real br
     expect(JSON.stringify(progress.mock.calls)).toContain('1 info')
     expect(JSON.stringify(progress.mock.calls)).not.toContain(secret)
     expect(JSON.stringify(observer.onEnd.mock.calls)).not.toContain(secret)
+  } finally { await manager.stop() }
+})
+
+test.each(['message', 'progress'])('progress notification still renders when %s is a saved secret', async secret => {
+  const progress = vi.fn()
+  vi.mocked(createMCPConnection).mockResolvedValue(client(secret, async options => {
+    options?.onprogress?.({ message: 'Working', progress: 2, total: 5 })
+    return { content: [{ type: 'text', text: 'done' }] }
+  }) as never)
+  const manager = new MCPManager([{ name: `plugin:demo:${secret}`, command: 'node', origin: { scope: 'plugin' }, pluginSecretValues: [secret] }])
+  try {
+    await manager.start()
+    const args: Record<string, unknown> = {}
+    Object.defineProperty(args, '__onProgress', { value: progress })
+    await manager.getTools()[0]!.execute(args)
+    expect(progress).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(progress.mock.calls)).toContain('Working')
+    expect(JSON.stringify(progress.mock.calls)).toContain('2/5')
+    expect(JSON.stringify(progress.mock.calls)).not.toContain(secret)
   } finally { await manager.stop() }
 })
 

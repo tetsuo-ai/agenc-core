@@ -20,6 +20,7 @@ import {
 import type { Logger } from "./_deps/logger.js";
 import type { ToolResult } from "./_deps/tools-types.js";
 import { DISPLAY_ATTACHMENT_LIMIT, DISPLAY_BINARY_LIMIT, DISPLAY_WORK_LIMIT, DisplayValidationError, peekDisplayArtifactBytes, releaseDisplayArtifactBytes, validateDisplayBlock, type DisplayAttachment } from "./display-attachments.js";
+import { redactMcpAttachmentValue } from "./local-control.js";
 import {
   consumeMcpSanitizationBudget,
   createMcpSanitizationBudget,
@@ -79,15 +80,12 @@ function containsLiteralSecret(bytes: Buffer, headers?: Readonly<Record<string, 
   return false;
 }
 
-/**
- * A display attachment is stored and shown as is, so everything the plugin
- * supplied is checked: its bytes (a chart or table holds its own title and
- * labels) and its title. Core's caption wording is not plugin output.
- */
+/** Chart/table JSON is redacted structurally before validation. Only binary
+ * attachment bytes and the plugin-supplied title need this separate check. */
 function displayContainsLiteralSecret(attachment: DisplayAttachment, headers?: Readonly<Record<string, string>>): boolean {
   if (headers === undefined) return false;
   const bytes = peekDisplayArtifactBytes(attachment);
-  return (bytes !== undefined && containsLiteralSecret(bytes, headers)) ||
+  return (attachment.kind !== "chart" && attachment.kind !== "table" && bytes !== undefined && containsLiteralSecret(bytes, headers)) ||
     containsLiteralSecret(Buffer.from(attachment.title, "utf8"), headers);
 }
 
@@ -663,13 +661,14 @@ export async function normalizeMcpToolOutput(
           continue;
         }
         try {
+          const safeDisplay = redactMcpAttachmentValue(displayRecord ?? {}, options.sensitiveHeaders, undefined, "content-block");
           // The bridge redacts before normalizing: a block whose bytes held a
           // saved secret arrives emptied and marked omitted. Never show it.
           if (options.sensitiveHeaders !== undefined &&
-              (displayRecord?.omitted === true || asRecord(displayRecord?.resource)?.omitted === true)) {
+              (safeDisplay.omitted === true || asRecord(safeDisplay.resource)?.omitted === true)) {
             throw new DisplayValidationError("contained a saved secret");
           }
-          const shown = await validateDisplayBlock(displayRecord ?? {}, options.displayRoots ?? [], undefined, options.displayDataRoot, displayBudget);
+          const shown = await validateDisplayBlock(safeDisplay, options.displayRoots ?? [], undefined, options.displayDataRoot, displayBudget);
           if (displayContainsLiteralSecret(shown.attachment, options.sensitiveHeaders)) {
             releaseDisplayArtifactBytes(shown.attachment);
             throw new DisplayValidationError("contained a saved secret");

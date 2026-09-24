@@ -67,6 +67,24 @@ describe("createResourceBridge", () => {
     expect((await bridge.readResource(alias)).contents[0]?.uri).toBe(alias);
     expect(readResource).toHaveBeenCalledTimes(2);
   });
+  it("redacts an alias-shaped plugin URI while preserving a bridge-issued alias", async () => {
+    const secret = "deadbeef";
+    const genuine = `file:///${secret}`;
+    const lookalike = `agenc-redacted-resource:${secret}${"a".repeat(56)}`;
+    const readResource = vi.fn(async ({ uri }: { uri: string }) => ({ contents: [{ uri, text: `body ${secret}` }] }));
+    const bridge = await createResourceBridge(makeClient({
+      listResources: vi.fn().mockResolvedValue({ resources: [{ uri: genuine }, { uri: lookalike }] }),
+      readResource,
+    }), "srv", undefined, { sensitiveHeaders: { token: secret } });
+    const listed = await bridge.listResources();
+    expect(listed).toHaveLength(2);
+    expect(listed[0]!.uri).toMatch(/^agenc-redacted-resource:[a-f0-9]{64}$/);
+    expect(JSON.stringify(listed)).not.toContain(secret);
+    expect((await bridge.readResource(listed[0]!.uri)).contents[0]?.uri).toBe(listed[0]!.uri);
+    expect((await bridge.readResource(listed[1]!.uri)).contents[0]?.uri).toBe(listed[1]!.uri);
+    expect(JSON.stringify(await bridge.readResource(listed[1]!.uri))).not.toContain(secret);
+    expect(readResource).toHaveBeenCalledWith({ uri: lookalike }, expect.anything());
+  });
   it("redacts resource text before the entry cap cuts a secret", async () => {
     const secret = "private-phrase";
     const text = "x".repeat(MAX_RESOURCE_ENTRY_BYTES - 8) + secret;

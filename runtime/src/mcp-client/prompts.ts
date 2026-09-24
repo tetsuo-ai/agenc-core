@@ -27,7 +27,7 @@ import {
   MAX_MCP_LIST_PAGES,
   McpListPaginationError,
 } from "./list-pagination.js";
-import { redactMcpAttachmentValue } from "./local-control.js";
+import { redactMcpAttachmentText, redactMcpAttachmentValue } from "./local-control.js";
 
 export const DEFAULT_PROMPT_RPC_TIMEOUT_MS = 30_000;
 
@@ -98,6 +98,7 @@ export async function createPromptBridge(
   const rawNameByPublicName = new Map<string, string>();
   const publicNameByRawName = new Map<string, string>();
   const rawArgumentNamesByPublicPrompt = new Map<string, Map<string, string>>();
+  const issuedAliases = new Set<string>();
   const redact = <T>(value: T): T => redactMcpAttachmentValue(value, opts.sensitiveHeaders, undefined, "prompt");
 
   return {
@@ -139,10 +140,12 @@ export async function createPromptBridge(
                 rawNameByPublicName.delete(oldest);
                 publicNameByRawName.delete(oldRaw);
                 rawArgumentNamesByPublicPrompt.delete(oldest);
+                issuedAliases.delete(oldest);
               }
             }
             rawNameByPublicName.set(publicName, prompt.name);
             publicNameByRawName.set(prompt.name, publicName);
+            if (publicName !== prompt.name) issuedAliases.add(publicName);
           }
           const argumentNames = new Map<string, string>();
           const safeArguments = safe.arguments?.map((argument, index) => {
@@ -211,17 +214,18 @@ export async function createPromptBridge(
               },
             ),
         });
-        const record = asRecord(redact(response));
+        const record = asRecord(response);
         const messages: MCPPromptRenderedMessage[] = arrayField(record, "messages")
           .map(projectPromptMessage)
           .filter((message): message is MCPPromptRenderedMessage => message !== null);
-        return redact({
-          promptName: name,
+        const safePromptName = redactMcpAttachmentText(name, opts.sensitiveHeaders, "prompt-alias", issuedAliases);
+        return {
+          promptName: safePromptName,
           ...(typeof record?.description === "string"
-            ? { description: record.description }
+            ? { description: redactMcpAttachmentText(record.description, opts.sensitiveHeaders) }
             : {}),
-          messages: frameUntrustedMcpPromptMessages(serverName, name, messages),
-        });
+          messages: frameUntrustedMcpPromptMessages(serverName, safePromptName, messages.map(message => redact(message))),
+        };
       } catch (error) {
         throw redact(error);
       }
@@ -231,6 +235,7 @@ export async function createPromptBridge(
       rawNameByPublicName.clear();
       publicNameByRawName.clear();
       rawArgumentNamesByPublicPrompt.clear();
+      issuedAliases.clear();
     },
   };
 }
