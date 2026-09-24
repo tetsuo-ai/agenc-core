@@ -30,35 +30,45 @@ export class ThreadRegistryLock {
     mkdirSync(dirname(this.path), { recursive: true });
     // A second pass only follows the removal of a dead holder's lock.
     for (let pass = 0; pass < 2; pass += 1) {
-      let created: { dev: number; ino: number } | null | undefined;
+      let attempt:
+        | { kind: "existing" }
+        | { kind: "stamp-collision" }
+        | { kind: "acquired"; token: string }
+        | { kind: "stamp-error"; cause: unknown }
+        | undefined;
       try {
-        // Hold the reclamation gate through mkdir and stat so this inode is
-        // definitely the directory created by this attempt.
-        created = this.withReclamationGate(() => {
+        // A reclaimer cannot check and remove the directory between its
+        // creation and stamp (or cleanup after a failed stamp).
+        attempt = this.withReclamationGate(() => {
           try { mkdirSync(this.path); }
           catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "EEXIST") return null;
+            if ((error as NodeJS.ErrnoException).code === "EEXIST") return { kind: "existing" as const };
             throw error;
           }
-          return statSync(this.path);
+          const created = statSync(this.path);
+          const token = `${process.pid}:${randomUUID()}`;
+          try { writeFileSync(join(this.path, "holder.pid"), token, { encoding: "utf8", flag: "wx" }); }
+          catch (error) {
+            // An older Core process can replace and stamp this path without
+            // taking the gate. Never clean up a stamped replacement.
+            if ((error as NodeJS.ErrnoException).code === "EEXIST") return { kind: "stamp-collision" as const };
+            this.cleanupFailedInitialization(created);
+            return { kind: "stamp-error" as const, cause: error };
+          }
+          return { kind: "acquired" as const, token };
         });
       } catch (error) {
         throw new Error(`failed to acquire registry lock ${this.path}`, { cause: error });
       }
-      if (created === undefined) return false;
-      if (created === null) {
+      if (attempt === undefined || attempt.kind === "stamp-collision") return false;
+      if (attempt.kind === "existing") {
         if (!this.tryReclaimStaleLock()) return false;
         continue;
       }
-      const token = `${process.pid}:${randomUUID()}`;
-      try { writeFileSync(join(this.path, "holder.pid"), token, { encoding: "utf8", flag: "wx" }); }
-      catch (error) {
-        // A replacement holder won the stamp race. Its directory is not ours.
-        if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
-        this.cleanupFailedInitialization(created);
-        throw new Error(`failed to write registry lock holder ${this.path}`, { cause: error });
+      if (attempt.kind === "stamp-error") {
+        throw new Error(`failed to write registry lock holder ${this.path}`, { cause: attempt.cause });
       }
-      this.token = token;
+      this.token = attempt.token;
       this.acquired = true;
       return true;
     }
@@ -103,14 +113,12 @@ export class ThreadRegistryLock {
 
   private cleanupFailedInitialization(created: { dev: number; ino: number }): void {
     try {
-      this.withReclamationGate(() => {
-        const current = statSync(this.path);
-        if (current.dev !== created.dev || current.ino !== created.ino) return;
-        if (this.readHolderToken() !== undefined) return;
-        // rmdir only removes an empty directory, even if a legacy holder
-        // writes its stamp while this process holds the reclamation gate.
-        rmdirSync(this.path);
-      });
+      const current = statSync(this.path);
+      if (current.dev !== created.dev || current.ino !== created.ino) return;
+      if (this.readHolderToken() !== undefined) return;
+      // rmdir only removes an empty directory, even if a legacy holder
+      // writes its stamp while this process holds the reclamation gate.
+      rmdirSync(this.path);
     } catch { /* Preserve the original stamp error; stale cleanup can retry. */ }
   }
 
@@ -119,6 +127,8 @@ export class ThreadRegistryLock {
     if (!this.holderIsStale(observed)) return false;
     try {
       return this.withReclamationGate(() => {
+        // Older Core processes do not use this gate. Their stamps can still
+        // race this check and removal; the gate protects updated processes.
         if (this.readHolderToken() !== observed || !this.holderIsStale(observed)) return false;
         rmSync(this.path, { recursive: true, force: true });
         return true;

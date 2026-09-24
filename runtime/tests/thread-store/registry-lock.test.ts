@@ -1,14 +1,15 @@
 const lockRemoval = vi.hoisted(() => ({ path: "", beforeRemove: undefined as undefined | (() => void) }));
-const lockStamp = vi.hoisted(() => ({ path: "", beforeWrite: undefined as undefined | (() => void) }));
+const lockStamp = vi.hoisted(() => ({ path: "", beforeWrite: undefined as undefined | ((write: () => void) => boolean | void) }));
 vi.mock("node:fs", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs")>();
   return { ...fs, writeFileSync: ((path: Parameters<typeof fs.writeFileSync>[0], data: Parameters<typeof fs.writeFileSync>[1], options?: Parameters<typeof fs.writeFileSync>[2]) => {
+    const write = () => fs.writeFileSync(path, data, options);
     if (String(path) === lockStamp.path && lockStamp.beforeWrite) {
       const callback = lockStamp.beforeWrite;
       lockStamp.beforeWrite = undefined;
-      callback();
+      if (callback(write)) return;
     }
-    return fs.writeFileSync(path, data, options);
+    return write();
   }) as typeof fs.writeFileSync, rmSync: ((path: Parameters<typeof fs.rmSync>[0], options?: Parameters<typeof fs.rmSync>[1]) => {
     if (String(path) === lockRemoval.path && lockRemoval.beforeRemove) {
       const callback = lockRemoval.beforeRemove;
@@ -37,14 +38,51 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-it("keeps a stamped replacement when an earlier unstamped acquisition resumes", () => {
+it("keeps one owner when stamping falls between a stale check and removal", () => {
+  const dir = mkdtempSync(join(tmpdir(), "registry-stamp-reclaim-"));
+  dirs.push(dir);
+  const initializing = new ThreadRegistryLock(dir);
+  const reclaimer = new ThreadRegistryLock(dir);
+  const third = new ThreadRegistryLock(dir);
+  let initializingStamp: (() => void) | undefined;
+  let stampedBeforeRemoval = false;
+  let reclaimerAcquired = false;
+  lockStamp.path = join(initializing.path, "holder.pid");
+  lockStamp.beforeWrite = (write) => {
+    initializingStamp = write;
+    // A has created the directory, then pauses past the stale threshold.
+    const staleTime = new Date(Date.now() - 6_000);
+    utimesSync(initializing.path, staleTime, staleTime);
+    reclaimerAcquired = reclaimer.tryAcquire();
+    return stampedBeforeRemoval;
+  };
+  lockRemoval.path = initializing.path;
+  lockRemoval.beforeRemove = () => {
+    // B finished its final stale check. A stamps before B removes the path.
+    initializingStamp!();
+    stampedBeforeRemoval = true;
+  };
+
+  try {
+    const initializingAcquired = initializing.tryAcquire();
+    lockRemoval.beforeRemove = undefined;
+    expect(Number(initializingAcquired) + Number(reclaimerAcquired)).toBe(1);
+    expect(third.tryAcquire()).toBe(false);
+  } finally {
+    lockRemoval.beforeRemove = undefined;
+    third.release();
+    initializing.release();
+    reclaimer.release();
+  }
+});
+
+it("refuses a reclaimer while an unstamped acquisition pauses", () => {
   const dir = mkdtempSync(join(tmpdir(), "registry-initialization-"));
   dirs.push(dir);
   const stalled = new ThreadRegistryLock(dir);
   const replacement = new ThreadRegistryLock(dir);
   const third = new ThreadRegistryLock(dir);
   let replacementAcquired = false;
-  let replacementToken = "";
   let stalledAcquired = false;
   let stalledError: unknown;
   lockStamp.path = join(stalled.path, "holder.pid");
@@ -52,18 +90,17 @@ it("keeps a stamped replacement when an earlier unstamped acquisition resumes", 
     const staleTime = new Date(Date.now() - 6_000);
     utimesSync(stalled.path, staleTime, staleTime);
     replacementAcquired = replacement.tryAcquire();
-    if (replacementAcquired) replacementToken = readFileSync(join(stalled.path, "holder.pid"), "utf8");
   };
   try {
     try { stalledAcquired = stalled.tryAcquire(); }
     catch (error) { stalledError = error; }
 
-    expect(replacementAcquired).toBe(true);
+    expect(replacementAcquired).toBe(false);
     expect(existsSync(stalled.path)).toBe(true);
-    expect(readFileSync(join(stalled.path, "holder.pid"), "utf8")).toBe(replacementToken);
+    expect(readFileSync(join(stalled.path, "holder.pid"), "utf8")).toMatch(/^\d+:[0-9a-f-]+$/u);
     expect(third.tryAcquire()).toBe(false);
     expect(stalledError).toBeUndefined();
-    expect(stalledAcquired).toBe(false);
+    expect(stalledAcquired).toBe(true);
   } finally {
     third.release();
     stalled.release();
@@ -88,6 +125,22 @@ it("does not clean up a different unstamped directory after its stamp fails", ()
   expect(existsSync(movedPath)).toBe(true);
   expect(existsSync(failed.path)).toBe(true);
   expect(replacement.tryAcquire()).toBe(false);
+});
+
+it("cleans up its own empty directory after a stamp failure", () => {
+  const dir = mkdtempSync(join(tmpdir(), "registry-stamp-error-"));
+  dirs.push(dir);
+  const failed = new ThreadRegistryLock(dir);
+  const next = new ThreadRegistryLock(dir);
+  lockStamp.path = join(failed.path, "holder.pid");
+  lockStamp.beforeWrite = () => {
+    throw Object.assign(new Error("injected stamp failure"), { code: "EIO" });
+  };
+
+  expect(() => failed.tryAcquire()).toThrow("failed to write registry lock holder");
+  expect(existsSync(failed.path)).toBe(false);
+  try { expect(next.tryAcquire()).toBe(true); }
+  finally { next.release(); }
 });
 
 it("allows only one of two reclaimers to replace the same dead holder", () => {
