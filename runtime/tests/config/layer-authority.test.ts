@@ -89,7 +89,7 @@ const MANAGED_VALUES = {
 } as const satisfies Record<ManagedOnlyConfigKey, unknown>;
 
 const OPERATOR_VALUES = {
-  agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] },
+  agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"], cross_provider_ask_each_spawn: false },
   gateway: { defaultAgent: "operator", hooks: { enabled: false } },
   modelOverrides: { "grok-4.6": "grok-4.6-enterprise" },
   allowedMcpServers: [{ serverName: "internal" }],
@@ -103,11 +103,16 @@ describe("canonical config layer authority", () => {
     expect(defaultConfig().agents).toEqual({
       cross_provider_enabled: false,
       allowed_providers: [],
+      cross_provider_ask_each_spawn: false,
     });
     expect(() => validateAgentsConfig({ allowed_providers: ["not-a-provider"] }))
       .toThrow(/unknown provider/u);
     expect(() => validateAgentsConfig({ allowed_providers: ["deepseek", "deepseek"] }))
       .toThrow(/duplicate provider/u);
+    expect(() => validateAgentsConfig({ cross_provider_ask_each_spawn: "no" }))
+      .toThrow(/expected boolean/u);
+    expect(validateAgentsConfig({ cross_provider_ask_each_spawn: true }))
+      .toEqual({ cross_provider_ask_each_spawn: true });
     expect(() => validateAgentsConfig({ cross_provider_enabled: "yes" }))
       .toThrow(/expected boolean/u);
   });
@@ -118,11 +123,15 @@ describe("canonical config layer authority", () => {
       agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] },
     });
     const loaded = await loadLayeredConfig(repositoryOptions(root));
-    expect(loaded.config.agents).toEqual({ cross_provider_enabled: false, allowed_providers: [] });
+    expect(loaded.config.agents).toEqual({ cross_provider_enabled: false, allowed_providers: [],
+      cross_provider_ask_each_spawn: false });
     expect(loaded.ignored).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: "agents", scope: "project" }),
     ]));
     expect(() => assertConfigPatchAuthority("project", { agents: { cross_provider_enabled: true } }))
+      .toThrow(/operator-only key agents/u);
+    // A repository cannot turn off the per-spawn question a user asked for.
+    expect(() => assertConfigPatchAuthority("project", { agents: { cross_provider_ask_each_spawn: false } }))
       .toThrow(/operator-only key agents/u);
   });
   test("keeps the three registries exact, disjoint, and classified", () => {

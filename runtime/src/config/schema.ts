@@ -220,6 +220,11 @@ export interface AgentConfig {
 export interface AgentsConfig {
   readonly cross_provider_enabled?: boolean;
   readonly allowed_providers?: readonly string[];
+  /**
+   * Ask before every cross-provider spawn. Off by default: enabling
+   * cross_provider_enabled with allowed_providers is the user's consent.
+   */
+  readonly cross_provider_ask_each_spawn?: boolean;
 }
 
 /**
@@ -1177,6 +1182,7 @@ export function defaultConfig(): AgenCConfig {
     agents: Object.freeze({
       cross_provider_enabled: false,
       allowed_providers: Object.freeze([]),
+      cross_provider_ask_each_spawn: false,
     }) as AgentsConfig,
     agent: Object.freeze({
       // Default budget is intentionally empty: caps are designed for
@@ -2149,10 +2155,15 @@ export function validateAgentsConfig(raw: unknown): AgentsConfig | undefined {
   const fail = (field: string, detail: string): InvalidAgentsConfigError =>
     new InvalidAgentsConfigError(field, detail);
   const record = requirePlainObject(raw, "", fail);
-  rejectUnknownFields(record, new Set(["cross_provider_enabled", "allowed_providers"]), fail);
+  rejectUnknownFields(record,
+    new Set(["cross_provider_enabled", "allowed_providers", "cross_provider_ask_each_spawn"]), fail);
   const enabled = record.cross_provider_enabled;
   if (enabled !== undefined && typeof enabled !== "boolean") {
     throw fail("cross_provider_enabled", "expected boolean");
+  }
+  const askEachSpawn = record.cross_provider_ask_each_spawn;
+  if (askEachSpawn !== undefined && typeof askEachSpawn !== "boolean") {
+    throw fail("cross_provider_ask_each_spawn", "expected boolean");
   }
   const allowed = record.allowed_providers;
   if (allowed !== undefined && !Array.isArray(allowed)) {
@@ -2172,6 +2183,7 @@ export function validateAgentsConfig(raw: unknown): AgentsConfig | undefined {
   return Object.freeze({
     ...(enabled !== undefined ? { cross_provider_enabled: enabled } : {}),
     ...(allowed !== undefined ? { allowed_providers: Object.freeze(providers) } : {}),
+    ...(askEachSpawn !== undefined ? { cross_provider_ask_each_spawn: askEachSpawn } : {}),
   });
 }
 

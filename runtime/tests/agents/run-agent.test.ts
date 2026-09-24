@@ -3464,7 +3464,9 @@ describe("runAgent", () => {
   }) {
     const cwd = mkdtempSync(join(tmpdir(), `agenc-${options.label}-`));
     const configStore = new ConfigStore({ cwd, base: { model_provider: "grok", model: "grok-4.6",
-      agents: { cross_provider_enabled: true, allowed_providers: [options.provider, "openrouter"] } } });
+      // These cases approve through the prompt, so they opt into per-spawn consent.
+      agents: { cross_provider_enabled: true, allowed_providers: [options.provider, "openrouter"],
+        cross_provider_ask_each_spawn: true } } });
     const session = makeStubSession({ conversationId: `${options.label}-root`, services: { configStore },
       sessionConfiguration: mkSessionConfiguration({ cwd }), config: { ...mkConfig(), cwd } });
     const parentRollout = new RolloutStore({ cwd, sessionId: session.conversationId,

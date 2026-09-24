@@ -340,8 +340,9 @@ otherwise.
 | `transcriptPersistenceEnabled` | `true` |
 | `promptSuggestionEnabled` | `false` |
 | `agent.budget` | no caps |
-| `agents.cross_provider_enabled` | `false`. User or managed config may enable cross-provider subagents. |
+| `agents.cross_provider_enabled` | `false`. User or managed config may enable cross-provider subagents. Enabling it is the user's consent for the providers in `allowed_providers`: a spawn to one of them runs without a question. After a child reports that its provider is out of funds, the next cross-provider spawn in that session asks. |
 | `agents.allowed_providers` | `[]`. Built-in provider names permitted for cross-provider subagents. |
+| `agents.cross_provider_ask_each_spawn` | `false`. Set `true` to be asked before every cross-provider spawn, as before. Repository config cannot change it. |
 | `agent.retention.completed_days` | `30` |
 | `agent.retention.failed_days` | `90` |
 | `agent.retention.snapshot_days` | `3` |

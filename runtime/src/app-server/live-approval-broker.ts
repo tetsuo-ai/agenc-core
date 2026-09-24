@@ -22,7 +22,7 @@ import { isUndeliverableApproval } from "./approval-delivery.js";
 import type { BackgroundAgentDaemonEvent } from "./background-agent-runner/shared.js";
 import { AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY, type PendingToolApproval, type JsonObject } from "./protocol/index.js";
 import { requestApproval } from "../permissions/guardian/arbiter.js";
-import { crossProviderDenialKey, type CrossProviderConsentService, type CrossProviderSpawnDisclosure, type CrossProviderConsentOutcome } from "../agents/cross-provider.js";
+import { crossProviderConsentFromSettings, crossProviderDenialKey, type CrossProviderConsentService, type CrossProviderSpawnDisclosure, type CrossProviderConsentOutcome } from "../agents/cross-provider.js";
 import { getSessionGoal } from "../goal/session-goal.js";
 
 /**
@@ -331,6 +331,16 @@ export class LiveApprovalBroker {
         !isApprovalSessionOwnedBy(requestingSession, owner.session)) {
       return unavailable("The interactive session is no longer active.");
     }
+    const grant = (kind: "once" | "session") => ({
+      kind, ownerSessionId: owner.session.conversationId,
+      sessionEpoch: owner.sessionEpoch, taskId: disclosure.taskId,
+      scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey,
+    });
+    // Enabling the allowed providers in settings is the consent, also for
+    // unattended runs. After a funds stop the user decides the next spawn.
+    if (crossProviderConsentFromSettings(owner.session) && !owner.fundsStopObserved) {
+      return { kind: "granted", grant: grant("session") };
+    }
     if (owner.workflow || isNonInteractiveSession(owner.session) ||
         getSessionGoal(owner.session)?.status === "active" ||
         (owner.session.activeTurn?.unsafePeek() !== undefined &&
@@ -351,11 +361,6 @@ export class LiveApprovalBroker {
     if (owner.deniedConsentPayloads.has(denialKey)) {
       return { kind: "consent_denied", reason: "This task's equivalent cross-provider request was already denied. Continue it yourself; do not retry the same request." };
     }
-    const grant = (kind: "once" | "session") => ({
-      kind, ownerSessionId: owner.session.conversationId,
-      sessionEpoch: owner.sessionEpoch, taskId: disclosure.taskId,
-      scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey,
-    });
     // Once any child hits a funds stop, task text cannot identify a retry.
     // Session-wide fresh approval is intentionally stricter than lineage-only
     // invalidation and cannot be evaded by changing the model's task wording.

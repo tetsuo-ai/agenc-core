@@ -114,7 +114,8 @@ function endpointIdentity(value: string): string {
 
 function policyRevision(session: Session): string {
   const policy = childProviderPolicy(session);
-  return `agents-v1:${fingerprint({ enabled: policy.cross_provider_enabled === true, allowed: policy.allowed_providers ?? [] })}`;
+  return `agents-v1:${fingerprint({ enabled: policy.cross_provider_enabled === true, allowed: policy.allowed_providers ?? [],
+    ...(policy.cross_provider_ask_each_spawn === true ? { askEachSpawn: true } : {}) })}`;
 }
 
 function catalogRevision(session: Session): string {
@@ -398,6 +399,15 @@ export function assertPreparedChildMatchesPlan(plan: ChildExecutionPlan, prepare
 export function childProviderPolicy(session: Session): AgentsConfig {
   if (session.services == null) return {};
   return session.services?.configStore?.current().agents ?? session.config?.agents ?? {};
+}
+
+/**
+ * Enabling cross-provider subagents in user or managed config is the user's
+ * consent for the allowed providers, unless they asked to confirm each spawn.
+ */
+export function crossProviderConsentFromSettings(session: Session): boolean {
+  const policy = childProviderPolicy(session);
+  return policy.cross_provider_enabled === true && policy.cross_provider_ask_each_spawn !== true;
 }
 
 export function childCatalogConfig(session: Session): AgenCConfig {

@@ -80,7 +80,7 @@ describe("cross-provider consent grants", () => {
   });
 });
 
-function interactiveFixture(options: { answerable?: boolean; nonInteractive?: boolean; workflow?: boolean; goal?: boolean; autonomousTick?: boolean; activeTurnId?: string } = {}) {
+function interactiveFixture(options: { answerable?: boolean; nonInteractive?: boolean; workflow?: boolean; goal?: boolean; autonomousTick?: boolean; activeTurnId?: string; agents?: Record<string, unknown> } = {}) {
   let stopped = false;
   let answerable = options.answerable !== false;
   const eventListeners = new Set<(event: unknown) => void>();
@@ -93,6 +93,7 @@ function interactiveFixture(options: { answerable?: boolean; nonInteractive?: bo
       eventListeners.add(listener); return () => { eventListeners.delete(listener); };
     } },
     onBeforeDurableClose: () => () => {},
+    ...(options.agents !== undefined ? { config: { agents: options.agents } } : {}),
     ...(options.autonomousTick ? { activeTurn: { unsafePeek: () => ({ turnId: "tick" }) }, currentRootHumanTurn: () => null } : {}),
     ...(options.activeTurnId !== undefined ? {
       activeTurn: { unsafePeek: () => ({ turnId: options.activeTurnId }) },
@@ -103,6 +104,7 @@ function interactiveFixture(options: { answerable?: boolean; nonInteractive?: bo
   const close = broker.register(session, { isActive: () => true, workflow: options.workflow === true });
   if (options.goal) restoreSessionGoal(session, { objective: "unattended work", status: "active" } as never);
   return { session, broker, close, stopped: () => stopped, setAnswerable: (value: boolean) => { answerable = value; },
+    emit: (event: unknown) => { for (const listener of eventListeners) listener(event); },
   };
 }
 
@@ -333,6 +335,68 @@ describe("live cross-provider consent", () => {
       expect(pending.crossProvider).toMatchObject({ provider: "openai", model: "gpt-5.4" });
       fixture.broker.resolve("root-session", pending.requestId, { kind: "denied" });
       expect((await next).kind).toBe("consent_denied");
+    } finally { fixture.close(); }
+  });
+});
+
+describe("consent from settings", () => {
+  const enabled = { cross_provider_enabled: true, allowed_providers: ["deepseek"] };
+
+  it("grants an allowed provider without asking, even with no client that could answer", async () => {
+    const fixture = interactiveFixture({ agents: enabled, answerable: false });
+    try {
+      const outcome = await authorizeChildExecutionPlan(fixture.session, plan);
+      expect(outcome.kind).toBe("granted");
+      expect(fixture.broker.list("root-session")).toHaveLength(0);
+    } finally { fixture.close(); }
+  });
+
+  it("grants unattended workflow and goal runs from settings", async () => {
+    for (const unattended of [{ workflow: true }, { goal: true }]) {
+      const fixture = interactiveFixture({ agents: enabled, ...unattended });
+      try {
+        expect((await authorizeChildExecutionPlan(fixture.session, plan)).kind).toBe("granted");
+      } finally { fixture.close(); }
+    }
+  });
+
+  it("covers a fresh message to an existing child without asking", async () => {
+    const fixture = interactiveFixture({ agents: enabled });
+    try {
+      expect((await authorizeChildExecutionPlan(fixture.session, plan, { fresh: true })).kind).toBe("granted");
+      expect(fixture.broker.list("root-session")).toHaveLength(0);
+    } finally { fixture.close(); }
+  });
+
+  it("asks at every spawn when the user opted into it", async () => {
+    const fixture = interactiveFixture({ agents: { ...enabled, cross_provider_ask_each_spawn: true } });
+    try {
+      const { promise, pending } = await pendingDecision(fixture);
+      expect(pending.kind).toBe("cross_provider_spawn");
+      expect(fixture.broker.resolve("root-session", pending.requestId, { kind: "denied" })).toBe(true);
+      expect(await promise).toMatchObject({ kind: "consent_denied" });
+    } finally { fixture.close(); }
+  });
+
+  it("asks the user again after a child hits a funds stop", async () => {
+    const fixture = interactiveFixture({ agents: enabled });
+    try {
+      expect((await authorizeChildExecutionPlan(fixture.session, plan)).kind).toBe("granted");
+      fixture.emit({ msg: { type: "subagent_funds_notice" } });
+      const { promise, pending } = await pendingDecision(fixture);
+      expect(pending.kind).toBe("cross_provider_spawn");
+      expect(fixture.broker.resolve("root-session", pending.requestId, { kind: "denied" })).toBe(true);
+      expect(await promise).toMatchObject({ kind: "consent_denied" });
+    } finally { fixture.close(); }
+  });
+
+  it("does not treat a disabled feature as consent", async () => {
+    const fixture = interactiveFixture({ agents: { cross_provider_enabled: false, allowed_providers: ["deepseek"] } });
+    try {
+      const { promise, pending } = await pendingDecision(fixture);
+      expect(pending.kind).toBe("cross_provider_spawn");
+      expect(fixture.broker.resolve("root-session", pending.requestId, { kind: "denied" })).toBe(true);
+      expect(await promise).toMatchObject({ kind: "consent_denied" });
     } finally { fixture.close(); }
   });
 });
