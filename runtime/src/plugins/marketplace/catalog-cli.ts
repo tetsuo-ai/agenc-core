@@ -21,6 +21,7 @@ import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import * as lockfile from "../../utils/lockfile.js";
 import { writeDurableAtomicFile } from "../../utils/durable-atomic-file.js";
+import { isExcludedPluginPayloadDirectory } from "../payload-paths.js";
 import { normalizeSkillDisplayName, skillDisplayNameFromMarkdown } from "../skill-display-metadata.js";
 import { verifiedAdvertisedPluginPayloadDigest } from "../resolution.js";
 import { updateMarketplaceInventory } from "./inventory.js";
@@ -286,7 +287,8 @@ function pinnedRawUrl(
   const clean = relativePath.replace(/^\.\//u, "").replace(/^\/+/u, "");
   const parts = [...prefix, ...clean.split("/")];
   if (parts.some((part) => part.length === 0 || part === "." || part === ".." ||
-    part.includes("\\") || part.includes("\0"))) return undefined;
+    part.includes("\\") || part.includes("\0") ||
+    isExcludedPluginPayloadDirectory(part))) return undefined;
   const pathname = `/${[owner, repo, source.sha, ...parts].map(encodeURIComponent).join("/")}`;
   const raw = new URL(`https://raw.githubusercontent.com${pathname}`);
   return raw.pathname === pathname && raw.hostname === "raw.githubusercontent.com"
@@ -327,6 +329,11 @@ interface MarketplaceComponentRow {
   readonly displayName?: string;
   readonly description?: string;
   readonly argumentHint?: string;
+}
+
+interface PendingSkillFetch {
+  readonly index: number;
+  readonly path: string;
 }
 
 interface PrefetchedCardMeta {
@@ -426,38 +433,40 @@ async function prefetchSkillRows(
   fetcher: Fetcher,
   source: MarketplacePlugin["source"],
   declaredSkills: unknown,
-): Promise<{ readonly rows: readonly MarketplaceComponentRow[]; readonly complete: boolean } | undefined> {
+): Promise<{ readonly rows: readonly MarketplaceComponentRow[]; readonly pending: readonly PendingSkillFetch[] } | undefined> {
   if (!Array.isArray(declaredSkills)) return undefined;
   const rows: MarketplaceComponentRow[] = [];
-  let complete = true;
+  const pending: PendingSkillFetch[] = [];
   for (const declared of declaredSkills.slice(0, CARD_SKILLS_MAX)) {
     if (typeof declared !== "string" || declared.length === 0) continue;
     const clean = declared.replace(/^\.\//u, "").replace(/\/+$/u, "");
     const name = clean.split("/").pop();
     if (name === undefined || name.length === 0) continue;
-    let description: string | undefined;
-    let displayName: string | undefined;
+    if (clean.split("/").some(isExcludedPluginPayloadDirectory)) continue;
+    let details: Pick<MarketplaceComponentRow, "displayName" | "description"> = {};
     const skillUrl = pinnedRawUrl(source, `${clean}/SKILL.md`);
     if (skillUrl !== undefined) {
       const bytes = await fetchBounded(fetcher, skillUrl, SKILL_PREFETCH_MAX_BYTES);
       if (bytes !== undefined) {
-        const head = Buffer.from(bytes).toString("utf8");
-        displayName = skillDisplayNameFromMarkdown(head);
-        const match = /^description:\s*(.+)$/mu.exec(head);
-        if (match?.[1] !== undefined) {
-          description = match[1].trim().slice(0, CARD_DESCRIPTION_MAX);
-        }
+        details = skillDetails(bytes);
       } else {
-        complete = false;
+        pending.push({ index: rows.length, path: clean });
       }
     }
-    rows.push({
-      name,
-      ...(displayName !== undefined ? { displayName } : {}),
-      ...(description !== undefined ? { description } : {}),
-    });
+    rows.push({ name, ...details });
   }
-  return rows.length > 0 ? { rows, complete } : undefined;
+  return rows.length > 0 ? { rows, pending } : undefined;
+}
+
+function skillDetails(bytes: Uint8Array): Pick<MarketplaceComponentRow, "displayName" | "description"> {
+  const head = Buffer.from(bytes).toString("utf8");
+  const displayName = skillDisplayNameFromMarkdown(head);
+  const match = /^description:\s*(.+)$/mu.exec(head);
+  const description = match?.[1]?.trim().slice(0, CARD_DESCRIPTION_MAX);
+  return {
+    ...(displayName !== undefined ? { displayName } : {}),
+    ...(description !== undefined ? { description } : {}),
+  };
 }
 
 function metaFromSidecar(value: unknown, logoPath: string | undefined): PrefetchedCardMeta {
@@ -543,6 +552,50 @@ async function finishAdvertRefresh(path: string, claim: string, metadata: Record
   } catch { /* The claimed deadline remains in force after cache write failures. */ }
 }
 
+/** Skill documents have their own retry state; they do not reopen the manifest advert claim. */
+async function retryIncompleteSkillMetadata(
+  path: string,
+  cached: Record<string, unknown>,
+  fetcher: Fetcher,
+  source: MarketplacePlugin["source"],
+): Promise<Record<string, unknown>> {
+  const rows = cardComponentRows(cached.skills);
+  if (rows === undefined || !Array.isArray(cached.pendingSkillFetches)) return cached;
+  if (cached.pendingSkillFetches.length > CARD_SKILLS_MAX) return cached;
+  const pending = cached.pendingSkillFetches.filter((entry): entry is PendingSkillFetch => {
+    if (typeof entry !== "object" || entry === null) return false;
+    const candidate = entry as Record<string, unknown>;
+    return Number.isInteger(candidate.index) && (candidate.index as number) >= 0 &&
+      (candidate.index as number) < rows.length &&
+      typeof candidate.path === "string" && candidate.path.length <= MANIFEST_PREFETCH_MAX_BYTES &&
+      candidate.path.split("/").pop() === rows[candidate.index as number]?.name;
+  });
+  if (pending.length === 0 || pending.length !== cached.pendingSkillFetches.length) return cached;
+  const updatedRows = [...rows];
+  const remaining: PendingSkillFetch[] = [];
+  for (const entry of pending) {
+    const url = pinnedRawUrl(source, entry.path + "/SKILL.md");
+    const bytes = url === undefined ? undefined : await fetchBounded(fetcher, url, SKILL_PREFETCH_MAX_BYTES);
+    if (bytes === undefined) {
+      remaining.push(entry);
+    } else {
+      updatedRows[entry.index] = { ...updatedRows[entry.index]!, ...skillDetails(bytes) };
+    }
+  }
+  if (remaining.length === pending.length) return cached;
+  const updated = { ...cached, skills: updatedRows, pendingSkillFetches: remaining,
+    ...(remaining.length === 0 ? { cardMetadataVersion: CARD_METADATA_VERSION } : {}) };
+  try {
+    return await withAdvertSidecarLock(path, async () => {
+      const current = await readAdvertSidecar(path);
+      if (JSON.stringify(current.pendingSkillFetches) !== JSON.stringify(cached.pendingSkillFetches) ||
+        current.manifestRetryAfter !== cached.manifestRetryAfter) return current;
+      await writeAdvertSidecar(path, updated);
+      return updated;
+    });
+  } catch { return updated; }
+}
+
 async function prefetchPinnedCardMeta(
   options: MarketplaceOperationOptions,
   plugin: MarketplacePlugin,
@@ -590,14 +643,24 @@ async function prefetchPinnedCardMetaOnce(
   const deadline = typeof cached.manifestRetryAfter === "string"
     ? Date.parse(cached.manifestRetryAfter) : NaN;
   if (deadline > now) {
+    const displaySidecar = await retryIncompleteSkillMetadata(
+      sidecarPath, cached, fetcher, plugin.source);
+    const { payloadDigest: _displayDigest, ...display } =
+      metaFromSidecar(displaySidecar, cachedLogoPath);
     const authenticated = authenticatedAdverts.get(cacheIdentity);
     if (includePayloadDigest && authenticated !== undefined && options.agencHome !== undefined) {
       try {
         const payloadDigest = await verifiedAdvertisedPluginPayloadDigest(
           authenticated.manifest, authenticated.signature, { agencHome: options.agencHome });
-        return { ...staleCached, payloadDigest };
+        return { ...display, payloadDigest };
       } catch { /* Publisher trust can change during the refresh window. */ }
     }
+    return display;
+  }
+  // Legacy complete display sidecars predate advert deadlines. They are still
+  // reusable for card copy; signed update comparisons must claim a fresh fetch.
+  if (cached.manifestRetryAfter === undefined &&
+    cached.cardMetadataVersion === CARD_METADATA_VERSION && !includePayloadDigest) {
     return staleCached;
   }
   const claim = await claimAdvertRefresh(sidecarPath, now);
@@ -693,8 +756,8 @@ async function prefetchPinnedCardMetaOnce(
     }
   }
   const sidecar = {
-    // Retry incomplete skill reads after the refresh deadline.
-    ...(skillMetadata?.complete !== false ? { cardMetadataVersion: CARD_METADATA_VERSION } : {}),
+    cardMetadataVersion: skillMetadata?.pending.length ? undefined : CARD_METADATA_VERSION,
+    pendingSkillFetches: skillMetadata?.pending ?? [],
     ...(surface?.displayName !== undefined
       ? { displayName: surface.displayName }
       : {}),
