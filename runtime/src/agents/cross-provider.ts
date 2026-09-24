@@ -56,8 +56,12 @@ export type CrossProviderConsentOutcome =
 export interface CrossProviderConsentService {
   readonly ownerSessionId: string;
   readonly sessionEpoch: string;
+  /**
+   * `routeProvider` is the provider of the plan's route. It differs from the
+   * disclosed destination only for a managed child, which routes via agenc.
+   */
   request(session: Session, disclosure: CrossProviderSpawnDisclosure,
-    options?: { readonly fresh?: boolean }): Promise<CrossProviderConsentOutcome>;
+    options?: { readonly fresh?: boolean; readonly routeProvider?: string }): Promise<CrossProviderConsentOutcome>;
 }
 
 export interface ChildExecutionPlan {
@@ -299,7 +303,8 @@ export async function authorizeChildExecutionPlan(session: Session, plan: ChildE
   if (!plan.crossProvider) return { kind: "granted", plan };
   const service = (session.services as { readonly crossProviderConsent?: CrossProviderConsentService }).crossProviderConsent;
   if (service === undefined) return { kind: "consent_unavailable", reason: "No attached client can answer cross-provider consent. Continue this task yourself." };
-  const outcome = await service.request(session, buildCrossProviderDisclosure(plan), options);
+  const outcome = await service.request(session, buildCrossProviderDisclosure(plan),
+    { ...options, routeProvider: plan.route.provider });
   if (outcome.kind !== "granted") return outcome;
   const granted = withChildConsentGrant(plan, outcome.grant);
   if (!consentGrantCoversPlan(granted, service.ownerSessionId, plan.task.text,

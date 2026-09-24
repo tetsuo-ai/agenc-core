@@ -326,7 +326,7 @@ export class LiveApprovalBroker {
     owner: ApprovalOwner,
     requestingSession: Session,
     disclosure: CrossProviderSpawnDisclosure,
-    options: { readonly fresh?: boolean } = {},
+    options: { readonly fresh?: boolean; readonly routeProvider?: string } = {},
   ): Promise<CrossProviderConsentOutcome> {
     const unavailable = (reason: string): CrossProviderConsentOutcome => ({
       kind: "consent_unavailable", reason: `${reason} Continue this task yourself.`,
@@ -339,6 +339,16 @@ export class LiveApprovalBroker {
         !isApprovalSessionOwnedBy(requestingSession, owner.session)) {
       return unavailable("The interactive session is no longer active.");
     }
+    // Neither the settings nor the user can consent to a provider the
+    // settings do not allow now. A message to an existing child reuses a plan
+    // made under older settings, and an approved card for it would fail at
+    // dispatch. A managed child also needs its route provider (agenc).
+    try {
+      if (options.routeProvider !== undefined) assertCrossProviderAllowed(owner.session, options.routeProvider);
+      assertCrossProviderAllowed(owner.session, disclosure.provider);
+    } catch (error) {
+      return unavailable(error instanceof Error ? error.message : String(error));
+    }
     const grant = (kind: "once" | "session") => ({
       kind, ownerSessionId: owner.session.conversationId,
       sessionEpoch: owner.sessionEpoch, taskId: disclosure.taskId,
@@ -347,13 +357,6 @@ export class LiveApprovalBroker {
     // Enabling the allowed providers in settings is the consent, also for
     // unattended runs. After a funds stop the user decides every later spawn.
     if (crossProviderConsentFromSettings(owner.session) && !fundsStopped(owner)) {
-      // The consent covers only the providers the settings allow now; a
-      // message to an existing child reuses a plan made under older settings.
-      try {
-        assertCrossProviderAllowed(owner.session, disclosure.provider);
-      } catch (error) {
-        return unavailable(error instanceof Error ? error.message : String(error));
-      }
       return { kind: "granted", grant: grant("session") };
     }
     if (owner.workflow || isNonInteractiveSession(owner.session) ||

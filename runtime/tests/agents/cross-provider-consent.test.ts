@@ -172,6 +172,15 @@ function fundsNotice(agentPath: string) {
 const nestedPlan = { ...plan, parent: { sessionId: "child-session", agentPath: "/root/worker" },
   task: { id: "grandchild", name: "grandchild", text: "Research", attachments: [] } } as ChildExecutionPlan;
 
+/** A managed child: its requests go through the agenc route to deepseek. */
+const managedPlan = { ...plan, route: { provider: "agenc", model: "agenc" },
+  destination: { ...plan.destination, authProfile: "managed", billingSource: "managed" } } as ChildExecutionPlan;
+
+/** A child on openai, which ASK_EACH_SPAWN and SETTINGS_CONSENT do not allow. */
+const openaiPlan = { ...plan, route: { provider: "openai", model: "gpt-5.4" },
+  destination: { ...plan.destination, provider: "openai", model: "gpt-5.4",
+    endpoint: "https://api.openai.com/v1" } } as ChildExecutionPlan;
+
 async function pendingDecision(fixture: ReturnType<typeof interactiveFixture>, task: ChildExecutionPlan = plan) {
   const promise = authorizeChildExecutionPlan(fixture.session, task);
   await vi.waitFor(() => expect(fixture.broker.list("root-session")).toHaveLength(1));
@@ -375,7 +384,7 @@ describe("live cross-provider consent", () => {
   );
 
   it("asks separately at a nested provider edge through the root owner", async () => {
-    const fixture = interactiveFixture();
+    const fixture = interactiveFixture({ agents: { ...ASK_EACH_SPAWN, allowed_providers: ["deepseek", "openai"] } });
     const child = {
       conversationId: "child-session", services: { ...fixture.session.services },
       abortController: new AbortController(), eventLog: { subscribe: () => () => {} },
@@ -448,6 +457,24 @@ describe("consent from settings", () => {
       for (const options of [{}, { fresh: true }]) {
         await expect(authorizeChildExecutionPlan(fixture.session, plan, options)).resolves.toMatchObject({
           kind: "consent_unavailable", reason: expect.stringContaining("Provider `deepseek` is not allowed"),
+        });
+      }
+      expect(fixture.broker.list("root-session")).toHaveLength(0);
+    } finally { fixture.close(); }
+  });
+
+  it("does not grant a managed child whose route provider the settings no longer allow", async () => {
+    // Its requests go through agenc to the destination, so dispatch needs
+    // both allowed. A message to it reuses the plan made when both were.
+    const both = interactiveFixture({ agents: { ...SETTINGS_CONSENT, allowed_providers: ["agenc", "deepseek"] } });
+    try {
+      expect((await authorizeChildExecutionPlan(both.session, managedPlan, { fresh: true })).kind).toBe("granted");
+    } finally { both.close(); }
+    const fixture = interactiveFixture({ agents: SETTINGS_CONSENT });
+    try {
+      for (const options of [{}, { fresh: true }]) {
+        await expect(authorizeChildExecutionPlan(fixture.session, managedPlan, options)).resolves.toMatchObject({
+          kind: "consent_unavailable", reason: expect.stringContaining("Provider `agenc` is not allowed"),
         });
       }
       expect(fixture.broker.list("root-session")).toHaveLength(0);
@@ -563,13 +590,31 @@ describe("consent from settings", () => {
     } finally { fixture.close(); }
   });
 
-  it("does not treat a disabled feature as consent", async () => {
+  it.each([
+    ["after a funds stop", SETTINGS_CONSENT, true],
+    ["when the user asks at each spawn", ASK_EACH_SPAWN, false],
+  ] as const)("does not ask about a provider the settings do not allow %s", async (_label, agents, fundsStop) => {
+    const fixture = interactiveFixture({ agents });
+    try {
+      if (fundsStop) fixture.emit(fundsNotice("/root/worker"));
+      // Existing children whose plans the settings no longer allow: approving
+      // a card for them would fail at dispatch.
+      for (const [task, provider] of [[openaiPlan, "openai"], [managedPlan, "agenc"]] as const) {
+        await expect(authorizeChildExecutionPlan(fixture.session, task, { fresh: true })).resolves.toMatchObject({
+          kind: "consent_unavailable", reason: expect.stringContaining(`Provider \`${provider}\` is not allowed`),
+        });
+      }
+      expect(fixture.broker.list("root-session")).toHaveLength(0);
+    } finally { fixture.close(); }
+  });
+
+  it("does not treat a disabled feature as consent, and does not ask either", async () => {
     const fixture = interactiveFixture({ agents: { cross_provider_enabled: false, allowed_providers: ["deepseek"] } });
     try {
-      const { promise, pending } = await pendingDecision(fixture);
-      expect(pending.kind).toBe("cross_provider_spawn");
-      expect(fixture.broker.resolve("root-session", pending.requestId, { kind: "denied" })).toBe(true);
-      expect(await promise).toMatchObject({ kind: "consent_denied" });
+      await expect(authorizeChildExecutionPlan(fixture.session, plan)).resolves.toMatchObject({
+        kind: "consent_unavailable", reason: expect.stringContaining("Cross-provider subagents are off"),
+      });
+      expect(fixture.broker.list("root-session")).toHaveLength(0);
     } finally { fixture.close(); }
   });
 });
