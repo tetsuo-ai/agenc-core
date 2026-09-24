@@ -1948,6 +1948,7 @@ export function normalizeHistoryMessages(
   for (const item of history) {
     if (!item || typeof item !== "object") continue;
     const candidate = item as {
+      id?: unknown;
       role?: unknown;
       content?: unknown;
       phase?: unknown;
@@ -1969,6 +1970,7 @@ export function normalizeHistoryMessages(
       agentInvocation?: AgentInvocationChannelMetadata;
       compactionHistory?: CompactionHistoryMarkerV1;
       runtimeOnly?: {
+        responseItemId?: unknown;
         userMessageId?: unknown;
         toolResultIntegrity?: ToolResultIntegrity;
         agentInvocation?: AgentInvocationChannelMetadata;
@@ -2009,15 +2011,23 @@ export function normalizeHistoryMessages(
         ? { toolName: candidate.toolName }
         : {}),
       ...providerReasoning,
-      // Preserve the file-history join key and durable integrity metadata.
+      // Preserve response-item identity, the file-history join key, and
+      // durable integrity metadata across turn-start and checkpoint copies.
       // The invocation merge boundary is derived from authenticated channel
       // metadata instead of accepting a transient serialized flag.
-      ...(typeof candidate.runtimeOnly?.userMessageId === "string" ||
+      ...(typeof candidate.runtimeOnly?.responseItemId === "string" ||
+      typeof candidate.id === "string" ||
+      typeof candidate.runtimeOnly?.userMessageId === "string" ||
       durable.toolResultIntegrity !== undefined ||
       durable.agentInvocation !== undefined ||
       durable.compactionHistory !== undefined
         ? {
             runtimeOnly: {
+              ...(typeof candidate.runtimeOnly?.responseItemId === "string"
+                ? { responseItemId: candidate.runtimeOnly.responseItemId }
+                : typeof candidate.id === "string"
+                  ? { responseItemId: candidate.id }
+                  : {}),
               ...(typeof candidate.runtimeOnly?.userMessageId === "string"
                 ? { userMessageId: candidate.runtimeOnly.userMessageId }
                 : {}),
