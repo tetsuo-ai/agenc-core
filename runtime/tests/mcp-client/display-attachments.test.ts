@@ -244,6 +244,26 @@ describe("MCP user audience display attachments", () => {
     expect(oversizedImage.content).toContain("could not be shown");
   });
 
+  it("keeps category and xy charts to the sizes the SVG renderer was built for", async () => {
+    const categoryChart = (count: number) => ({ version: 1, kind: "category", title: "Sectors",
+      categories: Array.from({ length: count }, (_, i) => `c${i}`),
+      series: [{ name: "Weight", values: Array.from({ length: count }, (_, i) => i) }] });
+    const xyChart = (perSeries: number) => ({ version: 1, kind: "xy", title: "Risk",
+      series: [0, 1].map(s => ({ name: `s${s}`, data: Array.from({ length: perSeries }, (_, i) => ({ x: i, y: s })) })) });
+    const accepted = await normalize([
+      resource("application/vnd.agenc.chart+json", categoryChart(500)),
+      resource("application/vnd.agenc.chart+json", xyChart(2500)),
+    ]);
+    expect(attachments(accepted)?.map(a => a.kind)).toEqual(["chart", "chart"]);
+    const refused = await normalize([
+      resource("application/vnd.agenc.chart+json", categoryChart(501)),
+      resource("application/vnd.agenc.chart+json", xyChart(2501)),
+    ]);
+    expect(attachments(refused)).toBeUndefined();
+    expect(refused.content).toContain("could not be shown: category chart has more than 500 categories");
+    expect(refused.content).toContain("could not be shown: xy chart has more than 5000 points in all series");
+  });
+
   it("caps the sum of valid image bytes in a result", async () => {
     const sharp = (await import("sharp")).default;
     const bytes = await sharp(randomBytes(1200 * 1200 * 3), { raw: { width: 1200, height: 1200, channels: 3 } }).png({ compressionLevel: 0 }).toBuffer();
