@@ -315,34 +315,62 @@ function cachePath(identity: PluginCatalogIdentity): string {
   return join(pluginCatalogDirectory(identity.cacheHome, identity.pluginName), `${key}.json`);
 }
 
+/** The earlier flat layout kept every catalog file directly in the root. */
+function flatLayoutCatalogFiles(cacheHome: string): string[] {
+  let entries;
+  try { entries = readdirSync(catalogRoot(cacheHome), { withFileTypes: true }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  return entries.filter(entry => entry.isFile()).map(entry => join(catalogRoot(cacheHome), entry.name));
+}
+
 /**
  * Remove every catalog discovered for a plugin, and catalogs from the earlier
  * flat layout, which cannot be attributed to a plugin.
  */
 export function removePluginCatalogs(cacheHome: string, pluginName: string): void {
   rmSync(pluginCatalogDirectory(cacheHome, pluginName), { recursive: true, force: true });
-  let entries;
-  try { entries = readdirSync(catalogRoot(cacheHome), { withFileTypes: true }); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw error;
-  }
-  for (const entry of entries) {
-    if (entry.isFile()) rmSync(join(catalogRoot(cacheHome), entry.name), { force: true });
+  for (const file of flatLayoutCatalogFiles(cacheHome)) rmSync(file, { force: true });
+}
+
+const sweptCatalogHomes = new Set<string>();
+
+/**
+ * Flat-layout catalogs are never read and may hold saved secrets. The first
+ * catalog load in a process removes them, best effort: a file that cannot be
+ * removed now is retried when the next process starts.
+ */
+export function sweepFlatLayoutPluginCatalogs(cacheHome: string): void {
+  if (sweptCatalogHomes.has(cacheHome)) return;
+  sweptCatalogHomes.add(cacheHome);
+  let files: string[];
+  try { files = flatLayoutCatalogFiles(cacheHome); }
+  catch { return; }
+  for (const file of files) {
+    try { rmSync(file, { force: true }); }
+    catch { /* Retried when the next process starts. */ }
   }
 }
 
-const discoveries = new Map<string, Promise<void>>();
+const discoveries = new Map<string, Promise<PluginCatalog | undefined>>();
 
-/** Prevent concurrent sessions from priming the same installed bytes twice. */
-export async function primePluginCatalogSingleFlight(identity: PluginCatalogIdentity, discover: () => Promise<void>): Promise<void> {
+/**
+ * Prevent concurrent sessions from priming the same installed bytes twice.
+ * Every caller receives the discovered catalog in memory, including one that
+ * is never written because it carries a saved secret.
+ */
+export async function primePluginCatalogSingleFlight(
+  identity: PluginCatalogIdentity, discover: () => Promise<PluginCatalog | undefined>,
+): Promise<PluginCatalog | undefined> {
   const key = cachePath(identity);
   let task = discoveries.get(key);
   if (!task) {
     task = discover();
     discoveries.set(key, task);
   }
-  try { await task; }
+  try { return await task; }
   finally { if (discoveries.get(key) === task) discoveries.delete(key); }
 }
 
@@ -362,4 +390,8 @@ export function writePluginCatalog(identity: PluginCatalogIdentity, catalog: Plu
   const temporary = `${path}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
   writeFileSync(temporary, JSON.stringify(catalog), { mode: 0o600 });
   renameSync(temporary, path);
+}
+
+export function deletePluginCatalog(identity: PluginCatalogIdentity): void {
+  rmSync(cachePath(identity), { force: true });
 }

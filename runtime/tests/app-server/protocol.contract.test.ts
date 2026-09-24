@@ -722,35 +722,6 @@ describe("AgenC daemon protocol surface", () => {
     ).toBe(false);
   });
 
-  it("publishes the opt-in stopped state for on-demand MCP servers", () => {
-    const schema = readProtocolSchema();
-    const validateRequest = compileRequestValidator(schema);
-    const request = (params: Record<string, unknown>) => ({
-      jsonrpc: JSON_RPC_VERSION, id: "mcp-status", method: "session.mcp.status", params,
-    });
-    expect(validateRequest(request({ sessionId: "session_1" })), JSON.stringify(validateRequest.errors)).toBe(true);
-    expect(
-      validateRequest(request({ sessionId: "session_1", includeStoppedState: true })),
-      JSON.stringify(validateRequest.errors),
-    ).toBe(true);
-    expect(validateRequest(request({ sessionId: "session_1", includeStoppedState: "true" }))).toBe(false);
-    const validateStatus = compileDefinitionValidator(schema, "SessionMcpStatusResult");
-    const status = {
-      sessionId: "session_1",
-      revision: 3,
-      servers: [{
-        name: "plugin:demo:edgar",
-        transport: "stdio",
-        enabled: true,
-        required: false,
-        state: "stopped",
-        toolCount: 1,
-      }],
-      tools: [{ serverName: "plugin:demo:edgar", name: "mcp.plugin:demo:edgar.lookup" }],
-    } satisfies SessionMcpStatusResult;
-    expect(validateStatus(status), JSON.stringify(validateStatus.errors)).toBe(true);
-  });
-
   it("exposes a distinct const-method request envelope for every Connections method", () => {
     const schema = readProtocolSchema();
     const request = schema.definitions.AgenCDaemonRequest as { oneOf: { $ref: string }[] };

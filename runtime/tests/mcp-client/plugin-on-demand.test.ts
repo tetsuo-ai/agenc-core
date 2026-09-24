@@ -1319,6 +1319,73 @@ describe("plugin MCP on-demand lifecycle", () => {
     } finally { await manager.stop(); }
   });
 
+  it("gives a session that joins another's discovery the catalog kept out of the disk cache", async () => {
+    const cacheHome = await home();
+    const cfg = config(cacheHome, "plugin:sample:joined", { pluginSecretValues: ["joined-private-phrase"] });
+    setupTransport([{ ...descriptor(), description: "Uses joined-private-phrase" }]);
+    const a = new MCPManager([cfg]); const b = new MCPManager([cfg]);
+    try {
+      await Promise.all([a.start(), b.start()]);
+      await Promise.all([a.primeCatalogs(), b.primeCatalogs()]);
+      await waitFor(() => a.getConnectionState(cfg.name)?.type === "stopped");
+      expect(spawn).toHaveBeenCalledTimes(1);
+      for (const manager of [a, b]) {
+        expect(manager.getToolsByServer(cfg.name).map(tool => tool.name)).toEqual([`mcp.${cfg.name}.ping`]);
+        expect(JSON.stringify(manager.getToolsByServer(cfg.name))).not.toContain("joined-private-phrase");
+      }
+      expect(readPluginCatalog(catalogIdentity(cfg))).toBeUndefined();
+      expect(await catalogText(cacheHome)).not.toContain("joined-private-phrase");
+    } finally { await Promise.all([a.stop(), b.stop()]); }
+  });
+
+  it("removes the older disk catalog when a newer one carries a saved secret", async () => {
+    const cacheHome = await home();
+    const cfg = config(cacheHome, "plugin:sample:grown", { pluginSecretValues: ["grown-private-phrase"] });
+    warm(cfg, [descriptor("ping")]);
+    setupTransport([descriptor("ping"), { ...descriptor("added"), description: "Uses grown-private-phrase" }]);
+    const first = new MCPManager([cfg]);
+    try {
+      await first.start();
+      expect((await first.callTool(cfg.name, "ping", {})).isError).not.toBe(true);
+      expect(readPluginCatalog(catalogIdentity(cfg))).toBeUndefined();
+    } finally { await first.stop(); }
+    const next = new MCPManager([cfg]);
+    try {
+      await next.start();
+      expect(next.getToolsByServer(cfg.name)).toEqual([]);
+      await next.primeCatalogs();
+      expect(next.getToolsByServer(cfg.name).map(tool => tool.name))
+        .toEqual([`mcp.${cfg.name}.ping`, `mcp.${cfg.name}.added`]);
+      expect(await catalogText(cacheHome)).not.toContain("grown-private-phrase");
+    } finally { await next.stop(); }
+  });
+
+  it("removes catalogs of the earlier flat layout when a session starts", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome); warm(cfg);
+    const flat = join(cacheHome, "cache", "plugin-mcp-catalogs", `${"f".repeat(64)}.json`);
+    await writeFile(flat, JSON.stringify({ format: 1, tools: [{ ...descriptor(), description: "Uses flat-private-phrase" }] }));
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      await expect(stat(flat)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await catalogText(cacheHome)).not.toContain("flat-private-phrase");
+      expect(manager.getToolsByServer(cfg.name)).toHaveLength(1);
+      expect(spawn).not.toHaveBeenCalled();
+    } finally { await manager.stop(); }
+  });
+
+  it.skipIf(process.platform === "win32")("starts when a flat-layout catalog cannot be removed", async () => {
+    const cacheHome = await home(); const cfg = config(cacheHome); warm(cfg);
+    const root = join(cacheHome, "cache", "plugin-mcp-catalogs");
+    await writeFile(join(root, `${"f".repeat(64)}.json`), "{}");
+    await chmod(root, 0o500);
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      expect(manager.getToolsByServer(cfg.name)).toHaveLength(1);
+    } finally { await manager.stop(); await chmod(root, 0o700); }
+  });
+
   it("redacts every plugin's saved values from a lazy startup failure", async () => {
     const cacheHome = await home();
     const alpha = config(cacheHome, "plugin:sample:alpha", { pluginSecretValues: ["alpha-private-phrase"] }); warm(alpha);
@@ -1334,6 +1401,23 @@ describe("plugin MCP on-demand lifecycle", () => {
         expect(JSON.stringify(result)).not.toContain(secret);
         expect(JSON.stringify(manager.getConnectionState(alpha.name))).not.toContain(secret);
       }
+    } finally { await manager.stop(); }
+  });
+
+  it.each(["readResource", "renderPrompt"] as const)("redacts every plugin's saved values from a lazy startup failure in %s", async operation => {
+    const cacheHome = await home();
+    const alpha = config(cacheHome, "plugin:sample:alpha", { pluginSecretValues: ["alpha-private-phrase"] }); warm(alpha);
+    const beta = config(cacheHome, "plugin:sample:beta", { pluginSecretValues: ["beta-private-phrase"] });
+    spawn.mockRejectedValue(new Error("spawn failed: alpha-private-phrase beta-private-phrase"));
+    const manager = new MCPManager([alpha, beta]);
+    try {
+      await manager.start();
+      const request = operation === "readResource"
+        ? manager.readResource(`mcp.${alpha.name}.fixture://item`)
+        : manager.renderPrompt(`mcp.${alpha.name}.hello`);
+      const message = await request.then(() => "resolved", (error: unknown) => String((error as Error).message));
+      expect(message).toContain("spawn failed");
+      for (const secret of ["alpha-private-phrase", "beta-private-phrase"]) expect(message).not.toContain(secret);
     } finally { await manager.stop(); }
   });
 

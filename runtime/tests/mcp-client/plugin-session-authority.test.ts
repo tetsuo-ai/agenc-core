@@ -16,9 +16,17 @@ vi.mock("./transports/stdio.js", () => ({ createStdioMCPConnection: vi.fn() }));
 import { createStdioMCPConnection } from "./transports/stdio.js";
 vi.mock("./plugin-catalog-cache.js", async importOriginal => {
   const actual = await importOriginal<typeof import("./plugin-catalog-cache.js")>();
-  return { ...actual, snapshotInstalledPluginOffThread: vi.fn(actual.snapshotInstalledPluginOffThread) };
+  return {
+    ...actual,
+    snapshotInstalledPluginOffThread: vi.fn(actual.snapshotInstalledPluginOffThread),
+    removePluginCatalogs: vi.fn(actual.removePluginCatalogs),
+  };
 });
-import { snapshotInstalledPluginOffThread } from "./plugin-catalog-cache.js";
+import { removePluginCatalogs, snapshotInstalledPluginOffThread } from "./plugin-catalog-cache.js";
+vi.mock("../utils/debug.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../utils/debug.js")>(), logForDebugging: vi.fn(),
+}));
+import { logForDebugging } from "../utils/debug.js";
 
 const spawn = vi.mocked(createStdioMCPConnection);
 const roots: string[] = [];
@@ -307,6 +315,55 @@ it("hashes only the target plugin before a first launch", async () => {
   } finally { await manager.stopStrict(); }
 });
 
+it("refuses a changed first launch without taking a process slot from an idle server", async () => {
+  const { config } = await fixture();
+  const limited: MCPServerConfig = { ...config, origin: { ...config.origin!, pluginServer: {
+    ...config.origin!.pluginServer!, maxProcesses: 1,
+  } } };
+  const other: MCPServerConfig = {
+    name: "plugin:other:idle", command: "fixture", transport: "stdio", pluginCatalogHome: config.pluginCatalogHome,
+    origin: { scope: "plugin", pluginServer: {
+      pluginName: "other", serverName: "idle", version: "1", digest: "b".repeat(64), idleTimeoutMs: 600_000, maxProcesses: 1,
+    } },
+  };
+  const manager = directManager(limited);
+  const otherManager = new MCPManager([other]);
+  try {
+    await manager.start();
+    await otherManager.start();
+    expect((await otherManager.callTool(other.name, "ping", {})).isError).not.toBe(true);
+    await writeFile(join(limited.origin!.pluginServer!.pluginRoot!, "entry.js"), "changed");
+    const result = await manager.callTool(limited.name, "ping", {});
+    expect(String(result.content)).toMatch(/changed; reconnect this server or start a new session/);
+    expect(otherManager.getConnectionState(other.name)?.type).toBe("connected");
+    expect(spawn).toHaveBeenCalledTimes(1);
+  } finally { await manager.stopStrict(); await otherManager.stopStrict(); }
+});
+
+it("checks a refused first launch once per configuration rather than on every tool search", async () => {
+  const { config } = await fixture();
+  const entry = join(config.origin!.pluginServer!.pluginRoot!, "entry.js");
+  const manager = directManager(config);
+  try {
+    await manager.start();
+    await writeFile(entry, "changed");
+    const snapshot = vi.mocked(snapshotInstalledPluginOffThread);
+    snapshot.mockClear();
+    for (let search = 0; search < 3; search++) await manager.primeCatalogs();
+    expect(snapshot).toHaveBeenCalledTimes(1);
+    expect(manager.getConnectionState(config.name)).toMatchObject({
+      type: "failed", error: expect.stringMatching(/changed; reconnect this server or start a new session/),
+    });
+    // A refresh replaces the refused configuration, so the next search checks it again.
+    await writeFile(entry, "same");
+    await manager.refreshServers([config]);
+    await manager.primeCatalogs();
+    expect(snapshot).toHaveBeenCalledTimes(2);
+    expect(manager.getToolsByServer(config.name)).toHaveLength(1);
+    expect(spawn).toHaveBeenCalledTimes(1);
+  } finally { await manager.stopStrict(); }
+});
+
 it("removes the plugin's discovered catalogs on uninstall", async () => {
   const { home, workspace, storage, config } = await fixture();
   const manager = directManager(config);
@@ -318,6 +375,27 @@ it("removes the plugin's discovered catalogs on uninstall", async () => {
   await uninstallPluginOp({ pluginId: "sample", agencHome: home, env: { HOME: home, AGENC_HOME: home },
     pluginStorageRoot: storage, sessionTempRoot: home, workspaceRoot: workspace });
   expect(await catalogFiles(home)).toEqual([]);
+});
+
+it("completes an uninstall and reloads its config store when catalog cleanup fails", async () => {
+  const { home, workspace, storage, config } = await fixture();
+  const store = await sessionStore(home, workspace);
+  const reload = vi.spyOn(store, "reload");
+  const catalogs = join(home, "cache", "plugin-mcp-catalogs");
+  vi.mocked(removePluginCatalogs).mockImplementationOnce(() => {
+    throw Object.assign(new Error(`EBUSY: resource busy or locked, rmdir '${catalogs}'`), { code: "EBUSY" });
+  });
+  vi.mocked(logForDebugging).mockClear();
+  await expect(uninstallPluginOp({ pluginId: "sample", agencHome: home, env: { HOME: home, AGENC_HOME: home },
+    pluginStorageRoot: storage, sessionTempRoot: home, workspaceRoot: workspace, configStore: store }))
+    .resolves.toMatchObject({ pluginId: "sample", removedRoots: [expect.any(String)] });
+  await expect(stat(config.origin!.pluginServer!.pluginRoot!)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(reload).toHaveBeenCalled();
+  const warnings = vi.mocked(logForDebugging).mock.calls
+    .filter(([, options]) => options?.level === "warn").map(([message]) => message).join("\n");
+  expect(warnings).toContain("sample");
+  expect(warnings).toContain("EBUSY");
+  expect(warnings).not.toContain(catalogs);
 });
 
 it("rejects CLI disable before a lazy plugin's first use", async () => {

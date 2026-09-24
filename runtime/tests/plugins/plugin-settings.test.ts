@@ -17,6 +17,17 @@ const discoveryPause = vi.hoisted(() => ({ wait: null as null | (() => Promise<v
 const validationPause = vi.hoisted(() => ({ wait: null as null | (() => Promise<void>) }))
 const staleNativeRead = vi.hoisted(() => ({ value: null as SecureStorageData | null }))
 const freshReadHook = vi.hoisted(() => ({ run: null as null | (() => void) }))
+const catalogRemovalFailure = vi.hoisted(() => ({ error: null as null | Error }))
+vi.mock('../../src/mcp-client/plugin-catalog-cache.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/mcp-client/plugin-catalog-cache.js')>()
+  return { ...actual, removePluginCatalogs: (...args: Parameters<typeof actual.removePluginCatalogs>) => {
+    if (catalogRemovalFailure.error) throw catalogRemovalFailure.error
+    return actual.removePluginCatalogs(...args)
+  } }
+})
+vi.mock('../../src/utils/debug.js', async importOriginal => ({
+  ...await importOriginal<typeof import('../../src/utils/debug.js')>(), logForDebugging: vi.fn(),
+}))
 vi.mock('../../src/utils/plugins/mcpbHandler.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/utils/plugins/mcpbHandler.js')>()
   return { ...actual, validateUserConfig: async (...args: Parameters<typeof actual.validateUserConfig>) => {
@@ -75,6 +86,7 @@ import { resolveSchemaOwnedPluginConfig } from '../../src/utils/plugins/pluginCo
 import { resolvePluginServerTemplate } from '../../src/plugins/registration/common.js'
 import { MCPManager } from '../../src/mcp-client/manager.js'
 import { createMCPConnection } from '../../src/mcp-client/connection.js'
+import { logForDebugging } from '../../src/utils/debug.js'
 
 vi.mock('../../src/mcp-client/connection.js', () => ({ createMCPConnection: vi.fn() }))
 
@@ -147,7 +159,7 @@ async function lazyPluginSession(options: { readonly idleTimeoutMs?: number; rea
   manager.setPluginFirstLaunchContext(store, context.plugins)
   return { ...context, store, config, manager, launches }
 }
-afterEach(() => { vi.mocked(createMCPConnection).mockReset(); secureStore.clear(); nativeUnavailable.value = false; nativeUnreadable.value = false; staleNativeRead.value = null; freshReadHook.run = null; discoveryPause.wait = null; validationPause.wait = null; for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(() => { vi.mocked(createMCPConnection).mockReset(); secureStore.clear(); nativeUnavailable.value = false; nativeUnreadable.value = false; staleNativeRead.value = null; freshReadHook.run = null; discoveryPause.wait = null; validationPause.wait = null; catalogRemovalFailure.error = null; for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 describe('plugin settings API', () => {
   test('reads, writes, and resets settings over the local daemon protocol', async () => {
@@ -1014,6 +1026,26 @@ describe('plugin settings for on-demand MCP servers', () => {
       expect(catalogFiles(home)).toHaveLength(1)
       await service.reset({ pluginId: 'demo' })
       expect(catalogFiles(home)).toEqual([])
+    } finally { await manager.stopStrict() }
+  })
+
+  test('completes a reset when its catalog cleanup fails', async () => {
+    const { manager, config, service, home } = await lazyPluginSession()
+    try {
+      await manager.start()
+      expect((await manager.callTool(config.name, 'lookup', {})).isError).not.toBe(true)
+      const catalogs = join(home, 'cache', 'plugin-mcp-catalogs')
+      catalogRemovalFailure.error = Object.assign(new Error(`EACCES: permission denied, rmdir '${catalogs}'`), { code: 'EACCES' })
+      vi.mocked(logForDebugging).mockClear()
+      const reset = await service.reset({ pluginId: 'demo' })
+      expect(reset.sensitiveSet.token).toBe(false)
+      expect(reset.values.contact).toBeUndefined()
+      expect(reset.needsSetup).toContain('contact')
+      const warnings = vi.mocked(logForDebugging).mock.calls
+        .filter(([, options]) => options?.level === 'warn').map(([message]) => message).join('\n')
+      expect(warnings).toContain('demo')
+      expect(warnings).toContain('EACCES')
+      expect(warnings).not.toContain(catalogs)
     } finally { await manager.stopStrict() }
   })
 

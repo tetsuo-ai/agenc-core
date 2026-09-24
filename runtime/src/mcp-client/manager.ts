@@ -60,7 +60,7 @@ import { registerSandboxExecutionLifecycleParticipant } from "../sandbox/executi
 import { MCPTransportCleanupError } from "./transports/connect-with-cleanup.js";
 import { assertValidMcpServerName } from "./server-name.js";
 import { isMcpAuthenticationError } from "../services/mcp/auth-errors.js";
-import { acquireVerifiedPluginGeneration, fingerprintPluginCatalogConfig, primePluginCatalogSingleFlight, readPluginCatalog, writePluginCatalog, type PluginCatalog, type PluginCatalogIdentity, type VerifiedPluginGeneration } from "./plugin-catalog-cache.js";
+import { acquireVerifiedPluginGeneration, deletePluginCatalog, fingerprintPluginCatalogConfig, primePluginCatalogSingleFlight, readPluginCatalog, sweepFlatLayoutPluginCatalogs, writePluginCatalog, type PluginCatalog, type PluginCatalogIdentity, type VerifiedPluginGeneration } from "./plugin-catalog-cache.js";
 import { reservePluginProcess, releasePluginProcess, touchPluginProcess, notifyPluginProcessBusy, notifyPluginProcessIdle } from "./plugin-process-budget.js";
 import type { ConfigStore } from "../config/store.js";
 import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
@@ -523,6 +523,8 @@ export class MCPManager {
   private readonly cachedTools = new Map<string, Tool[]>();
   private readonly cachedCatalogs = new Map<string, PluginCatalog>();
   private readonly revokedPluginConfigs = new WeakSet<MCPServerConfig>();
+  /** Tool search skips these until a refresh replaces the configuration. */
+  private readonly refusedFirstLaunches = new WeakSet<MCPServerConfig>();
   private pluginRevocations = new WeakMap<MCPServerConfig, AbortController>();
   private readonly installationGenerations = new Map<MCPServerConfig, { state: VerifiedPluginGeneration; version: number; release: () => void }>();
   private readonly launchedPluginNames = new Set<string>();
@@ -970,6 +972,26 @@ export class MCPManager {
     return raceWithAbort(validation, signal);
   }
 
+  /**
+   * Runs before a process slot is reserved, so a refused first launch takes no
+   * slot and evicts no other server.
+   */
+  private async checkFirstPluginLaunch(config: MCPServerConfig, signal?: AbortSignal): Promise<void> {
+    const plugin = config.origin?.pluginServer;
+    if (!this.isLazyPlugin(config) || this.launchedPluginNames.has(config.name) ||
+        !config.pluginWorkspaceRoot || !plugin?.snapshotRoot) return;
+    let matches = false;
+    try { matches = await this.firstPluginLaunchStillMatches(config, signal); }
+    catch { /* A failed source read or resolution cannot authorize a first launch. */ }
+    // A cancelled or timed-out check reports the cancellation, not a change.
+    signal?.throwIfAborted();
+    if (!matches) {
+      this.refusedFirstLaunches.add(config);
+      throw new Error(`Plugin ${plugin.pluginName} changed; reconnect this server or start a new session`);
+    }
+    this.refusedFirstLaunches.delete(config);
+  }
+
   private async prepareInstallationGenerations(): Promise<void> {
     for (const config of this.configs) {
       if (config.origin?.pluginServer?.pluginRoot && config.origin.pluginServer.digest && config.enabled !== false) {
@@ -1267,6 +1289,7 @@ export class MCPManager {
     this.cachedTools.clear();
     this.cachedCatalogs.clear();
     for (const config of this.configs) {
+      if (config.pluginCatalogHome !== undefined) sweepFlatLayoutPluginCatalogs(config.pluginCatalogHome);
       if (!this.isLazyPlugin(config) || config.enabled === false || !this.installedSnapshotCurrent(config)) continue;
       const identity = this.pluginIdentity(config)!;
       const catalog = readPluginCatalog(identity);
@@ -1281,7 +1304,8 @@ export class MCPManager {
     if (this.catalogPrimeTask) return this.catalogPrimeTask;
     const generation = this.lifecycleGeneration;
     const task = Promise.all(this.configs.filter(config =>
-      config.enabled !== false && this.installedSnapshotCurrent(config) && this.isLazyPlugin(config) && !this.cachedCatalogs.has(config.name))
+      config.enabled !== false && this.installedSnapshotCurrent(config) && this.isLazyPlugin(config) &&
+      !this.cachedCatalogs.has(config.name) && !this.refusedFirstLaunches.has(config))
       .map(async config => {
         const identity = this.pluginIdentity(config)!;
         const existing = readPluginCatalog(identity);
@@ -1290,7 +1314,7 @@ export class MCPManager {
           catch { /* Re-discover a corrupt catalog. */ }
         }
         try {
-          await primePluginCatalogSingleFlight(identity, async () => {
+          const discovered = await primePluginCatalogSingleFlight(identity, async () => {
             await this.ensurePluginConnected(config);
             void this.evictPlugin(config.name, this.pluginLifecycle(config.name).reservation, config, generation).catch(error => {
               const safeError = this.redactPluginDiagnostic(error);
@@ -1299,10 +1323,13 @@ export class MCPManager {
                 this.commitSurfaceMutation(() => this.connectionStates.set(config.name, { type: "failed", error: errMessage(safeError) }));
               }
             });
+            return this.cachedCatalogs.get(config.name);
           });
+          // A session that joined another's discovery takes its catalog from
+          // memory, since one that carries a saved secret has no file.
           if (this.configIsCurrent(config) && !this.cachedCatalogs.has(config.name)) {
-            const discovered = readPluginCatalog(identity);
-            if (discovered) await this.publishCachedCatalog(config, discovered, false);
+            const catalog = discovered ?? readPluginCatalog(identity);
+            if (catalog) await this.publishCachedCatalog(config, catalog, false);
           }
         } catch (error) {
           const safeError = this.redactPluginDiagnostic(error);
@@ -1341,12 +1368,16 @@ export class MCPManager {
     this.cachedCatalogs.set(config.name, catalog);
     this.cachedTools.set(config.name, tools);
     // Only a catalog that carries no saved secret reaches the disk. One that
-    // redaction would change stays in this session's memory.
+    // redaction would change stays in this session's memory, and the older
+    // file for the same identity is removed so new sessions do not list it.
     const sensitiveHeaders = pluginSensitiveHeaders(config);
     if (persist && (sensitiveHeaders === undefined ||
         JSON.stringify(redactMcpAttachmentValue(catalog, sensitiveHeaders)) === JSON.stringify(catalog))) {
       try { writePluginCatalog(this.pluginIdentity(config)!, catalog); }
       catch (error) { this.logger.warn?.(`Could not write plugin MCP catalog for ${config.name}`, error); }
+    } else if (persist) {
+      try { deletePluginCatalog(this.pluginIdentity(config)!); }
+      catch (error) { this.logger.warn?.(`Could not remove the older plugin MCP catalog for ${config.name}`, error); }
     }
     this.notifySurfaceChanged();
   }
@@ -1839,6 +1870,7 @@ export class MCPManager {
     let owner: object | undefined;
     try {
       this.commitSurfaceMutation(() => this.connectionStates.set(config.name, { type: "pending" }));
+      await this.checkFirstPluginLaunch(config, startSignal);
       owner = await this.reserve(config, startSignal);
       startSignal.throwIfAborted();
       if (this.lifecycleGeneration !== generation || !this.configIsCurrent(config) || this.shutdownTask) throw new Error(`MCP plugin ${config.name} configuration changed or session stopped`);
@@ -1891,7 +1923,9 @@ export class MCPManager {
     lifecycle.pending++;
     this.notifyPluginActivity(name);
     try {
-      await this.ensurePluginConnectedWithSignal(config, signal);
+      // A startup failure can quote any plugin's saved values, as in callTool.
+      try { await this.ensurePluginConnectedWithSignal(config, signal); }
+      catch (error) { throw this.redactPluginDiagnostic(error); }
       if (!this.configIsCurrent(config)) return null as T;
       lifecycle.active++;
       this.notifyPluginActivity(name);
@@ -2266,6 +2300,7 @@ export class MCPManager {
       let attempt: ManagedConnectionAttempt | undefined;
       let bridge: MCPToolBridge;
       try {
+        await this.checkFirstPluginLaunch(config, startSignal);
         owner = await this.reserve(config, startSignal);
         startSignal.throwIfAborted();
         if (!this.configIsCurrent(config) || !this.isReconnectLifecycleCurrent(lifecycleGeneration, running)) {
@@ -2875,18 +2910,8 @@ export class MCPManager {
     }
   }
 
+  /** A lazy server's first launch is checked by the caller before it reserves. */
   private async beginConnection(config: MCPServerConfig, signal?: AbortSignal): Promise<ManagedConnectionAttempt> {
-    if (this.isLazyPlugin(config) && !this.launchedPluginNames.has(config.name) &&
-        config.pluginWorkspaceRoot && config.origin?.pluginServer?.snapshotRoot) {
-      let matches = false;
-      try { matches = await this.firstPluginLaunchStillMatches(config, signal); }
-      catch { /* A failed source read or resolution cannot authorize a first launch. */ }
-      // A cancelled or timed-out check reports the cancellation, not a change.
-      signal?.throwIfAborted();
-      if (!matches) {
-        throw new Error(`Plugin ${config.origin.pluginServer.pluginName} changed; reconnect this server or start a new session`);
-      }
-    }
     signal?.throwIfAborted();
     if (!this.configIsCurrent(config)) {
       throw new Error(`MCP server "${config.name}" configuration changed or was disabled`);
