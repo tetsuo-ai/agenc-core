@@ -14,25 +14,34 @@ export class ThreadRegistryLock {
 
   acquire(): void {
     if (this.acquired) return;
-    mkdirSync(dirname(this.path), { recursive: true });
     const deadline = Date.now() + 30_000;
+    while (!this.tryAcquire()) {
+      if (Date.now() >= deadline) throw new Error(`failed to acquire registry lock ${this.path}`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+  }
+
+  /** One attempt that never waits: false while another live holder has the lock. */
+  tryAcquire(): boolean {
+    if (this.acquired) return true;
+    mkdirSync(dirname(this.path), { recursive: true });
     const holderFile = join(this.path, "holder.pid");
-    while (true) {
+    // A second pass only follows the removal of a dead holder's lock.
+    for (let pass = 0; pass < 2; pass += 1) {
       try {
         mkdirSync(this.path);
         try { writeFileSync(holderFile, `${process.pid}`, "utf8"); }
         catch { /* The directory itself is the lock; the pid aids recovery. */ }
         this.acquired = true;
-        return;
+        return true;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
           throw new Error(`failed to acquire registry lock ${this.path}`, { cause: error });
         }
-        if (this.tryReclaimStaleLock(holderFile)) continue;
-        if (Date.now() >= deadline) throw new Error(`failed to acquire registry lock ${this.path}`);
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+        if (!this.tryReclaimStaleLock(holderFile)) return false;
       }
     }
+    return false;
   }
 
   release(): void {

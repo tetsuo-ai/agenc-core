@@ -438,9 +438,13 @@ export function pruneRolloutSessions(
     // Publication and archive hold the same cross-process registry lock.
     // Take it before the rollout leases so publication can safely use an
     // already-held writer lease without mistaking retention for that writer.
+    // Retention runs on the daemon's periodic timer, so it never waits for a
+    // busy registry: the rest of this sweep is left to the next run.
     const registryLock = new ThreadRegistryLock(driver.projectDir);
-    try { registryLock.acquire(); }
+    let registryHeld: boolean;
+    try { registryHeld = registryLock.tryAcquire(); }
     catch (error) { onError(error); continue; }
+    if (!registryHeld) break;
     try {
       // An archive may have moved the journal since the first observation.
       const currentRollout = describeSessionRollouts(sessionDir);
