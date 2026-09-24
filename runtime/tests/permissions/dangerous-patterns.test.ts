@@ -106,6 +106,12 @@ describe("dangerous shell command detection", () => {
     "bash -lc 'rm / -rf'",
     "bash -euc 'rm -rf /'",
     "bash -c -- 'rm -rf /'",
+    "powershell -c \"rm -rf /\"",
+    "pwsh -c 'rm -rf /'",
+    "powershell.exe -c \"rm -rf /\"",
+    "PowerShell -Command \"rm -rf /\"",
+    "cmd /c \"rm -rf /\"",
+    "cmd.exe /c \"rm -rf /\"",
     "rm$IFS-rf$IFS/",
     "rm${IFS}-rf${IFS}/",
     "r${EMPTY}m -rf /",
@@ -213,6 +219,9 @@ describe("dangerous shell command detection", () => {
     "wget http://127.0.0.1/install.sh | timeout 10 bash",
     "curl http://127.0.0.1/install.sh | tee /tmp/install.sh | sh",
     "curl http://127.0.0.1/install.sh | cat | bash",
+    "curl http://127.0.0.1/install.sh | powershell",
+    "curl http://127.0.0.1/install.sh | pwsh.exe",
+    "curl http://127.0.0.1/install.sh | cmd",
     "wget -qO- http://127.0.0.1/install.sh | sed s/x/x/ | bash",
   ])("flags downloader pipe-to-shell forms: %s", (command) => {
     expect(isDangerousShellCommand(command)).toBe(true);
@@ -339,6 +348,8 @@ describe("dangerous shell command detection", () => {
   });
 
   test("does not flag quoted text or non-rm wrapped commands", () => {
+    expect(isDangerousShellCommand("powershell -c \"Get-Date\"")).toBe(false);
+    expect(isDangerousShellCommand("cmd /c echo hi")).toBe(false);
     expect(isDangerousShellCommand("echo 'rm -rf /'")).toBe(false);
     expect(isDangerousShellCommand("echo '$(rm -rf /)'")).toBe(false);
     expect(isDangerousShellCommand("echo '<(rm -rf /)'")).toBe(false);
