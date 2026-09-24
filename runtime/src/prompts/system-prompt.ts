@@ -1110,7 +1110,7 @@ export async function assembleSystemPrompt(
   // The turn config can inherit the root model in a delegated child. Its
   // session binding is the authority for the actual destination.
   const childBinding = session.providerService?.current();
-  const model = childBinding?.model ?? ctx.modelInfo.slug ?? ctx.config.model;
+  const model = childBinding?.model ?? ctx.modelInfo?.slug ?? ctx.config.model;
   const cwd = ctx.cwd;
   const envInfoInputs: EnvInfoInputs = {
     model,
