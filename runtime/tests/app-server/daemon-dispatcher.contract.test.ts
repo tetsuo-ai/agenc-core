@@ -109,19 +109,37 @@ describe("session.artifact.read wire contract", () => {
     const currentResult = await current.dispatch(request("new", "session.transcript.v2", { sessionId: "one" }));
     expect((currentResult.result as typeof snapshot).events).toHaveLength(1);
   });
-  it("gives a 1.17 client a readable preview of an oversized answer", async () => {
+  it("gives a 1.17 client the complete 400,000-byte answer", async () => {
     const manager = new AgenCDaemonAgentManager();
-    const answer = "Legacy answer. ".repeat(28_000);
+    const answer = `${"A".repeat(399_988)}FINAL_MARKER`;
     const snapshot = sessionTranscriptV2FromRollout([{ type: "event_msg", payload: { id: "answer", eventId: "answer", seq: 1, msg: { type: "agent_message", payload: { message: answer } } } }], "one", "run", undefined, await workspaces.create());
+    const bytes = Buffer.from(answer);
+    vi.spyOn(manager, "readSessionArtifact").mockImplementation(async ({ sessionId, id, offset = 0, length = 512 * 1024 }) => {
+      const end = Math.min(offset + length, bytes.length);
+      return { sessionId, id, encoding: "base64", data: bytes.subarray(offset, end).toString("base64"), size: bytes.length, offset, nextOffset: end < bytes.length ? end : null };
+    });
     vi.spyOn(manager, "getSessionTranscriptV2").mockResolvedValue(snapshot);
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: new AgenCDaemonSessionManager() });
     const older = dispatcher.createConnection({ sendNotification: () => {} });
     await initialize(older, "1.17.0");
     const response = await older.dispatch(request("old", "session.transcript.v2", { sessionId: "one" }));
     const message = (response.result as typeof snapshot).messages.at(-1)!;
-    expect(message.text).toContain("Legacy answer.");
-    expect(message.text).toContain("truncated");
+    expect(message.text).toBe(answer);
+    expect(message.text).toContain("FINAL_MARKER");
     expect(message.textArtifact).toBeUndefined();
+  });
+  it("does not mark an answer restored for 1.17 when it cannot fit the legacy transport", async () => {
+    const manager = new AgenCDaemonAgentManager();
+    const snapshot = sessionTranscriptV2FromRollout([{ type: "event_msg", payload: { id: "answer", eventId: "answer", seq: 1, msg: { type: "agent_message", payload: { message: "A".repeat(800_000) } } } }], "one", "run", undefined, await workspaces.create());
+    vi.spyOn(manager, "getSessionTranscriptV2").mockResolvedValue(snapshot);
+    const read = vi.spyOn(manager, "readSessionArtifact");
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: new AgenCDaemonSessionManager() });
+    const older = dispatcher.createConnection({ sendNotification: () => {} });
+    await initialize(older, "1.17.0");
+    const response = await older.dispatch(request("old", "session.transcript.v2", { sessionId: "one" }));
+    expect(response).toHaveProperty("error");
+    expect(response).not.toHaveProperty("result");
+    expect(read).not.toHaveBeenCalled();
   });
   it("requires a digest and routes an authenticated session-scoped id", async () => {
     const agentManager = new AgenCDaemonAgentManager();

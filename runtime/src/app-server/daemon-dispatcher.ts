@@ -8,7 +8,7 @@ import { ROUTINE_SESSION_PREPARE_CAPABILITY, type RoutineSessionPreparation } fr
  * land.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { sessionMcpAttachmentIssue } from "../mcp-client/local-control.js";
 import { isAbsolute } from "node:path";
 import { WhisperError, type WhisperService } from "../audio/whisper.js";
@@ -1330,11 +1330,38 @@ export class AgenCDaemonJsonRpcDispatcher {
             validateSessionTranscriptV2Params(params),
           );
           const clientMinor = Number(connection.initializeState?.clientProtocol.version.split(".")[1] ?? 0);
-          return successResponse(id, clientMinor >= 18 ? transcript : {
-            ...transcript,
-            messages: transcript.messages.map(({ textArtifact: _textArtifact, ...message }) => message),
-            events: transcript.events?.filter(event => event.type !== "tool_call_completed"),
-          });
+          if (clientMinor >= 18) return successResponse(id, transcript);
+          // Protocol 1.17 has no artifact RPC. Rehydrate text inside its
+          // existing transcript response while the whole reply fits the
+          // remote envelope. An error leaves reconciliation uncovered.
+          const maxLegacyBytes = 768 * 1024;
+          const messages: Array<(typeof transcript.messages)[number]> = [];
+          let artifactBytes = 0;
+          for (const { textArtifact, ...message } of transcript.messages) {
+            if (textArtifact === undefined) {
+              messages.push(message);
+              continue;
+            }
+            artifactBytes += textArtifact.size;
+            if (artifactBytes > maxLegacyBytes) throw new Error("legacy transcript answer exceeds transport limit");
+            const chunks: Buffer[] = [];
+            let offset = 0;
+            while (offset < textArtifact.size) {
+              const chunk = await this.#agentManager.readSessionArtifact({ sessionId: transcript.sessionId, id: textArtifact.id, offset, length: 256 * 1024 });
+              const data = Buffer.from(chunk.data, "base64");
+              if (chunk.id !== textArtifact.id || chunk.size !== textArtifact.size || chunk.offset !== offset || data.length === 0 || offset + data.length > textArtifact.size || chunk.nextOffset !== (offset + data.length < textArtifact.size ? offset + data.length : null)) {
+                throw new Error("legacy transcript artifact changed during read");
+              }
+              chunks.push(data);
+              offset += data.length;
+            }
+            const bytes = Buffer.concat(chunks, offset);
+            if (createHash("sha256").update(bytes).digest("hex") !== textArtifact.digest) throw new Error("legacy transcript artifact digest mismatch");
+            messages.push({ ...message, text: bytes.toString("utf8") });
+          }
+          const legacy = { ...transcript, messages, events: transcript.events?.filter(event => event.type !== "tool_call_completed") };
+          if (Buffer.byteLength(JSON.stringify(legacy), "utf8") > maxLegacyBytes) throw new Error("legacy transcript exceeds transport limit");
+          return successResponse(id, legacy);
         }
       case "session.artifact.read":
         {

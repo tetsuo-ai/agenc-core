@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { realpath } from "node:fs/promises";
 import { basename, extname, isAbsolute, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -194,15 +193,16 @@ export async function validateDisplayBlock(block: Record<string, unknown>, roots
     const inferredImages: Readonly<Record<string, string>> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" };
     const mimeType = typeof block.mimeType === "string" ? block.mimeType : inferredImages[extname(path).toLowerCase()] ?? "application/octet-stream";
     validateBinaryMime(mimeType);
-    const allowedRoots = roots;
-    const realRoots = await Promise.all(allowedRoots.map(root => realpath(root).catch(() => undefined)));
     let bytes: Buffer | undefined;
-    for (const rootPath of realRoots) {
-      if (!rootPath || !within(path, rootPath) || path === rootPath) continue;
+    for (const allowedRoot of roots) {
       const signal = new AbortController().signal;
-      const root = await bindVerifiedRoot(rootPath, signal, readContext);
+      // This retained binding is the authorization. Never resolve the root
+      // again after deciding that the candidate lies beneath it.
+      const root = await bindVerifiedRoot(allowedRoot, signal, readContext);
       if (!root) continue;
       try {
+        const rootPath = root.binding.canonicalPath;
+        if (!within(path, rootPath) || path === rootPath) continue;
         const rel = relative(rootPath, path);
         const handle = await openVerifiedCandidate(root, rel, signal, readContext);
         if (!handle) continue;

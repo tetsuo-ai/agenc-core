@@ -162,6 +162,24 @@ describe("MCP user audience display attachments", () => {
     } finally { fileRace.target = ""; fileRace.switchAncestor = undefined; }
   });
 
+  it.skipIf(process.platform !== "linux")("keeps the authorized root when an ancestor changes before root binding", async () => {
+    const base = await mkdtemp(join(tmpdir(), "display-root-bind-race-")); directories.push(base);
+    const outside = await mkdtemp(join(tmpdir(), "display-root-bind-outside-")); directories.push(outside);
+    const slot = join(base, "slot"); await mkdir(slot);
+    const root = join(slot, "allowed"); await mkdir(root);
+    await writeFile(join(root, "secret.txt"), "inside");
+    const outsideRoot = join(outside, "allowed"); await mkdir(outsideRoot);
+    await writeFile(join(outsideRoot, "secret.txt"), "OUTSIDE_SECRET_BYTES");
+    const target = join(root, "secret.txt");
+    fileRace.target = root;
+    fileRace.switchAncestor = async () => {
+      await rename(slot, join(base, "parked"));
+      await symlink(outside, slot);
+    };
+    await expect(validateDisplayBlock({ type: "resource_link", uri: pathToFileURL(target).href, name: "secret.txt" }, [root])).rejects.toThrow();
+    expect(fileRace.switched).toBe(true);
+  });
+
   it.each(["darwin", "freebsd"])("refuses workspace file links on %s before an ancestor can be switched for the entire read", async (platform) => {
     const plugin = await mkdtemp(join(tmpdir(), "display-trusted-")); directories.push(plugin);
     const workspace = await mkdtemp(join(tmpdir(), "display-workspace-")); directories.push(workspace);

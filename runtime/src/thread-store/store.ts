@@ -390,6 +390,7 @@ export class FileThreadStore implements ThreadStore {
           });
     this.threadIndex = new StateThreadRepository(this.stateDriver);
     this.readLegacyThreadsJson();
+    this.finishPendingUnarchiveCleanup();
   }
 
   /** Compatibility sidecar path imported by this store. Exposed for tests. */
@@ -837,6 +838,9 @@ export class FileThreadStore implements ThreadStore {
 
   archiveThread(params: ArchiveThreadParams): void {
     this.assertOpen();
+    // Re-archiving an active thread must not overwrite the only path that
+    // records a failed unarchive cleanup.
+    this.finishPendingUnarchiveCleanup(params.threadId);
     let archivedSessionDir: string | undefined;
     let archiveArtifactDir: string | undefined;
     timed("thread_archive", () =>
@@ -889,6 +893,11 @@ export class FileThreadStore implements ThreadStore {
       if (existing === undefined) {
         throw new ThreadNotFoundError(params.threadId);
       }
+      if (existing.archivedAt === undefined) {
+        if (existing.archivedRolloutPath !== undefined) archiveArtifactDir = dirname(existing.archivedRolloutPath);
+        result = toStoredThread(existing, this.defaultModelProviderId);
+        return;
+      }
       const now = new Date().toISOString();
       this.appendThreadMetadataRollout(existing, {
         archivedAt: null,
@@ -899,11 +908,11 @@ export class FileThreadStore implements ThreadStore {
       if (existing.archivedRolloutPath !== undefined) archiveArtifactDir = dirname(existing.archivedRolloutPath);
       const {
         archivedAt: _drop,
-        archivedRolloutPath: _archivedRolloutPath,
         ...rest
       } = existing;
       void _drop;
-      void _archivedRolloutPath;
+      // Keep archivedRolloutPath as a durable cleanup cursor. A crash or
+      // failed removal can resume after the active registry transition.
       const updated: RegistryEntry = {
         ...rest,
         updatedAt: now,
@@ -914,8 +923,36 @@ export class FileThreadStore implements ThreadStore {
       registry.set(params.threadId, updated);
       result = toStoredThread(updated, this.defaultModelProviderId);
     });
-    if (archiveArtifactDir !== undefined) removeDisplayArtifacts(archiveArtifactDir);
+    if (archiveArtifactDir !== undefined) {
+      removeDisplayArtifacts(archiveArtifactDir);
+      this.updateRegistry(registry => {
+        const existing = registry.get(params.threadId);
+        if (existing?.archivedAt !== undefined || existing?.archivedRolloutPath === undefined) return;
+        if (dirname(existing.archivedRolloutPath) !== archiveArtifactDir) return;
+        const { archivedRolloutPath: _drop, ...cleaned } = existing;
+        void _drop;
+        registry.set(params.threadId, cleaned);
+      });
+    }
     return result!;
+  }
+
+  private finishPendingUnarchiveCleanup(threadId?: ThreadId): void {
+    const entries = threadId === undefined
+      ? this.threadIndex.listThreads()
+      : [this.threadIndex.getThread(threadId)];
+    for (const entry of entries) {
+      if (entry === undefined || entry.archivedAt !== undefined || entry.archivedRolloutPath === undefined) continue;
+      const archiveArtifactDir = dirname(entry.archivedRolloutPath);
+      removeDisplayArtifacts(archiveArtifactDir);
+      this.updateRegistry(registry => {
+        const current = registry.get(entry.threadId);
+        if (current === undefined || current.archivedAt !== undefined || current.archivedRolloutPath !== entry.archivedRolloutPath) return;
+        const { archivedRolloutPath: _drop, ...cleaned } = current;
+        void _drop;
+        registry.set(entry.threadId, cleaned);
+      });
+    }
   }
 
   close(): void {

@@ -386,6 +386,50 @@ describe("FileThreadStore.archiveThread / listThreads", () => {
       expect(existsSync(artifacts)).toBe(false);
     } finally { rollout.close(); rmSync(cwd, { recursive: true, force: true }); }
   });
+  it("retries archived artifact cleanup after unarchive removal fails", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-unarchive-retry-"));
+    const rollout = openStore({ cwd, sessionId: "unarchive-retry" });
+    try {
+      const store = new FileThreadStore({ agencHome, cwd });
+      store.createThread({ threadId: "unarchive-retry", rolloutStore: rollout });
+      store.shutdownThread("unarchive-retry");
+      rollout.close();
+      store.archiveThread({ threadId: "unarchive-retry" });
+      const archived = store.readThread({ threadId: "unarchive-retry", includeArchived: true, includeHistory: false });
+      const artifacts = join(dirname(archived.rolloutPath!), "display-artifacts");
+      mkdirSync(artifacts);
+      writeFileSync(join(artifacts, "held"), "A".repeat(400_000));
+      artifactCleanupFailure.path = artifacts;
+      artifactCleanupFailure.failOnce = true;
+      expect(() => store.unarchiveThread({ threadId: "unarchive-retry" })).toThrow("injected artifact cleanup failure");
+      expect(existsSync(artifacts)).toBe(true);
+      store.unarchiveThread({ threadId: "unarchive-retry" });
+      expect(existsSync(artifacts)).toBe(false);
+    } finally { rollout.close(); rmSync(cwd, { recursive: true, force: true }); }
+  });
+  it("finishes pending unarchive cleanup when the store restarts", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-unarchive-startup-"));
+    const rollout = openStore({ cwd, sessionId: "unarchive-startup" });
+    try {
+      const store = new FileThreadStore({ agencHome, cwd });
+      store.createThread({ threadId: "unarchive-startup", rolloutStore: rollout });
+      store.shutdownThread("unarchive-startup");
+      rollout.close();
+      store.archiveThread({ threadId: "unarchive-startup" });
+      const archived = store.readThread({ threadId: "unarchive-startup", includeArchived: true, includeHistory: false });
+      const artifacts = join(dirname(archived.rolloutPath!), "display-artifacts");
+      mkdirSync(artifacts);
+      writeFileSync(join(artifacts, "held"), "A".repeat(400_000));
+      artifactCleanupFailure.path = artifacts;
+      artifactCleanupFailure.failOnce = true;
+      expect(() => store.unarchiveThread({ threadId: "unarchive-startup" })).toThrow("injected artifact cleanup failure");
+      store.close();
+      const restarted = new FileThreadStore({ agencHome, cwd });
+      expect(existsSync(artifacts)).toBe(false);
+      expect(restarted.readThread({ threadId: "unarchive-startup", includeArchived: false, includeHistory: false }).archivedAt).toBeUndefined();
+      restarted.close();
+    } finally { rollout.close(); rmSync(cwd, { recursive: true, force: true }); }
+  });
   it("archived threads do not appear in listThreads() without archived=true", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-cwd-"));
     const active = openStore({ cwd, sessionId: "active" });
