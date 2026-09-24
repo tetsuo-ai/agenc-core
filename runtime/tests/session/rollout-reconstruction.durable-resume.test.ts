@@ -171,6 +171,50 @@ function orphanWithCheckpoint(args: CheckpointArgs): RolloutItem[] {
   return items;
 }
 
+function checkpointWithEffectEvents(args: {
+  readonly turnId: string;
+  readonly buildId: string;
+  readonly userContent: string;
+  readonly callId: string;
+  readonly toolName: string;
+  readonly stepId: string;
+  readonly intentId: string;
+  readonly outcomeId: string;
+  readonly outcome: "succeeded" | "unknown_outcome";
+}): RolloutItem[] {
+  const prefix: ResponseItem[] = [
+    { role: "user", content: args.userContent },
+    { role: "assistant", content: "", toolCalls: [
+      { id: args.callId, name: args.toolName, arguments: "{}" },
+    ] },
+  ];
+  const items = orphanWithCheckpoint({ turnId: args.turnId, buildId: args.buildId, prefix,
+    checkpointVersion: 4, boundary: "postAssistant" });
+  items.push({ type: "event_msg", payload: { id: args.intentId, seq: 3, msg: {
+    type: "effect_intent", payload: { formatVersion: 2, minimumReaderRuntime: "0.14.0",
+      runId: "test-run", stepId: args.stepId, callId: args.callId,
+      toolName: args.toolName, recoveryCategory: "side-effecting", intentDigest: "intent",
+      attempt: 1, recordedAt: "2026-09-01T00:00:00.000Z" },
+  } } });
+  if (args.outcome === "succeeded") {
+    items.push({ type: "event_msg", payload: { id: args.outcomeId, seq: 4, msg: {
+      type: "effect_result", payload: { formatVersion: 2, minimumReaderRuntime: "0.14.0",
+        runId: "test-run", stepId: args.stepId, callId: args.callId,
+        toolName: args.toolName, recoveryCategory: "side-effecting", intentEventSeq: 3,
+        outcome: "succeeded", effectBoundary: "crossed", recordedAt: "2026-09-01T00:00:01.000Z" },
+    } } });
+  } else {
+    items.push({ type: "event_msg", payload: { id: args.outcomeId, seq: 4, msg: {
+      type: "effect_unknown_outcome", payload: { formatVersion: 2, minimumReaderRuntime: "0.14.0",
+        runId: "test-run", stepId: args.stepId, callId: args.callId,
+        toolName: args.toolName, recoveryCategory: "side-effecting", intentEventSeq: 3,
+        outcome: "unknown_outcome", reason: "acknowledgement_lost", requiresReview: true,
+        recordedAt: "2026-09-01T00:00:01.000Z" },
+    } } });
+  }
+  return items;
+}
+
 describe("reconstruction durable resume descriptors", () => {
   test("a placeholder persisted by an older bootstrap never settles a checkpointed effect", async () => {
     const runId = "legacy-placeholder-run";
@@ -357,24 +401,10 @@ describe("reconstruction durable resume descriptors", () => {
 
   test("durable effect completion pairs a checkpointed call without a response item", async () => {
     const buildId = pinBuild("effect-only-build");
-    const prefix: ResponseItem[] = [
-      { role: "user", content: "Write the file" },
-      { role: "assistant", content: "", toolCalls: [{ id: "write-effect", name: "Write", arguments: "{}" }] },
-    ];
-    const items = orphanWithCheckpoint({ turnId: "effect-only", buildId, prefix,
-      checkpointVersion: 4, boundary: "postAssistant" });
-    items.push({ type: "event_msg", payload: { id: "intent", seq: 3, msg: {
-      type: "effect_intent", payload: { formatVersion: 2, minimumReaderRuntime: "0.14.0",
-        runId: "test-run", stepId: "tool:effect-only:write", callId: "write-effect",
-        toolName: "Write", recoveryCategory: "side-effecting", intentDigest: "intent",
-        attempt: 1, recordedAt: "2026-09-01T00:00:00.000Z" },
-    } } });
-    items.push({ type: "event_msg", payload: { id: "effect", seq: 4, msg: {
-      type: "effect_result", payload: { formatVersion: 2, minimumReaderRuntime: "0.14.0",
-        runId: "test-run", stepId: "tool:effect-only:write", callId: "write-effect",
-        toolName: "Write", recoveryCategory: "side-effecting", intentEventSeq: 3,
-        outcome: "succeeded", effectBoundary: "crossed", recordedAt: "2026-09-01T00:00:01.000Z" },
-    } } });
+    const items = checkpointWithEffectEvents({ turnId: "effect-only", buildId,
+      userContent: "Write the file", callId: "write-effect", toolName: "Write",
+      stepId: "tool:effect-only:write", intentId: "intent", outcomeId: "effect",
+      outcome: "succeeded" });
     const reconstructed = reconstruct(items);
     expect(reconstructed.resumableTurns[0]?.danglingToolUses).toEqual([]);
     expect(reconstructed.resumableTurns[0]?.reconciledToolResults).toContainEqual(expect.objectContaining({
@@ -397,24 +427,10 @@ describe("reconstruction durable resume descriptors", () => {
 
   test("a persisted recovery pairing survives a crash before the next checkpoint", async () => {
     const buildId = pinBuild("pairing-crash-build");
-    const prefix: ResponseItem[] = [
-      { role: "user", content: "Write the file" },
-      { role: "assistant", content: "", toolCalls: [{ id: "crash-write", name: "Write", arguments: "{}" }] },
-    ];
-    const items = orphanWithCheckpoint({ turnId: "pairing-crash", buildId, prefix,
-      checkpointVersion: 4, boundary: "postAssistant" });
-    items.push({ type: "event_msg", payload: { id: "intent", seq: 3, msg: {
-      type: "effect_intent", payload: { formatVersion: 2, minimumReaderRuntime: "0.14.0",
-        runId: "test-run", stepId: "tool:pairing-crash:write", callId: "crash-write",
-        toolName: "Write", recoveryCategory: "side-effecting", intentDigest: "intent",
-        attempt: 1, recordedAt: "2026-09-01T00:00:00.000Z" },
-    } } });
-    items.push({ type: "event_msg", payload: { id: "effect", seq: 4, msg: {
-      type: "effect_result", payload: { formatVersion: 2, minimumReaderRuntime: "0.14.0",
-        runId: "test-run", stepId: "tool:pairing-crash:write", callId: "crash-write",
-        toolName: "Write", recoveryCategory: "side-effecting", intentEventSeq: 3,
-        outcome: "succeeded", effectBoundary: "crossed", recordedAt: "2026-09-01T00:00:01.000Z" },
-    } } });
+    const items = checkpointWithEffectEvents({ turnId: "pairing-crash", buildId,
+      userContent: "Write the file", callId: "crash-write", toolName: "Write",
+      stepId: "tool:pairing-crash:write", intentId: "intent", outcomeId: "effect",
+      outcome: "succeeded" });
     items.push({ type: "event_msg", payload: { id: "shutdown", seq: 5, msg: {
       type: "turn_aborted", payload: { turnId: "pairing-crash", reason: "daemon_shutdown" },
     } } });
@@ -470,25 +486,10 @@ describe("reconstruction durable resume descriptors", () => {
 
   test("operator resolution pairs an unknown checkpointed call without redispatch", () => {
     const buildId = pinBuild("reviewed-effect-build");
-    const prefix: ResponseItem[] = [
-      { role: "user", content: "Publish" },
-      { role: "assistant", content: "", toolCalls: [{ id: "publish-reviewed", name: "Publish", arguments: "{}" }] },
-    ];
-    const items = orphanWithCheckpoint({ turnId: "reviewed-effect", buildId, prefix,
-      checkpointVersion: 4, boundary: "postAssistant" });
-    items.push({ type: "event_msg", payload: { id: "review-intent", seq: 3, msg: {
-      type: "effect_intent", payload: { formatVersion: 2, minimumReaderRuntime: "0.14.0",
-        runId: "test-run", stepId: "tool:reviewed-effect:publish", callId: "publish-reviewed",
-        toolName: "Publish", recoveryCategory: "side-effecting", intentDigest: "intent",
-        attempt: 1, recordedAt: "2026-09-01T00:00:00.000Z" },
-    } } });
-    items.push({ type: "event_msg", payload: { id: "review-unknown", seq: 4, msg: {
-      type: "effect_unknown_outcome", payload: { formatVersion: 2, minimumReaderRuntime: "0.14.0",
-        runId: "test-run", stepId: "tool:reviewed-effect:publish", callId: "publish-reviewed",
-        toolName: "Publish", recoveryCategory: "side-effecting", intentEventSeq: 3,
-        outcome: "unknown_outcome", reason: "acknowledgement_lost", requiresReview: true,
-        recordedAt: "2026-09-01T00:00:01.000Z" },
-    } } });
+    const items = checkpointWithEffectEvents({ turnId: "reviewed-effect", buildId,
+      userContent: "Publish", callId: "publish-reviewed", toolName: "Publish",
+      stepId: "tool:reviewed-effect:publish", intentId: "review-intent",
+      outcomeId: "review-unknown", outcome: "unknown_outcome" });
     items.push({ type: "event_msg", payload: { id: "review-resolved", seq: 5, msg: {
       type: "effect_review_resolved", payload: { runId: "test-run",
         stepId: "tool:reviewed-effect:publish", callId: "publish-reviewed",
@@ -505,25 +506,10 @@ describe("reconstruction durable resume descriptors", () => {
 
   test("a review recorded after reconstruction settles the call before continuation", async () => {
     const buildId = pinBuild("late-review-build");
-    const prefix: ResponseItem[] = [
-      { role: "user", content: "Publish" },
-      { role: "assistant", content: "", toolCalls: [{ id: "late-call", name: "Publish", arguments: "{}" }] },
-    ];
-    const items = orphanWithCheckpoint({ turnId: "late-review", buildId, prefix,
-      checkpointVersion: 4, boundary: "postAssistant" });
-    items.push({ type: "event_msg", payload: { id: "late-intent", seq: 3, msg: {
-      type: "effect_intent", payload: { formatVersion: 2, minimumReaderRuntime: "0.14.0",
-        runId: "test-run", stepId: "tool:late-review:publish", callId: "late-call",
-        toolName: "Publish", recoveryCategory: "side-effecting", intentDigest: "intent",
-        attempt: 1, recordedAt: "2026-09-01T00:00:00.000Z" },
-    } } });
-    items.push({ type: "event_msg", payload: { id: "late-unknown", seq: 4, msg: {
-      type: "effect_unknown_outcome", payload: { formatVersion: 2, minimumReaderRuntime: "0.14.0",
-        runId: "test-run", stepId: "tool:late-review:publish", callId: "late-call",
-        toolName: "Publish", recoveryCategory: "side-effecting", intentEventSeq: 3,
-        outcome: "unknown_outcome", reason: "acknowledgement_lost", requiresReview: true,
-        recordedAt: "2026-09-01T00:00:01.000Z" },
-    } } });
+    const items = checkpointWithEffectEvents({ turnId: "late-review", buildId,
+      userContent: "Publish", callId: "late-call", toolName: "Publish",
+      stepId: "tool:late-review:publish", intentId: "late-intent",
+      outcomeId: "late-unknown", outcome: "unknown_outcome" });
     const beforeReview = reconstruct(items);
     expect(beforeReview.resumableTurns[0]?.danglingToolUses).toEqual([
       { callId: "late-call", toolName: "Publish" },

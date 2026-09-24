@@ -57,6 +57,20 @@ function postToolCompactionHarness(autoCompactTokenLimit = 3_000) {
   return { session, events, run, reconstruct, cleanup, samples: () => samples };
 }
 
+function blockCompactionUntilAbort(harness: ReturnType<typeof postToolCompactionHarness>,
+  injectionPoint: "do_not_inject" | "before_last_user_message", abortMessage: string,
+  entered: PromiseWithResolvers<void>) {
+  setAutoCompactImplForTests(async (_messages, _ctx, _tracking, _snip, injection) => {
+    if (injection !== injectionPoint) return { wasCompacted: false };
+    entered.resolve();
+    return await new Promise((_resolve, reject) => {
+      harness.session.abortController.signal.addEventListener("abort", () => {
+        reject(new DOMException(abortMessage, "AbortError"));
+      }, { once: true });
+    });
+  });
+}
+
 describe("compaction terminal outcome", () => {
   test.each([
     ["daemon_shutdown", "daemon_shutdown"],
@@ -65,15 +79,7 @@ describe("compaction terminal outcome", () => {
     const harness = postToolCompactionHarness(1);
     const entered = Promise.withResolvers<void>();
     try {
-      setAutoCompactImplForTests(async (_messages, _ctx, _tracking, _snip, injection) => {
-        if (injection !== "do_not_inject") return { wasCompacted: false };
-        entered.resolve();
-        return await new Promise((_resolve, reject) => {
-          harness.session.abortController.signal.addEventListener("abort", () => {
-            reject(new DOMException("pre-request compaction aborted", "AbortError"));
-          }, { once: true });
-        });
-      });
+      blockCompactionUntilAbort(harness, "do_not_inject", "pre-request compaction aborted", entered);
       const running = harness.run().then(() => undefined, error => error);
       await entered.promise;
       await shutdownSessionLifecycle({ session: harness.session,
@@ -92,15 +98,7 @@ describe("compaction terminal outcome", () => {
     const harness = postToolCompactionHarness();
     const entered = Promise.withResolvers<void>();
     try {
-      setAutoCompactImplForTests(async (_messages, _ctx, _tracking, _snip, injection) => {
-        if (injection !== "before_last_user_message") return { wasCompacted: false };
-        entered.resolve();
-        return await new Promise((_resolve, reject) => {
-          harness.session.abortController.signal.addEventListener("abort", () => {
-            reject(new DOMException("compaction aborted", "AbortError"));
-          }, { once: true });
-        });
-      });
+      blockCompactionUntilAbort(harness, "before_last_user_message", "compaction aborted", entered);
       const running = harness.run().then(() => undefined, error => error);
       await entered.promise;
       expect(harness.samples()).toBe(1);

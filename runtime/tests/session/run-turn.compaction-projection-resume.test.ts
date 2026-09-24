@@ -34,7 +34,7 @@ afterEach(() => {
   }
 });
 
-test("a committed standard tier is checkpointed before shutdown in the aggressive tier, then continues", async () => {
+function compactionScenario() {
   process.env.AGENC_AUTO_COMPACT_WINDOW = "1000";
   process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE = "50";
   delete process.env.AGENC_DISABLE_COMPACT;
@@ -44,6 +44,90 @@ test("a committed standard tier is checkpointed before shutdown in the aggressiv
     role: index % 2 === 0 ? "user" : "assistant",
     content: `source-${index}:${"x".repeat(4_000)}`,
   }));
+  const modelInfo = {
+    ...mkCtx().modelInfo,
+    slug: "grok-4.5",
+    contextWindow: 64_000,
+    maxOutputTokens: 512,
+    autoCompactTokenLimit: 100_000,
+  };
+  const registry = {
+    tools: [{ name: "Read", description: "read once", inputSchema: { type: "object" },
+      requiresApproval: false, recoveryCategory: "read-only",
+      execute: async () => ({ content: "read result", isError: false }) }],
+    toLLMTools: () => [],
+    dispatch: async () => ({ content: "read result", isError: false }),
+  } as unknown as ToolRegistry;
+  return { source, modelInfo, registry };
+}
+
+function response(content: string, tool = false, promptTokens = 3_100,
+  completionTokens = 1, toolCallId = "read-once"): LLMResponse {
+  return {
+    content,
+    toolCalls: tool ? [{ id: toolCallId, name: "Read", arguments: "{}" }] : [],
+    usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens,
+      availability: "reported", provenance: "provider" },
+    model: "grok-4.5",
+    finishReason: tool ? "tool_calls" : "stop",
+  };
+}
+
+interface StructuredCompactionPayload {
+  units?: Array<{ messages: Array<{ tool_call_id?: string; tool_result_sha256?: string }> }>;
+  summaries?: Array<{ body: { tool_pairs: Array<{ tool_call_id: string; result_sha256: string }> } }>;
+  children?: Array<{ body: { tool_pairs: Array<{ tool_call_id: string; result_sha256: string }> } }>;
+}
+
+function compactionToolPairs(payload: StructuredCompactionPayload) {
+  return payload.units?.flatMap((unit) => unit.messages
+    .filter((message) => message.tool_call_id && message.tool_result_sha256)
+    .map((message) => ({ tool_call_id: message.tool_call_id!,
+      result_sha256: message.tool_result_sha256! }))) ??
+    payload.summaries?.flatMap((summary) => summary.body.tool_pairs) ??
+    payload.children?.flatMap((summary) => summary.body.tool_pairs) ?? [];
+}
+
+function firstCompactionSession(harness: CompactionTransactionHarness, source: LLMMessage[],
+  modelInfo: ReturnType<typeof compactionScenario>["modelInfo"], registry: ToolRegistry) {
+  const firstHarness = mkSession({ cwd: harness.store.store.cwd, provider: harness.provider,
+    registry, history: source, modelInfo });
+  const first = firstHarness.session;
+  Object.assign(first.config, { durableTurns: { resume: { requireLease: false } } });
+  Object.assign(first.services, { executionAdmission: harness.session.services.executionAdmission,
+    admissionRequired: true });
+  attachCompactionSession(first, harness);
+  first.onBeforeDurableClose(bindExecutionAdmissionJournal(first, first.services.executionAdmission!));
+  return firstHarness;
+}
+
+function resumedCompactionSession(harness: CompactionTransactionHarness, registry: ToolRegistry,
+  modelInfo: ReturnType<typeof compactionScenario>["modelInfo"], originator: string) {
+  const resumedHarness = mkSession({ cwd: harness.store.store.cwd, provider: harness.provider,
+    registry, modelInfo });
+  const resumed = resumedHarness.session;
+  const kernel = new ExecutionAdmissionKernel({ agencHome: harness.store.store.agencHome,
+    ownerId: originator, ownerPid: process.pid });
+  const admission = kernel.bindClient({ cwd: harness.store.store.cwd,
+    scope: { runId: "conv-test", sessionId: "conv-test", autonomous: false } });
+  const store = new RolloutStore({ cwd: harness.store.store.cwd,
+    agencHome: harness.store.store.agencHome, sessionId: "conv-test",
+    agencVersion: "0.13.0", sessionTempRoot: harness.store.store.cwd,
+    autoStartScheduler: false, resume: true });
+  store.open({ sessionId: "conv-test", timestamp: new Date().toISOString(),
+    cwd: harness.store.store.cwd, originator,
+    agencVersion: "0.13.0", model: "grok-4.5", modelProvider: "grok" });
+  Object.assign(resumed.config, { durableTurns: { resume: { requireLease: false } } });
+  Object.assign(resumed.services, { executionAdmission: admission, admissionRequired: true });
+  resumed.mountRolloutStore(store);
+  resumed.eventLog.seedCanonicalHistory(store.readAll()
+    .filter((item) => item.type === "event_msg").map((item) => item.payload));
+  resumed.onBeforeDurableClose(bindExecutionAdmissionJournal(resumed, admission));
+  return { resumedHarness, kernel, store };
+}
+
+test("a committed standard tier is checkpointed before shutdown in the aggressive tier, then continues", async () => {
+  const { source, modelInfo, registry } = compactionScenario();
   const aggressiveEntered = Promise.withResolvers<void>();
   let first: Session | undefined;
   let second: Session | undefined;
@@ -52,30 +136,7 @@ test("a committed standard tier is checkpointed before shutdown in the aggressiv
   let resumedKernel: ExecutionAdmissionKernel | undefined;
   let sampleCalls = 0;
   let structuredCalls = 0;
-  const modelInfo = {
-    ...mkCtx().modelInfo,
-    slug: "grok-4.5",
-    contextWindow: 64_000,
-    maxOutputTokens: 512,
-    autoCompactTokenLimit: 100_000,
-  };
   const ctx = mkCtx({ modelInfo });
-  const registry = {
-    tools: [{ name: "Read", description: "read once", inputSchema: { type: "object" },
-      requiresApproval: false, recoveryCategory: "read-only",
-      execute: async () => ({ content: "read result", isError: false }) }],
-    toLLMTools: () => [],
-    dispatch: async () => ({ content: "read result", isError: false }),
-  } as unknown as ToolRegistry;
-  const response = (content: string, tool = false, promptTokens = 3_100,
-    completionTokens = 1): LLMResponse => ({
-    content,
-    toolCalls: tool ? [{ id: "read-once", name: "Read", arguments: "{}" }] : [],
-    usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens,
-      availability: "reported", provenance: "provider" },
-    model: "grok-4.5",
-    finishReason: tool ? "tool_calls" : "stop",
-  });
   try {
     harness = createCompactionTransactionHarness(source, {
       sessionId: "conv-test",
@@ -85,11 +146,7 @@ test("a committed standard tier is checkpointed before shutdown in the aggressiv
         const content = messages[0]?.content;
         if (typeof content === "string") {
           try {
-            const payload = JSON.parse(content) as {
-              units?: Array<{ messages: Array<{ tool_call_id?: string; tool_result_sha256?: string }> }>;
-              summaries?: Array<{ body: { tool_pairs: Array<{ tool_call_id: string; result_sha256: string }> } }>;
-              children?: Array<{ body: { tool_pairs: Array<{ tool_call_id: string; result_sha256: string }> } }>;
-            };
+            const payload = JSON.parse(content) as StructuredCompactionPayload;
             if (payload.units || payload.summaries || payload.children) {
               structuredCalls += 1;
               if (harness?.store.readAll().some((item) => item.type === "compaction_committed")) {
@@ -100,12 +157,7 @@ test("a committed standard tier is checkpointed before shutdown in the aggressiv
                   { once: true });
                 });
               }
-              const toolPairs = payload.units?.flatMap((unit) => unit.messages
-                .filter((message) => message.tool_call_id && message.tool_result_sha256)
-                .map((message) => ({ tool_call_id: message.tool_call_id!,
-                  result_sha256: message.tool_result_sha256! }))) ??
-                payload.summaries?.flatMap((summary) => summary.body.tool_pairs) ??
-                payload.children?.flatMap((summary) => summary.body.tool_pairs) ?? [];
+              const toolPairs = compactionToolPairs(payload);
               return response(JSON.stringify({ narrative: "Bounded summary.", facts: [],
                 open_actions: [], tool_pairs: toolPairs }), false, 128, 128);
             }
@@ -121,14 +173,8 @@ test("a committed standard tier is checkpointed before shutdown in the aggressiv
         return response("completed after restart");
       },
     });
-    const firstHarness = mkSession({ cwd: harness.store.store.cwd, provider: harness.provider,
-      registry, history: source, modelInfo });
+    const firstHarness = firstCompactionSession(harness, source, modelInfo, registry);
     first = firstHarness.session;
-    Object.assign(first.config, { durableTurns: { resume: { requireLease: false } } });
-    Object.assign(first.services, { executionAdmission: harness.session.services.executionAdmission,
-      admissionRequired: true });
-    attachCompactionSession(first, harness);
-    first.onBeforeDurableClose(bindExecutionAdmissionJournal(first, first.services.executionAdmission!));
     const running = drain(runTurn(first, ctx, "read then finish"));
     await Promise.race([
       aggressiveEntered.promise,
@@ -162,27 +208,12 @@ test("a committed standard tier is checkpointed before shutdown in the aggressiv
       .toMatchObject({ payload: { reason: "daemon_shutdown" } });
     expect(beforeShutdown.filter((item) => item.type === "response_item" &&
       item.payload.role === "tool" && item.payload.toolCallId === "read-once")).toHaveLength(1);
-    const secondHarness = mkSession({ cwd: harness.store.store.cwd, provider: harness.provider,
-      registry, modelInfo: { ...modelInfo, autoCompactTokenLimit: 100_000 } });
+    const resumedSetup = resumedCompactionSession(harness, registry,
+      { ...modelInfo, autoCompactTokenLimit: 100_000 }, "compaction-resume-test");
+    const secondHarness = resumedSetup.resumedHarness;
     second = secondHarness.session;
-    resumedKernel = new ExecutionAdmissionKernel({ agencHome: harness.store.store.agencHome,
-      ownerId: "compaction-resume-test", ownerPid: process.pid });
-    const resumedAdmission = resumedKernel.bindClient({ cwd: harness.store.store.cwd,
-      scope: { runId: "conv-test", sessionId: "conv-test", autonomous: false } });
-    secondStore = new RolloutStore({ cwd: harness.store.store.cwd,
-      agencHome: harness.store.store.agencHome, sessionId: "conv-test",
-      agencVersion: "0.13.0", sessionTempRoot: harness.store.store.cwd,
-      autoStartScheduler: false, resume: true });
-    secondStore.open({ sessionId: "conv-test", timestamp: new Date().toISOString(),
-      cwd: harness.store.store.cwd, originator: "compaction-resume-test",
-      agencVersion: "0.13.0", model: "grok-4.5", modelProvider: "grok" });
-    Object.assign(second.config, { durableTurns: { resume: { requireLease: false } } });
-    Object.assign(second.services, { executionAdmission: resumedAdmission,
-      admissionRequired: true });
-    second.mountRolloutStore(secondStore);
-    second.eventLog.seedCanonicalHistory(secondStore.readAll()
-      .filter((item) => item.type === "event_msg").map((item) => item.payload));
-    second.onBeforeDurableClose(bindExecutionAdmissionJournal(second, resumedAdmission));
+    resumedKernel = resumedSetup.kernel;
+    secondStore = resumedSetup.store;
     const reconstruction = reconstructFromRollout(secondStore.readAll(), {
       checkpointProjection: secondStore.checkpointProjectionContext("tier-shutdown-test"),
     });
@@ -207,15 +238,7 @@ test("a committed standard tier is checkpointed before shutdown in the aggressiv
 });
 
 test("a later ordinary turn resumes after a completed compacting turn and daemon shutdown", async () => {
-  process.env.AGENC_AUTO_COMPACT_WINDOW = "1000";
-  process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE = "50";
-  delete process.env.AGENC_DISABLE_COMPACT;
-  delete process.env.AGENC_DISABLE_AUTO_COMPACT;
-
-  const source: LLMMessage[] = Array.from({ length: 8 }, (_, index) => ({
-    role: index % 2 === 0 ? "user" : "assistant",
-    content: `source-${index}:${"x".repeat(4_000)}`,
-  }));
+  const { source, modelInfo, registry } = compactionScenario();
   const laterTurnEntered = Promise.withResolvers<void>();
   let first: Session | undefined;
   let resumed: Session | undefined;
@@ -223,30 +246,7 @@ test("a later ordinary turn resumes after a completed compacting turn and daemon
   let resumedStore: RolloutStore | undefined;
   let resumedKernel: ExecutionAdmissionKernel | undefined;
   let sampleCalls = 0;
-  const modelInfo = {
-    ...mkCtx().modelInfo,
-    slug: "grok-4.5",
-    contextWindow: 64_000,
-    maxOutputTokens: 512,
-    autoCompactTokenLimit: 100_000,
-  };
   const ctx = mkCtx({ modelInfo });
-  const registry = {
-    tools: [{ name: "Read", description: "read once", inputSchema: { type: "object" },
-      requiresApproval: false, recoveryCategory: "read-only",
-      execute: async () => ({ content: "read result", isError: false }) }],
-    toLLMTools: () => [],
-    dispatch: async () => ({ content: "read result", isError: false }),
-  } as unknown as ToolRegistry;
-  const response = (content: string, tool = false, promptTokens = 3_100,
-    completionTokens = 1, toolCallId = "read-once"): LLMResponse => ({
-    content,
-    toolCalls: tool ? [{ id: toolCallId, name: "Read", arguments: "{}" }] : [],
-    usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens,
-      availability: "reported", provenance: "provider" },
-    model: "grok-4.5",
-    finishReason: tool ? "tool_calls" : "stop",
-  });
   try {
     harness = createCompactionTransactionHarness(source, {
       sessionId: "conv-test",
@@ -256,18 +256,9 @@ test("a later ordinary turn resumes after a completed compacting turn and daemon
         const content = messages[0]?.content;
         if (typeof content === "string") {
           try {
-            const payload = JSON.parse(content) as {
-              units?: Array<{ messages: Array<{ tool_call_id?: string; tool_result_sha256?: string }> }>;
-              summaries?: Array<{ body: { tool_pairs: Array<{ tool_call_id: string; result_sha256: string }> } }>;
-              children?: Array<{ body: { tool_pairs: Array<{ tool_call_id: string; result_sha256: string }> } }>;
-            };
+            const payload = JSON.parse(content) as StructuredCompactionPayload;
             if (payload.units || payload.summaries || payload.children) {
-              const toolPairs = payload.units?.flatMap((unit) => unit.messages
-                .filter((message) => message.tool_call_id && message.tool_result_sha256)
-                .map((message) => ({ tool_call_id: message.tool_call_id!,
-                  result_sha256: message.tool_result_sha256! }))) ??
-                payload.summaries?.flatMap((summary) => summary.body.tool_pairs) ??
-                payload.children?.flatMap((summary) => summary.body.tool_pairs) ?? [];
+              const toolPairs = compactionToolPairs(payload);
               modelInfo.autoCompactTokenLimit = 100_000;
               return response(JSON.stringify({ narrative: "Bounded summary.", facts: [],
                 open_actions: [], tool_pairs: toolPairs }), false, 128, 128);
@@ -293,14 +284,8 @@ test("a later ordinary turn resumes after a completed compacting turn and daemon
         return response(sampleCalls === 2 ? "first turn complete" : "continued after restart");
       },
     });
-    const firstHarness = mkSession({ cwd: harness.store.store.cwd, provider: harness.provider,
-      registry, history: source, modelInfo });
+    const firstHarness = firstCompactionSession(harness, source, modelInfo, registry);
     first = firstHarness.session;
-    Object.assign(first.config, { durableTurns: { resume: { requireLease: false } } });
-    Object.assign(first.services, { executionAdmission: harness.session.services.executionAdmission,
-      admissionRequired: true });
-    attachCompactionSession(first, harness);
-    first.onBeforeDurableClose(bindExecutionAdmissionJournal(first, first.services.executionAdmission!));
 
     await drain(runTurn(first, ctx, "read then finish"));
     expect(firstHarness.events.some((event) => event.msg.type === "turn_complete")).toBe(true);
@@ -324,26 +309,12 @@ test("a later ordinary turn resumes after a completed compacting turn and daemon
     expect(firstHarness.events.filter((event) => event.msg.type === "turn_aborted").at(-1)?.msg)
       .toMatchObject({ payload: { reason: "daemon_shutdown" } });
 
-    const resumedHarness = mkSession({ cwd: harness.store.store.cwd, provider: harness.provider,
-      registry, modelInfo });
+    const resumedSetup = resumedCompactionSession(harness, registry, modelInfo,
+      "later-turn-resume-test");
+    const resumedHarness = resumedSetup.resumedHarness;
     resumed = resumedHarness.session;
-    resumedKernel = new ExecutionAdmissionKernel({ agencHome: harness.store.store.agencHome,
-      ownerId: "later-turn-resume-test", ownerPid: process.pid });
-    const admission = resumedKernel.bindClient({ cwd: harness.store.store.cwd,
-      scope: { runId: "conv-test", sessionId: "conv-test", autonomous: false } });
-    resumedStore = new RolloutStore({ cwd: harness.store.store.cwd,
-      agencHome: harness.store.store.agencHome, sessionId: "conv-test",
-      agencVersion: "0.13.0", sessionTempRoot: harness.store.store.cwd,
-      autoStartScheduler: false, resume: true });
-    resumedStore.open({ sessionId: "conv-test", timestamp: new Date().toISOString(),
-      cwd: harness.store.store.cwd, originator: "later-turn-resume-test",
-      agencVersion: "0.13.0", model: "grok-4.5", modelProvider: "grok" });
-    Object.assign(resumed.config, { durableTurns: { resume: { requireLease: false } } });
-    Object.assign(resumed.services, { executionAdmission: admission, admissionRequired: true });
-    resumed.mountRolloutStore(resumedStore);
-    resumed.eventLog.seedCanonicalHistory(resumedStore.readAll()
-      .filter((item) => item.type === "event_msg").map((item) => item.payload));
-    resumed.onBeforeDurableClose(bindExecutionAdmissionJournal(resumed, admission));
+    resumedKernel = resumedSetup.kernel;
+    resumedStore = resumedSetup.store;
     const reconstruction = reconstructFromRollout(resumedStore.readAll(), {
       checkpointProjection: resumedStore.checkpointProjectionContext("later-turn-resume-test"),
     });

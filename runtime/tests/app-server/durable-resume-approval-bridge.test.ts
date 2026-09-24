@@ -31,6 +31,7 @@ import {
 import {
   parseRolloutLine,
   type RolloutItem,
+  type ResponseItem,
 } from "../../src/session/rollout-item.js";
 import { reconstructFromRollout } from "../../src/session/rollout-reconstruction.js";
 import { RolloutStore } from "../../src/session/rollout-store.js";
@@ -178,6 +179,25 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
     rmSync(home, { recursive: true, force: true });
     rmSync(workspace, { recursive: true, force: true });
   });
+
+  function seedCheckpointedRoot(prefix: ResponseItem[], checkpointId: string) {
+    const root = new RolloutStore({ cwd: workspace, sessionId: CONVERSATION_ID,
+      agencVersion: VERSION, agencHome: home, sessionTempRoot: tmpdir(),
+      resume: true, autoStartScheduler: false });
+    root.open({ sessionId: CONVERSATION_ID, timestamp: new Date().toISOString(),
+      cwd: workspace, originator: "agenc-cli", agencVersion: VERSION,
+      model: "base-model", modelProvider: "grok" });
+    for (const payload of prefix) root.appendRollout({ type: "response_item", payload });
+    const appended = root.append({ eventId: checkpointId, id: checkpointId, seq: 3,
+      msg: { type: "turn_checkpoint", payload: { turnId: TURN_ID,
+        checkpointVersion: 4, prefixHashVersion: 3, toolResultIntegrityVersion: 1,
+        iterationIndex: 2, boundary: "postAssistant", checkpointSeq: 2,
+        persistedMessageCount: 2, prefixHash: computeCheckpointPrefixHashV3(prefix, 2),
+        resumableState: { turnCount: 1, recoveryReentryCount: 0,
+          maxOutputTokensRecoveryCount: 0, continuationNudgeCount: 0,
+          stopHookBlockingCount: 0 } } } }, { durable: true });
+    return { root, appended };
+  }
 
   function stubProviderAndMcp(): void {
     vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
@@ -1127,21 +1147,8 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
         { id: "dangling-read", name: "Read", arguments: "{}" },
       ] },
     ];
-    const root = new RolloutStore({ cwd: workspace, sessionId: CONVERSATION_ID,
-      agencVersion: VERSION, agencHome: home, sessionTempRoot: tmpdir(),
-      resume: true, autoStartScheduler: false });
-    root.open({ sessionId: CONVERSATION_ID, timestamp: new Date().toISOString(),
-      cwd: workspace, originator: "agenc-cli", agencVersion: VERSION,
-      model: "base-model", modelProvider: "grok" });
-    for (const payload of prefix) root.appendRollout({ type: "response_item", payload });
-    expect(root.append({ eventId: "read-checkpoint", id: "read-checkpoint", seq: 3,
-      msg: { type: "turn_checkpoint", payload: { turnId: TURN_ID,
-        checkpointVersion: 4, prefixHashVersion: 3, toolResultIntegrityVersion: 1,
-        iterationIndex: 2, boundary: "postAssistant", checkpointSeq: 2,
-        persistedMessageCount: 2, prefixHash: computeCheckpointPrefixHashV3(prefix, 2),
-        resumableState: { turnCount: 1, recoveryReentryCount: 0,
-          maxOutputTokensRecoveryCount: 0, continuationNudgeCount: 0,
-          stopHookBlockingCount: 0 } } } }, { durable: true })).toBe(true);
+    const { root, appended } = seedCheckpointedRoot(prefix, "read-checkpoint");
+    expect(appended).toBe(true);
     root.close();
     seedWorker("open_worker", "open", false);
     const observations = recordResumeObservations();
@@ -1222,21 +1229,8 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
         { id: "resume-read", name: "FileRead", arguments: "{}" },
       ] },
     ];
-    const root = new RolloutStore({ cwd: workspace, sessionId: CONVERSATION_ID,
-      agencVersion: VERSION, agencHome: home, sessionTempRoot: tmpdir(),
-      resume: true, autoStartScheduler: false });
-    root.open({ sessionId: CONVERSATION_ID, timestamp: new Date().toISOString(),
-      cwd: workspace, originator: "agenc-cli", agencVersion: VERSION,
-      model: "base-model", modelProvider: "grok" });
-    for (const payload of prefix) root.appendRollout({ type: "response_item", payload });
-    expect(root.append({ eventId: "resume-read-checkpoint", id: "resume-read-checkpoint", seq: 3,
-      msg: { type: "turn_checkpoint", payload: { turnId: TURN_ID,
-        checkpointVersion: 4, prefixHashVersion: 3, toolResultIntegrityVersion: 1,
-        iterationIndex: 2, boundary: "postAssistant", checkpointSeq: 2,
-        persistedMessageCount: 2, prefixHash: computeCheckpointPrefixHashV3(prefix, 2),
-        resumableState: { turnCount: 1, recoveryReentryCount: 0,
-          maxOutputTokensRecoveryCount: 0, continuationNudgeCount: 0,
-          stopHookBlockingCount: 0 } } } }, { durable: true })).toBe(true);
+    const { root, appended } = seedCheckpointedRoot(prefix, "resume-read-checkpoint");
+    expect(appended).toBe(true);
     root.close();
     let booted: LocalRuntimeBootstrap | undefined;
     const runner = makeRunner((bootstrap) => { booted = bootstrap; });
