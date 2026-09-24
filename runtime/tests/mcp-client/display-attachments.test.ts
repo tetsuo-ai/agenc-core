@@ -88,6 +88,17 @@ describe("display attachments and saved plugin secrets", () => {
     expect(result.content).not.toContain("NVDA");
     expect(JSON.stringify(result.codeModeResult ?? null)).not.toContain("NVDA");
   });
+  it.each(["json", "image", "table"])("keeps MIME routing when a saved secret is %j", async (value) => {
+    const headers = { token: value };
+    const sharp = (await import("sharp")).default;
+    const png = await sharp({ create: { width: 2, height: 2, channels: 3, background: "red" } }).png().toBuffer();
+    const raw = redactMcpAttachmentValue({ content: [
+      resource("application/vnd.agenc.table+json", table),
+      { type: "image", annotations: user, mimeType: "image/png", data: png.toString("base64"), name: "Plot" },
+    ] }, headers, undefined, "tool-result");
+    const result = await normalizeMcpToolOutput({ raw, serverName: "plugin:demo:show", toolName: "show", callId: "call-secret", environment: { MAX_MCP_OUTPUT_TOKENS: "100000" }, logger, displayRoots: [], sensitiveHeaders: headers });
+    expect(attachments(result)?.map(item => item.kind)).toEqual(["table", "image"]);
+  });
   it("still shows an attachment without a saved secret", async () => {
     const result = await normalizeWithSecret([resource("application/vnd.agenc.chart+json", chart)]);
     expect(attachments(result)).toHaveLength(1);

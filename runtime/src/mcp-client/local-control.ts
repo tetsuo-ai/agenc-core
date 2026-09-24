@@ -204,8 +204,21 @@ function protocolField(key: string, shape: McpRedactionShape, value: unknown): b
     // MCP annotations route a block to the user or the model; keep valid values.
     shape === "annotations" && key === "audience" && Array.isArray(value) &&
       value.every(item => item === "user" || item === "assistant") ||
-    shape === "annotations" && key === "priority" && typeof value === "number";
+    shape === "annotations" && key === "priority" && typeof value === "number" ||
+    (shape === "content-block" || shape === "resource") && (key === "mimeType" || key === "mediaType") &&
+      typeof value === "string" && ROUTING_MIME_TYPES.has(value.toLowerCase());
 }
+
+// Core routes blocks on these exact types: display attachments, images, audio
+// and files. A saved secret must not rewrite them; any other MIME text is
+// still redacted.
+const ROUTING_MIME_TYPES = new Set([
+  "application/vnd.agenc.chart+json", "application/vnd.agenc.table+json",
+  "image/png", "image/jpeg", "image/webp", "image/gif",
+  "application/octet-stream", "text/plain", "text/csv", "text/calendar", "application/pdf", "application/zip",
+  "application/json", "text/markdown", "text/html",
+  "audio/mpeg", "audio/wav", "audio/ogg", "audio/webm",
+]);
 
 const SCHEMA_CONTROL_FIELDS = new Set([
   "type", "required", "$ref", "$schema", "pattern",
