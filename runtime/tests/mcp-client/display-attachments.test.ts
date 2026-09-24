@@ -28,14 +28,14 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { mkdtemp, writeFile, symlink, rm, truncate, mkdir, rename } from "node:fs/promises";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { normalizeMcpToolOutput } from "../../src/mcp-client/tool-output.js";
 import { DISPLAY_ATTACHMENT_LIMIT, DISPLAY_JSON_LIMIT, validateDisplayBlock } from "../../src/mcp-client/display-attachments.js";
 import { DEFAULT_VERIFIED_READ_CONTEXT } from "../../src/fs/verified-read.js";
-import { persistDisplayAttachments, readDisplayArtifact, readDisplayArtifactChunk, DISPLAY_ARTIFACT_CHUNK_BYTES } from "../../src/session/display-artifact-store.js";
+import { persistDisplayArtifactBytes, persistDisplayAttachments, readDisplayArtifact, readDisplayArtifactChunk, DISPLAY_ARTIFACT_CHUNK_BYTES } from "../../src/session/display-artifact-store.js";
 import type { Event } from "../../src/session/event-log.js";
 import { mkSession } from "../fixtures.js";
 import { redactSecretsInValue } from "../../src/secrets/sanitizer.js";
@@ -325,6 +325,13 @@ if (snapshot.messages.at(-1)?.textArtifact?.size !== 393_000 || Buffer.byteLengt
     expect(() => persistDisplayAttachments(session, result.metadata?.displayAttachments as Parameters<typeof persistDisplayAttachments>[1])).toThrow("I/O failure");
   });
 
+  it("does not recreate a removed session directory when publishing an artifact", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "display-removed-parent-")); directories.push(parent);
+    const removedSession = join(parent, "removed-session");
+    expect(() => persistDisplayArtifactBytes(removedSession, Buffer.from("answer"))).toThrow();
+    expect(existsSync(removedSession)).toBe(false);
+  });
+
   it("redacts tables before calculating their content digest and storage bytes", async () => {
     const result = await normalize([resource("application/vnd.agenc.table+json", { version: 1, title: "T", columns: [{ key: "token", label: "Token" }], rows: [{ token: 42 }] })]);
     const item = attachments(result)?.[0];
@@ -394,6 +401,8 @@ if (snapshot.messages.at(-1)?.textArtifact?.size !== 393_000 || Buffer.byteLengt
   it("stores bytes by digest, isolates sessions, survives reread and removes with its session", async () => {
     const base = await mkdtemp(join(tmpdir(), "display-session-")); directories.push(base);
     const first = join(base, "one"); const second = join(base, "two");
+    await mkdir(first);
+    await mkdir(second);
     const bytes = Buffer.from("BEGIN:VCALENDAR");
     const id = createHash("sha256").update(bytes).digest("hex");
     const result = await normalize([{ type: "resource", annotations: user, resource: { uri: "agenc:talk.ics", mimeType: "text/calendar", blob: bytes.toString("base64") } }]);

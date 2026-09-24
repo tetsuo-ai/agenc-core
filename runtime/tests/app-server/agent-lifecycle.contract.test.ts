@@ -922,6 +922,35 @@ describe("AgenC background agent lifecycle", () => {
     }
   });
 
+  it("publishes an oversized persisted snapshot while a separate store owns the writer lease", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const threadId = "conv-snapshot-foreign-writer";
+    const answer = "A".repeat(400_000);
+    const rollout = openRollout(cwd, threadId);
+    const owner = new FileThreadStore({ cwd, agencHome: home });
+    const reader = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      owner.createThread({ threadId, rolloutStore: rollout, source: "cli_main", cwd });
+      rollout.appendRollout({ type: "event_msg", payload: { id: "answer", eventId: "answer", seq: 1, msg: { type: "agent_message", payload: { message: answer } } } });
+      rollout.flushDurable();
+      expect(existsSync(`${rollout.rolloutPath}.lock`)).toBe(true);
+
+      const sessions = new AgenCDaemonSessionManager({ threadStore: reader, createSessionId: () => threadId });
+      await sessions.createSession({ agentId: threadId, cwd });
+      const manager = new AgenCDaemonAgentManager({ threadStore: reader, sessionManager: sessions });
+      const snapshot = await manager.getSessionTranscriptV2({ sessionId: threadId });
+      const artifact = snapshot.messages.at(-1)?.textArtifact;
+      expect(artifact).toBeDefined();
+      const read = await manager.readSessionArtifact({ sessionId: threadId, id: artifact!.id });
+      expect(Buffer.from(read.data, "base64").toString()).toBe(answer);
+      expect(existsSync(`${rollout.rolloutPath}.lock`)).toBe(true);
+    } finally {
+      reader.close(); owner.close(); rollout.close(); restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("reads persisted agent logs when source agent id differs from thread id", async () => {
     const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
     const rollout = openRollout(cwd, "thread-distinct-agent-log");

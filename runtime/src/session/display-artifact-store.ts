@@ -40,7 +40,10 @@ export function persistDisplayArtifactBytes(sessionDir: string, bytes: Buffer): 
   if (bytes.length > DISPLAY_FILE_LIMIT) throw new Error("display artifact exceeds size limit");
   const id = createHash("sha256").update(bytes).digest("hex");
   const root = join(sessionDir, ARTIFACT_DIRECTORY);
-  mkdirSync(root, { recursive: true, mode: 0o700 });
+  try { mkdirSync(root, { mode: 0o700 }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
   if (!lstatSync(root).isDirectory()) throw new Error("display artifact directory is not a directory");
   // A prior creation may have failed its parent fsync while leaving root in
   // place. Re-establish this proof before every successful publication.

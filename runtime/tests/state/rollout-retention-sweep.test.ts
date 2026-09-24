@@ -572,6 +572,26 @@ describe("pruneRolloutSessions", () => {
     expect(mirrorRowCountForSource(lockedPath)).toBe(2);
   });
 
+  it("holds the cross-process registry lock before taking rollout leases for retention", () => {
+    seedSession("thread-guarded-retention", 90);
+    const acquire = SessionLock.prototype.acquire;
+    let registryHeldAtLease = false;
+    const spy = vi.spyOn(SessionLock.prototype, "acquire").mockImplementation(function (options) {
+      registryHeldAtLease = existsSync(join(driver.projectDir, "threads.json.lock"));
+      return acquire.call(this, options);
+    });
+    try {
+      const report = pruneRolloutSessions(driver, {
+        sessionsDir: join(driver.projectDir, "sessions"),
+        retention_days: 30,
+        now: () => NOW,
+      });
+      expect(report.prunedSessions).toBe(1);
+      expect(registryHeldAtLease).toBe(true);
+      expect(existsSync(join(driver.projectDir, "threads.json.lock"))).toBe(false);
+    } finally { spy.mockRestore(); }
+  });
+
   it("defers retention when a writer wins the lease race after observation", () => {
     const rolloutPath = seedSession("thread-lock-race", 90);
     const acquire = vi
