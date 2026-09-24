@@ -2569,6 +2569,8 @@ export class Session {
 
   /** Bootstrap-owned submit hook used by the TUI contract. */
   private turnDriverHooks: SessionTurnDriverHooks | null = null;
+  private interruptedTurnHandoff: (() => Promise<void>) | null = null;
+  private interruptedTurnHandoffInFlight: Promise<void> | null = null;
   private readonly turnDriverReadyListeners = new Set<() => void>();
   /**
    * SessionStart hooks may be deferred when the atomic first turn is an
@@ -3490,6 +3492,27 @@ export class Session {
     }
   }
 
+  /** Run recovery pairing inside the serialized submit lifecycle, before history append. */
+  installInterruptedTurnHandoff(handoff: (() => Promise<void>) | null): void {
+    this.interruptedTurnHandoff = handoff;
+  }
+
+  /** Settle a recovered turn's open calls before new history or a history boundary. */
+  async settleInterruptedTurnHandoff(): Promise<void> {
+    const handoff = this.interruptedTurnHandoff;
+    if (handoff === null) return;
+    const inFlight = this.interruptedTurnHandoffInFlight ?? handoff();
+    this.interruptedTurnHandoffInFlight = inFlight;
+    try {
+      await inFlight;
+      if (this.interruptedTurnHandoff === handoff) this.interruptedTurnHandoff = null;
+    } finally {
+      if (this.interruptedTurnHandoffInFlight === inFlight) {
+        this.interruptedTurnHandoffInFlight = null;
+      }
+    }
+  }
+
   onTurnDriverReady(listener: () => void): () => void {
     if (this.lifecycleState !== "open") {
       throw new Error("cannot schedule a turn after shutdown");
@@ -3816,6 +3839,9 @@ export class Session {
         }
       }
       if (!permitted()) return false;
+      if (this.interruptedTurnHandoff !== null) {
+        await this.settleInterruptedTurnHandoff();
+      }
       if (generation === undefined) {
         await this.childFollowupAdmission.exit(() => hooks.submit(message, opts));
         return true;
@@ -3933,6 +3959,7 @@ export class Session {
 
     try {
       this.throwIfPartialCompactAborted(abortController.signal);
+      await this.settleInterruptedTurnHandoff();
       const sourceHistory = this.snapshotHistoryMessages();
       const { prefixBeforeActive, activeHistory } =
         splitActiveHistory(sourceHistory);
@@ -4056,6 +4083,7 @@ export class Session {
     }
 
     try {
+      await this.settleInterruptedTurnHandoff();
       const sourceHistory = this.snapshotHistoryMessages();
       const { prefixBeforeActive, activeHistory } =
         splitActiveHistory(sourceHistory);
@@ -4151,6 +4179,7 @@ export class Session {
     }
 
     try {
+      await this.settleInterruptedTurnHandoff();
       let result: SessionRollbackCompactionResult | null = null;
       await this.taskDispatchLock.with(async () => {
         const ownsTask = await this.activeTurn.with(

@@ -1021,6 +1021,10 @@ fallback provider/model route can be restored as one binding. A clean
 rejection may start a fresh turn only after the original provider state is
 proven intact or restored. An unproven partial publication halts startup and
 fences the session from new turns. The existing checkpoint remains unchanged.
+Automatic continuation is limited to a root whose descendant edges are all
+closed with recorded terminal outcomes. Turns with unfinished workers use the
+ordinary bootstrap dangling-call pairing, do not restore descendant sessions,
+and wait for an explicit new turn. Resuming worker turns is follow-up work.
 See the canonical
 [resume outcome table](../design/durable-runs-effects-events.md#resume-outcomes).
 

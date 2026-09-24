@@ -447,7 +447,7 @@ describe("strict canonical journal contract", () => {
     );
   });
 
-  it("rejects suspension until canonical effect uncertainty is reviewed", () => {
+  it("permits suspension with a recorded unknown effect but keeps the review gate", () => {
     const intent = validEvent(1, "effect_intent", {
       formatVersion: 2,
       minimumReaderRuntime: "0.14.0",
@@ -487,11 +487,8 @@ describe("strict canonical journal contract", () => {
       requiresReview: true,
       recordedAt: "2026-08-19T00:01:00.000Z",
     });
-    expect(() =>
-      validateCanonicalJournalText(`${intent}${unknown}${suspend(3)}`),
-    ).toThrow(
-      expect.objectContaining({ reasonCode: "terminal_binding_mismatch" }),
-    );
+    expect(validateCanonicalJournalText(`${intent}${unknown}${suspend(3)}`))
+      .toMatchObject({ activeLifecycleState: "suspended" });
 
     const reviewed = validEvent(3, "effect_review_resolved", {
       runId: "run-1",

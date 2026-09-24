@@ -43,6 +43,29 @@ function settingsEvent(
 }
 
 describe("session.transcript.v2 durable projection", () => {
+  it("keeps a shutdown notice and the resumed completion on the original turn", () => {
+    const items: RolloutItem[] = [
+      event(1, "user", { type: "user_message", payload: { message: "Write twelve files", messageId: "client-1" } }),
+      event(2, "start", { type: "turn_started", payload: { turnId: "turn-1" } }),
+      event(3, "partial", { type: "agent_message", payload: { message: "Wrote four files" } }),
+      event(4, "shutdown", { type: "turn_aborted", payload: { turnId: "turn-1", reason: "daemon_shutdown" } }),
+      event(5, "resume-start", { type: "turn_started", payload: { turnId: "turn-1" } }),
+      event(6, "resume", { type: "turn_resumed", payload: { turnId: "turn-1", fromCheckpointSeq: 1, fromIteration: 2 } }),
+      event(7, "answer", { type: "agent_message", payload: { message: "Finished all twelve files" } }),
+      event(8, "complete", { type: "turn_complete", payload: { turnId: "turn-1", lastAgentMessage: "Finished all twelve files" } }),
+    ];
+    const snapshot = sessionTranscriptV2FromRollout(items, "session-1", "run-1");
+    expect(snapshot.messages.map(message => message.text)).toEqual([
+      "Write twelve files", "Wrote four files", "Finished all twelve files",
+    ]);
+    expect(snapshot.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "turn_aborted", payload: { turnId: "turn-1", reason: "daemon_shutdown" } }),
+    ]));
+    expect(snapshot.turnResults).toEqual([
+      expect.objectContaining({ turnId: "turn-1", outcome: "aborted", committedSequence: 4 }),
+      expect.objectContaining({ turnId: "turn-1", outcome: "completed", committedSequence: 8 }),
+    ]);
+  });
   it.each(["turn_failed", "background_agent_error", "review_task_failed"])(
     "closes %s failures without a later completion and ignores stale identities",
     (failureType) => {

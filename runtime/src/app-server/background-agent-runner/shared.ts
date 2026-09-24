@@ -693,6 +693,12 @@ interface ActiveBackgroundAgent {
   readonly bootstrap: LocalRuntimeBootstrap;
   readonly control: AgentControl;
   readonly thread: ManagedThread;
+  /** Recovered conversation to republish after review releases a deferred turn. */
+  reapplyRecoveredHistoryAfterReview?: () => Promise<void>;
+  deferredDurableResumePendingReview?: boolean;
+  deferredDurableResumeStarting?: boolean;
+  deferredDurableResumeReviewBarrier?: Promise<void>;
+  releaseDeferredDurableResumeReviewBarrier?: () => void;
   status: DaemonAgentStatus;
   readonly startedAt: string;
   readonly runtimeGenerationId: string;
@@ -711,6 +717,7 @@ interface ActiveBackgroundAgent {
     readonly eventId: string;
     readonly reason: "daemon_shutdown_idle";
     readonly suspendedAt: string;
+    readonly interruptedTurnId?: string;
   };
   /** Closes every runner ingress route before idle state is observed. */
   ingressClosed?: boolean;

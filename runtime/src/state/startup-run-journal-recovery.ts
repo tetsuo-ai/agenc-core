@@ -1471,6 +1471,9 @@ function projectRunEvents(
         eventSequence: row.event_seq,
         reason: requireSuspensionReason(payload.reason),
         suspendedAt,
+        // The old writer may have stopped with a tool effect in flight.
+        // Recovery reconciles that intent before restoring the run.
+        allowUnsettledEffects: true,
       });
       pendingStartupActivationResumeEventId = undefined;
       lifecycleBoundaryAt = suspendedAt;

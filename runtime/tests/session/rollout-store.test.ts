@@ -20,8 +20,10 @@ import {
 import type { Session } from "./session.js";
 import type { AgentMetadata } from "../agents/registry.js";
 import { upsertAgentRun } from "../state/agent-runs.js";
-import { createOperatorEffectReviewResolution } from "../state/effect-review.js";
+import { createOperatorEffectReviewResolution, resolveLiveDurableEffectReview } from "../state/effect-review.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
+import { recordInFlightToolCallUnknownOutcome } from "../state/tool-output-rotation.js";
+import { resolveUnknownOutcomeEffect } from "../state/unknown-outcome-gate.js";
 import {
   openStateDatabases,
   resolveStateDatabasePaths,
@@ -872,6 +874,8 @@ describe("RolloutStore thread-spawn edges", () => {
       });
       try {
         expect(resumed.runEpoch).toBe(2);
+        expect(resumed.hasPendingEffectReviews()).toBe(true);
+        expect(() => resumed.assertModelExecutionAllowed()).toThrow(/effect review/i);
         const driver = openStateDatabases({ cwd, agencHome });
         try {
           const row = driver
@@ -885,6 +889,27 @@ describe("RolloutStore thread-spawn edges", () => {
             )
             .get(sessionId, "step-1");
           expect(row?.review_status).toBe("pending");
+          let nextSeq = Math.max(...resumed.readAll().flatMap((item) =>
+            item.type === "event_msg" ? [item.payload.seq ?? 0] : [])) + 1;
+          expect(resolveLiveDurableEffectReview(driver, {
+            sessionId, toolCallId: "call-1",
+            resolution: createOperatorEffectReviewResolution({
+              disposition: "confirmed_no_effect", actorId: "operator",
+              evidenceRef: "test:recovered-effect", evidenceSha256: "a".repeat(64),
+              reviewedAt: "2026-08-19T00:01:00.000Z",
+            }),
+          }, {
+            readAll: () => resumed.readAll(),
+            append: (eventId, payload) => {
+              const event: Event = { eventId, id: eventId, seq: nextSeq++,
+                msg: { type: "effect_review_resolved", payload } };
+              expect(resumed.append(event, { durable: true })).toBe(true);
+              return event;
+            },
+            project: event => resumed.recordEffectEvent(event),
+          })).toMatchObject({ kind: "resolved", durable: true });
+          expect(resumed.hasPendingEffectReviews()).toBe(false);
+          expect(() => resumed.assertModelExecutionAllowed()).not.toThrow();
         } finally {
           driver.close();
         }
@@ -985,6 +1010,69 @@ describe("RolloutStore thread-spawn edges", () => {
       original.close();
       rmSync(cwd, { recursive: true, force: true });
     }
+  });
+
+  it("restores a suspended unknown effect for live review before model or mutations continue", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-suspended-review-"));
+    const sessionId = "suspended-pending-review";
+    const original = openStore({ cwd, sessionId });
+    const intent: Event = { eventId: "suspended-intent", id: "suspended-intent", seq: 1,
+      msg: { type: "effect_intent", payload: {
+        formatVersion: 2, minimumReaderRuntime: "0.14.0",
+        runId: sessionId, stepId: "tool:turn:call-1", callId: "call-1",
+        toolName: "Write", recoveryCategory: "side-effecting", intentDigest: "intent-digest",
+        attempt: 1, recordedAt: TEST_RUN_TIMESTAMP,
+      } } };
+    try {
+      expect(original.append(intent, { durable: true })).toBe(true);
+      original.recordEffectEvent(intent);
+      const unknown: Event = { eventId: "suspended-unknown", id: "suspended-unknown", seq: 2,
+        msg: { type: "effect_unknown_outcome", payload: {
+          formatVersion: 2, minimumReaderRuntime: "0.14.0",
+          runId: sessionId, stepId: "tool:turn:call-1", callId: "call-1", toolName: "Write",
+          recoveryCategory: "side-effecting", intentEventSeq: 1, outcome: "unknown_outcome",
+          reason: "acknowledgement_lost",
+          requiresReview: true, recordedAt: TEST_RUN_TIMESTAMP,
+        } } };
+      expect(original.append(unknown, { durable: true })).toBe(true);
+      original.recordEffectEvent(unknown);
+      const suspension: Event = { eventId: "suspended-with-effect", id: "suspended-with-effect", seq: 3,
+        msg: { type: "run_suspended", payload: { runId: sessionId, epoch: 1,
+          reason: "daemon_shutdown_idle", suspendedAt: TEST_RUN_TIMESTAMP } } };
+      expect(original.append(suspension, { durable: true })).toBe(true);
+      original.recordRunSuspensionEvent(suspension);
+      original.close();
+
+      const restored = openStore({ cwd, sessionId, resume: true,
+        resumeSuspendedRun: true, suspendedResumeReason: "explicit_continue" });
+      try {
+        expect(restored.hasPendingEffectReviews()).toBe(true);
+        expect(() => restored.assertModelExecutionAllowed()).toThrow(/effect review/i);
+        expect(() => restored.assertToolAdmissionAllowed("side-effecting")).toThrow();
+        const driver = openStateDatabases({ cwd, agencHome });
+        try {
+          let nextSeq = 5;
+          const review = resolveLiveDurableEffectReview(driver, {
+            sessionId, toolCallId: "call-1",
+            resolution: createOperatorEffectReviewResolution({ disposition: "confirmed_no_effect",
+              actorId: "operator", evidenceRef: "test:checked-workspace", evidenceSha256: "a".repeat(64),
+              reviewedAt: "2026-08-19T00:01:00.000Z" }),
+          }, {
+            readAll: () => restored.readAll(),
+            append: (eventId, payload) => {
+              const event: Event = { eventId, id: eventId, seq: nextSeq++,
+                msg: { type: "effect_review_resolved", payload } };
+              expect(restored.append(event, { durable: true })).toBe(true);
+              return event;
+            },
+            project: event => restored.recordEffectEvent(event),
+          });
+          expect(review).toMatchObject({ kind: "resolved", durable: true });
+          expect(restored.hasPendingEffectReviews()).toBe(false);
+          expect(() => restored.assertModelExecutionAllowed()).not.toThrow();
+        } finally { driver.close(); }
+      } finally { restored.close(); }
+    } finally { original.close(); rmSync(cwd, { recursive: true, force: true }); }
   });
 
   it("adopts a recovery-named source after the bound normal path was moved", () => {

@@ -1738,6 +1738,7 @@ export async function* runTurnKernel(
   userMessage: string | readonly LLMContentPart[],
   opts: RunTurnOptions = {},
 ): AsyncGenerator<PhaseEvent, Terminal> {
+  session.rolloutStore?.assertModelExecutionAllowed?.();
   // T6 gap #119: canonical turn-lifecycle emits. Each `runTurn`
   // invocation must flank its work with a `turn_started` +
   // `turn_context` pair and either a matching `turn_complete` (happy
@@ -2154,6 +2155,9 @@ async function* runTurnKernelInner(
   // allowing an in-flight admission row to reattach after restart.
   if (opts.resume !== undefined) {
     state.messages = [...priorFull];
+    const lastUserIndex = state.messages.findLastIndex((message) => message.role === "user");
+    const completedToolResults = state.messages.slice(lastUserIndex + 1)
+      .filter((message) => message.role === "tool").length;
     // The reconstructed prefix is already on disk → anchor the persist
     // cursor at its length so it is not re-persisted.
     persistedMessageCount = state.messages.length;
@@ -2185,8 +2189,17 @@ async function* runTurnKernelInner(
           : {}),
       });
     }
+    state.messages.push({
+      role: "developer",
+      content: `The previous turn was interrupted by an app or daemon restart. ${completedToolResults} completed tool result(s) from that turn are already recorded in the conversation. Continue the unfinished user request from the recorded state and pending plan. Check the workspace before further writes. Do not repeat completed work. A tool without a settled result may have executed; check its outcome before any side-effecting retry.`,
+      runtimeOnly: { excludeFromDurableHistory: true },
+    });
     restoreFromCheckpoint(state, opts.resume.restoreSlice);
     restoreModelSampleResumePrompt(state);
+    // The request in flight at shutdown owns its original admission row.
+    // A continuation is a new physical request, even when the old row is
+    // held_unknown, so reserve its next identity before dispatch.
+    advanceModelSampleOrdinal(state);
   }
   // Phase 4b eligibility is a per-turn decision; the checkpointed round
   // counter restored above keeps a resumed turn's verification loop bounded.
@@ -2352,7 +2365,8 @@ async function* runTurnKernelInner(
   let checkpointSeq = opts.resume?.fromCheckpointSeq ?? 0;
   let iterationIndex = opts.resume?.fromIteration ?? 0;
   let lastCheckpointAtMs = 0;
-  let checkpointedModelSampleOrdinal = state.modelSampleOrdinal;
+  let checkpointedModelSampleOrdinal =
+    opts.resume === undefined ? state.modelSampleOrdinal : state.modelSampleOrdinal - 1;
   const emitTurnCheckpoint = (
     boundary: "iteration" | "postAssistant",
     options: { readonly force?: boolean } = {},

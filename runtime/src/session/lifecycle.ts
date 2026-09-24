@@ -51,6 +51,7 @@ export interface SessionLifecycleOpts {
   readonly shutdownBudgetMs?: number;
   /** Escalated teardown skips the optional memory-extraction grace period. */
   readonly skipMemoryExtractionDrain?: boolean;
+  readonly shutdownReason?: "session_shutdown" | "daemon_shutdown";
 }
 
 /**
@@ -106,7 +107,7 @@ export async function shutdownSessionLifecycle(
   const ownedMcpDisposeTask =
     startupLifecycle.prepareOwnedMcpDisposalForShutdown?.(deadlineMs);
   if (!opts.session.abortController.signal.aborted) {
-    opts.session.abortController.abort("session_shutdown");
+    opts.session.abortController.abort(opts.shutdownReason ?? "daemon_shutdown");
   }
 
   // Step 2: drain startup activation before taking the agent-control
@@ -125,12 +126,12 @@ export async function shutdownSessionLifecycle(
   // continuations, before a background-run terminal can seal the journal.
   const abortAllTasks = (
     opts.session as Session & {
-      abortAllTasks?: (reason: "interrupted") => Promise<void>;
+      abortAllTasks?: (reason: "daemon_shutdown" | "session_shutdown") => Promise<void>;
     }
   ).abortAllTasks;
   if (typeof abortAllTasks === "function") {
     await raceBudget(
-      abortAllTasks.call(opts.session, "interrupted"),
+      abortAllTasks.call(opts.session, opts.shutdownReason ?? "daemon_shutdown"),
       deadlineMs,
       "session_active_task_shutdown",
       opts.session,
@@ -141,7 +142,7 @@ export async function shutdownSessionLifecycle(
   // before Session.shutdown() drain, else children can refill mailboxes).
   if (opts.agentControl) {
     await raceBudget(
-      opts.agentControl.shutdownAll("session_shutdown"),
+      opts.agentControl.shutdownAll(opts.shutdownReason ?? "daemon_shutdown"),
       deadlineMs,
       "agent_control_shutdown",
       opts.session,

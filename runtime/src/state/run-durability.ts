@@ -440,6 +440,7 @@ export class StateRunDurabilityRepository {
     readonly eventSequence: number;
     readonly reason: RunSuspendedBoundary["reason"];
     readonly suspendedAt: string;
+    readonly allowUnsettledEffects?: boolean;
   }): DurableWriteOutcome<DurableRunSuspension> {
     return this.driver.transactionImmediate(() => {
       const replayed = this.driver
@@ -487,7 +488,7 @@ export class StateRunDurabilityRepository {
           `run ${params.runId} epoch ${params.epoch} is already suspended`,
         );
       }
-      this.assertNoPendingEffects(params.runId);
+      if (params.allowUnsettledEffects !== true) this.assertNoPendingEffects(params.runId);
       this.assertSequenceUnclaimed(params.runId, params.eventSequence);
       this.driver
         .prepareState<[string, number, string, number, string, string]>(
@@ -582,7 +583,7 @@ export class StateRunDurabilityRepository {
           `resume sequence must follow suspension ${params.suspensionEventId}`,
         );
       }
-      this.assertNoPendingEffects(params.runId);
+      this.assertNoDanglingEffects(params.runId);
       this.assertSequenceUnclaimed(params.runId, params.eventSequence);
       this.driver
         .prepareState<[string, number, string, string, string, string]>(
@@ -2185,6 +2186,15 @@ export class StateRunDurabilityRepository {
       `run ${runId} has unsettled effect(s): ${unsettled
         .map((effect) => effect.stepId)
         .join(", ")}`,
+    );
+  }
+
+  private assertNoDanglingEffects(runId: RunId): void {
+    const dangling = this.listEffects(runId).filter(effect => effect.outcome === undefined);
+    if (dangling.length === 0) return;
+    throw conflict(
+      "RUN_SUSPENSION_EFFECT_PENDING",
+      `run ${runId} has unsettled effect(s): ${dangling.map(effect => effect.stepId).join(", ")}`,
     );
   }
 
