@@ -3149,7 +3149,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
 
   async getAgentSessionTranscriptV2(
     agentId: string,
-    params: { readonly sessionId: string },
+    params: { readonly sessionId: string; readonly includeCompleteMessages?: boolean },
   ): Promise<SessionTranscriptV2Result> {
     const active = this.#active.get(agentId);
     if (active === undefined || !isRunnableActiveAgent(active)) {
@@ -3176,6 +3176,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
               : {}),
           },
       active.bootstrap.rolloutStore.store?.sessionDir,
+      { includeCompleteMessages: params.includeCompleteMessages },
     );
   }
 

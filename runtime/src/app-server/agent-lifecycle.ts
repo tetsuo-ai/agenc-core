@@ -3501,6 +3501,7 @@ export class AgenCDaemonAgentManager {
 
   async getSessionTranscriptV2(
     params: SessionTranscriptV2Params,
+    options: { readonly includeCompleteMessages?: boolean } = {},
   ): Promise<SessionTranscriptV2Result> {
     if (this.#sessionManager === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
@@ -3511,6 +3512,7 @@ export class AgenCDaemonAgentManager {
     if (this.#runner?.getAgentSessionTranscriptV2 === undefined) {
       const persisted = await this.#readPersistedSessionTranscriptV2(
         params.sessionId,
+        options,
       );
       if (persisted !== undefined) return persisted;
       throw new AgenCDaemonAgentLifecycleError(
@@ -3527,6 +3529,7 @@ export class AgenCDaemonAgentManager {
       if (isNoLiveAgentError(error)) {
         const persisted = await this.#readPersistedSessionTranscriptV2(
           params.sessionId,
+          options,
         );
         if (persisted !== undefined) return persisted;
       }
@@ -3535,11 +3538,13 @@ export class AgenCDaemonAgentManager {
     try {
       return await this.#runner.getAgentSessionTranscriptV2(agentId, {
         sessionId: params.sessionId,
+        includeCompleteMessages: options.includeCompleteMessages,
       });
     } catch (error) {
       if (isNoLiveAgentRunnerError(error)) {
         const persisted = await this.#readPersistedSessionTranscriptV2(
           params.sessionId,
+          options,
         );
         if (persisted !== undefined) return persisted;
       }
@@ -3632,6 +3637,7 @@ export class AgenCDaemonAgentManager {
 
   async #readPersistedSessionTranscriptV2(
     sessionId: string,
+    options: { readonly includeCompleteMessages?: boolean } = {},
   ): Promise<SessionTranscriptV2Result | undefined> {
     const thread = await this.#readPersistedThreadForSession(sessionId);
     if (thread === undefined) return undefined;
@@ -3641,6 +3647,7 @@ export class AgenCDaemonAgentManager {
       thread.threadId,
       undefined,
       thread.rolloutPath ? dirname(thread.rolloutPath) : undefined,
+      options,
     );
   }
 

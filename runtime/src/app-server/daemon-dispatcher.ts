@@ -1326,10 +1326,11 @@ export class AgenCDaemonJsonRpcDispatcher {
         );
       case "session.transcript.v2":
         {
+          const clientMinor = Number(connection.initializeState?.clientProtocol.version.split(".")[1] ?? 0);
           const transcript = await this.#agentManager.getSessionTranscriptV2(
             validateSessionTranscriptV2Params(params),
+            { includeCompleteMessages: clientMinor < 18 },
           );
-          const clientMinor = Number(connection.initializeState?.clientProtocol.version.split(".")[1] ?? 0);
           if (clientMinor >= 18) return successResponse(id, transcript);
           // Protocol 1.17 has no artifact RPC. Restore the complete reply
           // inline, then measure the actual serialized transport frame.

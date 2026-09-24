@@ -156,6 +156,10 @@ export class StateThreadRepository {
   ): void {
     const existing = this.getThread(record.threadId);
     const replaceArchiveState = opts.replaceArchiveState === true;
+    // An active thread's archived path is a pending cleanup cursor after
+    // unarchive. Recovery may replace archive metadata without erasing it.
+    const preservePendingCleanup = existing?.archivedAt === undefined &&
+      existing?.archivedRolloutPath !== undefined && record.archivedAt === undefined;
     const name = record.name ?? existing?.name;
     const model = record.model ?? existing?.model;
     const modelProvider = record.modelProvider ?? existing?.modelProvider;
@@ -186,13 +190,13 @@ export class StateThreadRepository {
       ...(record.rolloutPath !== undefined
         ? { rolloutPath: record.rolloutPath }
         : {}),
-      ...(!replaceArchiveState && existing?.archivedRolloutPath !== undefined
+      ...((!replaceArchiveState || preservePendingCleanup) && existing?.archivedRolloutPath !== undefined
         ? { archivedRolloutPath: existing.archivedRolloutPath }
         : {}),
       ...(record.archivedRolloutPath !== undefined
         ? { archivedRolloutPath: record.archivedRolloutPath }
         : {}),
-      ...(!replaceArchiveState && existing?.archiveCleanupGeneration !== undefined
+      ...((!replaceArchiveState || preservePendingCleanup) && existing?.archiveCleanupGeneration !== undefined
         ? { archiveCleanupGeneration: existing.archiveCleanupGeneration }
         : {}),
       ...(record.archiveCleanupGeneration !== undefined

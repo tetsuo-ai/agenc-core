@@ -33,6 +33,9 @@ import {
   ThreadStoreInvalidRequestError,
 } from "../thread-store/store.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
+import { upsertAgentRun } from "../state/agent-runs.js";
+import { recoverCanonicalRunJournalForRun } from "../state/startup-run-journal-recovery.js";
+import { StateThreadRepository } from "../state/threads.js";
 import { sessionTranscriptV2FromRollout } from "../app-server/background-agent-runner.js";
 
 // Bind fixture homes explicitly: production storage follows immutable session
@@ -434,6 +437,39 @@ describe("FileThreadStore.archiveThread / listThreads", () => {
       expect(restarted.readThread({ threadId: "unarchive-startup", includeArchived: false, includeHistory: false }).archivedAt).toBeUndefined();
       restarted.close();
     } finally { rollout.close(); rmSync(cwd, { recursive: true, force: true }); }
+  });
+  it("keeps failed unarchive cleanup pending through startup journal backfill", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-unarchive-backfill-"));
+    const rollout = openStore({ cwd, sessionId: "unarchive-backfill" });
+    const store = new FileThreadStore({ agencHome, cwd });
+    try {
+      store.createThread({ threadId: "unarchive-backfill", rolloutStore: rollout });
+      store.shutdownThread("unarchive-backfill");
+      rollout.close();
+      store.archiveThread({ threadId: "unarchive-backfill" });
+      const archived = store.readThread({ threadId: "unarchive-backfill", includeArchived: true, includeHistory: false });
+      const artifacts = join(dirname(archived.rolloutPath!), "display-artifacts");
+      mkdirSync(artifacts);
+      writeFileSync(join(artifacts, "held"), "held artifact");
+      artifactCleanupFailure.path = artifacts;
+      artifactCleanupFailure.failOnce = true;
+      expect(() => store.unarchiveThread({ threadId: "unarchive-backfill" })).toThrow("injected artifact cleanup failure");
+      const active = store.readThread({ threadId: "unarchive-backfill", includeArchived: false, includeHistory: false });
+      const driver = openStateDatabases({ cwd, agencHome });
+      try {
+        const threads = new StateThreadRepository(driver);
+        const pending = threads.getThread("unarchive-backfill")!;
+        expect(pending.archivedRolloutPath).toBe(archived.rolloutPath);
+        expect(pending.archiveCleanupGeneration).toBeDefined();
+        upsertAgentRun(driver, { id: "unarchive-backfill", objective: "recovery", status: "completed", startedAt: active.createdAt, lastActiveAt: active.updatedAt, currentSessionId: "unarchive-backfill" });
+        expect(recoverCanonicalRunJournalForRun(driver, "unarchive-backfill")).toMatchObject({ filesScanned: 1 });
+        expect(threads.getThread("unarchive-backfill")).toMatchObject({ archivedRolloutPath: pending.archivedRolloutPath, archiveCleanupGeneration: pending.archiveCleanupGeneration });
+      } finally { driver.close(); }
+      store.close();
+      const restarted = new FileThreadStore({ agencHome, cwd });
+      try { expect(existsSync(artifacts)).toBe(false); }
+      finally { restarted.close(); }
+    } finally { store.close(); rollout.close(); rmSync(cwd, { recursive: true, force: true }); }
   });
   it("does not clear a newer unarchive cursor after startup removed the old artifacts", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-unarchive-cursor-race-"));

@@ -59,6 +59,32 @@ describe("daemon SSH proxy", () => {
     expect(f.stdout()).not.toContain(cookie);
     expect(f.stderr()).toBe("");
   });
+  it("forwards every chunk of a session artifact within the SSH frame limit", async () => {
+    const f = fixture();
+    const result = bridgeDaemonProxy(f.socket, cookie, f);
+    f.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocol: { version: "1.18.0" } } });
+    f.respond({ jsonrpc: "2.0", id: 1, result: { protocol: { version: "1.18.0" } } });
+    await flush();
+    const bytes = Buffer.alloc(700_000, 0x61);
+    const id = "b".repeat(64);
+    const received: Buffer[] = [];
+    for (let offset = 0, requestId = 2; offset < bytes.length; requestId++) {
+      f.send({ jsonrpc: "2.0", id: requestId, method: "session.artifact.read", params: { sessionId: "session-1", id, offset, length: 512 * 1024 } });
+      expect(f.forwarded.at(-1)).toMatchObject({ method: "session.artifact.read", params: { sessionId: "session-1", id, offset } });
+      const end = Math.min(offset + 512 * 1024, bytes.length);
+      const frame = { jsonrpc: "2.0", id: requestId, result: { sessionId: "session-1", id, encoding: "base64", data: bytes.subarray(offset, end).toString("base64"), size: bytes.length, offset, nextOffset: end < bytes.length ? end : null } };
+      expect(Buffer.byteLength(JSON.stringify(frame) + "\n")).toBeLessThanOrEqual(1024 * 1024);
+      f.respond(frame);
+      await flush();
+      const response = JSON.parse(f.stdout().trim().split("\n").at(-1)!) as typeof frame;
+      received.push(Buffer.from(response.result.data, "base64"));
+      offset = response.result.nextOffset ?? bytes.length;
+    }
+    expect(Buffer.concat(received)).toEqual(bytes);
+    f.input.end();
+    expect(await result).toBe(0);
+    expect(f.stderr()).toBe("");
+  });
   it("requires initialization, rejects credential/settings methods, and bounds unterminated input", async () => {
     const before = fixture(); const beforeResult = bridgeDaemonProxy(before.socket, cookie, before);
     before.send({ jsonrpc: "2.0", id: 1, method: "session.list" });

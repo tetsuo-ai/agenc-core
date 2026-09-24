@@ -331,6 +331,7 @@ export function sessionTranscriptV2FromRollout(
   runId: string,
   activeTurn?: { readonly turnId: string; readonly clientMessageId?: string },
   artifactSessionDir?: string,
+  options: { readonly includeCompleteMessages?: boolean } = {},
 ): SessionTranscriptV2Result {
   const boundary = latestTranscriptBoundary(items);
   const boundaryIndex = boundary?.index ?? -1;
@@ -596,6 +597,9 @@ export function sessionTranscriptV2FromRollout(
         }
       : {}),
   };
+  // Older clients cannot fetch text artifacts. Keep their complete projection
+  // until the dispatcher measures the serialized reply for this connection.
+  if (options.includeCompleteMessages) return snapshot;
   // The remote transport has a 1 MiB envelope ceiling. Leave room for JSON
   // escaping in that envelope and keep the newest transcript entries when an
   // unusually long session cannot fit in one snapshot response.

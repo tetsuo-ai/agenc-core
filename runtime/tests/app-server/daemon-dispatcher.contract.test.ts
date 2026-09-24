@@ -128,6 +128,25 @@ describe("session.artifact.read wire contract", () => {
     expect(message.text).toContain("FINAL_MARKER");
     expect(message.textArtifact).toBeUndefined();
   });
+  it("keeps two 250,000-byte answers when a 1.17 restored frame fits", async () => {
+    const manager = new AgenCDaemonAgentManager();
+    const answers = ["A".repeat(250_000), "B".repeat(250_000)];
+    const items = answers.map((answer, index) => ({ type: "event_msg" as const, payload: { id: `answer-${index}`, eventId: `answer-${index}`, seq: index + 1, msg: { type: "agent_message" as const, payload: { message: answer } } } }));
+    const sessionDir = await workspaces.create();
+    vi.spyOn(manager, "getSessionTranscriptV2").mockImplementation(async (_params, options) =>
+      sessionTranscriptV2FromRollout(items, "one", "run", undefined, sessionDir, { includeCompleteMessages: options?.includeCompleteMessages }),
+    );
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: new AgenCDaemonSessionManager() });
+    const older = dispatcher.createConnection({ sendNotification: () => {} });
+    await initialize(older, "1.17.0");
+    const response = await older.dispatch(request("old", "session.transcript.v2", { sessionId: "one" }));
+    const restored = (response.result as { messages: Array<{ text: string }>; asOfSequence: number }).messages;
+    expect(restored).toHaveLength(2);
+    expect(restored.map(message => message.text.length)).toEqual([250_000, 250_000]);
+    expect(restored[0]?.text).toBe(answers[0]);
+    expect(restored[1]?.text).toBe(answers[1]);
+    expect(Buffer.byteLength(JSON.stringify(response))).toBeLessThan(1024 * 1024);
+  });
   it("restores the complete 800,000-byte answer for 1.17 when its wrapped reply fits", async () => {
     const manager = new AgenCDaemonAgentManager();
     const answer = "A".repeat(800_000);
