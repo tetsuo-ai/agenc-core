@@ -23,6 +23,7 @@ import {
   authorizeChildExecutionPlan,
   childModelInfo,
   childProviderPolicy,
+  crossProviderConsentFromSettings,
   currentChildProvider,
   resolveChildSelection,
 } from "../cross-provider.js";
@@ -130,8 +131,8 @@ The new agent's canonical task name will be provided to it along with the messag
   const cfg = session?.config?.multiAgentV2;
   const policy = session?.services == null ? undefined : childProviderPolicy(session);
   const pairs = policy?.cross_provider_enabled === true ? allowedChildPairs(session!) : [];
-  const consentClause = policy?.cross_provider_enabled === true && policy.cross_provider_ask_each_spawn !== true
-    ? "The user enabled them in settings, so a spawn to an allowed provider/model pair runs without asking; after a child reports insufficient_funds, the next cross-provider spawn asks the user."
+  const consentClause = session != null && crossProviderConsentFromSettings(session)
+    ? "The user enabled them in settings, so a spawn to an allowed provider/model pair runs without asking. Once any child reports insufficient_funds, every later cross-provider spawn in this session asks the user, and a run no one can answer gets consent_unavailable."
     : "Using one asks the user for consent at the moment of use, even when enabled.";
   const pairList = pairs.map(({ provider, model }) => provider + "/" + model).join(", ") || "none";
   const allowedPairs = policy?.cross_provider_enabled === true ? ` Allowed provider/model pairs: ${pairList}.` : "";

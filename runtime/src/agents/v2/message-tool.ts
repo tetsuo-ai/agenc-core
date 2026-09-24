@@ -106,9 +106,10 @@ export async function handleMessageStringTool(
   }
   let assignedPlan: ChildExecutionPlan | undefined;
   if (mode === "queue_only" && targetPlan?.crossProvider) {
-    // A passive message is prepended to a later assignment. Obtain a fresh
-    // disclosure for its text before it enters the child's mailbox, even if
-    // the worker has a reusable session grant for assignments.
+    // A passive message is prepended to a later assignment, so its text needs
+    // consent before it enters the child's mailbox. Settings consent covers
+    // it. With per-spawn consent, or after a funds stop, it needs a fresh
+    // approval even if the worker holds a reusable session grant.
     const caller = current.threadId === sessionOrError.conversationId
       ? sessionOrError : liveAgentSession(control.getLive(current.threadId)!);
     if (caller === undefined) return agentValidationError("consent_unavailable: calling session is no longer live");

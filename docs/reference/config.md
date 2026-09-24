@@ -340,7 +340,7 @@ otherwise.
 | `transcriptPersistenceEnabled` | `true` |
 | `promptSuggestionEnabled` | `false` |
 | `agent.budget` | no caps |
-| `agents.cross_provider_enabled` | `false`. User or managed config may enable cross-provider subagents. Enabling it is the user's consent for the providers in `allowed_providers`: a spawn to one of them runs without a question. After a child reports that its provider is out of funds, the next cross-provider spawn in that session asks. |
+| `agents.cross_provider_enabled` | `false`. User or managed config may enable cross-provider subagents. Enabling it is the user's consent for the providers in `allowed_providers`: a spawn to one of them runs without a question. This consent also covers unattended runs (goals, routines, workflows, `agenc -p`, and turns resumed after a restart), nested children, and `send_message` or `assign_task` to an existing child. Once any child in a session reports that its provider is out of funds, settings consent ends for that session, also after a daemon restart. Every later cross-provider spawn then asks, even after the user picks Allow for session. An unattended run, or a run with no client that can answer, gets `consent_unavailable` instead of a question. |
 | `agents.allowed_providers` | `[]`. Built-in provider names permitted for cross-provider subagents. |
 | `agents.cross_provider_ask_each_spawn` | `false`. Set `true` to be asked before every cross-provider spawn, as before. Repository config cannot change it. |
 | `agent.retention.completed_days` | `30` |

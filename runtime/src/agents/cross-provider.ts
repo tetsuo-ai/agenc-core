@@ -408,6 +408,21 @@ export function crossProviderConsentFromSettings(session: Session): boolean {
   return policy.cross_provider_enabled === true && policy.cross_provider_ask_each_spawn !== true;
 }
 
+/**
+ * Whether a conversation's journal records a child's funds stop. Settings
+ * consent ends at the first one, so a restored or resumed owner reads it back.
+ */
+export function fundsStopFromRolloutItems(items: Iterable<unknown>): boolean {
+  for (const item of items) {
+    const record = item as {
+      readonly type?: unknown;
+      readonly payload?: { readonly msg?: { readonly type?: unknown } };
+    } | null;
+    if (record?.type === "event_msg" && record.payload?.msg?.type === "subagent_funds_notice") return true;
+  }
+  return false;
+}
+
 export function childCatalogConfig(session: Session): AgenCConfig {
   return session.services?.configStore?.current() ?? {
     model: session.modelInfo.slug,
