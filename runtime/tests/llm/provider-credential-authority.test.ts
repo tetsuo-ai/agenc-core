@@ -93,6 +93,73 @@ afterEach(async () => {
 });
 
 describe("provider credential authority", () => {
+  test.each(["request", "response body"] as const)("stopping a Grok child during stalled model-list %s settles preparation and cleans up", async (stall) => {
+    const home = await createHome(`grok-stalled-models-${stall}`);
+    const { xaiCredentials } = await loadCredentialModules();
+    xaiCredentials.saveXaiOauthCredentials(home, { accessToken: "sign-in" });
+    const stop = new AbortController();
+    let observedSignal: AbortSignal | undefined;
+    let release: (() => void) | undefined;
+    const wire = vi.fn<typeof fetch>(async (_input, init) => {
+      observedSignal = init?.signal ?? undefined;
+      if (stall === "request") return new Promise<Response>((resolve, reject) => {
+        release = () => resolve(Response.json({ data: [{ id: "grok-4.6" }] }));
+        init?.signal?.addEventListener("abort", () => reject(init.signal!.reason), { once: true });
+      });
+      return new Response(new ReadableStream({ start(controller) {
+        release = () => controller.close();
+        init?.signal?.addEventListener("abort", () => controller.error(init.signal!.reason), { once: true });
+      } }), { status: 200 });
+    });
+    const [{ SessionProviderService }, { createProvider }] = await Promise.all([
+      import("../../src/session/provider-service.js"), import("../../src/llm/provider.js"),
+    ]);
+    const service = new SessionProviderService({
+      initialProvider: createProvider("ollama", { model: "llama3.3" }), environment: {},
+    });
+    const pending = service.prepareChild({ provider: "grok", model: "grok-4.6" },
+      { model: "grok-4.6", credentialHome: home, extra: { fetchImpl: wire } },
+      { signal: stop.signal }, true, undefined,
+      { endpoint: "https://api.x.ai/v1", authProfile: "sign_in", billingSource: "sign_in" });
+    await vi.waitFor(() => expect(wire).toHaveBeenCalledOnce());
+    stop.abort("child stopped");
+    const outcome = await Promise.race([
+      pending.then(() => "resolved", () => "rejected"),
+      new Promise<"timed out">((resolve) => setTimeout(() => resolve("timed out"), 150)),
+    ]);
+    if (outcome === "timed out") release?.();
+    expect(observedSignal).toBeInstanceOf(AbortSignal);
+    expect(observedSignal?.aborted).toBe(true);
+    expect(outcome).toBe("rejected");
+    expect(service.current().provider).toBe("ollama");
+  });
+
+  test.each(["request", "response body"] as const)("sign-in model discovery bounds a stalled %s", async (stall) => {
+    const home = await createHome(`grok-model-deadline-${stall}`);
+    const { assertSignInChildModelEligible } = await import("../../src/llm/sign-in-child-models.js");
+    let observedSignal: AbortSignal | undefined;
+    const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
+      observedSignal = init?.signal ?? undefined;
+      if (stall === "request") return new Promise<Response>(() => {});
+      return new Response(new ReadableStream({ start() {} }), { status: 200 });
+    });
+    await expect(assertSignInChildModelEligible({ provider: "grok", model: "grok-4.6",
+      options: { model: "grok-4.6", credentialHome: home, apiKey: "sign-in" },
+      environment: {}, fetchImpl, timeoutMs: 25 })).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(observedSignal?.aborted).toBe(true);
+  });
+
+  test("a stopped child does not begin sign-in model discovery", async () => {
+    const home = await createHome("grok-model-pre-aborted");
+    const { assertSignInChildModelEligible } = await import("../../src/llm/sign-in-child-models.js");
+    const stopped = new AbortController();
+    stopped.abort("child stopped");
+    const fetchImpl = vi.fn<typeof fetch>();
+    await expect(assertSignInChildModelEligible({ provider: "grok", model: "grok-4.6",
+      options: { model: "grok-4.6", credentialHome: home, apiKey: "sign-in" },
+      environment: {}, fetchImpl, signal: stopped.signal })).rejects.toThrow(/child stopped/u);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
   test.each(["openai", "grok"] as const)("%s selects API billing without deleting a stored OAuth sign-in", async (provider) => {
     const home = await createHome(`choice-${provider}`);
     const { providerOptions, openAiCredentials, xaiCredentials } = await loadCredentialModules();
@@ -501,9 +568,10 @@ describe("provider credential authority", () => {
     const { xaiCredentials } = await loadCredentialModules();
     xaiCredentials.saveXaiOauthCredentials(home, { accessToken: "approved-sign-in" });
     const wire = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: "grok-4.6" }] }));
-    const [{ SessionProviderService }, { createProvider }] = await Promise.all([
+    const [{ SessionProviderService }, { createProvider }, { classifyChildFailure, childDispatchCertainty }] = await Promise.all([
       import("../../src/session/provider-service.js"),
       import("../../src/llm/provider.js"),
+      import("../../src/agents/child-terminal.js"),
     ]);
     const service = new SessionProviderService({
       initialProvider: createProvider("ollama", { model: "llama3.3" }),
@@ -516,8 +584,12 @@ describe("provider credential authority", () => {
       { endpoint: "https://api.x.ai/v1", authProfile: "sign_in", billingSource: "sign_in" },
     );
     xaiCredentials.clearXaiOauthCredentials(home);
-    expect(() => prepared.binding.instance.forkForSession?.({ cwd: testRoot }))
-      .toThrow(/sign-in.*(missing|unavailable|expired)/iu);
+    let failure: unknown;
+    try { prepared.binding.instance.forkForSession?.({ cwd: testRoot }); }
+    catch (error) { failure = error; }
+    expect(String(failure)).toMatch(/sign-in.*(missing|unavailable|expired)/iu);
+    expect(classifyChildFailure("grok", failure)).toMatchObject({ reason: "auth_required", retryable: false });
+    expect(childDispatchCertainty(failure)).toBe("not_sent");
     await prepared.binding.instance.dispose?.();
   });
 

@@ -53,6 +53,7 @@ import {
   readProviderIdentity,
 } from "../llm/provider.js";
 import { createGeminiEndpointPlan } from "../llm/providers/gemini/endpoint-plan.js";
+import { ZaiProvider } from "../llm/providers/zai/index.js";
 import {
   _resetAgentRolesForTesting,
   _resetNicknamePoolForTesting,
@@ -800,7 +801,8 @@ describe("runAgent", () => {
     const { result } = await collectRun(runAgent({ live, parent, initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", plan }));
     expect(result.outcome).toBe("completed");
     expect(prepare).toHaveBeenCalledWith(
-      { provider: "deepseek", model: "deepseek-v4-pro" }, undefined, {}, true,
+      { provider: "deepseek", model: "deepseek-v4-pro" }, undefined,
+      { signal: expect.any(AbortSignal) }, true,
       undefined, plan.destination,
     );
     expect(target.chatStream).toHaveBeenCalledOnce();
@@ -836,6 +838,43 @@ describe("runAgent", () => {
     expect(result.outcome).toBe("errored");
     expect(dispose).toHaveBeenCalledOnce(); // only the post-consent run preparation
     expect(target.chatStream).not.toHaveBeenCalled();
+  });
+
+  it("stops and cleans up a child while its model-list preparation is stalled", async () => {
+    const configStore = new ConfigStore({ cwd: "/tmp",
+      base: { agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] } } });
+    const target = { ...makeProvider([]), name: "deepseek", chatStream: vi.fn() } as LLMProvider;
+    const { parent, modelInfo } = crossProviderRuntime(target, configStore);
+    const plan = await authorizedCrossProviderPlan(parent, modelInfo);
+    Object.assign(parent.services, { unifiedExecManager: {
+      terminateOwnedProcesses: vi.fn(() => ({ results: [] })) } });
+    let entered!: () => void;
+    const preparing = new Promise<void>((resolve) => { entered = resolve; });
+    let preparationSignal: AbortSignal | undefined;
+    Object.assign(parent.providerService, { prepareChild: async (
+      _selection: unknown, _requested: unknown, runtime: { signal?: AbortSignal },
+    ) => {
+      preparationSignal = runtime.signal;
+      entered();
+      if (runtime.signal === undefined) throw new Error("model-list preparation has no child signal");
+      await new Promise<never>((_resolve, reject) => runtime.signal!.addEventListener("abort",
+        () => reject(new Error("model-list request aborted")), { once: true }));
+      throw new Error("unreachable");
+    } });
+    const control = new AgentControl({ session: parent, registry: new AgentRegistry() });
+    control.registerSessionRoot(parent.conversationId);
+    const live = await control.spawn({ parentPath: "/root" });
+    const run = collectRun(runAgent({ live, parent,
+      initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", plan }));
+    await preparing;
+    control.stopOpenSpawnChildren(parent.conversationId, "user_stop");
+    const result = await Promise.race([run.then(({ result }) => result),
+      new Promise<"timed out">((resolve) => setTimeout(() => resolve("timed out"), 250))]);
+    expect(result).not.toBe("timed out");
+    expect(preparationSignal?.aborted).toBe(true);
+    expect(live.abortController.signal.aborted).toBe(true);
+    expect(target.chatStream).not.toHaveBeenCalled();
+    expect(liveAgentSession(live)).toBeUndefined();
   });
 
   it.each(["Stop", "switch off"])("cancels an active cross-provider stream on %s", async (cause) => {
@@ -3147,10 +3186,10 @@ describe("runAgent", () => {
       typeof message.content === "string" && message.content.includes('"reason":"insufficient_funds"'))).toBe(true);
   });
 
-  it("publishes a setup-time funds stop and invalidates reusable cross-provider grants", async () => {
+  it.each(["deepseek", "zai"] as const)("publishes a %s setup-time funds stop and invalidates reusable cross-provider grants", async (destinationProvider) => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-setup-funds-"));
     const configStore = new ConfigStore({ cwd, base: { model_provider: "grok", model: "grok-4.6",
-      agents: { cross_provider_enabled: true, allowed_providers: ["deepseek", "openrouter"] } } });
+      agents: { cross_provider_enabled: true, allowed_providers: [destinationProvider, "openrouter"] } } });
     const session = makeStubSession({ conversationId: "setup-funds-root", services: { configStore },
       sessionConfiguration: mkSessionConfiguration({ cwd }), config: { ...mkConfig(), cwd } });
     const parentRollout = new RolloutStore({ cwd, sessionId: session.conversationId,
@@ -3180,8 +3219,8 @@ describe("runAgent", () => {
         session: { conversationId: session.conversationId, sessionConfiguration: session.sessionConfiguration,
           services: session.services, config: session.config, modelInfo: session.modelInfo,
           providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }) } } as Session,
-        selection: { provider: "deepseek", model: "deepseek-v4-pro" },
-        modelInfo: { ...mkModelInfo(), slug: "deepseek-v4-pro", provider: "deepseek" },
+        selection: { provider: destinationProvider, model: destinationProvider === "zai" ? "glm-5.3" : "deepseek-v4-pro" },
+        modelInfo: { ...mkModelInfo(), slug: destinationProvider === "zai" ? "glm-5.3" : "deepseek-v4-pro", provider: destinationProvider },
         parentPath: "/root", taskId: "setup-funds", taskName: "worker", taskText: "build parser",
         toolFree: false, forkedHistory: false,
       });
@@ -3193,7 +3232,13 @@ describe("runAgent", () => {
       };
       await approveSession(other);
       const plan = await approveSession(proposed);
-      vi.spyOn(session.providerService, "prepareChild").mockRejectedValue(new LLMFundsError("deepseek", 402));
+      const billingError = destinationProvider === "zai"
+        ? await new ZaiProvider({ apiKey: "test", model: "glm-5.3",
+            fetchImpl: async () => new Response(JSON.stringify({ error: {
+              code: "1113", message: "Insufficient balance" } }), { status: 429 }) })
+            .chat([{ role: "user", content: "go" }]).then(() => undefined, (error: unknown) => error)
+        : new LLMFundsError("deepseek", 402);
+      vi.spyOn(session.providerService, "prepareChild").mockRejectedValue(billingError);
       const notices: unknown[] = [];
       const closeSpawnEdge = vi.fn(async () => {});
       session.eventLog.subscribe(event => { if (event.msg.type === "subagent_funds_notice") notices.push(event.msg.payload); });

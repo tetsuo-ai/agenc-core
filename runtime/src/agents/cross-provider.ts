@@ -324,7 +324,9 @@ export async function assertChildExecutionPlan(session: Session, plan: ChildExec
   }
   if (plan.parent.sessionId !== session.conversationId) throw new Error("child execution plan parent changed");
   if (plan.policyRevision !== policyRevision(session)) throw new Error("child execution plan policy changed");
-  if (plan.catalogRevision !== catalogRevision(session)) throw new Error("child execution plan catalog changed");
+  // A plan pins one destination. Other providers can gain models without
+  // changing that approval; selection and prepared binding checks below
+  // validate the destination and the capabilities this child uses.
   const selected = !plan.crossProvider &&
       resolveBuiltInProviderSlug(plan.route.provider) === undefined
     ? { provider: currentChildProvider(session).provider, model: plan.route.model }

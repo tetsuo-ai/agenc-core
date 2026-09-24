@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../../src/config/schema.js";
-import { assertPreparedChildMatchesPlan, authorizeChildExecutionPlan, childModelInfo, createChildExecutionPlan, resolveChildSelection } from "../../src/agents/cross-provider.js";
+import { assertChildExecutionPlan, assertPreparedChildMatchesPlan, authorizeChildExecutionPlan, childModelInfo, createChildExecutionPlan, resolveChildSelection } from "../../src/agents/cross-provider.js";
 import { StaticModelsManager } from "../../src/llm/models-manager.js";
 import type { Session } from "../../src/session/session.js";
 
@@ -27,6 +27,41 @@ function sessionWithModels(provider: string, model: string, liveModels: string[]
 }
 
 describe("child provider selection", () => {
+  it("resumes an approved destination after an unrelated catalog addition, while checking its own destination and tools", async () => {
+    let config: ReturnType<typeof defaultConfig> = { ...defaultConfig(), model_provider: "grok", model: "grok-4.6",
+      agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] } };
+    const session = sessionWithModels("grok", "grok-4.6", ["grok-4.6"]);
+    Object.assign(session, { conversationId: "catalog-parent",
+      sessionConfiguration: { cwd: "/workspace", collaborationMode: { model: "grok-4.6" } },
+      providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }),
+        previewChildDestination: async () => ({ endpoint: "https://api.deepseek.com/v1",
+          authProfile: "api_key", billingSource: "byok" }) } });
+    Object.assign(session.services, { configStore: { current: () => config },
+      crossProviderConsent: { ownerSessionId: "catalog-parent", sessionEpoch: "epoch",
+        request: async (_session: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+          kind: "granted" as const, grant: { kind: "once" as const, ownerSessionId: "catalog-parent",
+            sessionEpoch: "epoch", taskId: disclosure.taskId, scopeKey: disclosure.scopeKey,
+            payloadKey: disclosure.payloadKey },
+        }) } });
+    const proposed = await createChildExecutionPlan({ session,
+      selection: { provider: "deepseek", model: "deepseek-v4-pro" },
+      modelInfo: { slug: "deepseek-v4-pro", provider: "deepseek", supportsToolUse: true } as Session["modelInfo"],
+      parentPath: "/root", taskId: "catalog-child", taskName: "worker", taskText: "inspect",
+      toolFree: false, forkedHistory: false });
+    const approved = await authorizeChildExecutionPlan(session, proposed);
+    if (approved.kind !== "granted") throw new Error("fixture consent was not granted");
+    await assertChildExecutionPlan(session, approved.plan);
+    config = { ...config, providers: { ollama: { default_model: "my-local-finetune" } } };
+    await expect(assertChildExecutionPlan(session, approved.plan)).resolves.toBeUndefined();
+    const binding = { authProfile: "api_key", billingSource: "byok", binding: {
+      provider: "deepseek", model: "deepseek-v4-pro", factoryOptions: { baseURL: "https://api.deepseek.com/v1" } } };
+    expect(() => assertPreparedChildMatchesPlan(approved.plan, { ...binding, binding: {
+      ...binding.binding, factoryOptions: { baseURL: "https://changed.example/v1" } } } as never))
+      .toThrow(/endpoint differs/u);
+    expect(() => assertPreparedChildMatchesPlan(approved.plan, { ...binding,
+      signInModelCapabilities: { supportsToolUse: false } } as never))
+      .toThrow(/no longer supports child tools/u);
+  });
   it("does not discover with a child's credential before its endpoint and consent are checked", async () => {
     const session = sessionWithModels("grok", "grok-4.6", ["grok-4.6"]);
     const wire = vi.fn(async () => new Response("{}"));

@@ -64,6 +64,7 @@ export interface ApprovedChildAuthority {
 }
 
 export interface ProviderPreparationRuntime {
+  readonly signal?: AbortSignal;
   readonly managedKeysEnabled?: boolean;
   readonly freeManagedCredential?: boolean;
   readonly applyManagedDefaultOutputCap?: boolean;
@@ -643,6 +644,7 @@ export class SessionProviderService {
         const boundOptions = binding.factoryOptions;
         signInModelCapabilities = await assertSignInChildModelEligible({
           provider, model, options: boundOptions,
+          signal: runtime.signal,
           fetchImpl: typeof boundOptions.extra?.fetchImpl === "function"
             ? boundOptions.extra.fetchImpl as typeof fetch : fetch,
           environment: this.#environment,

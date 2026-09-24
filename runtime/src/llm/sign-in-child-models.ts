@@ -12,6 +12,25 @@ export interface SignInChildModelCapabilities {
   readonly supportsToolUse?: boolean;
 }
 
+const CHILD_MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
+
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason :
+    new Error(String(signal.reason ?? "child model discovery aborted"));
+}
+
+async function withDiscoverySignal<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) throw abortReason(signal);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortReason(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => { signal.removeEventListener("abort", onAbort); resolve(value); },
+      (error: unknown) => { signal.removeEventListener("abort", onAbort); reject(error); },
+    );
+  });
+}
+
 function modelEntries(payload: unknown): ReadonlyMap<string, SignInChildModelCapabilities> {
   if (payload === null || typeof payload !== "object") return new Map();
   const value = payload as Record<string, unknown>;
@@ -38,8 +57,13 @@ export async function assertSignInChildModelEligible(args: {
   readonly options: ProviderFactoryOptions;
   readonly environment: ProviderEnvironment;
   readonly fetchImpl: typeof fetch;
+  readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
 }): Promise<SignInChildModelCapabilities> {
   const { provider, model, options } = args;
+  const deadline = AbortSignal.timeout(Math.min(CHILD_MODEL_DISCOVERY_TIMEOUT_MS,
+    Math.max(1, args.timeoutMs ?? CHILD_MODEL_DISCOVERY_TIMEOUT_MS)));
+  const signal = args.signal === undefined ? deadline : AbortSignal.any([args.signal, deadline]);
   const home = options.credentialHome;
   if (home === undefined) throw new LLMAuthenticationError(provider, 401, "sign-in is required for this child");
   const chatgpt = provider === "openai";
@@ -53,21 +77,23 @@ export async function assertSignInChildModelEligible(args: {
   }
   const url = chatgpt ? `${baseURL}/models?client_version=1.0.0` : `${baseURL}/models`;
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const response = await fetchPinned(url, { headers: {
+    if (signal.aborted) throw abortReason(signal);
+    const response = await withDiscoverySignal(fetchPinned(url, { signal, headers: {
       Authorization: `Bearer ${bearer}`,
       ...(chatgpt ? { "User-Agent": "agenc", ...chatGptSubscriptionHeaders(accountId!) } : {}),
-    } });
+    } }), signal);
     if (response.status === 401 && attempt === 0) {
       try {
         if (chatgpt) {
-          const refreshed = await refreshOpenAiSubscriptionIfNeeded(home, args.environment,
-            { force: true, rejectedAccessToken: bearer });
+          const refreshed: Awaited<ReturnType<typeof refreshOpenAiSubscriptionIfNeeded>> = await withDiscoverySignal(refreshOpenAiSubscriptionIfNeeded(home, args.environment,
+            { force: true, rejectedAccessToken: bearer }), signal);
           bearer = refreshed.refreshed ? refreshed.credentials?.accessToken : undefined;
           accountId = refreshed.credentials?.accountId;
         } else {
-          bearer = (await forceRefreshXaiOauthCredentials(home, bearer))?.accessToken;
+          bearer = (await withDiscoverySignal(forceRefreshXaiOauthCredentials(home, bearer), signal))?.accessToken;
         }
       } catch {
+        if (signal.aborted) throw abortReason(signal);
         throw new LLMAuthenticationError(provider, 401, "sign-in refresh failed for this child");
       }
       if (!bearer || (chatgpt && !accountId)) {
@@ -76,7 +102,10 @@ export async function assertSignInChildModelEligible(args: {
       continue;
     }
     if (!response.ok) {
-      const body = await response.text().catch(() => "");
+      const body = await withDiscoverySignal(response.text(), signal).catch((error: unknown) => {
+        if (signal.aborted) throw error;
+        return "";
+      });
       if (isProviderFundsFailure(provider, { status: response.status, body })) {
         const error = new LLMFundsError(provider, response.status);
         Object.assign(error, { headers: response.headers });
@@ -87,7 +116,8 @@ export async function assertSignInChildModelEligible(args: {
       }
       throw new LLMProviderError(provider, "sign-in model list is unavailable", response.status);
     }
-    const listed = modelEntries(await response.json());
+    const listed = modelEntries(await withDiscoverySignal(response.json(), signal));
+    if (signal.aborted) throw abortReason(signal);
     const capabilities = listed.get(model);
     if (capabilities === undefined) {
       throw new LLMModelUnavailableError(provider, model);

@@ -5,6 +5,7 @@
  */
 
 import { concurrentChatFetch } from "./providers/concurrent-chat-fetch.js";
+import { LLMMissingCredentialsError } from "./errors.js";
 import type {
   AuthBackend,
   AuthSubscriptionTier,
@@ -1707,7 +1708,7 @@ export function createProvider(
           : undefined;
       if (extra.canonicalEndpointRequired === true && extra.authMode === "oauth" &&
           storedOauthBearer === undefined) {
-        throw new Error("grok provider: approved sign-in is unavailable; a new child authority is required");
+        throw new LLMMissingCredentialsError("grok", "approved sign-in is unavailable; a new child authority is required");
       }
       const usesXaiOauth = storedOauthBearer !== undefined;
       const apiKey =

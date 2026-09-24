@@ -1299,6 +1299,7 @@ describe("AgentControl", () => {
   it("resumes an approved account-only OpenAI child after its parent switches to OpenAI", async () => {
     const session = stubSession({ conversationId: "account-model-root" });
     let parentProvider = "grok";
+    let unrelatedDefaultModel: string | undefined;
     const prepareChild = vi.fn(async () => ({
       authProfile: "sign_in" as const, billingSource: "sign_in" as const,
       signInModelCapabilities: { supportsToolUse: true },
@@ -1316,6 +1317,8 @@ describe("AgentControl", () => {
           authProfile: "sign_in", billingSource: "sign_in" }) },
       services: { ...session.services, configStore: { current: () => ({
         model_provider: "grok", model: "grok-4.6",
+        ...(unrelatedDefaultModel !== undefined ? { providers: { ollama: {
+          default_model: unrelatedDefaultModel } } } : {}),
         agents: { cross_provider_enabled: true, allowed_providers: ["openai"] } }) },
         crossProviderConsent: { ownerSessionId: "account-model-root", sessionEpoch: "live-epoch",
           request: async (_requester: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
@@ -1337,6 +1340,7 @@ describe("AgentControl", () => {
     expect(authorized.kind).toBe("granted");
     if (authorized.kind !== "granted") throw new Error("fixture consent was not granted");
     parentProvider = "openai";
+    unrelatedDefaultModel = "my-local-finetune";
     const metadata: AgentMetadata = {
       agentId: "account-child", agentPath: "/root/account_child",
       agentNickname: "account child", agentRole: "scanner",

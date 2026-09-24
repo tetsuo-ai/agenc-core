@@ -530,18 +530,18 @@ function mapOpenAIHttpFailureToError(args: {
     return error;
   }
   if (isZaiInsufficientBalanceFailure(args)) {
-    return new LLMProviderError(
+    return new LLMFundsError(
       args.providerName,
-      zaiInsufficientBalanceErrorMessage(),
       args.status,
+      zaiInsufficientBalanceErrorMessage(),
     );
   }
   const zaiPlanRefusal = readZaiPlanRefusal(args);
   if (zaiPlanRefusal !== undefined) {
-    return new LLMProviderError(
+    return new LLMFundsError(
       args.providerName,
-      zaiPlanRefusalErrorMessage(zaiPlanRefusal),
       args.status,
+      zaiPlanRefusalErrorMessage(zaiPlanRefusal),
     );
   }
   const bodyText = providerHttpBodyToString(args.body);

@@ -3967,7 +3967,8 @@ export async function* runAgent(
     if (params.providerSelection !== undefined) {
       if (params.plan === undefined) throw new Error("consent_unavailable: child provider dispatch has no granted plan");
       await assertChildExecutionPlan(parent, params.plan);
-      const prepared = await parent.providerService.prepareChild(params.providerSelection, undefined, {}, true,
+      const prepared = await parent.providerService.prepareChild(params.providerSelection, undefined,
+        { signal: merged.signal }, true,
         params.plan.route.provider === "agenc" ? params.plan.destination : undefined,
         params.plan.destination);
       provider = prepared.binding.instance;
