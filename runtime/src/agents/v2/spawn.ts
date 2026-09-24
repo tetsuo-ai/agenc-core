@@ -488,7 +488,7 @@ function buildSpawnAgentSchema(opts: MultiAgentV2Options, session = opts.getSess
       service_tier: { type: "string" },
       tool_free: {
         type: "boolean",
-        description: "Run this child with no client-side tools. Required when selecting a model without client-side tool calling.",
+        description: "Only for a model without client-side tool calling, which requires it. A model that can call tools always keeps all of them, web search included, and this flag is ignored for it.",
       },
       fork_turns: {
         type: "string",
@@ -823,6 +823,10 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     if (!callerIsCurrent()) {
       return failSpawn("invalid-runtime-identity: calling agent session is no longer live");
     }
+    // Every child whose model can call tools keeps all of them, web search
+    // included, whatever the parent asked; tool_free only describes a model
+    // that cannot call client-side tools.
+    const toolFree = args.tool_free === true && targetModelInfo?.supportsToolUse === false;
     let thread: AgentThread | undefined;
     let rejectedEffectDisposition: ToolResult["effectDisposition"];
     try {
@@ -832,7 +836,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         const proposedPlan = await createChildExecutionPlan({
           session, selection, modelInfo: targetModelInfo,
           parentPath: current.agentPath, taskId: callId, taskName, taskText: prompt,
-          toolFree: args.tool_free === true, forkedHistory: forkMode !== undefined,
+          toolFree, forkedHistory: forkMode !== undefined,
           ...(resolvedRole?.config.allowlist !== undefined
             ? { toolAllowlist: resolvedRole.config.allowlist } : {}),
           ...(selectedReasoningEffort !== undefined ? { reasoningEffort: selectedReasoningEffort } : {}),
@@ -878,7 +882,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         // Keep collab workers alive so assign_task after first completion
         // has a consumer (todo-106). close_agent still tears them down.
         keepAlive: true,
-        ...(args.tool_free === true ? { toolAllowlist: [] } : {}),
+        ...(toolFree ? { toolAllowlist: [] } : {}),
         ...(role !== undefined ? { role } : {}),
         ...(plan !== undefined ? { plan } : {}),
         ...(plan === undefined && effectiveModel !== undefined ? { model: effectiveModel } : {}),
