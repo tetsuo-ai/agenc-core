@@ -1,7 +1,7 @@
 /** Daemon-local budget shared by the MCP managers of all sessions. */
 interface Slot {
   readonly owner: object;
-  readonly evict: () => Promise<void>;
+  readonly evict: () => Promise<"busy" | void>;
   readonly busy: () => boolean;
   lastUsed: number;
   maxProcesses: number;
@@ -67,7 +67,7 @@ export async function reservePluginProcess(
   owner: object,
   maxProcesses: number,
   busy: () => boolean,
-  evict: () => Promise<void>,
+  evict: () => Promise<"busy" | void>,
   signal?: AbortSignal,
 ): Promise<void> {
   const declined = new Set<Slot>();
@@ -101,24 +101,20 @@ export async function reservePluginProcess(
     if (oldest) {
       wakeup.cancel();
       pendingEvictions.add(oldest);
-      let becameBusy = false;
       // The slot remains occupied while disposal is in progress. A timed-out
       // requester leaves the eviction task owned by the budget until it settles.
-      const disposal = Promise.resolve().then(() => {
-        becameBusy = oldest.busy();
-        return oldest.evict();
-      }).finally(() => {
+      const disposal = Promise.resolve().then(() => oldest.evict()).finally(() => {
         pendingEvictions.delete(oldest);
         wake();
       });
-      await awaitOrAbort(disposal, signal);
+      const outcome = await awaitOrAbort(disposal, signal);
       // A no-op eviction cannot make this same slot available. A candidate
-      // that was busy when eviction ran may have become idle and notified us
-      // before the task settled; allow that one recheck, then wait for a new
-      // wake if it still cannot release anything.
+      // refused by the queued transition because it was busy may already be
+      // idle again. Retry it once even if its idle notification has passed.
+      // A permanent refusal remains declined until new activity is observed.
       if (slots.has(oldest.owner)) {
         const busyNow = oldest.busy();
-        if (becameBusy && !busyNow && !retriedAfterWake.has(oldest)) {
+        if (outcome === "busy" && !busyNow && !retriedAfterWake.has(oldest)) {
           retriedAfterWake.add(oldest);
         } else {
           declined.add(oldest);

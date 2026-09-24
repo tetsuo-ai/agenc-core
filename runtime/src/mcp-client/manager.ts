@@ -1140,14 +1140,14 @@ export class MCPManager {
   private evictPlugin(
     name: string, expectedOwner?: object, expectedConfig?: MCPServerConfig,
     expectedGeneration?: number,
-  ): Promise<void> {
+  ): Promise<"busy" | void> {
     return this.enqueuePluginTransition(name, () => this.evictPluginNow(name, expectedOwner, expectedConfig, expectedGeneration));
   }
 
   private async evictPluginNow(
     name: string, expectedOwner?: object, expectedConfig?: MCPServerConfig,
     expectedGeneration?: number,
-  ): Promise<void> {
+  ): Promise<"busy" | void> {
     if (expectedGeneration !== undefined && this.lifecycleGeneration !== expectedGeneration) return;
     if (expectedConfig && !this.configs.includes(expectedConfig)) return;
     const lifecycle = this.pluginLifecycle(name);
@@ -1155,7 +1155,7 @@ export class MCPManager {
     if (this.retainedCleanup.has(name)) {
       await this.retryRetainedCleanup(name, "after idle eviction");
     }
-    if (this.busy(name, true)) return;
+    if (this.busy(name, true)) return "busy";
     if (!this.bridges.has(name)) {
       const owner = lifecycle.reservation;
       if (owner) this.releaseOwner(name, owner);

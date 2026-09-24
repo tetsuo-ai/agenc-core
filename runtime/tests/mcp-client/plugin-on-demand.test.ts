@@ -1383,6 +1383,55 @@ describe("plugin MCP on-demand lifecycle", () => {
     } finally { release(); await manager.stop(); }
   });
 
+  it("retries budget eviction after a listing finishes during the queued eviction", async () => {
+    const cacheHome = await home();
+    const [a, b] = ["listing-a", "listing-b"].map(name => config(cacheHome, `plugin:sample:${name}`, {
+      timeout: 300,
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: name,
+        digest: "a".repeat(64), idleTimeoutMs: 10_000, maxProcesses: 1 } },
+    }));
+    warm(a!); warm(b!);
+    setupTransport([descriptor()], { capabilities: { resources: {} } });
+    const manager = new MCPManager([a!, b!]);
+    const evictionRequested = deferred();
+    const listingStarted = deferred();
+    const listing = deferred<{ resources: readonly Record<string, unknown>[] }>();
+    const lifecycle = manager as never as { evictPlugin: (...args: unknown[]) => Promise<"busy" | void> };
+    const originalEvict = lifecycle.evictPlugin.bind(manager);
+    const guard = vi.spyOn(lifecycle, "evictPlugin").mockImplementation(async (...args) => {
+      // The budget chose idle A. Hold its real queued transition until A's
+      // live listing starts, then finish that listing before the waiter resumes.
+      evictionRequested.resolve();
+      await listingStarted.promise;
+      const result = await originalEvict(...args);
+      listing.resolve({ resources: [] });
+      await listed;
+      return result;
+    });
+    let listed: Promise<ReadonlyArray<unknown>> = Promise.resolve([]);
+    try {
+      await manager.start();
+      expect((await manager.callTool(a!.name, "ping", {})).isError).not.toBe(true);
+      clients[0]!.listResources.mockImplementation(() => {
+        listingStarted.resolve();
+        return listing.promise;
+      });
+      const next = manager.callTool(b!.name, "ping", {});
+      await evictionRequested.promise;
+      listed = manager.getResourcesByServer(a!.name);
+      const result = await next;
+      expect(result.isError).not.toBe(true);
+      expect(clients[0]!.close).toHaveBeenCalledOnce();
+      expect(spawn).toHaveBeenCalledTimes(2);
+      expect(manager.getConnectionState(a!.name)?.type).toBe("stopped");
+    } finally {
+      listing.resolve({ resources: [] });
+      await listed;
+      guard.mockRestore();
+      await manager.stop();
+    }
+  });
+
   it("returns a typed error and failed status when startup rejects", async () => {
     const cacheHome = await home(); const cfg = config(cacheHome); warm(cfg);
     spawn.mockRejectedValue(new Error("fixture startup failed"));

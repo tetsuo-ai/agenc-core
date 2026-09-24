@@ -6,11 +6,12 @@ describe("plugin process budget", () => {
     const first = {}; const second = {};
     let busy = false;
     let evictions = 0;
-    const evict = async (): Promise<void> => {
+    const evict = async (): Promise<"busy" | void> => {
       evictions++;
       if (busy) {
         busy = false;
         notifyPluginProcessIdle();
+        return "busy";
       } else {
         releasePluginProcess(first);
       }
