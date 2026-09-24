@@ -1432,6 +1432,118 @@ describe("plugin MCP on-demand lifecycle", () => {
     }
   });
 
+  it.each([2, 3])("retries budget eviction after %i successive listing overlaps", async overlaps => {
+    const cacheHome = await home();
+    const [a, b] = ["overlap-a", "overlap-b"].map(name => config(cacheHome, `plugin:sample:${name}`, {
+      timeout: 600,
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: name,
+        digest: "a".repeat(64), idleTimeoutMs: 10_000, maxProcesses: 1 } },
+    }));
+    warm(a!); warm(b!);
+    setupTransport([descriptor()], { capabilities: { resources: {} } });
+    const manager = new MCPManager([a!, b!]);
+    const requested = Array.from({ length: overlaps }, () => deferred());
+    const started = Array.from({ length: overlaps }, () => deferred());
+    const listings = Array.from({ length: overlaps }, () => deferred<{ resources: readonly Record<string, unknown>[] }>());
+    const listed: Array<Promise<ReadonlyArray<unknown>>> = [];
+    const lifecycle = manager as never as { evictPlugin: (...args: unknown[]) => Promise<"busy" | void> };
+    const originalEvict = lifecycle.evictPlugin.bind(manager);
+    let attempts = 0;
+    const guard = vi.spyOn(lifecycle, "evictPlugin").mockImplementation(async (...args) => {
+      const index = attempts++;
+      if (index >= overlaps) return originalEvict(...args);
+      requested[index]!.resolve();
+      await started[index]!.promise;
+      const result = await originalEvict(...args);
+      expect(result).toBe("busy");
+      listings[index]!.resolve({ resources: [] });
+      await listed[index];
+      return result;
+    });
+    try {
+      await manager.start();
+      expect((await manager.callTool(a!.name, "ping", {})).isError).not.toBe(true);
+      let listingIndex = 0;
+      clients[0]!.listResources.mockImplementation(() => {
+        const index = listingIndex++;
+        started[index]!.resolve();
+        return listings[index]!.promise;
+      });
+      const next = manager.callTool(b!.name, "ping", {});
+      for (let index = 0; index < overlaps; index++) {
+        await Promise.race([
+          requested[index]!.promise,
+          next.then(() => { throw new Error(`B settled before eviction attempt ${index + 1}`); }),
+        ]);
+        listed[index] = manager.getResourcesByServer(a!.name);
+        await started[index]!.promise;
+      }
+      const result = await next;
+      expect(result.isError).not.toBe(true);
+      expect(attempts).toBe(overlaps + 1);
+      expect(clients[0]!.close).toHaveBeenCalledOnce();
+      expect(spawn).toHaveBeenCalledTimes(2);
+      expect(manager.getConnectionState(a!.name)?.type).toBe("stopped");
+    } finally {
+      for (const listing of listings) listing.resolve({ resources: [] });
+      await Promise.allSettled(listed);
+      guard.mockRestore();
+      await manager.stop();
+    }
+  });
+
+  it("ends a budget wait promptly after a permanent eviction refusal", async () => {
+    const cacheHome = await home();
+    const [a, b] = ["refusal-a", "refusal-b"].map(name => config(cacheHome, `plugin:sample:${name}`, {
+      timeout: 500,
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: name,
+        digest: "a".repeat(64), idleTimeoutMs: 10_000, maxProcesses: 1 } },
+    }));
+    warm(a!); warm(b!);
+    const manager = new MCPManager([a!, b!]);
+    const lifecycle = manager as never as { evictPlugin: (...args: unknown[]) => Promise<"busy" | void> };
+    const guard = vi.spyOn(lifecycle, "evictPlugin").mockResolvedValue(undefined);
+    try {
+      await manager.start();
+      expect((await manager.callTool(a!.name, "ping", {})).isError).not.toBe(true);
+      const result = await Promise.race([
+        manager.callTool(b!.name, "ping", {}),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("permanent refusal did not end promptly")), 100)),
+      ]);
+      expect(result.metadata?.errorCode).toBe("MCP_PLUGIN_STARTUP_FAILED");
+      expect(guard).toHaveBeenCalledOnce();
+      expect(spawn).toHaveBeenCalledTimes(1);
+    } finally {
+      guard.mockRestore();
+      await manager.stop();
+    }
+  });
+
+  it("ends a budget wait promptly when the only process is pinned", async () => {
+    const cacheHome = await home();
+    const a = config(cacheHome, "plugin:sample:pinned-budget-a", {
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "pinned-budget-a",
+        digest: "a".repeat(64), eager: true, maxProcesses: 1 } },
+    });
+    const b = config(cacheHome, "plugin:sample:pinned-budget-b", {
+      timeout: 500,
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "pinned-budget-b",
+        digest: "a".repeat(64), maxProcesses: 1 } },
+    });
+    warm(a); warm(b);
+    const manager = new MCPManager([a, b]);
+    try {
+      await manager.start();
+      const result = await Promise.race([
+        manager.callTool(b.name, "ping", {}),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("pinned budget wait did not end promptly")), 100)),
+      ]);
+      expect(result.metadata?.errorCode).toBe("MCP_PLUGIN_STARTUP_FAILED");
+      expect(manager.getConnectionState(a.name)?.type).toBe("connected");
+      expect(spawn).toHaveBeenCalledTimes(1);
+    } finally { await manager.stop(); }
+  });
+
   it("returns a typed error and failed status when startup rejects", async () => {
     const cacheHome = await home(); const cfg = config(cacheHome); warm(cfg);
     spawn.mockRejectedValue(new Error("fixture startup failed"));

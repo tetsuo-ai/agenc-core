@@ -3,8 +3,11 @@ interface Slot {
   readonly owner: object;
   readonly evict: () => Promise<"busy" | void>;
   readonly busy: () => boolean;
+  readonly evictable: () => boolean;
   lastUsed: number;
   maxProcesses: number;
+  activityGeneration: number;
+  activityBusy: boolean;
 }
 
 const slots = new Map<object, Slot>();
@@ -24,6 +27,18 @@ export function touchPluginProcess(owner: object): void {
 
 export function releasePluginProcess(owner: object): void {
   if (slots.delete(owner)) wake();
+}
+
+function markPluginProcessActivity(owner: object, busy: boolean): void {
+  const slot = slots.get(owner);
+  if (!slot || slot.activityBusy === busy) return;
+  slot.activityBusy = busy;
+  slot.activityGeneration++;
+  wake();
+}
+
+export function notifyPluginProcessBusy(owner: object): void {
+  markPluginProcessActivity(owner, true);
 }
 
 function awaitOrAbort<T>(task: Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -69,38 +84,36 @@ export async function reservePluginProcess(
   busy: () => boolean,
   evict: () => Promise<"busy" | void>,
   signal?: AbortSignal,
+  evictable: () => boolean = () => true,
 ): Promise<void> {
-  const declined = new Set<Slot>();
-  const retriedAfterWake = new Set<Slot>();
-  const declinedWhileBusy = new Set<Slot>();
+  const permanentlyDeclined = new Set<Slot>();
+  const busyRefusals = new Map<Slot, number>();
   while (!slots.has(owner)) {
     signal?.throwIfAborted();
     // Subscribe before reading capacity or busy state. An idle notification
     // cannot fall between that check and the wait below.
     const wakeup = subscribeToWake(signal);
-    for (const slot of declined) {
-      if (!slots.has(slot.owner)) {
-        declined.delete(slot);
-        declinedWhileBusy.delete(slot);
-      } else if (slot.busy()) {
-        declinedWhileBusy.add(slot);
-      } else if (declinedWhileBusy.delete(slot)) {
-        declined.delete(slot);
-        retriedAfterWake.delete(slot);
+    for (const [slot, refusedGeneration] of busyRefusals) {
+      if (!slots.has(slot.owner) ||
+        (slot.activityGeneration !== refusedGeneration && !slot.busy())) {
+        busyRefusals.delete(slot);
       }
     }
     const limit = Math.min(maxProcesses,
       ...[...slots.values()].map(slot => slot.maxProcesses));
     if (slots.size < limit) {
       wakeup.cancel();
-      slots.set(owner, { owner, busy, evict, lastUsed: ++tick, maxProcesses });
+      slots.set(owner, { owner, busy, evict, evictable, lastUsed: ++tick, maxProcesses,
+        activityGeneration: 0, activityBusy: busy() });
       return;
     }
-    const oldest = [...slots.values()].filter(slot => !pendingEvictions.has(slot) && !declined.has(slot) && !slot.busy())
+    const oldest = [...slots.values()].filter(slot => !pendingEvictions.has(slot) &&
+      !permanentlyDeclined.has(slot) && !busyRefusals.has(slot) && slot.evictable() && !slot.busy())
       .sort((a, b) => a.lastUsed - b.lastUsed)[0];
     if (oldest) {
       wakeup.cancel();
       pendingEvictions.add(oldest);
+      const attemptedGeneration = oldest.activityGeneration;
       // The slot remains occupied while disposal is in progress. A timed-out
       // requester leaves the eviction task owned by the budget until it settles.
       const disposal = Promise.resolve().then(() => oldest.evict()).finally(() => {
@@ -108,24 +121,25 @@ export async function reservePluginProcess(
         wake();
       });
       const outcome = await awaitOrAbort(disposal, signal);
-      // A no-op eviction cannot make this same slot available. A candidate
-      // refused by the queued transition because it was busy may already be
-      // idle again. Retry it once even if its idle notification has passed.
-      // A permanent refusal remains declined until new activity is observed.
+      // A busy refusal is eligible again after any subsequent activity cycle,
+      // including one that completed before this eviction promise settled.
+      // A no-op refusal remains permanent for this waiter.
       if (slots.has(oldest.owner)) {
-        const busyNow = oldest.busy();
-        if (outcome === "busy" && !busyNow && !retriedAfterWake.has(oldest)) {
-          retriedAfterWake.add(oldest);
-        } else {
-          declined.add(oldest);
-          if (busyNow) declinedWhileBusy.add(oldest);
-        }
+        if (outcome === "busy") busyRefusals.set(oldest, attemptedGeneration);
+        else permanentlyDeclined.add(oldest);
       }
       continue;
+    }
+    if ([...slots.values()].every(slot => permanentlyDeclined.has(slot) || !slot.evictable())) {
+      wakeup.cancel();
+      throw new Error("No evictable plugin process remains in the budget");
     }
     await wakeup.promise;
   }
   touchPluginProcess(owner);
 }
 
-export function notifyPluginProcessIdle(): void { wake(); }
+export function notifyPluginProcessIdle(owner?: object): void {
+  if (owner) markPluginProcessActivity(owner, false);
+  else wake();
+}

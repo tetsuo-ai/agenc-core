@@ -60,7 +60,7 @@ import { MCPTransportCleanupError } from "./transports/connect-with-cleanup.js";
 import { assertValidMcpServerName } from "./server-name.js";
 import { isMcpAuthenticationError } from "../services/mcp/auth-errors.js";
 import { acquireVerifiedPluginGeneration, fingerprintPluginCatalogConfig, primePluginCatalogSingleFlight, readPluginCatalog, writePluginCatalog, type PluginCatalog, type PluginCatalogIdentity, type VerifiedPluginGeneration } from "./plugin-catalog-cache.js";
-import { reservePluginProcess, releasePluginProcess, touchPluginProcess, notifyPluginProcessIdle } from "./plugin-process-budget.js";
+import { reservePluginProcess, releasePluginProcess, touchPluginProcess, notifyPluginProcessBusy, notifyPluginProcessIdle } from "./plugin-process-budget.js";
 import type { ConfigStore } from "../config/store.js";
 import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 import { loadPluginMcpServerRegistrations } from "../plugins/registration/mcp-plugin-integration.js";
@@ -998,6 +998,11 @@ export class MCPManager {
     return lifecycle;
   }
 
+  private notifyPluginActivity(name: string): void {
+    const owner = this.pluginLifecycle(name).reservation;
+    if (owner) notifyPluginProcessBusy(owner);
+  }
+
   private releaseOwner(name: string, owner: object): void {
     if (this.retainedCleanup.has(name)) return;
     releasePluginProcess(owner);
@@ -1112,7 +1117,8 @@ export class MCPManager {
     const owner = this.owner(config.name);
     const generation = this.lifecycleGeneration;
     await reservePluginProcess(owner, identity.maxProcesses ?? 8,
-      () => this.busy(config.name), () => this.evictPlugin(config.name, owner, config, generation), signal);
+      () => this.busy(config.name), () => this.evictPlugin(config.name, owner, config, generation), signal,
+      () => this.isLazyPlugin(config) && !this.retainedCleanup.has(config.name));
     return owner;
   }
 
@@ -1124,7 +1130,7 @@ export class MCPManager {
     delete lifecycle.idleTimer;
     if (!this.isLazyPlugin(config) || !this.bridges.has(config.name) || this.busy(config.name)) return;
     touchPluginProcess(this.owner(config.name));
-    notifyPluginProcessIdle();
+    notifyPluginProcessIdle(this.owner(config.name));
     const ms = this.pluginIdentity(config)?.idleTimeoutMs ?? 600_000;
     if (ms === 0) return;
     const owner = lifecycle.reservation;
@@ -1820,10 +1826,12 @@ export class MCPManager {
     }
     const lifecycle = this.pluginLifecycle(name);
     lifecycle.pending++;
+    this.notifyPluginActivity(name);
     try {
       await this.ensurePluginConnectedWithSignal(config, signal);
       if (!this.configIsCurrent(config)) return null as T;
       lifecycle.active++;
+      this.notifyPluginActivity(name);
       try {
         const result = await operation();
         return this.configIsCurrent(config) ? result : null as T;
@@ -1838,6 +1846,7 @@ export class MCPManager {
     const config = this.getServerConfig(name);
     if (!config || !this.isLazyPlugin(config)) return operation();
     this.pluginLifecycle(name).active++;
+    this.notifyPluginActivity(name);
     try { return await operation(); }
     finally { this.finishPluginActivity(name, config); }
   }
@@ -1908,6 +1917,7 @@ export class MCPManager {
     const generation = this.lifecycleGeneration;
     if (config && this.isLazyPlugin(config) && this.running) {
       this.pluginLifecycle(serverName).pending++;
+      this.notifyPluginActivity(serverName);
       try {
         try { await this.ensurePluginConnectedWithSignal(config, executionArgs.__abortSignal instanceof AbortSignal ? executionArgs.__abortSignal : undefined); }
         catch (error) {
@@ -1955,6 +1965,7 @@ export class MCPManager {
     }
 
     this.pluginLifecycle(serverName).active++;
+    this.notifyPluginActivity(serverName);
     touchPluginProcess(this.owner(serverName));
     try {
       const result = await tool.execute(executionArgs);
@@ -2683,6 +2694,7 @@ export class MCPManager {
                 this.getServerConfig(config.name) === config && this.configIsCurrent(config);
               if (!current()) return { content: `MCP plugin ${config.name} proxy configuration changed`, isError: true };
               this.pluginLifecycle(config.name).active++;
+              this.notifyPluginActivity(config.name);
               try {
                 const result = await execute(args);
                 return result;
