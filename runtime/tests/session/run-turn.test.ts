@@ -69,6 +69,7 @@ import { reconstructFromRollout } from "./rollout-reconstruction.js";
 import { resumeTurnFromCheckpoint } from "../conversation/thread-manager.js";
 import { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
 import { bindExecutionAdmissionJournal } from "./execution-admission-journal.js";
+import { shutdownSessionLifecycle } from "./lifecycle.js";
 
 function enqueue(command: QueuedCommand): void {
   enqueueCommand({
@@ -3259,6 +3260,36 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       ),
     ).toBe(false);
     expect(getState().previousTurnSettings?.personality).toBe("friendly");
+  });
+
+  test.each([
+    ["session_shutdown", "interrupted"],
+    ["daemon_shutdown", "daemon_shutdown"],
+  ] as const)("emits %s shutdown as turn_aborted reason %s", async (shutdownReason, expectedReason) => {
+    const entered = Promise.withResolvers<void>();
+    const provider = mkProvider({});
+    provider.chatStream = async (_messages, _onChunk, options) => {
+      entered.resolve();
+      await new Promise<void>((_resolve, reject) => {
+        const signal = options?.signal;
+        if (signal?.aborted) {
+          reject(new Error("sample aborted"));
+        } else {
+          signal?.addEventListener("abort", () => reject(new Error("sample aborted")), { once: true });
+        }
+      });
+      throw new Error("unreachable");
+    };
+    const { session, events } = mkSession({ provider, registry: mkRegistry() });
+    const running = drain(session.runTurn("keep working", { ctx: mkCtx() }));
+    await entered.promise;
+    await shutdownSessionLifecycle({ session, shutdownReason });
+    await running;
+    expect(events.filter((event) => event.msg.type === "turn_aborted")).toEqual([
+      expect.objectContaining({
+        msg: { type: "turn_aborted", payload: expect.objectContaining({ reason: expectedReason }) },
+      }),
+    ]);
   });
 
   test("emits token_count after streamModel completes", async () => {

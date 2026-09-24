@@ -58,7 +58,7 @@ describe("state migration registry", () => {
   it("loads state migrations from numbered migration files in order", () => {
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.version)).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-      22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
     ]);
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.name)).toEqual([
       "initial_state_schema",
@@ -95,6 +95,7 @@ describe("state migration registry", () => {
       "drop_threads_last_item_index",
       "runtime_settings_max_effort",
       "thread_archive_cleanup_generation",
+      "idempotent_unknown_effect_outcome",
     ]);
     expectMigrationVersionsAreUnique(STATE_DB_MIGRATIONS);
   });
@@ -147,6 +148,7 @@ describe("state migration registry", () => {
       "032_drop_threads_last_item_index.ts",
       "033_runtime_settings_max_effort.ts",
       "034_thread_archive_cleanup_generation.ts",
+      "035_idempotent_unknown_effect_outcome.ts",
     ]);
   });
 

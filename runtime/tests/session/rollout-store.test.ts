@@ -12,6 +12,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
+import { runAdmittedToolCall } from "../budget/admitted-tool-call.js";
+import { shutdownSessionLifecycle } from "./lifecycle.js";
+import { validateCanonicalJournalBytes } from "../state/recovery-journal-contract.js";
+import { attachPendingPhysicalSettlement } from "../tools/physical-settlement.js";
+import type { Tool } from "../tools/types.js";
+import { mkSession } from "../fixtures.js";
 import {
   clearCurrentRuntimeSession,
   getCurrentRuntimeSession,
@@ -924,6 +930,78 @@ describe("RolloutStore thread-spawn edges", () => {
       rmSync(cwd, { recursive: true, force: true });
     }
   });
+
+  it.each(["idempotent", "side-effecting"] as const)(
+    "reopens a daemon suspension after a %s call exceeds the physical drain",
+    async (recoveryCategory) => {
+      const cwd = mkdtempSync(join(tmpdir(), "agenc-forced-effect-suspend-"));
+      const sessionId = "conv-test";
+      const store = openStore({ cwd, sessionId });
+      const { session } = mkSession({ cwd });
+      session.mountRolloutStore(store);
+      const physical = Promise.withResolvers<{ content: string }>();
+      const stopped = new Error("caller aborted");
+      attachPendingPhysicalSettlement(stopped, {
+        callerStop: "abort",
+        callerStoppedAt: TEST_RUN_TIMESTAMP,
+        settlement: physical.promise,
+      });
+      const tool = {
+        name: `test.${recoveryCategory}`,
+        recoveryCategory,
+      } as Tool;
+      session.onBeforeDurableClose(() => {
+        store.assertRunSuspendable({ allowUnsettledEffects: true });
+        const event = session.emit({
+          id: "forced-effect-suspension",
+          msg: { type: "run_suspended", payload: {
+            runId: sessionId, epoch: 1,
+            reason: "daemon_shutdown_idle", suspendedAt: TEST_RUN_TIMESTAMP,
+          } },
+        }, { durable: true });
+        store.recordRunSuspensionEvent(event);
+      });
+      try {
+        await expect(runAdmittedToolCall({
+          session, turnId: "turn-1", callId: "call-1", tool, args: {},
+          invoke: async ({ crossEffectBoundary }) => {
+            crossEffectBoundary();
+            throw stopped;
+          },
+        })).rejects.toBe(stopped);
+        await shutdownSessionLifecycle({ session, shutdownReason: "daemon_shutdown" });
+        const proof = validateCanonicalJournalBytes(readFileSync(store.rolloutPath));
+        const events = store.readAll().flatMap((item) =>
+          item.type === "event_msg" ? [item.payload.msg.type] : []);
+        expect(proof.activeLifecycleState).toBe("suspended");
+        expect(events).toContain("effect_unknown_outcome");
+        expect(events.at(-1)).toBe("run_suspended");
+        const reopened = openStore({ cwd, sessionId, resume: true,
+          resumeSuspendedRun: true });
+        try {
+          expect(reopened.runEpoch).toBe(1);
+          if (recoveryCategory === "idempotent") {
+            expect(() => reopened.assertModelExecutionAllowed()).not.toThrow();
+            expect(() => reopened.assertToolAdmissionAllowed("side-effecting")).not.toThrow();
+            const unknown = reopened.readAll().flatMap((item) =>
+              item.type === "event_msg" && item.payload.msg.type === "effect_unknown_outcome"
+                ? [item.payload.msg.payload] : []).at(0);
+            expect(unknown?.idempotencyKey).toBeTruthy();
+            expect(reopened.assertToolEffectAttemptAllowed({
+              callId: "call-1", recoveryCategory: "idempotent",
+              idempotencyKey: unknown!.idempotencyKey,
+            })).toBe(2);
+          } else {
+            expect(() => reopened.assertModelExecutionAllowed()).toThrow(/effect review/i);
+            expect(() => reopened.assertToolAdmissionAllowed("side-effecting")).toThrow();
+          }
+        } finally { reopened.close(); }
+      } finally {
+        await session.shutdown().catch(() => undefined);
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("resumes two clean daemon suspensions without changing the epoch", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-rollout-store-cwd-"));

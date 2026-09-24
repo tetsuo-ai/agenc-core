@@ -167,6 +167,7 @@ import type {
   SessionTaskAbortContext,
   SessionTaskRunContext,
   RunningTask,
+  TurnAbortReason,
 } from "./tasks.js";
 import { emitError, emitWarning } from "./event-log.js";
 import {
@@ -1413,6 +1414,18 @@ function samplingAbortError(signal: AbortSignal, fallback: unknown): StreamModel
   );
 }
 
+function turnSignalAbortReason(reason: unknown): TurnAbortReason {
+  switch (reason) {
+    case "daemon_shutdown":
+    case "interrupted":
+    case "replaced":
+    case "review_ended":
+      return reason;
+    default:
+      return "interrupted";
+  }
+}
+
 function errorSummary(err: unknown): string {
   const text = err instanceof Error ? err.message : String(err);
   return text.length > 160 ? `${text.slice(0, 157)}...` : text;
@@ -2637,11 +2650,7 @@ async function* runTurnKernelInner(
     await drainInFlight(state, ctx, session);
     await syncSessionState();
     if (isDeadlineAbort(signal)) return finishDeadlineReached();
-    emitTurnAborted(
-      String(
-        (signal as AbortSignal & { reason?: unknown }).reason ?? "cancelled",
-      ),
-    );
+    emitTurnAborted(turnSignalAbortReason(signal.reason));
     return {
       terminal: { reason: "cancelled" },
       event: {
@@ -2981,13 +2990,7 @@ async function* runTurnKernelInner(
           yield stopped.event;
           return stopped.terminal;
         }
-        emitTurnAborted(
-          String(
-            (signal as AbortSignal & { reason?: unknown }).reason ??
-              underlying.message ??
-              "cancelled",
-          ),
-        );
+        emitTurnAborted(turnSignalAbortReason(signal.reason));
         const terminal: Terminal = { reason: "cancelled" };
         yield {
           type: "turn_complete",

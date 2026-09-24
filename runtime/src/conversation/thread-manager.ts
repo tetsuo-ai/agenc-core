@@ -931,7 +931,8 @@ async function closeCheckpointToolCallsBeforePrompt(
       durableResults.set(item.payload.toolCallId, item.payload);
     }
   }
-  const intents = new Map<string, { stepId: string; eventSeq: number; toolName: string }>();
+  const intents = new Map<string, { stepId: string; eventSeq: number; toolName: string;
+    recoveryCategory: string }>();
   const outcomes = new Map<string, string>();
   for (const item of items.slice(checkpointIndex + 1)) {
     if (item.type !== "event_msg") continue;
@@ -940,7 +941,8 @@ async function closeCheckpointToolCallsBeforePrompt(
     if (event.type === "history_cleared") break;
     if (event.type === "effect_intent" && event.payload.runId === session.conversationId) {
       intents.set(event.payload.callId, { stepId: event.payload.stepId,
-        eventSeq: item.payload.seq ?? -1, toolName: event.payload.toolName });
+        eventSeq: item.payload.seq ?? -1, toolName: event.payload.toolName,
+        recoveryCategory: event.payload.recoveryCategory });
     } else if (event.type === "effect_result" && event.payload.runId === session.conversationId) {
       const intent = intents.get(event.payload.callId);
       if (intent?.stepId === event.payload.stepId &&
@@ -955,7 +957,9 @@ async function closeCheckpointToolCallsBeforePrompt(
       if (intent?.stepId === event.payload.stepId &&
           intent.eventSeq === event.payload.intentEventSeq) {
         outcomes.set(event.payload.callId,
-          `The ${intent.toolName} call's outcome is unknown after restart. Check the effect before retrying.`);
+          intent.recoveryCategory === "idempotent"
+            ? `The ${intent.toolName} call's outcome is unknown after restart. This idempotent call is safe to retry.`
+            : `The ${intent.toolName} call's outcome is unknown after restart. Check the effect before retrying.`);
       }
     } else if (event.type === "effect_review_resolved" &&
         event.payload.runId === session.conversationId &&

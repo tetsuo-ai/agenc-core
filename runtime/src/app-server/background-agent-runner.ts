@@ -1952,8 +1952,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       return false;
     }
     try {
-      // Shutdown retains the whole conversation tree. Unknown effects remain
-      // fenced for review after restart, including those in open descendants.
+      // Shutdown retains the whole conversation tree. Every effect must have
+      // an outcome record; unknown mutations remain fenced for review.
       active.bootstrap.rolloutStore.assertRunSuspendable({ allowUnsettledEffects: true });
       return true;
     } catch {
@@ -1971,9 +1971,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       this.#approvalBroker.hasPending(active.thread.threadId)
     ) return false;
     try {
-      // The turn was quiesced by bootstrap.shutdown. An unsettled effect is
-      // retained for restart recovery, which poisons or reviews it before any
-      // resumed model step can dispatch another call.
+      // The turn was quiesced by bootstrap.shutdown. Unknown outcomes retain
+      // review evidence, while outcome-less intents refuse suspension.
       active.bootstrap.rolloutStore.assertRunSuspendable({ allowUnsettledEffects: true });
       return true;
     } catch {

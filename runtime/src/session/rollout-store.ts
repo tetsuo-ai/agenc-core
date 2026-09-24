@@ -3070,9 +3070,6 @@ export class RolloutStore {
     }
     if (message.type === "effect_unknown_outcome") {
       const payload = message.payload;
-      if (payload.recoveryCategory === "idempotent") {
-        throw new Error("idempotent effects cannot have unknown outcome");
-      }
       this.runDurabilityRepo.markEffectUnknown({
         runId: payload.runId,
         stepId: payload.stepId,
@@ -3093,14 +3090,16 @@ export class RolloutStore {
         },
         observedAt: payload.recordedAt,
       });
-      recordInFlightToolCallUnknownOutcome(this.stateDriver, {
-        sessionId: this.sessionId,
-        agentId: payload.runId,
-        toolCallId: payload.callId,
-        toolName: payload.toolName,
-        observedAt: payload.recordedAt,
-        recoveryCategory: payload.recoveryCategory,
-      });
+      if (payload.recoveryCategory !== "idempotent") {
+        recordInFlightToolCallUnknownOutcome(this.stateDriver, {
+          sessionId: this.sessionId,
+          agentId: payload.runId,
+          toolCallId: payload.callId,
+          toolName: payload.toolName,
+          observedAt: payload.recordedAt,
+          recoveryCategory: payload.recoveryCategory,
+        });
+      }
       return;
     }
     if (message.type === "effect_review_resolved") {
@@ -3139,7 +3138,7 @@ export class RolloutStore {
     }
   }
 
-  /** Fail closed unless this writer can relinquish a clean, effect-free epoch. */
+  /** Refuse suspension over an intent with no recorded outcome. */
   assertRunSuspendable(options: { readonly allowUnsettledEffects?: boolean } = {}): void {
     const epoch = this.runEpoch;
     if (this.currentEpochIsTerminal(this.sessionId, epoch)) {
@@ -3152,15 +3151,17 @@ export class RolloutStore {
     ) {
       throw new Error(`run ${this.sessionId} is already suspended`);
     }
-    const unsettled = this.runDurabilityRepo
+    const blocking = this.runDurabilityRepo
       .listEffects(this.sessionId)
       .filter(
         (effect) =>
-          effect.outcome === undefined || effect.reviewStatus === "pending",
+          effect.outcome === undefined ||
+          (effect.reviewStatus === "pending" &&
+            options.allowUnsettledEffects !== true),
       );
-    if (unsettled.length > 0 && options.allowUnsettledEffects !== true) {
+    if (blocking.length > 0) {
       throw new Error(
-        `run ${this.sessionId} cannot suspend with unsettled effect(s): ${unsettled
+        `run ${this.sessionId} cannot suspend with unsettled effect(s): ${blocking
           .map((effect) => effect.stepId)
           .join(", ")}`,
       );
@@ -3177,6 +3178,7 @@ export class RolloutStore {
         [string], { readonly present: number }
       >(`SELECT 1 AS present FROM run_effects
          WHERE session_id = ? AND review_status = 'pending'
+           AND recovery_category IN ('side-effecting', 'interactive')
          LIMIT 1`).get(this.sessionId);
       if (durable !== undefined) return true;
       return this.stateDriver.prepareState<
@@ -4106,6 +4108,7 @@ export class RolloutStore {
           eventSequence: event.seq,
           reason: event.msg.payload.reason,
           suspendedAt: event.msg.payload.suspendedAt,
+          allowUnsettledEffects: true,
         });
         continue;
       }
@@ -4260,7 +4263,12 @@ export class RolloutStore {
         } else if (event.msg.type === "effect_result") {
           effectBoundaryState.delete(event.msg.payload.stepId);
         } else if (event.msg.type === "effect_unknown_outcome") {
-          effectBoundaryState.set(event.msg.payload.stepId, "review_required");
+          effectBoundaryState.set(
+            event.msg.payload.stepId,
+            event.msg.payload.recoveryCategory === "idempotent"
+              ? "retry_safe"
+              : "review_required",
+          );
         } else if (
           typeof event.msg.payload.resolution !== "string" &&
           event.msg.payload.resolution.workflowStatus !== "pending"

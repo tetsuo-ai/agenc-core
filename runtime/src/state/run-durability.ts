@@ -440,6 +440,7 @@ export class StateRunDurabilityRepository {
     readonly eventSequence: number;
     readonly reason: RunSuspendedBoundary["reason"];
     readonly suspendedAt: string;
+    /** Permit recorded unknown outcomes awaiting review, never bare intents. */
     readonly allowUnsettledEffects?: boolean;
   }): DurableWriteOutcome<DurableRunSuspension> {
     return this.driver.transactionImmediate(() => {
@@ -488,7 +489,11 @@ export class StateRunDurabilityRepository {
           `run ${params.runId} epoch ${params.epoch} is already suspended`,
         );
       }
-      if (params.allowUnsettledEffects !== true) this.assertNoPendingEffects(params.runId);
+      if (params.allowUnsettledEffects === true) {
+        this.assertNoDanglingEffects(params.runId);
+      } else {
+        this.assertNoPendingEffects(params.runId);
+      }
       this.assertSequenceUnclaimed(params.runId, params.eventSequence);
       this.driver
         .prepareState<[string, number, string, number, string, string]>(
@@ -1518,7 +1523,9 @@ export class StateRunDurabilityRepository {
   }
 
   assertDependentMutationAllowed(runId: RunId): void {
-    const pending = this.listPendingEffectReviews(runId);
+    const pending = this.listPendingEffectReviews(runId).filter(
+      (effect) => effect.recoveryCategory !== "idempotent",
+    );
     if (pending.length === 0) return;
     throw conflict(
       "RUN_EFFECT_REVIEW_REQUIRED",
@@ -2024,14 +2031,6 @@ export class StateRunDurabilityRepository {
         throw conflict(
           "RUN_EFFECT_OUTCOME_CONFLICT",
           `run ${params.runId} step ${params.stepId} already has a sticky ${existing.outcome} outcome`,
-        );
-      }
-      if (
-        params.outcome === "unknown_outcome" &&
-        existing.recoveryCategory === "idempotent"
-      ) {
-        throw new TypeError(
-          "an idempotent effect may not enter unknown_outcome",
         );
       }
       if (params.outcome === "unknown_outcome") {
