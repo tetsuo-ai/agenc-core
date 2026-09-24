@@ -838,6 +838,7 @@ export class FileThreadStore implements ThreadStore {
   archiveThread(params: ArchiveThreadParams): void {
     this.assertOpen();
     let archivedSessionDir: string | undefined;
+    let archiveArtifactDir: string | undefined;
     timed("thread_archive", () =>
       this.updateRegistry((registry) => {
         const existing = registry.get(params.threadId);
@@ -850,6 +851,7 @@ export class FileThreadStore implements ThreadStore {
           // released its lease without calling shutdownThread.
           if (!this.liveRecorders.has(params.threadId)) {
             const archivedRolloutPath = existing.archivedRolloutPath ?? this.archiveRolloutFile(existing);
+            if (archivedRolloutPath !== undefined) archiveArtifactDir = dirname(archivedRolloutPath);
             if (archivedRolloutPath !== undefined && existing.archivedRolloutPath === undefined) {
               registry.set(params.threadId, { ...existing, archivedRolloutPath, updatedAt: new Date().toISOString() });
             }
@@ -864,6 +866,7 @@ export class FileThreadStore implements ThreadStore {
         const archivedRolloutPath = this.liveRecorders.has(params.threadId)
           ? existing.archivedRolloutPath
           : this.archiveRolloutFile(existing);
+        if (archivedRolloutPath !== undefined) archiveArtifactDir = dirname(archivedRolloutPath);
         if (archivedRolloutPath !== undefined && existing.rolloutPath) archivedSessionDir = dirname(existing.rolloutPath);
         registry.set(params.threadId, {
           ...existing,
@@ -874,11 +877,13 @@ export class FileThreadStore implements ThreadStore {
       }),
     );
     if (archivedSessionDir !== undefined) removeDisplayArtifacts(archivedSessionDir);
+    if (archiveArtifactDir !== undefined && archiveArtifactDir !== archivedSessionDir) removeDisplayArtifacts(archiveArtifactDir);
   }
 
   unarchiveThread(params: ArchiveThreadParams): StoredThread {
     this.assertOpen();
     let result: StoredThread | undefined;
+    let archiveArtifactDir: string | undefined;
     this.updateRegistry((registry) => {
       const existing = registry.get(params.threadId);
       if (existing === undefined) {
@@ -891,6 +896,7 @@ export class FileThreadStore implements ThreadStore {
       const restoredRolloutPath = this.liveRecorders.has(params.threadId)
         ? existing.rolloutPath
         : this.unarchiveRolloutFile(existing);
+      if (existing.archivedRolloutPath !== undefined) archiveArtifactDir = dirname(existing.archivedRolloutPath);
       const {
         archivedAt: _drop,
         archivedRolloutPath: _archivedRolloutPath,
@@ -908,6 +914,7 @@ export class FileThreadStore implements ThreadStore {
       registry.set(params.threadId, updated);
       result = toStoredThread(updated, this.defaultModelProviderId);
     });
+    if (archiveArtifactDir !== undefined) removeDisplayArtifacts(archiveArtifactDir);
     return result!;
   }
 

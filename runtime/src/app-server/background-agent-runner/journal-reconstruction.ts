@@ -605,7 +605,8 @@ export function sessionTranscriptV2FromRollout(
     if (artifactSessionDir === undefined) throw new Error("oversized transcript message requires a session artifact store");
     const bytes = Buffer.from(message.text, "utf8");
     const id = persistDisplayArtifactBytes(artifactSessionDir, bytes);
-    return { ...message, text: `[Full message available with session.artifact.read: ${id}]`, textArtifact: { id, digest: id, size: bytes.length, mimeType: "text/plain" as const } };
+    const preview = bytes.subarray(0, 8 * 1024).toString("utf8");
+    return { ...message, text: `${preview}\n\n[Answer truncated; update to a protocol 1.18 client to read the full message.]`, textArtifact: { id, digest: id, size: bytes.length, mimeType: "text/plain" as const } };
   };
   const boundedMessages = [...snapshot.messages];
   const newestMessage = boundedMessages.at(-1);
@@ -618,7 +619,7 @@ export function sessionTranscriptV2FromRollout(
   while (Buffer.byteLength(JSON.stringify(bounded), "utf8") > maxSnapshotBytes) {
     const collections = [boundedMessages, boundedEvents, boundedTurnResults] as const;
     const largest = collections
-      .map((items, index) => ({ index, bytes: index === 0 && items.length <= 1 ? 0 : Buffer.byteLength(JSON.stringify(items), "utf8") }))
+      .map((items, index) => ({ index, bytes: items.length === 0 || (index === 0 && items.length <= 1) ? 0 : Buffer.byteLength(JSON.stringify(items), "utf8") }))
       .sort((left, right) => right.bytes - left.bytes)[0]!;
     const entries = collections[largest.index]!;
     if (largest.bytes === 0) {

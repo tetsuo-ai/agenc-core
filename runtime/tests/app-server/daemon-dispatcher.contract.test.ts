@@ -109,6 +109,20 @@ describe("session.artifact.read wire contract", () => {
     const currentResult = await current.dispatch(request("new", "session.transcript.v2", { sessionId: "one" }));
     expect((currentResult.result as typeof snapshot).events).toHaveLength(1);
   });
+  it("gives a 1.17 client a readable preview of an oversized answer", async () => {
+    const manager = new AgenCDaemonAgentManager();
+    const answer = "Legacy answer. ".repeat(28_000);
+    const snapshot = sessionTranscriptV2FromRollout([{ type: "event_msg", payload: { id: "answer", eventId: "answer", seq: 1, msg: { type: "agent_message", payload: { message: answer } } } }], "one", "run", undefined, await workspaces.create());
+    vi.spyOn(manager, "getSessionTranscriptV2").mockResolvedValue(snapshot);
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: new AgenCDaemonSessionManager() });
+    const older = dispatcher.createConnection({ sendNotification: () => {} });
+    await initialize(older, "1.17.0");
+    const response = await older.dispatch(request("old", "session.transcript.v2", { sessionId: "one" }));
+    const message = (response.result as typeof snapshot).messages.at(-1)!;
+    expect(message.text).toContain("Legacy answer.");
+    expect(message.text).toContain("truncated");
+    expect(message.textArtifact).toBeUndefined();
+  });
   it("requires a digest and routes an authenticated session-scoped id", async () => {
     const agentManager = new AgenCDaemonAgentManager();
     const id = "a".repeat(64);

@@ -30,6 +30,7 @@ import {
   ThreadStoreInvalidRequestError,
 } from "../thread-store/store.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
+import { sessionTranscriptV2FromRollout } from "../app-server/background-agent-runner.js";
 
 // Bind fixture homes explicitly: production storage follows immutable session
 // authority instead of later process.env edits in a Vitest hook.
@@ -330,6 +331,28 @@ describe("FileThreadStore.appendItems / loadHistory", () => {
 });
 
 describe("FileThreadStore.archiveThread / listThreads", () => {
+  it("cleans text artifacts created by an archived transcript read on repeat archive", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-archived-text-"));
+    const rollout = openStore({ cwd, sessionId: "archived-text" });
+    try {
+      const store = new FileThreadStore({ agencHome, cwd });
+      store.createThread({ threadId: "archived-text", rolloutStore: rollout });
+      store.appendItems({ threadId: "archived-text", items: [{ type: "event_msg", payload: { id: "answer", eventId: "answer", seq: 1, msg: { type: "agent_message", payload: { message: "A".repeat(400_000) } } } }] });
+      store.shutdownThread("archived-text");
+      rollout.close();
+      store.archiveThread({ threadId: "archived-text" });
+      const archived = store.readThread({ threadId: "archived-text", includeArchived: true, includeHistory: true });
+      const archiveDir = dirname(archived.rolloutPath!);
+      const restored = sessionTranscriptV2FromRollout(archived.history!.items, "archived-text", "archived-text", undefined, archiveDir);
+      expect(restored.messages.at(-1)?.textArtifact).toBeDefined();
+      expect(existsSync(join(archiveDir, "display-artifacts"))).toBe(true);
+      store.archiveThread({ threadId: "archived-text" });
+      expect(existsSync(join(archiveDir, "display-artifacts"))).toBe(false);
+      sessionTranscriptV2FromRollout(archived.history!.items, "archived-text", "archived-text", undefined, archiveDir);
+      store.unarchiveThread({ threadId: "archived-text" });
+      expect(existsSync(join(archiveDir, "display-artifacts"))).toBe(false);
+    } finally { rollout.close(); rmSync(cwd, { recursive: true, force: true }); }
+  });
   it("waits for a live writer to stop before removing its late display artifacts", () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-ts-artifact-live-"));
     const rollout = openStore({ cwd, sessionId: "artifact-live" });

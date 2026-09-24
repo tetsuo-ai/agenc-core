@@ -1332,6 +1332,7 @@ export class AgenCDaemonJsonRpcDispatcher {
           const clientMinor = Number(connection.initializeState?.clientProtocol.version.split(".")[1] ?? 0);
           return successResponse(id, clientMinor >= 18 ? transcript : {
             ...transcript,
+            messages: transcript.messages.map(({ textArtifact: _textArtifact, ...message }) => message),
             events: transcript.events?.filter(event => event.type !== "tool_call_completed"),
           });
         }

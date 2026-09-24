@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 
 vi.mock("./ink.js", () => ({
   Box: () => null,
@@ -776,8 +777,13 @@ describe("AgenC TUI daemon session adapter", () => {
 
   it("attaches the TUI to an agent before subscribing to its daemon session", async () => {
     const client = createClient();
+    const fullAnswer = "The notes CLI passes its tests";
+    const answerId = createHash("sha256").update(fullAnswer).digest("hex");
     client.request = async (method, params) => {
       client.requests.push({ method, params });
+      if (method === "session.artifact.read") {
+        return { sessionId: "session_1", id: answerId, encoding: "base64", data: Buffer.from(fullAnswer).toString("base64"), size: Buffer.byteLength(fullAnswer), offset: 0, nextOffset: null } as never;
+      }
       if (method === "agent.attach") {
         return {
           agentId: "agent_1",
@@ -821,7 +827,7 @@ describe("AgenC TUI daemon session adapter", () => {
           asOfSequence: 20,
           messages: [
             { messageId: "user_1", commitEventId: "event:1", role: "user", text: "Build a notes CLI", committedSequence: 1 },
-            { messageId: "assistant_1", commitEventId: "event:19", role: "assistant", text: "The notes CLI passes its tests", committedSequence: 19 },
+            { messageId: "assistant_1", commitEventId: "event:19", role: "assistant", text: "[truncated]", textArtifact: { id: answerId, digest: answerId, size: Buffer.byteLength(fullAnswer), mimeType: "text/plain" }, committedSequence: 19 },
           ],
         } as never;
       }
@@ -859,6 +865,7 @@ describe("AgenC TUI daemon session adapter", () => {
         params: { agentId: "agent_1", clientId: "tui_1" },
       },
       { method: "session.transcript.v2", params: { sessionId: "session_1" } },
+      { method: "session.artifact.read", params: { sessionId: "session_1", id: answerId, offset: 0, length: 524_288 } },
     ]);
     expect(received).toEqual([{ type: "turn_delta", id: "turn_1" }]);
   });

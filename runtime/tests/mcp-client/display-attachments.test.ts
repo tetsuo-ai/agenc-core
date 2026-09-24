@@ -26,8 +26,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   } };
 });
 import { createHash, randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, writeFile, symlink, rm, truncate, mkdir, rename } from "node:fs/promises";
-import { writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -260,6 +261,24 @@ describe("MCP user audience display attachments", () => {
     expect(latest?.textArtifact?.id).toMatch(/^[a-f0-9]{64}$/u);
     expect(readDisplayArtifact(session, latest!.textArtifact!.id).toString()).toBe(answer);
     expect(Buffer.byteLength(JSON.stringify(snapshot))).toBeLessThanOrEqual(384 * 1024);
+  });
+
+  it("bounds the 393,000-byte boundary answer within five seconds", () => {
+    // Run the synchronous reconstruction in a child so an infinite pruning
+    // loop fails the test without wedging the Vitest worker.
+    const source = new URL("../../src/app-server/background-agent-runner/journal-reconstruction.ts", import.meta.url).href;
+    const script = `import { sessionTranscriptV2FromRollout } from ${JSON.stringify(source)};
+const answer = "A".repeat(393_000);
+const snapshot = sessionTranscriptV2FromRollout([{ type: "event_msg", payload: { id: "answer", eventId: "answer", seq: 1, msg: { type: "agent_message", payload: { message: answer } } } }], "session", "run", undefined, process.env.DISPLAY_TEST_SESSION_DIR);
+if (snapshot.messages.at(-1)?.textArtifact?.size !== 393_000 || Buffer.byteLength(JSON.stringify(snapshot)) > 384 * 1024) process.exit(2);`;
+    const session = mkdtempSync(join(tmpdir(), "display-boundary-")); directories.push(session);
+    const result = spawnSync(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", script], {
+      timeout: 5_000,
+      encoding: "utf8",
+      env: { ...process.env, DISPLAY_TEST_SESSION_DIR: session },
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
   });
 
   it("keeps a recent answer inline when removing older history makes it fit", () => {
