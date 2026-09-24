@@ -672,7 +672,15 @@ export async function normalizeMcpToolOutput(
             throw new DisplayValidationError("contained a saved secret");
           }
           const fileLink = originalDisplayRecord?.type === "resource_link" && displayRecord?.type === "resource_link";
-          const shown = await validateDisplayBlock(fileLink ? originalDisplayRecord : safeDisplay, options.displayRoots ?? [], undefined, options.displayDataRoot, displayBudget);
+          // A file is read from its original URI, but its title is built from
+          // the redacted name: the validator truncates titles, and a secret cut
+          // at that boundary could no longer be matched afterwards.
+          const linkBlock = fileLink ? {
+            ...originalDisplayRecord,
+            ...("name" in safeDisplay ? { name: safeDisplay.name } : {}),
+            ...("title" in safeDisplay ? { title: safeDisplay.title } : {}),
+          } : safeDisplay;
+          const shown = await validateDisplayBlock(linkBlock, options.displayRoots ?? [], undefined, options.displayDataRoot, displayBudget);
           if (displayContainsLiteralSecret(shown.attachment, options.sensitiveHeaders)) {
             releaseDisplayArtifactBytes(shown.attachment);
             throw new DisplayValidationError("contained a saved secret");

@@ -12,7 +12,8 @@ vi.mock("../../src/mcp-client/display-attachments.js", async importOriginal => {
       if (!roots.some(root => path.startsWith(`${root}/`))) throw new original.DisplayValidationError("outside allowed root");
       reads.paths.push(path);
       const bytes = await readFile(path);
-      const title = String(block.name);
+      // Like the real validator's safeTitle: titles are cut at 120 characters.
+      const title = String(block.name).slice(0, 120);
       const attachment = { id: "file-id", kind: "file" as const, title, mimeType: "text/plain", size: bytes.length, digest: "file-id" };
       reads.bytes.set(attachment, bytes);
       return { attachment, caption: `[Shown to the user: file "${title}", ${bytes.length} bytes]` };
@@ -34,13 +35,13 @@ afterEach(async () => {
 });
 const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
-async function showFile(contents: string) {
+async function showFile(contents: string, name = "report.txt") {
   const root = await mkdtemp(join(tmpdir(), "mcp-file-redaction-"));
   directories.push(root);
   const originalPath = join(root, "report.txt");
   await writeFile(originalPath, contents);
   await writeFile(join(root, "[REDACTED].txt"), "wrong file");
-  const originalRaw = { content: [{ type: "resource_link", annotations: { audience: ["user"] }, uri: pathToFileURL(originalPath).href, name: "report.txt", mimeType: "text/plain" }] };
+  const originalRaw = { content: [{ type: "resource_link", annotations: { audience: ["user"] }, uri: pathToFileURL(originalPath).href, name, mimeType: "text/plain" }] };
   const sensitiveHeaders = { token: "report" };
   const bridge = await createToolBridge({
     listTools: async () => ({ tools: [{ name: "show" }] }),
@@ -64,4 +65,11 @@ test("checks the bytes read from the original URI for saved secrets", async () =
   expect(reads.paths).toEqual([originalPath]);
   expect(result.metadata?.displayAttachments).toBeUndefined();
   expect(result.content).toContain("contained a saved secret");
+});
+
+test("redacts a long file title before the validator truncates it", async () => {
+  // Cut at 120 characters, the unredacted name would end in "repo".
+  const { result } = await showFile("actual file bytes", `${"x".repeat(116)}report.txt`);
+  expect(JSON.stringify(result)).not.toContain("repo");
+  expect(result.metadata?.displayAttachments).toMatchObject([{ kind: "file" }]);
 });
