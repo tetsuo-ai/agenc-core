@@ -339,16 +339,8 @@ export class LiveApprovalBroker {
         !isApprovalSessionOwnedBy(requestingSession, owner.session)) {
       return unavailable("The interactive session is no longer active.");
     }
-    // Neither the settings nor the user can consent to a provider the
-    // settings do not allow now. A message to an existing child reuses a plan
-    // made under older settings, and an approved card for it would fail at
-    // dispatch. A managed child also needs its route provider (agenc).
-    try {
-      if (options.routeProvider !== undefined) assertCrossProviderAllowed(owner.session, options.routeProvider);
-      assertCrossProviderAllowed(owner.session, disclosure.provider);
-    } catch (error) {
-      return unavailable(error instanceof Error ? error.message : String(error));
-    }
+    const refusal = providerRefusal(owner.session, disclosure.provider, options.routeProvider);
+    if (refusal !== undefined) return unavailable(refusal);
     const grant = (kind: "once" | "session") => ({
       kind, ownerSessionId: owner.session.conversationId,
       sessionEpoch: owner.sessionEpoch, taskId: disclosure.taskId,
@@ -521,6 +513,22 @@ function isNonInteractiveSession(session: Session): boolean {
   return (
     session.services as { readonly runtimeOptions?: { readonly nonInteractive?: unknown } } | undefined
   )?.runtimeOptions?.nonInteractive === true;
+}
+
+/**
+ * Why the settings do not allow this provider now, if they do not. Neither
+ * the settings nor the user can consent to it: a message to an existing child
+ * reuses a plan made under older settings, and an approved card for it would
+ * fail at dispatch. A managed child also needs its route provider (agenc).
+ */
+function providerRefusal(session: Session, provider: string, routeProvider: string | undefined): string | undefined {
+  try {
+    if (routeProvider !== undefined) assertCrossProviderAllowed(session, routeProvider);
+    assertCrossProviderAllowed(session, provider);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
 }
 
 /**
