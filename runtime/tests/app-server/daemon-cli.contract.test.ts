@@ -4048,52 +4048,69 @@ token_cap = 123
       };
       const open = await openSession("open-session");
       const stale = await openSession("stale-session", explicitConfig);
+      const busy = await openSession("busy-session");
       open.register();
       stale.register();
+      busy.register();
       // Still starting: it read its settings before the save and registers
       // only after the reload.
       const late = await openSession("late-session", lateConfig);
-      for (const session of [open.session, stale.session]) {
+      for (const session of [open.session, stale.session, busy.session]) {
         expect((await authorizeChildExecutionPlan(session, CROSS_PROVIDER_PLAN)).kind)
           .toBe("granted");
       }
 
+      // A config apply of the busy session's own holds its config.
+      const held = await busy.configStore.prepareReload();
       // Desktop saves the switch, which also changed the model, and reloads.
       // The explicit files of the other sessions are gone by then.
       await writeFile(userConfig, settings(false, ['model = "grok-4"']));
       await rm(explicitConfig);
       await rm(lateConfig);
       const cliIo = createIo();
-      await expect(
-        runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io: cliIo }),
-      ).resolves.toBe(0);
-      // The daemon's own view, which no workspace file can make unreadable.
-      expect(refresh).toHaveBeenLastCalledWith(
-        expect.objectContaining({ cross_provider_enabled: false }),
-      );
+      try {
+        await expect(
+          runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io: cliIo }),
+        ).resolves.toBe(0);
+      } finally {
+        held.rollback();
+        held.settle();
+      }
+      // The daemon's own view before and after the save, which no workspace
+      // file can make unreadable.
+      expect(refresh).toHaveBeenLastCalledWith({
+        previous: expect.objectContaining({ cross_provider_enabled: true }),
+        next: expect.objectContaining({ cross_provider_enabled: false }),
+      });
 
       const nextTask = {
         ...CROSS_PROVIDER_PLAN,
         task: { ...CROSS_PROVIDER_PLAN.task, id: "task-two", text: "Another task" },
       } as ChildExecutionPlan;
       late.register();
-      // The session that could not read its settings again is narrowed to
-      // the daemon's view and no longer grants from settings.
-      for (const session of [open.session, stale.session, late.session]) {
+      // The sessions that could not read their settings again lose what the
+      // save took away from the daemon's view, and no longer grant from
+      // settings.
+      for (const session of [open.session, stale.session, busy.session, late.session]) {
         await expect(authorizeChildExecutionPlan(session, nextTask)).resolves.toMatchObject({
           kind: "consent_unavailable",
           reason: expect.stringContaining("Cross-provider subagents are off"),
         });
       }
       expect(open.configStore.current().model).toBe("grok-3");
-      const failureLine = (sessionId: string) =>
-        `agenc: session ${sessionId} could not read its cross-provider subagent settings again. Until it can, it allows only what both its earlier settings and the daemon's settings allow. Reason: explicit config file does not exist`;
-      // The daemon logs both. The reload result names the one it saw, and
-      // `agenc daemon reload` prints it.
-      expect(io.stderrText()).toContain(failureLine("stale-session"));
-      expect(io.stderrText()).toContain(failureLine("late-session"));
+      const failureLine = (sessionId: string, end: string) =>
+        `agenc: session ${sessionId} could not read its cross-provider subagent settings again. Until it can, it keeps its earlier settings without what the save took away from the daemon's settings. ${end}`;
+      const missingFile = "Reason: explicit config file does not exist";
+      const timedOut = "Its read still runs once its config is free. Reason: Reading its settings took longer than 1000 ms.";
+      // The daemon logs all three. The reload result names the two it saw,
+      // marks the one that ran out of time, and `agenc daemon reload`
+      // prints them.
+      expect(io.stderrText()).toContain(failureLine("stale-session", missingFile));
+      expect(io.stderrText()).toContain(failureLine("busy-session", timedOut));
+      expect(io.stderrText()).toContain(failureLine("late-session", missingFile));
       expect(cliIo.stdoutText()).toContain("AgenC daemon reloaded configuration");
-      expect(cliIo.stderrText()).toContain(failureLine("stale-session"));
+      expect(cliIo.stderrText()).toContain(failureLine("stale-session", missingFile));
+      expect(cliIo.stderrText()).toContain(failureLine("busy-session", timedOut));
       expect(cliIo.stderrText()).not.toContain("late-session");
 
       signalProcess.emit("SIGTERM");

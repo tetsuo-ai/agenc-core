@@ -954,7 +954,7 @@ agenc daemon restart
 | `start --foreground` | Run the daemon in the current process |
 | `stop` | Stop the local AgenC daemon |
 | `status` | Show local daemon status |
-| `reload` | Reload daemon configuration in place. Open sessions take the new `[agents]` cross-provider settings. The command prints each session that could not read them again. Such a session keeps only what both its earlier settings and the daemon's settings allow. Other session settings apply to new sessions |
+| `reload` | Reload daemon configuration in place. Open sessions take the new `[agents]` cross-provider settings. The command prints each session that could not read them again, and says when its read only ran out of time. Such a session keeps its earlier settings without what the save took away from the daemon's settings. Other session settings apply to new sessions |
 | `restart` | Stop and start the local AgenC daemon |
 
 Service templates under `packaging/` invoke `agenc daemon start --foreground`.

@@ -633,6 +633,12 @@ function agentsToml(enabled: boolean, allowed: readonly string[], askEachSpawn =
     ...(askEachSpawn ? ["cross_provider_ask_each_spawn = true"] : [])];
 }
 
+/** The same settings as the daemon's own view of user config. */
+function agentsView(enabled: boolean, allowed: readonly string[], askEachSpawn = false) {
+  return { cross_provider_enabled: enabled, allowed_providers: allowed,
+    ...(askEachSpawn ? { cross_provider_ask_each_spawn: true } : {}) };
+}
+
 /**
  * A session's own ConfigStore over a user config.toml, read as a daemon session
  * reads it, optionally with an explicit `--config` file.
@@ -757,8 +763,9 @@ describe("settings changed while a session is open", () => {
       expect((await authorizeChildExecutionPlan(background.session, plan)).kind).toBe("granted");
       workflowSettings.save(agentsToml(false, ["deepseek"]));
       rmSync(backgroundSettings.explicitConfig);
-      // The daemon's own view of the save.
-      await expect(broker.refreshCrossProviderPolicy({ cross_provider_enabled: false, allowed_providers: ["deepseek"] }))
+      // The daemon's own view before and after the save.
+      await expect(broker.refreshCrossProviderPolicy({
+        previous: agentsView(true, ["deepseek"]), next: agentsView(false, ["deepseek"]) }))
         .resolves.toEqual({
           changed: ["workflow-run"],
           failed: [{ sessionId: "background-run", reason: expect.stringContaining("explicit config file does not exist") }],
@@ -784,11 +791,15 @@ describe("settings changed while a session is open", () => {
     const writeExplicit = (lines: readonly string[]) =>
       writeFileSync(settings.explicitConfig, ["config_version = 2", ...lines, ""].join("\n"));
     try {
+      // The user adds openai.
       writeExplicit(agentsToml(true, ["deepseek", "openai"]));
-      await expect(broker.refreshCrossProviderPolicy({ cross_provider_enabled: true, allowed_providers: ["deepseek"] }))
+      await expect(broker.refreshCrossProviderPolicy({
+        previous: agentsView(true, ["deepseek"]), next: agentsView(true, ["deepseek", "openai"]) }))
         .resolves.toEqual({ changed: ["first-run", "second-run"], failed: [] });
+      // The user removes it again, and neither session can read its settings.
       rmSync(settings.explicitConfig);
-      await expect(broker.refreshCrossProviderPolicy({ cross_provider_enabled: true, allowed_providers: ["deepseek"] }))
+      await expect(broker.refreshCrossProviderPolicy({
+        previous: agentsView(true, ["deepseek", "openai"]), next: agentsView(true, ["deepseek"]) }))
         .resolves.toEqual({ changed: [], failed: [
           { sessionId: "first-run", reason: expect.stringContaining("explicit config file does not exist") },
           { sessionId: "second-run", reason: expect.stringContaining("explicit config file does not exist") },
@@ -801,7 +812,7 @@ describe("settings changed while a session is open", () => {
     }
   });
 
-  it("narrows a session whose workspace blocks its config load to what both its settings and the daemon's allow", async () => {
+  it("takes from a session whose workspace blocks its config load what the save took away from the daemon's settings", async () => {
     // Nothing protects .mcp.json: the model, `claude mcp add -s project` or a
     // git pull can write it, and it makes the session's config load fail.
     const root = mkdtempSync(join(tmpdir(), "agenc-cross-provider-workspace-"));
@@ -825,7 +836,7 @@ describe("settings changed while a session is open", () => {
       // Desktop's save removes openai and adds grok.
       save(agentsToml(true, ["deepseek", "grok"]));
       await expect(fixture.broker.refreshCrossProviderPolicy({
-        cross_provider_enabled: true, allowed_providers: ["deepseek", "grok"],
+        previous: agentsView(true, ["deepseek", "openai"]), next: agentsView(true, ["deepseek", "grok"]),
       })).resolves.toEqual({
         changed: [],
         failed: [{ sessionId: "root-session", reason: expect.stringContaining("Retired configuration input detected") }],
@@ -844,20 +855,175 @@ describe("settings changed while a session is open", () => {
       // nobody can answer.
       save(agentsToml(true, ["deepseek", "grok"], true));
       const askEachSpawn = { cross_provider_enabled: true, allowed_providers: ["deepseek", "grok"], cross_provider_ask_each_spawn: true };
-      expect((await fixture.broker.refreshCrossProviderPolicy(askEachSpawn)).failed).toHaveLength(1);
+      expect((await fixture.broker.refreshCrossProviderPolicy({
+        previous: agentsView(true, ["deepseek", "grok"]), next: askEachSpawn })).failed).toHaveLength(1);
       await expect(authorizeChildExecutionPlan(fixture.session, third)).resolves.toMatchObject({
         kind: "consent_unavailable", reason: expect.stringContaining("No attached consent-capable client"),
       });
       // Once the workspace no longer blocks the read, the session takes its
       // own settings again.
       rmSync(join(project, ".mcp.json"));
-      await expect(fixture.broker.refreshCrossProviderPolicy(askEachSpawn))
+      await expect(fixture.broker.refreshCrossProviderPolicy({ previous: askEachSpawn, next: askEachSpawn }))
         .resolves.toEqual({ changed: ["root-session"], failed: [] });
       expect(store.current().agents).toEqual(askEachSpawn);
     } finally {
       fixture.close();
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("keeps what a session's own --config file allows when it cannot read its settings after a save that took nothing away", async () => {
+    // An `agenc -p` run with its own --config file. User config, which the
+    // daemon reads, never turned cross-provider subagents on.
+    const root = mkdtempSync(join(tmpdir(), "agenc-cross-provider-explicit-"));
+    const home = join(root, "home");
+    const project = join(root, "project");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(join(project, ".git"), { recursive: true });
+    const write = (path: string, lines: readonly string[]) =>
+      writeFileSync(path, ["config_version = 2", ...lines, ""].join("\n"));
+    write(join(home, "config.toml"), ['model = "grok-3"']);
+    write(join(home, "run.toml"), agentsToml(true, ["openai"]));
+    const store = new ConfigStore({ home, env: { AGENC_HOME: home, HOME: home }, cwd: project,
+      flagConfigPath: join(home, "run.toml"),
+      managedConfigPath: join(root, "managed", "config.toml"), managedDropInDir: join(root, "managed", "config.d") });
+    await store.reload();
+    const fixture = interactiveFixture({ conversationId: "ci-run", nonInteractive: true, configStore: store });
+    // What a running child listens to.
+    const heard = vi.fn();
+    store.subscribe(heard, { sections: ["agents"] });
+    try {
+      expect((await authorizeChildExecutionPlan(fixture.session, openaiPlan)).kind).toBe("granted");
+      // The workspace now blocks its config load, and the user changes only
+      // the default model in Desktop.
+      writeFileSync(join(project, ".mcp.json"), JSON.stringify({ mcpServers: {} }));
+      write(join(home, "config.toml"), ['model = "grok-4"']);
+      const daemonView = agentsView(false, []);
+      await expect(fixture.broker.refreshCrossProviderPolicy({ previous: daemonView, next: daemonView })).resolves.toEqual({
+        changed: [],
+        failed: [{ sessionId: "ci-run", reason: expect.stringContaining("Retired configuration input detected") }],
+      });
+      expect(store.current().agents).toEqual({
+        cross_provider_enabled: true, allowed_providers: ["openai"], cross_provider_ask_each_spawn: false,
+      });
+      expect(heard).not.toHaveBeenCalled();
+      const next = { ...openaiPlan, task: { ...openaiPlan.task, id: "openai-two" } } as ChildExecutionPlan;
+      expect((await authorizeChildExecutionPlan(fixture.session, next)).kind).toBe("granted");
+    } finally {
+      fixture.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not stop a busy session's child for a save that took nothing away, and says its read ran out of time", async () => {
+    const broker = new LiveApprovalBroker({ canAnswerCrossProviderConsent: () => false, crossProviderRefreshTimeoutMs: 100 });
+    // A run started with its own --config file. User config never turned
+    // cross-provider subagents on.
+    const settings = await openSettings(['model = "grok-3"'], agentsToml(true, ["deepseek"]));
+    const fixture = interactiveFixture({ conversationId: "explicit-run", nonInteractive: true, broker,
+      configStore: settings.store });
+    Object.assign(fixture.session, {
+      modelInfo: { slug: "grok-4.6", provider: "grok" },
+      providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }) },
+      sessionConfiguration: { cwd: settings.home },
+    });
+    // What a running child listens to.
+    const heard = vi.fn();
+    settings.store.subscribe(heard, { sections: ["agents"] });
+    let held: Awaited<ReturnType<ConfigStore["prepareReload"]>> | undefined;
+    try {
+      const proposed = await createChildExecutionPlan({
+        session: fixture.session, selection: { provider: "deepseek", model: "deepseek-v4-pro" },
+        modelInfo: { slug: "deepseek-v4-pro", provider: "deepseek", supportsToolUse: true } as Session["modelInfo"],
+        parentPath: "/root", taskId: "running-child", taskName: "worker", taskText: "inspect",
+        toolFree: false, forkedHistory: false,
+      });
+      const granted = await authorizeChildExecutionPlan(fixture.session, proposed);
+      if (granted.kind !== "granted") throw new Error(`fixture spawn was not granted: ${granted.reason}`);
+      // Another client's config apply holds the session's config while the
+      // user changes only the model and Desktop reloads the daemon.
+      held = await settings.store.prepareReload();
+      settings.save(['model = "grok-4"']);
+      const daemonView = agentsView(false, []);
+      await expect(broker.refreshCrossProviderPolicy({ previous: daemonView, next: daemonView })).resolves.toEqual({
+        changed: [],
+        failed: [{ sessionId: "explicit-run", reason: "Reading its settings took longer than 100 ms.", timedOut: true }],
+      });
+      // The child's plan still holds, and nothing told it to stop.
+      expect(heard).not.toHaveBeenCalled();
+      await expect(assertChildExecutionPlan(fixture.session, granted.plan)).resolves.toBeUndefined();
+      // Once the config is free, the read that ran out of time finds nothing
+      // to change.
+      held.rollback();
+      held.settle();
+      await expect(settings.store.reloadAgentsSection()).resolves.toBe(false);
+      expect(heard).not.toHaveBeenCalled();
+      expect(settings.store.current().agents).toMatchObject({ cross_provider_enabled: true, allowed_providers: ["deepseek"] });
+    } finally {
+      if (held !== undefined && !held.settled) {
+        held.rollback();
+        held.settle();
+      }
+      fixture.close();
+      settings.dispose();
+    }
+  });
+
+  it("still takes a provider the save removed from a session that cannot read its settings, and keeps what only its own settings allow", async () => {
+    // User config allows deepseek and openai. The run's own --config file
+    // allows grok as well.
+    const settings = await openSettings(agentsToml(true, ["deepseek", "openai"]),
+      agentsToml(true, ["deepseek", "openai", "grok"]));
+    const fixture = interactiveFixture({ conversationId: "explicit-run", nonInteractive: true,
+      configStore: settings.store, answerable: false });
+    // A child running on openai stops once openai is no longer allowed.
+    const openaiChild = new AbortController();
+    settings.store.subscribe((config) => {
+      if (!(config.agents?.allowed_providers ?? []).includes("openai")) openaiChild.abort();
+    }, { sections: ["agents"] });
+    try {
+      // The user unchecks openai, and the run's own file cannot be read now.
+      settings.save(agentsToml(true, ["deepseek"]));
+      rmSync(settings.explicitConfig);
+      await expect(fixture.broker.refreshCrossProviderPolicy({
+        previous: agentsView(true, ["deepseek", "openai"]), next: agentsView(true, ["deepseek"]),
+      })).resolves.toEqual({
+        changed: [],
+        failed: [{ sessionId: "explicit-run", reason: expect.stringContaining("explicit config file does not exist") }],
+      });
+      expect(settings.store.current().agents).toEqual({
+        cross_provider_enabled: true, allowed_providers: ["deepseek", "grok"], cross_provider_ask_each_spawn: false,
+      });
+      expect(openaiChild.signal.aborted).toBe(true);
+      await expect(authorizeChildExecutionPlan(fixture.session, openaiPlan, { fresh: true })).resolves.toMatchObject({
+        kind: "consent_unavailable", reason: expect.stringContaining("Provider `openai` is not allowed"),
+      });
+      expect((await authorizeChildExecutionPlan(fixture.session, plan)).kind).toBe("granted");
+      // The next save turns the feature off, which reaches it too.
+      settings.save(agentsToml(false, ["deepseek"]));
+      await expect(fixture.broker.refreshCrossProviderPolicy({
+        previous: agentsView(true, ["deepseek"]), next: agentsView(false, ["deepseek"]),
+      })).resolves.toMatchObject({ changed: [], failed: [{ sessionId: "explicit-run" }] });
+      await expect(authorizeChildExecutionPlan(fixture.session, second)).resolves.toMatchObject({
+        kind: "consent_unavailable", reason: expect.stringContaining("Cross-provider subagents are off"),
+      });
+    } finally { fixture.close(); settings.dispose(); }
+  });
+
+  it("reports why a session could not read its settings on one plain line, without format characters", async () => {
+    const settings = await openSettings(agentsToml(true, ["deepseek"]));
+    const fixture = interactiveFixture({ configStore: settings.store });
+    // A project file can supply part of the message. A bidi override can
+    // reorder the terminal line, and an invisible mark can split a secret.
+    const secret = `sk-${"a".repeat(12)}‎${"b".repeat(12)}`;
+    vi.spyOn(settings.store, "reloadAgentsSection").mockRejectedValue(new Error(
+      `invalid TOML at /work/‮evil‬.toml\nline 2:⁦ model = "${secret}"⁩\u0007`));
+    try {
+      await expect(fixture.broker.refreshCrossProviderPolicy()).resolves.toEqual({
+        changed: [],
+        failed: [{ sessionId: "root-session", reason: 'invalid TOML at /work/evil.toml line 2: model = "[REDACTED_SECRET]"' }],
+      });
+    } finally { fixture.close(); settings.dispose(); }
   });
 
   it("reads again the settings of a session that registers after a daemon reload began, before its first decision", async () => {
@@ -870,7 +1036,8 @@ describe("settings changed while a session is open", () => {
     const unreadable = await openSettings([], agentsToml(true, ["deepseek"]));
     starting.save(agentsToml(false, ["deepseek"]));
     rmSync(unreadable.explicitConfig);
-    await expect(broker.refreshCrossProviderPolicy({ cross_provider_enabled: false, allowed_providers: ["deepseek"] }))
+    await expect(broker.refreshCrossProviderPolicy({
+      previous: agentsView(true, ["deepseek"]), next: agentsView(false, ["deepseek"]) }))
       .resolves.toEqual({ changed: [], failed: [] });
     // A session that reads its settings after the reload began needs no second read.
     const fresh = await openSettings(agentsToml(true, ["deepseek"]));
@@ -907,7 +1074,7 @@ describe("settings changed while a session is open", () => {
         // The user unchecks deepseek in Desktop while the card is open.
         settings.save(agentsToml(true, ["openai"], true));
         await expect(fixture.broker.refreshCrossProviderPolicy({
-          cross_provider_enabled: true, allowed_providers: ["openai"], cross_provider_ask_each_spawn: true,
+          previous: agentsView(true, ["deepseek", "openai"], true), next: agentsView(true, ["openai"], true),
         })).resolves.toEqual({ changed: ["root-session"], failed: [] });
         expect(fixture.broker.resolve("root-session", card.pending.requestId, { kind: decision },
           { approvalKind: "cross_provider_spawn" })).toBe(true);
@@ -916,7 +1083,7 @@ describe("settings changed while a session is open", () => {
         });
         settings.save(agentsToml(true, ["deepseek", "openai"], true));
         await fixture.broker.refreshCrossProviderPolicy({
-          cross_provider_enabled: true, allowed_providers: ["deepseek", "openai"], cross_provider_ask_each_spawn: true,
+          previous: agentsView(true, ["openai"], true), next: agentsView(true, ["deepseek", "openai"], true),
         });
       }
     } finally { fixture.close(); settings.dispose(); }
@@ -933,12 +1100,13 @@ describe("settings changed while a session is open", () => {
     const held = await busy.store.prepareReload();
     try {
       for (const settings of [fast, busy]) settings.save(agentsToml(false, ["deepseek"]));
-      const refresh = broker.refreshCrossProviderPolicy({ cross_provider_enabled: false, allowed_providers: ["deepseek"] });
+      const refresh = broker.refreshCrossProviderPolicy({
+        previous: agentsView(true, ["deepseek"]), next: agentsView(false, ["deepseek"]) });
       const outcome = await Promise.race([refresh,
         new Promise<"still waiting">((resolve) => setTimeout(() => resolve("still waiting"), 5_000))]);
       expect(outcome).toEqual({
         changed: ["fast-run"],
-        failed: [{ sessionId: "busy-run", reason: "Reading its settings took longer than 250 ms." }],
+        failed: [{ sessionId: "busy-run", reason: "Reading its settings took longer than 250 ms.", timedOut: true }],
       });
       for (const session of [fastRun.session, busyRun.session]) {
         await expect(authorizeChildExecutionPlan(session, plan)).resolves.toMatchObject({
@@ -955,7 +1123,8 @@ describe("settings changed while a session is open", () => {
       await expect(busy.store.reloadAgentsSection()).resolves.toBe(false);
       // Its own settings reach it again on the next reload.
       for (const settings of [fast, busy]) settings.save(agentsToml(true, ["deepseek"]));
-      await expect(broker.refreshCrossProviderPolicy({ cross_provider_enabled: true, allowed_providers: ["deepseek"] }))
+      await expect(broker.refreshCrossProviderPolicy({
+        previous: agentsView(false, ["deepseek"]), next: agentsView(true, ["deepseek"]) }))
         .resolves.toEqual({ changed: ["fast-run", "busy-run"], failed: [] });
       expect((await authorizeChildExecutionPlan(busyRun.session, second)).kind).toBe("granted");
     } finally {
@@ -1009,7 +1178,8 @@ describe("settings changed while a session is open", () => {
       const check = assertChildExecutionPlan(fixture.session, granted.plan);
       await atGate;
       settings.save(['model_provider = "grok"', 'model = "grok-4.6"', ...agentsToml(false, ["agenc", "deepseek"])]);
-      await expect(fixture.broker.refreshCrossProviderPolicy({ cross_provider_enabled: false }))
+      await expect(fixture.broker.refreshCrossProviderPolicy({
+        previous: agentsView(true, ["agenc", "deepseek"]), next: agentsView(false, ["agenc", "deepseek"]) }))
         .resolves.toEqual({ changed: ["root-session"], failed: [] });
       release();
       await expect(check).rejects.toThrow(/policy changed/u);

@@ -260,7 +260,7 @@ chunk that crosses the limit. Multiple bounded lines can share a chunk.
 | `routine.capabilities` / `routine.list` / `routine.get` / `routine.create` / `routine.update` / `routine.delete` / `routine.run` / `routine.runs` / `routine.cancel`                                                                                                 | Daemon-owned local routines. See [autonomy.md](autonomy.md)                                                        |
 | `routine.session.prepare.respond`                                                                           | Answer Core's request to prepare a routine's session before its first turn, so the client can attach its tools (protocol 1.17) |
 | `remote.*` / `telegram.*`                                                                                   | See the [remote and Telegram method contracts](#remote-and-telegram-methods) below                     |
-| `daemon.reload`                                                                                             | Reload configuration. Open sessions take the new `[agents]` cross-provider settings. A session that could not read them again is listed in the result's `crossProviderSettings.failed`. Other session settings apply to new sessions |
+| `daemon.reload`                                                                                             | Reload configuration. Open sessions take the new `[agents]` cross-provider settings. A session that could not read them again is listed in the result's `crossProviderSettings.failed`, with `timedOut: true` when it ran out of time. Other session settings apply to new sessions |
 | `daemon.shutdown`                                                                                           | Ask the daemon process to exit                                                                                     |
 | `auth.login` / `auth.whoami` / `auth.logout`                                                                | Auth backend                                                                                                       |
 
@@ -1296,15 +1296,23 @@ spend against daemon-owned sessions.
    A session may fail to read its settings, for example because a
    `.mcp.json` file or an invalid project `config.toml` now blocks its
    config load. It may also not finish within one second, because a config
-   reload of its own holds its config. Such a session fails closed. It
-   keeps only what both its earlier settings and the daemon's own settings
-   allow. The daemon reads those from user, profile and managed config,
-   never from a workspace. It never gains a provider this way. The reload
-   result lists it in the optional `crossProviderSettings.failed` field,
-   one `{ sessionId, reason }` entry per session, and the daemon logs it.
+   reload of its own holds its config. Such a session fails closed for what
+   the save took away. The daemon compares its own settings before and
+   after the save, read from user and managed config and the daemon's
+   profile, never from a workspace. The session loses each provider the
+   save removed there, turns the feature off if the save turned it off,
+   and asks at each spawn if the save started asking. It keeps the rest,
+   such as what its own `--config` file, profile or `-c` allows, and it
+   never gains a provider this way. A save that took nothing away leaves
+   it as it was. The reload result lists it in the optional
+   `crossProviderSettings.failed` field, one `{ sessionId, reason }` entry
+   per session, and the daemon logs it. The entry has `timedOut: true` when
+   the read only ran out of time. That read still runs once the session's
+   config is free, so the session usually takes its settings by itself.
    The field is absent when every session read its settings. A session that
    is still starting during the reload reads the settings again when it
-   registers for approvals, before its first cross-provider decision.
+   registers for approvals, before its first cross-provider decision. If
+   that read fails, only the daemon log reports it.
 5. `daemon stop` / signals run the cleanup registry and remove pid/socket
    ownership cleanly.
 
