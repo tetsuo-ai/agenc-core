@@ -2252,6 +2252,11 @@ async function* runTurnKernelInner(
       : state.messages.length;
   const onCompactionReplacedHistory = (durableCount: number): void => {
     if (rolloutPersistenceActive()) persistedMessageCount = durableCount;
+    // The replacement is already durable. Seal any unsent image turn carried
+    // across a pre-request compact, then fsync a checkpoint for this exact
+    // prefix before the compaction ladder can await its next tier.
+    persistNewResponseItems();
+    emitTurnCheckpoint("iteration", { force: true });
   };
   const persistTurnRolloutBaseline = (): void => {
     if (rolloutPersistenceSuspended()) return;
@@ -2585,6 +2590,7 @@ async function* runTurnKernelInner(
   try {
     await runPreSamplingCompact(session, ctx, turnQuerySource, state, {
       onAdvisoryRefusal: deferCompactionRefusal,
+      onDurableHistoryReplaced: onCompactionReplacedHistory,
     });
   } catch (error) {
     const underlying = compactFailureError(error);

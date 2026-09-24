@@ -93,6 +93,9 @@ export function llmMessageToResponseItem(message: LLMMessage): ResponseItem {
   return {
     role: message.role,
     content: cloneContent(message.content),
+    ...(message.runtimeOnly?.responseItemId !== undefined
+      ? { id: message.runtimeOnly.responseItemId }
+      : {}),
     ...(message.toolCalls !== undefined
       ? {
           toolCalls: message.toolCalls.map((call) => ({
@@ -233,11 +236,17 @@ export function responseItemToLlmMessage(item: ResponseItem): LLMMessage {
             : {}),
         }
       : {}),
-    ...(item.toolResultIntegrity !== undefined ||
+    // Checkpoint v3 hashes response-item IDs, including IDs assigned to
+    // committed compaction boundary and summary messages.
+    ...(item.id !== undefined ||
+    item.toolResultIntegrity !== undefined ||
     item.agentInvocation !== undefined ||
     item.compactionHistory !== undefined
       ? {
           runtimeOnly: {
+            ...(item.id !== undefined
+              ? { responseItemId: item.id }
+              : {}),
             ...(item.toolResultIntegrity !== undefined
               ? { toolResultIntegrity: item.toolResultIntegrity }
               : {}),
