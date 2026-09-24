@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type { AgentsConfig } from "../config/schema.js";
-import { nextConfigReadMark, type ConfigStore } from "../config/store.js";
+import {
+  agentsChangeRevokes,
+  nextConfigReadMark,
+  revokeAgentsConfig,
+  type AgentsConfigChange,
+  type ConfigStore,
+} from "../config/store.js";
 import { redactSecrets } from "../secrets/sanitizer.js";
 import type { Session } from "../session/session.js";
 import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
@@ -65,7 +70,8 @@ interface ApprovalOwner {
 interface PolicyRefresh {
   /** `nextConfigReadMark()` when it began: a read before it missed the save. */
   readonly startedAt: number;
-  readonly daemonAgents: AgentsConfig | undefined;
+  /** The daemon's own view before and after the save. */
+  readonly daemonAgents: AgentsConfigChange;
 }
 
 /**
@@ -95,6 +101,11 @@ export interface CrossProviderPolicyFailure {
   readonly sessionId: string;
   /** Why, in plain words, with secrets redacted. */
   readonly reason: string;
+  /**
+   * Set when the read only ran out of time. It still runs once the session's
+   * config is free, so such a session usually takes its settings by itself.
+   */
+  readonly timedOut?: true;
 }
 
 /** What a daemon reload did to the cross-provider settings of open sessions. */
@@ -102,9 +113,9 @@ export interface CrossProviderPolicyRefresh {
   /** Sessions whose `[agents]` settings changed and now apply. */
   readonly changed: readonly string[];
   /**
-   * Sessions whose settings could not be read again, or not in time. Each now
-   * allows only what both its earlier settings and the daemon's allow, until
-   * a later read of its own settings succeeds.
+   * Sessions whose settings could not be read again, or not in time. Each
+   * keeps its earlier settings without what the save took away from the
+   * daemon's own settings, until a later read of its own settings succeeds.
    */
   readonly failed: readonly CrossProviderPolicyFailure[];
 }
@@ -186,7 +197,7 @@ export class LiveApprovalBroker {
         if (owner.policyRefresh === refresh) owner.policyRefresh = undefined;
         if (outcome.failed === undefined) return;
         try {
-          this.options.onCrossProviderRefreshFailed?.({ sessionId: session.conversationId, reason: outcome.failed });
+          this.options.onCrossProviderRefreshFailed?.({ sessionId: session.conversationId, ...outcome.failed });
         } catch {
           // Reporting is an observer; the session is already narrowed.
         }
@@ -515,15 +526,22 @@ export class LiveApprovalBroker {
    * running children, which stop if their provider is no longer allowed.
    *
    * A session whose read fails, or does not finish within the timeout, fails
-   * closed: it is narrowed to what both its current settings and
-   * `daemonAgents` allow (`ConfigStore.limitAgentsSection`), which never
-   * widens its consent, and it is listed in `failed`. `daemonAgents` is the
-   * daemon's own view, read from user, profile and managed config, which no
-   * workspace file can make unreadable. Omitted, it allows nothing. A session
-   * that registers after this began reads its settings again then.
+   * closed for what the save took away and is listed in `failed`.
+   * `daemonAgents` is the daemon's own view before and after the save, read
+   * from user and managed config and the daemon's profile, which no
+   * workspace file can make unreadable. The session loses each provider that
+   * view lost, the feature if the view turned it off, and spawning without a
+   * question if the view started asking (`revokeAgentsConfig`, applied
+   * through `ConfigStore.limitAgentsSection`, which never widens it). The
+   * rest stays, such as what its own `--config` file, profile or `-c`
+   * allows, which that view does not show, so a save that took nothing away
+   * leaves it as it is. Without the view before the save, it keeps only what
+   * both it and the view after allow, and without `daemonAgents` it allows
+   * nothing. A session that registers after this began reads its settings
+   * again then.
    */
-  async refreshCrossProviderPolicy(daemonAgents?: AgentsConfig): Promise<CrossProviderPolicyRefresh> {
-    const refresh: PolicyRefresh = { startedAt: nextConfigReadMark(), daemonAgents };
+  async refreshCrossProviderPolicy(daemonAgents?: AgentsConfigChange): Promise<CrossProviderPolicyRefresh> {
+    const refresh: PolicyRefresh = { startedAt: nextConfigReadMark(), daemonAgents: daemonAgents ?? {} };
     this.#lastPolicyRefresh = refresh;
     const stores = new Map<ConfigStore, string[]>();
     for (const owner of this.#owners.values()) {
@@ -540,8 +558,8 @@ export class LiveApprovalBroker {
     outcomes.forEach((outcome, index) => {
       const sessionIds = sessions[index]![1];
       if (outcome.failed !== undefined) {
-        const reason = outcome.failed;
-        failed.push(...sessionIds.map((sessionId) => ({ sessionId, reason })));
+        const failure = outcome.failed;
+        failed.push(...sessionIds.map((sessionId) => ({ sessionId, ...failure })));
       } else if (outcome.changed) {
         changed.push(...sessionIds);
       }
@@ -551,11 +569,12 @@ export class LiveApprovalBroker {
 
   /**
    * Reads one store's `[agents]` settings again for `refresh`, bounded by the
-   * timeout, and narrows the store when that fails. Never rejects.
+   * timeout. When that fails, the store loses what the save took away
+   * (`revokeAfterFailedRead`). Never rejects.
    */
   async #refreshStore(store: ConfigStore, refresh: PolicyRefresh): Promise<{
     readonly changed: boolean;
-    readonly failed?: string;
+    readonly failed?: Omit<CrossProviderPolicyFailure, "sessionId">;
   }> {
     const timeoutMs = this.options.crossProviderRefreshTimeoutMs ?? CROSS_PROVIDER_REFRESH_TIMEOUT_MS;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -570,13 +589,17 @@ export class LiveApprovalBroker {
     } catch (error) {
       let changed = false;
       try {
-        if (typeof store.limitAgentsSection === "function") {
-          changed = store.limitAgentsSection(refresh.daemonAgents, refresh.startedAt);
-        }
+        changed = revokeAfterFailedRead(store, refresh);
       } catch {
         // Its listeners are isolated by the store; nothing else can fail here.
       }
-      return { changed, failed: refreshFailureReason(error) };
+      return {
+        changed,
+        failed: {
+          reason: refreshFailureReason(error),
+          ...(error instanceof CrossProviderRefreshTimeout ? { timedOut: true as const } : {}),
+        },
+      };
     } finally {
       if (timer !== undefined) clearTimeout(timer);
     }
@@ -697,12 +720,33 @@ function providerRefusal(session: Session, provider: string, routeProvider: stri
 }
 
 /**
+ * Fails a store closed after its read for `refresh` failed or timed out: it
+ * loses what the save took away from the daemon's own view, and nothing else
+ * (`revokeAgentsConfig`). Its own `--config` file, profile or `-c` can allow
+ * what that view never had, so a save that took nothing away leaves it as it
+ * is. Returns whether the store told its agents listeners of a change.
+ */
+function revokeAfterFailedRead(store: ConfigStore, refresh: PolicyRefresh): boolean {
+  if (typeof store.limitAgentsSection !== "function" || !agentsChangeRevokes(refresh.daemonAgents)) {
+    return false;
+  }
+  return store.limitAgentsSection(
+    revokeAgentsConfig(store.current().agents, refresh.daemonAgents),
+    refresh.startedAt,
+  );
+}
+
+/**
  * Why a session could not read its settings again: the loader's message as
  * plain text on one line (a project file can supply part of it), with
- * secrets redacted and its length bounded.
+ * secrets redacted and its length bounded. Format characters, such as the
+ * bidi controls that can reorder a terminal line, are dropped before the
+ * redaction, so none can split a secret to hide it.
  */
 function refreshFailureReason(error: unknown): string {
-  const message = redactSecrets(error instanceof Error ? error.message : String(error))
+  const message = redactSecrets(
+    (error instanceof Error ? error.message : String(error)).replace(/\p{Cf}/gu, ""),
+  )
     // eslint-disable-next-line no-control-regex
     .replace(/[\s\u0000-\u001f\u007f-\u009f]+/gu, " ")
     .trim();

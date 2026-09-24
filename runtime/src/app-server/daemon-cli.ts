@@ -3883,6 +3883,10 @@ async function runAgenCDaemonForegroundLocked(
             throw new Error("daemon is shutting down");
           }
           const previousMcpServer = activeMcpServer;
+          // The daemon's own [agents] view before this save: a session that
+          // cannot read its settings again loses only what the save took
+          // away from that view.
+          const previousAgents = activeConfig.agents;
           const preparedMcpChange =
             await prepareConfiguredDaemonMcpServerChange(
               previousMcpServer,
@@ -3928,11 +3932,12 @@ async function runAgenCDaemonForegroundLocked(
           // Open sessions keep the config they started with, except the
           // cross-provider subagent settings: a provider the user turned off
           // must stop taking spawns now, not after a restart. A session that
-          // cannot read them again is narrowed toward the daemon's own view,
-          // which no workspace file can make unreadable.
-          const crossProvider = await approvalBroker.refreshCrossProviderPolicy(
-            next.config.agents,
-          );
+          // cannot read them again loses what the save took away from the
+          // daemon's own view, which no workspace file can make unreadable.
+          const crossProvider = await approvalBroker.refreshCrossProviderPolicy({
+            previous: previousAgents,
+            next: next.config.agents,
+          });
           for (const failure of crossProvider.failed) {
             io.stderr.write(crossProviderSettingsFailureLine(failure));
           }
@@ -3943,9 +3948,10 @@ async function runAgenCDaemonForegroundLocked(
             ...(crossProvider.failed.length > 0
               ? {
                   crossProviderSettings: {
-                    failed: crossProvider.failed.map(({ sessionId, reason }) => ({
+                    failed: crossProvider.failed.map(({ sessionId, reason, timedOut }) => ({
                       sessionId,
                       reason,
+                      ...(timedOut === true ? { timedOut } : {}),
                     })),
                   },
                 }
@@ -6833,7 +6839,8 @@ function isDaemonReloadResult(
     crossProviderSettings.failed.every((failure) =>
       isJsonObject(failure) &&
       typeof failure.sessionId === "string" &&
-      typeof failure.reason === "string"
+      typeof failure.reason === "string" &&
+      (failure.timedOut === undefined || failure.timedOut === true)
     );
 }
 
@@ -6844,8 +6851,12 @@ function isDaemonReloadResult(
 function crossProviderSettingsFailureLine(failure: {
   readonly sessionId: string;
   readonly reason: string;
+  readonly timedOut?: boolean;
 }): string {
-  return `agenc: session ${failure.sessionId} could not read its cross-provider subagent settings again. Until it can, it allows only what both its earlier settings and the daemon's settings allow. Reason: ${failure.reason}\n`;
+  const retry = failure.timedOut === true
+    ? " Its read still runs once its config is free."
+    : "";
+  return `agenc: session ${failure.sessionId} could not read its cross-provider subagent settings again. Until it can, it keeps its earlier settings without what the save took away from the daemon's settings.${retry} Reason: ${failure.reason}\n`;
 }
 
 function daemonShuttingDownResponse(message: JsonObject): JsonObject {

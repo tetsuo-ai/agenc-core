@@ -2555,13 +2555,19 @@ export interface DaemonReloadCrossProviderSettingsFailure extends JsonObject {
     readonly sessionId: string;
     /** Why, in plain words, with secrets redacted. */
     readonly reason: string;
+    /**
+     * Present when the read only ran out of time. It still runs once the
+     * session's config is free, so such a session usually takes its settings
+     * by itself.
+     */
+    readonly timedOut?: true;
 }
 
 export interface DaemonReloadCrossProviderSettingsResult extends JsonObject {
     /**
      * Sessions that could not read their cross-provider subagent settings
-     * again, or not in time. Each now allows only what both its earlier
-     * settings and the daemon's settings allow, until a later read of its own
+     * again, or not in time. Each keeps its earlier settings without what the
+     * save took away from the daemon's settings, until a later read of its own
      * settings succeeds.
      */
     readonly failed: readonly DaemonReloadCrossProviderSettingsFailure[];

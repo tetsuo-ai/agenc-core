@@ -121,6 +121,64 @@ export function narrowAgentsConfig(
   });
 }
 
+/**
+ * The daemon's own `[agents]` view before and after the save that a daemon
+ * reload applies. Without `previous`, what the save took away is unknown.
+ * Without `next`, the view allows nothing.
+ */
+export interface AgentsConfigChange {
+  readonly previous?: AgentsConfig;
+  readonly next?: AgentsConfig;
+}
+
+/**
+ * Whether `change` took anything away: a provider `previous` allowed and
+ * `next` does not, the feature turned off, or asking at each spawn turned on.
+ * An unknown `previous` counts as taking away all that `next` does not allow.
+ */
+export function agentsChangeRevokes(change: AgentsConfigChange): boolean {
+  return change.previous === undefined ||
+    !sameAgentsPolicy(
+      narrowAgentsConfig(change.previous, change.next),
+      change.previous,
+    );
+}
+
+/**
+ * `current` without what `change` took away (`agentsChangeRevokes`): the
+ * providers `previous` allowed and `next` does not, the feature if `next`
+ * turned it off, and not asking at each spawn if `next` started asking.
+ * Everything else in `current` stays, such as what a session's own
+ * `--config` file, profile or `-c` allows. With an unknown `previous` it is
+ * `narrowAgentsConfig(current, next)`. It is never wider than `current`.
+ */
+export function revokeAgentsConfig(
+  current: AgentsConfig | undefined,
+  change: AgentsConfigChange,
+): AgentsConfig {
+  const { previous, next } = change;
+  if (previous === undefined) return narrowAgentsConfig(current, next);
+  const kept = new Set(next?.allowed_providers ?? []);
+  const removed = new Set(
+    (previous.allowed_providers ?? []).filter((provider) => !kept.has(provider)),
+  );
+  return Object.freeze({
+    cross_provider_enabled:
+      current?.cross_provider_enabled === true &&
+      (previous.cross_provider_enabled !== true ||
+        next?.cross_provider_enabled === true),
+    allowed_providers: Object.freeze(
+      (current?.allowed_providers ?? []).filter((provider) =>
+        !removed.has(provider)
+      ),
+    ),
+    cross_provider_ask_each_spawn:
+      current?.cross_provider_ask_each_spawn === true ||
+      (previous.cross_provider_ask_each_spawn !== true &&
+        next?.cross_provider_ask_each_spawn === true),
+  });
+}
+
 /** Whether two `agents` sections grant the same thing. */
 function sameAgentsPolicy(
   a: AgentsConfig | undefined,
@@ -153,6 +211,13 @@ export interface ConfigStoreAuthority extends CanonicalSettingsAuthority {
  * rolling back so later reloads cannot interleave with store publication.
  */
 export interface PreparedConfigStoreReload {
+  /**
+   * What this reload read. While a failed refresh's limit applies
+   * (`ConfigStore.limitAgentsSection`), its `agents` section, like that of
+   * `authority.current()`, can be wider than `current().agents`: the store
+   * commits and publishes it within the limit. Read that section from the
+   * store.
+   */
   readonly config: AgenCConfig;
   readonly authority: ConfigStoreAuthority;
   readonly state: "prepared" | "committed" | "published" | "rolled_back";
@@ -223,6 +288,11 @@ export class ConfigStore {
   private readonly listeners = new Set<ConfigStoreListener>();
   /** Listeners that also run when only the `agents` section changes. */
   private readonly agentsSectionListeners = new Set<ConfigStoreListener>();
+  /**
+   * The `agents` section those listeners last heard. The live one can differ:
+   * a committed reload changes `current()` before it publishes or rolls back.
+   */
+  private heardAgents: AgentsConfig | undefined;
   /** When the read that the current `agents` section came from began. */
   private agentsReadMark = 0;
   private agentsLimit: AgentsSectionLimit | undefined;
@@ -253,6 +323,7 @@ export class ConfigStore {
     // Start from defaults + env — safe to call before first reload().
     const base = mergeProviderModelLayer(defaultConfig(), opts.base ?? {});
     this.snapshot = applyEnvOverrides(base, this.environment, opts.onWarn);
+    this.heardAgents = this.snapshot.agents;
     this.resolvedProjectRoot = opts.projectRoot ?? opts.cwd ?? process.cwd();
     this.resolvedHomeContext = resolveHomeContext(this.environment, {
       ...(this.environment.HOME !== undefined
@@ -405,8 +476,8 @@ export class ConfigStore {
    * such as a coordinated reload that holds the reload lock now. The first
    * read that began at or after `since` and is published replaces the limit.
    * Needs no reload lock, so a held lock cannot delay it. Tells the listeners
-   * subscribed with `sections: ["agents"]` and returns whether the section
-   * changed.
+   * subscribed with `sections: ["agents"]` when the section changed or
+   * differs from what they last heard, and returns whether it told them.
    */
   limitAgentsSection(limit: AgentsConfig | undefined, since: number): boolean {
     this.agentsLimit = {
@@ -450,11 +521,25 @@ export class ConfigStore {
 
   /**
    * Takes `agents` into the snapshot and tells the listeners subscribed to
-   * that section. Returns whether it changed.
+   * that section (`tellAgentsSection`). Returns whether it told them.
    */
   private publishAgentsSection(agents: AgentsConfig | undefined): boolean {
-    if (isDeepStrictEqual(agents, this.snapshot.agents)) return false;
-    this.snapshot = Object.freeze({ ...this.snapshot, agents });
+    const changed = !isDeepStrictEqual(agents, this.snapshot.agents);
+    if (changed) this.snapshot = Object.freeze({ ...this.snapshot, agents });
+    return this.tellAgentsSection(changed);
+  }
+
+  /**
+   * Tells the listeners subscribed to the `agents` section about the live
+   * one when it just `changed` or differs from what they last heard. A
+   * listener may also hold a section nobody published, read from `current()`
+   * while a committed reload had not yet published or rolled back. Returns
+   * whether it told them.
+   */
+  private tellAgentsSection(changed: boolean): boolean {
+    if (!changed && isDeepStrictEqual(this.snapshot.agents, this.heardAgents)) {
+      return false;
+    }
     this.notifyListeners(
       this.snapshot,
       this.warningMessages,
@@ -557,6 +642,8 @@ export class ConfigStore {
     publication: ConfigStorePublicationMetadata,
     listeners: ReadonlySet<ConfigStoreListener> = this.listeners,
   ): void {
+    // Every listener subscribed to the `agents` section is in both sets.
+    this.heardAgents = config.agents;
     for (const listener of listeners) {
       try {
         listener(config, publication);
@@ -577,7 +664,12 @@ export class ConfigStore {
     }
   }
 
-  /** Re-read this store's captured sources without entering publication. */
+  /**
+   * Re-read this store's captured sources without entering publication.
+   * While a failed refresh's limit applies (`limitAgentsSection`), the
+   * `agents` section of its `current()` can be wider than this store's
+   * `current().agents`. Read that section from the store.
+   */
   async readSourceAuthority(): Promise<ConfigStoreAuthority> {
     return this.authorityForState(await this.loadStateFromSources());
   }
@@ -769,6 +861,7 @@ export class ConfigStore {
         if (state === "committed" || state === "published") {
           assertGeneration(generation + 1);
           const notifyRestoredAuthority = state === "published";
+          const committedAgents = this.snapshot.agents;
           this.applyState(previous);
           this.stateRepository.invalidate();
           this.reloadGeneration += 1;
@@ -777,6 +870,13 @@ export class ConfigStore {
               this.snapshot,
               this.warningMessages,
               publicationMetadata,
+            );
+          } else {
+            // Nothing published the commit, but `current()` returned it, and
+            // a failed refresh's limit can narrow the restored read below
+            // what the agents listeners last heard. They hear either change.
+            this.tellAgentsSection(
+              !isDeepStrictEqual(this.snapshot.agents, committedAgents),
             );
           }
         }
@@ -806,9 +906,10 @@ export class ConfigStore {
 
   /**
    * Register a listener for snapshot changes. Returns an unsubscribe
-   * function. Listeners fire on each successful `reload()`, and with
-   * `sections: ["agents"]` also on each `reloadAgentsSection()` that changed
-   * that section.
+   * function. Listeners fire on each successful `reload()`. With
+   * `sections: ["agents"]` they also fire when that section changes without
+   * one, or is not what they last heard: after `reloadAgentsSection()`,
+   * `limitAgentsSection()` or the rollback of a committed reload.
    */
   subscribe(
     listener: ConfigStoreListener,
