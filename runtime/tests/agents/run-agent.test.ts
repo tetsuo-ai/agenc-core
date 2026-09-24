@@ -3187,16 +3187,27 @@ describe("runAgent", () => {
       typeof message.content === "string" && message.content.includes('"reason":"insufficient_funds"'))).toBe(true);
   });
 
-  it.each(["deepseek", "zai"] as const)("publishes a %s setup-time funds stop and invalidates reusable cross-provider grants", async (destinationProvider) => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-setup-funds-"));
+  /**
+   * Runs one cross-provider child whose provider stops on funds, after two
+   * session grants (the child's and an unrelated OpenRouter task's). Checks
+   * that the funds stop invalidated the other grant: a reworded retry asks
+   * again and is denied.
+   */
+  async function runCrossProviderFundsStop(options: {
+    readonly label: string;
+    readonly provider: string;
+    readonly model: string;
+    readonly stubPrepare: (session: ReturnType<typeof makeStubSession>) => void;
+  }) {
+    const cwd = mkdtempSync(join(tmpdir(), `agenc-${options.label}-`));
     const configStore = new ConfigStore({ cwd, base: { model_provider: "grok", model: "grok-4.6",
-      agents: { cross_provider_enabled: true, allowed_providers: [destinationProvider, "openrouter"] } } });
-    const session = makeStubSession({ conversationId: "setup-funds-root", services: { configStore },
+      agents: { cross_provider_enabled: true, allowed_providers: [options.provider, "openrouter"] } } });
+    const session = makeStubSession({ conversationId: `${options.label}-root`, services: { configStore },
       sessionConfiguration: mkSessionConfiguration({ cwd }), config: { ...mkConfig(), cwd } });
     const parentRollout = new RolloutStore({ cwd, sessionId: session.conversationId,
       agencVersion: "0.2.0", sessionTempRoot: tmpdir() });
     parentRollout.open({ sessionId: session.conversationId, timestamp: new Date().toISOString(),
-      cwd, originator: "setup-funds-test", agencVersion: "0.2.0",
+      cwd, originator: `${options.label}-test`, agencVersion: "0.2.0",
       model: session.modelInfo.slug, modelProvider: "grok" });
     session.mountRolloutStore(parentRollout);
     Object.assign(session, { activeTurn: { unsafePeek: () => ({ turnId: "human-turn",
@@ -3220,9 +3231,9 @@ describe("runAgent", () => {
         session: { conversationId: session.conversationId, sessionConfiguration: session.sessionConfiguration,
           services: session.services, config: session.config, modelInfo: session.modelInfo,
           providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }) } } as Session,
-        selection: { provider: destinationProvider, model: destinationProvider === "zai" ? "glm-5.3" : "deepseek-v4-pro" },
-        modelInfo: { ...mkModelInfo(), slug: destinationProvider === "zai" ? "glm-5.3" : "deepseek-v4-pro", provider: destinationProvider },
-        parentPath: "/root", taskId: "setup-funds", taskName: "worker", taskText: "build parser",
+        selection: { provider: options.provider, model: options.model },
+        modelInfo: { ...mkModelInfo(), slug: options.model, provider: options.provider },
+        parentPath: "/root", taskId: options.label, taskName: "worker", taskText: "build parser",
         toolFree: false, forkedHistory: false,
       });
       const other = { ...proposed,
@@ -3233,112 +3244,65 @@ describe("runAgent", () => {
       };
       await approveSession(other);
       const plan = await approveSession(proposed);
-      const billingError = destinationProvider === "zai"
-        ? await new ZaiProvider({ apiKey: "test", model: "glm-5.3",
-            fetchImpl: async () => new Response(JSON.stringify({ error: {
-              code: "1113", message: "Insufficient balance" } }), { status: 429 }) })
-            .chat([{ role: "user", content: "go" }]).then(() => undefined, (error: unknown) => error)
-        : new LLMFundsError("deepseek", 402);
-      vi.spyOn(session.providerService, "prepareChild").mockRejectedValue(billingError);
+      options.stubPrepare(session);
       const notices: unknown[] = [];
       const closeSpawnEdge = vi.fn(async () => {});
       session.eventLog.subscribe(event => { if (event.msg.type === "subagent_funds_notice") notices.push(event.msg.payload); });
       const { result } = await collectRun(runAgent({ live, parent: session, plan,
-        taskPrompt: "build parser", taskId: "setup-funds",
+        taskPrompt: "build parser", taskId: options.label,
         onTerminalFundsStop: closeSpawnEdge,
         initialMessages: [{ role: "user", content: "build parser" }] }));
-      expect(result.outcome).toBe("errored");
-      expect(closeSpawnEdge).toHaveBeenCalledOnce();
-      expect(notices).toHaveLength(1);
-      expect(live.status.value).toMatchObject({ status: "errored", terminal: { reason: "insufficient_funds" } });
       const retry = authorizeChildExecutionPlan(session, { ...other, task: { ...other.task,
         id: "retry-other", text: "different wording" }, consentGrant: null });
       await vi.waitFor(() => expect(broker.list(session.conversationId)).toHaveLength(1));
       broker.resolve(session.conversationId, broker.list(session.conversationId)[0]!.requestId,
         { kind: "denied" }, { approvalKind: "cross_provider_spawn" });
       expect((await retry).kind).toBe("consent_denied");
+      return { result, live, notices, closeSpawnEdge };
     } finally {
       close(); await session.shutdown(); rmSync(cwd, { recursive: true, force: true });
     }
+  }
+
+  it.each(["deepseek", "zai"] as const)("publishes a %s setup-time funds stop and invalidates reusable cross-provider grants", async (destinationProvider) => {
+    const model = destinationProvider === "zai" ? "glm-5.3" : "deepseek-v4-pro";
+    const billingError = destinationProvider === "zai"
+      ? await new ZaiProvider({ apiKey: "test", model: "glm-5.3",
+          fetchImpl: async () => new Response(JSON.stringify({ error: {
+            code: "1113", message: "Insufficient balance" } }), { status: 429 }) })
+          .chat([{ role: "user", content: "go" }]).then(() => undefined, (error: unknown) => error)
+      : new LLMFundsError("deepseek", 402);
+    const { result, live, notices, closeSpawnEdge } = await runCrossProviderFundsStop({
+      label: "setup-funds", provider: destinationProvider, model,
+      stubPrepare: (session) => { vi.spyOn(session.providerService, "prepareChild").mockRejectedValue(billingError); },
+    });
+    expect(result.outcome).toBe("errored");
+    expect(closeSpawnEdge).toHaveBeenCalledOnce();
+    expect(notices).toHaveLength(1);
+    expect(live.status.value).toMatchObject({ status: "errored", terminal: { reason: "insufficient_funds" } });
   });
 
   it("stops an OpenAI SSE billing failure and invalidates session consent grants", async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-openai-stream-funds-"));
-    const configStore = new ConfigStore({ cwd, base: { model_provider: "grok", model: "grok-4.6",
-      agents: { cross_provider_enabled: true, allowed_providers: ["openai", "openrouter"] } } });
-    const session = makeStubSession({ conversationId: "openai-stream-funds-root", services: { configStore },
-      sessionConfiguration: mkSessionConfiguration({ cwd }), config: { ...mkConfig(), cwd } });
-    const parentRollout = new RolloutStore({ cwd, sessionId: session.conversationId,
-      agencVersion: "0.2.0", sessionTempRoot: tmpdir() });
-    parentRollout.open({ sessionId: session.conversationId, timestamp: new Date().toISOString(),
-      cwd, originator: "openai-stream-funds-test", agencVersion: "0.2.0",
-      model: session.modelInfo.slug, modelProvider: "grok" });
-    session.mountRolloutStore(parentRollout);
-    Object.assign(session, { activeTurn: { unsafePeek: () => ({ turnId: "human-turn",
-      rootHumanTurn: { turnId: "human-turn" } }) },
-      currentRootHumanTurn: () => ({ turnId: "human-turn" }) });
-    const broker = new LiveApprovalBroker({ canAnswerCrossProviderConsent: () => true });
-    const close = broker.register(session, { isActive: () => true });
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(
       `event: response.failed\ndata: ${JSON.stringify({ type: "response.failed", response: {
         error: { code: "insufficient_quota", message: "Billing is unavailable" },
       } })}\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } }));
     const provider = new OpenAIProvider({ apiKey: "sk-test", model: "gpt-5",
       useResponsesApi: true, fetchImpl });
-    const approveSession = async (proposed: Awaited<ReturnType<typeof createChildExecutionPlan>>) => {
-      const pending = authorizeChildExecutionPlan(session, proposed);
-      await vi.waitFor(() => expect(broker.list(session.conversationId)).toHaveLength(1));
-      const card = broker.list(session.conversationId)[0]!;
-      broker.resolve(session.conversationId, card.requestId, { kind: "approved_for_session" },
-        { approvalKind: "cross_provider_spawn" });
-      const decision = await pending;
-      if (decision.kind !== "granted") throw new Error(decision.reason);
-      return decision.plan;
-    };
-    try {
-      const { live } = await spawnLive(session);
-      const proposed = await createChildExecutionPlan({
-        session: { conversationId: session.conversationId, sessionConfiguration: session.sessionConfiguration,
-          services: session.services, config: session.config, modelInfo: session.modelInfo,
-          providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }) } } as Session,
-        selection: { provider: "openai", model: "gpt-5" },
-        modelInfo: { ...mkModelInfo(), slug: "gpt-5", provider: "openai" },
-        parentPath: "/root", taskId: "stream-funds", taskName: "worker", taskText: "build parser",
-        toolFree: false, forkedHistory: false,
-      });
-      const other = { ...proposed,
-        route: { provider: "openrouter", model: "openai/gpt-5" },
-        destination: { ...proposed.destination, provider: "openrouter", model: "openai/gpt-5",
-          endpoint: "https://openrouter.ai/api/v1" },
-        task: { ...proposed.task, id: "earlier-other", text: "other work" },
-      };
-      await approveSession(other);
-      const plan = await approveSession(proposed);
-      vi.spyOn(session.providerService, "prepareChild").mockResolvedValue({
-        binding: { provider: "openai", model: "gpt-5", instance: provider },
-      });
-      const notices: unknown[] = [];
-      const closeSpawnEdge = vi.fn(async () => {});
-      session.eventLog.subscribe(event => { if (event.msg.type === "subagent_funds_notice") notices.push(event.msg.payload); });
-      const { result } = await collectRun(runAgent({ live, parent: session, plan,
-        taskPrompt: "build parser", taskId: "stream-funds",
-        onTerminalFundsStop: closeSpawnEdge,
-        initialMessages: [{ role: "user", content: "build parser" }] }));
-      expect(fetchImpl).toHaveBeenCalledTimes(1);
-      expect(result.outcome).toBe("errored");
-      expect(closeSpawnEdge).toHaveBeenCalledOnce();
-      expect(notices).toHaveLength(1);
-      expect(live.status.value).toMatchObject({ status: "errored",
-        terminal: { reason: "insufficient_funds", retryable: false } });
-      const retry = authorizeChildExecutionPlan(session, { ...other, task: { ...other.task,
-        id: "retry-other", text: "different wording" }, consentGrant: null });
-      await vi.waitFor(() => expect(broker.list(session.conversationId)).toHaveLength(1));
-      broker.resolve(session.conversationId, broker.list(session.conversationId)[0]!.requestId,
-        { kind: "denied" }, { approvalKind: "cross_provider_spawn" });
-      expect((await retry).kind).toBe("consent_denied");
-    } finally {
-      close(); await session.shutdown(); rmSync(cwd, { recursive: true, force: true });
-    }
+    const { result, live, notices, closeSpawnEdge } = await runCrossProviderFundsStop({
+      label: "stream-funds", provider: "openai", model: "gpt-5",
+      stubPrepare: (session) => {
+        vi.spyOn(session.providerService, "prepareChild").mockResolvedValue({
+          binding: { provider: "openai", model: "gpt-5", instance: provider },
+        });
+      },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(result.outcome).toBe("errored");
+    expect(closeSpawnEdge).toHaveBeenCalledOnce();
+    expect(notices).toHaveLength(1);
+    expect(live.status.value).toMatchObject({ status: "errored",
+      terminal: { reason: "insufficient_funds", retryable: false } });
   });
 
   it("keeps parallel funds and completed child receipts distinct", async () => {
