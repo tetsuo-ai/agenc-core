@@ -1,6 +1,7 @@
 import { isProviderFundsFailure } from "../llm/funds.js";
 import { getRateLimitResetDelayMs } from "../llm/api/retry.js";
 import { LLMRateLimitError, LLMTimeoutError, LLMAuthenticationError,
+  LLMMissingCredentialsError,
   LLMContextWindowExceededError, LLMManagedUsagePendingError,
   LLMMessageValidationError, LLMManagedAdmissionError, LLMFundsError,
   LLMModelUnavailableError } from "../llm/errors.js";
@@ -37,6 +38,7 @@ function statusOf(error: unknown): number | undefined {
 /** Whether the failed sampling attempt crossed the provider wire boundary. */
 export function childDispatchCertainty(error: unknown): ChildTerminalOutcome["dispatch"] {
   for (let depth = 0; depth < 5; depth += 1) {
+    if (error instanceof LLMMissingCredentialsError) return "not_sent";
     if (error instanceof LLMManagedAdmissionError || error instanceof LLMMessageValidationError)
       return "not_sent";
     if (error instanceof LLMFundsError || statusOf(error) !== undefined) return "sent";

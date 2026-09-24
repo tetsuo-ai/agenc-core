@@ -172,6 +172,9 @@ describe("provider credential authority", () => {
     const prepared = await service.prepareChild(
       { provider: "openai", model: "gpt-6-luna" },
       { model: "gpt-6-luna", credentialHome: home, extra: { fetchImpl: wire } },
+      {}, true, undefined,
+      { endpoint: "https://chatgpt.com/backend-api/codex",
+        authProfile: "sign_in", billingSource: "sign_in" },
     );
     expect(prepared.authProfile).toBe("sign_in");
     expect(prepared.billingSource).toBe("sign_in");
@@ -190,6 +193,55 @@ describe("provider credential authority", () => {
     await descendant.binding.instance.dispose?.();
     await prepared.binding.instance.dispose?.();
     expect(wire).toHaveBeenCalledTimes(2);
+  });
+
+  test("a BYOK approval refuses a changed ChatGPT sign-in authority before discovery", async () => {
+    const home = await createHome("changed-child-authority");
+    const { openAiCredentials } = await loadCredentialModules();
+    openAiCredentials.saveOpenAiOauthCredentials(home, {
+      accessToken: "subscription-bearer", accountId: "account",
+    });
+    let configuredApiKey: string | undefined = "approved-byok";
+    const wire = vi.fn<typeof fetch>(async () => Response.json({ models: [{ id: "gpt-6-luna" }] }));
+    const [{ SessionProviderService }, { createProvider }] = await Promise.all([
+      import("../../src/session/provider-service.js"),
+      import("../../src/llm/provider.js"),
+    ]);
+    const service = new SessionProviderService({
+      initialProvider: createProvider("grok", { model: "grok-4.6", apiKey: "parent-key" }),
+      environment: {},
+      resolvePreparationRequest: ({ model }) => ({ requested: {
+        model, credentialHome: home,
+        ...(configuredApiKey !== undefined ? { apiKey: configuredApiKey } : {}),
+        extra: { fetchImpl: wire },
+      } }),
+    });
+    const selection = { provider: "openai", model: "gpt-6-luna" };
+    const approved = await service.previewChildDestination(selection);
+    expect(approved).toMatchObject({ endpoint: "https://api.openai.com/v1",
+      authProfile: "api_key", billingSource: "byok" });
+    configuredApiKey = undefined;
+    await expect(service.prepareChild(selection, undefined, {}, true, undefined, approved))
+      .rejects.toThrow(/authority differs|new consent/u);
+    expect(wire).not.toHaveBeenCalled();
+  });
+
+  test("missing DeepSeek BYOK credentials yield an unsent authentication terminal", async () => {
+    const [{ SessionProviderService }, { createProvider }, { childTerminalOutcome, childDispatchCertainty }] = await Promise.all([
+      import("../../src/session/provider-service.js"),
+      import("../../src/llm/provider.js"),
+      import("../../src/agents/child-terminal.js"),
+    ]);
+    const service = new SessionProviderService({
+      initialProvider: createProvider("grok", { model: "grok-4.6", apiKey: "parent-key" }),
+      environment: {},
+    });
+    const failure = await service.prepareChild({ provider: "deepseek", model: "deepseek-v4-pro" },
+      { model: "deepseek-v4-pro" }).then(() => undefined, (error: unknown) => error);
+    expect(childTerminalOutcome({ provider: "deepseek", model: "deepseek-v4-pro",
+      error: failure, dispatch: childDispatchCertainty(failure) })).toMatchObject({
+      reason: "auth_required", retryable: false, dispatch: "not_sent",
+    });
   });
 
   test("ChatGPT child rejects a configured custom endpoint before sending its bearer", async () => {

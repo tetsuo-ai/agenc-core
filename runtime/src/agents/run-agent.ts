@@ -3495,16 +3495,19 @@ export async function* runAgent(
         readonly status: "completed";
         readonly turnId: string;
         readonly message?: string;
+        readonly terminal?: ChildTerminalOutcome;
       }
     | {
         readonly status: "errored";
         readonly turnId: string;
         readonly error: string;
+        readonly terminal?: ChildTerminalOutcome;
       }
     | {
         readonly status: "interrupted";
         readonly turnId: string;
         readonly reason: string;
+        readonly terminal?: ChildTerminalOutcome;
       }
     | undefined;
   const terminalResultForPendingWorker = (): ChildRunTerminalResult => {
@@ -3964,9 +3967,9 @@ export async function* runAgent(
     if (params.providerSelection !== undefined) {
       if (params.plan === undefined) throw new Error("consent_unavailable: child provider dispatch has no granted plan");
       await assertChildExecutionPlan(parent, params.plan);
-      const prepared = params.plan?.route.provider === "agenc"
-        ? await parent.providerService.prepareChild(params.providerSelection, undefined, {}, true, params.plan.destination)
-        : await parent.providerService.prepareChild(params.providerSelection, undefined, {}, true);
+      const prepared = await parent.providerService.prepareChild(params.providerSelection, undefined, {}, true,
+        params.plan.route.provider === "agenc" ? params.plan.destination : undefined,
+        params.plan.destination);
       provider = prepared.binding.instance;
       ownedPreparedProvider = provider;
       if (params.plan !== undefined) {
@@ -4572,11 +4575,13 @@ export async function* runAgent(
         if (reuseBlockedReason === undefined) {
           live.status.markIdle(completedTurnId, currentCommittedReceipt?.terminal);
           pendingWorkerTerminal = turnFailureMessage !== undefined
-            ? { status: "errored", turnId: completedTurnId, error: turnFailureMessage }
+            ? { status: "errored", turnId: completedTurnId, error: turnFailureMessage,
+                terminal: committedReceipt.terminal }
             : {
                 status: "completed",
                 turnId: completedTurnId,
                 ...(assistantText ? { message: assistantText } : {}),
+                terminal: committedReceipt.terminal,
               };
           // The completed receipt owns the previous correlation. While parked,
           // teardown is a worker-lifecycle event, not a second task outcome.
@@ -5010,19 +5015,19 @@ export async function* runAgent(
       live.status.markCompleted(
         pendingWorkerTerminal.turnId,
         pendingWorkerTerminal.message,
-        currentCommittedReceipt?.terminal,
+        pendingWorkerTerminal.terminal ?? currentCommittedReceipt?.terminal,
       );
     } else if (pendingWorkerTerminal?.status === "errored") {
       live.status.markErrored(
         pendingWorkerTerminal.turnId,
         pendingWorkerTerminal.error,
-        currentCommittedReceipt?.terminal,
+        pendingWorkerTerminal.terminal ?? currentCommittedReceipt?.terminal,
       );
     } else if (pendingWorkerTerminal?.status === "interrupted") {
       live.status.markInterrupted(
         pendingWorkerTerminal.turnId,
         pendingWorkerTerminal.reason,
-        currentCommittedReceipt?.terminal,
+        pendingWorkerTerminal.terminal ?? currentCommittedReceipt?.terminal,
       );
     }
   }

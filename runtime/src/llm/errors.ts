@@ -299,6 +299,14 @@ export class LLMAuthenticationError extends RuntimeError {
   }
 }
 
+/** A required credential was absent before any provider request was sent. */
+export class LLMMissingCredentialsError extends LLMAuthenticationError {
+  constructor(providerName: string, message: string) {
+    super(providerName, 401, message);
+    this.name = "LLMMissingCredentialsError";
+  }
+}
+
 /**
  * Error thrown when TLS certificate validation fails before any authenticated
  * provider response is received.

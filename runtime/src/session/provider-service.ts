@@ -30,7 +30,6 @@ import { isGrokComposerModel } from "../llm/providers/grok/acp-adapter.js";
 import { assertSupportedCrossProviderAuth } from "../llm/cross-provider-auth.js";
 import { CHATGPT_BACKEND_BASE_URL } from "../llm/providers/openai/chatgpt-backend.js";
 import { assertSignInChildModelEligible, type SignInChildModelCapabilities } from "../llm/sign-in-child-models.js";
-import { LLMAuthenticationError } from "../llm/errors.js";
 
 export type { ReadSavedProviderApiKey } from "../llm/provider-options.js";
 
@@ -56,6 +55,12 @@ export interface PreparedProviderBinding {
   readonly billingSource?: "byok" | "sign_in" | "managed" | "local";
   readonly authProfile?: "api_key" | "sign_in" | "managed" | "local" | "aws_sigv4";
   readonly signInModelCapabilities?: SignInChildModelCapabilities;
+}
+
+export interface ApprovedChildAuthority {
+  readonly endpoint: string;
+  readonly authProfile: NonNullable<PreparedProviderBinding["authProfile"]>;
+  readonly billingSource: NonNullable<PreparedProviderBinding["billingSource"]>;
 }
 
 export interface ProviderPreparationRuntime {
@@ -389,8 +394,10 @@ export class SessionProviderService {
     runtime: ProviderPreparationRuntime = {},
     crossProviderProvenance = false,
     approvedConcreteDestination?: ProviderSelection,
+    approvedAuthority?: ApprovedChildAuthority,
   ): Promise<PreparedProviderBinding> {
-    return this.#prepare(selection, requested, runtime, true, crossProviderProvenance, approvedConcreteDestination);
+    return this.#prepare(selection, requested, runtime, true, crossProviderProvenance,
+      approvedConcreteDestination, approvedAuthority);
   }
 
   async #prepare(
@@ -400,6 +407,7 @@ export class SessionProviderService {
     child: boolean,
     crossProviderProvenance = false,
     approvedConcreteDestination?: ProviderSelection,
+    approvedAuthority?: ApprovedChildAuthority,
   ): Promise<PreparedProviderBinding> {
     const provider = resolveBuiltInProviderSlug(selection.provider);
     if (provider === undefined) {
@@ -490,52 +498,64 @@ export class SessionProviderService {
       }
     }
     const credentialHome = requestedOptions.credentialHome ?? this.#credentialHome;
-    const authority = await resolveProviderRuntimeAuthority(
-      provider,
-      {
-        ...requestedOptions,
-        ...(credentialHome !== undefined ? { credentialHome } : {}),
-        model,
-      },
-      this.#environment,
-      {
-        ...(this.#readSavedApiKey !== undefined
-          ? { readSavedApiKey: this.#readSavedApiKey }
-          : {}),
-        ...(this.#authBackend !== undefined
-          ? { authBackend: this.#authBackend }
-          : {}),
-        ...(this.#sessionId !== undefined ? { sessionId: this.#sessionId } : {}),
-        ...(this.#subscriptionTier !== undefined
-          ? { subscriptionTier: this.#subscriptionTier }
-          : {}),
-        ...(runtimeOptions.managedKeysEnabled !== undefined
-          ? { managedKeysEnabled: runtimeOptions.managedKeysEnabled }
-          : {}),
-        ...(runtimeOptions.freeManagedCredential !== undefined
-          ? { freeManagedCredential: runtimeOptions.freeManagedCredential }
-          : {}),
-      },
-    );
-    try {
-      requireProviderRuntimeCredential(provider, authority);
-    } catch (error) {
-      if (canonicalEndpointRequired &&
-          ((provider === "openai" && this.#environment.OPENAI_AUTH_MODE === "oauth") ||
-           (provider === "grok" && this.#environment.GROK_AUTH_MODE === "oauth"))) {
-        throw new LLMAuthenticationError(provider, 401, "sign-in is required for this child");
-      }
-      throw error;
-    }
-    const authProfile = provider === "agenc" || authority.managedCredential
+    const credentialOptions = {
+      ...requestedOptions,
+      ...(credentialHome !== undefined ? { credentialHome } : {}),
+      model,
+    };
+    const credentialRuntime = {
+      ...(this.#readSavedApiKey !== undefined
+        ? { readSavedApiKey: this.#readSavedApiKey }
+        : {}),
+      ...(this.#authBackend !== undefined
+        ? { authBackend: this.#authBackend }
+        : {}),
+      ...(this.#sessionId !== undefined ? { sessionId: this.#sessionId } : {}),
+      ...(this.#subscriptionTier !== undefined
+        ? { subscriptionTier: this.#subscriptionTier }
+        : {}),
+      ...(runtimeOptions.managedKeysEnabled !== undefined
+        ? { managedKeysEnabled: runtimeOptions.managedKeysEnabled }
+        : {}),
+      ...(runtimeOptions.freeManagedCredential !== undefined
+        ? { freeManagedCredential: runtimeOptions.freeManagedCredential }
+        : {}),
+    };
+    // Resolve once from local state. Reuse this choice for live preparation so
+    // credentials cannot change between the consent check and discovery.
+    const localAuthority = await resolveProviderLocalCredentialAuthority(
+      provider, credentialOptions, this.#environment, credentialRuntime);
+    const authProfile = provider === "agenc" || localAuthority.managedCredential
       ? "managed" as const
-      : authority.factoryOptions.extra?.authMode === "oauth"
+      : localAuthority.factoryOptions.extra?.authMode === "oauth"
         ? "sign_in" as const
         : provider === "amazon-bedrock"
           ? "aws_sigv4" as const
           : provider === "ollama" || provider === "lmstudio" ||
-            (provider === "openai-compatible" && !authority.factoryOptions.apiKey)
+            (provider === "openai-compatible" && !localAuthority.factoryOptions.apiKey)
             ? "local" as const : "api_key" as const;
+    const billingSource = authProfile === "managed" ? "managed" as const
+      : authProfile === "sign_in" ? "sign_in" as const
+      : authProfile === "local" ? "local" as const : "byok" as const;
+    if (approvedAuthority !== undefined) {
+      if (!canonicalEndpointRequired) throw new Error("approved child authority requires a pinned endpoint");
+      const locallyResolvedEndpoint = provider === "agenc"
+        ? resolveBuiltInProviderInfo(approvedConcreteDestination!.provider)?.baseURL
+        : localAuthority.factoryOptions.baseURL ?? resolveBuiltInProviderInfo(provider)?.baseURL;
+      const normalize = (value: string | undefined): string | undefined => {
+        if (value === undefined) return undefined;
+        try { return new URL(value).href.replace(/\/+$/u, ""); }
+        catch { return value.trim(); }
+      };
+      if (normalize(locallyResolvedEndpoint) !== normalize(approvedAuthority.endpoint) ||
+          authProfile !== approvedAuthority.authProfile ||
+          billingSource !== approvedAuthority.billingSource) {
+        throw new Error("resume_blocked: child endpoint or authority differs from approved plan; new consent is required");
+      }
+    }
+    requireProviderRuntimeCredential(provider, localAuthority);
+    const authority = await resolveProviderRuntimeAuthority(
+      provider, credentialOptions, this.#environment, credentialRuntime, localAuthority);
     if (canonicalEndpointRequired) {
       const info = resolveBuiltInProviderInfo(provider)!;
       const effective = authority.factoryOptions;
@@ -616,9 +636,7 @@ export class SessionProviderService {
       expectedRevision,
       authProfile,
       ...(signInModelCapabilities !== undefined ? { signInModelCapabilities } : {}),
-      billingSource: authProfile === "managed" ? "managed" as const
-        : authProfile === "sign_in" ? "sign_in" as const
-        : authProfile === "local" ? "local" as const : "byok" as const,
+      billingSource,
       managedDefaultOutputCap:
         authority.managedCredential &&
         runtimeOptions.applyManagedDefaultOutputCap === true,

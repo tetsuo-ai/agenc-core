@@ -801,6 +801,7 @@ describe("runAgent", () => {
     expect(result.outcome).toBe("completed");
     expect(prepare).toHaveBeenCalledWith(
       { provider: "deepseek", model: "deepseek-v4-pro" }, undefined, {}, true,
+      undefined, plan.destination,
     );
     expect(target.chatStream).toHaveBeenCalledOnce();
     expect(rootProvider.chatStream).not.toHaveBeenCalled();
@@ -2953,17 +2954,21 @@ describe("runAgent", () => {
   it("closes an idle keep-alive worker as completed instead of failing its finished turn", async () => {
     const provider = makeProvider([{ content: "verified" }]);
     const session = makeStubSession({ services: { provider } });
-    const { live } = await spawnLive(session);
+    const { control, live } = await spawnLive(session);
     const iter = runAgent({
       live,
       parent: session,
       initialMessages: [{ role: "user", content: "verify" }],
       taskPrompt: "verify",
+      taskId: "verify-task",
       keepAlive: true,
     });
 
     const completed = await nextProgressEvent(iter, "turn_complete");
     expect(completed.finalMessage).toBe("verified");
+    expect(live.status.value).toMatchObject({ status: "idle", terminal: {
+      reason: "completed", dispatch: "sent",
+    } });
     live.abortController.abort("agent shutdown");
 
     const { result } = await collectRun(iter);
@@ -2971,7 +2976,52 @@ describe("runAgent", () => {
       outcome: "completed",
       finalMessage: "verified",
     });
-    expect(live.status.value.status).toBe("completed");
+    expect(live.status.value).toMatchObject({ status: "completed", terminal: {
+      reason: "completed", dispatch: "sent",
+    } });
+    const terminal = live.status.value.status === "completed" ? live.status.value.terminal : undefined;
+    expect(terminal).toBeDefined();
+    control.recordTerminalOutcome(live.agentId, terminal!);
+    expect(control.getAgentConfigSnapshot(live.agentId)).toMatchObject({
+      terminalOutcome: { reason: "completed" },
+    });
+  });
+
+  it("keeps a max_turns terminal when an idle worker is torn down", async () => {
+    const turnSpy = vi.spyOn(Session.prototype, "runTurn").mockImplementation(async function* () {
+      yield { type: "turn_complete", content: "unfinished",
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        stopReason: "max_turns" };
+      return { reason: "completed" };
+    });
+    const session = makeStubSession({ services: { provider: makeProvider([]) } });
+    const { control, live } = await spawnLive(session);
+    const iter = runAgent({
+      live, parent: session,
+      initialMessages: [{ role: "user", content: "finish" }],
+      taskPrompt: "finish", taskId: "bounded-task", keepAlive: true,
+    });
+    try {
+      const completed = await nextProgressEvent(iter, "turn_complete");
+      expect(completed.finalMessage).toBe("subagent exceeded maxTurns");
+      expect(live.status.value).toMatchObject({ status: "idle", terminal: {
+        reason: "timeout", retryable: false,
+      } });
+      live.abortController.abort("worker closed");
+      const { result } = await collectRun(iter);
+      expect(result.outcome).toBe("errored");
+      expect(live.status.value).toMatchObject({ status: "errored", terminal: {
+        reason: "timeout", retryable: false,
+      } });
+      const terminal = live.status.value.status === "errored" ? live.status.value.terminal : undefined;
+      expect(terminal).toBeDefined();
+      control.recordTerminalOutcome(live.agentId, terminal!);
+      expect(control.getAgentConfigSnapshot(live.agentId)).toMatchObject({
+        terminalOutcome: { reason: "timeout", retryable: false },
+      });
+    } finally {
+      turnSpy.mockRestore();
+    }
   });
 
   it("fsyncs one correlated child outcome before projecting its one parent receipt", async () => {

@@ -1659,10 +1659,9 @@ export class AgentControl {
           metadata.crossProvider.provider,
           metadata.crossProvider.model,
         );
-        const prepared = metadata.executionPlan?.route.provider === "agenc"
-          ? await planParentSession.providerService.prepareChild(selection, undefined, {}, true,
-              metadata.executionPlan.destination)
-          : await planParentSession.providerService.prepareChild(selection, undefined, {}, true);
+        const prepared = await planParentSession.providerService.prepareChild(selection, undefined, {}, true,
+          metadata.executionPlan.route.provider === "agenc" ? metadata.executionPlan.destination : undefined,
+          metadata.executionPlan.destination);
         try {
           if (metadata.executionPlan !== undefined)
             assertPreparedChildMatchesPlan(metadata.executionPlan, prepared);

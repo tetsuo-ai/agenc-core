@@ -113,8 +113,10 @@ export async function handleMessageStringTool(
       ? sessionOrError : liveAgentSession(control.getLive(current.threadId)!);
     if (caller === undefined) return agentValidationError("consent_unavailable: calling session is no longer live");
     const previous = targetPlan;
+    const parentTurnId = caller.activeTurn?.unsafePeek()?.turnId;
     const proposed: ChildExecutionPlan = { ...previous,
-      task: { id: callId, name: previous.task.name, text: message, attachments: [] },
+      task: { id: callId, name: previous.task.name, text: message, attachments: [],
+        ...(parentTurnId !== undefined ? { parentTurnId } : {}) },
       consentGrant: null,
     };
     const consent = await authorizeChildExecutionPlan(caller, proposed, { fresh: true });
@@ -128,8 +130,10 @@ export async function handleMessageStringTool(
       ? sessionOrError : liveAgentSession(control.getLive(current.threadId)!);
     if (caller === undefined) return agentValidationError("consent_unavailable: calling session is no longer live; continue this task yourself");
     const previous = targetPlan;
+    const parentTurnId = caller.activeTurn?.unsafePeek()?.turnId;
     const proposed: ChildExecutionPlan = { ...previous,
-      task: { id: callId, name: previous.task.name, text: message, attachments: [] },
+      task: { id: callId, name: previous.task.name, text: message, attachments: [],
+        ...(parentTurnId !== undefined ? { parentTurnId } : {}) },
       consentGrant: null,
     };
     const consent = await authorizeChildExecutionPlan(caller, proposed);

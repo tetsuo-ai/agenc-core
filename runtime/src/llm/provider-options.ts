@@ -54,6 +54,7 @@ import {
 } from "../services/xai/oauth.js";
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import { hasActivePilotModelAccess } from "../auth/pilot-access.js";
+import { LLMMissingCredentialsError } from "./errors.js";
 
 export type ProviderEnvironment = Readonly<Record<string, string | undefined>>;
 
@@ -1013,8 +1014,9 @@ export async function resolveProviderRuntimeAuthority(
   requested: ProviderFactoryOptions,
   env: ProviderEnvironment,
   runtime: ProviderRuntimeCredentialOptions = {},
+  selectedAuthority?: ResolvedProviderRuntimeAuthority,
 ): Promise<ResolvedProviderRuntimeAuthority> {
-  const selected = await resolveProviderLocalCredentialAuthority(provider, requested, env, runtime);
+  const selected = selectedAuthority ?? await resolveProviderLocalCredentialAuthority(provider, requested, env, runtime);
   const sessionId = nonEmpty(runtime.sessionId);
   await assertHostedAgencModelAuthority({
     provider,
@@ -1056,7 +1058,7 @@ export function requireProviderRuntimeCredential(
       .supportsManagedKeyAccess === true
       ? " or sign in and enable auth.managedKeys.enabled"
       : "";
-  throw new Error(
+  throw new LLMMissingCredentialsError(provider,
     `${provider} provider requires credentials. Set ${authority.credential.missingLabel}${managedHint}.`,
   );
 }
