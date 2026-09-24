@@ -117,8 +117,12 @@ export function isDaemonCausalRoutineMessage(message: JsonObject): boolean {
   return record.kind === "session" && typeof record.toolCallId === "string";
 }
 
+/** Both methods run a session's streaming turn (Desktop uses message.send). */
+const DAEMON_STREAMING_TURN_METHODS: ReadonlySet<string> = new Set(["message.send", "message.stream"]);
+
 export function isDaemonCausalRoutineForStream(message: JsonObject, head: JsonObject | undefined): boolean {
-  if (!isDaemonCausalRoutineMessage(message) || head?.method !== "message.stream") return false;
+  if (!isDaemonCausalRoutineMessage(message) || typeof head?.method !== "string" ||
+    !DAEMON_STREAMING_TURN_METHODS.has(head.method)) return false;
   const authority = daemonObjectParams(message)?.permissionAuthority;
   if (authority === null || typeof authority !== "object" || Array.isArray(authority)) return false;
   const sessionId = (authority as JsonObject).sessionId;

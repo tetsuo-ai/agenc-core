@@ -121,7 +121,8 @@ describe("AgenC stdio transport", () => {
     } finally { releaseFirstUpdate(); releaseTurn(); await transport.close(); }
   });
 
-  it("answers a tool call's routine.create during a blocked turn while ordinary work stays queued", async () => {
+  // Desktop runs turns with message.send; both methods stream a session's turn.
+  it.each(["message.stream", "message.send"])("answers a tool call's routine.create during a blocked %s turn while ordinary work stays queued", async (turnMethod) => {
     const input = new PassThrough();
     const output = new PassThrough();
     const events: string[] = [];
@@ -138,7 +139,7 @@ describe("AgenC stdio transport", () => {
       input, output,
       onMessage: async (message) => {
         events.push(`${message.method}:start`);
-        if (message.method === "message.stream") {
+        if (message.method === turnMethod) {
           turnStarted();
           await turnFinished;
         }
@@ -148,13 +149,13 @@ describe("AgenC stdio transport", () => {
     });
     transport.start();
     try {
-      input.write('{"jsonrpc":"2.0","id":1,"method":"message.stream","params":{"sessionId":"s"}}\n');
+      input.write(`{"jsonrpc":"2.0","id":1,"method":"${turnMethod}","params":{"sessionId":"s"}}\n`);
       await started;
       input.write('{"jsonrpc":"2.0","id":2,"method":"routine.create","params":{"permissionAuthority":{"kind":"session","sessionId":"s","toolCallId":"call"}}}\n');
       input.write('{"jsonrpc":"2.0","id":3,"method":"session.clear"}\n');
       input.write('{"jsonrpc":"2.0","id":4,"method":"routine.get"}\n');
       await vi.waitFor(() => expect(responses).toEqual([2]), { timeout: 2_000 });
-      expect(events).toEqual(["message.stream:start", "routine.create:start", "routine.create:end"]);
+      expect(events).toEqual([`${turnMethod}:start`, "routine.create:start", "routine.create:end"]);
       releaseTurn();
       await vi.waitFor(() => expect(responses).toEqual([2, 1, 3, 4]), { timeout: 2_000 });
     } finally {
