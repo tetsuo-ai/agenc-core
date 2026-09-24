@@ -82,10 +82,17 @@ function mentions(text: string, term: string): boolean {
   return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, "u").test(text);
 }
 
-/** The text of every message the user typed in `session`, without injected context. */
+/**
+ * The text of every message the user typed in `session`, without injected
+ * context. The turn in progress counts through `currentRootHumanTurn`: its
+ * message reaches history only when the turn syncs it, which can be after
+ * this turn's tools run.
+ */
 function userMessageTexts(session: Session): string[] {
-  const history = (session.state?.unsafePeek?.().history ?? []) as ReadonlyArray<ResponseItem>;
   const texts: string[] = [];
+  const current = session.currentRootHumanTurn?.()?.text.toLowerCase();
+  if (current !== undefined && current.length > 0) texts.push(current);
+  const history = (session.state?.unsafePeek?.().history ?? []) as ReadonlyArray<ResponseItem>;
   for (const item of history) {
     if (item.role !== "user" || !isUserTurnBoundary(item)) continue;
     const text = responseItemText(item.content).toLowerCase();

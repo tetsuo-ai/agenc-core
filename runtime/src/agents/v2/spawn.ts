@@ -742,6 +742,13 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     const effectiveReasoningEffort = roleConfiguredReasoningEffort ?? reasoningEffort;
     if (!crossProviderRequested) crossProviderRequested = requestsOtherProvider(session, requestedProvider, effectiveModel);
     const provenancedDescendant = !crossProviderRequested && inheritedConsentPlan?.crossProvider === true;
+    // A local spawn announces itself before validation. When it runs the
+    // parent's model, its effort is already known: the provider's limit.
+    if (!crossProviderRequested && !provenancedDescendant && effectiveModel === undefined &&
+        forkMode?.kind !== "full_history") {
+      reportedEffort = limitedReasoningEffort(session.modelInfo, effectiveReasoningEffort,
+        subagentLimit(childProviderPolicy(session), activeProvider).effort) ?? reportedEffort;
+    }
     if (!crossProviderRequested) emitSpawnBegin();
     const overrideReason = (result: ToolResult): string => {
       try {

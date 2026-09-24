@@ -73,6 +73,15 @@ describe("a provider the user named", () => {
     expect(userNamedProvider(typed("ask xAI Grok"), "grok", "grok-4.7")).toBe(true);
   });
 
+  it("counts the message of the turn in progress, which history does not hold yet", () => {
+    const turn = (text: string): Session => ({
+      currentRootHumanTurn: () => ({ turnId: "turn-1", text }),
+      state: { unsafePeek: () => ({ history: [] }) },
+    }) as unknown as Session;
+    expect(userNamedProvider(turn("Spawn one sub-agent on DeepSeek to write notes.md"), "deepseek", "deepseek-v4-pro")).toBe(true);
+    expect(userNamedProvider(turn("write notes.md yourself"), "deepseek", "deepseek-v4-pro")).toBe(false);
+  });
+
   it("is not one that appears only inside another word, or only in context the runtime adds", () => {
     expect(userNamedProvider(typed("fix the tests"), "deepseek", "deepseek-v4-pro")).toBe(false);
     expect(userNamedProvider(typed("run the gptzero detector"), "openai", "gpt-5.4")).toBe(false);

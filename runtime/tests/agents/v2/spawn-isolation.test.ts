@@ -340,10 +340,16 @@ describe("spawn_agent isolation", () => {
     const { session } = await crossProviderFixture([], false, "grok");
     Object.assign(session.sessionConfiguration, { serviceTier: "priority",
       collaborationMode: { model: "grok-4.6", reasoningEffort: "high" } });
+    const events: Array<{ msg: { type: string; payload: Record<string, unknown> } }> = [];
+    Object.assign(session, { emit: (event: typeof events[number]) => events.push(event) });
     mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
     await createSpawnAgentTool(makeOptions(session)).execute({ message: "look", task_name: "helper" });
     expect(mockDelegate.mock.calls[0]?.[0]).toMatchObject({ reasoningEffort: "low" });
     expect(mockDelegate.mock.calls[0]?.[0].serviceTier).toBeUndefined();
+    // The spawn card shows the effort the child runs at from its first event.
+    const spawnEvents = events.filter((event) => event.msg.type.startsWith("collab_agent_spawn_"));
+    expect(spawnEvents.map((event) => [event.msg.type, event.msg.payload.reasoningEffort]))
+      .toEqual([["collab_agent_spawn_begin", "low"], ["collab_agent_spawn_end", "low"]]);
 
     const limited = await crossProviderFixture([], false, "grok", { subagent_limits: { grok: { effort: "high" } } });
     mockDelegate.mockClear();
