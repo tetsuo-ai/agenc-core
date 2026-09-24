@@ -667,6 +667,8 @@ export interface AgenCBackgroundAgentRunner {
    * creates can never carry a wider one.
    */
   getAgentPermissionMode?(agentId: string): Promise<string | null>;
+  /** True only while this call is executing in the agent's active turn. */
+  isAgentToolCallExecuting?(agentId: string, toolCallId: string): boolean | Promise<boolean>;
   resolveRealtimeThread?(
     threadId: string,
   ):

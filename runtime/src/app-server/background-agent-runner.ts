@@ -947,6 +947,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
   }
 
+  isAgentToolCallExecuting(agentId: string, toolCallId: string): boolean {
+    const active = this.#active.get(agentId);
+    return active !== undefined && isRunnableActiveAgent(active) &&
+      hasRuntimeActiveTurn(active.bootstrap.session) &&
+      active.activeToolCallIds.has(toolCallId);
+  }
+
   async listPermissions(agentId: string): Promise<PermissionListResult | null> {
     const active = this.#active.get(agentId);
     if (active === undefined || !isRunnableActiveAgent(active)) return null;

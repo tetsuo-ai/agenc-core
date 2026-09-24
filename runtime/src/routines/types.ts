@@ -57,14 +57,16 @@ export interface RoutineWorkspaceExpectation extends JsonObject {
  * Request-only: whose permissions a create or update speaks for. Never stored.
  *
  * `session` names the live session that asked (the Desktop sends the session
- * behind a model's routine tool call). Core reads that session's current mode
- * from its own permission registry; a request cannot state it. `operator` is
+ * behind a model's routine tool call). The optional toolCallId identifies that
+ * session's in-flight tool call, so its write is answered during the turn.
+ * Core reads that session's current mode from its own permission registry;
+ * a request cannot state it. `operator` is
  * a trusted client's own Routines screen, where the user picks a mode the way
  * they pick one for a session. Without either, a request keeps the original
  * contract: default or plan only.
  */
 export type RoutinePermissionAuthority =
-  | { readonly kind: "session"; readonly sessionId: string }
+  | { readonly kind: "session"; readonly sessionId: string; readonly toolCallId?: string }
   | { readonly kind: "operator" };
 export interface RoutineCreateParams extends RoutineConfig {
   readonly expectedWorkspace?: RoutineWorkspaceExpectation;

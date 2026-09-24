@@ -2594,6 +2594,17 @@ export class AgenCDaemonAgentManager {
     return { sessionId: owner.sessionId, mode };
   }
 
+  /** Resolve either session or agent ID, then inspect the live turn's tool calls. */
+  async isLiveSessionToolCallExecuting(sessionId: string, toolCallId: string): Promise<boolean> {
+    if (this.#runner?.isAgentToolCallExecuting === undefined) return false;
+    try {
+      const owner = await this.#resolvePermissionOwner(sessionId, false, true);
+      return await this.#runner.isAgentToolCallExecuting(owner.agentId, toolCallId);
+    } catch {
+      return false;
+    }
+  }
+
   async approveTool(params: ToolApproveParams): Promise<ToolDecisionResult> {
     if (this.#approvalBroker?.isWorkflowOwner(params.sessionId)) {
       return this.#approveWorkflowTool(params);

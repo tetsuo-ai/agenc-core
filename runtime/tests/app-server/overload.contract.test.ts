@@ -4,10 +4,9 @@ import {
   isDaemonControlMessage,
   isDaemonPreemptiveMessage,
   isDaemonPriorityMessage,
-  isDaemonRoutineMessage,
-  isDaemonSessionAttachmentMessage,
-} from "./overload.js";
-import { JSON_RPC_VERSION, type JsonObject } from "./protocol/index.js";
+  isDaemonCausalRoutineMessage,
+} from "../../src/app-server/overload.js";
+import { JSON_RPC_VERSION, type JsonObject } from "../../src/app-server/protocol/index.js";
 
 function request(method: string): JsonObject {
   return {
@@ -88,18 +87,18 @@ describe("AgenC daemon overload control messages", () => {
     expect(isDaemonControlMessage(review)).toBe(false);
   });
 
-  it("routes every routine request to its own FIFO without exempting it from connection limits", () => {
+  it("keeps routines in the ordinary FIFO except writes naming a live tool call", () => {
     for (const method of ["routine.capabilities", "routine.list", "routine.get", "routine.create", "routine.update", "routine.delete", "routine.run", "routine.runs", "routine.cancel"]) {
-      expect(isDaemonRoutineMessage(request(method))).toBe(true);
       expect(isDaemonPriorityMessage(request(method))).toBe(false);
       expect(isDaemonPreemptiveMessage(request(method))).toBe(false);
       expect(isDaemonControlMessage(request(method))).toBe(false);
     }
-    expect(isDaemonRoutineMessage(request("routine.session.prepare.respond"))).toBe(false);
-    expect(isDaemonRoutineMessage(request("routine.unknown"))).toBe(false);
-    for (const method of ["session.attach", "agent.attach", "session.resume"]) {
-      expect(isDaemonSessionAttachmentMessage(request(method))).toBe(true);
+    for (const method of ["routine.create", "routine.update"]) {
+      const causal = { ...request(method), params: { permissionAuthority: { kind: "session", sessionId: "s", toolCallId: "call" } } };
+      expect(isDaemonCausalRoutineMessage(causal)).toBe(true);
+      expect(isDaemonPriorityMessage(causal)).toBe(true);
     }
+    expect(isDaemonCausalRoutineMessage(request("routine.delete"))).toBe(false);
     const limiter = new AgenCDaemonConnectionLimiter({ maxInFlightRequests: 1 });
     const turn = limiter.tryStart(request("message.stream"), 0);
     expect(turn.admitted).toBe(true);

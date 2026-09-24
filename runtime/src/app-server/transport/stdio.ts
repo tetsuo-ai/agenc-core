@@ -16,16 +16,9 @@ import type { Readable, Writable } from "node:stream";
 import type { JsonObject, JsonValue } from "../protocol/index.js";
 import {
   daemonOverloadErrorResponse,
-  daemonAttachmentSessionId,
-  daemonPermissionMutationSessionId,
   isDaemonPreemptiveMessage,
   isDaemonPriorityMessage,
-  isDaemonRoutineMessage,
-  isDaemonSessionAttachmentMessage,
-  markDaemonRoutineAfterPendingAttachment,
-  markDaemonRoutineAfterPermissionChange,
   maxQueuedRequestsFromOptions,
-  routineAuthoritySessionId,
 } from "../overload.js";
 import { isRecord } from "../../utils/record.js";
 import { BoundedJsonLineReader } from "../../utils/bounded-json-lines.js";
@@ -45,10 +38,8 @@ export interface AgenCStdioTransportOptions {
 export class AgenCStdioTransport {
   readonly #options: AgenCStdioTransportOptions;
   readonly #pendingMessages = new Set<Promise<void>>();
-  // Ordinary requests keep their existing per-connection FIFO. Routine
-  // requests have a separate FIFO so one waiting chat turn cannot hold them.
+  // Ordinary requests, including routines, keep their per-connection FIFO.
   #dispatchChain: Promise<void> = Promise.resolve();
-  #routineChain: Promise<void> = Promise.resolve();
   // Priority requests may bypass a streaming turn, but never the initialize
   // request that authenticates and establishes connection state.
   #initializeBarrier: Promise<void> = Promise.resolve();
@@ -58,10 +49,6 @@ export class AgenCStdioTransport {
   // Both are bounded before initialize can release dispatcher admission.
   readonly #queuedPriorityMessages = { priority: 0, control: 0 };
   #queuedNormalMessages = 0;
-  #queuedRoutineMessages = 0;
-  #pendingSessionAttachments = 0;
-  readonly #attachmentBarriers = new Map<string, Promise<void>>();
-  readonly #pendingPermissionChanges = new Map<string, number>();
   #reader: BoundedJsonLineReader | null = null;
 
   constructor(options: AgenCStdioTransportOptions) {
@@ -109,38 +96,6 @@ export class AgenCStdioTransport {
       return;
     }
 
-    if (isDaemonRoutineMessage(message)) {
-      const maxQueuedRequests = maxQueuedRequestsFromOptions(this.#options);
-      if (this.#queuedRoutineMessages >= maxQueuedRequests) {
-        void this.send(daemonOverloadErrorResponse(
-          message, "TOO_MANY_QUEUED_REQUESTS", { maxQueuedRequests, lane: "routine" },
-        )).catch((error) => this.#options.onError?.(asError(error), line));
-        return;
-      }
-      const authoritySessionId = routineAuthoritySessionId(message);
-      if (this.#pendingSessionAttachments > 0) {
-        markDaemonRoutineAfterPendingAttachment(message, authoritySessionId === undefined ? undefined : this.#attachmentBarriers.get(authoritySessionId));
-      }
-      if (authoritySessionId !== undefined && (this.#pendingPermissionChanges.get(authoritySessionId) ?? 0) > 0) {
-        markDaemonRoutineAfterPermissionChange(message);
-      }
-      this.#queuedRoutineMessages += 1;
-      const initializeBarrier = this.#initializeBarrier;
-      const pending = (this.#routineChain = this.#routineChain.then(async () => {
-        try {
-          await initializeBarrier;
-          await this.#options.onMessage(message);
-        } catch (error) {
-          this.#options.onError?.(asError(error), line);
-        } finally {
-          this.#queuedRoutineMessages -= 1;
-        }
-      }));
-      this.#pendingMessages.add(pending);
-      pending.finally(() => { this.#pendingMessages.delete(pending); });
-      return;
-    }
-
     if (isDaemonPriorityMessage(message)) {
       const lane = isDaemonPreemptiveMessage(message) ? "control" : "priority";
       const maxQueuedRequests = maxQueuedRequestsFromOptions(this.#options);
@@ -151,8 +106,6 @@ export class AgenCStdioTransport {
         return;
       }
       this.#queuedPriorityMessages[lane] += 1;
-      const permissionSessionId = daemonPermissionMutationSessionId(message);
-      if (permissionSessionId !== undefined) this.#pendingPermissionChanges.set(permissionSessionId, (this.#pendingPermissionChanges.get(permissionSessionId) ?? 0) + 1);
       // Control-plane requests must NOT queue behind a full model stream.
       // Dispatch them off-chain while keeping ordinary, order-dependent work
       // FIFO. The promise is still tracked so close() drains it.
@@ -172,7 +125,6 @@ export class AgenCStdioTransport {
       }
       this.#pendingMessages.add(pending);
       pending.finally(() => {
-        if (permissionSessionId !== undefined) this.#releasePermissionChange(permissionSessionId);
         this.#queuedPriorityMessages[lane] -= 1;
         this.#pendingMessages.delete(pending);
       });
@@ -193,12 +145,6 @@ export class AgenCStdioTransport {
       return;
     }
     this.#queuedNormalMessages += 1;
-    const attachment = isDaemonSessionAttachmentMessage(message);
-    if (attachment) this.#pendingSessionAttachments += 1;
-    const attachmentId = attachment ? daemonAttachmentSessionId(message) : undefined;
-    const permissionSessionId = daemonPermissionMutationSessionId(message);
-    if (permissionSessionId !== undefined) this.#pendingPermissionChanges.set(permissionSessionId, (this.#pendingPermissionChanges.get(permissionSessionId) ?? 0) + 1);
-
     // Chain dispatch on a per-connection promise so pipelined,
     // order-dependent requests are handed to onMessage in arrival order
     // instead of racing. A handler rejection is caught here so it cannot
@@ -210,8 +156,6 @@ export class AgenCStdioTransport {
         } catch (error) {
           this.#options.onError?.(asError(error), line);
         } finally {
-          if (attachment) this.#pendingSessionAttachments -= 1;
-          if (permissionSessionId !== undefined) this.#releasePermissionChange(permissionSessionId);
           this.#queuedNormalMessages = Math.max(
             0,
             this.#queuedNormalMessages - 1,
@@ -219,22 +163,14 @@ export class AgenCStdioTransport {
         }
       },
     ));
-    if (attachmentId !== undefined) this.#attachmentBarriers.set(attachmentId, pending);
     if (message.method === "initialize" && !this.#hasInitializeBarrier) {
       this.#hasInitializeBarrier = true;
       this.#initializeBarrier = pending;
     }
     this.#pendingMessages.add(pending);
     pending.finally(() => {
-      if (attachmentId !== undefined && this.#attachmentBarriers.get(attachmentId) === pending) this.#attachmentBarriers.delete(attachmentId);
       this.#pendingMessages.delete(pending);
     });
-  }
-
-  #releasePermissionChange(sessionId: string): void {
-    const remaining = (this.#pendingPermissionChanges.get(sessionId) ?? 1) - 1;
-    if (remaining === 0) this.#pendingPermissionChanges.delete(sessionId);
-    else this.#pendingPermissionChanges.set(sessionId, remaining);
   }
 }
 

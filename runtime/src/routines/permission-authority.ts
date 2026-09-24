@@ -25,6 +25,7 @@
  * exactly, and the field is an unsupported parameter there.
  */
 import { RoutineError } from "./errors.js";
+import { MAX_TOOL_CALL_ID_UTF8_BYTES } from "../session/tool-result-integrity.js";
 import type { RoutinePermissionAuthority, RoutinePermissionMode } from "./types.js";
 
 export const ROUTINE_PERMISSION_MODES = Object.freeze(["default", "plan", "acceptEdits", "bypassPermissions"] as const);
@@ -103,9 +104,12 @@ export function sessionRoutineGrant(sessionMode: unknown): RoutinePermissionGran
 }
 
 const SESSION_ID = /^[\x21-\x7e]{1,256}$/u;
+const validToolCallId = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0 &&
+  Buffer.byteLength(value, "utf8") <= MAX_TOOL_CALL_ID_UTF8_BYTES;
 
 function invalidAuthority(): never {
-  throw new RoutineError("ROUTINE_INVALID_ARGUMENT", "permissionAuthority must be { kind: \"session\", sessionId } or { kind: \"operator\" }.");
+  throw new RoutineError("ROUTINE_INVALID_ARGUMENT", "permissionAuthority must be { kind: \"session\", sessionId, toolCallId? } or { kind: \"operator\" }.");
 }
 
 /** Exact shapes only: an authority cannot carry a mode or any other field. */
@@ -115,8 +119,9 @@ export function parseRoutinePermissionAuthority(value: unknown): RoutinePermissi
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record);
   if (record.kind === "operator" && keys.length === 1) return { kind: "operator" };
-  if (record.kind === "session" && keys.length === 2 && typeof record.sessionId === "string" && SESSION_ID.test(record.sessionId)) {
-    return { kind: "session", sessionId: record.sessionId };
+  if (record.kind === "session" && (keys.length === 2 || keys.length === 3) && typeof record.sessionId === "string" && SESSION_ID.test(record.sessionId) &&
+      (keys.length === 2 || (Object.hasOwn(record, "toolCallId") && validToolCallId(record.toolCallId)))) {
+    return { kind: "session", sessionId: record.sessionId, ...(keys.length === 3 ? { toolCallId: record.toolCallId as string } : {}) };
   }
   return invalidAuthority();
 }
@@ -140,6 +145,8 @@ export interface RoutineRequestConnection {
   liveSession(sessionId: string): Promise<{ readonly sessionId: string; readonly mode: string } | undefined>;
   /** Whether that live session is attached to this very connection. */
   holdsSession(liveSessionId: string): Promise<boolean>;
+  /** Core's active turn must still be executing this exact tool call. */
+  executingToolCall?(liveSessionId: string, toolCallId: string): Promise<boolean>;
   /** Declared routine.operator.v1, is local, and has no session attached. */
   readonly operator: boolean;
 }
@@ -171,6 +178,10 @@ export async function resolveRoutinePermissionGrant(
   catch { held = false; }
   if (!held) {
     throw new RoutineError("ROUTINE_PERMISSION_DENIED", "The session named for this routine is not attached to this connection, so this request cannot speak for it.");
+  }
+  if (authority.toolCallId !== undefined &&
+      !(await connection.executingToolCall?.(live.sessionId, authority.toolCallId))) {
+    throw new RoutineError("ROUTINE_PERMISSION_DENIED", "This tool call is not executing in the session's active turn.");
   }
   return sessionRoutineGrant(live.mode);
 }

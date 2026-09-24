@@ -60,6 +60,7 @@ export const AGENC_DAEMON_PROTOCOL_PUBLISH_TARGET = {
   schemaId: AGENC_DAEMON_PROTOCOL_SCHEMA_ID,
 } as const;
 export const AGENC_DAEMON_METHOD_CAPABILITIES_KEY = "daemon.methods" as const;
+/** A session authority may carry its in-flight toolCallId; that write answers during the turn. */
 export const AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY =
   "routine.sessionAuthority.v1" as const;
 /**

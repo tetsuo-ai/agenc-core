@@ -67,18 +67,6 @@ const DAEMON_PRIORITY_METHODS = new Set<string>([
   "health.stats",
 ]);
 
-const DAEMON_ROUTINE_METHODS = new Set<string>([
-  "routine.capabilities",
-  "routine.list",
-  "routine.get",
-  "routine.create",
-  "routine.update",
-  "routine.delete",
-  "routine.run",
-  "routine.runs",
-  "routine.cancel",
-]);
-
 export function isDaemonControlMessage(message: JsonObject): boolean {
   return (
     typeof message.method === "string" &&
@@ -105,10 +93,9 @@ export function isDaemonPreemptiveMessage(message: JsonObject): boolean {
  * Requests that use the connection's priority lane instead of waiting behind
  * a full streaming model turn. Abort/decision messages are included, along
  * with bounded agent creation, health, status, and session lookup operations.
- * Routine requests use their own FIFO so a chat's routine write can answer a
- * streaming turn without overtaking an earlier routine request. Attach
- * requests remain in the normal FIFO because they commonly depend on a
- * preceding create request from the same connection.
+ * A routine write carrying the ID of its executing tool call is also
+ * dispatched during that turn. The dispatcher verifies the call before
+ * granting session authority. Other routine requests keep the ordinary FIFO.
  *
  * Priority requests remain subject to the normal connection
  * limiter. Only {@link isDaemonControlMessage} operations are overload-exempt.
@@ -116,81 +103,24 @@ export function isDaemonPreemptiveMessage(message: JsonObject): boolean {
 export function isDaemonPriorityMessage(message: JsonObject): boolean {
   return (
     typeof message.method === "string" &&
-    DAEMON_PRIORITY_METHODS.has(message.method)
+    (DAEMON_PRIORITY_METHODS.has(message.method) || isDaemonCausalRoutineMessage(message))
   );
 }
 
-/** Routine operations share one connection FIFO, independent of a streaming turn. */
-export function isDaemonRoutineMessage(message: JsonObject): boolean {
-  return typeof message.method === "string" && DAEMON_ROUTINE_METHODS.has(message.method);
-}
-
-/** Requests that can attach a session to a delivery key, including resume. */
-export function isDaemonSessionAttachmentMessage(message: JsonObject): boolean {
-  return message.method === "session.attach" ||
-    message.method === "agent.attach" ||
-    message.method === "session.resume";
-}
-
-// Arrival metadata lives outside JSON params, so clients cannot forge it and
-// the wire request remains unchanged through transport and dispatcher.
-const ROUTINE_AFTER_PENDING_ATTACHMENT = new WeakSet<object>();
-const ROUTINE_ATTACHMENT_BARRIER = new WeakMap<object, Promise<void>>();
-const ROUTINE_AFTER_PERMISSION_CHANGE = new WeakSet<object>();
-
-export function markDaemonRoutineAfterPendingAttachment(message: JsonObject, barrier?: Promise<void>): void {
-  if (message.params !== null && typeof message.params === "object") {
-    ROUTINE_AFTER_PENDING_ATTACHMENT.add(message.params);
-    if (barrier !== undefined) ROUTINE_ATTACHMENT_BARRIER.set(message.params, barrier);
-  }
-}
-
-export function routineHasPriorPendingAttachment(params: JsonObject): boolean {
-  return ROUTINE_AFTER_PENDING_ATTACHMENT.has(params);
-}
-
-export function routinePriorAttachmentBarrier(params: JsonObject): Promise<void> | undefined {
-  return ROUTINE_ATTACHMENT_BARRIER.get(params);
-}
-
-/** All RPC routes that can mutate a live session's permission context. */
-export function daemonPermissionMutationSessionId(message: JsonObject): string | undefined {
+/** Only a routine tool's own write may answer during its streaming turn. */
+export function isDaemonCausalRoutineMessage(message: JsonObject): boolean {
+  if (message.method !== "routine.create" && message.method !== "routine.update") return false;
   const params = daemonObjectParams(message);
-  if (message.method !== "session.setPermissionMode" &&
-      message.method !== "session.permissions.mutateRule" &&
-      !(message.method === "tool.approve" &&
-        (params?.allowAllToolsForSession === true || params?.scope === "session" || params?.scope === "agent"))) return undefined;
-  return typeof params?.sessionId === "string" ? params.sessionId : undefined;
-}
-
-export function routineAuthoritySessionId(message: JsonObject): string | undefined {
-  const params = daemonObjectParams(message);
-  if (params === undefined) return undefined;
-  const authority = params.permissionAuthority;
-  if (authority === null || typeof authority !== "object" || Array.isArray(authority)) return undefined;
+  const authority = params?.permissionAuthority;
+  if (authority === null || typeof authority !== "object" || Array.isArray(authority)) return false;
   const record = authority as JsonObject;
-  return record.kind === "session" && typeof record.sessionId === "string" ? record.sessionId : undefined;
-}
-
-export function daemonAttachmentSessionId(message: JsonObject): string | undefined {
-  const params = daemonObjectParams(message);
-  if (params === undefined) return undefined;
-  return typeof params.sessionId === "string" ? params.sessionId
-    : typeof params.agentId === "string" ? params.agentId : undefined;
+  return record.kind === "session" && typeof record.toolCallId === "string";
 }
 
 function daemonObjectParams(message: JsonObject): JsonObject | undefined {
   const params = message.params;
   return params !== null && typeof params === "object" && !Array.isArray(params)
     ? params as JsonObject : undefined;
-}
-
-export function markDaemonRoutineAfterPermissionChange(message: JsonObject): void {
-  if (message.params !== null && typeof message.params === "object") ROUTINE_AFTER_PERMISSION_CHANGE.add(message.params);
-}
-
-export function routineHasPriorPermissionChange(params: JsonObject): boolean {
-  return ROUTINE_AFTER_PERMISSION_CHANGE.has(params);
 }
 
 export function requestIdFromJsonRpcMessage(message: JsonObject): RequestId | null {
