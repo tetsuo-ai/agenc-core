@@ -111,6 +111,35 @@ describe("ModelRegistry", () => {
     }
   });
 
+  it("advertises the xAI Fast tier for Grok 4.7 and Grok 4.6 only", () => {
+    // xAI priority processing: service_tier "priority", 2x every token rate
+    // (docs.x.ai priority-processing and pricing pages, 2026-09-24).
+    const registry = new ModelRegistry({ config: defaultConfig() });
+    const tiersFor = (model: string) =>
+      modelRegistryEntryToModelInfo(registry.resolveSync({ provider: "grok", model })).serviceTiers ?? [];
+
+    for (const model of ["grok-4.7", "grok-4.6"]) {
+      expect(tiersFor(model), model).toEqual([
+        {
+          id: "priority",
+          name: "Fast",
+          description: "Higher scheduling priority at 2x price",
+        },
+      ]);
+    }
+    for (const model of [
+      "grok-4.5",
+      "grok-4.3",
+      "grok-build-0.1",
+      "grok-4.20-0309-reasoning",
+      "grok-4.20-0309-non-reasoning",
+      "grok-4.20-multi-agent-0309",
+      "grok-composer-2.5-fast",
+    ]) {
+      expect(tiersFor(model), model).toEqual([]);
+    }
+  });
+
   it("preserves hidden model visibility in model info", () => {
     const registry = new ModelRegistry({ config: defaultConfig() });
 

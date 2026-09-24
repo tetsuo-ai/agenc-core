@@ -765,6 +765,62 @@ describe("provider credential authority", () => {
     expect(Object.isFrozen(original)).toBe(true);
   });
 
+  test("Grok sends priority processing on API-key billing and never on the sign-in route", async () => {
+    // xAI documents service_tier "priority" for API requests; its docs say
+    // nothing about the Sign in with X grant, so that route never sends it
+    // and a session bound to it does not list the Fast tier.
+    const home = await createHome("grok-priority-route");
+    const { xaiCredentials } = await loadCredentialModules();
+    const [
+      { createProvider, readProviderFactoryOptions },
+      { withoutXaiSignInFastTier },
+      { ModelRegistry, modelRegistryEntryToModelInfo },
+      { defaultConfig },
+      { runWithStartupProviderSelection },
+    ] = await Promise.all([
+      import("../../src/llm/provider.js"),
+      import("../../src/llm/providers/grok/priority-processing.js"),
+      import("../../src/llm/model-registry.js"),
+      import("../../src/config/schema.js"),
+      import("../../src/utils/model/providers.js"),
+    ]);
+    const fastInfo = modelRegistryEntryToModelInfo(
+      new ModelRegistry({ config: defaultConfig() }).resolveSync({ provider: "grok", model: "grok-4.7" }),
+    );
+    const sentTier = async (provider: ReturnType<typeof createProvider>) => {
+      const bodies: Record<string, unknown>[] = [];
+      Object.assign(provider, { client: { responses: { create: vi.fn((body: Record<string, unknown>) => {
+        bodies.push(body);
+        const data = { id: "resp", status: "completed", model: "grok-4.7", service_tier: "default",
+          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }],
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } };
+        return { withResponse: async () => ({ data, response: new Response("{}"), request_id: null }) };
+      }) } } });
+      await runWithStartupProviderSelection({ provider: "grok", model: "grok-4.7", environment: {} },
+        () => provider.chat([{ role: "user", content: "hi" }], { serviceTier: "priority" }));
+      return bodies[0]?.service_tier;
+    };
+
+    const apiKeyProvider = createProvider("grok", { credentialHome: home, apiKey: "xai-byok", model: "grok-4.7" });
+    expect(await sentTier(apiKeyProvider)).toBe("priority");
+    expect(withoutXaiSignInFastTier(fastInfo, {
+      provider: "grok", factoryOptions: readProviderFactoryOptions(apiKeyProvider),
+    }).serviceTiers?.map((tier) => tier.id)).toEqual(["priority"]);
+
+    // A home of its own, so no read made for the API-key provider can stand
+    // in front of the sign-in saved here.
+    const signedInHome = await createHome("grok-priority-route-signed-in");
+    expect(xaiCredentials.saveXaiOauthCredentials(signedInHome, {
+      accessToken: "xai-oauth", expiresAt: Date.now() + 6 * 60 * 60 * 1000,
+    })).toMatchObject({ success: true });
+    const signedIn = createProvider("grok", { credentialHome: signedInHome, model: "grok-4.7" });
+    expect(readProviderFactoryOptions(signedIn).extra?.authMode).toBe("oauth");
+    expect(await sentTier(signedIn)).toBeUndefined();
+    expect(withoutXaiSignInFastTier(fastInfo, {
+      provider: "grok", factoryOptions: readProviderFactoryOptions(signedIn),
+    }).serviceTiers).toBeUndefined();
+  });
+
   test("Grok media credential discovery follows explicit auth selection", async () => {
     const home = await createHome("grok-media");
     const { xaiCredentials } = await loadCredentialModules();

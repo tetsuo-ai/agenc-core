@@ -34,6 +34,7 @@ import {
   anthropicFastModeRequested,
   anthropicSupportsFastMode,
 } from "../llm/providers/anthropic/fast-mode.js";
+import { xaiSendsPriorityProcessing } from "../llm/providers/grok/priority-processing.js";
 import { AdmissionDeniedError } from "./admission-client.js";
 import { hitM4DurabilityFailpoint } from "../durability/failpoints.js";
 import { LLMManagedAdmissionError } from "../llm/errors.js";
@@ -247,6 +248,27 @@ function requestsOpenAiFastMode(
 }
 
 /**
+ * xAI priority processing is `service_tier: "priority"` on the Grok models
+ * with a Fast tier, sent only off the xAI sign-in route (the recorded
+ * `authMode`), and billed at 2x when the response reports that tier.
+ */
+function requestsXaiPriorityProcessing(
+  model: string,
+  provider: string,
+  options: LLMChatOptions,
+  factoryOptions: ProviderFactoryOptions,
+): boolean {
+  return (
+    provider.trim().toLowerCase() === "grok" &&
+    xaiSendsPriorityProcessing({
+      model,
+      serviceTier: options.serviceTier,
+      authMode: factoryOptions.extra?.authMode,
+    })
+  );
+}
+
+/**
  * The rates the most expensive outcome of this request bills at, or null
  * when the model is unpriced. A request that asks for fast mode is reserved
  * at fast rates. A reservation admits up to `inputTokens + outputTokens`
@@ -261,12 +283,14 @@ function reservationRates(
   inputTokens: number,
   outputTokens: number,
   options: LLMChatOptions,
+  factoryOptions: ProviderFactoryOptions,
 ): ReturnType<typeof selectCallRates> | null {
   const standardEntry = pricedEntry(model, provider);
   if (standardEntry === null) return null;
   const fast =
     requestsAnthropicFastMode(model, provider, options) ||
-    requestsOpenAiFastMode(provider, options);
+    requestsOpenAiFastMode(provider, options) ||
+    requestsXaiPriorityProcessing(model, provider, options, factoryOptions);
   return selectCallRates(standardEntry, {
     ...(fast ? { speed: "fast" as const } : {}),
     singleCallInputTokens: inputTokens + outputTokens,
@@ -708,6 +732,7 @@ export async function runAdmittedModelCall(
     maxInputTokens,
     admittedMaxOutputTokens,
     accountingOptions,
+    providerFactoryOptions,
   );
   const maximumCost = reservedRates?.documented === false
     ? null

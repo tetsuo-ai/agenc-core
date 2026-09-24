@@ -58,6 +58,7 @@ import {
   type ProviderHttpContinuationSnapshot,
 } from "../llm/client.js";
 import { isFactoryProvider } from "../llm/provider.js";
+import { withoutXaiSignInFastTier } from "../llm/providers/grok/priority-processing.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import type { LLMProvider } from "../llm/types.js";
 import {
@@ -2829,9 +2830,14 @@ export class Session {
       provider: admittedPending.provider,
       model: admittedPending.model,
     });
-    const rawModelInfo = await deriveNextModelInfo(
-      this.services.modelsManager,
-      provider.binding.model,
+    // A Grok binding on the xAI sign-in route never sends priority
+    // processing, so its model info does not offer the Fast tier.
+    const rawModelInfo = withoutXaiSignInFastTier(
+      await deriveNextModelInfo(
+        this.services.modelsManager,
+        provider.binding.model,
+      ),
+      provider.binding,
     );
     const modelInfo = provider.managedDefaultOutputCap
       ? capManagedOpenRouterModelInfo(rawModelInfo)

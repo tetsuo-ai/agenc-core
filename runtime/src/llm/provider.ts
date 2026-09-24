@@ -1720,6 +1720,8 @@ export function createProvider(
           ? { credentialHome: opts.credentialHome }
           : {}),
         apiKey,
+        // The adapter keeps priority processing off the sign-in route.
+        ...(usesXaiOauth ? { authMode: "oauth" as const } : {}),
         model,
         tools: opts.tools ? [...opts.tools] : undefined,
         baseURL: normalizeBaseURL(opts.baseURL) ?? defaultBaseURLFor("grok"),
