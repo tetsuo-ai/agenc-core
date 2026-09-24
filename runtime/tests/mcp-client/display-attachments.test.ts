@@ -79,6 +79,15 @@ describe("display attachments and saved plugin secrets", () => {
     expect(result.content).toContain("[Display attachment could not be shown: contained a saved secret]");
     expect(result.content).not.toContain("0 bytes");
   });
+  it.each(["user", "audience"])("keeps a user-only table away from the model when a saved secret is %j", async (value) => {
+    // Same order as the MCP bridge: redact the raw result, then normalize it.
+    const headers = { token: value };
+    const raw = redactMcpAttachmentValue({ content: [resource("application/vnd.agenc.table+json", table)] }, headers, undefined, "tool-result");
+    const result = await normalizeMcpToolOutput({ raw, serverName: "plugin:demo:show", toolName: "show", callId: "call-secret", environment: { MAX_MCP_OUTPUT_TOKENS: "100000" }, logger, displayRoots: [], sensitiveHeaders: headers });
+    expect(attachments(result)).toHaveLength(1);
+    expect(result.content).not.toContain("NVDA");
+    expect(JSON.stringify(result.codeModeResult ?? null)).not.toContain("NVDA");
+  });
   it("still shows an attachment without a saved secret", async () => {
     const result = await normalizeWithSecret([resource("application/vnd.agenc.chart+json", chart)]);
     expect(attachments(result)).toHaveLength(1);

@@ -116,7 +116,7 @@ function attachmentSecrets(headers?: Readonly<Record<string, string>>): string[]
  * identifiers and input-schema literal values are outside this boundary, as
  * are copies the plugin itself encodes or splits.
  */
-export type McpRedactionShape = "data" | "schema" | "schema-properties" | "tool-result" | "content-list" | "content-block" | "prompt" | "resource";
+export type McpRedactionShape = "data" | "schema" | "schema-properties" | "tool-result" | "content-list" | "content-block" | "prompt" | "resource" | "annotations";
 
 function redactedDataKey(
   key: string,
@@ -200,7 +200,11 @@ function protocolField(key: string, shape: McpRedactionShape, value: unknown): b
     shape === "tool-result" && key === "isError" ||
     shape === "content-block" && (key === "type" || key === "blob" || key === "data") ||
     shape === "prompt" && (key === "role" || key === "required") ||
-    shape === "resource" && (key === "truncated" || key === "bytesReturned" || key === "blob");
+    shape === "resource" && (key === "truncated" || key === "bytesReturned" || key === "blob") ||
+    // MCP annotations route a block to the user or the model; keep valid values.
+    shape === "annotations" && key === "audience" && Array.isArray(value) &&
+      value.every(item => item === "user" || item === "assistant") ||
+    shape === "annotations" && key === "priority" && typeof value === "number";
 }
 
 const SCHEMA_CONTROL_FIELDS = new Set([
@@ -217,6 +221,7 @@ function childShape(shape: McpRedactionShape, key: string): McpRedactionShape {
   if (shape === "schema" && ["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"].includes(key)) return "schema-properties";
   if (shape === "schema") return key === "default" || key === "enum" || key === "const" || key === "examples" ? "data" : "schema";
   if (shape === "prompt") return key === "rawContent" || key === "content" ? "content-block" : "prompt";
+  if ((shape === "content-block" || shape === "resource") && key === "annotations") return "annotations";
   if (shape === "content-block" && key === "resource") return "resource";
   return shape === "resource" && key === "contents" ? "resource" : "data";
 }

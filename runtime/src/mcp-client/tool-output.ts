@@ -79,12 +79,16 @@ function containsLiteralSecret(bytes: Buffer, headers?: Readonly<Record<string, 
   return false;
 }
 
-/** A display attachment is stored and shown as is, so it is checked whole. */
-function displayContainsLiteralSecret(attachment: DisplayAttachment, caption: string, headers?: Readonly<Record<string, string>>): boolean {
+/**
+ * A display attachment is stored and shown as is, so everything the plugin
+ * supplied is checked: its bytes (a chart or table holds its own title and
+ * labels) and its title. Core's caption wording is not plugin output.
+ */
+function displayContainsLiteralSecret(attachment: DisplayAttachment, headers?: Readonly<Record<string, string>>): boolean {
   if (headers === undefined) return false;
   const bytes = peekDisplayArtifactBytes(attachment);
   return (bytes !== undefined && containsLiteralSecret(bytes, headers)) ||
-    containsLiteralSecret(Buffer.from(`${attachment.title}\n${caption}`, "utf8"), headers);
+    containsLiteralSecret(Buffer.from(attachment.title, "utf8"), headers);
 }
 
 function containsEncodedLiteralSecret(encoded: unknown, headers?: Readonly<Record<string, string>>): boolean {
@@ -666,7 +670,7 @@ export async function normalizeMcpToolOutput(
             throw new DisplayValidationError("contained a saved secret");
           }
           const shown = await validateDisplayBlock(displayRecord ?? {}, options.displayRoots ?? [], undefined, options.displayDataRoot, displayBudget);
-          if (displayContainsLiteralSecret(shown.attachment, shown.caption, options.sensitiveHeaders)) {
+          if (displayContainsLiteralSecret(shown.attachment, options.sensitiveHeaders)) {
             releaseDisplayArtifactBytes(shown.attachment);
             throw new DisplayValidationError("contained a saved secret");
           }
