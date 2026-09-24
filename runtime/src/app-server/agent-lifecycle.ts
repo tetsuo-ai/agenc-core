@@ -3647,8 +3647,16 @@ export class AgenCDaemonAgentManager {
       sessionId,
       thread.threadId,
       undefined,
-      thread.rolloutPath ? dirname(thread.rolloutPath) : undefined,
-      options,
+      undefined,
+      {
+        ...options,
+        publishTextArtifact: (bytes) => {
+          if (!thread.rolloutPath || !this.#threadStore?.publishTranscriptArtifact) {
+            throw new Error("oversized transcript message requires a session artifact store");
+          }
+          return this.#threadStore.publishTranscriptArtifact(thread.threadId, thread.rolloutPath, bytes);
+        },
+      },
     );
   }
 

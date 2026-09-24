@@ -331,7 +331,7 @@ export function sessionTranscriptV2FromRollout(
   runId: string,
   activeTurn?: { readonly turnId: string; readonly clientMessageId?: string },
   artifactSessionDir?: string,
-  options: { readonly includeCompleteMessages?: boolean } = {},
+  options: { readonly includeCompleteMessages?: boolean; readonly publishTextArtifact?: (bytes: Buffer) => string } = {},
 ): SessionTranscriptV2Result {
   const boundary = latestTranscriptBoundary(items);
   const boundaryIndex = boundary?.index ?? -1;
@@ -606,9 +606,11 @@ export function sessionTranscriptV2FromRollout(
   const maxSnapshotBytes = 384 * 1024;
   if (Buffer.byteLength(JSON.stringify(snapshot), "utf8") <= maxSnapshotBytes) return snapshot;
   const referenceMessage = (message: typeof snapshot.messages[number]) => {
-    if (artifactSessionDir === undefined) throw new Error("oversized transcript message requires a session artifact store");
+    if (artifactSessionDir === undefined && options.publishTextArtifact === undefined) throw new Error("oversized transcript message requires a session artifact store");
     const bytes = Buffer.from(message.text, "utf8");
-    const id = persistDisplayArtifactBytes(artifactSessionDir, bytes);
+    const id = options.publishTextArtifact !== undefined
+      ? options.publishTextArtifact(bytes)
+      : persistDisplayArtifactBytes(artifactSessionDir!, bytes);
     const preview = bytes.subarray(0, 8 * 1024).toString("utf8");
     return { ...message, text: `${preview}\n\n[Answer truncated; update to a protocol 1.18 client to read the full message.]`, textArtifact: { id, digest: id, size: bytes.length, mimeType: "text/plain" as const } };
   };

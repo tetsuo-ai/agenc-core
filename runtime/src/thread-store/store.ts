@@ -17,7 +17,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { removeDisplayArtifacts } from "../session/display-artifact-store.js";
+import { persistDisplayArtifactBytes, removeDisplayArtifacts } from "../session/display-artifact-store.js";
 import {
   basename,
   dirname,
@@ -275,6 +275,8 @@ export interface ThreadStore {
   discardThread(threadId: ThreadId): void;
   loadHistory(params: LoadThreadHistoryParams): StoredThreadHistory;
   readThread(params: ReadThreadParams): StoredThread;
+  /** Publish snapshot text against the thread's current canonical rollout. */
+  publishTranscriptArtifact?(threadId: ThreadId, observedRolloutPath: string, bytes: Buffer): string;
   readThreadByRolloutPath(params: ReadThreadByRolloutPathParams): StoredThread;
   listThreads(params: ListThreadsParams): ThreadPage;
   /** Indexed count for latency-sensitive health probes. */
@@ -642,6 +644,39 @@ export class FileThreadStore implements ThreadStore {
         })
       : undefined;
     return toStoredThread(entry, this.defaultModelProviderId, history);
+  }
+
+  publishTranscriptArtifact(threadId: ThreadId, observedRolloutPath: string, bytes: Buffer): string {
+    this.assertOpen();
+    return this.withRegistryLock(() => {
+      let candidate = observedRolloutPath;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const entry = this.readRegistryUnlocked(true).get(threadId);
+        const current = entry === undefined ? undefined : this.readableRolloutPath(entry);
+        if (current === undefined) throw new ThreadNotFoundError(threadId);
+        if (current !== candidate) {
+          candidate = current;
+          continue;
+        }
+        // Archive takes the registry lock before moving this journal. Retention
+        // takes its canonical rollout lease before removing the session dir.
+        // Do not let lock acquisition create a directory that retention moved.
+        if (!existsSync(current)) throw new ThreadNotFoundError(threadId);
+        const ownWriter = this.liveRecorders.get(threadId);
+        if (ownWriter?.rolloutPath === current) {
+          return persistDisplayArtifactBytes(dirname(current), bytes);
+        }
+        const lease = new SessionLock(`${current}.lock`);
+        try {
+          lease.acquire({ createParent: false });
+          if (!existsSync(current)) throw new ThreadNotFoundError(threadId);
+          return persistDisplayArtifactBytes(dirname(current), bytes);
+        } finally {
+          lease.release();
+        }
+      }
+      throw new ThreadStoreInvalidRequestError(`thread ${threadId} moved during transcript artifact publication`);
+    });
   }
 
   readThreadByRolloutPath(params: ReadThreadByRolloutPathParams): StoredThread {

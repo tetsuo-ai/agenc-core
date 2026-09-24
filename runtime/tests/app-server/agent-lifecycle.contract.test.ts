@@ -1,5 +1,6 @@
 import {
   copyFileSync,
+  existsSync,
   lstatSync,
   linkSync,
   mkdirSync,
@@ -15,6 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgenCSessionSnapshotPolicy } from "../state/snapshot-policy.js";
+import { pruneRolloutSessions } from "../state/pruning.js";
 import { upsertAgentRun } from "../state/agent-runs.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import { persistDisplayAttachments, readDisplayArtifact } from "../session/display-artifact-store.js";
@@ -863,6 +865,58 @@ describe("AgenC background agent lifecycle", () => {
       threadStore.close();
       rollout.close();
       restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("publishes an oversized persisted snapshot in the archived location after lookup", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const threadId = "conv-snapshot-archive-race";
+    const answer = "A".repeat(400_000);
+    const rollout = openRollout(cwd, threadId);
+    const threadStore = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      threadStore.createThread({ threadId, rolloutStore: rollout, source: "cli_main", cwd });
+      rollout.appendRollout({ type: "event_msg", payload: { id: "answer", eventId: "answer", seq: 1, msg: { type: "agent_message", payload: { message: answer } } } });
+      rollout.flushDurable();
+      threadStore.shutdownThread(threadId);
+      rollout.close();
+      const oldArtifacts = join(dirname(rollout.rolloutPath), "display-artifacts");
+      const sessions = new AgenCDaemonSessionManager({ threadStore, createSessionId: () => threadId });
+      await sessions.createSession({ agentId: threadId, cwd });
+      const manager = new AgenCDaemonAgentManager({ threadStore, sessionManager: sessions });
+      const originalRead = threadStore.readThread.bind(threadStore);
+      let moved = false;
+      vi.spyOn(threadStore, "readThread").mockImplementation((params) => {
+        const thread = originalRead(params);
+        if (params.includeHistory && !moved) {
+          moved = true;
+          threadStore.archiveThread({ threadId });
+        }
+        return thread;
+      });
+
+      const snapshot = await manager.getSessionTranscriptV2({ sessionId: threadId });
+      expect(moved).toBe(true);
+      const artifact = snapshot.messages.at(-1)?.textArtifact;
+      expect(artifact).toBeDefined();
+      const read = await manager.readSessionArtifact({ sessionId: threadId, id: artifact!.id });
+      expect(Buffer.from(read.data, "base64").toString()).toBe(answer);
+      expect(existsSync(oldArtifacts)).toBe(false);
+
+      const driver = openStateDatabases({ cwd, agencHome: home });
+      try {
+        const report = pruneRolloutSessions(driver, {
+          sessionsDir: join(threadStore.getProjectDir(), "sessions"),
+          retention_days: 30,
+          now: () => "2026-06-01T00:00:00.000Z",
+        });
+        expect(report.prunedSessions).toBe(0);
+      } finally { driver.close(); }
+      expect(existsSync(oldArtifacts)).toBe(false);
+    } finally {
+      threadStore.close(); rollout.close(); restoreEnv();
       rmSync(home, { recursive: true, force: true });
       rmSync(cwd, { recursive: true, force: true });
     }
