@@ -1705,6 +1705,10 @@ export function createProvider(
         extra.authMode !== "api_key" && opts.credentialHome !== undefined
           ? readXaiOauthAccessToken(opts.credentialHome)
           : undefined;
+      if (extra.canonicalEndpointRequired === true && extra.authMode === "oauth" &&
+          storedOauthBearer === undefined) {
+        throw new Error("grok provider: approved sign-in is unavailable; a new child authority is required");
+      }
       const usesXaiOauth = storedOauthBearer !== undefined;
       const apiKey =
         storedOauthBearer ?? factoryApiKey ?? requireFactoryApiKey("grok", opts);

@@ -22,7 +22,7 @@ import { isUndeliverableApproval } from "./approval-delivery.js";
 import type { BackgroundAgentDaemonEvent } from "./background-agent-runner/shared.js";
 import { AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY, type PendingToolApproval, type JsonObject } from "./protocol/index.js";
 import { requestApproval } from "../permissions/guardian/arbiter.js";
-import type { CrossProviderConsentService, CrossProviderSpawnDisclosure, CrossProviderConsentOutcome } from "../agents/cross-provider.js";
+import { crossProviderDenialKey, type CrossProviderConsentService, type CrossProviderSpawnDisclosure, type CrossProviderConsentOutcome } from "../agents/cross-provider.js";
 import { getSessionGoal } from "../goal/session-goal.js";
 
 /**
@@ -323,6 +323,10 @@ export class LiveApprovalBroker {
     const unavailable = (reason: string): CrossProviderConsentOutcome => ({
       kind: "consent_unavailable", reason: `${reason} Continue this task yourself.`,
     });
+    const activeTurnAtRequest = requestingSession.activeTurn?.unsafePeek()?.turnId;
+    const turnId = activeTurnAtRequest ?? disclosure.requestingTurnId ?? disclosure.taskId;
+    const denialKey = crossProviderDenialKey(disclosure, turnId);
+    const cardDisclosure = { ...disclosure, requestingTurnId: turnId, denialKey };
     if (this.#owners.get(owner.session.conversationId) !== owner || !owner.isActive() ||
         !isApprovalSessionOwnedBy(requestingSession, owner.session)) {
       return unavailable("The interactive session is no longer active.");
@@ -339,7 +343,12 @@ export class LiveApprovalBroker {
         !(await this.options.canAnswerCrossProviderConsent(owner.session.conversationId))) {
       return unavailable("No attached consent-capable client can answer now.");
     }
-    if (owner.deniedConsentPayloads.has(disclosure.denialKey)) {
+    if (requestingSession.activeTurn?.unsafePeek()?.turnId !== activeTurnAtRequest ||
+        this.#owners.get(owner.session.conversationId) !== owner || !owner.isActive() ||
+        !isApprovalSessionOwnedBy(requestingSession, owner.session)) {
+      return unavailable("The requesting turn is no longer active.");
+    }
+    if (owner.deniedConsentPayloads.has(denialKey)) {
       return { kind: "consent_denied", reason: "This task's equivalent cross-provider request was already denied. Continue it yourself; do not retry the same request." };
     }
     const grant = (kind: "once" | "session") => ({
@@ -358,18 +367,17 @@ export class LiveApprovalBroker {
     // The arbiter settles a modal as stale unless it belongs to the session's
     // active turn, and clients match a request to that turn: use its id, not
     // the spawn call's.
-    const turnId = requestingSession.activeTurn?.unsafePeek()?.turnId ?? disclosure.taskId;
     const result = await requestApproval({
       ctx: {
         invocation: {
           session: requestingSession, callId,
-          payload: { kind: "function", arguments: JSON.stringify(disclosure) },
+          payload: { kind: "function", arguments: JSON.stringify(cardDisclosure) },
         } as Parameters<typeof requestApproval>[0]["ctx"]["invocation"],
         callId, toolName: "spawn_agent", approvalKind: "cross_provider_spawn",
         turnId, requiresUserInteraction: true,
         signal: requestingSession.abortController.signal,
       },
-      args: disclosure as unknown as Record<string, unknown>,
+      args: cardDisclosure as unknown as Record<string, unknown>,
       resolver: requestingSession.services.approvalResolver,
       signal: requestingSession.abortController.signal,
     });
@@ -384,7 +392,7 @@ export class LiveApprovalBroker {
       return { kind: "granted", grant: grant("session") };
     }
     if (result.decision.kind === "approved") return { kind: "granted", grant: grant("once") };
-    owner.deniedConsentPayloads.add(disclosure.denialKey);
+    owner.deniedConsentPayloads.add(denialKey);
     return { kind: "consent_denied", reason: "The user denied this cross-provider child. Continue the subtask yourself and do not retry the same request." };
   }
 

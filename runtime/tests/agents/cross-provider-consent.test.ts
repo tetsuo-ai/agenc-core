@@ -141,6 +141,49 @@ describe("live cross-provider consent", () => {
     } finally { fixture.close(); }
   });
 
+  it("rejects a consent request when its requesting turn changes during the capability check", async () => {
+    let answerCapability!: (answer: boolean) => void;
+    const capability = new Promise<boolean>((resolve) => { answerCapability = resolve; });
+    let activeTurnId = "turn-a";
+    const session = {
+      conversationId: "root-session",
+      services: {},
+      abortController: new AbortController(),
+      activeTurn: { unsafePeek: () => ({ turnId: activeTurnId }) },
+      currentRootHumanTurn: () => ({ turnId: activeTurnId }),
+      eventLog: { subscribe: () => () => {} },
+      onBeforeDurableClose: () => () => {},
+    } as unknown as Session;
+    const broker = new LiveApprovalBroker({ canAnswerCrossProviderConsent: () => capability });
+    const close = broker.register(session, { isActive: () => true });
+    const request = authorizeChildExecutionPlan(session, {
+      ...plan, task: { ...plan.task, parentTurnId: "turn-a" },
+    });
+    try {
+      activeTurnId = "turn-b";
+      answerCapability(true);
+      await expect(request).resolves.toMatchObject({ kind: "consent_unavailable" });
+      expect(broker.list("root-session")).toHaveLength(0);
+      const onTurnB = { ...plan, task: { ...plan.task,
+        id: "turn-b-task", parentTurnId: "turn-b" } };
+      const second = authorizeChildExecutionPlan(session, onTurnB);
+      await vi.waitFor(() => expect(broker.list("root-session")).toHaveLength(1));
+      const card = broker.list("root-session")[0]!;
+      expect(card.turnId).toBe("turn-b");
+      expect(card.crossProvider?.denialKey)
+        .toBe(buildCrossProviderDisclosure(onTurnB).denialKey);
+      broker.resolve("root-session", card.requestId, { kind: "denied" });
+      await expect(second).resolves.toMatchObject({ kind: "consent_denied" });
+      await expect(authorizeChildExecutionPlan(session, { ...onTurnB,
+        task: { ...onTurnB.task, id: "turn-b-retry" } }))
+        .resolves.toMatchObject({ kind: "consent_denied" });
+      expect(broker.list("root-session")).toHaveLength(0);
+    } finally {
+      broker.abort("root-session");
+      close();
+    }
+  });
+
   it("allows once and old clients cannot approve an unknown kind", async () => {
     const fixture = interactiveFixture();
     try {

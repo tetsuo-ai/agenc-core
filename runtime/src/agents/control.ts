@@ -520,6 +520,7 @@ export class AgentControl {
         this.session,
         opts.providerSelection.provider,
         opts.providerSelection.model,
+        opts.executionPlan?.crossProvider ? opts.executionPlan.destination : undefined,
       );
       if (validated.provider !== opts.providerSelection.provider ||
           validated.model !== opts.providerSelection.model) {
@@ -1658,6 +1659,7 @@ export class AgentControl {
           planParentSession,
           metadata.crossProvider.provider,
           metadata.crossProvider.model,
+          metadata.executionPlan.destination,
         );
         const prepared = await planParentSession.providerService.prepareChild(selection, undefined, {}, true,
           metadata.executionPlan.route.provider === "agenc" ? metadata.executionPlan.destination : undefined,

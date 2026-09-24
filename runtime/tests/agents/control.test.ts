@@ -1296,6 +1296,59 @@ describe("AgentControl", () => {
     expect(prepareChild).toHaveBeenCalledOnce();
   });
 
+  it("resumes an approved account-only OpenAI child after its parent switches to OpenAI", async () => {
+    const session = stubSession({ conversationId: "account-model-root" });
+    let parentProvider = "grok";
+    const prepareChild = vi.fn(async () => ({
+      authProfile: "sign_in" as const, billingSource: "sign_in" as const,
+      signInModelCapabilities: { supportsToolUse: true },
+      binding: { provider: "openai", model: "account-only-model",
+        instance: { dispose: vi.fn() }, factoryOptions: {
+          baseURL: "https://chatgpt.com/backend-api/codex" } },
+    }));
+    Object.assign(session, {
+      modelInfo: { slug: "grok-4.6", provider: "grok" },
+      sessionConfiguration: { ...session.sessionConfiguration, cwd: "/workspace",
+        collaborationMode: { model: "grok-4.6" } },
+      providerService: { current: () => ({ provider: parentProvider, model: "grok-4.6" }),
+        prepareChild, previewChildDestination: async () => ({
+          endpoint: "https://chatgpt.com/backend-api/codex",
+          authProfile: "sign_in", billingSource: "sign_in" }) },
+      services: { ...session.services, configStore: { current: () => ({
+        model_provider: "grok", model: "grok-4.6",
+        agents: { cross_provider_enabled: true, allowed_providers: ["openai"] } }) },
+        crossProviderConsent: { ownerSessionId: "account-model-root", sessionEpoch: "live-epoch",
+          request: async (_requester: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+            kind: "granted" as const, grant: { kind: "once" as const,
+              ownerSessionId: "account-model-root", sessionEpoch: "live-epoch",
+              taskId: disclosure.taskId, scopeKey: disclosure.scopeKey,
+              payloadKey: disclosure.payloadKey },
+          }) } },
+    });
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    const proposed = await createChildExecutionPlan({ session,
+      selection: { provider: "openai", model: "account-only-model" },
+      modelInfo: { slug: "account-only-model", provider: "openai",
+        supportsToolUse: true } as Session["modelInfo"],
+      parentPath: "/root", taskId: "account-task", taskName: "worker",
+      taskText: "inspect", toolFree: false, forkedHistory: false });
+    const authorized = await authorizeChildExecutionPlan(session, proposed);
+    expect(authorized.kind).toBe("granted");
+    if (authorized.kind !== "granted") throw new Error("fixture consent was not granted");
+    parentProvider = "openai";
+    const metadata: AgentMetadata = {
+      agentId: "account-child", agentPath: "/root/account_child",
+      agentNickname: "account child", agentRole: "scanner",
+      ...roleProvenance(control, "scanner"), depth: 1,
+      crossProvider: { provider: "openai", model: "account-only-model",
+        policy: "user-or-managed-agents-v1" }, executionPlan: authorized.plan,
+    };
+    await expect(control.resume({ parentPath: "/root", metadata }))
+      .resolves.toMatchObject({ agentId: "account-child" });
+    expect(prepareChild).toHaveBeenCalledOnce();
+  });
+
   it("resume() fails closed for named legacy metadata without workspace provenance", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();

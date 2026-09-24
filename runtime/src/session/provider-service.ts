@@ -594,18 +594,12 @@ export class SessionProviderService {
         throw new Error("Cross-provider Grok Composer children cannot use the CLI transport");
       }
       assertSupportedCrossProviderAuth(provider, authProfile);
-      if (authProfile === "sign_in") {
-        signInModelCapabilities = await assertSignInChildModelEligible({
-          provider, model, options: effective,
-          fetchImpl: typeof effective.extra?.fetchImpl === "function"
-            ? effective.extra.fetchImpl as typeof fetch : fetch,
-          environment: this.#environment,
-        });
-      }
     }
     const factoryOptions = canonicalEndpointRequired
       ? { ...authority.factoryOptions, extra: {
           ...(authority.factoryOptions.extra ?? {}), canonicalEndpointRequired: true,
+          ...(provider === "grok" || provider === "openai"
+            ? { authMode: authProfile === "sign_in" ? "oauth" : "api_key" } : {}),
           fetchImpl: createPinnedProviderFetch(
             [provider === "openai" && authProfile === "sign_in"
               ? CHATGPT_BACKEND_BASE_URL : resolveBuiltInProviderInfo(provider)!.baseURL],
@@ -631,6 +625,33 @@ export class SessionProviderService {
         } }
       : authority.factoryOptions;
     const instance = createProvider(provider, factoryOptions);
+    let binding: ProviderBinding;
+    try {
+      binding = bindingFromProvider({
+        provider: instance,
+        providerName: provider,
+        model,
+        revision: expectedRevision + 1,
+      });
+      if (canonicalEndpointRequired && (provider === "grok" || provider === "openai")) {
+        const boundMode = binding.factoryOptions.extra?.authMode;
+        if (boundMode !== (authProfile === "sign_in" ? "oauth" : "api_key")) {
+          throw new Error("resume_blocked: bound child authority differs from approved plan; new consent is required");
+        }
+      }
+      if (canonicalEndpointRequired && authProfile === "sign_in") {
+        const boundOptions = binding.factoryOptions;
+        signInModelCapabilities = await assertSignInChildModelEligible({
+          provider, model, options: boundOptions,
+          fetchImpl: typeof boundOptions.extra?.fetchImpl === "function"
+            ? boundOptions.extra.fetchImpl as typeof fetch : fetch,
+          environment: this.#environment,
+        });
+      }
+    } catch (error) {
+      await instance.dispose?.();
+      throw error;
+    }
     if (canonicalEndpointRequired) pinnedChildProviders.add(instance);
     return Object.freeze({
       expectedRevision,
@@ -640,12 +661,7 @@ export class SessionProviderService {
       managedDefaultOutputCap:
         authority.managedCredential &&
         runtimeOptions.applyManagedDefaultOutputCap === true,
-      binding: bindingFromProvider({
-        provider: instance,
-        providerName: provider,
-        model,
-        revision: expectedRevision + 1,
-      }),
+      binding,
     });
   }
 

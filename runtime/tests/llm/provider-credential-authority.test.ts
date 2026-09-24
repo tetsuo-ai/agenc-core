@@ -470,6 +470,57 @@ describe("provider credential authority", () => {
     await prepared.binding.instance.dispose?.();
   });
 
+  test("an approved Grok BYOK child keeps API-key billing after a sign-in is saved before its session fork", async () => {
+    const home = await createHome("grok-child-billing-fork");
+    const { xaiCredentials } = await loadCredentialModules();
+    const [{ SessionProviderService }, { createProvider, readProviderFactoryOptions }] = await Promise.all([
+      import("../../src/session/provider-service.js"),
+      import("../../src/llm/provider.js"),
+    ]);
+    const service = new SessionProviderService({
+      initialProvider: createProvider("ollama", { model: "llama3.3" }),
+      environment: { XAI_API_KEY: "approved-byok" },
+    });
+    const prepared = await service.prepareChild(
+      { provider: "grok", model: "grok-4.6" },
+      { model: "grok-4.6", credentialHome: home }, {}, true, undefined,
+      { endpoint: "https://api.x.ai/v1", authProfile: "api_key", billingSource: "byok" },
+    );
+    expect(prepared.authProfile).toBe("api_key");
+    xaiCredentials.saveXaiOauthCredentials(home, { accessToken: "later-sign-in" });
+    const fork = prepared.binding.instance.forkForSession?.({ cwd: testRoot });
+    expect(fork).toBeDefined();
+    expect(readProviderFactoryOptions(fork!).extra?.authMode).toBe("api_key");
+    expect(readProviderFactoryOptions(fork!).apiKey).toBe("approved-byok");
+    await fork?.dispose?.();
+    await prepared.binding.instance.dispose?.();
+  });
+
+  test("an approved Grok sign-in child cannot fork onto API billing after sign-out", async () => {
+    const home = await createHome("grok-child-sign-in-fork");
+    const { xaiCredentials } = await loadCredentialModules();
+    xaiCredentials.saveXaiOauthCredentials(home, { accessToken: "approved-sign-in" });
+    const wire = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: "grok-4.6" }] }));
+    const [{ SessionProviderService }, { createProvider }] = await Promise.all([
+      import("../../src/session/provider-service.js"),
+      import("../../src/llm/provider.js"),
+    ]);
+    const service = new SessionProviderService({
+      initialProvider: createProvider("ollama", { model: "llama3.3" }),
+      environment: { XAI_API_KEY: "fallback-byok" },
+    });
+    const prepared = await service.prepareChild(
+      { provider: "grok", model: "grok-4.6" },
+      { model: "grok-4.6", credentialHome: home, extra: { fetchImpl: wire } },
+      {}, true, undefined,
+      { endpoint: "https://api.x.ai/v1", authProfile: "sign_in", billingSource: "sign_in" },
+    );
+    xaiCredentials.clearXaiOauthCredentials(home);
+    expect(() => prepared.binding.instance.forkForSession?.({ cwd: testRoot }))
+      .toThrow(/sign-in.*(missing|unavailable|expired)/iu);
+    await prepared.binding.instance.dispose?.();
+  });
+
   test.each(["openai", "grok"] as const)("%s never falls back to paid API credentials when selected OAuth is absent", async (provider) => {
     const home = await createHome(`absent-${provider}`);
     const { providerOptions } = await loadCredentialModules();

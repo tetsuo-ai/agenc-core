@@ -45,6 +45,8 @@ export interface CrossProviderSpawnDisclosure {
   readonly futureToolResultsGoToProvider: true;
   readonly scopeKey: string;
   readonly payloadKey: string;
+  /** Turn captured when this disclosure was made. */
+  readonly requestingTurnId: string;
   /** Equivalent re-asks within the same parent turn use this key. */
   readonly denialKey: string;
 }
@@ -232,7 +234,7 @@ export function buildCrossProviderDisclosure(
     attachments, budget: plan.budgetAllocation });
   const payloadKey = fingerprint({ scopeKey, taskId: plan.task.id, taskText, attachments });
   const parentTurnId = sessionTurnIdForPlan(plan);
-  const denialKey = fingerprint({ scopeKey, parentTurnId, taskText, attachments });
+  const denialKey = crossProviderDenialKey({ scopeKey, taskText, attachments }, parentTurnId);
   const cost = resolveModelCostEntry({ provider: plan.destination.provider, model: plan.destination.model }, DEFAULT_MODEL_COSTS);
   return Object.freeze({
     kind: "cross_provider_spawn" as const,
@@ -251,8 +253,17 @@ export function buildCrossProviderDisclosure(
       subscriptionUsageNote: "Usage counts against your subscription limits.",
     } : {}),
     maxModelCalls: plan.budgetAllocation?.maxModelCalls ?? null,
-    futureToolResultsGoToProvider: true as const, scopeKey, payloadKey, denialKey,
+    futureToolResultsGoToProvider: true as const, scopeKey, payloadKey,
+    requestingTurnId: parentTurnId, denialKey,
   });
+}
+
+export function crossProviderDenialKey(
+  disclosure: Pick<CrossProviderSpawnDisclosure, "scopeKey" | "taskText" | "attachments">,
+  turnId: string,
+): string {
+  return fingerprint({ scopeKey: disclosure.scopeKey, parentTurnId: turnId,
+    taskText: disclosure.taskText, attachments: disclosure.attachments });
 }
 
 function sessionTurnIdForPlan(plan: ChildExecutionPlan): string {
@@ -317,7 +328,8 @@ export async function assertChildExecutionPlan(session: Session, plan: ChildExec
   const selected = !plan.crossProvider &&
       resolveBuiltInProviderSlug(plan.route.provider) === undefined
     ? { provider: currentChildProvider(session).provider, model: plan.route.model }
-    : await resolveChildSelection(session, plan.route.provider, plan.route.model);
+    : await resolveChildSelection(session, plan.route.provider, plan.route.model,
+      plan.crossProvider ? plan.destination : undefined);
   if (selected.provider !== plan.route.provider || selected.model !== plan.route.model) {
     throw new Error("child execution plan route changed");
   }
@@ -426,6 +438,7 @@ export async function resolveChildSelection(
   session: Session,
   requestedProvider: string | undefined,
   requestedModel: string | undefined,
+  approvedDestination?: ChildExecutionPlan["destination"],
 ): Promise<ProviderSelection> {
   const active = currentChildProvider(session);
   let provider: string | undefined = requestedProvider === undefined
@@ -473,7 +486,9 @@ export async function resolveChildSelection(
     : (catalog[provider] ?? []).includes(model);
   // Account-specific sign-in models are admitted provisionally. Their live
   // /models eligibility is checked through the pinned transport after consent.
-  if (!knownModel && provider !== active.provider &&
+  const approvedSignInChild = approvedDestination?.authProfile === "sign_in" &&
+    approvedDestination.provider === provider && approvedDestination.model === model;
+  if (!knownModel && (provider !== active.provider || approvedSignInChild) &&
       (provider === "openai" || provider === "grok") &&
       typeof session.providerService?.previewChildDestination === "function") {
     knownModel = (await session.providerService.previewChildDestination({ provider, model })).authProfile === "sign_in";
