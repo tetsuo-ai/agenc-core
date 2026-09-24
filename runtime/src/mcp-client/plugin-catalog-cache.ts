@@ -1,5 +1,5 @@
 /** Persistent, content-addressed MCP discovery for installed plugins. */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, cpSync, existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { Worker } from "node:worker_threads";
@@ -103,7 +103,7 @@ export function snapshotInstalledPlugin(root: string, storageRoot: string, diges
     return destination;
   }
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const temporary = `${destination}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
+  const temporary = `${destination}.${process.pid}.${randomUUID()}.tmp`;
   try {
     cpSync(root, temporary, { recursive: true, dereference: false, verbatimSymlinks: true, errorOnExist: true,
       filter: (source) => source === root || isPluginPayloadEntry(source) });
@@ -387,7 +387,7 @@ export function writePluginCatalog(identity: PluginCatalogIdentity, catalog: Plu
   const path = cachePath(identity);
   const directory = pluginCatalogDirectory(identity.cacheHome, identity.pluginName);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const temporary = `${path}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
   writeFileSync(temporary, JSON.stringify(catalog), { mode: 0o600 });
   renameSync(temporary, path);
 }
