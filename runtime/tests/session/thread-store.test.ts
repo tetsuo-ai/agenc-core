@@ -1,7 +1,25 @@
 const artifactCleanupFailure = vi.hoisted(() => ({ path: "", failOnce: false, beforeRemove: undefined as undefined | (() => void), afterRemove: undefined as undefined | (() => void) }));
+const publicationMove = vi.hoisted(() => ({ afterArtifactFsync: undefined as undefined | (() => void), linked: false }));
+const registryReclaimRace = vi.hoisted(() => ({ path: "", beforeRemove: undefined as undefined | (() => void) }));
 vi.mock("node:fs", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs")>();
-  return { ...fs, rmSync: ((path: Parameters<typeof fs.rmSync>[0], options?: Parameters<typeof fs.rmSync>[1]) => {
+  return { ...fs, linkSync: ((existing: string, target: string) => {
+    fs.linkSync(existing, target);
+    if (target.includes("display-artifacts")) publicationMove.linked = true;
+  }) as typeof fs.linkSync, fsyncSync: ((fd: number) => {
+    fs.fsyncSync(fd);
+    if (publicationMove.linked && publicationMove.afterArtifactFsync) {
+      publicationMove.linked = false;
+      const callback = publicationMove.afterArtifactFsync;
+      publicationMove.afterArtifactFsync = undefined;
+      callback();
+    }
+  }) as typeof fs.fsyncSync, rmSync: ((path: Parameters<typeof fs.rmSync>[0], options?: Parameters<typeof fs.rmSync>[1]) => {
+    if (String(path) === registryReclaimRace.path && registryReclaimRace.beforeRemove) {
+      const callback = registryReclaimRace.beforeRemove;
+      registryReclaimRace.beforeRemove = undefined;
+      callback();
+    }
     if (artifactCleanupFailure.failOnce && String(path) === artifactCleanupFailure.path) {
       artifactCleanupFailure.failOnce = false;
       throw Object.assign(new Error("injected artifact cleanup failure"), { code: "EIO" });
@@ -22,7 +40,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RolloutItem } from "./rollout-item.js";
 import { RolloutStore } from "./rollout-store.js";
@@ -37,6 +55,8 @@ import { upsertAgentRun } from "../state/agent-runs.js";
 import { recoverCanonicalRunJournalForRun } from "../state/startup-run-journal-recovery.js";
 import { StateThreadRepository } from "../state/threads.js";
 import { sessionTranscriptV2FromRollout } from "../app-server/background-agent-runner.js";
+import { readDisplayArtifact } from "../../src/session/display-artifact-store.js";
+import { ThreadRegistryLock } from "../../src/thread-store/registry-lock.js";
 
 // Bind fixture homes explicitly: production storage follows immutable session
 // authority instead of later process.env edits in a Vitest hook.
@@ -125,6 +145,10 @@ afterEach(() => {
   artifactCleanupFailure.failOnce = false;
   artifactCleanupFailure.beforeRemove = undefined;
   artifactCleanupFailure.afterRemove = undefined;
+  publicationMove.afterArtifactFsync = undefined;
+  publicationMove.linked = false;
+  registryReclaimRace.path = "";
+  registryReclaimRace.beforeRemove = undefined;
   if (originalAgencHome) process.env.AGENC_HOME = originalAgencHome;
   else delete process.env.AGENC_HOME;
   if (agencHome) rmSync(agencHome, { recursive: true, force: true });
@@ -736,6 +760,59 @@ describe("FileThreadStore.archiveThread / listThreads", () => {
         ),
       ).toBe(true);
     } finally {
+      fixture.close();
+    }
+  });
+
+  it("publishes again at the current rollout when archive moves it during a foreign-writer publication", () => {
+    const fixture = openForeignArchiveFixture("publication-move");
+    const { originalPath, owner, daemon } = fixture;
+    const bytes = Buffer.from("A".repeat(400_000));
+    const registryLockPath = `${daemon.registryFilePath}.lock`;
+    const deadPid = 2_147_483_647;
+    const secondReclaimer = new ThreadRegistryLock(daemon.getProjectDir());
+    let secondAcquired = false;
+    let replacement: ThreadRegistryLock | undefined;
+    let replacementToken = "";
+    let moved = false;
+    try {
+      mkdirSync(registryLockPath);
+      writeFileSync(join(registryLockPath, "holder.pid"), `${deadPid}:dead-beef`);
+      const realKill = process.kill.bind(process);
+      vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+        if (pid === deadPid) throw Object.assign(new Error("dead holder"), { code: "ESRCH" });
+        return realKill(pid, signal);
+      });
+      registryReclaimRace.path = registryLockPath;
+      registryReclaimRace.beforeRemove = () => { secondAcquired = secondReclaimer.tryAcquire(); };
+      publicationMove.afterArtifactFsync = () => {
+        moved = true;
+        // Model loss of the registry holder after the reclaimer race so an
+        // archive can commit while publication finishes its old write.
+        rmSync(registryLockPath, { recursive: true, force: true });
+        daemon.archiveThread({ threadId: "publication-move" });
+        owner.shutdownThread("publication-move");
+        replacement = new ThreadRegistryLock(daemon.getProjectDir());
+        expect(replacement.tryAcquire()).toBe(true);
+        replacementToken = readFileSync(join(registryLockPath, "holder.pid"), "utf8");
+      };
+
+      const id = daemon.publishTranscriptArtifact("publication-move", originalPath, bytes);
+      expect(moved).toBe(true);
+      expect(secondAcquired).toBe(false);
+      expect(readFileSync(join(registryLockPath, "holder.pid"), "utf8")).toBe(replacementToken);
+      const archivedPath = join(daemon.getProjectDir(), "archived_sessions", "publication-move", basename(originalPath));
+      expect(existsSync(archivedPath)).toBe(true);
+      expect(existsSync(originalPath)).toBe(false);
+      replacement?.release();
+      replacement = undefined;
+      const current = daemon.readThread({ threadId: "publication-move", includeArchived: true, includeHistory: false });
+      expect(current.rolloutPath).toBe(archivedPath);
+      expect(readDisplayArtifact(dirname(current.rolloutPath!), id)).toEqual(bytes);
+    } finally {
+      replacement?.release();
+      secondReclaimer.release();
+      vi.restoreAllMocks();
       fixture.close();
     }
   });

@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 export const THREAD_REGISTRY_FILENAME = "threads.json";
 
@@ -7,6 +9,7 @@ export const THREAD_REGISTRY_FILENAME = "threads.json";
 export class ThreadRegistryLock {
   readonly path: string;
   private acquired = false;
+  private token: string | undefined;
 
   constructor(projectDir: string) {
     this.path = `${join(projectDir, THREAD_REGISTRY_FILENAME)}.lock`;
@@ -25,20 +28,24 @@ export class ThreadRegistryLock {
   tryAcquire(): boolean {
     if (this.acquired) return true;
     mkdirSync(dirname(this.path), { recursive: true });
-    const holderFile = join(this.path, "holder.pid");
     // A second pass only follows the removal of a dead holder's lock.
     for (let pass = 0; pass < 2; pass += 1) {
       try {
         mkdirSync(this.path);
-        try { writeFileSync(holderFile, `${process.pid}`, "utf8"); }
-        catch { /* The directory itself is the lock; the pid aids recovery. */ }
+        const token = `${process.pid}:${randomUUID()}`;
+        try { writeFileSync(join(this.path, "holder.pid"), token, { encoding: "utf8", flag: "wx" }); }
+        catch (error) {
+          rmSync(this.path, { recursive: true, force: true });
+          throw new Error(`failed to write registry lock holder ${this.path}`, { cause: error });
+        }
+        this.token = token;
         this.acquired = true;
         return true;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
           throw new Error(`failed to acquire registry lock ${this.path}`, { cause: error });
         }
-        if (!this.tryReclaimStaleLock(holderFile)) return false;
+        if (!this.tryReclaimStaleLock()) return false;
       }
     }
     return false;
@@ -46,31 +53,60 @@ export class ThreadRegistryLock {
 
   release(): void {
     if (!this.acquired) return;
-    try { rmSync(this.path, { recursive: true, force: true }); }
-    finally { this.acquired = false; }
+    try {
+      if (this.token !== undefined && this.readHolderToken() === this.token) {
+        rmSync(this.path, { recursive: true, force: true });
+      }
+    } finally {
+      this.token = undefined;
+      this.acquired = false;
+    }
   }
 
-  private tryReclaimStaleLock(holderFile: string): boolean {
+  private readHolderToken(): string | undefined {
+    try { return readFileSync(join(this.path, "holder.pid"), "utf8").trim(); }
+    catch { return undefined; }
+  }
+
+  private holderIsStale(token: string | undefined): boolean {
     let holderPid: number | null = null;
-    try {
-      const parsed = Number.parseInt(readFileSync(holderFile, "utf8").trim(), 10);
-      if (Number.isInteger(parsed) && parsed > 0) holderPid = parsed;
-    } catch { /* A holder may not have written its pid yet. */ }
+    const pidText = token?.match(/^([1-9]\d*)(?::[0-9a-f-]+)?$/u)?.[1];
+    if (pidText !== undefined) {
+      const parsed = Number(pidText);
+      if (Number.isSafeInteger(parsed)) holderPid = parsed;
+    }
     if (holderPid !== null) {
       try {
         process.kill(holderPid, 0);
         return false;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false;
+        return (error as NodeJS.ErrnoException).code === "ESRCH";
       }
-    } else {
-      try {
-        if (Date.now() - statSync(this.path).mtimeMs < 5_000) return false;
-      } catch { return true; }
     }
+    try { return Date.now() - statSync(this.path).mtimeMs >= 5_000; }
+    catch { return false; }
+  }
+
+  private tryReclaimStaleLock(): boolean {
+    const observed = this.readHolderToken();
+    if (!this.holderIsStale(observed)) return false;
+    // SQLite's writer reservation serializes reclaimers and is released even
+    // if a process dies midway through reclaiming the stale directory.
+    const gate = new DatabaseSync(`${this.path}.reclaim.sqlite`, { timeout: 0 });
+    let held = false;
     try {
+      try { gate.exec("BEGIN IMMEDIATE"); held = true; }
+      catch (error) {
+        if ((error as { errcode?: number }).errcode === 5) return false; // SQLITE_BUSY
+        throw error;
+      }
+      if (this.readHolderToken() !== observed || !this.holderIsStale(observed)) return false;
       rmSync(this.path, { recursive: true, force: true });
       return true;
     } catch { return false; }
+    finally {
+      try { if (held) gate.exec("ROLLBACK"); }
+      finally { gate.close(); }
+    }
   }
 }

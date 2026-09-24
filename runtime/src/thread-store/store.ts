@@ -15,7 +15,7 @@ import {
   statSync,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { persistDisplayArtifactBytes, removeDisplayArtifacts } from "../session/display-artifact-store.js";
+import { persistDisplayArtifactBytes, readDisplayArtifact, removeDisplayArtifacts } from "../session/display-artifact-store.js";
 import { THREAD_REGISTRY_FILENAME, ThreadRegistryLock } from "./registry-lock.js";
 import {
   basename,
@@ -658,27 +658,41 @@ export class FileThreadStore implements ThreadStore {
         // takes its canonical rollout lease before removing the session dir.
         // Do not let lock acquisition create a directory that retention moved.
         if (!existsSync(current)) throw new ThreadNotFoundError(threadId);
+        let digest: string;
         const ownWriter = this.liveRecorders.get(threadId);
         if (ownWriter?.rolloutPath === current) {
-          return persistDisplayArtifactBytes(dirname(current), bytes);
-        }
-        const lease = new SessionLock(`${current}.lock`);
-        try {
+          digest = persistDisplayArtifactBytes(dirname(current), bytes);
+        } else {
+          const lease = new SessionLock(`${current}.lock`);
           try {
-            lease.acquire({ createParent: false });
-          } catch (error) {
-            if (!(error instanceof SessionLockedError)) throw error;
-            // A foreign foreground writer can own this lease for the whole
-            // session. Retention takes the project registry lock before its
-            // lease and directory removal, so it cannot be the holder here.
+            try {
+              lease.acquire({ createParent: false });
+            } catch (error) {
+              if (!(error instanceof SessionLockedError)) throw error;
+              // A foreign foreground writer can own this lease for the whole
+              // session. Retention takes the project registry lock before its
+              // lease and directory removal, so it cannot be the holder here.
+              if (!existsSync(current)) throw new ThreadNotFoundError(threadId);
+            }
             if (!existsSync(current)) throw new ThreadNotFoundError(threadId);
-            return persistDisplayArtifactBytes(dirname(current), bytes);
+            digest = persistDisplayArtifactBytes(dirname(current), bytes);
+          } finally {
+            lease.release();
           }
-          if (!existsSync(current)) throw new ThreadNotFoundError(threadId);
-          return persistDisplayArtifactBytes(dirname(current), bytes);
-        } finally {
-          lease.release();
         }
+        // A former registry holder could have lost its lock to a stale-lock
+        // race while the foreign writer still held the rollout lease. Verify
+        // the committed location after the write and retry a moved session.
+        const latest = this.readRegistryUnlocked(true).get(threadId);
+        const latestPath = latest === undefined ? undefined : this.readableRolloutPath(latest);
+        if (latestPath === undefined) throw new ThreadNotFoundError(threadId);
+        if (latestPath !== current) {
+          candidate = latestPath;
+          continue;
+        }
+        try {
+          if (readDisplayArtifact(dirname(latestPath), digest).equals(bytes)) return digest;
+        } catch { /* The current location was cleaned up while publishing. */ }
       }
       throw new ThreadStoreInvalidRequestError(`thread ${threadId} moved during transcript artifact publication`);
     });
