@@ -160,7 +160,7 @@ import {
   shutdownLspServerManager,
   waitForInitialization,
 } from "../services/lsp/manager.js";
-import { ConfigStore } from "../config/store.js";
+import { ConfigStore, nextConfigReadMark } from "../config/store.js";
 import { SessionProviderService } from "../session/provider-service.js";
 import { LLMFundsError } from "../llm/errors.js";
 import { LiveApprovalBroker } from "../app-server/live-approval-broker.js";
@@ -1092,6 +1092,58 @@ describe("runAgent", () => {
     expect(target.chatStream).not.toHaveBeenCalled();
   });
 
+  it("never reaches the provider of a managed child whose settings change while its last check resolves the destination", async () => {
+    let enabled = true;
+    const agents = () => ({ cross_provider_enabled: enabled, allowed_providers: ["agenc", "deepseek"] });
+    const configStore = new ConfigStore({
+      cwd: "/tmp",
+      base: { model_provider: "grok", model: "grok-4.6", agents: agents() },
+      loader: async () => ({ model_provider: "grok", model: "grok-4.6", agents: agents() }),
+    });
+    const target = { ...makeProvider([{ content: "done" }]), name: "agenc", chatStream: vi.fn() } as LLMProvider;
+    const selection = { provider: "agenc", model: "agenc" };
+    const { parent, prepare, modelInfo } = crossProviderRuntime(target, configStore, selection);
+    // After preparation, the last plan check awaits the managed destination.
+    let armed = false;
+    let arrived!: () => void;
+    const atDestination = new Promise<void>((resolve) => { arrived = resolve; });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    Object.assign(parent.providerService, {
+      resolveManagedChildDestination: async () => {
+        if (armed) {
+          armed = false;
+          arrived();
+          await released;
+        }
+        return { provider: "deepseek", model: "deepseek-v4-pro" };
+      },
+      previewChildDestination: async (_selection: unknown, concrete: { provider: string } | undefined) => ({
+        endpoint: concrete?.provider === "agenc" ? "https://id.agenc.ag/v1" : "https://api.deepseek.com/v1",
+        authProfile: "managed", billingSource: "managed",
+      }),
+    });
+    const plan = await authorizedCrossProviderPlan(parent, { ...modelInfo, slug: "agenc" }, selection);
+    Object.assign(parent.providerService, {
+      prepareChild: async () => {
+        const prepared = await prepare();
+        armed = true;
+        return prepared;
+      },
+    });
+    const { live } = await spawnLive(parent);
+    const run = collectRun(runAgent({ live, parent,
+      initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", plan }));
+    await atDestination;
+    // A daemon reload turns the feature off before the child subscribes.
+    enabled = false;
+    await expect(configStore.reloadAgentsSection()).resolves.toBe(true);
+    release();
+    const { result } = await run;
+    expect(result.outcome).not.toBe("completed");
+    expect(target.chatStream).not.toHaveBeenCalled();
+  });
+
   it("stops and cleans up a child while its model-list preparation is stalled", async () => {
     const configStore = new ConfigStore({ cwd: "/tmp",
       base: { agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] } } });
@@ -1129,7 +1181,7 @@ describe("runAgent", () => {
     expect(liveAgentSession(live)).toBeUndefined();
   });
 
-  it.each(["Stop", "switch off", "daemon reload"])("cancels an active cross-provider stream on %s", async (cause) => {
+  it.each(["Stop", "switch off", "daemon reload", "failed daemon reload"])("cancels an active cross-provider stream on %s", async (cause) => {
     let enabled = true;
     const configStore = new ConfigStore({
       cwd: "/tmp",
@@ -1163,7 +1215,11 @@ describe("runAgent", () => {
     const run = collectRun(runAgent({ live, parent, initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", plan }));
     await active;
     if (cause === "Stop") control.stopOpenSpawnChildren(parent.conversationId, "user_stop");
-    else {
+    else if (cause === "failed daemon reload") {
+      // The session cannot read its settings again, so it is narrowed to the
+      // daemon's view, which turned the feature off.
+      expect(configStore.limitAgentsSection({ cross_provider_enabled: false }, nextConfigReadMark())).toBe(true);
+    } else {
       enabled = false;
       // A daemon reload refreshes only the [agents] section of an open session.
       if (cause === "daemon reload") await expect(configStore.reloadAgentsSection()).resolves.toBe(true);

@@ -3981,10 +3981,29 @@ export interface DaemonReloadMcpServerResult extends JsonObject {
   readonly url?: string;
 }
 
+/** An open session that could not read its `[agents]` settings again. */
+export interface DaemonReloadCrossProviderSettingsFailure extends JsonObject {
+  readonly sessionId: string;
+  /** Why, in plain words, with secrets redacted. */
+  readonly reason: string;
+}
+
+export interface DaemonReloadCrossProviderSettingsResult extends JsonObject {
+  /**
+   * Sessions that could not read their cross-provider subagent settings
+   * again, or not in time. Each now allows only what both its earlier
+   * settings and the daemon's settings allow, until a later read of its own
+   * settings succeeds.
+   */
+  readonly failed: readonly DaemonReloadCrossProviderSettingsFailure[];
+}
+
 export interface DaemonReloadResult extends JsonObject {
   readonly reloaded: true;
   readonly configReloadedAt: string;
   readonly mcpServer: DaemonReloadMcpServerResult;
+  /** Present only when an open session could not take the new settings. */
+  readonly crossProviderSettings?: DaemonReloadCrossProviderSettingsResult;
 }
 
 export interface DaemonShutdownResult extends JsonObject {

@@ -2857,6 +2857,7 @@ async function reloadAgenCDaemon(
   }
 
   let bound: BoundAgenCDaemonCliInstance;
+  let reloaded: DaemonReloadResult | undefined;
   try {
     bound = await proveAgenCDaemonCliInstance(
       host,
@@ -2866,7 +2867,7 @@ async function reloadAgenCDaemon(
     );
     const requestReload =
       options.requestDaemonReload ?? requestAgenCDaemonReload;
-    await Promise.resolve(requestReload(host, bound.identity));
+    reloaded = await Promise.resolve(requestReload(host, bound.identity));
   } catch (error) {
     io.stderr.write(
       `agenc: daemon reload failed (pid ${recorded.pid}): ${formatCleanupError(error)}\n`,
@@ -2876,6 +2877,9 @@ async function reloadAgenCDaemon(
   io.stdout.write(
     `AgenC daemon reloaded configuration (pid ${bound.identity.pid})\n`,
   );
+  for (const failure of reloaded?.crossProviderSettings?.failed ?? []) {
+    io.stderr.write(crossProviderSettingsFailureLine(failure));
+  }
   return 0;
 }
 
@@ -3569,6 +3573,11 @@ async function runAgenCDaemonForegroundLocked(
         hasAttachedClientWithCapability: (sessionId, capability) =>
           clientMultiplexer.hasAttachedClientWithCapability(sessionId, capability),
       }),
+      // A session that was still starting during a reload reads the settings
+      // again when it registers. No reload result can name it, so log it.
+      onCrossProviderRefreshFailed: (failure) => {
+        io.stderr.write(crossProviderSettingsFailureLine(failure));
+      },
     });
     let configuredRunner: AgenCDelegateBackgroundAgentRunner | undefined;
     if (runner === undefined) {
@@ -3918,17 +3927,29 @@ async function runAgenCDaemonForegroundLocked(
           }
           // Open sessions keep the config they started with, except the
           // cross-provider subagent settings: a provider the user turned off
-          // must stop taking spawns now, not after a restart.
-          const crossProvider = await approvalBroker.refreshCrossProviderPolicy();
-          for (const { sessionId, reason } of crossProvider.failed) {
-            io.stderr.write(
-              `agenc: session ${sessionId} keeps its earlier cross-provider subagent settings. They could not be read again: ${reason}\n`,
-            );
+          // must stop taking spawns now, not after a restart. A session that
+          // cannot read them again is narrowed toward the daemon's own view,
+          // which no workspace file can make unreadable.
+          const crossProvider = await approvalBroker.refreshCrossProviderPolicy(
+            next.config.agents,
+          );
+          for (const failure of crossProvider.failed) {
+            io.stderr.write(crossProviderSettingsFailureLine(failure));
           }
           const result: DaemonReloadResult = {
             reloaded: true,
             configReloadedAt: new Date().toISOString(),
             mcpServer: daemonMcpServerReloadResult(activeMcpServer),
+            ...(crossProvider.failed.length > 0
+              ? {
+                  crossProviderSettings: {
+                    failed: crossProvider.failed.map(({ sessionId, reason }) => ({
+                      sessionId,
+                      reason,
+                    })),
+                  },
+                }
+              : {}),
           };
           io.stderr.write("AgenC daemon config reloaded\n");
           return result;
@@ -6802,7 +6823,29 @@ function isDaemonReloadResult(
   ) {
     return false;
   }
-  return mcpServer.url === undefined || typeof mcpServer.url === "string";
+  if (mcpServer.url !== undefined && typeof mcpServer.url !== "string") {
+    return false;
+  }
+  const crossProviderSettings = value.crossProviderSettings;
+  if (crossProviderSettings === undefined) return true;
+  return isJsonObject(crossProviderSettings) &&
+    Array.isArray(crossProviderSettings.failed) &&
+    crossProviderSettings.failed.every((failure) =>
+      isJsonObject(failure) &&
+      typeof failure.sessionId === "string" &&
+      typeof failure.reason === "string"
+    );
+}
+
+/**
+ * What the daemon and `agenc daemon reload` say about a session that could
+ * not read its cross-provider subagent settings again.
+ */
+function crossProviderSettingsFailureLine(failure: {
+  readonly sessionId: string;
+  readonly reason: string;
+}): string {
+  return `agenc: session ${failure.sessionId} could not read its cross-provider subagent settings again. Until it can, it allows only what both its earlier settings and the daemon's settings allow. Reason: ${failure.reason}\n`;
 }
 
 function daemonShuttingDownResponse(message: JsonObject): JsonObject {

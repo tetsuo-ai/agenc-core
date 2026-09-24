@@ -369,6 +369,9 @@ export async function assertChildExecutionPlan(session: Session, plan: ChildExec
   if (plan.requiredCapabilities.clientTools && catalogEntry?.supportsToolUse === false) {
     throw new Error(`Model ${plan.destination.provider}/${plan.destination.model} cannot call client-side tools`);
   }
+  // A daemon reload can change the settings while a managed destination or a
+  // sign-in preview resolves above. Check them again after the last await.
+  if (plan.policyRevision !== policyRevision(session)) throw new Error("child execution plan policy changed");
 }
 
 export function assertPreparedChildMatchesPlan(plan: ChildExecutionPlan, prepared: PreparedProviderBinding): void {

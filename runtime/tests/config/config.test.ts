@@ -3,13 +3,14 @@ import {
   existsSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
   mkdirSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 import {
   defaultConfig,
@@ -65,7 +66,12 @@ import {
   resolveProviderSettings,
 } from "../../src/config/resolve-provider.js";
 import { configuredModelForProvider } from "../../src/config/resolve-model.js";
-import { ConfigStore, type ConfigStoreOptions } from "../../src/config/store.js";
+import {
+  ConfigStore,
+  narrowAgentsConfig,
+  nextConfigReadMark,
+  type ConfigStoreOptions,
+} from "../../src/config/store.js";
 import {
   getCanonicalSettingsAuthority,
   runWithCanonicalSettingsAuthority,
@@ -2409,6 +2415,172 @@ snapshot_max_count = 0
         await expect(store.reloadAgentsSection()).resolves.toBe(true);
         expect(getCanonicalSettingsAuthority()).toBe(caller);
       });
+    });
+
+    test("narrowAgentsConfig keeps only what both allow and never widens", () => {
+      const current = {
+        cross_provider_enabled: true,
+        allowed_providers: ["deepseek", "openai"],
+      };
+      expect(narrowAgentsConfig(current, {
+        cross_provider_enabled: true,
+        allowed_providers: ["grok", "deepseek"],
+        cross_provider_ask_each_spawn: true,
+      })).toEqual({
+        cross_provider_enabled: true,
+        allowed_providers: ["deepseek"],
+        cross_provider_ask_each_spawn: true,
+      });
+      // A wider limit adds nothing, and either side turns the feature off.
+      expect(narrowAgentsConfig(current, {
+        cross_provider_enabled: true,
+        allowed_providers: ["deepseek", "openai", "grok"],
+      })).toEqual({ ...current, cross_provider_ask_each_spawn: false });
+      expect(narrowAgentsConfig(
+        { ...current, cross_provider_enabled: false },
+        { cross_provider_enabled: true, allowed_providers: ["deepseek"] },
+      ).cross_provider_enabled).toBe(false);
+      expect(narrowAgentsConfig(current, {
+        cross_provider_enabled: false,
+        allowed_providers: ["deepseek"],
+      }).cross_provider_enabled).toBe(false);
+      expect(narrowAgentsConfig(
+        { ...current, cross_provider_ask_each_spawn: true },
+        { cross_provider_enabled: true, allowed_providers: ["deepseek"] },
+      ).cross_provider_ask_each_spawn).toBe(true);
+      // No limit allows nothing.
+      expect(narrowAgentsConfig(current, undefined)).toEqual({
+        cross_provider_enabled: false,
+        allowed_providers: [],
+        cross_provider_ask_each_spawn: false,
+      });
+    });
+
+    test("limitAgentsSection narrows the section at once, tells only the agents listeners, and never widens it", async () => {
+      writeFileSync(join(dir, "config.toml"), toml([
+        'model = "grok-3"',
+        "[agents]",
+        "cross_provider_enabled = true",
+        'allowed_providers = ["deepseek", "openai"]',
+      ]));
+      const store = sessionStore();
+      await store.reload();
+      const before = store.current();
+      const everyReload = vi.fn();
+      const agentsSection = vi.fn();
+      store.subscribe(everyReload);
+      store.subscribe(agentsSection, { sections: ["agents"] });
+
+      // The daemon's own view dropped openai; this session cannot read its
+      // sources, so it keeps only what both allow.
+      expect(store.limitAgentsSection({
+        cross_provider_enabled: true,
+        allowed_providers: ["deepseek", "grok"],
+      }, nextConfigReadMark())).toBe(true);
+      expect(store.current().agents).toEqual({
+        cross_provider_enabled: true,
+        allowed_providers: ["deepseek"],
+        cross_provider_ask_each_spawn: false,
+      });
+      expect(store.current().model).toBe(before.model);
+      expect(store.authoritySnapshot().config).toBe(store.current());
+      expect(everyReload).not.toHaveBeenCalled();
+      expect(agentsSection).toHaveBeenCalledOnce();
+      expect(agentsSection).toHaveBeenCalledWith(
+        store.current(),
+        expect.objectContaining({ sections: ["agents"] }),
+      );
+
+      // A wider view gives nothing back.
+      expect(store.limitAgentsSection({
+        cross_provider_enabled: true,
+        allowed_providers: ["deepseek", "openai", "grok"],
+      }, nextConfigReadMark())).toBe(false);
+      expect(store.current().agents?.allowed_providers).toEqual(["deepseek"]);
+      expect(agentsSection).toHaveBeenCalledOnce();
+    });
+
+    test("a read from before the limit stays within it when a held reload publishes it or rolls back", async () => {
+      const path = join(dir, "config.toml");
+      const enabled = toml([
+        "[agents]",
+        "cross_provider_enabled = true",
+        'allowed_providers = ["deepseek"]',
+      ]);
+      const disabled = toml(["[agents]", "cross_provider_enabled = false"]);
+      const published = vi.fn();
+      for (const ending of ["settle", "rollback"] as const) {
+        writeFileSync(path, enabled);
+        const store = sessionStore();
+        await store.reload();
+        store.subscribe((config) => published(config.agents?.cross_provider_enabled));
+        // A coordinated reload read the sources before the user's save and
+        // still holds the store when a refresh gives up on it.
+        const held = await store.prepareReload();
+        writeFileSync(path, disabled);
+        expect(store.limitAgentsSection(
+          { cross_provider_enabled: false },
+          nextConfigReadMark(),
+        )).toBe(true);
+        held.commit();
+        held.publish();
+        expect(store.current().agents?.cross_provider_enabled).toBe(false);
+        // The older snapshot a rollback restores was read before it too.
+        if (ending === "rollback") held.rollback();
+        held.settle();
+        expect(store.current().agents?.cross_provider_enabled, ending).toBe(false);
+
+        // The next read of the sources began after the limit and replaces it.
+        await expect(store.reloadAgentsSection()).resolves.toBe(false);
+        writeFileSync(path, enabled);
+        await expect(store.reloadAgentsSection()).resolves.toBe(true);
+        expect(store.current().agents?.cross_provider_enabled).toBe(true);
+      }
+      expect(published).not.toHaveBeenCalledWith(true);
+    });
+
+    test("a published full reload from after the limit replaces it", async () => {
+      const path = join(dir, "config.toml");
+      writeFileSync(path, toml([
+        "[agents]",
+        "cross_provider_enabled = true",
+        'allowed_providers = ["deepseek"]',
+      ]));
+      const store = sessionStore();
+      await store.reload();
+      const readBefore = store.agentsReadStartedAt();
+      store.limitAgentsSection({ cross_provider_enabled: false }, nextConfigReadMark());
+      expect(store.current().agents?.cross_provider_enabled).toBe(false);
+      await store.reload();
+      expect(store.agentsReadStartedAt()).toBeGreaterThan(readBefore);
+      expect(store.current().agents?.cross_provider_enabled).toBe(true);
+    });
+
+    test("no source reads the agents section from layers, provenance or ignored values", () => {
+      // A section refresh or limit changes current().agents only. The layers,
+      // provenance and ignored values still describe the last full reload.
+      // The repository loader builds those layers and strips agents from the
+      // project and local ones.
+      const sourceRoot = join(import.meta.dirname, "../../src");
+      const layerRead = /\.(?:sources|provenance|ignored)\(|\.layers\b|\bgetSettingsForSource\(|\bgetCanonicalConfigLayers\(|\bmergeConfigLayerSnapshots\(/u;
+      const agentsRead = /\b(?:cross_provider_enabled|allowed_providers|cross_provider_ask_each_spawn)\b|["'`]agents[."'`]|\.agents\b/u;
+      const files = (directory: string): string[] =>
+        readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+          const path = join(directory, entry.name);
+          if (entry.isDirectory()) return files(path);
+          return /\.tsx?$/u.test(entry.name) ? [path] : [];
+        });
+      const violations = files(sourceRoot)
+        .map((path) => relative(sourceRoot, path))
+        .filter((path) => path !== "config/repository.ts")
+        .filter((path) => {
+          const source = readFileSync(join(sourceRoot, path), "utf8");
+          return layerRead.test(source) && agentsRead.test(source);
+        });
+      expect(violations).toEqual([]);
+      // The guard sees a read through the layers.
+      const probe = 'store.sources("user")[0]?.config.agents?.cross_provider_enabled';
+      expect(layerRead.test(probe) && agentsRead.test(probe)).toBe(true);
     });
   });
 });

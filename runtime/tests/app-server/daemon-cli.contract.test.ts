@@ -3999,11 +3999,13 @@ token_cap = 123
     host.runningPids.add(host.pid);
     const userConfig = join(agencHome, "config.toml");
     const explicitConfig = join(agencHome, "explicit.toml");
+    const lateConfig = join(agencHome, "late.toml");
     const settings = (enabled: boolean, extra: readonly string[] = []) =>
       ["config_version = 2", ...extra, "[agents]", `cross_provider_enabled = ${enabled}`,
         'allowed_providers = ["deepseek"]', ""].join("\n");
     await writeFile(userConfig, settings(true, ['model = "grok-3"']));
     await writeFile(explicitConfig, settings(true));
+    await writeFile(lateConfig, settings(true));
     const refresh = vi.spyOn(LiveApprovalBroker.prototype, "refreshCrossProviderPolicy");
     const unregister: (() => void)[] = [];
     const running = runAgenCDaemonCli(
@@ -4019,8 +4021,8 @@ token_cap = 123
       ).resolves.toBe(0);
       expect(refresh).toHaveBeenCalledTimes(1);
       const broker = refresh.mock.contexts[0] as LiveApprovalBroker;
-      // Open sessions, registered as the runner registers its sessions. One
-      // was started with an explicit --config file.
+      // Open sessions, registered as the runner registers its sessions. Two
+      // were started with an explicit --config file.
       const openSession = async (conversationId: string, flagConfigPath?: string) => {
         const configStore = new ConfigStore({
           home: agencHome,
@@ -4038,35 +4040,61 @@ token_cap = 123
           eventLog: { subscribe: () => () => {} },
           onBeforeDurableClose: () => () => {},
         } as unknown as Session;
-        unregister.push(broker.register(session, { isActive: () => true }));
-        return { session, configStore };
+        return {
+          session,
+          configStore,
+          register: () => { unregister.push(broker.register(session, { isActive: () => true })); },
+        };
       };
       const open = await openSession("open-session");
       const stale = await openSession("stale-session", explicitConfig);
-      expect((await authorizeChildExecutionPlan(open.session, CROSS_PROVIDER_PLAN)).kind)
-        .toBe("granted");
+      open.register();
+      stale.register();
+      // Still starting: it read its settings before the save and registers
+      // only after the reload.
+      const late = await openSession("late-session", lateConfig);
+      for (const session of [open.session, stale.session]) {
+        expect((await authorizeChildExecutionPlan(session, CROSS_PROVIDER_PLAN)).kind)
+          .toBe("granted");
+      }
 
       // Desktop saves the switch, which also changed the model, and reloads.
-      // The explicit file of the other session is gone by then.
+      // The explicit files of the other sessions are gone by then.
       await writeFile(userConfig, settings(false, ['model = "grok-4"']));
       await rm(explicitConfig);
+      await rm(lateConfig);
+      const cliIo = createIo();
       await expect(
-        runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io }),
+        runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io: cliIo }),
       ).resolves.toBe(0);
+      // The daemon's own view, which no workspace file can make unreadable.
+      expect(refresh).toHaveBeenLastCalledWith(
+        expect.objectContaining({ cross_provider_enabled: false }),
+      );
 
       const nextTask = {
         ...CROSS_PROVIDER_PLAN,
         task: { ...CROSS_PROVIDER_PLAN.task, id: "task-two", text: "Another task" },
       } as ChildExecutionPlan;
-      await expect(authorizeChildExecutionPlan(open.session, nextTask)).resolves.toMatchObject({
-        kind: "consent_unavailable",
-        reason: expect.stringContaining("Cross-provider subagents are off"),
-      });
+      late.register();
+      // The session that could not read its settings again is narrowed to
+      // the daemon's view and no longer grants from settings.
+      for (const session of [open.session, stale.session, late.session]) {
+        await expect(authorizeChildExecutionPlan(session, nextTask)).resolves.toMatchObject({
+          kind: "consent_unavailable",
+          reason: expect.stringContaining("Cross-provider subagents are off"),
+        });
+      }
       expect(open.configStore.current().model).toBe("grok-3");
-      expect((await authorizeChildExecutionPlan(stale.session, nextTask)).kind).toBe("granted");
-      expect(io.stderrText()).toContain(
-        "agenc: session stale-session keeps its earlier cross-provider subagent settings. They could not be read again: explicit config file does not exist",
-      );
+      const failureLine = (sessionId: string) =>
+        `agenc: session ${sessionId} could not read its cross-provider subagent settings again. Until it can, it allows only what both its earlier settings and the daemon's settings allow. Reason: explicit config file does not exist`;
+      // The daemon logs both. The reload result names the one it saw, and
+      // `agenc daemon reload` prints it.
+      expect(io.stderrText()).toContain(failureLine("stale-session"));
+      expect(io.stderrText()).toContain(failureLine("late-session"));
+      expect(cliIo.stdoutText()).toContain("AgenC daemon reloaded configuration");
+      expect(cliIo.stderrText()).toContain(failureLine("stale-session"));
+      expect(cliIo.stderrText()).not.toContain("late-session");
 
       signalProcess.emit("SIGTERM");
       stopped = true;
