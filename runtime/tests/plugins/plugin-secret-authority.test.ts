@@ -60,6 +60,7 @@ import {
   type UserConfigSchema,
 } from '../../src/utils/plugins/mcpbHandler.js'
 import { PlaintextPluginSecretError } from '../../src/utils/plugins/pluginConfigAuthority.js'
+import { acquireVerifiedPluginGeneration, hashInstalledPlugin } from '../../src/mcp-client/plugin-catalog-cache.js'
 import {
   loadPluginOptions,
   savePluginOptions,
@@ -138,6 +139,21 @@ afterEach(() => {
 })
 
 describe('plugin secret authority', () => {
+  test('retires a running generation before sensitive-only plugin configuration writes', async () => {
+    const store = await activateConfig('config_version = 2\n')
+    const root = join(store.homeContext.path, 'installed')
+    mkdirSync(root)
+    writeFileSync(join(root, 'entry.js'), 'same')
+    const acquire = () => acquireVerifiedPluginGeneration(root, undefined, hashInstalledPlugin(root), PLUGIN_ID, store.homeContext.path)
+    const optionsLease = await acquire()
+    await savePluginOptions(PLUGIN_ID, { token: 'new-secret' }, OPTION_SCHEMA)
+    expect(optionsLease.isCurrent(optionsLease.version)).toBe(false)
+    optionsLease.release()
+    const serverLease = await acquire()
+    await saveMcpServerUserConfig(PLUGIN_ID, 'main', { bot_token: 'new-token' }, SERVER_SCHEMA)
+    expect(serverLease.isCurrent(serverLease.version)).toBe(false)
+    serverLease.release()
+  })
   test('rejects a top-level plaintext sensitive value instead of using it as fallback', async () => {
     const store = await activateConfig([
       'config_version = 2',

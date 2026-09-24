@@ -46,7 +46,6 @@ import {
 } from "../resolution.js";
 import { parsePluginIdentifier } from "../identifier.js";
 import { skillDisplayNameFromMarkdown } from "../skill-display-metadata.js";
-import { retireVerifiedPluginGenerations } from "../../mcp-client/plugin-catalog-cache.js";
 import { withPluginLifecycleMutation } from "../../mcp-client/plugin-lifecycle-revision.js";
 
 export type PluginScope = "user" | "project" | "local";
@@ -466,7 +465,6 @@ export async function installPluginOp(
     }
     const destination = existingRoots[0] ?? join(installRoot, safeName);
     const result = await withPluginLifecycleMutation(resolvePluginAgencHome(input), pluginId, async () => {
-      retireVerifiedPluginGenerations(pluginId, undefined, resolvePluginAgencHome(input));
       await copyDirectoryAtomically(source, destination, {
         force: input.force === true,
       });
@@ -549,7 +547,6 @@ export async function uninstallPluginOp(
     throw new Error(`plugin is not installed in ${scope} scope: ${input.pluginId}`);
   }
   const result = await withPluginLifecycleMutation(resolvePluginAgencHome(input), pluginId, async () => {
-    retireVerifiedPluginGenerations(pluginId, undefined, resolvePluginAgencHome(input));
     for (const root of targetRoots) await rm(root, { recursive: true, force: true });
     const remainsInstalled = await pluginIdRemainsInstalled(pluginId, input);
     const removedConfig = remainsInstalled
@@ -1065,7 +1062,6 @@ async function writePluginConfigEntry(
     await options.configStore?.reload();
     return path;
   }
-  retireVerifiedPluginGenerations(pluginId, undefined, resolvePluginAgencHome(options));
   const path = pluginConfigPath(options);
   mutateCanonicalUserConfigSync(path, (raw) => {
     const plugins = isRecord(raw.plugins) ? raw.plugins : {};
@@ -1085,7 +1081,7 @@ async function writePluginConfigEntry(
       writable: true,
     });
     if (entry.enabled !== false) plugins.enabled = true;
-  });
+  }, true);
   return path;
 }
 
@@ -1100,7 +1096,6 @@ async function removePluginConfigEntry(
     await options.configStore?.reload();
     return removed;
   }
-  retireVerifiedPluginGenerations(pluginId, undefined, resolvePluginAgencHome(options));
   const path = pluginConfigPath(options);
   let removed = false;
   mutateCanonicalUserConfigSync(path, (raw) => {
@@ -1111,6 +1106,6 @@ async function removePluginConfigEntry(
     if (Object.keys(raw.plugins.plugins).length === 0) {
       delete raw.plugins.plugins;
     }
-  });
+  }, true);
   return removed;
 }

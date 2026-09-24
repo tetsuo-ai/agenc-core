@@ -61,6 +61,11 @@ import { assertValidMcpServerName } from "./server-name.js";
 import { isMcpAuthenticationError } from "../services/mcp/auth-errors.js";
 import { acquireVerifiedPluginGeneration, fingerprintPluginCatalogConfig, primePluginCatalogSingleFlight, readPluginCatalog, writePluginCatalog, type PluginCatalog, type PluginCatalogIdentity, type VerifiedPluginGeneration } from "./plugin-catalog-cache.js";
 import { reservePluginProcess, releasePluginProcess, touchPluginProcess, notifyPluginProcessIdle } from "./plugin-process-budget.js";
+import { readPluginLifecycleRevision } from "./plugin-lifecycle-revision.js";
+import { ConfigStore } from "../config/store.js";
+import { getCanonicalSettingsAuthority, runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
+import { loadPluginMcpServerRegistrations } from "../plugins/registration/mcp-plugin-integration.js";
+import { dirname, join } from "node:path";
 
 /** I-50: cancellable MCP startup wait; 30s default. */
 const MCP_STARTUP_TIMEOUT_MS = 30_000;
@@ -477,6 +482,7 @@ export class MCPManager {
   private readonly revokedPluginConfigs = new WeakSet<MCPServerConfig>();
   private pluginRevocations = new WeakMap<MCPServerConfig, AbortController>();
   private readonly installationGenerations = new Map<MCPServerConfig, { state: VerifiedPluginGeneration; version: number; release: () => void }>();
+  private readonly verifiedPluginBindings = new WeakMap<MCPServerConfig, { revision: string; fingerprint: string }>();
   private readonly preparingInstallations = new WeakSet<MCPServerConfig>();
   private readonly pluginLifecycles = new Map<string, PluginServerLifecycle>();
   private catalogPrimeTask: Promise<void> | undefined;
@@ -855,6 +861,41 @@ export class MCPManager {
     return current;
   }
 
+  /** A stopped manager keeps its old binding until fresh canonical resolution proves it again. */
+  private async canonicalPluginConfigurationStillMatches(config: MCPServerConfig, fingerprint: string): Promise<boolean> {
+    const plugin = config.origin?.pluginServer;
+    const home = config.pluginCatalogHome;
+    if (!plugin?.pluginRoot || !plugin.digest || !home) return false;
+    const active = getCanonicalSettingsAuthority();
+    const projectRoot = active?.homeContext.path === home ? active.projectRoot : process.cwd();
+    const store = new ConfigStore({ home, cwd: projectRoot, projectRoot, env: { ...process.env, AGENC_HOME: home } });
+    return runWithCanonicalSettingsAuthority(store, async () => {
+      await store.reload();
+      const registrations = await loadPluginMcpServerRegistrations({
+        pluginStorageRoot: plugin.snapshotRoot === undefined
+          ? join(home, "plugins")
+          : dirname(dirname(dirname(plugin.snapshotRoot))),
+        workspaceRoot: projectRoot,
+        config: store.current(),
+        env: { ...this.environment },
+        readOnly: true,
+        fresh: true,
+      });
+      const resolved = registrations.find(entry => entry.name === config.name && entry.pluginName === plugin.pluginName);
+      if (!resolved || resolved.server.enabled === false || resolved.pluginRoot !== plugin.pluginRoot ||
+          resolved.digest !== plugin.digest || resolved.snapshotRoot !== plugin.snapshotRoot) return false;
+      const server = resolved.server as MCPServerConfig;
+      return fingerprintPluginCatalogConfig({
+        transport: server.transport ?? "stdio", command: server.command,
+        args: server.args, env: server.env, env_vars: server.env_vars,
+        cwd: server.cwd, endpoint: server.endpoint, headers: server.headers,
+        pluginSandbox: server.pluginSandbox,
+        userConfigDigest: resolved.userConfigDigest,
+        parentEnvironment: this.environment,
+      }) === fingerprint;
+    });
+  }
+
   private async prepareInstallationGenerations(): Promise<void> {
     for (const config of this.configs) {
       if (config.origin?.pluginServer?.pluginRoot && config.origin.pluginServer.digest && config.enabled !== false) {
@@ -865,7 +906,21 @@ export class MCPManager {
       const plugin = config.origin?.pluginServer;
       if (!plugin?.pluginRoot || !plugin.digest || config.enabled === false) return;
       try {
+        const binding = this.verifiedPluginBindings.get(config);
+        let expectedRevision: string | undefined;
+        if (binding !== undefined && config.pluginCatalogHome !== undefined) {
+          try { expectedRevision = readPluginLifecycleRevision(config.pluginCatalogHome, plugin.pluginName); }
+          catch { throw new Error("Plugin lifecycle revision cannot be read on resume"); }
+          if (expectedRevision !== binding.revision &&
+              !await this.canonicalPluginConfigurationStillMatches(config, binding.fingerprint)) {
+            throw new Error("Plugin configuration changed before resume");
+          }
+        }
         const state = await acquireVerifiedPluginGeneration(plugin.pluginRoot, plugin.snapshotRoot, plugin.digest, plugin.pluginName, config.pluginCatalogHome);
+        if (expectedRevision !== undefined && state.lifecycleRevision !== expectedRevision) {
+          state.release();
+          throw new Error("Plugin configuration changed during resume");
+        }
         const version = state.version;
         const unsubscribe = state.subscribe(() => { this.installedSnapshotCurrent(config); });
         const release = () => { unsubscribe(); state.release(); };
@@ -874,6 +929,10 @@ export class MCPManager {
           return;
         }
         this.installationGenerations.set(config, { state, version, release });
+        const fingerprint = this.pluginIdentity(config)?.configFingerprint;
+        if (state.lifecycleRevision !== undefined && fingerprint !== undefined) {
+          this.verifiedPluginBindings.set(config, { revision: state.lifecycleRevision, fingerprint });
+        }
         this.installedSnapshotCurrent(config);
       } catch {
         this.preparingInstallations.delete(config);

@@ -27,8 +27,6 @@ import { enterCanonicalSettingsAuthority } from "../utils/settings/canonicalAuth
 import { RuntimeStateRepository } from "./runtime-state-repository.js";
 import type { CanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 import { mergeProviderModelLayer } from "./provider-model-authority.js";
-import { retireVerifiedPluginGenerations } from "../mcp-client/plugin-catalog-cache.js";
-import { acquirePluginLifecyclePublication, type PluginLifecyclePublication } from "../mcp-client/plugin-lifecycle-revision.js";
 import {
   resolveManagedPathContext,
   type ManagedPathContext,
@@ -57,32 +55,6 @@ const DIRECT_CONFIG_STORE_PUBLICATION = Object.freeze({
   permissionAuthority: "requires_subscriber_publication" as const,
 });
 
-/** Revoke only plugins whose canonical config changed at publication. */
-function changedPluginConfigurations(previous: AgenCConfig, next: AgenCConfig): readonly string[] | "all" {
-  if (previous.plugins?.enabled !== next.plugins?.enabled) {
-    return "all";
-  }
-  const beforeEntries = previous.plugins?.plugins ?? {};
-  const afterEntries = next.plugins?.plugins ?? {};
-  const beforePreferences = previous.pluginConfigs ?? {};
-  const afterPreferences = next.pluginConfigs ?? {};
-  const names = new Set([
-    ...Object.keys(beforeEntries), ...Object.keys(afterEntries),
-    ...Object.keys(beforePreferences), ...Object.keys(afterPreferences),
-  ]);
-  return [...names].filter(name =>
-    JSON.stringify(beforeEntries[name]) !== JSON.stringify(afterEntries[name]) ||
-    JSON.stringify(beforePreferences[name]) !== JSON.stringify(afterPreferences[name]));
-}
-
-function retireChangedPluginConfigurations<T>(changed: readonly string[] | "all", cacheHome: string, publication: PluginLifecyclePublication, operation: () => T): T {
-  return publication.publish(() => {
-    if (changed === "all") retireVerifiedPluginGenerations(undefined, undefined, cacheHome);
-    else for (const name of changed) retireVerifiedPluginGenerations(name, undefined, cacheHome);
-    return operation();
-  });
-}
-
 export type ConfigStoreListener = (
   config: AgenCConfig,
   publication: ConfigStorePublicationMetadata,
@@ -100,7 +72,7 @@ export interface ConfigStoreAuthority extends CanonicalSettingsAuthority {
 
 /**
  * One staged reload. The owner must settle it after either publishing or
- * rolling back so later reloads cannot interleave with lifecycle settlement.
+ * rolling back so later reloads cannot interleave with store publication.
  */
 export interface PreparedConfigStoreReload {
   readonly config: AgenCConfig;
@@ -308,8 +280,10 @@ export class ConfigStore {
 
   /**
    * Load and validate a new repository generation without changing the live
-   * store or notifying subscribers. Reload serialization remains held until
-   * the returned handle is settled.
+   * store or notifying subscribers. Only canonical writers bump plugin
+   * lifecycle revisions; this read takes no lifecycle locks and never retires
+   * a running plugin generation. Reload serialization remains held until the
+   * returned handle is settled.
    */
   prepareReload(): Promise<PreparedConfigStoreReload> {
     // Run before the first await so the caller continuation inherits this
@@ -500,8 +474,6 @@ export class ConfigStore {
       provenance: (key: string) => staged.provenance[key],
       ignored: () => staged.ignored,
     });
-    const changedPlugins = changedPluginConfigurations(previous.snapshot, staged.snapshot);
-    const pluginLifecyclePublication = await acquirePluginLifecyclePublication(this.resolvedHomeContext.path, changedPlugins);
     let state: "prepared" | "committed" | "published" | "rolled_back" =
       "prepared";
     let publicationMetadata: ConfigStorePublicationMetadata =
@@ -526,12 +498,10 @@ export class ConfigStore {
           throw new Error(`prepared config reload cannot commit from ${state}`);
         }
         assertGeneration(generation);
-        retireChangedPluginConfigurations(changedPlugins, this.resolvedHomeContext.path, pluginLifecyclePublication, () => {
-          this.applyState(staged);
-          this.stateRepository.invalidate();
-          this.reloadGeneration += 1;
-          state = "committed";
-        });
+        this.applyState(staged);
+        this.stateRepository.invalidate();
+        this.reloadGeneration += 1;
+        state = "committed";
       },
       publish: (options?: CoordinatedConfigStorePublishOptions) => {
         if (isSettled || state !== "committed") {
@@ -558,11 +528,9 @@ export class ConfigStore {
         if (state === "committed" || state === "published") {
           assertGeneration(generation + 1);
           const notifyRestoredAuthority = state === "published";
-          retireChangedPluginConfigurations(changedPlugins, this.resolvedHomeContext.path, pluginLifecyclePublication, () => {
-            this.applyState(previous);
-            this.stateRepository.invalidate();
-            this.reloadGeneration += 1;
-          });
+          this.applyState(previous);
+          this.stateRepository.invalidate();
+          this.reloadGeneration += 1;
           if (notifyRestoredAuthority) {
             this.notifyListeners(
               previous.snapshot,
@@ -579,9 +547,7 @@ export class ConfigStore {
           throw new Error(`prepared config reload cannot settle from ${state}`);
         }
         isSettled = true;
-        void pluginLifecyclePublication.release().catch(error => {
-          this.emitWarning(`[agenc:config] plugin lifecycle lock release failed: ${String(error)}`);
-        }).finally(release);
+        release();
       },
     });
   }

@@ -13,6 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import { withPluginLifecycleConfigMutationSync } from "../mcp-client/plugin-lifecycle-revision.js";
 
 import { cloneJsonValue, cloneRecord, isPlainRecord, stableJson, type JsonRecord } from "./json.js";
 import {
@@ -30,6 +31,34 @@ import {
 } from "./repository.js";
 
 const DEFAULT_FILE_MODE = 0o600;
+
+/** Names whose effective plugin authority a canonical document write changes. */
+export function pluginConfigChanges(before: JsonRecord, after: JsonRecord): readonly string[] | "all" {
+  const beforePlugins = isPlainRecord(before.plugins) ? before.plugins : {};
+  const afterPlugins = isPlainRecord(after.plugins) ? after.plugins : {};
+  const beforeEntries = isPlainRecord(beforePlugins.plugins) ? beforePlugins.plugins : {};
+  const afterEntries = isPlainRecord(afterPlugins.plugins) ? afterPlugins.plugins : {};
+  const global = (plugins: JsonRecord): JsonRecord => Object.fromEntries(
+    Object.entries(plugins).filter(([key]) => key !== "plugins"),
+  );
+  if (stableJson(global(beforePlugins)) !== stableJson(global(afterPlugins))) return "all";
+  const beforePreferences = isPlainRecord(before.pluginConfigs) ? before.pluginConfigs : {};
+  const afterPreferences = isPlainRecord(after.pluginConfigs) ? after.pluginConfigs : {};
+  return [...new Set([
+    ...Object.keys(beforeEntries), ...Object.keys(afterEntries),
+    ...Object.keys(beforePreferences), ...Object.keys(afterPreferences),
+  ])].filter(name =>
+    stableJson(beforeEntries[name]) !== stableJson(afterEntries[name]) ||
+    stableJson(beforePreferences[name]) !== stableJson(afterPreferences[name]));
+}
+
+function publishPluginConfigWrite<T>(home: string, before: JsonRecord, after: JsonRecord, write: () => T, lifecycleHeld: boolean): T {
+  if (lifecycleHeld) return write();
+  const changed = pluginConfigChanges(before, after);
+  return changed !== "all" && changed.length === 0
+    ? write()
+    : withPluginLifecycleConfigMutationSync(home, changed, write);
+}
 
 function errorCode(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error
@@ -181,6 +210,8 @@ export function applyCanonicalConfigPatchSync(
   path: string,
   patch: Readonly<JsonRecord>,
   scope: WritableConfigScope,
+  pluginLifecycleHome = dirname(path),
+  pluginLifecycleHeld = false,
 ): void {
   assertConfigPatchAuthority(scope, patch);
   withConfigAuthorityLockSync(path, () => {
@@ -188,8 +219,9 @@ export function applyCanonicalConfigPatchSync(
     const raw = target.exists
       ? readRaw(target.path)
       : { [CANONICAL_CONFIG_VERSION_KEY]: CANONICAL_CONFIG_VERSION };
+    const before = cloneRecord(raw);
     mergePatch(raw, patch);
-    prepareAndWrite(target, raw);
+    prepareAndWrite(target, raw, write => publishPluginConfigWrite(pluginLifecycleHome, before, raw, write, pluginLifecycleHeld));
   });
 }
 
@@ -200,17 +232,18 @@ export function applyCanonicalConfigPatchSync(
 export function mutateCanonicalUserConfigSync(
   path: string,
   mutator: (raw: JsonRecord) => void,
+  lifecycleHeld = false,
 ): void {
   withConfigAuthorityLockSync(path, () => {
     const target = writableTarget(path);
     const raw = target.exists
       ? readRaw(target.path)
       : { [CANONICAL_CONFIG_VERSION_KEY]: CANONICAL_CONFIG_VERSION };
-    const before = stableJson(raw);
+    const before = cloneRecord(raw);
     mutator(raw);
     assertUserConfigDocumentAuthority(raw, target.path);
-    if (stableJson(raw) === before) return;
-    prepareAndWrite(target, raw);
+    if (stableJson(raw) === stableJson(before)) return;
+    prepareAndWrite(target, raw, write => publishPluginConfigWrite(dirname(path), before, raw, write, lifecycleHeld));
   });
 }
 
@@ -245,7 +278,7 @@ export function replaceCanonicalUserConfigTextSync(
     const raw = parseCanonicalConfigText(replacement, target.path);
     assertUserConfigDocumentAuthority(raw, target.path);
     if (replacement === snapshot.content) return false;
-    writeAtomic(target.path, replacement, target.mode);
+    publishPluginConfigWrite(dirname(snapshot.path), cloneRecord(snapshot.raw), raw, () => writeAtomic(target.path, replacement, target.mode), false);
     return true;
   });
 }
@@ -253,6 +286,7 @@ export function replaceCanonicalUserConfigTextSync(
 function prepareAndWrite(
   target: WritableTarget,
   raw: JsonRecord,
+  publish: (write: () => void) => void,
 ): void {
   raw[CANONICAL_CONFIG_VERSION_KEY] = CANONICAL_CONFIG_VERSION;
   validateStrictConfigDocument(raw, target.path);
@@ -261,5 +295,5 @@ function prepareAndWrite(
   if (stableJson(roundTrip) !== stableJson(raw)) {
     throw new Error(`canonical config update did not round-trip: ${target.path}`);
   }
-  writeAtomic(target.path, serialized, target.mode);
+  publish(() => writeAtomic(target.path, serialized, target.mode));
 }

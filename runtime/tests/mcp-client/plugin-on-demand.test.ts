@@ -16,6 +16,9 @@ import { validatePluginsConfig } from "../config/schema.js";
 import type { MCPServerConfig } from "./types.js";
 import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import { transitionSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
+import { ConfigStore } from "../config/store.js";
+import { readPluginLifecycleRevision } from "./plugin-lifecycle-revision.js";
+import { mutateCanonicalUserConfigSync } from "../config/update-sync.js";
 
 vi.mock("./transports/stdio.js", () => ({ createStdioMCPConnection: vi.fn() }));
 import { createStdioMCPConnection } from "./transports/stdio.js";
@@ -89,6 +92,125 @@ async function unlockDirectories(path: string): Promise<void> {
 afterEach(async () => { for (const path of homes.splice(0)) { await unlockDirectories(path); await rm(path, { recursive: true, force: true }); } });
 
 describe("plugin MCP on-demand lifecycle", () => {
+  it("keeps a connected manager and its revision on a new session's first config load", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    await writeFile(join(cacheHome, "config.toml"), "config_version = 2\n[plugins]\nenabled = true\n");
+    const cfg = config(cacheHome, "plugin:sample:first-load", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "first-load", digest: hashInstalledPlugin(root), pluginRoot: root, eager: true } } });
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      const revision = readPluginLifecycleRevision(cacheHome, "sample");
+      const store = new ConfigStore({ home: cacheHome, cwd: cacheHome, projectRoot: cacheHome, projectTrusted: false, env: {} });
+      await store.reload();
+      expect(readPluginLifecycleRevision(cacheHome, "sample")).toBe(revision);
+      expect(manager.getConnectionState(cfg.name)?.type).toBe("connected");
+      expect((await manager.callTool(cfg.name, "ping", {})).isError).not.toBe(true);
+    } finally { await manager.stopStrict(); }
+  });
+
+  it("does not revoke a replacement when another store observes a published plugin change", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    await writeFile(join(cacheHome, "config.toml"), "config_version = 2\n[plugins]\nenabled = true\n");
+    const cfg = config(cacheHome, "plugin:sample:second-store", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "second-store", digest: hashInstalledPlugin(root), pluginRoot: root, eager: true } } });
+    const a = new ConfigStore({ home: cacheHome, cwd: cacheHome, projectRoot: cacheHome, projectTrusted: false, env: {} });
+    const b = new ConfigStore({ home: cacheHome, cwd: cacheHome, projectRoot: cacheHome, projectTrusted: false, env: {} });
+    await a.reload();
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      mutateCanonicalUserConfigSync(join(cacheHome, "config.toml"), raw => { raw.plugins = { enabled: true, plugins: { sample: { enabled: true } } }; });
+      await a.reload();
+      await manager.refreshServers([{ ...cfg, env: { UPDATED: "1" } }]);
+      const revision = readPluginLifecycleRevision(cacheHome, "sample");
+      await b.reload();
+      expect(readPluginLifecycleRevision(cacheHome, "sample")).toBe(revision);
+      expect(manager.getConnectionState(cfg.name)?.type).toBe("connected");
+      expect((await manager.callTool(cfg.name, "ping", {})).isError).not.toBe(true);
+    } finally { await manager.stopStrict(); }
+  });
+
+  it("refuses to resume a plugin disabled by an isolated CLI module", async () => {
+    const cacheHome = await home();
+    const pluginRoot = join(cacheHome, "plugins", "sample");
+    await mkdir(join(pluginRoot, ".agenc-plugin"), { recursive: true });
+    await writeFile(join(pluginRoot, ".agenc-plugin", "plugin.json"), JSON.stringify({ name: "sample", mcpServers: { main: { command: "fixture" } } }));
+    await writeFile(join(pluginRoot, "entry.js"), "old");
+    await writeFile(join(cacheHome, "config.toml"), "config_version = 2\n[plugins]\nenabled = true\n[plugins.plugins.sample]\nenabled = true\n");
+    const workspaceRoot = join(cacheHome, "workspace"); await mkdir(workspaceRoot);
+    const registrations = await loadPluginMcpServerRegistrations({ pluginStorageRoot: join(cacheHome, "plugins"), workspaceRoot, config: { plugins: { enabled: true, plugins: { sample: { enabled: true } } } } });
+    expect(registrations).toHaveLength(1);
+    const registration = registrations[0]!;
+    const cfg = config(cacheHome, registration.name, {
+      command: registration.server.command, args: registration.server.args,
+      cwd: registration.server.cwd, env: registration.server.env,
+      transport: registration.server.transport ?? "stdio",
+      ...((registration.server as MCPServerConfig).pluginSandbox !== undefined
+        ? { pluginSandbox: (registration.server as MCPServerConfig).pluginSandbox } : {}),
+      origin: { scope: "plugin", pluginServer: {
+        pluginName: registration.pluginName, serverName: registration.serverName,
+        digest: registration.digest, pluginRoot: registration.pluginRoot,
+        snapshotRoot: registration.snapshotRoot, userConfigDigest: registration.userConfigDigest,
+        eager: true,
+      } },
+    });
+    const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd: cacheHome });
+    const manager = new MCPManager([cfg]);
+    manager.setSandboxExecutionBroker(broker);
+    try {
+      await manager.start();
+      vi.resetModules();
+      const isolated = await import("../plugins/cli/pluginOperations.js");
+      await isolated.setPluginEnabledOp({ pluginId: "sample", enabled: false, agencHome: cacheHome, pluginStorageRoot: join(cacheHome, "plugins"), sessionTempRoot: cacheHome, workspaceRoot: cacheHome });
+      const spawnCount = spawn.mock.calls.length;
+      const nextCwd = join(cacheHome, "next-workspace"); await mkdir(nextCwd);
+      await transitionSandboxExecutionBroker(broker, nextCwd);
+      expect((await manager.callTool(cfg.name, "ping", {})).isError).toBe(true);
+      expect(spawn.mock.calls.length).toBe(spawnCount);
+    } finally { await manager.stopStrict(); manager.setSandboxExecutionBroker(undefined); }
+  });
+
+  it("resolves an enabled installed plugin again before resuming at a newer revision", async () => {
+    const cacheHome = await home();
+    const pluginRoot = join(cacheHome, "plugins", "sample");
+    await mkdir(join(pluginRoot, ".agenc-plugin"), { recursive: true });
+    await writeFile(join(pluginRoot, ".agenc-plugin", "plugin.json"), JSON.stringify({ name: "sample", mcpServers: { main: { command: "fixture" } } }));
+    await writeFile(join(pluginRoot, "entry.js"), "old");
+    await writeFile(join(cacheHome, "config.toml"), "config_version = 2\n[plugins]\nenabled = true\n[plugins.plugins.sample]\nenabled = true\n");
+    const workspaceRoot = join(cacheHome, "workspace"); await mkdir(workspaceRoot);
+    const registrations = await loadPluginMcpServerRegistrations({ pluginStorageRoot: join(cacheHome, "plugins"), workspaceRoot, config: { plugins: { enabled: true, plugins: { sample: { enabled: true } } } } });
+    expect(registrations).toHaveLength(1);
+    const registration = registrations[0]!;
+    const cfg = config(cacheHome, registration.name, {
+      command: registration.server.command,
+      args: registration.server.args,
+      cwd: registration.server.cwd,
+      env: registration.server.env,
+      transport: registration.server.transport ?? "stdio",
+      ...((registration.server as MCPServerConfig).pluginSandbox !== undefined
+        ? { pluginSandbox: (registration.server as MCPServerConfig).pluginSandbox } : {}),
+      origin: { scope: "plugin", pluginServer: {
+        pluginName: registration.pluginName, serverName: registration.serverName,
+        digest: registration.digest, pluginRoot: registration.pluginRoot,
+        snapshotRoot: registration.snapshotRoot, userConfigDigest: registration.userConfigDigest,
+        eager: true,
+      } },
+    });
+    const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd: cacheHome });
+    const manager = new MCPManager([cfg]);
+    manager.setSandboxExecutionBroker(broker);
+    try {
+      await manager.start();
+      vi.resetModules();
+      const isolated = await import("../plugins/cli/pluginOperations.js");
+      await isolated.setPluginEnabledOp({ pluginId: "sample", enabled: true, agencHome: cacheHome, pluginStorageRoot: join(cacheHome, "plugins"), sessionTempRoot: cacheHome, workspaceRoot: cacheHome });
+      const nextCwd = join(cacheHome, "next-workspace"); await mkdir(nextCwd);
+      await transitionSandboxExecutionBroker(broker, nextCwd);
+      expect(manager.getConnectionState(cfg.name)?.type).toBe("connected");
+      expect((await manager.callTool(cfg.name, "ping", {})).isError).not.toBe(true);
+    } finally { await manager.stopStrict(); manager.setSandboxExecutionBroker(undefined); }
+  });
   it.each(["eager", "lazy"])("refuses a %s generation after a separate CLI module disables its plugin", async kind => {
     const cacheHome = await home(); const root = join(cacheHome, "installed");
     await mkdir(root); await writeFile(join(root, "entry.js"), "old");

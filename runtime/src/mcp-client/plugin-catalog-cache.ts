@@ -248,6 +248,7 @@ export function snapshotInstalledPluginOffThread(root: string, storageRoot: stri
 
 export interface VerifiedPluginGeneration {
   readonly version: number;
+  readonly lifecycleRevision: string | undefined;
   isCurrent(version: number): boolean;
   subscribe(listener: () => void): () => void;
   /** An acquisition owns this lease from before verification begins. */
@@ -359,6 +360,7 @@ export async function acquireVerifiedPluginGeneration(
   }
   return {
     get version() { return owned.version; },
+    get lifecycleRevision() { return owned.lifecycleRevision; },
     isCurrent: version => {
       if (!owned.invalidated && cacheHome && pluginName) {
         try {

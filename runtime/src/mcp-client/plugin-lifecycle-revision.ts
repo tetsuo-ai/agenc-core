@@ -2,7 +2,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { acquireConfigAuthorityLocks, runWithConfigAuthorityLocks } from "../config/authority-lock.js";
+import { runWithConfigAuthorityLocks, withConfigAuthorityLockSync } from "../config/authority-lock.js";
 import { writeDurableAtomicFileSync } from "../utils/durable-atomic-file.js";
 
 const observations = new Map<string, { identity: string; revision: string }>();
@@ -38,7 +38,7 @@ function ensurePluginLifecycleRevisionUnlocked(home: string, pluginName: string)
   const path = pluginLifecycleRevisionPath(home, pluginName);
   if (existsSync(path)) return;
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  writeDurableAtomicFileSync(path, temporary, "0\n");
+  writeDurableAtomicFileSync(path, temporary, `${randomUUID()}\n`);
 }
 
 /** Verification cannot observe pre-replacement bytes under a new revision. */
@@ -62,24 +62,7 @@ function bumpUnlocked(home: string, pluginName: string): void {
   bumpPathUnlocked(pluginLifecycleRevisionPath(home, pluginName));
 }
 
-/** The callback owns the per-plugin lifecycle lock through replacement/removal. */
-export async function withPluginLifecycleMutation<T>(home: string, pluginName: string, operation: () => Promise<T>): Promise<T> {
-  const path = pluginLifecycleRevisionPath(home, pluginName);
-  const outcome = await runWithConfigAuthorityLocks([path], async () => {
-    bumpUnlocked(home, pluginName);
-    return operation();
-  });
-  if (outcome.status === "failed") throw outcome.error;
-  return outcome.value;
-}
-
-export interface PluginLifecyclePublication {
-  publish<T>(operation: () => T): T;
-  release(): Promise<void>;
-}
-
-/** Prepared ConfigStore reloads hold these locks through commit or rollback. */
-export async function acquirePluginLifecyclePublication(home: string, pluginNames: readonly string[] | "all"): Promise<PluginLifecyclePublication> {
+function revisionPaths(home: string, pluginNames: readonly string[] | "all"): string[] {
   const directory = revisionDirectory(home);
   let paths: string[];
   if (pluginNames === "all") {
@@ -91,22 +74,42 @@ export async function acquirePluginLifecyclePublication(home: string, pluginName
   } else {
     paths = pluginNames.map(name => pluginLifecycleRevisionPath(home, name));
   }
-  paths = [...new Set(paths)].sort();
-  const unlock = await acquireConfigAuthorityLocks(paths);
-  let released = false;
-  return {
-    publish<T>(operation: () => T): T {
-      if (released) throw new Error("Plugin lifecycle publication already settled");
-      for (const path of paths) bumpPathUnlocked(path);
-      return operation();
-    },
-    async release(): Promise<void> {
-      if (released) return;
-      released = true;
-      const outcome = await unlock();
-      if (outcome.postOperationReleaseErrors.length > 0) {
-        throw new AggregateError(outcome.postOperationReleaseErrors, "Plugin lifecycle lock release failed");
-      }
-    },
+  return [...new Set(paths)].sort();
+}
+
+/** The callback owns the per-plugin lifecycle lock through replacement/removal. */
+export async function withPluginLifecycleMutation<T>(home: string, pluginName: string, operation: () => Promise<T>): Promise<T> {
+  const path = pluginLifecycleRevisionPath(home, pluginName);
+  const outcome = await runWithConfigAuthorityLocks([path], async () => {
+    bumpUnlocked(home, pluginName);
+    return operation();
+  });
+  if (outcome.status === "failed") throw outcome.error;
+  return outcome.value;
+}
+
+/** Only canonical writers publish revisions, before changing plugin bytes or config. */
+export function withPluginLifecycleConfigMutationSync<T>(home: string, pluginNames: readonly string[] | "all", operation: () => T): T {
+  const paths = revisionPaths(home, pluginNames);
+  const write = (): T => {
+    for (const path of paths) bumpPathUnlocked(path);
+    return operation();
   };
+  const lock = (index: number): T => {
+    const path = paths[index];
+    if (path === undefined) return write();
+    return withConfigAuthorityLockSync(path, () => lock(index + 1));
+  };
+  return lock(0);
+}
+
+/** Async canonical writers retain their revision locks through publication. */
+export async function withPluginLifecycleConfigMutation<T>(home: string, pluginNames: readonly string[] | "all", operation: () => Promise<T>): Promise<T> {
+  const paths = revisionPaths(home, pluginNames);
+  const outcome = await runWithConfigAuthorityLocks(paths, async () => {
+    for (const path of paths) bumpPathUnlocked(path);
+    return operation();
+  });
+  if (outcome.status === "failed") throw outcome.error;
+  return outcome.value;
 }

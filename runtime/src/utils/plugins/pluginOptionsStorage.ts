@@ -13,6 +13,7 @@
  */
 
 import type { LoadedPlugin } from '../../types/plugin.js'
+import { withPluginLifecycleMutation } from '../../mcp-client/plugin-lifecycle-revision.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from '../log.js'
 import {
@@ -90,6 +91,17 @@ export async function savePluginOptions(
     schema,
     values,
   )
+  // The revision covers native secrets and TOML together, including sensitive-only saves.
+  return withPluginLifecycleMutation(authority.homeContext.path, pluginId, () =>
+    savePluginOptionsLocked(pluginId, values, schema, authority))
+}
+
+async function savePluginOptionsLocked(
+  pluginId: string,
+  values: PluginOptionValues,
+  schema: PluginOptionSchema,
+  authority: ReturnType<typeof requirePluginConfigAuthority>,
+): Promise<void> {
   const nonSensitive: PluginOptionValues = {}
   const sensitive: Record<string, string> = {}
 
@@ -163,6 +175,7 @@ export async function savePluginOptions(
           },
         },
         authority,
+        true,
       )
       if (result.error) {
         throw new Error(
@@ -182,7 +195,6 @@ export async function savePluginOptions(
     logError(errorObj)
     throw errorObj
   }
-
 }
 
 /**
@@ -201,6 +213,14 @@ export async function savePluginOptions(
  */
 export async function deletePluginOptions(pluginId: string): Promise<void> {
   const authority = requirePluginConfigAuthority()
+  return withPluginLifecycleMutation(authority.homeContext.path, pluginId, () =>
+    deletePluginOptionsLocked(pluginId, authority))
+}
+
+async function deletePluginOptionsLocked(
+  pluginId: string,
+  authority: ReturnType<typeof requirePluginConfigAuthority>,
+): Promise<void> {
   // Config side—also wipes the plugin-scoped mcpServers sub-key so uninstall
   // cannot leave an orphaned override.
   //
@@ -221,6 +241,7 @@ export async function deletePluginOptions(pluginId: string): Promise<void> {
       'userSettings',
       { pluginConfigs: pluginConfigs as PluginConfigs },
       authority,
+      true,
     )
     if (error) {
       logForDebugging(
@@ -259,7 +280,6 @@ export async function deletePluginOptions(pluginId: string): Promise<void> {
       { level: 'warn' },
     )
   }
-
 }
 
 /**
