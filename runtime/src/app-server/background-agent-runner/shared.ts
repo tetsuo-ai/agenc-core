@@ -548,7 +548,7 @@ export interface AgenCBackgroundAgentRunner {
   ): Promise<SessionTranscriptResult>;
   getAgentSessionTranscriptV2?(
     agentId: string,
-    params: { readonly sessionId: string },
+    params: { readonly sessionId: string; readonly includeCompleteMessages?: boolean },
   ): Promise<SessionTranscriptV2Result>;
   resolveLiveEffectReview?(
     agentId: string,
@@ -667,6 +667,8 @@ export interface AgenCBackgroundAgentRunner {
    * creates can never carry a wider one.
    */
   getAgentPermissionMode?(agentId: string): Promise<string | null>;
+  /** True only while this call is executing in the agent's active turn. */
+  isAgentToolCallExecuting?(agentId: string, toolCallId: string): boolean | Promise<boolean>;
   resolveRealtimeThread?(
     threadId: string,
   ):

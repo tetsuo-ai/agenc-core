@@ -466,7 +466,7 @@ test('a session fork preserves configuration and refreshes only its own OAuth cl
     })
 
     expect(outcome).toEqual({ kind: 'refreshed', bearer: 'oauth-bearer-3' })
-    expect(forceRefreshMock).toHaveBeenCalledExactlyOnceWith(CREDENTIAL_HOME)
+    expect(forceRefreshMock).toHaveBeenCalledExactlyOnceWith(CREDENTIAL_HOME, 'oauth-bearer-2')
     expect(childClient.apiKey).toBe('oauth-bearer-3')
     expect(childState.config.apiKey).toBe('oauth-bearer-3')
     expect(parentClient.apiKey).toBe('oauth-bearer-1')

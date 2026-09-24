@@ -15,7 +15,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   createHash,
   createPublicKey,
@@ -33,6 +33,7 @@ import {
   parsePluginIdentifier,
 } from "./identifier.js";
 import type { LoadedPlugin } from "./loader.js";
+import { isExcludedPluginPayloadDirectory, isExcludedPluginPayloadPath } from "./payload-paths.js";
 
 export type PluginResolutionKind =
   | "local"
@@ -98,6 +99,8 @@ export interface PluginSignatureVerification {
   readonly present: boolean;
   readonly verified: boolean;
   readonly publisher?: string;
+  /** SHA-256 of the canonical signed manifest and payload digest set. */
+  readonly payloadDigest?: string;
   readonly payloadFileCount?: number;
   readonly reason?: string;
 }
@@ -797,6 +800,7 @@ export async function verifyResolvedPluginSignature(
     present: true,
     verified: true,
     publisher: signature.publisher,
+    payloadDigest: `sha256:${createHash("sha256").update(payload).digest("hex")}`,
     payloadFileCount: Object.keys(signature.files).length,
   };
 }
@@ -805,15 +809,56 @@ export function pluginSignaturePayloadBytes(
   manifestBytes: Uint8Array,
   files: Readonly<Record<string, string>>,
 ): Uint8Array {
+  return pluginSignaturePayloadBytesFromManifestHash(sha256Hex(manifestBytes), files);
+}
+
+function pluginSignaturePayloadBytesFromManifestHash(
+  manifestSha256: string,
+  files: Readonly<Record<string, string>>,
+): Uint8Array {
   const normalizedFiles = Object.fromEntries(
     Object.entries(files)
       .map(([path, digest]) => [path, normalizeSha256Digest(digest)] as const)
       .sort(([a], [b]) => a.localeCompare(b)),
   );
   return Buffer.from(JSON.stringify({
-    manifestSha256: sha256Hex(manifestBytes),
+    manifestSha256,
     files: normalizedFiles,
   }));
+}
+
+/** Verify a pinned package's signed digest set before downloading its payload. */
+export async function verifiedAdvertisedPluginPayloadDigest(
+  manifestBytes: Uint8Array,
+  signatureBytes: Uint8Array,
+  options: { readonly agencHome: string; readonly publishersPath?: string },
+): Promise<string> {
+  return verifiedAdvertisedPluginPayloadDigestFromManifestHash(
+    sha256Hex(manifestBytes), signatureBytes, options,
+  );
+}
+
+/** Recheck a cached signed advert against today's publisher keyring. */
+export async function verifiedAdvertisedPluginPayloadDigestFromManifestHash(
+  manifestSha256: string,
+  signatureBytes: Uint8Array,
+  options: { readonly agencHome: string; readonly publishersPath?: string },
+): Promise<string> {
+  if (!/^[a-f0-9]{64}$/u.test(manifestSha256)) {
+    throw new Error("invalid cached plugin manifest digest");
+  }
+  const signature = parseSignatureFile(Buffer.from(signatureBytes).toString("utf8"));
+  const publicKeys = await readPublisherPublicKeys(
+    options.publishersPath ?? defaultPublishersPath(options.agencHome),
+    signature.publisher,
+    options.publishersPath === undefined
+      ? builtInPluginPublisherPublicKeys(signature.publisher) : undefined,
+  );
+  const payload = pluginSignaturePayloadBytesFromManifestHash(manifestSha256, signature.files);
+  if (!publicKeys.some((publicKey) => verifyEd25519Signature({
+    publicKey, payload, signature: signature.signature,
+  }))) throw new Error(`plugin signature verification failed for publisher ${signature.publisher}`);
+  return `sha256:${createHash("sha256").update(payload).digest("hex")}`;
 }
 
 function verifyEd25519Signature(input: {
@@ -1560,7 +1605,7 @@ async function collectPluginPayloadDigests(
   const maxDepth = options.maxExtractDepth ?? DEFAULT_MAX_EXTRACT_DEPTH;
   const maxFiles = options.maxExtractedFiles ?? DEFAULT_MAX_EXTRACTED_FILES;
   const maxBytes = options.maxExtractedBytes ?? DEFAULT_MAX_EXTRACTED_BYTES;
-  const out: Record<string, string> = {};
+  const out: Record<string, string> = Object.create(null);
   let fileCount = 0;
   let byteCount = 0;
 
@@ -1573,7 +1618,7 @@ async function collectPluginPayloadDigests(
       if (childStat.isSymbolicLink()) {
         throw new Error(`plugin signature cannot cover symlink payloads: ${entry.name}`);
       }
-      if (entry.isDirectory() && isIgnoredSignaturePayloadDirectory(entry.name)) continue;
+      if (entry.isDirectory() && isExcludedPluginPayloadDirectory(entry.name)) continue;
       const childReal = await realpath(child);
       if (!isPathInside(childReal, rootReal)) {
         throw new Error(`plugin payload escapes plugin root: ${entry.name}`);
@@ -1584,8 +1629,11 @@ async function collectPluginPayloadDigests(
       }
       if (!childStat.isFile()) continue;
       if (childReal === manifestReal || childReal === signatureReal) continue;
-      const relPath = relative(pluginRoot, child).replace(/\\/g, "/");
+      const relPath = relative(pluginRoot, child).split(sep).join("/");
       if (relPath === PLUGIN_INSTALL_METADATA_RELATIVE_PATH) continue;
+      if (Object.hasOwn(out, relPath)) {
+        throw new Error(`plugin signature payload path collision: ${relPath}`);
+      }
       fileCount += 1;
       byteCount += childStat.size;
       if (fileCount > maxFiles) throw new Error(`plugin signature payload exceeds maximum file count: ${fileCount} > ${maxFiles}`);
@@ -1598,17 +1646,8 @@ async function collectPluginPayloadDigests(
   return out;
 }
 
-function isIgnoredSignaturePayloadDirectory(name: string): boolean {
-  return isPluginVcsMetadataDirectoryName(name);
-}
-
-function isPluginVcsMetadataDirectoryName(name: string): boolean {
-  return name === ".git" || name === ".hg" || name === ".svn";
-}
-
 export function shouldCopyPluginPayloadPath(pluginRoot: string, sourcePath: string): boolean {
-  const relativePath = relative(resolve(pluginRoot), resolve(sourcePath)).replace(/\\/g, "/");
-  return relativePath === "" || !relativePath.split("/").some(isPluginVcsMetadataDirectoryName);
+  return !isExcludedPluginPayloadPath(pluginRoot, sourcePath);
 }
 
 function assertSignedPayloadMatches(

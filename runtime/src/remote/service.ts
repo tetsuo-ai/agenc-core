@@ -27,7 +27,7 @@ export interface RemoteServiceOptions {
   readonly home: string;
   readonly backend: RemoteBackend;
   readonly lookupSession: RemoteSessionLookup;
-  readonly createConnection: (access: RemoteAccessBoundary) => BrowserConnection;
+  readonly createConnection: (access: RemoteAccessBoundary, cid: string) => BrowserConnection;
   readonly socket?: (url: string, protocols: string[]) => WebSocket;
   readonly now?: () => number;
   readonly qrDataUrl?: (value: string) => Promise<string>;
@@ -249,7 +249,7 @@ export class RemoteService {
         try { return await this.#options.createSession!(record.grant.workspacePath, title, record.controller.signal); }
         finally { record.creatingSession = false; }
       } } : {}) });
-      peer = { connection: this.#options.createConnection(access), queued: 0, bytes: 0 };
+      peer = { connection: this.#options.createConnection(access, cid), queued: 0, bytes: 0 };
       record.peers.set(cid, peer);
     }
     const bytes = Buffer.byteLength(frame.payload);

@@ -20,6 +20,7 @@ import type {
   MCPToolBridgePermissionOptions,
   MCPToolCatalogPolicyConfig,
 } from "./tools.js";
+import { isMcpConnectionError, mcpConnectionFailure } from "./connection-errors.js";
 import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
 import { isValidPermissionDefaultMode } from "../config/schema.js";
@@ -29,6 +30,17 @@ import {
   EMPTY_MCP_REQUEST_ENVIRONMENT,
   snapshotMcpRequestEnvironment,
 } from "./environment.js";
+
+/** Only template-resolved sensitive settings are redaction inputs for plugins. */
+export function pluginSensitiveHeaders(
+  config: MCPServerConfig,
+): Readonly<Record<string, string>> | undefined {
+  if (config.origin?.scope !== "plugin") return undefined;
+  const values = (config.pluginSecretValues ?? []).filter(Boolean);
+  return values.length === 0
+    ? undefined
+    : Object.fromEntries(values.map((value, index) => [`decoded:${index}`, value]));
+}
 
 /**
  * Derive the tool catalog policy (allow/deny filter, I-74 SHA-256 catalog
@@ -50,6 +62,9 @@ export function toToolCatalogPolicyConfig(
   config: MCPServerConfig,
 ): MCPToolCatalogPolicyConfig | undefined {
   const allowedTools = config.enabled_tools;
+  // Only the runtime-minted plugin sandbox metadata identifies the trusted
+  // directory. An arbitrary MCP server may set AGENC_PLUGIN_DATA in its env.
+  const displayDataRoot = config.pluginSandbox?.pluginDataDir;
   const deniedTools = config.disabled_tools;
   const defaultToolsApprovalMode = isValidPermissionDefaultMode(
     config.default_tools_approval_mode,
@@ -65,7 +80,9 @@ export function toToolCatalogPolicyConfig(
       config.origin?.scope === "user"
       ? config.virtual_no_fs_write_tools
       : undefined;
+  const pluginSecrets = pluginSensitiveHeaders(config);
   if (
+    !displayDataRoot &&
     !config.supplyChain &&
     !config.pinnedCatalogSha256 &&
     allowedTools === undefined &&
@@ -74,15 +91,20 @@ export function toToolCatalogPolicyConfig(
     virtualNoFsWriteTools === undefined &&
     config.tools === undefined &&
     config.localOnly !== true &&
-    !(config.origin?.scope === "session" && config.headers !== undefined)
+    !(config.origin?.scope === "session" && config.headers !== undefined) &&
+    pluginSecrets === undefined
   ) {
     return undefined;
   }
   return {
+    ...(displayDataRoot ? { displayDataRoot } : {}),
     ...(config.localOnly === true ? { localOnly: true } : {}),
     ...(config.desktopAuthorityGrant ? { desktopAuthorityGrant: config.desktopAuthorityGrant } : {}),
     ...(config.origin?.scope === "session" && config.headers !== undefined
-      ? { sensitiveHeaders: config.headers } : {}),
+      ? { sensitiveHeaders: config.headers } :
+      pluginSecrets !== undefined
+        ? { sensitiveHeaders: pluginSecrets }
+        : {}),
     ...(allowedTools !== undefined ? { allowedTools } : {}),
     ...(deniedTools !== undefined ? { deniedTools } : {}),
     ...(config.pinnedCatalogSha256 !== undefined
@@ -98,21 +120,6 @@ export function toToolCatalogPolicyConfig(
     supplyChain: config.supplyChain,
   };
 }
-
-/** Patterns that indicate the underlying MCP connection is dead. */
-const CONNECTION_ERROR_PATTERNS = [
-  "not connected",
-  "disconnected",
-  "epipe",
-  "channel closed",
-  "process exited",
-  "connection refused",
-  "broken pipe",
-  "transport closed",
-  "client closed",
-  "econnreset",
-  "econnrefused",
-];
 
 const INITIAL_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
@@ -349,7 +356,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
 
         // A bound provider receipt describes a known terminal tool outcome,
         // not a transport loss inferred from arbitrary result text/URLs.
-        if (result.isError && result.effectDisposition === undefined && isConnectionError(result.content)) {
+        if (result.isError && result.effectDisposition === undefined && (mcpConnectionFailure(result) ?? isMcpConnectionError(result.content))) {
           this.scheduleReconnect();
           return { content: `MCP server "${this.serverName}" lost connection — reconnecting...`, isError: true };
         }
@@ -710,10 +717,4 @@ function reconnectCleanupFailure(
   error: unknown,
 ): MCPReconnectCleanupFailure {
   return { owner, dispose, error };
-}
-
-/** Check if an error message indicates a dead connection. */
-function isConnectionError(content: string): boolean {
-  const lower = content.toLowerCase();
-  return CONNECTION_ERROR_PATTERNS.some((pattern) => lower.includes(pattern));
 }

@@ -8,7 +8,9 @@ import { ROUTINE_SESSION_PREPARE_CAPABILITY, type RoutineSessionPreparation } fr
  * land.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import type { PluginSettingsService } from "../plugins/settings-service.js";
+import type { PluginSettingsResult } from "./protocol/index.js";
 import { sessionMcpAttachmentIssue } from "../mcp-client/local-control.js";
 import { isAbsolute } from "node:path";
 import { WhisperError, type WhisperService } from "../audio/whisper.js";
@@ -75,6 +77,7 @@ import {
 } from "./realtime.js";
 import {
   AgenCDaemonConnectionLimiter,
+  daemonCausalRoutineHead,
   type AgenCDaemonOverloadLimitOptions,
 } from "./overload.js";
 import {
@@ -104,9 +107,11 @@ import type { AgenCDaemonProjectTrustService } from "./project-trust.js";
 import {
   AGENC_DAEMON_INTERNAL_METHODS,
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
+  AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY,
   AGENC_DAEMON_METHODS,
   AGENC_DAEMON_PROTOCOL_VERSION,
   AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
+  AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY,
   AGENC_PENDING_APPROVALS_LIST_CAPABILITY,
   MAX_SESSION_SHELL_COMMAND_UTF8_BYTES,
   MAX_SESSION_SHELL_IDENTIFIER_UTF8_BYTES,
@@ -158,6 +163,7 @@ import {
   type SessionAttachResult,
   type SessionCancelTurnParams,
   type SessionTranscriptV2Params,
+  type SessionArtifactReadParams,
   type SessionResolveToolCallAttestationParams,
   type SessionResolveToolCallEvidenceParams,
   type SessionResolveToolCallLegacyParams,
@@ -268,6 +274,7 @@ const MINIMUM_PROTOCOL_MINOR_BY_METHOD: Readonly<
   Partial<Record<AgenCDaemonKnownMethod, number>>
 > = Object.freeze({
   "session.transcript.v2": 2,
+  "session.artifact.read": 18,
   "session.mcp.status": 3,
   "session.permissions.mutateRule": 7,
   "session.shell.execute": 9,
@@ -319,6 +326,7 @@ interface AgenCDaemonServerCapabilityInputs {
   readonly ownerTelegram: OwnerTelegramService | undefined;
   readonly csvJobReview: AgenCCsvJobReviewService | undefined;
   readonly projectTrust: AgenCDaemonProjectTrustService | undefined;
+  readonly pluginSettings: PluginSettingsService | undefined;
 }
 
 function buildServerCapabilities(
@@ -369,6 +377,7 @@ function buildServerCapabilities(
     "session.processes.stop": hasMethod(agentManager, "stopSessionProcess"),
     "session.transcript": hasMethod(agentManager, "getSessionTranscript"),
     "session.transcript.v2": hasMethod(agentManager, "getSessionTranscriptV2"),
+    "session.artifact.read": hasMethod(agentManager, "readSessionArtifact"),
     "session.cancelTurn": hasMethod(agentManager, "cancelSessionTurn"),
     "session.resolveToolCall": hasMethod(
       agentManager,
@@ -376,6 +385,9 @@ function buildServerCapabilities(
     ),
     "session.mcp.status": hasMethod(agentManager, "getMcpStatusForSession"),
     "session.mcp.addServer": hasMethod(agentManager, "addMcpServerToSession"),
+    "plugin.settings.get": inputs.pluginSettings !== undefined,
+    "plugin.settings.set": inputs.pluginSettings !== undefined,
+    "plugin.settings.reset": inputs.pluginSettings !== undefined,
     "message.send": hasMethod(agentManager, "streamAgentMessage"),
     "message.stream": hasMethod(agentManager, "streamAgentMessage"),
     "thread/realtime/start":
@@ -484,6 +496,7 @@ function buildServerCapabilities(
     [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.freeze(
       methodCapabilities,
     ) as AgenCDaemonMethodCapabilities,
+    ...(inputs.routines !== undefined ? { [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]: true } : {}),
   }) as AgenCDaemonServerCapabilities;
 }
 
@@ -508,6 +521,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "snapshotSession"
     | "getSessionTranscript"
     | "getSessionTranscriptV2"
+    | "readSessionArtifact"
     | "getMcpStatusForSession"
     | "addMcpServerToSession"
     | "reconnectMcpServerOnSession"
@@ -539,6 +553,7 @@ export interface AgenCDaemonDispatcherOptions {
     readonly setSessionHooksDisabled?: AgenCDaemonAgentManager["setSessionHooksDisabled"];
     readonly updateSessionGoal?: AgenCDaemonAgentManager["updateSessionGoal"];
     readonly getLiveSessionPermission?: AgenCDaemonAgentManager["getLiveSessionPermission"];
+    readonly isLiveSessionToolCallExecuting?: AgenCDaemonAgentManager["isLiveSessionToolCallExecuting"];
   };
   readonly initializeAuthenticator?: (
     params: InitializeParams,
@@ -603,6 +618,7 @@ export interface AgenCDaemonDispatcherOptions {
    * authenticated local connections, like `remote.*`.
    */
   readonly projectTrust?: AgenCDaemonProjectTrustService;
+  readonly pluginSettings?: PluginSettingsService;
   readonly healthStateCounter?: AgenCHealthStateCounter;
   readonly now?: () => string;
 }
@@ -634,6 +650,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "snapshotSession"
     | "getSessionTranscript"
     | "getSessionTranscriptV2"
+    | "readSessionArtifact"
     | "getMcpStatusForSession"
     | "addMcpServerToSession"
     | "reconnectMcpServerOnSession"
@@ -665,6 +682,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     readonly setSessionHooksDisabled?: AgenCDaemonAgentManager["setSessionHooksDisabled"];
     readonly updateSessionGoal?: AgenCDaemonAgentManager["updateSessionGoal"];
     readonly getLiveSessionPermission?: AgenCDaemonAgentManager["getLiveSessionPermission"];
+    readonly isLiveSessionToolCallExecuting?: AgenCDaemonAgentManager["isLiveSessionToolCallExecuting"];
   };
   readonly #initializeAuthenticator:
     | ((
@@ -734,6 +752,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #routineSubscriptions = new Map<AgenCDaemonJsonRpcConnection, () => void>();
   readonly #csvJobReview: AgenCCsvJobReviewService | undefined;
   readonly #projectTrust: AgenCDaemonProjectTrustService | undefined;
+  readonly #pluginSettings: PluginSettingsService | undefined;
   readonly #serverCapabilities: AgenCDaemonServerCapabilities;
   readonly #now: () => string;
 
@@ -770,6 +789,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#ownerTelegram = options.ownerTelegram;
     this.#csvJobReview = options.csvJobReview;
     this.#projectTrust = options.projectTrust;
+    this.#pluginSettings = options.pluginSettings;
     this.#authHandlers =
       options.authBackend !== undefined
         ? createAgenCDaemonAuthHandlers(options.authBackend)
@@ -796,6 +816,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       ownerTelegram: this.#ownerTelegram,
       csvJobReview: this.#csvJobReview,
       projectTrust: this.#projectTrust,
+      pluginSettings: this.#pluginSettings,
     });
     this.#now = options.now ?? (() => new Date().toISOString());
   }
@@ -892,8 +913,11 @@ export class AgenCDaemonJsonRpcDispatcher {
           const negotiated = negotiateInitializeProtocol(
             initializeParams,
             connection.remoteAccess ? {
-              ...this.#serverCapabilities,
+              ...Object.fromEntries(Object.entries(this.#serverCapabilities).filter(([key]) => key !== AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY)),
               [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.fromEntries(Object.entries(this.#serverCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY]).map(([key, value]) => [key, value && connection.remoteAccess!.allowsMethod(key)])) as AgenCDaemonMethodCapabilities,
+              // Match the filtered routine methods in this remote-access view.
+              ...(this.#serverCapabilities[AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY] && connection.remoteAccess.allowsMethod("routine.create") && connection.remoteAccess.allowsMethod("routine.update")
+                ? { [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]: true as const } : {}),
             } : this.#serverCapabilities,
           );
           if (!negotiated.supported) {
@@ -976,7 +1000,7 @@ export class AgenCDaemonJsonRpcDispatcher {
 
       if (methodSupportsRequestCancellation(method)) {
         return await connection.runCancellableRequest(id, (signal) =>
-          this.#dispatchKnownMethod(connection, id, method, params, signal),
+          this.#dispatchKnownMethod(connection, id, method, params, signal, message),
         );
       }
 
@@ -986,6 +1010,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         method,
         params,
         INERT_ABORT_SIGNAL,
+        message,
       );
     } catch (error) {
       return mapDispatchError(id, error);
@@ -1003,7 +1028,12 @@ export class AgenCDaemonJsonRpcDispatcher {
   async #routinePermissionGrant(
     connection: AgenCDaemonJsonRpcConnection,
     authority: RoutinePermissionAuthority | undefined,
+    priorityHeadSessionId?: string,
   ): Promise<RoutinePermissionGrant> {
+    if (priorityHeadSessionId !== undefined &&
+        (authority?.kind !== "session" || authority.toolCallId === undefined)) {
+      throw new RoutineError("ROUTINE_PERMISSION_DENIED", "A bypassed routine write requires its executing session tool call.");
+    }
     if (authority === undefined) return LEGACY_ROUTINE_GRANT;
     const agentManager = this.#agentManager;
     const multiplexer = this.#clientMultiplexer;
@@ -1019,11 +1049,18 @@ export class AgenCDaemonJsonRpcDispatcher {
       operator,
       async liveSession(sessionId) {
         if (agentManager.getLiveSessionPermission === undefined) return undefined;
-        return await agentManager.getLiveSessionPermission(sessionId);
+        return await agentManager.getLiveSessionPermission(sessionId, priorityHeadSessionId);
       },
       async holdsSession(liveSessionId) {
         if (multiplexer?.deliveryHoldsSession === undefined) return false;
         return await multiplexer.deliveryHoldsSession(deliveryKey, liveSessionId);
+      },
+      async executingToolCall(liveSessionId, toolCallId) {
+        // A tool's routine write is part of the turn already streaming on this
+        // connection. Judge it using the session's mode now, like that tool's
+        // other effects. Queued permission changes and attach/detach apply
+        // after the turn under the connection's ordinary FIFO.
+        return (await agentManager.isLiveSessionToolCallExecuting?.(liveSessionId, toolCallId)) === true;
       },
     });
   }
@@ -1065,6 +1102,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     method: AgenCDaemonKnownMethod,
     params: JsonObject,
     signal: AbortSignal,
+    message: JsonObject,
   ): Promise<AgenCDaemonResponse> {
     switch (method) {
       case "audio.whisper.status":
@@ -1100,13 +1138,13 @@ export class AgenCDaemonJsonRpcDispatcher {
       case "routine.create": {
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
         const request = this.#routineRequest(connection, params);
-        const grant = await this.#routinePermissionGrant(connection, request.authority);
+        const grant = await this.#routinePermissionGrant(connection, request.authority, daemonCausalRoutineHead(message));
         return successResponse(id, this.#routines.create(request.params, grant));
       }
       case "routine.update": {
         if (this.#routines === undefined) return methodNotImplementedResponse(id, method);
         const request = this.#routineRequest(connection, params);
-        const grant = await this.#routinePermissionGrant(connection, request.authority);
+        const grant = await this.#routinePermissionGrant(connection, request.authority, daemonCausalRoutineHead(message));
         // Checked after the grant's await so nothing interleaves before the update.
         this.#assertRoutineVisible(connection, params);
         return successResponse(id, this.#routines.update(request.params, grant));
@@ -1297,12 +1335,63 @@ export class AgenCDaemonJsonRpcDispatcher {
           ),
         );
       case "session.transcript.v2":
-        return successResponse(
-          id,
-          await this.#agentManager.getSessionTranscriptV2(
+        {
+          const clientMinor = Number(connection.initializeState?.clientProtocol.version.split(".")[1] ?? 0);
+          const transcript = await this.#agentManager.getSessionTranscriptV2(
             validateSessionTranscriptV2Params(params),
-          ),
-        );
+            { includeCompleteMessages: clientMinor < 18 },
+          );
+          if (clientMinor >= 18) return successResponse(id, transcript);
+          // Protocol 1.17 has no artifact RPC. Restore complete messages only
+          // while the serialized reply still fits this connection's frame.
+          const maxLegacyBytes = connection.remoteAccess === undefined
+            ? 16 * 1024 * 1024
+            : 1024 * 1024;
+          const messages: Array<(typeof transcript.messages)[number]> = [];
+          const legacyEvents = transcript.events?.filter(event => event.type !== "tool_call_completed");
+          const emptyResponse = successResponse(id, { ...transcript, messages, events: legacyEvents });
+          const emptyPayload = JSON.stringify(emptyResponse);
+          const remote = connection.remoteAccess !== undefined;
+          let measuredBytes = Buffer.byteLength(remote
+            ? JSON.stringify({ t: "data", cid: connection.remoteCid ?? "", payload: emptyPayload })
+            : emptyPayload, "utf8");
+          const addMessage = (message: (typeof transcript.messages)[number]): void => {
+            const part = `${messages.length > 0 ? "," : ""}${JSON.stringify(message)}`;
+            // The remote relay quotes and escapes the JSON payload once more.
+            // Measure that one message's contribution without constructing the
+            // complete reply or relay envelope.
+            measuredBytes += Buffer.byteLength(remote ? JSON.stringify(part).slice(1, -1) : part, "utf8");
+            if (measuredBytes > maxLegacyBytes) throw new Error("legacy transcript exceeds transport limit");
+            messages.push(message);
+          };
+          if (measuredBytes > maxLegacyBytes) throw new Error("legacy transcript exceeds transport limit");
+          for (const { textArtifact, ...message } of transcript.messages) {
+            if (textArtifact === undefined) {
+              addMessage(message);
+              continue;
+            }
+            if (textArtifact.size > maxLegacyBytes - measuredBytes) throw new Error("legacy transcript exceeds transport limit");
+            const chunks: Buffer[] = [];
+            let offset = 0;
+            while (offset < textArtifact.size) {
+              const chunk = await this.#agentManager.readSessionArtifact({ sessionId: transcript.sessionId, id: textArtifact.id, offset, length: 256 * 1024 });
+              const data = Buffer.from(chunk.data, "base64");
+              if (chunk.id !== textArtifact.id || chunk.size !== textArtifact.size || chunk.offset !== offset || data.length === 0 || offset + data.length > textArtifact.size || chunk.nextOffset !== (offset + data.length < textArtifact.size ? offset + data.length : null)) {
+                throw new Error("legacy transcript artifact changed during read");
+              }
+              chunks.push(data);
+              offset += data.length;
+            }
+            const bytes = Buffer.concat(chunks, offset);
+            if (createHash("sha256").update(bytes).digest("hex") !== textArtifact.digest) throw new Error("legacy transcript artifact digest mismatch");
+            addMessage({ ...message, text: bytes.toString("utf8") });
+          }
+          return emptyResponse;
+        }
+      case "session.artifact.read":
+        {
+          return successResponse(id, await this.#agentManager.readSessionArtifact(validateSessionArtifactReadParams(params)));
+        }
       case "session.cancelTurn":
         return successResponse(
           id,
@@ -1326,6 +1415,21 @@ export class AgenCDaemonJsonRpcDispatcher {
             validateSessionMcpAddServerParams(params),
           ),
         );
+      case "plugin.settings.get":
+      case "plugin.settings.set":
+      case "plugin.settings.reset": {
+        if (connection.remoteAccess !== undefined || this.#pluginSettings === undefined) return methodNotImplementedResponse(id, method);
+        const validated = validateObjectShape(params, {
+          methodName: method,
+          stringFields: ["pluginId"],
+          ...(method === "plugin.settings.set" ? { objectFields: ["values"] } : {}),
+        });
+        validateRequiredString(validated, method, "pluginId");
+        if (method === "plugin.settings.get") return successResponse(id, await this.#pluginSettings.get({ pluginId: validated.pluginId as string }) as unknown as PluginSettingsResult);
+        if (method === "plugin.settings.reset") return successResponse(id, await this.#pluginSettings.reset({ pluginId: validated.pluginId as string }) as unknown as PluginSettingsResult);
+        if (validated.values === undefined || typeof validated.values !== "object" || Array.isArray(validated.values)) throw invalidParams("plugin.settings.set values must be an object");
+        return successResponse(id, await this.#pluginSettings.set({ pluginId: validated.pluginId as string, values: validated.values as Record<string, string | number | boolean | string[]> }) as unknown as PluginSettingsResult);
+      }
       case "session.mcp.reconnectServer":
         return successResponse(
           id,
@@ -1942,8 +2046,13 @@ export class AgenCDaemonJsonRpcDispatcher {
     const preparesRoutineSession = capabilities[ROUTINE_SESSION_PREPARE_CAPABILITY] === true;
     const listsPendingApprovals =
       capabilities[AGENC_PENDING_APPROVALS_LIST_CAPABILITY] === true;
+    // Registered so a session attach on this connection counts as able to
+    // answer cross-provider consent (hasAttachedClientWithCapability).
+    const answersCrossProviderConsent =
+      capabilities[AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY] === true;
     if (
-      (!receivesLedgerActions && !receivesMobileStatus && !listsPendingApprovals && !preparesRoutineSession) ||
+      (!receivesLedgerActions && !receivesMobileStatus && !listsPendingApprovals &&
+        !preparesRoutineSession && !answersCrossProviderConsent) ||
       this.#clientMultiplexer === undefined ||
       connection.sendNotification === undefined
     ) {
@@ -2228,6 +2337,8 @@ export class AgenCDaemonJsonRpcDispatcher {
 export interface AgenCDaemonJsonRpcConnectionOptions {
   /** In-process browser authority. No JSON-RPC field can populate this. */
   readonly remoteAccess?: RemoteAccessBoundary;
+  /** Remote peer identity used in the relay's outbound JSON envelope. */
+  readonly remoteCid?: string;
   readonly sendNotification?: (message: JsonObject) => void | Promise<void>;
   readonly overloadLimits?: AgenCDaemonOverloadLimitOptions;
 }
@@ -2236,6 +2347,7 @@ let nextConnectionId = 0;
 
 export class AgenCDaemonJsonRpcConnection {
   readonly remoteAccess: RemoteAccessBoundary | undefined;
+  readonly remoteCid: string | undefined;
   readonly #dispatcher: AgenCDaemonJsonRpcDispatcher;
   readonly #sendNotification:
     ((message: JsonObject) => void | Promise<void>) | undefined;
@@ -2255,6 +2367,7 @@ export class AgenCDaemonJsonRpcConnection {
   ) {
     this.#dispatcher = dispatcher;
     this.remoteAccess = options.remoteAccess;
+    this.remoteCid = options.remoteCid;
     this.#sendNotification = options.sendNotification;
     this.#limiter = new AgenCDaemonConnectionLimiter(options.overloadLimits);
     nextConnectionId += 1;
@@ -3373,6 +3486,16 @@ function validateSessionTranscriptV2Params(
   return validated as SessionTranscriptV2Params;
 }
 
+function validateSessionArtifactReadParams(params: JsonObject): SessionArtifactReadParams {
+  const validated = validateObjectShape(params, { methodName: "session.artifact.read", stringFields: ["sessionId", "id"], numberFields: ["offset", "length"] });
+  validateRequiredString(validated, "session.artifact.read", "sessionId");
+  validateRequiredString(validated, "session.artifact.read", "id");
+  if (typeof validated.id !== "string" || !/^[a-f0-9]{64}$/u.test(validated.id)) throw invalidParams("session.artifact.read.id must be a SHA-256 digest");
+  if (validated.offset !== undefined && (typeof validated.offset !== "number" || !Number.isSafeInteger(validated.offset) || validated.offset < 0 || validated.offset > 32 * 1024 * 1024)) throw invalidParams("session.artifact.read.offset is invalid");
+  if (validated.length !== undefined && (typeof validated.length !== "number" || !Number.isSafeInteger(validated.length) || validated.length < 1 || validated.length > 512 * 1024)) throw invalidParams("session.artifact.read.length is invalid");
+  return validated as SessionArtifactReadParams;
+}
+
 function validateSessionCancelTurnParams(
   params: JsonObject,
 ): SessionCancelTurnParams {
@@ -4390,12 +4513,15 @@ function isValidMessageContentBlock(block: unknown): boolean {
 function validateToolApproveParams(params: JsonObject): ToolApproveParams {
   const validated = validateObjectShape(params, {
     methodName: "tool.approve",
-    stringFields: ["sessionId", "requestId", "scope"],
+    stringFields: ["sessionId", "requestId", "scope", "approvalKind"],
     objectFields: ["exitPlan", "askUserQuestionInput"],
     valueFields: ["allowAllToolsForSession"],
   });
   validateRequiredString(validated, "tool.approve", "sessionId");
   validateRequiredString(validated, "tool.approve", "requestId");
+  if (validated.approvalKind !== undefined && validated.approvalKind !== "cross_provider_spawn") {
+    throw invalidParams("tool.approve param 'approvalKind' must be cross_provider_spawn");
+  }
   if (
     validated.scope !== undefined &&
     validated.scope !== "once" &&

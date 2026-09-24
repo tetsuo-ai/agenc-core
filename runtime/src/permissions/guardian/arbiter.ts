@@ -246,6 +246,8 @@ export interface ApprovalCtx {
   /** Canonical identity of this permission occurrence, not the tool invocation. */
   readonly requestEventId?: string;
   readonly toolName: string;
+  /** Consent is a human data-transfer decision, outside tool permission modes. */
+  readonly approvalKind?: "cross_provider_spawn";
   readonly turnId: string;
   /** True when the resolver is also the tool's per-call input channel. */
   readonly requiresUserInteraction?: boolean;
@@ -714,8 +716,13 @@ function beginDurableApprovalJournal(
         payload: {
           callId: opts.ctx.callId,
           toolName: opts.ctx.toolName,
+          ...(opts.ctx.approvalKind !== undefined ? { kind: opts.ctx.approvalKind } : {}),
+          ...(opts.ctx.approvalKind === "cross_provider_spawn"
+            ? { crossProvider: input as unknown as import("../../app-server/protocol/index.js").CrossProviderSpawnDisclosure }
+            : {}),
           turnId: opts.ctx.turnId,
-          permissions: ["tool.use"],
+          permissions: opts.ctx.approvalKind === "cross_provider_spawn"
+            ? ["cross_provider_spawn"] : ["tool.use"],
           ...(opts.ctx.retryReason !== undefined
             ? { reason: opts.ctx.retryReason }
             : {}),

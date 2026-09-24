@@ -1,5 +1,6 @@
 import {
   copyFileSync,
+  existsSync,
   lstatSync,
   linkSync,
   mkdirSync,
@@ -10,13 +11,16 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgenCSessionSnapshotPolicy } from "../state/snapshot-policy.js";
+import { pruneRolloutSessions } from "../state/pruning.js";
 import { upsertAgentRun } from "../state/agent-runs.js";
 import { RolloutStore } from "../session/rollout-store.js";
+import { persistDisplayAttachments, readDisplayArtifact } from "../session/display-artifact-store.js";
+import { validateDisplayBlock } from "../mcp-client/display-attachments.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
 import { FileThreadStore } from "../thread-store/store.js";
@@ -103,6 +107,12 @@ function createThreadStoreTestDirs(): {
   };
 }
 
+function cleanupThreadStoreTestDirs(cwd: string, home: string, restoreEnv: () => void): void {
+  restoreEnv();
+  rmSync(home, { recursive: true, force: true });
+  rmSync(cwd, { recursive: true, force: true });
+}
+
 function openRollout(
   cwd: string,
   sessionId: string,
@@ -126,6 +136,19 @@ function openRollout(
     modelProvider: "grok",
   });
   return rollout;
+}
+
+function appendOversizedSnapshotAnswer(
+  store: FileThreadStore,
+  rollout: RolloutStore,
+  threadId: string,
+  cwd: string,
+): string {
+  const answer = "A".repeat(400_000);
+  store.createThread({ threadId, rolloutStore: rollout, source: "cli_main", cwd });
+  rollout.appendRollout({ type: "event_msg", payload: { id: "answer", eventId: "answer", seq: 1, msg: { type: "agent_message", payload: { message: answer } } } });
+  rollout.flushDurable();
+  return answer;
 }
 
 type LifecycleRunner = NonNullable<
@@ -650,6 +673,51 @@ describe("AgenC background agent lifecycle", () => {
     }
   });
 
+  it("reads a 13 MiB artifact through bounded session-scoped responses after a manager restart", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const first = openRollout(cwd, "conv-display-one");
+    const second = openRollout(cwd, "conv-display-two");
+    const threadStore = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      for (const [id, rollout] of [["conv-display-one", first], ["conv-display-two", second]] as const) {
+        threadStore.createThread({ threadId: id, rolloutStore: rollout, source: "cli_main", cwd });
+        threadStore.shutdownThread(id);
+      }
+      const bytes = randomBytes(13 * 1024 * 1024);
+      const id = createHash("sha256").update(bytes).digest("hex");
+      const display = await validateDisplayBlock({ type: "resource", resource: { uri: "agenc:large.bin", name: "large.bin", mimeType: "application/octet-stream", blob: bytes.toString("base64") } }, []);
+      const stored = persistDisplayAttachments(first.store.sessionDir, [display.attachment]);
+      first.appendRollout({ type: "event_msg", payload: { id: "display-complete", seq: 1, msg: { type: "tool_call_completed", payload: { callId: "call-1", result: '[Shown to the user: file "talk.ics"]', isError: false, displayAttachments: stored } } } });
+      first.flushDurable();
+      const sessionManager = new AgenCDaemonSessionManager({ createSessionId: () => "conv-display-one" });
+      await sessionManager.createSession({ agentId: "agent-display", cwd });
+      const restarted = new AgenCDaemonAgentManager({ threadStore, sessionManager });
+      const threadReads = vi.spyOn(threadStore, "readThread");
+      let offset = 0;
+      const chunks: Buffer[] = [];
+      for (;;) {
+        const response = await restarted.readSessionArtifact({ sessionId: "conv-display-one", id, offset });
+        expect(response).toMatchObject({ sessionId: "conv-display-one", id, size: bytes.length, offset });
+        expect(Buffer.byteLength(JSON.stringify({ jsonrpc: "2.0", id: "read", result: response }))).toBeLessThan(1024 * 1024);
+        chunks.push(Buffer.from(response.data, "base64"));
+        if (response.nextOffset === null) break;
+        offset = response.nextOffset;
+      }
+      expect(chunks.length).toBeGreaterThan(1);
+      expect(threadReads).toHaveBeenCalled();
+      expect(threadReads.mock.calls.every(([params]) => params.includeHistory === false)).toBe(true);
+      expect(createHash("sha256").update(Buffer.concat(chunks)).digest("hex")).toBe(id);
+      await expect(restarted.getSessionTranscriptV2({ sessionId: "conv-display-one" })).resolves.toMatchObject({ events: expect.arrayContaining([expect.objectContaining({ type: "tool_call_completed", payload: expect.objectContaining({ displayAttachments: stored }) })]) });
+      await expect(restarted.readSessionArtifact({ sessionId: "conv-display-two", id })).rejects.toThrow("session artifact not found");
+      first.close();
+      threadStore.archiveThread({ threadId: "conv-display-one" });
+      expect(() => readDisplayArtifact(first.store.sessionDir, id)).toThrow();
+    } finally {
+      threadStore.close(); first.close(); second.close();
+      cleanupThreadStoreTestDirs(cwd, home, restoreEnv);
+    }
+  });
+
   it("serves session.transcript from the persisted thread when no live agent exists", async () => {
     // A `conv-*` terminal session (source "cli_main") persists a thread but
     // runs its agent in its OWN process, so the daemon has no live agent for
@@ -817,6 +885,79 @@ describe("AgenC background agent lifecycle", () => {
       restoreEnv();
       rmSync(home, { recursive: true, force: true });
       rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("publishes an oversized persisted snapshot in the archived location after lookup", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const threadId = "conv-snapshot-archive-race";
+    const rollout = openRollout(cwd, threadId);
+    const threadStore = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      const answer = appendOversizedSnapshotAnswer(threadStore, rollout, threadId, cwd);
+      threadStore.shutdownThread(threadId);
+      rollout.close();
+      const oldArtifacts = join(dirname(rollout.rolloutPath), "display-artifacts");
+      const sessions = new AgenCDaemonSessionManager({ threadStore, createSessionId: () => threadId });
+      await sessions.createSession({ agentId: threadId, cwd });
+      const manager = new AgenCDaemonAgentManager({ threadStore, sessionManager: sessions });
+      const originalRead = threadStore.readThread.bind(threadStore);
+      let moved = false;
+      vi.spyOn(threadStore, "readThread").mockImplementation((params) => {
+        const thread = originalRead(params);
+        if (params.includeHistory && !moved) {
+          moved = true;
+          threadStore.archiveThread({ threadId });
+        }
+        return thread;
+      });
+
+      const snapshot = await manager.getSessionTranscriptV2({ sessionId: threadId });
+      expect(moved).toBe(true);
+      const artifact = snapshot.messages.at(-1)?.textArtifact;
+      expect(artifact).toBeDefined();
+      const read = await manager.readSessionArtifact({ sessionId: threadId, id: artifact!.id });
+      expect(Buffer.from(read.data, "base64").toString()).toBe(answer);
+      expect(existsSync(oldArtifacts)).toBe(false);
+
+      const driver = openStateDatabases({ cwd, agencHome: home });
+      try {
+        const report = pruneRolloutSessions(driver, {
+          sessionsDir: join(threadStore.getProjectDir(), "sessions"),
+          retention_days: 30,
+          now: () => "2026-06-01T00:00:00.000Z",
+        });
+        expect(report.prunedSessions).toBe(0);
+      } finally { driver.close(); }
+      expect(existsSync(oldArtifacts)).toBe(false);
+    } finally {
+      threadStore.close(); rollout.close();
+      cleanupThreadStoreTestDirs(cwd, home, restoreEnv);
+    }
+  });
+
+  it("publishes an oversized persisted snapshot while a separate store owns the writer lease", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const threadId = "conv-snapshot-foreign-writer";
+    const rollout = openRollout(cwd, threadId);
+    const owner = new FileThreadStore({ cwd, agencHome: home });
+    const reader = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      const answer = appendOversizedSnapshotAnswer(owner, rollout, threadId, cwd);
+      expect(existsSync(`${rollout.rolloutPath}.lock`)).toBe(true);
+
+      const sessions = new AgenCDaemonSessionManager({ threadStore: reader, createSessionId: () => threadId });
+      await sessions.createSession({ agentId: threadId, cwd });
+      const manager = new AgenCDaemonAgentManager({ threadStore: reader, sessionManager: sessions });
+      const snapshot = await manager.getSessionTranscriptV2({ sessionId: threadId });
+      const artifact = snapshot.messages.at(-1)?.textArtifact;
+      expect(artifact).toBeDefined();
+      const read = await manager.readSessionArtifact({ sessionId: threadId, id: artifact!.id });
+      expect(Buffer.from(read.data, "base64").toString()).toBe(answer);
+      expect(existsSync(`${rollout.rolloutPath}.lock`)).toBe(true);
+    } finally {
+      reader.close(); owner.close(); rollout.close();
+      cleanupThreadStoreTestDirs(cwd, home, restoreEnv);
     }
   });
 
@@ -6487,6 +6628,7 @@ describe("AgenC background agent lifecycle", () => {
         capabilities: {},
       },
     });
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.18.0");
     expect(connection.initializeState).toMatchObject({
       protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
       clientProtocol: { version: "1.0.0" },

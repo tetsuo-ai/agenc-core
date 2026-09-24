@@ -104,6 +104,27 @@ export type AgencPromptEvent = AgencPromptEventIdentity &
         readonly retiredCountKnown?: boolean;
       }
     | {
+        /**
+         * SDK-local loss: this process discarded `retiredCount` events it had
+         * already received because the consumer did not drain the run's
+         * iterator within the bounded buffer. Delivered in place of the
+         * discarded events and never itself evicted. Unlike `retention`, the
+         * daemon still holds the events: a socket consumer can replay from
+         * `afterSequence`; the subprocess transport has no replay path.
+         * `sessionId` is omitted only when the stream never identified one.
+         */
+        readonly type: "gap";
+        readonly kind: "event_gap";
+        readonly reason: "local_overflow";
+        readonly sessionId?: string;
+        readonly runId?: string;
+        /** Last sequence the consumer received before the loss. */
+        readonly afterSequence?: number;
+        /** Sequence of the first surviving event after the loss. */
+        readonly firstAvailableSequence?: number;
+        readonly retiredCount: number;
+      }
+    | {
         readonly type: "session_event";
         readonly event: JsonObject;
       }

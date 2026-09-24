@@ -29,6 +29,7 @@ import { ensureAgentControl } from "../bin/delegate-tool.js";
 import { AgentControl } from "../agents/control.js";
 import { clearSession } from "../commands/clear.js";
 import { runTurn } from "../session/run-turn.js";
+import { isToolCallPhysicallyExecuting } from "../session/executing-tool-calls.js";
 import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
 import {
   prepareUserPromptForTurn,
@@ -945,6 +946,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       // no settled mode to lend a routine right now.
       return null;
     }
+  }
+
+  isAgentToolCallExecuting(agentId: string, toolCallId: string): boolean {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) return false;
+    const session = active.bootstrap.session;
+    const turn = session.activeTurn?.unsafePeek();
+    return turn !== null && turn !== undefined &&
+      !session.abortController?.signal.aborted &&
+      isToolCallPhysicallyExecuting(session, toolCallId, turn.abortController);
   }
 
   async listPermissions(agentId: string): Promise<PermissionListResult | null> {
@@ -3138,7 +3149,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
 
   async getAgentSessionTranscriptV2(
     agentId: string,
-    params: { readonly sessionId: string },
+    params: { readonly sessionId: string; readonly includeCompleteMessages?: boolean },
   ): Promise<SessionTranscriptV2Result> {
     const active = this.#active.get(agentId);
     if (active === undefined || !isRunnableActiveAgent(active)) {
@@ -3164,6 +3175,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
               ? { clientMessageId: submission.clientMessageId }
               : {}),
           },
+      active.bootstrap.rolloutStore.store?.sessionDir,
+      { includeCompleteMessages: params.includeCompleteMessages },
     );
   }
 

@@ -41,13 +41,15 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * revision: a 1.0 through 1.14 client still negotiates successfully, because
  * negotiation compares versions and not method sets, but those calls now
  * answer `METHOD_NOT_FOUND`. Nothing outside this repository used them.
+ * Plugin settings read, write and reset are additive capability-gated methods.
  * 1.16 adds project trust for a working directory (`project.trustStatus`,
  * `project.trust`), resolved to the project root a session there would use.
  * 1.17 adds a bounded routine session preparation handshake.
+ * 1.18 adds display attachment events and chunked artifact reads by digest.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.17.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.18.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -60,6 +62,9 @@ export const AGENC_DAEMON_PROTOCOL_PUBLISH_TARGET = {
   schemaId: AGENC_DAEMON_PROTOCOL_SCHEMA_ID,
 } as const;
 export const AGENC_DAEMON_METHOD_CAPABILITIES_KEY = "daemon.methods" as const;
+/** A session authority may carry its in-flight toolCallId; that write answers during the turn. */
+export const AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY =
+  "routine.sessionAuthority.v1" as const;
 /**
  * A client advertising this reconciles pending permission requests through
  * `permission.list` (on attach, reconnect or a poll), so it can show a
@@ -69,6 +74,9 @@ export const AGENC_DAEMON_METHOD_CAPABILITIES_KEY = "daemon.methods" as const;
  */
 export const AGENC_PENDING_APPROVALS_LIST_CAPABILITY =
   "approvals.pending.list.v1" as const;
+/** Client understands the cross-provider disclosure and explicit approval marker. */
+export const AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY =
+  "approvals.cross_provider_spawn.v1" as const;
 /** Explicit opt-in for unsolicited, cross-session mobile agent-status notifications. */
 export const AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY =
   "portal.mobile.status.push.v1" as const;
@@ -152,10 +160,14 @@ export const AGENC_DAEMON_METHODS = [
   "session.goal",
   "session.transcript",
   "session.transcript.v2",
+  "session.artifact.read",
   "session.cancelTurn",
   "session.resolveToolCall",
   "session.mcp.status",
   "session.mcp.addServer",
+  "plugin.settings.get",
+  "plugin.settings.set",
+  "plugin.settings.reset",
   "message.send",
   "message.stream",
   "thread/realtime/start",
@@ -222,6 +234,7 @@ export type AgenCDaemonMethodCapabilities = JsonObject & {
 
 export type AgenCDaemonServerCapabilities = JsonObject & {
   readonly [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: AgenCDaemonMethodCapabilities;
+  readonly [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]?: true;
 };
 
 /**
@@ -791,6 +804,13 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     description:
       "Read an identity-bearing, sequence-watermarked transcript projection suitable for atomic snapshot-plus-live reconciliation.",
   },
+  "session.artifact.read": {
+    method: "session.artifact.read",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Read immutable display artifact bytes by digest within a daemon session.",
+  },
   "session.cancelTurn": {
     method: "session.cancelTurn",
     direction: "client-to-server",
@@ -823,6 +843,9 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     description:
       "Add an MCP server to the daemon-owned runtime session so system.searchTools and model tool calls can use it immediately.",
   },
+  "plugin.settings.get": { method: "plugin.settings.get", direction: "client-to-server", params: "required", result: "object", description: "Read a plugin's declared settings and redacted values." },
+  "plugin.settings.set": { method: "plugin.settings.set", direction: "client-to-server", params: "required", result: "object", description: "Validate and store declared plugin settings." },
+  "plugin.settings.reset": { method: "plugin.settings.reset", direction: "client-to-server", params: "required", result: "object", description: "Clear a plugin's stored settings." },
   "message.send": {
     method: "message.send",
     direction: "client-to-server",
@@ -1724,6 +1747,35 @@ export interface SessionMcpStatusParams extends JsonObject {
   readonly includeStoppedState?: boolean;
 }
 
+export interface PluginSettingsParams extends JsonObject {
+  readonly pluginId: string;
+}
+
+export interface PluginSettingsSetParams extends PluginSettingsParams {
+  readonly values: Readonly<Record<string, string | number | boolean | readonly string[]>>;
+}
+
+export interface PluginSettingOption extends JsonObject {
+  readonly type: "string" | "number" | "boolean" | "directory" | "file";
+  readonly title: string;
+  readonly description: string;
+  readonly required?: boolean;
+  readonly sensitive?: boolean;
+  readonly default?: string | number | boolean | readonly string[];
+  readonly multiple?: boolean;
+  readonly min?: number;
+  readonly max?: number;
+  readonly pattern?: string;
+}
+
+export interface PluginSettingsResult extends JsonObject {
+  readonly pluginId: string;
+  readonly schema: Readonly<Record<string, PluginSettingOption>>;
+  readonly values: Readonly<Record<string, string | number | boolean | readonly string[]>>;
+  readonly sensitiveSet: Readonly<Record<string, boolean>>;
+  readonly needsSetup: readonly string[];
+}
+
 export interface SessionMcpServerConfig extends JsonObject {
   readonly name: string;
   readonly transport?: "stdio" | "sse" | "http" | "websocket";
@@ -2093,6 +2145,8 @@ export interface ToolApproveParams extends JsonObject {
   readonly sessionId: string;
   readonly requestId: string;
   readonly scope?: "once" | "session" | "agent";
+  /** Required to approve a cross-provider request; old clients fail closed. */
+  readonly approvalKind?: "cross_provider_spawn";
   /** Opt in to bypassing future tool prompts for this daemon session only. */
   readonly allowAllToolsForSession?: boolean;
   readonly exitPlan?: ExitPlanApprovalPayload;
@@ -2265,6 +2319,8 @@ export interface EventToolRequestParams extends AgenCEventBaseParams {
 
 export interface EventPermissionRequestParams extends AgenCEventBaseParams {
   readonly requestId: string;
+  readonly kind?: "cross_provider_spawn";
+  readonly crossProvider?: CrossProviderSpawnDisclosure;
   readonly callId?: string;
   /** Set when a spawned sub-agent (or a nested one) asks through its owner. */
   readonly sourceConversationId?: string;
@@ -2553,6 +2609,7 @@ export type AgenCDaemonRequest =
       "session.transcript.v2",
       SessionTranscriptV2Params
     >
+  | AgenCDaemonRequestWithParams<"session.artifact.read", SessionArtifactReadParams>
   | AgenCDaemonRequestWithParams<"session.cancelTurn", SessionCancelTurnParams>
   | AgenCDaemonRequestWithParams<
       "session.resolveToolCall",
@@ -2566,6 +2623,9 @@ export type AgenCDaemonRequest =
       "session.mcp.addServer",
       SessionMcpAddServerParams
     >
+  | AgenCDaemonRequestWithParams<"plugin.settings.get", PluginSettingsParams>
+  | AgenCDaemonRequestWithParams<"plugin.settings.set", PluginSettingsSetParams>
+  | AgenCDaemonRequestWithParams<"plugin.settings.reset", PluginSettingsParams>
   | AgenCDaemonRequestWithParams<"message.send", MessageSendParams>
   | AgenCDaemonRequestWithParams<"message.stream", MessageStreamParams>
   | AgenCDaemonRequestWithParams<
@@ -3271,6 +3331,24 @@ export interface SessionResolveToolCallResult extends JsonObject {
   readonly remaining: number;
 }
 
+/** Child terminal outcome carried by worker snapshots and session events. */
+export interface ChildTerminalOutcomeWire extends JsonObject {
+  readonly provider: string;
+  readonly model: string;
+  readonly reason:
+    | "completed" | "insufficient_funds" | "rate_limited" | "provider_unavailable"
+    | "timeout" | "auth_required" | "model_unavailable" | "context_insufficient"
+    | "tool_protocol_unreliable" | "model_refused" | "parent_cancelled"
+    | "policy_revoked" | "resume_blocked" | "cost_cap_reached"
+    | "effect_outcome_unknown" | "consent_denied" | "consent_unavailable";
+  readonly retryable: boolean;
+  readonly retryAfterMs?: number;
+  readonly dispatch: "not_sent" | "sent" | "unknown";
+  readonly completedWork: string;
+  readonly unfinishedWork: string;
+  readonly costUsd?: number;
+}
+
 /** Counters from the daemon-owned in-process session. */
 export interface SessionNativeWorkerSnapshot extends JsonObject {
   readonly agentId: string;
@@ -3278,8 +3356,12 @@ export interface SessionNativeWorkerSnapshot extends JsonObject {
   readonly nickname: string;
   readonly role: string;
   readonly prompt?: string;
+  readonly provider?: string;
+  readonly model?: string;
+  readonly reasoningEffort?: string;
   readonly status: "pending_init" | "running" | "idle" | "completed" | "errored" | "shutdown" | "not_found" | "interrupted";
   readonly error?: string;
+  readonly terminal?: ChildTerminalOutcomeWire;
   readonly toolUseCount: number;
   readonly tokenCount: number;
   /** Current assignment's Unix-ms execution interval, when known by the daemon. */
@@ -3352,6 +3434,23 @@ export interface SessionTranscriptV2Params extends JsonObject {
   readonly sessionId: string;
 }
 
+export interface SessionArtifactReadParams extends JsonObject {
+  readonly sessionId: string;
+  readonly id: string;
+  readonly offset?: number;
+  readonly length?: number;
+}
+
+export interface SessionArtifactReadResult extends JsonObject {
+  readonly sessionId: string;
+  readonly id: string;
+  readonly encoding: "base64";
+  readonly data: string;
+  readonly size: number;
+  readonly offset: number;
+  readonly nextOffset: number | null;
+}
+
 export interface SessionTranscriptMessage extends JsonObject {
   readonly role: string; // "user" | "assistant"
   readonly text: string;
@@ -3367,6 +3466,8 @@ export interface SessionTranscriptV2Message extends JsonObject {
   readonly commitEventId: string;
   readonly role: "user" | "assistant";
   readonly text: string;
+  /** Full UTF-8 text when the snapshot substitutes a bounded reference. */
+  readonly textArtifact?: { readonly id: string; readonly digest: string; readonly size: number; readonly mimeType: "text/plain" };
   readonly turnId?: string;
   readonly clientMessageId?: string;
   /** Zero only for migrated response_item rows that predate event sequencing. */
@@ -3404,7 +3505,7 @@ export interface SessionTranscriptV2Event extends JsonObject {
    * `approval_denied` names a call the user denied (`callId`, `toolName`,
    * `stage`, and `input` bounded to the fields that identify its target).
    */
-  readonly type: "token_count" | "session_usage" | "turn_failed" | "turn_aborted" | "approval_denied";
+  readonly type: "token_count" | "session_usage" | "turn_failed" | "turn_aborted" | "approval_denied" | "tool_call_completed";
   readonly payload: {
     readonly runId?: string;
     readonly sequence?: number;
@@ -3450,9 +3551,23 @@ export interface SessionTranscriptV2Event extends JsonObject {
     readonly reason?: string;
     readonly callId?: string;
     readonly toolName?: string;
+    readonly result?: string;
+    readonly isError?: boolean;
     readonly input?: { readonly [key: string]: string };
     readonly stage?: "before_execution" | "sandbox_escalation";
+    readonly displayAttachments?: readonly DisplayAttachment[];
   };
+}
+
+/** Attachment bytes are fetched with session.artifact.read using id. */
+export interface DisplayAttachment extends JsonObject {
+  readonly id: string;
+  readonly kind: "chart" | "table" | "image" | "file";
+  readonly title: string;
+  readonly mimeType: string;
+  readonly size: number;
+  readonly digest: string;
+  readonly data?: JsonValue;
 }
 
 export interface SessionTranscriptV2Result extends JsonObject {
@@ -3462,6 +3577,8 @@ export interface SessionTranscriptV2Result extends JsonObject {
   readonly historyEpoch: string;
   readonly asOfSequence: number;
   readonly messages: readonly SessionTranscriptV2Message[];
+  /** Older rows were omitted to keep the response within transport limits. */
+  readonly truncated?: boolean;
   readonly activeTurn?: SessionTranscriptV2ActiveTurn;
   readonly turnResults?: readonly SessionTranscriptV2TurnResult[];
   readonly events?: readonly SessionTranscriptV2Event[];
@@ -3726,6 +3843,8 @@ export interface PermissionListResult extends JsonObject {
 
 export interface PendingToolApproval extends JsonObject {
   readonly requestId: string;
+  readonly kind?: "cross_provider_spawn";
+  readonly crossProvider?: CrossProviderSpawnDisclosure;
   readonly ownerRunId: string;
   readonly sessionId: string;
   readonly sourceAgentNickname?: string;
@@ -3737,6 +3856,33 @@ export interface PendingToolApproval extends JsonObject {
   readonly planContent?: string;
   readonly planFilePath?: string;
   readonly fileWritePreview?: FileWriteApprovalPreview;
+}
+
+/** Exact data-transfer question shown before a cross-provider child can run. */
+export interface CrossProviderSpawnDisclosure extends JsonObject {
+  readonly kind: "cross_provider_spawn";
+  readonly provider: string;
+  readonly model: string;
+  readonly endpoint: string;
+  readonly billingSource: "byok" | "sign_in" | "managed" | "local";
+  readonly taskId: string;
+  readonly taskText: string;
+  readonly attachments: readonly string[];
+  readonly workspace: string;
+  readonly sandboxMode: string;
+  readonly fileReadAllowlist: readonly string[];
+  readonly fileReadDenylist: readonly string[];
+  readonly dataScope: "task_only" | "forked_history";
+  readonly tools: "parent_filtered" | readonly string[];
+  readonly network: boolean;
+  readonly search: boolean;
+  readonly price: { readonly inputUsdPer1K: number; readonly outputUsdPer1K: number } | "price unknown";
+  readonly subscriptionUsageNote?: string;
+  readonly maxModelCalls: number | null;
+  readonly futureToolResultsGoToProvider: true;
+  readonly scopeKey: string;
+  readonly payloadKey: string;
+  readonly denialKey: string;
 }
 
 export interface FuzzyFileSearchResult extends JsonObject {
@@ -3945,10 +4091,14 @@ export interface AgenCDaemonResultByMethod {
   readonly "session.goal": SessionGoalResult;
   readonly "session.transcript": SessionTranscriptResult;
   readonly "session.transcript.v2": SessionTranscriptV2Result;
+  readonly "session.artifact.read": SessionArtifactReadResult;
   readonly "session.cancelTurn": SessionCancelTurnResult;
   readonly "session.resolveToolCall": SessionResolveToolCallResult;
   readonly "session.mcp.status": SessionMcpStatusResult;
   readonly "session.mcp.addServer": SessionMcpAddServerResult;
+  readonly "plugin.settings.get": PluginSettingsResult;
+  readonly "plugin.settings.set": PluginSettingsResult;
+  readonly "plugin.settings.reset": PluginSettingsResult;
   readonly "message.send": MessageSendResult;
   readonly "message.stream": MessageStreamResult;
   readonly "thread/realtime/start": ThreadRealtimeStartResponse;

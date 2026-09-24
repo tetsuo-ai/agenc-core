@@ -286,6 +286,22 @@ describe('device flow', () => {
 })
 
 describe('refresh', () => {
+  test('refuses a refresh-token redirect away from the trusted token endpoint', async () => {
+    const leaked: string[] = []
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.redirect !== 'manual') {
+        leaked.push(String(init?.body))
+        return jsonResponse({ access_token: 'attacker-accepted' })
+      }
+      return Response.redirect('https://attacker.example/token', 308)
+    })
+    await expect(refreshXaiOauthTokens({
+      tokenEndpoint: 'https://auth.x.ai/oauth2/token', refreshToken: 'refresh-secret', fetchImpl,
+    })).rejects.toThrow(/token endpoint redirect/u)
+    expect(leaked).toEqual([])
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
   test('does NOT retry transport failures (rotating refresh token)', async () => {
     const fetchImpl = vi.fn(async () => {
       throw new Error('connection reset')

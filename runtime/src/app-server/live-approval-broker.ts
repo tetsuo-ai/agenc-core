@@ -20,7 +20,10 @@ import {
 import { daemonEventFromUnboundSessionEvent } from "./background-agent-runner/daemon-events.js";
 import { isUndeliverableApproval } from "./approval-delivery.js";
 import type { BackgroundAgentDaemonEvent } from "./background-agent-runner/shared.js";
-import type { PendingToolApproval, JsonObject } from "./protocol/index.js";
+import { AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY, type PendingToolApproval, type JsonObject } from "./protocol/index.js";
+import { requestApproval } from "../permissions/guardian/arbiter.js";
+import { crossProviderDenialKey, type CrossProviderConsentService, type CrossProviderSpawnDisclosure, type CrossProviderConsentOutcome } from "../agents/cross-provider.js";
+import { getSessionGoal } from "../goal/session-goal.js";
 
 /**
  * A runtime refusal, not the person's decision (no `decidedBy`): the child's
@@ -39,6 +42,10 @@ interface ApprovalOwner {
   readonly pending: Map<string, LivePendingApproval>;
   /** Forwarded requests no client could be shown; failed on arrival. */
   readonly undeliverable: Set<string>;
+  readonly sessionEpoch: string;
+  readonly consentSessionGrants: Set<string>;
+  fundsStopObserved: boolean;
+  readonly deniedConsentPayloads: Set<string>;
 }
 
 export interface LivePendingApproval {
@@ -48,8 +55,29 @@ export interface LivePendingApproval {
   readonly settle: (decision: ReviewDecision) => void;
 }
 
+/**
+ * Whether a person can answer a cross-provider consent question for an owner
+ * now. The broker asks by owner run id, which is the daemon agent id; clients
+ * attach to that agent's daemon session ids, not to the run id itself.
+ */
+export function crossProviderConsentAvailability(deps: {
+  readonly sessionIdsForAgent: (agentId: string) => Promise<readonly string[]>;
+  readonly hasAttachedClientWithCapability: (sessionId: string, capability: string) => Promise<boolean>;
+}): (ownerRunId: string) => Promise<boolean> {
+  return async (ownerRunId) => {
+    for (const sessionId of await deps.sessionIdsForAgent(ownerRunId)) {
+      if (await deps.hasAttachedClientWithCapability(sessionId, AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY)) return true;
+    }
+    return false;
+  };
+}
+
 export class LiveApprovalBroker {
   readonly #owners = new Map<string, ApprovalOwner>();
+
+  constructor(private readonly options: {
+    readonly canAnswerCrossProviderConsent?: (ownerRunId: string) => boolean | Promise<boolean>;
+  } = {}) {}
 
   register(
     session: Session,
@@ -77,10 +105,36 @@ export class LiveApprovalBroker {
       isActive: options.isActive,
       pending: new Map(),
       undeliverable: new Set(),
+      sessionEpoch: randomUUID(),
+      consentSessionGrants: new Set(),
+      fundsStopObserved: false,
+      deniedConsentPayloads: new Set(),
     };
     this.#owners.set(session.conversationId, owner);
-    const services = session.services as { approvalResolver?: ApprovalResolver };
+    // A restored or test session may carry an event log without live
+    // subscriptions; registration must not fail because of it.
+    const rootEventLog = session.eventLog;
+    const unsubscribeRootFunds = typeof rootEventLog?.subscribe === "function"
+      ? rootEventLog.subscribe((event) => {
+        if (event.msg.type === "subagent_funds_notice") {
+          owner.fundsStopObserved = true;
+          owner.consentSessionGrants.clear();
+        }
+      })
+      : () => {};
+    const unsubscribePolicy = session.services.configStore?.subscribe?.(() => {
+      // Revoking or changing the operator allowlist retires session grants.
+      owner.consentSessionGrants.clear();
+    });
+    const services = session.services as { approvalResolver?: ApprovalResolver; crossProviderConsent?: CrossProviderConsentService };
     const previousResolver = services.approvalResolver;
+    const previousConsent = services.crossProviderConsent;
+    const consentService: CrossProviderConsentService = {
+      ownerSessionId: owner.session.conversationId,
+      sessionEpoch: owner.sessionEpoch,
+      request: (requestingSession, disclosure, options) => this.#requestCrossProviderConsent(owner, requestingSession, disclosure, options),
+    };
+    services.crossProviderConsent = consentService;
     const subscriptions = new Set<() => void>();
     const requestIds = new WeakMap<Session, Map<string, string>>();
     const watchSession = (requestingSession: Session): (() => void) => {
@@ -91,6 +145,11 @@ export class LiveApprovalBroker {
       const ids = new Map<string, string>();
       requestIds.set(requestingSession, ids);
       const unsubscribe = requestingSession.eventLog.subscribe((event) => {
+        if (event.msg.type === "subagent_funds_notice") {
+          owner.fundsStopObserved = true;
+          owner.consentSessionGrants.clear();
+          return;
+        }
         if (
           event.msg.type !== "request_permissions" &&
           event.msg.type !== "permission_decision"
@@ -164,7 +223,7 @@ export class LiveApprovalBroker {
               !("rolloutStore" in ctx.invocation.session) ? ctx.callId : undefined
             )
           : ctx.requestEventId === undefined
-            ? undefined
+            ? !('rolloutStore' in ctx.invocation.session) ? ctx.callId : undefined
             : requestIds.get(ctx.invocation.session)?.get(ctx.requestEventId);
         return this.#request(owner, ctx, requestId, options.timeoutMs);
       },
@@ -177,11 +236,17 @@ export class LiveApprovalBroker {
       this.abort(session.conversationId);
       this.#owners.delete(session.conversationId);
       unsubscribeChildren();
+      unsubscribeRootFunds();
+      unsubscribePolicy?.();
       for (const cleanup of subscriptions) cleanup();
       session.abortController.signal.removeEventListener("abort", abort);
       if (services.approvalResolver === resolver) {
         if (previousResolver === undefined) delete services.approvalResolver;
         else services.approvalResolver = previousResolver;
+      }
+      if (services.crossProviderConsent === consentService) {
+        if (previousConsent === undefined) delete services.crossProviderConsent;
+        else services.crossProviderConsent = previousConsent;
       }
     };
   }
@@ -216,9 +281,13 @@ export class LiveApprovalBroker {
     return (this.#owners.get(ownerRunId)?.pending.size ?? 0) > 0;
   }
 
-  resolve(ownerRunId: string, requestId: string, decision: ReviewDecision): boolean {
+  resolve(ownerRunId: string, requestId: string, decision: ReviewDecision,
+    options: { readonly approvalKind?: "cross_provider_spawn" } = {}): boolean {
     const pending = this.pending(ownerRunId, requestId);
     if (pending === undefined || pending.ctx.signal?.aborted) return false;
+    if (pending.ctx.approvalKind === "cross_provider_spawn" &&
+        (decision.kind === "approved" || decision.kind === "approved_for_session") &&
+        options.approvalKind !== "cross_provider_spawn") return false;
     const owner = this.#owners.get(ownerRunId)!;
     // A client answering the pending request is the only path a person can
     // take to deny it. A non-interactive client has nobody attached, so its
@@ -234,6 +303,7 @@ export class LiveApprovalBroker {
     // child's report starts once the owner's turn has ended.
     if (
       !owner.workflow &&
+      pending.ctx.approvalKind !== "cross_provider_spawn" &&
       userDecision.kind === "denied" &&
       userDecision.decidedBy === "user" &&
       pending.ctx.invocation.session === owner.session
@@ -242,6 +312,88 @@ export class LiveApprovalBroker {
     }
     pending.settle(userDecision);
     return true;
+  }
+
+  async #requestCrossProviderConsent(
+    owner: ApprovalOwner,
+    requestingSession: Session,
+    disclosure: CrossProviderSpawnDisclosure,
+    options: { readonly fresh?: boolean } = {},
+  ): Promise<CrossProviderConsentOutcome> {
+    const unavailable = (reason: string): CrossProviderConsentOutcome => ({
+      kind: "consent_unavailable", reason: `${reason} Continue this task yourself.`,
+    });
+    const activeTurnAtRequest = requestingSession.activeTurn?.unsafePeek()?.turnId;
+    const turnId = activeTurnAtRequest ?? disclosure.requestingTurnId ?? disclosure.taskId;
+    const denialKey = crossProviderDenialKey(disclosure, turnId);
+    const cardDisclosure = { ...disclosure, requestingTurnId: turnId, denialKey };
+    if (this.#owners.get(owner.session.conversationId) !== owner || !owner.isActive() ||
+        !isApprovalSessionOwnedBy(requestingSession, owner.session)) {
+      return unavailable("The interactive session is no longer active.");
+    }
+    if (owner.workflow || isNonInteractiveSession(owner.session) ||
+        getSessionGoal(owner.session)?.status === "active" ||
+        (owner.session.activeTurn?.unsafePeek() !== undefined &&
+          owner.session.activeTurn.unsafePeek() !== null &&
+          owner.session.currentRootHumanTurn() === null) ||
+        owner.session.services.deferInteractiveApprovals !== undefined) {
+      return unavailable("This run is unattended and cannot request human consent.");
+    }
+    if (this.options.canAnswerCrossProviderConsent === undefined ||
+        !(await this.options.canAnswerCrossProviderConsent(owner.session.conversationId))) {
+      return unavailable("No attached consent-capable client can answer now.");
+    }
+    if (requestingSession.activeTurn?.unsafePeek()?.turnId !== activeTurnAtRequest ||
+        this.#owners.get(owner.session.conversationId) !== owner || !owner.isActive() ||
+        !isApprovalSessionOwnedBy(requestingSession, owner.session)) {
+      return unavailable("The requesting turn is no longer active.");
+    }
+    if (owner.deniedConsentPayloads.has(denialKey)) {
+      return { kind: "consent_denied", reason: "This task's equivalent cross-provider request was already denied. Continue it yourself; do not retry the same request." };
+    }
+    const grant = (kind: "once" | "session") => ({
+      kind, ownerSessionId: owner.session.conversationId,
+      sessionEpoch: owner.sessionEpoch, taskId: disclosure.taskId,
+      scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey,
+    });
+    // Once any child hits a funds stop, task text cannot identify a retry.
+    // Session-wide fresh approval is intentionally stricter than lineage-only
+    // invalidation and cannot be evaded by changing the model's task wording.
+    if (options.fresh !== true && !owner.fundsStopObserved &&
+        owner.consentSessionGrants.has(disclosure.scopeKey)) {
+      return { kind: "granted", grant: grant("session") };
+    }
+    const callId = `cross-provider-consent:${disclosure.taskId}:${randomUUID()}`;
+    // The arbiter settles a modal as stale unless it belongs to the session's
+    // active turn, and clients match a request to that turn: use its id, not
+    // the spawn call's.
+    const result = await requestApproval({
+      ctx: {
+        invocation: {
+          session: requestingSession, callId,
+          payload: { kind: "function", arguments: JSON.stringify(cardDisclosure) },
+        } as Parameters<typeof requestApproval>[0]["ctx"]["invocation"],
+        callId, toolName: "spawn_agent", approvalKind: "cross_provider_spawn",
+        turnId, requiresUserInteraction: true,
+        signal: requestingSession.abortController.signal,
+      },
+      args: cardDisclosure as unknown as Record<string, unknown>,
+      resolver: requestingSession.services.approvalResolver,
+      signal: requestingSession.abortController.signal,
+    });
+    if (result.source !== "resolver" ||
+        (result.decision.kind !== "approved" &&
+         result.decision.kind !== "approved_for_session" &&
+         (result.decision.kind !== "denied" || result.decision.decidedBy !== "user"))) {
+      return unavailable("Human consent could not be obtained.");
+    }
+    if (result.decision.kind === "approved_for_session") {
+      owner.consentSessionGrants.add(disclosure.scopeKey);
+      return { kind: "granted", grant: grant("session") };
+    }
+    if (result.decision.kind === "approved") return { kind: "granted", grant: grant("once") };
+    owner.deniedConsentPayloads.add(denialKey);
+    return { kind: "consent_denied", reason: "The user denied this cross-provider child. Continue the subtask yourself and do not retry the same request." };
   }
 
   abort(ownerRunId: string): void {
@@ -319,6 +471,10 @@ export class LiveApprovalBroker {
           sessionId: requestingSession.conversationId,
           ...(requestingSession === owner.session ? {} : subAgentAttribution(requestingSession)),
           requestId,
+          ...(ctx.approvalKind !== undefined ? { kind: ctx.approvalKind } : {}),
+          ...(ctx.approvalKind === "cross_provider_spawn" && approvalInput(ctx) !== undefined
+            ? { crossProvider: approvalInput(ctx) as unknown as import("./protocol/index.js").CrossProviderSpawnDisclosure }
+            : {}),
           toolName: ctx.toolName,
           turnId: ctx.turnId,
           ...(approvalInput(ctx) !== undefined ? { input: approvalInput(ctx) } : {}),

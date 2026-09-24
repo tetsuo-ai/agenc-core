@@ -36,6 +36,7 @@ import { buildFilteredRegistry } from "../../src/agents/run-agent.js";
 import { createMultiAgentV2Tools } from "../../src/agents/v2/index.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import { ConfigStore } from "../../src/config/store.js";
+import { SessionProviderService } from "../../src/session/provider-service.js";
 import type { LLMMessage, LLMProvider, LLMResponse } from "../../src/llm/types.js";
 import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../../src/permissions/types.js";
@@ -139,10 +140,11 @@ function journalEvents(path: string): Event[] {
 function lastUserIndexWith(messages: readonly LLMMessage[], marker: string): number {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]!;
-    if (
-      message.role === "user" &&
-      JSON.stringify(message.content ?? "").includes(marker)
-    ) {
+    // Terminal receipts repeat the task under unfinishedWork. Treat only a
+    // direct user request as a fixture command, not a quoted child receipt.
+    const directText = JSON.stringify(message.content ?? "")
+      .split("<subagent_notification>", 1)[0]!;
+    if (message.role === "user" && directText.includes(marker)) {
       return index;
     }
   }
@@ -168,6 +170,7 @@ function untilAborted(signal: AbortSignal | undefined): Promise<never> {
 }
 
 interface ScenarioOptions {
+  readonly crossProvider?: boolean;
   /** The sub-agent's exec_command arguments, given the pid file to write. */
   readonly childExec: (
     pidFile: string,
@@ -296,6 +299,7 @@ function createScenario(options: ScenarioOptions): Scenario {
               task_name: "runner",
               fork_turns: "none",
               isolation: "none",
+              ...(options.crossProvider ? { provider: "openrouter", model: "openai/gpt-4o-mini" } : {}),
             },
           })
         : response("", { name: "wait_agent", args: { timeout_ms: 300_000 } });
@@ -342,13 +346,14 @@ function createScenario(options: ScenarioOptions): Scenario {
     fileSystemSandboxPolicy: { allowWrite: [], denyWrite: [], allowRead: [], denyRead: [] },
     networkSandboxPolicy: { allowlist: [], denylist: [], allowManagedDomainsOnly: false },
     windowsSandboxLevel: "none",
-    collaborationMode: { model: "fake-model" },
+    collaborationMode: { model: options.crossProvider ? "grok-4.6" : "fake-model" },
     dynamicTools: [],
     sessionSource: "cli_main",
-    provider: { slug: "fake" } as unknown as SessionConfiguration["provider"],
+    provider: { slug: options.crossProvider ? "grok" : "fake" } as unknown as SessionConfiguration["provider"],
   };
   const config = {
-    model: "fake-model",
+    model: options.crossProvider ? "grok-4.6" : "fake-model",
+    ...(options.crossProvider ? { model_provider: "grok" } : {}),
     cwd,
     features: {},
     multiAgentV2: { usageHintEnabled: false, usageHintText: "", hideSpawnAgentMetadata: false },
@@ -361,7 +366,7 @@ function createScenario(options: ScenarioOptions): Scenario {
     agentRoles: [],
   } as unknown as Config;
   const modelInfo = {
-    slug: "fake-model",
+    slug: options.crossProvider ? "grok-4.6" : "fake-model",
     effectiveContextWindowPercent: 100,
     contextWindow: 131_072,
     maxOutputTokens: 32,
@@ -370,7 +375,41 @@ function createScenario(options: ScenarioOptions): Scenario {
     truncationPolicy: "off",
     usedFallbackModelMetadata: false,
   } as unknown as ModelInfo;
-  const configStore = new ConfigStore({ home, cwd });
+  const configStore = new ConfigStore({
+    home, cwd,
+    ...(options.crossProvider ? {
+      base: { agents: { cross_provider_enabled: true, allowed_providers: ["openrouter"] } },
+    } : {}),
+  });
+  const targetProvider = options.crossProvider
+    ? { ...provider, name: "openrouter", getExecutionProfile: async () => ({
+        provider: "openrouter", model: "openai/gpt-4o-mini",
+        usageReporting: "authoritative" as const, supportsMaxOutputTokens: true,
+      }) } as LLMProvider
+    : undefined;
+  const providerService = options.crossProvider
+    ? new SessionProviderService({
+        initialProvider: provider,
+        initialProviderName: "grok",
+        initialModel: "grok-4.6",
+      })
+    : undefined;
+  if (providerService !== undefined && targetProvider !== undefined) {
+    vi.spyOn(providerService, "previewChildDestination").mockResolvedValue({
+      endpoint: "https://openrouter.ai/api/v1", authProfile: "api_key", billingSource: "byok",
+    });
+    vi.spyOn(providerService, "prepareChild").mockImplementation(async (selection) => ({
+      expectedRevision: 0,
+      managedDefaultOutputCap: false,
+      binding: {
+        provider: selection.provider,
+        model: selection.model,
+        instance: targetProvider,
+        factoryOptions: { model: selection.model },
+        revision: 1,
+      },
+    }));
+  }
   enterCanonicalSettingsAuthority(configStore);
   const root = new Session({
     conversationId: "stop-root",
@@ -392,6 +431,15 @@ function createScenario(options: ScenarioOptions): Scenario {
       },
       mcpStartupCancellationToken: { cancel: () => {}, isCancelled: () => false },
       provider,
+      ...(providerService !== undefined ? { providerService } : {}),
+      ...(options.crossProvider ? { crossProviderConsent: {
+        ownerSessionId: "stop-root", sessionEpoch: "stop-test-human",
+        request: async (_session: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+          kind: "granted" as const,
+          grant: { kind: "once" as const, ownerSessionId: "stop-root", sessionEpoch: "stop-test-human",
+            taskId: disclosure.taskId, scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey },
+        }),
+      } } : {}),
       registry,
       hooks: { executeStop: async () => ({}) },
       admissionRequired: true,
@@ -651,7 +699,7 @@ describe("a child tool call keeps the executor's abort signal", () => {
 describe.skipIf(process.platform === "win32")(
   "an owner Stop reaches a sub-agent's exec",
   () => {
-    it("ends the sub-agent's command, settles its call, and takes the next prompt", async () => {
+  it("ends the sub-agent's command, settles its call, and takes the next prompt", async () => {
       const scenario = createScenario({
         childExec: (pidFile) => ({
           cmd: `echo $$ > ${JSON.stringify(pidFile)}; exec sleep ${CHILD_SLEEP_SECONDS}`,
@@ -685,6 +733,33 @@ describe.skipIf(process.platform === "win32")(
       );
       expectNothingToResolve(scenario, child);
       await expectFollowUpRuns(scenario);
+    });
+
+    it("ends a cross-provider child's shell through the owner Stop path", async () => {
+      const scenario = createScenario({
+        crossProvider: true,
+        childExec: (pidFile) => ({
+          cmd: `echo $$ > ${JSON.stringify(pidFile)}; exec sleep ${CHILD_SLEEP_SECONDS}`,
+          yield_time_ms: 30_000,
+        }),
+      });
+      cleanups.push(scenario.cleanup);
+
+      scenario.startRootTurn();
+      const pid = await waitFor(() => readPid(scenario.pidFile), 20_000, "the cross-provider child's shell");
+      expect(processIsRunning(pid)).toBe(true);
+      const children = scenario.control.openThreadSpawnChildren(scenario.root.conversationId);
+      expect(children).toHaveLength(1);
+      expect(children[0]?.[1].crossProvider).toMatchObject({
+        provider: "openrouter", model: "openai/gpt-4o-mini",
+      });
+
+      await ownerStop(scenario);
+      await waitFor(() => processIsRunning(pid) ? undefined : true, PROCESS_GONE_BOUND_MS, "the cross-provider shell to end");
+      await scenario.rootTurnDone();
+      const child = scenario.children[0]!;
+      expectSettledFromProcessEvidence(await childRunClosed(child), "tool:system.exec-command:process-exit");
+      expectNothingToResolve(scenario, child);
     });
 
     it("keeps a service the sub-agent detached, settles its call, and takes the next prompt", async () => {

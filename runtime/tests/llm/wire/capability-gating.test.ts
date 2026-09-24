@@ -442,6 +442,36 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
     });
   });
 
+  describe("Meta stream finalization", () => {
+    const FINALIZATION = {
+      requiresToolCallsFinishReason: true,
+      rejectsPartialToolCalls: true,
+      requiresExplicitFinishReason: true,
+    } as const;
+
+    test("the native Meta slug requires a finish_reason and finalized tool calls", () => {
+      expect(
+        chatCompletionsCapabilityHintsForProvider("meta", "llama-3.3-70b"),
+      ).toMatchObject(FINALIZATION);
+      expect(
+        chatCompletionsCapabilityHintsForProvider("meta", "any-model"),
+      ).toMatchObject(FINALIZATION);
+    });
+
+    test("managed and third-party Meta routes keep their own stream contracts", () => {
+      expect(
+        chatCompletionsCapabilityHintsForProvider(
+          "openrouter",
+          "meta/llama-3.3-70b-instruct",
+          { managedGateway: true },
+        ),
+      ).not.toMatchObject(FINALIZATION);
+      expect(
+        chatCompletionsCapabilityHintsForProvider("openai", "gpt-4o"),
+      ).not.toMatchObject(FINALIZATION);
+    });
+  });
+
   test("undefined provider name resolves to safe defaults", () => {
     const hints = chatCompletionsCapabilityHintsForProvider(undefined, "x");
     expect(hints.acceptsReasoningEffort).toBe(false);

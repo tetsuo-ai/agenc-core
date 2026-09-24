@@ -5786,10 +5786,14 @@ export async function attachAgentTuiEntry(
       const attachProfile = liveSettings.profile ?? undefined;
       const attachConfigPath =
         startupLayers.flagConfigPath ?? retainedConfigPath;
-      const transcriptSnapshot = await attachedClient.request("session.transcript.v2", {
+      const rawTranscriptSnapshot = await attachedClient.request("session.transcript.v2", {
         sessionId,
       });
-      const { daemonTranscriptSnapshotEvents } = await import("../tui/daemon-transcript-snapshot.js");
+      const { daemonTranscriptSnapshotEvents, resolveDaemonTranscriptTextArtifacts } = await import("../tui/daemon-transcript-snapshot.js");
+      const transcriptSnapshot = await resolveDaemonTranscriptTextArtifacts(
+        rawTranscriptSnapshot,
+        (params) => attachedClient.request("session.artifact.read", params),
+      );
       daemonTranscriptSnapshotEvents(transcriptSnapshot, sessionId);
       const {
         workspaceRoot,

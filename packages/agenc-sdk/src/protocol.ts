@@ -17,12 +17,13 @@ export type {
   SessionTranscriptV2Message,
   SessionTranscriptV2Result,
   SessionTranscriptV2TurnResult,
+  DisplayAttachment,
 } from "./transcript-v2.generated.js";
 
 /** JSON-RPC 2.0 envelope version sent on every request. */
 export const AGENC_SDK_JSON_RPC_VERSION = "2.0" as const;
 /** Protocol the SDK advertises on `initialize`. Handshake rules are in docs/sdk.md. */
-export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.17.0" as const;
+export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.18.0" as const;
 
 /** Preserve named wire fields while allowing helpers to supply cwd. */
 export type AgencDefaultCwdParams<Params extends { readonly cwd: string }> =
@@ -115,10 +116,14 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "session.goal",
   "session.transcript",
   "session.transcript.v2",
+  "session.artifact.read",
   "session.cancelTurn",
   "session.resolveToolCall",
   "session.mcp.status",
   "session.mcp.addServer",
+  "plugin.settings.get",
+  "plugin.settings.set",
+  "plugin.settings.reset",
   "message.send",
   "message.stream",
   "thread/realtime/start",
@@ -234,6 +239,9 @@ export type RunStartParams = Wire.RunStartParams;
 /** Helper input; generic request() uses the required-cwd wire shape. */
 export type SessionCreateParams =
   AgencDefaultCwdParams<Wire.SessionCreateParams>;
+
+export type SessionArtifactReadParams = Wire.SessionArtifactReadParams;
+export type SessionArtifactReadResult = Wire.SessionArtifactReadResult;
 
 export type SessionListParams = Wire.SessionListParams;
 

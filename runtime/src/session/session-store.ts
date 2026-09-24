@@ -587,9 +587,9 @@ export class SessionLock {
     this.startNs = `${Date.now()}-${process.hrtime.bigint().toString()}`;
   }
 
-  acquire(): void {
+  acquire(options: { readonly createParent?: boolean } = {}): void {
     if (this.acquired) return;
-    mkdirSync(dirname(this.lockPath), { recursive: true });
+    if (options.createParent !== false) mkdirSync(dirname(this.lockPath), { recursive: true });
 
     // Retry loop: up to 2 passes. First pass may observe a stale lock
     // and reclaim; second pass resolves the O_EXCL race if two

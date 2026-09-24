@@ -70,6 +70,7 @@ import {
   type AuthRefreshOutcome,
 } from "./auth-refresh.js";
 import { xaiBillingRefusalError } from "./billing-refusal.js";
+import { isProviderFundsFailure } from "../../funds.js";
 import { monotonicMs } from "../../_deps/monotonic.js";
 import { resolveContextWindowProfile } from "../../_deps/context-window.js";
 import { getSelectedProviderEnvironment } from "../../../utils/model/providers.js";
@@ -1158,6 +1159,7 @@ export class GrokProvider implements LLMProvider {
     model: string = this.config.model,
     singleWireAttempt = false,
   ): ProviderFallbackDecision | null {
+    if (isProviderFundsFailure(this.name, error)) return null;
     if (!this.config.providerFallback) return null;
     const decision = evaluateProviderFallback({
       ...this.config.providerFallback,
@@ -2337,6 +2339,7 @@ export class GrokProvider implements LLMProvider {
         baseURL: this.config.baseURL,
         timeout: this.config.timeoutMs,
         maxRetries: this.config.maxRetries ?? 2,
+        ...(this.config.fetchImpl ? { fetch: this.config.fetchImpl } : {}),
       });
       installAgenCManagedSdkFetch(client);
       return client;

@@ -24,6 +24,7 @@ import {
   LLMContextWindowExceededError,
   LLMInvalidResponseError,
   LLMProviderError,
+  LLMFundsError,
   LLMStreamTruncatedError,
   LLMManagedAdmissionError,
   LLMManagedUsagePendingError,
@@ -31,6 +32,7 @@ import {
   LLMServerError,
   mapLLMError,
 } from "../../errors.js";
+import { isProviderFundsFailure } from "../../funds.js";
 import { ProviderHttpClient } from "../../client.js";
 import {
   ProviderHttpError,
@@ -82,6 +84,12 @@ import {
 const OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE =
   "OpenAI Responses stream emitted invalid function_call";
 const OPENAI_STREAM_FAILED_MESSAGE = "OpenAI stream failed";
+const OPENAI_STREAM_RATE_LIMIT_CODES: ReadonlySet<string> = new Set([
+  "rate_limit_exceeded",
+  "rate_limit",
+  "rate_limited",
+  "too_many_requests",
+]);
 const OPENAI_CHAT_COMPLETIONS_INVALID_TOOL_CALL_MESSAGE =
   "OpenAI chat-completions stream emitted invalid tool_call";
 const CHAT_COMPLETIONS_CONTEXT_SAFETY_BUFFER_TOKENS = 1024;
@@ -224,12 +232,9 @@ function isOpenRouterBudgetLimitFailure(args: {
   const nested = readNestedProviderMessage(args.body);
   const text = `${args.message}\n${nested ?? ""}\n${providerHttpBodyToString(args.body)}`;
   const lower = text.toLowerCase();
-  return (
-    lower.includes("requires more credits") ||
-    lower.includes("insufficient credits") ||
-    lower.includes("monthly limit") ||
-    (lower.includes("can only afford") && lower.includes("max_tokens"))
-  );
+  // A request can exceed its output reservation even when the account still
+  // has funds. Keep that redacted guidance separate from exhausted billing.
+  return lower.includes("can only afford") && lower.includes("max_tokens");
 }
 
 function readNestedProviderCode(
@@ -522,19 +527,27 @@ function mapOpenAIHttpFailureToError(args: {
       args.status,
     );
   }
+  if (isProviderFundsFailure(args.providerName, {
+    status: args.status, body: args.body, message: args.message,
+  })) {
+    const error = new LLMFundsError(args.providerName, args.status);
+    const retryAfterMs = args.retryAfterMs ?? readRetryAfterMs(args.body);
+    if (retryAfterMs !== undefined) Object.assign(error, { retryAfterMs });
+    return error;
+  }
   if (isZaiInsufficientBalanceFailure(args)) {
-    return new LLMProviderError(
+    return new LLMFundsError(
       args.providerName,
-      zaiInsufficientBalanceErrorMessage(),
       args.status,
+      zaiInsufficientBalanceErrorMessage(),
     );
   }
   const zaiPlanRefusal = readZaiPlanRefusal(args);
   if (zaiPlanRefusal !== undefined) {
-    return new LLMProviderError(
+    return new LLMFundsError(
       args.providerName,
-      zaiPlanRefusalErrorMessage(zaiPlanRefusal),
       args.status,
+      zaiPlanRefusalErrorMessage(zaiPlanRefusal),
     );
   }
   const bodyText = providerHttpBodyToString(args.body);
@@ -607,6 +620,24 @@ function mapOpenAIStreamError(args: {
             }).error.message,
           )
         : args.fallbackMessage;
+  if (isProviderFundsFailure(args.providerName, {
+    status, body: args.errorBody, message,
+  })) {
+    const error = new LLMFundsError(args.providerName, status);
+    const retryAfterMs = readRetryAfterMs(args.errorBody);
+    if (retryAfterMs !== undefined) Object.assign(error, { retryAfterMs });
+    return error;
+  }
+  if (OPENAI_STREAM_RATE_LIMIT_CODES.has(readNestedProviderCode(args.errorBody) ?? "")) {
+    return new LLMRateLimitError(
+      args.providerName,
+      readRetryAfterMs(args.errorBody),
+      buildOpenAICompatibilityErrorMessage(
+        message,
+        classifyOpenAIHttpFailure({ status: 429, body: message }),
+      ),
+    );
+  }
   if (typeof status === "number") {
     return mapOpenAIHttpFailureToError({
       providerName: args.providerName,
@@ -729,6 +760,7 @@ export class OpenAIProvider implements LLMProvider {
     consecutiveFailures: number,
     model: string = this.config.model,
   ): ProviderFallbackDecision | null {
+    if (isProviderFundsFailure(this.name, error)) return null;
     if (!this.config.providerFallback) return null;
     const decision = evaluateProviderFallback({
       ...this.config.providerFallback,
@@ -1499,7 +1531,8 @@ export class OpenAIProvider implements LLMProvider {
             errorBody,
             fallbackMessage: message,
           });
-          if (streamedContent.length === 0 && streamedToolCalls.size === 0) {
+          if (!isProviderFundsFailure(this.name, streamError) &&
+            streamedContent.length === 0 && streamedToolCalls.size === 0) {
             const fallbackDecision = this.evaluateConfiguredFallback(
               openAIStreamFallbackCandidate(errorBody, message),
               consecutiveFallbackFailures,
@@ -1691,7 +1724,8 @@ export class OpenAIProvider implements LLMProvider {
             errorBody: chunk.error,
             fallbackMessage: OPENAI_STREAM_FAILED_MESSAGE,
           });
-          if (content.length === 0 && toolCallAccumulator.size === 0) {
+          if (!isProviderFundsFailure(this.name, streamError) &&
+            content.length === 0 && toolCallAccumulator.size === 0) {
             const fallbackDecision = this.evaluateConfiguredFallback(
               openAIStreamFallbackCandidate(
                 chunk.error,

@@ -6,7 +6,7 @@
  * later daemon rows.
  */
 
-import { LiveApprovalBroker } from "./live-approval-broker.js";
+import { LiveApprovalBroker, crossProviderConsentAvailability } from "./live-approval-broker.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { enterDaemonWorkingDirectory } from "./daemon-working-directory.js";
 import { randomUUID } from "node:crypto";
@@ -136,6 +136,7 @@ import { AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT } from "../app-server-protoc
 import { AgenCDaemonHealthService } from "./health.js";
 import { AgenCDaemonRunInspectionService } from "./run-inspection.js";
 import { AgenCProjectTrustService } from "./project-trust.js";
+import { PluginSettingsService } from "../plugins/settings-service.js";
 import { AgenCCleanupRegistry } from "../lifecycle/cleanup-registry.js";
 import { closeAllBrowserManagers } from "../browser/manager.js";
 import { installAgenCShutdownSignalHandlers } from "../lifecycle/signal-handlers.js";
@@ -166,6 +167,7 @@ import { resolveProviderBaseURL } from "../config/env.js";
 import {
   resolveAgentRuntimeOptions,
   resolveSessionTempRootAtIngress,
+  resolvePluginStorageRootAtIngress,
   validateAgentRuntimeOptions,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
@@ -3561,7 +3563,13 @@ async function runAgenCDaemonForegroundLocked(
       },
     );
     let runner = options.runner;
-    const approvalBroker = new LiveApprovalBroker();
+    const approvalBroker: LiveApprovalBroker = new LiveApprovalBroker({
+      canAnswerCrossProviderConsent: crossProviderConsentAvailability({
+        sessionIdsForAgent: (agentId): Promise<readonly string[]> => agentManager.sessionIdsForAgent(agentId),
+        hasAttachedClientWithCapability: (sessionId, capability) =>
+          clientMultiplexer.hasAttachedClientWithCapability(sessionId, capability),
+      }),
+    });
     let configuredRunner: AgenCDelegateBackgroundAgentRunner | undefined;
     if (runner === undefined) {
       configuredRunner = new AgenCDelegateBackgroundAgentRunner({
@@ -3978,7 +3986,7 @@ async function runAgenCDaemonForegroundLocked(
       home: authStartup.daemonHome,
       backend: createRemoteBackend({ backendUrl: host.env.AGENC_BACKEND_URL || "https://id.agenc.ag", token: () => remoteAuthSessionTokenSync(remoteContext) }),
       lookupSession: (sessionId) => sessionManager.getSession(sessionId),
-      createConnection: (remoteAccess) => dispatcher.createConnection({ remoteAccess }),
+      createConnection: (remoteAccess, remoteCid) => dispatcher.createConnection({ remoteAccess, remoteCid }),
       createSession: createRemoteSession,
       assertControlSession: assertRemoteControlSession,
     });
@@ -3999,6 +4007,12 @@ async function runAgenCDaemonForegroundLocked(
     }
     cleanup.register("daemon-owner-telegram", () => ownerTelegram?.close());
     const dispatcher: AgenCDaemonJsonRpcDispatcher = new AgenCDaemonJsonRpcDispatcher({
+      pluginSettings: new PluginSettingsService({
+        home: authStartup.daemonHome,
+        pluginStorageRoot: resolvePluginStorageRootAtIngress({ ...host.env, AGENC_HOME: authStartup.daemonHome }),
+        workspaceRoot: primaryCwd,
+        env: { ...host.env, AGENC_HOME: authStartup.daemonHome },
+      }),
       remote,
       ownerTelegram,
       agentManager,
@@ -4103,8 +4117,10 @@ async function runAgenCDaemonForegroundLocked(
     const nativePeerCredentialAddonPath =
       options.nativePeerCredentialAddonPath ??
       systemNativePeerCredentialAddonPath;
+    const resolveRoutineSessionId = (id: string) => agentManager.peekRoutineSessionId(id);
     const socketServer = new AgenCUnixSocketServer({
       socketPath,
+      resolveRoutineSessionId,
       nativePeerCredentialAddonPath,
       requireRootOwnedNativePeerCredentialAddon:
         options.nativePeerCredentialAddonPath === undefined &&
@@ -4171,6 +4187,7 @@ async function runAgenCDaemonForegroundLocked(
     });
     const webSocketServer = new AgenCWebSocketServer({
       ...webSocketListenOptions,
+      resolveRoutineSessionId,
       ready: () => !shuttingDown,
       validateOrigin: validateAgenCDaemonWebSocketOrigin,
       // gaphunt3 #47: mirror the Unix socket accept-auth gate, but the ws path

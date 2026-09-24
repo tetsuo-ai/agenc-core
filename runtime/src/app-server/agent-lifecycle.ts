@@ -27,6 +27,7 @@ import {
   resolve,
 } from "node:path";
 import { randomUUID } from "node:crypto";
+import { readDisplayArtifactChunk } from "../session/display-artifact-store.js";
 import type { LiveApprovalBroker } from "./live-approval-broker.js";
 import { permissionGrantsFromToolPermissionContext } from "../permissions/permission-grants.js";
 import { isDeepStrictEqual } from "node:util";
@@ -122,6 +123,8 @@ import type {
   SessionTranscriptResult,
   SessionTranscriptV2Params,
   SessionTranscriptV2Result,
+  SessionArtifactReadParams,
+  SessionArtifactReadResult,
   SessionPartialCompactFromMessageParams,
   SessionPartialCompactFromMessageResult,
   SessionRollbackCompactionParams,
@@ -475,6 +478,19 @@ interface AgentAttachmentTarget {
 
 interface AgentLifecycleState {
   agents: Map<string, MutableAgent>;
+}
+
+function canonicalSessionForOwner(
+  state: Readonly<AgentLifecycleState>,
+  ownerId: string,
+): { readonly sessionId: string; readonly expectedAgentId?: string } {
+  const canonicalAgent = state.agents.get(ownerId);
+  if (canonicalAgent === undefined) return { sessionId: ownerId };
+  const sessionId = latestSessionIdForAgentRun(canonicalAgent);
+  if (sessionId === undefined) {
+    throw new AgenCDaemonAgentLifecycleError("AGENT_NOT_FOUND", `AgenC daemon session not found or closed: ${ownerId}`);
+  }
+  return { sessionId, expectedAgentId: canonicalAgent.agentId };
 }
 
 interface PendingRunnerTermination {
@@ -1763,6 +1779,11 @@ export class AgenCDaemonAgentManager {
     }
   }
 
+  /** The daemon session ids clients attach to for this agent. */
+  async sessionIdsForAgent(agentId: string): Promise<readonly string[]> {
+    return await this.#state.with((state) => state.agents.get(agentId)?.sessionIds.slice() ?? []);
+  }
+
   async getAgent(agentId: string): Promise<AgentSummary | null> {
     await this.#refreshAgentFromRunner(agentId);
     return this.#state.with((state) => {
@@ -2571,6 +2592,7 @@ export class AgenCDaemonAgentManager {
    */
   async getLiveSessionPermission(
     sessionId: string,
+    expectedRoutineHeadId?: string,
   ): Promise<{ readonly sessionId: string; readonly mode: string }> {
     if (this.#runner?.getAgentPermissionMode === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
@@ -2578,7 +2600,7 @@ export class AgenCDaemonAgentManager {
         "session permission mode requires a background runner",
       );
     }
-    const owner = await this.#resolvePermissionOwner(sessionId, false, true);
+    const owner = await this.#resolvePermissionOwner(sessionId, false, true, expectedRoutineHeadId);
     const mode = await this.#runner.getAgentPermissionMode(owner.agentId);
     if (mode === null) {
       throw new AgenCDaemonAgentLifecycleError(
@@ -2589,11 +2611,34 @@ export class AgenCDaemonAgentManager {
     return { sessionId: owner.sessionId, mode };
   }
 
+  /** Best-effort canonical id for transport scheduling only; never grants authority. */
+  peekRoutineSessionId(id: string): string | undefined {
+    try {
+      return this.#state.peek((state) => canonicalSessionForOwner(state, id).sessionId);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Resolve either session or agent ID, then inspect the live turn's tool calls. */
+  async isLiveSessionToolCallExecuting(sessionId: string, toolCallId: string): Promise<boolean> {
+    if (this.#runner?.isAgentToolCallExecuting === undefined) return false;
+    try {
+      const owner = await this.#resolvePermissionOwner(sessionId, false, true);
+      return await this.#runner.isAgentToolCallExecuting(owner.agentId, toolCallId);
+    } catch {
+      return false;
+    }
+  }
+
   async approveTool(params: ToolApproveParams): Promise<ToolDecisionResult> {
     if (this.#approvalBroker?.isWorkflowOwner(params.sessionId)) {
       return this.#approveWorkflowTool(params);
     }
     const { agentId, sessionId } = await this.#resolvePermissionOwner(params.sessionId);
+    if (this.#approvalBroker?.pending(agentId, params.requestId)?.ctx.approvalKind === "cross_provider_spawn") {
+      return this.#approveCrossProviderConsent(agentId, params);
+    }
     const responseKey = this.#approvalBroker?.pending(agentId, params.requestId)?.responseKey ?? params.requestId;
     const allowAllToolsForSession = params.allowAllToolsForSession === true;
     if (allowAllToolsForSession && params.scope !== "session") {
@@ -2704,6 +2749,9 @@ export class AgenCDaemonAgentManager {
     if (pending === undefined) {
       throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", `AgenC daemon tool request is not pending: ${params.requestId}`);
     }
+    if (pending.ctx.approvalKind === "cross_provider_spawn") {
+      return this.#approveCrossProviderConsent(params.sessionId, params);
+    }
     if (params.allowAllToolsForSession === true) {
       throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", "Workflow permission mode is frozen; approve the requested tool without promoting the run mode");
     }
@@ -2734,6 +2782,22 @@ export class AgenCDaemonAgentManager {
         : "rpc_approved_once",
       ...(params.scope !== undefined ? { scope: params.scope } : {}),
     });
+    return { requestId: params.requestId, decision: "approved" };
+  }
+
+  #approveCrossProviderConsent(ownerRunId: string, params: ToolApproveParams): ToolDecisionResult {
+    if (params.approvalKind !== "cross_provider_spawn" ||
+        params.allowAllToolsForSession === true || params.scope === "agent" ||
+        params.exitPlan !== undefined) {
+      throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT",
+        "cross_provider_spawn requires a consent-aware client, once or session scope, and cannot enable tool bypass");
+    }
+    const decision = params.scope === "session" ? APPROVED_FOR_SESSION : APPROVED;
+    if (!this.#approvalBroker?.resolve(ownerRunId, params.requestId, decision,
+      { approvalKind: "cross_provider_spawn" })) {
+      throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT",
+        `AgenC daemon cross-provider consent is not pending: ${params.requestId}`);
+    }
     return { requestId: params.requestId, decision: "approved" };
   }
 
@@ -2768,6 +2832,11 @@ export class AgenCDaemonAgentManager {
   async denyTool(params: ToolDenyParams): Promise<ToolDecisionResult> {
     const reason = normalizeNonEmpty(params.reason);
     const decision = reason === undefined ? DENIED : { kind: "denied" as const, reason };
+    const consentOwner = this.#approvalBroker?.pending(params.sessionId, params.requestId);
+    if (consentOwner?.ctx.approvalKind === "cross_provider_spawn") {
+      this.#approvalBroker!.resolve(params.sessionId, params.requestId, decision);
+      return { requestId: params.requestId, decision: "denied" };
+    }
     if (this.#approvalBroker?.isWorkflowOwner(params.sessionId)) {
       if (!this.#approvalBroker.resolve(params.sessionId, params.requestId, decision)) {
         throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", `AgenC daemon tool request is not pending: ${params.requestId}`);
@@ -2779,6 +2848,10 @@ export class AgenCDaemonAgentManager {
       return { requestId: params.requestId, decision: "denied" };
     }
     const { agentId } = await this.#resolvePermissionOwner(params.sessionId);
+    if (this.#approvalBroker?.pending(agentId, params.requestId)?.ctx.approvalKind === "cross_provider_spawn") {
+      this.#approvalBroker.resolve(agentId, params.requestId, decision);
+      return { requestId: params.requestId, decision: "denied" };
+    }
     const resolved = await this.#runner!.resolveToolDecision!(agentId, {
       requestId: params.requestId,
       decision,
@@ -3429,6 +3502,7 @@ export class AgenCDaemonAgentManager {
 
   async getSessionTranscriptV2(
     params: SessionTranscriptV2Params,
+    options: { readonly includeCompleteMessages?: boolean } = {},
   ): Promise<SessionTranscriptV2Result> {
     if (this.#sessionManager === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
@@ -3439,6 +3513,7 @@ export class AgenCDaemonAgentManager {
     if (this.#runner?.getAgentSessionTranscriptV2 === undefined) {
       const persisted = await this.#readPersistedSessionTranscriptV2(
         params.sessionId,
+        options,
       );
       if (persisted !== undefined) return persisted;
       throw new AgenCDaemonAgentLifecycleError(
@@ -3455,6 +3530,7 @@ export class AgenCDaemonAgentManager {
       if (isNoLiveAgentError(error)) {
         const persisted = await this.#readPersistedSessionTranscriptV2(
           params.sessionId,
+          options,
         );
         if (persisted !== undefined) return persisted;
       }
@@ -3463,16 +3539,29 @@ export class AgenCDaemonAgentManager {
     try {
       return await this.#runner.getAgentSessionTranscriptV2(agentId, {
         sessionId: params.sessionId,
+        includeCompleteMessages: options.includeCompleteMessages,
       });
     } catch (error) {
       if (isNoLiveAgentRunnerError(error)) {
         const persisted = await this.#readPersistedSessionTranscriptV2(
           params.sessionId,
+          options,
         );
         if (persisted !== undefined) return persisted;
       }
       throw error;
     }
+  }
+
+  async readSessionArtifact(params: SessionArtifactReadParams): Promise<SessionArtifactReadResult> {
+    const thread = await this.#readPersistedThreadForSession(params.sessionId, false);
+    if (!thread?.rolloutPath) {
+      throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", "session artifact not found");
+    }
+    let chunk: ReturnType<typeof readDisplayArtifactChunk>;
+    try { chunk = readDisplayArtifactChunk(dirname(thread.rolloutPath), params.id, params.offset ?? 0, params.length); }
+    catch { throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", "session artifact not found"); }
+    return { sessionId: params.sessionId, id: params.id, encoding: "base64", data: chunk.data.toString("base64"), size: chunk.size, offset: params.offset ?? 0, nextOffset: chunk.nextOffset };
   }
 
   /**
@@ -3518,6 +3607,7 @@ export class AgenCDaemonAgentManager {
 
   async #readPersistedThreadForSession(
     sessionId: string,
+    includeHistory = true,
   ): Promise<StoredThread | undefined> {
     const threadStore = this.#threadStore;
     if (threadStore === undefined) return undefined;
@@ -3526,7 +3616,7 @@ export class AgenCDaemonAgentManager {
         return threadStore.readThread({
           threadId,
           includeArchived: true,
-          includeHistory: true,
+          includeHistory,
         });
       } catch (error) {
         if (isThreadLogReadMiss(error)) continue;
@@ -3549,6 +3639,7 @@ export class AgenCDaemonAgentManager {
 
   async #readPersistedSessionTranscriptV2(
     sessionId: string,
+    options: { readonly includeCompleteMessages?: boolean } = {},
   ): Promise<SessionTranscriptV2Result | undefined> {
     const thread = await this.#readPersistedThreadForSession(sessionId);
     if (thread === undefined) return undefined;
@@ -3556,6 +3647,17 @@ export class AgenCDaemonAgentManager {
       thread.history?.items ?? [],
       sessionId,
       thread.threadId,
+      undefined,
+      undefined,
+      {
+        ...options,
+        publishTextArtifact: (bytes) => {
+          if (!thread.rolloutPath || !this.#threadStore?.publishTranscriptArtifact) {
+            throw new Error("oversized transcript message requires a session artifact store");
+          }
+          return this.#threadStore.publishTranscriptArtifact(thread.threadId, thread.rolloutPath, bytes);
+        },
+      },
     );
   }
 
@@ -4379,15 +4481,15 @@ export class AgenCDaemonAgentManager {
     ownerId: string,
     allowListPermissions = false,
     allowPermissionMode = false,
+    expectedRoutineHeadId?: string,
   ): Promise<{ readonly agentId: string; readonly sessionId: string }> {
     const resolvedOwner = await this.#state.with((state) => {
-      const canonicalAgent = state.agents.get(ownerId);
-      if (canonicalAgent === undefined) return { sessionId: ownerId };
-      const latestSessionId = latestSessionIdForAgentRun(canonicalAgent);
-      if (latestSessionId === undefined) {
-        throw new AgenCDaemonAgentLifecycleError("AGENT_NOT_FOUND", `AgenC daemon session not found or closed: ${ownerId}`);
+      const owner = canonicalSessionForOwner(state, ownerId);
+      if (expectedRoutineHeadId !== undefined &&
+          owner.sessionId !== canonicalSessionForOwner(state, expectedRoutineHeadId).sessionId) {
+        throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", "Routine authority is not executing in the FIFO head's session");
       }
-      return { sessionId: latestSessionId, expectedAgentId: canonicalAgent.agentId };
+      return owner;
     });
     const { sessionId } = resolvedOwner;
     const agentId = await this.#resolveActiveAgentIdForSession(sessionId, { allowListPermissions, allowPermissionMode });

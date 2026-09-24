@@ -563,6 +563,24 @@ describe("streamModel — live assistant text sanitization", () => {
     expect(seenOptions[0]).toMatchObject({ promptCacheKey: "conv-stream" });
   });
 
+  test("ChatGPT sign-in child calls keep their child session cache key", async () => {
+    const seen: Array<Record<string, unknown> | undefined> = [];
+    const provider = { ...mkProvider(async (_messages, _onChunk, options) => {
+      seen.push(options as Record<string, unknown> | undefined);
+      return { content: "ok", toolCalls: [], usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "gpt-6-luna", finishReason: "stop" };
+    }), name: "openai" };
+    const { session } = mkSession(provider);
+    Object.assign(session, { conversationId: "child-luna-session" });
+    for (let i = 0; i < 2; i += 1) {
+      const ctx = mkCtx("chat");
+      await streamModel(mkState(ctx), ctx, session,
+        mkRequest([{ role: "user", content: `turn ${i}` }]));
+    }
+    expect(seen.map((options) => options?.promptCacheKey))
+      .toEqual(["child-luna-session", "child-luna-session"]);
+  });
+
   test("the default ten-minute stream watchdog aborts a stalled provider with a retryable stream_idle", async () => {
     vi.useFakeTimers();
     try {

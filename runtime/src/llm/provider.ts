@@ -5,6 +5,7 @@
  */
 
 import { concurrentChatFetch } from "./providers/concurrent-chat-fetch.js";
+import { LLMMissingCredentialsError } from "./errors.js";
 import type {
   AuthBackend,
   AuthSubscriptionTier,
@@ -157,6 +158,7 @@ export type ProviderRuntimeExtra = Partial<
   };
   readonly defaultHeaders?: Readonly<Record<string, string>>;
   readonly fetchImpl?: typeof fetch;
+  readonly canonicalEndpointRequired?: boolean;
   readonly accessKeyId?: string;
   readonly secretAccessKey?: string;
   readonly sessionToken?: string;
@@ -210,6 +212,7 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "grokAcp",
   "defaultHeaders",
   "fetchImpl",
+  "canonicalEndpointRequired",
   "accessKeyId",
   "secretAccessKey",
   "sessionToken",
@@ -648,6 +651,34 @@ class AuthVendedProvider implements LLMProvider {
       vended,
     );
     const baseURL = firstNonEmpty(options.baseURL, vended.baseUrl);
+    if (options.extra?.canonicalEndpointRequired === true) {
+      const canonical = defaultBaseURLFor(this.#provider);
+      const isCanonical = (value: string | undefined): boolean => {
+        if (value === undefined) return true;
+        try {
+          return new URL(value).href.replace(/\/+$/u, "") ===
+            new URL(canonical).href.replace(/\/+$/u, "");
+        } catch {
+          return false;
+        }
+      };
+      const vendedRegionalEndpoint = this.#provider === "amazon-bedrock"
+        ? resolveBuiltInProviderRegionalEndpoint(
+            this.#provider,
+            firstNonEmpty(
+              vended.kind === "aws-sigv4" ? vended.region : undefined,
+              readString(options.extra, "region"),
+            ),
+          )?.baseURL
+        : undefined;
+      if (!isCanonical(options.baseURL) || !isCanonical(vended.baseUrl) ||
+          !isCanonical(vendedRegionalEndpoint)) {
+        throw new Error(
+          `${this.#provider} managed child key vending returned a noncanonical endpoint; ` +
+          `cross-provider sub-agents require the default endpoint`,
+        );
+      }
+    }
     const model =
       baseURL !== undefined && options.model !== undefined
         ? normalizeManagedGatewayModel(this.#provider, options.model)
@@ -1144,6 +1175,9 @@ function readRuntimeExtra(
       ? { defaultHeaders: readStringRecord(extra, "defaultHeaders") }
       : {}),
     ...(extra?.fetchImpl ? { fetchImpl: extra.fetchImpl as typeof fetch } : {}),
+    ...(readBoolean(extra, "canonicalEndpointRequired") === true
+      ? { canonicalEndpointRequired: true }
+      : {}),
     ...(readString(extra, "accessKeyId") !== undefined
       ? { accessKeyId: readString(extra, "accessKeyId") }
       : {}),
@@ -1415,6 +1449,8 @@ function buildOpenAICompatibleProvider(
   const ProviderCtor = input.providerCtor ?? OpenAIProvider;
   const providerExtra = readProviderRuntimeExtra({
     ...(cfg as unknown as Record<string, unknown>),
+    ...(extra.canonicalEndpointRequired === true
+      ? { canonicalEndpointRequired: true } : {}),
     ...(extra.openAiCompatibility !== undefined
       ? { openAiCompatibility: extra.openAiCompatibility }
       : {}),
@@ -1670,6 +1706,10 @@ export function createProvider(
         extra.authMode !== "api_key" && opts.credentialHome !== undefined
           ? readXaiOauthAccessToken(opts.credentialHome)
           : undefined;
+      if (extra.canonicalEndpointRequired === true && extra.authMode === "oauth" &&
+          storedOauthBearer === undefined) {
+        throw new LLMMissingCredentialsError("grok", "approved sign-in is unavailable; a new child authority is required");
+      }
       const usesXaiOauth = storedOauthBearer !== undefined;
       const apiKey =
         storedOauthBearer ?? factoryApiKey ?? requireFactoryApiKey("grok", opts);
@@ -1683,6 +1723,7 @@ export function createProvider(
         model,
         tools: opts.tools ? [...opts.tools] : undefined,
         baseURL: normalizeBaseURL(opts.baseURL) ?? defaultBaseURLFor("grok"),
+        ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
         ...(extra.contextWindowTokens !== undefined
           ? { contextWindowTokens: extra.contextWindowTokens }
@@ -1722,13 +1763,18 @@ export function createProvider(
       }
       const grokProvider = new GrokProvider(cfg);
       if (usesXaiOauth) {
+        let activeBearer = apiKey;
         // I-14: first real consumer of the adapter's auth-refresh seam.
         // On 401, force a single-flight refresh of the stored OAuth grant,
         // swap the bearer on the live SDK client, and retry.
         grokProvider.withAuthRefreshCallbacks({
-          refreshBearer: async () => {
+          refreshBearer: async ({ attempt }) => {
+            if (extra.canonicalEndpointRequired === true && attempt > 1) {
+              return { kind: "exhausted", reason: "xAI sign-in retry was already used" };
+            }
             const refreshed = await forceRefreshXaiOauthCredentials(
               opts.credentialHome!,
+              activeBearer,
             );
             if (refreshed === undefined) {
               // Honesty split: only claim the user is logged out when the
@@ -1754,12 +1800,15 @@ export function createProvider(
               };
             }
             grokProvider.applyRefreshedBearer(refreshed.accessToken);
+            activeBearer = refreshed.accessToken;
             return { kind: "refreshed", bearer: refreshed.accessToken };
           },
         });
       }
       const storedExtra = readProviderRuntimeExtra({
         ...(cfg as unknown as Record<string, unknown>),
+        ...(extra.canonicalEndpointRequired === true
+          ? { canonicalEndpointRequired: true } : {}),
         ...(usesXaiOauth
           ? { authMode: "oauth" }
           : extra.authMode !== undefined
@@ -1925,6 +1974,7 @@ export function createProvider(
         ...(extra.keepAlive ? { keepAlive: extra.keepAlive } : {}),
         ...(numCtx !== undefined ? { numCtx } : {}),
         ...(extra.numGpu !== undefined ? { numGpu: extra.numGpu } : {}),
+        ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
       };
       return markFactoryProvider(new OllamaProvider(cfg), {
         provider: "ollama",

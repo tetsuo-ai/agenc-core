@@ -23,6 +23,7 @@ import { load as loadYaml } from "js-yaml";
 import type { AgenCConfig } from "../config/schema.js";
 import { FileWatcher } from "../file-watcher/index.js";
 import { discoverPluginSkillRootsWithProvenance } from "../plugins/loader.js";
+import { isExcludedPluginPayloadDirectory, isExcludedPluginPayloadPath } from "../plugins/payload-paths.js";
 import type { SessionServices } from "../session/session.js";
 import type { SkillLoadOutcome } from "../session/turn-context.js";
 import { substituteArguments } from "../tui/slash/argument-substitution.js";
@@ -256,7 +257,6 @@ const SKILL_LISTING_DESC_MAX_CHARS = 250;
 const SKILL_LISTING_CONTEXT_PERCENT = 0.01;
 const CHARS_PER_TOKEN = 4;
 const SKIP_DIRS = new Set([
-  ".git",
   "node_modules",
   "dist",
   "build",
@@ -585,6 +585,7 @@ interface SkillFileScan {
   readonly files: readonly ScannedSkillFile[];
   readonly droppedCount: number;
   readonly rootRealPath: string;
+  readonly rejectedRoot?: boolean;
   readonly unsafeRoot?: boolean;
   readonly emptyDirectories: readonly EmptySkillDirectory[];
   readonly warnings: readonly SkillLoadWarning[];
@@ -647,6 +648,16 @@ function byPath<T extends { readonly path: string }>(a: T, b: T): number {
 async function findSkillFiles(root: SkillRoot): Promise<SkillFileScan> {
   const maxFiles = maxSkillFilesPerRoot();
   const rootRealPath = (await getFileIdentity(root.path)) ?? resolve(root.path);
+  const physicalPluginRoot = root.pluginRoot === undefined ? undefined :
+    (await getFileIdentity(root.pluginRoot)) ?? resolve(root.pluginRoot);
+  const excludedPluginPath = (lexical: string, physical: string): boolean =>
+    root.pluginRoot !== undefined && physicalPluginRoot !== undefined &&
+    (isExcludedPluginPayloadPath(root.pluginRoot, lexical) ||
+      isExcludedPluginPayloadPath(physicalPluginRoot, physical));
+  if (excludedPluginPath(root.path, rootRealPath)) {
+    return { files: [], droppedCount: 0, rootRealPath, rejectedRoot: true,
+      warnings: [], emptyDirectories: [] };
+  }
   const visited = new Set<string>([rootRealPath]);
   const loaded: Array<ScannedSkillFile & { readonly depth: number }> = [];
   let droppedCount = 0;
@@ -694,7 +705,9 @@ async function findSkillFiles(root: SkillRoot): Promise<SkillFileScan> {
             }
             continue;
           }
-          if (frame.depth >= MAX_SCAN_DEPTH || SKIP_DIRS.has(entry.name)) continue;
+          if (frame.depth >= MAX_SCAN_DEPTH || SKIP_DIRS.has(entry.name) ||
+            isExcludedPluginPayloadDirectory(entry.name) ||
+            excludedPluginPath(path, join(frame.realPath, entry.name))) continue;
           const top = frame.top ?? path;
           if (entry.isDirectory()) {
             const realPath = join(frame.realPath, entry.name);
@@ -739,6 +752,7 @@ async function findSkillFiles(root: SkillRoot): Promise<SkillFileScan> {
       async (link): Promise<ScanFrame | null> => {
         const realPath = await getFileIdentity(link.path);
         if (realPath === null || !(await pathIsDirectory(realPath))) return null;
+        if (excludedPluginPath(link.path, realPath)) return null;
         if (root.scope === "project" && !(await projectSkillPathIsSafe(realPath))) {
           warnings.push({ path: link.path, reason: WORLD_WRITABLE_PROJECT_LINK_WARNING });
           return null;
@@ -1205,7 +1219,7 @@ async function loadSkillsFromRoot(root: SkillRoot): Promise<LoadedSkillRoot> {
   // dir individually (skills: ["./skills/flash-board"]), so the root
   // itself carries the SKILL.md instead of holding child skill dirs.
   let leafRoot = false;
-  if (files.length === 0 && !scan.unsafeRoot) {
+  if (files.length === 0 && !scan.unsafeRoot && !scan.rejectedRoot) {
     const leaf = join(root.path, SKILL_FILE_NAME);
     try {
       const stats = await lstat(leaf);

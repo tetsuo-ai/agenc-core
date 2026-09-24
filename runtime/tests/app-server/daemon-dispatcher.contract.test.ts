@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AuthBackend } from "../auth/backend.js";
 import { createTempWorkspaceFixture } from "../helpers/temp-workspace.js";
 import { AgenCDaemonAgentManager } from "./agent-lifecycle.js";
+import { sessionTranscriptV2FromRollout } from "./background-agent-runner.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import {
   AgenCDaemonJsonRpcDispatcher,
@@ -92,6 +93,138 @@ function daemonMethodCapabilities(
     boolean
   >;
 }
+
+async function legacyTranscriptConnection(manager: AgenCDaemonAgentManager) {
+  const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: new AgenCDaemonSessionManager() });
+  const older = dispatcher.createConnection({ sendNotification: () => {} });
+  await initialize(older, "1.17.0");
+  return { dispatcher, older };
+}
+
+async function mockArtifactAnswer(manager: AgenCDaemonAgentManager, answer: string) {
+  const snapshot = sessionTranscriptV2FromRollout([{ type: "event_msg", payload: { id: "answer", eventId: "answer", seq: 1, msg: { type: "agent_message", payload: { message: answer } } } }], "one", "run", undefined, await workspaces.create());
+  const bytes = Buffer.from(answer);
+  const read = vi.spyOn(manager, "readSessionArtifact").mockImplementation(async ({ sessionId, id, offset = 0, length = 512 * 1024 }) => {
+    const end = Math.min(offset + length, bytes.length);
+    return { sessionId, id, encoding: "base64", data: bytes.subarray(offset, end).toString("base64"), size: bytes.length, offset, nextOffset: end < bytes.length ? end : null };
+  });
+  vi.spyOn(manager, "getSessionTranscriptV2").mockResolvedValue(snapshot);
+  return { snapshot, read };
+}
+
+describe("session.artifact.read wire contract", () => {
+  it("omits attachment transcript events for a client negotiating 1.17", async () => {
+    const manager = new AgenCDaemonAgentManager();
+    const snapshot = sessionTranscriptV2FromRollout([{ type: "event_msg", payload: { id: "event", eventId: "event", seq: 1, msg: { type: "tool_call_completed", payload: { callId: "c", result: "shown", isError: false, displayAttachments: [{ id: "a".repeat(64), digest: "a".repeat(64), kind: "file", title: "F", mimeType: "text/plain", size: 1 }] } } } }], "one", "run");
+    vi.spyOn(manager, "getSessionTranscriptV2").mockResolvedValue(snapshot);
+    const { dispatcher, older } = await legacyTranscriptConnection(manager);
+    const oldResult = await older.dispatch(request("old", "session.transcript.v2", { sessionId: "one" }));
+    expect((oldResult.result as typeof snapshot).events).toEqual([]);
+    const current = dispatcher.createConnection({ sendNotification: () => {} });
+    await initialize(current, AGENC_DAEMON_PROTOCOL_VERSION);
+    const currentResult = await current.dispatch(request("new", "session.transcript.v2", { sessionId: "one" }));
+    expect((currentResult.result as typeof snapshot).events).toHaveLength(1);
+  });
+  it("gives a 1.17 client the complete 400,000-byte answer", async () => {
+    const manager = new AgenCDaemonAgentManager();
+    const answer = `${"A".repeat(399_988)}FINAL_MARKER`;
+    const { snapshot } = await mockArtifactAnswer(manager, answer);
+    const { older } = await legacyTranscriptConnection(manager);
+    const response = await older.dispatch(request("old", "session.transcript.v2", { sessionId: "one" }));
+    const message = (response.result as typeof snapshot).messages.at(-1)!;
+    expect(message.text).toBe(answer);
+    expect(message.text).toContain("FINAL_MARKER");
+    expect(message.textArtifact).toBeUndefined();
+  });
+  it("keeps two 250,000-byte answers when a 1.17 restored frame fits", async () => {
+    const manager = new AgenCDaemonAgentManager();
+    const answers = ["A".repeat(250_000), "B".repeat(250_000)];
+    const items = answers.map((answer, index) => ({ type: "event_msg" as const, payload: { id: `answer-${index}`, eventId: `answer-${index}`, seq: index + 1, msg: { type: "agent_message" as const, payload: { message: answer } } } }));
+    const sessionDir = await workspaces.create();
+    vi.spyOn(manager, "getSessionTranscriptV2").mockImplementation(async (_params, options) =>
+      sessionTranscriptV2FromRollout(items, "one", "run", undefined, sessionDir, { includeCompleteMessages: options?.includeCompleteMessages }),
+    );
+    const { older } = await legacyTranscriptConnection(manager);
+    const response = await older.dispatch(request("old", "session.transcript.v2", { sessionId: "one" }));
+    const restored = (response.result as { messages: Array<{ text: string }>; asOfSequence: number }).messages;
+    expect(restored).toHaveLength(2);
+    expect(restored.map(message => message.text.length)).toEqual([250_000, 250_000]);
+    expect(restored[0]?.text).toBe(answers[0]);
+    expect(restored[1]?.text).toBe(answers[1]);
+    expect(Buffer.byteLength(JSON.stringify(response))).toBeLessThan(1024 * 1024);
+  });
+  it("rejects 1,000 legacy answers without serializing the complete reply", async () => {
+    const manager = new AgenCDaemonAgentManager();
+    const text = "A".repeat(250_000);
+    const messages = Array.from({ length: 1_000 }, (_, index) => ({
+      messageId: `answer-${index}`, commitEventId: `event:${index}`, role: "assistant" as const,
+      text, committedSequence: index + 1,
+    }));
+    vi.spyOn(manager, "getSessionTranscriptV2").mockResolvedValue({
+      schemaVersion: 2, sessionId: "one", runId: "run", historyEpoch: "epoch",
+      asOfSequence: 1_000, messages,
+    });
+    const { dispatcher, older } = await legacyTranscriptConnection(manager);
+    const stringify = JSON.stringify;
+    let completeSerializations = 0;
+    let messageSerializations = 0;
+    const spy = vi.spyOn(JSON, "stringify").mockImplementation(((value: unknown, ...rest: unknown[]) => {
+      if ((value as { result?: { messages?: unknown[] } })?.result?.messages?.length === 1_000) {
+        completeSerializations++;
+        throw new Error("complete legacy reply was serialized");
+      }
+      if ((value as { text?: unknown })?.text === text) messageSerializations++;
+      return Reflect.apply(stringify, JSON, [value, ...rest]);
+    }) as typeof JSON.stringify);
+    try {
+      const response = await older.dispatch(request("old", "session.transcript.v2", { sessionId: "one" }));
+      expect(response).toHaveProperty("error");
+      expect(completeSerializations).toBe(0);
+      expect(messageSerializations).toBeLessThan(100);
+    } finally {
+      spy.mockRestore();
+      await older.close();
+      await dispatcher.close();
+    }
+  });
+  it("restores the complete 800,000-byte answer for 1.17 when its wrapped reply fits", async () => {
+    const manager = new AgenCDaemonAgentManager();
+    const answer = "A".repeat(800_000);
+    const { snapshot, read } = await mockArtifactAnswer(manager, answer);
+    const { older } = await legacyTranscriptConnection(manager);
+    const response = await older.dispatch(request("old", "session.transcript.v2", { sessionId: "one" }));
+    expect((response.result as typeof snapshot).messages.at(-1)?.text).toBe(answer);
+    expect((response.result as typeof snapshot).messages.at(-1)?.textArtifact).toBeUndefined();
+    expect(read).toHaveBeenCalled();
+  });
+  it("uses the local 16 MiB line limit for a 1.17 artifact answer", async () => {
+    const manager = new AgenCDaemonAgentManager();
+    const answer = `${"L".repeat(1_199_988)}FINAL_MARKER`;
+    const { snapshot } = await mockArtifactAnswer(manager, answer);
+    const { older } = await legacyTranscriptConnection(manager);
+    const response = await older.dispatch(request("old", "session.transcript.v2", { sessionId: "one" }));
+    expect((response.result as typeof snapshot).messages.at(-1)?.text).toBe(answer);
+    expect(Buffer.byteLength(JSON.stringify(response))).toBeLessThanOrEqual(16 * 1024 * 1024);
+  });
+  it("requires a digest and routes an authenticated session-scoped id", async () => {
+    const agentManager = new AgenCDaemonAgentManager();
+    const id = "a".repeat(64);
+    const read = vi.spyOn(agentManager, "readSessionArtifact").mockResolvedValue({ sessionId: "one", id, encoding: "base64", data: "YQ==", size: 1, offset: 0, nextOffset: null });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager, sessionManager: new AgenCDaemonSessionManager() });
+    const connection = dispatcher.createConnection({ sendNotification: () => {} });
+    await initialize(connection, "1.17.0");
+    await expect(connection.dispatch(request("legacy", "session.artifact.read", { sessionId: "one", id }))).resolves.toMatchObject({ error: { code: -32601 } });
+    expect(read).not.toHaveBeenCalled();
+    const current = dispatcher.createConnection({ sendNotification: () => {} });
+    await initialize(current, AGENC_DAEMON_PROTOCOL_VERSION);
+    await expect(current.dispatch(request("bad", "session.artifact.read", { sessionId: "one", id: "../other" }))).resolves.toHaveProperty("error");
+    expect(read).not.toHaveBeenCalled();
+    await expect(current.dispatch(request("good", "session.artifact.read", { sessionId: "one", id }))).resolves.toMatchObject({ result: { sessionId: "one", id, data: "YQ==" } });
+    expect(read).toHaveBeenCalledWith({ sessionId: "one", id });
+    read.mockResolvedValue({ sessionId: "one", id, encoding: "base64", data: "YQ==", size: 1024 * 1024, offset: 0, nextOffset: 1 });
+    await expect(current.dispatch(request("chunk", "session.artifact.read", { sessionId: "one", id, offset: 0, length: 1 }))).resolves.toMatchObject({ result: { nextOffset: 1 } });
+  });
+});
 
 describe("AgenC daemon session lifecycle dispatcher", () => {
   it("does not turn an aborted v1.2 identity-bearing send into session-wide cancellation", async () => {

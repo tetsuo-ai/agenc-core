@@ -20,6 +20,7 @@ vi.mock("../session/event-log.js", async (importOriginal) => ({
 }));
 
 import { AgentStatusTracker } from "./status.js";
+import { childTerminalOutcome } from "./child-terminal.js";
 import { Mailbox } from "./mailbox.js";
 import {
   _resetAgentRolesForTesting,
@@ -39,6 +40,13 @@ import {
 } from "./registry.js";
 import type { AgentMetadata } from "./registry.js";
 import { RolloutStore } from "../session/rollout-store.js";
+import { SessionProviderService } from "../session/provider-service.js";
+import { createProvider } from "../llm/provider.js";
+import { resolveProviderRuntimeRequest } from "../llm/provider-request.js";
+import { defaultConfig } from "../config/schema.js";
+import { StaticModelsManager } from "../llm/models-manager.js";
+import { authorizeChildExecutionPlan, createChildExecutionPlan } from "./cross-provider.js";
+import type { Session } from "../session/session.js";
 import { EventLog } from "../session/event-log.js";
 import {
   computeAgentInvocationEnvelopeDigest,
@@ -48,6 +56,24 @@ import {
 const mockRunAgent = vi.mocked(runAgent);
 const mockForkSubagent = vi.mocked(forkSubagent);
 const ROLE_WORKSPACE = createAgentRoleWorkspace(process.cwd());
+
+async function grantedTestPlan(parent: Session, pair: { provider: string; model: string },
+  modelInfo: Session["modelInfo"], taskText: string, taskId: string, parentPath: string) {
+  const ownerSessionId = parent.services.crossProviderConsent?.ownerSessionId ?? parent.conversationId;
+  Object.assign(parent.services, { crossProviderConsent: {
+    ownerSessionId, sessionEpoch: "delegate-test-human",
+    request: async (_session: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+      kind: "granted" as const,
+      grant: { kind: "once" as const, ownerSessionId, sessionEpoch: "delegate-test-human",
+        taskId: disclosure.taskId, scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey },
+    }),
+  } });
+  const proposed = await createChildExecutionPlan({ session: parent, selection: pair, modelInfo,
+    parentPath, taskId, taskName: "worker", taskText, toolFree: false, forkedHistory: false });
+  const authorized = await authorizeChildExecutionPlan(parent, proposed);
+  if (authorized.kind !== "granted") throw new Error("fixture consent failed");
+  return authorized.plan;
+}
 
 function makeLive(
   agentId: string,
@@ -243,6 +269,29 @@ describe("delegate lifecycle recovery", () => {
     await outcome.thread.join();
     expect(control.shutdown).not.toHaveBeenCalled();
     expect(control.markThreadSpawnEdgeClosed).toHaveBeenCalledWith("thread-bg");
+  });
+
+  it.each(["string", "object"] as const)("reads a %s child status after its run", async (shape) => {
+    const live = makeLive(`thread-${shape}`, `/root/${shape}`);
+    const terminal = childTerminalOutcome({ provider: "fake", model: "fake-model",
+      reason: "completed", dispatch: "sent", completedWork: "done" });
+    const control = {
+      spawn: vi.fn(async () => live), shutdown: vi.fn(async () => {}),
+      markThreadSpawnEdgeClosed: vi.fn(async () => {}),
+      recordTerminalOutcome: vi.fn(), resumeAgentFromRollout: vi.fn(),
+    };
+    mockRunAgent.mockImplementationOnce(() => {
+      live.status.subject.next((shape === "string" ? "running" : { status: "idle", terminal }) as never);
+      return runResult({ threadId: live.agentId, durationMs: 1, outcome: "completed", finalMessage: "done" });
+    });
+    const outcome = await delegate({ parent: makeParentSession() as never,
+      parentPath: "/root", control: control as never, registry: {} as never,
+      taskPrompt: "run separately" });
+    expect(outcome.kind).toBe("async_launched");
+    if (outcome.kind !== "async_launched") throw new Error("expected async launch");
+    await outcome.thread.join();
+    if (shape === "string") expect(control.recordTerminalOutcome).not.toHaveBeenCalled();
+    else expect(control.recordTerminalOutcome).toHaveBeenCalledWith(live.agentId, terminal);
   });
 
   it("records summary cache params and tool transcript events from async runs", async () => {
@@ -728,6 +777,182 @@ describe("delegate lifecycle recovery", () => {
     expect(outcome.result.outcome).toBe("completed");
     expect(outcome.result.finalMessage).toBe("done after restart");
     expect(resumeManager.recordSuccess).toHaveBeenCalledWith("thread-2");
+  });
+
+  it.each(["ready", "credential revoked", "policy revoked"] as const)(
+    "retains the durable provider pair through a real hard restart when %s",
+    async (state) => {
+      mockRunAgent.mockReset();
+      const harness = makeRealDelegateHarness(`provider-restart-${state.replaceAll(" ", "-")}`);
+      let key: string | undefined = "deepseek-key";
+      let enabled = true;
+      const config = () => ({
+        ...defaultConfig(), model_provider: "grok", model: "grok-4.6",
+        agents: { cross_provider_enabled: enabled, allowed_providers: ["deepseek"] },
+      });
+      const modelsManager = new StaticModelsManager({ config: config(), fallbackProvider: "grok" });
+      const readSavedApiKey = vi.fn(async () => key);
+      const providerService = new SessionProviderService({
+        initialProvider: createProvider("grok", { model: "grok-4.6", apiKey: "parent-key" }),
+        readSavedApiKey,
+        resolvePreparationRequest: ({ model }) => ({
+          requested: resolveProviderRuntimeRequest({
+            provider: "deepseek", model, config: config(), environment: {},
+          }).requested,
+        }),
+      });
+      Object.assign(harness.parent, {
+        providerService,
+        modelInfo: await modelsManager.getModelInfo("grok-4.6"),
+        sessionConfiguration: {
+          ...harness.parent.sessionConfiguration,
+          collaborationMode: { model: "grok-4.6" },
+        },
+        services: {
+          ...harness.parent.services,
+          configStore: { current: config },
+          modelsManager,
+        },
+      });
+      const pair = { provider: "deepseek", model: "deepseek-v4-pro" };
+      const plan = await grantedTestPlan(harness.parent as Session, pair,
+        await modelsManager.getModelInfo(pair.model), "inspect", "delegate-restart", "/root");
+      const spawnSpy = vi.spyOn(harness.control, "spawn");
+      const resumeManager = {
+        recordFailure: vi.fn(() => ({ kind: "restart" as const, reason: "hard_error" })),
+        recordSuccess: vi.fn(),
+        transferFailureCount: vi.fn(),
+      };
+      mockRunAgent.mockImplementationOnce((params) => {
+        if (state === "credential revoked") key = undefined;
+        if (state === "policy revoked") enabled = false;
+        return runResult({ threadId: params.live.agentId, durationMs: 1, outcome: "errored", error: new Error("hard fail") });
+      });
+      mockRunAgent.mockImplementationOnce((params) =>
+        runResult({ threadId: params.live.agentId, durationMs: 1, outcome: "completed", finalMessage: "restarted" }),
+      );
+      try {
+        const outcome = await delegate({
+          parent: harness.parent as never,
+          parentPath: "/root",
+          control: harness.control,
+          registry: harness.registry,
+          taskPrompt: "inspect",
+          taskId: "delegate-restart",
+          runInBackground: false,
+          forceSynchronous: true,
+          plan,
+          resumeManager: resumeManager as never,
+        });
+        expect(outcome.kind).toBe("sync_completed");
+        if (outcome.kind !== "sync_completed") throw new Error("expected sync_completed");
+        if (state === "ready") {
+          expect(outcome.result.outcome).toBe("completed");
+          expect(spawnSpy).toHaveBeenCalledTimes(2);
+          expect(spawnSpy.mock.calls[1]?.[0].providerSelection).toEqual(pair);
+          expect(harness.rolloutStore.getThreadSpawnEdge(outcome.thread.threadId)?.metadata.crossProvider)
+            .toMatchObject(pair);
+          expect(readSavedApiKey).toHaveBeenCalledTimes(2); // local preview and live preparation select the same saved key
+        } else {
+          expect(outcome.result.outcome).toBe("errored");
+          expect(spawnSpy).toHaveBeenCalledTimes(1);
+        }
+      } finally {
+        mockRunAgent.mockReset();
+        harness.cleanup();
+      }
+    },
+  );
+
+  it("spawns a nested slash-model child through the real delegate and records its parent edge", async () => {
+    mockRunAgent.mockReset();
+    const harness = makeRealDelegateHarness("nested-cross-provider");
+    (harness.parent as { eventLog: unknown }).eventLog = new EventLog();
+    const config = {
+      ...defaultConfig(), model_provider: "grok", model: "grok-4.6",
+      agents: { cross_provider_enabled: true, allowed_providers: ["openrouter"] },
+    };
+    const modelsManager = new StaticModelsManager({ config, fallbackProvider: "grok" });
+    const providerService = new SessionProviderService({
+      initialProvider: createProvider("grok", { model: "grok-4.6", apiKey: "parent-key" }),
+      readSavedApiKey: async () => "openrouter-key",
+      resolvePreparationRequest: ({ provider, model }) => ({
+        requested: resolveProviderRuntimeRequest({
+          provider: provider as "openrouter", model, config, environment: {},
+        }).requested,
+      }),
+    });
+    Object.assign(harness.parent, {
+      providerService,
+      modelInfo: await modelsManager.getModelInfo("grok-4.6"),
+      sessionConfiguration: {
+        ...harness.parent.sessionConfiguration,
+        collaborationMode: { model: "grok-4.6" },
+      },
+      services: {
+        ...harness.parent.services,
+        configStore: { current: () => config },
+        modelsManager,
+      },
+    });
+    const control = new AgentControl({ session: harness.parent as never, registry: harness.registry, maxDepth: 2 });
+    control.registerSessionRoot(harness.parent.conversationId);
+    let nestedOutcome: Awaited<ReturnType<typeof delegate>> | undefined;
+    let outerId = "";
+    mockRunAgent.mockImplementationOnce((params) => (async function* () {
+      outerId = params.live.agentId;
+      const childParent = {
+        ...harness.parent,
+        conversationId: outerId,
+        providerService: providerService.forkForChild(
+          createProvider("grok", { model: "grok-4.6", apiKey: "parent-key" }),
+          { provider: "grok", model: "grok-4.6" },
+        ),
+      };
+      const nestedPair = { provider: "openrouter", model: "openai/gpt-4o-mini" };
+      const nestedPlan = await grantedTestPlan(childParent as Session, nestedPair,
+        { slug: nestedPair.model, provider: nestedPair.provider, supportsToolUse: true } as Session["modelInfo"],
+        "nested inspect", "nested-task", params.live.agentPath);
+      nestedOutcome = await delegate({
+        parent: childParent as never,
+        parentPath: params.live.agentPath,
+        control,
+        registry: harness.registry,
+        taskPrompt: "nested inspect",
+        taskId: "nested-task",
+        agentName: "nested",
+        runInBackground: false,
+        forceSynchronous: true,
+        plan: nestedPlan,
+      });
+      return { threadId: outerId, durationMs: 1, outcome: "completed" as const };
+    })());
+    mockRunAgent.mockImplementationOnce((params) =>
+      runResult({ threadId: params.live.agentId, durationMs: 1, outcome: "completed" }),
+    );
+    try {
+      const outer = await delegate({
+        parent: harness.parent as never,
+        parentPath: "/root",
+        control,
+        registry: harness.registry,
+        taskPrompt: "first inspect",
+        agentName: "first",
+        runInBackground: false,
+        forceSynchronous: true,
+      });
+      expect(outer.kind).toBe("sync_completed");
+      expect(nestedOutcome?.kind, nestedOutcome?.kind === "rejected" ? nestedOutcome.reason : undefined).toBe("sync_completed");
+      if (nestedOutcome?.kind !== "sync_completed") throw new Error("nested delegate failed");
+      expect(harness.rolloutStore.getThreadSpawnEdge(nestedOutcome.thread.threadId))
+        .toMatchObject({
+          parentThreadId: outerId,
+          metadata: { crossProvider: { provider: "openrouter", model: "openai/gpt-4o-mini" } },
+        });
+    } finally {
+      mockRunAgent.mockReset();
+      harness.cleanup();
+    }
   });
 
   it("restarts from the immutable session catalog when an ambient role changes", async () => {

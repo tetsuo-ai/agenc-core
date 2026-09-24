@@ -6,6 +6,7 @@ import Database from "better-sqlite3";
 import { createEmptyToolPermissionContext } from "../../src/permissions/types.js";
 import { createMultiAgentV2Tools } from "../../src/agents/v2/index.js";
 import { injectChildToolArgs } from "../../src/agents/run-agent.js";
+import { authorizeChildExecutionPlan, createChildExecutionPlan } from "../../src/agents/cross-provider.js";
 import {
   AgentControl,
   AgentAssignmentRejectedError,
@@ -27,6 +28,7 @@ import { ThreadManager } from "./thread-manager.js";
 import {
   SimpleMailbox,
   type InterAgentCommunication,
+  type Session,
 } from "../session/session.js";
 import { upsertAgentRun } from "../state/agent-runs.js";
 import {
@@ -165,6 +167,40 @@ afterEach(() => {
 });
 
 describe("AgentControl", () => {
+  it("snapshots and interrupts a worker with a string status projection", async () => {
+    const session = stubSession();
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    control.registerSessionRoot(session.conversationId);
+    const worker = await control.spawn({ parentPath: "/root" });
+    const status = vi.spyOn(worker.status, "value", "get").mockReturnValue("running" as never);
+    try {
+      expect(control.snapshotNativeWorkers(session.conversationId)[0]).toMatchObject({
+        agentId: worker.agentId, status: "running",
+      });
+      expect(control.snapshotNativeWorkers(session.conversationId)[0]).not.toHaveProperty("terminal");
+      control.interrupt(worker.agentId, "user_cancel");
+      expect(worker.status.subject.value).toMatchObject({ status: "interrupted", turnId: worker.agentId });
+    } finally {
+      status.mockRestore();
+      await control.shutdownAll();
+    }
+  });
+
+  it("projects an object status terminal in native worker snapshots", async () => {
+    const { childTerminalOutcome } = await import("../../src/agents/child-terminal.js");
+    const session = stubSession();
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    control.registerSessionRoot(session.conversationId);
+    const worker = await control.spawn({ parentPath: "/root" });
+    try {
+      const terminal = childTerminalOutcome({ provider: "fake", model: "fake-model",
+        reason: "completed", dispatch: "sent", completedWork: "done" });
+      worker.status.markIdle("turn-1", terminal);
+      expect(control.snapshotNativeWorkers(session.conversationId)[0]).toMatchObject({
+        agentId: worker.agentId, status: "idle", terminal,
+      });
+    } finally { await control.shutdownAll(); }
+  });
   it("preserves actual turn timing when interrupting a worker by its thread ID", async () => {
     const session = stubSession();
     const control = new AgentControl({ session, registry: new AgentRegistry() });
@@ -1108,6 +1144,215 @@ describe("AgentControl", () => {
     expect(registry.activeCount).toBe(1);
   });
 
+  it("refuses a cross-provider child without a consent plan before persisting an edge", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-cross-provider-edge-"));
+    const rolloutStore = openRolloutStore({ cwd, sessionId: "cross-provider-root" });
+    try {
+      const session = stubSession({ cwd, conversationId: "cross-provider-root", rolloutStore });
+      const config = {
+        model_provider: "grok",
+        model: "grok-4.6",
+        agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] },
+      };
+      Object.assign(session, {
+        modelInfo: { slug: "grok-4.6" },
+        providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }) },
+        services: { ...session.services, configStore: { current: () => config } },
+      });
+      const registry = new AgentRegistry();
+      const control = new AgentControl({ session, registry });
+      registerDurableSessionRoot(control, cwd, "cross-provider-root");
+      await expect(control.spawn({
+        parentPath: "/root",
+        providerSelection: { provider: "deepseek", model: "deepseek-v4-pro" },
+      })).rejects.toThrow(/consent_unavailable/u);
+      expect(registry.activeCount).toBe(0);
+    } finally {
+      rolloutStore.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("persists the complete child plan and rechecks its policy on resume", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-child-plan-edge-"));
+    const rolloutStore = openRolloutStore({ cwd, sessionId: "plan-root" });
+    try {
+      const session = stubSession({ cwd, conversationId: "plan-root", rolloutStore });
+      let allowed = ["deepseek"];
+      const config = () => ({ model_provider: "grok", model: "grok-4.6",
+        agents: { cross_provider_enabled: true, allowed_providers: allowed } });
+      Object.assign(session, {
+        modelInfo: { slug: "grok-4.6", provider: "grok" },
+        providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }) },
+        services: { ...session.services, configStore: { current: config } },
+      });
+      const control = new AgentControl({ session, registry: new AgentRegistry(), maxDepth: 3 });
+      registerDurableSessionRoot(control, cwd, "plan-root");
+      Object.assign(session.services, { crossProviderConsent: {
+        ownerSessionId: "plan-root", sessionEpoch: "test-interactive-session",
+        request: async (_requester: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+          kind: "granted" as const,
+          grant: { kind: "once" as const, ownerSessionId: "plan-root", sessionEpoch: "test-interactive-session",
+            taskId: disclosure.taskId, scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey },
+        }),
+      } });
+      const proposedPlan = await createChildExecutionPlan({
+        session, selection: { provider: "deepseek", model: "deepseek-v4-pro" },
+        modelInfo: { slug: "deepseek-v4-pro", provider: "deepseek", supportsToolUse: true } as Session["modelInfo"],
+        parentPath: "/root", taskId: "spawn-plan", taskName: "worker", taskText: "inspect",
+        toolFree: false, forkedHistory: false,
+      });
+      const authorized = await authorizeChildExecutionPlan(session, proposedPlan);
+      expect(authorized.kind).toBe("granted");
+      if (authorized.kind !== "granted") throw new Error("fixture consent was not granted");
+      const plan = authorized.plan;
+      const live = await control.spawn({ parentPath: "/root", agentName: "worker",
+        providerSelection: plan.route, executionPlan: plan });
+      await expect(control.spawn({ parentPath: live.agentPath }))
+        .rejects.toThrow(/consent provenance/u);
+      expect(rolloutStore.getThreadSpawnEdge(live.agentId)?.metadata.executionPlan).toEqual(plan);
+      expect(control.getAgentConfigSnapshot(live.agentId)?.executionPlan).toEqual(plan);
+      expect(control.listAgents().find((agent) => agent.agentName === live.agentPath))
+        .toMatchObject({ provider: "deepseek", model: "deepseek-v4-pro" });
+      expect(control.snapshotNativeWorkers(session.conversationId).find((agent) => agent.agentId === live.agentId))
+        .toMatchObject({ provider: "deepseek", model: "deepseek-v4-pro" });
+      allowed = ["deepseek", "openai"];
+      await expect(control.resume({ parentPath: "/root", metadata: live.metadata }))
+        .rejects.toThrow(/execution plan.*policy changed/u);
+    } finally {
+      rolloutStore.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["provider removed", "credential gone"])("refuses legacy cross-provider recovery without a consent plan when %s", async (failure) => {
+    const session = stubSession();
+    let allowed = ["deepseek"];
+    let credentialReady = true;
+    const prepare = vi.fn(async () => {
+      if (!credentialReady) throw new Error("DeepSeek credential is missing; add a saved API key");
+      return { binding: { instance: { dispose: vi.fn() } } };
+    });
+    Object.assign(session, {
+      modelInfo: { slug: "grok-4.6" },
+      providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }), prepare, prepareChild: prepare },
+      services: { ...session.services, configStore: { current: () => ({ model_provider: "grok", model: "grok-4.6", agents: { cross_provider_enabled: true, allowed_providers: allowed } }) } },
+    });
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    const metadata: AgentMetadata = {
+      agentId: "cross-recovery", agentPath: "/root/cross_recovery", agentNickname: "cross",
+      agentRole: "scanner", ...roleProvenance(control, "scanner"), depth: 1,
+      crossProvider: { provider: "deepseek", model: "deepseek-v4-pro", policy: "user-or-managed-agents-v1" },
+    };
+    if (failure === "provider removed") allowed = [];
+    else credentialReady = false;
+    await expect(control.resume({ parentPath: "/root", metadata })).rejects.toThrow(/resume_blocked/u);
+    expect(registry.activeCount).toBe(0);
+  });
+
+  it("blocks recovery of a signed-out sign-in child before dispatch", async () => {
+    const session = stubSession({ conversationId: "sign-in-root" });
+    let signedIn = true;
+    const prepareChild = vi.fn(async () => {
+      if (!signedIn) throw new Error("openai authentication failed (HTTP 401): signed out");
+      return { authProfile: "sign_in", billingSource: "sign_in",
+        binding: { instance: { dispose: vi.fn() }, factoryOptions: {
+          baseURL: "https://chatgpt.com/backend-api/codex" } } };
+    });
+    Object.assign(session, {
+      modelInfo: { slug: "grok-4.6", provider: "grok" },
+      sessionConfiguration: { ...session.sessionConfiguration, cwd: "/workspace",
+        collaborationMode: { model: "grok-4.6" } },
+      providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }), prepareChild,
+        previewChildDestination: async () => ({ endpoint: "https://chatgpt.com/backend-api/codex",
+          authProfile: "sign_in", billingSource: "sign_in" }) },
+      services: { ...session.services, configStore: { current: () => ({ model_provider: "grok",
+        model: "grok-4.6", agents: { cross_provider_enabled: true, allowed_providers: ["openai"] } }) },
+        crossProviderConsent: { ownerSessionId: "sign-in-root", sessionEpoch: "live-epoch",
+          request: async (_requester: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+            kind: "granted" as const, grant: { kind: "once" as const, ownerSessionId: "sign-in-root",
+              sessionEpoch: "live-epoch", taskId: disclosure.taskId,
+              scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey },
+          }) } },
+    });
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    const proposed = await createChildExecutionPlan({ session,
+      selection: { provider: "openai", model: "gpt-6-luna" },
+      modelInfo: { slug: "gpt-6-luna", provider: "openai", supportsToolUse: true } as Session["modelInfo"],
+      parentPath: "/root", taskId: "sign-in-task", taskName: "worker", taskText: "inspect",
+      toolFree: false, forkedHistory: false });
+    const authorized = await authorizeChildExecutionPlan(session, proposed);
+    expect(authorized.kind).toBe("granted");
+    if (authorized.kind !== "granted") throw new Error("fixture consent was not granted");
+    signedIn = false;
+    const metadata: AgentMetadata = {
+      agentId: "sign-in-child", agentPath: "/root/sign_in_child", agentNickname: "sign-in child",
+      agentRole: "scanner", ...roleProvenance(control, "scanner"), depth: 1,
+      crossProvider: { provider: "openai", model: "gpt-6-luna", policy: "user-or-managed-agents-v1" },
+      executionPlan: authorized.plan,
+    };
+    await expect(control.resume({ parentPath: "/root", metadata })).rejects.toThrow(/resume_blocked/u);
+    expect(prepareChild).toHaveBeenCalledOnce();
+  });
+
+  it("resumes an approved account-only OpenAI child after its parent switches to OpenAI", async () => {
+    const session = stubSession({ conversationId: "account-model-root" });
+    let parentProvider = "grok";
+    let unrelatedDefaultModel: string | undefined;
+    const prepareChild = vi.fn(async () => ({
+      authProfile: "sign_in" as const, billingSource: "sign_in" as const,
+      signInModelCapabilities: { supportsToolUse: true },
+      binding: { provider: "openai", model: "account-only-model",
+        instance: { dispose: vi.fn() }, factoryOptions: {
+          baseURL: "https://chatgpt.com/backend-api/codex" } },
+    }));
+    Object.assign(session, {
+      modelInfo: { slug: "grok-4.6", provider: "grok" },
+      sessionConfiguration: { ...session.sessionConfiguration, cwd: "/workspace",
+        collaborationMode: { model: "grok-4.6" } },
+      providerService: { current: () => ({ provider: parentProvider, model: "grok-4.6" }),
+        prepareChild, previewChildDestination: async () => ({
+          endpoint: "https://chatgpt.com/backend-api/codex",
+          authProfile: "sign_in", billingSource: "sign_in" }) },
+      services: { ...session.services, configStore: { current: () => ({
+        model_provider: "grok", model: "grok-4.6",
+        ...(unrelatedDefaultModel !== undefined ? { providers: { ollama: {
+          default_model: unrelatedDefaultModel } } } : {}),
+        agents: { cross_provider_enabled: true, allowed_providers: ["openai"] } }) },
+        crossProviderConsent: { ownerSessionId: "account-model-root", sessionEpoch: "live-epoch",
+          request: async (_requester: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+            kind: "granted" as const, grant: { kind: "once" as const,
+              ownerSessionId: "account-model-root", sessionEpoch: "live-epoch",
+              taskId: disclosure.taskId, scopeKey: disclosure.scopeKey,
+              payloadKey: disclosure.payloadKey },
+          }) } },
+    });
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
+    const proposed = await createChildExecutionPlan({ session,
+      selection: { provider: "openai", model: "account-only-model" },
+      modelInfo: { slug: "account-only-model", provider: "openai",
+        supportsToolUse: true } as Session["modelInfo"],
+      parentPath: "/root", taskId: "account-task", taskName: "worker",
+      taskText: "inspect", toolFree: false, forkedHistory: false });
+    const authorized = await authorizeChildExecutionPlan(session, proposed);
+    expect(authorized.kind).toBe("granted");
+    if (authorized.kind !== "granted") throw new Error("fixture consent was not granted");
+    parentProvider = "openai";
+    unrelatedDefaultModel = "my-local-finetune";
+    const metadata: AgentMetadata = {
+      agentId: "account-child", agentPath: "/root/account_child",
+      agentNickname: "account child", agentRole: "scanner",
+      ...roleProvenance(control, "scanner"), depth: 1,
+      crossProvider: { provider: "openai", model: "account-only-model",
+        policy: "user-or-managed-agents-v1" }, executionPlan: authorized.plan,
+    };
+    await expect(control.resume({ parentPath: "/root", metadata }))
+      .resolves.toMatchObject({ agentId: "account-child" });
+    expect(prepareChild).toHaveBeenCalledOnce();
+  });
+
   it("resume() fails closed for named legacy metadata without workspace provenance", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();
@@ -2015,6 +2260,34 @@ describe("AgentControl", () => {
     }
   });
 
+  it("rehydrates a nested child with a persisted same-provider plan before parent sessions are bound", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-nested-plan-rollout-"));
+    const store = openRolloutStore({ cwd, sessionId: "nested-plan-root" });
+    try {
+      const session = stubSession({ cwd, rolloutStore: store, conversationId: "nested-plan-root" });
+      Object.assign(session, { modelInfo: { slug: "grok-4.7", provider: "grok", supportsToolUse: true },
+        sessionConfiguration: { cwd, collaborationMode: { model: "grok-4.7" } },
+        providerService: { current: () => ({ provider: "grok", model: "grok-4.7" }) },
+        services: { ...session.services, configStore: { current: () => ({ model_provider: "grok", model: "grok-4.7", agents: {} }) } } });
+      const control = new AgentControl({ session, registry: new AgentRegistry(), maxDepth: 3 });
+      const root = await control.spawn({ parentPath: "/root" });
+      seedRunningAgentRun(cwd, root.agentId);
+      const child = await control.spawn({ parentPath: root.agentPath });
+      const proposed = await createChildExecutionPlan({ session,
+        selection: { provider: "grok", model: "grok-4.7" },
+        modelInfo: session.modelInfo, parentPath: child.agentPath,
+        taskId: "grandchild-task", taskName: "planned", taskText: "inspect",
+        toolFree: false, forkedHistory: false });
+      const nestedPlan = { ...proposed, parent: { sessionId: child.agentId, agentPath: child.agentPath } };
+      const grandchild = await control.spawn({ parentPath: child.agentPath, executionPlan: nestedPlan });
+      await control.shutdownAll("manager_shutdown");
+      const resumed = await control.resumeAgentFromRollout({ rootThreadId: root.agentId,
+        parentPath: "/root", metadata: root.metadata });
+      expect(resumed.resumedCount).toBe(3);
+      expect(control.getLive(grandchild.agentId)?.metadata.executionPlan).toEqual(nestedPlan);
+    } finally { store.close(); rmSync(cwd, { recursive: true, force: true }); }
+  });
+
   it("resumeAgentFromRollout() restores descendants on a fresh control plane restart", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-control-rollout-"));
     const sessionId = "resume-fresh-control-plane";
@@ -2077,6 +2350,44 @@ describe("AgentControl", () => {
     } finally {
       originalRolloutStore.close();
       resumedRolloutStore?.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not redispatch a funds-stopped child after a fresh control plane restart", async () => {
+    const { childTerminalOutcome } = await import("../../src/agents/child-terminal.js");
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-control-funds-restart-"));
+    const sessionId = "funds-stop-fresh-control-plane";
+    const originalStore = openRolloutStore({ cwd, sessionId });
+    let resumedStore: RolloutStore | null = null;
+    try {
+      const session = stubSession({ rolloutStore: originalStore, conversationId: sessionId });
+      const control = new AgentControl({ session, registry: new AgentRegistry(), maxDepth: 3 });
+      const root = await control.spawn({ parentPath: "/root" });
+      seedRunningAgentRun(cwd, root.agentId);
+      const child = await control.spawn({ parentPath: root.agentPath });
+      control.recordTerminalOutcome(child.agentId, childTerminalOutcome({
+        provider: "deepseek", model: "deepseek-chat", reason: "insufficient_funds",
+        dispatch: "sent", unfinishedWork: "Run tests",
+      }));
+      expect(originalStore.getThreadSpawnEdge(child.agentId)?.status).toBe("closed");
+      await control.shutdownAll("manager_shutdown");
+      originalStore.close();
+
+      resumedStore = openRolloutStore({ cwd, sessionId, resume: true });
+      const resumedSession = stubSession({ rolloutStore: resumedStore, conversationId: sessionId });
+      const resumedControl = new AgentControl({
+        session: resumedSession, registry: new AgentRegistry(), maxDepth: 3,
+      });
+      const result = await resumedControl.resumeAgentFromRollout({
+        rootThreadId: root.agentId, parentPath: "/root", metadata: root.metadata,
+      });
+      expect(result.resumedCount).toBe(1);
+      expect(resumedControl.getLive(child.agentId)).toBeUndefined();
+      expect(resumedStore.getThreadSpawnEdge(child.agentId)?.status).toBe("closed");
+    } finally {
+      originalStore.close();
+      resumedStore?.close();
       rmSync(cwd, { recursive: true, force: true });
     }
   });

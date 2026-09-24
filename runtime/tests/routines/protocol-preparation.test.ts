@@ -11,7 +11,8 @@ const validator = (name: string) => ajv.getSchema(`${schema.$id}#/definitions/${
 
 describe("routine preparation protocol parity", () => {
   it("publishes the versioned request and answer in Core, schema and generated SDK", () => {
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.17.0");
+    // The handshake arrived in 1.17; later protocol versions keep it.
+    expect(Number(AGENC_DAEMON_PROTOCOL_VERSION.split(".")[1])).toBeGreaterThanOrEqual(17);
     expect(AGENC_DAEMON_METHODS).toContain("routine.session.prepare.respond");
     expect(AGENC_DAEMON_NOTIFICATION_METHODS).toContain("routine.session.prepare");
     expect(schema["x-agenc-methods"]).toContain("routine.session.prepare.respond");

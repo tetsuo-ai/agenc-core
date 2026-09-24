@@ -133,6 +133,8 @@ export interface VerifiedReadContext {
   readonly beforeRootOpenForTesting?: (
     requestedPath: string,
   ) => void | Promise<void>;
+  /** @internal Test the final open after the parent walk has succeeded. */
+  readonly beforeCandidateOpenForTesting?: (requestedPath: string) => void | Promise<void>;
 }
 
 /** Raised when the platform cannot prove where an open descriptor points. */
@@ -463,6 +465,7 @@ export async function openVerifiedCandidate(
   if (pathStats.isSymbolicLink() || !pathStats.isFile()) return null;
   let handle: FileHandle;
   try {
+    await context.beforeCandidateOpenForTesting?.(descriptorPath);
     handle = await open(descriptorPath, verifiedFileOpenFlags());
   } catch {
     context.checkAborted(signal);

@@ -57,6 +57,10 @@ import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
 import { AGENC_DAEMON_PROTOCOL_VERSION, JSON_RPC_VERSION } from "./protocol/index.js";
 import { UnifiedExecProcessManager } from "../unified-exec/process-manager.js";
 import { requestApproval } from "../tools/orchestrator.js";
+import { runToolUse } from "../tools/execution.js";
+import { StreamingToolExecutor } from "../tools/streaming-executor.js";
+import { queueStreamingToolCall } from "../phases/execute-tools.js";
+import { resolveRoutinePermissionGrant } from "../routines/permission-authority.js";
 import type { CsvAgentJobsRepositoryProvider } from "./csv-agent-jobs-authority.js";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
@@ -631,7 +635,7 @@ function makeTopLevelRunner(opts: {
       : {}),
     syncCanonicalTail: opts.syncCanonicalTail ?? vi.fn(() => {}),
   };
-  let activeTurnValue: { readonly turnId: string } | null = null;
+  let activeTurnValue: { readonly turnId: string; readonly abortController: AbortController } | null = null;
   const abortTurnIfActive = vi.fn(async (turnId: string) => {
     if (activeTurnValue?.turnId !== turnId) return false;
     activeTurnValue = null;
@@ -1109,7 +1113,7 @@ function makeTopLevelRunner(opts: {
     abortTurnIfActive,
     activeTurn,
     setActiveTurn(turnId: string | null) {
-      activeTurnValue = turnId === null ? null : { turnId };
+      activeTurnValue = turnId === null ? null : { turnId, abortController: new AbortController() };
     },
     forcePermissionContextForTesting(next: ToolPermissionContext) {
       permissionContext = next;
@@ -1313,7 +1317,199 @@ function configureSessionShellHarness(
   };
 }
 
+async function startRoutineToolRunner(agentId: string) {
+  const h = makeTopLevelRunner({ conversationId: agentId, scopedTurnCancellation: true });
+  await h.runner.startAgent({ objective: "routine tool", deferInitialTurn: true, unattendedAllow: [], unattendedDeny: [] });
+  h.setActiveTurn("routine-turn");
+  return h;
+}
+
+function recordRoutineToolStart(h: Awaited<ReturnType<typeof startRoutineToolRunner>>, callId: string) {
+  h.session.emit({ id: callId, msg: { type: "tool_call_started", payload: {
+    callId, toolName: "RoutineTool", args: "{}",
+  } } });
+}
+
 describe("AgenC delegate background-agent runner", () => {
+  it("does not grant a queued call behind a running executor call", async () => {
+    const agentId = "routine-executor-queue";
+    const h = await startRoutineToolRunner(agentId);
+    let firstStarted!: () => void;
+    let secondStarted!: () => void;
+    let releaseFirst!: () => void;
+    let releaseSecond!: () => void;
+    const firstEntered = new Promise<void>((resolve) => { firstStarted = resolve; });
+    const secondEntered = new Promise<void>((resolve) => { secondStarted = resolve; });
+    const firstDone = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const secondDone = new Promise<void>((resolve) => { releaseSecond = resolve; });
+    const tools = ["FirstTool", "RoutineTool"].map((name) => ({
+      name, description: "", isReadOnly: false, inputSchema: { type: "object" },
+      execute: async () => {
+        if (name === "FirstTool") { firstStarted(); await firstDone; }
+        else { secondStarted(); await secondDone; }
+        return { content: "done" };
+      },
+    }));
+    const executor = new StreamingToolExecutor({
+      registry: { tools, toLLMTools: () => [] } as never,
+      maxConcurrency: 1,
+      runToolUseFn: async (call, signal) => runToolUse(call.arguments, {
+        currentTurnId: "routine-turn",
+        invocation: { session: h.session, turn: {} as never, tracker: {} as never,
+          callId: call.id, toolName: { name: call.name },
+          payload: { kind: "function", arguments: call.arguments }, source: "direct" } as never,
+        tool: tools.find((tool) => tool.name === call.name)!, signal,
+      }),
+    });
+    try {
+      queueStreamingToolCall(executor, {} as never,
+        { id: "first-call", name: "FirstTool", arguments: "{}" }, h.session);
+      executor.dispatchPending();
+      await firstEntered;
+      queueStreamingToolCall(executor, {} as never,
+        { id: "queued-call", name: "RoutineTool", arguments: "{}" }, h.session);
+      executor.dispatchPending();
+      expect(executor.getToolStates().find((call) => call.id === "queued-call")?.status).toBe("queued");
+      expect(h.runner.isAgentToolCallExecuting(agentId, "queued-call")).toBe(false);
+      releaseFirst();
+      await secondEntered;
+      expect(h.runner.isAgentToolCallExecuting(agentId, "queued-call")).toBe(true);
+    } finally {
+      releaseFirst(); releaseSecond();
+      executor.close();
+      for await (const _ of executor.getRemainingResults()) { /* drain */ }
+      h.setActiveTurn(null);
+      await h.runner.stopAgent(agentId);
+    }
+  });
+
+  it("does not grant a call while its approval is pending", async () => {
+    const agentId = "routine-pending-approval";
+    const h = await startRoutineToolRunner(agentId);
+    recordRoutineToolStart(h, "approval-call");
+    let approvalEntered!: () => void;
+    let approve!: () => void;
+    let executionEntered!: () => void;
+    let releaseExecution!: () => void;
+    const awaitingApproval = new Promise<void>((resolve) => { approvalEntered = resolve; });
+    const approval = new Promise<void>((resolve) => { approve = resolve; });
+    const executing = new Promise<void>((resolve) => { executionEntered = resolve; });
+    const executionDone = new Promise<void>((resolve) => { releaseExecution = resolve; });
+    const pending = runToolUse("{}", {
+      currentTurnId: "routine-turn", getActiveTurnId: () => "routine-turn",
+      invocation: { session: h.session, turn: {} as never, tracker: {} as never,
+        callId: "approval-call", toolName: { name: "RoutineTool" },
+        payload: { kind: "function", arguments: "{}" }, source: "direct" } as never,
+      tool: { name: "RoutineTool", description: "", isReadOnly: false,
+        inputSchema: { type: "object" }, execute: async () => {
+          executionEntered(); await executionDone; return { content: "done" };
+        } },
+      requestApproval: async () => {
+        approvalEntered(); await approval;
+        return { behavior: "allow", decisionAtTurnId: "routine-turn" };
+      },
+    });
+    try {
+      await awaitingApproval;
+      expect(h.runner.isAgentToolCallExecuting(agentId, "approval-call")).toBe(false);
+      approve();
+      await executing;
+      expect(h.runner.isAgentToolCallExecuting(agentId, "approval-call")).toBe(true);
+    } finally {
+      approve(); releaseExecution();
+      await pending;
+      h.setActiveTurn(null);
+      await h.runner.stopAgent(agentId);
+    }
+  });
+
+  it("grants a routine only while the named call has crossed the physical execution boundary", async () => {
+    const agentId = "routine-executing-boundary";
+    const h = await startRoutineToolRunner(agentId);
+    recordRoutineToolStart(h, "queued-call");
+    const grant = () => resolveRoutinePermissionGrant(
+      { kind: "session", sessionId: agentId, toolCallId: "queued-call" },
+      { operator: false, liveSession: async () => ({ sessionId: agentId, mode: "acceptEdits" }),
+        holdsSession: async () => true,
+        executingToolCall: async (_, callId) => h.runner.isAgentToolCallExecuting(agentId, callId) },
+    );
+    let release = () => {};
+    let execution: Promise<unknown> | undefined;
+    try {
+      // The transcript start precedes executor admission and may wait behind
+      // another call or an approval. It must not lend routine authority.
+      expect(h.runner.isAgentToolCallExecuting(agentId, "queued-call")).toBe(false);
+      await expect(grant()).rejects.toMatchObject({ code: "ROUTINE_PERMISSION_DENIED" });
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => { entered = resolve; });
+      const hold = new Promise<void>((resolve) => { release = resolve; });
+      const callAbort = new AbortController();
+      execution = runToolUse("{}", {
+        currentTurnId: "routine-turn",
+        invocation: { session: h.session, turn: {} as never, tracker: {} as never,
+          callId: "queued-call", toolName: { name: "RoutineTool" },
+          payload: { kind: "function", arguments: "{}" }, source: "direct" } as never,
+        tool: { name: "RoutineTool", description: "", isReadOnly: true,
+          inputSchema: { type: "object" }, execute: async () => {
+            entered(); await hold; return { content: "done" };
+          } },
+        signal: callAbort.signal,
+      });
+      await started;
+      expect(h.runner.isAgentToolCallExecuting(agentId, "queued-call")).toBe(true);
+      await expect(grant()).resolves.toMatchObject({ source: "session", ceiling: "acceptEdits" });
+      callAbort.abort("call cancelled");
+      expect(h.runner.isAgentToolCallExecuting(agentId, "queued-call")).toBe(false);
+      await expect(grant()).rejects.toMatchObject({ code: "ROUTINE_PERMISSION_DENIED" });
+      release();
+      await execution;
+      expect(h.runner.isAgentToolCallExecuting(agentId, "queued-call")).toBe(false);
+    } finally {
+      release();
+      await execution;
+      h.setActiveTurn(null);
+      await h.runner.stopAgent(agentId);
+    }
+  });
+
+  it.each(["turn", "session"] as const)("revokes a routine grant as soon as its %s aborts, before cleanup finishes", async (scope) => {
+    const agentId = `routine-aborting-${scope}-boundary`;
+    const h = await startRoutineToolRunner(agentId);
+    recordRoutineToolStart(h, "running-call");
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const execution = runToolUse("{}", {
+      currentTurnId: "routine-turn",
+      invocation: { session: h.session, turn: {} as never, tracker: {} as never,
+        callId: "running-call", toolName: { name: "RoutineTool" },
+        payload: { kind: "function", arguments: "{}" }, source: "direct" } as never,
+      tool: { name: "RoutineTool", description: "", isReadOnly: true,
+        inputSchema: { type: "object" }, execute: async () => {
+          entered(); await hold; return { content: "done" };
+        } },
+    });
+    try {
+      await started;
+      expect(h.runner.isAgentToolCallExecuting(agentId, "running-call")).toBe(true);
+      if (scope === "turn") h.activeTurn.unsafePeek()?.abortController.abort("cancelled");
+      else h.session.abortController.abort("cancelled");
+      expect(h.runner.isAgentToolCallExecuting(agentId, "running-call")).toBe(false);
+      await expect(resolveRoutinePermissionGrant(
+        { kind: "session", sessionId: agentId, toolCallId: "running-call" },
+        { operator: false, liveSession: async () => ({ sessionId: agentId, mode: "acceptEdits" }),
+          holdsSession: async () => true,
+          executingToolCall: async (_, callId) => h.runner.isAgentToolCallExecuting(agentId, callId) },
+      )).rejects.toMatchObject({ code: "ROUTINE_PERMISSION_DENIED" });
+    } finally {
+      release();
+      await execution;
+      h.setActiveTurn(null);
+      await h.runner.stopAgent(agentId);
+    }
+  });
+
   it("[status-line] reaches the bound deferred owner's executor without a model turn", async () => {
     const agentId = "status-line-deferred-agent";
     const sessionId = "status-line-bound-session";
@@ -11412,7 +11608,9 @@ describe("AgenC delegate background-agent runner", () => {
       ),
     ).resolves.toEqual({ cancelled: true, activeTurnId: "turn-old" });
     expect(abortTurnIfActive).toHaveBeenCalledWith("turn-old", "interrupted");
-    expect(activeTurn.unsafePeek()).toEqual({ turnId: "turn-new" });
+    // The replacement turn keeps its own, still-live abort controller.
+    expect(activeTurn.unsafePeek()).toEqual({ turnId: "turn-new", abortController: expect.any(AbortController) });
+    expect((activeTurn.unsafePeek() as { abortController: AbortController }).abortController.signal.aborted).toBe(false);
     expect(stub.thread.submit).not.toHaveBeenCalled();
   });
 

@@ -84,7 +84,10 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.unstubAllGlobals();
   vi.doUnmock(secureStorageModulePath);
+  vi.doUnmock("../../src/services/xai/oauth.js");
+  vi.doUnmock("../../src/utils/model/providers.js");
   vi.clearAllMocks();
   vi.resetModules();
   secureStorageByIdentity.clear();
@@ -92,6 +95,73 @@ afterEach(async () => {
 });
 
 describe("provider credential authority", () => {
+  test.each(["request", "response body"] as const)("stopping a Grok child during stalled model-list %s settles preparation and cleans up", async (stall) => {
+    const home = await createHome(`grok-stalled-models-${stall}`);
+    const { xaiCredentials } = await loadCredentialModules();
+    xaiCredentials.saveXaiOauthCredentials(home, { accessToken: "sign-in" });
+    const stop = new AbortController();
+    let observedSignal: AbortSignal | undefined;
+    let release: (() => void) | undefined;
+    const wire = vi.fn<typeof fetch>(async (_input, init) => {
+      observedSignal = init?.signal ?? undefined;
+      if (stall === "request") return new Promise<Response>((resolve, reject) => {
+        release = () => resolve(Response.json({ data: [{ id: "grok-4.6" }] }));
+        init?.signal?.addEventListener("abort", () => reject(init.signal!.reason), { once: true });
+      });
+      return new Response(new ReadableStream({ start(controller) {
+        release = () => controller.close();
+        init?.signal?.addEventListener("abort", () => controller.error(init.signal!.reason), { once: true });
+      } }), { status: 200 });
+    });
+    const [{ SessionProviderService }, { createProvider }] = await Promise.all([
+      import("../../src/session/provider-service.js"), import("../../src/llm/provider.js"),
+    ]);
+    const service = new SessionProviderService({
+      initialProvider: createProvider("ollama", { model: "llama3.3" }), environment: {},
+    });
+    const pending = service.prepareChild({ provider: "grok", model: "grok-4.6" },
+      { model: "grok-4.6", credentialHome: home, extra: { fetchImpl: wire } },
+      { signal: stop.signal }, true, undefined,
+      { endpoint: "https://api.x.ai/v1", authProfile: "sign_in", billingSource: "sign_in" });
+    await vi.waitFor(() => expect(wire).toHaveBeenCalledOnce());
+    stop.abort("child stopped");
+    const outcome = await Promise.race([
+      pending.then(() => "resolved", () => "rejected"),
+      new Promise<"timed out">((resolve) => setTimeout(() => resolve("timed out"), 150)),
+    ]);
+    if (outcome === "timed out") release?.();
+    expect(observedSignal).toBeInstanceOf(AbortSignal);
+    expect(observedSignal?.aborted).toBe(true);
+    expect(outcome).toBe("rejected");
+    expect(service.current().provider).toBe("ollama");
+  });
+
+  test.each(["request", "response body"] as const)("sign-in model discovery bounds a stalled %s", async (stall) => {
+    const home = await createHome(`grok-model-deadline-${stall}`);
+    const { assertSignInChildModelEligible } = await import("../../src/llm/sign-in-child-models.js");
+    let observedSignal: AbortSignal | undefined;
+    const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
+      observedSignal = init?.signal ?? undefined;
+      if (stall === "request") return new Promise<Response>(() => {});
+      return new Response(new ReadableStream({ start() {} }), { status: 200 });
+    });
+    await expect(assertSignInChildModelEligible({ provider: "grok", model: "grok-4.6",
+      options: { model: "grok-4.6", credentialHome: home, apiKey: "sign-in" },
+      environment: {}, fetchImpl, timeoutMs: 25 })).rejects.toMatchObject({ name: "TimeoutError" });
+    expect(observedSignal?.aborted).toBe(true);
+  });
+
+  test("a stopped child does not begin sign-in model discovery", async () => {
+    const home = await createHome("grok-model-pre-aborted");
+    const { assertSignInChildModelEligible } = await import("../../src/llm/sign-in-child-models.js");
+    const stopped = new AbortController();
+    stopped.abort("child stopped");
+    const fetchImpl = vi.fn<typeof fetch>();
+    await expect(assertSignInChildModelEligible({ provider: "grok", model: "grok-4.6",
+      options: { model: "grok-4.6", credentialHome: home, apiKey: "sign-in" },
+      environment: {}, fetchImpl, signal: stopped.signal })).rejects.toThrow(/child stopped/u);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
   test.each(["openai", "grok"] as const)("%s selects API billing without deleting a stored OAuth sign-in", async (provider) => {
     const home = await createHome(`choice-${provider}`);
     const { providerOptions, openAiCredentials, xaiCredentials } = await loadCredentialModules();
@@ -116,6 +186,525 @@ describe("provider credential authority", () => {
     expect(result.credential).toMatchObject({ status: "ready", mode: provider === "openai" ? "openai-oauth" : "xai-oauth" });
     expect(result.factoryOptions.apiKey).toBe(provider === "openai" ? undefined : "xai-oauth");
     if (provider === "openai") expect(result.factoryOptions).toMatchObject({ baseURL: "https://chatgpt.com/backend-api/codex", extra: { authMode: "oauth" } });
+  });
+
+  test("cross-provider child preparation keeps OpenAI sign-in on its first-party endpoint", async () => {
+    const home = await createHome("child-openai-sign-in");
+    const { openAiCredentials } = await loadCredentialModules();
+    openAiCredentials.saveOpenAiOauthCredentials(home, { accessToken: "child-openai-oauth", accountId: "account" });
+    const [{ SessionProviderService }, { createProvider }, { resolveProviderRuntimeRequest }] = await Promise.all([
+      import("../../src/session/provider-service.js"),
+      import("../../src/llm/provider.js"),
+      import("../../src/llm/provider-request.js"),
+    ]);
+    let service!: InstanceType<typeof SessionProviderService>;
+    service = new SessionProviderService({
+      initialProvider: createProvider("ollama", { model: "llama3.3", baseURL: "http://127.0.0.1:11434" }),
+      environment: { OPENAI_AUTH_MODE: "oauth", OPENAI_BASE_URL: "https://untrusted.example.test/v1" },
+      resolvePreparationRequest: ({ model }) => ({ requested: resolveProviderRuntimeRequest({
+        provider: "openai", model, config: { model_provider: "ollama", model: "llama3.3" },
+        environment: service.environment(), credentialHome: home,
+      }).requested }),
+    });
+    const prepared = await service.prepare({ provider: "openai", model: "gpt-5.4" });
+    expect(prepared.binding.factoryOptions.baseURL).toBe("https://chatgpt.com/backend-api/codex");
+    expect(prepared.binding.factoryOptions.extra?.authMode).toBe("oauth");
+    expect(service.current().provider).toBe("ollama");
+    const child = service.forkForChild(prepared.binding.instance, { provider: "openai", model: "gpt-5.4" });
+    expect(child.current().factoryOptions.baseURL).toBe("https://chatgpt.com/backend-api/codex");
+    await prepared.binding.instance.dispose?.();
+  });
+
+  test("cross-provider ChatGPT child uses its pinned backend, account and originator", async () => {
+    const wire = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe("https://chatgpt.com/backend-api/codex/models?client_version=1.0.0");
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer child-openai-oauth");
+      expect(new Headers(init?.headers).get("chatgpt-account-id")).toBe("account");
+      expect(new Headers(init?.headers).get("originator")).toBe("agenc");
+      return new Response(JSON.stringify({ models: [{ id: "gpt-6-luna", supports_tool_use: true }] }),
+        { headers: { "content-type": "application/json" } });
+    });
+    const home = await createHome("cross-provider-openai-subscription");
+    const { openAiCredentials } = await loadCredentialModules();
+    openAiCredentials.saveOpenAiOauthCredentials(home, {
+      accessToken: "child-openai-oauth", accountId: "account",
+    });
+    const [{ SessionProviderService }, { createProvider }] = await Promise.all([
+      import("../../src/session/provider-service.js"),
+      import("../../src/llm/provider.js"),
+    ]);
+    const service = new SessionProviderService({
+      initialProvider: createProvider("ollama", { model: "llama3.3" }),
+      environment: { OPENAI_AUTH_MODE: "oauth", OPENAI_API_KEY: "leftover-byok",
+        OPENAI_BASE_URL: "https://chatgpt.com/backend-api/codex" },
+    });
+    const prepared = await service.prepareChild(
+      { provider: "openai", model: "gpt-6-luna" },
+      { model: "gpt-6-luna", credentialHome: home, extra: { fetchImpl: wire } },
+      {}, true, undefined,
+      { endpoint: "https://chatgpt.com/backend-api/codex",
+        authProfile: "sign_in", billingSource: "sign_in" },
+    );
+    expect(prepared.authProfile).toBe("sign_in");
+    expect(prepared.billingSource).toBe("sign_in");
+    expect(prepared.signInModelCapabilities).toEqual({ supportsToolUse: true });
+    expect(prepared.binding.factoryOptions.baseURL).toBe("https://chatgpt.com/backend-api/codex");
+    expect(prepared.binding.factoryOptions.extra?.defaultHeaders).toMatchObject({
+      "ChatGPT-Account-ID": "account", originator: "agenc",
+    });
+    const descendantService = service.forkForChild(prepared.binding.instance,
+      { provider: "openai", model: "gpt-6-luna" });
+    const descendant = await descendantService.prepareChild(
+      { provider: "openai", model: "gpt-6-luna" },
+      { model: "gpt-6-luna", credentialHome: home, extra: { fetchImpl: wire } },
+    );
+    expect(descendant.binding.factoryOptions.baseURL).toBe("https://chatgpt.com/backend-api/codex");
+    await descendant.binding.instance.dispose?.();
+    await prepared.binding.instance.dispose?.();
+    expect(wire).toHaveBeenCalledTimes(2);
+  });
+
+  test("a BYOK approval refuses a changed ChatGPT sign-in authority before discovery", async () => {
+    const home = await createHome("changed-child-authority");
+    const { openAiCredentials } = await loadCredentialModules();
+    openAiCredentials.saveOpenAiOauthCredentials(home, {
+      accessToken: "subscription-bearer", accountId: "account",
+    });
+    let configuredApiKey: string | undefined = "approved-byok";
+    const wire = vi.fn<typeof fetch>(async () => Response.json({ models: [{ id: "gpt-6-luna" }] }));
+    const [{ SessionProviderService }, { createProvider }] = await Promise.all([
+      import("../../src/session/provider-service.js"),
+      import("../../src/llm/provider.js"),
+    ]);
+    const service = new SessionProviderService({
+      initialProvider: createProvider("grok", { model: "grok-4.6", apiKey: "parent-key" }),
+      environment: {},
+      resolvePreparationRequest: ({ model }) => ({ requested: {
+        model, credentialHome: home,
+        ...(configuredApiKey !== undefined ? { apiKey: configuredApiKey } : {}),
+        extra: { fetchImpl: wire },
+      } }),
+    });
+    const selection = { provider: "openai", model: "gpt-6-luna" };
+    const approved = await service.previewChildDestination(selection);
+    expect(approved).toMatchObject({ endpoint: "https://api.openai.com/v1",
+      authProfile: "api_key", billingSource: "byok" });
+    configuredApiKey = undefined;
+    await expect(service.prepareChild(selection, undefined, {}, true, undefined, approved))
+      .rejects.toThrow(/authority differs|new consent/u);
+    expect(wire).not.toHaveBeenCalled();
+  });
+
+  test("missing DeepSeek BYOK credentials yield an unsent authentication terminal", async () => {
+    const [{ SessionProviderService }, { createProvider }, { childTerminalOutcome, childDispatchCertainty }] = await Promise.all([
+      import("../../src/session/provider-service.js"),
+      import("../../src/llm/provider.js"),
+      import("../../src/agents/child-terminal.js"),
+    ]);
+    const service = new SessionProviderService({
+      initialProvider: createProvider("grok", { model: "grok-4.6", apiKey: "parent-key" }),
+      environment: {},
+    });
+    const failure = await service.prepareChild({ provider: "deepseek", model: "deepseek-v4-pro" },
+      { model: "deepseek-v4-pro" }).then(() => undefined, (error: unknown) => error);
+    expect(childTerminalOutcome({ provider: "deepseek", model: "deepseek-v4-pro",
+      error: failure, dispatch: childDispatchCertainty(failure) })).toMatchObject({
+      reason: "auth_required", retryable: false, dispatch: "not_sent",
+    });
+  });
+
+  test("ChatGPT child rejects a configured custom endpoint before sending its bearer", async () => {
+    const home = await createHome("chatgpt-custom-child-endpoint");
+    const { openAiCredentials } = await loadCredentialModules();
+    openAiCredentials.saveOpenAiOauthCredentials(home, { accessToken: "bearer", accountId: "account" });
+    const wire = vi.fn<typeof fetch>(async () => new Response("unexpected"));
+    const { SessionProviderService } = await import("../../src/session/provider-service.js");
+    const { createProvider } = await import("../../src/llm/provider.js");
+    const service = new SessionProviderService({ initialProvider: createProvider("ollama", { model: "llama3.3" }),
+      environment: { OPENAI_AUTH_MODE: "oauth", OPENAI_BASE_URL: "https://receiver.example/v1" } });
+    await expect(service.prepareChild({ provider: "openai", model: "gpt-6-luna" },
+      { model: "gpt-6-luna", credentialHome: home, extra: { fetchImpl: wire } }))
+      .rejects.toThrow(/default endpoint/u);
+    expect(wire).not.toHaveBeenCalled();
+  });
+
+  test("three sessions on one home share one rotating ChatGPT refresh", async () => {
+    const home = await createHome("shared-chatgpt-refresh");
+    const { openAiCredentials } = await loadCredentialModules();
+    openAiCredentials.saveOpenAiOauthCredentials(home, {
+      accessToken: "old-bearer", refreshToken: "old-refresh", accountId: "account",
+    });
+    const refresh = vi.fn<typeof fetch>(async (_input, init) => {
+      expect(String(init?.body)).toContain("refresh_token=old-refresh");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return new Response(JSON.stringify({ access_token: "new-bearer", refresh_token: "new-refresh" }),
+        { headers: { "content-type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", refresh);
+    const results = await Promise.all([{}, {}, {}].map((environment) =>
+      openAiCredentials.refreshOpenAiSubscriptionIfNeeded(home, environment,
+        { force: true, rejectedAccessToken: "old-bearer" })));
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(results.map((result) => result.credentials?.accessToken))
+      .toEqual(["new-bearer", "new-bearer", "new-bearer"]);
+    const lateChild = await openAiCredentials.refreshOpenAiSubscriptionIfNeeded(home, {},
+      { force: true, rejectedAccessToken: "old-bearer" });
+    expect(lateChild.credentials?.accessToken).toBe("new-bearer");
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+
+  test("ChatGPT model-list 401 forces one refresh and retries with the rotated bearer", async () => {
+    const home = await createHome("chatgpt-child-401");
+    const { openAiCredentials } = await loadCredentialModules();
+    openAiCredentials.saveOpenAiOauthCredentials(home, {
+      accessToken: "old-bearer", refreshToken: "old-refresh", accountId: "account",
+    });
+    const tokenRefresh = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      access_token: "new-bearer", refresh_token: "new-refresh",
+    }), { headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", tokenRefresh);
+    const wire = vi.fn<typeof fetch>(async (_input, init) =>
+      new Headers(init?.headers).get("authorization") === "Bearer old-bearer"
+        ? new Response("", { status: 401 })
+        : new Response(JSON.stringify({ models: [{ id: "gpt-6-luna" }] }),
+          { headers: { "content-type": "application/json" } }));
+    const { SessionProviderService } = await import("../../src/session/provider-service.js");
+    const { createProvider } = await import("../../src/llm/provider.js");
+    const service = new SessionProviderService({ initialProvider: createProvider("ollama", { model: "llama3.3" }),
+      environment: { OPENAI_AUTH_MODE: "oauth" } });
+    const prepared = await service.prepareChild({ provider: "openai", model: "gpt-6-luna" },
+      { model: "gpt-6-luna", credentialHome: home, extra: { fetchImpl: wire } });
+    expect(wire).toHaveBeenCalledTimes(2);
+    expect(new Headers(wire.mock.calls[1]?.[1]?.headers).get("authorization")).toBe("Bearer new-bearer");
+    expect(tokenRefresh).toHaveBeenCalledOnce();
+    await prepared.binding.instance.dispose?.();
+  });
+
+  test("ChatGPT child inference retries one 401 with the shared refreshed token", async () => {
+    const home = await createHome("chatgpt-child-inference-401");
+    const { openAiCredentials } = await loadCredentialModules();
+    openAiCredentials.saveOpenAiOauthCredentials(home, {
+      accessToken: "old-bearer", refreshToken: "old-refresh", accountId: "account",
+    });
+    const tokenRefresh = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      access_token: "new-bearer", refresh_token: "new-refresh",
+    }), { headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", tokenRefresh);
+    const inferenceBearers: string[] = [];
+    const wire = vi.fn<typeof fetch>(async (input, init) => {
+      if (String(input).includes("/models?")) {
+        return Response.json({ models: [{ id: "gpt-6-luna" }] });
+      }
+      inferenceBearers.push(new Headers(init?.headers).get("authorization") ?? "");
+      if (inferenceBearers.length === 1) return Response.json({ error: { message: "expired" } }, { status: 401 });
+      const response = { id: "resp_1", status: "completed", model: "gpt-6-luna",
+        output: [{ type: "message", content: [{ type: "output_text", text: "ok" }] }],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } };
+      return new Response(`event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response })}\n\n`,
+        { headers: { "content-type": "text/event-stream" } });
+    });
+    const { SessionProviderService } = await import("../../src/session/provider-service.js");
+    const { createProvider } = await import("../../src/llm/provider.js");
+    const service = new SessionProviderService({ initialProvider: createProvider("ollama", { model: "llama3.3" }),
+      environment: { OPENAI_AUTH_MODE: "oauth" } });
+    const prepared = await service.prepareChild({ provider: "openai", model: "gpt-6-luna" },
+      { model: "gpt-6-luna", credentialHome: home, extra: { fetchImpl: wire } });
+    const result = await prepared.binding.instance.chatStream(
+      [{ role: "user", content: "hello" }], () => {});
+    expect(result.content).toBe("ok");
+    expect(inferenceBearers).toEqual(["Bearer old-bearer", "Bearer new-bearer"]);
+    expect(tokenRefresh).toHaveBeenCalledOnce();
+    expect(service.current().provider).toBe("ollama");
+    await prepared.binding.instance.dispose?.();
+  });
+
+  test("ChatGPT discovery refresh reaches the first single-wire inference request", async () => {
+    const home = await createHome("chatgpt-child-discovery-single-wire");
+    const newBearer = `header.${Buffer.from(JSON.stringify({ chatgpt_account_id: "new-account" })).toString("base64url")}.signature`;
+    const { openAiCredentials } = await loadCredentialModules();
+    openAiCredentials.saveOpenAiOauthCredentials(home, {
+      accessToken: "old-bearer", refreshToken: "old-refresh", accountId: "old-account",
+    });
+    const tokenRefresh = vi.fn<typeof fetch>(async () => Response.json({
+      access_token: newBearer, refresh_token: "new-refresh",
+    }));
+    vi.stubGlobal("fetch", tokenRefresh);
+    const modelBearers: string[] = [];
+    const inferenceHeaders: Headers[] = [];
+    const wire = vi.fn<typeof fetch>(async (input, init) => {
+      const headers = new Headers(init?.headers);
+      if (String(input).includes("/models?")) {
+        modelBearers.push(headers.get("authorization") ?? "");
+        if (modelBearers.length === 1) return new Response("", { status: 401 });
+        expect(headers.get("chatgpt-account-id")).toBe("new-account");
+        return Response.json({ models: [{ id: "gpt-6-luna" }] });
+      }
+      expect(String(input)).toContain("/responses");
+      inferenceHeaders.push(headers);
+      if (headers.get("authorization") !== `Bearer ${newBearer}` ||
+          headers.get("chatgpt-account-id") !== "new-account") {
+        return Response.json({ error: { message: "expired" } }, { status: 401 });
+      }
+      const response = { id: "resp_1", status: "completed", model: "gpt-6-luna",
+        output: [{ type: "message", content: [{ type: "output_text", text: "ok" }] }],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } };
+      return new Response(`event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response })}\n\n`,
+        { headers: { "content-type": "text/event-stream" } });
+    });
+    const { SessionProviderService } = await import("../../src/session/provider-service.js");
+    const { createProvider } = await import("../../src/llm/provider.js");
+    const service = new SessionProviderService({ initialProvider: createProvider("ollama", { model: "llama3.3" }),
+      environment: { OPENAI_AUTH_MODE: "oauth" } });
+    const prepared = await service.prepareChild({ provider: "openai", model: "gpt-6-luna" },
+      { model: "gpt-6-luna", credentialHome: home, extra: { fetchImpl: wire } });
+    try {
+      const result = await prepared.binding.instance.chatStream(
+        [{ role: "user", content: "hello" }], () => {}, { singleWireAttempt: true });
+      expect(result.content).toBe("ok");
+      expect(modelBearers).toEqual(["Bearer old-bearer", `Bearer ${newBearer}`]);
+      expect(inferenceHeaders).toHaveLength(1);
+      expect(inferenceHeaders[0]?.get("authorization")).toBe(`Bearer ${newBearer}`);
+      expect(inferenceHeaders[0]?.get("chatgpt-account-id")).toBe("new-account");
+      expect(tokenRefresh).toHaveBeenCalledOnce();
+    } finally {
+      await prepared.binding.instance.dispose?.();
+    }
+  });
+
+  test("failed ChatGPT refresh ends authentication without another model request", async () => {
+    const home = await createHome("chatgpt-child-refresh-failed");
+    const { openAiCredentials } = await loadCredentialModules();
+    openAiCredentials.saveOpenAiOauthCredentials(home, {
+      accessToken: "old-bearer", refreshToken: "old-refresh", accountId: "account",
+    });
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async () => new Response("denied", { status: 400 })));
+    const wire = vi.fn<typeof fetch>(async () => new Response("", { status: 401 }));
+    const { SessionProviderService } = await import("../../src/session/provider-service.js");
+    const { createProvider } = await import("../../src/llm/provider.js");
+    const { classifyChildFailure } = await import("../../src/agents/child-terminal.js");
+    const service = new SessionProviderService({ initialProvider: createProvider("ollama", { model: "llama3.3" }),
+      environment: { OPENAI_AUTH_MODE: "oauth" } });
+    const failure = await service.prepareChild({ provider: "openai", model: "gpt-6-luna" },
+      { model: "gpt-6-luna", credentialHome: home, extra: { fetchImpl: wire } })
+      .then(() => undefined, (error: unknown) => error);
+    expect(classifyChildFailure("openai", failure).reason).toBe("auth_required");
+    expect(wire).toHaveBeenCalledOnce();
+    expect(service.current().provider).toBe("ollama");
+  });
+
+  test("subscription model-list usage limit ends with funds and provider retry-after", async () => {
+    const home = await createHome("chatgpt-child-limit");
+    const { openAiCredentials } = await loadCredentialModules();
+    openAiCredentials.saveOpenAiOauthCredentials(home, { accessToken: "bearer", accountId: "account" });
+    const wire = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      error: { code: "usage_limit_reached" },
+    }), { status: 429, headers: { "retry-after": "37" } }));
+    const { SessionProviderService } = await import("../../src/session/provider-service.js");
+    const { createProvider } = await import("../../src/llm/provider.js");
+    const { classifyChildFailure } = await import("../../src/agents/child-terminal.js");
+    const service = new SessionProviderService({ initialProvider: createProvider("ollama", { model: "llama3.3" }),
+      environment: { OPENAI_AUTH_MODE: "oauth" } });
+    const failure = await service.prepareChild({ provider: "openai", model: "gpt-6-luna" },
+      { model: "gpt-6-luna", credentialHome: home, extra: { fetchImpl: wire } })
+      .then(() => undefined, (error: unknown) => error);
+    expect(classifyChildFailure("openai", failure)).toMatchObject({
+      reason: "insufficient_funds", retryable: false, retryAfterMs: 37_000,
+    });
+    expect(wire).toHaveBeenCalledOnce();
+  });
+
+  test("Grok sign-in child uses api.x.ai and refuses a model absent from its sign-in list", async () => {
+    const home = await createHome("grok-child-models");
+    const { xaiCredentials } = await loadCredentialModules();
+    xaiCredentials.saveXaiOauthCredentials(home, { accessToken: "xai-oauth" });
+    const wire = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe("https://api.x.ai/v1/models");
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer xai-oauth");
+      return new Response(JSON.stringify({ data: [{ id: "grok-4.6" }] }),
+        { headers: { "content-type": "application/json" } });
+    });
+    const { SessionProviderService } = await import("../../src/session/provider-service.js");
+    const { createProvider } = await import("../../src/llm/provider.js");
+    const service = new SessionProviderService({ initialProvider: createProvider("ollama", { model: "llama3.3" }),
+      environment: { GROK_AUTH_MODE: "oauth" } });
+    const prepared = await service.prepareChild({ provider: "grok", model: "grok-4.6" },
+      { model: "grok-4.6", credentialHome: home, extra: { fetchImpl: wire } });
+    expect(prepared.binding.factoryOptions.baseURL).toBe("https://api.x.ai/v1");
+    expect(prepared.billingSource).toBe("sign_in");
+    await prepared.binding.instance.dispose?.();
+    await expect(service.prepareChild({ provider: "grok", model: "grok-4.7" },
+      { model: "grok-4.7", credentialHome: home, extra: { fetchImpl: wire } }))
+      .rejects.toThrow(/not served by this sign-in/u);
+    const { childTerminalOutcome } = await import("../../src/agents/child-terminal.js");
+    const failure = await service.prepareChild({ provider: "grok", model: "grok-4.7" },
+      { model: "grok-4.7", credentialHome: home, extra: { fetchImpl: wire } })
+      .then(() => undefined, (error: unknown) => error);
+    expect(childTerminalOutcome({ provider: "grok", model: "grok-4.7", error: failure,
+      dispatch: "not_sent" })).toMatchObject({ reason: "model_unavailable", retryable: false,
+      dispatch: "not_sent" });
+  });
+
+  test("Grok discovery refresh reaches the first single-wire inference request", async () => {
+    const home = await createHome("grok-child-discovery-single-wire");
+    vi.doMock("../../src/utils/model/providers.js", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/utils/model/providers.js")>(),
+      getSelectedProviderEnvironment: () => ({ AGENC_XAI_STORE: "0" }),
+    }));
+    const tokenRefresh = vi.fn(async () => ({
+      accessToken: "new-xai-bearer", refreshToken: "new-xai-refresh",
+      expiresAt: Date.now() + 6 * 60 * 60 * 1000,
+    }));
+    vi.doMock("../../src/services/xai/oauth.js", async (importOriginal) => ({
+      ...await importOriginal<typeof import("../../src/services/xai/oauth.js")>(),
+      refreshXaiOauthTokens: tokenRefresh,
+    }));
+    const { xaiCredentials } = await loadCredentialModules();
+    xaiCredentials.saveXaiOauthCredentials(home, {
+      accessToken: "old-xai-bearer", refreshToken: "old-xai-refresh",
+      tokenEndpoint: "https://auth.x.ai/oauth2/token",
+      expiresAt: Date.now() + 6 * 60 * 60 * 1000,
+    });
+    const modelBearers: string[] = [];
+    const inferenceBearers: string[] = [];
+    const wire = vi.fn<typeof fetch>(async (input, init) => {
+      const bearer = new Headers(init?.headers).get("authorization") ?? "";
+      if (String(input).endsWith("/models")) {
+        modelBearers.push(bearer);
+        return modelBearers.length === 1
+          ? new Response("", { status: 401 })
+          : Response.json({ data: [{ id: "grok-4.6" }] });
+      }
+      expect(String(input)).toContain("/responses");
+      inferenceBearers.push(bearer);
+      if (bearer !== "Bearer new-xai-bearer") {
+        return Response.json({ error: { message: "expired" } }, { status: 401 });
+      }
+      const response = { id: "resp_1", status: "completed", model: "grok-4.6",
+        output: [{ type: "message", content: [{ type: "output_text", text: "ok" }] }],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } };
+      return new Response(`event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response })}\n\n`,
+        { headers: { "content-type": "text/event-stream" } });
+    });
+    const { SessionProviderService } = await import("../../src/session/provider-service.js");
+    const { createProvider } = await import("../../src/llm/provider.js");
+    const service = new SessionProviderService({ initialProvider: createProvider("ollama", { model: "llama3.3" }),
+      environment: { GROK_AUTH_MODE: "oauth" } });
+    const prepared = await service.prepareChild({ provider: "grok", model: "grok-4.6" },
+      { model: "grok-4.6", credentialHome: home, extra: { fetchImpl: wire } });
+    try {
+      const result = await prepared.binding.instance.chatStream(
+        [{ role: "user", content: "hello" }], () => {}, { singleWireAttempt: true });
+      expect(result.content).toBe("ok");
+      expect(modelBearers).toEqual(["Bearer old-xai-bearer", "Bearer new-xai-bearer"]);
+      expect(inferenceBearers).toEqual(["Bearer new-xai-bearer"]);
+      expect(tokenRefresh).toHaveBeenCalledOnce();
+    } finally {
+      await prepared.binding.instance.dispose?.();
+    }
+  });
+
+  test("a signed-out sign-in child cannot be prepared again after restart", async () => {
+    const home = await createHome("signed-out-child");
+    const { openAiCredentials } = await loadCredentialModules();
+    openAiCredentials.saveOpenAiOauthCredentials(home, { accessToken: "bearer", accountId: "account" });
+    openAiCredentials.clearOpenAiOauthCredentials(home);
+    const { SessionProviderService } = await import("../../src/session/provider-service.js");
+    const { createProvider } = await import("../../src/llm/provider.js");
+    const { classifyChildFailure } = await import("../../src/agents/child-terminal.js");
+    const service = new SessionProviderService({ initialProvider: createProvider("ollama", { model: "llama3.3" }),
+      environment: { OPENAI_AUTH_MODE: "oauth" } });
+    const failure = await service.prepareChild({ provider: "openai", model: "gpt-6-luna" },
+      { model: "gpt-6-luna", credentialHome: home }).then(() => undefined, (error: unknown) => error);
+    expect(classifyChildFailure("openai", failure).reason).toBe("auth_required");
+  });
+
+  test("cross-provider child preparation pins xAI sign-in and refuses a custom host", async () => {
+    const home = await createHome("child-xai-sign-in");
+    const { xaiCredentials } = await loadCredentialModules();
+    xaiCredentials.saveXaiOauthCredentials(home, { accessToken: "child-xai-oauth" });
+    const [{ SessionProviderService }, { createProvider }, { resolveProviderRuntimeRequest }] = await Promise.all([
+      import("../../src/session/provider-service.js"),
+      import("../../src/llm/provider.js"),
+      import("../../src/llm/provider-request.js"),
+    ]);
+    const makeService = (environment: Record<string, string>) => {
+      let service!: InstanceType<typeof SessionProviderService>;
+      service = new SessionProviderService({
+        initialProvider: createProvider("ollama", { model: "llama3.3", baseURL: "http://127.0.0.1:11434" }),
+        environment,
+        resolvePreparationRequest: ({ model }) => ({ requested: resolveProviderRuntimeRequest({
+          provider: "grok", model, config: { model_provider: "ollama", model: "llama3.3" },
+          environment: service.environment(), credentialHome: home,
+        }).requested }),
+      });
+      return service;
+    };
+    const firstParty = makeService({ GROK_AUTH_MODE: "oauth" });
+    const prepared = await firstParty.prepare({ provider: "grok", model: "grok-4.6" });
+    expect(prepared.binding.factoryOptions.baseURL).toBe("https://api.x.ai/v1");
+    expect(prepared.binding.factoryOptions.apiKey).toBe("child-xai-oauth");
+    const child = firstParty.forkForChild(prepared.binding.instance, { provider: "grok", model: "grok-4.6" });
+    expect(child.current().factoryOptions.baseURL).toBe("https://api.x.ai/v1");
+    const custom = makeService({ GROK_AUTH_MODE: "oauth", XAI_BASE_URL: "https://untrusted.example.test/v1" });
+    await expect(custom.prepare({ provider: "grok", model: "grok-4.6" }))
+      .rejects.toThrow(/xAI sign-in credentials.*custom Grok base URL/u);
+    await prepared.binding.instance.dispose?.();
+  });
+
+  test("an approved Grok BYOK child keeps API-key billing after a sign-in is saved before its session fork", async () => {
+    const home = await createHome("grok-child-billing-fork");
+    const { xaiCredentials } = await loadCredentialModules();
+    const [{ SessionProviderService }, { createProvider, readProviderFactoryOptions }] = await Promise.all([
+      import("../../src/session/provider-service.js"),
+      import("../../src/llm/provider.js"),
+    ]);
+    const service = new SessionProviderService({
+      initialProvider: createProvider("ollama", { model: "llama3.3" }),
+      environment: { XAI_API_KEY: "approved-byok" },
+    });
+    const prepared = await service.prepareChild(
+      { provider: "grok", model: "grok-4.6" },
+      { model: "grok-4.6", credentialHome: home }, {}, true, undefined,
+      { endpoint: "https://api.x.ai/v1", authProfile: "api_key", billingSource: "byok" },
+    );
+    expect(prepared.authProfile).toBe("api_key");
+    xaiCredentials.saveXaiOauthCredentials(home, { accessToken: "later-sign-in" });
+    const fork = prepared.binding.instance.forkForSession?.({ cwd: testRoot });
+    expect(fork).toBeDefined();
+    expect(readProviderFactoryOptions(fork!).extra?.authMode).toBe("api_key");
+    expect(readProviderFactoryOptions(fork!).apiKey).toBe("approved-byok");
+    await fork?.dispose?.();
+    await prepared.binding.instance.dispose?.();
+  });
+
+  test("an approved Grok sign-in child cannot fork onto API billing after sign-out", async () => {
+    const home = await createHome("grok-child-sign-in-fork");
+    const { xaiCredentials } = await loadCredentialModules();
+    xaiCredentials.saveXaiOauthCredentials(home, { accessToken: "approved-sign-in" });
+    const wire = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: "grok-4.6" }] }));
+    const [{ SessionProviderService }, { createProvider }, { classifyChildFailure, childDispatchCertainty }] = await Promise.all([
+      import("../../src/session/provider-service.js"),
+      import("../../src/llm/provider.js"),
+      import("../../src/agents/child-terminal.js"),
+    ]);
+    const service = new SessionProviderService({
+      initialProvider: createProvider("ollama", { model: "llama3.3" }),
+      environment: { XAI_API_KEY: "fallback-byok" },
+    });
+    const prepared = await service.prepareChild(
+      { provider: "grok", model: "grok-4.6" },
+      { model: "grok-4.6", credentialHome: home, extra: { fetchImpl: wire } },
+      {}, true, undefined,
+      { endpoint: "https://api.x.ai/v1", authProfile: "sign_in", billingSource: "sign_in" },
+    );
+    xaiCredentials.clearXaiOauthCredentials(home);
+    let failure: unknown;
+    try { prepared.binding.instance.forkForSession?.({ cwd: testRoot }); }
+    catch (error) { failure = error; }
+    expect(String(failure)).toMatch(/sign-in.*(missing|unavailable|expired)/iu);
+    expect(classifyChildFailure("grok", failure)).toMatchObject({ reason: "auth_required", retryable: false });
+    expect(childDispatchCertainty(failure)).toBe("not_sent");
+    await prepared.binding.instance.dispose?.();
   });
 
   test.each(["openai", "grok"] as const)("%s never falls back to paid API credentials when selected OAuth is absent", async (provider) => {

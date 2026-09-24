@@ -326,6 +326,22 @@ describe("AnthropicProvider", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  test("does not retry or fall back when the stream reports exhausted credits", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        'event: error\ndata: {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API"}}\n\n',
+      ]),
+    );
+    const provider = new AnthropicProvider({
+      apiKey: "anthropic-test", model: "claude-sonnet-4.5", fetchImpl,
+      providerFallback: { provider: "anthropic", model: "claude-sonnet-4.5",
+        targets: [{ provider: "grok", model: "grok-4-fast" }] },
+    });
+    await expect(provider.chatStream([{ role: "user", content: "hello" }], () => {}))
+      .rejects.toMatchObject({ name: "LLMFundsError" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   test("propagates fallback trigger from chat requests", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ error: { message: "overloaded" } }), {

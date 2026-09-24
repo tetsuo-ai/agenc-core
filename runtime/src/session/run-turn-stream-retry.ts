@@ -9,6 +9,7 @@
 import {
   classifyLLMFailure,
   LLMAuthenticationError,
+  LLMFundsError,
   LLMContextWindowExceededError,
   LLMMessageValidationError,
   LLMRateLimitError,
@@ -289,6 +290,7 @@ export function isRetryableStreamError(error: unknown): boolean {
   // generic branch so a provider message containing "504" can't
   // accidentally retry a context-window or auth failure.
   if (cause instanceof LLMContextWindowExceededError) return false;
+  if (cause instanceof LLMFundsError) return false;
   if (cause instanceof LLMAuthenticationError) return false;
   if (cause instanceof LLMMessageValidationError) return false;
 

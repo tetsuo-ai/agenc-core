@@ -542,7 +542,11 @@ in the permission mode its routine stores (`runtime/src/routines/`).
   `permissionAuthority`. `{ kind: "session", sessionId }` makes Core read that
   live session's current mode from its own permission registry; the session
   must be attached to the connection that sends the request, and the request
-  may only narrow its mode. `{ kind: "operator" }` is a Routines screen: Core
+  may only narrow its mode. With `routine.sessionAuthority.v1`, the session
+  authority may also carry the `toolCallId` of a tool call executing in that
+  session's active turn. Core answers that write during the turn using the
+  session's mode then. Without `toolCallId`, routine methods keep the
+  connection's ordinary FIFO. `{ kind: "operator" }` is a Routines screen: Core
   accepts it only on a connection that declared `routine.operator.v1` at
   initialize and has no session attached, so a connection that relays a
   model's requests can never also speak for the person. A request without an

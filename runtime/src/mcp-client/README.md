@@ -68,10 +68,11 @@ Top-level entries under `runtime/src/mcp-client/`:
 | -------------------------------- | ------------------------------------------------------------------------------------------------- |
 | `manager.ts`                     | Multi-server connection manager. Drives startup (I-50 cancellable wait, I-20 required-server gates), per-server reconnect, tool/resource/prompt bridge aggregation, and `MCPConnectionState` tracking. |
 | `connection.ts`                  | Transport dispatcher. Reads `config.transport` and delegates to the right `transports/<x>.ts` factory; the single import surface used by `manager.ts` and tests. |
-| `tools.ts`                       | MCP→runtime `Tool` bridge. Namespaces tool names, attaches permission metadata (`MCPToolBridgePermissionOptions`), applies tool-catalog policy (config `enabled_tools` / `disabled_tools` / `default_tools_approval_mode` plus the trusted `virtual_no_fs_write_tools` audit list, normalized by `toToolCatalogPolicyConfig` in `resilient-client.ts`), caps each result at `MAX_MCP_CALL_RESULT_BYTES = 5 MiB` (I-76), and routes calls through the permissions arbiter. |
+| `tools.ts`                       | MCP→runtime `Tool` bridge. Namespaces tool names, attaches permission metadata (`MCPToolBridgePermissionOptions`), applies tool-catalog policy (config `enabled_tools` / `disabled_tools` / `default_tools_approval_mode` plus the trusted `virtual_no_fs_write_tools` audit list, normalized by `toToolCatalogPolicyConfig` in `resilient-client.ts`), follows bounded `tools/list` pagination before filtering or hashing, caps each result at `MAX_MCP_CALL_RESULT_BYTES = 5 MiB` (I-76), and routes calls through the permissions arbiter. |
+| `list-pagination.ts`             | Shared bounded cursor walk for MCP `tools/list` and `prompts/list`. Follows `nextCursor`, concatenates pages in protocol order, and fail-closes on repeated cursors, page/item/byte caps, timeout, or cancellation under one overall deadline. |
 | `model-facing-sanitization.ts`   | Shared model-facing catalog sanitizer. `inputSchema` size/annotation rewrite, missing-root-`type` default to `object`, plus description/title/searchHint framing. Operator contract: [mcp.md](../../../docs/reference/mcp.md#mcp-object-schemas-that-omit-type). |
 | `resources.ts`                   | MCP→runtime resource bridge. Lists/reads server resources with `MAX_RESOURCE_BYTES = 5 MiB` (I-76) and surfaces both namespaced and raw upstream URIs. |
-| `prompts.ts`                     | MCP→runtime prompt-template bridge. Lists prompts, materializes them into message chains, applies a default 30 s RPC timeout. |
+| `prompts.ts`                     | MCP→runtime prompt-template bridge. Lists prompts through the shared pagination helper, materializes them into message chains, applies a default 30 s RPC timeout. |
 | `resilient-client.ts`            | `ResilientMCPBridge` wrapper that detects connection-error patterns on tool calls (epipe, channel closed, process exited, …) and reconnects with exponential backoff (1 s → 30 s, ×2). |
 | `supply-chain.ts`                | I-74: SHA-256 pin over the canonical JSON of an MCP server's tool catalog. Refuses to load the bridge if the advertised catalog drifts from the pin. |
 | `tui-connections.ts`             | Projects an `McpManagerLike` into the `MCPServerConnection[]` shape the TUI consumes for connection-status rendering. |
@@ -82,7 +83,7 @@ Top-level entries under `runtime/src/mcp-client/`:
 
 Unit tests are not colocated here — they live under `runtime/tests/mcp-client/`
 (one suite per module: connection, manager, manager.stdio-lifecycle, tools,
-model-facing-sanitization, resources, prompts, resilient-client, supply-chain,
+list-pagination, model-facing-sanitization, resources, prompts, resilient-client, supply-chain,
 tui-connections) and
 `runtime/tests/mcp-client/transports/` (stdio + websocket).
 

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { phaseEventToProgressEvent } from "../../src/app-server/background-agent-runner.js";
+import { terminalResultFromThread } from "../../src/app-server/background-agent-runner/turn-lifecycle.js";
 
 const usage = { inputTokens: 1, outputTokens: 2, totalTokens: 3 } as never;
 
@@ -14,6 +15,18 @@ function turnComplete(stopReason: string, content = ""): never {
 }
 
 describe("stop-reason mapping decides turn versus run scope", () => {
+
+  test("serializes string and object terminal thread statuses", () => {
+    const active = { lastActiveAt: "2026-09-23T10:00:00.000Z",
+      thread: { totalTokenUsage: () => ({ inputTokens: 0, outputTokens: 0, totalTokens: 0 }) },
+      bootstrap: { session: { services: {} } } } as never;
+    expect(terminalResultFromThread(active, "run-1", "shutdown")).toMatchObject({
+      status: "cancelled", stopReason: "shutdown", finishedAt: "2026-09-23T10:00:00.000Z",
+    });
+    expect(terminalResultFromThread(active, "run-1", {
+      status: "completed", turnId: "turn-1", lastMessage: "done", endedAtMs: 1_000,
+    })).toMatchObject({ status: "completed", finalMessage: "done", finishedAt: "1970-01-01T00:00:01.000Z" });
+  });
 
   test("compact_failed prefers the skip message over leftover assistant text", () => {
     const mapped = phaseEventToProgressEvent({

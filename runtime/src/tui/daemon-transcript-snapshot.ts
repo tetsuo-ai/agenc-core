@@ -1,10 +1,54 @@
+import { createHash } from "node:crypto";
 import type {
   JsonObject,
+  SessionArtifactReadParams,
+  SessionArtifactReadResult,
   SessionTranscriptV2Result,
 } from "../app-server/protocol/index.js";
 import { isRecord } from "../utils/record.js";
 import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
 import { isAdmissionUsageSummary } from "../session/usage-summary.js";
+
+/** Resolve text references before the adapter can mark a replay as covered. */
+export async function resolveDaemonTranscriptTextArtifacts(
+  snapshot: SessionTranscriptV2Result,
+  read: (params: SessionArtifactReadParams) => Promise<SessionArtifactReadResult>,
+): Promise<SessionTranscriptV2Result> {
+  const messages = await Promise.all(snapshot.messages.map(async (message) => {
+    const artifact = message.textArtifact;
+    if (artifact === undefined) return message;
+    if (artifact.mimeType !== "text/plain" || artifact.id !== artifact.digest ||
+      !/^[a-f0-9]{64}$/u.test(artifact.id) || !Number.isSafeInteger(artifact.size) ||
+      artifact.size < 0 || artifact.size > 32 * 1024 * 1024) {
+      throw new Error("Daemon returned an invalid transcript text artifact");
+    }
+    const chunks: Buffer[] = [];
+    let offset = 0;
+    for (;;) {
+      const chunk = await read({ sessionId: snapshot.sessionId, id: artifact.id, offset, length: 512 * 1024 });
+      if (chunk.sessionId !== snapshot.sessionId || chunk.id !== artifact.id || chunk.encoding !== "base64" ||
+        chunk.size !== artifact.size || chunk.offset !== offset || typeof chunk.data !== "string") {
+        throw new Error("Daemon returned an invalid transcript text chunk");
+      }
+      const bytes = Buffer.from(chunk.data, "base64");
+      if (bytes.length > 512 * 1024 || offset + bytes.length > artifact.size ||
+        (chunk.nextOffset !== null && (bytes.length === 0 || chunk.nextOffset !== offset + bytes.length)) ||
+        (chunk.nextOffset === null && offset + bytes.length !== artifact.size)) {
+        throw new Error("Daemon returned an invalid transcript text range");
+      }
+      chunks.push(bytes);
+      if (chunk.nextOffset === null) break;
+      offset = chunk.nextOffset;
+    }
+    const full = Buffer.concat(chunks);
+    if (createHash("sha256").update(full).digest("hex") !== artifact.digest) {
+      throw new Error("Daemon returned a transcript text digest mismatch");
+    }
+    const { textArtifact: _textArtifact, ...rest } = message;
+    return { ...rest, text: full.toString("utf8") };
+  }));
+  return { ...snapshot, messages };
+}
 
 export function daemonTranscriptSnapshotEvents(
   snapshot: SessionTranscriptV2Result,
@@ -33,6 +77,9 @@ export function daemonTranscriptSnapshotEvents(
     ) {
       throw new Error("Daemon returned an invalid transcript message");
     }
+    if (message.textArtifact !== undefined) {
+      throw new Error("Daemon returned an unresolved text artifact");
+    }
     return {
       sequence: message.committedSequence,
       event: {
@@ -55,11 +102,16 @@ export function daemonTranscriptSnapshotEvents(
       !Number.isSafeInteger(notice.committedSequence) ||
       notice.committedSequence < 0 || notice.committedSequence > snapshot.asOfSequence ||
       !isRecord(notice.payload) ||
-      (notice.type !== "token_count" && notice.type !== "session_usage" && notice.type !== "turn_failed" && notice.type !== "turn_aborted") ||
+      (notice.type !== "token_count" && notice.type !== "session_usage" && notice.type !== "turn_failed" && notice.type !== "turn_aborted" && notice.type !== "tool_call_completed") ||
       (notice.type === "session_usage" && (
         !isAdmissionUsageSummary(notice.payload) || notice.payload.runId !== snapshot.runId
       )) ||
-      (notice.type !== "token_count" && notice.type !== "session_usage" && classifyTurnTerminal(notice) === undefined)
+      (notice.type === "tool_call_completed" && (
+        typeof notice.payload.callId !== "string" ||
+        !Array.isArray(notice.payload.displayAttachments) ||
+        notice.payload.displayAttachments.length === 0
+      )) ||
+      (notice.type !== "token_count" && notice.type !== "session_usage" && notice.type !== "tool_call_completed" && classifyTurnTerminal(notice) === undefined)
     ) {
       throw new Error("Daemon returned an invalid transcript notice");
     }
@@ -77,6 +129,11 @@ export function daemonTranscriptSnapshotEvents(
   }
   events.sort((left, right) => left.sequence - right.sequence);
   const transcript: JsonObject[] = events.map((entry) => entry.event);
+  if (snapshot.truncated === true) transcript.unshift({
+    id: `snapshot:${snapshot.historyEpoch}:truncated`,
+    type: "warning",
+    payload: { cause: "transcript_truncated", message: "Earlier transcript entries were omitted from this snapshot." },
+  });
   if (snapshot.activeTurn !== undefined) {
     const firstActiveMessage = snapshot.messages.find((message) =>
       message.turnId === snapshot.activeTurn?.turnId,

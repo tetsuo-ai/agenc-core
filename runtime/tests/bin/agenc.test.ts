@@ -4366,6 +4366,45 @@ describe("main() smoke", () => {
     }
   });
 
+  it("resolves a 400,000-byte answer before the CLI attach validates its snapshot", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-artifact-attach-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-artifact-attach-cwd-"));
+    const daemon = installDaemonCliDepsForTest({ agentId: "agent_artifact_attach", sessionId: "session_artifact_attach", cwd: tmpCwd });
+    const answer = "A".repeat(400_000);
+    const id = createHash("sha256").update(answer).digest("hex");
+    const originalRequest = daemon.client.request.getMockImplementation()!;
+    daemon.client.request.mockImplementation(async (method, params) => {
+      if (method === "session.transcript.v2") return {
+        schemaVersion: 2, sessionId: daemon.sessionId, runId: daemon.runtimeSessionId,
+        historyEpoch: "artifact_epoch", asOfSequence: 1,
+        messages: [{ messageId: "answer", commitEventId: "event:1", role: "assistant", text: "[truncated]", textArtifact: { id, digest: id, size: 400_000, mimeType: "text/plain" }, committedSequence: 1 }],
+      };
+      if (method === "session.artifact.read") return {
+        sessionId: daemon.sessionId, id, encoding: "base64", data: Buffer.from(answer).toString("base64"),
+        size: 400_000, offset: 0, nextOffset: null,
+      };
+      return originalRequest(method, params);
+    });
+    const received: unknown[] = [];
+    vi.doMock("../tui/main.js", () => ({ bootTUI: vi.fn(async (options: { session: { getInitialTranscriptEvents(): readonly unknown[] } }) => {
+      received.push(...options.session.getInitialTranscriptEvents());
+      return { unmount: vi.fn(), waitUntilExit: async () => undefined };
+    }) }));
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      await expect(attachAgentTuiEntry({
+        agentId: daemon.agentId, clientId: "client_artifact_attach",
+        env: { AGENC_HOME: tmpHome, AGENC_WORKSPACE: tmpCwd, HOME: tmpHome },
+      })).resolves.toBe(0);
+      expect(daemon.client.request).toHaveBeenCalledWith("session.artifact.read", { sessionId: daemon.sessionId, id, offset: 0, length: 524_288 });
+      expect(received).toEqual([{ id: "snapshot:artifact_epoch:answer", type: "agent_message", payload: { message: answer } }]);
+    } finally {
+      vi.doUnmock("../tui/main.js");
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
   it("attach binds local TUI work to the daemon session runtime options", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-bare-attach-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-bare-attach-cwd-"));

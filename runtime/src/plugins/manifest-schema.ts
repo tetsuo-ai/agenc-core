@@ -1,7 +1,9 @@
+import { realpathSync } from "node:fs";
 import { isAbsolute, normalize, resolve, sep } from "node:path";
 import { validateHooksConfig } from "../config/schema.js";
 import { isRecord } from "../utils/record.js";
 import { isCanonicalPluginName } from "./identifier.js";
+import { isExcludedPluginPayloadDirectory, isExcludedPluginPayloadPath, isUnsignedPluginMetadataPath } from "./payload-paths.js";
 
 export { isRecord };
 
@@ -85,6 +87,7 @@ export interface PluginUserConfigOption {
   readonly sensitive?: boolean;
   readonly min?: number;
   readonly max?: number;
+  readonly pattern?: string;
 }
 
 export interface PluginManifestChannel {
@@ -231,10 +234,11 @@ export function resolveManifestRelativePath(
   }
   const rawParts = relativePath.split(/[\\/]/u);
   if (
-    rawParts.some((part) => part.length === 0 || part === "." || part === "..")
+    rawParts.some((part) => part.length === 0 || part === "." || part === ".." ||
+      isExcludedPluginPayloadDirectory(part))
   ) {
     throw new PluginManifestError(`${field} path must be normalized`, [
-      { path: field, message: "Path must not contain empty, ., or .. segments" },
+      { path: field, message: "Path must not contain empty, ., .., or excluded metadata segments" },
     ]);
   }
   const normalized = normalize(relativePath);
@@ -254,6 +258,22 @@ export function resolveManifestRelativePath(
   if (resolved !== root && !resolved.startsWith(`${root}${sep}`)) {
     throw new PluginManifestError(`${field} path escapes the plugin root`, [
       { path: field, message: "Path must stay inside the plugin root" },
+    ]);
+  }
+  // A directory alias (including a symlink or Windows short name) may name
+  // excluded content even when none of the lexical segments do.
+  let physicalRoot = root;
+  let physicalPath = resolved;
+  try {
+    physicalRoot = realpathSync.native(root);
+    physicalPath = realpathSync.native(resolved);
+  } catch { /* Missing paths are handled by the loader; lexical checks still apply. */ }
+  if (isExcludedPluginPayloadPath(root, resolved) ||
+    isExcludedPluginPayloadPath(physicalRoot, physicalPath) ||
+    isUnsignedPluginMetadataPath(root, resolved) ||
+    isUnsignedPluginMetadataPath(physicalRoot, physicalPath)) {
+    throw new PluginManifestError(`${field} path names excluded plugin metadata`, [
+      { path: field, message: "Path must not name an excluded metadata directory" },
     ]);
   }
   return resolved;
@@ -1033,6 +1053,7 @@ const USER_CONFIG_OPTION_KEYS = new Set([
   "sensitive",
   "min",
   "max",
+  "pattern",
 ]);
 const IDENTIFIER_KEY_PATTERN = /^[A-Za-z_]\w*$/u;
 
@@ -1124,6 +1145,13 @@ function normalizeUserConfigOption(
   if (value.max !== undefined && typeof value.max !== "number") {
     issues.push({ path: `${field}.max`, message: "Expected number" });
   }
+  if (value.pattern !== undefined) {
+    if (typeof value.pattern !== "string") issues.push({ path: `${field}.pattern`, message: "Expected string" });
+    else {
+      try { new RegExp(value.pattern, 'u'); }
+      catch { issues.push({ path: `${field}.pattern`, message: "Invalid pattern" }); }
+    }
+  }
   if (
     defaultValue !== undefined &&
     typeof defaultValue !== "string" &&
@@ -1154,6 +1182,7 @@ function normalizeUserConfigOption(
     ...(typeof value.sensitive === "boolean" ? { sensitive: value.sensitive } : {}),
     ...(typeof value.min === "number" ? { min: value.min } : {}),
     ...(typeof value.max === "number" ? { max: value.max } : {}),
+    ...(typeof value.pattern === "string" ? { pattern: value.pattern } : {}),
   };
 }
 

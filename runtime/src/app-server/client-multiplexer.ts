@@ -820,6 +820,27 @@ export class AgenCDaemonClientMultiplexer {
   }
 
   /**
+   * A consent prompt needs an attached human client, not a possible future
+   * reconnect. A connection advertises capabilities once, at initialize, under
+   * its own client id; its session attach registers the id the client chose.
+   * Both share the connection's delivery key, so the check goes by connection.
+   */
+  async hasAttachedClientWithCapability(sessionId: string, capability: string): Promise<boolean> {
+    return await this.#state.with(async (state) => {
+      const route = state.sessions.get(sessionId);
+      if (route === undefined) return false;
+      const capableConnections = new Set<string>();
+      for (const client of state.clients.values()) {
+        if (!client.evicted && client.capabilities.has(capability)) capableConnections.add(client.deliveryKey);
+      }
+      return [...route.clientAttachmentIds.keys()].some((clientId) => {
+        const client = state.clients.get(clientId);
+        return client !== undefined && !client.evicted && capableConnections.has(client.deliveryKey);
+      });
+    });
+  }
+
+  /**
    * Deliver a client action to initialized clients advertising an exact
    * capability, independently of transcript/session attachment. A Ledger action
    * is financial one-shot work, so exactly one deterministic client receives a

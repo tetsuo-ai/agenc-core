@@ -25,6 +25,25 @@ function validator() {
 }
 
 describe("event.permission_request schema", () => {
+  it("accepts a typed cross-provider consent disclosure and additive approval marker", () => {
+    const { schema, validate } = validator();
+    const disclosure = { kind: "cross_provider_spawn", provider: "deepseek", model: "deepseek-v4-pro",
+      endpoint: "https://api.deepseek.com/v1", billingSource: "byok", taskId: "task-1",
+      taskText: "Read the design", attachments: ["design.pdf"], workspace: "/workspace",
+      sandboxMode: "workspace_write", fileReadAllowlist: ["/workspace"], fileReadDenylist: [],
+      dataScope: "task_only", tools: ["Read", "WebSearch"], network: true, search: true,
+      price: { inputUsdPer1K: 0.2, outputUsdPer1K: 0.8 }, futureToolResultsGoToProvider: true,
+      maxModelCalls: 32,
+      scopeKey: "scope", payloadKey: "payload", denialKey: "denial" };
+    const notification = { jsonrpc: "2.0", method: "event.permission_request", params: {
+      sessionId: "root", eventId: "event:1", requestId: "event:1", kind: "cross_provider_spawn",
+      permissions: ["cross_provider_spawn"], crossProvider: disclosure,
+    } };
+    expect(validate(notification), JSON.stringify(validate.errors)).toBe(true);
+    expect(schema.definitions.ToolApproveParams?.properties?.approvalKind).toEqual({ const: "cross_provider_spawn" });
+    expect(schema.definitions.EventPermissionRequestParams?.properties?.crossProvider)
+      .toEqual({ $ref: "#/definitions/CrossProviderSpawnDisclosure" });
+  });
   it("accepts a forwarded sub-agent request with its attribution", () => {
     const { validate } = validator();
     const notification = notificationFromDaemonEvent("conv-parent", "conv-parent", {

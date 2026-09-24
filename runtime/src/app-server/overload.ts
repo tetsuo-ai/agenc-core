@@ -92,9 +92,10 @@ export function isDaemonPreemptiveMessage(message: JsonObject): boolean {
 /**
  * Requests that use the connection's priority lane instead of waiting behind
  * a full streaming model turn. Abort/decision messages are included, along
- * with bounded agent creation, health, status, and session lookup operations. Attach requests
- * remain in the normal FIFO because they commonly depend on a preceding
- * create request from the same connection.
+ * with bounded agent creation, health, status, and session lookup operations.
+ * A routine write carrying the ID of its executing tool call is also
+ * dispatched during that turn. The dispatcher verifies the call before
+ * granting session authority. Other routine requests keep the ordinary FIFO.
  *
  * Priority requests remain subject to the normal connection
  * limiter. Only {@link isDaemonControlMessage} operations are overload-exempt.
@@ -102,8 +103,70 @@ export function isDaemonPreemptiveMessage(message: JsonObject): boolean {
 export function isDaemonPriorityMessage(message: JsonObject): boolean {
   return (
     typeof message.method === "string" &&
-    DAEMON_PRIORITY_METHODS.has(message.method)
+    (DAEMON_PRIORITY_METHODS.has(message.method) || isDaemonCausalRoutineMessage(message))
   );
+}
+
+/** Only a routine tool's own write may answer during its streaming turn. */
+export function isDaemonCausalRoutineMessage(message: JsonObject): boolean {
+  if (message.method !== "routine.create" && message.method !== "routine.update") return false;
+  const params = daemonObjectParams(message);
+  const authority = params?.permissionAuthority;
+  if (authority === null || typeof authority !== "object" || Array.isArray(authority)) return false;
+  const record = authority as JsonObject;
+  return record.kind === "session" && typeof record.toolCallId === "string";
+}
+
+/** Both methods run a session's streaming turn (Desktop uses message.send). */
+const DAEMON_STREAMING_TURN_METHODS: ReadonlySet<string> = new Set(["message.send", "message.stream"]);
+
+export type ResolveRoutineSessionId = (id: string) => string | undefined;
+
+// A parsed message object is unique to one transport dispatch. This metadata
+// is deliberately never placed in JSON-RPC params or serialized to the peer.
+const causalRoutineHeads = new WeakMap<JsonObject, string>();
+
+export function tagDaemonCausalRoutineHead(message: JsonObject, headSessionId: string): void {
+  causalRoutineHeads.set(message, headSessionId);
+}
+
+export function daemonCausalRoutineHead(message: JsonObject): string | undefined {
+  return causalRoutineHeads.get(message);
+}
+
+export function isDaemonCausalRoutineForStream(
+  message: JsonObject,
+  head: JsonObject | undefined,
+  resolveSessionId?: ResolveRoutineSessionId,
+): boolean {
+  if (!isDaemonCausalRoutineMessage(message) || typeof head?.method !== "string" ||
+    !DAEMON_STREAMING_TURN_METHODS.has(head.method)) return false;
+  const authority = daemonObjectParams(message)?.permissionAuthority;
+  if (authority === null || typeof authority !== "object" || Array.isArray(authority)) return false;
+  const authorityId = (authority as JsonObject).sessionId;
+  const headId = daemonObjectParams(head)?.sessionId;
+  if (typeof authorityId !== "string" || authorityId.length === 0 ||
+    typeof headId !== "string" || headId.length === 0) return false;
+  if (resolveSessionId === undefined) return authorityId === headId;
+  try {
+    const authoritySessionId = resolveSessionId(authorityId);
+    const headSessionId = resolveSessionId(headId);
+    return typeof authoritySessionId === "string" && authoritySessionId.length > 0 &&
+      authoritySessionId === headSessionId;
+  } catch {
+    return false;
+  }
+}
+
+export function daemonStreamHeadSessionId(head: JsonObject): string | undefined {
+  const sessionId = daemonObjectParams(head)?.sessionId;
+  return typeof sessionId === "string" && sessionId.length > 0 ? sessionId : undefined;
+}
+
+function daemonObjectParams(message: JsonObject): JsonObject | undefined {
+  const params = message.params;
+  return params !== null && typeof params === "object" && !Array.isArray(params)
+    ? params as JsonObject : undefined;
 }
 
 export function requestIdFromJsonRpcMessage(message: JsonObject): RequestId | null {

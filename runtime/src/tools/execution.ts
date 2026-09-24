@@ -60,6 +60,7 @@
  */
 
 import { invocationForArgs, stringifyToolArgsWithBigInt } from "./execution-invocation.js";
+import { beginExecutingToolCall } from "../session/executing-tool-calls.js";
 import { normalizeModelToolArgs, validateToolArgs, stripAgenCInternalArgsForValidation } from "./argument-validation.js";
 export { validateToolArgs, stripAgenCInternalArgsForValidation } from "./argument-validation.js";
 export type { SchemaValidationError, SchemaValidationResult } from "./argument-validation.js";
@@ -2258,7 +2259,13 @@ export async function runToolUse(
   const executePhysical = async (): Promise<ToolDispatchResult> => {
     physicalStarted = true;
     opts.onEffectBoundaryCrossed?.();
-    const result = await tool.execute(argsForTool);
+    const finishExecuting = beginExecutingToolCall(invocation.session, invocation.callId, effectiveSignal);
+    let result: Awaited<ReturnType<typeof tool.execute>>;
+    try {
+      result = await tool.execute(argsForTool);
+    } finally {
+      finishExecuting();
+    }
     return {
       content: result.content,
       isError: result.isError,

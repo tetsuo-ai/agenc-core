@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,11 @@ import { canonicalRemoteWorkspace, pathWithin, RemoteAccessBoundary } from "../.
 import { RemoteService } from "../../src/remote/service.js";
 import type { RemoteBackend, RemoteBackendPoll, RemotePairParams } from "../../src/remote/types.js";
 import type { AgenCDaemonResponse, JsonObject } from "../../src/app-server/protocol/index.js";
+import { readDisplayArtifactChunk } from "../../src/session/display-artifact-store.js";
+import { validateDisplayBlock } from "../../src/mcp-client/display-attachments.js";
+import { persistDisplayAttachments } from "../../src/session/display-artifact-store.js";
+import { sessionTranscriptV2FromRollout } from "../../src/app-server/background-agent-runner.js";
+import type { RolloutItem } from "../../src/session/rollout-item.js";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); vi.useRealTimers(); });
@@ -48,6 +54,80 @@ function fixture() {
 }
 
 describe("daemon browser remote lifecycle", () => {
+  it("keeps accumulated attachment notices inside one remote transcript response", async () => {
+    const f = fixture(); await f.approve();
+    const table = { version: 1, title: "T", columns: [{ key: "value", label: "Value" }], rows: [{ value: "x" }] };
+    const { attachment, caption } = await validateDisplayBlock({ type: "resource", resource: { mimeType: "application/vnd.agenc.table+json", text: JSON.stringify(table) } }, []);
+    const items: RolloutItem[] = Array.from({ length: 4_000 }, (_, index) => ({ type: "event_msg", payload: { id: `event-${index}`, eventId: `event-${index}`, seq: index + 1, msg: { type: "tool_call_completed", payload: { callId: `call-${index}`, result: caption, isError: false, displayAttachments: [attachment] } } } }));
+    const snapshot = sessionTranscriptV2FromRollout(items, "allowed", "run-1");
+    f.dispatch.mockImplementation(async (message) => ({ jsonrpc: "2.0", id: message.id as string, result: snapshot }));
+    f.sockets[0]!.emit("message", f.frame("transcript")); await vi.advanceTimersByTimeAsync(0);
+    const response = JSON.parse(JSON.parse(f.sockets[0]!.sent[0]!).payload) as { result?: typeof snapshot; error?: unknown };
+    expect(response.error).toBeUndefined();
+    expect(response.result?.truncated).toBe(true);
+    expect(response.result?.events?.at(-1)?.payload.callId).toBe("call-3999");
+    expect(Buffer.byteLength(f.sockets[0]!.sent[0]!)).toBeLessThan(1024 * 1024);
+  });
+  it("delivers a transcript with three accepted 523 KB tables and fetches their full data through artifact chunks", async () => {
+    const f = fixture(); await f.approve();
+    const sessionDir = join(f.workspace, "session"); mkdirSync(sessionDir);
+    const items: RolloutItem[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const table = { version: 1, title: `Table ${index}`, columns: [{ key: "value", label: "Value" }], rows: [{ value: "x".repeat(523_000) }] };
+      const { attachment, caption } = await validateDisplayBlock({ type: "resource", resource: { mimeType: "application/vnd.agenc.table+json", text: JSON.stringify(table) } }, []);
+      persistDisplayAttachments(sessionDir, [attachment]);
+      items.push({ type: "event_msg", payload: { id: `event-${index}`, eventId: `event-${index}`, seq: index + 1, msg: { type: "tool_call_completed", payload: { callId: `call-${index}`, result: caption, isError: false, displayAttachments: [attachment] } } } });
+    }
+    const snapshot = sessionTranscriptV2FromRollout(items, "allowed", "run-1");
+    f.dispatch.mockImplementation(async (message) => {
+      if (message.method === "session.transcript.v2") return { jsonrpc: "2.0", id: message.id as string, result: snapshot };
+      const params = message.params as { id: string; offset: number };
+      const chunk = readDisplayArtifactChunk(sessionDir, params.id, params.offset);
+      return { jsonrpc: "2.0", id: message.id as string, result: { sessionId: "allowed", id: params.id, encoding: "base64", data: chunk.data.toString("base64"), size: chunk.size, offset: params.offset, nextOffset: chunk.nextOffset } };
+    });
+    f.sockets[0]!.emit("message", f.frame("transcript")); await vi.advanceTimersByTimeAsync(0);
+    const frame = f.sockets[0]!.sent[0]!;
+    expect(Buffer.byteLength(frame)).toBeLessThan(1024 * 1024);
+    const response = JSON.parse(JSON.parse(frame).payload) as { result?: typeof snapshot; error?: unknown };
+    expect(response.error).toBeUndefined();
+    expect(response.result?.events).toHaveLength(3);
+    const first = response.result!.events![0]!.payload.displayAttachments![0]!;
+    expect(first.data).toBeUndefined();
+    f.sockets[0]!.emit("message", f.frame("artifact", "session.artifact.read", { sessionId: "allowed", id: first.id, offset: 0 }));
+    await vi.advanceTimersByTimeAsync(0);
+    const artifact = JSON.parse(JSON.parse(f.sockets[0]!.sent[1]!).payload) as { result: { data: string } };
+    expect(JSON.parse(Buffer.from(artifact.result.data, "base64").toString()).rows[0].value).toHaveLength(523_000);
+  });
+  it("delivers a 13 MiB artifact as authenticated responses below the remote frame limit", async () => {
+    const f = fixture(); await f.approve();
+    const bytes = randomBytes(13 * 1024 * 1024);
+    const id = createHash("sha256").update(bytes).digest("hex");
+    const sessionDir = join(f.workspace, "session");
+    mkdirSync(join(sessionDir, "display-artifacts"), { recursive: true });
+    writeFileSync(join(sessionDir, "display-artifacts", id), bytes);
+    f.dispatch.mockImplementation(async (message) => {
+      const params = message.params as { offset: number };
+      const chunk = readDisplayArtifactChunk(sessionDir, id, params.offset);
+      return { jsonrpc: "2.0", id: message.id as string, result: {
+        sessionId: "allowed", id, encoding: "base64", data: chunk.data.toString("base64"), size: chunk.size,
+        offset: params.offset, nextOffset: chunk.nextOffset,
+      } };
+    });
+    let offset = 0;
+    const chunks: Buffer[] = [];
+    for (let index = 0;; index += 1) {
+      f.sockets[0]!.emit("message", f.frame(`chunk-${index}`, "session.artifact.read", { sessionId: "allowed", id, offset }));
+      await vi.advanceTimersByTimeAsync(0);
+      const frame = f.sockets[0]!.sent[index]!;
+      expect(Buffer.byteLength(frame)).toBeLessThan(1024 * 1024);
+      const response = JSON.parse((JSON.parse(frame) as { payload: string }).payload) as { result: { data: string; nextOffset: number | null } };
+      chunks.push(Buffer.from(response.result.data, "base64"));
+      if (response.result.nextOffset === null) break;
+      offset = response.result.nextOffset;
+    }
+    expect(createHash("sha256").update(Buffer.concat(chunks)).digest("hex")).toBe(id);
+    expect(f.sockets[0]!.readyState).toBe(1);
+  });
   it("is disabled by default and idempotent; capability inspection creates no pairing", () => {
     const f = fixture(); expect(f.service.status().state).toBe("stopped");
     expect(f.service.capabilities().requiresLocalApproval).toBe(true);

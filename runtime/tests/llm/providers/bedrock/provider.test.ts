@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createTokenAccountingRequest } from "../../token-accounting.js";
 import { encodeMcpToolNameForWire } from "../../wire/mcp-tool-naming.js";
-import { BedrockProvider } from "./index.js";
+import { BedrockHttpError, BedrockProvider } from "./index.js";
+import { childDispatchCertainty, classifyChildFailure } from "../../../../src/agents/child-terminal.js";
 import {
   createCsvAgentInvocationEnvelope,
   materializeAgentInvocationMessages,
@@ -71,6 +72,55 @@ function payloadHash(value: string): string {
 }
 
 describe("providers/bedrock", () => {
+  it.each([
+    { status: 403, message: "The security token included in the request is invalid.",
+      expected: { reason: "auth_required", retryable: false }, retryAfter: undefined },
+    { status: 429, message: "Too many requests", expected: {
+      reason: "rate_limited", retryable: true, retryAfterMs: 7_000 }, retryAfter: "7" },
+  ])("preserves HTTP $status body and headers through chatStream child classification", async ({
+    status, message, expected, retryAfter,
+  }) => {
+    const body = { message, __type: status === 403 ? "UnrecognizedClientException" : "ThrottlingException" };
+    const headers = new Headers({ "content-type": "application/json",
+      ...(retryAfter === undefined ? {} : { "retry-after": retryAfter }) });
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(body), { status, headers }),
+    );
+    const provider = new BedrockProvider({ accessKeyId: "AKIDEXAMPLE",
+      secretAccessKey: "secret", model: "amazon.nova-pro-v1:0", fetchImpl });
+    const failure = await provider.chatStream([{ role: "user", content: "hello" }], () => {})
+      .then(() => undefined, (caught: unknown) => caught);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).toBeInstanceOf(BedrockHttpError);
+    expect(failure).toMatchObject({ status, body });
+    expect((failure as { headers: Headers }).headers.get("retry-after")).toBe(retryAfter ?? null);
+    expect(classifyChildFailure("amazon-bedrock", failure)).toMatchObject(expected);
+    expect(childDispatchCertainty(failure)).toBe("sent");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["chat", "token count"] as const)("retains HTTP metadata on the %s request path", async (path) => {
+    const body = { message: "Too many requests", __type: "ThrottlingException" };
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(body), {
+      status: 429, headers: { "content-type": "application/json", "retry-after": "4" },
+    }));
+    const provider = new BedrockProvider({ accessKeyId: "AKIDEXAMPLE",
+      secretAccessKey: "secret", model: "amazon.nova-pro-v1:0", fetchImpl });
+    const request = createTokenAccountingRequest({ provider: provider.name,
+      model: "amazon.nova-pro-v1:0", messages: [{ role: "user", content: "hello" }],
+      options: {}, reservedOutputTokens: 32 });
+    const failure = await (path === "chat"
+      ? provider.chat([{ role: "user", content: "hello" }])
+      : provider.tokenCountCapability.countTokens(request, new AbortController().signal))
+      .then(() => undefined, (caught: unknown) => caught);
+    expect(failure).toBeInstanceOf(BedrockHttpError);
+    expect(failure).toMatchObject({ status: 429, statusCode: 429, body });
+    expect((failure as BedrockHttpError).headers.get("retry-after")).toBe("4");
+    expect(classifyChildFailure("amazon-bedrock", failure)).toMatchObject({
+      reason: "rate_limited", retryable: true, retryAfterMs: 4_000,
+    });
+  });
+
   it("refuses invocation-looking content without durable authority metadata", async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const provider = new BedrockProvider({

@@ -69,6 +69,8 @@ export interface ModelServiceTier {
 
 export interface ModelInfo {
   readonly slug: string;
+  /** Provider that supplied this catalog or discovery result. */
+  readonly provider?: string;
   readonly contextWindow?: number;
   readonly effectiveContextWindowPercent: number;
   readonly maxOutputTokens?: number;
@@ -460,6 +462,7 @@ export type SessionSource =
 
 /** The original config blob (large). */
 export interface Config {
+  readonly agents?: import("../config/schema.js").AgentsConfig;
   readonly model: string;
   readonly modelVerbosity?: "low" | "medium" | "high";
   readonly modelReasoningEffort?: ReasoningEffort;

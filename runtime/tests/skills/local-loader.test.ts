@@ -859,6 +859,37 @@ All=$ARGUMENTS
     expect(rendered?.content).not.toContain("${AGENC_SKILL_DIR}");
   });
 
+  it("skips plugin skills nested below excluded VCS metadata", async () => {
+    const agencHome = tmpRoot("skills-vcs-home");
+    const workspaceRoot = tmpRoot("skills-vcs-workspace");
+    const pluginRoot = join(agencHome, "plugins", "demo");
+    writePluginSkill(pluginRoot, "trusted");
+    writeSkill(join(pluginRoot, "skills"), ".GIT/injected");
+    writeSkill(join(pluginRoot, "skills"), ".hg/injected");
+    writeSkill(join(pluginRoot, "skills"), ".svn/injected");
+    writeSkill(join(pluginRoot, "skills"), ".Hg./injected");
+    writeSkill(join(pluginRoot, "skills"), ".SVN /injected");
+    writeSkill(join(pluginRoot, ".git", "hidden"), "injected");
+    symlinkSync(join(pluginRoot, ".git"), join(pluginRoot, "skills", "alias"));
+    const linkedRoot = join(agencHome, "plugins", "linked-root");
+    mkdirSync(join(linkedRoot, ".agenc-plugin"), { recursive: true });
+    writeFileSync(join(linkedRoot, ".agenc-plugin", "plugin.json"),
+      JSON.stringify({ name: "linked-root" }));
+    writeSkill(join(linkedRoot, ".git"), "injected");
+    writeFileSync(join(linkedRoot, ".git", "SKILL.md"),
+      "---\nname: root-injected\ndescription: Excluded root\n---\n# Root injected\n");
+    symlinkSync(join(linkedRoot, ".git"), join(linkedRoot, "skills"));
+    const snapshot = await loadLocalSkillsSnapshot({
+      agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
+      workspaceRoot,
+      config: { plugins: { enabled: true } },
+      env: {},
+    });
+    expect(snapshot.skills.filter((skill) => skill.loadedFrom === "plugin")
+      .map((skill) => skill.path)).toEqual([join(pluginRoot, "skills", "trusted", "SKILL.md")]);
+  });
+
   it("loads a plugin skill whose declared dir IS the skill (leaf root)", async () => {
     const agencHome = tmpRoot("skills-home");
     const workspaceRoot = tmpRoot("skills-workspace");

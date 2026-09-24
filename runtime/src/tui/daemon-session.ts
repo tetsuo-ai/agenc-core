@@ -12,6 +12,7 @@ import { DaemonEventReplay } from "./daemon-event-replay.js";
 import {
   daemonTranscriptSnapshotCoversEvent,
   daemonTranscriptSnapshotEvents,
+  resolveDaemonTranscriptTextArtifacts,
 } from "./daemon-transcript-snapshot.js";
 import { classifyTurnTerminal, createTurnFailedEvent } from "../contracts/turn-terminal.js";
 import type {
@@ -601,9 +602,13 @@ export async function attachDaemonAgentTuiSession<
     authorityCwd,
     attachment.runtimeSettings,
   );
-  const transcriptSnapshot = await options.client.request("session.transcript.v2", {
+  const rawTranscriptSnapshot = await options.client.request("session.transcript.v2", {
     sessionId,
   });
+  const transcriptSnapshot = await resolveDaemonTranscriptTextArtifacts(
+    rawTranscriptSnapshot,
+    params => options.client.request("session.artifact.read", params),
+  );
   daemonTranscriptSnapshotEvents(transcriptSnapshot, sessionId);
   return createDaemonTuiSession({
     ...options,

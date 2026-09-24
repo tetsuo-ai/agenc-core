@@ -4,8 +4,9 @@ import {
   isDaemonControlMessage,
   isDaemonPreemptiveMessage,
   isDaemonPriorityMessage,
-} from "./overload.js";
-import { JSON_RPC_VERSION, type JsonObject } from "./protocol/index.js";
+  isDaemonCausalRoutineMessage,
+} from "../../src/app-server/overload.js";
+import { JSON_RPC_VERSION, type JsonObject } from "../../src/app-server/protocol/index.js";
 
 function request(method: string): JsonObject {
   return {
@@ -86,6 +87,28 @@ describe("AgenC daemon overload control messages", () => {
     expect(isDaemonControlMessage(review)).toBe(false);
   });
 
+  it("keeps routines in the ordinary FIFO except writes naming a live tool call", () => {
+    for (const method of ["routine.capabilities", "routine.list", "routine.get", "routine.create", "routine.update", "routine.delete", "routine.run", "routine.runs", "routine.cancel"]) {
+      expect(isDaemonPriorityMessage(request(method))).toBe(false);
+      expect(isDaemonPreemptiveMessage(request(method))).toBe(false);
+      expect(isDaemonControlMessage(request(method))).toBe(false);
+    }
+    for (const method of ["routine.create", "routine.update"]) {
+      const causal = { ...request(method), params: { permissionAuthority: { kind: "session", sessionId: "s", toolCallId: "call" } } };
+      expect(isDaemonCausalRoutineMessage(causal)).toBe(true);
+      expect(isDaemonPriorityMessage(causal)).toBe(true);
+    }
+    expect(isDaemonCausalRoutineMessage(request("routine.delete"))).toBe(false);
+    const limiter = new AgenCDaemonConnectionLimiter({ maxInFlightRequests: 1 });
+    const turn = limiter.tryStart(request("message.stream"), 0);
+    expect(turn.admitted).toBe(true);
+    expect(limiter.tryStart(request("routine.create"), 0)).toMatchObject({
+      admitted: false,
+      response: { error: { data: { code: "TOO_MANY_IN_FLIGHT_REQUESTS" } } },
+    });
+    turn.release();
+  });
+
   it("keeps preemptive interactive decisions subject to normal overload limits", () => {
     const limiter = new AgenCDaemonConnectionLimiter({
       maxInFlightRequests: 1,
@@ -119,6 +142,15 @@ describe("AgenC daemon overload control messages", () => {
     expect(first.admitted).toBe(true);
 
     expect(limiter.tryStart(request("health.ping"), 0)).toMatchObject({
+      admitted: false,
+      response: { error: { data: { code: "TOO_MANY_IN_FLIGHT_REQUESTS" } } },
+    });
+
+    const causalRoutine = { ...request("routine.create"), params: {
+      permissionAuthority: { kind: "session", sessionId: "s", toolCallId: "call" },
+    } };
+    expect(isDaemonCausalRoutineMessage(causalRoutine)).toBe(true);
+    expect(limiter.tryStart(causalRoutine, 0)).toMatchObject({
       admitted: false,
       response: {
         error: {

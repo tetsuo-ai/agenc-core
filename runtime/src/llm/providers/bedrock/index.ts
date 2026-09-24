@@ -51,6 +51,8 @@ import {
   providerCredentialEnvironmentLabel,
   resolveBuiltInProviderRegionalEndpoint,
 } from "../../registry/provider-info.js";
+import { fetchProviderRequest } from "../../credential-redirect-fetch.js";
+import { LLMProviderError } from "../../errors.js";
 
 const BEDROCK_PROVIDER_ID = "amazon-bedrock";
 const BEDROCK_SERVICE = "bedrock";
@@ -982,6 +984,23 @@ function errorMessageFromBody(body: unknown): string {
   return "request failed";
 }
 
+/** An HTTP refusal from a Bedrock request, including the provider's response metadata. */
+export class BedrockHttpError extends LLMProviderError {
+  readonly status: number;
+  readonly body: unknown;
+  readonly headers: Headers;
+
+  constructor(operation: string, response: Response, body: unknown) {
+    super(BEDROCK_PROVIDER_ID,
+      `Amazon Bedrock ${operation} failed (HTTP ${response.status}): ${errorMessageFromBody(body)}`,
+      response.status);
+    this.name = "BedrockHttpError";
+    this.status = response.status;
+    this.body = body;
+    this.headers = new Headers(response.headers);
+  }
+}
+
 function resolveCredentials(config: BedrockProviderConfig): BedrockCredentials {
   const accessKeyId = firstNonEmpty(config.accessKeyId);
   const secretAccessKey = firstNonEmpty(config.secretAccessKey);
@@ -1119,17 +1138,15 @@ export class BedrockProvider implements LLMProvider {
       now: this.config.now?.() ?? new Date(),
       operation: "count-tokens",
     });
-    const response = await (this.config.fetchImpl ?? fetch)(signed.url, {
+    const response = await fetchProviderRequest(signed.url, {
       method: "POST",
       headers: signed.headers,
       body: signed.body,
       signal,
-    });
+    }, this.config.fetchImpl ?? fetch);
     const parsed = await readJsonResponse(response);
     if (!response.ok) {
-      throw new Error(
-        `Amazon Bedrock token count failed (HTTP ${response.status}): ${errorMessageFromBody(parsed)}`,
-      );
+      throw new BedrockHttpError("token count", response, parsed);
     }
     const inputTokens = isRecord(parsed)
       ? numericField(parsed, "inputTokens")
@@ -1190,17 +1207,15 @@ export class BedrockProvider implements LLMProvider {
       positiveInteger(this.config.timeoutMs);
     const signalState = requestSignal(options?.signal, timeoutMs);
     try {
-      const response = await (this.config.fetchImpl ?? fetch)(signed.url, {
+      const response = await fetchProviderRequest(signed.url, {
         method: "POST",
         headers: signed.headers,
         body: signed.body,
         signal: signalState.signal,
-      });
+      }, this.config.fetchImpl ?? fetch);
       const parsed = await readJsonResponse(response);
       if (!response.ok) {
-        throw new Error(
-          `Amazon Bedrock request failed (HTTP ${response.status}): ${errorMessageFromBody(parsed)}`,
-        );
+        throw new BedrockHttpError("request", response, parsed);
       }
       return parseResponse(
         model,
@@ -1247,17 +1262,15 @@ export class BedrockProvider implements LLMProvider {
       positiveInteger(this.config.timeoutMs);
     const signalState = requestSignal(options?.signal, timeoutMs);
     try {
-      const response = await (this.config.fetchImpl ?? fetch)(signed.url, {
+      const response = await fetchProviderRequest(signed.url, {
         method: "POST",
         headers: signed.headers,
         body: signed.body,
         signal: signalState.signal,
-      });
+      }, this.config.fetchImpl ?? fetch);
       if (!response.ok) {
         const parsed = await readJsonResponse(response);
-        throw new Error(
-          `Amazon Bedrock stream request failed (HTTP ${response.status}): ${errorMessageFromBody(parsed)}`,
-        );
+        throw new BedrockHttpError("stream request", response, parsed);
       }
       return await parseStreamResponse({
         body: response.body,

@@ -34,6 +34,12 @@ import { createMCPConnection } from "./connection.js";
 import { createToolBridge } from "./tools.js";
 import { createResourceBridge } from "./resources.js";
 import { createPromptBridge } from "./prompts.js";
+import { projectMcpManagerToConnections } from "./tui-connections.js";
+import { mcpInstructionsDeltaProducer } from "../prompts/attachments/mcp-delta.js";
+import {
+  _resetAttachmentTrackingStateForTest,
+  getAttachmentTrackingState,
+} from "../session/attachment-state.js";
 
 const mockCreateMCPConnection = vi.mocked(createMCPConnection);
 const mockCreateToolBridge = vi.mocked(createToolBridge);
@@ -104,6 +110,39 @@ function makeMockBridge(serverName: string, toolNames: string[]) {
   };
 }
 
+function makeInitializedClient(label: string, options?: {
+  readonly capabilities?: Record<string, unknown>;
+  readonly serverInfo?: { readonly name: string; readonly version: string };
+  readonly instructions?: string;
+}) {
+  return {
+    label,
+    close: vi.fn().mockResolvedValue(undefined),
+    getServerCapabilities: vi.fn(() => options?.capabilities ?? {}),
+    getServerVersion: vi.fn(() => options?.serverInfo),
+    getInstructions: vi.fn(() => options?.instructions),
+  };
+}
+
+function makeInstructionDeltaOpts(sessionKey: object) {
+  return {
+    sessionKey,
+    userInput: null,
+    loadedTools: [],
+    discoveredToolNames: new Set(),
+    messages: [],
+    permissionContext: { mode: "default" } as never,
+    cwd: "/tmp/agenc-mcp-reconnect-metadata-test",
+    subagentDepth: 0,
+    signal: new AbortController().signal,
+  };
+}
+
+async function triggerAutomaticReconnect(manager: MCPManager): Promise<void> {
+  await manager.getTools()[0]!.execute({});
+  await vi.advanceTimersByTimeAsync(1_000);
+}
+
 function deferred<T = void>(): {
   readonly promise: Promise<T>;
   readonly resolve: (value: T) => void;
@@ -165,6 +204,117 @@ describe("MCPManager", () => {
     mockCreatePromptBridge.mockImplementation((_client, serverName) =>
       Promise.resolve(makeMockPromptBridge(serverName)),
     );
+  });
+
+  it("redacts decoded plugin secrets without changing ordinary settings in errors, logs and projections", async () => {
+    const token = "private-phrase";
+    const config = makeConfig("plugin:demo:alpha", {
+      origin: { scope: "plugin" }, env: { TOKEN: token, DEBUG: "1", LOG_LEVEL: "info" },
+      headers: { Authorization: `Bearer ${token}`, "X-Mode": "info" },
+      pluginSecretValues: [token],
+    });
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    mockCreateMCPConnection.mockImplementation(async (_config, connectionLogger) => {
+      connectionLogger.error(`server stderr: 1 info ${token}`);
+      throw new Error(`spawn failed: 1 info ${token}`);
+    });
+    const manager = new MCPManager([config], logger);
+    await manager.start();
+    expect(JSON.stringify(manager.getConfiguredServers())).not.toContain(token);
+    const state = JSON.stringify(manager.getConnectionState(config.name));
+    expect(state).toContain("1 info");
+    expect(state).not.toContain(token);
+    const logs = JSON.stringify(logger.error.mock.calls);
+    expect(logs).toContain("1 info");
+    expect(logs).not.toContain(token);
+    const reconnect = JSON.stringify(await manager.reconnectServer(config.name));
+    expect(reconnect).toContain("1 info");
+    expect(reconnect).not.toContain(token);
+    expect(manager.redactPluginSecrets(`diagnostic 1 info ${token}`)).toBe("diagnostic 1 info [REDACTED]");
+    await manager.stop();
+  });
+
+  it("redacts plugin credentials from optional bridge and cleanup diagnostics", async () => {
+    const token = "bridge-private-phrase";
+    const config = makeConfig("plugin:demo:bridge", { origin: { scope: "plugin" }, env: { TOKEN: token, DEBUG: "1", LOG_LEVEL: "info" }, pluginSecretValues: [token] });
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    mockCreateMCPConnection.mockResolvedValue({} as never);
+    mockCreateToolBridge.mockResolvedValue(makeMockBridge(config.name, ["ping"]) as never);
+    mockCreateResourceBridge.mockImplementation(async (_client, _name, bridgeLogger) => {
+      bridgeLogger.error(`server stderr: 1 info ${token}`);
+      throw new Error(`resource failed: 1 info ${token}`);
+    });
+    const manager = new MCPManager([config], logger);
+    await manager.start();
+    expect(JSON.stringify(logger.error.mock.calls)).toContain("1 info");
+    expect((logger.warn.mock.calls[0]?.[1] as Error).message).toContain("1 info");
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain(token);
+    expect((logger.warn.mock.calls[0]?.[1] as Error).message).not.toContain(token);
+    await manager.stop();
+  });
+
+  it("releases each plugin connection's redaction values after replacement and terminal cleanup", async () => {
+    const old = makeConfig("plugin:demo:owned", { origin: { scope: "plugin" }, env: { TOKEN: "old-owned-secret" }, pluginSecretValues: ["old-owned-secret"] });
+    const rotated = makeConfig(old.name, { origin: { scope: "plugin" }, env: { TOKEN: "new-owned-secret" }, pluginSecretValues: ["new-owned-secret"] });
+    mockCreateMCPConnection.mockResolvedValue({ close: vi.fn().mockResolvedValue(undefined) } as never);
+    mockCreateToolBridge.mockImplementation(async (_client, name) => makeMockBridge(name, ["ping"]) as never);
+    const manager = new MCPManager([old]);
+    await manager.start();
+    expect(manager.redactPluginSecrets("old-owned-secret")).not.toContain("old-owned-secret");
+    await manager.refreshServers([rotated]);
+    expect(manager.redactPluginSecrets("old-owned-secret")).toBe("old-owned-secret");
+    expect(manager.redactPluginSecrets("new-owned-secret")).not.toContain("new-owned-secret");
+    await manager.clearServersStrict();
+    expect(manager.redactPluginSecrets("new-owned-secret")).toBe("new-owned-secret");
+
+    // A removed connection keeps its value until the exact cleanup settles.
+    const gate = deferred();
+    const slowBridge = makeMockBridge(old.name, ["ping"]);
+    slowBridge.dispose.mockImplementation(() => gate.promise);
+    mockCreateToolBridge.mockResolvedValueOnce(slowBridge as never);
+    await manager.refreshServers([old]);
+    const removing = manager.refreshServers([]);
+    expect(manager.redactPluginSecrets("old-owned-secret")).not.toContain("old-owned-secret");
+    gate.resolve();
+    await removing;
+    expect(manager.redactPluginSecrets("old-owned-secret")).toBe("old-owned-secret");
+
+    await manager.refreshServers([rotated]);
+    await manager.stopStrict();
+    expect(manager.redactPluginSecrets("new-owned-secret")).toBe("new-owned-secret");
+    await manager.start();
+    expect(manager.redactPluginSecrets("new-owned-secret")).not.toContain("new-owned-secret");
+    await manager.stopStrict();
+    expect(manager.redactPluginSecrets("new-owned-secret")).toBe("new-owned-secret");
+
+    const retryBridge = makeMockBridge(old.name, ["ping"]);
+    retryBridge.dispose.mockRejectedValueOnce(new Error("cleanup failed"));
+    mockCreateToolBridge.mockResolvedValueOnce(retryBridge as never);
+    const retryManager = new MCPManager([old]);
+    await retryManager.start();
+    await expect(retryManager.clearServersStrict()).rejects.toThrow();
+    expect(retryManager.redactPluginSecrets("old-owned-secret")).not.toContain("old-owned-secret");
+    await retryManager.clearServersStrict();
+    expect(retryManager.redactPluginSecrets("old-owned-secret")).toBe("old-owned-secret");
+  });
+
+  it("releases an individual connection's values after cleanup and registers them before reconnect", async () => {
+    const config = makeConfig("plugin:demo:individual", { origin: { scope: "plugin" }, pluginSecretValues: ["private-phrase"] });
+    const bridge = makeMockBridge(config.name, ["ping"]);
+    const gate = deferred();
+    bridge.dispose.mockImplementationOnce(() => gate.promise);
+    mockCreateMCPConnection.mockResolvedValue({ close: vi.fn().mockResolvedValue(undefined) } as never);
+    mockCreateToolBridge.mockResolvedValue(bridge as never);
+    const manager = new MCPManager([config]);
+    await manager.start();
+    const cleanup = manager.getConnectedConnection(config.name)!.cleanup();
+    expect(manager.redactPluginSecrets("private-phrase")).toBe("[REDACTED]");
+    gate.resolve();
+    await cleanup;
+    expect(manager.redactPluginSecrets("private-phrase")).toBe("private-phrase");
+    await manager.reconnectServer(config.name);
+    expect(manager.redactPluginSecrets("private-phrase")).toBe("[REDACTED]");
+    await manager.stop();
   });
 
   it.each(["", "bad name", "bad.name", "bad\nname", "a".repeat(257)])(
@@ -1392,6 +1542,278 @@ describe("MCPManager", () => {
       await vi.advanceTimersByTimeAsync(2_000);
       expect(manager.isConnected("srv1")).toBe(true);
     } finally { await manager.stop(); vi.useRealTimers(); }
+  });
+
+  it("republishes the replacement client, capabilities, server info, and instructions after automatic reconnect", async () => {
+    vi.useFakeTimers();
+    const initialClient = makeInitializedClient("initial", {
+      capabilities: { tools: { listChanged: true } },
+      serverInfo: { name: "first-server", version: "1.0.0" },
+      instructions: "use the first generation",
+    });
+    const replacementClient = makeInitializedClient("replacement", {
+      capabilities: { resources: { subscribe: true } },
+      serverInfo: { name: "second-server", version: "2.0.0" },
+      instructions: "use the replacement generation",
+    });
+    const initialBridge = makeMockBridge("srv1", ["tool"]);
+    initialBridge.tools[0]!.execute = vi.fn().mockResolvedValue({
+      content: "transport closed",
+      isError: true,
+    });
+    const replacementBridge = makeMockBridge("srv1", ["tool"]);
+    replacementBridge.tools[0]!.execute = vi
+      .fn()
+      .mockResolvedValue({ content: "from replacement" });
+    const replacementResource = makeMockResourceBridge("srv1", [
+      { uri: "file:///fresh" },
+    ]);
+    const replacementPrompt = makeMockPromptBridge("srv1", [{ name: "fresh" }]);
+    mockCreateMCPConnection
+      .mockResolvedValueOnce(initialClient)
+      .mockResolvedValueOnce(replacementClient);
+    mockCreateToolBridge
+      .mockResolvedValueOnce(initialBridge)
+      .mockResolvedValueOnce(replacementBridge);
+    mockCreateResourceBridge
+      .mockResolvedValueOnce(makeMockResourceBridge("srv1", [{ uri: "file:///stale" }]))
+      .mockResolvedValueOnce(replacementResource);
+    mockCreatePromptBridge
+      .mockResolvedValueOnce(makeMockPromptBridge("srv1", [{ name: "stale" }]))
+      .mockResolvedValueOnce(replacementPrompt);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    try {
+      await manager.start();
+      expect(manager.getConnectedConnection("srv1")).toEqual(
+        expect.objectContaining({
+          type: "connected",
+          client: initialClient,
+          capabilities: { tools: { listChanged: true } },
+          serverInfo: { name: "first-server", version: "1.0.0" },
+          instructions: "use the first generation",
+        }),
+      );
+      expect(manager.getServerInstructions("srv1")).toBe(
+        "use the first generation",
+      );
+
+      await triggerAutomaticReconnect(manager);
+      await expect(manager.callTool("srv1", "tool", {})).resolves.toEqual({
+        content: "from replacement",
+      });
+
+      expect(manager.getConnectedConnection("srv1")).toEqual(
+        expect.objectContaining({
+          type: "connected",
+          client: replacementClient,
+          capabilities: { resources: { subscribe: true } },
+          serverInfo: { name: "second-server", version: "2.0.0" },
+          instructions: "use the replacement generation",
+        }),
+      );
+      expect(manager.getServerInstructions("srv1")).toBe(
+        "use the replacement generation",
+      );
+      expect(await manager.getResources()).toEqual([
+        expect.objectContaining({ uri: "file:///fresh" }),
+      ]);
+      expect((await manager.listPrompts()).map((prompt) => prompt.name)).toEqual([
+        "fresh",
+      ]);
+      expect(projectMcpManagerToConnections(manager)[0]).toEqual(
+        expect.objectContaining({
+          type: "connected",
+          client: replacementClient,
+          instructions: "use the replacement generation",
+        }),
+      );
+    } finally {
+      await manager.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears omitted replacement instructions and emits the instruction delta", async () => {
+    vi.useFakeTimers();
+    const initialClient = makeInitializedClient("initial", {
+      capabilities: { tools: {} },
+      serverInfo: { name: "first-server", version: "1.0.0" },
+      instructions: "keep this until reconnect omits it",
+    });
+    const replacementClient = makeInitializedClient("replacement", {
+      capabilities: { prompts: {} },
+    });
+    const initialBridge = makeMockBridge("srv1", ["tool"]);
+    initialBridge.tools[0]!.execute = vi.fn().mockResolvedValue({
+      content: "transport closed",
+      isError: true,
+    });
+    const replacementBridge = makeMockBridge("srv1", ["tool"]);
+    mockCreateMCPConnection
+      .mockResolvedValueOnce(initialClient)
+      .mockResolvedValueOnce(replacementClient);
+    mockCreateToolBridge
+      .mockResolvedValueOnce(initialBridge)
+      .mockResolvedValueOnce(replacementBridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    const sessionKey = { services: { mcpManager: manager } };
+    try {
+      await manager.start();
+      const tracking = getAttachmentTrackingState(sessionKey);
+      await expect(
+        mcpInstructionsDeltaProducer(makeInstructionDeltaOpts(sessionKey), tracking),
+      ).resolves.toEqual([]);
+      expect(tracking.lastMcpInstructionsMap?.get("srv1")).toBe(
+        "keep this until reconnect omits it",
+      );
+
+      await triggerAutomaticReconnect(manager);
+
+      const connection = manager.getConnectedConnection("srv1");
+      expect(connection?.client).toBe(replacementClient);
+      expect(connection?.capabilities).toEqual({ prompts: {} });
+      expect(connection?.serverInfo).toBeUndefined();
+      expect(connection?.instructions).toBeUndefined();
+      expect(manager.getServerInstructions("srv1")).toBeUndefined();
+      await expect(
+        mcpInstructionsDeltaProducer(makeInstructionDeltaOpts(sessionKey), tracking),
+      ).resolves.toEqual([
+        {
+          kind: "mcp_instructions_delta",
+          addedNames: [],
+          addedBlocks: [],
+          removedNames: ["srv1"],
+        },
+      ]);
+    } finally {
+      _resetAttachmentTrackingStateForTest(sessionKey);
+      await manager.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not publish a stale automatic reconnect generation after stop wins", async () => {
+    vi.useFakeTimers();
+    const initialClient = makeInitializedClient("initial", {
+      instructions: "first generation",
+    });
+    const replacementClient = makeInitializedClient("replacement", {
+      instructions: "must not be published after stop",
+    });
+    const initialBridge = makeMockBridge("srv1", ["tool"]);
+    initialBridge.tools[0]!.execute = vi.fn().mockResolvedValue({
+      content: "transport closed",
+      isError: true,
+    });
+    const replacementBridge = makeMockBridge("srv1", ["tool"]);
+    const hang = deferred<ReturnType<typeof makeMockResourceBridge>>();
+    mockCreateMCPConnection
+      .mockResolvedValueOnce(initialClient)
+      .mockResolvedValueOnce(replacementClient);
+    mockCreateToolBridge
+      .mockResolvedValueOnce(initialBridge)
+      .mockResolvedValueOnce(replacementBridge);
+    mockCreateResourceBridge
+      .mockResolvedValueOnce(makeMockResourceBridge("srv1"))
+      .mockReturnValueOnce(hang.promise);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    try {
+      await manager.start();
+      await triggerAutomaticReconnect(manager);
+      await vi.waitFor(() => {
+        expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+      });
+
+      const stopping = manager.stop();
+      hang.resolve(makeMockResourceBridge("srv1"));
+      await stopping;
+
+      expect(manager.getConnectedConnection("srv1")).toBeUndefined();
+      expect(manager.getServerInstructions("srv1")).toBeUndefined();
+      expect(replacementClient.close).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a closed replacement unpublished and publishes the next automatic reconnect", async () => {
+    vi.useFakeTimers();
+    const firstClient = makeInitializedClient("first", {
+      instructions: "generation-1",
+    });
+    const staleClient = makeInitializedClient("stale", {
+      instructions: "generation-2-stale",
+    });
+    const liveClient = makeInitializedClient("live", {
+      instructions: "generation-3-live",
+      capabilities: { tools: { listChanged: true } },
+      serverInfo: { name: "live-server", version: "3.0.0" },
+    });
+    const firstBridge = makeMockBridge("srv1", ["tool"]);
+    firstBridge.tools[0]!.execute = vi.fn().mockResolvedValue({
+      content: "transport closed",
+      isError: true,
+    });
+    const staleBridge = makeMockBridge("srv1", ["tool"]);
+    staleBridge.tools[0]!.execute = vi.fn().mockResolvedValue({
+      content: "transport closed",
+      isError: true,
+    });
+    const liveBridge = makeMockBridge("srv1", ["tool"]);
+    liveBridge.tools[0]!.execute = vi
+      .fn()
+      .mockResolvedValue({ content: "from latest generation" });
+    const firstReconnectResources = deferred<
+      ReturnType<typeof makeMockResourceBridge>
+    >();
+    mockCreateMCPConnection
+      .mockResolvedValueOnce(firstClient)
+      .mockResolvedValueOnce(staleClient)
+      .mockResolvedValueOnce(liveClient);
+    mockCreateToolBridge
+      .mockResolvedValueOnce(firstBridge)
+      .mockResolvedValueOnce(staleBridge)
+      .mockResolvedValueOnce(liveBridge);
+    mockCreateResourceBridge
+      .mockResolvedValueOnce(makeMockResourceBridge("srv1"))
+      .mockReturnValueOnce(firstReconnectResources.promise)
+      .mockResolvedValueOnce(makeMockResourceBridge("srv1"));
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    try {
+      await manager.start();
+      await triggerAutomaticReconnect(manager);
+      await vi.waitFor(() => {
+        expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+      });
+
+      staleClient.onclose?.();
+      firstReconnectResources.resolve(makeMockResourceBridge("srv1"));
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.waitFor(() => {
+        expect(manager.getConnectedConnection("srv1")?.client).toBe(liveClient);
+      });
+
+      expect(manager.getServerInstructions("srv1")).toBe("generation-3-live");
+      expect(manager.getConnectedConnection("srv1")).toEqual(
+        expect.objectContaining({
+          client: liveClient,
+          capabilities: { tools: { listChanged: true } },
+          serverInfo: { name: "live-server", version: "3.0.0" },
+          instructions: "generation-3-live",
+        }),
+      );
+      await expect(manager.callTool("srv1", "tool", {})).resolves.toEqual({
+        content: "from latest generation",
+      });
+      expect(staleClient.close).toHaveBeenCalled();
+    } finally {
+      await manager.stop();
+      vi.useRealTimers();
+    }
   });
 
   it("fails closed when a manager-owned MCP call has no exact live tool", async () => {

@@ -8,6 +8,7 @@ import type { LocalRuntimeBootstrap } from "../../bin/bootstrap.js";
 import type { Event } from "../../session/event-log.js";
 import { classifyTurnTerminal, type TurnTerminal } from "../../contracts/turn-terminal.js";
 import type { RolloutItem } from "../../session/rollout-item.js";
+import { persistDisplayArtifactBytes } from "../../session/display-artifact-store.js";
 import { isAdmissionUsageSummary } from "../../session/usage-summary.js";
 import {
   reconstructFromRollout,
@@ -329,6 +330,8 @@ export function sessionTranscriptV2FromRollout(
   sessionId: string,
   runId: string,
   activeTurn?: { readonly turnId: string; readonly clientMessageId?: string },
+  artifactSessionDir?: string,
+  options: { readonly includeCompleteMessages?: boolean; readonly publishTextArtifact?: (bytes: Buffer) => string } = {},
 ): SessionTranscriptV2Result {
   const boundary = latestTranscriptBoundary(items);
   const boundaryIndex = boundary?.index ?? -1;
@@ -373,6 +376,7 @@ export function sessionTranscriptV2FromRollout(
   let pendingUserIndex: number | undefined;
   let pendingClientMessageId: string | undefined;
   const assistantOrdinals = new Map<string, number>();
+  const attachmentEvents: SessionTranscriptV2Event[] = [];
 
   if (boundary?.kind === "replaced") {
     const replacement = reconstructFromRollout(
@@ -440,6 +444,26 @@ export function sessionTranscriptV2FromRollout(
     const event = item.payload;
     const sequence = positiveSequence(event.seq);
     if (sequence === undefined) continue;
+    if (event.msg.type === "tool_call_completed" && event.msg.payload.displayAttachments?.length) {
+      const captions = typeof event.msg.payload.result === "string"
+        ? event.msg.payload.result.match(/\[Shown to the user: [^\]\r\n]{0,500}\]/gu)?.slice(0, 8).join("\n")
+        : undefined;
+      attachmentEvents.push({
+        eventId: canonicalEventId(event),
+        committedSequence: sequence,
+        type: "tool_call_completed",
+        payload: {
+          callId: event.msg.payload.callId,
+          ...(event.msg.payload.toolName ? { toolName: event.msg.payload.toolName } : {}),
+          result: captions ?? event.msg.payload.displayAttachments.map(item => `[Shown to the user: ${item.kind} "${item.title}"]`).join("\n"),
+          isError: event.msg.payload.isError,
+          displayAttachments: event.msg.payload.displayAttachments.map(item =>
+            item.data !== undefined && Buffer.byteLength(JSON.stringify(item.data), "utf8") > 8 * 1024
+              ? { id: item.id, kind: item.kind, title: item.title, mimeType: item.mimeType, size: item.size, digest: item.digest }
+              : item),
+        },
+      });
+    }
     if (event.msg.type === "message_submission") {
       pendingUserIndex = undefined;
       pendingClientMessageId = event.msg.payload.messageId;
@@ -556,14 +580,14 @@ export function sessionTranscriptV2FromRollout(
     currentClientMessageId === undefined
       ? activeTurn
       : { turnId: activeTurn.turnId, clientMessageId: currentClientMessageId };
-  return {
+  const snapshot: SessionTranscriptV2Result = {
     schemaVersion: 2,
     sessionId,
     runId,
     historyEpoch: historyEpochForBoundary(runId, boundaryId),
     asOfSequence,
     messages,
-    events: transcriptNoticesFromRollout(items, boundaryIndex, runId),
+    events: [...transcriptNoticesFromRollout(items, boundaryIndex, runId), ...attachmentEvents].sort((a, b) => a.committedSequence - b.committedSequence),
     ...(liveTurn !== undefined ? { activeTurn: liveTurn } : {}),
     ...(turnResults.length > 0 ? { turnResults } : {}),
     ...(planMode !== undefined
@@ -573,6 +597,48 @@ export function sessionTranscriptV2FromRollout(
         }
       : {}),
   };
+  // Older clients cannot fetch text artifacts. Keep their complete projection
+  // until the dispatcher measures the serialized reply for this connection.
+  if (options.includeCompleteMessages) return snapshot;
+  // The remote transport has a 1 MiB envelope ceiling. Leave room for JSON
+  // escaping in that envelope and keep the newest transcript entries when an
+  // unusually long session cannot fit in one snapshot response.
+  const maxSnapshotBytes = 384 * 1024;
+  if (Buffer.byteLength(JSON.stringify(snapshot), "utf8") <= maxSnapshotBytes) return snapshot;
+  const referenceMessage = (message: typeof snapshot.messages[number]) => {
+    if (artifactSessionDir === undefined && options.publishTextArtifact === undefined) throw new Error("oversized transcript message requires a session artifact store");
+    const bytes = Buffer.from(message.text, "utf8");
+    const id = options.publishTextArtifact !== undefined
+      ? options.publishTextArtifact(bytes)
+      : persistDisplayArtifactBytes(artifactSessionDir!, bytes);
+    const preview = bytes.subarray(0, 8 * 1024).toString("utf8");
+    return { ...message, text: `${preview}\n\n[Answer truncated; update to a protocol 1.18 client to read the full message.]`, textArtifact: { id, digest: id, size: bytes.length, mimeType: "text/plain" as const } };
+  };
+  const boundedMessages = [...snapshot.messages];
+  const newestMessage = boundedMessages.at(-1);
+  if (newestMessage !== undefined && Buffer.byteLength(JSON.stringify(newestMessage), "utf8") > maxSnapshotBytes) {
+    boundedMessages[boundedMessages.length - 1] = referenceMessage(newestMessage);
+  }
+  const boundedEvents = [...(snapshot.events ?? [])];
+  const boundedTurnResults = [...(snapshot.turnResults ?? [])];
+  let bounded: SessionTranscriptV2Result = { ...snapshot, messages: boundedMessages, truncated: true };
+  while (Buffer.byteLength(JSON.stringify(bounded), "utf8") > maxSnapshotBytes) {
+    const collections = [boundedMessages, boundedEvents, boundedTurnResults] as const;
+    const largest = collections
+      .map((items, index) => ({ index, bytes: items.length === 0 || (index === 0 && items.length <= 1) ? 0 : Buffer.byteLength(JSON.stringify(items), "utf8") }))
+      .sort((left, right) => right.bytes - left.bytes)[0]!;
+    const entries = collections[largest.index]!;
+    if (largest.bytes === 0) {
+      const latest = boundedMessages.at(-1);
+      if (latest === undefined || latest.textArtifact !== undefined) throw new Error("transcript snapshot cannot fit transport limit");
+      boundedMessages[boundedMessages.length - 1] = referenceMessage(latest);
+      bounded = { ...snapshot, messages: boundedMessages, events: boundedEvents, turnResults: boundedTurnResults, truncated: true };
+      continue;
+    }
+    entries.splice(0, Math.min(entries.length - (largest.index === 0 ? 1 : 0), Math.max(1, Math.ceil(entries.length / 4))));
+    bounded = { ...snapshot, messages: boundedMessages, events: boundedEvents, turnResults: boundedTurnResults, truncated: true };
+  }
+  return bounded;
 }
 
 /** The fields that say what a call would act on, for "You denied: ...". */
