@@ -2490,6 +2490,26 @@ snapshot_max_count = 0
       expect(revokeAgentsConfig(own, manual).cross_provider_auto).toBe(false);
     });
 
+    test("a save between an unset limit and \"minimal\" or \"standard\" takes nothing away", () => {
+      // Both run sub-agents at each model's lowest level and at standard speed.
+      const own = { cross_provider_enabled: true, allowed_providers: ["deepseek"],
+        subagent_limits: { openai: { speed: "fast" as const }, deepseek: { effort: "high" as const } } };
+      for (const [previous, next] of [
+        [{ openai: { speed: "standard" as const } }, {}],
+        [{ deepseek: { effort: "minimal" as const } }, {}],
+        [{}, { openai: { speed: "standard" as const }, deepseek: { effort: "minimal" as const } }],
+      ] as const) {
+        const change = { previous: { ...own, subagent_limits: previous }, next: { ...own, subagent_limits: next } };
+        expect(agentsChangeRevokes(change)).toBe(false);
+        // The session keeps its own limits, which the save did not lower.
+        expect(revokeAgentsConfig(own, change).subagent_limits).toEqual(own.subagent_limits);
+      }
+      // Lowering a raised limit to "standard" still takes it away.
+      const lowered = { previous: own, next: { ...own, subagent_limits: { ...own.subagent_limits, openai: { speed: "standard" as const } } } };
+      expect(agentsChangeRevokes(lowered)).toBe(true);
+      expect(revokeAgentsConfig(own, lowered).subagent_limits).toEqual({ deepseek: { effort: "high" } });
+    });
+
     test("revokeAgentsConfig takes away only what the daemon's view lost and never widens", () => {
       // The session's own --config file also allows grok.
       const own = {

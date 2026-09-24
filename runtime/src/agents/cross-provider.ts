@@ -140,6 +140,17 @@ export async function createChildExecutionPlan(params: {
   readonly toolAllowlist?: readonly string[];
   /** Destination provenance inherited through a same-provider child. */
   readonly inheritedConsentPlan?: ChildExecutionPlan;
+  /**
+   * For a managed AgenC route: called once the concrete destination is
+   * resolved, after the route's preliminary consent. It may refuse the
+   * destination by throwing, and it gives the effort and service tier the
+   * child runs at there, in place of `reasoningEffort` and `serviceTier`,
+   * which were chosen for the route's model.
+   */
+  readonly managedDestinationSettings?: (destination: ProviderSelection, modelInfo: ModelInfo) => {
+    readonly reasoningEffort?: ReasoningEffort;
+    readonly serviceTier?: string;
+  };
 }, preliminaryManaged = false): Promise<ChildExecutionPlan> {
   const { session, selection } = params;
   const crossProvider = selection.provider !== currentChildProvider(session).provider ||
@@ -165,6 +176,10 @@ export async function createChildExecutionPlan(params: {
   }
   const destinationModelInfo = selection.provider === "agenc"
     ? await childModelInfo(session, destination) : params.modelInfo;
+  const managed = selection.provider === "agenc" && !preliminaryManaged
+    ? params.managedDestinationSettings?.(destination, destinationModelInfo) : undefined;
+  const reasoningEffort = managed !== undefined ? managed.reasoningEffort : params.reasoningEffort;
+  const serviceTier = managed !== undefined ? managed.serviceTier : params.serviceTier;
   if (!params.toolFree && (destinationModelInfo.supportsToolUse === false ||
       resolveRegisteredModelCatalogEntry({ provider: destination.provider, model: destination.model })?.supportsToolUse === false)) {
     throw new Error(`Model ${destination.provider}/${destination.model} does not support client-side tool calling. Set tool_free = true for an explicitly tool-free task.`);
@@ -214,8 +229,8 @@ export async function createChildExecutionPlan(params: {
     budgetAllocation: crossProvider ? Object.freeze({
       maxModelCalls: Math.min(32, Math.max(1, session.config?.maxTurns ?? 32)),
     }) : null,
-    ...(params.reasoningEffort !== undefined ? { reasoningEffort: params.reasoningEffort } : {}),
-    ...(params.serviceTier !== undefined ? { serviceTier: params.serviceTier } : {}),
+    ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+    ...(serviceTier !== undefined ? { serviceTier } : {}),
     crossProvider,
   });
 }

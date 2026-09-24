@@ -1,10 +1,8 @@
 import type { AgentsConfig, SubagentEffort, SubagentLimit, SubagentSpeed } from "../config/schema.js";
 import { resolveBuiltInProviderInfo } from "../llm/registry/provider-info.js";
-import type { ResponseItem } from "../session/rollout-item.js";
-import { isUserTurnBoundary } from "../session/rollout-reconstruction.js";
 import type { Session } from "../session/session.js";
-import { responseItemText } from "../session/trajectory-curate.js";
 import type { ModelInfo, ReasoningEffort } from "../session/turn-context.js";
+import { childModelInfo, childProviderPolicy } from "./cross-provider.js";
 
 /** Every effort spelling, lowest first. */
 const EFFORT_ORDER: readonly ReasoningEffort[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -57,12 +55,89 @@ export function limitedServiceTier(
   return requested === undefined || requested === "priority" ? "priority" : undefined;
 }
 
+/**
+ * The effort and service tier of a child. A service tier of null is standard:
+ * the child sends no tier, and takes neither its parent's nor its role's.
+ */
+export interface SubagentModelSettings {
+  readonly reasoningEffort?: ReasoningEffort;
+  readonly serviceTier?: string | null;
+}
+
+/**
+ * The effort and service tier a new child without an execution plan runs at
+ * on its parent's provider, for what its caller left out: the provider's
+ * limits applied to what the child's role asks for. What the caller gave is
+ * kept; spawn_agent applies the limits itself. Every path that creates a
+ * child through `delegate` gets them this way, spawn_agents_on_csv workers
+ * and workflow agents included. A fork of the full conversation does not
+ * come here: it keeps its parent's effort and tier.
+ */
+export async function subagentModelSettings(parent: Session, request: {
+  readonly model?: string;
+  readonly modelInfo?: ModelInfo;
+  readonly role?: {
+    readonly config: {
+      readonly model?: string;
+      readonly reasoningEffort?: ReasoningEffort;
+      readonly serviceTier?: string;
+    };
+  };
+  readonly reasoningEffort?: ReasoningEffort;
+  readonly serviceTier?: string | null;
+}): Promise<SubagentModelSettings> {
+  const given: SubagentModelSettings = {
+    ...(request.reasoningEffort !== undefined ? { reasoningEffort: request.reasoningEffort } : {}),
+    ...(request.serviceTier !== undefined ? { serviceTier: request.serviceTier } : {}),
+  };
+  const binding = parent.services?.providerService?.current?.();
+  if (binding === undefined || (request.reasoningEffort !== undefined && request.serviceTier !== undefined)) {
+    return given;
+  }
+  const model = request.model ?? request.role?.config.model ?? binding.model;
+  const modelInfo = request.modelInfo ?? await sameProviderModelInfo(parent, binding.provider, model);
+  const limit = subagentLimit(childProviderPolicy(parent), binding.provider);
+  const reasoningEffort = request.reasoningEffort ??
+    limitedReasoningEffort(modelInfo, request.role?.config.reasoningEffort, limit.effort);
+  return {
+    ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+    serviceTier: request.serviceTier !== undefined ? request.serviceTier
+      : limitedServiceTier(modelInfo, request.role?.config.serviceTier, limit.speed) ?? null,
+  };
+}
+
+/**
+ * The metadata of `model` on the parent's provider. When it cannot be read,
+ * the parent's metadata under the model's name, which is what the child
+ * session itself is given in that case.
+ */
+async function sameProviderModelInfo(parent: Session, provider: string, model: string): Promise<ModelInfo | undefined> {
+  const parentInfo = parent.modelInfo as ModelInfo | undefined;
+  if (parentInfo === undefined || model === parentInfo.slug) return parentInfo;
+  try {
+    return await childModelInfo(parent, { provider, model });
+  } catch {
+    const { modelMessages: _parentMessages, ...info } = parentInfo;
+    return { ...info, slug: model };
+  }
+}
+
+/** A cross-provider spawn the user did not ask for while automatic choice is off. */
+export class ProviderNotRequestedError extends Error {
+  readonly code = "not_requested";
+
+  constructor(readonly provider: string) {
+    super(`The user's message for this turn does not name ${provider}, and choosing other providers automatically is off in settings.`);
+    this.name = "ProviderNotRequestedError";
+  }
+}
+
 /** What a user may type for a provider besides its name and display name. */
 const PROVIDER_ALIASES: Readonly<Record<string, readonly string[]>> = {
   grok: ["xai", "x.ai"],
   openai: ["gpt", "chatgpt", "codex"],
   anthropic: ["claude", "sonnet", "opus", "haiku"],
-  meta: ["llama"],
+  meta: ["llama", "meta ai"],
   zai: ["glm", "zhipu", "z.ai"],
   "zai-coding-plan": ["glm", "zhipu", "z.ai"],
   qwen: ["qwen"],
@@ -73,9 +148,20 @@ const PROVIDER_ALIASES: Readonly<Record<string, readonly string[]>> = {
   lmstudio: ["lm studio"],
   "nvidia-nim": ["nvidia", "nim"],
   "amazon-bedrock": ["bedrock"],
-  github: ["copilot"],
+  github: ["copilot", "github copilot"],
   mistral: ["codestral", "devstral"],
 };
+
+/**
+ * Providers whose name or display name is an ordinary word in a message:
+ * "push the branch to github", "update the meta tags", and AgenC, this
+ * product's own name. Only their aliases and model names count. A managed
+ * AgenC child is checked by the provider it resolves to.
+ */
+const NAMED_ONLY_BY_ALIAS: ReadonlySet<string> = new Set(["github", "meta", "agenc"]);
+
+/** "an openai-compatible endpoint" names a kind of API, not OpenAI. */
+const OPENAI_COMPATIBLE = /openai[-\s]+compatible/gu;
 
 function mentions(text: string, term: string): boolean {
   const escaped = term.toLowerCase().replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -83,42 +169,41 @@ function mentions(text: string, term: string): boolean {
 }
 
 /**
- * The text of every message the user typed in `session`, without injected
- * context. The turn in progress counts through `currentRootHumanTurn`: its
- * message reaches history only when the turn syncs it, which can be after
- * this turn's tools run.
+ * Whether the message that started the current turn of `rootSession`, the
+ * root conversation, names `provider` or `model`: the provider's name, its
+ * display name, a common alias such as GPT or Claude, or the model's name.
+ * History is not read: only a turn a person started carries that message
+ * (`currentRootHumanTurn`). Turns that cron, child follow-ups, goals or a
+ * resumed run start name nothing, and so does a root with no turn in
+ * progress. So the user names the provider in the message that asks for the
+ * work, and a later message that does not name it cannot start new
+ * sub-agents there.
  */
-function userMessageTexts(session: Session): string[] {
-  const texts: string[] = [];
-  const current = session.currentRootHumanTurn?.()?.text.toLowerCase();
-  if (current !== undefined && current.length > 0) texts.push(current);
-  const history = (session.state?.unsafePeek?.().history ?? []) as ReadonlyArray<ResponseItem>;
-  for (const item of history) {
-    if (item.role !== "user" || !isUserTurnBoundary(item)) continue;
-    const text = responseItemText(item.content).toLowerCase();
-    if (text.length > 0) texts.push(text);
-  }
-  return texts;
-}
-
-/**
- * Whether the user named `provider` or `model` in a message of `session`:
- * the provider's name, its display name, a common alias such as GPT or
- * Claude, or the model's name. Context the runtime injects does not count.
- */
-export function userNamedProvider(session: Session, provider: string, model: string): boolean {
+export function userNamedProvider(rootSession: Session, provider: string, model: string): boolean {
+  const message = rootSession.currentRootHumanTurn?.()?.text;
+  if (message === undefined || message.trim().length === 0) return false;
+  const lowered = message.toLowerCase();
+  const text = provider === "openai-compatible" ? lowered : lowered.replace(OPENAI_COMPATIBLE, " ");
   const displayName = resolveBuiltInProviderInfo(provider)?.name;
-  const terms = [provider, model, ...(PROVIDER_ALIASES[provider] ?? []), ...(displayName !== undefined ? [displayName] : [])]
+  const ownNames = [provider, ...(displayName !== undefined ? [displayName] : [])]
+    .map((term) => term.trim().toLowerCase());
+  // A model named after its provider ("agenc") is that name too.
+  const ordinaryWords = NAMED_ONLY_BY_ALIAS.has(provider) ? new Set(ownNames) : new Set<string>();
+  const terms = [...ownNames, model, ...(PROVIDER_ALIASES[provider] ?? [])]
     .map((term) => term.trim().toLowerCase())
-    .filter((term) => term.length > 0);
-  return userMessageTexts(session).some((text) => terms.some((term) => mentions(text, term)));
+    .filter((term) => term.length > 0 && !ordinaryWords.has(term));
+  return terms.some((term) => mentions(text, term));
 }
 
-/** The limits the user set, in words, for the spawn tool's description. */
+/** The limits sentence of the spawn tool's description; the user's limits only when they set some. */
 export function describeSubagentLimits(policy: AgentsConfig): string {
-  const set = Object.entries(policy.subagent_limits ?? {})
-    .map(([provider, limit]) => `${provider} effort ${limit.effort ?? "lowest"}, speed ${limit.speed ?? "standard"}`);
-  return set.length === 0
-    ? "Every provider is at its lowest effort and standard speed."
-    : `Set by the user: ${set.join("; ")}. Every other provider is at its lowest effort and standard speed.`;
+  const set = Object.entries(policy.subagent_limits ?? {}).flatMap(([provider, limit]) => {
+    const parts = [
+      ...(limit.effort !== undefined && limit.effort !== "minimal" ? [`effort ${limit.effort}`] : []),
+      ...(limit.speed === "fast" ? ["fast"] : []),
+    ];
+    return parts.length === 0 ? [] : [`${provider} ${parts.join(", ")}`];
+  });
+  const except = set.length === 0 ? "" : ` except as the user set (${set.join("; ")})`;
+  return `Sub-agents run at the lowest effort and standard speed${except}; reasoning_effort and service_tier can only lower that.`;
 }

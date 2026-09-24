@@ -51,6 +51,7 @@ import type { ReasoningEffort } from "../session/turn-context.js";
 import type { ModelInfo } from "../session/turn-context.js";
 import type { ProviderSelection } from "../session/provider-service.js";
 import { assertCrossProviderAllowed, assertChildExecutionPlan, assertPreparedChildMatchesPlan, currentChildProvider, resolveChildSelection, type ChildExecutionPlan } from "./cross-provider.js";
+import { subagentModelSettings, type SubagentModelSettings } from "./subagent-limits.js";
 import type { AssistantOutputStreamSink } from "../contracts/assistant-output-stream.js";
 import { emitWarning } from "../session/event-log.js";
 import { AgentThread as AgentThreadClass } from "./thread.js";
@@ -97,8 +98,15 @@ export interface DelegateOpts {
   readonly modelInfo?: ModelInfo;
   readonly providerSelection?: ProviderSelection;
   readonly plan?: ChildExecutionPlan;
+  /**
+   * The child's effort and service tier. A caller that sets them applies the
+   * sub-agent limits itself, as spawn_agent does. Left out, a child without a
+   * plan runs at its provider's limits for what its role asks
+   * (`subagentModelSettings`); a full-history fork keeps its parent's. A
+   * null tier is standard: no tier, neither the parent's nor the role's.
+   */
   readonly reasoningEffort?: ReasoningEffort;
-  readonly serviceTier?: string;
+  readonly serviceTier?: string | null;
   readonly isolation?: IsolationMode;
   readonly worktreeSlug?: string;
   readonly forkMode?: ForkMode;
@@ -158,16 +166,17 @@ export type DelegateOutcome =
 
 function delegateModelOptions(
   opts: DelegateOpts,
+  settings: SubagentModelSettings,
 ): Pick<DelegateOpts, "plan" | "model" | "modelInfo" | "providerSelection" | "reasoningEffort" | "serviceTier"> {
   if (opts.plan !== undefined) return { plan: opts.plan };
   return {
     ...(opts.model !== undefined ? { model: opts.model } : {}),
     ...(opts.modelInfo !== undefined ? { modelInfo: opts.modelInfo } : {}),
     ...(opts.providerSelection !== undefined ? { providerSelection: opts.providerSelection } : {}),
-    ...(opts.reasoningEffort !== undefined
-      ? { reasoningEffort: opts.reasoningEffort }
+    ...(settings.reasoningEffort !== undefined
+      ? { reasoningEffort: settings.reasoningEffort }
       : {}),
-    ...(opts.serviceTier !== undefined ? { serviceTier: opts.serviceTier } : {}),
+    ...(settings.serviceTier !== undefined ? { serviceTier: settings.serviceTier } : {}),
   };
 }
 
@@ -276,9 +285,10 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
   }
 
   const parentThreadId = opts.registry.agentIdForPath?.(opts.parentPath);
+  const requestedRole = opts.control.roleCatalog?.require(opts.role);
   const readOnlyConstraint = childReadOnlyDelegation(
     opts.parent,
-    opts.control.roleCatalog?.require(opts.role),
+    requestedRole,
     parentThreadId === undefined ? undefined : opts.registry.agentMetadataForThread?.(parentThreadId)?.executionConstraint,
   );
   if (readOnlyConstraint !== undefined && isolation === "worktree") {
@@ -291,6 +301,26 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       noChildCreated(reason),
     );
   }
+
+  // Every child runs at its provider's sub-agent limits, whatever path
+  // creates it: spawn_agent (which applies them itself), spawn_agents_on_csv
+  // workers, workflow agents. A plan carries its destination's; a fork of the
+  // full conversation keeps its parent's, so it can reuse the parent's
+  // prompt cache.
+  const modelSettings: SubagentModelSettings =
+    opts.plan === undefined && opts.providerSelection === undefined &&
+      forkMode?.kind !== "full_history"
+      ? await subagentModelSettings(opts.parent, {
+          ...(opts.model !== undefined ? { model: opts.model } : {}),
+          ...(opts.modelInfo !== undefined ? { modelInfo: opts.modelInfo } : {}),
+          ...(requestedRole !== undefined ? { role: requestedRole } : {}),
+          ...(opts.reasoningEffort !== undefined ? { reasoningEffort: opts.reasoningEffort } : {}),
+          ...(opts.serviceTier !== undefined ? { serviceTier: opts.serviceTier } : {}),
+        })
+      : {
+          ...(opts.reasoningEffort !== undefined ? { reasoningEffort: opts.reasoningEffort } : {}),
+          ...(opts.serviceTier !== undefined ? { serviceTier: opts.serviceTier } : {}),
+        };
 
   // Set up worktree if requested.
   let worktree: WorktreeHandle | undefined;
@@ -558,7 +588,7 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
       ...(opts.deferInteractiveApprovals !== undefined
         ? { deferInteractiveApprovals: opts.deferInteractiveApprovals } : {}),
-      ...delegateModelOptions(opts),
+      ...delegateModelOptions(opts, modelSettings),
       ...(opts.resumeManager !== undefined
         ? { resumeManager: opts.resumeManager }
         : {}),
@@ -729,7 +759,7 @@ async function runDelegateAgentLoop(opts: {
   readonly providerSelection?: ProviderSelection;
   readonly plan?: ChildExecutionPlan;
   readonly reasoningEffort?: ReasoningEffort;
-  readonly serviceTier?: string;
+  readonly serviceTier?: string | null;
   readonly resumeManager?: ResumeManager;
   readonly keepAlive?: boolean;
   readonly onWorktreeEvidence: (evidence: WorktreeTurnEvidence) => void;

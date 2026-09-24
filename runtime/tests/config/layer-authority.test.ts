@@ -140,6 +140,10 @@ describe("canonical config layer authority", () => {
     expect(validateAgentsConfig({ cross_provider_auto: true,
       subagent_limits: { deepseek: { effort: "high", speed: "fast" }, openai: {} } }))
       .toEqual({ cross_provider_auto: true, subagent_limits: { deepseek: { effort: "high", speed: "fast" }, openai: {} } });
+    // Written values stay as written, so `agenc config get` shows them; the
+    // store ranks "minimal" and "standard" with unset.
+    expect(validateAgentsConfig({ subagent_limits: { openai: { effort: "minimal", speed: "standard" } } }))
+      .toEqual({ subagent_limits: { openai: { effort: "minimal", speed: "standard" } } });
     expect(() => validateAgentsConfig({ cross_provider_auto: "yes" })).toThrow(/cross_provider_auto/u);
     expect(() => validateAgentsConfig({ subagent_limits: { "not-a-provider": {} } })).toThrow(/subagent_limits\.not-a-provider/u);
     expect(() => validateAgentsConfig({ subagent_limits: { deepseek: { effort: "extreme" } } })).toThrow(/effort/u);

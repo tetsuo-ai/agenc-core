@@ -132,13 +132,16 @@ function withSubagentLimits(
   return Object.keys(limits).length > 0 ? { subagent_limits: limits } : {};
 }
 
-/** Unset effort and speed are the lowest: each model's lowest level, standard. */
+/**
+ * Unset effort and speed are the lowest: each model's lowest level, standard.
+ * They rank with "minimal" and "standard", which run sub-agents the same way.
+ */
 function effortRank(effort: SubagentEffort | undefined): number {
-  return effort === undefined ? -1 : SUBAGENT_EFFORTS.indexOf(effort);
+  return effort === undefined ? 0 : SUBAGENT_EFFORTS.indexOf(effort);
 }
 
 function speedRank(speed: SubagentSpeed | undefined): number {
-  return speed === undefined ? -1 : SUBAGENT_SPEEDS.indexOf(speed);
+  return speed === undefined ? 0 : SUBAGENT_SPEEDS.indexOf(speed);
 }
 
 function lowerEffort(a: SubagentEffort | undefined, b: SubagentEffort | undefined): SubagentEffort | undefined {
@@ -149,16 +152,21 @@ function lowerSpeed(a: SubagentSpeed | undefined, b: SubagentSpeed | undefined):
   return speedRank(a) <= speedRank(b) ? a : b;
 }
 
-/** Sub-agent limits as a frozen map, without providers left at the lowest. */
+/**
+ * Sub-agent limits as a frozen map, without limits at the lowest ("minimal",
+ * "standard") or providers left with none.
+ */
 function subagentLimitMap(
   entries: Iterable<readonly [string, SubagentEffort | undefined, SubagentSpeed | undefined]>,
 ): Readonly<Record<string, SubagentLimit>> {
   const out: Record<string, SubagentLimit> = {};
   for (const [provider, effort, speed] of entries) {
-    if (effort === undefined && speed === undefined) continue;
+    const raisedEffort = effortRank(effort) > 0 ? effort : undefined;
+    const raisedSpeed = speedRank(speed) > 0 ? speed : undefined;
+    if (raisedEffort === undefined && raisedSpeed === undefined) continue;
     out[provider] = Object.freeze({
-      ...(effort !== undefined ? { effort } : {}),
-      ...(speed !== undefined ? { speed } : {}),
+      ...(raisedEffort !== undefined ? { effort: raisedEffort } : {}),
+      ...(raisedSpeed !== undefined ? { speed: raisedSpeed } : {}),
     });
   }
   return Object.freeze(out);

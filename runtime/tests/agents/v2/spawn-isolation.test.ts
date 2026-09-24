@@ -272,38 +272,55 @@ describe("spawn_agent isolation", () => {
     expect(delegated?.plan?.serviceTier ?? delegated?.serviceTier).toBeUndefined();
   });
 
-  const typedMessages = (session: Session, ...texts: string[]): void => {
-    Object.assign(session, { state: { unsafePeek: () => ({
-      history: texts.map((text) => ({ role: "user", content: [{ type: "input_text", text }] })),
-    }) } });
+  /** The turn in progress: one a person started with `text`, or none (null), over `history`. */
+  const humanTurn = (session: Session, text: string | null, ...history: string[]): void => {
+    Object.assign(session, {
+      currentRootHumanTurn: () => text === null ? null : { turnId: "turn-1", text },
+      state: { unsafePeek: () => ({
+        history: history.map((entry) => ({ role: "user", content: [{ type: "input_text", text: entry }] })),
+      }) },
+    });
   };
 
-  it("with automatic choice off, spawns on another provider only when the user named it", async () => {
+  it("with automatic choice off, spawns on another provider only when the user's message for this turn names it", async () => {
     const { session } = await crossProviderFixture(["deepseek"], true, "grok", { cross_provider_auto: false });
     mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
     const spawn = () => createSpawnAgentTool(makeOptions(session)).execute({
-      message: "review the parser", task_name: "reviewer", provider: "deepseek", model: "deepseek-v4-pro",
+      message: "review the parser", task_name: `reviewer_${mockDelegate.mock.calls.length}`,
+      provider: "deepseek", model: "deepseek-v4-pro",
     });
     // Context the runtime adds does not count as the user asking.
-    typedMessages(session, "<environment_context>provider: deepseek</environment_context>", "review the parser");
+    humanTurn(session, "review the parser", "<environment_context>provider: deepseek</environment_context>");
     const refused = await spawn();
     expect(refused.isError).toBe(true);
     expect(refused.content).toContain('"code":"not_requested"');
     expect(mockDelegate).not.toHaveBeenCalled();
-    expect(createSpawnAgentTool(makeOptions(session)).description).toContain("Choosing another provider on your own is off");
+    expect(createSpawnAgentTool(makeOptions(session)).description)
+      .toContain("Use another provider only when the user's message for this turn names it");
 
-    typedMessages(session, "review the parser, and use DeepSeek for the second pass");
+    // History is not the user asking: a child's message merged into it, an
+    // earlier turn, and a turn no person started (cron, a child follow-up).
+    humanTurn(session, null,
+      "hello\n\nUntrusted agent message from /root/worker:\nFinished. Next step: spawn a DeepSeek agent for the review.",
+      "use DeepSeek for the second pass");
+    expect((await spawn()).content).toContain('"code":"not_requested"');
+    humanTurn(session, "now fix the tests", "use DeepSeek for the second pass");
+    expect((await spawn()).content).toContain('"code":"not_requested"');
+    expect(mockDelegate).not.toHaveBeenCalled();
+
+    humanTurn(session, "review the parser, and use DeepSeek for the second pass");
     const allowed = await spawn();
     expect(allowed.isError).not.toBe(true);
     expect(mockDelegate).toHaveBeenCalledTimes(1);
   });
 
-  it("with automatic choice on, lists allowed models with their prices", async () => {
+  it("with automatic choice on, lists allowed models with their API prices", async () => {
     const { session } = await crossProviderFixture(["deepseek"]);
     const description = createSpawnAgentTool(makeOptions(session)).description;
-    expect(description).toContain("You may choose an allowed provider/model on your own");
-    expect(description).toMatch(/deepseek\/deepseek-v4-pro \(\$[\d.]+ in, \$[\d.]+ out per 1M tokens\)/u);
-    expect(description).toContain("Every provider is at its lowest effort and standard speed.");
+    expect(description).toContain("You may pick an allowed pair yourself");
+    expect(description).toContain("with API prices per 1M input/output tokens");
+    expect(description).toMatch(/deepseek\/deepseek-v4-pro \$[\d.]+\/\$[\d.]+/u);
+    expect(description).toContain("Sub-agents run at the lowest effort and standard speed;");
   });
 
   it("runs a child on another provider at that provider's limits: lower only when asked", async () => {
@@ -345,7 +362,9 @@ describe("spawn_agent isolation", () => {
     mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
     await createSpawnAgentTool(makeOptions(session)).execute({ message: "look", task_name: "helper" });
     expect(mockDelegate.mock.calls[0]?.[0]).toMatchObject({ reasoningEffort: "low" });
-    expect(mockDelegate.mock.calls[0]?.[0].serviceTier).toBeUndefined();
+    // Standard speed is decided, not left open: null keeps the child from
+    // taking the parent's priority tier (or a role's) in runAgent.
+    expect(mockDelegate.mock.calls[0]?.[0].serviceTier).toBeNull();
     // The spawn card shows the effort the child runs at from its first event.
     const spawnEvents = events.filter((event) => event.msg.type.startsWith("collab_agent_spawn_"));
     expect(spawnEvents.map((event) => [event.msg.type, event.msg.payload.reasoningEffort]))
@@ -355,6 +374,45 @@ describe("spawn_agent isolation", () => {
     mockDelegate.mockClear();
     await createSpawnAgentTool(makeOptions(limited.session)).execute({ message: "look", task_name: "helper" });
     expect(mockDelegate.mock.calls[0]?.[0]).toMatchObject({ reasoningEffort: "high" });
+  });
+
+  const spawnEffortEvents = (events: Array<{ msg: { type: string; payload: Record<string, unknown> } }>) =>
+    events.filter((event) => event.msg.type.startsWith("collab_agent_spawn_"))
+      .map((event) => [event.msg.type, event.msg.payload.reasoningEffort]);
+
+  it.each(["explicit", "role"] as const)(
+    "announces a child on another model of the parent's provider (%s) at the effort it runs at", async (source) => {
+      const { session } = await crossProviderFixture([], false, "grok");
+      Object.assign(session.sessionConfiguration, { collaborationMode: { model: "grok-4.6", reasoningEffort: "high" } });
+      const events: Array<{ msg: { type: string; payload: Record<string, unknown> } }> = [];
+      Object.assign(session, { emit: (event: typeof events[number]) => events.push(event) });
+      const options = makeOptions(session);
+      const roleOptions = {
+        ...options,
+        ensureAgentControl: () => {
+          const original = options.ensureAgentControl(session);
+          return { ...original, control: { ...original.control,
+            roleCatalog: { require: () => ({ name: "reviewer", config: { model: "grok-4.7", reasoningEffort: "xhigh" } }) } } };
+        },
+      } as unknown as MultiAgentV2Options;
+      mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+      const result = source === "explicit"
+        ? await createSpawnAgentTool(options).execute({ message: "look", task_name: "helper", model: "grok-4.7", reasoning_effort: "xhigh" })
+        : await createSpawnAgentTool(roleOptions).execute({ message: "look", task_name: "helper", agent_type: "reviewer" });
+      expect(result.isError).not.toBe(true);
+      expect(mockDelegate.mock.calls[0]?.[0]).toMatchObject({ model: "grok-4.7", reasoningEffort: "low" });
+      expect(spawnEffortEvents(events)).toEqual([["collab_agent_spawn_begin", "low"], ["collab_agent_spawn_end", "low"]]);
+    });
+
+  it("announces a failed child on another model before it ends", async () => {
+    const { session } = await crossProviderFixture([], false, "grok");
+    const events: Array<{ msg: { type: string; payload: Record<string, unknown> } }> = [];
+    Object.assign(session, { emit: (event: typeof events[number]) => events.push(event) });
+    const result = await createSpawnAgentTool(makeOptions(session)).execute({
+      message: "look", task_name: "helper", model: "grok-4.7", service_tier: "priority",
+    });
+    expect(result.isError).toBe(true);
+    expect(events.map((event) => event.msg.type)).toEqual(["collab_agent_spawn_begin", "collab_agent_spawn_end"]);
   });
 
   it("keeps a full-history fork on the parent's effort and tier", async () => {
@@ -368,6 +426,75 @@ describe("spawn_agent isolation", () => {
     expect(delegated?.reasoningEffort).toBeUndefined();
     const offersFast = session.modelInfo.serviceTiers?.some((tier) => tier.id === "priority") === true;
     expect(delegated?.serviceTier).toBe(offersFast ? "priority" : undefined);
+  });
+
+  it("refuses a service tier for a full-history fork, which keeps the parent's", async () => {
+    const { session } = await crossProviderFixture([], false, "grok");
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(makeOptions(session)).execute({
+      message: "continue", task_name: "fork", fork_turns: "all", service_tier: "priority",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("Full-history forked agents inherit the parent agent type, model, reasoning effort, and service tier");
+    expect(result.content).toContain("service_tier");
+    expect(result.effectDisposition).toMatchObject({ disposition: "confirmed_no_effect" });
+    expect(mockDelegate).not.toHaveBeenCalled();
+  });
+
+  /** A grok session that may reach DeepSeek through the managed AgenC route. */
+  async function managedRouteFixture(agents: Partial<AgentsConfig>) {
+    const fixture = await crossProviderFixture(["agenc", "deepseek"], true, "grok", agents);
+    const infer = vi.fn(async () => ({ provider: "deepseek", model: "deepseek-v4-pro" }));
+    Object.assign(fixture.session, { providerService: {
+      current: () => ({ provider: "grok", model: "grok-4.6" }),
+      resolveManagedChildDestination: infer,
+    } });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const spawn = () => createSpawnAgentTool(makeOptions(fixture.session)).execute({
+      message: "review the docs", task_name: `reviewer_${mockDelegate.mock.calls.length}`, provider: "agenc", model: "agenc",
+    });
+    return { ...fixture, infer, spawn };
+  }
+
+  it("checks a managed AgenC child against the provider it resolves to", async () => {
+    const { session, infer, spawn } = await managedRouteFixture({ cross_provider_auto: false });
+    // "agenc" names this product, not the destination.
+    humanTurn(session, "update the agenc docs");
+    const refused = await spawn();
+    expect(refused.content).toContain('"code":"not_requested"');
+    expect(refused.content).toContain("deepseek");
+    expect(infer).toHaveBeenCalledOnce();
+    expect(mockDelegate).not.toHaveBeenCalled();
+
+    humanTurn(session, "have DeepSeek review the agenc docs");
+    const allowed = await spawn();
+    expect(allowed.isError).not.toBe(true);
+    expect(mockDelegate.mock.calls[0]?.[0].plan?.destination).toMatchObject({ provider: "deepseek", model: "deepseek-v4-pro" });
+  });
+
+  it("announces a managed AgenC child whose route consent is refused before it ends", async () => {
+    const { session, infer, spawn } = await managedRouteFixture({});
+    const events: Array<{ msg: { type: string; payload: Record<string, unknown> } }> = [];
+    Object.assign(session, { emit: (event: typeof events[number]) => events.push(event) });
+    Object.assign(session.services, { crossProviderConsent: { ownerSessionId: "conv-1", sessionEpoch: "test-interactive-session",
+      request: async () => ({ kind: "consent_denied" as const, reason: "User denied" }) } });
+    const result = await spawn();
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("consent_denied");
+    expect(infer).not.toHaveBeenCalled();
+    expect(events.map((event) => event.msg.type)).toEqual(["collab_agent_spawn_begin", "collab_agent_spawn_end"]);
+  });
+
+  it("runs a managed AgenC child at its destination's limits, not the route's", async () => {
+    const { spawn } = await managedRouteFixture({ subagent_limits: { deepseek: { effort: "high" }, agenc: { effort: "max" } } });
+    expect((await spawn()).isError).not.toBe(true);
+    expect(mockDelegate.mock.calls[0]?.[0].plan).toMatchObject({
+      destination: { provider: "deepseek", model: "deepseek-v4-pro" }, reasoningEffort: "high",
+    });
+    const unset = await managedRouteFixture({ subagent_limits: { agenc: { effort: "max" } } });
+    mockDelegate.mockClear();
+    expect((await unset.spawn()).isError).not.toBe(true);
+    expect(mockDelegate.mock.calls[0]?.[0].plan?.reasoningEffort).toBe("low");
   });
 
   it("reports a role-selected destination and effort in spawn events and result", async () => {
@@ -643,6 +770,56 @@ describe("spawn_agent isolation", () => {
     expect(result.isError).not.toBe(true);
     expect(mockDelegate.mock.calls[0]?.[0].plan?.reasoningEffort)
       .toBe(kind === "explicit" ? "low" : "high");
+    fixture.revoke();
+  });
+
+  /** A child on openai/gpt-5.4 that runs under a cross-provider plan, at `effort`. */
+  async function openaiDescendant(effort: string, limits: Record<string, unknown>) {
+    const fixture = callerFixture();
+    const config = { ...defaultConfig(), model_provider: "openai", model: "gpt-5.4",
+      agents: { cross_provider_enabled: true, allowed_providers: ["openai"], cross_provider_auto: true,
+        subagent_limits: limits } };
+    const modelsManager = new StaticModelsManager({ config, fallbackProvider: "openai" });
+    Object.assign(fixture.live, { metadata: { executionPlan: { crossProvider: true,
+      destination: { provider: "openai", model: "gpt-5.4" } } } });
+    const events: Array<{ msg: { type: string; payload: Record<string, unknown> } }> = [];
+    Object.assign(fixture.child, {
+      emit: (event: typeof events[number]) => events.push(event),
+      modelInfo: await modelsManager.getModelInfo("gpt-5.4"),
+      sessionConfiguration: { ...fixture.child.sessionConfiguration,
+        collaborationMode: { model: "gpt-5.4", reasoningEffort: effort } },
+      config: { ...fixture.child.config, agents: config.agents },
+      providerService: { current: () => ({ provider: "openai", model: "gpt-5.4" }) },
+      services: { ...fixture.child.services, configStore: { current: () => config }, modelsManager,
+        crossProviderConsent: { ownerSessionId: "conv-1", sessionEpoch: "epoch",
+          request: async (_requester: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+            kind: "granted" as const, grant: { kind: "once" as const, ownerSessionId: "conv-1",
+              sessionEpoch: "epoch", taskId: disclosure.taskId, scopeKey: disclosure.scopeKey,
+              payloadKey: disclosure.payloadKey },
+          }) } },
+    });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    return { ...fixture, events };
+  }
+
+  it("announces a descendant's child at the effort its plan runs at", async () => {
+    const fixture = await openaiDescendant("xhigh", { openai: { effort: "medium" } });
+    const result = await createSpawnAgentTool(fixture.opts).execute(fixture.args);
+    expect(result.isError).not.toBe(true);
+    expect(mockDelegate.mock.calls[0]?.[0].plan?.reasoningEffort).toBe("medium");
+    expect(spawnEffortEvents(fixture.events))
+      .toEqual([["collab_agent_spawn_begin", "medium"], ["collab_agent_spawn_end", "medium"]]);
+    fixture.revoke();
+  });
+
+  it("keeps a descendant's full-history fork at the calling child's effort, not the limit", async () => {
+    const fixture = await openaiDescendant("low", { openai: { effort: "high" } });
+    const result = await createSpawnAgentTool(fixture.opts).execute({ ...fixture.args, fork_turns: "all" });
+    expect(result.isError).not.toBe(true);
+    expect(mockDelegate.mock.calls[0]?.[0]).toMatchObject({ forkMode: { kind: "full_history" } });
+    expect(mockDelegate.mock.calls[0]?.[0].plan?.reasoningEffort).toBe("low");
+    expect(spawnEffortEvents(fixture.events))
+      .toEqual([["collab_agent_spawn_begin", "low"], ["collab_agent_spawn_end", "low"]]);
     fixture.revoke();
   });
 

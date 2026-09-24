@@ -216,7 +216,6 @@ export interface AgentConfig {
   readonly retention?: AgentRunRetentionConfig;
 }
 
-/** Operator authority for routing subagents to another provider. */
 /** Sub-agent effort limits, lowest first. */
 export const SUBAGENT_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type SubagentEffort = (typeof SUBAGENT_EFFORTS)[number];
@@ -227,13 +226,15 @@ export type SubagentSpeed = (typeof SUBAGENT_SPEEDS)[number];
 /**
  * The effort and speed sub-agents on one provider run at. A model may ask
  * for less, never more. Unset, effort is each model's lowest level other than
- * none, and speed is standard.
+ * none, and speed is standard. "minimal" and "standard" run sub-agents the
+ * same way as unset; the config store ranks them together.
  */
 export interface SubagentLimit {
   readonly effort?: SubagentEffort;
   readonly speed?: SubagentSpeed;
 }
 
+/** Operator authority for routing subagents to another provider. */
 export interface AgentsConfig {
   readonly cross_provider_enabled?: boolean;
   readonly allowed_providers?: readonly string[];
