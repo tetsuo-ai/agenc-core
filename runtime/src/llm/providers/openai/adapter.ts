@@ -84,6 +84,12 @@ import {
 const OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE =
   "OpenAI Responses stream emitted invalid function_call";
 const OPENAI_STREAM_FAILED_MESSAGE = "OpenAI stream failed";
+const OPENAI_STREAM_RATE_LIMIT_CODES: ReadonlySet<string> = new Set([
+  "rate_limit_exceeded",
+  "rate_limit",
+  "rate_limited",
+  "too_many_requests",
+]);
 const OPENAI_CHAT_COMPLETIONS_INVALID_TOOL_CALL_MESSAGE =
   "OpenAI chat-completions stream emitted invalid tool_call";
 const CHAT_COMPLETIONS_CONTEXT_SAFETY_BUFFER_TOKENS = 1024;
@@ -621,6 +627,16 @@ function mapOpenAIStreamError(args: {
     const retryAfterMs = readRetryAfterMs(args.errorBody);
     if (retryAfterMs !== undefined) Object.assign(error, { retryAfterMs });
     return error;
+  }
+  if (OPENAI_STREAM_RATE_LIMIT_CODES.has(readNestedProviderCode(args.errorBody) ?? "")) {
+    return new LLMRateLimitError(
+      args.providerName,
+      readRetryAfterMs(args.errorBody),
+      buildOpenAICompatibilityErrorMessage(
+        message,
+        classifyOpenAIHttpFailure({ status: 429, body: message }),
+      ),
+    );
   }
   if (typeof status === "number") {
     return mapOpenAIHttpFailureToError({

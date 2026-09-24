@@ -10,6 +10,8 @@ import { LMStudioProvider } from "../lmstudio/index.js";
 import { BUILT_IN_PROVIDER_BASE_URLS } from "../../registry/provider-info.js";
 import { OpenAIProvider } from "./adapter.js";
 import { childTerminalOutcome } from "../../../agents/child-terminal.js";
+import { StreamModelError } from "../../../phases/stream-model.js";
+import { isRetryableStreamError } from "../../../session/run-turn-stream-retry.js";
 
 const PROVIDER_TEST_LABEL = "Open" + "AI";
 
@@ -52,6 +54,34 @@ function expectNoRequestMetadataWarning(emitWarning: ReturnType<typeof vi.fn>): 
 }
 
 describe("OpenAIProvider", () => {
+  test.each([
+    "rate_limit_exceeded",
+    "rate_limit",
+    "rate_limited",
+    "too_many_requests",
+  ])("classifies response.failed throttling code %s with or without HTTP status", async (code) => {
+    for (const status of [undefined, 429]) {
+      const error = { code, message: "Request throttled", retry_after_ms: 2_500,
+        ...(status === undefined ? {} : { status }) };
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(sseResponse([
+        `event: response.failed\ndata: ${JSON.stringify({ type: "response.failed", response: { error } })}\n\n`,
+      ]));
+      const provider = new OpenAIProvider({ apiKey: "sk-test", model: "gpt-5",
+        useResponsesApi: true, fetchImpl });
+      const failure = await provider.chatStream(
+        [{ role: "user", content: "go" }], () => {}, { singleWireAttempt: true },
+      ).then(() => undefined, (caught: unknown) => caught);
+      expect(failure).toBeInstanceOf(LLMRateLimitError);
+      expect(failure).toMatchObject({ retryAfterMs: 2_500 });
+      expect((failure as Error).message).toContain("openai_category=rate_limited");
+      expect(childTerminalOutcome({ provider: "openai", model: "gpt-5", error: failure,
+        dispatch: "sent" })).toMatchObject({ reason: "rate_limited", retryable: true,
+          retryAfterMs: 2_500 });
+      expect(isRetryableStreamError(new StreamModelError(failure))).toBe(true);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    }
+  });
+
   test.each([
     "insufficient_quota",
     "credit_balance_exhausted",
