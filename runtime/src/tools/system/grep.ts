@@ -799,17 +799,14 @@ async function resolveSearchPath(params: {
   if (!candidate) {
     return { error: "No search path resolved" };
   }
-  // A relative `path` must be resolved against an allowed root, NOT
-  // `process.cwd()` (the runtime dir). Resolving against cwd would push the
-  // candidate outside `allowedPaths` and `safePath` would reject it. We make
-  // it absolute against each allowed root and pick the first that exists and
-  // re-validates safely. `safePath` below still confines the result to the
-  // allowed set, so this does not widen access. Single-root is production.
+  // A relative `path` belongs to the tool's first allowed root, not a later
+  // signed or durable-memory root. Those extra roots authorize absolute paths
+  // but must not change where the same relative path resolves.
   const isCandidateAbsolute =
     isAbsolute(candidate) || isWindowsAbsolutePath(candidate);
   const candidates = isCandidateAbsolute
     ? [candidate]
-    : allowedPaths.map((root) => join(root, candidate));
+    : [join(allowedPaths[0]!, candidate)];
 
   let safe: Awaited<ReturnType<typeof safePath>> | undefined;
   let targetIsDirectory: boolean | undefined;

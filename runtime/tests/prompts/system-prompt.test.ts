@@ -648,6 +648,16 @@ describe("assembleSystemPrompt", () => {
     expect(prompt.text).not.toContain("Model: grok-4-fast (provider: grok)");
     expect(prompt.staticPrefix).toBe(next.staticPrefix);
   });
+  test("names a managed child's concrete destination instead of its route", async () => {
+    const session = { ...fakeSession,
+      providerService: { current: () => ({ provider: "agenc", model: "managed-route" }) },
+    } as unknown as Session;
+    const prompt = await assembleSystemPrompt({ session, ctx: fakeCtx(),
+      provider: "agenc",
+      promptIdentity: { provider: "deepseek", model: "deepseek-v4-pro" } });
+    expect(prompt.text).toContain("Model: deepseek-v4-pro (provider: deepseek)");
+    expect(prompt.text).not.toContain("Model: managed-route (provider: agenc)");
+  });
   test("builds subagent prompts from explicit canonical inputs", () => {
     const prompt = assembleSubagentSystemPrompt({
       basePrompts: ["Review the change."],

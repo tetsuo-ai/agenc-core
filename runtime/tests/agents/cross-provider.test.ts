@@ -27,6 +27,19 @@ function sessionWithModels(provider: string, model: string, liveModels: string[]
 }
 
 describe("child provider selection", () => {
+  it("does not reuse a different same-provider model's instructions without a model catalog", async () => {
+    const session = sessionWithModels("grok", "grok-4.7", ["grok-4.7", "grok-4.6"]);
+    Object.assign(session.services, { modelsManager: undefined });
+    Object.assign(session, { modelInfo: {
+      slug: "grok-4.7", modelMessages: { instructionsTemplate: "Grok 4.7-only note" },
+      supportsPersonality: true,
+    } });
+    const child = await childModelInfo(session, { provider: "grok", model: "grok-4.6" });
+    expect(child.slug).toBe("grok-4.6");
+    expect(child.modelMessages).toBeUndefined();
+    expect(child.supportsPersonality).toBe(false);
+  });
+
   it("resumes an approved destination after an unrelated catalog addition, while checking its own destination and tools", async () => {
     let config: ReturnType<typeof defaultConfig> = { ...defaultConfig(), model_provider: "grok", model: "grok-4.6",
       agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] } };

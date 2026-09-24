@@ -35,6 +35,8 @@ import { LRUCache } from "lru-cache";
 import { registerChildApprovalSession, revokeChildApprovalSession } from "./child-approval-context.js";
 import { bindLiveAgentSession } from "./live-session.js";
 import { createInertMcpManager } from "../mcp-client/inert-manager.js";
+import { assembleBaseInstructionsForModel } from "../prompts/system-prompt.js";
+import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
 import { createChildAbortController } from "../utils/abortController.js";
 import type {
   LLMChatOptions,
@@ -3134,8 +3136,14 @@ function buildChildModelInfo(
   modelInfo?: ModelInfo,
 ): Session["modelInfo"] {
   if (modelInfo !== undefined) return modelInfo;
+  if (sessionConfiguration.collaborationMode.model === parent.modelInfo.slug) {
+    return parent.modelInfo;
+  }
+  // A different model cannot reuse the parent's instruction template. The
+  // spawn path supplies the selected model's metadata when it is available.
+  const { modelMessages: _parentModelMessages, ...parentModelInfo } = parent.modelInfo;
   return {
-    ...parent.modelInfo,
+    ...parentModelInfo,
     slug: sessionConfiguration.collaborationMode.model,
   };
 }
@@ -3251,7 +3259,8 @@ function prepareChildSessionAuthority(
   params: RunAgentParams,
 ): ChildSessionAuthority {
   const roleConfig = params.live.role.config;
-  const childModel = params.model ?? roleConfig.model;
+  const childModel = params.model ?? roleConfig.model ??
+    params.parent.providerService.current().model;
   const childReasoningEffort =
     params.reasoningEffort ?? roleConfig.reasoningEffort;
   const childServiceTier = params.serviceTier ?? roleConfig.serviceTier;
@@ -3350,8 +3359,9 @@ function buildChildSession(
       // survive the spread above and silently override the forked provider in
       // the ChildSession constructor.
       providerService: params.parent.providerService.forkForChild(provider, {
-        provider: params.providerSelection?.provider ?? params.parent.providerService.current().provider,
-        model: params.providerSelection?.model ?? params.parent.providerService.current().model,
+        provider: params.providerSelection?.provider ??
+          params.parent.providerService.current().provider,
+        model: sessionConfiguration.collaborationMode.model,
       }, params.plan?.crossProvider ? params.plan.route : undefined),
       providerEnvironment: params.parent.providerService.environment(),
       registry,
@@ -3454,6 +3464,31 @@ function buildChildSession(
 
   registerChildApprovalSession(childSession, params.parent);
   return childSession;
+}
+
+/** A forked session must not carry the parent's model-specific base prompt. */
+async function refreshChildBaseInstructions(parent: Session, child: ChildSession,
+  promptIdentity?: ProviderSelection): Promise<void> {
+  const parentBinding = parent.providerService.current();
+  const childBinding = child.providerService.current();
+  const childIdentity = promptIdentity ?? childBinding;
+  if (parentBinding.provider === childIdentity.provider &&
+      parentBinding.model === childIdentity.model) return;
+
+  const baseInstructions = await assembleBaseInstructionsForModel({
+    session: child,
+    ctx: child.newDefaultTurnWithSubId(child.nextInternalSubId()),
+    registry: child.services.registry,
+    provider: childIdentity.provider,
+    ...(promptIdentity !== undefined ? { promptIdentity } : {}),
+    permissionContext: child.permissionModeRegistry.current(),
+    profile: child.config.coordinatorMode === true
+      ? "coordinator"
+      : usesLocalToolProfile(childIdentity.provider) ? "compact" : "standard",
+  });
+  await child.state.with((state) => {
+    state.sessionConfiguration = { ...state.sessionConfiguration, baseInstructions };
+  });
 }
 
 /**
@@ -4105,6 +4140,7 @@ export async function* runAgent(
       childAuthority,
       terminalResultForPendingWorker,
     );
+    await refreshChildBaseInstructions(parent, childSession, params.plan?.destination);
     revokeLiveSession = bindLiveAgentSession(live, childSession);
     const {
       history,

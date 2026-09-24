@@ -791,6 +791,8 @@ export interface AssembleSystemPromptOpts {
   readonly scratchpadDir?: string;
   /** Provider slug for env-info. */
   readonly provider?: string;
+  /** Concrete child destination when a managed transport routes to another provider. */
+  readonly promptIdentity?: { readonly provider: string; readonly model: string };
   /**
    * Active permission context (mode + rules). Drives the AgenC implementationed
    * approval-policy / sandbox-mode prose injection. When `undefined` /
@@ -959,6 +961,7 @@ export async function assembleBaseInstructionsForModel(params: {
     readonly tools: ReadonlyArray<{ readonly name: string }>;
   };
   readonly provider: string;
+  readonly promptIdentity?: { readonly provider: string; readonly model: string };
   readonly permissionContext: ToolPermissionContext | null;
   readonly profile: SystemPromptProfile;
 }): Promise<string> {
@@ -978,6 +981,8 @@ export async function assembleBaseInstructionsForModel(params: {
     enabledToolNames,
     agentsEnabled: enabledToolNames.has("spawn_agent"),
     provider: params.provider,
+    ...(params.promptIdentity !== undefined
+      ? { promptIdentity: params.promptIdentity } : {}),
     permissionContext: params.permissionContext,
     autonomousMode: params.ctx.config.autonomousMode === true,
     outputStyle: await resolveOutputStyleFromSession(
@@ -1110,11 +1115,12 @@ export async function assembleSystemPrompt(
   // The turn config can inherit the root model in a delegated child. Its
   // session binding is the authority for the actual destination.
   const childBinding = session.providerService?.current();
-  const model = childBinding?.model ?? ctx.modelInfo?.slug ?? ctx.config.model;
+  const model = opts.promptIdentity?.model ?? childBinding?.model ??
+    ctx.modelInfo?.slug ?? ctx.config.model;
   const cwd = ctx.cwd;
   const envInfoInputs: EnvInfoInputs = {
     model,
-    provider: childBinding?.provider ?? opts.provider,
+    provider: opts.promptIdentity?.provider ?? childBinding?.provider ?? opts.provider,
     cwd,
     ...(session.services?.sandboxExecutionBroker !== undefined
       ? { sandboxExecutionBroker: session.services.sandboxExecutionBroker }

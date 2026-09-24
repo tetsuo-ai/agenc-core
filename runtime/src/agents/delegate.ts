@@ -437,9 +437,20 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
     opts.assertParentSessionActive?.();
     const parentMessages =
       opts.parentMessagesOverride ?? opts.parent.snapshotHistoryMessages();
+    const parentBinding = opts.parent.services?.providerService?.current?.();
+    const parentProvider = parentBinding?.provider;
+    const parentModel = parentBinding?.model ??
+      opts.parent.sessionConfiguration?.collaborationMode?.model ??
+      opts.parent.modelInfo?.slug;
+    const childProvider = opts.plan?.destination.provider ??
+      opts.providerSelection?.provider ?? parentProvider;
+    const childModel = opts.plan?.destination.model ?? opts.model ??
+      live.role.config.model ?? parentModel;
     fork = await forkSubagent({
       parent: opts.parent,
       parentMessages,
+      inheritParentInstructions: childProvider === parentProvider &&
+        childModel === parentModel,
       ...(forkMode !== undefined ? { mode: forkMode } : {}),
       ...(opts.parentMessagesOverride !== undefined
         ? { useProvidedParentMessages: true }

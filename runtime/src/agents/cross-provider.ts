@@ -513,12 +513,13 @@ export async function childModelInfo(
   localOnly = false,
 ): Promise<ModelInfo> {
   if (!localOnly && selection.provider === currentChildProvider(session).provider) {
-    return selection.model === session.modelInfo.slug
-      ? session.modelInfo
-      : session.services.modelsManager === undefined
-        ? { ...session.modelInfo, slug: selection.model }
-        : await (session.services.modelsManager.getModelInfoForProvider?.(selection.provider, selection.model) ??
-            session.services.modelsManager.getModelInfo(selection.model));
+    if (selection.model === session.modelInfo.slug) return session.modelInfo;
+    if (session.services.modelsManager !== undefined) {
+      return await (session.services.modelsManager.getModelInfoForProvider?.(selection.provider, selection.model) ??
+        session.services.modelsManager.getModelInfo(selection.model));
+    }
+    const { modelMessages: _parentMessages, ...parentInfo } = session.modelInfo;
+    return { ...parentInfo, slug: selection.model, supportsPersonality: false };
   }
   const entry = new ModelRegistry({
     config: childCatalogConfig(session),

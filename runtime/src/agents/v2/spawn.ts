@@ -782,6 +782,16 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           return confirmedNoSpawn(failure);
         }
       }
+      if (!provenancedDescendant && effectiveModel !== undefined &&
+          effectiveModel !== currentChildProvider(session).model) {
+        try {
+          targetModelInfo = await childModelInfo(session, {
+            provider: activeProvider, model: effectiveModel,
+          });
+        } catch (error) {
+          return failSpawn(error instanceof Error ? error.message : String(error));
+        }
+      }
       try {
         serviceTierResult = await resolveSameProviderServiceTier({ session, model: effectiveModel,
           ...(provenancedDescendant && targetModelInfo !== undefined
@@ -866,6 +876,8 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         ...(role !== undefined ? { role } : {}),
         ...(plan !== undefined ? { plan } : {}),
         ...(plan === undefined && effectiveModel !== undefined ? { model: effectiveModel } : {}),
+        ...(plan === undefined && targetModelInfo !== undefined
+          ? { modelInfo: targetModelInfo } : {}),
         ...(plan === undefined && effectiveReasoningEffort !== undefined
           ? { reasoningEffort: effectiveReasoningEffort } : {}),
         ...(plan === undefined && serviceTierResult.serviceTier !== undefined

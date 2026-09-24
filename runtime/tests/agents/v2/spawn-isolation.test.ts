@@ -188,6 +188,17 @@ describe("spawn_agent isolation", () => {
     expect(mockDelegate.mock.calls[0]?.[0].plan).toBeUndefined();
   });
 
+  it("passes a different same-provider model's own metadata to the child", async () => {
+    const { tool } = await crossProviderFixture(["grok"], false);
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await tool.execute({ message: "inspect", task_name: "worker",
+      provider: "grok", model: "grok-4.7" });
+    expect(result.isError).not.toBe(true);
+    expect(mockDelegate.mock.calls[0]?.[0]).toMatchObject({
+      model: "grok-4.7", modelInfo: { slug: "grok-4.7" },
+    });
+  });
+
   it.each(["string", "object"] as const)("projects a %s live status safely", async (shape) => {
     const session = makeSession();
     const events: Array<{ msg: { type: string; payload: Record<string, unknown> } }> = [];
