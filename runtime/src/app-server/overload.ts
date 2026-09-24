@@ -117,6 +117,15 @@ export function isDaemonCausalRoutineMessage(message: JsonObject): boolean {
   return record.kind === "session" && typeof record.toolCallId === "string";
 }
 
+export function isDaemonCausalRoutineForStream(message: JsonObject, head: JsonObject | undefined): boolean {
+  if (!isDaemonCausalRoutineMessage(message) || head?.method !== "message.stream") return false;
+  const authority = daemonObjectParams(message)?.permissionAuthority;
+  if (authority === null || typeof authority !== "object" || Array.isArray(authority)) return false;
+  const sessionId = (authority as JsonObject).sessionId;
+  return typeof sessionId === "string" && sessionId.length > 0 &&
+    daemonObjectParams(head)?.sessionId === sessionId;
+}
+
 function daemonObjectParams(message: JsonObject): JsonObject | undefined {
   const params = message.params;
   return params !== null && typeof params === "object" && !Array.isArray(params)

@@ -343,7 +343,7 @@ describe("routine dispatcher and daemon execution contract", () => {
       await h.submission.promise;
       for (const toolCallId of ["finished", "other-session", "invented"]) {
         wire.send(toolCallId, "routine.create", {
-          ...fields, permissionAuthority: { kind: "session", sessionId: chat.agentId, toolCallId },
+          ...fields, permissionAuthority: { kind: "session", sessionId: chat.sessionId, toolCallId },
         });
         expect(await wire.response(toolCallId)).toMatchObject({ error: { data: { code: "ROUTINE_PERMISSION_DENIED" } } });
       }
@@ -443,7 +443,7 @@ describe("routine dispatcher and daemon execution contract", () => {
       h.executingToolCalls.set(chat.agentId, new Set(["tool-call"]));
       wire.send("change", "session.setPermissionMode", { sessionId: chat.sessionId, mode: "default" });
       wire.send("write", "routine.create", {
-        ...fields, permissionAuthority: { kind: "session", sessionId: chat.agentId, toolCallId: "tool-call" },
+        ...fields, permissionAuthority: { kind: "session", sessionId: chat.sessionId, toolCallId: "tool-call" },
       });
       expect(result<{ routine: Routine }>(await wire.response("write")).routine.permissionMode).toBe("bypassPermissions");
       expect(wire.responses.has("turn")).toBe(false);

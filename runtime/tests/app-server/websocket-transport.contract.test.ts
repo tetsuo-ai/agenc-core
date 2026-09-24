@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import {
   AgenCWebSocketServer as PublicAgenCWebSocketServer,
@@ -86,6 +86,47 @@ async function rejectedUpgradeStatus(
 }
 
 describe("AgenC websocket app-server transport", () => {
+  it("keeps a causal routine write on another connection in that connection's FIFO", async () => {
+    const events: string[] = [];
+    let releaseTurn!: () => void;
+    let releaseHead!: () => void;
+    let enteredTurn!: () => void;
+    let enteredHead!: () => void;
+    const turnDone = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    const headDone = new Promise<void>((resolve) => { releaseHead = resolve; });
+    const turnStarted = new Promise<void>((resolve) => { enteredTurn = resolve; });
+    const headStarted = new Promise<void>((resolve) => { enteredHead = resolve; });
+    const server = new AgenCWebSocketServer({ onMessage: async (message) => {
+      if (message.method === "message.stream") { enteredTurn(); await turnDone; }
+      else if (message.method === "routine.get") {
+        events.push("routine.get"); enteredHead(); await headDone;
+      } else events.push(String(message.method));
+    } });
+    const address = await server.listen();
+    const turnClient = new WebSocket(address.url);
+    const otherClient = new WebSocket(address.url);
+    try {
+      await Promise.all([once(turnClient, "open"), once(otherClient, "open")]);
+      turnClient.send(JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: 1, method: "message.stream",
+        params: { sessionId: "shared-session" } }));
+      await turnStarted;
+      otherClient.send(JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: 1, method: "routine.get" }));
+      await headStarted;
+      otherClient.send(JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: 2, method: "routine.update",
+        params: { permissionAuthority: { kind: "session", sessionId: "shared-session", toolCallId: "running-call" } } }));
+      otherClient.send(JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: 3, method: "routine.delete" }));
+      await delay(40);
+      expect(events).toEqual(["routine.get"]);
+      releaseHead();
+      await vi.waitFor(() => expect(events).toEqual(["routine.get", "routine.update", "routine.delete"]));
+    } finally {
+      releaseHead(); releaseTurn();
+      turnClient.close(); otherClient.close();
+      await Promise.all([nextClose(turnClient), nextClose(otherClient)]);
+      await server.close();
+    }
+  });
+
   it("accepts JSON-RPC objects over a websocket and sends responses", async () => {
     const server = new AgenCWebSocketServer({
       onMessage: async (message, connection) => {

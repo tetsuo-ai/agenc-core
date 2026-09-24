@@ -2,6 +2,7 @@ import { PassThrough } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
+import { isDaemonCausalRoutineMessage } from "./overload.js";
 import {
   AGENC_STDIO_DEFAULT_MAX_LINE_BYTES,
   AgenCStdioTransport,
@@ -33,6 +34,93 @@ const RESPONSIVE_CONTROL_METHODS = [
 ] as const;
 
 describe("AgenC stdio transport", () => {
+  it("keeps a routine write on another connection behind that connection's FIFO head", async () => {
+    const turnInput = new PassThrough();
+    const turnOutput = new PassThrough();
+    let releaseTurn!: () => void;
+    let turnStarted!: () => void;
+    const turnDone = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    const turnEntered = new Promise<void>((resolve) => { turnStarted = resolve; });
+    const turnTransport = new AgenCStdioTransport({ input: turnInput, output: turnOutput,
+      onMessage: async () => { turnStarted(); await turnDone; },
+    });
+    turnTransport.start();
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const events: string[] = [];
+    let releaseHead!: () => void;
+    let headStarted!: () => void;
+    const headDone = new Promise<void>((resolve) => { releaseHead = resolve; });
+    const started = new Promise<void>((resolve) => { headStarted = resolve; });
+    const transport = new AgenCStdioTransport({ input, output, onMessage: async (message) => {
+      events.push(String(message.method));
+      if (message.method === "routine.get") {
+        headStarted();
+        await headDone;
+      }
+    } });
+    transport.start();
+    try {
+      turnInput.write('{"jsonrpc":"2.0","id":1,"method":"message.stream","params":{"sessionId":"session-on-other-connection"}}\n');
+      await turnEntered;
+      input.write('{"jsonrpc":"2.0","id":1,"method":"routine.get"}\n');
+      await started;
+      input.write(JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id: 2, method: "routine.update", params: {
+        permissionAuthority: { kind: "session", sessionId: "session-on-other-connection", toolCallId: "running-call" },
+      } }) + "\n");
+      input.write('{"jsonrpc":"2.0","id":3,"method":"routine.delete"}\n');
+      await delay(20);
+      expect(events).toEqual(["routine.get"]);
+      releaseHead();
+      await vi.waitFor(() => expect(events).toEqual(["routine.get", "routine.update", "routine.delete"]));
+    } finally { releaseHead(); releaseTurn(); await transport.close(); await turnTransport.close(); }
+  });
+
+  it("serializes a tool's bypassed updates and its later delete", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const events: string[] = [];
+    let releaseTurn!: () => void;
+    let releaseFirstUpdate!: () => void;
+    let turnStarted!: () => void;
+    let firstUpdateStarted!: () => void;
+    const turnDone = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    const firstUpdateDone = new Promise<void>((resolve) => { releaseFirstUpdate = resolve; });
+    const turnEntered = new Promise<void>((resolve) => { turnStarted = resolve; });
+    const firstUpdateEntered = new Promise<void>((resolve) => { firstUpdateStarted = resolve; });
+    const transport = new AgenCStdioTransport({ input, output, onMessage: async (message) => {
+      if (message.method === "message.stream") {
+        events.push("turn:start"); turnStarted(); await turnDone; events.push("turn:end");
+      } else if (message.id === 2) {
+        events.push("first:start"); firstUpdateStarted(); await firstUpdateDone; events.push("first:end");
+      } else {
+        events.push(String(message.method));
+      }
+    } });
+    transport.start();
+    const update = (id: number) => JSON.stringify({ jsonrpc: JSON_RPC_VERSION, id,
+      method: "routine.update", params: { permissionAuthority: {
+        kind: "session", sessionId: "s", toolCallId: "call",
+      } },
+    }) + "\n";
+    try {
+      input.write('{"jsonrpc":"2.0","id":1,"method":"message.stream","params":{"sessionId":"s"}}\n');
+      await turnEntered;
+      input.write(update(2));
+      await firstUpdateEntered;
+      input.write(update(3));
+      input.write('{"jsonrpc":"2.0","id":4,"method":"routine.delete"}\n');
+      await delay(20);
+      expect(events).toEqual(["turn:start", "first:start"]);
+      releaseFirstUpdate();
+      await vi.waitFor(() => expect(events).toContain("routine.update"));
+      releaseTurn();
+      await vi.waitFor(() => expect(events).toEqual([
+        "turn:start", "first:start", "first:end", "routine.update", "turn:end", "routine.delete",
+      ]));
+    } finally { releaseFirstUpdate(); releaseTurn(); await transport.close(); }
+  });
+
   it("answers a tool call's routine.create during a blocked turn while ordinary work stays queued", async () => {
     const input = new PassThrough();
     const output = new PassThrough();
@@ -60,7 +148,7 @@ describe("AgenC stdio transport", () => {
     });
     transport.start();
     try {
-      input.write('{"jsonrpc":"2.0","id":1,"method":"message.stream"}\n');
+      input.write('{"jsonrpc":"2.0","id":1,"method":"message.stream","params":{"sessionId":"s"}}\n');
       await started;
       input.write('{"jsonrpc":"2.0","id":2,"method":"routine.create","params":{"permissionAuthority":{"kind":"session","sessionId":"s","toolCallId":"call"}}}\n');
       input.write('{"jsonrpc":"2.0","id":3,"method":"session.clear"}\n');
@@ -313,7 +401,13 @@ describe("AgenC stdio transport", () => {
     input.write(
       '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1.0.0"}}\n',
     );
-    input.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method }) + "\n");
+    const following = { jsonrpc: "2.0", id: 2, method,
+      ...(method === "routine.create" ? { params: { permissionAuthority: {
+        kind: "session", sessionId: "s", toolCallId: "call",
+      } } } : {}),
+    };
+    if (method === "routine.create") expect(isDaemonCausalRoutineMessage(following)).toBe(true);
+    input.write(JSON.stringify(following) + "\n");
     await delay(20);
     expect(events).toEqual(["initialize:start"]);
 

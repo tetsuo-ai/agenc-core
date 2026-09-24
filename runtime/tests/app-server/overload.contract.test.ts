@@ -143,6 +143,15 @@ describe("AgenC daemon overload control messages", () => {
 
     expect(limiter.tryStart(request("health.ping"), 0)).toMatchObject({
       admitted: false,
+      response: { error: { data: { code: "TOO_MANY_IN_FLIGHT_REQUESTS" } } },
+    });
+
+    const causalRoutine = { ...request("routine.create"), params: {
+      permissionAuthority: { kind: "session", sessionId: "s", toolCallId: "call" },
+    } };
+    expect(isDaemonCausalRoutineMessage(causalRoutine)).toBe(true);
+    expect(limiter.tryStart(causalRoutine, 0)).toMatchObject({
+      admitted: false,
       response: {
         error: {
           data: { code: "TOO_MANY_IN_FLIGHT_REQUESTS" },

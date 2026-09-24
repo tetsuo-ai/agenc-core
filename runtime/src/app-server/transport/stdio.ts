@@ -16,6 +16,8 @@ import type { Readable, Writable } from "node:stream";
 import type { JsonObject, JsonValue } from "../protocol/index.js";
 import {
   daemonOverloadErrorResponse,
+  isDaemonCausalRoutineForStream,
+  isDaemonCausalRoutineMessage,
   isDaemonPreemptiveMessage,
   isDaemonPriorityMessage,
   maxQueuedRequestsFromOptions,
@@ -40,6 +42,8 @@ export class AgenCStdioTransport {
   readonly #pendingMessages = new Set<Promise<void>>();
   // Ordinary requests, including routines, keep their per-connection FIFO.
   #dispatchChain: Promise<void> = Promise.resolve();
+  readonly #normalQueue: JsonObject[] = [];
+  #causalRoutineChain: Promise<void> = Promise.resolve();
   // Priority requests may bypass a streaming turn, but never the initialize
   // request that authenticates and establishes connection state.
   #initializeBarrier: Promise<void> = Promise.resolve();
@@ -96,7 +100,10 @@ export class AgenCStdioTransport {
       return;
     }
 
-    if (isDaemonPriorityMessage(message)) {
+    const causalRoutine = isDaemonCausalRoutineMessage(message);
+    const sameStreamingHead = causalRoutine &&
+      isDaemonCausalRoutineForStream(message, this.#normalQueue[0]);
+    if (isDaemonPriorityMessage(message) && (!causalRoutine || sameStreamingHead)) {
       const lane = isDaemonPreemptiveMessage(message) ? "control" : "priority";
       const maxQueuedRequests = maxQueuedRequestsFromOptions(this.#options);
       if (this.#queuedPriorityMessages[lane] >= maxQueuedRequests) {
@@ -110,9 +117,11 @@ export class AgenCStdioTransport {
       // Dispatch them off-chain while keeping ordinary, order-dependent work
       // FIFO. The promise is still tracked so close() drains it.
       const initializeBarrier = this.#initializeBarrier;
+      const priorCausalRoutine = this.#causalRoutineChain;
       const pending = Promise.resolve()
         .then(async () => {
           await initializeBarrier;
+          if (causalRoutine) await priorCausalRoutine;
           await this.#options.onMessage(message);
         })
         .catch((error) => {
@@ -121,6 +130,10 @@ export class AgenCStdioTransport {
       if (message.method === "agent.create") {
         // Create can start during a stream, but a later attach must still
         // wait for its session to exist.
+        this.#dispatchChain = Promise.all([this.#dispatchChain, pending]).then(() => {});
+      }
+      if (causalRoutine) {
+        this.#causalRoutineChain = pending;
         this.#dispatchChain = Promise.all([this.#dispatchChain, pending]).then(() => {});
       }
       this.#pendingMessages.add(pending);
@@ -145,6 +158,7 @@ export class AgenCStdioTransport {
       return;
     }
     this.#queuedNormalMessages += 1;
+    this.#normalQueue.push(message);
     // Chain dispatch on a per-connection promise so pipelined,
     // order-dependent requests are handed to onMessage in arrival order
     // instead of racing. A handler rejection is caught here so it cannot
@@ -156,6 +170,7 @@ export class AgenCStdioTransport {
         } catch (error) {
           this.#options.onError?.(asError(error), line);
         } finally {
+          this.#normalQueue.shift();
           this.#queuedNormalMessages = Math.max(
             0,
             this.#queuedNormalMessages - 1,
