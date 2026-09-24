@@ -59,7 +59,7 @@ import { registerSandboxExecutionLifecycleParticipant } from "../sandbox/executi
 import { MCPTransportCleanupError } from "./transports/connect-with-cleanup.js";
 import { assertValidMcpServerName } from "./server-name.js";
 import { isMcpAuthenticationError } from "../services/mcp/auth-errors.js";
-import { acquireVerifiedPluginGeneration, retireVerifiedPluginGenerations, fingerprintPluginCatalogConfig, primePluginCatalogSingleFlight, readPluginCatalog, writePluginCatalog, type PluginCatalog, type PluginCatalogIdentity, type VerifiedPluginGeneration } from "./plugin-catalog-cache.js";
+import { acquireVerifiedPluginGeneration, fingerprintPluginCatalogConfig, primePluginCatalogSingleFlight, readPluginCatalog, writePluginCatalog, type PluginCatalog, type PluginCatalogIdentity, type VerifiedPluginGeneration } from "./plugin-catalog-cache.js";
 import { reservePluginProcess, releasePluginProcess, touchPluginProcess, notifyPluginProcessIdle } from "./plugin-process-budget.js";
 
 /** I-50: cancellable MCP startup wait; 30s default. */
@@ -1581,8 +1581,12 @@ export class MCPManager {
     const nextConfigs = Object.freeze(configs.map(immutableMcpServerConfig));
     for (const previous of this.configs) {
       const plugin = previous.origin?.pluginServer;
-      if (!plugin || JSON.stringify(previous) === JSON.stringify(nextConfigs.find(next => next.name === previous.name))) continue;
-      retireVerifiedPluginGenerations(plugin.pluginName, plugin.pluginRoot, previous.pluginCatalogHome);
+      const next = nextConfigs.find(candidate => candidate.name === previous.name);
+      if (!plugin || JSON.stringify(previous) === JSON.stringify(next)) continue;
+      // Enable/disable overrides belong to this manager. For other changes,
+      // revoke only the generation this manager actually supersedes.
+      if (next?.enabled === false || previous.enabled === false) continue;
+      this.installationGenerations.get(previous)?.state.retire();
     }
     let deferred: DeferredMcpRefresh | undefined;
     let deferralNotified = false;

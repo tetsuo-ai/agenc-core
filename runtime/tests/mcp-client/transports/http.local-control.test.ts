@@ -15,6 +15,29 @@ vi.mock("../../utils/proxy.js", () => ({ getProxyFetchOptions: observed.proxy })
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
 
 describe("private HTTP MCP transport", () => {
+  it("follows an ordinary HTTP redirect while keeping local redirects blocked", async () => {
+    const endpoint = "https://service.example/mcp";
+    const visited: string[] = [];
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      visited.push(url);
+      if (url === endpoint) {
+        if (init?.redirect === "error") throw new Error("unexpected redirect");
+        visited.push(`${endpoint}/`); // Node's default follows the 307 Location.
+      }
+      return new Response("destination", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetch);
+    await createHttpMCPConnection({ name: "ordinary", endpoint });
+    const ordinary = (observed.options as { fetch: (input: string, init?: RequestInit) => Promise<Response> }).fetch;
+    await expect(ordinary(endpoint, { method: "POST", body: JSON.stringify({ method: "tools/call" }) })).resolves.toHaveProperty("status", 200);
+    expect(fetch).toHaveBeenLastCalledWith(endpoint, expect.not.objectContaining({ redirect: "error" }));
+    expect(visited).toEqual([endpoint, `${endpoint}/`]);
+    await createHttpMCPConnection({ name: "local", endpoint, localOnly: true });
+    const local = (observed.options as { fetch: (input: string, init?: RequestInit) => Promise<Response> }).fetch;
+    await expect(local(endpoint)).rejects.toThrow("unexpected redirect");
+    expect(visited).toEqual([endpoint, `${endpoint}/`, endpoint]);
+  });
   it("uses an explicitly direct environment, rejects redirects and refuses alternate endpoints", async () => {
     const fetch = vi.fn(async () => new Response("ok"));
     vi.stubGlobal("fetch", fetch);

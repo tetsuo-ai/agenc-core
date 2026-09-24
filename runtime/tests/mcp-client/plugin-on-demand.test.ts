@@ -89,6 +89,61 @@ async function unlockDirectories(path: string): Promise<void> {
 afterEach(async () => { for (const path of homes.splice(0)) { await unlockDirectories(path); await rm(path, { recursive: true, force: true }); } });
 
 describe("plugin MCP on-demand lifecycle", () => {
+  it.each(["eager", "lazy"])("refuses a %s generation after a separate CLI module disables its plugin", async kind => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const plugin = { pluginName: "sample", serverName: kind, digest: hashInstalledPlugin(root), pluginRoot: root, eager: kind === "eager" };
+    const cfg = config(cacheHome, `plugin:sample:${kind}-external`, { origin: { scope: "plugin", pluginServer: plugin } });
+    const otherRoot = join(cacheHome, "other");
+    await mkdir(otherRoot); await writeFile(join(otherRoot, "entry.js"), "other");
+    const other = config(cacheHome, "plugin:other:main", { origin: { scope: "plugin", pluginServer: { pluginName: "other", serverName: "main", digest: hashInstalledPlugin(otherRoot), pluginRoot: otherRoot, eager: true } } });
+    warm(cfg);
+    const manager = new MCPManager([cfg, other]);
+    try {
+      await manager.start();
+      const before = spawn.mock.calls.length;
+      vi.resetModules();
+      const isolated = await import("../plugins/cli/pluginOperations.js");
+      await isolated.setPluginEnabledOp({ pluginId: "sample", enabled: false, agencHome: cacheHome, pluginStorageRoot: join(cacheHome, "plugins"), sessionTempRoot: cacheHome, workspaceRoot: cacheHome });
+      const result = await manager.callTool(cfg.name, "ping", {});
+      expect(result.isError).toBe(true);
+      expect(spawn.mock.calls.length).toBe(before);
+      expect((await manager.callTool(other.name, "ping", {})).isError).not.toBe(true);
+      const fresh = new MCPManager([cfg]);
+      try {
+        await fresh.start();
+        expect((await fresh.callTool(cfg.name, "ping", {})).isError).not.toBe(true);
+      } finally { await fresh.stopStrict(); }
+    } finally { await manager.stopStrict(); }
+  });
+
+  it("keeps A's replacement after B refreshes to the same environment", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const cfg = config(cacheHome, "plugin:sample:two-refreshes", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "main", digest: hashInstalledPlugin(root), pluginRoot: root, eager: true } } });
+    const a = new MCPManager([cfg]); const b = new MCPManager([cfg]);
+    try {
+      await Promise.all([a.start(), b.start()]);
+      const replacement = { ...cfg, env: { NEW_VALUE: "1" } };
+      await a.refreshServers([replacement]);
+      await b.refreshServers([replacement]);
+      expect((await a.callTool(cfg.name, "ping", {})).isError).not.toBe(true);
+    } finally { await Promise.all([a.stopStrict(), b.stopStrict()]); }
+  });
+
+  it("keeps another session running when one session disables its plugin", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const cfg = config(cacheHome, "plugin:sample:local-override", { origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "main", digest: hashInstalledPlugin(root), pluginRoot: root, eager: true } } });
+    const a = new MCPManager([cfg]); const b = new MCPManager([cfg]);
+    try {
+      await Promise.all([a.start(), b.start()]);
+      await b.refreshServers([{ ...cfg, enabled: false }]);
+      expect((await a.callTool(cfg.name, "ping", {})).isError).not.toBe(true);
+      await b.refreshServers([{ ...cfg, enabled: true }]);
+      expect((await a.callTool(cfg.name, "ping", {})).isError).not.toBe(true);
+    } finally { await Promise.all([a.stopStrict(), b.stopStrict()]); }
+  });
   it("checks revocation after onBegin before stdio dispatch", async () => {
     const cacheHome = await home(); const root = join(cacheHome, "installed");
     await mkdir(root); await writeFile(join(root, "entry.js"), "old");

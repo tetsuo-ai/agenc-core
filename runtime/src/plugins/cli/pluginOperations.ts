@@ -47,6 +47,7 @@ import {
 import { parsePluginIdentifier } from "../identifier.js";
 import { skillDisplayNameFromMarkdown } from "../skill-display-metadata.js";
 import { retireVerifiedPluginGenerations } from "../../mcp-client/plugin-catalog-cache.js";
+import { withPluginLifecycleMutation } from "../../mcp-client/plugin-lifecycle-revision.js";
 
 export type PluginScope = "user" | "project" | "local";
 
@@ -432,6 +433,7 @@ export async function installPluginOp(
         `plugin source failed validation: ${loaded.errors.map((issue) => issue.message).join("; ")}`,
       );
     }
+    const validatedPlugin = loaded.plugin;
     const pluginId = resolveInstallPluginId(
       input.name,
       (typeof input.source === "string"
@@ -463,44 +465,48 @@ export async function installPluginOp(
       );
     }
     const destination = existingRoots[0] ?? join(installRoot, safeName);
-    retireVerifiedPluginGenerations(pluginId, destination);
-    await copyDirectoryAtomically(source, destination, {
-      force: input.force === true,
+    const result = await withPluginLifecycleMutation(resolvePluginAgencHome(input), pluginId, async () => {
+      retireVerifiedPluginGenerations(pluginId, undefined, resolvePluginAgencHome(input));
+      await copyDirectoryAtomically(source, destination, {
+        force: input.force === true,
+      });
+      await writeInstallMetadata(destination, {
+        name: validatedPlugin.name,
+        dependencyIdentity: pluginId,
+        source: resolutionKind === "local"
+          ? source
+          : redactPluginInstallSource(input.source),
+        ...(resolutionKind !== "local" &&
+          pluginInstallSourceNeedsRedaction(input.source)
+          ? { sourceRedacted: true }
+          : {}),
+        sourceRoot: source,
+        scope,
+        resolutionKind,
+        signatureRequired,
+        signatureVerified,
+        installedAt: (input.now ?? (() => new Date()))().toISOString(),
+      });
+      const plugin = await createPluginFromPath(destination, {
+        source: scope,
+        enabled: true,
+      });
+      if (plugin.plugin === null || plugin.errors.length > 0) {
+        throw new Error(
+          `installed plugin failed validation: ${plugin.errors.map((issue) => issue.message).join("; ")}`,
+        );
+      }
+      await writePluginConfigEntry(pluginId, { enabled: true }, input, true);
+      return {
+        plugin: summarizeLoadedPlugin({ ...plugin.plugin, id: pluginId }),
+        destination,
+        scope,
+        resolutionKind,
+        signatureVerified,
+      };
     });
-    await writeInstallMetadata(destination, {
-      name: loaded.plugin.name,
-      dependencyIdentity: pluginId,
-      source: resolutionKind === "local"
-        ? source
-        : redactPluginInstallSource(input.source),
-      ...(resolutionKind !== "local" &&
-        pluginInstallSourceNeedsRedaction(input.source)
-        ? { sourceRedacted: true }
-        : {}),
-      sourceRoot: source,
-      scope,
-      resolutionKind,
-      signatureRequired,
-      signatureVerified,
-      installedAt: (input.now ?? (() => new Date()))().toISOString(),
-    });
-    const plugin = await createPluginFromPath(destination, {
-      source: scope,
-      enabled: true,
-    });
-    if (plugin.plugin === null || plugin.errors.length > 0) {
-      throw new Error(
-        `installed plugin failed validation: ${plugin.errors.map((issue) => issue.message).join("; ")}`,
-      );
-    }
-    await writePluginConfigEntry(pluginId, { enabled: true }, input);
-    return {
-      plugin: summarizeLoadedPlugin({ ...plugin.plugin, id: pluginId }),
-      destination,
-      scope,
-      resolutionKind,
-      signatureVerified,
-    };
+    await input.configStore?.reload();
+    return result;
   } finally {
     await resolved?.cleanup();
   }
@@ -542,31 +548,26 @@ export async function uninstallPluginOp(
   if (targetRoots.length === 0) {
     throw new Error(`plugin is not installed in ${scope} scope: ${input.pluginId}`);
   }
-  for (const root of targetRoots) {
-    retireVerifiedPluginGenerations(pluginId, root);
-    await rm(root, { recursive: true, force: true });
-  }
-  const remainsInstalled = await pluginIdRemainsInstalled(pluginId, input);
-  const removedConfig = remainsInstalled
-    ? false
-    : await removePluginConfigEntry(pluginId, input);
-  let removedData = false;
-  if (!remainsInstalled && input.keepData !== true) {
-    const authority = {
-      pluginStorageRoot: input.pluginStorageRoot,
-    };
-    const dataDir = pluginDataDirPath(pluginId, authority);
-    if (await pathExists(dataDir)) {
-      await deletePluginDataDir(pluginId, authority);
-      removedData = !(await pathExists(dataDir));
+  const result = await withPluginLifecycleMutation(resolvePluginAgencHome(input), pluginId, async () => {
+    retireVerifiedPluginGenerations(pluginId, undefined, resolvePluginAgencHome(input));
+    for (const root of targetRoots) await rm(root, { recursive: true, force: true });
+    const remainsInstalled = await pluginIdRemainsInstalled(pluginId, input);
+    const removedConfig = remainsInstalled
+      ? false
+      : await removePluginConfigEntry(pluginId, input, true);
+    let removedData = false;
+    if (!remainsInstalled && input.keepData !== true) {
+      const authority = { pluginStorageRoot: input.pluginStorageRoot };
+      const dataDir = pluginDataDirPath(pluginId, authority);
+      if (await pathExists(dataDir)) {
+        await deletePluginDataDir(pluginId, authority);
+        removedData = !(await pathExists(dataDir));
+      }
     }
-  }
-  return {
-    pluginId,
-    removedRoots: targetRoots,
-    removedConfig,
-    removedData,
-  };
+    return { pluginId, removedRoots: targetRoots, removedConfig, removedData };
+  });
+  await input.configStore?.reload();
+  return result;
 }
 
 export async function setPluginEnabledOp(
@@ -1056,7 +1057,14 @@ async function writePluginConfigEntry(
   pluginId: string,
   entry: PluginEntryConfig,
   options: PluginOperationOptions,
+  lifecycleHeld = false,
 ): Promise<string> {
+  if (!lifecycleHeld) {
+    const path = await withPluginLifecycleMutation(resolvePluginAgencHome(options), pluginId, () =>
+      writePluginConfigEntry(pluginId, entry, options, true));
+    await options.configStore?.reload();
+    return path;
+  }
   retireVerifiedPluginGenerations(pluginId, undefined, resolvePluginAgencHome(options));
   const path = pluginConfigPath(options);
   mutateCanonicalUserConfigSync(path, (raw) => {
@@ -1078,14 +1086,21 @@ async function writePluginConfigEntry(
     });
     if (entry.enabled !== false) plugins.enabled = true;
   });
-  await options.configStore?.reload();
   return path;
 }
 
 async function removePluginConfigEntry(
   pluginId: string,
   options: PluginOperationOptions,
+  lifecycleHeld = false,
 ): Promise<boolean> {
+  if (!lifecycleHeld) {
+    const removed = await withPluginLifecycleMutation(resolvePluginAgencHome(options), pluginId, () =>
+      removePluginConfigEntry(pluginId, options, true));
+    await options.configStore?.reload();
+    return removed;
+  }
+  retireVerifiedPluginGenerations(pluginId, undefined, resolvePluginAgencHome(options));
   const path = pluginConfigPath(options);
   let removed = false;
   mutateCanonicalUserConfigSync(path, (raw) => {
@@ -1097,6 +1112,5 @@ async function removePluginConfigEntry(
       delete raw.plugins.plugins;
     }
   });
-  await options.configStore?.reload();
   return removed;
 }

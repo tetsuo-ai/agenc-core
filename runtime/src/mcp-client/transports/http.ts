@@ -69,7 +69,9 @@ export async function createHttpMCPConnection(
     if (config.desktopAuthorityGrant) await assertDesktopSocketBinding(config.desktopAuthorityGrant);
     // Binding and OAuth work may yield after the bridge's initial guard.
     assertMcpFetchToolDispatch(init?.body, config.desktopAuthorityGrant !== undefined);
-    return fetch(input, { ...init, ...proxyOptions, redirect: "error" });
+    return fetch(input, { ...init, ...proxyOptions,
+      ...(config.localOnly === true || config.desktopAuthorityGrant !== undefined ? { redirect: "error" as const } : {}),
+    });
   };
   try {
   await attestDesktopEndpoint(config, privateFetch);

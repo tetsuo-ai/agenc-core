@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { Worker } from "node:worker_threads";
+import { readPluginLifecycleRevision, withPluginLifecycleVerification } from "./plugin-lifecycle-revision.js";
 
 export interface PluginCatalogIdentity {
   readonly pluginName: string;
@@ -251,12 +252,15 @@ export interface VerifiedPluginGeneration {
   subscribe(listener: () => void): () => void;
   /** An acquisition owns this lease from before verification begins. */
   release(): void;
+  /** Revoke this exact verified generation, leaving later generations intact. */
+  retire(): void;
 }
 
 interface GenerationState {
   readonly root: string;
   readonly pluginName: string | undefined;
   readonly cacheHome: string | undefined;
+  lifecycleRevision: string | undefined;
   version: number;
   invalidated: boolean;
   owners: number;
@@ -265,6 +269,17 @@ interface GenerationState {
 }
 
 const generations = new Map<string, GenerationState>();
+
+function retireGeneration(key: string, state: GenerationState): void {
+  if (state.invalidated) return;
+  state.invalidated = true;
+  state.version++;
+  if (generations.get(key) === state) generations.delete(key);
+  for (const listener of [...state.listeners]) {
+    try { listener(); }
+    catch { /* The invalidated state still blocks dispatch in every owner. */ }
+  }
+}
 
 /**
  * The plugin lifecycle is the revocation authority. A local process editing
@@ -276,13 +291,7 @@ export function retireVerifiedPluginGenerations(pluginName: string | undefined, 
   for (const [key, state] of generations) {
     if ((pluginName !== undefined && state.pluginName !== pluginName) || (root !== undefined && state.root !== root) ||
       (cacheHome !== undefined && state.cacheHome !== cacheHome)) continue;
-    state.invalidated = true;
-    state.version++;
-    generations.delete(key);
-    for (const listener of [...state.listeners]) {
-      try { listener(); }
-      catch { /* The invalidated state still blocks dispatch in every owner. */ }
-    }
+    retireGeneration(key, state);
   }
 }
 
@@ -292,16 +301,34 @@ export async function acquireVerifiedPluginGeneration(
 ): Promise<VerifiedPluginGeneration> {
   const key = JSON.stringify([root, snapshotRoot, digest, pluginName, cacheHome]);
   let state = generations.get(key);
+  if (state && state.lifecycleRevision !== undefined && cacheHome && pluginName) {
+    const prior = state;
+    try {
+      if (readPluginLifecycleRevision(cacheHome, pluginName) !== prior.lifecycleRevision) {
+        retireGeneration(key, prior);
+        state = undefined;
+      }
+    } catch {
+      retireGeneration(key, prior);
+      state = undefined;
+    }
+  }
   if (!state) {
     state = {
-      root, pluginName, cacheHome, version: 0, invalidated: false, owners: 0,
+      root, pluginName, cacheHome, lifecycleRevision: undefined, version: 0, invalidated: false, owners: 0,
       listeners: new Set(), verified: Promise.resolve(),
     };
     const created = state;
-    created.verified = installationWorker<{ valid: boolean }>({ kind: "verify", root, snapshotRoot, digest })
-      .then(({ valid }) => {
-        if (!valid) throw new Error("Installed plugin changed during verification");
-      });
+    const verify = async (): Promise<void> => {
+      const { valid } = await installationWorker<{ valid: boolean }>({ kind: "verify", root, snapshotRoot, digest });
+      if (!valid) throw new Error("Installed plugin changed during verification");
+    };
+    created.verified = cacheHome && pluginName
+      ? withPluginLifecycleVerification(cacheHome, pluginName, async revision => {
+          created.lifecycleRevision = revision;
+          await verify();
+        })
+      : verify();
     generations.set(key, created);
   }
   // Increment before the first await: another manager cannot release the
@@ -317,19 +344,38 @@ export async function acquireVerifiedPluginGeneration(
   };
   try {
     await owned.verified;
-    if (owned.invalidated) throw new Error("Installed plugin generation changed");
+    let revisionCurrent = true;
+    if (cacheHome && pluginName) {
+      try { revisionCurrent = readPluginLifecycleRevision(cacheHome, pluginName) === owned.lifecycleRevision; }
+      catch { revisionCurrent = false; }
+    }
+    if (owned.invalidated || !revisionCurrent) {
+      retireGeneration(key, owned);
+      throw new Error("Installed plugin generation changed");
+    }
   } catch (error) {
     release();
     throw error;
   }
   return {
     get version() { return owned.version; },
-    isCurrent: version => !owned.invalidated && owned.version === version,
+    isCurrent: version => {
+      if (!owned.invalidated && cacheHome && pluginName) {
+        try {
+          if (readPluginLifecycleRevision(cacheHome, pluginName) !== owned.lifecycleRevision) retireGeneration(key, owned);
+        } catch {
+          // A missing or unreadable revision cannot authorize dispatch.
+          retireGeneration(key, owned);
+        }
+      }
+      return !owned.invalidated && owned.version === version;
+    },
     subscribe(listener) {
       owned.listeners.add(listener);
       return () => { owned.listeners.delete(listener); };
     },
     release,
+    retire: () => retireGeneration(key, owned),
   };
 }
 
