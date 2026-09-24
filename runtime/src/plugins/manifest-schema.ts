@@ -1,8 +1,9 @@
+import { realpathSync } from "node:fs";
 import { isAbsolute, normalize, resolve, sep } from "node:path";
 import { validateHooksConfig } from "../config/schema.js";
 import { isRecord } from "../utils/record.js";
 import { isCanonicalPluginName } from "./identifier.js";
-import { isExcludedPluginPayloadDirectory } from "./payload-paths.js";
+import { isExcludedPluginPayloadDirectory, isExcludedPluginPayloadPath } from "./payload-paths.js";
 
 export { isRecord };
 
@@ -253,6 +254,20 @@ export function resolveManifestRelativePath(
   if (resolved !== root && !resolved.startsWith(`${root}${sep}`)) {
     throw new PluginManifestError(`${field} path escapes the plugin root`, [
       { path: field, message: "Path must stay inside the plugin root" },
+    ]);
+  }
+  // A directory alias (including a symlink or Windows short name) may name
+  // excluded content even when none of the lexical segments do.
+  let physicalRoot = root;
+  let physicalPath = resolved;
+  try {
+    physicalRoot = realpathSync.native(root);
+    physicalPath = realpathSync.native(resolved);
+  } catch { /* Missing paths are handled by the loader; lexical checks still apply. */ }
+  if (isExcludedPluginPayloadPath(root, resolved) ||
+    isExcludedPluginPayloadPath(physicalRoot, physicalPath)) {
+    throw new PluginManifestError(`${field} path names excluded plugin metadata`, [
+      { path: field, message: "Path must not name an excluded metadata directory" },
     ]);
   }
   return resolved;

@@ -83,13 +83,38 @@ describe("skill display metadata", () => {
     expect(JSON.parse(await readFile(fixture.cache, "utf8")).cardMetadataVersion).toBe(1);
   });
 
-  it("does not permanently cache a failed skill fetch as current metadata", async () => {
+  it("claims a shared skill retry deadline before failed fetches", async () => {
     const fixture = await catalogFixture();
     fixture.fetcher.mockImplementationOnce(async () => new Response(JSON.stringify({ name: "forja", skills: ["./skills/calidad"] })));
     fixture.fetcher.mockRejectedValueOnce(new Error("skill unavailable"));
     expect((await fixture.get()).skills).toEqual([{ name: "calidad" }]);
     expect(JSON.parse(await readFile(fixture.cache, "utf8")).cardMetadataVersion).toBeUndefined();
+    fixture.fetcher.mockClear();
+    const clients = ["client-a", "client-b"].map((name) => buildMarketplaceCatalog({
+      ...fixture, agencHome: join(fixture.root, name), fetcher: fixture.fetcher,
+      now: () => new Date("2026-09-23T00:00:00Z"),
+    }, "desktop"));
+    await Promise.all(clients);
+    expect(fixture.fetcher).not.toHaveBeenCalled();
+    expect((await fixture.get()).skills).toEqual([{ name: "calidad" }]);
+    expect(fixture.fetcher).not.toHaveBeenCalled();
+    const sidecar = JSON.parse(await readFile(fixture.cache, "utf8"));
+    await writeFile(fixture.cache, JSON.stringify({ ...sidecar,
+      manifestRetryAfter: new Date(Date.parse("2026-09-23T00:00:00Z") +
+        3 * OFFICIAL_MARKETPLACE_REFRESH_MS).toISOString(),
+    }));
+    fixture.advance(OFFICIAL_MARKETPLACE_REFRESH_MS + 1);
+    fixture.fetcher.mockRejectedValueOnce(new Error("still offline"));
+    await Promise.all(["retry-a", "retry-b"].map((name) => buildMarketplaceCatalog({
+      ...fixture, agencHome: join(fixture.root, name), fetcher: fixture.fetcher,
+      now: () => new Date("2026-09-23T01:00:00.001Z"),
+    }, "desktop")));
+    expect(fixture.fetcher).toHaveBeenCalledTimes(1);
+    expect((await fixture.get()).skills).toEqual([{ name: "calidad" }]);
+    expect(fixture.fetcher).toHaveBeenCalledTimes(1);
+    fixture.advance(OFFICIAL_MARKETPLACE_REFRESH_MS + 1);
     expect((await fixture.get()).skills?.[0]?.displayName).toBe("Code Quality");
+    expect(fixture.fetcher).toHaveBeenCalledTimes(2);
   });
 
   it("keeps missing or invalid label fallbacks and bounds cached display values", async () => {

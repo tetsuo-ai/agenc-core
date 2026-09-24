@@ -568,6 +568,7 @@ export async function installPluginOp(
       force: input.force === true,
     });
     await writeInstallMetadata(destination, {
+      provenanceVersion: 1,
       name: loaded.plugin.name,
       dependencyIdentity: pluginId,
       source: resolutionKind === "local"
@@ -1036,6 +1037,7 @@ async function copyDirectoryAtomically(
 async function writeInstallMetadata(
   pluginRoot: string,
   metadata: {
+    readonly provenanceVersion: 1;
     readonly name: string;
     readonly dependencyIdentity: string;
     readonly source: PluginInstallSource;
@@ -1111,7 +1113,8 @@ function installedSignatureRequired(metadata: Record<string, unknown>): boolean 
 
 function installedMarketplace(metadata: Record<string, unknown>, installedId: string): string | undefined {
   return typeof metadata.marketplace === "string"
-    ? metadata.marketplace : parsePluginIdentifier(installedId).marketplace;
+    ? metadata.marketplace : metadata.provenanceVersion === 1
+      ? undefined : parsePluginIdentifier(installedId).marketplace;
 }
 
 async function readInstalledPluginSource(

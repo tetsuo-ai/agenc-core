@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildMarketplaceCatalog,
   marketplacePluginSupportsProduct,
@@ -175,6 +175,31 @@ describe("marketplace catalog CLI surface", () => {
     expect(digests[0]).toMatch(/^sha256:/u);
     expect(digests).toEqual([digests[0], digests[0], digests[0]]);
     expect(fetches()).toBe(2);
+  });
+
+  it("revalidates a signed advert after a fresh CLI module starts", async () => {
+    const { options, fetches } = await remoteAdvertFixture(JSON.stringify({ name: "remote", version: "2.0.0" }), true);
+    const first = await buildMarketplaceCatalog(options, undefined, true);
+    const digest = first.marketplaces[0]?.plugins[0]?.payloadDigest;
+    expect(digest).toMatch(/^sha256:/u);
+    vi.resetModules();
+    const fresh = await import("./catalog-cli.js");
+    const second = await fresh.buildMarketplaceCatalog(options, undefined, true);
+    expect(second.marketplaces[0]?.plugins[0]?.payloadDigest).toBe(digest);
+    expect(fetches()).toBe(2);
+  });
+
+  it("authenticates an advert after a display-only catalog claimed its manifest window", async () => {
+    const { options, fetches } = await remoteAdvertFixture(JSON.stringify({ name: "remote", version: "2.0.0" }), true);
+    const display = await buildMarketplaceCatalog(options);
+    expect(display.marketplaces[0]?.plugins[0]?.payloadDigest).toBeUndefined();
+    vi.resetModules();
+    const fresh = await import("./catalog-cli.js");
+    const inventory = await fresh.buildMarketplaceCatalog(options, undefined, true);
+    expect(inventory.marketplaces[0]?.plugins[0]?.payloadDigest).toMatch(/^sha256:/u);
+    const calls = fetches();
+    await fresh.buildMarketplaceCatalog(options, undefined, true);
+    expect(fetches()).toBe(calls);
   });
   it("exposes only a cryptographically verified advertised payload digest", async () => {
     const options = await tempRuntime();
