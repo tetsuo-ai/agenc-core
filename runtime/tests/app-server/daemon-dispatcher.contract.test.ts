@@ -147,6 +147,42 @@ describe("session.artifact.read wire contract", () => {
     expect(restored[1]?.text).toBe(answers[1]);
     expect(Buffer.byteLength(JSON.stringify(response))).toBeLessThan(1024 * 1024);
   });
+  it("rejects 1,000 legacy answers without serializing the complete reply", async () => {
+    const manager = new AgenCDaemonAgentManager();
+    const text = "A".repeat(250_000);
+    const messages = Array.from({ length: 1_000 }, (_, index) => ({
+      messageId: `answer-${index}`, commitEventId: `event:${index}`, role: "assistant" as const,
+      text, committedSequence: index + 1,
+    }));
+    vi.spyOn(manager, "getSessionTranscriptV2").mockResolvedValue({
+      schemaVersion: 2, sessionId: "one", runId: "run", historyEpoch: "epoch",
+      asOfSequence: 1_000, messages,
+    });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({ agentManager: manager, sessionManager: new AgenCDaemonSessionManager() });
+    const older = dispatcher.createConnection({ sendNotification: () => {} });
+    await initialize(older, "1.17.0");
+    const stringify = JSON.stringify;
+    let completeSerializations = 0;
+    let messageSerializations = 0;
+    const spy = vi.spyOn(JSON, "stringify").mockImplementation(((value: unknown, ...rest: unknown[]) => {
+      if ((value as { result?: { messages?: unknown[] } })?.result?.messages?.length === 1_000) {
+        completeSerializations++;
+        throw new Error("complete legacy reply was serialized");
+      }
+      if ((value as { text?: unknown })?.text === text) messageSerializations++;
+      return Reflect.apply(stringify, JSON, [value, ...rest]);
+    }) as typeof JSON.stringify);
+    try {
+      const response = await older.dispatch(request("old", "session.transcript.v2", { sessionId: "one" }));
+      expect(response).toHaveProperty("error");
+      expect(completeSerializations).toBe(0);
+      expect(messageSerializations).toBeLessThan(100);
+    } finally {
+      spy.mockRestore();
+      await older.close();
+      await dispatcher.close();
+    }
+  });
   it("restores the complete 800,000-byte answer for 1.17 when its wrapped reply fits", async () => {
     const manager = new AgenCDaemonAgentManager();
     const answer = "A".repeat(800_000);

@@ -1332,17 +1332,35 @@ export class AgenCDaemonJsonRpcDispatcher {
             { includeCompleteMessages: clientMinor < 18 },
           );
           if (clientMinor >= 18) return successResponse(id, transcript);
-          // Protocol 1.17 has no artifact RPC. Restore the complete reply
-          // inline, then measure the actual serialized transport frame.
+          // Protocol 1.17 has no artifact RPC. Restore complete messages only
+          // while the serialized reply still fits this connection's frame.
           const maxLegacyBytes = connection.remoteAccess === undefined
             ? 16 * 1024 * 1024
             : 1024 * 1024;
           const messages: Array<(typeof transcript.messages)[number]> = [];
+          const legacyEvents = transcript.events?.filter(event => event.type !== "tool_call_completed");
+          const emptyResponse = successResponse(id, { ...transcript, messages, events: legacyEvents });
+          const emptyPayload = JSON.stringify(emptyResponse);
+          const remote = connection.remoteAccess !== undefined;
+          let measuredBytes = Buffer.byteLength(remote
+            ? JSON.stringify({ t: "data", cid: connection.remoteCid ?? "", payload: emptyPayload })
+            : emptyPayload, "utf8");
+          const addMessage = (message: (typeof transcript.messages)[number]): void => {
+            const part = `${messages.length > 0 ? "," : ""}${JSON.stringify(message)}`;
+            // The remote relay quotes and escapes the JSON payload once more.
+            // Measure that one message's contribution without constructing the
+            // complete reply or relay envelope.
+            measuredBytes += Buffer.byteLength(remote ? JSON.stringify(part).slice(1, -1) : part, "utf8");
+            if (measuredBytes > maxLegacyBytes) throw new Error("legacy transcript exceeds transport limit");
+            messages.push(message);
+          };
+          if (measuredBytes > maxLegacyBytes) throw new Error("legacy transcript exceeds transport limit");
           for (const { textArtifact, ...message } of transcript.messages) {
             if (textArtifact === undefined) {
-              messages.push(message);
+              addMessage(message);
               continue;
             }
+            if (textArtifact.size > maxLegacyBytes - measuredBytes) throw new Error("legacy transcript exceeds transport limit");
             const chunks: Buffer[] = [];
             let offset = 0;
             while (offset < textArtifact.size) {
@@ -1356,16 +1374,9 @@ export class AgenCDaemonJsonRpcDispatcher {
             }
             const bytes = Buffer.concat(chunks, offset);
             if (createHash("sha256").update(bytes).digest("hex") !== textArtifact.digest) throw new Error("legacy transcript artifact digest mismatch");
-            messages.push({ ...message, text: bytes.toString("utf8") });
+            addMessage({ ...message, text: bytes.toString("utf8") });
           }
-          const legacy = { ...transcript, messages, events: transcript.events?.filter(event => event.type !== "tool_call_completed") };
-          const response = successResponse(id, legacy);
-          const payload = JSON.stringify(response);
-          const transportFrame = connection.remoteAccess === undefined
-            ? payload
-            : JSON.stringify({ t: "data", cid: connection.remoteCid ?? "", payload });
-          if (Buffer.byteLength(transportFrame, "utf8") > maxLegacyBytes) throw new Error("legacy transcript exceeds transport limit");
-          return response;
+          return emptyResponse;
         }
       case "session.artifact.read":
         {

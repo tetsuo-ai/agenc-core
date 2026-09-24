@@ -521,7 +521,7 @@ export function notificationFromDaemonEvent(
       },
     };
   }
-  return {
+  const notification: AgenCDaemonSessionNotification = {
     jsonrpc: JSON_RPC_VERSION,
     method: "event.session_event",
     params: {
@@ -540,6 +540,38 @@ export function notificationFromDaemonEvent(
       },
     },
   };
+  if (event.type !== "tool_call_completed" || !isJsonObject(payload) ||
+      !Array.isArray(payload.displayAttachments) ||
+      Buffer.byteLength(JSON.stringify(notification) + "\n") <= 1024 * 1024) {
+    return notification;
+  }
+  // The journal keeps validated inline JSON for replay. A live frame has the
+  // smaller SSH limit, and clients can fetch these same bytes by artifact id.
+  const references = payload.displayAttachments.map((attachment) => {
+    if (!isJsonObject(attachment)) return attachment;
+    const { data: _data, ...reference } = attachment;
+    return reference;
+  });
+  const livePayload: JsonObject = { ...payload, displayAttachments: references };
+  const projected: AgenCDaemonSessionNotification = {
+    ...notification,
+    params: { ...notification.params, event: { ...notification.params.event, payload: livePayload } },
+  };
+  if (Buffer.byteLength(JSON.stringify(projected) + "\n") <= 1024 * 1024) return projected;
+  // A large ordinary tool result can accompany valid attachments. Keep the
+  // artifact references and a short notice rather than publishing a bad frame.
+  const bounded: AgenCDaemonSessionNotification = {
+    ...projected,
+    params: { ...projected.params, event: { ...projected.params.event,
+      payload: { callId: payload.callId, isError: payload.isError,
+        result: "[Tool result omitted from live notification; read the transcript]",
+        displayAttachments: references },
+    } },
+  };
+  if (Buffer.byteLength(JSON.stringify(bounded) + "\n") > 1024 * 1024) {
+    throw new Error("live display notification exceeds SSH frame limit");
+  }
+  return bounded;
 }
 
 function eventBaseParams(

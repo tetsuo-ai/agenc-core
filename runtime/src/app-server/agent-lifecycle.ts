@@ -3553,7 +3553,7 @@ export class AgenCDaemonAgentManager {
   }
 
   async readSessionArtifact(params: SessionArtifactReadParams): Promise<SessionArtifactReadResult> {
-    const thread = await this.#readPersistedThreadForSession(params.sessionId);
+    const thread = await this.#readPersistedThreadForSession(params.sessionId, false);
     if (!thread?.rolloutPath) {
       throw new AgenCDaemonAgentLifecycleError("INVALID_ARGUMENT", "session artifact not found");
     }
@@ -3606,6 +3606,7 @@ export class AgenCDaemonAgentManager {
 
   async #readPersistedThreadForSession(
     sessionId: string,
+    includeHistory = true,
   ): Promise<StoredThread | undefined> {
     const threadStore = this.#threadStore;
     if (threadStore === undefined) return undefined;
@@ -3614,7 +3615,7 @@ export class AgenCDaemonAgentManager {
         return threadStore.readThread({
           threadId,
           includeArchived: true,
-          includeHistory: true,
+          includeHistory,
         });
       } catch (error) {
         if (isThreadLogReadMiss(error)) continue;

@@ -671,6 +671,7 @@ describe("AgenC background agent lifecycle", () => {
       const sessionManager = new AgenCDaemonSessionManager({ createSessionId: () => "conv-display-one" });
       await sessionManager.createSession({ agentId: "agent-display", cwd });
       const restarted = new AgenCDaemonAgentManager({ threadStore, sessionManager });
+      const threadReads = vi.spyOn(threadStore, "readThread");
       let offset = 0;
       const chunks: Buffer[] = [];
       for (;;) {
@@ -681,6 +682,9 @@ describe("AgenC background agent lifecycle", () => {
         if (response.nextOffset === null) break;
         offset = response.nextOffset;
       }
+      expect(chunks.length).toBeGreaterThan(1);
+      expect(threadReads).toHaveBeenCalled();
+      expect(threadReads.mock.calls.every(([params]) => params.includeHistory === false)).toBe(true);
       expect(createHash("sha256").update(Buffer.concat(chunks)).digest("hex")).toBe(id);
       await expect(restarted.getSessionTranscriptV2({ sessionId: "conv-display-one" })).resolves.toMatchObject({ events: expect.arrayContaining([expect.objectContaining({ type: "tool_call_completed", payload: expect.objectContaining({ displayAttachments: stored }) })]) });
       await expect(restarted.readSessionArtifact({ sessionId: "conv-display-two", id })).rejects.toThrow("session artifact not found");
