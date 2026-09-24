@@ -596,7 +596,7 @@ export class SessionProviderService {
       }
       assertSupportedCrossProviderAuth(provider, authProfile);
     }
-    const factoryOptions = canonicalEndpointRequired
+    let factoryOptions = canonicalEndpointRequired
       ? { ...authority.factoryOptions, extra: {
           ...(authority.factoryOptions.extra ?? {}), canonicalEndpointRequired: true,
           ...(provider === "grok" || provider === "openai"
@@ -625,6 +625,39 @@ export class SessionProviderService {
           } : {}),
         } }
       : authority.factoryOptions;
+    if (canonicalEndpointRequired && (provider === "grok" || provider === "openai") &&
+        factoryOptions.extra?.authMode !== (authProfile === "sign_in" ? "oauth" : "api_key")) {
+      throw new Error("resume_blocked: child authority differs from approved plan; new consent is required");
+    }
+    if (canonicalEndpointRequired && authProfile === "sign_in") {
+      if (provider === "grok" || provider === "openai") {
+        signInModelCapabilities = await assertSignInChildModelEligible({
+          provider, model, options: factoryOptions,
+          signal: runtime.signal,
+          fetchImpl: typeof factoryOptions.extra?.fetchImpl === "function"
+            ? factoryOptions.extra.fetchImpl as typeof fetch : fetch,
+          environment: this.#environment,
+        });
+        // Discovery can rotate the OAuth grant on 401. Read the same credential
+        // authority again before constructing the provider, so its first wire
+        // request uses the bearer (and ChatGPT account) that discovery used.
+        const current = await resolveProviderLocalCredentialAuthority(
+          provider, credentialOptions, this.#environment, credentialRuntime);
+        requireProviderRuntimeCredential(provider, current);
+        if (current.factoryOptions.extra?.authMode !== "oauth" ||
+            current.factoryOptions.baseURL !== authority.factoryOptions.baseURL) {
+          throw new Error("resume_blocked: child authority changed during model discovery; new consent is required");
+        }
+        factoryOptions = provider === "openai"
+          ? { ...factoryOptions, extra: {
+              ...factoryOptions.extra,
+              oauth: { ...current.factoryOptions.extra?.oauth as Record<string, unknown>,
+                maxRefreshAttempts: 1 },
+              defaultHeaders: current.factoryOptions.extra?.defaultHeaders,
+            } }
+          : { ...factoryOptions, apiKey: current.factoryOptions.apiKey };
+      }
+    }
     const instance = createProvider(provider, factoryOptions);
     let binding: ProviderBinding;
     try {
@@ -639,16 +672,6 @@ export class SessionProviderService {
         if (boundMode !== (authProfile === "sign_in" ? "oauth" : "api_key")) {
           throw new Error("resume_blocked: bound child authority differs from approved plan; new consent is required");
         }
-      }
-      if (canonicalEndpointRequired && authProfile === "sign_in") {
-        const boundOptions = binding.factoryOptions;
-        signInModelCapabilities = await assertSignInChildModelEligible({
-          provider, model, options: boundOptions,
-          signal: runtime.signal,
-          fetchImpl: typeof boundOptions.extra?.fetchImpl === "function"
-            ? boundOptions.extra.fetchImpl as typeof fetch : fetch,
-          environment: this.#environment,
-        });
       }
     } catch (error) {
       await instance.dispose?.();
