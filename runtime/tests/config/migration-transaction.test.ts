@@ -20,7 +20,6 @@ import {
   rollbackConfigV2Migration,
 } from "../../src/config/migration.js";
 import { applyCanonicalConfigPatchSync } from "../../src/config/update-sync.js";
-import { acquireVerifiedPluginGeneration, hashInstalledPlugin } from "../../src/mcp-client/plugin-catalog-cache.js";
 
 const roots: string[] = [];
 
@@ -46,29 +45,6 @@ afterEach(() => {
 });
 
 describe("configuration migration transaction recovery", () => {
-  test("publishes plugin revisions before migration apply and rollback change canonical config", async () => {
-    const root = temp();
-    const home = join(root, "home");
-    const pluginRoot = join(root, "installed");
-    write(join(pluginRoot, "entry.js"), "same");
-    write(join(home, "config.toml"), 'configVersion = 1\n[enabledPlugins.sample]\nenabled = true\n');
-    const acquire = () => acquireVerifiedPluginGeneration(pluginRoot, undefined, hashInstalledPlugin(pluginRoot), "sample", home);
-    const before = await acquire();
-    const plan = await checkConfigV2Migration({
-      env: {}, home, projectRoot: join(root, "project"),
-      managedConfigPath: join(root, "managed", "config.toml"),
-      managedSettingsPath: join(root, "managed", "managed-settings.json"),
-      globalStatePath: join(root, "missing-state.json"), id: "plugin-revision-migration",
-    });
-    expect(plan.conflicts).toEqual([]);
-    await applyConfigV2Migration(plan);
-    expect(before.isCurrent(before.version)).toBe(false);
-    before.release();
-    const applied = await acquire();
-    await rollbackConfigV2Migration(plan.id, { home, env: {} });
-    expect(applied.isCurrent(applied.version)).toBe(false);
-    applied.release();
-  });
   test.each([".", ".."])(
     "rejects migration id %s before resolving a journal path",
     async (id) => {

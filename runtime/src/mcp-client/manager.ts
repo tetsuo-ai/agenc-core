@@ -61,7 +61,6 @@ import { assertValidMcpServerName } from "./server-name.js";
 import { isMcpAuthenticationError } from "../services/mcp/auth-errors.js";
 import { acquireVerifiedPluginGeneration, fingerprintPluginCatalogConfig, primePluginCatalogSingleFlight, readPluginCatalog, writePluginCatalog, type PluginCatalog, type PluginCatalogIdentity, type VerifiedPluginGeneration } from "./plugin-catalog-cache.js";
 import { reservePluginProcess, releasePluginProcess, touchPluginProcess, notifyPluginProcessIdle } from "./plugin-process-budget.js";
-import { readPluginLifecycleRevision } from "./plugin-lifecycle-revision.js";
 import { ConfigStore } from "../config/store.js";
 import { getCanonicalSettingsAuthority, runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 import { loadPluginMcpServerRegistrations } from "../plugins/registration/mcp-plugin-integration.js";
@@ -482,7 +481,7 @@ export class MCPManager {
   private readonly revokedPluginConfigs = new WeakSet<MCPServerConfig>();
   private pluginRevocations = new WeakMap<MCPServerConfig, AbortController>();
   private readonly installationGenerations = new Map<MCPServerConfig, { state: VerifiedPluginGeneration; version: number; release: () => void }>();
-  private readonly verifiedPluginBindings = new WeakMap<MCPServerConfig, { revision: string; fingerprint: string }>();
+  private readonly launchedPluginNames = new Set<string>();
   private readonly preparingInstallations = new WeakSet<MCPServerConfig>();
   private readonly pluginLifecycles = new Map<string, PluginServerLifecycle>();
   private catalogPrimeTask: Promise<void> | undefined;
@@ -833,7 +832,7 @@ export class MCPManager {
         this.connectionStates.get(config.name)?.type !== "failed";
       this.cachedCatalogs.delete(config.name);
       this.cachedTools.delete(config.name);
-      this.connectionStates.set(config.name, { type: "failed", error: `Installed plugin ${plugin.pluginName} changed; refresh MCP configuration` });
+      this.connectionStates.set(config.name, { type: "failed", error: `Installed plugin ${plugin.pluginName} changed; restart this session before using it` });
       if (changed) this.notifySurfaceChanged();
       if (!this.revokedPluginConfigs.has(config)) {
         this.revokedPluginConfigs.add(config);
@@ -846,7 +845,7 @@ export class MCPManager {
             await this.disconnectServer(config.name, "after installed plugin changed", true);
             if (this.configs.includes(config) && this.running) {
               this.commitSurfaceMutation(() => this.connectionStates.set(config.name, {
-                type: "failed", error: `Installed plugin ${plugin.pluginName} changed; refresh MCP configuration`,
+                type: "failed", error: `Installed plugin ${plugin.pluginName} changed; restart this session before using it`,
               }));
             }
           }).catch(error => {
@@ -861,13 +860,18 @@ export class MCPManager {
     return current;
   }
 
-  /** A stopped manager keeps its old binding until fresh canonical resolution proves it again. */
-  private async canonicalPluginConfigurationStillMatches(config: MCPServerConfig, fingerprint: string): Promise<boolean> {
+  /**
+   * Eager servers use the session's resolved configuration until its own refresh.
+   * A lazy server has not yet launched, so check that same loader resolution once
+   * before its first launch. Later restarts retain the session's configuration.
+   */
+  private async firstPluginLaunchStillMatches(config: MCPServerConfig): Promise<boolean> {
     const plugin = config.origin?.pluginServer;
     const home = config.pluginCatalogHome;
     if (!plugin?.pluginRoot || !plugin.digest || !home) return false;
     const active = getCanonicalSettingsAuthority();
-    const projectRoot = active?.homeContext.path === home ? active.projectRoot : process.cwd();
+    const projectRoot = config.pluginWorkspaceRoot ??
+      (active?.homeContext.path === home ? active.projectRoot : process.cwd());
     const store = new ConfigStore({ home, cwd: projectRoot, projectRoot, env: { ...process.env, AGENC_HOME: home } });
     return runWithCanonicalSettingsAuthority(store, async () => {
       await store.reload();
@@ -884,15 +888,28 @@ export class MCPManager {
       const resolved = registrations.find(entry => entry.name === config.name && entry.pluginName === plugin.pluginName);
       if (!resolved || resolved.server.enabled === false || resolved.pluginRoot !== plugin.pluginRoot ||
           resolved.digest !== plugin.digest || resolved.snapshotRoot !== plugin.snapshotRoot) return false;
+      if ((plugin.version !== undefined && resolved.version !== plugin.version) ||
+          (plugin.eager !== undefined && resolved.eager !== plugin.eager) ||
+          (plugin.idleTimeoutMs !== undefined && resolved.idleTimeoutMs !== plugin.idleTimeoutMs) ||
+          (plugin.maxProcesses !== undefined && resolved.maxProcesses !== plugin.maxProcesses)) return false;
       const server = resolved.server as MCPServerConfig;
-      return fingerprintPluginCatalogConfig({
-        transport: server.transport ?? "stdio", command: server.command,
-        args: server.args, env: server.env, env_vars: server.env_vars,
-        cwd: server.cwd, endpoint: server.endpoint, headers: server.headers,
-        pluginSandbox: server.pluginSandbox,
-        userConfigDigest: resolved.userConfigDigest,
-        parentEnvironment: this.environment,
-      }) === fingerprint;
+      return this.pluginExecutionFingerprint(server, resolved.userConfigDigest) ===
+        this.pluginExecutionFingerprint(config, plugin.userConfigDigest);
+    });
+  }
+
+  private pluginExecutionFingerprint(config: MCPServerConfig, userConfigDigest: string | undefined): string {
+    return fingerprintPluginCatalogConfig({
+      transport: config.transport ?? "stdio", command: config.command, args: config.args,
+      env: config.env, env_vars: config.env_vars, cwd: config.cwd,
+      endpoint: config.endpoint, headers: config.headers, pluginSandbox: config.pluginSandbox,
+      enabled: config.enabled, required: config.required, timeout: config.timeout,
+      container: config.container, oauth: config.oauth,
+      default_tools_approval_mode: config.default_tools_approval_mode,
+      enabled_tools: config.enabled_tools, disabled_tools: config.disabled_tools,
+      virtual_no_fs_write_tools: config.virtual_no_fs_write_tools,
+      tools: config.tools, pinnedCatalogSha256: config.pinnedCatalogSha256,
+      supplyChain: config.supplyChain, userConfigDigest,
     });
   }
 
@@ -906,21 +923,7 @@ export class MCPManager {
       const plugin = config.origin?.pluginServer;
       if (!plugin?.pluginRoot || !plugin.digest || config.enabled === false) return;
       try {
-        const binding = this.verifiedPluginBindings.get(config);
-        let expectedRevision: string | undefined;
-        if (binding !== undefined && config.pluginCatalogHome !== undefined) {
-          try { expectedRevision = readPluginLifecycleRevision(config.pluginCatalogHome, plugin.pluginName); }
-          catch { throw new Error("Plugin lifecycle revision cannot be read on resume"); }
-          if (expectedRevision !== binding.revision &&
-              !await this.canonicalPluginConfigurationStillMatches(config, binding.fingerprint)) {
-            throw new Error("Plugin configuration changed before resume");
-          }
-        }
-        const state = await acquireVerifiedPluginGeneration(plugin.pluginRoot, plugin.snapshotRoot, plugin.digest, plugin.pluginName, config.pluginCatalogHome);
-        if (expectedRevision !== undefined && state.lifecycleRevision !== expectedRevision) {
-          state.release();
-          throw new Error("Plugin configuration changed during resume");
-        }
+        const state = await acquireVerifiedPluginGeneration(plugin.pluginRoot, plugin.snapshotRoot, plugin.digest);
         const version = state.version;
         const unsubscribe = state.subscribe(() => { this.installedSnapshotCurrent(config); });
         const release = () => { unsubscribe(); state.release(); };
@@ -929,10 +932,6 @@ export class MCPManager {
           return;
         }
         this.installationGenerations.set(config, { state, version, release });
-        const fingerprint = this.pluginIdentity(config)?.configFingerprint;
-        if (state.lifecycleRevision !== undefined && fingerprint !== undefined) {
-          this.verifiedPluginBindings.set(config, { revision: state.lifecycleRevision, fingerprint });
-        }
         this.installedSnapshotCurrent(config);
       } catch {
         this.preparingInstallations.delete(config);
@@ -1765,10 +1764,20 @@ export class MCPManager {
     let owner: object | undefined;
     try {
       this.commitSurfaceMutation(() => this.connectionStates.set(config.name, { type: "pending" }));
+      if (!this.launchedPluginNames.has(config.name) && config.pluginWorkspaceRoot &&
+          config.origin?.pluginServer?.snapshotRoot) {
+        let matches = false;
+        try { matches = await this.firstPluginLaunchStillMatches(config); }
+        catch { /* A failed reload or resolution cannot authorize a first launch. */ }
+        if (!matches) {
+          throw new Error(`Plugin ${config.origin.pluginServer.pluginName} changed; restart this session before using it`);
+        }
+      }
       owner = await this.reserve(config, startSignal);
       startSignal.throwIfAborted();
       if (this.lifecycleGeneration !== generation || !this.configIsCurrent(config) || this.shutdownTask) throw new Error(`MCP plugin ${config.name} configuration changed or session stopped`);
       attempt = this.beginConnection(config);
+      this.launchedPluginNames.add(config.name);
       await raceWithSignal(attempt.promise, startSignal, timeoutMs,
         `MCP plugin ${config.name} startup`, attempt.gate);
       if (!attempt.isCurrent()) throw new Error(`MCP plugin ${config.name} closed during discovery`);
@@ -1896,7 +1905,9 @@ export class MCPManager {
       return { content: `MCP server ${JSON.stringify(serverName)} is not connected`, isError: true };
     }
     if (config.enabled === false || !this.configIsCurrent(config)) {
-      return { content: `MCP server ${JSON.stringify(serverName)} is disabled or its configuration changed`, isError: true };
+      const state = this.connectionStates.get(serverName);
+      return { content: state?.type === "failed" && state.error ? state.error :
+        `MCP server ${JSON.stringify(serverName)} is disabled or its configuration changed`, isError: true };
     }
     const generation = this.lifecycleGeneration;
     if (config && this.isLazyPlugin(config) && this.running) {

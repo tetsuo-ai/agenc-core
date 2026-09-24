@@ -154,7 +154,6 @@ export async function updateSettingsForSource(
   source: EditableSettingSource,
   settings: Partial<AgenCConfig>,
   explicitAuthority: CanonicalSettingsAuthority | null = getCanonicalSettingsAuthority(),
-  pluginLifecycleHeld = false,
 ): Promise<{ error: Error | null }> {
   const classification = classifyUpdate(settings);
   if (classification instanceof Error) return { error: classification };
@@ -193,7 +192,7 @@ export async function updateSettingsForSource(
       : source === "projectSettings"
         ? "project"
         : "local";
-    applyCanonicalConfigPatchSync(path, settings as JsonRecord, configScope, authority.homeContext.path, pluginLifecycleHeld);
+    applyCanonicalConfigPatchSync(path, settings as JsonRecord, configScope);
     await authority.reload();
     return { error: null };
   } catch (error) {

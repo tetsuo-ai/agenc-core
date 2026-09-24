@@ -67,8 +67,6 @@ import {
   type RetiredOpenAiCredential,
 } from "./openai-credential-migration.js";
 import { parseToml } from "./loader.js";
-import { pluginConfigChanges } from "./update-sync.js";
-import { withPluginLifecycleConfigMutation } from "../mcp-client/plugin-lifecycle-revision.js";
 import { retiredProjectMcpJsonCandidates } from "./retired-input-preflight.js";
 import { logForDebugging } from "../utils/debug.js";
 import { resolveManagedConfigPath } from "../utils/settings/managedPath.js";
@@ -5700,33 +5698,6 @@ async function assertMigrationPlanPhysicalAuthority(
   );
 }
 
-/** Migration is a canonical writer too; classify plugin changes before locking. */
-async function changedMigrationPlugins(writes: readonly {
-  readonly kind: MigrationWriteKind;
-  readonly targetPath: string;
-  readonly replacement: string;
-}[]): Promise<readonly string[] | "all"> {
-  const names = new Set<string>();
-  for (const write of writes) {
-    if (write.kind !== "config") continue;
-    const current = await readMigrationFile(write.targetPath);
-    let before: JsonRecord;
-    let after: JsonRecord;
-    try {
-      before = cloneRecord(parseToml(current?.bytes.toString("utf8") ?? ""));
-      after = cloneRecord(parseToml(write.replacement));
-    } catch {
-      // A malformed rollback target still belongs to the journal's recovery
-      // logic. Fence all existing plugin generations before it is touched.
-      return "all";
-    }
-    const changed = pluginConfigChanges(before, after);
-    if (changed === "all") return "all";
-    for (const name of changed) names.add(name);
-  }
-  return [...names].sort();
-}
-
 export async function applyConfigV2Migration(
   plan: ConfigV2MigrationPlan,
 ): Promise<AppliedConfigV2Migration> {
@@ -5746,16 +5717,11 @@ export async function applyConfigV2Migration(
   }
   const dir = await secureJournalDirectory(plan.home, plan.id);
   const journalPath = join(dir, "journal.json");
-  const pluginNames = await changedMigrationPlugins(plan.writes.map(write => ({
-    kind: write.kind, targetPath: write.targetPath, replacement: write.content,
-  })));
   const apply = () => runWithConfigAuthorityLocks(
     migrationPlanAuthorityPaths(plan, journalPath),
     () => applyConfigV2MigrationLocked(plan, dir),
   );
-  const outcome = pluginNames === "all" || pluginNames.length > 0
-    ? await withPluginLifecycleConfigMutation(plan.home.path, pluginNames, apply)
-    : await apply();
+  const outcome = await apply();
   reportMigrationAuthorityReleaseErrors(
     "Configuration migration",
     outcome.postOperationReleaseErrors,
@@ -7810,14 +7776,6 @@ export async function rollbackConfigV2Migration(
     snapshot: initialSnapshot,
     journal: initialJournal,
   } = discoveryOutcome.value;
-  const rollbackWrites = await Promise.all(initialJournal.writes.map(async write => ({
-    kind: write.kind,
-    targetPath: write.targetPath,
-    replacement: write.backupPath === undefined
-      ? ""
-      : (await readMigrationFile(write.backupPath))?.bytes.toString("utf8") ?? "",
-  })));
-  const pluginNames = await changedMigrationPlugins(rollbackWrites);
   const rollback = () => runWithConfigAuthorityLocks(
     [
       migrationLockAnchor(home),
@@ -7868,9 +7826,7 @@ export async function rollbackConfigV2Migration(
       });
     },
   );
-  const outcome = pluginNames === "all" || pluginNames.length > 0
-    ? await withPluginLifecycleConfigMutation(home.path, pluginNames, rollback)
-    : await rollback();
+  const outcome = await rollback();
   reportMigrationAuthorityReleaseErrors(
     "Configuration migration rollback",
     outcome.postOperationReleaseErrors,

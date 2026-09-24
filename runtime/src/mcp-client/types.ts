@@ -121,6 +121,8 @@ export interface MCPServerConfig {
   readonly pluginSandbox?: PluginMcpSandboxMetadata;
   /** Runtime home authority used only for content-addressed plugin catalogs. */
   readonly pluginCatalogHome?: string;
+  /** Workspace captured by the session's plugin loader for first lazy launch. */
+  readonly pluginWorkspaceRoot?: string;
   /** Canonical source identity used by status and policy projections. */
   readonly origin?: MCPServerOrigin;
 }

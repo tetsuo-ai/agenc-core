@@ -46,7 +46,6 @@ import {
 } from "../resolution.js";
 import { parsePluginIdentifier } from "../identifier.js";
 import { skillDisplayNameFromMarkdown } from "../skill-display-metadata.js";
-import { withPluginLifecycleMutation } from "../../mcp-client/plugin-lifecycle-revision.js";
 
 export type PluginScope = "user" | "project" | "local";
 
@@ -464,45 +463,43 @@ export async function installPluginOp(
       );
     }
     const destination = existingRoots[0] ?? join(installRoot, safeName);
-    const result = await withPluginLifecycleMutation(resolvePluginAgencHome(input), pluginId, async () => {
-      await copyDirectoryAtomically(source, destination, {
-        force: input.force === true,
-      });
-      await writeInstallMetadata(destination, {
-        name: validatedPlugin.name,
-        dependencyIdentity: pluginId,
-        source: resolutionKind === "local"
-          ? source
-          : redactPluginInstallSource(input.source),
-        ...(resolutionKind !== "local" &&
-          pluginInstallSourceNeedsRedaction(input.source)
-          ? { sourceRedacted: true }
-          : {}),
-        sourceRoot: source,
-        scope,
-        resolutionKind,
-        signatureRequired,
-        signatureVerified,
-        installedAt: (input.now ?? (() => new Date()))().toISOString(),
-      });
-      const plugin = await createPluginFromPath(destination, {
-        source: scope,
-        enabled: true,
-      });
-      if (plugin.plugin === null || plugin.errors.length > 0) {
-        throw new Error(
-          `installed plugin failed validation: ${plugin.errors.map((issue) => issue.message).join("; ")}`,
-        );
-      }
-      await writePluginConfigEntry(pluginId, { enabled: true }, input, true);
-      return {
-        plugin: summarizeLoadedPlugin({ ...plugin.plugin, id: pluginId }),
-        destination,
-        scope,
-        resolutionKind,
-        signatureVerified,
-      };
+    await copyDirectoryAtomically(source, destination, {
+      force: input.force === true,
     });
+    await writeInstallMetadata(destination, {
+      name: validatedPlugin.name,
+      dependencyIdentity: pluginId,
+      source: resolutionKind === "local"
+        ? source
+        : redactPluginInstallSource(input.source),
+      ...(resolutionKind !== "local" &&
+        pluginInstallSourceNeedsRedaction(input.source)
+        ? { sourceRedacted: true }
+        : {}),
+      sourceRoot: source,
+      scope,
+      resolutionKind,
+      signatureRequired,
+      signatureVerified,
+      installedAt: (input.now ?? (() => new Date()))().toISOString(),
+    });
+    const plugin = await createPluginFromPath(destination, {
+      source: scope,
+      enabled: true,
+    });
+    if (plugin.plugin === null || plugin.errors.length > 0) {
+      throw new Error(
+        `installed plugin failed validation: ${plugin.errors.map((issue) => issue.message).join("; ")}`,
+      );
+    }
+    await writePluginConfigEntry(pluginId, { enabled: true }, input);
+    const result = {
+      plugin: summarizeLoadedPlugin({ ...plugin.plugin, id: pluginId }),
+      destination,
+      scope,
+      resolutionKind,
+      signatureVerified,
+    };
     await input.configStore?.reload();
     return result;
   } finally {
@@ -546,23 +543,21 @@ export async function uninstallPluginOp(
   if (targetRoots.length === 0) {
     throw new Error(`plugin is not installed in ${scope} scope: ${input.pluginId}`);
   }
-  const result = await withPluginLifecycleMutation(resolvePluginAgencHome(input), pluginId, async () => {
-    for (const root of targetRoots) await rm(root, { recursive: true, force: true });
-    const remainsInstalled = await pluginIdRemainsInstalled(pluginId, input);
-    const removedConfig = remainsInstalled
-      ? false
-      : await removePluginConfigEntry(pluginId, input, true);
-    let removedData = false;
-    if (!remainsInstalled && input.keepData !== true) {
-      const authority = { pluginStorageRoot: input.pluginStorageRoot };
-      const dataDir = pluginDataDirPath(pluginId, authority);
-      if (await pathExists(dataDir)) {
-        await deletePluginDataDir(pluginId, authority);
-        removedData = !(await pathExists(dataDir));
-      }
+  for (const root of targetRoots) await rm(root, { recursive: true, force: true });
+  const remainsInstalled = await pluginIdRemainsInstalled(pluginId, input);
+  const removedConfig = remainsInstalled
+    ? false
+    : await removePluginConfigEntry(pluginId, input);
+  let removedData = false;
+  if (!remainsInstalled && input.keepData !== true) {
+    const authority = { pluginStorageRoot: input.pluginStorageRoot };
+    const dataDir = pluginDataDirPath(pluginId, authority);
+    if (await pathExists(dataDir)) {
+      await deletePluginDataDir(pluginId, authority);
+      removedData = !(await pathExists(dataDir));
     }
-    return { pluginId, removedRoots: targetRoots, removedConfig, removedData };
-  });
+  }
+  const result = { pluginId, removedRoots: targetRoots, removedConfig, removedData };
   await input.configStore?.reload();
   return result;
 }
@@ -575,6 +570,7 @@ export async function setPluginEnabledOp(
     ...(input.path ? { path: resolvePath(input.path, resolvePluginWorkspaceRoot(input)) } : {}),
   };
   const configPath = await writePluginConfigEntry(input.pluginId, entry, input);
+  await input.configStore?.reload();
   return {
     pluginId: input.pluginId,
     enabled: input.enabled,
@@ -591,6 +587,7 @@ export async function disableAllPluginsOp(
   for (const name of names) {
     configPath = await writePluginConfigEntry(name, { enabled: false }, options);
   }
+  await options.configStore?.reload();
   return {
     disabled: names,
     configPath,
@@ -1054,14 +1051,7 @@ async function writePluginConfigEntry(
   pluginId: string,
   entry: PluginEntryConfig,
   options: PluginOperationOptions,
-  lifecycleHeld = false,
 ): Promise<string> {
-  if (!lifecycleHeld) {
-    const path = await withPluginLifecycleMutation(resolvePluginAgencHome(options), pluginId, () =>
-      writePluginConfigEntry(pluginId, entry, options, true));
-    await options.configStore?.reload();
-    return path;
-  }
   const path = pluginConfigPath(options);
   mutateCanonicalUserConfigSync(path, (raw) => {
     const plugins = isRecord(raw.plugins) ? raw.plugins : {};
@@ -1081,21 +1071,14 @@ async function writePluginConfigEntry(
       writable: true,
     });
     if (entry.enabled !== false) plugins.enabled = true;
-  }, true);
+  });
   return path;
 }
 
 async function removePluginConfigEntry(
   pluginId: string,
   options: PluginOperationOptions,
-  lifecycleHeld = false,
 ): Promise<boolean> {
-  if (!lifecycleHeld) {
-    const removed = await withPluginLifecycleMutation(resolvePluginAgencHome(options), pluginId, () =>
-      removePluginConfigEntry(pluginId, options, true));
-    await options.configStore?.reload();
-    return removed;
-  }
   const path = pluginConfigPath(options);
   let removed = false;
   mutateCanonicalUserConfigSync(path, (raw) => {
@@ -1106,6 +1089,6 @@ async function removePluginConfigEntry(
     if (Object.keys(raw.plugins.plugins).length === 0) {
       delete raw.plugins.plugins;
     }
-  }, true);
+  });
   return removed;
 }

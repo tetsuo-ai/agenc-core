@@ -13,7 +13,6 @@
  */
 
 import type { LoadedPlugin } from '../../types/plugin.js'
-import { withPluginLifecycleMutation } from '../../mcp-client/plugin-lifecycle-revision.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from '../log.js'
 import {
@@ -91,9 +90,7 @@ export async function savePluginOptions(
     schema,
     values,
   )
-  // The revision covers native secrets and TOML together, including sensitive-only saves.
-  return withPluginLifecycleMutation(authority.homeContext.path, pluginId, () =>
-    savePluginOptionsLocked(pluginId, values, schema, authority))
+  return savePluginOptionsLocked(pluginId, values, schema, authority)
 }
 
 async function savePluginOptionsLocked(
@@ -175,7 +172,6 @@ async function savePluginOptionsLocked(
           },
         },
         authority,
-        true,
       )
       if (result.error) {
         throw new Error(
@@ -213,8 +209,7 @@ async function savePluginOptionsLocked(
  */
 export async function deletePluginOptions(pluginId: string): Promise<void> {
   const authority = requirePluginConfigAuthority()
-  return withPluginLifecycleMutation(authority.homeContext.path, pluginId, () =>
-    deletePluginOptionsLocked(pluginId, authority))
+  return deletePluginOptionsLocked(pluginId, authority)
 }
 
 async function deletePluginOptionsLocked(
@@ -241,7 +236,6 @@ async function deletePluginOptionsLocked(
       'userSettings',
       { pluginConfigs: pluginConfigs as PluginConfigs },
       authority,
-      true,
     )
     if (error) {
       logForDebugging(

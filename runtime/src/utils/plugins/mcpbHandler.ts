@@ -3,7 +3,6 @@ import { createHash } from 'crypto'
 import { chmod, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
 import type { McpServerConfig } from '../../services/mcp/types.js'
-import { withPluginLifecycleMutation } from '../../mcp-client/plugin-lifecycle-revision.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { parseAndValidateManifestFromBytes } from '../dxt/helpers.js'
 import {
@@ -204,9 +203,7 @@ export async function saveMcpServerUserConfig(
       schema,
       config,
     )
-    // Publish before either native secure storage or TOML can change.
-    return await withPluginLifecycleMutation(authority.homeContext.path, pluginId, () =>
-      saveMcpServerUserConfigLocked(pluginId, serverName, config, schema, authority))
+    return await saveMcpServerUserConfigLocked(pluginId, serverName, config, schema, authority)
   } catch (error) {
     const errorObj = toError(error)
     logError(errorObj)
@@ -322,7 +319,6 @@ async function saveMcpServerUserConfigLocked(
           },
         },
         authority,
-        true,
       )
       if (result.error) {
         throw result.error

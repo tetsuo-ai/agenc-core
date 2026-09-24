@@ -330,20 +330,16 @@ as model tools `mcp.plugin:<id>:<server>.<tool>`.
 Core runs plugin MCP servers from a content-addressed snapshot of the
 installation. It verifies the snapshot off the event loop before publishing
 the server and makes snapshot files read-only for the user where the platform
-permits; directories stay writable so the cache can always be removed. Canonical
-writers (`plugin install`, `update`, `uninstall`, `enable`, `disable`, Core
-config and plugin option writers, and config migration apply/rollback) bump the
-affected plugin's lifecycle
-revision before writing. ConfigStore loads and reloads only observe
-configuration; they never bump revisions or retire running servers. Admission
-rejects generations whose revision changed, and each manager refresh retires
-its own superseded generation. Hand edits of `config.toml` reach sessions
-through normal config refresh. A manager resuming after a revision change
-reloads and resolves canonical plugin configuration before verification.
-Filesystem watchers and polling are not revocation authorities. Another local
-process changing Core's
-snapshot or a plugin's installed files in place is outside this protection,
-as with any installed program. Use `agenc plugin update` to replace a plugin.
+permits; directories stay writable so the cache can always be removed.
+Plugin changes apply to new sessions. A running session keeps
+the plugin configuration it resolved, as with eager servers; its own config
+refresh restarts affected servers. Before a lazy server's first launch in that
+session, Core re-resolves the installed plugin through the session loader,
+including aliases, enabled state, configuration, and tool policy. If it changed,
+the launch fails and the session must be restarted. Once launched, that server
+restarts with the session's resolved configuration. A session refresh retires
+only its own superseded verified generation. There are no lifecycle revision
+files, cross-process revocation checks, installation watchers, or pollers.
 
 Project- and local-scope installs are **repository-controlled**
 (`isRepositoryControlledPlugin`). The loader strips their `mcpServers`,

@@ -1,0 +1,253 @@
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, expect, it, vi } from "vitest";
+import { MCPManager } from "./manager.js";
+import { loadPluginMcpServerRegistrations } from "../plugins/registration/mcp-plugin-integration.js";
+import { setPluginEnabledOp } from "../plugins/cli/pluginOperations.js";
+import { mutateCanonicalUserConfigSync } from "../config/update-sync.js";
+import type { MCPServerConfig } from "./types.js";
+import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
+import { transitionSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
+
+vi.mock("./transports/stdio.js", () => ({ createStdioMCPConnection: vi.fn() }));
+import { createStdioMCPConnection } from "./transports/stdio.js";
+
+const spawn = vi.mocked(createStdioMCPConnection);
+const roots: string[] = [];
+
+afterEach(async () => {
+  spawn.mockReset();
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+});
+
+async function fixture(directory = "sample"): Promise<{
+  home: string; workspace: string; storage: string; config: MCPServerConfig;
+}> {
+  const home = await mkdtemp(join(tmpdir(), "agenc-plugin-session-"));
+  roots.push(home);
+  const workspace = join(home, "workspace");
+  const storage = join(home, "plugins");
+  const installed = join(storage, directory);
+  await mkdir(join(installed, ".agenc-plugin"), { recursive: true });
+  await mkdir(workspace);
+  await writeFile(join(installed, ".agenc-plugin", "plugin.json"), JSON.stringify({
+    name: "sample", mcpServers: { main: { command: "fixture" } },
+  }));
+  await writeFile(join(installed, "entry.js"), "same");
+  await writeFile(join(home, "config.toml"), "config_version = 2\n[plugins]\nenabled = true\n");
+  const registrations = await loadPluginMcpServerRegistrations({
+    pluginStorageRoot: storage, workspaceRoot: workspace,
+    config: { plugins: { enabled: true } }, fresh: true,
+  });
+  expect(registrations).toHaveLength(1);
+  const registration = registrations[0]!;
+  const config: MCPServerConfig = {
+    ...registration.server,
+    name: registration.name,
+    pluginCatalogHome: home,
+    pluginWorkspaceRoot: workspace,
+    origin: { scope: "plugin", pluginServer: {
+      pluginName: registration.pluginName, serverName: registration.serverName,
+      digest: registration.digest, pluginRoot: registration.pluginRoot,
+      snapshotRoot: registration.snapshotRoot,
+      userConfigDigest: registration.userConfigDigest,
+      eager: false,
+    } },
+  };
+  spawn.mockResolvedValue({
+    getServerCapabilities: () => ({}),
+    listTools: async () => ({ tools: [{ name: "ping", inputSchema: { type: "object" } }] }),
+    listResources: async () => ({ resources: [] }),
+    listPrompts: async () => ({ prompts: [] }),
+    callTool: async () => ({ content: [{ type: "text", text: "pong" }] }),
+    close: async () => undefined,
+  } as never);
+  return { home, workspace, storage, config };
+}
+
+it("launches an unchanged plugin on first use", async () => {
+  const { config } = await fixture();
+  const manager = new MCPManager([config]);
+  try {
+    await manager.start();
+    expect((await manager.callTool(config.name, "ping", {})).isError).not.toBe(true);
+    expect(spawn).toHaveBeenCalledTimes(1);
+  } finally { await manager.stopStrict(); }
+});
+
+it("rejects a changed installation snapshot before first launch", async () => {
+  const { config } = await fixture();
+  await writeFile(join(config.origin!.pluginServer!.pluginRoot!, "entry.js"), "changed");
+  const manager = new MCPManager([config]);
+  try {
+    await manager.start();
+    const result = await manager.callTool(config.name, "ping", {});
+    expect(result).toMatchObject({ isError: true });
+    expect(String(result.content)).toMatch(/changed; restart this session/);
+    expect(spawn).not.toHaveBeenCalled();
+  } finally { await manager.stopStrict(); }
+});
+
+it("rejects CLI disable before a lazy plugin's first use", async () => {
+  const { home, workspace, storage, config } = await fixture();
+  const manager = new MCPManager([config]);
+  try {
+    await manager.start();
+    await setPluginEnabledOp({ pluginId: "sample", enabled: false, agencHome: home,
+      pluginStorageRoot: storage, sessionTempRoot: home, workspaceRoot: workspace });
+    await expect(stat(join(home, "cache", "plugin-lifecycle-revisions")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    const result = await manager.callTool(config.name, "ping", {});
+    expect(result).toMatchObject({ isError: true });
+    expect(String(result.content)).toMatch(/changed; restart this session/);
+    expect(spawn).not.toHaveBeenCalled();
+  } finally { await manager.stopStrict(); }
+});
+
+it("rejects disable through the installation directory alias before first use", async () => {
+  const { home, config } = await fixture("directory-alias");
+  const manager = new MCPManager([config]);
+  try {
+    await manager.start();
+    mutateCanonicalUserConfigSync(join(home, "config.toml"), raw => {
+      raw.plugins = { enabled: true, plugins: { "directory-alias": { enabled: false } } };
+    });
+    const result = await manager.callTool(config.name, "ping", {});
+    expect(result).toMatchObject({ isError: true });
+    expect(String(result.content)).toMatch(/changed; restart this session/);
+    expect(spawn).not.toHaveBeenCalled();
+  } finally { await manager.stopStrict(); }
+});
+
+it("rejects a tool policy change before first use", async () => {
+  const { home, config } = await fixture();
+  const manager = new MCPManager([config]);
+  try {
+    await manager.start();
+    mutateCanonicalUserConfigSync(join(home, "config.toml"), raw => {
+      raw.plugins = { enabled: true, plugins: { sample: { enabled: true,
+        mcp_servers: { main: { disabled_tools: ["ping"] } } } } };
+    });
+    const result = await manager.callTool(config.name, "ping", {});
+    expect(result).toMatchObject({ isError: true });
+    expect(String(result.content)).toMatch(/changed; restart this session/);
+    expect(spawn).not.toHaveBeenCalled();
+  } finally { await manager.stopStrict(); }
+});
+
+it("restarts a lazy server that already ran after CLI disable", async () => {
+  const { home, workspace, storage, config } = await fixture();
+  const manager = new MCPManager([config]);
+  try {
+    await manager.start();
+    expect((await manager.callTool(config.name, "ping", {})).isError).not.toBe(true);
+    await setPluginEnabledOp({ pluginId: "sample", enabled: false, agencHome: home,
+      pluginStorageRoot: storage, sessionTempRoot: home, workspaceRoot: workspace });
+    await manager.stopStrict();
+    await manager.start();
+    expect((await manager.callTool(config.name, "ping", {})).isError).not.toBe(true);
+    expect(spawn).toHaveBeenCalledTimes(2);
+  } finally { await manager.stopStrict(); }
+});
+
+it("keeps a running plugin across CLI disable and stop/resume, as eager servers do", async () => {
+  const { home, workspace, storage, config } = await fixture();
+  const eager: MCPServerConfig = { ...config, origin: { scope: "plugin", pluginServer: {
+    ...config.origin!.pluginServer!, eager: true,
+  } } };
+  const manager = new MCPManager([eager]);
+  try {
+    await manager.start();
+    await setPluginEnabledOp({ pluginId: "sample", enabled: false, agencHome: home,
+      pluginStorageRoot: storage, sessionTempRoot: home, workspaceRoot: workspace });
+    expect((await manager.callTool(eager.name, "ping", {})).isError).not.toBe(true);
+    await manager.stopStrict();
+    await manager.start();
+    expect((await manager.callTool(eager.name, "ping", {})).isError).not.toBe(true);
+  } finally { await manager.stopStrict(); }
+});
+
+it("starts an eager plugin from its resolved configuration after CLI disable", async () => {
+  const { home, workspace, storage, config } = await fixture();
+  const eager: MCPServerConfig = { ...config, origin: { scope: "plugin", pluginServer: {
+    ...config.origin!.pluginServer!, eager: true,
+  } } };
+  await setPluginEnabledOp({ pluginId: "sample", enabled: false, agencHome: home,
+    pluginStorageRoot: storage, sessionTempRoot: home, workspaceRoot: workspace });
+  const manager = new MCPManager([eager]);
+  try {
+    await manager.start();
+    expect((await manager.callTool(eager.name, "ping", {})).isError).not.toBe(true);
+    expect(spawn).toHaveBeenCalledTimes(1);
+  } finally { await manager.stopStrict(); }
+});
+
+it("resumes an eager plugin after CLI disable through the sandbox lifecycle", async () => {
+  const { home, workspace, storage, config } = await fixture();
+  const eager: MCPServerConfig = { ...config, origin: { scope: "plugin", pluginServer: {
+    ...config.origin!.pluginServer!, eager: true,
+  } } };
+  const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd: workspace });
+  const manager = new MCPManager([eager]);
+  manager.setSandboxExecutionBroker(broker);
+  try {
+    await manager.start();
+    await setPluginEnabledOp({ pluginId: "sample", enabled: false, agencHome: home,
+      pluginStorageRoot: storage, sessionTempRoot: home, workspaceRoot: workspace });
+    const nextWorkspace = join(home, "next-workspace");
+    await mkdir(nextWorkspace);
+    await transitionSandboxExecutionBroker(broker, nextWorkspace);
+    expect((await manager.callTool(eager.name, "ping", {})).isError).not.toBe(true);
+    expect(manager.getConnectionState(eager.name)?.type).toBe("connected");
+  } finally { await manager.stopStrict(); manager.setSandboxExecutionBroker(undefined); }
+});
+
+it("retains an eager session's tool policy on stop and resume", async () => {
+  const { home, config } = await fixture();
+  const eager: MCPServerConfig = { ...config, origin: { scope: "plugin", pluginServer: {
+    ...config.origin!.pluginServer!, eager: true,
+  } } };
+  const manager = new MCPManager([eager]);
+  try {
+    await manager.start();
+    mutateCanonicalUserConfigSync(join(home, "config.toml"), raw => {
+      raw.plugins = { enabled: true, plugins: { sample: { enabled: true,
+        mcp_servers: { main: { disabled_tools: ["ping"] } } } } };
+    });
+    await manager.stopStrict();
+    await manager.start();
+    expect((await manager.callTool(eager.name, "ping", {})).isError).not.toBe(true);
+  } finally { await manager.stopStrict(); }
+});
+
+it("applies a session's own policy refresh by restarting its eager server", async () => {
+  const { config } = await fixture();
+  const eager: MCPServerConfig = { ...config, origin: { scope: "plugin", pluginServer: {
+    ...config.origin!.pluginServer!, eager: true,
+  } } };
+  const manager = new MCPManager([eager]);
+  try {
+    await manager.start();
+    expect(manager.getToolsByServer(eager.name)).toHaveLength(1);
+    await manager.refreshServers([{ ...eager, disabled_tools: ["ping"] }]);
+    expect(spawn).toHaveBeenCalledTimes(2);
+    expect(manager.getToolsByServer(eager.name)).toHaveLength(0);
+  } finally { await manager.stopStrict(); }
+});
+
+it("retires only the refreshing session's superseded generation", async () => {
+  const { config } = await fixture();
+  const eager = { ...config, origin: { scope: "plugin" as const, pluginServer: {
+    ...config.origin!.pluginServer!, eager: true,
+  } } };
+  const older = new MCPManager([eager]);
+  const newer = new MCPManager([eager]);
+  try {
+    await older.start(); await newer.start();
+    await older.refreshServers([{ ...eager, env: { UPDATED: "1" } }]);
+    expect(spawn.mock.calls.at(-1)?.[0]).toMatchObject({ env: { UPDATED: "1" } });
+    expect((await newer.callTool(eager.name, "ping", {})).isError).not.toBe(true);
+    expect(newer.getConnectionState(eager.name)?.type).toBe("connected");
+  } finally { await older.stopStrict(); await newer.stopStrict(); }
+});

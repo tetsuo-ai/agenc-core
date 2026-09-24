@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import { chmodSync, cpSync, existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { Worker } from "node:worker_threads";
-import { readPluginLifecycleRevision, withPluginLifecycleVerification } from "./plugin-lifecycle-revision.js";
 
 export interface PluginCatalogIdentity {
   readonly pluginName: string;
@@ -248,136 +247,48 @@ export function snapshotInstalledPluginOffThread(root: string, storageRoot: stri
 
 export interface VerifiedPluginGeneration {
   readonly version: number;
-  readonly lifecycleRevision: string | undefined;
   isCurrent(version: number): boolean;
   subscribe(listener: () => void): () => void;
-  /** An acquisition owns this lease from before verification begins. */
+  /** Release the manager's reference after shutdown or refresh. */
   release(): void;
   /** Revoke this exact verified generation, leaving later generations intact. */
   retire(): void;
 }
 
 interface GenerationState {
-  readonly root: string;
-  readonly pluginName: string | undefined;
-  readonly cacheHome: string | undefined;
-  lifecycleRevision: string | undefined;
   version: number;
   invalidated: boolean;
-  owners: number;
   listeners: Set<() => void>;
-  verified: Promise<void>;
 }
 
-const generations = new Map<string, GenerationState>();
-
-function retireGeneration(key: string, state: GenerationState): void {
+function retireGeneration(state: GenerationState): void {
   if (state.invalidated) return;
   state.invalidated = true;
   state.version++;
-  if (generations.get(key) === state) generations.delete(key);
   for (const listener of [...state.listeners]) {
     try { listener(); }
     catch { /* The invalidated state still blocks dispatch in every owner. */ }
   }
 }
 
-/**
- * The plugin lifecycle is the revocation authority. A local process editing
- * Core's snapshot or an installation in place is outside this protection,
- * just as editing any installed executable is. Updates use plugin commands.
- * There is deliberately no filesystem watcher or polling on either tree.
- */
-export function retireVerifiedPluginGenerations(pluginName: string | undefined, root?: string, cacheHome?: string): void {
-  for (const [key, state] of generations) {
-    if ((pluginName !== undefined && state.pluginName !== pluginName) || (root !== undefined && state.root !== root) ||
-      (cacheHome !== undefined && state.cacheHome !== cacheHome)) continue;
-    retireGeneration(key, state);
-  }
-}
-
-/** Share one off-thread verification across managers, with a lease per caller. */
+/** Each manager owns its verified generation; a refresh retires only that owner. */
 export async function acquireVerifiedPluginGeneration(
-  root: string, snapshotRoot: string | undefined, digest: string, pluginName?: string, cacheHome?: string,
+  root: string, snapshotRoot: string | undefined, digest: string,
 ): Promise<VerifiedPluginGeneration> {
-  const key = JSON.stringify([root, snapshotRoot, digest, pluginName, cacheHome]);
-  let state = generations.get(key);
-  if (state && state.lifecycleRevision !== undefined && cacheHome && pluginName) {
-    const prior = state;
-    try {
-      if (readPluginLifecycleRevision(cacheHome, pluginName) !== prior.lifecycleRevision) {
-        retireGeneration(key, prior);
-        state = undefined;
-      }
-    } catch {
-      retireGeneration(key, prior);
-      state = undefined;
-    }
-  }
-  if (!state) {
-    state = {
-      root, pluginName, cacheHome, lifecycleRevision: undefined, version: 0, invalidated: false, owners: 0,
-      listeners: new Set(), verified: Promise.resolve(),
-    };
-    const created = state;
-    const verify = async (): Promise<void> => {
-      const { valid } = await installationWorker<{ valid: boolean }>({ kind: "verify", root, snapshotRoot, digest });
-      if (!valid) throw new Error("Installed plugin changed during verification");
-    };
-    created.verified = cacheHome && pluginName
-      ? withPluginLifecycleVerification(cacheHome, pluginName, async revision => {
-          created.lifecycleRevision = revision;
-          await verify();
-        })
-      : verify();
-    generations.set(key, created);
-  }
-  // Increment before the first await: another manager cannot release the
-  // shared verification while this acquisition is still pending.
-  state.owners++;
-  const owned = state;
-  let released = false;
-  const release = (): void => {
-    if (released) return;
-    released = true;
-    owned.owners--;
-    if (owned.owners === 0 && generations.get(key) === owned) generations.delete(key);
+  const { valid } = await installationWorker<{ valid: boolean }>({ kind: "verify", root, snapshotRoot, digest });
+  if (!valid) throw new Error("Installed plugin changed during verification");
+  const state: GenerationState = {
+    version: 0, invalidated: false, listeners: new Set(),
   };
-  try {
-    await owned.verified;
-    let revisionCurrent = true;
-    if (cacheHome && pluginName) {
-      try { revisionCurrent = readPluginLifecycleRevision(cacheHome, pluginName) === owned.lifecycleRevision; }
-      catch { revisionCurrent = false; }
-    }
-    if (owned.invalidated || !revisionCurrent) {
-      retireGeneration(key, owned);
-      throw new Error("Installed plugin generation changed");
-    }
-  } catch (error) {
-    release();
-    throw error;
-  }
   return {
-    get version() { return owned.version; },
-    get lifecycleRevision() { return owned.lifecycleRevision; },
-    isCurrent: version => {
-      if (!owned.invalidated && cacheHome && pluginName) {
-        try {
-          if (readPluginLifecycleRevision(cacheHome, pluginName) !== owned.lifecycleRevision) retireGeneration(key, owned);
-        } catch {
-          // A missing or unreadable revision cannot authorize dispatch.
-          retireGeneration(key, owned);
-        }
-      }
-      return !owned.invalidated && owned.version === version;
-    },
+    get version() { return state.version; },
+    isCurrent: version => !state.invalidated && state.version === version,
     subscribe(listener) {
-      owned.listeners.add(listener);
-      return () => { owned.listeners.delete(listener); };
+      state.listeners.add(listener);
+      return () => { state.listeners.delete(listener); };
     },
-    release,
-    retire: () => retireGeneration(key, owned),
+    release: () => { state.listeners.clear(); },
+    retire: () => retireGeneration(state),
   };
 }
 
