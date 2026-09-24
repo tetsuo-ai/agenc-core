@@ -799,14 +799,16 @@ async function resolveSearchPath(params: {
   if (!candidate) {
     return { error: "No search path resolved" };
   }
-  // A relative `path` belongs to the tool's first allowed root, not a later
-  // signed or durable-memory root. Those extra roots authorize absolute paths
-  // but must not change where the same relative path resolves.
+  // The execution cwd is supplied by the calling Session for child tools.
+  // Allowed roots grant access; their order must not choose a relative path's
+  // meaning (prompt rebuilding can add a memory root to that list).
   const isCandidateAbsolute =
     isAbsolute(candidate) || isWindowsAbsolutePath(candidate);
+  const executionCwd = typeof params.args.cwd === "string" && params.args.cwd.length > 0
+    ? params.args.cwd : allowedPaths[0]!;
   const candidates = isCandidateAbsolute
     ? [candidate]
-    : [join(allowedPaths[0]!, candidate)];
+    : [join(executionCwd, candidate)];
 
   let safe: Awaited<ReturnType<typeof safePath>> | undefined;
   let targetIsDirectory: boolean | undefined;

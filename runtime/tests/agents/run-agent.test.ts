@@ -32,6 +32,9 @@ import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manage
 import { childApprovalRevocationSignal, isApprovalSessionOwnedBy, observeChildApprovalSessions } from "../../src/agents/child-approval-context.js";
 import { AgentRegistry } from "./registry.js";
 import { createMultiAgentV2Tools } from "./v2/index.js";
+import { createSpawnAgentTool } from "./v2/spawn.js";
+import { AgentRoleCatalog } from "./role-catalog.js";
+import type { MultiAgentV2Options } from "./v2/common.js";
 import { bindLiveAgentSession, liveAgentSession } from "./live-session.js";
 import {
   buildFilteredRegistry,
@@ -53,6 +56,7 @@ import {
   readProviderIdentity,
 } from "../llm/provider.js";
 import { createGeminiEndpointPlan } from "../llm/providers/gemini/endpoint-plan.js";
+import { GrokProvider } from "../llm/providers/grok/adapter.js";
 import { ZaiProvider } from "../llm/providers/zai/index.js";
 import { OpenAIProvider } from "../llm/providers/openai/adapter.js";
 import {
@@ -788,16 +792,31 @@ describe("runAgent", () => {
       agents: { cross_provider_enabled: true, allowed_providers: ["deepseek", "openai"] },
     } });
     let requestPrompt = "";
+    let requestSpawnModel: { description: string; enum?: string[] } | undefined;
     const target = { ...makeProvider([]), name: provider,
       chatStream: vi.fn(async (_messages: LLMMessage[], _onChunk: StreamProgressCallback,
         options?: LLMChatOptions): Promise<LLMResponse> => {
         requestPrompt = options?.systemPrompt ?? "";
+        requestSpawnModel = (options?.tools?.find((tool) => tool.function.name === "spawn_agent")?.function.parameters as
+          { properties?: { model?: { description: string; enum?: string[] } } } | undefined)?.properties?.model;
         return { content: "done", toolCalls: [], usage: {
           promptTokens: 0, completionTokens: 0, totalTokens: 0,
         }, model, finishReason: "stop" };
       }),
     } satisfies LLMProvider;
     const { parent, modelInfo } = crossProviderRuntime(target, configStore, selection, authProfile);
+    const spawnTool = createSpawnAgentTool({
+      getSession: () => parent,
+      workspace: ROLE_WORKSPACE,
+      roleCatalog: new AgentRoleCatalog(ROLE_WORKSPACE),
+      ensureAgentControl: () => { throw new Error("not used"); },
+    } as unknown as MultiAgentV2Options);
+    Object.assign(parent.services, { registry: {
+      ...mkRegistry(), tools: [spawnTool],
+      toLLMTools: () => [{ type: "function", function: {
+        name: spawnTool.name, description: spawnTool.description, parameters: spawnTool.inputSchema,
+      } }],
+    } satisfies ToolRegistry });
     await parent.state.with((state) => { state.sessionConfiguration = {
       ...state.sessionConfiguration,
       collaborationMode: { model: "grok-4.7" },
@@ -816,6 +835,8 @@ describe("runAgent", () => {
     expect(result.outcome).toBe("completed");
     expect(target.chatStream).toHaveBeenCalled();
     expect(requestPrompt).toContain(`Model: ${model} (provider: ${provider})`);
+    expect(requestSpawnModel?.description).toContain(`current model (\`${model}\`)`);
+    expect(requestSpawnModel?.description).not.toContain("current model (`grok-4.7`)");
     expect(requestPrompt).toContain(`${provider.toUpperCase()} provider notes`);
     expect(requestPrompt).not.toMatch(/grok|xai/iu);
   });
@@ -855,6 +876,33 @@ describe("runAgent", () => {
     } else {
       expect(requestPrompt).toContain("Model: grok-4.7 (provider: grok)");
       expect(requestPrompt).toContain("Grok 4.7-only note");
+    }
+  });
+
+  it("dispatches another Grok model when the parent provider has factory model metadata", async () => {
+    const provider = createProvider("grok", { apiKey: "xai-test", model: "grok-4.7" });
+    const chat = vi.spyOn(GrokProvider.prototype, "chatStream").mockResolvedValue({
+      content: "child completed", toolCalls: [],
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      model: "grok-4.6", finishReason: "stop",
+    });
+    const parent = makeStubSession({
+      services: { provider, sandboxExecutionBroker: new SandboxExecutionBroker({ mode: "danger_full_access", cwd: "/tmp" }) },
+      sessionConfiguration: mkSessionConfiguration({ collaborationMode: { model: "grok-4.7" } }),
+      config: { ...mkConfig(), model: "grok-4.7" },
+      modelInfo: { ...mkModelInfo(), slug: "grok-4.7" },
+    });
+    try {
+      const { live } = await spawnLive(parent);
+      const { result } = await collectRun(runAgent({ live, parent,
+        initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", model: "grok-4.6",
+      }));
+      expect(result.outcome, result.error).toBe("completed");
+      expect(chat).toHaveBeenCalled();
+    } finally {
+      await parent.shutdown();
+      await provider.dispose?.();
+      chat.mockRestore();
     }
   });
 
@@ -2163,20 +2211,34 @@ describe("runAgent", () => {
       expect(nullDefault.content).toContain("child-cwd-hit.txt");
       expect(nullDefault.content).not.toContain("parent-cwd-hit.txt");
 
-      // Explicit relative paths keep their existing registry-root resolution.
-      // Caller-relative explicit paths are a separate issue from omitted cwd.
+      // The signed child cwd is the base for explicit relative searches.
       for (const relativePath of [".", "src"]) {
         const relative = await invoke({ path: relativePath });
-        if (role === "read-only") {
+        if (role === "read-only" && toolName !== "Grep") {
           expect(relative).toMatchObject({
             isError: true, content: expect.stringContaining("outside delegated read authority"),
           });
         } else {
           expect(relative.isError, relative.content).not.toBe(true);
-          expect(relative.content).toContain("parent-src-hit.txt");
+          if (toolName === "Grep") {
+            expect(relative.content).toContain("child-src-hit.txt");
+            expect(relative.content).not.toContain("parent-src-hit.txt");
+          } else {
+            expect(relative.content).toContain("parent-src-hit.txt");
+          }
         }
       }
+      if (toolName === "Grep" && role === "writer") {
+        const worktreeOnly = await invoke({ path: "src/child-src-hit.txt" });
+        expect(worktreeOnly.isError, worktreeOnly.content).not.toBe(true);
+        expect(worktreeOnly.content).toContain("child-src-hit.txt");
+      }
       if (role === "read-only") {
+        if (toolName === "Grep") {
+          expect(await invoke({ path: ".", cwd: workspace })).toMatchObject({
+            isError: true, content: expect.stringContaining("outside delegated read authority"),
+          });
+        }
         expect(await invoke({ path: workspace })).toMatchObject({
           isError: true, content: expect.stringContaining("Read-only delegation cannot read"),
         });

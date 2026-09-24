@@ -19,6 +19,7 @@
 
 import { normalize } from "node:path";
 import { inheritBuiltinToolProvenance } from "../tools/builtin-provenance.js";
+import { SESSION_BOUND_TOOL_SURFACE, type SessionBoundToolSurface } from "../tools/session-bound-surface.js";
 import { SYSTEM_SEARCH_TOOLS_NAME } from "../tools/system/tool-search-name.js";
 import {
   SESSION_ADVERTISED_TOOL_NAMES_ARG,
@@ -55,7 +56,10 @@ import type {
 import { createCacheSafeParams } from "../services/PromptSuggestion/runtime.js";
 import { llmMessageToAgentSummaryMessage } from "../services/AgentSummary/transcript.js";
 import {
+  createProvider,
+  isFactoryProvider,
   preserveProviderFactoryState,
+  readProviderFactoryOptions,
   readProviderIdentity,
 } from "../llm/provider.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
@@ -2270,7 +2274,33 @@ export function buildFilteredRegistry(
   const eligibleTools = base.tools.filter((tool) => isEligible(tool.name));
   const toolCatalogScope: ReadonlySet<string> = new Set(eligibleTools.map((tool) => tool.name));
   const wrappedTools = eligibleTools
-    .map((tool) => wrapToolForChild(tool, { ...opts, toolCatalogScope }));
+    .map((tool) => {
+      const wrapped = wrapToolForChild(tool, { ...opts, toolCatalogScope });
+      const sessionSurface = (wrapped as Tool & {
+        readonly [SESSION_BOUND_TOOL_SURFACE]?: SessionBoundToolSurface;
+      })[SESSION_BOUND_TOOL_SURFACE];
+      if (sessionSurface !== undefined) {
+        Object.defineProperties(wrapped, {
+          description: {
+            enumerable: true,
+            configurable: true,
+            get: () => {
+              const session = opts.getSession?.();
+              return session == null ? tool.description : sessionSurface(session).description;
+            },
+          },
+          inputSchema: {
+            enumerable: true,
+            configurable: true,
+            get: () => {
+              const session = opts.getSession?.();
+              return session == null ? tool.inputSchema : sessionSurface(session).inputSchema;
+            },
+          },
+        });
+      }
+      return wrapped;
+    });
   const wrappedByName = new Map(wrappedTools.map((tool) => [tool.name, tool]));
   const fallbackAdvertisedTools = () =>
     wrappedTools.map((tool) => ({
@@ -2283,12 +2313,20 @@ export function buildFilteredRegistry(
     }));
   const advertisedLLMTools = () => {
     const advertised = base.toLLMTools();
-    if (advertised.length === 0) {
-      return fallbackAdvertisedTools();
-    }
-    return advertised.filter((tool) =>
-      isEligible(tool.function.name as string),
-    );
+    const visible = (advertised.length === 0 ? fallbackAdvertisedTools() : advertised)
+      .filter((tool) => isEligible(tool.function.name as string));
+    const session = opts.getSession?.();
+    if (session === undefined || session === null) return visible;
+    return visible.map((tool) => {
+      const wrapped = wrappedByName.get(tool.function.name as string);
+      const surface = (wrapped as (Tool & {
+        readonly [SESSION_BOUND_TOOL_SURFACE]?: SessionBoundToolSurface;
+      }) | undefined)?.[SESSION_BOUND_TOOL_SURFACE]?.(session);
+      return surface === undefined ? tool : {
+        ...tool,
+        function: { ...tool.function, description: surface.description, parameters: surface.inputSchema },
+      };
+    });
   };
   const advertisedNames = () =>
     new Set(advertisedLLMTools().map((tool) => tool.function.name as string));
@@ -4020,6 +4058,16 @@ export async function* runAgent(
           live.abortController.abort("cross-provider subagent policy was disabled or provider removed");
         }
       }) ?? null;
+    } else if (provider && isFactoryProvider(provider)) {
+      const selectedModel = params.model ?? live.role.config.model ??
+        parent.providerService.current().model;
+      const factoryOptions = readProviderFactoryOptions(provider);
+      if (factoryOptions.model !== undefined && factoryOptions.model !== selectedModel) {
+        const providerName = readProviderIdentity(provider);
+        if (providerName === null) throw new Error("factory provider has no identity");
+        provider = createProvider(providerName, { ...factoryOptions, model: selectedModel });
+        ownedPreparedProvider = provider;
+      }
     }
     if (!provider) {
       const err = new Error(

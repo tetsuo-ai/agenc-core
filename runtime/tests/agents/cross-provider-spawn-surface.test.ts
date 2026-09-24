@@ -7,6 +7,7 @@ import { AgentRoleCatalog } from "../../src/agents/role-catalog.js";
 import type { MultiAgentV2Options } from "../../src/agents/v2/common.js";
 import type { Session } from "../../src/session/session.js";
 import type { Tool } from "../../src/tools/types.js";
+import { buildFilteredRegistry } from "../../src/agents/run-agent.js";
 
 // Bootstrap builds the tool registry before it creates the session. The
 // spawn_agent tool must still show the session's allowed provider/model pairs:
@@ -44,6 +45,37 @@ function spawnTool(getSession: () => Session | null): Tool {
 }
 
 describe("spawn_agent cross-provider surface", () => {
+  it("advertises each child and descendant's live model choices", () => {
+    const root = crossProviderSession(["deepseek"]);
+    const base = buildToolRegistry({ workspaceRoot: "/tmp", modelFacingTools: [spawnTool(() => root)] });
+    const child = crossProviderSession(["deepseek"]);
+    Object.assign(child, {
+      modelInfo: { slug: "deepseek-v4-pro" },
+      sessionConfiguration: { collaborationMode: { model: "deepseek-v4-pro" } },
+      providerService: { current: () => ({ provider: "deepseek", model: "deepseek-v4-pro" }) },
+    });
+    Object.assign(child.services, { modelsManager: {
+      tryListModels: () => [
+        { slug: "grok-4.7", provider: "grok" },
+        { slug: "deepseek-v4-pro", provider: "deepseek" },
+      ],
+    } });
+    const advertisedModel = (registry: ReturnType<typeof buildFilteredRegistry>) => {
+      const spawn = registry.toLLMTools().find((tool) => tool.function.name === "spawn_agent");
+      expect(spawn).toBeDefined();
+      return (spawn!.function.parameters as { properties: { model: { description: string; enum?: string[] } } }).properties.model;
+    };
+    const childRegistry = buildFilteredRegistry(base, { childConversationId: "deepseek-child", getSession: () => child });
+    expect(advertisedModel(childRegistry).description).toContain("deepseek-v4-pro");
+    expect(advertisedModel(childRegistry).description).not.toContain("current model (`grok-4.7`)");
+    expect(advertisedModel(childRegistry).enum).toContain("deepseek-v4-pro");
+    expect(advertisedModel(childRegistry).enum).not.toContain("grok-4.7");
+    const childCatalogSchema = childRegistry.tools.find((tool) => tool.name === "spawn_agent")?.inputSchema as
+      { properties: { model: { description: string } } } | undefined;
+    expect(childCatalogSchema?.properties.model.description).toContain("current model (`deepseek-v4-pro`)");
+    const descendant = buildFilteredRegistry(childRegistry, { childConversationId: "grandchild", getSession: () => child });
+    expect(advertisedModel(descendant).description).toContain("current model (`deepseek-v4-pro`)");
+  });
   it("advertises the live allowed pairs when the registry predates the session", () => {
     let session: Session | null = null;
     const registry = buildToolRegistry({

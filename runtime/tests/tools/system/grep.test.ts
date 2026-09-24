@@ -2013,6 +2013,21 @@ describe("Grep tool", () => {
     }
   });
 
+  test("an added memory root does not change a relative path's execution cwd", async () => {
+    const memory = join(root, "memory");
+    const worktree = join(root, "worktree");
+    await mkdir(memory);
+    await mkdir(worktree);
+    await writeFile(join(worktree, "worktree-only.txt"), "worktree-only-token\n");
+    __setRipgrepAvailabilityForTests(true);
+    const tool = createGrepTool({ allowedPaths: [memory, worktree] });
+    const result = await tool.execute({
+      pattern: "worktree-only-token", path: "worktree-only.txt", cwd: worktree,
+    });
+    expect(result.isError, result.content).not.toBe(true);
+    expect(result.content).toContain("worktree-only.txt");
+  });
+
   test("relative single-file path with ZERO matches is not an error", async () => {
     await mkdir(join(root, "src", "syntax"), { recursive: true });
     const target = join(root, "src", "syntax", "empty.c");

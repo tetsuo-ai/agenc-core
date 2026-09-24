@@ -12,6 +12,7 @@ import type { PermissionResult } from "../permissions/types.js";
 import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
 import type { PermissionDefaultMode } from "../config/schema.js";
 import type { ToolEffectDispositionEvidence } from "../contracts/run-contracts.js";
+import { SESSION_BOUND_TOOL_SURFACE, type SessionBoundToolSurface } from "./session-bound-surface.js";
 
 /**
  * JSON Schema type alias.
@@ -162,6 +163,7 @@ export interface ToolPreflightFailure {
  * dispatched via `ToolHandler` for the executor.
  */
 export interface Tool {
+  readonly [SESSION_BOUND_TOOL_SURFACE]?: SessionBoundToolSurface;
   /** Namespaced tool name (e.g. "jupiter.getQuote", "agenc.listTasks") */
   readonly name: string;
   /** Human-readable description for LLM consumption */

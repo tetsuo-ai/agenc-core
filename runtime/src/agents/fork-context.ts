@@ -323,6 +323,7 @@ export async function forkSubagent(
   const parentMessages = trimUnansweredToolBatch(
     rolloutBackedParentMessages(input),
   ).filter((message) => input.inheritParentInstructions !== false ||
+    message.runtimeOnly?.agentInvocation !== undefined ||
     (message.role !== "system" && message.role !== "developer"));
   validateAgentInvocationMessageSequence(parentMessages);
 

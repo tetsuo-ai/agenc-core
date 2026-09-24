@@ -275,6 +275,30 @@ describe("forkSubagent", () => {
     expect(res.messages[3]?.content).toBe("job answer");
   });
 
+  it("keeps a workflow invocation intact when another model inherits one turn", async () => {
+    const invocation = materializeAgentInvocationMessages(createCsvAgentInvocationEnvelope({
+      jobId: "workflow-job", itemId: "workflow-item", rowIndex: 0,
+      rowSha256: `sha256:${"d".repeat(64)}`,
+      instruction: "Process this workflow item.", row: { payload: "untrusted" },
+    }));
+    const res = await forkSubagent({
+      parent: stubSession(),
+      parentMessages: [
+        { role: "system", content: "Parent model instructions" },
+        { role: "developer", content: "Parent developer instructions" },
+        ...invocation,
+        { role: "assistant", content: "workflow result" },
+      ],
+      mode: { kind: "last_n_turns", n: 1 },
+      inheritParentInstructions: false,
+      taskPrompt: "continue on another model",
+    });
+    expect(res.messages.slice(0, 3).map((message) => message.role)).toEqual(["developer", "user", "user"]);
+    expect(res.messages.slice(0, 3).map((message) => message.runtimeOnly?.agentInvocation?.channelIndex)).toEqual([0, 1, 2]);
+    expect(res.messages.some((message) => message.content === "Parent model instructions" ||
+      message.content === "Parent developer instructions")).toBe(false);
+  });
+
   it("fails closed when rollout history loses invocation metadata", async () => {
     const invocation = materializeAgentInvocationMessages(
       createCsvAgentInvocationEnvelope({
