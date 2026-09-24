@@ -117,6 +117,7 @@ const CONNECTION_ERROR_PATTERNS = [
 const INITIAL_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
 const BACKOFF_MULTIPLIER = 2;
+const RECONNECT_STABILITY_MS = 60_000;
 
 export interface MCPReconnectCleanupFailure {
   /** Exact resource whose cleanup could not be proven. */
@@ -219,6 +220,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
   private reconnectTask: Promise<void> | undefined;
   private reconnectEpoch = 0;
   private backoffMs = 0;
+  private stabilityTimer: ReturnType<typeof setTimeout> | null = null;
   private cleanupPoisoned = false;
   private readonly retainedCleanup = new Map<
     unknown,
@@ -264,6 +266,10 @@ export class ResilientMCPBridge implements MCPToolBridge {
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+    if (this.stabilityTimer !== null) {
+      clearTimeout(this.stabilityTimer);
+      this.stabilityTimer = null;
     }
     const inner = this.inner;
     const reconnectTask = this.reconnectTask;
@@ -353,6 +359,11 @@ export class ResilientMCPBridge implements MCPToolBridge {
 
   private scheduleReconnect(): void {
     if (this.disposed || this.reconnecting || this.cleanupPoisoned) return;
+
+    if (this.stabilityTimer !== null) {
+      clearTimeout(this.stabilityTimer);
+      this.stabilityTimer = null;
+    }
 
     this.reconnecting = true;
     const epoch = ++this.reconnectEpoch;
@@ -498,7 +509,16 @@ export class ResilientMCPBridge implements MCPToolBridge {
       if (!isAlive()) throw new Error(`MCP server "${this.serverName}" replacement closed during initialization`);
       this.inner = newBridge;
       this.reconnecting = false;
-      this.backoffMs = 0;
+      // A replacement that initializes and immediately dies is still part
+      // of the same crash sequence. Reset only after a healthy interval.
+      const healthyBridge = newBridge;
+      this.stabilityTimer = setTimeout(() => {
+        this.stabilityTimer = null;
+        if (!this.disposed && !this.reconnecting && this.inner === healthyBridge && this.reconnectEpoch === epoch) {
+          this.backoffMs = 0;
+        }
+      }, RECONNECT_STABILITY_MS);
+      this.stabilityTimer.unref?.();
 
       this.logger.info(`MCP server "${this.serverName}" reconnected (${newBridge.tools.length} tools)`);
     } catch (error) {

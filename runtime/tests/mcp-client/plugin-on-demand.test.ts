@@ -514,6 +514,53 @@ describe("plugin MCP on-demand lifecycle", () => {
     } finally { await manager.stop(); }
   });
 
+  it.each(["eager", "required"])("revokes a retained %s plugin tool and retires its owner when installed bytes change", async kind => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const digest = hashInstalledPlugin(root);
+    const cfg = config(cacheHome, `plugin:sample:${kind}-revoked`, {
+      ...(kind === "required" ? { required: true } : {}),
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: `${kind}-revoked`, digest, pluginRoot: root, eager: kind === "eager" } },
+    });
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      const retained = manager.getToolsByServer(cfg.name)[0]!;
+      expect((await retained.execute({})).isError).not.toBe(true);
+      await writeFile(join(root, "entry.js"), "changed");
+      expect(manager.getConnectionState(cfg.name)?.type).toBe("failed");
+      expect(manager.getToolsByServer(cfg.name)).toEqual([]);
+      expect((await retained.execute({})).isError).toBe(true);
+      expect(clients[0]!.callTool).toHaveBeenCalledTimes(1);
+      await waitFor(() => clients[0]!.close.mock.calls.length > 0);
+      await writeFile(join(root, "entry.js"), "old");
+      expect(manager.getConnectionState(cfg.name)?.type).toBe("failed");
+      expect((await retained.execute({})).isError).toBe(true);
+    } finally { await manager.stop(); }
+  });
+
+  it("retains cleanup ownership when revoking an eager plugin fails to close it", async () => {
+    const cacheHome = await home(); const root = join(cacheHome, "installed");
+    await mkdir(root); await writeFile(join(root, "entry.js"), "old");
+    const cfg = config(cacheHome, "plugin:sample:eager-cleanup", {
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "eager-cleanup", digest: hashInstalledPlugin(root), pluginRoot: root, eager: true } },
+    });
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      const retained = manager.getToolsByServer(cfg.name)[0]!;
+      clients[0]!.close.mockRejectedValueOnce(new Error("close failed"));
+      await writeFile(join(root, "entry.js"), "changed");
+      expect((await retained.execute({})).isError).toBe(true);
+      const cleanup = (manager as unknown as { retainedCleanup: Map<string, unknown> }).retainedCleanup;
+      await waitFor(() => cleanup.has(cfg.name));
+      expect(manager.getConnectionState(cfg.name)?.type).toBe("failed");
+      expect(manager.getToolsByServer(cfg.name)).toEqual([]);
+      await manager.stopStrict();
+      expect(cleanup.has(cfg.name)).toBe(false);
+    } finally { await manager.stop(); }
+  });
+
   it("launches a pinned plugin tree even if installation changes at the transport boundary", async () => {
     const cacheHome = await home(); const root = join(cacheHome, "installed");
     await mkdir(root); await writeFile(join(root, "entry.js"), "old");

@@ -1290,6 +1290,41 @@ describe("MCPManager", () => {
     } finally { await manager.stop(); vi.useRealTimers(); }
   });
 
+  it.each(["ordinary", "eager plugin"])("backs off across twelve consecutive idle crashes of an %s server", async kind => {
+    vi.useFakeTimers();
+    const name = kind === "ordinary" ? "unstable-ordinary" : "plugin:sample:unstable-eager";
+    const clients: Array<{ onclose?: () => void; close: ReturnType<typeof vi.fn> }> = [];
+    mockCreateMCPConnection.mockImplementation(async () => {
+      const client = { close: vi.fn().mockResolvedValue(undefined) };
+      clients.push(client);
+      return client as never;
+    });
+    mockCreateToolBridge.mockImplementation(async () => makeMockBridge(name, ["listener"]));
+    const cfg = makeConfig(name, kind === "ordinary" ? {} : {
+      pluginCatalogHome: "/tmp/agenc-unstable-eager-test",
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "unstable-eager", digest: "a".repeat(64), eager: true } },
+    });
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      for (let crash = 0; crash < 12; crash++) {
+        clients[crash]!.onclose?.();
+        const delay = Math.min(1_000 * 2 ** crash, 30_000);
+        await vi.advanceTimersByTimeAsync(delay - 1);
+        expect(mockCreateMCPConnection).toHaveBeenCalledTimes(crash + 1);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(mockCreateMCPConnection).toHaveBeenCalledTimes(crash + 2);
+      }
+      expect(clients).toHaveLength(13);
+      await vi.advanceTimersByTimeAsync(60_000);
+      clients[12]!.onclose?.();
+      await vi.advanceTimersByTimeAsync(999);
+      expect(mockCreateMCPConnection).toHaveBeenCalledTimes(13);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(mockCreateMCPConnection).toHaveBeenCalledTimes(14);
+    } finally { await manager.stop(); vi.useRealTimers(); }
+  });
+
   it("retries an automatic replacement that closes during tool discovery", async () => {
     vi.useFakeTimers();
     const firstClient = { close: vi.fn().mockResolvedValue(undefined) };

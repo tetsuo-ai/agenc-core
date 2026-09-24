@@ -474,6 +474,7 @@ export class MCPManager {
   private readonly bridges: Map<string, MCPToolBridge> = new Map();
   private readonly cachedTools = new Map<string, Tool[]>();
   private readonly cachedCatalogs = new Map<string, PluginCatalog>();
+  private readonly revokedPluginConfigs = new WeakSet<MCPServerConfig>();
   private readonly pluginLifecycles = new Map<string, PluginServerLifecycle>();
   private catalogPrimeTask: Promise<void> | undefined;
   private readonly resourceBridges: Map<string, MCPResourceBridge> = new Map();
@@ -809,6 +810,7 @@ export class MCPManager {
   private installedSnapshotCurrent(config: MCPServerConfig): boolean {
     const plugin = config.origin?.pluginServer;
     if (!plugin?.pluginRoot || !plugin.digest) return true;
+    if (this.revokedPluginConfigs.has(config)) return false;
     let current = false;
     try {
       current = hashInstalledPlugin(plugin.pluginRoot) === plugin.digest &&
@@ -822,6 +824,28 @@ export class MCPManager {
       this.cachedTools.delete(config.name);
       this.connectionStates.set(config.name, { type: "failed", error: `Installed plugin ${plugin.pluginName} changed; refresh MCP configuration` });
       if (changed) this.notifySurfaceChanged();
+      if (!this.revokedPluginConfigs.has(config)) {
+        this.revokedPluginConfigs.add(config);
+        if (this.configs.includes(config) && this.running) {
+          void this.enqueuePluginTransition(config.name, async () => {
+            const lifecycle = this.pluginLifecycle(config.name);
+            while (lifecycle.active > 0) {
+              await new Promise<void>(resolve => lifecycle.activeWaiters.push(resolve));
+            }
+            await this.disconnectServer(config.name, "after installed plugin changed", true);
+            if (this.configs.includes(config) && this.running) {
+              this.commitSurfaceMutation(() => this.connectionStates.set(config.name, {
+                type: "failed", error: `Installed plugin ${plugin.pluginName} changed; refresh MCP configuration`,
+              }));
+            }
+          }).catch(error => {
+            this.logger.warn?.(`Could not retire invalidated plugin MCP server ${config.name}`, error);
+            this.commitSurfaceMutation(() => this.connectionStates.set(config.name, {
+              type: "failed", error: `Installed plugin ${plugin.pluginName} changed; cleanup remains unproven: ${errMessage(error)}`,
+            }));
+          });
+        }
+      }
     }
     return current;
   }
@@ -1545,7 +1569,8 @@ export class MCPManager {
       if (config.enabled === false || !this.installedSnapshotCurrent(config)) continue;
       if (config.localOnly === true && !hasLocalMcpAccess()) continue;
       const found = this.isLazyPlugin(config) ? this.cachedTools.get(config.name) :
-        this.connectedConnections.has(config.name) ? this.bridges.get(config.name)?.tools : undefined;
+        config.origin?.scope !== "session" && !this.connectedConnections.has(config.name)
+          ? undefined : this.bridges.get(config.name)?.tools;
       if (found) tools.push(...found);
     }
     return tools;
@@ -1557,7 +1582,8 @@ export class MCPManager {
     const config = this.getServerConfig(name);
     if (!config || config.enabled === false || !this.installedSnapshotCurrent(config)) return [];
     return this.isLazyPlugin(config) ? this.cachedTools.get(name) ?? [] :
-      this.connectedConnections.has(name) ? this.bridges.get(name)?.tools ?? [] : [];
+      config.origin?.scope !== "session" && !this.connectedConnections.has(name)
+        ? [] : this.bridges.get(name)?.tools ?? [];
   }
 
   private async ensurePluginConnected(config: MCPServerConfig): Promise<void> {
@@ -2509,6 +2535,25 @@ export class MCPManager {
           }
         },
       });
+      if (config.origin?.scope === "plugin") {
+        const proxyGeneration = this.lifecycleGeneration;
+        bridge.tools.splice(0, bridge.tools.length, ...bridge.tools.map(tool => {
+          const execute = tool.execute;
+          return {
+            ...tool,
+            execute: async (args: Record<string, unknown>): Promise<ToolResult> => {
+              const current = () => this.lifecycleGeneration === proxyGeneration &&
+                this.getServerConfig(config.name) === config && this.configIsCurrent(config);
+              if (!current()) return { content: `MCP plugin ${config.name} proxy configuration changed`, isError: true };
+              this.pluginLifecycle(config.name).active++;
+              try {
+                const result = await execute(args);
+                return current() ? result : { content: `MCP plugin ${config.name} proxy configuration changed`, isError: true };
+              } finally { this.finishPluginActivity(config.name, config); }
+            },
+          };
+        }));
+      }
       // Publish before the optional companion bridges are constructed so
       // concurrently-starting servers observe this namespace for I-73 shadow
       // checks. The startup gate is checked immediately beforehand and stop
