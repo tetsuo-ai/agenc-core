@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { redactLiteralSecrets } from "../utils/redact-literal-secrets.js";
 import type { Logger } from "./_deps/logger.js";
 import { createToolEffectDispositionEvidence } from "../tools/effect-boundary.js";
 import type { ToolEffectDispositionEvidence } from "../contracts/run-contracts.js";
@@ -98,40 +99,126 @@ export function sessionMcpAttachmentIssue(config: {
 }
 
 export function redactMcpAttachmentText(text: string, headers?: Readonly<Record<string, string>>): string {
-  let result = text;
-  for (const value of Object.values(headers ?? {})) {
-    for (const secret of [value, value.replace(/^Bearer\s+/i, "")]) {
-      if (secret) result = result.split(secret).join("[REDACTED]");
-    }
-  }
+  return redactLiteralSecrets(text, attachmentSecrets(headers));
+}
+
+function attachmentSecrets(headers?: Readonly<Record<string, string>>): string[] {
+  return [...new Set(Object.values(headers ?? {}).flatMap(value => [value, value.replace(/^Bearer\s+/i, "")]))]
+    .filter(secret => secret.length >= 4);
+}
+
+/**
+ * Protects against a non-malicious plugin accidentally disclosing its saved
+ * secrets in Core diagnostics, stderr/logs, tool results/errors, progress,
+ * resource contents/URIs, and prompt descriptions/messages. Core redacts
+ * complete literal values in runtime data keys and values before its own
+ * splitting or truncation, and preserves protocol shape. Plugin-declared
+ * identifiers and input-schema literal values are outside this boundary, as
+ * are copies the plugin itself encodes or splits.
+ */
+export type McpRedactionShape = "data" | "schema" | "schema-properties" | "tool-result" | "content-list" | "content-block" | "prompt" | "resource";
+
+function redactedDataKey(
+  key: string,
+  shape: McpRedactionShape,
+  headers: Readonly<Record<string, string>>,
+  used: Set<string>,
+): string {
+  // Only runtime data holds dynamic keys. Keys of protocol-shaped objects
+  // (prompt, content, resource, schema) are structure and are never renamed,
+  // even when a saved secret happens to equal one of them.
+  const dataKey = shape === "data" ||
+    shape === "tool-result" && !["content", "structuredContent", "_meta", "isError"].includes(key);
+  const base = dataKey ? redactMcpAttachmentText(key, headers) : key;
+  let result = base;
+  for (let number = 2; used.has(result); number += 1) result = `${base}#${number}`;
+  used.add(result);
   return result;
 }
 
-export function redactMcpAttachmentValue<T>(value: T, headers?: Readonly<Record<string, string>>, seen = new WeakMap<object, unknown>()): T {
+export function redactMcpAttachmentValue<T>(
+  value: T,
+  headers?: Readonly<Record<string, string>>,
+  seen = new WeakMap<object, unknown>(),
+  shape: McpRedactionShape = "data",
+): T {
   if (!headers) return value;
   if (typeof value === "string") return redactMcpAttachmentText(value, headers) as T;
+  if (typeof value === "number" || typeof value === "boolean") {
+    const literal = String(value);
+    return Object.values(headers).some(secret => secret.length >= 4 && (secret === literal || secret.replace(/^Bearer\s+/i, "") === literal))
+      ? "[REDACTED]" as T : value;
+  }
   if (value !== null && typeof value === "object") {
     if (seen.has(value)) return seen.get(value) as T;
+    if ((shape === "content-block" || shape === "resource") && !Array.isArray(value)) {
+      const block = value as Record<string, unknown>;
+      const binary = [block.data, block.blob].filter((item): item is string => typeof item === "string");
+      const secrets = attachmentSecrets(headers);
+      if (binary.some(item => secrets.some(secret => item.includes(secret) || Buffer.from(item, "base64").includes(Buffer.from(secret, "utf8"))))) {
+        const omitted: Record<string, unknown> = {};
+        seen.set(value, omitted);
+        const used = new Set<string>(["omitted"]);
+        for (const [key, item] of Object.entries(block)) {
+          Object.defineProperty(omitted, redactedDataKey(key, shape, headers, used), {
+            value: key === "data" || key === "blob" ? "" :
+              protocolField(key, shape, item) ? item : redactMcpAttachmentValue(item, headers, seen, childShape(shape, key)),
+            enumerable: true, configurable: true, writable: true,
+          });
+        }
+        omitted.omitted = true;
+        return omitted as T;
+      }
+    }
     if (value instanceof Error) {
       // Preserve cleanup-error prototypes/ownership fields, including frozen
       // errors, while keeping the original object untouched.
       const result = Object.create(Object.getPrototypeOf(value)) as Error;
       seen.set(value, result);
+      const used = new Set<string>(["name", "message", "stack", "cause"]);
       for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
-        Object.defineProperty(result, key, "value" in descriptor
-          ? { ...descriptor, value: redactMcpAttachmentValue(descriptor.value, headers, seen) }
+        Object.defineProperty(result, ["name", "message", "stack", "cause"].includes(key) ? key : redactedDataKey(key, shape, headers, used), "value" in descriptor
+          ? { ...descriptor, value: protocolField(key, shape, descriptor.value) ? descriptor.value : redactMcpAttachmentValue(descriptor.value, headers, seen, childShape(shape, key)) }
           : descriptor);
       }
       return result as T;
     }
     const result: Record<string, unknown> | unknown[] = Array.isArray(value) ? [] : {};
     seen.set(value, result);
-    for (const [key, item] of Object.entries(value)) Object.defineProperty(result, redactMcpAttachmentText(key, headers), {
-      value: redactMcpAttachmentValue(item, headers, seen), enumerable: true, configurable: true, writable: true,
+    const used = new Set<string>();
+    for (const [key, item] of Object.entries(value)) Object.defineProperty(result, Array.isArray(value) ? key : redactedDataKey(key, shape, headers, used), {
+      value: protocolField(key, shape, item) ? item : redactMcpAttachmentValue(item, headers, seen, Array.isArray(value) && (shape === "content-block" || shape === "resource") ? shape : childShape(shape, key)), enumerable: true, configurable: true, writable: true,
     });
     return result as T;
   }
   return value;
+}
+
+function protocolField(key: string, shape: McpRedactionShape, value: unknown): boolean {
+  return shape === "schema" && SCHEMA_CONTROL_FIELDS.has(key) ||
+    shape === "schema" && key === "additionalProperties" && typeof value === "boolean" ||
+    shape === "tool-result" && key === "isError" ||
+    shape === "content-block" && (key === "type" || key === "blob" || key === "data") ||
+    shape === "prompt" && (key === "role" || key === "required") ||
+    shape === "resource" && (key === "truncated" || key === "bytesReturned" || key === "blob");
+}
+
+const SCHEMA_CONTROL_FIELDS = new Set([
+  "type", "required", "$ref", "$schema", "pattern",
+  "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+  "minLength", "maxLength", "minItems", "maxItems", "uniqueItems",
+  "minProperties", "maxProperties",
+]);
+
+function childShape(shape: McpRedactionShape, key: string): McpRedactionShape {
+  if (shape === "tool-result") return key === "content" ? "content-list" : "data";
+  if (shape === "content-list") return "content-block";
+  if (shape === "schema-properties") return "schema";
+  if (shape === "schema" && ["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"].includes(key)) return "schema-properties";
+  if (shape === "schema") return key === "default" || key === "enum" || key === "const" || key === "examples" ? "data" : "schema";
+  if (shape === "prompt") return key === "rawContent" || key === "content" ? "content-block" : "prompt";
+  if (shape === "content-block" && key === "resource") return "resource";
+  return shape === "resource" && key === "contents" ? "resource" : "data";
 }
 
 /** Accept a bound receipt only from the explicitly attached local Desktop endpoint. */
@@ -169,5 +256,17 @@ export function attachmentLogger(logger: Logger, headers?: Readonly<Record<strin
   if (!headers) return logger;
   const level = (name: keyof Logger) => (message: string, ...args: unknown[]) =>
     logger[name](redactMcpAttachmentText(message, headers), ...args.map(arg => redactMcpAttachmentValue(arg, headers)));
-  return { debug: level("debug"), info: level("info"), warn: level("warn"), error: level("error") };
+  const wrapped = { debug: level("debug"), info: level("info"), warn: level("warn"), error: level("error") };
+  attachmentLoggerSecrets.set(wrapped, attachmentSecrets(headers).map(secret => Buffer.from(secret, "utf8")));
+  attachmentLoggerHeaders.set(wrapped, headers);
+  return wrapped;
+}
+
+const attachmentLoggerSecrets = new WeakMap<Logger, readonly Buffer[]>();
+const attachmentLoggerHeaders = new WeakMap<Logger, Readonly<Record<string, string>>>();
+export function literalSecretsForAttachmentLogger(logger: Logger): readonly Buffer[] {
+  return attachmentLoggerSecrets.get(logger) ?? [];
+}
+export function redactAttachmentLoggerText(logger: Logger, value: string): string {
+  return redactMcpAttachmentText(value, attachmentLoggerHeaders.get(logger));
 }

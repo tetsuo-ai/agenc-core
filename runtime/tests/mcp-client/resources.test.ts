@@ -24,6 +24,51 @@ function makeClient(overrides: {
 }
 
 describe("createResourceBridge", () => {
+  it("redacts resource text before the entry cap cuts a secret", async () => {
+    const secret = "private-phrase";
+    const text = "x".repeat(MAX_RESOURCE_ENTRY_BYTES - 8) + secret;
+    const bridge = await createResourceBridge(makeClient({ readResource: vi.fn().mockResolvedValue({ contents: [{ uri: "resource://safe", text }] }) }), "srv", undefined, { sensitiveHeaders: { token: secret } });
+    const result = await bridge.readResource("resource://safe");
+    expect(result.contents[0]).toMatchObject({ truncated: true });
+    expect(JSON.stringify(result)).not.toContain("private-");
+  });
+
+  it("keeps colliding resource aliases stable and returns the read resource identity", async () => {
+    const uris = ["file:///alpha-private", "file:///alpha-other"];
+    const readResource = vi.fn(async ({ uri }: { uri: string }) => ({ contents: [{ uri, text: uri }] }));
+    const bridge = await createResourceBridge(makeClient({ listResources: vi.fn().mockResolvedValue({ resources: uris.map(uri => ({ uri })) }), readResource }), "srv", undefined, { sensitiveHeaders: { token: "private", other: "other" } });
+    const first = await bridge.listResources();
+    expect((await bridge.listResources()).map(item => item.uri)).toEqual(first.map(item => item.uri));
+    const second = first[1]!;
+    const result = await bridge.readResource(second.uri);
+    expect(readResource).toHaveBeenCalledWith({ uri: uris[1] }, expect.anything());
+    expect(result.contents[0]?.uri).toBe(second.uri);
+  });
+
+  it("expires old aliases after the bounded catalog cache fills", async () => {
+    let page = 0;
+    const readResource = vi.fn();
+    const bridge = await createResourceBridge(makeClient({
+      listResources: vi.fn(async () => ({ resources: Array.from({ length: MAX_RESOURCE_DESCRIPTORS }, (_, i) => ({ uri: `resource://private-${page}-${i}` })) })),
+      readResource,
+    }), "srv", undefined, { sensitiveHeaders: { token: "private" } });
+    const oldAlias = (await bridge.listResources())[0]!.uri;
+    page += 1;
+    await bridge.listResources();
+    page += 1;
+    await bridge.listResources();
+    await expect(bridge.readResource(oldAlias)).rejects.toThrow(/alias expired/);
+    expect(readResource).not.toHaveBeenCalled();
+    page = 0;
+    expect((await bridge.listResources())[0]!.uri).toBe(oldAlias);
+  });
+
+  it("omits a binary block whose encoded payload contains a literal secret", async () => {
+    const bridge = await createResourceBridge(makeClient({ readResource: vi.fn().mockResolvedValue({ contents: [{ uri: "resource://blob", blob: "AAAA" }] }) }), "srv", undefined, { sensitiveHeaders: { token: "AAAA" } });
+    const result = await bridge.readResource("resource://blob");
+    expect(result.contents[0]).toMatchObject({ blob: "", truncated: true, bytesReturned: 0 });
+    expect(result.truncated).toBe(true);
+  });
   it("follows cursor pagination and namespaces every listed resource URI", async () => {
     const listResources = vi
       .fn()

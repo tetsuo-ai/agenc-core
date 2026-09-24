@@ -41,6 +41,7 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * revision: a 1.0 through 1.14 client still negotiates successfully, because
  * negotiation compares versions and not method sets, but those calls now
  * answer `METHOD_NOT_FOUND`. Nothing outside this repository used them.
+ * Plugin settings read, write and reset are additive capability-gated methods.
  * 1.16 adds project trust for a working directory (`project.trustStatus`,
  * `project.trust`), resolved to the project root a session there would use.
  * 1.17 adds a bounded routine session preparation handshake.
@@ -164,6 +165,9 @@ export const AGENC_DAEMON_METHODS = [
   "session.resolveToolCall",
   "session.mcp.status",
   "session.mcp.addServer",
+  "plugin.settings.get",
+  "plugin.settings.set",
+  "plugin.settings.reset",
   "message.send",
   "message.stream",
   "thread/realtime/start",
@@ -839,6 +843,9 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     description:
       "Add an MCP server to the daemon-owned runtime session so system.searchTools and model tool calls can use it immediately.",
   },
+  "plugin.settings.get": { method: "plugin.settings.get", direction: "client-to-server", params: "required", result: "object", description: "Read a plugin's declared settings and redacted values." },
+  "plugin.settings.set": { method: "plugin.settings.set", direction: "client-to-server", params: "required", result: "object", description: "Validate and store declared plugin settings." },
+  "plugin.settings.reset": { method: "plugin.settings.reset", direction: "client-to-server", params: "required", result: "object", description: "Clear a plugin's stored settings." },
   "message.send": {
     method: "message.send",
     direction: "client-to-server",
@@ -1738,6 +1745,35 @@ export interface SessionMcpStatusParams extends JsonObject {
   readonly sessionId: string;
 }
 
+export interface PluginSettingsParams extends JsonObject {
+  readonly pluginId: string;
+}
+
+export interface PluginSettingsSetParams extends PluginSettingsParams {
+  readonly values: Readonly<Record<string, string | number | boolean | readonly string[]>>;
+}
+
+export interface PluginSettingOption extends JsonObject {
+  readonly type: "string" | "number" | "boolean" | "directory" | "file";
+  readonly title: string;
+  readonly description: string;
+  readonly required?: boolean;
+  readonly sensitive?: boolean;
+  readonly default?: string | number | boolean | readonly string[];
+  readonly multiple?: boolean;
+  readonly min?: number;
+  readonly max?: number;
+  readonly pattern?: string;
+}
+
+export interface PluginSettingsResult extends JsonObject {
+  readonly pluginId: string;
+  readonly schema: Readonly<Record<string, PluginSettingOption>>;
+  readonly values: Readonly<Record<string, string | number | boolean | readonly string[]>>;
+  readonly sensitiveSet: Readonly<Record<string, boolean>>;
+  readonly needsSetup: readonly string[];
+}
+
 export interface SessionMcpServerConfig extends JsonObject {
   readonly name: string;
   readonly transport?: "stdio" | "sse" | "http" | "websocket";
@@ -2585,6 +2621,9 @@ export type AgenCDaemonRequest =
       "session.mcp.addServer",
       SessionMcpAddServerParams
     >
+  | AgenCDaemonRequestWithParams<"plugin.settings.get", PluginSettingsParams>
+  | AgenCDaemonRequestWithParams<"plugin.settings.set", PluginSettingsSetParams>
+  | AgenCDaemonRequestWithParams<"plugin.settings.reset", PluginSettingsParams>
   | AgenCDaemonRequestWithParams<"message.send", MessageSendParams>
   | AgenCDaemonRequestWithParams<"message.stream", MessageStreamParams>
   | AgenCDaemonRequestWithParams<
@@ -4053,6 +4092,9 @@ export interface AgenCDaemonResultByMethod {
   readonly "session.resolveToolCall": SessionResolveToolCallResult;
   readonly "session.mcp.status": SessionMcpStatusResult;
   readonly "session.mcp.addServer": SessionMcpAddServerResult;
+  readonly "plugin.settings.get": PluginSettingsResult;
+  readonly "plugin.settings.set": PluginSettingsResult;
+  readonly "plugin.settings.reset": PluginSettingsResult;
   readonly "message.send": MessageSendResult;
   readonly "message.stream": MessageStreamResult;
   readonly "thread/realtime/start": ThreadRealtimeStartResponse;

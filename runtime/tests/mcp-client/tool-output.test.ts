@@ -40,6 +40,7 @@ import {
   MCP_TOOL_RESULT_HARD_LIMIT_BYTES,
   normalizeMcpToolOutput,
 } from "../../src/mcp-client/tool-output.js";
+import { redactMcpAttachmentValue } from "../../src/mcp-client/local-control.js";
 
 const logger = {
   debug: vi.fn(),
@@ -130,6 +131,63 @@ beforeEach(() => {
 });
 
 describe("canonical MCP tool output normalization", () => {
+  test("redacts dynamic result dictionary keys before rendering and code-mode output", async () => {
+    const secret = "private-credential";
+    const url = `https://example.test/download?token=${secret}`;
+    const raw = {
+      content: [{ type: "text", text: "Download status", details: { [url]: "expired" } }],
+      structuredContent: { downloadStatus: { [url]: "expired" } },
+    };
+    const redacted = redactMcpAttachmentValue(raw, { token: secret }, undefined, "tool-result");
+    expect(JSON.stringify(redacted)).not.toContain(secret);
+    expect(Object.keys(redacted.content[0]!.details)).toEqual(["https://example.test/download?token=[REDACTED]"]);
+    const result = await normalizeMcpToolOutput({
+      raw: redacted, serverName: "plugin:demo:download", toolName: "downloadStatus",
+      callId: "call-redacted-key", environment: {}, logger,
+    });
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(result.content).toContain("https://example.test/download?token=[REDACTED]");
+    expect(JSON.stringify(result.codeModeResult)).toContain("https://example.test/download?token=[REDACTED]");
+  });
+
+  test("retains colliding redacted keys and persists only redacted oversized output", async () => {
+    const secret = "private-credential";
+    const secondSecret = "other-credential";
+    const raw = { structuredContent: { downloadStatus: {
+      [`https://example.test/download?token=${secret}`]: "first",
+      [`https://example.test/download?token=${secondSecret}`]: "second",
+      "https://example.test/download?token=[REDACTED]": "third",
+    } } };
+    const redacted = redactMcpAttachmentValue(raw, { token: secret, other: secondSecret }, undefined, "tool-result");
+    expect(redacted.structuredContent.downloadStatus).toEqual({
+      "https://example.test/download?token=[REDACTED]": "first",
+      "https://example.test/download?token=[REDACTED]#2": "second",
+      "https://example.test/download?token=[REDACTED]#3": "third",
+    });
+    const result = await normalizeMcpToolOutput({
+      raw: redacted, serverName: "plugin:demo:download", toolName: "downloadStatus",
+      callId: "call-persisted-redacted-key", environment: { MAX_MCP_OUTPUT_TOKENS: "1" }, logger,
+    });
+    expect(mocks.persistToolResult).toHaveBeenCalledOnce();
+    const persisted = mocks.persistToolResult.mock.calls[0]![0] as string;
+    expect(persisted).toContain('"first"');
+    expect(persisted).toContain('"second"');
+    expect(persisted).toContain('"third"');
+    expect(persisted).not.toContain(secret);
+    expect(persisted).not.toContain(secondSecret);
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(JSON.stringify(result)).not.toContain(secondSecret);
+  });
+  test("omits an encoded binary block matching a saved secret instead of persisting it", async () => {
+    const result = await normalizeMcpToolOutput({
+      raw: { content: [{ type: "audio", data: "AAAA", mimeType: "audio/mpeg" }] },
+      serverName: "srv", toolName: "read", callId: "call-secret-binary",
+      environment: { MAX_MCP_OUTPUT_TOKENS: "100000" }, logger,
+      sensitiveHeaders: { token: "AAAA" },
+    });
+    expect(result.content).toContain("omitted: contained a saved secret");
+    expect(mocks.persistBinaryContent).not.toHaveBeenCalled();
+  });
   test("attaches a validated MCP PNG alongside its saved-file line", async () => {
     const png = await makePng();
     const result = await normalizeMcpToolOutput({

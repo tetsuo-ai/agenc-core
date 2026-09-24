@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { hasLocalMcpAccess, withLocalMcpAccess, sessionMcpAttachmentIssue, attachmentLogger, desktopControlEffectReceipt, withDesktopMcpDispatchGuard, assertDesktopMcpDispatchGuard, DesktopMcpPreflightRefusal } from "./local-control.js";
+import { hasLocalMcpAccess, withLocalMcpAccess, sessionMcpAttachmentIssue, attachmentLogger, desktopControlEffectReceipt, withDesktopMcpDispatchGuard, assertDesktopMcpDispatchGuard, DesktopMcpPreflightRefusal, redactMcpAttachmentText, redactMcpAttachmentValue } from "./local-control.js";
 import { createToolBridge } from "./tools.js";
 import { toToolCatalogPolicyConfig } from "./resilient-client.js";
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
@@ -10,6 +10,23 @@ const headers = { Authorization: `Bearer ${token}` };
 const config = { name: "agenc-desktop-control", transport: "http" as const, endpoint: "http://127.0.0.1:43118/mcp", localOnly: true, headers, origin: { scope: "session" as const } };
 
 describe("ephemeral local MCP authority", () => {
+  it("matches overlapping secrets against the original text", () => {
+    expect(redactMcpAttachmentText("abcdefgh-secret", { first: "abcd", second: "abcdefgh-secret" })).toBe("[REDACTED]");
+    expect(redactMcpAttachmentText("abcdefghi-secret", { first: "abcdef", second: "defghi-secret" })).toBe("[REDACTED]");
+  });
+
+  it("preserves schema controls while visiting property-name maps and nested subschemas", () => {
+    const schema = { type: "object", properties: { type: { type: "string", description: "private-phrase", enum: ["private-phrase"] }, nested: { type: "object", properties: { required: { type: "string", description: "private-phrase" } } } } };
+    const safe = redactMcpAttachmentValue(schema, { token: "private-phrase" }, undefined, "schema");
+    expect(safe.type).toBe("object");
+    expect(safe.properties.type.type).toBe("string");
+    expect(safe.properties.type.description).toBe("[REDACTED]");
+    expect(safe.properties.type.enum).toEqual(["[REDACTED]"]);
+    expect(safe.properties.nested.properties.required.description).toBe("[REDACTED]");
+    const additional = redactMcpAttachmentValue({ type: "object", additionalProperties: { description: "private-phrase" } }, { token: "private-phrase" }, undefined, "schema");
+    expect(additional.additionalProperties.description).toBe("[REDACTED]");
+    expect(redactMcpAttachmentValue({ additionalProperties: true }, { token: "true" }, undefined, "schema").additionalProperties).toBe(true);
+  });
   it("does not claim no effect for a refused retry after a request was already sent", async () => {
     let revoked = false;
     await withDesktopMcpDispatchGuard(() => { if (revoked) throw new DesktopMcpPreflightRefusal("expired"); }, async () => {

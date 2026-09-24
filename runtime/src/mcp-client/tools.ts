@@ -1040,7 +1040,7 @@ export async function createToolBridge(
       inputSchema: modelFacingMcpInputSchema(
         serverName,
         mcpTool.name,
-        redactMcpAttachmentValue(mcpTool.inputSchema ?? { type: "object", properties: {} }, options.serverConfig?.sensitiveHeaders),
+        redactMcpAttachmentValue(mcpTool.inputSchema ?? { type: "object", properties: {} }, options.serverConfig?.sensitiveHeaders, undefined, "schema"),
         logger,
       ),
       serverId: serverName,
@@ -1185,7 +1185,10 @@ export async function createToolBridge(
             effectSignal,
           );
           const result = await normalizeMcpToolOutput({
-            raw: redactMcpAttachmentValue(rawResult, options.serverConfig?.sensitiveHeaders),
+            raw: redactMcpAttachmentValue(rawResult, options.serverConfig?.sensitiveHeaders, undefined, "tool-result"),
+            ...(options.serverConfig?.sensitiveHeaders !== undefined
+              ? { sensitiveHeaders: options.serverConfig.sensitiveHeaders }
+              : {}),
             serverName,
             toolName: mcpTool.name,
             callId,

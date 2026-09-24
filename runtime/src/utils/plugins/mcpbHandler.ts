@@ -2,6 +2,7 @@ import axios from 'axios'
 import { createHash } from 'crypto'
 import { chmod, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
+import { Worker } from 'node:worker_threads'
 import type { McpServerConfig } from '../../services/mcp/types.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { parseAndValidateManifestFromBytes } from '../dxt/helpers.js'
@@ -16,6 +17,8 @@ import { getFsImplementation } from '../fsOperations.js'
 import { logError } from '../log.js'
 import {
   readNativeSecureStorage,
+  readNativeSecureStorageFresh,
+  NativeSecureStorageUnavailableError,
   updateNativeSecureStorage,
 } from '../secureStorage/native.js'
 import {
@@ -26,11 +29,14 @@ import { jsonParse, jsonStringify } from '../slowOperations.js'
 import { getSystemDirectories } from '../systemDirectories.js'
 import {
   assertPluginConfigKeysDeclared,
+  readFreshPluginConfigs,
   requirePluginConfigAuthority,
   resolveSchemaOwnedPluginConfig,
   rollbackPluginSecretBucket,
   withPluginSecretBucket,
+  withPluginSecretFormats,
 } from './pluginConfigAuthority.js'
+import { decodeStoredPluginSecret, encodeStoredPluginSecret, pluginSecretFormat, type PluginSecretFormat } from './plugin-secret-codec.js'
 /**
  * User configuration values for MCPB
  */
@@ -43,6 +49,47 @@ export type UserConfigValues = Record<
  * User configuration schema from DXT manifest
  */
 export type UserConfigSchema = Record<string, McpbUserConfigurationOption>
+
+// Manifest regexes run off the main thread. One shared-memory deadline covers
+// the entire pass, including all fields and entries; a timed-out worker is
+// discarded so catastrophic backtracking cannot delay later validations.
+const PATTERN_MATCH_TIMEOUT_MS = 125
+const PATTERN_WORKER_SOURCE = `
+  const { parentPort, workerData } = require('node:worker_threads');
+  const results = [];
+  for (const { pattern, entries } of workerData) {
+      try {
+        const regex = new RegExp(pattern, 'u');
+        results.push(entries.every(entry => typeof entry !== 'string' || regex.test(entry)) ? 1 : 2);
+      } catch { results.push(3); }
+  }
+  parentPort.postMessage(results);
+`
+
+function matchPatterns(checks: readonly { pattern: string; entries: unknown[] }[]): Promise<number[]> {
+  const invalid = () => checks.map(() => 3)
+  return new Promise(resolve => {
+    let worker: Worker
+    try {
+      worker = new Worker(PATTERN_WORKER_SOURCE, { eval: true, workerData: checks })
+    } catch {
+      resolve(invalid())
+      return
+    }
+    let settled = false
+    const finish = (results: number[]) => {
+      if (settled) return
+      settled = true
+      clearTimeout(deadline)
+      resolve(results.length === checks.length ? results : invalid())
+      void worker.terminate()
+    }
+    const deadline = setTimeout(() => finish(invalid()), PATTERN_MATCH_TIMEOUT_MS)
+    worker.once('message', value => finish(Array.isArray(value) ? value as number[] : invalid()))
+    worker.once('error', () => finish(invalid()))
+    worker.once('exit', () => finish(invalid()))
+  })
+}
 
 /**
  * Result of loading an MCPB file (success case)
@@ -151,18 +198,28 @@ export function loadMcpServerUserConfig(
   pluginId: string,
   serverName: string,
   schema: UserConfigSchema,
+  options: { readonly fresh?: boolean } = {},
 ): UserConfigValues | null {
   const authority = requirePluginConfigAuthority()
   const configured =
-    authority.current().pluginConfigs?.[pluginId]?.mcpServers?.[serverName]
-  const sensitive = readNativeSecureStorage(authority.homeContext)
-    .pluginSecrets?.[serverSecretsKey(pluginId, serverName)]
+    (options.fresh ? readFreshPluginConfigs() : authority.current().pluginConfigs)?.[pluginId]?.mcpServers?.[serverName]
+  let sensitiveStorage: ReturnType<typeof readNativeSecureStorage>
+  try {
+    sensitiveStorage = options.fresh ? readNativeSecureStorageFresh(authority.homeContext) : readNativeSecureStorage(authority.homeContext)
+  } catch (error) {
+    if (!(options.fresh && error instanceof NativeSecureStorageUnavailableError)) throw error
+    sensitiveStorage = {}
+  }
+  const sensitive = sensitiveStorage.pluginSecrets?.[serverSecretsKey(pluginId, serverName)]
   const resolved = resolveSchemaOwnedPluginConfig(
     `pluginConfigs.${JSON.stringify(pluginId)}.mcpServers.${JSON.stringify(serverName)}`,
     schema,
     configured,
     sensitive,
   ) as UserConfigValues
+  for (const [key, field] of Object.entries(schema)) {
+    if (field.sensitive && typeof resolved[key] === 'string') resolved[key] = decodeStoredPluginSecret(resolved[key], field, sensitiveStorage.pluginSecretFormats?.[serverSecretsKey(pluginId, serverName)]?.[key])
+  }
 
   if (Object.keys(resolved).length === 0) return null
   logForDebugging(
@@ -205,10 +262,12 @@ export async function saveMcpServerUserConfig(
     )
     const nonSensitive: UserConfigValues = {}
     const sensitive: Record<string, string> = {}
+    const sensitiveFormats: Record<string, PluginSecretFormat> = {}
 
     for (const [key, value] of Object.entries(config)) {
       if (schema[key]?.sensitive === true) {
-        sensitive[key] = String(value)
+        sensitive[key] = encodeStoredPluginSecret(value, schema[key])
+        sensitiveFormats[key] = pluginSecretFormat(value, schema[key])
       } else {
         nonSensitive[key] = value
       }
@@ -245,10 +304,11 @@ export async function saveMcpServerUserConfig(
                     ),
                   )
                 : undefined
-              return withPluginSecretBucket(current, k, {
+              const next = withPluginSecretBucket(current, k, {
                 ...secureScrubbed,
                 ...sensitive,
               })
+              return withPluginSecretFormats(next, k, { ...next.pluginSecretFormats?.[k], ...sensitiveFormats })
             },
             `Failed to save sensitive config to secure storage for ${k}`,
           )
@@ -337,24 +397,36 @@ export async function saveMcpServerUserConfig(
 /**
  * Validate user configuration values against DXT user_config schema
  */
-export function validateUserConfig(
+export async function validateUserConfig(
   values: UserConfigValues,
   schema: UserConfigSchema,
-): { valid: boolean; errors: string[] } {
+): Promise<{ valid: boolean; errors: string[]; invalidKeys: string[] }> {
   const errors: string[] = []
+  const invalidKeys = new Set<string>()
+  const patternChecks: Array<{ key: string; label: string; pattern: string; entries: unknown[] }> = []
 
   // Check each field in the schema
   for (const [key, fieldSchema] of Object.entries(schema)) {
+    const before = errors.length
     const value = values[key]
+    const label = fieldSchema.sensitive ? key : fieldSchema.title || key
 
     // Check required fields
-    if (fieldSchema.required && (value === undefined || value === '')) {
-      errors.push(`${fieldSchema.title || key} is required but not provided`)
+    if (fieldSchema.required && (value === undefined || value === '' || (Array.isArray(value) && value.length === 0))) {
+      errors.push(`${label} is required but not provided`)
+      invalidKeys.add(key)
       continue
     }
 
     // Skip validation for optional fields that aren't provided
-    if (value === undefined || value === '') {
+    if (value === undefined) {
+      continue
+    }
+
+    if ((typeof value === 'string' && /[\u0000-\u001f\u007f]/u.test(value)) ||
+        (Array.isArray(value) && value.some(item => typeof item === 'string' && /[\u0000-\u001f\u007f]/u.test(item)))) {
+      errors.push(`${label} contains invalid control characters`)
+      invalidKeys.add(key)
       continue
     }
 
@@ -364,41 +436,58 @@ export function validateUserConfig(
         // String arrays are allowed if multiple: true
         if (!fieldSchema.multiple) {
           errors.push(
-            `${fieldSchema.title || key} must be a string, not an array`,
+            `${label} must be a string, not an array`,
           )
         } else if (!value.every(v => typeof v === 'string')) {
-          errors.push(`${fieldSchema.title || key} must be an array of strings`)
+          errors.push(`${label} must be an array of strings`)
         }
       } else if (typeof value !== 'string') {
-        errors.push(`${fieldSchema.title || key} must be a string`)
+        errors.push(`${label} must be a string`)
       }
-    } else if (fieldSchema.type === 'number' && typeof value !== 'number') {
-      errors.push(`${fieldSchema.title || key} must be a number`)
+    } else if (fieldSchema.type === 'number' && (typeof value !== 'number' || !Number.isFinite(value))) {
+      errors.push(`${label} must be a number`)
     } else if (fieldSchema.type === 'boolean' && typeof value !== 'boolean') {
-      errors.push(`${fieldSchema.title || key} must be a boolean`)
+      errors.push(`${label} must be a boolean`)
     } else if (
       (fieldSchema.type === 'file' || fieldSchema.type === 'directory') &&
       typeof value !== 'string'
     ) {
-      errors.push(`${fieldSchema.title || key} must be a path string`)
+      errors.push(`${label} must be a path string`)
     }
 
     // Number range validation
     if (fieldSchema.type === 'number' && typeof value === 'number') {
       if (fieldSchema.min !== undefined && value < fieldSchema.min) {
         errors.push(
-          `${fieldSchema.title || key} must be at least ${fieldSchema.min}`,
+          `${label} must be at least ${fieldSchema.min}`,
         )
       }
       if (fieldSchema.max !== undefined && value > fieldSchema.max) {
         errors.push(
-          `${fieldSchema.title || key} must be at most ${fieldSchema.max}`,
+          `${label} must be at most ${fieldSchema.max}`,
         )
       }
     }
+    if (fieldSchema.pattern !== undefined) {
+      patternChecks.push({ key, label, pattern: fieldSchema.pattern, entries: Array.isArray(value) ? value : [value] })
+    }
+    if (errors.length > before) invalidKeys.add(key)
   }
 
-  return { valid: errors.length === 0, errors }
+  if (patternChecks.length > 0) {
+    const results = await matchPatterns(patternChecks)
+    patternChecks.forEach((check, index) => {
+      if (results[index] === 2) {
+        errors.push(`${check.label} does not match the required pattern`)
+        invalidKeys.add(check.key)
+      } else if (results[index] !== 1) {
+        errors.push(`${check.label} has an invalid pattern`)
+        invalidKeys.add(check.key)
+      }
+    })
+  }
+
+  return { valid: errors.length === 0, errors, invalidKeys: [...invalidKeys] }
 }
 
 /**
@@ -722,7 +811,7 @@ export async function loadMcpbFile(
       const userConfig = providedUserConfig || savedConfig || {}
 
       // Validate we have all required fields
-      const validation = validateUserConfig(userConfig, manifest.user_config)
+      const validation = await validateUserConfig(userConfig, manifest.user_config)
 
       // Return needs-config if: forced (reconfiguration) OR validation failed
       if (forceConfigDialog || !validation.valid) {
@@ -861,7 +950,7 @@ export async function loadMcpbFile(
     const userConfig = providedUserConfig || savedConfig || {}
 
     // Validate we have all required fields
-    const validation = validateUserConfig(userConfig, manifest.user_config)
+    const validation = await validateUserConfig(userConfig, manifest.user_config)
 
     if (!validation.valid) {
       // Save cache metadata even though config is incomplete

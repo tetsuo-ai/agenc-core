@@ -123,6 +123,8 @@ export interface SecureStorageData {
   mcpXaaIdpConfig?: Record<string, { clientSecret: string }>
   trustedDeviceToken?: string
   pluginSecrets?: Record<string, Record<string, string>>
+  /** Version metadata is separate from credential payloads and ignored by older builds. */
+  pluginSecretFormats?: Record<string, Record<string, 'literal-v1' | 'typed-v1' | `typed-v2:${string}`>>
   /** OpenAI OAuth (Sign in with ChatGPT): the exchanged platform API
    * key plus the login tokens that produced it. */
   openAiOauth?: {

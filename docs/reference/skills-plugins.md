@@ -440,6 +440,47 @@ write the value to secure storage and scrub the plaintext field. AgenC never tre
 TOML as a secret fallback and never creates a plaintext secret archive during
 this reconfiguration.
 
+Local app-server clients can call `plugin.settings.get` with `{ pluginId }` to
+read the installed manifest's schema, ordinary effective values, a
+`sensitiveSet` boolean per secret, and missing or invalid keys in `needsSetup`.
+Secret values never appear in that result. `plugin.settings.set` accepts
+`{ pluginId, values }`, validates the resulting settings against the manifest,
+and writes only the changed keys to their schema-selected stores.
+`plugin.settings.reset` accepts `{ pluginId }` and clears all declared saved
+values. If native secure storage is unavailable, reset fails without reporting
+deletion or clearing the ordinary settings. `agenc plugin list --json` also includes `needsSetup` keys on installed
+plugins when settings need setup. These app-server methods are
+available only on authenticated local connections.
+
+MCP server configuration is resolved when the server starts. A settings change
+does not alter a running process. Reconnect that plugin server in the active
+session, or start a new session, to use the new value.
+
+A plugin MCP server receives its saved secrets by design. Redaction protects
+against a non-malicious plugin accidentally disclosing them. Core covers its
+own diagnostics, the plugin's stderr and logs, tool result content and errors,
+progress text, resource contents and resource URIs (including signed URLs),
+prompt descriptions, and rendered prompt messages. Core redacts a complete
+literal secret before it splits, normalizes, or truncates output. It never
+corrupts binary output with text markers: a binary payload containing a secret
+is omitted and marked as omitted. Values shorter than four characters are not
+redacted, preserving ordinary output and protocol structure.
+
+Plugin-declared identifiers and schemas, including tool names and literal
+values in input schemas, are outside this guarantee. A plugin can also encode
+or split its own secret before sending it; those transformed copies are outside
+the literal-match guarantee. The plugin can deliberately send its secrets
+elsewhere.
+
+Secret format metadata is stored separately from the credential payload.
+Unmarked legacy credentials retain their schema-based decoding rules; a literal
+such as `agenc:secret:v2:"literal-secret"` remains literal. An unmarked value
+written by the earlier preview of the `v2` envelope is indistinguishable from
+such a literal and must be re-entered. New writes use
+the older compatible payload formats, so downgrading to a build that ignores
+the metadata never substitutes a new envelope as a credential. The older build
+can still read the credential using its previous format rules.
+
 ### CLI: `agenc plugin`
 
 ```text

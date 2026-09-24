@@ -187,6 +187,8 @@ export type PluginMcpServerIdentity = {
 
 export type ScopedMcpServerConfig = McpServerConfig & {
   scope: ConfigScope
+  /** Decoded saved plugin credentials for redacting this connection's output. */
+  pluginSecretValues?: readonly string[]
   /** Exact canonical repository authority that supplied the winning definition. */
   authoritySource?: RepositoryConfigScope | 'session'
   // For plugin-provided servers: the providing plugin's LoadedPlugin.source

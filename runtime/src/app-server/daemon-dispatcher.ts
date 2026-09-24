@@ -9,6 +9,8 @@ import { ROUTINE_SESSION_PREPARE_CAPABILITY, type RoutineSessionPreparation } fr
  */
 
 import { createHash, randomUUID } from "node:crypto";
+import type { PluginSettingsService } from "../plugins/settings-service.js";
+import type { PluginSettingsResult } from "./protocol/index.js";
 import { sessionMcpAttachmentIssue } from "../mcp-client/local-control.js";
 import { isAbsolute } from "node:path";
 import { WhisperError, type WhisperService } from "../audio/whisper.js";
@@ -324,6 +326,7 @@ interface AgenCDaemonServerCapabilityInputs {
   readonly ownerTelegram: OwnerTelegramService | undefined;
   readonly csvJobReview: AgenCCsvJobReviewService | undefined;
   readonly projectTrust: AgenCDaemonProjectTrustService | undefined;
+  readonly pluginSettings: PluginSettingsService | undefined;
 }
 
 function buildServerCapabilities(
@@ -382,6 +385,9 @@ function buildServerCapabilities(
     ),
     "session.mcp.status": hasMethod(agentManager, "getMcpStatusForSession"),
     "session.mcp.addServer": hasMethod(agentManager, "addMcpServerToSession"),
+    "plugin.settings.get": inputs.pluginSettings !== undefined,
+    "plugin.settings.set": inputs.pluginSettings !== undefined,
+    "plugin.settings.reset": inputs.pluginSettings !== undefined,
     "message.send": hasMethod(agentManager, "streamAgentMessage"),
     "message.stream": hasMethod(agentManager, "streamAgentMessage"),
     "thread/realtime/start":
@@ -612,6 +618,7 @@ export interface AgenCDaemonDispatcherOptions {
    * authenticated local connections, like `remote.*`.
    */
   readonly projectTrust?: AgenCDaemonProjectTrustService;
+  readonly pluginSettings?: PluginSettingsService;
   readonly healthStateCounter?: AgenCHealthStateCounter;
   readonly now?: () => string;
 }
@@ -745,6 +752,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #routineSubscriptions = new Map<AgenCDaemonJsonRpcConnection, () => void>();
   readonly #csvJobReview: AgenCCsvJobReviewService | undefined;
   readonly #projectTrust: AgenCDaemonProjectTrustService | undefined;
+  readonly #pluginSettings: PluginSettingsService | undefined;
   readonly #serverCapabilities: AgenCDaemonServerCapabilities;
   readonly #now: () => string;
 
@@ -781,6 +789,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#ownerTelegram = options.ownerTelegram;
     this.#csvJobReview = options.csvJobReview;
     this.#projectTrust = options.projectTrust;
+    this.#pluginSettings = options.pluginSettings;
     this.#authHandlers =
       options.authBackend !== undefined
         ? createAgenCDaemonAuthHandlers(options.authBackend)
@@ -807,6 +816,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       ownerTelegram: this.#ownerTelegram,
       csvJobReview: this.#csvJobReview,
       projectTrust: this.#projectTrust,
+      pluginSettings: this.#pluginSettings,
     });
     this.#now = options.now ?? (() => new Date().toISOString());
   }
@@ -1405,6 +1415,21 @@ export class AgenCDaemonJsonRpcDispatcher {
             validateSessionMcpAddServerParams(params),
           ),
         );
+      case "plugin.settings.get":
+      case "plugin.settings.set":
+      case "plugin.settings.reset": {
+        if (connection.remoteAccess !== undefined || this.#pluginSettings === undefined) return methodNotImplementedResponse(id, method);
+        const validated = validateObjectShape(params, {
+          methodName: method,
+          stringFields: ["pluginId"],
+          ...(method === "plugin.settings.set" ? { objectFields: ["values"] } : {}),
+        });
+        validateRequiredString(validated, method, "pluginId");
+        if (method === "plugin.settings.get") return successResponse(id, await this.#pluginSettings.get({ pluginId: validated.pluginId as string }) as unknown as PluginSettingsResult);
+        if (method === "plugin.settings.reset") return successResponse(id, await this.#pluginSettings.reset({ pluginId: validated.pluginId as string }) as unknown as PluginSettingsResult);
+        if (validated.values === undefined || typeof validated.values !== "object" || Array.isArray(validated.values)) throw invalidParams("plugin.settings.set values must be an object");
+        return successResponse(id, await this.#pluginSettings.set({ pluginId: validated.pluginId as string, values: validated.values as Record<string, string | number | boolean | string[]> }) as unknown as PluginSettingsResult);
+      }
       case "session.mcp.reconnectServer":
         return successResponse(
           id,

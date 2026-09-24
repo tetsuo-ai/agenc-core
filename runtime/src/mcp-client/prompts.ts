@@ -12,6 +12,7 @@
  */
 
 import type { Logger } from "./_deps/logger.js";
+import { createHash } from "node:crypto";
 import { silentLogger } from "./_deps/logger.js";
 import { runAdmittedSessionBoundToolCall } from "../budget/admitted-legacy-tool-call.js";
 import { sanitizeSystemReminderContent } from "../prompts/attachments/system-reminder-sanitizer.js";
@@ -26,6 +27,7 @@ import {
   MAX_MCP_LIST_PAGES,
   McpListPaginationError,
 } from "./list-pagination.js";
+import { redactMcpAttachmentValue } from "./local-control.js";
 
 export const DEFAULT_PROMPT_RPC_TIMEOUT_MS = 30_000;
 
@@ -76,6 +78,7 @@ interface CreatePromptBridgeOpts {
   readonly maxListItems?: number;
   /** Test seam; production remains bounded by `MAX_MCP_LIST_AGGREGATE_BYTES`. */
   readonly maxListAggregateBytes?: number;
+  readonly sensitiveHeaders?: Readonly<Record<string, string>>;
 }
 
 type PromptRole = MCPPromptRenderedMessage["role"];
@@ -92,6 +95,10 @@ export async function createPromptBridge(
 ): Promise<MCPPromptBridge> {
   const rpcTimeoutMs = opts.rpcTimeoutMs ?? DEFAULT_PROMPT_RPC_TIMEOUT_MS;
   let disposed = false;
+  const rawNameByPublicName = new Map<string, string>();
+  const publicNameByRawName = new Map<string, string>();
+  const rawArgumentNamesByPublicPrompt = new Map<string, Map<string, string>>();
+  const redact = <T>(value: T): T => redactMcpAttachmentValue(value, opts.sensitiveHeaders, undefined, "prompt");
 
   return {
     serverName,
@@ -116,7 +123,46 @@ export async function createPromptBridge(
               timeout: callOptions.timeout,
             }),
         });
-        return normalizePromptCatalog(rawPrompts, serverName);
+        return normalizePromptCatalog(rawPrompts, serverName).map(prompt => {
+          const safe = redact(prompt);
+          let publicName = publicNameByRawName.get(prompt.name);
+          if (publicName === undefined) {
+            publicName = safe.name === prompt.name ? safe.name
+              : `agenc-redacted-prompt-${createHash("sha256").update(prompt.name).digest("hex")}`;
+            if (rawNameByPublicName.has(publicName) && rawNameByPublicName.get(publicName) !== prompt.name) {
+              publicName = `agenc-redacted-prompt-${createHash("sha256").update(prompt.name).digest("hex")}`;
+            }
+            if (rawNameByPublicName.size >= 2_000) {
+              const oldest = rawNameByPublicName.keys().next().value;
+              if (oldest !== undefined) {
+                const oldRaw = rawNameByPublicName.get(oldest)!;
+                rawNameByPublicName.delete(oldest);
+                publicNameByRawName.delete(oldRaw);
+                rawArgumentNamesByPublicPrompt.delete(oldest);
+              }
+            }
+            rawNameByPublicName.set(publicName, prompt.name);
+            publicNameByRawName.set(prompt.name, publicName);
+          }
+          const argumentNames = new Map<string, string>();
+          const safeArguments = safe.arguments?.map((argument, index) => {
+            const rawName = prompt.arguments?.[index]?.name ?? argument.name;
+            let publicArgumentName = argument.name;
+            let suffix = 0;
+            while (argumentNames.has(publicArgumentName) && argumentNames.get(publicArgumentName) !== rawName) {
+              publicArgumentName = `agenc-redacted-argument-${++suffix}`;
+            }
+            argumentNames.set(publicArgumentName, rawName);
+            return { ...argument, name: publicArgumentName };
+          });
+          rawArgumentNamesByPublicPrompt.set(publicName, argumentNames);
+          return {
+            ...safe,
+            name: publicName,
+            namespacedName: `mcp.${serverName}.${publicName}`,
+            ...(safeArguments !== undefined ? { arguments: safeArguments } : {}),
+          };
+        });
       } catch (err) {
         signal?.throwIfAborted();
         if (err instanceof McpListPaginationError || isAbortError(err)) {
@@ -124,7 +170,7 @@ export async function createPromptBridge(
         }
         logger.warn?.(
           `MCP server "${serverName}" listPrompts failed:`,
-          err,
+          redact(err),
         );
         return [];
       }
@@ -139,38 +185,52 @@ export async function createPromptBridge(
           `MCP prompt bridge for "${serverName}" has been disposed`,
         );
       }
-      const response = await runAdmittedMcpPromptGet<unknown>({
-        serverName,
-        promptName: name,
-        args: args ?? {},
-        rpcTimeoutMs,
-        ...(signal !== undefined ? { signal } : {}),
-        invoke: (effectSignal) =>
-          client.getPrompt(
-            {
-              name,
-              ...(args !== undefined ? { arguments: args } : {}),
-            },
-            {
-              signal: effectSignal,
-              timeout: rpcTimeoutMs,
-            },
-          ),
-      });
-      const record = asRecord(response);
-      const messages: MCPPromptRenderedMessage[] = arrayField(record, "messages")
-        .map(projectPromptMessage)
-        .filter((message): message is MCPPromptRenderedMessage => message !== null);
-      return {
-        promptName: name,
-        ...(typeof record?.description === "string"
-          ? { description: record.description }
-          : {}),
-        messages: frameUntrustedMcpPromptMessages(serverName, name, messages),
-      };
+      if (name.startsWith("agenc-redacted-prompt-") && !rawNameByPublicName.has(name)) {
+        throw new Error("MCP prompt alias expired; list prompts again");
+      }
+      try {
+        const rawArgumentNames = rawArgumentNamesByPublicPrompt.get(name);
+        const upstreamArgs = args === undefined ? undefined : Object.fromEntries(
+          Object.entries(args).map(([key, value]) => [rawArgumentNames?.get(key) ?? key, value]),
+        );
+        const response = await runAdmittedMcpPromptGet<unknown>({
+          serverName,
+          promptName: name,
+          args: args ?? {},
+          rpcTimeoutMs,
+          ...(signal !== undefined ? { signal } : {}),
+          invoke: (effectSignal) =>
+            client.getPrompt(
+              {
+                name: rawNameByPublicName.get(name) ?? name,
+                ...(upstreamArgs !== undefined ? { arguments: upstreamArgs } : {}),
+              },
+              {
+                signal: effectSignal,
+                timeout: rpcTimeoutMs,
+              },
+            ),
+        });
+        const record = asRecord(redact(response));
+        const messages: MCPPromptRenderedMessage[] = arrayField(record, "messages")
+          .map(projectPromptMessage)
+          .filter((message): message is MCPPromptRenderedMessage => message !== null);
+        return redact({
+          promptName: name,
+          ...(typeof record?.description === "string"
+            ? { description: record.description }
+            : {}),
+          messages: frameUntrustedMcpPromptMessages(serverName, name, messages),
+        });
+      } catch (error) {
+        throw redact(error);
+      }
     },
     async dispose(): Promise<void> {
       disposed = true;
+      rawNameByPublicName.clear();
+      publicNameByRawName.clear();
+      rawArgumentNamesByPublicPrompt.clear();
     },
   };
 }

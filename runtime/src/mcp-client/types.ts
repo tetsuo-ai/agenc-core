@@ -55,6 +55,8 @@ export interface MCPServerOrigin {
  *   - `"websocket"`: connect to a remote WebSocket endpoint.
  */
 export interface MCPServerConfig {
+  /** Runtime-only decoded values carried with the owning plugin connection. */
+  readonly pluginSecretValues?: readonly string[];
   readonly oauth?: McpOAuthConfig;
   /** Human-readable server name (used for tool namespacing) */
   readonly name: string;

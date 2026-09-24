@@ -30,6 +30,17 @@ import {
   snapshotMcpRequestEnvironment,
 } from "./environment.js";
 
+/** Only template-resolved sensitive settings are redaction inputs for plugins. */
+export function pluginSensitiveHeaders(
+  config: MCPServerConfig,
+): Readonly<Record<string, string>> | undefined {
+  if (config.origin?.scope !== "plugin") return undefined;
+  const values = (config.pluginSecretValues ?? []).filter(Boolean);
+  return values.length === 0
+    ? undefined
+    : Object.fromEntries(values.map((value, index) => [`decoded:${index}`, value]));
+}
+
 /**
  * Derive the tool catalog policy (allow/deny filter, I-74 SHA-256 catalog
  * pin, per-tool + default approval modes) from a server config.
@@ -68,6 +79,7 @@ export function toToolCatalogPolicyConfig(
       config.origin?.scope === "user"
       ? config.virtual_no_fs_write_tools
       : undefined;
+  const pluginSecrets = pluginSensitiveHeaders(config);
   if (
     !displayDataRoot &&
     !config.supplyChain &&
@@ -78,7 +90,8 @@ export function toToolCatalogPolicyConfig(
     virtualNoFsWriteTools === undefined &&
     config.tools === undefined &&
     config.localOnly !== true &&
-    !(config.origin?.scope === "session" && config.headers !== undefined)
+    !(config.origin?.scope === "session" && config.headers !== undefined) &&
+    pluginSecrets === undefined
   ) {
     return undefined;
   }
@@ -87,7 +100,10 @@ export function toToolCatalogPolicyConfig(
     ...(config.localOnly === true ? { localOnly: true } : {}),
     ...(config.desktopAuthorityGrant ? { desktopAuthorityGrant: config.desktopAuthorityGrant } : {}),
     ...(config.origin?.scope === "session" && config.headers !== undefined
-      ? { sensitiveHeaders: config.headers } : {}),
+      ? { sensitiveHeaders: config.headers } :
+      pluginSecrets !== undefined
+        ? { sensitiveHeaders: pluginSecrets }
+        : {}),
     ...(allowedTools !== undefined ? { allowedTools } : {}),
     ...(deniedTools !== undefined ? { deniedTools } : {}),
     ...(config.pinnedCatalogSha256 !== undefined

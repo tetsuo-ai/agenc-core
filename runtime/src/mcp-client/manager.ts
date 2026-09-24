@@ -33,6 +33,7 @@ import {
   withoutMcpExecutionOnlyArgs,
 } from "./tools.js";
 import {
+  pluginSensitiveHeaders,
   ResilientMCPBridge,
   toToolCatalogPolicyConfig,
 } from "./resilient-client.js";
@@ -231,6 +232,9 @@ function immutableMcpServerConfig(config: MCPServerConfig): MCPServerConfig {
       : {}),
     ...(config.env !== undefined
       ? { env: Object.freeze({ ...config.env }) }
+      : {}),
+    ...(config.pluginSecretValues !== undefined
+      ? { pluginSecretValues: Object.freeze([...config.pluginSecretValues]) }
       : {}),
     ...(config.env_vars !== undefined
       ? { env_vars: Object.freeze([...config.env_vars]) }
@@ -513,6 +517,7 @@ export class MCPManager {
   private readonly reconnectTails = new Map<string, Promise<void>>();
   private readonly retainedCleanup = new Map<string, RetainedServerCleanup>();
   private readonly surfaceChangeListeners = new Set<() => void>();
+  private readonly pluginSecretValues = new Map<string, ReadonlySet<string>>();
   private shutdownTask: Promise<ReadonlyArray<unknown>> | undefined;
 
   constructor(
@@ -521,6 +526,7 @@ export class MCPManager {
     environment: ProviderEnvironment = EMPTY_MCP_REQUEST_ENVIRONMENT,
   ) {
     this.configs = Object.freeze(configs.map(immutableMcpServerConfig));
+    this.rememberPluginSecrets(this.configs);
     this.logger = logger;
     this.environment = snapshotMcpRequestEnvironment(environment);
     this.resetConnectionStates();
@@ -533,6 +539,21 @@ export class MCPManager {
       () => undefined,
     );
     return run;
+  }
+
+  private rememberPluginSecrets(configs: ReadonlyArray<MCPServerConfig>): void {
+    for (const config of configs) {
+      if (config.origin?.scope !== "plugin") continue;
+      this.pluginSecretValues.set(config.name, new Set(
+        (config.pluginSecretValues ?? []).filter(Boolean),
+      ));
+    }
+  }
+
+  private redactPluginDiagnostic<T>(value: T): T {
+    return redactMcpAttachmentValue(value, Object.fromEntries(
+      [...this.pluginSecretValues.values()].flatMap(secrets => [...secrets]).map((secret, index) => [String(index), secret]),
+    ));
   }
 
   private deferRefreshUntilSandboxResume(
@@ -733,7 +754,7 @@ export class MCPManager {
         // Surface observers are downstream projections. A broken observer must
         // never interrupt connection publication or fail-closed revocation.
         try {
-          this.logger.warn?.("MCP surface change listener failed:", error);
+          this.logger.warn?.("MCP surface change listener failed:", this.redactPluginDiagnostic(error));
         } catch {
           // Logging is best-effort on this isolation path.
         }
@@ -816,6 +837,7 @@ export class MCPManager {
     }
     const generation = ++this.lifecycleGeneration;
     this.running = true;
+    this.rememberPluginSecrets(this.configs);
     this.resetConnectionStates();
     const enabledConfigs = this.configs.filter((c) => c.enabled !== false);
 
@@ -860,14 +882,15 @@ export class MCPManager {
           successCount++;
           this.connectionStates.set(cfg.name, { type: "connected" });
         } else {
-          this.connectionStates.set(cfg.name, isMcpAuthenticationError(result.reason) ? { type: "needs-auth" } : {
+          const safeReason = this.redactPluginDiagnostic(result.reason);
+          this.connectionStates.set(cfg.name, isMcpAuthenticationError(safeReason) ? { type: "needs-auth" } : {
             type: "failed",
-            error: errMessage(result.reason),
+            error: errMessage(safeReason),
           });
-          failures.push({ name: cfg.name, reason: result.reason });
+          failures.push({ name: cfg.name, reason: safeReason });
           this.logger.error(
             `Failed to connect to MCP server "${cfg.name}":`,
-            result.reason,
+            safeReason,
           );
         }
       }
@@ -954,8 +977,13 @@ export class MCPManager {
 
   private async stopInternal(strict: boolean): Promise<void> {
     const errors = await this.beginShutdown();
+    const safeErrors = errors.map(error => this.redactPluginDiagnostic(error));
+    // Cleanup has finished. Keep only owners whose disposal still needs a retry.
+    for (const name of this.pluginSecretValues.keys()) {
+      if (!this.retainedCleanup.has(name)) this.pluginSecretValues.delete(name);
+    }
     if (strict && errors.length > 0) {
-      throw new AggregateError(errors, "MCP manager strict shutdown failed");
+      throw new AggregateError(safeErrors, "MCP manager strict shutdown failed");
     }
   }
 
@@ -1023,7 +1051,7 @@ export class MCPManager {
         }
       }
       for (const error of errors) {
-        this.logger.warn?.("Error disconnecting MCP server:", error);
+        this.logger.warn?.("Error disconnecting MCP server:", this.redactPluginDiagnostic(error));
       }
       if (errors.length > 0) {
         // Cleanup retention changes getConnectionState() from pending to the
@@ -1067,6 +1095,7 @@ export class MCPManager {
       );
       await this.stopInternal(true);
       this.configs = nextConfigs;
+      this.rememberPluginSecrets(nextConfigs);
       this.resetConnectionStates();
       if (this.sandboxQuiesced) {
         this.restartAfterSandboxTransition = true;
@@ -1222,10 +1251,19 @@ export class MCPManager {
 
   getConfiguredServers(): readonly MCPServerConfig[] {
     return this.configs.map(config => {
+      if (config.origin?.scope === "plugin") {
+        const { env: _env, headers: _headers, pluginSecretValues: _secrets, ...publicConfig } = config;
+        return publicConfig;
+      }
       if (config.origin?.scope !== "session" || config.headers === undefined) return config;
       const { headers: _headers, desktopAuthority: _proof, desktopAuthorityGrant: _grant, ...publicConfig } = config;
       return publicConfig;
     });
+  }
+
+  /** Redact credentials retained by plugin connections during this manager's lifetime. */
+  redactPluginSecrets(value: string): string {
+    return this.redactPluginDiagnostic(value);
   }
 
   getServerConfig(name: string): MCPServerConfig | undefined {
@@ -1353,15 +1391,16 @@ export class MCPManager {
     void tail.then(remove);
 
     return promise.catch((error: unknown) => {
+      const safeError = this.redactPluginDiagnostic(error);
       if (this.isReconnectLifecycleCurrent(lifecycleGeneration, running)) {
         this.commitSurfaceMutation(() => {
-          this.connectionStates.set(config.name, isMcpAuthenticationError(error) ? { type: "needs-auth" } : {
+          this.connectionStates.set(config.name, isMcpAuthenticationError(safeError) ? { type: "needs-auth" } : {
             type: "failed",
-            error: errMessage(error),
+            error: errMessage(safeError),
           });
         });
       }
-      return reconnectFailure(config.name, error);
+      return reconnectFailure(config.name, safeError);
     });
   }
 
@@ -1407,15 +1446,16 @@ export class MCPManager {
         toolCount: bridge.tools.length,
       };
     } catch (error) {
+      const safeError = this.redactPluginDiagnostic(error);
       if (this.isReconnectLifecycleCurrent(lifecycleGeneration, running)) {
         this.commitSurfaceMutation(() => {
-          this.connectionStates.set(config.name, isMcpAuthenticationError(error) ? { type: "needs-auth" } : {
+          this.connectionStates.set(config.name, isMcpAuthenticationError(safeError) ? { type: "needs-auth" } : {
             type: "failed",
-            error: errMessage(error),
+            error: errMessage(safeError),
           });
         });
       }
-      return reconnectFailure(config.name, error);
+      return reconnectFailure(config.name, safeError);
     }
   }
 
@@ -1568,6 +1608,9 @@ export class MCPManager {
     startupGate?: StartupGate,
     isCurrent: () => boolean = () => true,
   ): Promise<RefreshedCompanionBridges> {
+    const logger = attachmentLogger(this.logger, config.origin?.scope === "session"
+      ? config.headers
+      : pluginSensitiveHeaders(config));
     if (config.localOnly === true) {
       // Local app control is a tool-only surface: no server-initiated skill,
       // resource or prompt can escape the turn-scoped execution boundary.
@@ -1594,8 +1637,11 @@ export class MCPManager {
       createdResourceBridge = await createResourceBridge(
         client,
         config.name,
-        this.logger,
+        logger,
         {
+          ...(pluginSensitiveHeaders(config) !== undefined
+            ? { sensitiveHeaders: pluginSensitiveHeaders(config) }
+            : {}),
           ...(config.timeout !== undefined
             ? { rpcTimeoutMs: config.timeout }
             : {}),
@@ -1607,7 +1653,7 @@ export class MCPManager {
         await abandonCreatedBridges();
         throw error;
       }
-      this.logger.warn?.(
+      logger.warn?.(
         `MCP server "${config.name}" resource bridge unavailable:`,
         error,
       );
@@ -1618,8 +1664,11 @@ export class MCPManager {
       createdPromptBridge = await createPromptBridge(
         client,
         config.name,
-        this.logger,
+        logger,
         {
+          ...(pluginSensitiveHeaders(config) !== undefined
+            ? { sensitiveHeaders: pluginSensitiveHeaders(config) }
+            : {}),
           ...(config.timeout !== undefined
             ? { rpcTimeoutMs: config.timeout }
             : {}),
@@ -1631,7 +1680,7 @@ export class MCPManager {
         await abandonCreatedBridges();
         throw error;
       }
-      this.logger.warn?.(
+      logger.warn?.(
         `MCP server "${config.name}" prompt bridge unavailable:`,
         error,
       );
@@ -1671,7 +1720,11 @@ export class MCPManager {
     startupGate: StartupGate,
     isCurrent: () => boolean,
   ): Promise<MCPToolBridge> {
-    const sensitiveHeaders = config.origin?.scope === "session" ? config.headers : undefined;
+    // Retain the values in this immutable connection config. A settings rotation
+    // must not make a still-running server's old credentials printable again.
+    const sensitiveHeaders = config.origin?.scope === "session"
+      ? config.headers
+      : pluginSensitiveHeaders(config);
     const logger = attachmentLogger(this.logger, sensitiveHeaders);
     let client: Awaited<ReturnType<typeof createMCPConnection>>;
     try {
@@ -1889,6 +1942,7 @@ export class MCPManager {
         `MCP server "${config.name}" cannot connect while prior cleanup remains unproven`,
       );
     }
+    this.rememberPluginSecrets([config]);
     const gate = createStartupGate();
     const lifecycleGeneration = this.lifecycleGeneration;
     const serverEpoch = this.nextServerEpoch(config.name);
@@ -1935,10 +1989,16 @@ export class MCPManager {
       ...(snapshot.instructions !== undefined
         ? { instructions: snapshot.instructions }
         : {}),
+      // A plugin's env and headers can carry its saved secrets, so neither is
+      // published with the connection.
       config: toScopedMcpServerConfig(
-        sensitiveHeaders === undefined
+        sensitiveHeaders === undefined && config.origin?.scope !== "plugin"
           ? config
-          : { ...config, headers: undefined },
+          : {
+              ...config,
+              headers: undefined,
+              ...(config.origin?.scope === "plugin" ? { env: undefined } : {}),
+            },
       ),
       cleanup: async () => {
         await this.disconnectServer(
@@ -2062,7 +2122,7 @@ export class MCPManager {
         if (result.status === "rejected") {
           this.logger.warn?.(
             `Error disposing poisoned MCP server "${serverName}" companion:`,
-            result.reason,
+            this.redactPluginDiagnostic(result.reason),
           );
         }
       }
@@ -2153,6 +2213,7 @@ export class MCPManager {
     reason: string,
     strictCleanup = false,
   ): Promise<void> {
+    const ownedSecrets = this.pluginSecretValues.get(name);
     this.invalidateServerAuthority(name);
     const attempts = Array.from(this.connectionAttempts).filter(
       (attempt) => attempt.serverName === name,
@@ -2219,12 +2280,15 @@ export class MCPManager {
         cleanupErrors.push(result.reason);
         this.logger.warn?.(
           `Error disposing MCP server "${name}" ${reason}:`,
-          result.reason,
+          this.redactPluginDiagnostic(result.reason),
         );
       }
     }
     if (cleanupErrors.length > 0) {
       this.notifySurfaceChanged();
+    }
+    if (!this.retainedCleanup.has(name) && this.pluginSecretValues.get(name) === ownedSecrets) {
+      this.pluginSecretValues.delete(name);
     }
     if (strictCleanup && cleanupErrors.length > 0) {
       throw new MCPConnectionCleanupError(name, reason, cleanupErrors);

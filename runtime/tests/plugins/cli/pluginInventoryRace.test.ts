@@ -143,6 +143,47 @@ describe("installed plugin inventory snapshot", () => {
     }
   });
 
+  it("checks required settings added after discovery in the verified snapshot", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-plugin-settings-race-"));
+    const workspaceRoot = join(home, "workspace");
+    const pluginStorageRoot = join(home, "plugins");
+    const pluginRoot = join(pluginStorageRoot, "alpha");
+    const manifestPath = join(pluginRoot, ".agenc-plugin", "plugin.json");
+    await mkdir(join(pluginRoot, ".agenc-plugin"), { recursive: true });
+    await mkdir(workspaceRoot);
+    const discoveredManifest = Buffer.from(JSON.stringify({ name: "alpha", version: "1.0.0" }));
+    const snapshotManifest = Buffer.from(JSON.stringify({ name: "alpha", version: "1.0.0", userConfig: {
+      contact: { type: "string", title: "Contact", description: "Contact address", required: true },
+    } }));
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    await writeFile(join(home, "plugin-publishers.json"), JSON.stringify({ publishers: {
+      team: { publicKey: publicKey.export({ type: "spki", format: "der" }).toString("base64") },
+    } }));
+    await writeFile(manifestPath, discoveredManifest);
+    await writeFile(join(pluginRoot, ".agenc-plugin", "agenc-install.json"), JSON.stringify({
+      source: pluginRoot, resolutionKind: "local", signatureRequired: true,
+    }));
+    const signaturePath = join(pluginRoot, ".agenc-plugin", "signature.json");
+    const writeSignature = async (manifest: Buffer) => writeFile(signaturePath, JSON.stringify({
+      publisher: "team", files: {},
+      signature: sign(null, pluginSignaturePayloadBytes(manifest, {}), privateKey).toString("base64"),
+    }));
+    await writeSignature(discoveredManifest);
+    race.beforeCopy = async () => {
+      race.beforeCopy = undefined;
+      await writeFile(manifestPath, snapshotManifest);
+      await writeSignature(snapshotManifest);
+    };
+    try {
+      const listed = await listInstalledPlugins({ agencHome: home, pluginStorageRoot,
+        workspaceRoot, sessionTempRoot: join(home, "temp"), env: {} });
+      expect(listed.plugins[0]?.verificationState).toBe("verified");
+      expect(listed.plugins[0]?.needsSetup).toEqual(["contact"]);
+    } finally {
+      race.beforeCopy = undefined;
+    }
+  });
+
   it("rejects a source root replaced with a symlink between discovery and copy", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-plugin-root-race-"));
     const workspaceRoot = join(home, "workspace");

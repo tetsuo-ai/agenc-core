@@ -393,23 +393,20 @@ function resolvePluginTemplate(
     );
     return pluginDataDir;
   };
-  let out = value
-    .replace(/\$\{AGENC_PLUGIN_ROOT\}/g, () =>
-      formatTemplatePath(plugin.root),
-    )
-    .replace(/\$\{AGENC_PLUGIN_DATA\}/g, () => dataDir())
-    .replace(/\$\{AGENC_SESSION_ID\}/g, () => options.sessionId ?? "");
-  out = out.replace(/\$\{user_config\.([A-Za-z_][\w.-]*)\}/g, (_match, key: string) => {
-    const value = pluginSettingValue(plugin, key, {
+  const out = value.replace(/\$\{[^}]+\}/g, placeholder => {
+    if (placeholder === '${AGENC_PLUGIN_ROOT}') return formatTemplatePath(plugin.root);
+    if (placeholder === '${AGENC_PLUGIN_DATA}') return dataDir();
+    if (placeholder === '${AGENC_SESSION_ID}') return options.sessionId ?? '';
+    const userConfig = /^\$\{user_config\.([A-Za-z_][\w.-]*)\}$/.exec(placeholder);
+    if (userConfig === null) return placeholder;
+    const key = userConfig[1]!;
+    const literal = pluginSettingValue(plugin, key, {
       exposeSensitive: options.exposeSensitive,
       schemaOwnedValues: options.schemaOwnedValues,
       schema: options.schema,
     });
-    if (value === undefined) {
-      missingUserConfig.push(key);
-      return "";
-    }
-    return value;
+    if (literal === undefined) missingUserConfig.push(key);
+    return literal ?? '';
   });
   return { value: out, missingUserConfig: [...new Set(missingUserConfig)] };
 }
@@ -458,20 +455,37 @@ export function resolvePluginServerTemplate(
     readonly schema?: PluginRuntimeOptionSchema;
   } = {},
 ): PluginServerTemplateResolution {
-  const pluginResult = resolvePluginTemplate(value, plugin, {
-    sessionId: options.sessionId,
-    exposeSensitive: true,
-    schemaOwnedValues: options.schemaOwnedValues,
-    schema: options.schema,
-    ...(options.pluginStorageRoot !== undefined
-      ? { pluginStorageRoot: options.pluginStorageRoot }
-      : {}),
+  const missingUserConfig = new Set<string>();
+  const missingEnv = new Set<string>();
+  let pluginDataDir: string | undefined;
+  // Visit placeholders in the manifest text once. A substituted secret is a
+  // literal value, even when it contains text that looks like a template.
+  const resolved = value.replace(/\$\{[^}]+\}/g, placeholder => {
+    if (placeholder === '${AGENC_PLUGIN_ROOT}') return formatTemplatePath(plugin.root);
+    if (placeholder === '${AGENC_PLUGIN_DATA}') {
+      pluginDataDir ??= formatTemplatePath(getPluginDataDir(plugin.id, options.pluginStorageRoot));
+      return pluginDataDir;
+    }
+    if (placeholder === '${AGENC_SESSION_ID}') return options.sessionId ?? '';
+    const userConfig = /^\$\{user_config\.([A-Za-z_][\w.-]*)\}$/.exec(placeholder);
+    if (userConfig) {
+      const key = userConfig[1]!;
+      const literal = pluginSettingValue(plugin, key, {
+        exposeSensitive: true,
+        schemaOwnedValues: options.schemaOwnedValues,
+        schema: options.schema,
+      });
+      if (literal === undefined) missingUserConfig.add(key);
+      return literal ?? '';
+    }
+    const result = expandEnvTemplate(placeholder, options.env);
+    result.missingEnv.forEach(key => missingEnv.add(key));
+    return result.value;
   });
-  const envResult = expandEnvTemplate(pluginResult.value, options.env);
   return {
-    value: envResult.value,
-    missingUserConfig: pluginResult.missingUserConfig,
-    missingEnv: envResult.missingEnv,
+    value: resolved,
+    missingUserConfig: [...missingUserConfig],
+    missingEnv: [...missingEnv],
   };
 }
 

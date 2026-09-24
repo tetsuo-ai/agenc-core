@@ -136,6 +136,7 @@ import { AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT } from "../app-server-protoc
 import { AgenCDaemonHealthService } from "./health.js";
 import { AgenCDaemonRunInspectionService } from "./run-inspection.js";
 import { AgenCProjectTrustService } from "./project-trust.js";
+import { PluginSettingsService } from "../plugins/settings-service.js";
 import { AgenCCleanupRegistry } from "../lifecycle/cleanup-registry.js";
 import { closeAllBrowserManagers } from "../browser/manager.js";
 import { installAgenCShutdownSignalHandlers } from "../lifecycle/signal-handlers.js";
@@ -166,6 +167,7 @@ import { resolveProviderBaseURL } from "../config/env.js";
 import {
   resolveAgentRuntimeOptions,
   resolveSessionTempRootAtIngress,
+  resolvePluginStorageRootAtIngress,
   validateAgentRuntimeOptions,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
@@ -4005,6 +4007,12 @@ async function runAgenCDaemonForegroundLocked(
     }
     cleanup.register("daemon-owner-telegram", () => ownerTelegram?.close());
     const dispatcher: AgenCDaemonJsonRpcDispatcher = new AgenCDaemonJsonRpcDispatcher({
+      pluginSettings: new PluginSettingsService({
+        home: authStartup.daemonHome,
+        pluginStorageRoot: resolvePluginStorageRootAtIngress({ ...host.env, AGENC_HOME: authStartup.daemonHome }),
+        workspaceRoot: primaryCwd,
+        env: { ...host.env, AGENC_HOME: authStartup.daemonHome },
+      }),
       remote,
       ownerTelegram,
       agentManager,

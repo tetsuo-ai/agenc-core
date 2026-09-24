@@ -1,4 +1,11 @@
 import type { McpServerConfig } from "../../config/schema.js";
+
+/**
+ * A plugin server config as the runtime carries it: the canonical config plus
+ * the decoded sensitive values used for redaction. config.toml can never set
+ * pluginSecretValues; only plugin resolution adds it.
+ */
+export type PluginMcpServerConfig = McpServerConfig & { readonly pluginSecretValues?: readonly string[] };
 import { pluginScopedServerIdentifier } from "../identifier-normalization.js";
 import {
   isRepositoryControlledPlugin,
@@ -43,11 +50,15 @@ export interface PluginChannelRegistration {
 interface ServerResolutionIssues {
   readonly missingUserConfig: Set<string>;
   readonly missingEnv: Set<string>;
+  readonly unsafeSensitive: Set<string>;
+  readonly invalidTransportValues: Set<string>;
+  readonly sensitiveValues: Set<string>;
 }
 
 interface SchemaOwnedServerUserConfig {
   readonly values: Readonly<Record<string, PluginConfigStoredValue>>;
   readonly schema: Readonly<Record<string, PluginUserConfigOption>>;
+  readonly sensitiveKeys: ReadonlySet<string>;
 }
 
 function schemaOwnedServerUserConfig(
@@ -67,6 +78,7 @@ function schemaOwnedServerUserConfig(
     : loadPluginOptions(
         plugin.id,
         topLevelSchema as unknown as PluginOptionSchema,
+        { fresh: true },
       );
   const channel = channelSchema === undefined
     ? undefined
@@ -74,10 +86,17 @@ function schemaOwnedServerUserConfig(
         plugin.id,
         serverName,
         channelSchema as unknown as UserConfigSchema,
+        { fresh: true },
       );
+  const values = { ...topLevel, ...channel };
   return {
-    values: { ...topLevel, ...channel },
+    values,
     schema: { ...topLevelSchema, ...channelSchema },
+    sensitiveKeys: new Set(Object.keys(values).filter(key =>
+      Object.hasOwn(channel ?? {}, key)
+        ? channelSchema?.[key]?.sensitive === true
+        : topLevelSchema?.[key]?.sensitive === true,
+    )),
   };
 }
 
@@ -85,6 +104,9 @@ function createServerResolutionIssues(): ServerResolutionIssues {
   return {
     missingUserConfig: new Set(),
     missingEnv: new Set(),
+    unsafeSensitive: new Set(),
+    invalidTransportValues: new Set(),
+    sensitiveValues: new Set(),
   };
 }
 
@@ -94,7 +116,29 @@ function resolveServerString(
   options: PluginMcpRegistrationOptions,
   issues: ServerResolutionIssues,
   userConfig?: SchemaOwnedServerUserConfig,
+  field = 'value',
 ): string {
+  if (field === 'env' || field === 'headers') {
+    for (const match of value.matchAll(/\$\{user_config\.([A-Za-z_][\w.-]*)\}/g)) {
+      const key = match[1]!
+      if (userConfig?.sensitiveKeys.has(key) !== true) continue
+      const decoded = userConfig.values[key]
+      for (const part of Array.isArray(decoded) ? decoded : [decoded]) {
+        if (part !== undefined && String(part)) issues.sensitiveValues.add(String(part))
+      }
+    }
+  }
+  if (field !== 'env' && field !== 'headers') {
+    for (const match of value.matchAll(/\$\{user_config\.([A-Za-z_][\w.-]*)\}/g)) {
+      const key = match[1]!
+      if (userConfig?.values[key] !== undefined
+        ? userConfig.sensitiveKeys.has(key)
+        : userConfig?.schema[key]?.sensitive === true) {
+        issues.unsafeSensitive.add(`${key} in ${field}`)
+      }
+    }
+    if (issues.unsafeSensitive.size > 0) return value
+  }
   const result = resolvePluginServerTemplate(value, plugin, {
     sessionId: options.sessionId,
     env: options.env,
@@ -119,12 +163,13 @@ function substituteStringRecord(
   options: PluginMcpRegistrationOptions,
   issues: ServerResolutionIssues,
   userConfig?: SchemaOwnedServerUserConfig,
+  field = 'env',
 ): Readonly<Record<string, string>> | undefined {
   if (value === undefined) return undefined;
   return Object.fromEntries(
     Object.entries(value).map(([key, entry]) => [
       key,
-      resolveServerString(plugin, entry, options, issues, userConfig),
+      resolveServerString(plugin, entry, options, issues, userConfig, field),
     ]),
   );
 }
@@ -133,7 +178,7 @@ export function resolvePluginMcpEnvironment(
   plugin: LoadedPlugin,
   server: McpServerConfig,
   options: PluginMcpRegistrationOptions,
-): McpServerConfig {
+): PluginMcpServerConfig {
   return resolvePluginMcpEnvironmentWithIssues(plugin, server, options).server;
 }
 
@@ -142,7 +187,7 @@ function resolvePluginMcpEnvironmentWithIssues(
   server: McpServerConfig,
   options: PluginMcpRegistrationOptions,
   userConfig?: SchemaOwnedServerUserConfig,
-): { readonly server: McpServerConfig; readonly issues: ServerResolutionIssues } {
+): { readonly server: PluginMcpServerConfig; readonly issues: ServerResolutionIssues } {
   const issues = createServerResolutionIssues();
   const env = substituteStringRecord(
     plugin,
@@ -150,15 +195,21 @@ function resolvePluginMcpEnvironmentWithIssues(
     options,
     issues,
     userConfig,
+    'env',
   );
+  const headers = substituteStringRecord(plugin, server.headers, options, issues, userConfig, 'headers');
+  for (const [field, values] of [['env', env], ['headers', headers]] as const) {
+    if (Object.values(values ?? {}).some(value => /[\u0000-\u001f\u007f]/u.test(value))) issues.invalidTransportValues.add(field);
+  }
   return {
     server: {
       ...server,
+      pluginSecretValues: [...issues.sensitiveValues],
       ...(server.oauth === undefined ? {} : {
         oauth: {
           ...server.oauth,
           ...(server.oauth.clientId === undefined ? {} : {
-            clientId: resolveServerString(plugin, server.oauth.clientId, options, issues, userConfig),
+            clientId: resolveServerString(plugin, server.oauth.clientId, options, issues, userConfig, 'oauth.clientId'),
           }),
         },
       }),
@@ -170,13 +221,14 @@ function resolvePluginMcpEnvironmentWithIssues(
               options,
               issues,
               userConfig,
+              'command',
             ),
           }
         : {}),
       ...(server.args !== undefined
         ? {
             args: server.args.map((arg) =>
-              resolveServerString(plugin, arg, options, issues, userConfig)
+              resolveServerString(plugin, arg, options, issues, userConfig, 'args')
             ),
           }
         : {}),
@@ -188,20 +240,11 @@ function resolvePluginMcpEnvironmentWithIssues(
               options,
               issues,
               userConfig,
+              'endpoint',
             ),
           }
         : {}),
-      ...(server.headers !== undefined
-        ? {
-            headers: substituteStringRecord(
-              plugin,
-              server.headers,
-              options,
-              issues,
-              userConfig,
-            ),
-          }
-        : {}),
+      ...(headers !== undefined ? { headers } : {}),
       ...(server.cwd !== undefined
         ? {
             cwd: resolveServerString(
@@ -210,6 +253,7 @@ function resolvePluginMcpEnvironmentWithIssues(
               options,
               issues,
               userConfig,
+              'cwd',
             ),
           }
         : server.command !== undefined
@@ -229,7 +273,21 @@ function reportServerIssues(
 ): boolean {
   const missingUserConfig = [...issues.missingUserConfig].sort();
   const missingEnv = [...issues.missingEnv].sort();
-  if (missingUserConfig.length === 0 && missingEnv.length === 0) return false;
+  const unsafeSensitive = [...issues.unsafeSensitive].sort((a, b) => a.localeCompare(b));
+  const invalidTransportValues = [...issues.invalidTransportValues].sort((a, b) => a.localeCompare(b));
+  if (missingUserConfig.length === 0 && missingEnv.length === 0 && unsafeSensitive.length === 0 && invalidTransportValues.length === 0) return false;
+  if (invalidTransportValues.length > 0) {
+    options.errors?.push({
+      type: 'mcp', source: `plugin:${plugin.id}`, plugin: plugin.id, path: serverName,
+      message: `Invalid MCP ${invalidTransportValues.join(' and ')} value`,
+    });
+  }
+  if (unsafeSensitive.length > 0) {
+    options.errors?.push({
+      type: 'mcp', source: `plugin:${plugin.id}`, plugin: plugin.id, path: serverName,
+      message: `Sensitive user configuration may only be used in MCP env values or headers: ${unsafeSensitive.join(', ')}`,
+    });
+  }
   if (missingUserConfig.length > 0) {
     options.errors?.push({
       type: "mcp",

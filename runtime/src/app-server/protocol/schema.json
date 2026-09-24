@@ -75,6 +75,9 @@
     "session.resolveToolCall",
     "session.mcp.status",
     "session.mcp.addServer",
+    "plugin.settings.get",
+    "plugin.settings.set",
+    "plugin.settings.reset",
     "message.send",
     "message.stream",
     "thread/realtime/start",
@@ -2469,6 +2472,9 @@
         "sessionId"
       ]
     },
+    "PluginSettingsParams": { "type": "object", "additionalProperties": false, "properties": { "pluginId": { "type": "string", "minLength": 1 } }, "required": ["pluginId"] },
+    "PluginSettingsSetParams": { "type": "object", "additionalProperties": false, "properties": { "pluginId": { "type": "string", "minLength": 1 }, "values": { "type": "object", "additionalProperties": { "oneOf": [{ "type": "string" }, { "type": "number" }, { "type": "boolean" }, { "type": "array", "items": { "type": "string" } }] } } }, "required": ["pluginId", "values"] },
+    "PluginSettingsResult": { "type": "object", "additionalProperties": false, "properties": { "pluginId": { "type": "string" }, "schema": { "type": "object" }, "values": { "type": "object" }, "sensitiveSet": { "type": "object", "additionalProperties": { "type": "boolean" } }, "needsSetup": { "type": "array", "items": { "type": "string" } } }, "required": ["pluginId", "schema", "values", "sensitiveSet", "needsSetup"] },
     "SessionMcpStatusServer": {
       "type": "object",
       "additionalProperties": false,
@@ -4208,6 +4214,9 @@
         {
           "$ref": "#/definitions/SessionMcpAddServerRequest"
         },
+        { "$ref": "#/definitions/PluginSettingsGetRequest" },
+        { "$ref": "#/definitions/PluginSettingsSetRequest" },
+        { "$ref": "#/definitions/PluginSettingsResetRequest" },
         {
           "$ref": "#/definitions/MessageSendRequest"
         },
@@ -5460,6 +5469,9 @@
         "params"
       ]
     },
+    "PluginSettingsGetRequest": { "type": "object", "additionalProperties": false, "properties": { "jsonrpc": { "const": "2.0" }, "id": { "$ref": "#/definitions/RequestId" }, "method": { "const": "plugin.settings.get" }, "params": { "$ref": "#/definitions/PluginSettingsParams" } }, "required": ["jsonrpc", "id", "method", "params"] },
+    "PluginSettingsSetRequest": { "type": "object", "additionalProperties": false, "properties": { "jsonrpc": { "const": "2.0" }, "id": { "$ref": "#/definitions/RequestId" }, "method": { "const": "plugin.settings.set" }, "params": { "$ref": "#/definitions/PluginSettingsSetParams" } }, "required": ["jsonrpc", "id", "method", "params"] },
+    "PluginSettingsResetRequest": { "type": "object", "additionalProperties": false, "properties": { "jsonrpc": { "const": "2.0" }, "id": { "$ref": "#/definitions/RequestId" }, "method": { "const": "plugin.settings.reset" }, "params": { "$ref": "#/definitions/PluginSettingsParams" } }, "required": ["jsonrpc", "id", "method", "params"] },
     "SessionMcpAddServerRequest": {
       "type": "object",
       "additionalProperties": false,

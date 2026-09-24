@@ -35,6 +35,7 @@
 import { randomUUID } from "node:crypto";
 import { persistDisplayAttachments } from "./display-artifact-store.js";
 import { boundDisplayCompletionEvent } from "./display-completion.js";
+import { createSavedPluginSecretRedactor } from '../plugins/secret-redaction.js';
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readPersistedUserStopState, type RolloutItem } from "./rollout-item.js";
 import type { ReadOnlyDelegationConstraint } from "../agents/readonly-delegation.js";
@@ -2942,7 +2943,11 @@ export class Session {
     ) {
       return [];
     }
-    return projectMcpManagerToConnections(manager);
+    const saved = this.services.configStore === undefined
+      ? (value: string) => value
+      : createSavedPluginSecretRedactor(this.services.configStore.homeContext);
+    const plugin = (manager as McpManagerLike & { redactPluginSecrets?: (value: string) => string }).redactPluginSecrets;
+    return projectMcpManagerToConnections(manager, value => plugin?.call(manager, saved(value)) ?? saved(value));
   }
 
   listMcpTools(): readonly unknown[] {

@@ -16,6 +16,8 @@ vi.mock("../utils/secureStorage/native.js", async importOriginal => {
     ...actual,
     readNativeSecureStorage: (home: { path: string }) =>
       structuredClone(secureStorageRecords.get(home.path) ?? {}),
+    readNativeSecureStorageFresh: (home: { path: string }) =>
+      structuredClone(secureStorageRecords.get(home.path) ?? {}),
     readNativeSecureStorageAsync: async (home: { path: string }) =>
       structuredClone(secureStorageRecords.get(home.path) ?? {}),
     updateNativeSecureStorage: (
@@ -904,7 +906,7 @@ describe("plugin registration", () => {
             expect.objectContaining({
               type: "mcp",
               path: "local",
-              message: "Missing user configuration values: token",
+              message: "Sensitive user configuration may only be used in MCP env values or headers: token in args",
             }),
             expect.objectContaining({
               type: "mcp",

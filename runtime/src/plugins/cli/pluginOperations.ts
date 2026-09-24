@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win
 import { resolveHomeContext } from "../../config/home.js";
 import { loadCanonicalConfig } from "../../config/repository.js";
 import type { PluginEntryConfig } from "../../config/schema.js";
-import type { ConfigStore } from "../../config/store.js";
+import { ConfigStore } from "../../config/store.js";
 import { mutateCanonicalUserConfigSync } from "../../config/update-sync.js";
 import { writeDurableAtomicFile } from "../../utils/durable-atomic-file.js";
 import { isRecord } from "../../utils/record.js";
@@ -51,6 +51,9 @@ import { skillDisplayNameFromMarkdown } from "../skill-display-metadata.js";
 import { loadPluginCommands } from "../registration/load-plugin-commands.js";
 import { isExcludedPluginPayloadDirectory } from "../payload-paths.js";
 import type { AgencPluginInventoryProvenance } from "./pluginInventoryProtocol.js";
+import { runWithCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
+import { inspectPluginOptions } from "../../utils/plugins/pluginOptionsStorage.js";
+import { validateUserConfig } from "../../utils/plugins/mcpbHandler.js";
 
 export type PluginScope = "user" | "project" | "local";
 
@@ -93,6 +96,7 @@ export interface InstalledPluginSummary extends AgencPluginInventoryProvenance {
   readonly interface?: Omit<PluginManifestInterface, "logo">;
   readonly commands?: readonly PluginComponentRow[];
   readonly skills?: readonly PluginComponentRow[];
+  readonly needsSetup?: readonly string[];
 }
 
 export interface PluginListResult {
@@ -306,6 +310,18 @@ export async function listInstalledPlugins(
     workspaceRoot,
     config,
   });
+  let settingsStorePromise: Promise<ConfigStore> | undefined;
+  const getSettingsStore = (): Promise<ConfigStore> => {
+    settingsStorePromise ??= options.configStore !== undefined
+      ? Promise.resolve(options.configStore)
+      : (async () => {
+          const store = new ConfigStore({ home: resolvePluginAgencHome(options),
+            cwd: workspaceRoot, projectRoot: workspaceRoot, env: options.env });
+          await store.reload();
+          return store;
+        })();
+    return settingsStorePromise;
+  };
   await mkdir(options.sessionTempRoot, { recursive: true, mode: 0o700 });
   const inspected = await Promise.all(
     [...loaded.enabled, ...loaded.disabled].map(async (plugin) => {
@@ -363,12 +379,31 @@ export async function listInstalledPlugins(
         });
         const skills = await describeSkills(snapshotPlugin.skillsPaths);
         let provenance: Awaited<ReturnType<typeof installedPluginProvenance>>;
-        let error: string | undefined;
+        const errors: string[] = [];
         try {
           provenance = await installedPluginProvenance(snapshotRoot, options, plugin.id, plugin.root);
         } catch {
           provenance = { verificationState: "failed" };
-          error = `${plugin.id}: invalid .agenc-plugin/${INSTALL_METADATA_FILE}`;
+          errors.push(`${plugin.id}: invalid .agenc-plugin/${INSTALL_METADATA_FILE}`);
+        }
+        // Settings are checked against the verified snapshot's manifest, after
+        // provenance and components have been computed independently.
+        let needsSetup: string[] | undefined;
+        const schema = snapshotPlugin.manifest.userConfig ?? {};
+        if (Object.keys(schema).length > 0) {
+          try {
+            const settingsStore = await getSettingsStore();
+            needsSetup = await runWithCanonicalSettingsAuthority(settingsStore, async () => {
+              const { values: saved, plaintextSensitiveKeys } = inspectPluginOptions(plugin.id, schema, { fresh: true });
+              const effective = Object.fromEntries(Object.entries(schema).map(([key, field]) =>
+                [key, saved[key] ?? (field.sensitive ? undefined : field.default)],
+              )) as Record<string, string | number | boolean | string[]>;
+              const invalid = new Set((await validateUserConfig(effective, schema)).invalidKeys);
+              return Object.keys(schema).filter(key => plaintextSensitiveKeys.includes(key) || invalid.has(key));
+            });
+          } catch {
+            errors.push(`${plugin.id}: plugin settings could not be read`);
+          }
         }
         return { plugin: { ...summary, ...provenance,
           commands: registeredCommands
@@ -376,11 +411,12 @@ export async function listInstalledPlugins(
             .map((command) => ({ name: command.name,
               ...(command.description !== undefined ? { description: command.description } : {}),
               ...(command.argumentHint !== undefined ? { argumentHint: command.argumentHint } : {}) })),
-          ...(skills.length > 0 ? { skills } : {}) }, error };
+          ...(skills.length > 0 ? { skills } : {}),
+          ...(needsSetup !== undefined && needsSetup.length > 0 ? { needsSetup } : {}) }, errors };
       } catch {
         return { plugin: { id: plugin.id, name: plugin.name, enabled: plugin.enabled,
           root: plugin.root, source: plugin.source, verificationState: "failed" as const },
-          error: `${plugin.id}: failed to inspect installed plugin snapshot` };
+          errors: [`${plugin.id}: failed to inspect installed plugin snapshot`] };
       } finally {
         if (snapshotDir !== undefined) {
           await rm(snapshotDir, { recursive: true, force: true }).catch(() => {});
@@ -395,7 +431,7 @@ export async function listInstalledPlugins(
     errors: [
       ...warnings,
       ...loaded.errors.map((issue) => `${issue.source}: ${issue.message}`),
-      ...inspected.flatMap((entry) => entry.error === undefined ? [] : [entry.error]),
+      ...inspected.flatMap((entry) => entry.errors),
     ],
   };
 }

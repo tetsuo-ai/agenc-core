@@ -63,6 +63,26 @@ export interface NormalizeMcpToolOutputOptions {
   /** Trusted roots supplied by the plugin bridge, never from MCP output. */
   readonly displayRoots?: readonly string[];
   readonly displayDataRoot?: string;
+  readonly sensitiveHeaders?: Readonly<Record<string, string>>;
+}
+
+function containsLiteralSecret(bytes: Buffer, headers?: Readonly<Record<string, string>>): boolean {
+  for (const value of Object.values(headers ?? {})) {
+    for (const secret of [value, value.replace(/^Bearer\s+/i, "")]) {
+      if (secret.length >= 4 && bytes.includes(Buffer.from(secret, "utf8"))) return true;
+    }
+  }
+  return false;
+}
+
+function containsEncodedLiteralSecret(encoded: unknown, headers?: Readonly<Record<string, string>>): boolean {
+  if (typeof encoded !== "string" || encoded.length > MAX_MCP_BASE64_INSPECTION_BYTES) return false;
+  for (const value of Object.values(headers ?? {})) {
+    for (const secret of [value, value.replace(/^Bearer\s+/i, "")]) {
+      if (secret.length >= 4 && encoded.includes(secret)) return true;
+    }
+  }
+  return false;
 }
 
 interface RenderState {
@@ -243,7 +263,13 @@ async function appendBinary(
   index: number,
   options: NormalizeMcpToolOutputOptions,
 ): Promise<void> {
-  const bytes = decodeBase64WithinBudget(state, record.data ?? record.blob);
+  const encoded = record.data ?? record.blob;
+  if (containsEncodedLiteralSecret(encoded, options.sensitiveHeaders)) {
+    appendStaticText(state, `[MCP ${contentType} omitted: contained a saved secret]`);
+    state.omitted = true;
+    return;
+  }
+  const bytes = decodeBase64WithinBudget(state, encoded);
   const mimeType = sanitizeMimeType(
     state,
     record.mimeType ?? record.mediaType,
@@ -253,6 +279,13 @@ async function appendBinary(
     options.logger.warn?.(
       `MCP tool ${JSON.stringify(options.toolName)} returned invalid or oversized ${contentType} content; omitted`,
     );
+    return;
+  }
+  // Binary bytes cannot be rewritten without corrupting them. Omit a blob
+  // whose decoded text contains a literal saved secret before persistence.
+  if (containsLiteralSecret(bytes, options.sensitiveHeaders)) {
+    appendStaticText(state, `[MCP ${contentType} omitted: contained a saved secret]`);
+    state.omitted = true;
     return;
   }
 
@@ -304,6 +337,12 @@ async function appendImage(
   }
   state.imagesProcessed += 1;
 
+  if (containsEncodedLiteralSecret(encoded, options.sensitiveHeaders)) {
+    appendStaticText(state, "[MCP image omitted: contained a saved secret]");
+    state.omitted = true;
+    return;
+  }
+
   const bytes = decodeBase64WithinBudget(state, encoded);
   const rawDeclaredMime = record.mimeType ?? record.mediaType;
   const declaredMime = rawDeclaredMime === undefined
@@ -311,6 +350,11 @@ async function appendImage(
     : sanitizeMimeType(state, rawDeclaredMime);
   if (bytes === undefined) {
     appendStaticText(state, IMAGE_OMITTED);
+    return;
+  }
+  if (containsLiteralSecret(bytes, options.sensitiveHeaders)) {
+    appendStaticText(state, "[MCP image omitted: contained a saved secret]");
+    state.omitted = true;
     return;
   }
   const inspection = inspectImageBytes(bytes);

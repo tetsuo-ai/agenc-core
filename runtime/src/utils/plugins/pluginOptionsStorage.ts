@@ -13,11 +13,16 @@
  */
 
 import type { LoadedPlugin } from '../../types/plugin.js'
+import { mutateCanonicalUserConfigSync } from '../../config/update-sync.js'
+import { stableJson } from '../../config/json.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from '../log.js'
 import {
   readNativeSecureStorage,
+  readNativeSecureStorageFresh,
   updateNativeSecureStorage,
+  NativeSecureStorageError,
+  NativeSecureStorageUnavailableError,
 } from '../secureStorage/native.js'
 import {
   getSettingsForSource,
@@ -30,14 +35,27 @@ import {
 } from './mcpbHandler.js'
 import {
   assertPluginConfigKeysDeclared,
+  readFreshPluginConfigs,
   requirePluginConfigAuthority,
   resolveSchemaOwnedPluginConfig,
   rollbackPluginSecretBucket,
   withPluginSecretBucket,
+  withPluginSecretFormats,
 } from './pluginConfigAuthority.js'
+import { decodeStoredPluginSecret, encodeStoredPluginSecret, pluginSecretFormat, type PluginSecretFormat } from './plugin-secret-codec.js'
 
 export type PluginOptionValues = UserConfigValues
 export type PluginOptionSchema = UserConfigSchema
+
+export class PluginSettingsConflictError extends Error {
+  readonly name = 'PluginSettingsConflictError'
+  constructor() { super('Plugin settings changed during validation') }
+}
+
+export interface PluginSettingsValidatedSnapshot {
+  readonly config: string
+  readonly secure: string
+}
 
 /**
  * Canonical storage key for a plugin's options, secrets, and persistent data.
@@ -59,30 +77,88 @@ export function getPluginStorageId(plugin: LoadedPlugin): string {
 export function loadPluginOptions(
   pluginId: string,
   schema: PluginOptionSchema,
+  options: { readonly fresh?: boolean } = {},
 ): PluginOptionValues {
-  const authority = requirePluginConfigAuthority()
-  const configuredOptions = authority.current().pluginConfigs?.[pluginId]?.options
+  return resolvePluginOptions(pluginId, schema, false, options.fresh === true).values
+}
 
-  const sensitive = readNativeSecureStorage(authority.homeContext)
-    .pluginSecrets?.[pluginId]
+/** Setup reads name legacy plaintext keys but never use or return their values. */
+export function inspectPluginOptions(
+  pluginId: string,
+  schema: PluginOptionSchema,
+  options: { readonly fresh?: boolean } = {},
+): { readonly values: PluginOptionValues; readonly plaintextSensitiveKeys: readonly string[] } {
+  return resolvePluginOptions(pluginId, schema, true, options.fresh === true)
+}
+
+/** Resolve validation inputs from the same captured documents used at commit. */
+export function inspectPluginOptionsSnapshot(
+  pluginId: string,
+  schema: PluginOptionSchema,
+  configuredOptions: Readonly<Record<string, import('./pluginConfigAuthority.js').PluginConfigStoredValue>> | undefined,
+  sensitive: Readonly<Record<string, string>> | undefined,
+  formats?: Readonly<Record<string, PluginSecretFormat>>,
+): { readonly values: PluginOptionValues; readonly plaintextSensitiveKeys: readonly string[] } {
+  const plaintextSensitiveKeys = Object.keys(schema).filter(key =>
+    schema[key]?.sensitive === true && configuredOptions !== undefined && Object.hasOwn(configuredOptions, key),
+  )
+  const safeOptions = configuredOptions === undefined ? undefined : Object.fromEntries(
+    Object.entries(configuredOptions).filter(([key]) => !plaintextSensitiveKeys.includes(key)),
+  )
+  const values = resolveSchemaOwnedPluginConfig(
+    `pluginConfigs.${JSON.stringify(pluginId)}.options`, schema, safeOptions, sensitive,
+  ) as PluginOptionValues
+  for (const [key, field] of Object.entries(schema)) {
+    if (field.sensitive && typeof values[key] === 'string') values[key] = decodeStoredPluginSecret(values[key], field, formats?.[key])
+  }
+  return { values, plaintextSensitiveKeys }
+}
+
+function resolvePluginOptions(
+  pluginId: string,
+  schema: PluginOptionSchema,
+  ignorePlaintext: boolean,
+  fresh = false,
+): { readonly values: PluginOptionValues; readonly plaintextSensitiveKeys: readonly string[] } {
+  const authority = requirePluginConfigAuthority()
+  const configuredOptions = (fresh ? readFreshPluginConfigs() : authority.current().pluginConfigs)?.[pluginId]?.options
+  const plaintextSensitiveKeys = Object.keys(schema).filter(key =>
+    schema[key]?.sensitive === true && configuredOptions !== undefined && Object.hasOwn(configuredOptions, key),
+  )
+  const safeOptions = ignorePlaintext && configuredOptions !== undefined
+    ? Object.fromEntries(Object.entries(configuredOptions).filter(([key]) => !plaintextSensitiveKeys.includes(key)))
+    : configuredOptions
+  let sensitiveStorage: ReturnType<typeof readNativeSecureStorage>
+  try {
+    sensitiveStorage = fresh ? readNativeSecureStorageFresh(authority.homeContext) : readNativeSecureStorage(authority.homeContext)
+  } catch (error) {
+    if (!(fresh && error instanceof NativeSecureStorageUnavailableError)) throw error
+    sensitiveStorage = {}
+  }
+  const sensitive = sensitiveStorage.pluginSecrets?.[pluginId]
   const resolved = resolveSchemaOwnedPluginConfig(
     `pluginConfigs.${JSON.stringify(pluginId)}.options`,
     schema,
-    configuredOptions,
+    safeOptions,
     sensitive,
   ) as PluginOptionValues
-  return resolved
+  for (const [key, field] of Object.entries(schema)) {
+    if (field.sensitive && typeof resolved[key] === 'string') resolved[key] = decodeStoredPluginSecret(resolved[key], field, sensitiveStorage.pluginSecretFormats?.[pluginId]?.[key])
+  }
+  return { values: resolved, plaintextSensitiveKeys }
 }
 
 /**
  * Save option values, splitting by `schema[key].sensitive`. Non-sensitive
  * values go to config.toml; sensitive values go to native secure storage.
- * Writes are skipped when that category has no values.
+ * The config lock encloses the secure write and optional validated-snapshot
+ * check so an independent config writer cannot race validation.
  */
 export async function savePluginOptions(
   pluginId: string,
   values: PluginOptionValues,
   schema: PluginOptionSchema,
+  expected?: PluginSettingsValidatedSnapshot,
 ): Promise<void> {
   const authority = requirePluginConfigAuthority()
   assertPluginConfigKeysDeclared(
@@ -92,10 +168,12 @@ export async function savePluginOptions(
   )
   const nonSensitive: PluginOptionValues = {}
   const sensitive: Record<string, string> = {}
+  const sensitiveFormats: Record<string, PluginSecretFormat> = {}
 
   for (const [key, value] of Object.entries(values)) {
     if (schema[key]?.sensitive === true) {
-      sensitive[key] = String(value)
+      sensitive[key] = encodeStoredPluginSecret(value as string | number | boolean | string[], schema[key])
+      sensitiveFormats[key] = pluginSecretFormat(value as string | number | boolean | string[], schema[key])
     } else {
       nonSensitive[key] = value
     }
@@ -107,82 +185,90 @@ export async function savePluginOptions(
   const sensitiveKeysInThisSave = new Set(Object.keys(sensitive))
   const nonSensitiveKeysInThisSave = new Set(Object.keys(nonSensitive))
 
-  // Write native secure storage first. If that write fails, throw before
-  // touching config.toml. Any old plaintext remains rejected until
-  // reconfiguration can complete safely; it never becomes a runtime fallback.
-  const secureTransaction =
-    Object.keys(sensitive).length > 0 || nonSensitiveKeysInThisSave.size > 0
-      ? updateNativeSecureStorage(
+  let secureTransaction: ReturnType<typeof updateNativeSecureStorage> = null
+  try {
+    mutateCanonicalUserConfigSync(authority.homeContext.configTomlPath, raw => {
+      if (expected !== undefined && stableJson(raw) !== expected.config) throw new PluginSettingsConflictError()
+      // The config lock encloses the secure-store comparison and write. A
+      // concurrent canonical writer can no longer invalidate validation.
+      try {
+        secureTransaction = updateNativeSecureStorage(
           authority.homeContext,
           current => {
+            if (expected !== undefined && stableJson(current) !== expected.secure) throw new PluginSettingsConflictError()
             const existing = current.pluginSecrets?.[pluginId]
             const secureScrubbed = existing
-              ? Object.fromEntries(
-                  Object.entries(existing).filter(
-                    ([key]) => !nonSensitiveKeysInThisSave.has(key),
-                  ),
-                )
+              ? Object.fromEntries(Object.entries(existing).filter(([key]) => !nonSensitiveKeysInThisSave.has(key)))
               : undefined
-            return withPluginSecretBucket(current, pluginId, {
-              ...secureScrubbed,
-              ...sensitive,
-            })
+            const next = withPluginSecretBucket(current, pluginId, { ...secureScrubbed, ...sensitive })
+            return withPluginSecretFormats(next, pluginId, { ...next.pluginSecretFormats?.[pluginId], ...sensitiveFormats })
           },
           `Failed to save sensitive plugin options for ${pluginId} to secure storage`,
         )
-      : null
-
-  // Write config.toml after native secure storage. Scrub sensitive keys via
-  // explicit undefined (mergeWith deletion pattern).
-  //
-  try {
-    const settings = getSettingsForSource('userSettings', authority) ?? {}
-    const existingInSettings = settings.pluginConfigs?.[pluginId]?.options ?? {}
-    const keysToScrubFromSettings = Object.keys(existingInSettings).filter(k =>
-      sensitiveKeysInThisSave.has(k),
-    )
-    if (
-      Object.keys(nonSensitive).length > 0 ||
-      keysToScrubFromSettings.length > 0
-    ) {
-      const scrubbed = Object.fromEntries(
-        keysToScrubFromSettings.map(k => [k, undefined]),
-      ) as Record<string, undefined>
-      const existingPluginConfig = settings.pluginConfigs?.[pluginId] ?? {}
-      const result = await updateSettingsForSource(
-        'userSettings',
-        {
-          pluginConfigs: {
-            [pluginId]: {
-              ...existingPluginConfig,
-              options: {
-                ...nonSensitive,
-                ...scrubbed,
-              } as PluginOptionValues,
-            },
-          },
-        },
-        authority,
-      )
-      if (result.error) {
-        throw new Error(
-          `Failed to save plugin options for ${pluginId}: ${result.error.message}`,
-          { cause: result.error },
-        )
+      } catch (error) {
+        if (!(error instanceof NativeSecureStorageUnavailableError) || Object.keys(sensitive).length > 0) throw error
       }
-    }
+      if (Object.keys(nonSensitive).length > 0 || sensitiveKeysInThisSave.size > 0) {
+        const configs = (raw.pluginConfigs ??= {}) as Record<string, { options?: PluginOptionValues }>
+        const plugin = (configs[pluginId] ??= {})
+        const current = (plugin.options ??= {})
+        for (const key of sensitiveKeysInThisSave) delete current[key]
+        Object.assign(current, nonSensitive)
+        if (Object.keys(current).length === 0) delete plugin.options
+        if (Object.keys(plugin).length === 0) delete configs[pluginId]
+        if (Object.keys(configs).length === 0) delete raw.pluginConfigs
+      }
+    })
   } catch (error) {
-    rollbackPluginSecretBucket(
-      authority.homeContext,
-      pluginId,
-      secureTransaction,
-      `Failed to roll back sensitive plugin options for ${pluginId}`,
-    )
-    const errorObj = error instanceof Error ? error : new Error(String(error))
-    logError(errorObj)
-    throw errorObj
+    try {
+      rollbackPluginSecretBucket(authority.homeContext, pluginId, secureTransaction, `Failed to roll back sensitive plugin options for ${pluginId}`)
+    } catch {
+      throw new NativeSecureStorageError('Native secure storage rollback failed')
+    }
+    if (error instanceof PluginSettingsConflictError) throw error
+    const safe = error instanceof NativeSecureStorageUnavailableError
+      ? new NativeSecureStorageUnavailableError('Native secure storage is unavailable')
+      : error instanceof NativeSecureStorageError
+        ? new NativeSecureStorageError('Native secure storage operation failed')
+        : new Error('Failed to save plugin options')
+    logError(safe)
+    throw safe
   }
 
+}
+
+/** Clear declared values without changing plugin enablement or MCP overrides. */
+export async function resetPluginOptions(pluginId: string, keys: readonly string[]): Promise<void> {
+  const authority = requirePluginConfigAuthority()
+  const selected = new Set(keys)
+  let transaction: ReturnType<typeof updateNativeSecureStorage> = null
+  try {
+    transaction = updateNativeSecureStorage(
+      authority.homeContext,
+      current => withPluginSecretBucket(current, pluginId, Object.fromEntries(
+        Object.entries(current.pluginSecrets?.[pluginId] ?? {}).filter(([key]) => !selected.has(key)),
+      )),
+      `Failed to reset plugin secrets for ${pluginId}`,
+    )
+  } catch (error) {
+    if (error instanceof NativeSecureStorageUnavailableError) throw error
+    throw new NativeSecureStorageError('Native secure storage operation failed')
+  }
+  try {
+    mutateCanonicalUserConfigSync(authority.homeContext.configTomlPath, raw => {
+      const configs = raw.pluginConfigs as Record<string, { options?: Record<string, unknown> }> | undefined
+      const current = configs?.[pluginId]?.options
+      if (!current) return
+      for (const key of selected) delete current[key]
+      if (Object.keys(current).length === 0) delete configs![pluginId]!.options
+      if (Object.keys(configs![pluginId]!).length === 0) delete configs![pluginId]
+      if (Object.keys(configs!).length === 0) delete raw.pluginConfigs
+    })
+  } catch (error) {
+    try { rollbackPluginSecretBucket(authority.homeContext, pluginId, transaction, `Failed to roll back plugin reset for ${pluginId}`) }
+    catch { throw new NativeSecureStorageError('Native secure storage rollback failed') }
+    throw new Error('Failed to reset plugin options')
+  }
 }
 
 /**
@@ -249,6 +335,11 @@ export async function deletePluginOptions(pluginId: string): Promise<void> {
         } else {
           next.pluginSecrets = Object.fromEntries(survivingEntries)
         }
+        const survivingFormats = Object.entries(current.pluginSecretFormats ?? {}).filter(
+          ([key]) => key !== pluginId && !key.startsWith(prefix),
+        )
+        if (survivingFormats.length === 0) delete next.pluginSecretFormats
+        else next.pluginSecretFormats = Object.fromEntries(survivingFormats)
         return next
       },
       `Failed to clear plugin secrets for ${pluginId} from secure storage`,
@@ -269,32 +360,24 @@ export async function deletePluginOptions(pluginId: string): Promise<void> {
  *
  * Used by PluginOptionsFlow to decide whether to show the prompt after enable.
  */
-export function getUnconfiguredOptions(
+export async function getUnconfiguredOptions(
   plugin: LoadedPlugin,
-): PluginOptionSchema {
+): Promise<PluginOptionSchema> {
   const manifestSchema = plugin.manifest.userConfig
   if (!manifestSchema || Object.keys(manifestSchema).length === 0) {
     return {}
   }
 
   const saved = loadPluginOptions(getPluginStorageId(plugin), manifestSchema)
-  const validation = validateUserConfig(saved, manifestSchema)
+  const effective = { ...Object.fromEntries(Object.entries(manifestSchema).filter(([, field]) => !field.sensitive && field.default !== undefined).map(([key, field]) => [key, field.default])), ...saved } as PluginOptionValues
+  const validation = await validateUserConfig(effective, manifestSchema)
   if (validation.valid) {
     return {}
   }
 
-  // Return only the fields that failed. validateUserConfig reports errors as
-  // strings keyed by title/key — simpler to just re-check each field here than
-  // parse error strings.
   const unconfigured: PluginOptionSchema = {}
-  for (const [key, fieldSchema] of Object.entries(manifestSchema)) {
-    const single = validateUserConfig(
-      { [key]: saved[key] } as PluginOptionValues,
-      { [key]: fieldSchema },
-    )
-    if (!single.valid) {
-      unconfigured[key] = fieldSchema
-    }
+  for (const key of validation.invalidKeys) {
+    unconfigured[key] = manifestSchema[key]!
   }
   return unconfigured
 }

@@ -206,6 +206,117 @@ describe("MCPManager", () => {
     );
   });
 
+  it("redacts decoded plugin secrets without changing ordinary settings in errors, logs and projections", async () => {
+    const token = "private-phrase";
+    const config = makeConfig("plugin:demo:alpha", {
+      origin: { scope: "plugin" }, env: { TOKEN: token, DEBUG: "1", LOG_LEVEL: "info" },
+      headers: { Authorization: `Bearer ${token}`, "X-Mode": "info" },
+      pluginSecretValues: [token],
+    });
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    mockCreateMCPConnection.mockImplementation(async (_config, connectionLogger) => {
+      connectionLogger.error(`server stderr: 1 info ${token}`);
+      throw new Error(`spawn failed: 1 info ${token}`);
+    });
+    const manager = new MCPManager([config], logger);
+    await manager.start();
+    expect(JSON.stringify(manager.getConfiguredServers())).not.toContain(token);
+    const state = JSON.stringify(manager.getConnectionState(config.name));
+    expect(state).toContain("1 info");
+    expect(state).not.toContain(token);
+    const logs = JSON.stringify(logger.error.mock.calls);
+    expect(logs).toContain("1 info");
+    expect(logs).not.toContain(token);
+    const reconnect = JSON.stringify(await manager.reconnectServer(config.name));
+    expect(reconnect).toContain("1 info");
+    expect(reconnect).not.toContain(token);
+    expect(manager.redactPluginSecrets(`diagnostic 1 info ${token}`)).toBe("diagnostic 1 info [REDACTED]");
+    await manager.stop();
+  });
+
+  it("redacts plugin credentials from optional bridge and cleanup diagnostics", async () => {
+    const token = "bridge-private-phrase";
+    const config = makeConfig("plugin:demo:bridge", { origin: { scope: "plugin" }, env: { TOKEN: token, DEBUG: "1", LOG_LEVEL: "info" }, pluginSecretValues: [token] });
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    mockCreateMCPConnection.mockResolvedValue({} as never);
+    mockCreateToolBridge.mockResolvedValue(makeMockBridge(config.name, ["ping"]) as never);
+    mockCreateResourceBridge.mockImplementation(async (_client, _name, bridgeLogger) => {
+      bridgeLogger.error(`server stderr: 1 info ${token}`);
+      throw new Error(`resource failed: 1 info ${token}`);
+    });
+    const manager = new MCPManager([config], logger);
+    await manager.start();
+    expect(JSON.stringify(logger.error.mock.calls)).toContain("1 info");
+    expect((logger.warn.mock.calls[0]?.[1] as Error).message).toContain("1 info");
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain(token);
+    expect((logger.warn.mock.calls[0]?.[1] as Error).message).not.toContain(token);
+    await manager.stop();
+  });
+
+  it("releases each plugin connection's redaction values after replacement and terminal cleanup", async () => {
+    const old = makeConfig("plugin:demo:owned", { origin: { scope: "plugin" }, env: { TOKEN: "old-owned-secret" }, pluginSecretValues: ["old-owned-secret"] });
+    const rotated = makeConfig(old.name, { origin: { scope: "plugin" }, env: { TOKEN: "new-owned-secret" }, pluginSecretValues: ["new-owned-secret"] });
+    mockCreateMCPConnection.mockResolvedValue({ close: vi.fn().mockResolvedValue(undefined) } as never);
+    mockCreateToolBridge.mockImplementation(async (_client, name) => makeMockBridge(name, ["ping"]) as never);
+    const manager = new MCPManager([old]);
+    await manager.start();
+    expect(manager.redactPluginSecrets("old-owned-secret")).not.toContain("old-owned-secret");
+    await manager.refreshServers([rotated]);
+    expect(manager.redactPluginSecrets("old-owned-secret")).toBe("old-owned-secret");
+    expect(manager.redactPluginSecrets("new-owned-secret")).not.toContain("new-owned-secret");
+    await manager.clearServersStrict();
+    expect(manager.redactPluginSecrets("new-owned-secret")).toBe("new-owned-secret");
+
+    // A removed connection keeps its value until the exact cleanup settles.
+    const gate = deferred();
+    const slowBridge = makeMockBridge(old.name, ["ping"]);
+    slowBridge.dispose.mockImplementation(() => gate.promise);
+    mockCreateToolBridge.mockResolvedValueOnce(slowBridge as never);
+    await manager.refreshServers([old]);
+    const removing = manager.refreshServers([]);
+    expect(manager.redactPluginSecrets("old-owned-secret")).not.toContain("old-owned-secret");
+    gate.resolve();
+    await removing;
+    expect(manager.redactPluginSecrets("old-owned-secret")).toBe("old-owned-secret");
+
+    await manager.refreshServers([rotated]);
+    await manager.stopStrict();
+    expect(manager.redactPluginSecrets("new-owned-secret")).toBe("new-owned-secret");
+    await manager.start();
+    expect(manager.redactPluginSecrets("new-owned-secret")).not.toContain("new-owned-secret");
+    await manager.stopStrict();
+    expect(manager.redactPluginSecrets("new-owned-secret")).toBe("new-owned-secret");
+
+    const retryBridge = makeMockBridge(old.name, ["ping"]);
+    retryBridge.dispose.mockRejectedValueOnce(new Error("cleanup failed"));
+    mockCreateToolBridge.mockResolvedValueOnce(retryBridge as never);
+    const retryManager = new MCPManager([old]);
+    await retryManager.start();
+    await expect(retryManager.clearServersStrict()).rejects.toThrow();
+    expect(retryManager.redactPluginSecrets("old-owned-secret")).not.toContain("old-owned-secret");
+    await retryManager.clearServersStrict();
+    expect(retryManager.redactPluginSecrets("old-owned-secret")).toBe("old-owned-secret");
+  });
+
+  it("releases an individual connection's values after cleanup and registers them before reconnect", async () => {
+    const config = makeConfig("plugin:demo:individual", { origin: { scope: "plugin" }, pluginSecretValues: ["private-phrase"] });
+    const bridge = makeMockBridge(config.name, ["ping"]);
+    const gate = deferred();
+    bridge.dispose.mockImplementationOnce(() => gate.promise);
+    mockCreateMCPConnection.mockResolvedValue({ close: vi.fn().mockResolvedValue(undefined) } as never);
+    mockCreateToolBridge.mockResolvedValue(bridge as never);
+    const manager = new MCPManager([config]);
+    await manager.start();
+    const cleanup = manager.getConnectedConnection(config.name)!.cleanup();
+    expect(manager.redactPluginSecrets("private-phrase")).toBe("[REDACTED]");
+    gate.resolve();
+    await cleanup;
+    expect(manager.redactPluginSecrets("private-phrase")).toBe("private-phrase");
+    await manager.reconnectServer(config.name);
+    expect(manager.redactPluginSecrets("private-phrase")).toBe("[REDACTED]");
+    await manager.stop();
+  });
+
   it.each(["", "bad name", "bad.name", "bad\nname", "a".repeat(257)])(
     "rejects invalid server identity %j before constructing runtime state",
     (name) => {
