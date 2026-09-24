@@ -3916,6 +3916,15 @@ async function runAgenCDaemonForegroundLocked(
           if (preparedMcpChange.closePreviousAfterAdoption) {
             await closeReplacedDaemonMcpServer(previousMcpServer, io);
           }
+          // Open sessions keep the config they started with, except the
+          // cross-provider subagent settings: a provider the user turned off
+          // must stop taking spawns now, not after a restart.
+          const crossProvider = await approvalBroker.refreshCrossProviderPolicy();
+          for (const { sessionId, reason } of crossProvider.failed) {
+            io.stderr.write(
+              `agenc: session ${sessionId} keeps its earlier cross-provider subagent settings. They could not be read again: ${reason}\n`,
+            );
+          }
           const result: DaemonReloadResult = {
             reloaded: true,
             configReloadedAt: new Date().toISOString(),

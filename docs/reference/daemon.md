@@ -260,7 +260,7 @@ chunk that crosses the limit. Multiple bounded lines can share a chunk.
 | `routine.capabilities` / `routine.list` / `routine.get` / `routine.create` / `routine.update` / `routine.delete` / `routine.run` / `routine.runs` / `routine.cancel`                                                                                                 | Daemon-owned local routines. See [autonomy.md](autonomy.md)                                                        |
 | `routine.session.prepare.respond`                                                                           | Answer Core's request to prepare a routine's session before its first turn, so the client can attach its tools (protocol 1.17) |
 | `remote.*` / `telegram.*`                                                                                   | See the [remote and Telegram method contracts](#remote-and-telegram-methods) below                     |
-| `daemon.reload`                                                                                             | Reload configuration                                                                                               |
+| `daemon.reload`                                                                                             | Reload configuration. Open sessions take the new `[agents]` cross-provider settings. Other session settings apply to new sessions |
 | `daemon.shutdown`                                                                                           | Ask the daemon process to exit                                                                                     |
 | `auth.login` / `auth.whoami` / `auth.logout`                                                                | Auth backend                                                                                                       |
 
@@ -1289,7 +1289,10 @@ spend against daemon-owned sessions.
    socket; writes `daemon.pid`.
 2. Dispatcher advertises method capabilities on `initialize`.
 3. Clients open the socket, authenticate, create or attach sessions.
-4. `daemon.reload` reloads config without tearing down the process.
+4. `daemon.reload` reloads config without tearing down the process. Open
+   sessions read their `[agents]` cross-provider subagent settings again,
+   each from its own config sources. Other session settings, such as the
+   model, permissions and MCP servers, still apply to new sessions.
 5. `daemon stop` / signals run the cleanup registry and remove pid/socket
    ownership cleanly.
 

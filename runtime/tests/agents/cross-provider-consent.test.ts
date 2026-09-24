@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   buildCrossProviderDisclosure,
@@ -5,9 +8,11 @@ import {
   withChildConsentGrant,
   authorizeChildExecutionPlan,
   assertChildExecutionPlan,
+  createChildExecutionPlan,
   type ChildExecutionPlan,
 } from "../../src/agents/cross-provider.js";
 import { LiveApprovalBroker } from "../../src/app-server/live-approval-broker.js";
+import { ConfigStore } from "../../src/config/store.js";
 import type { Session } from "../../src/session/session.js";
 import { registerChildApprovalSession } from "../../src/agents/child-approval-context.js";
 import { childTerminalOutcome } from "../../src/agents/child-terminal.js";
@@ -86,7 +91,9 @@ const ASK_EACH_SPAWN = { cross_provider_enabled: true, allowed_providers: ["deep
 /** The user enabled cross-provider subagents, so settings are the consent. */
 const SETTINGS_CONSENT = { cross_provider_enabled: true, allowed_providers: ["deepseek"] };
 
-function interactiveFixture(options: { answerable?: boolean; nonInteractive?: boolean; workflow?: boolean; goal?: boolean; autonomousTick?: boolean; activeTurnId?: string; agents?: Record<string, unknown>; journal?: unknown[] } = {}) {
+function interactiveFixture(options: { answerable?: boolean; nonInteractive?: boolean; workflow?: boolean; goal?: boolean; autonomousTick?: boolean; activeTurnId?: string; agents?: Record<string, unknown>; journal?: unknown[];
+  /** The session's own config, read from disk; `agents` is then unused. */
+  configStore?: ConfigStore; conversationId?: string; broker?: LiveApprovalBroker } = {}) {
   let stopped = false;
   let answerable = options.answerable !== false;
   const eventListeners = new Set<(event: unknown) => void>();
@@ -97,8 +104,9 @@ function interactiveFixture(options: { answerable?: boolean; nonInteractive?: bo
   const journal = options.journal;
   let sequence = journal?.length ?? 0;
   const session = {
-    conversationId: "root-session",
-    services: { runtimeOptions: { nonInteractive: options.nonInteractive === true } },
+    conversationId: options.conversationId ?? "root-session",
+    services: { runtimeOptions: { nonInteractive: options.nonInteractive === true },
+      ...(options.configStore !== undefined ? { configStore: options.configStore } : {}) },
     abortController: new AbortController(),
     markStoppedByUser: () => { stopped = true; },
     eventLog: { subscribe: (listener: (event: unknown) => void) => {
@@ -123,7 +131,7 @@ function interactiveFixture(options: { answerable?: boolean; nonInteractive?: bo
       currentRootHumanTurn: () => ({ turnId: options.activeTurnId }),
     } : {}),
   } as unknown as Session;
-  const broker = new LiveApprovalBroker({ canAnswerCrossProviderConsent: () => answerable });
+  const broker = options.broker ?? new LiveApprovalBroker({ canAnswerCrossProviderConsent: () => answerable });
   const close = broker.register(session, { isActive: () => true, workflow: options.workflow === true });
   if (options.goal) restoreSessionGoal(session, { objective: "unattended work", status: "active" } as never);
   return { session, broker, close, journal: journal ?? [], stopped: () => stopped,
@@ -616,5 +624,151 @@ describe("consent from settings", () => {
       });
       expect(fixture.broker.list("root-session")).toHaveLength(0);
     } finally { fixture.close(); }
+  });
+});
+
+/** An `[agents]` section of config.toml. */
+function agentsToml(enabled: boolean, allowed: readonly string[], askEachSpawn = false): string[] {
+  return ["[agents]", `cross_provider_enabled = ${enabled}`, `allowed_providers = ${JSON.stringify(allowed)}`,
+    ...(askEachSpawn ? ["cross_provider_ask_each_spawn = true"] : [])];
+}
+
+/**
+ * A session's own ConfigStore over a user config.toml, read as a daemon session
+ * reads it, optionally with an explicit `--config` file.
+ */
+async function openSettings(user: readonly string[], explicit?: readonly string[]) {
+  const home = mkdtempSync(join(tmpdir(), "agenc-cross-provider-settings-"));
+  const write = (path: string, lines: readonly string[]) =>
+    writeFileSync(path, ["config_version = 2", ...lines, ""].join("\n"));
+  const userConfig = join(home, "config.toml");
+  const explicitConfig = join(home, "explicit.toml");
+  write(userConfig, user);
+  if (explicit !== undefined) write(explicitConfig, explicit);
+  const store = new ConfigStore({ home, env: { AGENC_HOME: home, HOME: home }, cwd: home,
+    managedConfigPath: join(home, "missing-managed.toml"), managedDropInDir: join(home, "missing-managed.d"),
+    ...(explicit !== undefined ? { flagConfigPath: explicitConfig } : {}) });
+  await store.reload();
+  return { store, home, explicitConfig,
+    /** What Desktop's save does: `agenc config set` writes user config. */
+    save: (lines: readonly string[]) => write(userConfig, lines),
+    dispose: () => rmSync(home, { recursive: true, force: true }) };
+}
+
+// `daemon.reload` runs `refreshCrossProviderPolicy` on the broker every
+// daemon session registers with.
+describe("settings changed while a session is open", () => {
+  const second = { ...plan, task: { ...plan.task, id: "task-two", text: "Another task" } } as ChildExecutionPlan;
+  const third = { ...plan, task: { ...plan.task, id: "task-three", text: "A third task" } } as ChildExecutionPlan;
+
+  it("stops granting from settings after the daemon reload that follows turning the feature off", async () => {
+    const settings = await openSettings(['model = "grok-3"', ...agentsToml(true, ["deepseek"])]);
+    const fixture = interactiveFixture({ configStore: settings.store });
+    try {
+      expect((await authorizeChildExecutionPlan(fixture.session, plan)).kind).toBe("granted");
+      // The same save also changed the model.
+      settings.save(['model = "grok-4"', ...agentsToml(false, ["deepseek"])]);
+      // Until the daemon reloads, the open session keeps what it read.
+      expect((await authorizeChildExecutionPlan(fixture.session, second)).kind).toBe("granted");
+      await expect(fixture.broker.refreshCrossProviderPolicy()).resolves.toEqual({ changed: ["root-session"], failed: [] });
+      for (const options of [{}, { fresh: true }]) {
+        await expect(authorizeChildExecutionPlan(fixture.session, third, options)).resolves.toMatchObject({
+          kind: "consent_unavailable", reason: expect.stringContaining("Cross-provider subagents are off"),
+        });
+      }
+      expect(fixture.broker.list("root-session")).toHaveLength(0);
+      expect(settings.store.current().model).toBe("grok-3");
+    } finally { fixture.close(); settings.dispose(); }
+  });
+
+  it("retires Allow for session when the settings change, and refuses a removed provider without asking", async () => {
+    const settings = await openSettings(agentsToml(true, ["deepseek", "openai"], true));
+    const fixture = interactiveFixture({ configStore: settings.store });
+    try {
+      const first = await pendingDecision(fixture);
+      fixture.broker.resolve("root-session", first.pending.requestId, { kind: "approved_for_session" },
+        { approvalKind: "cross_provider_spawn" });
+      expect((await first.promise).kind).toBe("granted");
+      expect((await authorizeChildExecutionPlan(fixture.session, second)).kind).toBe("granted");
+      expect(fixture.broker.list("root-session")).toHaveLength(0);
+      // The user unchecks openai. deepseek stays allowed, but the grant
+      // was given under the earlier settings.
+      settings.save(agentsToml(true, ["deepseek"], true));
+      await expect(fixture.broker.refreshCrossProviderPolicy()).resolves.toEqual({ changed: ["root-session"], failed: [] });
+      const again = await pendingDecision(fixture, third);
+      expect(again.pending.crossProvider).toMatchObject({ provider: "deepseek", taskId: "task-three" });
+      fixture.broker.resolve("root-session", again.pending.requestId, { kind: "denied" });
+      expect((await again.promise).kind).toBe("consent_denied");
+      await expect(authorizeChildExecutionPlan(fixture.session, openaiPlan, { fresh: true })).resolves.toMatchObject({
+        kind: "consent_unavailable", reason: expect.stringContaining("Provider `openai` is not allowed"),
+      });
+      expect(fixture.broker.list("root-session")).toHaveLength(0);
+    } finally { fixture.close(); settings.dispose(); }
+  });
+
+  it("grants from settings after the daemon reload that follows turning the feature on", async () => {
+    const settings = await openSettings(agentsToml(false, []));
+    const fixture = interactiveFixture({ configStore: settings.store, answerable: false });
+    try {
+      await expect(authorizeChildExecutionPlan(fixture.session, plan)).resolves.toMatchObject({
+        kind: "consent_unavailable", reason: expect.stringContaining("Cross-provider subagents are off"),
+      });
+      settings.save(agentsToml(true, ["deepseek"]));
+      await expect(fixture.broker.refreshCrossProviderPolicy()).resolves.toEqual({ changed: ["root-session"], failed: [] });
+      expect((await authorizeChildExecutionPlan(fixture.session, plan)).kind).toBe("granted");
+      expect(fixture.broker.list("root-session")).toHaveLength(0);
+    } finally { fixture.close(); settings.dispose(); }
+  });
+
+  it("refuses at dispatch a child plan granted under the earlier settings", async () => {
+    const settings = await openSettings(agentsToml(true, ["deepseek"]));
+    const fixture = interactiveFixture({ configStore: settings.store });
+    Object.assign(fixture.session, {
+      modelInfo: { slug: "grok-4.6", provider: "grok" },
+      providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }) },
+      sessionConfiguration: { cwd: settings.home },
+    });
+    try {
+      const proposed = await createChildExecutionPlan({
+        session: fixture.session, selection: { provider: "deepseek", model: "deepseek-v4-pro" },
+        modelInfo: { slug: "deepseek-v4-pro", provider: "deepseek", supportsToolUse: true } as Session["modelInfo"],
+        parentPath: "/root", taskId: "spawn-plan", taskName: "worker", taskText: "inspect",
+        toolFree: false, forkedHistory: false,
+      });
+      const granted = await authorizeChildExecutionPlan(fixture.session, proposed);
+      if (granted.kind !== "granted") throw new Error(`fixture spawn was not granted: ${granted.reason}`);
+      await expect(assertChildExecutionPlan(fixture.session, granted.plan)).resolves.toBeUndefined();
+      settings.save(agentsToml(false, ["deepseek"]));
+      await fixture.broker.refreshCrossProviderPolicy();
+      await expect(assertChildExecutionPlan(fixture.session, granted.plan)).rejects.toThrow(/policy changed/u);
+    } finally { fixture.close(); settings.dispose(); }
+  });
+
+  it("reaches workflow and background sessions, and a session that cannot read its settings keeps them", async () => {
+    const broker = new LiveApprovalBroker({ canAnswerCrossProviderConsent: () => false });
+    const workflowSettings = await openSettings(agentsToml(true, ["deepseek"]));
+    // A background run started with an explicit --config file, deleted later.
+    const backgroundSettings = await openSettings([], agentsToml(true, ["deepseek"]));
+    const workflow = interactiveFixture({ conversationId: "workflow-run", workflow: true, broker,
+      configStore: workflowSettings.store });
+    const background = interactiveFixture({ conversationId: "background-run", nonInteractive: true, broker,
+      configStore: backgroundSettings.store });
+    try {
+      workflowSettings.save(agentsToml(false, ["deepseek"]));
+      rmSync(backgroundSettings.explicitConfig);
+      await expect(broker.refreshCrossProviderPolicy()).resolves.toEqual({
+        changed: ["workflow-run"],
+        failed: [{ sessionId: "background-run", reason: expect.stringContaining("explicit config file does not exist") }],
+      });
+      await expect(authorizeChildExecutionPlan(workflow.session, plan)).resolves.toMatchObject({
+        kind: "consent_unavailable", reason: expect.stringContaining("Cross-provider subagents are off"),
+      });
+      expect((await authorizeChildExecutionPlan(background.session, plan)).kind).toBe("granted");
+    } finally {
+      workflow.close();
+      background.close();
+      workflowSettings.dispose();
+      backgroundSettings.dispose();
+    }
   });
 });

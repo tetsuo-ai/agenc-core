@@ -38,7 +38,7 @@ import {
   resolveAgentRuntimeOptions,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
-import type { PendingProviderSwitch } from "../session/session.js";
+import type { PendingProviderSwitch, Session } from "../session/session.js";
 import { createAgenCJsonLineDaemonRequestClient } from "./agent-cli.js";
 import { AGENC_DAEMON_PROTOCOL_VERSION, type JsonObject } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
@@ -92,6 +92,11 @@ import {
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { ConfigStore } from "../config/store.js";
+import { LiveApprovalBroker } from "./live-approval-broker.js";
+import {
+  authorizeChildExecutionPlan,
+  type ChildExecutionPlan,
+} from "../agents/cross-provider.js";
 import {
   _resetErrorLogForTesting,
   getErrorLogQueueStats,
@@ -125,6 +130,29 @@ import {
 import type { AgenCDaemonInstanceIdentity } from "./daemon-instance-identity.js";
 
 const TEST_RUNTIME_OPTIONS = resolveAgentRuntimeOptions({});
+
+/** A deepseek child an open session asks to spawn. */
+const CROSS_PROVIDER_PLAN = {
+  version: 1,
+  route: { provider: "deepseek", model: "deepseek-v4-pro" },
+  destination: {
+    provider: "deepseek",
+    model: "deepseek-v4-pro",
+    endpoint: "https://api.deepseek.com/v1",
+    authProfile: "api_key",
+    billingSource: "byok",
+  },
+  modelInfo: { slug: "deepseek-v4-pro" },
+  catalogRevision: "catalog-v1:a",
+  requiredCapabilities: { clientTools: true },
+  parent: { sessionId: "open-session", agentPath: "/root" },
+  task: { id: "task-one", name: "research", text: "Read the design", attachments: [] },
+  scope: { tools: ["Read"], data: "task_only", cwd: "/workspace" },
+  policyRevision: "agents-v1:a",
+  consentGrant: null,
+  budgetAllocation: { maxModelCalls: 32 },
+  crossProvider: true,
+} as unknown as ChildExecutionPlan;
 
 function createRecoveredSession(
   threadId: string,
@@ -3960,6 +3988,98 @@ token_cap = 123
     // Starts a real daemon and reloads its config; on a loaded runner that
     // does not fit in the shared 30s default. DEFAULT_DAEMON_READY_TIMEOUT_MS
     // is already >= 30s on its own, so the test bound has to clear it.
+  }, 90_000);
+
+  it("reload gives open sessions their new cross-provider settings and keeps the rest of their config", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    host.runningPids.add(host.pid);
+    const userConfig = join(agencHome, "config.toml");
+    const explicitConfig = join(agencHome, "explicit.toml");
+    const settings = (enabled: boolean, extra: readonly string[] = []) =>
+      ["config_version = 2", ...extra, "[agents]", `cross_provider_enabled = ${enabled}`,
+        'allowed_providers = ["deepseek"]', ""].join("\n");
+    await writeFile(userConfig, settings(true, ['model = "grok-3"']));
+    await writeFile(explicitConfig, settings(true));
+    const refresh = vi.spyOn(LiveApprovalBroker.prototype, "refreshCrossProviderPolicy");
+    const unregister: (() => void)[] = [];
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    let stopped = false;
+    try {
+      await expect(waitForPid(pidPath)).resolves.toBe(4100);
+      // The daemon owns its broker. Its first reload hands it to the spy.
+      await expect(
+        runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io }),
+      ).resolves.toBe(0);
+      expect(refresh).toHaveBeenCalledTimes(1);
+      const broker = refresh.mock.contexts[0] as LiveApprovalBroker;
+      // Open sessions, registered as the runner registers its sessions. One
+      // was started with an explicit --config file.
+      const openSession = async (conversationId: string, flagConfigPath?: string) => {
+        const configStore = new ConfigStore({
+          home: agencHome,
+          env: { AGENC_HOME: agencHome, HOME: agencHome },
+          cwd: agencHome,
+          managedConfigPath: join(agencHome, "missing-managed.toml"),
+          managedDropInDir: join(agencHome, "missing-managed.d"),
+          ...(flagConfigPath !== undefined ? { flagConfigPath } : {}),
+        });
+        await configStore.reload();
+        const session = {
+          conversationId,
+          services: { configStore, runtimeOptions: { nonInteractive: false } },
+          abortController: new AbortController(),
+          eventLog: { subscribe: () => () => {} },
+          onBeforeDurableClose: () => () => {},
+        } as unknown as Session;
+        unregister.push(broker.register(session, { isActive: () => true }));
+        return { session, configStore };
+      };
+      const open = await openSession("open-session");
+      const stale = await openSession("stale-session", explicitConfig);
+      expect((await authorizeChildExecutionPlan(open.session, CROSS_PROVIDER_PLAN)).kind)
+        .toBe("granted");
+
+      // Desktop saves the switch, which also changed the model, and reloads.
+      // The explicit file of the other session is gone by then.
+      await writeFile(userConfig, settings(false, ['model = "grok-4"']));
+      await rm(explicitConfig);
+      await expect(
+        runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io }),
+      ).resolves.toBe(0);
+
+      const nextTask = {
+        ...CROSS_PROVIDER_PLAN,
+        task: { ...CROSS_PROVIDER_PLAN.task, id: "task-two", text: "Another task" },
+      } as ChildExecutionPlan;
+      await expect(authorizeChildExecutionPlan(open.session, nextTask)).resolves.toMatchObject({
+        kind: "consent_unavailable",
+        reason: expect.stringContaining("Cross-provider subagents are off"),
+      });
+      expect(open.configStore.current().model).toBe("grok-3");
+      expect((await authorizeChildExecutionPlan(stale.session, nextTask)).kind).toBe("granted");
+      expect(io.stderrText()).toContain(
+        "agenc: session stale-session keeps its earlier cross-provider subagent settings. They could not be read again: explicit config file does not exist",
+      );
+
+      signalProcess.emit("SIGTERM");
+      stopped = true;
+      await expect(running).resolves.toBe(0);
+    } finally {
+      for (const close of unregister) close();
+      refresh.mockRestore();
+      if (!stopped) {
+        signalProcess.emit("SIGTERM");
+        await running.catch(() => {});
+      }
+      await rm(agencHome, { recursive: true, force: true });
+    }
   }, 90_000);
 
   it("reload reuses a fixed MCP listener, revokes old sessions, and keeps direct tools fail-closed", async () => {

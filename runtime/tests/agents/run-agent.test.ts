@@ -1129,7 +1129,7 @@ describe("runAgent", () => {
     expect(liveAgentSession(live)).toBeUndefined();
   });
 
-  it.each(["Stop", "switch off"])("cancels an active cross-provider stream on %s", async (cause) => {
+  it.each(["Stop", "switch off", "daemon reload"])("cancels an active cross-provider stream on %s", async (cause) => {
     let enabled = true;
     const configStore = new ConfigStore({
       cwd: "/tmp",
@@ -1165,7 +1165,9 @@ describe("runAgent", () => {
     if (cause === "Stop") control.stopOpenSpawnChildren(parent.conversationId, "user_stop");
     else {
       enabled = false;
-      await configStore.reload();
+      // A daemon reload refreshes only the [agents] section of an open session.
+      if (cause === "daemon reload") await expect(configStore.reloadAgentsSection()).resolves.toBe(true);
+      else await configStore.reload();
     }
     const { result } = await run;
     expect(streamSignal?.aborted).toBe(true);

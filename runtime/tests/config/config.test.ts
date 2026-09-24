@@ -65,7 +65,11 @@ import {
   resolveProviderSettings,
 } from "../../src/config/resolve-provider.js";
 import { configuredModelForProvider } from "../../src/config/resolve-model.js";
-import { ConfigStore } from "../../src/config/store.js";
+import { ConfigStore, type ConfigStoreOptions } from "../../src/config/store.js";
+import {
+  getCanonicalSettingsAuthority,
+  runWithCanonicalSettingsAuthority,
+} from "../../src/utils/settings/canonicalAuthority.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // schema
@@ -2251,5 +2255,160 @@ snapshot_max_count = 0
     expect(store.current().model).toBe("second");
     expect(seen).toEqual(["first", "second"]);
     expect(maxActive).toBe(1);
+  });
+
+  describe("reloadAgentsSection", () => {
+    const toml = (lines: readonly string[]): string =>
+      ["config_version = 2", ...lines, ""].join("\n");
+    const sessionStore = (options: Partial<ConfigStoreOptions> = {}) =>
+      new ConfigStore({
+        home: dir,
+        env: { AGENC_HOME: dir, HOME: dir },
+        cwd: dir,
+        managedConfigPath: join(dir, "missing-managed.toml"),
+        managedDropInDir: join(dir, "missing-managed.d"),
+        ...options,
+      });
+
+    test("takes only the agents section from disk and runs only the listeners subscribed to it", async () => {
+      const path = join(dir, "config.toml");
+      writeFileSync(path, toml([
+        'model = "grok-3"',
+        "max_turns = 5",
+        "[agents]",
+        "cross_provider_enabled = true",
+        'allowed_providers = ["deepseek"]',
+      ]));
+      const store = sessionStore();
+      await store.reload();
+      const before = store.current();
+      const everyReload = vi.fn();
+      const agentsSection = vi.fn();
+      store.subscribe(everyReload);
+      store.subscribe(agentsSection, { sections: ["agents"] });
+
+      // One save turned the feature off and also changed the model.
+      writeFileSync(path, toml([
+        'model = "grok-4"',
+        "max_turns = 9",
+        "[agents]",
+        "cross_provider_enabled = false",
+        'allowed_providers = ["deepseek", "openai"]',
+      ]));
+      await expect(store.reloadAgentsSection()).resolves.toBe(true);
+
+      const after = store.current();
+      expect(after.agents).toEqual({
+        cross_provider_enabled: false,
+        allowed_providers: ["deepseek", "openai"],
+        cross_provider_ask_each_spawn: false,
+      });
+      for (const key of Object.keys(before) as (keyof AgenCConfig)[]) {
+        if (key !== "agents") expect(after[key]).toBe(before[key]);
+      }
+      expect(after.model).toBe("grok-3");
+      expect(after.max_turns).toBe(5);
+      expect(everyReload).not.toHaveBeenCalled();
+      expect(agentsSection).toHaveBeenCalledTimes(1);
+      expect(agentsSection).toHaveBeenCalledWith(
+        after,
+        expect.objectContaining({ sections: ["agents"] }),
+      );
+
+      // An unchanged section publishes nothing.
+      await expect(store.reloadAgentsSection()).resolves.toBe(false);
+      expect(store.current()).toBe(after);
+      expect(agentsSection).toHaveBeenCalledTimes(1);
+
+      // A full reload still takes every change and runs every listener.
+      await store.reload();
+      expect(store.current().model).toBe("grok-4");
+      expect(everyReload).toHaveBeenCalledTimes(1);
+      expect(agentsSection).toHaveBeenCalledTimes(2);
+    });
+
+    test("keeps the agents section of the session's explicit --config file", async () => {
+      const user = join(dir, "config.toml");
+      const explicit = join(dir, "explicit.toml");
+      writeFileSync(user, toml([
+        "[agents]",
+        "cross_provider_enabled = true",
+        'allowed_providers = ["deepseek"]',
+      ]));
+      writeFileSync(explicit, toml([
+        "[agents]",
+        "cross_provider_enabled = true",
+        'allowed_providers = ["openai"]',
+        "cross_provider_ask_each_spawn = true",
+      ]));
+      const store = sessionStore({ flagConfigPath: explicit });
+      await store.reload();
+      const operatorAgents = {
+        cross_provider_enabled: true,
+        allowed_providers: ["openai"],
+        cross_provider_ask_each_spawn: true,
+      };
+      expect(store.current().agents).toEqual(operatorAgents);
+
+      // Desktop writes user config; the explicit file still decides.
+      writeFileSync(user, toml([
+        "[agents]",
+        "cross_provider_enabled = false",
+        "allowed_providers = []",
+      ]));
+      await expect(store.reloadAgentsSection()).resolves.toBe(false);
+      expect(store.current().agents).toEqual(operatorAgents);
+
+      // A change to that file itself reaches the session.
+      writeFileSync(explicit, toml([
+        "[agents]",
+        "cross_provider_enabled = false",
+        'allowed_providers = ["openai"]',
+        "cross_provider_ask_each_spawn = true",
+      ]));
+      await expect(store.reloadAgentsSection()).resolves.toBe(true);
+      expect(store.current().agents).toEqual({
+        ...operatorAgents,
+        cross_provider_enabled: false,
+      });
+    });
+
+    test("leaves the store as it was when its sources cannot be read", async () => {
+      const path = join(dir, "config.toml");
+      writeFileSync(path, toml([
+        "[agents]",
+        "cross_provider_enabled = true",
+        'allowed_providers = ["deepseek"]',
+      ]));
+      const store = sessionStore();
+      await store.reload();
+      const before = store.current();
+      const agentsSection = vi.fn();
+      store.subscribe(agentsSection, { sections: ["agents"] });
+
+      writeFileSync(path, toml(["[agents]", 'cross_provider_enabled = "no"']));
+      await expect(store.reloadAgentsSection()).rejects.toThrow(/cross_provider_enabled/u);
+      expect(store.current()).toBe(before);
+      expect(agentsSection).not.toHaveBeenCalled();
+
+      // The failed read released the store for the next one.
+      writeFileSync(path, toml(["[agents]", "cross_provider_enabled = false"]));
+      await expect(store.reloadAgentsSection()).resolves.toBe(true);
+      expect(store.current().agents?.cross_provider_enabled).toBe(false);
+    });
+
+    test("keeps the caller's settings authority", async () => {
+      writeFileSync(join(dir, "config.toml"), toml([
+        "[agents]",
+        "cross_provider_enabled = true",
+      ]));
+      const store = sessionStore();
+      const caller = sessionStore();
+      // The daemon refreshes many sessions' stores from one async context.
+      await runWithCanonicalSettingsAuthority(caller, async () => {
+        await expect(store.reloadAgentsSection()).resolves.toBe(true);
+        expect(getCanonicalSettingsAuthority()).toBe(caller);
+      });
+    });
   });
 });

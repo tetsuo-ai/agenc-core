@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import type { ConfigStore } from "../config/store.js";
+import { redactSecrets } from "../secrets/sanitizer.js";
 import type { Session } from "../session/session.js";
 import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
 import {
@@ -58,6 +60,14 @@ export interface LivePendingApproval {
   readonly responseKey: string;
   readonly projection: PendingToolApproval;
   readonly settle: (decision: ReviewDecision) => void;
+}
+
+/** What a daemon reload did to the cross-provider settings of open sessions. */
+export interface CrossProviderPolicyRefresh {
+  /** Sessions whose `[agents]` settings changed and now apply. */
+  readonly changed: readonly string[];
+  /** Sessions that keep their earlier settings, with a redacted reason. */
+  readonly failed: readonly { readonly sessionId: string; readonly reason: string }[];
 }
 
 /**
@@ -129,9 +139,10 @@ export class LiveApprovalBroker {
       })
       : () => {};
     const unsubscribePolicy = session.services.configStore?.subscribe?.(() => {
-      // Revoking or changing the operator allowlist retires session grants.
+      // Revoking or changing the operator allowlist retires session grants,
+      // also when a daemon reload refreshes only that section.
       owner.consentSessionGrants.clear();
-    });
+    }, { sections: ["agents"] });
     const services = session.services as { approvalResolver?: ApprovalResolver; crossProviderConsent?: CrossProviderConsentService };
     const previousResolver = services.approvalResolver;
     const previousConsent = services.crossProviderConsent;
@@ -415,6 +426,40 @@ export class LiveApprovalBroker {
     for (const pending of this.#owners.get(ownerRunId)?.pending.values() ?? []) {
       pending.settle(ABORT);
     }
+  }
+
+  /**
+   * Reads the cross-provider subagent settings (`[agents]`) again for every
+   * session registered here: interactive, background and routine runs, and
+   * workflow runs. A session that is not registered cannot get cross-provider
+   * consent at all, and its children share its config. Each session reads
+   * its own config sources, and nothing else in its config changes
+   * (`ConfigStore.reloadAgentsSection`). When the settings changed, the store
+   * tells this broker, which retires the session's grants, and the session's
+   * running children, which stop if their provider is no longer allowed. A
+   * session whose read fails keeps its earlier settings and is listed in
+   * `failed`; the others still refresh.
+   */
+  async refreshCrossProviderPolicy(): Promise<CrossProviderPolicyRefresh> {
+    const stores = new Map<ConfigStore, string>();
+    for (const owner of this.#owners.values()) {
+      const store = owner.session.services.configStore;
+      if (store !== undefined && !stores.has(store)) stores.set(store, owner.session.conversationId);
+    }
+    const sessions = [...stores];
+    const outcomes = await Promise.allSettled(sessions.map(async ([store]) => store.reloadAgentsSection()));
+    const changed: string[] = [];
+    const failed: { readonly sessionId: string; readonly reason: string }[] = [];
+    outcomes.forEach((outcome, index) => {
+      const sessionId = sessions[index]![1];
+      if (outcome.status === "rejected") {
+        const reason: unknown = outcome.reason;
+        failed.push({ sessionId, reason: redactSecrets(reason instanceof Error ? reason.message : String(reason)) });
+      } else if (outcome.value) {
+        changed.push(sessionId);
+      }
+    });
+    return { changed, failed };
   }
 
   #failUndeliverable(owner: ApprovalOwner, requestId: string): void {

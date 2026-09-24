@@ -2,12 +2,14 @@
 //
 // - `current()` returns the frozen current snapshot.
 // - `reload()` re-reads disk + env, updates the snapshot, notifies subscribers.
+// - `reloadAgentsSection()` re-reads them for the `[agents]` section only.
 // - `subscribe(listener)` returns an unsubscribe function.
 //
 // No global state — each ConfigStore is instantiable. bin/agenc.ts
 // integration constructs one; SIGUSR1 → reload() wiring lives in T10-I.
 
 import { dirname, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import type { AgenCConfig } from "./schema.js";
 import { defaultConfig } from "./schema.js";
@@ -23,7 +25,10 @@ import {
   type LayeredConfigRepositoryOptions,
 } from "./repository.js";
 import { isProjectTrustedSync } from "../permissions/trust/project-trust.js";
-import { enterCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
+import {
+  enterCanonicalSettingsAuthority,
+  runWithCanonicalSettingsAuthority,
+} from "../utils/settings/canonicalAuthority.js";
 import { RuntimeStateRepository } from "./runtime-state-repository.js";
 import type { CanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 import { mergeProviderModelLayer } from "./provider-model-authority.js";
@@ -41,6 +46,23 @@ export interface ConfigStorePublicationMetadata {
   readonly permissionAuthority:
     | "requires_subscriber_publication"
     | "coordinated_by_permission_mode_registry";
+  /**
+   * Set when only these sections changed and every other value is the
+   * previous snapshot's (`reloadAgentsSection`). Absent after a full reload.
+   */
+  readonly sections?: readonly ConfigStoreSection[];
+}
+
+/** A section a live store can take from its sources without a full reload. */
+export type ConfigStoreSection = "agents";
+
+export interface ConfigStoreSubscribeOptions {
+  /**
+   * Also run when only these sections change. Without them a listener runs
+   * after full reloads only, so a section change never wakes work such as
+   * the MCP, permission and hook reloads.
+   */
+  readonly sections?: readonly ConfigStoreSection[];
 }
 
 export interface CoordinatedConfigStorePublishOptions {
@@ -54,6 +76,12 @@ export const COORDINATED_CONFIG_STORE_PUBLICATION = Object.freeze({
 const DIRECT_CONFIG_STORE_PUBLICATION = Object.freeze({
   permissionAuthority: "requires_subscriber_publication" as const,
 });
+
+const AGENTS_SECTION_PUBLICATION: ConfigStorePublicationMetadata =
+  Object.freeze({
+    ...DIRECT_CONFIG_STORE_PUBLICATION,
+    sections: Object.freeze(["agents" as const]),
+  });
 
 export type ConfigStoreListener = (
   config: AgenCConfig,
@@ -131,6 +159,8 @@ interface ConfigStoreState {
 export class ConfigStore {
   private snapshot: AgenCConfig;
   private readonly listeners = new Set<ConfigStoreListener>();
+  /** Listeners that also run when only the `agents` section changes. */
+  private readonly agentsSectionListeners = new Set<ConfigStoreListener>();
   private readonly opts: ConfigStoreOptions;
   private readonly environment: EnvSnapshot;
   private warningMessages: string[] = [];
@@ -248,6 +278,41 @@ export class ConfigStore {
     return this.reloadPreparedAndPublish();
   }
 
+  /**
+   * Re-read this store's sources, as `reload()` does, and take only their
+   * `agents` section (the cross-provider subagent policy) into the snapshot.
+   * A daemon reload uses it for open sessions: their explicit `--config`
+   * file, profile, environment, CLI and managed layers still apply, and every
+   * other value, the layers, warnings and provenance stay as the last full
+   * reload left them. When the section changed, only the listeners
+   * subscribed with `sections: ["agents"]` run. Resolves to whether it
+   * changed. A read that fails leaves the store as it was.
+   */
+  reloadAgentsSection(): Promise<boolean> {
+    // prepareReload binds this store to the caller's async context. Keep that
+    // inside, so a caller that refreshes several stores keeps its own.
+    return runWithCanonicalSettingsAuthority(this, async () => {
+      const prepared = await this.prepareReload();
+      try {
+        const agents = prepared.config.agents;
+        if (isDeepStrictEqual(agents, this.snapshot.agents)) return false;
+        this.snapshot = Object.freeze({ ...this.snapshot, agents });
+        this.reloadGeneration += 1;
+        this.notifyListeners(
+          this.snapshot,
+          this.warningMessages,
+          AGENTS_SECTION_PUBLICATION,
+          this.agentsSectionListeners,
+        );
+        return true;
+      } finally {
+        // Nothing else of the prepared generation is committed.
+        prepared.rollback();
+        prepared.settle();
+      }
+    });
+  }
+
   private async reloadPreparedAndPublish(): Promise<AgenCConfig> {
     const prepared = await this.prepareReload();
     try {
@@ -330,8 +395,9 @@ export class ConfigStore {
     config: AgenCConfig,
     warnings: string[],
     publication: ConfigStorePublicationMetadata,
+    listeners: ReadonlySet<ConfigStoreListener> = this.listeners,
   ): void {
-    for (const listener of this.listeners) {
+    for (const listener of listeners) {
       try {
         listener(config, publication);
       } catch (err) {
@@ -552,12 +618,21 @@ export class ConfigStore {
 
   /**
    * Register a listener for snapshot changes. Returns an unsubscribe
-   * function. Listeners fire on each successful `reload()`.
+   * function. Listeners fire on each successful `reload()`, and with
+   * `sections: ["agents"]` also on each `reloadAgentsSection()` that changed
+   * that section.
    */
-  subscribe(listener: ConfigStoreListener): () => void {
+  subscribe(
+    listener: ConfigStoreListener,
+    options: ConfigStoreSubscribeOptions = {},
+  ): () => void {
     this.listeners.add(listener);
+    if (options.sections?.includes("agents") === true) {
+      this.agentsSectionListeners.add(listener);
+    }
     return () => {
       this.listeners.delete(listener);
+      this.agentsSectionListeners.delete(listener);
     };
   }
 

@@ -4048,6 +4048,7 @@ export async function* runAgent(
         assertPreparedChildMatchesPlan(params.plan, prepared);
         await assertChildExecutionPlan(parent, params.plan);
       }
+      // Also when a daemon reload refreshes only the [agents] section.
       unsubscribeCrossPolicy = parent.services.configStore?.subscribe((config) => {
         if (config.agents?.cross_provider_enabled !== true ||
             !(config.agents.allowed_providers ?? []).includes(params.providerSelection!.provider) ||
@@ -4055,7 +4056,7 @@ export async function* runAgent(
              !(config.agents.allowed_providers ?? []).includes(params.plan.destination.provider))) {
           live.abortController.abort("cross-provider subagent policy was disabled or provider removed");
         }
-      }) ?? null;
+      }, { sections: ["agents"] }) ?? null;
     } else if (provider && isFactoryProvider(provider)) {
       const selectedModel = params.model ?? live.role.config.model ??
         parent.providerService.current().model;
