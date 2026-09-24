@@ -1,4 +1,5 @@
 import "../helpers/cron-os-home.js";
+import { setTimeout as realSleep } from "node:timers/promises";
 /**
  * T6 gap #119 — turn-lifecycle emit callsites.
  *
@@ -833,10 +834,13 @@ describe("daemon-owned scheduled turns", () => {
         ),
         advance: async () => {
           await vi.advanceTimersByTimeAsync(60_000);
-          for (let round = 0; round < 25; round += 1) {
-            await new Promise<void>((resolveRound) => setImmediate(resolveRound));
+          // Durable cron storage does real file I/O. A reschedule can arm its
+          // next timer only after that I/O, so pause for real (node:timers/
+          // promises is not faked) and run due timers until things settle.
+          for (let round = 0; round < 10; round += 1) {
+            await realSleep(5);
+            await vi.advanceTimersByTimeAsync(0);
           }
-          await vi.advanceTimersByTimeAsync(0);
         },
       });
     } finally {
