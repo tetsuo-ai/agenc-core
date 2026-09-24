@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -30,23 +30,37 @@ export class ThreadRegistryLock {
     mkdirSync(dirname(this.path), { recursive: true });
     // A second pass only follows the removal of a dead holder's lock.
     for (let pass = 0; pass < 2; pass += 1) {
+      let created: { dev: number; ino: number } | null | undefined;
       try {
-        mkdirSync(this.path);
-        const token = `${process.pid}:${randomUUID()}`;
-        try { writeFileSync(join(this.path, "holder.pid"), token, { encoding: "utf8", flag: "wx" }); }
-        catch (error) {
-          rmSync(this.path, { recursive: true, force: true });
-          throw new Error(`failed to write registry lock holder ${this.path}`, { cause: error });
-        }
-        this.token = token;
-        this.acquired = true;
-        return true;
+        // Hold the reclamation gate through mkdir and stat so this inode is
+        // definitely the directory created by this attempt.
+        created = this.withReclamationGate(() => {
+          try { mkdirSync(this.path); }
+          catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "EEXIST") return null;
+            throw error;
+          }
+          return statSync(this.path);
+        });
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-          throw new Error(`failed to acquire registry lock ${this.path}`, { cause: error });
-        }
-        if (!this.tryReclaimStaleLock()) return false;
+        throw new Error(`failed to acquire registry lock ${this.path}`, { cause: error });
       }
+      if (created === undefined) return false;
+      if (created === null) {
+        if (!this.tryReclaimStaleLock()) return false;
+        continue;
+      }
+      const token = `${process.pid}:${randomUUID()}`;
+      try { writeFileSync(join(this.path, "holder.pid"), token, { encoding: "utf8", flag: "wx" }); }
+      catch (error) {
+        // A replacement holder won the stamp race. Its directory is not ours.
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+        this.cleanupFailedInitialization(created);
+        throw new Error(`failed to write registry lock holder ${this.path}`, { cause: error });
+      }
+      this.token = token;
+      this.acquired = true;
+      return true;
     }
     return false;
   }
@@ -87,23 +101,43 @@ export class ThreadRegistryLock {
     catch { return false; }
   }
 
+  private cleanupFailedInitialization(created: { dev: number; ino: number }): void {
+    try {
+      this.withReclamationGate(() => {
+        const current = statSync(this.path);
+        if (current.dev !== created.dev || current.ino !== created.ino) return;
+        if (this.readHolderToken() !== undefined) return;
+        // rmdir only removes an empty directory, even if a legacy holder
+        // writes its stamp while this process holds the reclamation gate.
+        rmdirSync(this.path);
+      });
+    } catch { /* Preserve the original stamp error; stale cleanup can retry. */ }
+  }
+
   private tryReclaimStaleLock(): boolean {
     const observed = this.readHolderToken();
     if (!this.holderIsStale(observed)) return false;
-    // SQLite's writer reservation serializes reclaimers and is released even
-    // if a process dies midway through reclaiming the stale directory.
+    try {
+      return this.withReclamationGate(() => {
+        if (this.readHolderToken() !== observed || !this.holderIsStale(observed)) return false;
+        rmSync(this.path, { recursive: true, force: true });
+        return true;
+      }) ?? false;
+    } catch { return false; }
+  }
+
+  /** SQLite releases the reservation if a process dies during reclamation. */
+  private withReclamationGate<T>(operation: () => T): T | undefined {
     const gate = new DatabaseSync(`${this.path}.reclaim.sqlite`, { timeout: 0 });
     let held = false;
     try {
       try { gate.exec("BEGIN IMMEDIATE"); held = true; }
       catch (error) {
-        if ((error as { errcode?: number }).errcode === 5) return false; // SQLITE_BUSY
+        if ((error as { errcode?: number }).errcode === 5) return undefined; // SQLITE_BUSY
         throw error;
       }
-      if (this.readHolderToken() !== observed || !this.holderIsStale(observed)) return false;
-      rmSync(this.path, { recursive: true, force: true });
-      return true;
-    } catch { return false; }
+      return operation();
+    }
     finally {
       try { if (held) gate.exec("ROLLBACK"); }
       finally { gate.close(); }

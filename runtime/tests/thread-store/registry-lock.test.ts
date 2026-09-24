@@ -1,7 +1,15 @@
 const lockRemoval = vi.hoisted(() => ({ path: "", beforeRemove: undefined as undefined | (() => void) }));
+const lockStamp = vi.hoisted(() => ({ path: "", beforeWrite: undefined as undefined | (() => void) }));
 vi.mock("node:fs", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs")>();
-  return { ...fs, rmSync: ((path: Parameters<typeof fs.rmSync>[0], options?: Parameters<typeof fs.rmSync>[1]) => {
+  return { ...fs, writeFileSync: ((path: Parameters<typeof fs.writeFileSync>[0], data: Parameters<typeof fs.writeFileSync>[1], options?: Parameters<typeof fs.writeFileSync>[2]) => {
+    if (String(path) === lockStamp.path && lockStamp.beforeWrite) {
+      const callback = lockStamp.beforeWrite;
+      lockStamp.beforeWrite = undefined;
+      callback();
+    }
+    return fs.writeFileSync(path, data, options);
+  }) as typeof fs.writeFileSync, rmSync: ((path: Parameters<typeof fs.rmSync>[0], options?: Parameters<typeof fs.rmSync>[1]) => {
     if (String(path) === lockRemoval.path && lockRemoval.beforeRemove) {
       const callback = lockRemoval.beforeRemove;
       lockRemoval.beforeRemove = undefined;
@@ -11,7 +19,7 @@ vi.mock("node:fs", async (importOriginal) => {
   }) as typeof fs.rmSync };
 });
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -23,8 +31,63 @@ const dirs: string[] = [];
 afterEach(() => {
   lockRemoval.path = "";
   lockRemoval.beforeRemove = undefined;
+  lockStamp.path = "";
+  lockStamp.beforeWrite = undefined;
   vi.restoreAllMocks();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+it("keeps a stamped replacement when an earlier unstamped acquisition resumes", () => {
+  const dir = mkdtempSync(join(tmpdir(), "registry-initialization-"));
+  dirs.push(dir);
+  const stalled = new ThreadRegistryLock(dir);
+  const replacement = new ThreadRegistryLock(dir);
+  const third = new ThreadRegistryLock(dir);
+  let replacementAcquired = false;
+  let replacementToken = "";
+  let stalledAcquired = false;
+  let stalledError: unknown;
+  lockStamp.path = join(stalled.path, "holder.pid");
+  lockStamp.beforeWrite = () => {
+    const staleTime = new Date(Date.now() - 6_000);
+    utimesSync(stalled.path, staleTime, staleTime);
+    replacementAcquired = replacement.tryAcquire();
+    if (replacementAcquired) replacementToken = readFileSync(join(stalled.path, "holder.pid"), "utf8");
+  };
+  try {
+    try { stalledAcquired = stalled.tryAcquire(); }
+    catch (error) { stalledError = error; }
+
+    expect(replacementAcquired).toBe(true);
+    expect(existsSync(stalled.path)).toBe(true);
+    expect(readFileSync(join(stalled.path, "holder.pid"), "utf8")).toBe(replacementToken);
+    expect(third.tryAcquire()).toBe(false);
+    expect(stalledError).toBeUndefined();
+    expect(stalledAcquired).toBe(false);
+  } finally {
+    third.release();
+    stalled.release();
+    replacement.release();
+  }
+});
+
+it("does not clean up a different unstamped directory after its stamp fails", () => {
+  const dir = mkdtempSync(join(tmpdir(), "registry-initialization-error-"));
+  dirs.push(dir);
+  const failed = new ThreadRegistryLock(dir);
+  const replacement = new ThreadRegistryLock(dir);
+  const movedPath = `${failed.path}.moved`;
+  lockStamp.path = join(failed.path, "holder.pid");
+  lockStamp.beforeWrite = () => {
+    renameSync(failed.path, movedPath);
+    mkdirSync(failed.path);
+    throw Object.assign(new Error("injected stamp failure"), { code: "EIO" });
+  };
+
+  expect(() => failed.tryAcquire()).toThrow("failed to write registry lock holder");
+  expect(existsSync(movedPath)).toBe(true);
+  expect(existsSync(failed.path)).toBe(true);
+  expect(replacement.tryAcquire()).toBe(false);
 });
 
 it("allows only one of two reclaimers to replace the same dead holder", () => {
