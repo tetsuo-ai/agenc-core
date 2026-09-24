@@ -809,6 +809,40 @@ describe("plugin MCP on-demand lifecycle", () => {
     }
   });
 
+  it("rejects a symlink then dot-dot route into installed bytes at startup and restart", async () => {
+    const cacheHome = await home();
+    const root = join(cacheHome, "sample");
+    const sibling = join(cacheHome, "sibling");
+    const aliases = join(cacheHome, "aliases");
+    const snapshotRoot = join(cacheHome, "snapshot");
+    await mkdir(root); await mkdir(sibling); await mkdir(aliases); await mkdir(snapshotRoot);
+    await symlink(sibling, join(aliases, "alias"), "dir");
+    const installedEntry = join(root, "server.py");
+    await writeFile(installedEntry, "original");
+    const operand = `${aliases}/alias/../sample/server.py`;
+    const cfg = config(cacheHome, "plugin:sample:symlink-parent", {
+      command: "python3",
+      origin: { scope: "plugin", pluginServer: { pluginName: "sample", serverName: "symlink-parent",
+        pluginRoot: root, snapshotRoot, snapshotLaunch: {
+          command: "python3", args: [operand], cwd: snapshotRoot,
+        } } },
+    });
+    const manager = new MCPManager([cfg]);
+    try {
+      await manager.start();
+      expect(manager.getConnectionState(cfg.name)).toMatchObject({
+        type: "failed", error: expect.stringContaining("launch references its mutable installation"),
+      });
+      await manager.stop();
+      await writeFile(installedEntry, "changed installed bytes");
+      await manager.start();
+      expect(manager.getConnectionState(cfg.name)).toMatchObject({
+        type: "failed", error: expect.stringContaining("launch references its mutable installation"),
+      });
+      expect(spawn).not.toHaveBeenCalled();
+    } finally { await manager.stop(); }
+  });
+
   it("skips stdio launch checks for remote plugin transports", async () => {
     const cacheHome = await home(); const root = join(cacheHome, "installed");
     const snapshotRoot = join(cacheHome, "snapshot");

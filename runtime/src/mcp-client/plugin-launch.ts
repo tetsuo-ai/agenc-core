@@ -26,9 +26,16 @@ function insideRoot(value: string, root: string, platform: NodeJS.Platform): boo
   return !!needle && (candidate === needle || candidate.startsWith(`${needle}/`));
 }
 
+function absoluteLiteral(value: string, cwd: string, platform: NodeJS.Platform): string {
+  const paths = platform === "win32" ? win32 : posix;
+  return paths.isAbsolute(value) ? value : `${cwd}${paths.sep}${value}`;
+}
+
 function realPathWithMissingTail(value: string, platform: NodeJS.Platform): string | undefined {
-  // Realpath the longest existing prefix so a link to the installation also
-  // catches a yet-to-be-created child beneath that link.
+  // Try the literal spelling first: resolving `..` before a preceding symlink
+  // would change which directory the operating system actually traverses.
+  // If the tail is absent, realpath the longest existing literal prefix and
+  // append only the absent components after its symlinks have been resolved.
   const paths = platform === "win32" ? win32 : posix;
   let prefix = value;
   const tail: string[] = [];
@@ -44,7 +51,6 @@ function realPathWithMissingTail(value: string, platform: NodeJS.Platform): stri
 
 function pointsIntoRoot(value: string, root: string, platform: NodeJS.Platform, cwd: string): boolean {
   const realRoot = realPathWithMissingTail(root, platform);
-  const paths = platform === "win32" ? win32 : posix;
   const pathListSeparator = platform === "win32" ? ";" : ":";
   const candidates = [value];
   const equals = value.indexOf("=");
@@ -62,10 +68,12 @@ function pointsIntoRoot(value: string, root: string, platform: NodeJS.Platform, 
       catch { /* The entire literal is still a path candidate. */ }
     }
     for (const target of targets) {
-      const resolved = paths.resolve(cwd, target);
-      if (insideRoot(resolved, root, platform)) return true;
-      const real = realPathWithMissingTail(resolved, platform);
+      const absolute = absoluteLiteral(target, cwd, platform);
+      const real = realPathWithMissingTail(absolute, platform);
       if (realRoot && real && insideRoot(real, realRoot, platform)) return true;
+      // Cross-platform spelling checks (notably Windows fixtures on POSIX)
+      // cannot be realpathed by the host. They remain useful for absent paths.
+      if ((!realRoot || !real) && insideRoot(absolute, root, platform)) return true;
     }
   }
   return false;
@@ -81,8 +89,10 @@ export function assertPluginSnapshotLaunchSafe(
   baseCwd: string = process.cwd(),
 ): void {
   const env = createStdioMCPEnvironment(launch.env, launch.env_vars, parentEnvironment);
-  const paths = platform === "win32" ? win32 : posix;
-  const cwd = paths.resolve(baseCwd, launch.cwd ?? ".");
+  const declaredCwd = launch.cwd ?? ".";
+  const cwd = declaredCwd === "."
+    ? baseCwd
+    : absoluteLiteral(declaredCwd, baseCwd, platform);
   const command = launch.command ?? "";
   // The broker performs the final executable search immediately before spawn.
   // A missing executable is still reported by that broker; keep checking the

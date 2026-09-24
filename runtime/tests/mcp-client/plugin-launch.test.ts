@@ -58,6 +58,22 @@ it("rejects an encoded file URL through a symlink into the installation", async 
     .toThrow(/launch references its mutable installation/);
 });
 
+it("resolves a literal symlink before dot-dot, including an uncreated tail", async () => {
+  const home = await mkdtemp(join(tmpdir(), "agenc-plugin-symlink-parent-")); roots.push(home);
+  const installed = join(home, "sample");
+  const sibling = join(home, "sibling");
+  const aliases = join(home, "aliases");
+  await mkdir(installed); await mkdir(sibling); await mkdir(aliases);
+  await symlink(sibling, join(aliases, "alias"), "dir");
+  await writeFile(join(installed, "server.py"), "print('installed')\n");
+  for (const name of ["server.py", "future.py"]) {
+    const operand = `${aliases}/alias/../sample/${name}`;
+    expect(() => assertPluginSnapshotLaunchSafe("sample", installed,
+      { command: "python3", args: [operand], cwd: home }, {}))
+      .toThrow(/launch references its mutable installation/);
+  }
+});
+
 it("resolves relative argument and environment paths from the launch cwd", async () => {
   const home = await mkdtemp(join(tmpdir(), "agenc-plugin-relative-")); roots.push(home);
   const installed = join(home, "sample");
