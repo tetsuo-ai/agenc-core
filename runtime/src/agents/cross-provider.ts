@@ -493,8 +493,9 @@ export async function resolveChildSelection(
 export async function childModelInfo(
   session: Session,
   selection: ProviderSelection,
+  localOnly = false,
 ): Promise<ModelInfo> {
-  if (selection.provider === currentChildProvider(session).provider) {
+  if (!localOnly && selection.provider === currentChildProvider(session).provider) {
     return selection.model === session.modelInfo.slug
       ? session.modelInfo
       : session.services.modelsManager === undefined

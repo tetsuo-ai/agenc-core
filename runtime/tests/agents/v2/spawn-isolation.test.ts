@@ -452,6 +452,67 @@ describe("spawn_agent isolation", () => {
     fixture.revoke();
   });
 
+  it("resolves inherited-provenance descendant metadata locally before consent", async () => {
+    const fixture = callerFixture();
+    const config = { ...defaultConfig(), model_provider: "openai", model: "gpt-5.3-codex",
+      agents: { cross_provider_enabled: true, allowed_providers: ["openai"] } };
+    const modelsManager = new StaticModelsManager({ config, fallbackProvider: "openai" });
+    const authenticatedDiscovery = vi.spyOn(modelsManager, "getModelInfoForProvider")
+      .mockImplementation(async () => { throw new Error("authenticated metadata discovery before consent"); });
+    const request = vi.fn(async () => {
+      expect(authenticatedDiscovery).not.toHaveBeenCalled();
+      return { kind: "consent_denied" as const, reason: "User denied" };
+    });
+    Object.assign(fixture.live, { metadata: { executionPlan: { crossProvider: true,
+      destination: { provider: "openai", model: "gpt-5.3-codex" } } } });
+    Object.assign(fixture.child, {
+      modelInfo: await modelsManager.getModelInfo("gpt-5.3-codex"),
+      sessionConfiguration: { ...fixture.child.sessionConfiguration,
+        collaborationMode: { model: "gpt-5.3-codex" } },
+      config: { ...fixture.child.config, agents: config.agents },
+      providerService: { current: () => ({ provider: "openai", model: "gpt-5.3-codex" }) },
+      services: { ...fixture.child.services, configStore: { current: () => config },
+        modelsManager, crossProviderConsent: { ownerSessionId: "conv-1", sessionEpoch: "epoch", request } },
+    });
+    const result = await createSpawnAgentTool(fixture.opts).execute({ ...fixture.args,
+      model: "gpt-5.4" });
+    expect(result.content).toContain("consent_denied");
+    expect(request).toHaveBeenCalledOnce();
+    expect(authenticatedDiscovery).not.toHaveBeenCalled();
+    expect(mockDelegate).not.toHaveBeenCalled();
+    fixture.revoke();
+  });
+
+  it.each(["explicit", "inherited"] as const)("carries %s effort in a descendant consent plan", async (kind) => {
+    const fixture = callerFixture();
+    const config = { ...defaultConfig(), model_provider: "openai", model: "gpt-5.4",
+      agents: { cross_provider_enabled: true, allowed_providers: ["openai"] } };
+    const modelsManager = new StaticModelsManager({ config, fallbackProvider: "openai" });
+    Object.assign(fixture.live, { metadata: { executionPlan: { crossProvider: true,
+      destination: { provider: "openai", model: "gpt-5.4" } } } });
+    Object.assign(fixture.child, {
+      modelInfo: await modelsManager.getModelInfo("gpt-5.4"),
+      sessionConfiguration: { ...fixture.child.sessionConfiguration,
+        collaborationMode: { model: "gpt-5.4", reasoningEffort: "high" } },
+      config: { ...fixture.child.config, agents: config.agents },
+      providerService: { current: () => ({ provider: "openai", model: "gpt-5.4" }) },
+      services: { ...fixture.child.services, configStore: { current: () => config }, modelsManager,
+        crossProviderConsent: { ownerSessionId: "conv-1", sessionEpoch: "epoch",
+          request: async (_requester: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+            kind: "granted" as const, grant: { kind: "once" as const, ownerSessionId: "conv-1",
+              sessionEpoch: "epoch", taskId: disclosure.taskId, scopeKey: disclosure.scopeKey,
+              payloadKey: disclosure.payloadKey },
+          }) } },
+    });
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(fixture.opts).execute({ ...fixture.args,
+      ...(kind === "explicit" ? { reasoning_effort: "low" } : {}) });
+    expect(result.isError).not.toBe(true);
+    expect(mockDelegate.mock.calls[0]?.[0].plan?.reasoningEffort)
+      .toBe(kind === "explicit" ? "low" : "high");
+    fixture.revoke();
+  });
+
   it("uses the authenticated child's session and retains the root control namespace", async () => {
     const fixture = callerFixture();
     const ensure = vi.spyOn(fixture.opts, "ensureAgentControl");

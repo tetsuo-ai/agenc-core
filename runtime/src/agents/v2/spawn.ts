@@ -324,6 +324,7 @@ async function validateSpawnModelOverrides(opts: {
 async function resolveSameProviderServiceTier(opts: {
   readonly session: Session;
   readonly model?: string;
+  readonly localModelInfo?: ModelInfo;
   readonly requestedServiceTier?: string;
   readonly roleServiceTier?: string;
 }): Promise<{ readonly serviceTier?: string } | ToolResult> {
@@ -331,8 +332,8 @@ async function resolveSameProviderServiceTier(opts: {
   if (opts.requestedServiceTier === undefined && opts.roleServiceTier === undefined && parentServiceTier === undefined) return {};
   const model = opts.model ?? opts.session.sessionConfiguration.collaborationMode.model ?? opts.session.modelInfo.slug;
   if (!model) return agentValidationError("spawn_agent could not resolve the child model for service tier validation");
-  const modelInfo = model === opts.session.modelInfo.slug
-    ? opts.session.modelInfo : await opts.session.services.modelsManager.getModelInfo(model);
+  const modelInfo = opts.localModelInfo ?? (model === opts.session.modelInfo.slug
+    ? opts.session.modelInfo : await opts.session.services.modelsManager.getModelInfo(model));
   if (opts.requestedServiceTier !== undefined && !modelSupportsServiceTier(modelInfo, opts.requestedServiceTier)) {
     return agentValidationError(
       `Service tier \`${opts.requestedServiceTier}\` is not supported for model \`${model}\`. Supported service tiers: ${formatSupportedServiceTiers(modelInfo)}`,
@@ -713,6 +714,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     const effectiveModel = roleConfiguredModel ?? model;
     const effectiveReasoningEffort = roleConfiguredReasoningEffort ?? reasoningEffort;
     if (!crossProviderRequested) crossProviderRequested = requestsOtherProvider(session, requestedProvider, effectiveModel);
+    const provenancedDescendant = !crossProviderRequested && inheritedConsentPlan?.crossProvider === true;
     if (!crossProviderRequested) emitSpawnBegin();
     const overrideReason = (result: ToolResult): string => {
       try {
@@ -751,7 +753,23 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         ...(requestedServiceTier !== undefined ? { requestedServiceTier } : {}),
         ...(roleConfiguredServiceTier !== undefined ? { roleServiceTier: roleConfiguredServiceTier } : {}) });
     } else {
-      for (const overrides of [
+      if (provenancedDescendant) {
+        try {
+          selection = await resolveChildSelection(session, requestedProvider, effectiveModel);
+          targetModelInfo = await childModelInfo(session, selection, true);
+        } catch (error) {
+          return failSpawn(error instanceof Error ? error.message : String(error));
+        }
+        selectedReasoningEffort = effectiveReasoningEffort ??
+          session.sessionConfiguration.collaborationMode.reasoningEffort;
+        const effortError = validateCrossProviderModelOverrides({ modelInfo: targetModelInfo,
+          ...(selectedReasoningEffort !== undefined ? { reasoningEffort: selectedReasoningEffort } : {}) });
+        if (effortError !== null) {
+          emitSpawnFailureEnd(overrideReason(effortError));
+          return confirmedNoSpawn(effortError);
+        }
+      }
+      if (!provenancedDescendant) for (const overrides of [
         { model, reasoningEffort },
         ...(roleConfiguredModel !== undefined || roleConfiguredReasoningEffort !== undefined
           ? [{ model: effectiveModel, reasoningEffort: effectiveReasoningEffort }] : []),
@@ -766,6 +784,8 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       }
       try {
         serviceTierResult = await resolveSameProviderServiceTier({ session, model: effectiveModel,
+          ...(provenancedDescendant && targetModelInfo !== undefined
+            ? { localModelInfo: targetModelInfo } : {}),
           ...(requestedServiceTier !== undefined ? { requestedServiceTier } : {}),
           ...(roleConfiguredServiceTier !== undefined ? { roleServiceTier: roleConfiguredServiceTier } : {}) });
       } catch (error) { return failSpawn(error instanceof Error ? error.message : String(error)); }
@@ -786,14 +806,6 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     // that closed or was replaced while those checks were pending.
     if (!callerIsCurrent()) {
       return failSpawn("invalid-runtime-identity: calling agent session is no longer live");
-    }
-    if (!crossProviderRequested && inheritedConsentPlan?.crossProvider === true) {
-      try {
-        selection = await resolveChildSelection(session, requestedProvider, effectiveModel);
-        targetModelInfo = await childModelInfo(session, selection);
-      } catch (error) {
-        return failSpawn(error instanceof Error ? error.message : String(error));
-      }
     }
     let thread: AgentThread | undefined;
     let rejectedEffectDisposition: ToolResult["effectDisposition"];

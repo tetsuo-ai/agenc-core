@@ -166,7 +166,8 @@ describe("provider credential authority", () => {
     ]);
     const service = new SessionProviderService({
       initialProvider: createProvider("ollama", { model: "llama3.3" }),
-      environment: { OPENAI_AUTH_MODE: "oauth" },
+      environment: { OPENAI_AUTH_MODE: "oauth", OPENAI_API_KEY: "leftover-byok",
+        OPENAI_BASE_URL: "https://chatgpt.com/backend-api/codex" },
     });
     const prepared = await service.prepareChild(
       { provider: "openai", model: "gpt-6-luna" },
@@ -179,8 +180,16 @@ describe("provider credential authority", () => {
     expect(prepared.binding.factoryOptions.extra?.defaultHeaders).toMatchObject({
       "ChatGPT-Account-ID": "account", originator: "agenc",
     });
+    const descendantService = service.forkForChild(prepared.binding.instance,
+      { provider: "openai", model: "gpt-6-luna" });
+    const descendant = await descendantService.prepareChild(
+      { provider: "openai", model: "gpt-6-luna" },
+      { model: "gpt-6-luna", credentialHome: home, extra: { fetchImpl: wire } },
+    );
+    expect(descendant.binding.factoryOptions.baseURL).toBe("https://chatgpt.com/backend-api/codex");
+    await descendant.binding.instance.dispose?.();
     await prepared.binding.instance.dispose?.();
-    expect(wire).toHaveBeenCalledOnce();
+    expect(wire).toHaveBeenCalledTimes(2);
   });
 
   test("ChatGPT child rejects a configured custom endpoint before sending its bearer", async () => {
@@ -352,6 +361,13 @@ describe("provider credential authority", () => {
     await expect(service.prepareChild({ provider: "grok", model: "grok-4.7" },
       { model: "grok-4.7", credentialHome: home, extra: { fetchImpl: wire } }))
       .rejects.toThrow(/not served by this sign-in/u);
+    const { childTerminalOutcome } = await import("../../src/agents/child-terminal.js");
+    const failure = await service.prepareChild({ provider: "grok", model: "grok-4.7" },
+      { model: "grok-4.7", credentialHome: home, extra: { fetchImpl: wire } })
+      .then(() => undefined, (error: unknown) => error);
+    expect(childTerminalOutcome({ provider: "grok", model: "grok-4.7", error: failure,
+      dispatch: "not_sent" })).toMatchObject({ reason: "model_unavailable", retryable: false,
+      dispatch: "not_sent" });
   });
 
   test("a signed-out sign-in child cannot be prepared again after restart", async () => {

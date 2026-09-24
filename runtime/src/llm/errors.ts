@@ -145,6 +145,14 @@ export class LLMFundsError extends LLMProviderError {
   }
 }
 
+/** A successful sign-in model list did not include the requested child model. */
+export class LLMModelUnavailableError extends LLMProviderError {
+  constructor(providerName: string, model: string) {
+    super(providerName, `Model ${providerName}/${model} is not served by this sign-in`);
+    this.name = "LLMModelUnavailableError";
+  }
+}
+
 /** An authenticated AgenC response bound to this attempt proves no dispatch. */
 export class LLMManagedAdmissionError extends LLMProviderError {
   constructor(readonly reason: "capacity" | "insufficient_credits" | "credits_unavailable" = "capacity") {

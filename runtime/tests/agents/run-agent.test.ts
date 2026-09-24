@@ -23,6 +23,7 @@ import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AsyncQueue } from "../utils/async-queue.js";
 import { AgentControl } from "./control.js";
+import { toListedAgentJson } from "./v2/common.js";
 import { delegate } from "./delegate.js";
 import { authorizeChildExecutionPlan, createChildExecutionPlan } from "./cross-provider.js";
 import type { AgentThread } from "./thread.js";
@@ -2235,7 +2236,16 @@ describe("runAgent", () => {
         } as never,
       },
     });
-    const { live } = await spawnLive(session);
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    control.registerSessionRoot(session.conversationId);
+    const live = await control.spawn({ parentPath: "/root" });
+    let nativeAtInterruption: ReturnType<typeof control.snapshotNativeWorkers> = [];
+    let listedAtInterruption: ReturnType<typeof control.listAgents> = [];
+    live.status.subscribe((status) => {
+      if (status.status !== "interrupted") return;
+      nativeAtInterruption = control.snapshotNativeWorkers(session.conversationId);
+      listedAtInterruption = control.listAgents();
+    });
 
     const { events, result } = await collectRun(
       runAgent({
@@ -2250,6 +2260,24 @@ describe("runAgent", () => {
     expect(provider.chatStream).not.toHaveBeenCalled();
     expect(result.outcome).toBe("interrupted");
     expect(live.status.value.status).toBe("interrupted");
+    expect(live.status.value).toMatchObject({ terminal: {
+      reason: "parent_cancelled", retryable: false, dispatch: "unknown",
+    } });
+    const terminal = live.status.value.status === "interrupted" ? live.status.value.terminal : undefined;
+    expect(terminal).toBeDefined();
+    expect(toListedAgentJson({ agentName: live.agentPath, agentStatus: live.status.value }).terminal)
+      .toEqual(terminal);
+    expect(nativeAtInterruption).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agentId: live.agentId, terminal }),
+    ]));
+    expect(listedAtInterruption.find((agent) => agent.agentName === live.agentPath)?.agentStatus)
+      .toMatchObject({ terminal });
+    if (terminal !== undefined) {
+      control.recordTerminalOutcome(live.agentId, terminal);
+      expect(control.getAgentConfigSnapshot(live.agentId)).toMatchObject({
+        terminalOutcome: { reason: "parent_cancelled" },
+      });
+    }
     expect(events.some((event) => event.kind === "run_interrupted")).toBe(true);
     expect(events.some((event) => event.kind === "run_complete")).toBe(false);
     const receipt = session.mailbox

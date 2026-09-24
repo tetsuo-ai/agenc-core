@@ -27,11 +27,16 @@ function geminiLongQuota(value: unknown): boolean {
   const error = record(item?.error) ?? item;
   const details = error?.details;
   if (!Array.isArray(details)) return false;
-  const quotaText = JSON.stringify(details).toLowerCase();
   // Per-minute quota violations are ordinary throttling. Daily / paid-tier
   // quota exhaustion needs an account change or a new quota window.
-  return /perday|per_day|daily|billing|free.?tier/.test(quotaText) &&
-    !/perminute|per_minute/.test(quotaText);
+  return details.some((detail) => {
+    const violations = record(detail)?.violations;
+    return Array.isArray(violations) && violations.some((violation) => {
+      const quotaText = JSON.stringify(violation).toLowerCase();
+      return /perday|per_day|daily|billing/.test(quotaText) ||
+        (/free.?tier/.test(quotaText) && !/perminute|per_minute/.test(quotaText));
+    });
+  });
 }
 
 export function isProviderFundsFailure(providerName: string, error: unknown): boolean {

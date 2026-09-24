@@ -3,7 +3,7 @@ import type { ProviderFactoryOptions } from "./provider.js";
 import type { ProviderEnvironment } from "./provider-options.js";
 import { createPinnedProviderFetch } from "./credential-redirect-fetch.js";
 import { CHATGPT_BACKEND_BASE_URL, chatGptSubscriptionHeaders } from "./providers/openai/chatgpt-backend.js";
-import { LLMAuthenticationError, LLMFundsError, LLMProviderError } from "./errors.js";
+import { LLMAuthenticationError, LLMFundsError, LLMModelUnavailableError, LLMProviderError } from "./errors.js";
 import { isProviderFundsFailure } from "./funds.js";
 import { refreshOpenAiSubscriptionIfNeeded } from "../utils/openAiOauthCredentials.js";
 import { forceRefreshXaiOauthCredentials } from "../utils/xaiOauthCredentials.js";
@@ -90,7 +90,7 @@ export async function assertSignInChildModelEligible(args: {
     const listed = modelEntries(await response.json());
     const capabilities = listed.get(model);
     if (capabilities === undefined) {
-      throw new Error(`Model ${provider}/${model} is not served by this sign-in`);
+      throw new LLMModelUnavailableError(provider, model);
     }
     return capabilities;
   }

@@ -2,7 +2,8 @@ import { isProviderFundsFailure } from "../llm/funds.js";
 import { getRateLimitResetDelayMs } from "../llm/api/retry.js";
 import { LLMRateLimitError, LLMTimeoutError, LLMAuthenticationError,
   LLMContextWindowExceededError, LLMManagedUsagePendingError,
-  LLMMessageValidationError, LLMManagedAdmissionError, LLMFundsError } from "../llm/errors.js";
+  LLMMessageValidationError, LLMManagedAdmissionError, LLMFundsError,
+  LLMModelUnavailableError } from "../llm/errors.js";
 
 export type ChildTerminalReason =
   | "completed" | "insufficient_funds" | "rate_limited" | "provider_unavailable"
@@ -96,6 +97,8 @@ export function classifyChildFailure(provider: string, error: unknown): {
   }
   const message = (error instanceof Error ? error.message : String(error ?? "")).toLowerCase();
   const status = statusOf(error);
+  if (error instanceof LLMModelUnavailableError)
+    return { reason: "model_unavailable", retryable: false };
   if (error instanceof LLMRateLimitError || status === 429) {
     const retryAfterMs = retryAfterOf(error);
     return { reason: "rate_limited", retryable: true,

@@ -111,7 +111,10 @@ function providerWithFetch(fetchImpl: typeof fetch): GeminiProvider {
 test("a Gemini daily quota HTTP response stops after one wire attempt", async () => {
   const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ error: {
     status: "RESOURCE_EXHAUSTED", message: "Daily quota exhausted",
-    details: [{ violations: [{ quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier" }] }],
+    details: [{ violations: [
+      { quotaId: "GenerateRequestsPerMinutePerProjectPerModel-FreeTier" },
+      { quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier" },
+    ] }],
   } }, { status: 429 }));
   const provider = providerWithFetch(fetchImpl);
   await expect(provider.chat([{ role: "user", content: "hello" }]))

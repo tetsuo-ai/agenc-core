@@ -3532,15 +3532,11 @@ export async function* runAgent(
     return terminalResultForLiveAgent(live);
   };
   const markInterruptedAfterDurability = (reason: string): void => {
+    pendingWorkerTerminal = { status: "interrupted", turnId, reason };
     if (childSession === null) {
-      pendingWorkerTerminal = {
-        status: "interrupted",
-        turnId,
-        reason,
-      };
       return;
     }
-    live.status.markInterrupted(turnId, reason);
+    live.status.markInterrupted(turnId, reason, currentCommittedReceipt?.terminal);
   };
   const relayAgentEvent = (
     event: Omit<Parameters<typeof relayToParentMailbox>[0], "live" | "parent">,
