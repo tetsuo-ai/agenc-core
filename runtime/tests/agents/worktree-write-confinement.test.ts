@@ -106,11 +106,13 @@ describe("a worktree child's Write through the child registry", () => {
     return registry.tools.find((tool) => tool.name === "Write")!;
   }
 
-  it("is denied at the permission check, before any approval is asked", async () => {
+  it("is not a permission denial, which would end a whole Goal run", async () => {
+    // A workflow child's denied approval is WorkflowApprovalFailure: the run
+    // ends policy_denied. The refusal belongs to execution, as a tool error.
     const seen: Record<string, unknown>[] = [];
     const write = childRegistry(seen);
     const decision = await write.checkPermissions!({ file_path: join(checkout, "src/slug.js"), content: "x" }, {} as never);
-    expect(decision).toMatchObject({ behavior: "deny", decisionReason: { type: "other", reason: "worktree_confinement" } });
+    expect(decision.behavior).not.toBe("deny");
   });
 
   it("is refused at execution and never reaches the tool", async () => {

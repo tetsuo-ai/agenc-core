@@ -11,9 +11,12 @@
  * auto-approved under acceptEdits, and landed in the user's files (Goal E2E
  * run wf-97c581d7, 2026-09-25, whose worktree came from an empty base).
  *
- * This is the refusal both places a child's call goes through apply: the
- * permission check (so no approval card is shown and bypass cannot skip it,
- * a tool's own deny is bypass-immune) and the execution preparation.
+ * The refusal is applied when a child's call is prepared for execution, in
+ * every permission mode, and reaches the model as a tool error it can
+ * recover from by writing inside its worktree. It is not a deny at the
+ * permission check: a workflow child's denied approval ends the whole Goal
+ * run as policy_denied (WorkflowApprovalFailure), and a child that had done
+ * its work in the worktree lost the run over one extra write.
  */
 
 import { existsSync, realpathSync } from "node:fs";
@@ -36,10 +39,6 @@ const PATH_WRITE_TOOLS: Readonly<Record<string, readonly string[]>> = {
 };
 const APPLY_PATCH_TOOL = "apply_patch";
 
-/** Whether a tool writes files at paths it is given, which a worktree child may only do inside its worktree. */
-export function isWorktreeConfinedWriteTool(toolName: string): boolean {
-  return PATH_WRITE_TOOLS[toolName] !== undefined || toolName === APPLY_PATCH_TOOL;
-}
 
 function isInside(path: string, root: string): boolean {
   const rel = relative(root, path);

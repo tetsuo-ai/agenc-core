@@ -70,7 +70,7 @@ import {
   READ_ONLY_DELEGATION_PROMPT,
   type ReadOnlyDelegationConstraint,
 } from "./readonly-delegation.js";
-import { isWorktreeConfinedWriteTool, worktreeWriteRefusal } from "./worktree-write-confinement.js";
+import { worktreeWriteRefusal } from "./worktree-write-confinement.js";
 import {
   attachReadOnlyInspectionInvocation,
   inspectReadOnlyCommand,
@@ -2843,8 +2843,7 @@ function wrapToolForChild(
   const executionOpts = { ...opts, ...(policy !== undefined ? { childToolPolicy: policy } : {}) };
   const wrapped = inheritBuiltinToolProvenance(source, {
     ...source,
-    ...(policy !== undefined || (source.checkPermissions !== undefined &&
-      (CHILD_FILE_CWD_TOOLS.has(source.name) || (opts.worktree !== undefined && isWorktreeConfinedWriteTool(source.name)))) ? {
+    ...(policy !== undefined || (source.checkPermissions !== undefined && CHILD_FILE_CWD_TOOLS.has(source.name)) ? {
       async checkPermissions(input, context) {
         if (input === null || typeof input !== "object" || Array.isArray(input)) {
           return { behavior: "deny" as const, message: "Child tool input must be an object" };
@@ -2867,13 +2866,6 @@ function wrapToolForChild(
               opts.worktree?.path ?? opts.getSession?.()?.sessionConfiguration.cwd,
             )
           : currentInput;
-        // A worktree child writes inside its worktree only. A tool's own deny
-        // survives bypass, and no approval is asked for a write that cannot run.
-        const outsideWorktree = worktreeWriteRefusal(source.name, reviewedInput, opts.worktree?.path);
-        if (outsideWorktree !== undefined) {
-          return { behavior: "deny" as const, message: outsideWorktree,
-            decisionReason: { type: "other" as const, reason: "worktree_confinement" } };
-        }
         const result = await source.checkPermissions?.(reviewedInput, context) ?? {
           behavior: "passthrough" as const, updatedInput: reviewedInput,
         };
@@ -3023,6 +3015,10 @@ async function prepareChildToolCall(
       return { result: { content: safeStringify({ error: refusal }), isError: true, metadata: { childPolicyDenied: true } } };
     }
   }
+  // A worktree child writes inside its worktree only. Refused here, as a tool
+  // error the model reads and recovers from: a deny at the permission check
+  // would end a whole Goal run (a workflow child's denied approval is
+  // WorkflowApprovalFailure, policy_denied).
   const outsideWorktree = worktreeWriteRefusal(tool.name, policyResult.args, opts.worktree?.path);
   if (outsideWorktree !== undefined) {
     return { result: { content: safeStringify({ error: outsideWorktree }), isError: true, metadata: { childPolicyDenied: true } } };
