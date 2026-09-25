@@ -53,6 +53,66 @@ function withVolumes(
   }
 }
 
+const SENSITIVE_HOME: readonly (readonly [string, PathCaseSemantics])[] = [
+  ["/home/u", "sensitive"],
+  ["/home/u/proj", "insensitive"],
+];
+const INSENSITIVE_HOME: readonly (readonly [string, PathCaseSemantics])[] = [
+  ["/home/u", "insensitive"],
+  ["/home/u/proj", "insensitive"],
+];
+const SENSITIVE_LEAF: readonly (readonly [string, PathCaseSemantics])[] = [
+  ["/home/u", "insensitive"],
+  ["/home/u/proj", "insensitive"],
+  ["/home/u/proj/private", "sensitive"],
+];
+const PRO_STAR = {
+  rule: "/home/u/Pro*/a.txt",
+  candidate: "/home/u/proj/a.txt",
+} as const;
+const PRIVATE_GLOB = {
+  rule: "/home/u/*/Private/*.txt",
+  candidate: "/home/u/proj/PRIVATE/a.txt",
+} as const;
+
+function foldCase(
+  label: string,
+  volumes: readonly (readonly [string, PathCaseSemantics])[],
+  pattern: { readonly rule: string; readonly candidate: string },
+  tail: "narrow" | "wide",
+  matches: boolean,
+) {
+  return {
+    label,
+    volumes,
+    rule: pattern.rule,
+    candidate: pattern.candidate,
+    tail,
+    matches,
+  };
+}
+
+function writePermission(
+  behavior: "allow" | "deny",
+  rule: string,
+  candidate: string,
+) {
+  const context = applyPermissionUpdate(createEmptyToolPermissionContext(), {
+    type: "addRules",
+    destination: "session",
+    behavior,
+    rules: [{ toolName: "Write", ruleContent: rule }],
+  });
+  return checkToolPathPermission({
+    toolName: "Write",
+    input: { file_path: candidate },
+    path: candidate,
+    cwd: "/home/u",
+    context,
+    operationType: "write",
+  });
+}
+
 describe("pathForComparison inherits only the probed volume", () => {
   test("a new entry under a sensitive mount does not inherit the parent", () => {
     const volumes = new Map<string, PathCaseSemantics>([
@@ -217,118 +277,81 @@ describe("pathForComparison inherits only the probed volume", () => {
   });
 
   test.each([
-    {
-      label: "allow skips a sensitive directory that holds the first wildcard",
-      volumes: [
-        ["/home/u", "sensitive"],
-        ["/home/u/proj", "insensitive"],
-      ] as const,
-      rule: "/home/u/Pro*/a.txt",
-      candidate: "/home/u/proj/a.txt",
-      tail: "narrow" as const,
-      matches: false,
-    },
-    {
-      label: "allow folds the first wildcard when that directory is insensitive",
-      volumes: [
-        ["/home/u", "insensitive"],
-        ["/home/u/proj", "insensitive"],
-      ] as const,
-      rule: "/home/u/Pro*/a.txt",
-      candidate: "/home/u/proj/a.txt",
-      tail: "narrow" as const,
-      matches: true,
-    },
-    {
-      label: "deny still folds when a later mount is insensitive",
-      volumes: [
-        ["/home/u", "sensitive"],
-        ["/home/u/proj", "insensitive"],
-      ] as const,
-      rule: "/home/u/Pro*/a.txt",
-      candidate: "/home/u/proj/a.txt",
-      tail: "wide" as const,
-      matches: true,
-    },
-    {
-      label: "allow does not fold a sensitive leaf under an insensitive folder",
-      volumes: [
-        ["/home/u", "insensitive"],
-        ["/home/u/proj", "insensitive"],
-        ["/home/u/proj/private", "sensitive"],
-      ] as const,
-      rule: "/home/u/*/Private/*.txt",
-      candidate: "/home/u/proj/PRIVATE/a.txt",
-      tail: "narrow" as const,
-      matches: false,
-    },
-    {
-      label: "deny folds when any directory from the wildcard down is insensitive",
-      volumes: [
-        ["/home/u", "insensitive"],
-        ["/home/u/proj", "insensitive"],
-        ["/home/u/proj/private", "sensitive"],
-      ] as const,
-      rule: "/home/u/*/Private/*.txt",
-      candidate: "/home/u/proj/PRIVATE/a.txt",
-      tail: "wide" as const,
-      matches: true,
-    },
+    foldCase(
+      "allow skips a sensitive directory that holds the first wildcard",
+      SENSITIVE_HOME,
+      PRO_STAR,
+      "narrow",
+      false,
+    ),
+    foldCase(
+      "allow folds the first wildcard when that directory is insensitive",
+      INSENSITIVE_HOME,
+      PRO_STAR,
+      "narrow",
+      true,
+    ),
+    foldCase(
+      "deny still folds when a later mount is insensitive",
+      SENSITIVE_HOME,
+      PRO_STAR,
+      "wide",
+      true,
+    ),
+    foldCase(
+      "allow does not fold a sensitive leaf under an insensitive folder",
+      SENSITIVE_LEAF,
+      PRIVATE_GLOB,
+      "narrow",
+      false,
+    ),
+    foldCase(
+      "deny folds when any directory from the wildcard down is insensitive",
+      SENSITIVE_LEAF,
+      PRIVATE_GLOB,
+      "wide",
+      true,
+    ),
   ])("$label", ({ volumes, rule, candidate, tail, matches }) => {
     withVolumes(new Map<string, PathCaseSemantics>(volumes), () => {
       expect(matchPathRuleContent(rule, candidate, undefined, tail)).toBe(matches);
       if (tail !== "wide") return;
-      const seeded = applyPermissionUpdate(createEmptyToolPermissionContext(), {
-        type: "addRules",
-        destination: "session",
-        behavior: "deny",
-        rules: [{ toolName: "Write", ruleContent: rule }],
-      });
-      const result = checkToolPathPermission({
-        toolName: "Write",
-        input: { file_path: candidate },
-        path: candidate,
-        cwd: "/home/u",
-        context: seeded,
-        operationType: "write",
-      });
-      expect(result.behavior).toBe("deny");
+      expect(writePermission("deny", rule, candidate).behavior).toBe("deny");
     });
   });
 
   test("a read-only none glob uses the wide fold", () => {
-    withVolumes(
-      new Map<string, PathCaseSemantics>([
-        ["/home/u", "insensitive"],
-        ["/home/u/proj", "insensitive"],
-        ["/home/u/proj/private", "sensitive"],
-      ]),
-      () => {
-        const session = {
-          sessionConfiguration: { cwd: "/home/u" },
-          permissionModeRegistry: { current: () => createEmptyToolPermissionContext() },
-          services: {
-            sandboxExecutionBroker: {
-              cwd: "/home/u",
-              sessionTempRoot: "/tmp/agenc-readonly",
-              executionAuthority: () => ({
-                permissionProfile: {
-                  fileSystem: {
-                    entries: [
-                      {
-                        path: { kind: "glob", pattern: "/home/u/*/Private/*.txt" },
-                        access: "none",
-                      },
-                    ],
-                  },
+    withVolumes(new Map<string, PathCaseSemantics>(SENSITIVE_LEAF), () => {
+      const session = {
+        sessionConfiguration: { cwd: "/home/u" },
+        permissionModeRegistry: { current: () => createEmptyToolPermissionContext() },
+        services: {
+          sandboxExecutionBroker: {
+            cwd: "/home/u",
+            sessionTempRoot: "/tmp/agenc-readonly",
+            executionAuthority: () => ({
+              permissionProfile: {
+                fileSystem: {
+                  kind: "restricted",
+                  entries: [
+                    { path: { kind: "path", path: "/home/u" }, access: "read" },
+                    { path: { kind: "glob", pattern: PRIVATE_GLOB.rule }, access: "none" },
+                  ],
                 },
-              }),
-            },
+              },
+            }),
           },
-        } as Session;
-        expect(readOnlyDelegationPathAllowed(session, "/home/u/proj/PRIVATE/a.txt")).toBe(false);
-      },
-    );
+        },
+      } as Session;
+      expect(readOnlyDelegationPathAllowed(session, PRIVATE_GLOB.candidate)).toBe(false);
+      expect(readOnlyDelegationPathAllowed(session, "/home/u/proj/notes.txt")).toBe(true);
+    });
+  });
+
+  test("an allow rule does not auto-allow a recased path across a sensitive directory", () => {
+    withVolumes(new Map<string, PathCaseSemantics>(SENSITIVE_HOME), () => {
+      expect(writePermission("allow", PRO_STAR.rule, PRO_STAR.candidate).behavior).toBe("ask");
+    });
   });
 
   test("deny still matches a recased path under a not-yet-existing directory", async () => {
