@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { access, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -179,9 +179,11 @@ describe("plugin cache lock leases", () => {
 
     try {
       await waitForChildReady(child);
+      await waitForPath(join(lockDir, "owner.child-owner"));
       await expect(acquirePluginCacheLock(cacheRoot, {
         createOwnerToken: () => "parent-blocked",
         acquireTimeoutMs: 0,
+        nowMs: () => 0,
         isProcessAlive: (pid) => {
           try {
             process.kill(pid, 0);
@@ -483,6 +485,19 @@ function waitForChildReady(child: ReturnType<typeof spawn>): Promise<void> {
       resolve();
     });
   });
+}
+
+async function waitForPath(path: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    try {
+      await stat(path);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || Date.now() >= deadline) throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 function waitForChildExit(child: ReturnType<typeof spawn>): Promise<void> {
