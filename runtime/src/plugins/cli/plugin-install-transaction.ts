@@ -408,19 +408,24 @@ async function recoverParsedRecord(
   if (await installLeaseIsLive(pluginInstallLeasePath(recordPath))) {
     return { recovered: false };
   }
-  const confined = await confineRecordPaths(installRoot, parsed);
-  if (confined !== undefined) return { recovered: false, issue: confined };
-  const unrestored = unrestoredConfigIssue(parsed, options.reportUnrestoredConfig === true);
-  const result = await recoverRecord(
-    parsed,
-    recordPath,
-    options.reportUnrestoredConfig === true ? undefined : options.restorePluginConfig,
-    options.hooks,
-  );
-  if (result.issue !== undefined) return { recovered: false, issue: result.issue };
-  return unrestored === undefined
-    ? { recovered: true }
-    : { recovered: true, issue: unrestored };
+  try {
+    const confined = await confineRecordPaths(installRoot, parsed);
+    if (confined !== undefined) return { recovered: false, issue: confined };
+    const unrestored = unrestoredConfigIssue(parsed, options.reportUnrestoredConfig === true);
+    const result = await recoverRecord(
+      parsed,
+      recordPath,
+      options.reportUnrestoredConfig === true ? undefined : options.restorePluginConfig,
+      options.hooks,
+    );
+    if (result.issue !== undefined) return { recovered: false, issue: result.issue };
+    return unrestored === undefined
+      ? { recovered: true }
+      : { recovered: true, issue: unrestored };
+  } finally {
+    await removeInstallLease(pluginInstallLeasePath(recordPath));
+    await removeEmptyOpsDirectory(dirname(recordPath));
+  }
 }
 
 function unrestoredConfigIssue(
@@ -432,7 +437,7 @@ function unrestoredConfigIssue(
     operationId: record.operationId,
     pluginId: record.pluginId,
     destination: record.destination,
-    message: "plugin config was not restored because the operation record is outside the user plugin storage root",
+    message: "plugin config not restored",
     preservedPaths: [record.destination],
   };
 }
@@ -1112,11 +1117,14 @@ function preservedRecordPaths(
 
 async function removeOperationRecord(recordPath: string): Promise<void> {
   await rm(recordPath, { force: true });
-  const parent = dirname(recordPath);
+  await removeEmptyOpsDirectory(dirname(recordPath));
+}
+
+async function removeEmptyOpsDirectory(opsDir: string): Promise<void> {
   try {
-    const remaining = await readdir(parent);
-    if (remaining.length === 0 && basename(parent) === PLUGIN_INSTALL_OPS_DIR) {
-      await rm(parent, { recursive: true, force: true });
+    const remaining = await readdir(opsDir);
+    if (remaining.length === 0 && basename(opsDir) === PLUGIN_INSTALL_OPS_DIR) {
+      await rm(opsDir, { recursive: true, force: true });
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
