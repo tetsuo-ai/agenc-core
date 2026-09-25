@@ -41,9 +41,10 @@ export interface GrokProviderConfig
    */
   parallelToolCalls?: boolean;
   /**
-   * Opt in to Responses `previous_response_id` continuation on the streaming
-   * path (`AGENC_XAI_INCREMENTAL=1` / `providers.grok.incremental_continuation`).
-   * Off by default: follow-up requests then re-upload the full history.
+   * Responses `previous_response_id` continuation on the streaming path. The
+   * request builder turns it on for Grok unless
+   * `providers.grok.incremental_continuation` (or `AGENC_XAI_INCREMENTAL`) is
+   * false; without it, follow-up requests re-upload the full history.
    */
   incrementalContinuation?: boolean;
   /** Vision-capable model to auto-switch to when images are present (default: 'grok-2-vision-1212') */
