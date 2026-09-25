@@ -410,9 +410,9 @@ function createResumeFixture(
 }
 
 /** A daemon agent manager whose runner can restore, with its session manager and spies. */
-function restoringAgentManager() {
+function restoringAgentManager(resumedSessionId = "session_resumed") {
   const sessions = new AgenCDaemonSessionManager({
-    createSessionId: sequence(["session_resumed"]),
+    createSessionId: sequence([resumedSessionId]),
     now: sequence(["2026-08-19T12:00:01.000Z"]),
   });
   const startAgent = vi.fn(async () => ({
@@ -3580,21 +3580,8 @@ describe("AgenC background agent lifecycle", () => {
     const fixture = createResumeFixture("conv-interactive1", {
       objective: "Reply with the single word: ok",
     });
-    const sessions = new AgenCDaemonSessionManager({
-      createSessionId: sequence(["session_interactive_resumed"]),
-      now: sequence(["2026-08-19T12:00:01.000Z"]),
-    });
-    const startAgent = vi.fn(async () => ({
-      agentId: "unexpected_fresh_agent",
-      startedAt: "2026-08-19T12:00:00.500Z",
-      status: "running" as const,
-    }));
-    const restoreAgent = vi.fn(async () => true);
-    const agents = new AgenCDaemonAgentManager({
-      now: sequence(["2026-08-19T12:00:00.000Z"]),
-      runner: { startAgent, restoreAgent },
-      sessionManager: sessions,
-    });
+    const { startAgent, restoreAgent, agents } =
+      restoringAgentManager("session_interactive_resumed");
     await agents.restoreAgent({
       agentId: "conv-interactive1",
       // The label a deferred-initial-turn client registers.
