@@ -871,20 +871,18 @@ describe("plugin install transaction", () => {
     await expect(access(recordPath)).rejects.toThrow();
   });
 
-  it("sweeps a dead claim file and removes the emptied ops directory", async () => {
+  it.each([
+    ["claim", (operationId: string, pid: number) =>
+      `${operationId}.json.lease.claim-${pid}-01234567-89ab-4cde-8fab-0123456789ab`],
+    ["partial", (operationId: string, pid: number) =>
+      `${operationId}.json.lease.tmp-${pid}-01234567-89ab-4cde-8fab-0123456789ab.partial-01234567-89ab-4cde-8fab-0123456789ab`],
+  ])("sweeps a dead %s file and removes the emptied ops directory", async (label, artifactName) => {
     const world = await createWorld();
-    const operationId = "00000000-0000-4000-8000-sweep0000001";
-    await writeDeadRecord(world, operationId);
-    const child = spawn(process.execPath, ["-e", "process.exit(0)"]);
-    await new Promise<void>((resolve, reject) => {
-      child.once("exit", () => resolve());
-      child.once("error", reject);
-    });
+    const operationId = `00000000-0000-4000-8000-sweep${label}0001`;
+    const recordPath = await writeDeadRecord(world, operationId);
+    const pid = (JSON.parse(await readFile(`${recordPath}.lease`, "utf8")) as { pid: number }).pid;
     const ops = join(world.pluginStorageRoot, ".plugin-install-ops");
-    await writeFile(
-      join(ops, `${operationId}.json.lease.claim-${child.pid}-01234567-89ab-4cde-8fab-0123456789ab`),
-      "stale\n",
-    );
+    await writeFile(join(ops, artifactName(operationId, pid)), "stale\n");
     const loaded = await loadPlugins({
       pluginStorageRoot: world.pluginStorageRoot,
       workspaceRoot: world.workspaceRoot,
@@ -894,30 +892,32 @@ describe("plugin install transaction", () => {
     await expect(access(ops)).rejects.toThrow();
   });
 
-  it("sweeps a dead partial lease file and removes the emptied ops directory", async () => {
+  it("leaves near-miss lease names in the ops directory", async () => {
     const world = await createWorld();
-    const operationId = "00000000-0000-4000-8000-sweep0000002";
-    await writeDeadRecord(world, operationId);
-    const child = spawn(process.execPath, ["-e", "process.exit(0)"]);
-    await new Promise<void>((resolve, reject) => {
-      child.once("exit", () => resolve());
-      child.once("error", reject);
-    });
+    const operationId = "00000000-0000-4000-8000-nearmiss0001";
+    const recordPath = await writeDeadRecord(world, operationId);
+    const pid = (JSON.parse(await readFile(`${recordPath}.lease`, "utf8")) as { pid: number }).pid;
+    const uuid = "01234567-89ab-4cde-8fab-0123456789ab";
     const ops = join(world.pluginStorageRoot, ".plugin-install-ops");
-    await writeFile(
-      join(
-        ops,
-        `${operationId}.json.lease.tmp-${child.pid}-01234567-89ab-4cde-8fab-0123456789ab.partial-01234567-89ab-4cde-8fab-0123456789ab`,
-      ),
-      "partial\n",
-    );
+    const kept = [
+      `${operationId}.json.lease.claim-${pid}-not-a-uuid`,
+      `${operationId}.json.lease.claim-${pid}-${uuid}.partial-${uuid}`,
+      `${operationId}.json.lease.tmp-${pid}-01234567-89AB-4CDE-8FAB-0123456789AB`,
+      "00000000-0000-4000-8000-baremiss00001.json.lease",
+      "kept-record.json",
+    ];
+    await Promise.all(kept.map((name) => writeFile(join(ops, name), "keep\n")));
     const loaded = await loadPlugins({
       pluginStorageRoot: world.pluginStorageRoot,
       workspaceRoot: world.workspaceRoot,
       config: { plugins: { enabled: true } },
     });
-    expect(loaded.errors.filter((issue) => issue.type === "install-recovery")).toEqual([]);
-    await expect(access(ops)).rejects.toThrow();
+    expect(loaded.errors.filter((issue) => issue.type === "install-recovery").map((issue) => issue.message))
+      .toEqual([expect.stringContaining("kept-record.json")]);
+    await expect(access(recordPath)).rejects.toThrow();
+    for (const name of kept) {
+      expect(await readFile(join(ops, name), "utf8")).toBe("keep\n");
+    }
   });
 
   it("does not follow a symlinked lease when recovering a dead record", async () => {
