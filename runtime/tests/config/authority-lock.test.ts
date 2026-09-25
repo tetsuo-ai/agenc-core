@@ -1,5 +1,6 @@
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -15,6 +16,7 @@ import {
   runWithConfigAuthorityLockSync,
   runWithConfigAuthorityLocks,
 } from "../../src/config/authority-lock.js";
+import { holdLockElsewhere } from "../helpers/foreign-lock-holder.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -130,5 +132,76 @@ describe("configuration authority lock outcomes", () => {
     expect(primary.postOperationReleaseErrors).toEqual([
       expect.objectContaining({ code: "ENOTDIR" }),
     ]);
+  });
+});
+
+describe("synchronous configuration authority acquisition", () => {
+  test("waits for a holder outside this thread instead of failing with ELOCKED", async () => {
+    const target = join(temporaryDirectory(), "state.json");
+    const lockPath = `${target}.agenc-config-authority.lock`;
+    const holder = await holdLockElsewhere(lockPath, 300);
+    expect(existsSync(lockPath)).toBe(true);
+
+    const outcome = runWithConfigAuthorityLockSync(target, () => 7);
+
+    expect(outcome).toMatchObject({ status: "succeeded", value: 7 });
+    await holder.released;
+  });
+
+  test("gives up with the ELOCKED error once the wait budget runs out", () => {
+    const target = join(temporaryDirectory(), "state.json");
+    mkdirSync(`${target}.agenc-config-authority.lock`);
+    let operationRan = false;
+    const startedAt = Date.now();
+
+    expect(() =>
+      runWithConfigAuthorityLockSync(
+        target,
+        () => {
+          operationRan = true;
+        },
+        { waitMs: 150 },
+      ),
+    ).toThrow(expect.objectContaining({ code: "ELOCKED" }));
+    const waited = Date.now() - startedAt;
+    expect(waited).toBeGreaterThanOrEqual(140);
+    expect(waited).toBeLessThan(1_500);
+    expect(operationRan).toBe(false);
+  });
+
+  test("fails at once when this process holds the lock asynchronously", async () => {
+    const target = join(temporaryDirectory(), "state.json");
+    const release = await acquireConfigAuthorityLocks([target]);
+    try {
+      const startedAt = Date.now();
+      expect(() => runWithConfigAuthorityLockSync(target, () => 1)).toThrow(
+        expect.objectContaining({ code: "ELOCKED" }),
+      );
+      expect(Date.now() - startedAt).toBeLessThan(500);
+    } finally {
+      await release();
+    }
+    expect(runWithConfigAuthorityLockSync(target, () => 2)).toMatchObject({
+      status: "succeeded",
+      value: 2,
+    });
+  });
+
+  test("fails a nested acquisition at once instead of waiting on itself", () => {
+    const target = join(temporaryDirectory(), "state.json");
+    const startedAt = Date.now();
+
+    const outer = runWithConfigAuthorityLockSync(target, () =>
+      runWithConfigAuthorityLockSync(target, () => "inner"),
+    );
+
+    expect(outer.status).toBe("failed");
+    if (outer.status !== "failed") throw new Error("expected failure outcome");
+    expect(outer.error).toMatchObject({ code: "ELOCKED" });
+    expect(Date.now() - startedAt).toBeLessThan(500);
+    expect(runWithConfigAuthorityLockSync(target, () => 3)).toMatchObject({
+      status: "succeeded",
+      value: 3,
+    });
   });
 });

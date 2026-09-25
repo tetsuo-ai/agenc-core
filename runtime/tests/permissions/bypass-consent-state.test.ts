@@ -1,4 +1,5 @@
 import {
+  existsSync,
   lstatSync,
   mkdtempSync,
   mkdirSync,
@@ -22,6 +23,7 @@ import {
   recordBypassPermissionsConsent,
 } from "../../src/permissions/bypass-consent-state.js";
 import type { ToolPermissionContext } from "../../src/permissions/types.js";
+import { holdLockElsewhere } from "../helpers/foreign-lock-holder.js";
 
 const roots: string[] = [];
 
@@ -132,6 +134,30 @@ describe("bypass permission consent state", () => {
         },
       },
     });
+    repository.close();
+  });
+
+  // Session restore and cold resume reread consent this way
+  // (applyRestoredRuntimeSettings). Another process holding the state lock
+  // for its own read or write used to fail the resume with ELOCKED.
+  it("rereads consent while another process briefly holds the state lock", async () => {
+    const root = temporaryRoot();
+    const workspace = join(root, "workspace");
+    const home = resolveHomeContext({
+      AGENC_HOME: join(root, "home"),
+      HOME: root,
+    });
+    mkdirSync(workspace);
+    const repository = new RuntimeStateRepository(home, { storage: "disk" });
+    const canonicalCwd = recordBypassPermissionsConsent(repository, workspace);
+    const lockPath = `${home.statePath}.agenc-config-authority.lock`;
+    const holder = await holdLockElsewhere(lockPath, 300);
+    expect(existsSync(lockPath)).toBe(true);
+
+    expect(
+      loadBypassPermissionsConsent(repository, workspace, { reload: true }),
+    ).toEqual([canonicalCwd]);
+    await holder.released;
     repository.close();
   });
 
