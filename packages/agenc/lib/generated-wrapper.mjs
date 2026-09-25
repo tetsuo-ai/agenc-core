@@ -90,18 +90,13 @@ export function renderGeneratedWrapperContent({
   validateValues(kind, values);
   const metadata = metadataFor(values);
   if (kind === "cmd") {
-    const batch = (value) => value.replaceAll("%", "%%");
-    const nodeDir = win32.dirname(nodeBin);
-    return [
-      "@echo off",
-      "setlocal DisableDelayedExpansion",
-      `rem ${CMD_WRAPPER_SIGNATURE} - rewritten on every install/upgrade.`,
-      `rem ${WRAPPER_METADATA_PREFIX} ${metadata}`,
-      `if not defined AGENC_HOME set "AGENC_HOME=${batch(agencHome)}"`,
-      `set "PATH=${batch(nodeDir)};%PATH%"`,
-      `"${batch(nodeBin)}" "${batch(runtimeBin)}" %*`,
-      "",
-    ].join("\r\n");
+    return renderCmdWrapper({
+      nodeBin,
+      runtimeBin,
+      agencHome,
+      metadata,
+      recordInstallPrefix: true,
+    });
   }
   const quote = (value) => `'${value.replaceAll("'", `'"'"'`)}'`;
   const nodeDir = posix.dirname(nodeBin);
@@ -140,6 +135,43 @@ export function renderGeneratedWrapperContent({
 // before standalone installs carried a private Node runtime. Keep the renderer
 // private: it exists only so ownership can be proven by exact full-file
 // reconstruction, never by trusting the historical marker or metadata alone.
+function renderCmdWrapper({
+  nodeBin,
+  runtimeBin,
+  agencHome,
+  metadata,
+  recordInstallPrefix,
+}) {
+  const batch = (value) => value.replaceAll("%", "%%");
+  const nodeDir = win32.dirname(nodeBin);
+  const lines = [
+    "@echo off",
+    "setlocal DisableDelayedExpansion",
+    `rem ${CMD_WRAPPER_SIGNATURE} - rewritten on every install/upgrade.`,
+    `rem ${WRAPPER_METADATA_PREFIX} ${metadata}`,
+    `if not defined AGENC_HOME set "AGENC_HOME=${batch(agencHome)}"`,
+  ];
+  if (recordInstallPrefix) {
+    lines.push(
+      'if not defined AGENC_INSTALL_PREFIX for %%I in ("%~dp0..") do set "AGENC_INSTALL_PREFIX=%%~fI"',
+    );
+  }
+  lines.push(
+    `set "PATH=${batch(nodeDir)};%PATH%"`,
+    `"${batch(nodeBin)}" "${batch(runtimeBin)}" %*`,
+    "",
+  );
+  return lines.join("\r\n");
+}
+
+function renderHistoricalPrivateNodeCmdWrapper(values) {
+  return renderCmdWrapper({
+    ...values,
+    metadata: metadataFor(values),
+    recordInstallPrefix: false,
+  });
+}
+
 function renderPrePrivateNodeWrapperContent({
   kind,
   nodeBin,
@@ -235,6 +267,11 @@ function parseModern(path, content) {
   try {
     const wrapper = { kind, path, ...values };
     if (renderGeneratedWrapperContent(wrapper) === content) return wrapper;
+    if (
+      kind === "cmd" &&
+      values.nodeLibraryPath === undefined &&
+      renderHistoricalPrivateNodeCmdWrapper(values) === content
+    ) return wrapper;
     if (
       values.nodeLibraryPath === undefined &&
       renderPrePrivateNodeWrapperContent(wrapper) === content

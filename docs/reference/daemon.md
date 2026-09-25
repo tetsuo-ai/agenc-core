@@ -129,7 +129,10 @@ Packaging units under `packaging/` (systemd, launchd, Windows service) run
 places the CLI; `agenc daemon install-service` (or the XML the installer
 already wrote) is the generated service definition. WinSW install/start/stop
 is a separate elevated step and must use that generated file, not the
-example template unchanged. The service account is the installing user so
+example template unchanged. The definition is pinned to WinSW 2.12.0
+(`<domain>` and `<user>`, no password). Place `agenc-daemon.exe` from that
+release beside the XML and run `agenc-daemon.exe install /p`, then
+`start`, `stop`, or `restart`. The service account is the installing user so
 the daemon shares that user's `AGENC_HOME`.
 
 ## Files under `AGENC_HOME` (default `~/.agenc`)

@@ -6,6 +6,9 @@ const AGENC_DAEMON_WINSW_SERVICE_ID = "agenc-daemon";
 const AGENC_DAEMON_WINSW_SERVICE_NAME = "AgenC Daemon";
 const WINDOWS_SYSTEM32_CMD_EXE = "C:\\Windows\\System32\\cmd.exe";
 
+/** Packaging does not download WinSW. Service XML is pinned to this release. */
+export const AGENC_DAEMON_WINSW_VERSION = "2.12.0";
+
 const LOCAL_SYSTEM_ACCOUNTS = new Set([
   "localsystem",
   "system",
@@ -91,6 +94,26 @@ function assertWindowsServiceAccount(username: string): void {
   }
 }
 
+function splitWinSW212ServiceAccount(username: string): {
+  readonly domain: string;
+  readonly user: string;
+} {
+  const account = normalizeAccountUsername(username);
+  assertWindowsServiceAccount(account);
+  const separator = account.lastIndexOf("\\");
+  const domain = separator === -1 ? "" : account.slice(0, separator);
+  const user = separator === -1 ? account : account.slice(separator + 1);
+  if (domain === "" || user === "") {
+    throw new Error(
+      "WinSW 2.12 service account must be DOMAIN\\user so the service is not LocalSystem",
+    );
+  }
+  if (LOCAL_SYSTEM_ACCOUNTS.has(user.toLowerCase())) {
+    throw new Error("service account must be the installing user, not LocalSystem");
+  }
+  return { domain, user };
+}
+
 function escapeCmdPercent(value: string): string {
   return value.replaceAll("%", "%%");
 }
@@ -140,25 +163,18 @@ function resolveWindowsAgencLauncher(
   env: Readonly<Record<string, string | undefined>> = {},
 ): string {
   const prefix = env.AGENC_INSTALL_PREFIX;
-  if (prefix !== undefined && prefix !== "") {
-    const launcher = joinServicePath(prefix, "bin", "agenc.cmd");
-    assertLauncher(launcher);
-    return launcher;
+  if (prefix === undefined || prefix === "") {
+    throw new Error(
+      "Cannot resolve agenc.cmd; the agenc.cmd shim must set AGENC_INSTALL_PREFIX",
+    );
   }
-  const localAppData = env.LOCALAPPDATA;
-  if (localAppData !== undefined && localAppData !== "") {
-    const launcher = joinServicePath(localAppData, "agenc", "bin", "agenc.cmd");
-    assertLauncher(launcher);
-    return launcher;
-  }
-  throw new Error(
-    "Cannot resolve agenc.cmd; set AGENC_INSTALL_PREFIX or LOCALAPPDATA",
-  );
+  const launcher = joinServicePath(prefix, "bin", "agenc.cmd");
+  assertLauncher(launcher);
+  return launcher;
 }
 
 function resolveAgencDaemonWinSWOutputPath(
   env: Readonly<Record<string, string | undefined>>,
-  agencHome: string,
 ): string {
   if (env.AGENC_WINSW_XML !== undefined && env.AGENC_WINSW_XML !== "") {
     if (!win32.isAbsolute(env.AGENC_WINSW_XML)) {
@@ -166,17 +182,14 @@ function resolveAgencDaemonWinSWOutputPath(
     }
     return env.AGENC_WINSW_XML;
   }
-  const prefix =
-    env.AGENC_INSTALL_PREFIX ??
-    (env.LOCALAPPDATA === undefined || env.LOCALAPPDATA === ""
-      ? undefined
-      : joinServicePath(env.LOCALAPPDATA, "agenc"));
-  if (prefix !== undefined && prefix !== "") {
-    assertAbsoluteServicePath(prefix, "install prefix");
-    return joinServicePath(prefix, "agenc-daemon.xml");
+  const prefix = env.AGENC_INSTALL_PREFIX;
+  if (prefix === undefined || prefix === "") {
+    throw new Error(
+      "Cannot resolve the WinSW XML path; the agenc.cmd shim must set AGENC_INSTALL_PREFIX",
+    );
   }
-  assertAbsoluteServicePath(agencHome, "AGENC_HOME");
-  return joinServicePath(agencHome, "agenc-daemon.xml");
+  assertAbsoluteServicePath(prefix, "install prefix");
+  return joinServicePath(prefix, "agenc-daemon.xml");
 }
 
 export function installAgencDaemonWinSWService(options: {
@@ -188,10 +201,7 @@ export function installAgencDaemonWinSWService(options: {
   try {
     const launcher = resolveWindowsAgencLauncher(options.env);
     const accountUsername = resolveWindowsServiceAccount(options.env);
-    const outputPath = resolveAgencDaemonWinSWOutputPath(
-      options.env,
-      options.agencHome,
-    );
+    const outputPath = resolveAgencDaemonWinSWOutputPath(options.env);
     writeAgencDaemonWinSWServiceXml({
       commandPrompt: resolveWindowsCmdExe(options.env),
       launcher,
@@ -226,6 +236,7 @@ export function renderAgencDaemonWinSWService(
   const workingDirectory = input.workingDirectory ?? input.agencHome;
   assertAbsoluteServicePath(workingDirectory, "workingDirectory");
   const accountUsername = normalizeAccountUsername(input.accountUsername);
+  const account = splitWinSW212ServiceAccount(accountUsername);
   const args = buildWinSWCmdArguments(input.launcher);
   const xml = [
     "<service>",
@@ -238,7 +249,8 @@ export function renderAgencDaemonWinSWService(
     `  <env name="AGENC_HOME" value="${escapeXmlAttr(input.agencHome)}"/>`,
     '  <env name="NODE_ENV" value="production"/>',
     "  <serviceaccount>",
-    `    <username>${escapeXmlAttr(accountUsername)}</username>`,
+    `    <domain>${escapeXmlAttr(account.domain)}</domain>`,
+    `    <user>${escapeXmlAttr(account.user)}</user>`,
     "    <allowservicelogon>true</allowservicelogon>",
     "  </serviceaccount>",
     "  <startmode>Automatic</startmode>",
@@ -290,6 +302,13 @@ export function parseAgencDaemonWinSWServiceXml(
   if (launcherMatch?.[1] === undefined) {
     throw new Error("WinSW arguments are not a PATH-independent cmd invocation");
   }
+  if (/<password[\s>]/iu.test(xml) || /<username[\s>]/iu.test(xml)) {
+    throw new Error(
+      "WinSW 2.12 XML must use <domain> and <user> and must not store a password or <username>",
+    );
+  }
+  const domain = xmlText(xml, "domain");
+  const user = xmlText(xml, "user");
   return {
     xml,
     id: xmlText(xml, "id"),
@@ -298,7 +317,7 @@ export function parseAgencDaemonWinSWServiceXml(
     launcher: unescapeCmdPercent(launcherMatch[1]),
     workingDirectory: xmlText(xml, "workingdirectory"),
     agencHome: xmlEnvValue(xml, "AGENC_HOME"),
-    accountUsername: xmlText(xml, "username"),
+    accountUsername: `${domain}\\${user}`,
     allowServiceLogon: xml.includes("<allowservicelogon>true</allowservicelogon>"),
   };
 }
@@ -318,21 +337,31 @@ function formatWinSWServiceInstallInstructions(input: {
   readonly agencHome: string;
   readonly launcher: string;
 }): string {
+  const executable = win32.join(win32.dirname(input.outputPath), "agenc-daemon.exe");
   return [
     `Wrote ${input.outputPath}`,
     "This file is the service definition only. The one-line Windows installer",
     "does not install or start a Windows service.",
+    "",
+    `Pinned WinSW version: ${AGENC_DAEMON_WINSW_VERSION}`,
+    "Packaging does not download WinSW. Use the WinSW 2.12.0 binary",
+    "(WinSW-x64.exe from the v2.12.0 GitHub release). WinSW 3 reads <username>",
+    "and ignores <domain>/<user>, so it is not compatible with this file.",
     "",
     "Service identity: the installing user (not LocalSystem)",
     `  account:    ${input.accountUsername}`,
     `  AGENC_HOME: ${input.agencHome}`,
     `  launcher:   ${input.launcher}`,
     "",
-    "To install, start, stop, and restart with WinSW (typically elevated):",
-    `  winsw install "${input.outputPath}"`,
-    "  winsw start agenc-daemon",
-    "  winsw stop agenc-daemon",
-    "  winsw restart agenc-daemon",
+    "The XML omits <password>. WinSW 2.12.0 prompts for the account password",
+    "when install is started with /p. Do not write the password into the XML.",
+    "",
+    "Place that binary beside the XML, rename it to agenc-daemon.exe, then run",
+    "these WinSW 2.12.0 commands (elevated):",
+    `  "${executable}" install /p`,
+    `  "${executable}" start`,
+    `  "${executable}" stop`,
+    `  "${executable}" restart`,
     "",
     "agenc daemon start still works without a Windows service.",
   ].join("\n");

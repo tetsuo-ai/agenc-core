@@ -960,8 +960,10 @@ agenc daemon install-service
 | `install-service` | Write a WinSW XML definition from this install's absolute launcher, `AGENC_HOME`, and installing-user account. Does not install or start the Windows service. |
 
 Service templates under `packaging/` invoke `agenc daemon start --foreground`.
-The Windows one-line installer writes a generated WinSW file; installing that
-service with WinSW is a separate elevated step. Launcher autostart:
+The Windows one-line installer writes a generated WinSW 2.12.0 file; installing
+that service with WinSW 2.12.0 (`agenc-daemon.exe install /p`, then `start`)
+is a separate elevated step. The password is prompted by `/p` and is not
+stored in the XML. Launcher autostart:
 `AGENC_DAEMON_AUTOSTART=0` disables; ready timeout
 `AGENC_DAEMON_READY_TIMEOUT_MS`.
 
