@@ -678,7 +678,7 @@ export async function installPluginOp(
       publishConfig: async () => {
         await writePluginConfigEntry(pluginId, { enabled: true }, input);
       },
-      readPluginConfig: () => readPluginConfigSnapshot(pluginId, input),
+      readPluginConfig: () => Promise.resolve(readPluginConfigSnapshot(pluginId, input)),
       restorePluginConfig: (_pluginId, previous) => restorePluginConfigSnapshot(pluginId, previous, input),
     });
     const result = {

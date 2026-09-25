@@ -13,7 +13,7 @@ const PLUGIN_INSTALL_TRANSACTION_RECORD_VERSION = 1;
 
 const STAGE_SUFFIX = ".stage-";
 const BACKUP_SUFFIX = ".bak-";
-const UUID_PATTERN = String.raw`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`;
+const UUID_PATTERN = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const ARTIFACT_NAME_PATTERN = new RegExp(
   String.raw`\.(?:stage|bak)-${UUID_PATTERN}$`,
   "iu",
@@ -169,7 +169,7 @@ export async function runPluginInstallTransaction(input: {
   readonly writeStageMetadata: (stagePath: string) => Promise<void>;
   readonly validateStage: (stagePath: string) => Promise<void>;
   readonly publishConfig: () => Promise<void>;
-  readonly readPluginConfig?: () => unknown | Promise<unknown>;
+  readonly readPluginConfig?: () => Promise<unknown>;
   readonly restorePluginConfig?: (pluginId: string, previous: unknown) => Promise<void>;
   readonly hooks?: PluginInstallTransactionHooks;
 }): Promise<void> {
@@ -215,22 +215,7 @@ export async function runPluginInstallTransaction(input: {
     await invokeAfterPhase(input.hooks, state.record, recordPath);
     await removeOperationRecord(recordPath);
   } catch (error) {
-    if (!(error instanceof PluginInstallTransactionSimulatedCrash)) {
-      const rollbackError = await rollbackInProcess(
-        state.record,
-        recordPath,
-        input.restorePluginConfig,
-        input.hooks,
-      ).catch((cause: unknown) => cause);
-      if (rollbackError !== undefined) {
-        throw new AggregateError(
-          [error, rollbackError],
-          error instanceof Error ? error.message : String(error),
-          { cause: error },
-        );
-      }
-    }
-    throw error;
+    await rethrowAfterRollback(error, state, recordPath, input);
   } finally {
     await removeInstallLease(leasePath);
   }
@@ -763,6 +748,30 @@ async function recoverCommitted(
   }
   await removeOperationRecord(recordPath);
   return {};
+}
+
+async function rethrowAfterRollback(
+  error: unknown,
+  state: TransactionState,
+  recordPath: string,
+  input: Parameters<typeof runPluginInstallTransaction>[0],
+): Promise<never> {
+  if (!(error instanceof PluginInstallTransactionSimulatedCrash)) {
+    const rollbackError = await rollbackInProcess(
+      state.record,
+      recordPath,
+      input.restorePluginConfig,
+      input.hooks,
+    ).catch((cause: unknown) => cause);
+    if (rollbackError !== undefined) {
+      throw new AggregateError(
+        [error, rollbackError],
+        error instanceof Error ? error.message : String(error),
+        { cause: error },
+      );
+    }
+  }
+  throw error;
 }
 
 async function rollbackInProcess(
