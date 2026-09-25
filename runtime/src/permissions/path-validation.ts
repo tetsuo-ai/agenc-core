@@ -29,7 +29,7 @@ import { unattendedWriteRoots } from "./unattended-policy.js";
 import { checkProtectedPathSafety } from "./protected-paths.js";
 import {
   comparablePath,
-  pathCaseSemantics,
+  pathForComparison,
   type PathCaseSemantics,
 } from "./path-case.js";
 import { withSignedAllowedRoots } from "../agents/_deps/filesystem-args.js";
@@ -147,15 +147,10 @@ function normalizeSlashes(path: string): string {
  * still contains `/users/me/file` where those are one directory.
  */
 function isPathInside(candidate: string, root: string): boolean {
-  const semantics = pathCaseSemantics(candidate);
-  const normalizedCandidate = comparablePath(
+  const normalizedCandidate = pathForComparison(
     normalize(candidate).normalize("NFC"),
-    semantics,
   );
-  const normalizedRoot = comparablePath(
-    normalize(root).normalize("NFC"),
-    semantics,
-  );
+  const normalizedRoot = pathForComparison(normalize(root).normalize("NFC"));
   if (normalizedCandidate === normalizedRoot) return true;
   const rel = relative(normalizedRoot, normalizedCandidate);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
@@ -314,13 +309,14 @@ function wildcardPatternToRegExp(pattern: string): RegExp {
 export function matchPathRuleContent(
   ruleContent: string,
   filePath: string,
-  caseSemantics: PathCaseSemantics = pathCaseSemantics(filePath),
+  caseSemantics?: PathCaseSemantics,
 ): boolean {
-  const expandedRule = comparablePath(
-    normalizeSlashes(expandTilde(ruleContent)),
-    caseSemantics,
-  );
-  const expandedPath = comparablePath(normalizeSlashes(filePath), caseSemantics);
+  const apply = (value: string): string =>
+    caseSemantics === undefined
+      ? pathForComparison(value)
+      : comparablePath(value, caseSemantics);
+  const expandedRule = apply(normalizeSlashes(expandTilde(ruleContent)));
+  const expandedPath = apply(normalizeSlashes(filePath));
   if (expandedRule === expandedPath) return true;
   if (expandedRule.endsWith("/**")) {
     const root = expandedRule.slice(0, -3).replace(/\/$/, "");
@@ -410,16 +406,14 @@ function matchingRuleForPath(
   behavior: "allow" | "ask" | "deny",
   cwd: string,
 ): PermissionRule | null {
-  const pathsToCheck = getPathsForPermissionCheck(filePath).map(
-    (candidate) => [candidate, pathCaseSemantics(candidate)] as const,
-  );
+  const pathsToCheck = getPathsForPermissionCheck(filePath);
   for (const toolName of toolNamesForOperation(operationType)) {
     const rules = getRuleByContentsForTool(context, toolName, behavior);
     for (const [content, rule] of rules) {
       const resolvedContent = resolvePathRulePattern(content, rule.source, cwd);
       if (
-        pathsToCheck.some(([candidate, semantics]) =>
-          matchPathRuleContent(resolvedContent, candidate, semantics),
+        pathsToCheck.some((candidate) =>
+          matchPathRuleContent(resolvedContent, candidate),
         )
       ) {
         return rule;

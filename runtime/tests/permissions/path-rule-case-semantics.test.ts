@@ -8,15 +8,18 @@
  * one host; the probe itself is checked against the real temp volume.
  */
 
-import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { lstatSync } from "node:fs";
+import { link, mkdtemp, mkdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, test } from "vitest";
 
 import {
+  __pathCaseSemanticsCacheSizeForTesting,
   __setPathCaseSemanticsResolverForTesting,
   pathCaseSemantics,
+  pathForComparison,
   platformDefaultPathCaseSemantics,
   type PathCaseSemantics,
 } from "../../src/permissions/path-case.js";
@@ -178,6 +181,66 @@ describe("pathCaseSemantics probes the volume that holds the path", () => {
       );
       if (a.ino !== b.ino) expect(pathCaseSemantics(upper)).toBe("sensitive");
     });
+  });
+
+  test("ß.txt is not probed as SS.TXT, and that miss is not cached", async () => {
+    await withCaseFixtures(async (root) => {
+      const dir = join(root, "unicode");
+      await mkdir(dir);
+      const eszett = join(dir, "ß.txt");
+      await writeFile(eszett, "eszett");
+      await writeFile(join(dir, "SS.TXT"), "ascii");
+      __setPathCaseSemanticsResolverForTesting(null);
+      const verdict = pathCaseSemantics(eszett);
+      if (verdict === "sensitive") {
+        expect(__pathCaseSemanticsCacheSizeForTesting()).toBe(0);
+        expect(pathForComparison(eszett)).toBe(eszett);
+      } else {
+        expect(verdict).toBe("insensitive");
+      }
+    });
+  });
+
+  test.each([
+    ["symlink", symlink],
+    ["hardlink", link],
+  ] as const)(
+    "a case-twin %s does not make a sensitive directory insensitive",
+    async (_kind, linkNames) => {
+      await withCaseFixtures(async (root) => {
+        const dir = join(root, "links");
+        await mkdir(dir);
+        const file = join(dir, "file.txt");
+        const twin = join(dir, "FILE.TXT");
+        await writeFile(file, "file");
+        try {
+          await linkNames(file, twin);
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code === "EEXIST") return;
+          throw err;
+        }
+        __setPathCaseSemanticsResolverForTesting(null);
+        expect(pathCaseSemantics(file)).toBe("sensitive");
+        expect(pathCaseSemantics(twin)).toBe("sensitive");
+      });
+    },
+  );
+
+  test("a missing path on another device does not inherit the parent volume", () => {
+    __setPathCaseSemanticsResolverForTesting(null);
+    let rootDev: number | bigint;
+    let procDev: number | bigint;
+    try {
+      rootDev = lstatSync("/").dev;
+      procDev = lstatSync("/proc").dev;
+    } catch {
+      return;
+    }
+    if (rootDev === procDev) return;
+    const missing = "/proc/agenc-missing-case-probe.txt";
+    expect(pathCaseSemantics(missing)).toBe("sensitive");
+    expect(__pathCaseSemanticsCacheSizeForTesting()).toBe(0);
+    expect(pathForComparison(missing)).toBe(missing);
   });
 
   test("the platform default applies when nothing on the path can be probed", () => {

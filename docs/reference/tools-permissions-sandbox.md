@@ -573,17 +573,6 @@ subagent under the full bypass with `--add-dir /` was refused on every path
 outside its workspace. The safety
 gates (`.git`, `.agenc`, `.agents`, dangerous removals) are not widened.
 
-Path rules (`FileRead(...)`, `Edit(...)`, `Write(...)`, exact paths, `/**`
-prefixes and globs) and the working-directory containment check follow the
-case semantics of the volume that holds the target. Where the filesystem
-treats `C:/Work/Secret.txt` and `c:\work\SECRET.txt` as one file (default
-Windows and macOS volumes, or a case-insensitive mount elsewhere), a rule
-written either way governs both spellings, drive letter and separators
-included. Where they are two files (Linux, case-sensitive APFS) they stay
-distinct. The semantics are probed on the filesystem, falling back to the
-platform default when nothing on the path exists yet; rule text and the
-decision recorded for audit keep their original spelling.
-
 Neither bypass setting removes a planning worker's permanent read-only
 constraint. See [read-only planning workers](agents.md#read-only-planning-workers).
 Normal coding and verification workers retain the configured bypass behavior.
@@ -592,6 +581,19 @@ Shell tools reject deterministically invalid commands before asking for
 approval and recheck the command before execution. Approval cannot override
 protected-path or shell-write-policy refusals. Operations that need ordinary
 workspace deletion approval still use the configured permission mode.
+
+Path rules (`FileRead(...)`, `Edit(...)`, `Write(...)`, exact paths, `/**`
+prefixes and globs) and the working-directory containment check follow the
+case semantics of the volume that holds the target. Where the filesystem
+treats `C:/Work/Secret.txt` and `c:\work\SECRET.txt` as one file (default
+Windows and macOS volumes, or a case-insensitive mount elsewhere), a rule
+written either way governs both spellings, drive letter and separators
+included. Where they are two files (Linux, case-sensitive APFS) they stay
+distinct. The probe flips ASCII letters only and reads the directory entry,
+so a symlink or hard link is not a second spelling of the same name. A
+case-sensitive mount does not inherit its parent volume's folding. When
+nothing on the path exists yet, the platform default applies. Rule text and
+the decision recorded for audit keep their original spelling.
 
 **Internal-only** (valid runtime state, not CLI defaults):
 
