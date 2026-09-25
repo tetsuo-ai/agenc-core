@@ -358,6 +358,16 @@ export interface AgenCDaemonAgentManagerOptions {
   readonly voidBudgetHoldsForAgents?: (
     agentIds: readonly string[],
   ) => number | Promise<number>;
+  /**
+   * Waits for the daemon's background restore of the sessions open at its
+   * last shutdown: a promise when one of `ids` is still being restored,
+   * undefined otherwise. A resume create waits on it so it never rebuilds a
+   * session a startup restore is rebuilding.
+   */
+  readonly waitForStartupRestore?: (
+    ids: readonly string[],
+    signal?: AbortSignal,
+  ) => Promise<void> | undefined;
 }
 
 export interface AgenCDaemonAgentToolOutputReadParams {
@@ -583,6 +593,12 @@ export class AgenCDaemonAgentManager {
     | undefined;
   readonly #voidBudgetHoldsForAgents:
     ((agentIds: readonly string[]) => number | Promise<number>) | undefined;
+  readonly #waitForStartupRestore:
+    | ((
+        ids: readonly string[],
+        signal?: AbortSignal,
+      ) => Promise<void> | undefined)
+    | undefined;
   #shuttingDown = false;
   #shutdownDisposition: "cancel" | "suspend_idle" = "cancel";
   #activeCreates = 0;
@@ -639,6 +655,7 @@ export class AgenCDaemonAgentManager {
     this.#onPermissionAuditError = options.onPermissionAuditError;
     this.#cancelRunTreeDurable = options.cancelRunTreeDurable;
     this.#voidBudgetHoldsForAgents = options.voidBudgetHoldsForAgents;
+    this.#waitForStartupRestore = options.waitForStartupRestore;
   }
 
   createAgent(
@@ -646,6 +663,17 @@ export class AgenCDaemonAgentManager {
     options: { readonly signal?: AbortSignal } = {},
   ): Promise<AgentCreateResult> {
     const resumeSessionId = normalizeNonEmpty(params.resumeSessionId);
+    // Two restores of one session must never run. A resume of a session the
+    // daemon is still restoring from its last shutdown waits for that restore
+    // to settle, then runs as it would have once startup finished: refused
+    // when the session came back with a live runtime, a cold resume when it
+    // did not.
+    const restoring = resumeSessionId === undefined
+      ? undefined
+      : this.#waitForStartupRestore?.([resumeSessionId], options.signal);
+    if (restoring !== undefined) {
+      return restoring.then(() => this.createAgent(params, options));
+    }
     const pending = resumeSessionId === undefined
       ? undefined : this.#pendingResumeCreates.get(resumeSessionId);
     if (pending !== undefined) {

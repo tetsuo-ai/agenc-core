@@ -1,4 +1,5 @@
 import { once } from "node:events";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
   existsSync,
@@ -702,6 +703,37 @@ async function waitForPid(
     await delay(10);
   }
   throw new Error("timed out waiting for daemon pid");
+}
+
+/**
+ * Waits until the daemon has settled the restore of every session that was
+ * open at its last shutdown. The daemon serves before those restores finish,
+ * so a case that inspects a restored runtime right after the pid appears
+ * waits here first.
+ */
+async function waitForStartupRestores(
+  host: AgenCDaemonCliHost,
+  budgetMs: number = DAEMON_MILESTONE_BUDGET_MS,
+): Promise<void> {
+  const authCookie = (
+    await readFile(resolveAgenCDaemonCookiePath(host.env, host.userHome), "utf8")
+  ).trim();
+  const client = createAgenCJsonLineDaemonRequestClient({
+    socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
+    authCookie,
+    timeoutMs: 1000,
+  });
+  const startedAt = Date.now();
+  for (;;) {
+    const ready = await client.request("health.ready", {});
+    if (ready.restoringSessions === 0) return;
+    if (Date.now() - startedAt > budgetMs) {
+      throw new Error(
+        `timed out waiting for startup session restores (${String(ready.restoringSessions)} still restoring)`,
+      );
+    }
+    await delay(10);
+  }
 }
 
 /**
@@ -5808,7 +5840,7 @@ snapshot_max_bytes = 64
     }
   });
 
-  it("foreground daemon runs restart recovery before advertising readiness", async () => {
+  it("foreground daemon advertises readiness once its state is recovered and restores sessions after", async () => {
     const agencHome = await tempAgencHome();
     const otherCwd = await mkdtemp(join(tmpdir(), "agenc-daemon-other-cwd-"));
     await mkdir(join(otherCwd, ".git"));
@@ -5850,8 +5882,14 @@ snapshot_max_bytes = 64
       Parameters<AgenCBootstrapFunction>[0]
     >();
     const sendInput = vi.fn(async () => {});
+    // Holds every session rebuild until the test has seen the daemon serve.
+    let releaseRestores!: () => void;
+    const restoresReleased = new Promise<void>((resolve) => {
+      releaseRestores = resolve;
+    });
     const runner = new AgenCDelegateBackgroundAgentRunner({
       bootstrap: (async (options) => {
+        await restoresReleased;
         const conversationId = options.conversationId ?? "daemon-recovery";
         restoredConversationIds.push(conversationId);
         restoreOptions.set(conversationId, options);
@@ -5886,10 +5924,39 @@ snapshot_max_bytes = 64
       { host, io, signalProcess, runner, snapshotPeriodicIntervalMs: 10 },
     );
     await expect(waitForPid(pidPath)).resolves.toBe(4100);
+    expect(io.stderrText()).toContain(
+      "daemon recovery loaded 2 agent run(s) from state",
+    );
+    // The daemon serves while both rebuilds are held: nothing is published
+    // yet, health says how many sessions are still restoring.
+    const earlyCookie = (await readFile(cookiePath, "utf8")).trim();
+    const earlyClient = createAgenCJsonLineDaemonRequestClient({
+      socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
+      authCookie: earlyCookie,
+      timeoutMs: 1000,
+    });
+    await expect(earlyClient.request("health.ready", {})).resolves.toMatchObject({
+      ready: true,
+      restoringSessions: 2,
+    });
+    await vi.waitFor(() => expect(restoreAgentSpy).toHaveBeenCalledTimes(2));
+    expect(restoredConversationIds).toEqual([]);
+    const earlyAgents = await earlyClient.request("agent.list", {});
+    expect(
+      earlyAgents.agents.filter(
+        (agent) => agent.agentId === "run-restart" || agent.agentId === "run-other",
+      ),
+    ).toEqual([]);
+    const earlySessions = await earlyClient.request("session.list", {});
+    expect(earlySessions.sessions.map((session) => session.sessionId)).not.toContain(
+      "session-restart",
+    );
+    expect(io.stderrText()).not.toContain("daemon restored 2 session(s)");
     // Each recovered session is re-written once at hydration, before the
-    // daemon advertises readiness. That write replaces the seeded row (it is
-    // older than the default snapshot_days window and is pruned on the same
-    // write), so the evidence is a row newer than the seed, not a row count.
+    // daemon advertises readiness and while its rebuild is still held. That
+    // write replaces the seeded row (it is older than the default
+    // snapshot_days window and is pruned on the same write), so the evidence
+    // is a row newer than the seed, not a row count.
     const restartSnapshotAt = await waitForSnapshotAfter(
       agencHome,
       process.cwd(),
@@ -5910,6 +5977,12 @@ snapshot_max_bytes = 64
       lastTrigger: "periodic",
       pending: [],
     });
+    expect(restoredConversationIds).toEqual([]);
+    releaseRestores();
+    await waitForStartupRestores(host);
+    expect(io.stderrText()).toContain(
+      "agenc: daemon restored 2 session(s) open at its last shutdown",
+    );
 
     expect(io.stderrText()).toContain(
       "daemon recovery loaded 2 agent run(s) from state",
@@ -6160,9 +6233,10 @@ snapshot_max_bytes = 64
     await rm(agencHome, { recursive: true, force: true });
   });
 
-  it("rolls back an exact startup runtime and session when recovered-agent publication fails", async () => {
+  it("stops the daemon when a restored session fails to publish and its rollback fails too", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
+    const io = createIo();
     const runId = "run-startup-publication-failure";
     const sessionId = "session-startup-publication-failure";
     seedRecoverableDaemonState(agencHome, {
@@ -6195,23 +6269,32 @@ snapshot_max_bytes = 64
       },
     };
 
-    const running = runAgenCDaemonCli(
-      { kind: "command", action: "run" },
-      { host, io: createIo(), runner },
-    );
-    const failure = await running.catch((error: unknown) => error);
-
-    expect(failure).toBeInstanceOf(AggregateError);
-    expect((failure as AggregateError).errors[0]).toBe(primaryFailure);
-    expect((failure as AggregateError).errors).toContain(cleanupFailure);
-    const restoreAttemptId = restoreAgent.mock.calls[0]?.[0].restoreAttemptId;
-    expect(restoreAttemptId).toEqual(expect.any(String));
-    expect(rollbackRestoredAgent).toHaveBeenCalledWith(runId, restoreAttemptId);
-    expect(terminateSession).toHaveBeenCalledWith({
-      sessionId,
-      reason: "startup_restore_publication_failed",
-    });
-    await rm(agencHome, { recursive: true, force: true });
+    try {
+      // The daemon was already serving when the publication failed. With the
+      // rollback failed too it may hold part of that session, so it stops
+      // with a clear error instead of serving it.
+      await expect(
+        runAgenCDaemonCli(
+          { kind: "command", action: "run" },
+          { host, io, runner },
+        ),
+      ).resolves.toBe(1);
+      expect(io.stderrText()).toContain(
+        `agenc: startup restore of run ${runId} failed to publish and could not be rolled back; stopping the daemon: ` +
+          `startup restore publication failed for run ${runId}: injected recovered-agent publication failure; ` +
+          "rollback also failed: injected restored-runtime rollback failure",
+      );
+      const restoreAttemptId = restoreAgent.mock.calls[0]?.[0].restoreAttemptId;
+      expect(restoreAttemptId).toEqual(expect.any(String));
+      expect(rollbackRestoredAgent).toHaveBeenCalledWith(runId, restoreAttemptId);
+      expect(terminateSession).toHaveBeenCalledWith({
+        sessionId,
+        reason: "startup_restore_publication_failed",
+      });
+    } finally {
+      terminateSession.mockRestore();
+      await rm(agencHome, { recursive: true, force: true });
+    }
   });
 
   describe("startup runtime restores", () => {
@@ -6224,40 +6307,59 @@ snapshot_max_bytes = 64
       "run-parallel-f",
     ];
 
-    function seedParallelRuns(agencHome: string): void {
+    /** Seeds every parallel run; returns each run's canonical rollout path. */
+    function seedParallelRuns(agencHome: string): Map<string, string> {
+      const rolloutPaths = new Map<string, string>();
       for (const runId of parallelRunIds) {
-        seedRecoverableDaemonState(agencHome, {
-          cwd: process.cwd(),
+        rolloutPaths.set(
           runId,
-          sessionId: runId.replace("run-", "session-"),
-        });
+          seedRecoverableDaemonState(agencHome, {
+            cwd: process.cwd(),
+            runId,
+            sessionId: runId.replace("run-", "session-"),
+          }),
+        );
       }
+      return rolloutPaths;
     }
 
     /** A runner whose rebuilds wait until the test releases each one. */
     function gatedRunner(options: {
       readonly fail?: ReadonlySet<string>;
       readonly rollbackRestoredAgent?: AgenCBackgroundAgentRunner["rollbackRestoredAgent"];
+      readonly suspendIdleAgentForDaemonShutdown?: AgenCBackgroundAgentRunner["suspendIdleAgentForDaemonShutdown"];
+      /** Reject a rebuild when its restore signal aborts. */
+      readonly honorAbort?: boolean;
     } = {}) {
       const started: string[] = [];
+      const finished: string[] = [];
       const gates = new Map<string, () => void>();
       let inFlight = 0;
       let maxInFlight = 0;
       const restoreAgent = vi.fn(async (params: {
         readonly agentId: string;
         readonly restoreAttemptId?: string;
+        readonly signal?: AbortSignal;
       }) => {
         started.push(params.agentId);
         inFlight += 1;
         maxInFlight = Math.max(maxInFlight, inFlight);
         try {
-          await new Promise<void>((resolve) => gates.set(params.agentId, resolve));
+          await new Promise<void>((resolve, reject) => {
+            gates.set(params.agentId, resolve);
+            if (options.honorAbort === true) {
+              params.signal?.addEventListener("abort", () =>
+                reject(new Error(`restore of ${params.agentId} aborted`)),
+              );
+            }
+          });
           if (options.fail?.has(params.agentId) === true) {
             throw new Error(`injected rebuild failure for ${params.agentId}`);
           }
           return true;
         } finally {
           inFlight -= 1;
+          finished.push(params.agentId);
         }
       });
       const runner: AgenCBackgroundAgentRunner = {
@@ -6268,6 +6370,12 @@ snapshot_max_bytes = 64
         ...(options.rollbackRestoredAgent !== undefined
           ? { rollbackRestoredAgent: options.rollbackRestoredAgent }
           : {}),
+        ...(options.suspendIdleAgentForDaemonShutdown !== undefined
+          ? {
+              suspendIdleAgentForDaemonShutdown:
+                options.suspendIdleAgentForDaemonShutdown,
+            }
+          : {}),
       };
       const release = async (agentId: string): Promise<void> => {
         await vi.waitFor(() => expect(gates.has(agentId)).toBe(true));
@@ -6277,12 +6385,37 @@ snapshot_max_bytes = 64
         runner,
         restoreAgent,
         started,
+        finished,
         release,
         maxInFlight: () => maxInFlight,
       };
     }
 
-    it("rebuilds four at a time, publishes in recovery order, and listens only after all of them", async () => {
+    async function daemonClient(host: AgenCDaemonCliHost, timeoutMs = 1000) {
+      const authCookie = (
+        await readFile(resolveAgenCDaemonCookiePath(host.env, host.userHome), "utf8")
+      ).trim();
+      return createAgenCJsonLineDaemonRequestClient({
+        socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
+        authCookie,
+        timeoutMs,
+      });
+    }
+
+    /** Whether a promise is still pending after the event loop turns over. */
+    async function stillPending(promise: Promise<unknown>): Promise<boolean> {
+      const marker = Symbol("pending");
+      const outcome = await Promise.race([
+        promise.then(
+          () => "settled",
+          () => "settled",
+        ),
+        delay(50).then(() => marker),
+      ]);
+      return outcome === marker;
+    }
+
+    it("serves before any rebuild, rebuilds four at a time, and publishes each one as it finishes", async () => {
       const agencHome = await tempAgencHome();
       const host = createHost(agencHome);
       const signalProcess = createSignalProcess();
@@ -6290,34 +6423,61 @@ snapshot_max_bytes = 64
       seedParallelRuns(agencHome);
       const gated = gatedRunner();
       const published = vi.spyOn(AgenCDaemonAgentManager.prototype, "restoreAgent");
-
-      const running = runAgenCDaemonCli(
-        { kind: "command", action: "run" },
-        { host, io: createIo(), signalProcess, runner: gated.runner },
-      );
-      await vi.waitFor(() => expect(gated.started).toHaveLength(4));
-      expect(gated.started).toEqual(parallelRunIds.slice(0, 4));
-      // Rebuilds finish out of order; publication still follows recovery order.
-      await gated.release("run-parallel-d");
-      await vi.waitFor(() => expect(gated.started).toHaveLength(5));
-      await gated.release("run-parallel-b");
-      await vi.waitFor(() => expect(gated.started).toHaveLength(6));
-      expect(gated.started).toEqual(parallelRunIds);
-      for (const runId of ["run-parallel-f", "run-parallel-e", "run-parallel-c"]) {
-        await gated.release(runId);
+      try {
+        const running = runAgenCDaemonCli(
+          { kind: "command", action: "run" },
+          { host, io: createIo(), signalProcess, runner: gated.runner },
+        );
+        // Readiness is published while every rebuild is still held.
+        await expect(waitForPid(pidPath)).resolves.toBe(4100);
+        await vi.waitFor(() => expect(gated.started).toHaveLength(4));
+        expect(gated.started).toEqual(parallelRunIds.slice(0, 4));
+        const client = await daemonClient(host);
+        await expect(client.request("health.ready", {})).resolves.toMatchObject({
+          ready: true,
+          restoringSessions: 6,
+        });
+        expect(published).not.toHaveBeenCalled();
+        // Each session is published when its own rebuild finishes.
+        const releaseAndPublish = async (runId: string): Promise<void> => {
+          const before = published.mock.calls.length;
+          await gated.release(runId);
+          await vi.waitFor(() =>
+            expect(published.mock.calls.length).toBe(before + 1),
+          );
+        };
+        await releaseAndPublish("run-parallel-d");
+        await vi.waitFor(() => expect(gated.started).toHaveLength(5));
+        await releaseAndPublish("run-parallel-b");
+        await vi.waitFor(() => expect(gated.started).toHaveLength(6));
+        expect(gated.started).toEqual(parallelRunIds);
+        await expect(client.request("health.ready", {})).resolves.toMatchObject({
+          restoringSessions: 4,
+        });
+        for (const runId of [
+          "run-parallel-f",
+          "run-parallel-e",
+          "run-parallel-c",
+          "run-parallel-a",
+        ]) {
+          await releaseAndPublish(runId);
+        }
+        await waitForStartupRestores(host);
+        expect(gated.maxInFlight()).toBe(4);
+        expect(published.mock.calls.map(([params]) => params.agentId)).toEqual([
+          "run-parallel-d",
+          "run-parallel-b",
+          "run-parallel-f",
+          "run-parallel-e",
+          "run-parallel-c",
+          "run-parallel-a",
+        ]);
+        signalProcess.emit("SIGTERM");
+        await expect(running).resolves.toBe(0);
+      } finally {
+        published.mockRestore();
+        await rm(agencHome, { recursive: true, force: true });
       }
-      await delay(50);
-      expect(await readAgenCDaemonPid(pidPath)).toBeNull();
-      await gated.release("run-parallel-a");
-
-      await expect(waitForPid(pidPath)).resolves.toBe(4100);
-      expect(gated.maxInFlight()).toBe(4);
-      const publishedRunIds = published.mock.calls.map(([params]) => params.agentId);
-      published.mockRestore();
-      expect(publishedRunIds).toEqual(parallelRunIds);
-      signalProcess.emit("SIGTERM");
-      await expect(running).resolves.toBe(0);
-      await rm(agencHome, { recursive: true, force: true });
     });
 
     it("leaves only the session whose runtime cannot be rebuilt unavailable", async () => {
@@ -6332,17 +6492,11 @@ snapshot_max_bytes = 64
         { kind: "command", action: "run" },
         { host, io: createIo(), signalProcess, runner: gated.runner },
       );
-      for (const runId of parallelRunIds) await gated.release(runId);
       await expect(waitForPid(pidPath)).resolves.toBe(4100);
+      for (const runId of parallelRunIds) await gated.release(runId);
+      await waitForStartupRestores(host);
 
-      const authCookie = (
-        await readFile(resolveAgenCDaemonCookiePath(host.env, host.userHome), "utf8")
-      ).trim();
-      const client = createAgenCJsonLineDaemonRequestClient({
-        socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
-        authCookie,
-        timeoutMs: 1000,
-      });
+      const client = await daemonClient(host);
       const listed = (await client.request("agent.list", {})) as {
         readonly agents: ReadonlyArray<{
           readonly agentId: string;
@@ -6367,9 +6521,12 @@ snapshot_max_bytes = 64
       await rm(agencHome, { recursive: true, force: true });
     });
 
-    it("still stops startup at a failed publication and rolls back the runtimes rebuilt ahead of it", async () => {
+    it("rolls back a session whose publication fails and keeps serving the others", async () => {
       const agencHome = await tempAgencHome();
       const host = createHost(agencHome);
+      const io = createIo();
+      const signalProcess = createSignalProcess();
+      const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
       seedParallelRuns(agencHome);
       const rollbackRestoredAgent = vi.fn(async () => {});
       const gated = gatedRunner({ rollbackRestoredAgent });
@@ -6384,36 +6541,343 @@ snapshot_max_bytes = 64
           if (params.agentId === "run-parallel-c") throw primaryFailure;
           return await originalRestoreAgent.call(this, params);
         });
+      try {
+        const running = runAgenCDaemonCli(
+          { kind: "command", action: "run" },
+          { host, io, signalProcess, runner: gated.runner },
+        );
+        await expect(waitForPid(pidPath)).resolves.toBe(4100);
+        for (const runId of parallelRunIds) await gated.release(runId);
+        await waitForStartupRestores(host);
 
+        const attemptFor = (runId: string): string | undefined =>
+          gated.restoreAgent.mock.calls.find(([params]) => params.agentId === runId)?.[0]
+            .restoreAttemptId;
+        // Only its own runtime is rolled back; nothing else is touched.
+        expect(rollbackRestoredAgent.mock.calls).toEqual([
+          ["run-parallel-c", attemptFor("run-parallel-c")],
+        ]);
+        expect(io.stderrText()).toContain(
+          "agenc: startup restore of run run-parallel-c (session session-parallel-c) failed; " +
+            "it was not published and can be resumed again: " +
+            "startup restore publication failed for run run-parallel-c: injected publication failure for run-parallel-c",
+        );
+        expect(io.stderrText()).toContain(
+          "agenc: daemon restored 6 session(s) open at its last shutdown",
+        );
+        const client = await daemonClient(host);
+        await expect(client.request("health.ready", {})).resolves.toMatchObject({
+          ready: true,
+          restoringSessions: 0,
+        });
+        const listed = await client.request("agent.list", {});
+        expect(
+          listed.agents
+            .filter((agent) => parallelRunIds.includes(agent.agentId))
+            .map((agent) => agent.agentId),
+        ).toEqual(parallelRunIds.filter((runId) => runId !== "run-parallel-c"));
+        // The session it had published was closed by the rollback, which a
+        // client reads as a session to resume again.
+        await expect(
+          client.request("session.attach", {
+            sessionId: "session-parallel-c",
+            clientId: "client-parallel-c",
+          }),
+        ).rejects.toThrow(/closed/);
+        await expect(
+          client.request("session.attach", {
+            sessionId: "session-parallel-d",
+            clientId: "client-parallel-d",
+          }),
+        ).resolves.toMatchObject({ sessionId: "session-parallel-d" });
+        signalProcess.emit("SIGTERM");
+        await expect(running).resolves.toBe(0);
+      } finally {
+        published.mockRestore();
+        await rm(agencHome, { recursive: true, force: true });
+      }
+    });
+
+    it("holds a request for a session still restoring, and answers the rest at once", async () => {
+      const agencHome = await tempAgencHome();
+      const host = createHost(agencHome);
+      const signalProcess = createSignalProcess();
+      const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+      seedParallelRuns(agencHome);
+      const gated = gatedRunner();
       const running = runAgenCDaemonCli(
         { kind: "command", action: "run" },
-        { host, io: createIo(), runner: gated.runner },
+        { host, io: createIo(), signalProcess, runner: gated.runner },
       );
-      const failure = running.catch((error: unknown) => error);
-      for (const runId of parallelRunIds) await gated.release(runId);
+      try {
+        await expect(waitForPid(pidPath)).resolves.toBe(4100);
+        await gated.release("run-parallel-b");
+        const client = await daemonClient(host, 5_000);
+        // run-parallel-a is still held: its requests wait, by session id and
+        // by run id alike.
+        const attach = client.request("session.attach", {
+          sessionId: "session-parallel-a",
+          clientId: "client-held",
+        });
+        const byRunId = client.request("session.snapshot", {
+          sessionId: "run-parallel-a",
+        });
+        const agentAttach = client.request("agent.attach", {
+          agentId: "run-parallel-a",
+          clientId: "client-held-agent",
+        });
+        expect(await stillPending(attach)).toBe(true);
+        expect(await stillPending(byRunId)).toBe(true);
+        expect(await stillPending(agentAttach)).toBe(true);
+        // Health, listings and the session already restored answer now.
+        await expect(client.request("health.ready", {})).resolves.toMatchObject({
+          ready: true,
+          restoringSessions: 5,
+        });
+        const sessions = await client.request("session.list", {});
+        expect(sessions.sessions.map((session) => session.sessionId)).toContain(
+          "session-parallel-b",
+        );
+        expect(sessions.sessions.map((session) => session.sessionId)).not.toContain(
+          "session-parallel-a",
+        );
+        const agents = await client.request("agent.list", {});
+        expect(agents.agents.map((agent) => agent.agentId)).toEqual(
+          expect.arrayContaining(["run-parallel-b"]),
+        );
+        expect(agents.agents.map((agent) => agent.agentId)).not.toContain(
+          "run-parallel-a",
+        );
+        await expect(
+          client.request("session.attach", {
+            sessionId: "session-parallel-b",
+            clientId: "client-other",
+          }),
+        ).resolves.toMatchObject({ sessionId: "session-parallel-b" });
+        expect(await stillPending(attach)).toBe(true);
+        // Published: each held request then runs exactly as it would have.
+        await gated.release("run-parallel-a");
+        await expect(attach).resolves.toMatchObject({
+          sessionId: "session-parallel-a",
+          clientId: "client-held",
+        });
+        await expect(byRunId).rejects.toThrow();
+        await expect(agentAttach).rejects.toThrow(/runtime-settings authority/);
+      } finally {
+        for (const runId of parallelRunIds) {
+          if (!gated.finished.includes(runId)) await gated.release(runId);
+        }
+        signalProcess.emit("SIGTERM");
+        await expect(running).resolves.toBe(0);
+        await rm(agencHome, { recursive: true, force: true });
+      }
+    });
 
-      const settled = await failure;
-      const publishedRunIds = published.mock.calls.map(([params]) => params.agentId);
-      published.mockRestore();
-      expect(settled instanceof AggregateError ? settled.errors[0] : settled).toBe(
-        primaryFailure,
+    it("restores a requested session next instead of after the whole queue", async () => {
+      const agencHome = await tempAgencHome();
+      const host = createHost(agencHome);
+      const io = createIo();
+      const signalProcess = createSignalProcess();
+      const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+      seedParallelRuns(agencHome);
+      const gated = gatedRunner();
+      const running = runAgenCDaemonCli(
+        { kind: "command", action: "run" },
+        {
+          host,
+          io,
+          signalProcess,
+          runner: gated.runner,
+        },
       );
-      expect(publishedRunIds).toEqual([
-        "run-parallel-a",
-        "run-parallel-b",
-        "run-parallel-c",
-      ]);
-      const attemptFor = (runId: string): string | undefined =>
-        gated.restoreAgent.mock.calls.find(([params]) => params.agentId === runId)?.[0]
-          .restoreAttemptId;
-      // Its own rollback, as before, then every runtime rebuilt ahead of it.
-      expect(rollbackRestoredAgent.mock.calls).toEqual([
-        ["run-parallel-c", attemptFor("run-parallel-c")],
-        ["run-parallel-d", attemptFor("run-parallel-d")],
-        ["run-parallel-e", attemptFor("run-parallel-e")],
-        ["run-parallel-f", attemptFor("run-parallel-f")],
-      ]);
-      await rm(agencHome, { recursive: true, force: true });
+      try {
+        await expect(waitForPid(pidPath)).resolves.toBe(4100);
+        await vi.waitFor(() =>
+          expect(gated.started).toEqual(parallelRunIds.slice(0, 4)),
+        );
+        const client = await daemonClient(host, 5_000);
+        // The last session in recovery order.
+        const attach = client.request("session.attach", {
+          sessionId: "session-parallel-f",
+          clientId: "client-last",
+        });
+        expect(await stillPending(attach)).toBe(true);
+        // The first free slot goes to it, ahead of run-parallel-e.
+        await gated.release("run-parallel-a");
+        await vi.waitFor(() => expect(gated.started).toHaveLength(5));
+        expect(gated.started[4]).toBe("run-parallel-f");
+        await gated.release("run-parallel-f");
+        await expect(attach).resolves.toMatchObject({
+          sessionId: "session-parallel-f",
+        });
+        // It came back after one rebuild plus the ones in flight: run-parallel-e
+        // started only after it, and has not finished.
+        expect(gated.started.indexOf("run-parallel-f")).toBeLessThan(
+          gated.started.indexOf("run-parallel-e") === -1
+            ? Number.POSITIVE_INFINITY
+            : gated.started.indexOf("run-parallel-e"),
+        );
+        expect(gated.finished).not.toContain("run-parallel-e");
+      } finally {
+        for (const runId of parallelRunIds) {
+          if (!gated.finished.includes(runId)) await gated.release(runId);
+        }
+        await waitForStartupRestores(host);
+        signalProcess.emit("SIGTERM");
+        await expect(running).resolves.toBe(0);
+        await rm(agencHome, { recursive: true, force: true });
+      }
+    });
+
+    it("resumes of a session still restoring wait for it and never rebuild it twice", async () => {
+      const agencHome = await tempAgencHome();
+      const host = createHost(agencHome);
+      const signalProcess = createSignalProcess();
+      const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+      const runId = "run-parallel-a";
+      const rolloutPath = seedParallelRuns(agencHome).get(runId)!;
+      const gated = gatedRunner();
+      const running = runAgenCDaemonCli(
+        { kind: "command", action: "run" },
+        { host, io: createIo(), signalProcess, runner: gated.runner },
+      );
+      try {
+        await expect(waitForPid(pidPath)).resolves.toBe(4100);
+        await vi.waitFor(() => expect(gated.started).toContain(runId));
+        const client = await daemonClient(host, 5_000);
+        const rolloutStats = await stat(rolloutPath);
+        const cwdStats = await stat(process.cwd());
+        const resume = client.request("agent.create", {
+          cwd: process.cwd(),
+          resumeSessionId: runId,
+          resumeRolloutPath: rolloutPath,
+          resumeSourceProof: {
+            dev: String(rolloutStats.dev),
+            ino: String(rolloutStats.ino),
+            size: String(rolloutStats.size),
+            sha256: createHash("sha256")
+              .update(await readFile(rolloutPath))
+              .digest("hex"),
+            cwdDev: String(cwdStats.dev),
+            cwdIno: String(cwdStats.ino),
+          },
+          runtimeOptions: TEST_RUNTIME_OPTIONS,
+        });
+        expect(await stillPending(resume)).toBe(true);
+        await gated.release(runId);
+        // Restored with a live runtime, the session refuses a second one,
+        // exactly as it does once startup is over.
+        await expect(resume).rejects.toThrow(
+          `canonical session ${runId} already has a live daemon agent`,
+        );
+        expect(
+          gated.restoreAgent.mock.calls.filter(([params]) => params.agentId === runId),
+        ).toHaveLength(1);
+      } finally {
+        for (const id of parallelRunIds) {
+          if (!gated.finished.includes(id)) await gated.release(id);
+        }
+        await waitForStartupRestores(host);
+        signalProcess.emit("SIGTERM");
+        await expect(running).resolves.toBe(0);
+        await rm(agencHome, { recursive: true, force: true });
+      }
+    });
+
+    it("shutdown lets the rebuilds in flight finish and suspends them, and starts no other", async () => {
+      const agencHome = await tempAgencHome();
+      const host = createHost(agencHome);
+      const io = createIo();
+      const signalProcess = createSignalProcess();
+      const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+      seedParallelRuns(agencHome);
+      const suspendIdleAgentForDaemonShutdown = vi.fn(async () => ({
+        disposition: "suspended" as const,
+      }));
+      const rollbackRestoredAgent = vi.fn(async () => {});
+      const gated = gatedRunner({
+        suspendIdleAgentForDaemonShutdown,
+        rollbackRestoredAgent,
+      });
+      const published = vi.spyOn(AgenCDaemonAgentManager.prototype, "restoreAgent");
+      try {
+        const running = runAgenCDaemonCli(
+          { kind: "command", action: "run" },
+          { host, io, signalProcess, runner: gated.runner },
+        );
+        await expect(waitForPid(pidPath)).resolves.toBe(4100);
+        await vi.waitFor(() =>
+          expect(gated.started).toEqual(parallelRunIds.slice(0, 4)),
+        );
+        const client = await daemonClient(host, 5_000);
+        const waitingForQueued = client.request("session.attach", {
+          sessionId: "session-parallel-f",
+          clientId: "client-queued",
+        });
+        expect(await stillPending(waitingForQueued)).toBe(true);
+        signalProcess.emit("SIGTERM");
+        // A request for a session that will not be restored is answered.
+        await expect(waitingForQueued).rejects.toThrow();
+        // The four in flight finish during shutdown and are published...
+        for (const runId of parallelRunIds.slice(0, 4)) await gated.release(runId);
+        await expect(running).resolves.toBe(0);
+        expect(published.mock.calls.map(([params]) => params.agentId).sort()).toEqual(
+          parallelRunIds.slice(0, 4),
+        );
+        // ...then suspended like every other idle session. None leaked.
+        expect(
+          suspendIdleAgentForDaemonShutdown.mock.calls.map(([agentId]) => agentId).sort(),
+        ).toEqual(parallelRunIds.slice(0, 4));
+        expect(rollbackRestoredAgent).not.toHaveBeenCalled();
+        // The two queued ones were never started. Their runs are untouched and
+        // restored by the next start.
+        expect(gated.started).toEqual(parallelRunIds.slice(0, 4));
+        expect(io.stderrText()).toContain(
+          "agenc: daemon shutdown stopped restoring the sessions open at its last shutdown; " +
+            "2 of 6 were not restored and will be at the next start",
+        );
+      } finally {
+        published.mockRestore();
+        await rm(agencHome, { recursive: true, force: true });
+      }
+    });
+
+    it("shutdown aborts a rebuild that outlives its grace and publishes nothing for it", async () => {
+      const agencHome = await tempAgencHome();
+      const host = createHost(agencHome);
+      const io = createIo();
+      const signalProcess = createSignalProcess();
+      const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+      seedRecoverableDaemonState(agencHome, {
+        cwd: process.cwd(),
+        runId: "run-slow",
+        sessionId: "session-slow",
+      });
+      const gated = gatedRunner({ honorAbort: true });
+      const published = vi.spyOn(AgenCDaemonAgentManager.prototype, "restoreAgent");
+      try {
+        const running = runAgenCDaemonCli(
+          { kind: "command", action: "run" },
+          {
+            host,
+            io,
+            signalProcess,
+            runner: gated.runner,
+            startupRestoreShutdownGraceMs: 50,
+          },
+        );
+        await expect(waitForPid(pidPath)).resolves.toBe(4100);
+        await vi.waitFor(() => expect(gated.started).toEqual(["run-slow"]));
+        signalProcess.emit("SIGTERM");
+        await expect(running).resolves.toBe(0);
+        const signal = gated.restoreAgent.mock.calls[0]?.[0].signal;
+        expect(signal?.aborted).toBe(true);
+        expect(published).not.toHaveBeenCalled();
+        expect(io.stderrText()).toContain("1 of 1 were not restored");
+      } finally {
+        published.mockRestore();
+        await rm(agencHome, { recursive: true, force: true });
+      }
     });
   });
 
@@ -6557,6 +7021,7 @@ snapshot_max_bytes = 64
         },
       );
       await expect(waitForPid(pidPath)).resolves.toBe(4100);
+      await waitForStartupRestores(host);
       expect(restoredOptions[0]).toMatchObject({
         conversationId: runId,
         resumeConversation: true,
@@ -6592,6 +7057,7 @@ snapshot_max_bytes = 64
         },
       );
       await expect(waitForPid(pidPath)).resolves.toBe(4100);
+      await waitForStartupRestores(host);
       expect(restoredOptions[1]).toMatchObject({
         conversationId: runId,
         resumeConversation: true,
@@ -6978,6 +7444,7 @@ snapshot_max_bytes = 64
       host, io: createIo(), signalProcess: firstSignal, runner: makeRunner(true),
     });
     await expect(waitForPid(resolveAgenCDaemonPidPath(host.env, host.userHome))).resolves.toBe(4100);
+    await waitForStartupRestores(host);
     expect(restoredSessions[0]?.state.unsafePeek().history).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "tool", toolCallId: "tool-completed" }),
     ]));
@@ -6993,6 +7460,7 @@ snapshot_max_bytes = 64
       host, io: createIo(), signalProcess: secondSignal, runner: makeRunner(false),
     });
     await expect(waitForPid(resolveAgenCDaemonPidPath(host.env, host.userHome))).resolves.toBe(4100);
+    await waitForStartupRestores(host);
     expect(restoredSessions[1]?.state.unsafePeek().history).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: "tool", toolCallId: "tool-completed" }),
     ]));
@@ -7392,6 +7860,7 @@ snapshot_max_bytes = 64
       },
     );
     await expect(waitForPid(pidPath)).resolves.toBe(4100);
+    await waitForStartupRestores(host);
     expect(restoreBootstrapOptions?.conversationId).toBe(createdAgentId);
     expect(restoreBootstrapOptions?.resumeConversation).toBe(true);
     expect(

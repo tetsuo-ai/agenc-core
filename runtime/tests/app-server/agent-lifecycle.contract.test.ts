@@ -3116,6 +3116,96 @@ describe("AgenC background agent lifecycle", () => {
     expect(session).not.toHaveProperty("activeAttachmentIds");
   });
 
+  it("agent.create waits for the daemon's startup restore of the session it resumes", async () => {
+    const fixture = createResumeFixture("conv-restoring1");
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_resumed"]),
+      now: sequence(["2026-08-19T12:00:01.000Z"]),
+    });
+    const restoreAgent = vi.fn(async () => true);
+    const startupRestore = createDeferred();
+    let restoring = true;
+    const waitForStartupRestore = vi.fn((ids: readonly string[]) =>
+      restoring && ids.includes("conv-restoring1")
+        ? startupRestore.promise
+        : undefined,
+    );
+    const agents = new AgenCDaemonAgentManager({
+      now: sequence(["2026-08-19T12:00:00.000Z"]),
+      runner: {
+        startAgent: vi.fn(async () => {
+          throw new Error("not used");
+        }),
+        restoreAgent,
+      },
+      sessionManager: sessions,
+      waitForStartupRestore,
+    });
+
+    const created = createTestAgent(agents, {
+      resumeSessionId: "conv-restoring1",
+      resumeRolloutPath: fixture.rolloutPath,
+      resumeSourceProof: fixture.sourceProof,
+      cwd: fixture.cwd,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // Nothing is rebuilt while the daemon is still restoring that session.
+    expect(restoreAgent).not.toHaveBeenCalled();
+    expect(waitForStartupRestore).toHaveBeenCalledWith(["conv-restoring1"], undefined);
+    // Its startup restore settled without a runtime; the resume then runs as
+    // it always did, and rebuilds it once.
+    restoring = false;
+    startupRestore.resolve();
+    await expect(created).resolves.toMatchObject({
+      agentId: "conv-restoring1",
+      activeSessionIds: ["session_resumed"],
+    });
+    expect(restoreAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("agent.create refuses to resume a session its startup restore brought back live", async () => {
+    const fixture = createResumeFixture("conv-restoring2");
+    const sessions = new AgenCDaemonSessionManager();
+    const restoreAgent = vi.fn(async () => true);
+    const startupRestore = createDeferred();
+    let restoring = true;
+    const agents: AgenCDaemonAgentManager = new AgenCDaemonAgentManager({
+      runner: {
+        startAgent: vi.fn(async () => {
+          throw new Error("not used");
+        }),
+        restoreAgent,
+      },
+      sessionManager: sessions,
+      waitForStartupRestore: (ids) =>
+        restoring && ids.includes("conv-restoring2")
+          ? startupRestore.promise
+          : undefined,
+    });
+
+    const created = createTestAgent(agents, {
+      resumeSessionId: "conv-restoring2",
+      resumeRolloutPath: fixture.rolloutPath,
+      resumeSourceProof: fixture.sourceProof,
+      cwd: fixture.cwd,
+    });
+    // What the daemon's startup restore publishes when the runtime came back.
+    await agents.restoreAgent({
+      agentId: "conv-restoring2",
+      objective: "retained canonical objective",
+      status: "idle",
+      runtimeAvailable: true,
+      sessionIds: ["session_restored"],
+      metadata: { agentPath: "/root" },
+    });
+    restoring = false;
+    startupRestore.resolve();
+    await expect(created).rejects.toMatchObject({
+      code: "CANONICAL_SESSION_ALREADY_ACTIVE",
+    });
+    expect(restoreAgent).not.toHaveBeenCalled();
+  });
+
   it("agent.create explicitly reopens a retained canonical session", async () => {
     const fixture = createResumeFixture("conv-retained1");
     const sessions = new AgenCDaemonSessionManager({

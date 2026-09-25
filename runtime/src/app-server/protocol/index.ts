@@ -3942,6 +3942,13 @@ export interface HealthReadyResult extends JsonObject {
   readonly ready: boolean;
   readonly uptimeMs: number;
   readonly now: string;
+  /**
+   * Sessions open at the daemon's last shutdown that it is still restoring.
+   * The daemon answers requests while it restores them; one that names such a
+   * session waits for its restore. 0 once all of them are restored. Absent
+   * from daemons that restored every session before they started serving.
+   */
+  readonly restoringSessions?: number;
 }
 
 export interface HealthMemoryStats extends JsonObject {
