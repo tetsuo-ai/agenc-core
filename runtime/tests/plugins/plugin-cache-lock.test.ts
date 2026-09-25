@@ -614,6 +614,42 @@ describe("plugin cache lock leases", () => {
     await expect(readdir(pluginCacheLockDirectory(cacheRoot))).resolves.toEqual(["owner.owner-a"]);
     await owner.release();
   });
+
+  test("a dead lease that carries this process's own pid is reclaimed after expiry", async () => {
+    const { cacheRoot } = await setup();
+    const lockDir = pluginCacheLockDirectory(cacheRoot);
+    await mkdir(lockDir, { mode: 0o700 });
+    await writeFile(join(lockDir, "owner.previous-incarnation"), `${JSON.stringify({
+      ownerToken: "previous-incarnation",
+      pid: process.pid,
+      heartbeatAtMs: Date.now() - 10 * PLUGIN_CACHE_LOCK_LEASE_TTL_MS,
+    })}\n`, { mode: 0o600 });
+    const lock = await acquirePluginCacheLock(cacheRoot, {
+      createOwnerToken: () => "restarted",
+      acquireTimeoutMs: 300,
+      pollIntervalMs: 20,
+    });
+    expect(lock.ownerToken).toBe("restarted");
+    await expect(readdir(lockDir)).resolves.toEqual(["owner.restarted"]);
+    await lock.release();
+  });
+
+  test("a held same-process token with an expired heartbeat is not reclaimed", async () => {
+    const { cacheRoot, clock } = await setup();
+    const owner = await acquirePluginCacheLock(cacheRoot, clockedOwner(clock, "owner-a", {
+      pid: process.pid,
+      leaseTtlMs: 1_000,
+      isProcessAlive: () => true,
+    }));
+    clock.advance(5_000);
+    await expect(acquirePluginCacheLock(cacheRoot, clockedOwner(clock, "owner-b", {
+      acquireTimeoutMs: 0,
+      leaseTtlMs: 1_000,
+      isProcessAlive: () => false,
+    }))).rejects.toThrow(manualRemoval(cacheRoot));
+    await expect(readdir(pluginCacheLockDirectory(cacheRoot))).resolves.toEqual(["owner.owner-a"]);
+    await owner.release();
+  });
 });
 
 function manualRemoval(cacheRoot: string): RegExp {

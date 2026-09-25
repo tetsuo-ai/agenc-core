@@ -24,6 +24,7 @@ const PLUGIN_CACHE_LOCK_POLL_INTERVAL_MS = 100;
 
 const OWNER_FILE_PREFIX = "owner.";
 const OWNER_TOKEN_PATTERN = /^[A-Za-z0-9_-]+$/u;
+const heldOwnerTokens = new Set<string>();
 
 export interface PluginCacheLockHooks {
   readonly nowMs?: () => number;
@@ -185,6 +186,7 @@ function createHandle(
   identity: LockIdentity,
   hooks: ResolvedLockHooks,
 ): PluginCacheLockHandle {
+  heldOwnerTokens.add(ownerToken);
   let refreshTail: Promise<void> = Promise.resolve();
   let released = false;
 
@@ -215,10 +217,14 @@ function createHandle(
     },
     release: async () => {
       released = true;
-      await refreshTail;
-      if (!await lockIdentityMatches(lockDir, identity)) return;
-      await unlink(ownerFilePath(lockDir, ownerToken)).catch(() => {});
-      await rmdir(lockDir).catch(() => {});
+      try {
+        await refreshTail;
+        if (!await lockIdentityMatches(lockDir, identity)) return;
+        await unlink(ownerFilePath(lockDir, ownerToken)).catch(() => {});
+        await rmdir(lockDir).catch(() => {});
+      } finally {
+        heldOwnerTokens.delete(ownerToken);
+      }
     },
   };
 }
@@ -328,12 +334,17 @@ function pidIsDefinitelyDead(pid: number, hooks: ResolvedLockHooks): boolean {
   return isLockOwnerPid(pid) && !hooks.isProcessAlive(pid);
 }
 
+function ownerPidIsDead(lease: OwnerLease, hooks: ResolvedLockHooks): boolean {
+  if (lease.pid === process.pid) return !heldOwnerTokens.has(lease.ownerToken);
+  return pidIsDefinitelyDead(lease.pid, hooks);
+}
+
 function ownerLeaseIsReclaimable(
   lease: OwnerLease,
   nowMs: number,
   hooks: ResolvedLockHooks,
 ): boolean {
-  return pidIsDefinitelyDead(lease.pid, hooks) &&
+  return ownerPidIsDead(lease, hooks) &&
     nowMs - lease.heartbeatAtMs >= hooks.leaseTtlMs;
 }
 
