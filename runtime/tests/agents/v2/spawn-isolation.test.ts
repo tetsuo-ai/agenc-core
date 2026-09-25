@@ -441,6 +441,23 @@ describe("spawn_agent isolation", () => {
     expect(mockDelegate).not.toHaveBeenCalled();
   });
 
+  it("reports a child that planning refused as a spawn with no effect", async () => {
+    const { session } = await crossProviderFixture(["deepseek"]);
+    const refusal = "Sub-agents on DeepSeek use its default endpoint, but a custom base URL is set (DEEPSEEK_BASE_URL). " +
+      "Remove it, or use DeepSeek as the main session's provider.";
+    Object.assign(session.providerService, {
+      previewChildDestination: async () => { throw new Error(refusal); },
+    });
+    const result = await createSpawnAgentTool(makeOptions(session)).execute({
+      message: "inspect", task_name: "worker", provider: "deepseek", model: "deepseek-v4-pro",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("custom base URL is set");
+    // Nothing was spawned, so the session must not wait for an effect review.
+    expect(result.effectDisposition).toMatchObject({ disposition: "confirmed_no_effect" });
+    expect(mockDelegate).not.toHaveBeenCalled();
+  });
+
   /** A grok session that may reach DeepSeek through the managed AgenC route. */
   async function managedRouteFixture(agents: Partial<AgentsConfig>) {
     const fixture = await crossProviderFixture(["agenc", "deepseek"], true, "grok", agents);

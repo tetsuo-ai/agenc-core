@@ -970,7 +970,11 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           });
         } catch (error) {
           if (error instanceof ProviderNotRequestedError) return refuseNotRequested(error);
-          throw error;
+          // Planning only resolves the child's route, endpoint and credentials;
+          // nothing has started yet, so a refusal here (a custom base URL, an
+          // unsupported sign-in) spawned nothing and must not hold the session
+          // for an effect review.
+          return failSpawn(error instanceof Error ? error.message : String(error));
         }
         const consent = await authorizeChildExecutionPlan(session, proposedPlan);
         if (consent.kind !== "granted") {
