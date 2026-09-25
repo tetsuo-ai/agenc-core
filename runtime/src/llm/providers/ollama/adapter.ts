@@ -628,7 +628,7 @@ export class OllamaProvider implements LLMProvider {
         kind: "response",
         transport: "chat",
         provider: this.name,
-        model: String(response?.model ?? params.model ?? this.config.model),
+        model: readString(response?.model) || String(params.model ?? this.config.model),
         payload: {
           ...(cloneProviderTracePayload(response) ??
             { error: "provider_response_trace_unavailable" }),

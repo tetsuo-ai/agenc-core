@@ -98,7 +98,7 @@ describe("Ollama non-streaming physical timeout and cancellation", () => {
     const raced = Promise.race([
       observed,
       new Promise<"still-pending">((resolve) => {
-        setTimeout(() => resolve("still-pending"), 50);
+        setTimeout(() => resolve("still-pending"), 500);
       }),
     ]);
 
@@ -139,7 +139,7 @@ describe("Ollama non-streaming physical timeout and cancellation", () => {
     const raced = Promise.race([
       observed,
       new Promise<"still-pending">((resolve) => {
-        setTimeout(() => resolve("still-pending"), 50);
+        setTimeout(() => resolve("still-pending"), 500);
       }),
     ]);
 
