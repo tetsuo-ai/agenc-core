@@ -314,22 +314,10 @@ function createResumeFixture(
     );
   }
   eventSequence += 1;
+  const suspendedId = `run-suspended:${sessionId}:1`;
   rollout.append(
     options.suspended === true
-      ? {
-          eventId: `run-suspended:${sessionId}:1`,
-          id: `run-suspended:${sessionId}:1`,
-          seq: eventSequence,
-          msg: {
-            type: "run_suspended",
-            payload: {
-              runId: sessionId,
-              epoch: 1,
-              reason: "daemon_shutdown_idle",
-              suspendedAt: "2026-05-01T12:31:00.000Z",
-            },
-          },
-        }
+      ? { eventId: suspendedId, id: suspendedId, seq: eventSequence, msg: { type: "run_suspended", payload: { runId: sessionId, epoch: 1, reason: "daemon_shutdown_idle", suspendedAt: "2026-05-01T12:31:00.000Z" } } }
       : options.cancelRequested === true
       ? {
           eventId: `run-cancel-request:${sessionId}:1`,
@@ -412,24 +400,33 @@ function createResumeFixture(
   }
   const rolloutPath = rollout.rolloutPath;
   rollout.close();
-  const sourceStats = lstatSync(rolloutPath, { bigint: true });
-  const cwdStats = lstatSync(dirs.cwd, { bigint: true });
-  const sourceProof = {
-    dev: sourceStats.dev.toString(10),
-    ino: sourceStats.ino.toString(10),
-    size: sourceStats.size.toString(10),
-    sha256: createHash("sha256")
-      .update(readFileSync(rolloutPath))
-      .digest("hex"),
-    cwdDev: cwdStats.dev.toString(10),
-    cwdIno: cwdStats.ino.toString(10),
-  };
+  const sourceProof = resumeSourceProofFor(rolloutPath, dirs.cwd);
   resumeFixtureCleanups.push(() => {
     dirs.restoreEnv();
     rmSync(dirs.home, { recursive: true, force: true });
     rmSync(dirs.cwd, { recursive: true, force: true });
   });
   return { cwd: dirs.cwd, rolloutPath, sourceProof };
+}
+
+/** A daemon agent manager whose runner can restore, with its session manager and spies. */
+function restoringAgentManager() {
+  const sessions = new AgenCDaemonSessionManager({
+    createSessionId: sequence(["session_resumed"]),
+    now: sequence(["2026-08-19T12:00:01.000Z"]),
+  });
+  const startAgent = vi.fn(async () => ({
+    agentId: "unexpected_fresh_agent",
+    startedAt: "2026-08-19T12:00:00.500Z",
+    status: "running" as const,
+  }));
+  const restoreAgent = vi.fn(async () => true);
+  const agents = new AgenCDaemonAgentManager({
+    now: sequence(["2026-08-19T12:00:00.000Z"]),
+    runner: { startAgent, restoreAgent },
+    sessionManager: sessions,
+  });
+  return { sessions, startAgent, restoreAgent, agents };
 }
 
 /** The trusted source proof for a rollout file as it is on disk now. */
@@ -3243,21 +3240,7 @@ describe("AgenC background agent lifecycle", () => {
 
   it("agent.create explicitly reopens a retained canonical session", async () => {
     const fixture = createResumeFixture("conv-retained1");
-    const sessions = new AgenCDaemonSessionManager({
-      createSessionId: sequence(["session_resumed"]),
-      now: sequence(["2026-08-19T12:00:01.000Z"]),
-    });
-    const startAgent = vi.fn(async () => ({
-      agentId: "unexpected_fresh_agent",
-      startedAt: "2026-08-19T12:00:00.500Z",
-      status: "running" as const,
-    }));
-    const restoreAgent = vi.fn(async () => true);
-    const agents = new AgenCDaemonAgentManager({
-      now: sequence(["2026-08-19T12:00:00.000Z"]),
-      runner: { startAgent, restoreAgent },
-      sessionManager: sessions,
-    });
+    const { sessions, startAgent, restoreAgent, agents } = restoringAgentManager();
 
     await expect(
       createTestAgent(agents, {
@@ -3424,23 +3407,33 @@ describe("AgenC background agent lifecycle", () => {
     // rollout holds no user message. After a daemon restart they could not be
     // reopened: "agent.create resume rollout has no bounded canonical user
     // objective" (2026-09-25 Goal E2E, chat conv-muhfawwh).
-    const restoringAgents = () => {
-      const sessions = new AgenCDaemonSessionManager({
-        createSessionId: sequence(["session_resumed"]),
-        now: sequence(["2026-08-19T12:00:01.000Z"]),
-      });
-      const startAgent = vi.fn(async () => ({
-        agentId: "unexpected_fresh_agent",
-        startedAt: "2026-08-19T12:00:00.500Z",
-        status: "running" as const,
-      }));
-      const restoreAgent = vi.fn(async () => true);
-      const agents = new AgenCDaemonAgentManager({
-        now: sequence(["2026-08-19T12:00:00.000Z"]),
-        runner: { startAgent, restoreAgent },
-        sessionManager: sessions,
-      });
-      return { sessions, startAgent, restoreAgent, agents };
+    const neverMessaged = (sessionId: string) =>
+      createResumeFixture(sessionId, { neverMessaged: true, suspended: true });
+    /** Rewrites the rollout on disk and returns the proof for what is there now. */
+    const rewrite = (fixture: ReturnType<typeof createResumeFixture>, edit: (text: string) => string) => {
+      writeFileSync(fixture.rolloutPath, edit(readFileSync(fixture.rolloutPath, "utf8")));
+      return resumeSourceProofFor(fixture.rolloutPath, fixture.cwd);
+    };
+    const resume = (
+      agents: AgenCDaemonAgentManager,
+      sessionId: string,
+      fixture: ReturnType<typeof createResumeFixture>,
+      sourceProof = fixture.sourceProof,
+    ) => createTestAgent(agents, {
+      resumeSessionId: sessionId,
+      resumeRolloutPath: fixture.rolloutPath,
+      resumeSourceProof: sourceProof,
+      cwd: fixture.cwd,
+    });
+    const expectRefused = async (
+      sessionId: string,
+      fixture: ReturnType<typeof createResumeFixture>,
+      message: string | RegExp,
+      sourceProof = fixture.sourceProof,
+    ) => {
+      const { restoreAgent, agents } = restoringAgentManager();
+      await expect(resume(agents, sessionId, fixture, sourceProof)).rejects.toThrow(message);
+      expect(restoreAgent).not.toHaveBeenCalled();
     };
 
     it("reopens as the empty conversation it is, labelled like a new interactive session", async () => {
@@ -3450,16 +3443,9 @@ describe("AgenC background agent lifecycle", () => {
         suspended: true,
         runtimeSettings: (cwd) => canonicalRuntimeSettings("default", cwd),
       });
-      const { sessions, startAgent, restoreAgent, agents } = restoringAgents();
+      const { sessions, startAgent, restoreAgent, agents } = restoringAgentManager();
 
-      await expect(
-        createTestAgent(agents, {
-          resumeSessionId: sessionId,
-          resumeRolloutPath: fixture.rolloutPath,
-          resumeSourceProof: fixture.sourceProof,
-          cwd: fixture.cwd,
-        }),
-      ).resolves.toMatchObject({
+      await expect(resume(agents, sessionId, fixture)).resolves.toMatchObject({
         agentId: sessionId,
         objective: "Interactive session",
         status: "running",
@@ -3484,87 +3470,35 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     it("is still refused when the rollout is truncated", async () => {
-      const sessionId = "conv-never-messaged-truncated";
-      const fixture = createResumeFixture(sessionId, { neverMessaged: true, suspended: true });
-      const bytes = readFileSync(fixture.rolloutPath);
-      writeFileSync(fixture.rolloutPath, bytes.subarray(0, bytes.byteLength - 20));
-      const { restoreAgent, agents } = restoringAgents();
-
-      await expect(
-        createTestAgent(agents, {
-          resumeSessionId: sessionId,
-          resumeRolloutPath: fixture.rolloutPath,
-          resumeSourceProof: resumeSourceProofFor(fixture.rolloutPath, fixture.cwd),
-          cwd: fixture.cwd,
-        }),
-      ).rejects.toThrow(/malformed JSON|failed strict canonical validation/);
-      expect(restoreAgent).not.toHaveBeenCalled();
+      const fixture = neverMessaged("conv-never-messaged-truncated");
+      const proof = rewrite(fixture, (text) => text.slice(0, -20));
+      await expectRefused("conv-never-messaged-truncated", fixture, /malformed JSON|failed strict canonical validation/, proof);
     });
 
     it("is still refused without a session_meta line, or empty", async () => {
-      const sessionId = "conv-never-messaged-no-meta";
-      const fixture = createResumeFixture(sessionId, { neverMessaged: true, suspended: true });
-      const lines = readFileSync(fixture.rolloutPath, "utf8").split("\n");
-      writeFileSync(fixture.rolloutPath, lines.slice(1).join("\n"));
-      const { restoreAgent, agents } = restoringAgents();
-
-      await expect(
-        createTestAgent(agents, {
-          resumeSessionId: sessionId,
-          resumeRolloutPath: fixture.rolloutPath,
-          resumeSourceProof: resumeSourceProofFor(fixture.rolloutPath, fixture.cwd),
-          cwd: fixture.cwd,
-        }),
-      ).rejects.toThrow("has no initial metadata");
-
-      writeFileSync(fixture.rolloutPath, "");
-      await expect(
-        createTestAgent(agents, {
-          resumeSessionId: sessionId,
-          resumeRolloutPath: fixture.rolloutPath,
-          resumeSourceProof: resumeSourceProofFor(fixture.rolloutPath, fixture.cwd),
-          cwd: fixture.cwd,
-        }),
-      ).rejects.toThrow("has no bounded canonical user objective");
-      expect(restoreAgent).not.toHaveBeenCalled();
+      const fixture = neverMessaged("conv-never-messaged-no-meta");
+      const withoutMeta = rewrite(fixture, (text) => text.split("\n").slice(1).join("\n"));
+      await expectRefused("conv-never-messaged-no-meta", fixture, "has no initial metadata", withoutMeta);
+      const empty = rewrite(fixture, () => "");
+      await expectRefused("conv-never-messaged-no-meta", fixture, "has no bounded canonical user objective", empty);
     });
 
     it("is still refused when the rollout belongs to another session", async () => {
-      const sessionId = "conv-never-messaged-foreign";
-      const fixture = createResumeFixture(sessionId, { neverMessaged: true, suspended: true });
-      const [first, ...rest] = readFileSync(fixture.rolloutPath, "utf8").split("\n");
-      const meta = JSON.parse(first!) as { payload: { sessionId: string } };
-      meta.payload.sessionId = "conv-someone-else";
-      writeFileSync(fixture.rolloutPath, [JSON.stringify(meta), ...rest].join("\n"));
-      const { restoreAgent, agents } = restoringAgents();
-
-      await expect(
-        createTestAgent(agents, {
-          resumeSessionId: sessionId,
-          resumeRolloutPath: fixture.rolloutPath,
-          resumeSourceProof: resumeSourceProofFor(fixture.rolloutPath, fixture.cwd),
-          cwd: fixture.cwd,
-        }),
-      ).rejects.toThrow(/does not match session id and cwd|failed strict canonical validation/);
-      expect(restoreAgent).not.toHaveBeenCalled();
+      const fixture = neverMessaged("conv-never-messaged-foreign");
+      const proof = rewrite(fixture, (text) => {
+        const [first, ...rest] = text.split("\n");
+        const meta = JSON.parse(first!) as { payload: { sessionId: string } };
+        meta.payload.sessionId = "conv-someone-else";
+        return [JSON.stringify(meta), ...rest].join("\n");
+      });
+      await expectRefused("conv-never-messaged-foreign", fixture, /does not match session id and cwd|failed strict canonical validation/, proof);
     });
 
     it("does not cover a session whose user message has no text", async () => {
       // It did receive a user message (an image-only one): that is not a
       // never-messaged session, and stays refused as before.
-      const sessionId = "conv-image-only";
-      const fixture = createResumeFixture(sessionId, { objective: "   ", suspended: true });
-      const { restoreAgent, agents } = restoringAgents();
-
-      await expect(
-        createTestAgent(agents, {
-          resumeSessionId: sessionId,
-          resumeRolloutPath: fixture.rolloutPath,
-          resumeSourceProof: fixture.sourceProof,
-          cwd: fixture.cwd,
-        }),
-      ).rejects.toThrow("has no bounded canonical user objective");
-      expect(restoreAgent).not.toHaveBeenCalled();
+      const fixture = createResumeFixture("conv-image-only", { objective: "   ", suspended: true });
+      await expectRefused("conv-image-only", fixture, "has no bounded canonical user objective");
     });
   });
 
