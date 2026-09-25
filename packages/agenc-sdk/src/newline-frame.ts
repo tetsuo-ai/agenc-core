@@ -8,7 +8,7 @@ import { AGENC_SDK_MAX_FRAME_BYTES } from "./limits.js";
  * Overflow is sticky: later chunks are ignored.
  */
 export class SdkNewlineFrameDecoder {
-  #chunks: Buffer[] = [];
+  readonly #chunks: Buffer[] = [];
   #bytes = 0;
   #overflowed = false;
   /** A CR already ended the frame; a following LF is the same delimiter. */

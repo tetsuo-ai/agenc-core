@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MAX_BUFFERED_PROMPT_EVENTS,
+  AGENC_SDK_MAX_FRAME_BYTES,
   promptViaSubprocess,
   signalOwnedDetachedProcessGroup,
   type AgencPromptEvent,
@@ -52,7 +53,9 @@ function createFakeSpawn(script: FakeChildScript): {
     const stdout = new EventEmitter() as EventEmitter & {
       setEncoding: (encoding: string) => void;
     };
-    stdout.setEncoding = () => {};
+    stdout.setEncoding = () => {
+      throw new Error("stdout setEncoding must not be called");
+    };
     const stderr = new EventEmitter() as EventEmitter & {
       setEncoding: (encoding: string) => void;
     };
@@ -127,7 +130,9 @@ function createManualChild(): {
   const stdout = new EventEmitter() as EventEmitter & {
     setEncoding: (encoding: string) => void;
   };
-  stdout.setEncoding = () => {};
+  stdout.setEncoding = () => {
+      throw new Error("stdout setEncoding must not be called");
+    };
   const stderr = new EventEmitter() as EventEmitter & {
     setEncoding: (encoding: string) => void;
   };
@@ -218,7 +223,9 @@ function createControllableSpawn(): {
     const stdout = new EventEmitter() as EventEmitter & {
       setEncoding: (encoding: string) => void;
     };
-    stdout.setEncoding = () => {};
+    stdout.setEncoding = () => {
+      throw new Error("stdout setEncoding must not be called");
+    };
     const stderr = new EventEmitter() as EventEmitter & {
       setEncoding: (encoding: string) => void;
     };
@@ -345,6 +352,22 @@ function reapProcess(pid: number): void {
  * inherited stdout, writes that pid, then exits with no stream-json result.
  * `signalPath` makes the descendant record SIGTERM before it exits.
  */
+function overflowIgnoreTermCommand(pidPath: string): readonly [string, string] {
+  const grandchild = 'process.on("SIGTERM",()=>{});setInterval(()=>{},1000);';
+  const wrapper = [
+    'const {spawn}=require("node:child_process");const fs=require("node:fs");',
+    'process.on("SIGTERM",()=>{});',
+    'process.stdout.on("error",()=>{});',
+    `const child=spawn(process.execPath,["-e",${JSON.stringify(grandchild)}],{stdio:"ignore"});`,
+    `fs.writeFileSync(${JSON.stringify(pidPath)},process.pid+"\\n"+String(child.pid));`,
+    `process.stdout.write(Buffer.alloc(${AGENC_SDK_MAX_FRAME_BYTES + 1},0x61));`,
+    "setInterval(()=>{},1000);",
+  ].join("");
+  const scriptPath = `${pidPath}.overflow.cjs`;
+  writeFileSync(scriptPath, wrapper);
+  return [process.execPath, scriptPath];
+}
+
 function detachedHolderCommand(
   pidPath: string,
   signalPath?: string,
@@ -638,7 +661,9 @@ describe("agenc-sdk subprocess transport", () => {
       const stdout = new EventEmitter() as EventEmitter & {
         setEncoding: (encoding: string) => void;
       };
-      stdout.setEncoding = () => {};
+      stdout.setEncoding = () => {
+      throw new Error("stdout setEncoding must not be called");
+    };
       const stderr = new EventEmitter() as EventEmitter & {
         setEncoding: (encoding: string) => void;
       };
@@ -948,6 +973,40 @@ describe("agenc-sdk subprocess transport", () => {
       expect(await pollUntil(() => isLiveProcess(pid), 1_000)).toBe(true);
       return pid;
     }
+
+    it.skipIf(process.platform === "win32")(
+      "SIGKILLs a detached group that ignores SIGTERM after stdout overflow",
+      async () => {
+        const root = mkdtempSync(join(tmpdir(), "agenc-sdk-overflow-group-"));
+        const pidPath = join(root, "group.pid");
+        try {
+          const run = promptViaSubprocess("overflow group", {
+            agencCommand: overflowIgnoreTermCommand(pidPath),
+            detachProcessGroup: true,
+          });
+          const pending = run.result();
+          expect(await pollUntil(() => existsSync(pidPath), 2_000)).toBe(true);
+          const [leader, grandchild] = readFileSync(pidPath, "utf8")
+            .trim()
+            .split("\n")
+            .map((value) => Number(value));
+          expect(leader).toBeGreaterThan(1);
+          expect(grandchild).toBeGreaterThan(1);
+          descendants.push(leader, grandchild);
+          await expect(pending).rejects.toThrow(/stdout frame exceeded/i);
+          expect(
+            await pollUntil(
+              () => !isLiveProcess(leader) && !isLiveProcess(grandchild),
+              2_000,
+            ),
+          ).toBe(true);
+          expect(() => process.kill(-leader, 0)).toThrow(/ESRCH/u);
+          expect(isLiveProcess(process.pid)).toBe(true);
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      },
+    );
 
     it.skipIf(process.platform === "win32")(
       "SIGKILLs a detached descendant that keeps stdout open after the wrapper exits",

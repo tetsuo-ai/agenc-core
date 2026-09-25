@@ -206,7 +206,7 @@ export class AgencSocketTransport implements AgencTransport {
   readonly #requestTimeoutMs: number;
   readonly #onNotification: ((message: JsonObject) => void) | undefined;
   readonly #onClose: ((error: Error | null) => void) | undefined;
-  #decoder = new SdkNewlineFrameDecoder();
+  readonly #decoder = new SdkNewlineFrameDecoder();
   #closed = false;
 
   private constructor(socket: Socket, options: AgencSocketTransportOptions) {
@@ -216,8 +216,7 @@ export class AgencSocketTransport implements AgencTransport {
     this.#onNotification = options.onNotification;
     this.#onClose = options.onClose;
 
-    socket.setEncoding("utf8");
-    socket.on("data", (chunk: string) => {
+    socket.on("data", (chunk: Buffer | string) => {
       this.#handleData(chunk);
     });
     socket.once("error", (error) => {
@@ -317,7 +316,7 @@ export class AgencSocketTransport implements AgencTransport {
     if (notifyClose) this.#onClose?.(error);
   }
 
-  #handleData(chunk: string): void {
+  #handleData(chunk: Buffer | string): void {
     if (this.#closed) return;
     const frames = this.#decoder.push(chunk);
     if (this.#decoder.overflowed) {

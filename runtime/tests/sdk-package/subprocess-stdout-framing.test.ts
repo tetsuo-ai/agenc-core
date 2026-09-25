@@ -34,8 +34,10 @@ function resultChunk(message = "ok"): Buffer {
 interface ProgrammableChild {
   readonly spawn: AgencSubprocessSpawnFn;
   readonly kills: string[];
+  readonly stdoutEncodings: string[];
   readonly listenerCounts: () => {
     stdoutData: number;
+    exit: number;
     abort: number;
   };
   emitStdout(chunk: Buffer | string): void;
@@ -43,18 +45,24 @@ interface ProgrammableChild {
   exit(code?: number | null, signal?: string | null): void;
 }
 
-function createProgrammableChild(signal?: AbortSignal): ProgrammableChild {
+function createProgrammableChild(
+  signal?: AbortSignal,
+  exitOnSigterm = false,
+): ProgrammableChild {
   const processEmitter = new EventEmitter();
   const stdout = new EventEmitter();
   const stderr = new EventEmitter();
   const kills: string[] = [];
+  const stdoutEncodings: string[] = [];
 
   const spawn: AgencSubprocessSpawnFn = () => {
     const stdoutStream = stdout as EventEmitter & {
       setEncoding: (encoding: string) => void;
       pause: () => void;
     };
-    stdoutStream.setEncoding = () => {};
+    stdoutStream.setEncoding = (encoding: string) => {
+      stdoutEncodings.push(encoding);
+    };
     stdoutStream.pause = () => {};
     const stderrStream = stderr as EventEmitter & {
       setEncoding: (encoding: string) => void;
@@ -85,7 +93,13 @@ function createProgrammableChild(signal?: AbortSignal): ProgrammableChild {
         return child;
       },
       kill: (sig?: string) => {
-        kills.push(sig ?? "SIGTERM");
+        const signalName = sig ?? "SIGTERM";
+        kills.push(signalName);
+        if (exitOnSigterm && signalName === "SIGTERM") {
+          stdout.emit("end");
+          processEmitter.emit("exit", null, "SIGTERM");
+          processEmitter.emit("close", null, "SIGTERM");
+        }
         return true;
       },
     };
@@ -95,8 +109,10 @@ function createProgrammableChild(signal?: AbortSignal): ProgrammableChild {
   return {
     spawn,
     kills,
+    stdoutEncodings,
     listenerCounts: () => ({
       stdoutData: getEventListeners(stdout, "data").length,
+      exit: getEventListeners(processEmitter, "exit").length,
       abort:
         signal === undefined ? 0 : getEventListeners(signal, "abort").length,
     }),
@@ -139,6 +155,7 @@ describe("SDK subprocess stdout frame limit", () => {
     child.emitStdout(resultChunk());
     child.exit(0);
 
+    expect(child.stdoutEncodings).toEqual([]);
     await expect(run.result()).resolves.toMatchObject({
       exitCode: 0,
       finalMessage: "ok",
@@ -163,8 +180,9 @@ describe("SDK subprocess stdout frame limit", () => {
       await expect(first).rejects.toThrow(/stdout frame exceeded 16777216 bytes/i);
       expect(child.kills).toEqual(["SIGTERM"]);
       await new Promise((resolve) => setTimeout(resolve, STDOUT_OVERFLOW_KILL_GRACE_MS + 30));
-      expect(child.kills).toEqual(["SIGTERM", "SIGKILL"]);
-      expect(processKill).not.toHaveBeenCalled();
+    expect(child.kills).toEqual(["SIGTERM", "SIGKILL"]);
+    expect(child.listenerCounts().exit).toBe(0);
+    expect(processKill).not.toHaveBeenCalled();
 
       child.emitStdout(resultChunk("must-not-win"));
       child.exit(0);
@@ -177,6 +195,22 @@ describe("SDK subprocess stdout frame limit", () => {
       expect((drained as Error).message).toContain("child-warning");
       expect(child.listenerCounts().stdoutData).toBe(0);
       expect(child.listenerCounts().abort).toBe(0);
+    } finally {
+      processKill.mockRestore();
+    }
+  });
+
+  it("does not SIGKILL a child that exits on SIGTERM", async () => {
+    const child = createProgrammableChild(undefined, true);
+    const processKill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    try {
+      const run = promptViaSubprocess("go", { spawn: child.spawn });
+      child.emitStdout(Buffer.alloc(AGENC_SDK_MAX_FRAME_BYTES + 1, 0x61));
+      await expect(run.result()).rejects.toThrow(/stdout frame exceeded/i);
+      await new Promise((resolve) => setTimeout(resolve, STDOUT_OVERFLOW_KILL_GRACE_MS + 30));
+      expect(child.kills).toEqual(["SIGTERM"]);
+      expect(child.listenerCounts().exit).toBe(0);
+      expect(processKill).not.toHaveBeenCalled();
     } finally {
       processKill.mockRestore();
     }
@@ -231,6 +265,44 @@ describe("SDK subprocess overflow reaps a real child", () => {
         /stdout frame exceeded 16777216 bytes/i,
       );
       await childExit;
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "accepts an exact-limit frame of invalid UTF-8 from a real child",
+    async () => {
+      const encodings: string[] = [];
+      const resultLine = `${JSON.stringify({ ...RESULT_LINE, finalMessage: "raw" })}\n`;
+      const spawn: AgencSubprocessSpawnFn = () => {
+        const child = nodeSpawn(
+          process.execPath,
+          [
+            "-e",
+            `process.stdout.write(Buffer.alloc(${AGENC_SDK_MAX_FRAME_BYTES}, 0xff)); process.stdout.write(${JSON.stringify(`\n${resultLine}`)});`,
+          ],
+          { stdio: ["pipe", "pipe", "pipe"] },
+        );
+        const stdout = child.stdout;
+        if (stdout !== null) {
+          const original = stdout.setEncoding.bind(stdout);
+          stdout.setEncoding = ((encoding: BufferEncoding) => {
+            encodings.push(encoding);
+            return original(encoding);
+          }) as typeof stdout.setEncoding;
+        }
+        if (child.pid !== undefined) livePids.add(child.pid);
+        child.once("exit", () => {
+          if (child.pid !== undefined) livePids.delete(child.pid);
+        });
+        return child as unknown as AgencSubprocessChild;
+      };
+
+      const run = promptViaSubprocess("go", { spawn });
+      expect(encodings).toEqual([]);
+      await expect(run.result()).resolves.toMatchObject({
+        exitCode: 0,
+        finalMessage: "raw",
+      });
     },
   );
 });

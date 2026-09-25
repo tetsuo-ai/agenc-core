@@ -345,8 +345,11 @@ export function promptViaSubprocess(
     } catch {
       // Stream already closed.
     }
-    escalateTermination();
+    // Settle before signalling so a child that exits inside SIGTERM cannot
+    // replace this overflow error, and so the one-shot escalation listener
+    // is the only exit listener still attached.
     finishError(error);
+    escalateTermination();
   };
   const consumeStdout = (chunk: string | Buffer) => {
     if (done || stdoutEnded || stdoutDecoder.overflowed) return;
@@ -410,18 +413,34 @@ export function promptViaSubprocess(
       ownsDetachedProcessGroup,
     );
   };
+  let removeKillEscalationListener: (() => void) | null = null;
   const clearKillEscalation = () => {
-    if (killEscalation === undefined) return;
-    clearTimeout(killEscalation);
-    killEscalation = undefined;
+    if (killEscalation !== undefined) {
+      clearTimeout(killEscalation);
+      killEscalation = undefined;
+    }
+    removeKillEscalationListener?.();
+    removeKillEscalationListener = null;
   };
   const escalateTermination = () => {
-    signalChild("SIGTERM");
     clearKillEscalation();
-    killEscalation = setTimeout(() => {
+    const onEscalationExit = () => {
+      clearKillEscalation();
+    };
+    child.once("exit", onEscalationExit);
+    removeKillEscalationListener = () => {
+      child.removeListener("exit", onEscalationExit);
+    };
+    signalChild("SIGTERM");
+    if (removeKillEscalationListener === null) return;
+    const timer = setTimeout(() => {
       killEscalation = undefined;
+      removeKillEscalationListener?.();
+      removeKillEscalationListener = null;
       signalChild("SIGKILL");
     }, STDOUT_OVERFLOW_KILL_GRACE_MS);
+    timer.unref();
+    killEscalation = timer;
   };
   const terminateRetainedDescendants = () => {
     signalChild("SIGKILL");
@@ -494,7 +513,8 @@ export function promptViaSubprocess(
     settleFromTerminalState();
   };
 
-  child.stdout?.setEncoding("utf8");
+  // Leave stdout as raw bytes. setEncoding("utf8") would replace invalid
+  // sequences with U+FFFD before the frame ceiling is counted.
   child.stderr?.setEncoding("utf8");
   if (child.stdout !== null) {
     child.stdout.on("data", onStdoutData);
