@@ -125,8 +125,8 @@ npm --workspace=@tetsuo-ai/runtime run eval:agent -- \
 npm --workspace=@tetsuo-ai/runtime run eval:agent -- \
   --suite eval/tasks \
   --agent-command "agenc -p --output-format json {prompt}" \
-  --provider xai --model grok-4 \
-  --output eval/reports/grok-4.json
+  --provider grok --model grok-4.6 \
+  --output eval/reports/grok-4.6.json
 ```
 
 ### Model / config matrix

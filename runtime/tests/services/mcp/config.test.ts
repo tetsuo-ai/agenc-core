@@ -2,11 +2,26 @@ import { describe, expect, test } from "vitest";
 
 import {
   dedupPluginMcpServers,
+  getMcpServerSignature,
   pluginMcpDuplicateSuppressionError,
 } from "../../../src/services/mcp/config.js";
 import type { ScopedMcpServerConfig } from "../../../src/services/mcp/types.js";
+import { mcpServerDefinitionId } from "../../../src/services/mcp/utils.js";
 
 describe("MCP config plugin duplicate suppression", () => {
+  test("snapshot launch fields do not change the installed definition identity", () => {
+    const installed: ScopedMcpServerConfig = {
+      scope: "dynamic", command: "node", args: ["/plugins/sample/server.mjs"], cwd: "/plugins/sample",
+      pluginServer: { pluginName: "sample", serverName: "main", pluginRoot: "/plugins/sample",
+        snapshotRoot: "/cache/digest" },
+    };
+    const withLaunch: ScopedMcpServerConfig = { ...installed, pluginServer: {
+      ...installed.pluginServer!, snapshotLaunch: { command: "node", args: ["/cache/digest/server.mjs"], cwd: "/cache/digest" },
+    } };
+    expect(mcpServerDefinitionId("plugin:sample:main", withLaunch))
+      .toBe(mcpServerDefinitionId("plugin:sample:main", installed));
+    expect(getMcpServerSignature(withLaunch)).toBe(getMcpServerSignature(installed));
+  });
   test("keeps identical relative entry points from different plugin directories", () => {
     const common = { scope: "dynamic" as const, command: "node", args: ["./server/main.mjs"] };
     const plugins = {

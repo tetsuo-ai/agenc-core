@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 
 vi.mock("./ink.js", () => ({
   Box: () => null,
@@ -94,6 +95,7 @@ vi.mock("./tool-rendering.js", () => ({
 }));
 
 import {
+  AGENC_DAEMON_LOST_TURN_REASON,
   AGENC_DAEMON_RECONNECTING_MESSAGE,
   attachDaemonAgentTuiSession,
   type AgenCDaemonConnectionState,
@@ -775,8 +777,13 @@ describe("AgenC TUI daemon session adapter", () => {
 
   it("attaches the TUI to an agent before subscribing to its daemon session", async () => {
     const client = createClient();
+    const fullAnswer = "The notes CLI passes its tests";
+    const answerId = createHash("sha256").update(fullAnswer).digest("hex");
     client.request = async (method, params) => {
       client.requests.push({ method, params });
+      if (method === "session.artifact.read") {
+        return { sessionId: "session_1", id: answerId, encoding: "base64", data: Buffer.from(fullAnswer).toString("base64"), size: Buffer.byteLength(fullAnswer), offset: 0, nextOffset: null } as never;
+      }
       if (method === "agent.attach") {
         return {
           agentId: "agent_1",
@@ -820,7 +827,7 @@ describe("AgenC TUI daemon session adapter", () => {
           asOfSequence: 20,
           messages: [
             { messageId: "user_1", commitEventId: "event:1", role: "user", text: "Build a notes CLI", committedSequence: 1 },
-            { messageId: "assistant_1", commitEventId: "event:19", role: "assistant", text: "The notes CLI passes its tests", committedSequence: 19 },
+            { messageId: "assistant_1", commitEventId: "event:19", role: "assistant", text: "[truncated]", textArtifact: { id: answerId, digest: answerId, size: Buffer.byteLength(fullAnswer), mimeType: "text/plain" }, committedSequence: 19 },
           ],
         } as never;
       }
@@ -858,6 +865,7 @@ describe("AgenC TUI daemon session adapter", () => {
         params: { agentId: "agent_1", clientId: "tui_1" },
       },
       { method: "session.transcript.v2", params: { sessionId: "session_1" } },
+      { method: "session.artifact.read", params: { sessionId: "session_1", id: answerId, offset: 0, length: 524_288 } },
     ]);
     expect(received).toEqual([{ type: "turn_delta", id: "turn_1" }]);
   });
@@ -1095,7 +1103,7 @@ describe("AgenC TUI daemon session adapter", () => {
     ]);
     expect(client.requests).toContainEqual({
       method: "session.mcp.status",
-      params: { sessionId: "session_1" },
+      params: { sessionId: "session_1", includeStoppedState: true },
     });
     expect(localAddServer).not.toHaveBeenCalled();
     expect(session.listMcpClients).toBeUndefined();
@@ -1160,6 +1168,29 @@ describe("AgenC TUI daemon session adapter", () => {
       servers: [],
       tools: [],
     });
+  });
+
+  it("accepts a stopped plugin status and keeps effective server projection usable", async () => {
+    const client = createClient();
+    client.request = async (method, params) => {
+      client.requests.push({ method, params });
+      if (method === "session.mcp.status") return {
+        sessionId: "session_1", revision: 1,
+        servers: [{ name: "plugin:sample:lazy", transport: "stdio", enabled: true,
+          required: false, state: "stopped", toolCount: 1 }],
+        tools: [{ serverName: "plugin:sample:lazy", name: "mcp.plugin:sample:lazy.ping" }],
+      } as never;
+      return {} as never;
+    };
+    const session = await attachDaemonTuiSession({
+      baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1",
+    });
+    await expect(session.refreshMcpSurface?.()).resolves.toMatchObject({
+      servers: [expect.objectContaining({ state: "stopped" })],
+    });
+    expect(session.mcpSurfaceSnapshot?.().servers[0]?.state).toBe("stopped");
+    expect(client.requests.find(request => request.method === "session.mcp.status")?.params)
+      .toMatchObject({ includeStoppedState: true });
   });
 
   it("rejects non-canonical daemon MCP server identities before caching them", async () => {
@@ -1820,52 +1851,6 @@ describe("AgenC TUI daemon session adapter", () => {
       params: {
         sessionId: "session_1",
         content: "run tests",
-      },
-    });
-  });
-
-  it("preserves exact editor selection metadata through message.stream", async () => {
-    const client = createClient();
-    const session = createDaemonTuiSession({
-      baseSession: createBaseSession(),
-      client,
-      sessionId: "session_1",
-      clientId: "tui_1",
-    });
-
-    await session.submit?.("explain this selection", {
-      editorInteraction: {
-        interactionId: "interaction-1",
-        kind: "explain",
-        policy: "read_only",
-        editorInstanceId: "editor-1",
-        bufferHandle: 7,
-        changedtick: 19,
-        contentSha256: "a".repeat(64),
-        path: "/workspace/src/main.ts",
-        range: {
-          start: { line: 4, column: 2 },
-          end: { line: 6, column: 9 },
-        },
-        selectionMode: "block",
-      },
-    });
-
-    expect(client.requests).toHaveLength(1);
-    expect(client.requests[0]).toMatchObject({
-      method: "message.stream",
-      params: {
-        sessionId: "session_1",
-        content: "explain this selection",
-        metadata: {
-          editorInteraction: {
-            range: {
-              start: { line: 4, column: 2 },
-              end: { line: 6, column: 9 },
-            },
-            selectionMode: "block",
-          },
-        },
       },
     });
   });
@@ -2677,347 +2662,6 @@ describe("AgenC TUI daemon session adapter", () => {
     ]);
   });
 
-  it("forwards workspace editor lease and synchronization RPCs without session projection", async () => {
-    const client = createClient();
-    const session = createDaemonTuiSession({
-      baseSession: createBaseSession(),
-      client,
-      sessionId: "session_1",
-      clientId: "tui_1",
-    });
-    const lease = {
-      workspaceRoot: "/workspace",
-      editorInstanceId: "editor_1",
-      leaseToken: "00000000-0000-4000-8000-000000000001",
-      epoch: 2,
-    };
-
-    await expect(
-      session.acquireWorkspaceEditor?.({
-        workspaceRoot: lease.workspaceRoot,
-        editorInstanceId: lease.editorInstanceId,
-      }),
-    ).resolves.toMatchObject({
-      ...lease,
-      sequence: -1,
-      expiresAt: 15_000,
-    });
-    await expect(
-      session.syncWorkspaceEditor?.({
-        ...lease,
-        sequence: 1,
-        buffers: [
-          {
-            path: "/workspace/src/index.ts",
-            bufferHandle: 7,
-            changedtick: 4,
-            contentSha256: "a".repeat(64),
-            contentBytes: 0,
-            dirty: false,
-          },
-        ],
-      }),
-    ).resolves.toEqual({
-      accepted: true,
-      sequence: 1,
-      expiresAt: 16_000,
-      dirtyPaths: [],
-      stalePaths: [],
-    });
-    await expect(
-      session.refreshWorkspaceEditorStaleAuthority?.(lease),
-    ).resolves.toEqual({
-      refreshed: true,
-      staleAuthority: [],
-    });
-    await expect(
-      session.heartbeatWorkspaceEditor?.(lease),
-    ).resolves.toMatchObject({
-      ...lease,
-      sequence: -1,
-      expiresAt: 15_000,
-    });
-    await expect(
-      session.releaseWorkspaceEditor?.({
-        ...lease,
-        abandonDirty: false,
-      }),
-    ).resolves.toEqual({
-      released: true,
-      stalePaths: [],
-    });
-    const topologyTargets = [
-      {
-        path: "/workspace/src",
-        includeDescendants: true,
-        allowOwnedClean: true,
-      },
-      {
-        path: "/workspace/lib",
-        includeDescendants: true,
-        allowOwnedClean: false,
-      },
-    ] as const;
-    const finalBuffers = [
-      {
-        path: "/workspace/lib/index.ts",
-        bufferHandle: 7,
-        changedtick: 5,
-        contentSha256: "b".repeat(64),
-        contentBytes: 0,
-        dirty: false,
-      },
-    ] as const;
-    await expect(
-      session.reserveWorkspaceEditorTopology?.({
-        ...lease,
-        targets: topologyTargets,
-      }),
-    ).resolves.toEqual({
-      tokenId: "topology-1",
-      targets: topologyTargets,
-    });
-    await expect(
-      session.completeWorkspaceEditorTopology?.({
-        ...lease,
-        tokenId: "topology-1",
-        status: "applied",
-        sequence: 2,
-        buffers: finalBuffers,
-      }),
-    ).resolves.toEqual({
-      completed: true,
-      tokenId: "topology-1",
-      status: "applied",
-      sync: {
-        accepted: true,
-        sequence: 2,
-        expiresAt: 17_000,
-        dirtyPaths: [],
-        stalePaths: [],
-      },
-    });
-    await expect(
-      session.releaseWorkspaceEditorTopology?.({
-        ...lease,
-        tokenId: "topology-1",
-        sequence: 3,
-        buffers: finalBuffers,
-      }),
-    ).resolves.toEqual({
-      released: true,
-      tokenId: "topology-1",
-      sync: {
-        accepted: true,
-        sequence: 3,
-        expiresAt: 18_000,
-        dirtyPaths: [],
-        stalePaths: [],
-      },
-    });
-    await expect(
-      session.listRecoveredWorkspaceEditorTopologies?.(lease),
-    ).resolves.toEqual({
-      mutations: [
-        {
-          tokenId: "recovered-topology-1",
-          workspaceRoot: "/workspace",
-          targets: [
-            {
-              path: "/workspace/src",
-              includeDescendants: true,
-            },
-          ],
-          source: "editor",
-          createdAt: 123,
-        },
-      ],
-    });
-    await expect(
-      session.resolveRecoveredWorkspaceEditorTopology?.({
-        ...lease,
-        tokenId: "recovered-topology-1",
-      }),
-    ).resolves.toEqual({
-      resolved: true,
-      tokenId: "recovered-topology-1",
-      status: "unknown_outcome",
-    });
-    await expect(
-      session.getWorkspaceEditorProposal?.({
-        ...lease,
-        proposalId: "proposal-1",
-      }),
-    ).resolves.toMatchObject({
-      proposalId: "proposal-1",
-      beforeText: "const value = 1;\n",
-      afterText: "const value = 2;\n",
-    });
-    await expect(
-      session.getWorkspaceEditorProposalStatus?.({
-        ...lease,
-        proposalId: "proposal-1",
-      }),
-    ).resolves.toEqual({
-      status: "committed",
-      proposalId: "proposal-1",
-      path: "/workspace/src/index.ts",
-      source: "file_edit",
-      baseContentSha256: "a".repeat(64),
-      afterContentSha256: "b".repeat(64),
-      baseChangedtick: 4,
-      bufferHandle: 7,
-    });
-    await expect(
-      session.applyWorkspaceEditorProposal?.({
-        ...lease,
-        proposalId: "proposal-1",
-        changedtick: 5,
-        contentSha256: "b".repeat(64),
-        content: "const value = 2;\n",
-      }),
-    ).resolves.toMatchObject({
-      applied: true,
-      proposalId: "proposal-1",
-      changedtick: 5,
-    });
-    await expect(
-      session.discardWorkspaceEditorProposal?.({
-        ...lease,
-        proposalId: "proposal-1",
-      }),
-    ).resolves.toMatchObject({
-      discarded: true,
-      proposalId: "proposal-1",
-    });
-    await expect(
-      session.listWorkspaceEditorChanges?.({
-        ...lease,
-        afterSequence: 2,
-      }),
-    ).resolves.toEqual({
-      sequence: 3,
-      changes: [],
-    });
-
-    expect(client.requests).toEqual([
-      {
-        method: "workspace.editor.acquire",
-        params: {
-          workspaceRoot: "/workspace",
-          editorInstanceId: "editor_1",
-        },
-      },
-      {
-        method: "workspace.editor.sync",
-        params: {
-          ...lease,
-          sequence: 1,
-          buffers: [
-            {
-              path: "/workspace/src/index.ts",
-              bufferHandle: 7,
-              changedtick: 4,
-              contentSha256: "a".repeat(64),
-              contentBytes: 0,
-              dirty: false,
-            },
-          ],
-        },
-      },
-      {
-        method: "workspace.editor.staleAuthority.refresh",
-        params: lease,
-      },
-      {
-        method: "workspace.editor.heartbeat",
-        params: lease,
-      },
-      {
-        method: "workspace.editor.release",
-        params: {
-          ...lease,
-          abandonDirty: false,
-        },
-      },
-      {
-        method: "workspace.editor.topology.reserve",
-        params: {
-          ...lease,
-          targets: topologyTargets,
-        },
-      },
-      {
-        method: "workspace.editor.topology.complete",
-        params: {
-          ...lease,
-          tokenId: "topology-1",
-          status: "applied",
-          sequence: 2,
-          buffers: finalBuffers,
-        },
-      },
-      {
-        method: "workspace.editor.topology.release",
-        params: {
-          ...lease,
-          tokenId: "topology-1",
-          sequence: 3,
-          buffers: finalBuffers,
-        },
-      },
-      {
-        method: "workspace.editor.topology.recovered.list",
-        params: lease,
-      },
-      {
-        method: "workspace.editor.topology.recovered.resolve",
-        params: {
-          ...lease,
-          tokenId: "recovered-topology-1",
-        },
-      },
-      {
-        method: "workspace.editor.proposal.get",
-        params: {
-          ...lease,
-          proposalId: "proposal-1",
-        },
-      },
-      {
-        method: "workspace.editor.proposal.status",
-        params: {
-          ...lease,
-          proposalId: "proposal-1",
-        },
-      },
-      {
-        method: "workspace.editor.proposal.apply",
-        params: {
-          ...lease,
-          proposalId: "proposal-1",
-          changedtick: 5,
-          contentSha256: "b".repeat(64),
-          content: "const value = 2;\n",
-        },
-      },
-      {
-        method: "workspace.editor.proposal.discard",
-        params: {
-          ...lease,
-          proposalId: "proposal-1",
-        },
-      },
-      {
-        method: "workspace.editor.changes.list",
-        params: {
-          ...lease,
-          afterSequence: 2,
-        },
-      },
-    ]);
-  });
-
   it("forwards shell execution through the attached session with cancellation", async () => {
     const client = createClient();
     const session = createDaemonTuiSession({
@@ -3086,10 +2730,10 @@ describe("AgenC TUI daemon session adapter", () => {
     });
     const controller = new AbortController();
     await expect(session.executeDaemonStatusLine?.({
-      vimMode: "NORMAL", sessionId: "foreign-session", command: "never-send", cost: 100,
+      sessionId: "foreign-session", command: "never-send", cost: 100,
     }, controller.signal)).resolves.toEqual({ status: "rendered", text: "daemon-cost" });
     expect(request).toHaveBeenCalledWith("session.statusLine.execute", {
-      sessionId: "session_1", presentation: { vimMode: "NORMAL" },
+      sessionId: "session_1", presentation: {},
     }, { signal: controller.signal });
     request.mockRestore();
   });
@@ -3546,67 +3190,6 @@ describe("AgenC TUI daemon session adapter", () => {
           { type: "text", text: "typed" },
         ],
       },
-    });
-  });
-
-  it("never drains Editor-owned input into Agent submits and admits only the exact Editor interaction", async () => {
-    const client = createClient();
-    const session = createDaemonTuiSession({
-      baseSession: createBaseSession(),
-      client,
-      sessionId: "session_1",
-      clientId: "tui_1",
-    });
-    const interaction = {
-      interactionId: "editor-owned-daemon-input",
-      kind: "explain" as const,
-      policy: "read_only" as const,
-      editorInstanceId: "editor-1",
-      bufferHandle: 7,
-      changedtick: 3,
-      contentSha256: "a".repeat(64),
-      path: "src/value.ts",
-      range: {
-        start: { line: 1, column: 0 },
-        end: { line: 1, column: 5 },
-      },
-    };
-    session.enqueueIdleInput(
-      { role: "user", content: "EDITOR_ATTACHMENT_SENTINEL" },
-      {
-        workspaceView: "editor",
-        editorInteractionId: interaction.interactionId,
-      },
-    );
-
-    await session.submit("Agent prompt");
-    await session.submit("Editor prompt", {
-      editorInteraction: interaction,
-    });
-    await session.submit("later Agent prompt");
-
-    expect(client.requests).toHaveLength(3);
-    expect(client.requests[0]).toMatchObject({
-      method: "message.stream",
-      params: { content: "Agent prompt" },
-    });
-    expect(client.requests[1]).toMatchObject({
-      method: "message.stream",
-      params: {
-        content: [
-          { type: "text", text: "EDITOR_ATTACHMENT_SENTINEL" },
-          { type: "text", text: "Editor prompt" },
-        ],
-        metadata: {
-          editorInteraction: {
-            interactionId: interaction.interactionId,
-          },
-        },
-      },
-    });
-    expect(client.requests[2]).toMatchObject({
-      method: "message.stream",
-      params: { content: "later Agent prompt" },
     });
   });
 
@@ -4098,6 +3681,85 @@ describe("AgenC TUI daemon session adapter", () => {
       },
       { type: "turn_complete", id: "turn_1" },
     ]);
+  });
+
+  describe("a turn whose daemon is gone", () => {
+    function sessionWithActiveTurn(request: (method: string) => Promise<unknown>, lostTurnProbeMs?: number) {
+      const client = createClient();
+      client.request = ((method: string) => request(method)) as typeof client.request;
+      const received: JsonObject[] = [];
+      const session = createDaemonTuiSession({
+        baseSession: createBaseSession(),
+        client,
+        sessionId: "session_1",
+        clientId: "tui_1",
+        ...(lostTurnProbeMs !== undefined ? { lostTurnProbeMs } : {}),
+      });
+      const unsubscribe = session.subscribeToEvents((event) => {
+        received.push(event as JsonObject);
+      });
+      client.emit("session_1", {
+        type: "daemon.event",
+        msg: { type: "turn_started", payload: { turnId: "turn_1" } },
+      });
+      expect(session.activeTurn.unsafePeek()).toEqual({ turnId: "turn_1" });
+      return { client, session, received, unsubscribe };
+    }
+    const aborted = (events: readonly JsonObject[]) =>
+      events.filter((event) => event.type === "turn_aborted");
+
+    it("ends the turn locally once the daemon is proven unreachable, so the TUI is not busy forever", async () => {
+      // No terminal event can arrive from a killed daemon. Without this the
+      // composer stays busy: Esc cancels nothing and /exit is refused.
+      const probes: string[] = [];
+      const { client, session, received, unsubscribe } = sessionWithActiveTurn(async (method) => {
+        probes.push(method);
+        throw new Error("connect ECONNREFUSED daemon.sock");
+      });
+      client.emitConnection({ status: "disconnected", message: "Daemon connection closed" });
+      await vi.waitFor(() => expect(aborted(received)).toHaveLength(1));
+      expect(probes).toEqual(["session.snapshot"]);
+      expect(aborted(received)[0]).toMatchObject({
+        payload: { turnId: "turn_1", reason: AGENC_DAEMON_LOST_TURN_REASON },
+      });
+      expect(session.activeTurn.unsafePeek()).toBeNull();
+      // The failed probe reports "disconnected" again; the settled turn is not aborted twice.
+      client.emitConnection({ status: "disconnected", message: "connect ECONNREFUSED" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(aborted(received)).toHaveLength(1);
+      unsubscribe();
+    });
+
+    it("leaves the turn alone when the daemon answers: a dropped socket is not a dead turn", async () => {
+      const { client, session, received, unsubscribe } = sessionWithActiveTurn(async () => ({ sessionId: "session_1" }));
+      client.emitConnection({ status: "disconnected", message: "Daemon connection closed" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(aborted(received)).toHaveLength(0);
+      expect(session.activeTurn.unsafePeek()).toEqual({ turnId: "turn_1" });
+      unsubscribe();
+    });
+
+    it("ends the turn when the daemon stays silent past the probe deadline, not the 30 s RPC window", async () => {
+      const { client, received, unsubscribe } = sessionWithActiveTurn(
+        () => new Promise(() => {}),
+        25,
+      );
+      client.emitConnection({ status: "disconnected", message: "Daemon connection closed" });
+      await vi.waitFor(() => expect(aborted(received)).toHaveLength(1), { timeout: 2_000 });
+      expect(aborted(received)[0]).toMatchObject({ payload: { reason: AGENC_DAEMON_LOST_TURN_REASON } });
+      unsubscribe();
+    });
+
+    it("does not probe when no turn is in flight", async () => {
+      const client = createClient();
+      const session = createDaemonTuiSession({ baseSession: createBaseSession(), client, sessionId: "session_1", clientId: "tui_1" });
+      const unsubscribe = session.subscribeToEvents(() => {});
+      const before = client.requests.length;
+      client.emitConnection({ status: "disconnected" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(client.requests.slice(before).map((request) => request.method)).not.toContain("session.snapshot");
+      unsubscribe();
+    });
   });
 
   it("preserves initial transcript state while surfacing an existing disconnect", () => {

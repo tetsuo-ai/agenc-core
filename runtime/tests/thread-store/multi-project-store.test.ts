@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -44,6 +44,34 @@ afterEach(() => {
 });
 
 describe("MultiProjectFileThreadStore (DAE-03) — behavioral", () => {
+  it.skipIf(process.platform === "win32")("keeps a nonprimary project open for its second live writer", () => {
+    const primary = mkdtempSync(join(tmpdir(), "agenc-mp-primary-"));
+    const project = mkdtempSync(join(tmpdir(), "agenc-mp-shared-"));
+    const first = openRollout({ cwd: project, sessionId: "shared-a" });
+    const second = openRollout({ cwd: project, sessionId: "shared-b" });
+    const multi = new MultiProjectFileThreadStore({ primaryCwd: primary, agencHome });
+    const baseline = readdirSync("/dev/fd").length;
+    try {
+      multi.createThread({ threadId: "shared-a", cwd: project, rolloutStore: first });
+      multi.createThread({ threadId: "shared-b", cwd: project, rolloutStore: second });
+      const bothLive = readdirSync("/dev/fd").length;
+      multi.shutdownThread("shared-a");
+      first.close();
+      multi.flushThread("shared-b");
+      expect(multi.readThread({ threadId: "shared-b", includeArchived: false })).toMatchObject({ threadId: "shared-b" });
+      expect(readdirSync("/dev/fd").length).toBeGreaterThanOrEqual(bothLive - 6);
+      multi.shutdownThread("shared-b");
+      second.close();
+      expect(readdirSync("/dev/fd").length).toBeLessThanOrEqual(baseline + 2);
+    } finally {
+      multi.close();
+      first.close();
+      second.close();
+      rmSync(primary, { recursive: true, force: true });
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+
   it("unions listThreads and readThread across two project cwds", () => {
     const cwdA = mkdtempSync(join(tmpdir(), "agenc-mp-a-"));
     const cwdB = mkdtempSync(join(tmpdir(), "agenc-mp-b-"));

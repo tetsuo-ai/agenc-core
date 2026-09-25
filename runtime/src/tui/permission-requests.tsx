@@ -199,7 +199,8 @@ export function buildToolUseConfirm(
           return;
         }
       }
-      request.resolve(DENIED);
+      // The person at the prompt chose Deny: the turn ends as their decision.
+      request.resolve({ kind: "denied", decidedBy: "user" });
     },
     async recheckPermission() {},
   };

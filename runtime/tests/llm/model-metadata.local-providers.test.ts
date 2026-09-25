@@ -42,6 +42,7 @@ interface Call {
   readonly url: string;
   readonly method: string;
   readonly body?: string;
+  readonly authorization?: string;
 }
 
 function recordingFetch(
@@ -50,10 +51,12 @@ function recordingFetch(
   const calls: Call[] = [];
   const impl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    const authorization = new Headers(init?.headers).get("authorization");
     calls.push({
       url,
       method: init?.method ?? "GET",
       ...(typeof init?.body === "string" ? { body: init.body } : {}),
+      ...(authorization ? { authorization } : {}),
     });
     const route = routes[url];
     if (route === undefined) {
@@ -118,6 +121,62 @@ describe("provider metadata identity", () => {
       usedFallbackModelMetadata: false,
     });
   });
+
+  test.each([
+    ["grok", "XAI_BASE_URL", "XAI_API_KEY"],
+    ["groq", "GROQ_BASE_URL", "GROQ_API_KEY"],
+    ["deepseek", "DEEPSEEK_BASE_URL", "DEEPSEEK_API_KEY"],
+    ["meta", "META_BASE_URL", "MODEL_API_KEY"],
+    ["qwen", "QWEN_BASE_URL", "QWEN_API_KEY"],
+    ["qwen-token-plan", "QWEN_TOKEN_PLAN_BASE_URL", "QWEN_TOKEN_PLAN_API_KEY"],
+    ["cerebras", "CEREBRAS_BASE_URL", "CEREBRAS_API_KEY"],
+    ["lmstudio", "LMSTUDIO_BASE_URL", "LMSTUDIO_API_KEY"],
+    ["openai-compatible", "OPENAI_COMPATIBLE_BASE_URL", "OPENAI_COMPATIBLE_API_KEY"],
+  ])("%s only queries its configured API paths", async (provider, baseUrlEnv, apiKeyEnv) => {
+    const { impl, calls } = recordingFetch({
+      "https://metadata.example/v1/models": {
+        json: { object: "list", data: [{ id: "unlisted-model" }] },
+      },
+    });
+    const resolved = await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: {
+        [baseUrlEnv]: "https://metadata.example/v1",
+        [apiKeyEnv]: "provider-key",
+      },
+    }).resolve({ provider, model: "unlisted-model", config: EMPTY_CONFIG });
+
+    expect(resolved.contextWindow).toBeGreaterThan(0);
+    expect(calls[0]).toMatchObject({
+      url: "https://metadata.example/v1/models",
+      authorization: "Bearer provider-key",
+    });
+    expect(calls.map((call) => call.url)).not.toContain(
+      "https://metadata.example/api/show",
+    );
+  });
+
+  test("Ollama Cloud still uses its own native API with its own key", async () => {
+    const { impl, calls } = recordingFetch({
+      "https://ollama.com/api/show": { json: OLLAMA_SHOW },
+    });
+    const resolved = await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: { OLLAMA_API_KEY: "ollama-cloud-key", OPENAI_API_KEY: "hosted-openai-key" },
+    }).resolve({
+      provider: "ollama-cloud",
+      model: "unlisted-model",
+      config: EMPTY_CONFIG,
+    });
+
+    expect(resolved.contextWindow).toBe(32768);
+    expect(calls).toEqual([{
+      url: "https://ollama.com/api/show",
+      method: "POST",
+      body: JSON.stringify({ model: "unlisted-model" }),
+      authorization: "Bearer ollama-cloud-key",
+    }]);
+  });
 });
 
 describe("local providers resolve the real context window", () => {
@@ -179,7 +238,10 @@ describe("local providers resolve the real context window", () => {
       });
       const resolved = await new ModelMetadataResolver({
         fetchImpl: impl,
-        env: { [envKey]: "http://127.0.0.1:11434/v1" },
+        env: {
+          [envKey]: "http://127.0.0.1:11434/v1",
+          OPENAI_API_KEY: "hosted-openai-key",
+        },
       }).resolve({
         provider,
         model: "qwen2.5-coder:1.5b",
@@ -194,8 +256,66 @@ describe("local providers resolve the real context window", () => {
         "http://127.0.0.1:11434/v1/models",
         "http://127.0.0.1:11434/api/show",
       ]);
+      expect(calls[0]!.authorization).toBeUndefined();
+      expect(calls[1]!.authorization).toBeUndefined();
     });
   }
+
+  test("the default compatible metadata probe does not borrow the OpenAI key", async () => {
+    const { impl, calls } = recordingFetch({
+      "http://localhost:8000/v1/models": {
+        json: { data: [{ id: "local-model", max_model_len: 8192 }] },
+      },
+    });
+    await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: { OPENAI_API_KEY: "hosted-openai-key" },
+    }).resolve({
+      provider: "openai-compatible",
+      model: "local-model",
+      config: EMPTY_CONFIG,
+    });
+
+    expect(calls[0]?.url).toBe("http://localhost:8000/v1/models");
+    expect(calls[0]?.authorization).toBeUndefined();
+  });
+
+  test.each([
+    ["the default hosted origin", undefined, "https://api.openai.com/v1/models"],
+    ["an explicit hosted origin", "https://api.openai.com/v1", "https://api.openai.com/v1/models"],
+    ["a custom hosted origin", "https://openai.example/v1", "https://openai.example/v1/models"],
+    ["a custom local origin", "http://127.0.0.1:11434/v1", "http://127.0.0.1:11434/v1/models"],
+  ])("OpenAI session startup never queries /api/show at %s", async (_label, baseUrl, modelsUrl) => {
+    const { impl, calls } = recordingFetch({
+      [modelsUrl]: { json: { object: "list", data: [{ id: "unlisted-model" }] } },
+    });
+    const manager = new StaticModelsManager({
+      config: defaultConfig(),
+      fallbackProvider: "openai",
+      metadata: {
+        fetchImpl: impl,
+        env: {
+          OPENAI_API_KEY: "hosted-openai-key",
+          ...(baseUrl ? { OPENAI_BASE_URL: baseUrl } : {}),
+        },
+      },
+    });
+
+    const info = await manager.getModelInfo("unlisted-model");
+    expect(info.contextWindow).toBeGreaterThan(0);
+    if (baseUrl) {
+      expect(calls[0]).toMatchObject({
+        url: modelsUrl,
+        authorization: "Bearer hosted-openai-key",
+      });
+      expect(calls.filter((call) => call.authorization)).toEqual([calls[0]]);
+    } else {
+      expect(calls.every((call) => call.authorization === undefined)).toBe(true);
+    }
+    expect(calls.map((call) => call.url)).not.toContain(
+      ollamaShowUrlFromBaseUrl(baseUrl ?? "https://api.openai.com/v1"),
+    );
+  });
 
   test("a compatible server that already reports a window is not probed twice", async () => {
     // vLLM and friends expose max_model_len on /v1/models; that answer wins
@@ -250,10 +370,8 @@ describe("local providers resolve the real context window", () => {
     ]);
   });
 
-  test("a non-Ollama server that rejects the native probe still resolves", async () => {
-    // The extra POST must never turn a working setup into a failure: an
-    // unknown server 404s and the resolver falls through its usual chain.
-    const { impl } = recordingFetch({
+  test("an unrecognized local server uses the usual metadata fallbacks", async () => {
+    const { impl, calls } = recordingFetch({
       "http://127.0.0.1:8000/v1/models": {
         json: { object: "list", data: [{ id: "local-model" }] },
       },
@@ -269,6 +387,9 @@ describe("local providers resolve the real context window", () => {
 
     expect(resolved.source).not.toBe("live_endpoint");
     expect(resolved.contextWindow).toBeGreaterThan(0);
+    expect(calls.map((call) => call.url)).not.toContain(
+      "http://127.0.0.1:8000/api/show",
+    );
   });
 
   test("llama.cpp reports the window nested under meta", async () => {

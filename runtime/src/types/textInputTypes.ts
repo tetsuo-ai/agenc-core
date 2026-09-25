@@ -2,7 +2,6 @@ import type { ContentBlockParam } from "@anthropic-ai/sdk/resources/messages.mjs
 import type { UUID } from "crypto";
 import type React from "react";
 import type { PermissionResult } from "../entrypoints/agentSdkTypes.js";
-import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
 import type { Key } from "../tui/ink.js";
 import type { PastedContent } from "../utils/config.js";
 import type { ImageDimensions } from "../utils/imageResizer.js";
@@ -201,25 +200,6 @@ export type BaseTextInputProps = {
   readonly inputFilter?: (input: string, key: Key) => string;
 };
 
-/**
- * Extended props for VimTextInput
- */
-export type VimTextInputProps = BaseTextInputProps & {
-  /**
-   * Initial vim mode to use
-   */
-  readonly initialMode?: VimMode;
-
-  /**
-   * Optional callback for mode changes
-   */
-  readonly onModeChange?: (mode: VimMode) => void;
-};
-
-/**
- * Vim editor modes
- */
-export type VimMode = "INSERT" | "NORMAL" | "VISUAL";
 
 /**
  * Common properties for input hook results
@@ -252,14 +232,6 @@ export type BaseInputState = {
  * State for text input
  */
 export type TextInputState = BaseInputState;
-
-/**
- * State for vim input with mode
- */
-export type VimInputState = BaseInputState & {
-  mode: VimMode;
-  setMode: (mode: VimMode) => void;
-};
 
 /**
  * Input modes for the prompt
@@ -326,16 +298,6 @@ export type QueuedCommand = {
    * owning mount's workspace root at admission time.
    */
   executionCwd?: string;
-  /**
-   * Workspace composer that created this command. TUI queue drains may run
-   * after the user switches tabs, so ownership must travel with the prompt.
-   */
-  workspaceView?: "agent" | "editor";
-  /**
-   * Exact trusted editor metadata captured at enqueue time. Queue drains must
-   * never infer this from whichever editor attachment happens to be active.
-   */
-  editorInteraction?: SessionEditorInteraction;
   /** Defaults to the priority implied by `mode` when enqueued. */
   priority?: QueuePriority;
   uuid?: UUID;

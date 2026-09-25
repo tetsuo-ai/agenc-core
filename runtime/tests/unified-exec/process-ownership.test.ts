@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assertProcessOwnerAccess,
+  isLiveOwnedProcess,
   isProcessOwnedBy,
   processOwnerIdFromToolArgs,
 } from "../../src/unified-exec/process-ownership.js";
@@ -51,6 +52,14 @@ describe("process ownership (TOOL-01)", () => {
         requestOwnerId: "agent-a",
       }).ok,
     ).toBe(true);
+  });
+
+  it("list and kill treat running and stopping as still-owned live work (#2555)", () => {
+    expect(isLiveOwnedProcess({ status: "running" })).toBe(true);
+    expect(isLiveOwnedProcess({ status: "stopping" })).toBe(true);
+    expect(isLiveOwnedProcess({ status: "completed" })).toBe(false);
+    expect(isLiveOwnedProcess({ status: "failed" })).toBe(false);
+    expect(isLiveOwnedProcess({ status: "killed" })).toBe(false);
   });
 
   it("enumeration is stricter than per-id access: only same-owner work is owned (#2477)", () => {

@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { ConfigStore } from "../../src/config/store.js";
@@ -10,7 +11,11 @@ import { createEmptyToolPermissionContext } from "../../src/permissions/types.js
 test.each(["allow", "deny"] as const)(
   "canonical non-glob prefix is used for matching, behavior=%s",
   async (behavior) => {
-    const parent = await mkdtemp("/private/tmp/agenc-rule-prefix-review-");
+    // Resolve the temp base first: on macOS both /tmp and /var are symlinks,
+    // so an unresolved base would add a link layer this test is not measuring.
+    const parent = await mkdtemp(
+      join(await realpath(tmpdir()), "agenc-rule-prefix-review-"),
+    );
     const root = join(parent, "project");
     await mkdir(join(root, "actual-src"), { recursive: true });
     await mkdir(join(parent, "home"));

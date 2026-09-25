@@ -25,14 +25,20 @@ import {
   assertAgentInvocationEnvelope,
   type AgentInvocationEnvelope,
 } from "../contracts/agent-invocation-envelope.js";
-import type { AgentControl, LiveAgent } from "./control.js";
+import {
+  MaxDepthExceededError,
+  type AgentControl,
+  type LiveAgent,
+} from "./control.js";
 import {
   AgentCapacityQueueFullError,
   AgentConcurrencyLimitError,
+  AgentPathExistsError,
   type AgentCapacityPermit,
   type AgentRegistry,
   type AgentPath,
 } from "./registry.js";
+import { createToolEffectDispositionEvidence } from "../tools/effect-boundary.js";
 import type { ForkMode } from "./fork-context.js";
 import type { WorktreeHandle, WorktreeTurnEvidence } from "./worktree.js";
 import type { AgentThread } from "./thread.js";
@@ -42,6 +48,10 @@ import type {
   RunAgentResult,
 } from "./run-agent.js";
 import type { ReasoningEffort } from "../session/turn-context.js";
+import type { ModelInfo } from "../session/turn-context.js";
+import type { ProviderSelection } from "../session/provider-service.js";
+import { assertCrossProviderAllowed, assertChildExecutionPlan, assertPreparedChildMatchesPlan, currentChildProvider, resolveChildSelection, type ChildExecutionPlan } from "./cross-provider.js";
+import { subagentModelSettings, type SubagentModelSettings } from "./subagent-limits.js";
 import type { AssistantOutputStreamSink } from "../contracts/assistant-output-stream.js";
 import { emitWarning } from "../session/event-log.js";
 import { AgentThread as AgentThreadClass } from "./thread.js";
@@ -55,6 +65,7 @@ import {
   WorktreePreconditionError,
 } from "./worktree.js";
 import { runAgent } from "./run-agent.js";
+import { terminalFromAgentStatus } from "./status.js";
 import { ResumeManager } from "./resume.js";
 import {
   missingSandboxExecutionBoundary,
@@ -84,8 +95,18 @@ export interface DelegateOpts {
   readonly role?: string;
   readonly agentName?: string;
   readonly model?: string;
+  readonly modelInfo?: ModelInfo;
+  readonly providerSelection?: ProviderSelection;
+  readonly plan?: ChildExecutionPlan;
+  /**
+   * The child's effort and service tier. A caller that sets them applies the
+   * sub-agent limits itself, as spawn_agent does. Left out, a child without a
+   * plan runs at its provider's limits for what its role asks
+   * (`subagentModelSettings`); a full-history fork keeps its parent's. A
+   * null tier is standard: no tier, neither the parent's nor the role's.
+   */
   readonly reasoningEffort?: ReasoningEffort;
-  readonly serviceTier?: string;
+  readonly serviceTier?: string | null;
   readonly isolation?: IsolationMode;
   readonly worktreeSlug?: string;
   readonly forkMode?: ForkMode;
@@ -145,14 +166,49 @@ export type DelegateOutcome =
 
 function delegateModelOptions(
   opts: DelegateOpts,
-): Pick<DelegateOpts, "model" | "reasoningEffort" | "serviceTier"> {
+  settings: SubagentModelSettings,
+): Pick<DelegateOpts, "plan" | "model" | "modelInfo" | "providerSelection" | "reasoningEffort" | "serviceTier"> {
+  if (opts.plan !== undefined) return { plan: opts.plan };
   return {
     ...(opts.model !== undefined ? { model: opts.model } : {}),
-    ...(opts.reasoningEffort !== undefined
-      ? { reasoningEffort: opts.reasoningEffort }
+    ...(opts.modelInfo !== undefined ? { modelInfo: opts.modelInfo } : {}),
+    ...(opts.providerSelection !== undefined ? { providerSelection: opts.providerSelection } : {}),
+    ...(settings.reasoningEffort !== undefined
+      ? { reasoningEffort: settings.reasoningEffort }
       : {}),
-    ...(opts.serviceTier !== undefined ? { serviceTier: opts.serviceTier } : {}),
+    ...(settings.serviceTier !== undefined ? { serviceTier: settings.serviceTier } : {}),
   };
+}
+
+/**
+ * Evidence that a refused delegation created no child and no worktree. A
+ * caller such as spawn_agent otherwise files the refusal as an unknown
+ * outcome, which gates the whole session behind /resolve (luna-mac F1).
+ */
+function noChildCreated(reason: string): ToolEffectDispositionEvidence {
+  return createToolEffectDispositionEvidence({
+    disposition: "confirmed_no_effect",
+    evidenceKind: "boundary_not_crossed",
+    evidenceRef: "agents.delegate:refused-before-child",
+    evidenceMaterial: reason,
+  });
+}
+
+/**
+ * AgentControl.spawn commits a child only at its durable spawn edge and rolls
+ * back its slot, path and nickname for every refusal before that commit.
+ * These refusals are raised only before it (the depth cap, the slot limits,
+ * and a path another agent of this session holds). Any other failure,
+ * including a thread id collision that the commit itself can report, stays
+ * unknown.
+ */
+function refusedBeforeChildCommit(error: unknown): boolean {
+  return (
+    error instanceof AgentConcurrencyLimitError ||
+    error instanceof AgentCapacityQueueFullError ||
+    error instanceof AgentPathExistsError ||
+    error instanceof MaxDepthExceededError
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -176,6 +232,26 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
     };
   };
 
+  if (opts.plan !== undefined) {
+    try {
+      await assertChildExecutionPlan(opts.parent, opts.plan);
+      if (opts.plan.parent.agentPath !== opts.parentPath ||
+          opts.plan.task.id !== (opts.taskId ?? opts.plan.task.id)) {
+        throw new Error("child execution plan task identity changed");
+      }
+      if (opts.plan.crossProvider && forkMode !== undefined &&
+          opts.plan.route.provider !== currentChildProvider(opts.parent).provider) {
+        throw new Error("Cross-provider subagents require fork_turns = none. Omit fork_turns or set it to none.");
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return reject("INVALID_DELEGATE_REQUEST", "invalid_request", reason, noChildCreated(reason));
+    }
+  } else if (opts.providerSelection !== undefined) {
+    const reason = "consent_unavailable: a cross-provider child requires a human-granted execution plan";
+    return reject("INVALID_DELEGATE_REQUEST", "invalid_request", reason, noChildCreated(reason));
+  }
+
   if (opts.invocationEnvelope !== undefined) {
     try {
       assertAgentInvocationEnvelope(opts.invocationEnvelope);
@@ -185,10 +261,12 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
         );
       }
     } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
       return reject(
         "INVALID_DELEGATE_REQUEST",
         "invalid_request",
-        error instanceof Error ? error.message : String(error),
+        reason,
+        noChildCreated(reason),
       );
     }
   }
@@ -197,26 +275,52 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
     isolation === "worktree" &&
     (!opts.worktreeSlug || opts.worktreeSlug.trim().length === 0)
   ) {
+    const reason = "worktree isolation requires a non-empty worktreeSlug";
     return reject(
       "INVALID_DELEGATE_REQUEST",
       "invalid_request",
-      "worktree isolation requires a non-empty worktreeSlug",
+      reason,
+      noChildCreated(reason),
     );
   }
 
   const parentThreadId = opts.registry.agentIdForPath?.(opts.parentPath);
+  const requestedRole = opts.control.roleCatalog?.require(opts.role);
   const readOnlyConstraint = childReadOnlyDelegation(
     opts.parent,
-    opts.control.roleCatalog?.require(opts.role),
+    requestedRole,
     parentThreadId === undefined ? undefined : opts.registry.agentMetadataForThread?.(parentThreadId)?.executionConstraint,
   );
   if (readOnlyConstraint !== undefined && isolation === "worktree") {
+    const reason =
+      "Read-only delegation cannot create a worktree. Use isolation none.";
     return reject(
       "INVALID_DELEGATE_REQUEST",
       "invalid_request",
-      "Read-only delegation cannot create a worktree. Use isolation none.",
+      reason,
+      noChildCreated(reason),
     );
   }
+
+  // Every child runs at its provider's sub-agent limits, whatever path
+  // creates it: spawn_agent (which applies them itself), spawn_agents_on_csv
+  // workers, workflow agents. A plan carries its destination's; a fork of the
+  // full conversation keeps its parent's, so it can reuse the parent's
+  // prompt cache.
+  const modelSettings: SubagentModelSettings =
+    opts.plan === undefined && opts.providerSelection === undefined &&
+      forkMode?.kind !== "full_history"
+      ? await subagentModelSettings(opts.parent, {
+          ...(opts.model !== undefined ? { model: opts.model } : {}),
+          ...(opts.modelInfo !== undefined ? { modelInfo: opts.modelInfo } : {}),
+          ...(requestedRole !== undefined ? { role: requestedRole } : {}),
+          ...(opts.reasoningEffort !== undefined ? { reasoningEffort: opts.reasoningEffort } : {}),
+          ...(opts.serviceTier !== undefined ? { serviceTier: opts.serviceTier } : {}),
+        })
+      : {
+          ...(opts.reasoningEffort !== undefined ? { reasoningEffort: opts.reasoningEffort } : {}),
+          ...(opts.serviceTier !== undefined ? { serviceTier: opts.serviceTier } : {}),
+        };
 
   // Set up worktree if requested.
   let worktree: WorktreeHandle | undefined;
@@ -303,6 +407,10 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       ...(opts.capacityOwnerId !== undefined
         ? { capacityOwnerId: opts.capacityOwnerId }
         : {}),
+      ...(opts.plan?.crossProvider || opts.providerSelection !== undefined
+        ? { providerSelection: opts.plan?.route ?? opts.providerSelection }
+        : {}),
+      ...(opts.plan !== undefined ? { executionPlan: opts.plan } : {}),
     });
   } catch (err) {
     // Teardown worktree if we created one — slot reservation rolled back.
@@ -327,13 +435,30 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       });
     }
     const reason = err instanceof Error ? err.message : String(err);
+    // A worktree created for this child is removed above, but that is a
+    // change and its cleanup can fail, so only a spawn without one claims
+    // no effect.
+    const evidence =
+      refusedBeforeChildCommit(err) && worktree?.created !== true
+        ? noChildCreated(reason)
+        : undefined;
     if (err instanceof AgentConcurrencyLimitError) {
-      return reject("AGENT_CONCURRENCY_LIMIT", "retryable_capacity", reason);
+      return reject(
+        "AGENT_CONCURRENCY_LIMIT",
+        "retryable_capacity",
+        reason,
+        evidence,
+      );
     }
     if (err instanceof AgentCapacityQueueFullError) {
-      return reject("AGENT_CAPACITY_QUEUE_FULL", "retryable_capacity", reason);
+      return reject(
+        "AGENT_CAPACITY_QUEUE_FULL",
+        "retryable_capacity",
+        reason,
+        evidence,
+      );
     }
-    return reject("AGENT_SPAWN_REJECTED", "spawn_failed", reason);
+    return reject("AGENT_SPAWN_REJECTED", "spawn_failed", reason, evidence);
   }
 
   // Build the fork context.
@@ -342,9 +467,20 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
     opts.assertParentSessionActive?.();
     const parentMessages =
       opts.parentMessagesOverride ?? opts.parent.snapshotHistoryMessages();
+    const parentBinding = opts.parent.services?.providerService?.current?.();
+    const parentProvider = parentBinding?.provider;
+    const parentModel = parentBinding?.model ??
+      opts.parent.sessionConfiguration?.collaborationMode?.model ??
+      opts.parent.modelInfo?.slug;
+    const childProvider = opts.plan?.destination.provider ??
+      opts.providerSelection?.provider ?? parentProvider;
+    const childModel = opts.plan?.destination.model ?? opts.model ??
+      live.role.config.model ?? parentModel;
     fork = await forkSubagent({
       parent: opts.parent,
       parentMessages,
+      inheritParentInstructions: childProvider === parentProvider &&
+        childModel === parentModel,
       ...(forkMode !== undefined ? { mode: forkMode } : {}),
       ...(opts.parentMessagesOverride !== undefined
         ? { useProvidedParentMessages: true }
@@ -452,7 +588,7 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       ...(opts.silent !== undefined ? { silent: opts.silent } : {}),
       ...(opts.deferInteractiveApprovals !== undefined
         ? { deferInteractiveApprovals: opts.deferInteractiveApprovals } : {}),
-      ...delegateModelOptions(opts),
+      ...delegateModelOptions(opts, modelSettings),
       ...(opts.resumeManager !== undefined
         ? { resumeManager: opts.resumeManager }
         : {}),
@@ -619,8 +755,11 @@ async function runDelegateAgentLoop(opts: {
   readonly silent?: boolean;
   readonly deferInteractiveApprovals?: (toolName: string) => void;
   readonly model?: string;
+  readonly modelInfo?: ModelInfo;
+  readonly providerSelection?: ProviderSelection;
+  readonly plan?: ChildExecutionPlan;
   readonly reasoningEffort?: ReasoningEffort;
-  readonly serviceTier?: string;
+  readonly serviceTier?: string | null;
   readonly resumeManager?: ResumeManager;
   readonly keepAlive?: boolean;
   readonly onWorktreeEvidence: (evidence: WorktreeTurnEvidence) => void;
@@ -658,6 +797,9 @@ async function runDelegateAgentLoop(opts: {
         ...(opts.deferInteractiveApprovals !== undefined
           ? { deferInteractiveApprovals: opts.deferInteractiveApprovals } : {}),
         ...(opts.model !== undefined ? { model: opts.model } : {}),
+        ...(opts.modelInfo !== undefined ? { modelInfo: opts.modelInfo } : {}),
+        ...(opts.providerSelection !== undefined ? { providerSelection: opts.providerSelection } : {}),
+        ...(opts.plan !== undefined ? { plan: opts.plan } : {}),
         ...(opts.reasoningEffort !== undefined
           ? { reasoningEffort: opts.reasoningEffort }
           : {}),
@@ -666,6 +808,7 @@ async function runDelegateAgentLoop(opts: {
           : {}),
         ...(opts.keepAlive !== undefined ? { keepAlive: opts.keepAlive } : {}),
         onWorktreeEvidence: opts.onWorktreeEvidence,
+        onTerminalFundsStop: () => opts.control.markThreadSpawnEdgeClosed(live.agentId),
         ...(opts.finalMessageSink !== undefined
           ? { finalMessageSink: opts.finalMessageSink }
           : {}),
@@ -679,6 +822,12 @@ async function runDelegateAgentLoop(opts: {
       },
       opts.finalMessageSink,
     );
+
+    const terminal = opts.thread.live.status.value;
+    const terminalOutcome = terminalFromAgentStatus(terminal);
+    if (terminalOutcome !== undefined) {
+      opts.control.recordTerminalOutcome(opts.thread.live.agentId, terminalOutcome);
+    }
 
     if (result.outcome !== "errored") {
       opts.resumeManager?.recordSuccess(live.agentId);
@@ -706,6 +855,8 @@ async function runDelegateAgentLoop(opts: {
         parent: opts.parent,
         parentPath: opts.parentPath,
         control: opts.control,
+        ...(opts.providerSelection !== undefined ? { providerSelection: opts.providerSelection } : {}),
+        ...(opts.plan !== undefined ? { plan: opts.plan } : {}),
         onRoleProvenanceFailure: opts.onRoleProvenanceFailure,
       });
       if (!restarted) {
@@ -794,6 +945,8 @@ async function restartLiveAgent(opts: {
   readonly parent: Session;
   readonly parentPath: AgentPath;
   readonly control: AgentControl;
+  readonly providerSelection?: ProviderSelection;
+  readonly plan?: ChildExecutionPlan;
   readonly onRoleProvenanceFailure: () => void;
 }): Promise<LiveAgent | null> {
   const live = opts.thread.live;
@@ -801,6 +954,45 @@ async function restartLiveAgent(opts: {
     opts.control.assertAgentMetadataRoleWorkspace(live.metadata);
   } catch (err) {
     opts.onRoleProvenanceFailure();
+    emitWarning(
+      opts.parent.eventLog,
+      opts.parent.nextInternalSubId(),
+      "subagent_restart_failed",
+      err instanceof Error ? err.message : String(err),
+    );
+    return null;
+  }
+  const persisted = live.metadata.crossProvider;
+  const plan = live.metadata.executionPlan ?? opts.plan;
+  const providerSelection = persisted === undefined
+    ? opts.providerSelection
+    : { provider: persisted.provider, model: persisted.model };
+  try {
+    if (plan !== undefined) await assertChildExecutionPlan(opts.parent, plan);
+    if (persisted !== undefined && opts.providerSelection !== undefined &&
+        (persisted.provider !== opts.providerSelection.provider ||
+          persisted.model !== opts.providerSelection.model)) {
+      throw new Error("child provider/model pair changed before restart");
+    }
+    if (providerSelection !== undefined) {
+      assertCrossProviderAllowed(opts.parent, providerSelection.provider);
+      const validated = await resolveChildSelection(
+        opts.parent, providerSelection.provider, providerSelection.model,
+      );
+      if (validated.provider !== providerSelection.provider ||
+          validated.model !== providerSelection.model) {
+        throw new Error("child provider/model pair changed before restart");
+      }
+      const prepared = await opts.parent.providerService.prepareChild(validated, undefined, {}, true,
+        plan?.route.provider === "agenc" ? plan.destination : undefined,
+        plan?.destination);
+      try {
+        if (plan !== undefined) assertPreparedChildMatchesPlan(plan, prepared);
+      } finally {
+        await prepared.binding.instance.dispose?.();
+      }
+    }
+  } catch (err) {
     emitWarning(
       opts.parent.eventLog,
       opts.parent.nextInternalSubId(),
@@ -819,13 +1011,22 @@ async function restartLiveAgent(opts: {
   await opts.control.shutdown(live.agentId, "delegate_restart");
 
   try {
-    return await opts.control.spawn({
+    const restarted = await opts.control.spawn({
       parentPath: opts.parentPath,
       roleName: live.metadata.agentRole ?? live.role.name,
       agentPath: live.agentPath,
       preferredNickname: live.nickname,
       expectedRoleProvenance: live.metadata,
+      ...(providerSelection !== undefined ? { providerSelection } : {}),
+      ...(plan !== undefined ? { executionPlan: plan } : {}),
     });
+    if (providerSelection !== undefined &&
+        (restarted.metadata.crossProvider?.provider !== providerSelection.provider ||
+          restarted.metadata.crossProvider.model !== providerSelection.model)) {
+      await opts.control.shutdown(restarted.agentId, "delegate_restart_provenance_failed");
+      throw new Error("replacement spawn lost child provider/model provenance");
+    }
+    return restarted;
   } catch (err) {
     emitWarning(
       opts.parent.eventLog,

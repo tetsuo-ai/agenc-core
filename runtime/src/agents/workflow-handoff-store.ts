@@ -76,6 +76,9 @@ const HANDOFF_IO_POLICY = Object.freeze({
   unavailableAlias: "windows-private-path",
   verifyWindowsPrivatePath: (path, role) => assertWindowsPrivatePath(path, role, false),
 } satisfies ConfinedIoPolicy);
+const HANDOFF_READ_IO_POLICY = Object.freeze({
+  ...HANDOFF_IO_POLICY,
+} satisfies ConfinedIoPolicy);
 const HANDOFF_INSTALLATION_IO_POLICY = Object.freeze({
   ...HANDOFF_IO_POLICY,
   hardLinks: "allow",
@@ -1085,7 +1088,7 @@ export class WorkflowHandoffArtifactStore {
         if (isConfinedChildError(error)) return { observation: "conflict" as const };
         throw error;
       }
-    });
+    }, HANDOFF_READ_IO_POLICY);
   }
 
   async #removeExpectedFile(
@@ -1124,8 +1127,9 @@ export class WorkflowHandoffArtifactStore {
 
   async #withPinnedRoot<Result>(
     operation: (root: ConfinedDirectory) => Promise<Result>,
+    policy: ConfinedIoPolicy = HANDOFF_IO_POLICY,
   ): Promise<Result> {
-    return withHandoffRoot(this.#trustedRoot, operation, HANDOFF_IO_POLICY, this.#hooks);
+    return withHandoffRoot(this.#trustedRoot, operation, policy, this.#hooks);
   }
 
   #markConflict(

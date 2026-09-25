@@ -12,6 +12,7 @@ import type {
   PluginMcpServerConfig,
 } from "../config/schema.js";
 import { pluginDependencyIdentityFromSource, verifyPluginDependencyState } from "./resolution.js";
+import { isExcludedPluginPayloadDirectory, isExcludedPluginPayloadPath } from "./payload-paths.js";
 import {
   createPluginStorageAuthority,
   isReservedPluginStorageChildName,
@@ -135,6 +136,8 @@ export interface LoadedPlugin {
   readonly contentProvenance: PluginContentProvenance;
   readonly enabled: boolean;
   readonly manifest: PluginManifest;
+  /** Configuration selected using the loader's source and directory alias precedence. */
+  readonly configEntry?: PluginEntryConfig;
   readonly manifestPath?: string;
   readonly commandsPath?: string;
   readonly commandsPaths: readonly string[];
@@ -870,10 +873,8 @@ export async function createPluginFromPath(
         opts.source,
         manifest.name,
       );
-  const configuredMcpServers = applyPluginMcpServerConfig(
-    mcpServers,
-    opts.configEntry?.(manifest.name),
-  );
+  const configEntry = opts.configEntry?.(manifest.name);
+  const configuredMcpServers = applyPluginMcpServerConfig(mcpServers, configEntry);
   const lspServers = repositoryControlled
     ? nullProtoRecord<LspServerConfigInput>()
     : await loadServers<LspServerConfigInput>(
@@ -915,6 +916,7 @@ export async function createPluginFromPath(
     contentProvenance,
     enabled: opts.enabled,
     manifest: loadedManifest,
+    ...(configEntry !== undefined ? { configEntry } : {}),
     ...(manifestPath !== undefined ? { manifestPath } : {}),
     ...(await pathIsDirectory(join(pluginPath, DEFAULT_COMPONENT_DIRS.commands))
       ? { commandsPath: join(pluginPath, DEFAULT_COMPONENT_DIRS.commands) }
@@ -983,7 +985,7 @@ async function loadCommands(
   const defaultCommandsDir = join(pluginRoot, DEFAULT_COMPONENT_DIRS.commands);
   if (manifest.commands === undefined && await pathIsDirectory(defaultCommandsDir)) {
     commands.push(
-      ...(await collectMarkdownFiles(defaultCommandsDir)).map((path) => ({
+      ...(await collectMarkdownFiles(defaultCommandsDir, pluginRoot)).map((path) => ({
         name: basename(path).replace(/\.md$/iu, ""),
         path,
         metadata: { source: path },
@@ -1142,7 +1144,7 @@ function componentFromField(field: string): PluginComponentKind | undefined {
   return undefined;
 }
 
-async function collectMarkdownFiles(root: string): Promise<string[]> {
+async function collectMarkdownFiles(root: string, pluginRoot: string): Promise<string[]> {
   const out: string[] = [];
   const queue: Array<{ readonly path: string; readonly depth: number }> = [
     { path: root, depth: 0 },
@@ -1153,6 +1155,8 @@ async function collectMarkdownFiles(root: string): Promise<string[]> {
     const current = queue.shift()!;
     if (current.depth > MAX_PLUGIN_SCAN_DEPTH) continue;
     const identity = await maybeRealpath(current.path);
+    if (isExcludedPluginPayloadPath(pluginRoot, current.path) ||
+      isExcludedPluginPayloadPath(await maybeRealpath(pluginRoot), identity)) continue;
     if (visitedDirs.has(identity)) continue;
     visitedDirs.add(identity);
     let entries;
@@ -1164,7 +1168,7 @@ async function collectMarkdownFiles(root: string): Promise<string[]> {
     for (const entry of entries) {
       if (out.length >= MAX_PLUGIN_MARKDOWN_FILES) break;
       const path = join(current.path, entry.name);
-      if (entry.isDirectory()) {
+      if (entry.isDirectory() && !isExcludedPluginPayloadDirectory(entry.name)) {
         queue.push({ path, depth: current.depth + 1 });
       } else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
         out.push(path);

@@ -531,6 +531,9 @@ export function immutableToolPermissionContext(
             ...context.unattendedPolicy,
             allowlist: [...context.unattendedPolicy.allowlist],
             denylist: [...context.unattendedPolicy.denylist],
+            ...(context.unattendedPolicy.workspaceRoots === undefined
+              ? {}
+              : { workspaceRoots: [...context.unattendedPolicy.workspaceRoots] }),
           },
         }),
   }, options.forceClone === true);

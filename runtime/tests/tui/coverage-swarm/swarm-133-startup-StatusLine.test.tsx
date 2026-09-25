@@ -35,7 +35,6 @@ const harness = vi.hoisted(() => ({
     statusLine: { command: 'statusline', padding: 0 },
   } as Record<string, unknown>,
   setAppState: vi.fn(),
-  vimEnabled: false,
   worktreeSession: undefined as
     | undefined
     | {
@@ -141,11 +140,6 @@ vi.mock('../../../src/utils/worktree.js', () => ({
   getCurrentWorktreeSession: () => harness.worktreeSession,
 }))
 
-vi.mock('../../../src/tui/components/PromptInput/utils.js', () => ({
-  formatVimModeIndicator: (mode?: string) => `-- ${mode ?? 'INSERT'} --`,
-  isVimModeEnabled: () => harness.vimEnabled,
-}))
-
 vi.mock('../../../src/tui/state/AppState.js', () => ({
   useAppState: (selector: (state: Record<string, unknown>) => unknown) =>
     selector(harness.appState),
@@ -243,7 +237,6 @@ function resetHarness(): void {
     statusLine: { command: 'statusline', padding: 0 },
   }
   harness.setAppState.mockClear()
-  harness.vimEnabled = false
   harness.worktreeSession = undefined
 }
 

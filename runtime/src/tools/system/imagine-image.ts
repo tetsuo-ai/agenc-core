@@ -21,13 +21,14 @@ import {
 } from "../../llm/provider.js";
 import {
   isDirectXaiInferenceHost,
-  resolveXaiBearerToken,
+  tryResolveXaiBearerTokenForBaseUrl,
 } from "../../llm/xai-capability-config.js";
 import {
   resolveProviderApiKeyEnvironment,
   resolveProviderBaseURLEnvironment,
 } from "../../llm/registry/provider-ingress.js";
 import type { Tool, ToolResult } from "../types.js";
+import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { validationErrorToolResult } from "../results.js";
 import { safeStringify } from "../types.js";
 import type { HomeContext } from "../../config/home.js";
@@ -59,6 +60,43 @@ function json(payload: unknown, isError?: boolean): ToolResult {
   return {
     content: safeStringify(payload),
     ...(isError ? { isError: true } : {}),
+  };
+}
+
+/**
+ * MiniMax answers HTTP 200 for a refused request and names the refusal in
+ * base_resp. These codes are refusals made before any generation: rate
+ * limit, authentication, balance, content policy, invalid parameters and
+ * invalid key. Other non-zero codes (unknown error, timeout) stay unknown.
+ */
+const MINIMAX_REFUSAL_STATUS_CODES: ReadonlySet<number> = new Set([
+  1002, 1004, 1008, 1026, 2013, 2049,
+]);
+
+/**
+ * A provider answer that refused the request: HTTP 4xx, or one of MiniMax's
+ * refusal codes. The backend generated nothing, so the failure is a
+ * confirmed no-effect outcome and not an unknown one. A bare error from this
+ * side-effecting tool is filed as an unknown outcome and gates the whole
+ * session behind /resolve (#2190); live, one expired Meta token ("The OAuth2
+ * access token could not be validated.") blocked every later shell, skill
+ * and image call in the session. Network failures, 5xx answers and empty or
+ * truncated results keep the bare form: the provider may have generated and
+ * billed something the model never saw.
+ */
+function providerRejection(
+  backend: ImageBackend,
+  receipt: string,
+  message: string,
+): ToolResult {
+  return {
+    ...json({ error: message }, true),
+    effectDisposition: createToolEffectDispositionEvidence({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "provider_receipt",
+      evidenceRef: `tool:ImagineImage:${backend.kind}:${receipt}`,
+      evidenceMaterial: `${imageBackendLabel(backend)} ${receipt}: ${message}`,
+    }),
   };
 }
 
@@ -111,6 +149,8 @@ const MINIMAX_ASPECT_RATIOS = Object.freeze(
 const OPENAI_IMAGE_MODELS = Object.freeze(
   new Set([
     "gpt-image-2",
+    "gpt-image-2.5-sunburst",
+    "gpt-image-2.5-flare",
     "gpt-image-1.5",
     "gpt-image-1",
     "gpt-image-1-mini",
@@ -118,8 +158,17 @@ const OPENAI_IMAGE_MODELS = Object.freeze(
   ]),
 );
 const OPENAI_IMAGE_QUALITIES = Object.freeze(
-  new Set(["low", "medium", "high", "auto"]),
+  new Set(["low", "medium", "high", "xhigh", "max", "auto"]),
 );
+/**
+ * GPT Image 2.5 adds the xhigh and max quality settings; earlier GPT Image
+ * models stop at high (developers.openai.com image generation guide,
+ * 2026-09-22). Refusing before the request keeps the model's retry cheap.
+ */
+const OPENAI_EXTENDED_QUALITY_IMAGE_MODELS = Object.freeze(
+  new Set(["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"]),
+);
+const OPENAI_EXTENDED_IMAGE_QUALITIES = Object.freeze(new Set(["xhigh", "max"]));
 /** OpenAI's three encodings, keyed by the `output_format` it reports. */
 const OPENAI_OUTPUT_EXTENSIONS: Readonly<Record<string, string>> = Object.freeze(
   { jpeg: "jpg", webp: "webp", png: "png" },
@@ -352,11 +401,13 @@ function zaiEnvironmentBackend(
  */
 function openaiEnvironmentBackend(
   env: NodeJS.ProcessEnv,
+  sessionBaseURL?: string,
 ): ImageBackend | undefined {
   const credential = resolveProviderApiKeyEnvironment("openai", env);
   if (credential === undefined) return undefined;
   const baseURL =
     resolveProviderBaseURLEnvironment("openai", env)?.value ??
+    sessionBaseURL ??
     DEFAULT_OPENAI_BASE_URL;
   try {
     new URL(baseURL);
@@ -399,6 +450,7 @@ function resolveImageBackend(opts: ImagineImageToolOptions): BackendResolution {
   const env = opts.env ?? process.env;
   const provider = opts.getSession()?.services?.provider;
   const providerIdentity = readProviderIdentity(provider as never);
+  let oauthBaseUrlError: string | undefined;
   const metaCredential = resolveProviderApiKeyEnvironment("meta", env);
   const metaBackend = (): ImageBackend | undefined => {
     if (metaCredential === undefined) return undefined;
@@ -475,7 +527,12 @@ function resolveImageBackend(opts: ImagineImageToolOptions): BackendResolution {
   // authorize it, so a session running on the ChatGPT OAuth grant alone
   // falls through to the independent backends below.
   if (providerIdentity === "openai") {
-    const backend = openaiEnvironmentBackend(env);
+    const backend = openaiEnvironmentBackend(
+      env,
+      provider === undefined
+        ? undefined
+        : readProviderFactoryOptions(provider as never).baseURL,
+    );
     if (backend !== undefined) return { backend };
   }
 
@@ -486,27 +543,33 @@ function resolveImageBackend(opts: ImagineImageToolOptions): BackendResolution {
 
   if (providerIdentity === "grok" && provider !== undefined) {
     const factory = readProviderFactoryOptions(provider as never);
-    if (isDirectXaiInferenceHost(factory.baseURL)) {
-      const sessionKey =
-        typeof factory.apiKey === "string" ? factory.apiKey : undefined;
-      const bearer = resolveXaiBearerToken(opts.home, env, sessionKey);
-      if (bearer !== undefined) {
-        return {
-          backend: {
-            kind: "xai",
-            baseURL: withoutTrailingSlash(
-              factory.baseURL ?? DEFAULT_XAI_BASE_URL,
-            ),
-            bearer,
-          },
-        };
-      }
+    const sessionKey =
+      typeof factory.apiKey === "string" ? factory.apiKey : undefined;
+    const xaiResolution = tryResolveXaiBearerTokenForBaseUrl(
+      opts.home, env, factory.baseURL ?? DEFAULT_XAI_BASE_URL, sessionKey,
+    );
+    oauthBaseUrlError = xaiResolution.oauthBaseUrlError;
+    const bearer = xaiResolution.bearer;
+    if (bearer !== undefined) {
+      return {
+        backend: {
+          kind: "xai",
+          baseURL: withoutTrailingSlash(
+            factory.baseURL ?? DEFAULT_XAI_BASE_URL,
+          ),
+          bearer,
+        },
+      };
     }
   }
 
-  // A non-direct Grok session follows this path too: use only independent
-  // xAI authority, never the gateway's session key or base URL.
-  const xaiBearer = resolveXaiBearerToken(opts.home, env);
+  // Without a usable Grok session key, use only independent xAI authority.
+  const xaiResolution = tryResolveXaiBearerTokenForBaseUrl(
+    opts.home, env,
+    resolveProviderBaseURLEnvironment("grok", env)?.value ?? DEFAULT_XAI_BASE_URL,
+  );
+  oauthBaseUrlError ??= xaiResolution.oauthBaseUrlError;
+  const xaiBearer = xaiResolution.bearer;
   if (xaiBearer !== undefined) {
     const xaiBaseURL =
       resolveProviderBaseURLEnvironment("grok", env)?.value ??
@@ -560,7 +623,7 @@ function resolveImageBackend(opts: ImagineImageToolOptions): BackendResolution {
   }
 
   return {
-    error:
+    error: oauthBaseUrlError ??
       "ImagineImage needs a media backend credential: MODEL_API_KEY for Meta Muse Image; DASHSCOPE_API_KEY/QWEN_API_KEY or QWEN_TOKEN_PLAN_API_KEY for QwenCloud; ZAI_API_KEY for GLM-Image; OPENAI_API_KEY for GPT Image; MINIMAX_API_KEY for MiniMax Image; or /grok-login, XAI_API_KEY, or GROK_API_KEY for xAI Imagine.",
   };
 }
@@ -815,6 +878,7 @@ type QualityDecision =
 function decideImageQuality(
   backend: ImageBackend,
   quality: string | undefined,
+  model: string,
 ): QualityDecision {
   if (quality === undefined) return { kind: "use", value: undefined };
   if (backend.kind === "zai") {
@@ -824,12 +888,22 @@ function decideImageQuality(
   }
   if (backend.kind === "openai") {
     const translated = UNIVERSAL_TO_OPENAI_QUALITY[quality] ?? quality;
-    return OPENAI_IMAGE_QUALITIES.has(translated)
-      ? { kind: "use", value: translated }
-      : {
-          kind: "refuse",
-          error: `OpenAI quality must be one of ${[...OPENAI_IMAGE_QUALITIES].join(", ")}`,
-        };
+    if (!OPENAI_IMAGE_QUALITIES.has(translated)) {
+      return {
+        kind: "refuse",
+        error: `OpenAI quality must be one of ${[...OPENAI_IMAGE_QUALITIES].join(", ")}`,
+      };
+    }
+    if (
+      OPENAI_EXTENDED_IMAGE_QUALITIES.has(translated) &&
+      !OPENAI_EXTENDED_QUALITY_IMAGE_MODELS.has(model)
+    ) {
+      return {
+        kind: "refuse",
+        error: `OpenAI quality xhigh and max need gpt-image-2.5-sunburst or gpt-image-2.5-flare; ${model} accepts low, medium, high or auto`,
+      };
+    }
+    return { kind: "use", value: translated };
   }
   // Meta, QwenCloud, MiniMax and xAI have no quality control at all.
   return { kind: "ignore" };
@@ -1008,7 +1082,7 @@ function imagineImageInputSchema(
           type: "string",
           enum: [...OPENAI_IMAGE_QUALITIES],
           description:
-            "OpenAI rendering quality (default auto). Lower quality costs fewer output tokens.",
+            "OpenAI rendering quality (default auto). Lower quality costs fewer output tokens. xhigh and max need gpt-image-2.5-sunburst or gpt-image-2.5-flare.",
         },
       });
       break;
@@ -1122,6 +1196,10 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
       hiddenByDefault: false,
       mutating: true,
       deferred: deferredUntilDiscovered,
+      // The only write is the generated media file under this fixed
+      // directory; no argument names a path, so the sandbox must be told
+      // where the output lands or it denies the call as unverifiable.
+      fixedWriteTargets: () => [join(opts.workspaceRoot, ".agenc", "imagine")],
       keywords: ["image", "generate", "media"],
       preferredProfiles: ["coding", "operator", "general"],
     },
@@ -1261,6 +1339,7 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
       const qualityDecision = decideImageQuality(
         backend,
         stringValue(args.quality),
+        model,
       );
       if (qualityDecision.kind === "refuse") {
         return refusal({ error: qualityDecision.error });
@@ -1375,25 +1454,21 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
           };
         };
         if (!res.ok) {
-          return json(
-            {
-              error: imageRequestError(payload, backend, res.status),
-            },
-            true,
-          );
+          const message = imageRequestError(payload, backend, res.status);
+          return res.status >= 400 && res.status < 500
+            ? providerRejection(backend, `http-${res.status}`, message)
+            : json({ error: message }, true);
         }
         // MiniMax reports invalid params and quota failures with HTTP 200.
         if (backend.kind === "minimax") {
           const status = payload.base_resp?.status_code;
           if (status !== 0) {
-            return json(
-              {
-                error:
-                  payload.base_resp?.status_msg ??
-                  `MiniMax image request failed with status ${status ?? "unknown"}`,
-              },
-              true,
-            );
+            const message =
+              payload.base_resp?.status_msg ??
+              `MiniMax image request failed with status ${status ?? "unknown"}`;
+            return status !== undefined && MINIMAX_REFUSAL_STATUS_CODES.has(status)
+              ? providerRejection(backend, `base_resp-${status}`, message)
+              : json({ error: message }, true);
           }
         }
         if (

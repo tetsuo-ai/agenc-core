@@ -1066,6 +1066,160 @@ describe("buildAnthropicMessagesRequest — fable/mythos 5 family", () => {
   });
 });
 
+/**
+ * Claude Opus 5.5 (platform.claude.com, 2026-09-22): thinking is always on
+ * (`disabled` and `enabled` + budget_tokens return 400 at every effort
+ * level), forced tool_choice returns 400 ("tool_choice: type "tool" and
+ * "any" are not supported for this model"), non-default sampling parameters
+ * return 400, all five effort levels are accepted, and fast mode is offered.
+ * Claude Opus 5 keeps its adaptive surface. Not probed live yet.
+ */
+describe("buildAnthropicMessagesRequest: Claude Opus 5.5", () => {
+  const turns = [{ role: "user" as const, content: "hello" }];
+  const tools = [
+    {
+      type: "function" as const,
+      function: {
+        name: "echo",
+        description: "Echo input.",
+        parameters: { type: "object" },
+      },
+    },
+  ];
+
+  test("never sends a thinking config and forwards every effort level unchanged", () => {
+    for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
+      const request = buildAnthropicMessagesRequest({
+        model: "claude-opus-5-5",
+        messages: turns,
+        tools: [],
+        options: { reasoningEffort: effort },
+      });
+      expect(request.thinking, effort).toBeUndefined();
+      expect(request.output_config, effort).toEqual({ effort });
+    }
+    // `minimal` rounds up to low.
+    expect(
+      buildAnthropicMessagesRequest({
+        model: "claude-opus-5-5",
+        messages: turns,
+        tools: [],
+        options: { reasoningEffort: "minimal" },
+      }).output_config,
+    ).toEqual({ effort: "low" });
+    // No effort configured: nothing is sent and the API applies medium.
+    const bare = buildAnthropicMessagesRequest({
+      model: "claude-opus-5-5",
+      messages: turns,
+      tools: [],
+    });
+    expect(bare.thinking).toBeUndefined();
+    expect(bare.output_config).toBeUndefined();
+    // Provider spellings take the same surface.
+    for (const model of ["us.anthropic.agenc-opus-5-5-v1", "anthropic.claude-opus-5-5"]) {
+      const request = buildAnthropicMessagesRequest({
+        model,
+        messages: turns,
+        tools: [],
+        options: { reasoningEffort: "xhigh" },
+      });
+      expect(request.thinking, model).toBeUndefined();
+      expect(request.output_config, model).toEqual({ effort: "xhigh" });
+    }
+  });
+
+  test("drops temperature and never forces a tool, with or without effort", () => {
+    for (const options of [
+      { temperature: 0.3, toolChoice: "required" as const },
+      {
+        temperature: 0.3,
+        toolChoice: { type: "function" as const, name: "echo" },
+      },
+      {
+        temperature: 0.3,
+        toolChoice: "required" as const,
+        reasoningEffort: "low" as const,
+      },
+    ]) {
+      const request = buildAnthropicMessagesRequest({
+        model: "claude-opus-5-5",
+        messages: turns,
+        tools,
+        options,
+      });
+      expect(request.temperature).toBeUndefined();
+      expect(request.tool_choice).toBeUndefined();
+      expect((request.tools as Array<{ name: string }>).map((tool) => tool.name))
+        .toEqual(["echo"]);
+    }
+  });
+
+  test("offers the structured-output tool without forcing it", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-opus-5-5",
+      messages: turns,
+      tools: [],
+      options: {
+        structuredOutput: {
+          schema: {
+            type: "json_schema",
+            name: "answer",
+            schema: { type: "object" },
+          },
+        },
+      },
+    });
+    expect(
+      (request.tools as Array<Record<string, unknown>>).map((tool) => tool.name),
+    ).toEqual([ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME]);
+    expect(request.tool_choice).toBeUndefined();
+  });
+
+  test("rides the priority tier as fast mode", () => {
+    const request = (serviceTier?: "priority" | "flex") =>
+      buildAnthropicMessagesRequest({
+        model: "claude-opus-5-5",
+        messages: turns,
+        tools: [],
+        options: serviceTier === undefined ? {} : { serviceTier },
+      });
+    expect(request("priority").speed).toBe("fast");
+    expect(request("flex")).not.toHaveProperty("speed");
+    expect(request()).not.toHaveProperty("speed");
+  });
+
+  test("keeps the served speed on the response usage", () => {
+    const parse = (usage: Record<string, unknown>) =>
+      parseAnthropicMessagesResponse(
+        "claude-opus-5-5",
+        {
+          model: "claude-opus-5-5",
+          content: [{ type: "text", text: "ok" }],
+          stop_reason: "end_turn",
+          usage,
+        },
+        { model: "claude-opus-5-5", messages: turns, tools: [] },
+      ).usage;
+    expect(parse({ input_tokens: 3, output_tokens: 1, speed: "fast" }).speed).toBe("fast");
+    expect(parse({ input_tokens: 3, output_tokens: 1, speed: "standard" }).speed).toBe("standard");
+    expect(parse({ input_tokens: 3, output_tokens: 1 })).not.toHaveProperty("speed");
+    expect(parse({ input_tokens: 3, output_tokens: 1, speed: "turbo" })).not.toHaveProperty("speed");
+  });
+
+  test("Claude Opus 5 is not swept into the always-on surface", () => {
+    for (const model of ["claude-opus-5", "us.anthropic.agenc-opus-5-v1"]) {
+      const request = buildAnthropicMessagesRequest({
+        model,
+        messages: turns,
+        tools: [],
+        options: { reasoningEffort: "high" },
+      });
+      expect(request.thinking, model).toEqual({ type: "adaptive" });
+      expect(request.output_config, model).toEqual({ effort: "high" });
+    }
+  });
+});
+
 describe("buildAnthropicMessagesRequest — thinking capability matrix", () => {
   const turns = [{ role: "user" as const, content: "hello" }];
 

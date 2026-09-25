@@ -1,6 +1,9 @@
+import { createHash } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import {
+  lstat,
+  open,
   readdir,
-  readFile,
   realpath,
   stat,
 } from "node:fs/promises";
@@ -20,9 +23,14 @@ import { load as loadYaml } from "js-yaml";
 import type { AgenCConfig } from "../config/schema.js";
 import { FileWatcher } from "../file-watcher/index.js";
 import { discoverPluginSkillRootsWithProvenance } from "../plugins/loader.js";
+import { isExcludedPluginPayloadDirectory, isExcludedPluginPayloadPath } from "../plugins/payload-paths.js";
 import type { SessionServices } from "../session/session.js";
 import type { SkillLoadOutcome } from "../session/turn-context.js";
 import { substituteArguments } from "../tui/slash/argument-substitution.js";
+import {
+  parseBooleanFrontmatter,
+  quoteProblematicValues,
+} from "../utils/frontmatterParser.js";
 import { isRecord } from "../utils/record.js";
 import { getAgenCHomeDir } from "../utils/envUtils.js";
 import {
@@ -72,6 +80,8 @@ export interface LocalSkillMetadata {
   readonly description: string;
   readonly hasUserSpecifiedDescription: boolean;
   readonly path: string;
+  /** Canonical file path retained for project skill reads after scanning. */
+  readonly projectRealPath?: string;
   readonly root: string;
   readonly scope: LocalSkillScope;
   readonly source: SkillSource;
@@ -169,10 +179,11 @@ interface SkillRoot {
   readonly pluginId?: string;
 }
 
-interface SkillWithContent {
+interface LoadedSkillFile {
   readonly skill: LocalSkillMetadata;
-  readonly content: string;
   readonly filePath: string;
+  /** Real path of the file, for deduplication across roots. */
+  readonly identity: string | null;
 }
 
 interface SplitFrontmatter {
@@ -246,7 +257,6 @@ const SKILL_LISTING_DESC_MAX_CHARS = 250;
 const SKILL_LISTING_CONTEXT_PERCENT = 0.01;
 const CHARS_PER_TOKEN = 4;
 const SKIP_DIRS = new Set([
-  ".git",
   "node_modules",
   "dist",
   "build",
@@ -284,14 +294,6 @@ async function pathIsDirectory(path: string): Promise<boolean> {
   }
 }
 
-async function pathIsFile(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isFile();
-  } catch {
-    return false;
-  }
-}
-
 async function getFileIdentity(filePath: string): Promise<string | null> {
   try {
     return await realpath(filePath);
@@ -304,34 +306,124 @@ function normalizeDisplayPath(path: string): string {
   return process.platform === "win32" ? path.replace(/\\/g, "/") : path;
 }
 
-function projectDirsUpToHome(
+/** Walk from the workspace through its nearest git root, excluding HOME. */
+async function projectSkillDirs(
   workspaceRoot: string,
   home?: string,
-): string[] {
-  const dirs: string[] = [];
-  const homeResolved = home ? resolve(home) : null;
-  let current = resolve(workspaceRoot);
+): Promise<string[]> {
+  const workspace = (await getFileIdentity(workspaceRoot)) ?? resolve(workspaceRoot);
+  const ancestors: string[] = [];
+  const homeResolved = home
+    ? (await getFileIdentity(home)) ?? resolve(home)
+    : null;
+  let current = workspace;
+  let foundGitRoot = false;
   while (true) {
     if (homeResolved !== null && current === homeResolved) break;
-    dirs.push(join(current, ".agents", "skills"));
-    dirs.push(join(current, ".agenc", "skills"));
+    ancestors.push(current);
+    try {
+      const gitMarker = await lstat(join(current, ".git"));
+      if (gitMarker.isDirectory() || gitMarker.isFile()) {
+        foundGitRoot = true;
+        break;
+      }
+    } catch {
+      // Keep looking for a git root within the home boundary.
+    }
     const parent = dirname(current);
     if (parent === current) break;
     current = parent;
   }
-  return dirs;
+  const projectDirs = foundGitRoot ? ancestors : ancestors.slice(0, 1);
+  return projectDirs.flatMap((dir) => [
+    join(dir, ".agents", "skills"),
+    join(dir, ".agenc", "skills"),
+  ]);
 }
 
-function localSkillRootCandidates(
+const warnedUnsafeProjectRoots = new Set<string>();
+const WORLD_WRITABLE_PROJECT_ROOT_WARNING = "skipped world-writable project skill root";
+const WORLD_WRITABLE_PROJECT_LINK_WARNING = "skipped world-writable project skill symlink target";
+
+async function projectSkillPathIsSafe(path: string, allowMissing = false): Promise<boolean> {
+  if (process.platform === "win32") return true;
+  for (const component of [dirname(dirname(path)), dirname(path), path]) {
+    try {
+      if (((await stat(component)).mode & 0o002) !== 0) return false;
+    } catch (error) {
+      if (allowMissing && isRecord(error) &&
+        (error.code === "ENOENT" || error.code === "ENOTDIR")) continue;
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Device and inode of the file a safety check approved. */
+interface CheckedFile {
+  readonly dev: bigint;
+  readonly ino: bigint;
+}
+
+/**
+ * The identity of a project skill file at its recorded real path, or null when
+ * that path is no longer a regular file in a safe location. A read compares
+ * what it opened with this identity and refuses any other file.
+ */
+async function checkedProjectSkillFile(path: string): Promise<CheckedFile | null> {
+  let checked: CheckedFile;
+  try {
+    // lstat: a link here is refused, never resolved to its target's identity.
+    const stats = await lstat(path, { bigint: true });
+    if (!stats.isFile()) return null;
+    checked = { dev: stats.dev, ino: stats.ino };
+  } catch {
+    return null;
+  }
+  // A recorded real path may later be replaced by a link. Reject it rather
+  // than following the replacement to a different file.
+  if ((await getFileIdentity(path)) !== path || !(await projectSkillPathIsSafe(path))) return null;
+  return checked;
+}
+
+/** Check every directory that can let another user replace a project root. */
+async function projectSkillRootIsSafe(
+  root: string,
+  warnings?: SkillLoadWarning[],
+): Promise<boolean> {
+  if (process.platform === "win32") return true;
+  // Missing components stay eligible for watches until they are created.
+  const lexicalSafe = await projectSkillPathIsSafe(root, true);
+  const realRoot = lexicalSafe ? await getFileIdentity(root) : null;
+  if (!lexicalSafe || (realRoot !== null &&
+    realRoot !== resolve(root) && !(await projectSkillPathIsSafe(realRoot)))) {
+    // Missing roots are watch candidates, but have no skill to warn about.
+    if (await pathIsDirectory(root)) {
+      if (warnings && !warnings.some((warning) =>
+        warning.path === root && warning.reason === WORLD_WRITABLE_PROJECT_ROOT_WARNING
+      )) {
+        warnings.push({ path: root, reason: WORLD_WRITABLE_PROJECT_ROOT_WARNING });
+      }
+      if (!warnedUnsafeProjectRoots.has(root)) {
+        warnedUnsafeProjectRoots.add(root);
+        console.warn(`Skills: ${WORLD_WRITABLE_PROJECT_ROOT_WARNING}: ${root}`);
+      }
+    }
+    return false;
+  }
+  return true;
+}
+
+async function localSkillRootCandidates(
   options: LocalSkillsServiceOptions,
-): SkillRoot[] {
+): Promise<SkillRoot[]> {
   const home = options.env?.HOME ?? homedir();
   const agencHome = normalizeExistingCandidate(options.agencHome);
   const workspaceRoot = normalizeExistingCandidate(options.workspaceRoot);
 
   const roots: SkillRoot[] = [];
 
-  for (const path of projectDirsUpToHome(workspaceRoot, home)) {
+  for (const path of await projectSkillDirs(workspaceRoot, home)) {
     roots.push({
       path,
       scope: "project",
@@ -368,15 +460,16 @@ function localSkillRootCandidates(
   return roots;
 }
 
-export async function discoverSkillRoots(
+async function discoverSkillRootsWithWarnings(
   options: LocalSkillsServiceOptions,
-  discoveredSkillRoots: readonly string[] = [],
+  discoveredSkillRoots: readonly string[],
+  warnings: SkillLoadWarning[],
 ): Promise<readonly SkillRoot[]> {
   const pluginStorageRoot = normalizeExistingCandidate(
     options.pluginStorageRoot,
   );
   const workspaceRoot = normalizeExistingCandidate(options.workspaceRoot);
-  const roots = localSkillRootCandidates(options);
+  const roots = await localSkillRootCandidates(options);
 
   for (const path of discoveredSkillRoots) {
     const normalized = normalizeExistingCandidate(path);
@@ -420,10 +513,20 @@ export async function discoverSkillRoots(
       ...root,
       path: normalizeExistingCandidate(root.path),
     };
+    if (normalized.scope === "project" && !(await projectSkillRootIsSafe(normalized.path, warnings))) {
+      continue;
+    }
     if (!(await pathIsDirectory(normalized.path))) continue;
     deduped.set(rootKey(normalized), normalized);
   }
   return [...deduped.values()];
+}
+
+export async function discoverSkillRoots(
+  options: LocalSkillsServiceOptions,
+  discoveredSkillRoots: readonly string[] = [],
+): Promise<readonly SkillRoot[]> {
+  return discoverSkillRootsWithWarnings(options, discoveredSkillRoots, []);
 }
 
 export async function discoverSkillWatchRoots(
@@ -433,8 +536,14 @@ export async function discoverSkillWatchRoots(
     options.pluginStorageRoot,
   );
   const workspaceRoot = normalizeExistingCandidate(options.workspaceRoot);
+  const localRoots = await localSkillRootCandidates(options);
+  const safeLocalRoots = await Promise.all(localRoots.map(async (root) =>
+    root.scope !== "project" || await projectSkillRootIsSafe(root.path)
+      ? root.path
+      : null
+  ));
   const roots = [
-    ...localSkillRootCandidates(options).map((root) => root.path),
+    ...safeLocalRoots.filter((path): path is string => path !== null),
     ...(await discoverPluginSkillRootsWithProvenance({
       pluginStorageRoot,
       workspaceRoot,
@@ -454,103 +563,254 @@ async function readDirEntries(path: string) {
   }
 }
 
-async function isDirectoryEntry(path: string, isSymlink: boolean): Promise<boolean> {
-  if (!isSymlink) return true;
-  try {
-    return (await stat(path)).isDirectory();
-  } catch {
-    return false;
-  }
+interface ScannedSkillFile {
+  /** Path as reached from the root; names the skill. */
+  readonly path: string;
+  /**
+   * Real path of the file, derived from the real path of its directory. The
+   * walk only records regular files, never links, so this equals
+   * realpath(path) without a syscall per file.
+   */
+  readonly identity: string;
+}
+
+/** A top-level directory of a root with no SKILL.md anywhere below it. */
+interface EmptySkillDirectory {
+  readonly path: string;
+  /** A markdown file it does hold, when the file was probably misnamed. */
+  readonly markdownFile?: string;
 }
 
 interface SkillFileScan {
-  readonly files: readonly string[];
+  readonly files: readonly ScannedSkillFile[];
   readonly droppedCount: number;
-}
-
-interface MutableSkillFileScan {
-  readonly files: string[];
-  droppedCount: number;
-  readonly maxFiles: number;
+  readonly rootRealPath: string;
+  readonly rejectedRoot?: boolean;
+  readonly unsafeRoot?: boolean;
+  readonly emptyDirectories: readonly EmptySkillDirectory[];
+  readonly warnings: readonly SkillLoadWarning[];
 }
 
 interface ScanFrame {
   readonly path: string;
+  readonly realPath: string;
   readonly depth: number;
+  /** The root's direct child this frame sits under; null for the root. */
+  readonly top: string | null;
 }
 
-type DirEntry = Awaited<ReturnType<typeof readDirEntries>>[number];
-
-async function isScannableDir(entry: DirEntry, path: string): Promise<boolean> {
-  if (!entry.isDirectory() && !entry.isSymbolicLink()) return false;
-  if (SKIP_DIRS.has(entry.name)) return false;
-  return isDirectoryEntry(path, entry.isSymbolicLink());
+interface PendingLink {
+  readonly path: string;
+  readonly depth: number;
+  readonly top: string | null;
 }
 
-async function topLevelScanFrames(root: string): Promise<ScanFrame[]> {
-  const frames: ScanFrame[] = [];
-  for (const entry of await readDirEntries(root)) {
-    const next = join(root, entry.name);
-    if (await isScannableDir(entry, next)) frames.push({ path: next, depth: 1 });
-  }
-  return frames;
-}
+/** Directory reads in flight per root; the threadpool does the rest. */
+const SCAN_CONCURRENCY = 32;
 
-/** Returns false when the directory (by real path) was already scanned. */
-async function markVisited(path: string, visited: Set<string>): Promise<boolean> {
-  const dirId = await getFileIdentity(path);
-  if (dirId === null) return true;
-  if (visited.has(dirId)) return false;
-  visited.add(dirId);
-  return true;
-}
-
-function recordSkillFile(scan: MutableSkillFileScan, file: string): void {
-  // Past the cap the walk keeps going but only counts, so the snapshot can
-  // say how many skills this root holds that were never loaded.
-  if (scan.files.length >= scan.maxFiles) scan.droppedCount += 1;
-  else scan.files.push(file);
-}
-
-async function scanSkillDir(
-  frame: ScanFrame,
-  scan: MutableSkillFileScan,
-  queue: ScanFrame[],
-): Promise<void> {
-  for (const entry of await readDirEntries(frame.path)) {
-    const next = join(frame.path, entry.name);
-    if (entry.isFile()) {
-      if (isSkillFile(next)) recordSkillFile(scan, next);
-      continue;
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index]!);
     }
-    if (frame.depth < MAX_SCAN_DEPTH && (await isScannableDir(entry, next))) {
-      queue.push({ path: next, depth: frame.depth + 1 });
-    }
-  }
-}
-
-async function findSkillFiles(root: string): Promise<SkillFileScan> {
-  const scan: MutableSkillFileScan = {
-    files: [],
-    droppedCount: 0,
-    maxFiles: maxSkillFilesPerRoot(),
   };
-  const queue = await topLevelScanFrames(root);
-  const visitedDirs = new Set<string>();
-  while (queue.length > 0) {
-    const frame = queue.shift()!;
-    if (await markVisited(frame.path, visitedDirs)) {
-      await scanSkillDir(frame, scan, queue);
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, worker),
+  );
+  return results;
+}
+
+function byPath<T extends { readonly path: string }>(a: T, b: T): number {
+  return a.path.localeCompare(b.path);
+}
+
+/**
+ * Every SKILL.md under a root, down to MAX_SCAN_DEPTH directory levels,
+ * skipping SKIP_DIRS and never loading a SKILL.md that is itself a link.
+ *
+ * The walk used to take one directory at a time: realpath, then readdir,
+ * then the next, so 2,950 directories of a 1,822-skill catalog cost 128 ms
+ * of serialized round trips to the threadpool. It now reads a whole level
+ * with bounded concurrency, and derives each directory's real path from its
+ * parent's, calling realpath only for symbolic links. Symlinked directories
+ * wait until every directory reachable without one has been walked, so a
+ * directory reached both ways keeps its own name instead of the link's.
+ * Files past the per-root cap are counted, shallowest and then
+ * alphabetically first loaded, the same way on every scan.
+ */
+async function findSkillFiles(root: SkillRoot): Promise<SkillFileScan> {
+  const maxFiles = maxSkillFilesPerRoot();
+  const rootRealPath = (await getFileIdentity(root.path)) ?? resolve(root.path);
+  const physicalPluginRoot = root.pluginRoot === undefined ? undefined :
+    (await getFileIdentity(root.pluginRoot)) ?? resolve(root.pluginRoot);
+  const excludedPluginPath = (lexical: string, physical: string): boolean =>
+    root.pluginRoot !== undefined && physicalPluginRoot !== undefined &&
+    (isExcludedPluginPayloadPath(root.pluginRoot, lexical) ||
+      isExcludedPluginPayloadPath(physicalPluginRoot, physical));
+  if (excludedPluginPath(root.path, rootRealPath)) {
+    return { files: [], droppedCount: 0, rootRealPath, rejectedRoot: true,
+      warnings: [], emptyDirectories: [] };
+  }
+  const visited = new Set<string>([rootRealPath]);
+  const loaded: Array<ScannedSkillFile & { readonly depth: number }> = [];
+  let droppedCount = 0;
+  const pendingLinks: PendingLink[] = [];
+  const topLevel: string[] = [];
+  const topsWithSkills = new Set<string>();
+  const topMarkdown = new Map<string, string>();
+  const warnings: SkillLoadWarning[] = [];
+  // A project root may have changed since discovery. Validate the real path
+  // that the scan will actually read.
+  if (root.scope === "project" && !(await projectSkillPathIsSafe(rootRealPath))) {
+    return {
+      files: [], droppedCount: 0, rootRealPath, unsafeRoot: true, emptyDirectories: [],
+      warnings: [{ path: root.path, reason: WORLD_WRITABLE_PROJECT_ROOT_WARNING }],
+    };
+  }
+
+  const walk = async (start: readonly ScanFrame[], oneLevel = false): Promise<ScanFrame[]> => {
+    let level = start;
+    while (level.length > 0) {
+      const listings = await mapWithConcurrency(
+        level,
+        SCAN_CONCURRENCY,
+        (frame) => readDirEntries(root.scope === "project" ? frame.realPath : frame.path),
+      );
+      const found: Array<ScannedSkillFile & { readonly depth: number }> = [];
+      const next: ScanFrame[] = [];
+      level.forEach((frame, index) => {
+        if (frame.depth === 1) topLevel.push(frame.path);
+        for (const entry of listings[index]!) {
+          const path = join(frame.path, entry.name);
+          if (entry.isFile()) {
+            // Files directly in the root are never skills (leaf roots are
+            // handled by the caller).
+            if (frame.top === null) continue;
+            if (isSkillFile(entry.name)) {
+              found.push({ path, identity: join(frame.realPath, entry.name), depth: frame.depth });
+              topsWithSkills.add(frame.top);
+            } else if (
+              frame.depth === 1 &&
+              !topMarkdown.has(frame.top) &&
+              entry.name.toLowerCase().endsWith(".md")
+            ) {
+              topMarkdown.set(frame.top, entry.name);
+            }
+            continue;
+          }
+          if (frame.depth >= MAX_SCAN_DEPTH || SKIP_DIRS.has(entry.name) ||
+            isExcludedPluginPayloadDirectory(entry.name) ||
+            excludedPluginPath(path, join(frame.realPath, entry.name))) continue;
+          const top = frame.top ?? path;
+          if (entry.isDirectory()) {
+            const realPath = join(frame.realPath, entry.name);
+            if (visited.has(realPath)) continue;
+            visited.add(realPath);
+            next.push({ path, realPath, depth: frame.depth + 1, top });
+          } else if (entry.isSymbolicLink()) {
+            pendingLinks.push({ path, depth: frame.depth + 1, top });
+          }
+        }
+      });
+      // A later symlink can lead to a shallower file than one already found.
+      // Keep the best candidates across both walks before applying the cap.
+      for (const file of found) loaded.push(file);
+      loaded.sort((a, b) => a.depth - b.depth || byPath(a, b));
+      droppedCount += Math.max(0, loaded.length - maxFiles);
+      loaded.length = Math.min(loaded.length, maxFiles);
+      if (oneLevel) return next;
+      level = next;
     }
+    return [];
+  };
+
+  await walk([{ path: root.path, realPath: rootRealPath, depth: 0, top: null }]);
+  const pendingDirectories: ScanFrame[] = [];
+  while (pendingLinks.length > 0 || pendingDirectories.length > 0) {
+    pendingLinks.sort((a, b) => a.depth - b.depth || byPath(a, b));
+    pendingDirectories.sort((a, b) => a.depth - b.depth || byPath(a, b));
+    const depth = Math.min(
+      pendingLinks[0]?.depth ?? Infinity,
+      pendingDirectories[0]?.depth ?? Infinity,
+    );
+    let directoryCount = 0;
+    while (pendingDirectories[directoryCount]?.depth === depth) directoryCount++;
+    pendingDirectories.push(...await walk(pendingDirectories.splice(0, directoryCount), true));
+    let linkCount = 0;
+    while (pendingLinks[linkCount]?.depth === depth) linkCount++;
+    const links = pendingLinks.splice(0, linkCount);
+    const targets = await mapWithConcurrency(
+      links,
+      SCAN_CONCURRENCY,
+      async (link): Promise<ScanFrame | null> => {
+        const realPath = await getFileIdentity(link.path);
+        if (realPath === null || !(await pathIsDirectory(realPath))) return null;
+        if (excludedPluginPath(link.path, realPath)) return null;
+        if (root.scope === "project" && !(await projectSkillPathIsSafe(realPath))) {
+          warnings.push({ path: link.path, reason: WORLD_WRITABLE_PROJECT_LINK_WARNING });
+          return null;
+        }
+        return { path: link.path, realPath, depth: link.depth, top: link.top };
+      },
+    );
+    const frames: ScanFrame[] = [];
+    for (const target of targets) {
+      if (target === null || visited.has(target.realPath)) continue;
+      visited.add(target.realPath);
+      frames.push(target);
+    }
+    pendingDirectories.push(...await walk(frames, true));
   }
   return {
-    files: scan.files.toSorted((a, b) => a.localeCompare(b)),
-    droppedCount: scan.droppedCount,
+    files: loaded.toSorted(byPath),
+    droppedCount,
+    rootRealPath,
+    warnings,
+    // Hidden directories (.system, .cache) hold support files by convention.
+    emptyDirectories: topLevel
+      .filter((dir) => !topsWithSkills.has(dir) && !basename(dir).startsWith("."))
+      .sort((a, b) => a.localeCompare(b))
+      .map((dir) => {
+        const markdownFile = topMarkdown.get(dir);
+        return markdownFile === undefined ? { path: dir } : { path: dir, markdownFile };
+      }),
   };
 }
 
-function isSkillFile(filePath: string): boolean {
-  return basename(filePath).toLowerCase() === "skill.md";
+/**
+ * Read a SKILL.md without following a link at its last component, and only
+ * when the opened descriptor is a regular file (null otherwise). A project
+ * skill is read through a real path that passed the safety check, with the
+ * identity that check saw: the open can still reach another file where
+ * O_NOFOLLOW does not exist (Windows) or through a folder swapped above the
+ * file, and such a file is refused.
+ */
+async function readRegularFileNoFollow(
+  path: string,
+  checked?: CheckedFile,
+): Promise<Buffer | null> {
+  const handle = await open(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile()) return null;
+    if (checked !== undefined && (opened.dev !== checked.dev || opened.ino !== checked.ino)) {
+      return null;
+    }
+    return await handle.readFile();
+  } finally {
+    await handle.close();
+  }
+}
+
+function isSkillFile(fileName: string): boolean {
+  return fileName.toLowerCase() === "skill.md";
 }
 
 function buildNamespace(targetDir: string, baseDir: string): string {
@@ -577,38 +837,125 @@ function implicitAliasesForSkillName(name: string): readonly string[] {
   return /^[A-Za-z][A-Za-z0-9_:-]*$/u.test(leaf) ? [leaf] : [];
 }
 
+function opensMultilineFlowCollection(value: string): boolean {
+  if (value[0] !== "{" && value[0] !== "[") return false;
+  let depth = 0;
+  let quote: "'" | '"' | null = null;
+  for (let index = 0; index < value.length; index++) {
+    const char = value[index];
+    if (quote !== null) {
+      if (quote === '"' && char === "\\") index++;
+      else if (char === quote) {
+        if (quote === "'" && value[index + 1] === "'") index++;
+        else quote = null;
+      }
+      continue;
+    }
+    if (char === "#" && (index === 0 || /[ \t]/u.test(value[index - 1]!))) break;
+    if (char === "'" || char === '"') quote = char;
+    else if (char === "{" || char === "[") depth++;
+    else if (char === "}" || char === "]") depth--;
+  }
+  return depth > 0;
+}
+
+/** A top-level true flag survives YAML recovery or invalid sibling fields. */
+function hasRawDisableModelInvocation(yamlText: string): boolean {
+  const lines = yamlText.split(/\r?\n/u);
+  const mappingParents: number[] = [];
+  let blockScalarIndent: number | null = null;
+  for (const line of lines) {
+    if (line.trim() === "") continue;
+    const indent = /^[ \t]*/u.exec(line)?.[0].length ?? 0;
+    if (blockScalarIndent !== null) {
+      if (indent > blockScalarIndent) continue;
+      blockScalarIndent = null;
+    }
+    while (mappingParents.length > 0 && indent <= mappingParents[mappingParents.length - 1]!) {
+      mappingParents.pop();
+    }
+    const match = /^[ \t]*([^#\s][^:]*?)[ \t]*:[ \t]*(.*)$/u.exec(line);
+    if (match === null) continue;
+    const rawValue = (match[2] ?? "").trim();
+    const scopedValue = rawValue.replace(/^&[^\s,{}\[\]]+(?:[ \t]+|$)/u, "");
+    if (/^[|>](?:[+-][1-9]?|[1-9][+-]?)?(?:[ \t]+#.*)?$/u.test(scopedValue)) {
+      blockScalarIndent = indent;
+      continue;
+    }
+    if (
+      scopedValue === "" || scopedValue.startsWith("#") ||
+      opensMultilineFlowCollection(scopedValue)
+    ) {
+      mappingParents.push(indent);
+      continue;
+    }
+    if (mappingParents.length > 0 || match[1]?.toLowerCase() !== "disable-model-invocation") continue;
+    const quoted = /^(['"])(.*)\1(?:[ \t]+#.*)?$/u.exec(rawValue);
+    const value = quoted?.[2] ?? rawValue;
+    if (parseBooleanFrontmatter(value)) return true;
+  }
+  return false;
+}
+
 function splitFrontmatter(raw: string): SplitFrontmatter {
   if (!raw.startsWith("---")) {
     return { frontmatter: {}, markdown: raw };
   }
   const match = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n)?([\s\S]*)$/u.exec(raw);
   if (!match) return { frontmatter: {}, markdown: raw };
+  const yamlText = match[1] ?? "";
+  const rawFlag = hasRawDisableModelInvocation(yamlText);
+  // The line scan only stands in for the YAML parser. When the text parses as
+  // it is, the parsed flag is the answer: a scan that took a nested or
+  // quoted key for a top-level one hid skills whose frontmatter said false.
+  // It is consulted only when the strict parse failed, where recovery can
+  // turn `true # reason` into a string or drop every field.
+  let modelProof = false;
+  let parsed: unknown;
   try {
-    const parsed = loadYaml(match[1] ?? "");
-    if (parsed === null || parsed === undefined) {
-      return { frontmatter: {}, markdown: match[2] ?? "" };
-    }
-    if (typeof parsed !== "object" || Array.isArray(parsed)) {
+    parsed = loadYaml(yamlText);
+  } catch (error) {
+    modelProof = rawFlag;
+    // The canonical parser (utils/frontmatterParser.ts), which commands and
+    // MCP skills go through, quotes values holding YAML indicators and parses
+    // again: `description: Settle tasks in AUTONOMOUS mode: prompt-free` is
+    // not strict YAML but is a perfectly clear SKILL.md. Without the same
+    // second chance here every field of such a file was dropped, including
+    // disable-model-invocation.
+    try {
+      parsed = loadYaml(quoteProblematicValues(yamlText));
+    } catch {
+      const detail =
+        (error instanceof Error ? error.message : String(error)).split("\n")[0] ??
+        "";
       return {
-        frontmatter: {},
-        markdown: match[2] ?? "",
-        warning: "frontmatter is not a YAML mapping; its fields were ignored",
+        frontmatter: modelProof ? { "disable-model-invocation": true } : {},
+        markdown: match[2] ?? raw,
+        warning: modelProof
+          ? `frontmatter is not valid YAML (${detail}); its fields were ignored, except disable-model-invocation: true, which still keeps the model from loading it`
+          : `frontmatter is not valid YAML (${detail}); its fields were ignored`,
       };
     }
+  }
+  if (parsed === null || parsed === undefined) {
     return {
-      frontmatter: parsed as Record<string, unknown>,
+      frontmatter: modelProof ? { "disable-model-invocation": true } : {},
       markdown: match[2] ?? "",
     };
-  } catch (error) {
-    const detail =
-      (error instanceof Error ? error.message : String(error)).split("\n")[0] ??
-      "";
+  }
+  if (typeof parsed !== "object" || Array.isArray(parsed)) {
     return {
-      frontmatter: {},
-      markdown: match[2] ?? raw,
-      warning: `frontmatter is not valid YAML (${detail}); its fields were ignored`,
+      frontmatter: modelProof ? { "disable-model-invocation": true } : {},
+      markdown: match[2] ?? "",
+      warning: "frontmatter is not a YAML mapping; its fields were ignored",
     };
   }
+  return {
+    frontmatter: modelProof
+      ? { ...(parsed as Record<string, unknown>), "disable-model-invocation": true }
+      : parsed as Record<string, unknown>,
+    markdown: match[2] ?? "",
+  };
 }
 
 function coerceString(value: unknown): string | undefined {
@@ -649,15 +996,88 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
-async function loadSkillFile(
+/**
+ * What one SKILL.md contributes to its metadata, whichever root it is read
+ * through: the parsed frontmatter, the parse problem if any, the first
+ * non-blank body line (all the description fallback reads) and the body
+ * length (for token estimates). The body itself is only read on render.
+ */
+interface ParsedSkillFile {
+  readonly frontmatter: Readonly<Record<string, unknown>>;
+  readonly warning?: string;
+  readonly leadLine: string;
+  readonly markdownLength: number;
+}
+
+/**
+ * Parsed SKILL.md files for the whole process, keyed by path and verified
+ * against the content hash on every scan. A 1,822-skill catalog is otherwise
+ * YAML-parsed in full (7.7 MB) by every
+ * session the daemon opens, by every /skills and every watcher reload,
+ * although an edit touches one file. Model aliases and
+ * other settings-dependent fields are derived from the cached frontmatter on
+ * every build, never cached themselves.
+ */
+const PARSED_SKILL_FILE_CACHE_LIMIT = 10_000;
+const parsedSkillFiles = new Map<
+  string,
+  { readonly contentHash: string; readonly parsed: ParsedSkillFile }
+>();
+let skillFileParseCount = 0;
+
+/** SKILL.md files read and parsed by this process; for tests. */
+export function skillFileParseCountForTest(): number {
+  return skillFileParseCount;
+}
+
+/** Longest lead line kept; the description fallback uses at most 100. */
+const LEAD_LINE_MAX_CHARS = 512;
+
+function firstNonBlankLine(markdown: string): string {
+  for (const line of markdown.split("\n")) {
+    if (line.trim().length > 0) return line.trim().slice(0, LEAD_LINE_MAX_CHARS);
+  }
+  return "";
+}
+
+/**
+ * A copy of a parsed value whose strings no longer point into the file
+ * text. V8 keeps substrings as views of their parent, so caching the YAML
+ * output as parsed kept every SKILL.md alive in full: 12.6 MB retained for
+ * the audited catalog against 1.5 MB for detached copies. Dates and other
+ * non-plain values are kept as they are.
+ */
+function detachStrings<T>(value: T): T {
+  if (typeof value === "string") return JSON.parse(JSON.stringify(value)) as T;
+  if (Array.isArray(value)) return value.map(detachStrings) as T;
+  if (value !== null && typeof value === "object" &&
+    Object.getPrototypeOf(value) === Object.prototype) {
+    const copy: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      // defineProperty, so a "__proto__" key stays a plain field.
+      Object.defineProperty(copy, key, {
+        value: detachStrings(entry),
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
+    return copy as T;
+  }
+  return value;
+}
+
+async function readParsedSkillFile(
   filePath: string,
-  root: SkillRoot,
   warnings: SkillLoadWarning[],
-): Promise<SkillWithContent | null> {
-  if (!(await pathIsFile(filePath))) return null;
-  let raw: string;
+  readPath = filePath,
+  checked?: CheckedFile,
+): Promise<ParsedSkillFile | null> {
+  let bytes: Buffer;
   try {
-    raw = await readFile(filePath, "utf8");
+    const read = await readRegularFileNoFollow(readPath, checked);
+    if (read === null) return null;
+    bytes = read;
   } catch (error) {
     warnings.push({
       path: filePath,
@@ -665,17 +1085,71 @@ async function loadSkillFile(
     });
     return null;
   }
-
+  const contentHash = createHash("sha256").update(bytes).digest("hex");
+  const cached = parsedSkillFiles.get(filePath);
+  if (cached !== undefined && cached.contentHash === contentHash) {
+    parsedSkillFiles.delete(filePath);
+    parsedSkillFiles.set(filePath, cached);
+    return cached.parsed;
+  }
+  const raw = bytes.toString("utf8");
+  skillFileParseCount += 1;
   const { frontmatter, markdown, warning } = splitFrontmatter(raw);
+  const parsed: ParsedSkillFile = {
+    frontmatter: Object.freeze(detachStrings(frontmatter)),
+    ...(warning !== undefined ? { warning: detachStrings(warning) } : {}),
+    leadLine: detachStrings(firstNonBlankLine(markdown)),
+    markdownLength: markdown.length,
+  };
+  parsedSkillFiles.delete(filePath);
+  parsedSkillFiles.set(filePath, { contentHash, parsed });
+  while (parsedSkillFiles.size > PARSED_SKILL_FILE_CACHE_LIMIT) {
+    const oldest = parsedSkillFiles.keys().next().value;
+    if (oldest === undefined) break;
+    parsedSkillFiles.delete(oldest);
+  }
+  return parsed;
+}
+
+async function loadSkillFile(
+  file: ScannedSkillFile | { readonly path: string; readonly identity: string | null },
+  root: SkillRoot,
+  warnings: SkillLoadWarning[],
+): Promise<LoadedSkillFile | null> {
+  const filePath = file.path;
+  let readPath = filePath;
+  let checked: CheckedFile | undefined;
+  if (root.scope === "project") {
+    const checkedFile = file.identity === null ? null : await checkedProjectSkillFile(file.identity);
+    if (file.identity === null || checkedFile === null) {
+      warnings.push({ path: filePath, reason: "skipped unsafe project skill path" });
+      return null;
+    }
+    readPath = file.identity;
+    checked = checkedFile;
+  }
+  const parsedFile = await readParsedSkillFile(filePath, warnings, readPath, checked);
+  if (parsedFile === null) return null;
+  const { frontmatter, warning } = parsedFile;
   if (warning !== undefined) warnings.push({ path: filePath, reason: warning });
   const skillName = skillNameForSkillFile(filePath, root.path);
   if (skillName.length === 0) return null;
   const canonicalFields = parseCanonicalSkillFrontmatterFields(
-    frontmatter,
-    markdown,
+    // The canonical parser's input type is mutable; it only reads.
+    frontmatter as Record<string, unknown>,
+    parsedFile.leadLine,
     skillName,
     "Skill",
   );
+  // The description is what the model matches a request against; a heading
+  // borrowed from the body ("Tech Debt Analysis") rarely says when to use
+  // the skill. A frontmatter warning already explains a missing one.
+  if (!canonicalFields.hasUserSpecifiedDescription && warning === undefined) {
+    warnings.push({
+      path: filePath,
+      reason: "no description in frontmatter",
+    });
+  }
   const {
     argumentNames,
     executionContext,
@@ -712,6 +1186,7 @@ async function loadSkillFile(
     ...safeParsed,
     name: skillName,
     path: filePath,
+    ...(root.scope === "project" ? { projectRealPath: readPath } : {}),
     root: root.path,
     scope: root.scope,
     source: root.source,
@@ -720,59 +1195,77 @@ async function loadSkillFile(
       ? { pluginRoot: root.pluginRoot }
       : {}),
     ...(root.pluginId !== undefined ? { pluginId: root.pluginId } : {}),
-    contentLength: markdown.length,
+    contentLength: parsedFile.markdownLength,
     ...(() => {
       const aliases = implicitAliasesForSkillName(skillName);
       return aliases.length > 0 ? { aliases } : {};
     })(),
   };
 
-  return { skill, content: markdown, filePath };
+  return { skill, filePath, identity: file.identity };
 }
 
 interface LoadedSkillRoot {
-  readonly skills: readonly SkillWithContent[];
+  readonly skills: readonly LoadedSkillFile[];
   readonly droppedCount: number;
   readonly warnings: readonly SkillLoadWarning[];
 }
 
 async function loadSkillsFromRoot(root: SkillRoot): Promise<LoadedSkillRoot> {
-  const scan = await findSkillFiles(root.path);
-  const files = [...scan.files];
+  const scan = await findSkillFiles(root);
+  const files: Array<{ readonly path: string; readonly identity: string | null }> =
+    [...scan.files];
   // A root can BE one skill: plugin manifests may declare each skill
   // dir individually (skills: ["./skills/flash-board"]), so the root
   // itself carries the SKILL.md instead of holding child skill dirs.
-  if (files.length === 0) {
+  let leafRoot = false;
+  if (files.length === 0 && !scan.unsafeRoot && !scan.rejectedRoot) {
     const leaf = join(root.path, SKILL_FILE_NAME);
     try {
-      const stats = await stat(leaf);
-      if (stats.isFile()) files.push(leaf);
+      const stats = await lstat(leaf);
+      if (stats.isFile()) {
+        files.push({ path: leaf, identity: await getFileIdentity(leaf) });
+        leafRoot = true;
+      }
     } catch {
       // Genuinely empty root.
     }
   }
-  const warnings: SkillLoadWarning[] = [];
+  const warnings: SkillLoadWarning[] = [...scan.warnings];
+  // A directory in a user, project or managed root with no SKILL.md is a
+  // skill that failed to install (the audited catalog had one holding only
+  // CLAUDE.md). Plugin layouts are the plugin author's to choose, and a
+  // leaf root's subdirectories are that skill's own files.
+  if (root.scope !== "plugin" && !leafRoot) {
+    for (const dir of scan.emptyDirectories) {
+      warnings.push({
+        path: dir.path,
+        reason:
+          "no SKILL.md in this directory or below it, so nothing here was loaded as a skill" +
+          (dir.markdownFile !== undefined
+            ? ` (it holds ${dir.markdownFile}; a skill is read from a file named SKILL.md)`
+            : ""),
+      });
+    }
+  }
   const loaded = await Promise.all(
     files.map((file) => loadSkillFile(file, root, warnings)),
   );
   return {
-    skills: loaded.filter((entry): entry is SkillWithContent => entry !== null),
+    skills: loaded.filter((entry): entry is LoadedSkillFile => entry !== null),
     droppedCount: scan.droppedCount,
-    warnings,
+    // Files finish loading in any order; report them in path order.
+    warnings: warnings.sort((a, b) => a.path.localeCompare(b.path)),
   };
 }
 
-async function dedupeSkillsByRealPath(
-  entries: readonly SkillWithContent[],
-): Promise<readonly SkillWithContent[]> {
-  const identities = await Promise.all(
-    entries.map((entry) => getFileIdentity(entry.filePath)),
-  );
+function dedupeSkillsByRealPath(
+  entries: readonly LoadedSkillFile[],
+): readonly LoadedSkillFile[] {
   const seen = new Set<string>();
-  const out: SkillWithContent[] = [];
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i]!;
-    const identity = identities[i];
+  const out: LoadedSkillFile[] = [];
+  for (const entry of entries) {
+    const identity = entry.identity;
     if (identity === null) {
       out.push(entry);
       continue;
@@ -851,9 +1344,10 @@ export async function loadLocalSkillsSnapshot(
   activePaths: readonly string[] = [],
   discoveredSkillRoots: readonly string[] = [],
 ): Promise<LocalSkillsSnapshot> {
-  const roots = await discoverSkillRoots(options, discoveredSkillRoots);
+  const warnings: SkillLoadWarning[] = [];
+  const roots = await discoverSkillRootsWithWarnings(options, discoveredSkillRoots, warnings);
   const loadedNested = await Promise.all(roots.map(loadSkillsFromRoot));
-  const deduped = await dedupeSkillsByRealPath(
+  const deduped = dedupeSkillsByRealPath(
     loadedNested.flatMap((loaded) => loaded.skills),
   );
   const truncatedRoots = loadedNested.flatMap((loaded, index) =>
@@ -865,7 +1359,7 @@ export async function loadLocalSkillsSnapshot(
       }]
       : [],
   );
-  const warnings = loadedNested.flatMap((loaded) => loaded.warnings);
+  warnings.push(...loadedNested.flatMap((loaded) => loaded.warnings));
 
   const allFileSkills = deduped.map((entry) => entry.skill);
   const unconditional: LocalSkillMetadata[] = [];
@@ -879,22 +1373,32 @@ export async function loadLocalSkillsSnapshot(
   }
 
   const bundled = BUNDLED_SKILLS.map(bundledSkillMetadata);
-  const discoveredRoots = new Set(
-    discoveredSkillRoots.map(normalizeExistingCandidate),
-  );
-  const sortedSkills = [...bundled, ...unconditional].sort((a, b) => {
-    const byName = a.name.localeCompare(b.name);
-    if (byName !== 0) return byName;
-    if (discoveredRoots.has(a.root) && discoveredRoots.has(b.root)) {
-      const byDepth = b.root.split(sep).length - a.root.split(sep).length;
-      if (byDepth !== 0) return byDepth;
+  const active = keepOneSkillPerName([...bundled, ...unconditional]);
+  // A path-gated skill that loses to an active skill of the same name could
+  // never load, even once its paths match; one that wins takes over when
+  // it activates, so only the losers are dropped.
+  const activeByName = new Map(active.kept.map((skill) => [skill.name, skill]));
+  const gated = keepOneSkillPerName(conditional);
+  const gatedKept: LocalSkillMetadata[] = [];
+  const gatedShadowed: ShadowedSkill[] = [];
+  for (const skill of gated.kept) {
+    const winner = activeByName.get(skill.name);
+    if (winner !== undefined && compareSkillPrecedence(winner, skill) < 0) {
+      gatedShadowed.push({ skill, by: winner });
+    } else {
+      gatedKept.push(skill);
     }
-    return a.path.localeCompare(b.path);
-  });
+  }
+  const allWarnings = [
+    ...warnings,
+    ...[...active.shadowed, ...gated.shadowed, ...gatedShadowed].map(
+      shadowWarning,
+    ),
+  ];
 
   return {
-    skills: sortedSkills,
-    conditionalSkills: conditional.sort((a, b) => a.name.localeCompare(b.name)),
+    skills: active.kept.sort(byNameThenPath),
+    conditionalSkills: gatedKept.sort(byNameThenPath),
     skillRoots: unique(roots.map((root) => root.path)).sort((a, b) =>
       a.localeCompare(b)
     ),
@@ -902,7 +1406,91 @@ export async function loadLocalSkillsSnapshot(
       roots.filter((root) => root.scope === "plugin").map((root) => root.path),
     ).sort((a, b) => a.localeCompare(b)),
     truncatedRoots,
-    warnings,
+    warnings: allWarnings,
+  };
+}
+
+function byNameThenPath(a: LocalSkillMetadata, b: LocalSkillMetadata): number {
+  return a.name.localeCompare(b.name) || a.path.localeCompare(b.path);
+}
+
+/**
+ * Which of two same-named skills the listing, `/skills` and the Skill tool
+ * use. Managed policy first, then the user's own skills ($AGENC_HOME before
+ * the shared ~/.agents catalog), then repository skills (the root nearest
+ * the files being worked on first, `.agenc` before `.agents` in one
+ * directory), then plugins, then AgenC's built-ins. A repository cannot
+ * replace a skill the user installed for themselves, which matches the
+ * upstream rule (managed > personal > project), and a local skill still
+ * overrides a built-in, as the bundled-skill listing already did.
+ *
+ * Before this order was explicit the first skill by path won, so the
+ * result depended on where the home directory and the checkout happened
+ * to sort, and both copies were listed while only one could ever load.
+ */
+const SKILL_PRECEDENCE_TIER: Readonly<Record<LocalSkillScope, number>> = {
+  managed: 0,
+  user: 1,
+  project: 2,
+  plugin: 3,
+  mcp: 4,
+  bundled: 5,
+};
+
+function sharedCatalogRoot(root: string): number {
+  return root.endsWith(SHARED_AGENTS_SKILLS_SUFFIX) ? 1 : 0;
+}
+
+export function compareSkillPrecedence(
+  a: LocalSkillMetadata,
+  b: LocalSkillMetadata,
+): number {
+  const byTier = SKILL_PRECEDENCE_TIER[a.scope] - SKILL_PRECEDENCE_TIER[b.scope];
+  if (byTier !== 0) return byTier;
+  if (a.scope === "project") {
+    const byDepth = b.root.split(sep).length - a.root.split(sep).length;
+    if (byDepth !== 0) return byDepth;
+  }
+  return (
+    sharedCatalogRoot(a.root) - sharedCatalogRoot(b.root) ||
+    a.path.localeCompare(b.path)
+  );
+}
+
+interface ShadowedSkill {
+  readonly skill: LocalSkillMetadata;
+  readonly by: LocalSkillMetadata;
+}
+
+function keepOneSkillPerName(skills: readonly LocalSkillMetadata[]): {
+  readonly kept: LocalSkillMetadata[];
+  readonly shadowed: ShadowedSkill[];
+} {
+  const winners = new Map<string, LocalSkillMetadata>();
+  for (const skill of skills) {
+    const current = winners.get(skill.name);
+    if (current === undefined || compareSkillPrecedence(skill, current) < 0) {
+      winners.set(skill.name, skill);
+    }
+  }
+  const shadowed: ShadowedSkill[] = [];
+  for (const skill of skills) {
+    const winner = winners.get(skill.name)!;
+    if (winner !== skill) shadowed.push({ skill, by: winner });
+  }
+  return { kept: [...winners.values()], shadowed };
+}
+
+function shadowWarning({ skill, by }: ShadowedSkill): SkillLoadWarning {
+  if (skill.loadedFrom === "bundled") {
+    return {
+      path: by.path,
+      reason: `replaces the built-in skill "${skill.name}"; the built-in one is not listed or loadable`,
+    };
+  }
+  return {
+    path: skill.path,
+    reason: `not loaded: ${by.path} defines a skill with the same name ("${skill.name}") and takes precedence`,
   };
 }
 
@@ -955,8 +1543,21 @@ async function loadSkillContent(
     return renderBundledSkill(skill, args);
   }
   let raw: string;
+  let readPath = skill.path;
+  let checked: CheckedFile | undefined;
+  if (skill.scope === "project") {
+    const realPath = skill.projectRealPath;
+    const checkedFile = realPath === undefined ? null : await checkedProjectSkillFile(realPath);
+    if (realPath === undefined || checkedFile === null) {
+      throw new Error(`Project skill is no longer in a safe location: ${skill.path}`);
+    }
+    readPath = realPath;
+    checked = checkedFile;
+  }
   try {
-    raw = await readFile(skill.path, "utf8");
+    const read = await readRegularFileNoFollow(readPath, checked);
+    if (read === null) return null;
+    raw = read.toString("utf8");
   } catch {
     return null;
   }
@@ -991,8 +1592,10 @@ function snapshotFindSkill(
   name: string,
 ): LocalSkillMetadata | undefined {
   const normalized = normalizeSkillName(name);
-  return snapshot.skills.find(
-    (skill) => skill.name === normalized || skill.aliases?.includes(normalized),
+  // A skill's own name wins over another skill's alias, as in findCommand.
+  return (
+    snapshot.skills.find((skill) => skill.name === normalized) ??
+    snapshot.skills.find((skill) => skill.aliases?.includes(normalized))
   );
 }
 
@@ -1036,7 +1639,11 @@ function formatHiddenSkillsLine(count: number): string {
 }
 
 /**
- * Words too common to say anything about which skill fits a request.
+ * Words too common to say anything about which skill fits a request, mostly
+ * the grammar of an instruction ("write", "create", "set up"). How common a
+ * word is among the installed skills is weighed separately, per catalog,
+ * below; "module" and "project" are left to that weighing, which measured
+ * better than listing them here.
  */
 const SKILL_MATCH_STOPWORDS: ReadonlySet<string> = new Set([
   "the", "and", "for", "with", "that", "this", "you", "your", "are", "was",
@@ -1045,51 +1652,160 @@ const SKILL_MATCH_STOPWORDS: ReadonlySet<string> = new Set([
   "add", "into", "from", "when", "what", "where", "which", "will", "would",
   "please", "should", "then", "them", "they", "there", "here", "just", "like",
   "file", "files", "code", "line", "lines",
+  "write", "create", "set", "get", "need", "want", "help", "some", "about",
+  "also", "our", "these", "those", "via", "etc", "thing", "things", "stuff",
+  "something", "repo", "codebase",
 ]);
 
-/** Content words of the current request, lowercased and de-duplicated. */
+/**
+ * A light suffix strip so "tests", "testing" and "tested" meet "test", and
+ * "policies" meets "policy". Applied to request words and skill words alike,
+ * so the stems only need to agree with each other, not be real words.
+ */
+function stemTerm(word: string): string {
+  let stem = word;
+  if (stem.length > 4 && stem.endsWith("ies")) stem = `${stem.slice(0, -3)}y`;
+  else if (stem.length > 5 && stem.endsWith("ing")) stem = stem.slice(0, -3);
+  else if (stem.length > 4 && stem.endsWith("ed")) stem = stem.slice(0, -2);
+  else if (
+    stem.length > 3 &&
+    stem.endsWith("s") &&
+    !stem.endsWith("ss") &&
+    !stem.endsWith("us") &&
+    !stem.endsWith("is")
+  ) {
+    stem = stem.slice(0, -1);
+  }
+  return stem.length > 4 && stem.endsWith("e") ? stem.slice(0, -1) : stem;
+}
+
+/** Stemmed content words of free text: a request or a skill description. */
+function matchTerms(
+  text: string,
+  stopwords: ReadonlySet<string> = SKILL_MATCH_STOPWORDS,
+): Set<string> {
+  const terms = new Set<string>();
+  for (const raw of text.toLowerCase().split(/[^a-z0-9+#.]+/u)) {
+    const token = raw.replace(/^[.]+|[.]+$/gu, "");
+    if (token.length < 3 || stopwords.has(token)) continue;
+    terms.add(stemTerm(token));
+    // "next.js" and "package.json" also mean "next" and "json".
+    if (token.includes(".")) {
+      for (const part of token.split(".")) {
+        if (part.length >= 3 && !stopwords.has(part)) terms.add(stemTerm(part));
+      }
+    }
+  }
+  return terms;
+}
+
+/** Content words of the current request, stemmed and de-duplicated. */
 function requestMatchTokens(request: string | null | undefined): readonly string[] {
   if (typeof request !== "string" || request.length === 0) return [];
-  const tokens = new Set<string>();
-  for (const raw of request.toLowerCase().split(/[^a-z0-9+#.]+/u)) {
-    const token = raw.replace(/^[.]+|[.]+$/gu, "");
-    if (token.length < 3) continue;
-    if (SKILL_MATCH_STOPWORDS.has(token)) continue;
-    tokens.add(token);
+  return [...matchTerms(request)];
+}
+
+const EMPTY_STOPWORDS: ReadonlySet<string> = new Set();
+
+interface IndexedSkill {
+  /** Stemmed parts of the skill name and its plugin id. */
+  readonly nameTerms: ReadonlySet<string>;
+  readonly nameParts: readonly string[];
+  /** Stemmed words of the description and when_to_use. */
+  readonly textTerms: ReadonlySet<string>;
+}
+
+/**
+ * Per-skill match index, built once per metadata object. Snapshot entries
+ * are the same objects until the snapshot is rebuilt, so a human turn over a
+ * 1,822-skill catalog does set lookups instead of lowercasing and scanning
+ * every description again.
+ */
+const skillMatchIndex = new WeakMap<SkillListingEntry, IndexedSkill>();
+
+function indexedSkill(skill: SkillListingEntry): IndexedSkill {
+  let entry = skillMatchIndex.get(skill);
+  if (entry === undefined) {
+    const parts = [
+      ...new Set(
+        `${skill.name} ${skill.pluginId ?? ""}`
+          .toLowerCase()
+          .split(/[^a-z0-9]+/u)
+          .filter((part) => part.length > 0)
+          .map(stemTerm),
+      ),
+    ];
+    entry = {
+      nameTerms: new Set(parts),
+      nameParts: parts,
+      // Descriptions keep every content word; only the request drops the
+      // instruction words.
+      textTerms: matchTerms(
+        `${skill.description ?? ""} ${skill.whenToUse ?? ""}`,
+        EMPTY_STOPWORDS,
+      ),
+    };
+    skillMatchIndex.set(skill, entry);
   }
-  return [...tokens];
+  return entry;
 }
 
 /** Cap so one long description cannot outweigh a real name match. */
 const SKILL_DESCRIPTION_MATCH_CAP = 6;
+const NAME_MATCH_WEIGHT = 3;
+const NAME_PREFIX_MATCH_WEIGHT = 1.5;
+const DESCRIPTION_MATCH_WEIGHT = 1;
+/** Share of the best score a relevance-block line needs to be shown. */
+const RELEVANCE_BLOCK_FLOOR = 0.3;
 
 /**
- * How well a skill answers the current request. A name match counts most: a
- * skill called `generating-unit-tests` is what "write unit tests" wants, and
- * its description only corroborates that.
+ * How well each skill answers the current request. A name match counts most:
+ * a skill called `generating-unit-tests` is what "write unit tests" wants,
+ * and its description only corroborates that. Each word is weighed by how
+ * rare it is in this catalog (inverse document frequency): "vercel" or
+ * "dockerfile" picks out a few skills, "service" or "deploy" appears in
+ * hundreds and says little. A name part that starts with the word, or that
+ * the word starts with ("docker" / "dockerfile"), is a partial match.
  */
-function skillRelevance(
-  skill: SkillListingEntry,
-  tokens: readonly string[],
-): number {
-  if (tokens.length === 0) return 0;
-  const name = `${skill.name} ${skill.pluginId ?? ""}`.toLowerCase();
-  const nameParts = new Set(name.split(/[^a-z0-9]+/u));
-  const description = `${skill.description ?? ""} ${skill.whenToUse ?? ""}`.toLowerCase();
-  let score = 0;
-  let fromDescription = 0;
-  for (const token of tokens) {
-    if (nameParts.has(token)) {
-      score += 4;
-    } else if (name.includes(token)) {
-      score += 2;
+function skillRelevanceScores(
+  skills: readonly SkillListingEntry[],
+  terms: readonly string[],
+): number[] {
+  if (terms.length === 0) return skills.map(() => 0);
+  const indexed = skills.map(indexedSkill);
+  const count = indexed.length;
+  const weights = terms.map((term) => {
+    let documents = 0;
+    for (const entry of indexed) {
+      if (entry.nameTerms.has(term) || entry.textTerms.has(term)) documents += 1;
     }
-    if (fromDescription < SKILL_DESCRIPTION_MATCH_CAP && description.includes(token)) {
-      score += 1;
-      fromDescription += 1;
-    }
-  }
-  return score;
+    return Math.log(1 + count / (1 + documents));
+  });
+  return indexed.map((entry) => {
+    let score = 0;
+    let fromDescription = 0;
+    terms.forEach((term, index) => {
+      const weight = weights[index]!;
+      if (entry.nameTerms.has(term)) {
+        score += NAME_MATCH_WEIGHT * weight;
+      } else if (
+        term.length >= 4 &&
+        entry.nameParts.some(
+          (part) => part.length >= 4 && (part.startsWith(term) || term.startsWith(part)),
+        )
+      ) {
+        score += NAME_PREFIX_MATCH_WEIGHT * weight;
+      }
+      if (
+        fromDescription < SKILL_DESCRIPTION_MATCH_CAP &&
+        entry.textTerms.has(term)
+      ) {
+        score += DESCRIPTION_MATCH_WEIGHT * weight;
+        fromDescription += 1;
+      }
+    });
+    return score;
+  });
 }
 
 /** What a listing pass decided, for the operator-facing diagnostic. */
@@ -1143,10 +1859,18 @@ export function buildSkillListingWithinBudget(
     };
   }
   const budget = getListingCharBudget(contextWindowTokens);
-  const fullLines = commands.map(formatSkillListingLine);
+  // Every line is at least "- <name>: ", so a catalog whose names alone
+  // overflow the budget cannot fit; skip formatting 1,800 lines to learn it.
+  const shortestTotal =
+    commands.reduce((sum, skill) => sum + skill.name.length + 4, 0) +
+    commands.length - 1;
+  const fullLines =
+    shortestTotal <= budget ? commands.map(formatSkillListingLine) : null;
   const fullTotal =
-    fullLines.reduce((sum, line) => sum + line.length, 0) + fullLines.length - 1;
-  if (fullTotal <= budget) {
+    fullLines === null
+      ? Number.POSITIVE_INFINITY
+      : fullLines.reduce((sum, line) => sum + line.length, 0) + fullLines.length - 1;
+  if (fullLines !== null && fullTotal <= budget) {
     return {
       listing: fullLines.join("\n"),
       stats: {
@@ -1175,13 +1899,13 @@ export function buildSkillListingWithinBudget(
   // javascript-typescript — was never shown, which is why 15 turns of exactly
   // that work produced zero Skill invocations. What the request is about now
   // decides who gets the space; scope rank breaks ties, as before.
-  const tokens = tokensForStats;
+  const relevance = skillRelevanceScores(commands, tokensForStats);
   const rest = commands
     .map((skill, index) => ({
       skill,
       index,
       rank: skillListingRank(skill),
-      relevance: skillRelevance(skill, tokens),
+      relevance: relevance[index]!,
     }))
     .filter((entry) => entry.skill.loadedFrom !== "bundled")
     .sort(
@@ -1240,18 +1964,25 @@ export function rankSkillsForRequest(
     [...(request ?? "").matchAll(/(?:^|[\s(])@([a-z0-9][a-z0-9:_-]*)/giu)]
       .map((match) => match[1]!.toLowerCase()),
   );
-  const ranked = skills
-    .filter((skill) => !skill.disableModelInvocation && (
-      !exclude.has(skill.name) ||
-      (skill.pluginId !== undefined && mentionedPlugins.has(skill.pluginId.toLowerCase()))
-    ))
+  // Word weights come from the whole catalog, not just the candidates.
+  const relevance = skillRelevanceScores(skills, tokens);
+  const candidates = skills
     .map((skill, index) => ({
       skill,
       index,
       rank: skillListingRank(skill),
-      relevance: skillRelevance(skill, tokens),
+      relevance: relevance[index]!,
     }))
-    .filter((entry) => entry.relevance > 0)
+    .filter((entry) => entry.relevance > 0 && !entry.skill.disableModelInvocation && (
+      !exclude.has(entry.skill.name) ||
+      (entry.skill.pluginId !== undefined &&
+        mentionedPlugins.has(entry.skill.pluginId.toLowerCase()))
+    ));
+  const best = candidates.reduce((top, entry) => Math.max(top, entry.relevance), 0);
+  const ranked = candidates
+    // A line that matched only a word the best candidates also matched,
+    // and nothing rarer, is noise the model has to read on every turn.
+    .filter((entry) => entry.relevance >= RELEVANCE_BLOCK_FLOOR * best)
     .sort(
       (a, b) =>
         b.relevance - a.relevance || a.rank - b.rank || a.index - b.index,
@@ -1421,7 +2152,7 @@ export function createLocalSkillsServices(
   } | null = null;
   let lastPluginConfig: Pick<AgenCConfig, "plugins"> | undefined =
     options.config;
-  let watchedPluginConfigKey = JSON.stringify(options.config ?? null);
+  let watchedPluginConfigKey = pluginWatchKey(options.config);
   const activePaths = new Set<string>();
   const discoveredSkillRoots = new Set<string>();
   let watcherStarted = false;
@@ -1511,7 +2242,7 @@ export function createLocalSkillsServices(
   const startWatcher = () => {
     if (watcherStarted) return Promise.resolve();
     watcherStarted = true;
-    watchedPluginConfigKey = JSON.stringify(lastPluginConfig ?? null);
+    watchedPluginConfigKey = pluginWatchKey(lastPluginConfig);
     return detector.initialize({
       fileWatcher: options.fileWatcher,
       getWatchRoots: async () => {
@@ -1537,7 +2268,7 @@ export function createLocalSkillsServices(
   };
   const restartWatcherIfPluginConfigChanged = async () => {
     if (!watcherStarted) return;
-    const nextKey = JSON.stringify(lastPluginConfig ?? null);
+    const nextKey = pluginWatchKey(lastPluginConfig);
     if (nextKey === watchedPluginConfigKey) return;
     await detector.dispose();
     watcherStarted = false;
@@ -1648,6 +2379,16 @@ export function createLocalSkillsServices(
   };
 }
 
+/**
+ * The watch roots depend on the plugin section alone (plugin discovery reads
+ * nothing else). The whole session config used to be the key, so changing
+ * the model or a permission rule tore the watcher down and registered every
+ * root again.
+ */
+function pluginWatchKey(config: Pick<AgenCConfig, "plugins"> | undefined): string {
+  return JSON.stringify(config?.plugins ?? null);
+}
+
 function skillSnapshotCacheKey(
   config: Pick<AgenCConfig, "plugins"> | undefined,
   activePaths: ReadonlySet<string>,
@@ -1682,7 +2423,9 @@ export async function discoverDynamicSkillDirsForPaths(
         const skillDir = join(current, rootName, "skills");
         if (seen.has(skillDir)) continue;
         seen.add(skillDir);
-        if (await pathIsDirectory(skillDir)) dirs.push(skillDir);
+        if (await pathIsDirectory(skillDir) && await projectSkillRootIsSafe(skillDir)) {
+          dirs.push(skillDir);
+        }
       }
       const parent = dirname(current);
       if (parent === current) break;

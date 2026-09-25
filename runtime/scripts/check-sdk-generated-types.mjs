@@ -66,6 +66,7 @@ const transcriptV2InterfaceNames = [
   "SessionTranscriptV2Message",
   "SessionTranscriptV2ActiveTurn",
   "SessionTranscriptV2TurnResult",
+  "DisplayAttachment",
   "SessionTranscriptV2Event",
   "SessionTranscriptV2Result",
 ];
@@ -115,6 +116,7 @@ function renderTranscriptV2Generated(runtimeProtocol) {
     "  | TranscriptV2JsonPrimitive",
     "  | readonly TranscriptV2JsonValue[]",
     "  | TranscriptV2JsonObject;",
+    "type JsonValue = TranscriptV2JsonValue;",
     "interface TranscriptV2JsonObject {",
     "  readonly [key: string]: TranscriptV2JsonValue | undefined;",
     "}",

@@ -15,6 +15,12 @@ import {
 } from '../tools/FileReadTool/imageProcessor.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { formatFileSize } from './format.js'
+import {
+  imageFormatLabel,
+  inspectImageBytes,
+  pngHasUndecodedParts,
+  type InlineImageFormat,
+} from './image-validation.js'
 import { logError } from './log.js'
 
 type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
@@ -26,6 +32,112 @@ export class ImageResizeError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'ImageResizeError'
+  }
+}
+
+/**
+ * The bytes are not a complete PNG, JPEG, GIF or WebP image. Providers decode
+ * every inline image and answer such bytes with an HTTP 400, so they must
+ * never be sent as an image.
+ */
+export class UndecodableImageError extends ImageResizeError {
+  constructor(
+    /** Lower-case clause describing the defect. */
+    readonly reason: string,
+    /** Container format named by the signature, when it has a known one. */
+    readonly format?: InlineImageFormat,
+  ) {
+    super(
+      format === undefined
+        ? `Not a valid image: ${reason}.`
+        : `Not a valid ${imageFormatLabel(format)} image: ${reason}.`,
+    )
+    this.name = 'UndecodableImageError'
+  }
+}
+
+/**
+ * No image decoder is installed, so no bytes can be shown to be an image.
+ * Passing them on unchecked is how a 16-byte fake PNG reached a provider.
+ */
+export class ImageDecoderUnavailableError extends ImageResizeError {
+  constructor() {
+    super(
+      'No image decoder is available (sharp is not installed), so the image cannot be checked.',
+    )
+    this.name = 'ImageDecoderUnavailableError'
+  }
+}
+
+/** Bound the aggregate pixels an animated image decoder may allocate. */
+export class ImageDecodeBudgetError extends ImageResizeError {
+  constructor() {
+    super('Image exceeds the decoded pixel budget')
+    this.name = 'ImageDecodeBudgetError'
+  }
+}
+
+const MAX_DECODED_IMAGE_PIXELS = 32 * 1024 * 1024
+
+function assertImageDecodeBudget(metadata: {
+  width?: number
+  height?: number
+  pages?: number
+}): void {
+  const { width, height } = metadata
+  const pages = metadata.pages ?? 1
+  if (
+    width !== undefined && height !== undefined &&
+    Number.isFinite(width) && Number.isFinite(height) &&
+    Number.isFinite(pages) && pages > 0 &&
+    width * height * pages > MAX_DECODED_IMAGE_PIXELS
+  ) {
+    throw new ImageDecodeBudgetError()
+  }
+}
+
+const MAX_DECODER_DETAIL_CHARS = 160
+
+/**
+ * The bytes to hand on for `buffer`, which must be a complete image that
+ * decodes: the caller's original bytes, or for an animated PNG its default
+ * image encoded again. Throws otherwise. Paths that would return the
+ * original bytes unchanged must go through this. The structural check names
+ * common defects precisely; the full decode catches what a container walk
+ * cannot, such as corrupt compressed data behind valid headers. Sharp's
+ * metadata read parses only the header, and without `animated` sharp decodes
+ * only the first frame, while a provider may decode every pixel of every
+ * frame. No decoder here reads APNG frames, so those are left behind rather
+ * than handed on unchecked.
+ */
+async function decodedImageBytes(
+  sharp: SharpFunction,
+  buffer: Buffer,
+): Promise<Buffer> {
+  const inspection = inspectImageBytes(buffer)
+  if (!inspection.ok) {
+    throw new UndecodableImageError(inspection.reason, inspection.format)
+  }
+  try {
+    if (pngHasUndecodedParts(buffer)) {
+      return await sharp(buffer).png().toBuffer()
+    }
+    const image = sharp(buffer, { animated: true })
+    assertImageDecodeBudget(await image.metadata())
+    await (typeof image.raw === 'function' ? image.raw() : image).toBuffer()
+    return buffer
+  } catch (error) {
+    if (error instanceof ImageDecodeBudgetError) throw error
+    const detail = (error instanceof Error ? error.message : String(error))
+      .replace(/\s+/gu, ' ')
+      .trim()
+      .slice(0, MAX_DECODER_DETAIL_CHARS)
+    throw new UndecodableImageError(
+      detail.length > 0
+        ? `the image decoder could not read it (${detail})`
+        : 'the image decoder could not read it',
+      inspection.format,
+    )
   }
 }
 
@@ -72,10 +184,16 @@ export async function maybeResizeAndDownsampleImageBuffer(
     // that the API rejects with `image cannot be empty`.
     throw new ImageResizeError('Image file is empty (0 bytes)')
   }
+  let sharp: SharpFunction
   try {
-    const sharp = await getImageProcessor()
+    sharp = await getImageProcessor()
+  } catch {
+    throw new ImageDecoderUnavailableError()
+  }
+  try {
     const image = sharp(imageBuffer)
     const metadata = await image.metadata()
+    assertImageDecodeBudget(metadata)
 
     const mediaType = metadata.format ?? ext
     // Normalize "jpg" to "jpeg" for media type compatibility
@@ -91,7 +209,10 @@ export async function maybeResizeAndDownsampleImageBuffer(
         return { buffer: compressedBuffer, mediaType: 'jpeg' }
       }
       // Return without dimensions if we can't determine them
-      return { buffer: imageBuffer, mediaType: normalizedMediaType }
+      return {
+        buffer: await decodedImageBytes(sharp, imageBuffer),
+        mediaType: normalizedMediaType,
+      }
     }
 
     // Store original dimensions (guaranteed to be defined here)
@@ -102,14 +223,15 @@ export async function maybeResizeAndDownsampleImageBuffer(
     let width = originalWidth
     let height = originalHeight
 
-    // Check if the original file just works
+    // Check if the original file just works. Sharp read only the header, so
+    // a file truncated or corrupt after it still reaches this point.
     if (
       originalSize <= IMAGE_TARGET_RAW_SIZE &&
       width <= IMAGE_MAX_WIDTH &&
       height <= IMAGE_MAX_HEIGHT
     ) {
       return {
-        buffer: imageBuffer,
+        buffer: await decodedImageBytes(sharp, imageBuffer),
         mediaType: normalizedMediaType,
         dimensions: {
           originalWidth,
@@ -275,30 +397,34 @@ export async function maybeResizeAndDownsampleImageBuffer(
       },
     }
   } catch (error) {
+    if (error instanceof UndecodableImageError || error instanceof ImageDecodeBudgetError) throw error
     logError(error as Error)
 
-    // Detect actual format from magic bytes instead of trusting extension
-    const detected = detectImageFormatFromBuffer(imageBuffer)
-    const normalizedExt = detected.slice(6) // Remove 'image/' prefix
+    // Sharp could not read or process the bytes. They may pass through
+    // unprocessed only when they decode completely; anything else (such as a
+    // PNG signature with no image after it) would be rejected by the
+    // provider on this and every later request.
+    const decoded = await decodedImageBytes(sharp, imageBuffer)
+    const inspection = inspectImageBytes(imageBuffer)
+    if (!inspection.ok) {
+      throw new UndecodableImageError(inspection.reason, inspection.format)
+    }
+    // The format comes from the signature, never from the extension.
+    const normalizedExt = inspection.format
 
     // Calculate the base64 size (API limit is on base64-encoded length)
     const base64Size = Math.ceil((originalSize * 4) / 3)
 
     // Size-under-5MB does not imply dimensions-under-cap. Don't return the
-    // raw buffer if the PNG header says it's oversized — fall through to
-    // ImageResizeError instead. PNG sig is 8 bytes, IHDR dims at 16-24.
+    // raw buffer if the header says it's oversized; fall through to
+    // ImageResizeError instead.
     const overDim =
-      imageBuffer.length >= 24 &&
-      imageBuffer[0] === 0x89 &&
-      imageBuffer[1] === 0x50 &&
-      imageBuffer[2] === 0x4e &&
-      imageBuffer[3] === 0x47 &&
-      (imageBuffer.readUInt32BE(16) > IMAGE_MAX_WIDTH ||
-        imageBuffer.readUInt32BE(20) > IMAGE_MAX_HEIGHT)
+      inspection.width > IMAGE_MAX_WIDTH ||
+      inspection.height > IMAGE_MAX_HEIGHT
 
     // If original image's base64 encoding is within API limit, allow it through uncompressed
     if (base64Size <= API_IMAGE_MAX_BASE64_SIZE && !overDim) {
-      return { buffer: imageBuffer, mediaType: normalizedExt }
+      return { buffer: decoded, mediaType: normalizedExt }
     }
 
     // Image is too large and we failed to compress it - fail with user-friendly error

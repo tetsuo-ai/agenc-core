@@ -17,6 +17,7 @@
  */
 
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
+import { withheldImagePlaceholder } from "./query-image-withheld.js";
 
 export const DEFAULT_CONTEXT_IMAGE_BUDGET_BYTES = 6 * 1024 * 1024;
 export const CONTEXT_IMAGE_BUDGET_ENV = "AGENC_CONTEXT_IMAGE_BUDGET_BYTES";
@@ -95,10 +96,10 @@ export function boundContextImageBytes(
         continue;
       }
       suffixFull = true;
-      parts[j] = {
-        type: "text",
-        text: bytes > budgetBytes ? OVERSIZED_IMAGE_TEXT : OMITTED_IMAGE_TEXT,
-      };
+      parts[j] = withheldImagePlaceholder(
+        part,
+        bytes > budgetBytes ? OVERSIZED_IMAGE_TEXT : OMITTED_IMAGE_TEXT,
+      );
       omitted += 1;
       changed = true;
     }

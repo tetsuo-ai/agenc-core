@@ -1,3 +1,5 @@
+import { largeGrokReplay, unpaddedGrokReplays } from "../../helpers/grok-encrypted-replay.js";
+import { llmMessageToDurableResponseItem, responseItemToLlmMessage } from "../../../src/session/message-history-conversion.js";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { crc32 } from "node:zlib";
 import { tmpdir } from "node:os";
@@ -99,6 +101,48 @@ type TransactionRunOverrides = Pick<
   readonly messagesToKeep?: readonly RuntimeMessage[];
   readonly messagesToSummarize?: readonly RuntimeMessage[];
 };
+
+function expectReplaySurvivedCompaction(
+  store: RolloutStore,
+  result: Awaited<ReturnType<typeof runRealTransaction>>,
+  expected: {
+    readonly version: 2;
+    readonly content: string | undefined;
+    readonly provider: string;
+    readonly model: string;
+  },
+): void {
+  expect(
+    result.transaction?.committed.replacement_history.find(
+      (message) => message.providerReasoning !== undefined,
+    )?.providerReasoning,
+  ).toEqual(expected);
+
+  const committedRow = store.readAll().find(
+    (item) => item.type === "compaction_committed",
+  );
+  expect(committedRow?.type).toBe("compaction_committed");
+  if (committedRow?.type !== "compaction_committed") {
+    throw new Error("missing compaction commit");
+  }
+  const parsed = readCompactionRolloutPayload(
+    committedRow.type,
+    committedRow.payload,
+  );
+  if (!("replacement_history" in parsed)) {
+    throw new Error("missing replacement history in compaction payload");
+  }
+  expect(
+    parsed.replacement_history.find(
+      (message) => message.providerReasoning !== undefined,
+    )?.providerReasoning,
+  ).toEqual(expected);
+  expect(
+    reduceAll(store.readAll()).state.history.find(
+      (message) => message.providerReasoning !== undefined,
+    )?.providerReasoning,
+  ).toEqual(expected);
+}
 
 describe("transactional compaction strict contracts", () => {
   it("never authorizes instructions embedded in transcript context", () => {
@@ -719,36 +763,77 @@ describe("transactional compaction production path", () => {
         provider: "qwen",
         model: "qwen3.8-max",
       } as const;
-      expect(
-        result.transaction?.committed.replacement_history.find(
-          (message) => message.providerReasoning !== undefined,
-        )?.providerReasoning,
-      ).toEqual(expected);
+      expectReplaySurvivedCompaction(store, result, expected);
+    });
+  });
 
-      const committedRow = store.readAll().find(
-        (item) => item.type === "compaction_committed",
+  it("preserves 100KB encrypted reasoning through compaction replacement and disk replay", async () => {
+    await withTransactionalStore("transaction-grok-encrypted-replay", async (store) => {
+      const source = appendSourceMessages(store, 8, 4_000);
+      const reasoningMessage: RuntimeMessage = {
+        role: "assistant",
+        content: "",
+        ...largeGrokReplay,
+      };
+      store.appendRollout({
+        type: "response_item",
+        payload: llmMessageToDurableResponseItem(reasoningMessage as LLMMessage),
+      }, { durable: true });
+      source.push(reasoningMessage);
+
+      const result = await runRealTransaction(
+        store,
+        source,
+        compactionProvider(),
+        {
+          messagesToKeep: [reasoningMessage],
+          messagesToSummarize: source.slice(0, -1),
+        },
       );
-      expect(committedRow?.type).toBe("compaction_committed");
-      if (committedRow?.type !== "compaction_committed") {
-        throw new Error("missing compaction commit");
-      }
-      const parsed = readCompactionRolloutPayload(
-        committedRow.type,
-        committedRow.payload,
+      const expected = {
+        version: 2,
+        content: largeGrokReplay.providerReasoningContent,
+        provider: "grok",
+        model: "grok-4.7",
+      } as const;
+      expectReplaySurvivedCompaction(store, result, expected);
+      const restored = result.transaction!.committed.replacement_history.map(responseItemToLlmMessage);
+      expect(restored.some((message) => message.providerReasoningContent === largeGrokReplay.providerReasoningContent)).toBe(true);
+    });
+  });
+
+  it.each(unpaddedGrokReplays)("preserves unpadded $length-character reasoning through compaction replacement and disk replay", async ({ replay }) => {
+    await withTransactionalStore("transaction-grok-encrypted-replay", async (store) => {
+      const source = appendSourceMessages(store, 8, 4_000);
+      const reasoningMessage: RuntimeMessage = {
+        role: "assistant",
+        content: "",
+        ...replay,
+      };
+      store.appendRollout({
+        type: "response_item",
+        payload: llmMessageToDurableResponseItem(reasoningMessage as LLMMessage),
+      }, { durable: true });
+      source.push(reasoningMessage);
+
+      const result = await runRealTransaction(
+        store,
+        source,
+        compactionProvider(),
+        {
+          messagesToKeep: [reasoningMessage],
+          messagesToSummarize: source.slice(0, -1),
+        },
       );
-      if (!("replacement_history" in parsed)) {
-        throw new Error("missing replacement history in compaction payload");
-      }
-      expect(
-        parsed.replacement_history.find(
-          (message) => message.providerReasoning !== undefined,
-        )?.providerReasoning,
-      ).toEqual(expected);
-      expect(
-        reduceAll(store.readAll()).state.history.find(
-          (message) => message.providerReasoning !== undefined,
-        )?.providerReasoning,
-      ).toEqual(expected);
+      const expected = {
+        version: 2,
+        content: replay.providerReasoningContent,
+        provider: "grok",
+        model: "grok-4.7",
+      } as const;
+      expectReplaySurvivedCompaction(store, result, expected);
+      const restored = result.transaction!.committed.replacement_history.map(responseItemToLlmMessage);
+      expect(restored.some((message) => message.providerReasoningContent === replay.providerReasoningContent)).toBe(true);
     });
   });
 

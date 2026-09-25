@@ -1114,6 +1114,14 @@ async function execCommandHook(
     // bash `read -r line` returns exit 1 (EOF before delimiter) — the
     // variable IS populated but `if read -r line; then ...` skips the
     // branch. See gh-30509 / CC-161.
+    // A hook that exits without reading its input makes this write fail with
+    // EPIPE once the input is larger than the pipe buffer. Without a
+    // listener that is an uncaught exception; the hook's exit reports it.
+    child.stdin.on("error", (error) => {
+      logForDebugging(
+        `Hooks: stdin error for async hook ${processId}: ${errorMessage(error)}`,
+      );
+    });
     child.stdin.write(jsonInput + "\n", "utf8");
     child.stdin.end();
     stdinWritten = true;

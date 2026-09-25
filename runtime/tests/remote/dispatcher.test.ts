@@ -25,13 +25,26 @@ function fixture() {
   const projection = new RemoteApprovalProjection();
   const createSession = vi.fn(async () => ({ sessionId: "new-session", agentId: "new-agent" }));
   const boundary = new RemoteAccessBoundary(grant, () => active, async (sessionId) => ({ sessionId, cwd: workspace, title: "Title", apiKey: "private-key" }), home, { approvals: projection, createSession });
-  const browser = dispatcher.createConnection({ remoteAccess: boundary });
+  const browser = dispatcher.createConnection({ remoteAccess: boundary, remoteCid: "peer" });
   cleanups.push(async () => { active = false; await browser.close(); await connection.close(); await dispatcher.close(); rmSync(root, { recursive: true, force: true }); });
   const initialize = { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION }, capabilities: { "portal.mobile.status.push.v1": true, "routine.updated.v1": true }, authCookie: "fixture-cookie" };
   return { browser, connection, initialize, authenticate, manage, transcript, boundary, projection, createSession, grant };
 }
 
 describe("Core browser dispatcher authority", () => {
+  it("measures legacy transcript replies after remote envelope escaping", async () => {
+    const f = fixture();
+    await f.browser.dispatch(request("initialize", { protocol: { version: "1.17.0" } }));
+    const message = { messageId: "answer", commitEventId: "answer", role: "assistant" as const, text: "A".repeat(800_000), committedSequence: 1 };
+    f.transcript.mockResolvedValue({ schemaVersion: 2, sessionId: "allowed", runId: "run", historyEpoch: "epoch", asOfSequence: 1, messages: [message] });
+    const fitting = await f.browser.dispatch(request("session.transcript.v2", { sessionId: "allowed" }));
+    expect((fitting.result as { messages: typeof message[] }).messages[0]?.text).toBe(message.text);
+    expect(Buffer.byteLength(JSON.stringify({ t: "data", cid: "peer", payload: JSON.stringify(fitting) }))).toBeLessThanOrEqual(1024 * 1024);
+    f.transcript.mockResolvedValue({ schemaVersion: 2, sessionId: "allowed", runId: "run", historyEpoch: "epoch", asOfSequence: 1, messages: [{ ...message, text: "\n".repeat(400_000) }] });
+    const tooLarge = await f.browser.dispatch(request("session.transcript.v2", { sessionId: "allowed" }));
+    expect(tooLarge).toHaveProperty("error");
+    expect(tooLarge).not.toHaveProperty("result");
+  });
   it("requires authenticated initialization for local remote management", async () => {
     const f = fixture();
     await expect(f.connection.dispatch(request("remote.start"))).resolves.toMatchObject({ error: { data: { code: "CONNECTION_NOT_INITIALIZED" } } });

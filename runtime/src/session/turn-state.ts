@@ -49,6 +49,7 @@ import {
  *   token_budget_continuation
  *   continuation_nudge
  *   model_fallback (model-fallback site)
+ *   image_rejection_retry (a provider refused an image; it is left out)
  *
  * T8 disambiguation:
  *   - `model_fallback` is reserved for `onFallbackError` (FallbackTriggeredError
@@ -70,7 +71,9 @@ export type ContinueReason =
   | "plan_tool_required"
   | "text_tool_call_correction"
   | "continuation_nudge"
-  | "completion_gate";
+  | "completion_gate"
+  | "goal_gate"
+  | "image_rejection_retry";
 
 export interface Continue {
   readonly reason: ContinueReason;
@@ -282,6 +285,13 @@ export interface TurnState {
    *  compaction pipeline. AgenC query.ts:369. */
   messagesForQuery: LLMMessage[];
 
+  /** `messages.length` when the current sampling request was prepared. A
+   *  recovery that must drop the sampled batch truncates back to it rather
+   *  than copying `messagesForQuery`, whose per-request attachments,
+   *  pointer-swapped tool bodies and microcompacted history the rollout never
+   *  stores. */
+  messagesAtSampleStart?: number;
+
   /**
    * Set once the turn's first sampling request has placed its attachments
    * before the prompt; later requests of the same turn append theirs after
@@ -430,6 +440,14 @@ export interface TurnState {
    */
   completionGateUnavailablePrompted: boolean;
 
+  // ── Phase 4c — goal gate (`/goal`) — turn-scoped ──
+  /**
+   * `completedToolResults.length` when the goal gate last injected. The goal
+   * itself (rounds, verdicts) is session state; only the stall window is
+   * turn-scoped, and a resumed turn restarting it is harmless.
+   */
+  goalGateToolLedgerMark: number;
+
   // ── Phase 5 — execute tools (AgenC query.ts:572, 1467-1635) ──
   /** Streaming tool executor instance (T7). Kept loop-local so the
    *  next iteration can await pending executor completion before
@@ -469,13 +487,6 @@ export interface TurnState {
    *  auto-compact + budget decisions. Cleared at iteration start by
    *  resetIterationFields. */
   lastResponseUsage: LLMUsage | undefined;
-
-  /** Request-scoped Editor tools admitted before executor dispatch. */
-  editorToolCallsAdmitted: number;
-  /** IDs denied by the fixed Editor tool-call quota in this iteration. */
-  editorToolCallLimitDeniedIds: Set<string>;
-  /** Turn-scoped latch forcing a structured limit terminal after pairing. */
-  editorToolCallLimitExceeded: boolean;
 
   // ── Phase 6 — commit (AgenC query.ts:1192-1465) ──────────────
   /** Number of model turns consumed this session. Compared against
@@ -592,15 +603,13 @@ export function buildInitialTurnState(
     completionGateToolLedgerMark: 0,
     completionGateSettled: false,
     completionGateUnavailablePrompted: false,
+    goalGateToolLedgerMark: 0,
     // Phase 5
     streamingToolExecutor: null,
     pendingToolUseSummary: undefined,
     preventContinuation: false,
     pendingBudgetDecision: undefined,
     lastResponseUsage: undefined,
-    editorToolCallsAdmitted: 0,
-    editorToolCallLimitDeniedIds: new Set(),
-    editorToolCallLimitExceeded: false,
     // Phase 6
     turnCount: 1,
     // Recovery transition
@@ -654,7 +663,6 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
     stopHookBlockingCount: number;
     planToolRequiredRetryCount?: number;
     completionGateRound?: number;
-    editorToolCallsAdmitted?: number;
     pendingAdmissionFallback?: PendingAdmissionFallback;
     modelSampleOrdinal?: number;
     modelSampleResumePrompt?: ModelSampleResumePrompt;
@@ -677,9 +685,6 @@ export function toCheckpointSlice(state: TurnState): TurnCheckpointSlice {
   };
   if (state.completionGateRound > 0) {
     slice.completionGateRound = state.completionGateRound;
-  }
-  if (state.editorToolCallsAdmitted > 0) {
-    slice.editorToolCallsAdmitted = state.editorToolCallsAdmitted;
   }
   if (state.pendingAdmissionFallback !== undefined) {
     const fallback = validatePendingAdmissionFallbackSlice(
@@ -738,6 +743,8 @@ const CONTINUE_REASONS: ReadonlySet<string> = new Set<ContinueReason>([
   "text_tool_call_correction",
   "continuation_nudge",
   "completion_gate",
+  "goal_gate",
+  "image_rejection_retry",
 ]);
 
 /**
@@ -791,13 +798,6 @@ export function restoreFromCheckpoint(
     Number.isFinite(slice.planToolRequiredRetryCount)
   ) {
     state.planToolRequiredRetryCount = slice.planToolRequiredRetryCount;
-  }
-  if (
-    slice.editorToolCallsAdmitted !== undefined &&
-    Number.isFinite(slice.editorToolCallsAdmitted) &&
-    slice.editorToolCallsAdmitted >= 0
-  ) {
-    state.editorToolCallsAdmitted = slice.editorToolCallsAdmitted;
   }
   if (
     slice.completionGateRound !== undefined &&
@@ -893,7 +893,6 @@ export function resetIterationFields(state: TurnState): void {
   state.snipTokensFreed = 0;
   state.pendingBudgetDecision = undefined;
   state.lastResponseUsage = undefined;
-  state.editorToolCallLimitDeniedIds.clear();
   // pendingToolUseSummary + streamingToolExecutor intentionally NOT
   // cleared here — they are awaited in executeTools and cleared by
   // commit phase after their resolution.

@@ -21,11 +21,13 @@
  */
 
 import type { Logger } from "./_deps/logger.js";
+import { createHash } from "node:crypto";
 import { silentLogger } from "./_deps/logger.js";
 import { sanitizeSystemReminderContent } from "../prompts/attachments/system-reminder-sanitizer.js";
 import { asRecord } from "../utils/record.js";
 import { recursivelySanitizeUnicode } from "../utils/sanitization.js";
 import { nonEmptyString } from "../utils/stringUtils.js";
+import { redactMcpAttachmentText, redactMcpAttachmentValue, type McpTextPosition } from "./local-control.js";
 
 /** Aggregate decoded-payload upper bound for one resource read (I-76). */
 export const MAX_RESOURCE_BYTES = 5 * 1024 * 1024;
@@ -124,6 +126,7 @@ export interface MCPResourceBridge {
 
 interface CreateResourceBridgeOpts {
   readonly rpcTimeoutMs?: number;
+  readonly sensitiveHeaders?: Readonly<Record<string, string>>;
   /** Test seam; production remains bounded by `MAX_RESOURCE_LIST_PAGES`. */
   readonly maxListPages?: number;
 }
@@ -153,6 +156,36 @@ export async function createResourceBridge(
     );
   }
   let disposed = false;
+  const rawUriByPublicUri = new Map<string, string>();
+  const publicUriByRawUri = new Map<string, string>();
+  const issuedAliases = new Set<string>();
+  const redact = <T>(value: T): T => redactMcpAttachmentValue(value, opts.sensitiveHeaders, undefined, "resource");
+  const redactIssued = <T>(value: T): T => redactMcpAttachmentValue(value, opts.sensitiveHeaders, undefined, "resource", "payload", issuedAliases);
+  const publicUriForRaw = (raw: string): string => {
+    const existing = publicUriByRawUri.get(raw);
+    if (existing !== undefined) return existing;
+    const redacted = redactMcpAttachmentText(raw, opts.sensitiveHeaders, "uri");
+    let generated = redacted !== raw;
+    let publicUri = generated ? `agenc-redacted-resource:${createHash("sha256").update(raw).digest("hex")}` : raw;
+    if (!fitsUtf8(publicUri, MAX_RESOURCE_URI_BYTES) ||
+        (rawUriByPublicUri.has(publicUri) && rawUriByPublicUri.get(publicUri) !== raw)) {
+      publicUri = `agenc-redacted-resource:${createHash("sha256").update(raw).digest("hex")}`;
+      generated = true;
+    }
+    if (rawUriByPublicUri.size >= 2 * MAX_RESOURCE_DESCRIPTORS) {
+      const oldest = rawUriByPublicUri.keys().next().value;
+      if (oldest !== undefined) {
+        const oldRaw = rawUriByPublicUri.get(oldest)!;
+        rawUriByPublicUri.delete(oldest);
+        publicUriByRawUri.delete(oldRaw);
+        issuedAliases.delete(oldest);
+      }
+    }
+    rawUriByPublicUri.set(publicUri, raw);
+    publicUriByRawUri.set(raw, publicUri);
+    if (generated) issuedAliases.add(publicUri);
+    return publicUri;
+  };
 
   return {
     serverName,
@@ -179,14 +212,18 @@ export async function createResourceBridge(
             signal,
           );
           const responseRecord = asRecord(response);
-          resources.push(
-            ...normalizeResourceCatalog(
-              responseRecord,
-              serverName,
-              MAX_RESOURCE_DESCRIPTORS - catalogEntries,
-              logger,
-            ),
+          const pageResources = normalizeResourceCatalog(
+            responseRecord,
+            serverName,
+            MAX_RESOURCE_DESCRIPTORS - catalogEntries,
+            logger,
+            (text, position) => redactMcpAttachmentText(text, opts.sensitiveHeaders, position),
           );
+          for (const resource of pageResources) {
+            const safe = redact(resource);
+            const publicUri = publicUriForRaw(resource.uri);
+            resources.push({ ...safe, uri: publicUri, namespacedName: `mcp.${serverName}.${publicUri}` });
+          }
           catalogEntries += arrayField(responseRecord, "resources").length;
 
           const nextCursor = nonEmptyString(responseRecord?.nextCursor);
@@ -210,7 +247,7 @@ export async function createResourceBridge(
         );
       } catch (err) {
         signal?.throwIfAborted();
-        logger.warn?.(`MCP server "${serverName}" listResources failed:`, err);
+        logger.warn?.(`MCP server "${serverName}" listResources failed:`, redact(err));
         return [];
       }
     },
@@ -228,20 +265,32 @@ export async function createResourceBridge(
           `MCP resource URI exceeds ${MAX_RESOURCE_URI_BYTES} UTF-8 bytes`,
         );
       }
-      const response = await withDeadline<unknown>(
-        `MCP server "${serverName}" readResource`,
-        rpcTimeoutMs,
-        (effectSignal) =>
-          client.readResource(
-            { uri },
-            { signal: effectSignal, timeout: rpcTimeoutMs },
-          ),
-        signal,
-      );
-      return normalizeResourceContents(response, uri, logger);
+      if (uri.startsWith("agenc-redacted-resource:") && !rawUriByPublicUri.has(uri)) {
+        throw new Error("MCP resource alias expired; list resources again");
+      }
+      try {
+        const response = await withDeadline<unknown>(
+          `MCP server "${serverName}" readResource`,
+          rpcTimeoutMs,
+          (effectSignal) =>
+            client.readResource(
+              { uri: rawUriByPublicUri.get(uri) ?? uri },
+              { signal: effectSignal, timeout: rpcTimeoutMs },
+            ),
+          signal,
+        );
+        return redactIssued(normalizeResourceContents(response, rawUriByPublicUri.get(uri) ?? uri, logger,
+          (text, position) => redactMcpAttachmentText(text, opts.sensitiveHeaders, position, issuedAliases), publicUriForRaw,
+          blob => binaryContainsSecret(blob, opts.sensitiveHeaders)));
+      } catch (error) {
+        throw redact(error);
+      }
     },
     async dispose(): Promise<void> {
       disposed = true;
+      rawUriByPublicUri.clear();
+      publicUriByRawUri.clear();
+      issuedAliases.clear();
     },
   };
 }
@@ -271,6 +320,7 @@ function normalizeResourceCatalog(
   serverName: string,
   remainingEntries: number,
   logger: Logger,
+  redactText: (text: string, position?: McpTextPosition) => string = text => text,
 ): MCPResourceDescriptor[] {
   const rawResources = arrayField(asRecord(response), "resources");
   if (rawResources.length > remainingEntries) {
@@ -280,7 +330,7 @@ function normalizeResourceCatalog(
   }
   return rawResources
     .map((raw, index) =>
-      normalizeResourceDescriptor(raw, serverName, index, logger),
+      normalizeResourceDescriptor(raw, serverName, index, logger, redactText),
     )
     .filter((resource): resource is MCPResourceDescriptor => resource !== null);
 }
@@ -290,6 +340,7 @@ function normalizeResourceDescriptor(
   serverName: string,
   index: number,
   logger: Logger,
+  redactText: (text: string, position?: McpTextPosition) => string,
 ): MCPResourceDescriptor | null {
   const record = asRecord(raw);
   if (!record) return null;
@@ -304,15 +355,16 @@ function normalizeResourceDescriptor(
   }
 
   const name = sanitizeOptionalBoundedResourceText(
-    stringField(record, "name"),
+    redactOptional(stringField(record, "name"), redactText),
     MAX_RESOURCE_NAME_BYTES,
   );
   const description = sanitizeOptionalBoundedResourceText(
-    stringField(record, "description"),
+    redactOptional(stringField(record, "description"), redactText),
     MAX_RESOURCE_DESCRIPTION_BYTES,
   );
   const mimeType = sanitizeOptionalBoundedResourceText(
-    stringField(record, "mimeType"),
+    // Catalog metadata is redacted before the later structural pass.
+    redactOptional(stringField(record, "mimeType"), redactText, "mime"),
     MAX_RESOURCE_MIME_TYPE_BYTES,
   );
 
@@ -330,6 +382,9 @@ function normalizeResourceContents(
   response: unknown,
   requestedUri: string,
   logger: Logger,
+  redactText: (text: string, position?: McpTextPosition) => string = text => text,
+  publicUriForRaw: (uri: string) => string = uri => uri,
+  binaryContainsSecret: (blob: string) => boolean = () => false,
 ): MCPResourceContent {
   const rawContents = arrayField(asRecord(response), "contents");
   const blockLimitTruncated = rawContents.length > MAX_RESOURCE_CONTENT_BLOCKS;
@@ -368,7 +423,7 @@ function normalizeResourceContents(
       );
       continue;
     }
-    const uri = sanitizeResourceText(rawUri);
+    const uri = sanitizeResourceText(publicUriForRaw(rawUri));
     if (!fitsUtf8(uri, MAX_RESOURCE_URI_BYTES)) {
       logger.warn?.(
         `MCP resource content block ${index} sanitized URI exceeded ${MAX_RESOURCE_URI_BYTES} UTF-8 bytes; ignored`,
@@ -376,14 +431,16 @@ function normalizeResourceContents(
       continue;
     }
     const mimeType = sanitizeOptionalBoundedResourceText(
-      stringField(record, "mimeType"),
+      // Keep the same MIME routing rule on resources/read before persistence.
+      redactOptional(stringField(record, "mimeType"), redactText, "mime"),
       MAX_RESOURCE_MIME_TYPE_BYTES,
     );
     const entryBudget = Math.min(MAX_RESOURCE_ENTRY_BYTES, remainingBytes);
 
     if (text !== undefined) {
-      const rawPrefix = truncateUtf8(text, entryBudget);
-      const rawTruncated = rawPrefix.length < text.length;
+      const safeText = redactText(text);
+      const rawPrefix = truncateUtf8(safeText, entryBudget);
+      const rawTruncated = rawPrefix.length < safeText.length;
       const sanitized = sanitizeResourceText(rawPrefix);
       const retained = truncateUtf8(sanitized, entryBudget);
       const retainedBytes = Buffer.byteLength(retained, "utf8");
@@ -399,13 +456,18 @@ function normalizeResourceContents(
       remainingBytes -= retainedBytes;
       if (truncated) {
         logger.warn?.(
-          `MCP text resource content block ${index} for "${safeLogLabel(rawUri)}" exceeded its bounded byte budget; truncated`,
+          `MCP text resource content block ${index} for "${safeLogLabel(redactText(rawUri))}" exceeded its bounded byte budget; truncated`,
         );
       }
       continue;
     }
 
     const blobValue = blob as string;
+    if (binaryContainsSecret(blobValue)) {
+      contents.push({ uri, ...(mimeType !== undefined ? { mimeType } : {}), blob: "", truncated: true, bytesReturned: 0 });
+      logger.warn?.(`MCP blob resource content block ${index} for "${safeLogLabel(redactText(rawUri))}" contained a saved secret; content omitted`);
+      continue;
+    }
     if (blobValue.length > MAX_RESOURCE_BLOB_INPUT_CHARS) {
       contents.push({
         uri,
@@ -415,7 +477,7 @@ function normalizeResourceContents(
         bytesReturned: 0,
       });
       logger.warn?.(
-        `MCP blob resource content block ${index} for "${safeLogLabel(rawUri)}" exceeded ${MAX_RESOURCE_BLOB_INPUT_CHARS} encoded characters; content omitted`,
+        `MCP blob resource content block ${index} for "${safeLogLabel(redactText(rawUri))}" exceeded ${MAX_RESOURCE_BLOB_INPUT_CHARS} encoded characters; content omitted`,
       );
       continue;
     }
@@ -443,7 +505,7 @@ function normalizeResourceContents(
         bytesReturned: 0,
       });
       logger.warn?.(
-        `MCP blob resource content block ${index} for "${safeLogLabel(rawUri)}" exceeded the aggregate encoded-input inspection budget; content omitted`,
+        `MCP blob resource content block ${index} for "${safeLogLabel(redactText(rawUri))}" exceeded the aggregate encoded-input inspection budget; content omitted`,
       );
       continue;
     }
@@ -453,7 +515,7 @@ function normalizeResourceContents(
       const prefix = blobValue.slice(0, inspectionChars);
       if (!BASE64_UNPADDED_PREFIX_PATTERN.test(prefix)) {
         logger.warn?.(
-          `MCP blob resource content block ${index} for "${safeLogLabel(rawUri)}" did not have a valid base64 prefix; ignored`,
+          `MCP blob resource content block ${index} for "${safeLogLabel(redactText(rawUri))}" did not have a valid base64 prefix; ignored`,
         );
         continue;
       }
@@ -471,7 +533,7 @@ function normalizeResourceContents(
       bytesReturned += retainedBuffer.length;
       remainingBytes -= retainedBuffer.length;
       logger.warn?.(
-        `MCP blob resource content block ${index} for "${safeLogLabel(rawUri)}" exceeded its bounded byte budget; truncated`,
+        `MCP blob resource content block ${index} for "${safeLogLabel(redactText(rawUri))}" exceeded its bounded byte budget; truncated`,
       );
       continue;
     }
@@ -479,7 +541,7 @@ function normalizeResourceContents(
     const inspected = inspectBase64(blobValue);
     if (inspected === null) {
       logger.warn?.(
-        `MCP blob resource content block ${index} for "${safeLogLabel(rawUri)}" was not valid canonical base64; ignored`,
+        `MCP blob resource content block ${index} for "${safeLogLabel(redactText(rawUri))}" was not valid canonical base64; ignored`,
       );
       continue;
     }
@@ -500,7 +562,7 @@ function normalizeResourceContents(
     remainingBytes -= retainedBytes;
     if (truncated) {
       logger.warn?.(
-        `MCP blob resource content block ${index} for "${safeLogLabel(rawUri)}" exceeded its bounded byte budget; truncated`,
+        `MCP blob resource content block ${index} for "${safeLogLabel(redactText(rawUri))}" exceeded its bounded byte budget; truncated`,
       );
     }
   }
@@ -511,6 +573,20 @@ function normalizeResourceContents(
       blockLimitTruncated || contents.some((content) => content.truncated),
     bytesReturned,
   };
+}
+
+function binaryContainsSecret(blob: string, headers?: Readonly<Record<string, string>>): boolean {
+  if (!headers || blob.length > MAX_RESOURCE_BLOB_INPUT_CHARS) return false;
+  const secrets = [...new Set(Object.values(headers).flatMap(value => [value, value.replace(/^Bearer\s+/i, "")]))]
+    .filter(secret => secret.length >= 4);
+  if (secrets.some(secret => blob.includes(secret))) return true;
+  if (secrets.length === 0) return false;
+  const bytes = Buffer.from(blob, "base64");
+  return secrets.some(secret => bytes.includes(Buffer.from(secret, "utf8")));
+}
+
+function redactOptional(value: string | undefined, redactText: (text: string, position?: McpTextPosition) => string, position: McpTextPosition = "payload"): string | undefined {
+  return value === undefined ? undefined : redactText(value, position);
 }
 
 function sanitizeOptionalBoundedResourceText(

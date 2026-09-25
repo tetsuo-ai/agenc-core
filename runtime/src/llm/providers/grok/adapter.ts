@@ -70,6 +70,7 @@ import {
   type AuthRefreshOutcome,
 } from "./auth-refresh.js";
 import { xaiBillingRefusalError } from "./billing-refusal.js";
+import { isProviderFundsFailure } from "../../funds.js";
 import { monotonicMs } from "../../_deps/monotonic.js";
 import { resolveContextWindowProfile } from "../../_deps/context-window.js";
 import { getSelectedProviderEnvironment } from "../../../utils/model/providers.js";
@@ -98,6 +99,7 @@ import {
 } from "../../../recovery/api-errors.js";
 import {
   buildXaiResponsesInputItems,
+  extractXaiReasoningReplay,
   resolveXaiResponsesToolChoice,
   toXaiResponsesTools,
   XAI_ENCRYPTED_REASONING_INCLUDE,
@@ -110,6 +112,11 @@ import {
   BUILT_IN_PROVIDER_BASE_URLS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
 } from "../../registry/provider-info.js";
+import {
+  XAI_PRIORITY_SERVICE_TIER,
+  xaiSendsPriorityProcessing,
+  xaiServedSpeed,
+} from "./priority-processing.js";
 
 const DEFAULT_VISION_MODEL = "grok-4-0709";
 
@@ -170,6 +177,7 @@ type ProviderFallbackWaitDecision = Extract<
  * client function tools on that family (built-ins + remote MCP only).
  */
 const VISION_MODELS_WITH_TOOLS = new Set([
+  "grok-4.7",
   "grok-4.6",
   "grok-4.6-latest",
   "grok-4.5",
@@ -1156,6 +1164,7 @@ export class GrokProvider implements LLMProvider {
     model: string = this.config.model,
     singleWireAttempt = false,
   ): ProviderFallbackDecision | null {
+    if (isProviderFundsFailure(this.name, error)) return null;
     if (!this.config.providerFallback) return null;
     const decision = evaluateProviderFallback({
       ...this.config.providerFallback,
@@ -1306,6 +1315,7 @@ export class GrokProvider implements LLMProvider {
             activePlan.params,
             options?.tools,
           ),
+          String(activePlan.params.model),
         );
         this.emitToolCallNormalizationIssues(
           parsed.normalizationIssues,
@@ -1549,6 +1559,7 @@ export class GrokProvider implements LLMProvider {
       let streamIterator: AsyncIterator<any> | null = null;
       let abortStream: ((reason?: unknown) => void) | undefined;
       let streamExhausted = false;
+      let reasoningReplay: Pick<LLMResponse, "providerReasoningContent" | "providerReasoningProvenance"> = {};
       let responseTracePayload: Record<string, unknown> | undefined;
       let streamResponseMeta: ProviderResponseTraceMeta | undefined;
       let completedResponseId: string | undefined;
@@ -1934,6 +1945,7 @@ export class GrokProvider implements LLMProvider {
             cloneProviderTracePayload(response) ??
             { error: "provider_response_trace_unavailable" };
           model = String(response.model ?? model);
+          reasoningReplay = extractXaiReasoningReplay(response.output, String(params.model));
           usage = this.parseUsage(response);
           providerEvidence = this.extractProviderEvidence(
             response as Record<string, unknown>,
@@ -2078,6 +2090,7 @@ export class GrokProvider implements LLMProvider {
               options.structuredOutput.schema.schema,
             ),
         encryptedReasoning,
+        ...reasoningReplay,
         finishReason,
         ...(thinking.length > 0 ? { thinking } : {}),
         ...(responseError ? { error: responseError } : {}),
@@ -2301,6 +2314,7 @@ export class GrokProvider implements LLMProvider {
       maxTurns: options?.maxTurns,
       model: options?.model?.trim() || undefined,
       reasoningEffort: options?.reasoningEffort,
+      serviceTier: options?.serviceTier,
       includeEncryptedReasoning: options?.includeEncryptedReasoning,
       structuredOutput: options?.structuredOutput,
       toolSelection,
@@ -2331,6 +2345,7 @@ export class GrokProvider implements LLMProvider {
         baseURL: this.config.baseURL,
         timeout: this.config.timeoutMs,
         maxRetries: this.config.maxRetries ?? 2,
+        ...(this.config.fetchImpl ? { fetch: this.config.fetchImpl } : {}),
       });
       installAgenCManagedSdkFetch(client);
       return client;
@@ -2347,6 +2362,7 @@ export class GrokProvider implements LLMProvider {
       maxOutputTokens?: number;
       maxTurns?: number;
       reasoningEffort?: LLMChatOptions["reasoningEffort"];
+      serviceTier?: LLMChatOptions["serviceTier"];
       includeEncryptedReasoning?: boolean;
       structuredOutput?: LLMChatOptions["structuredOutput"];
       toolSelection?: ToolSelectionDiagnostics;
@@ -2361,7 +2377,8 @@ export class GrokProvider implements LLMProvider {
     requestMessages: readonly LLMMessage[];
     incrementalBaseline: readonly LLMMessage[];
   } {
-    const visionModel = this.config.visionModel ?? DEFAULT_VISION_MODEL;
+    const visionModel = this.config.visionModel ??
+      (this.config.model === "grok-4.7" ? this.config.model : DEFAULT_VISION_MODEL);
     // Prefix-cache split: xAI caching is prefix-based ("never modify
     // earlier messages — only append"), so the volatile tail of the
     // system prompt (timestamp, git state, …) must not sit at the front
@@ -2384,9 +2401,12 @@ export class GrokProvider implements LLMProvider {
       providerName: this.name,
     });
 
-    const xaiInput = buildXaiResponsesInputItems(repairedMessages);
+    const hasImages = repairedMessages.some((message) =>
+      Array.isArray(message.content) &&
+      message.content.some((part) => part.type === "image_url"));
     const model =
-      options?.model ?? (xaiInput.hasImages ? visionModel : this.config.model);
+      options?.model ?? (hasImages ? visionModel : this.config.model);
+    const xaiInput = buildXaiResponsesInputItems(repairedMessages, model);
 
     const params: Record<string, unknown> = {
       model,
@@ -2426,6 +2446,19 @@ export class GrokProvider implements LLMProvider {
     // inherited config cannot hard-fail an otherwise valid request.
     if (reasoningEffort && supportsXaiReasoningEffortParam(model)) {
       params.reasoning = { effort: reasoningEffort };
+    }
+    // Priority processing rides the session's "priority" service tier on the
+    // model this request names, when its catalog row lists a Fast tier. The
+    // xAI sign-in route never sends it (priority-processing.ts). The response
+    // reports the tier it applied (parseUsage).
+    if (
+      xaiSendsPriorityProcessing({
+        model,
+        serviceTier: options?.serviceTier,
+        authMode: this.config.authMode,
+      })
+    ) {
+      params.service_tier = XAI_PRIORITY_SERVICE_TIER;
     }
     const includeEncryptedReasoning =
       options?.includeEncryptedReasoning ?? this.config.includeEncryptedReasoning;
@@ -2511,7 +2544,7 @@ export class GrokProvider implements LLMProvider {
           // prepend the static system prompt (already part of the stored
           // response) and re-validate a suffix that can legitimately open
           // with tool output.
-          params.input = buildXaiResponsesInputItems(decision.delta).input;
+          params.input = buildXaiResponsesInputItems(decision.delta, model).input;
         } else {
           const deltaBuilt = this.buildParams(decision.delta, {
             ...options,
@@ -2762,6 +2795,7 @@ export class GrokProvider implements LLMProvider {
     compactionDiagnostics?: LLMCompactionDiagnostics,
     structuredOutputRequest?: LLMChatOptions["structuredOutput"],
     advertisedToolNames: readonly string[] = [],
+    requestModel: string = this.config.model,
   ): LLMResponse & {
     normalizationIssues?: readonly ToolCallNormalizationIssue[];
   } {
@@ -2775,6 +2809,7 @@ export class GrokProvider implements LLMProvider {
     const parsedError = this.extractResponseError(response, finishReason);
 
     return {
+      ...extractXaiReasoningReplay(response.output, requestModel),
       content: this.extractOutputText(response) ?? "",
       toolCalls,
       usage: this.parseUsage(response),
@@ -2946,6 +2981,9 @@ export class GrokProvider implements LLMProvider {
       cachedInputTokens: inputDetails.cached_tokens,
       reasoningOutputTokens: outputDetails.reasoning_tokens,
       webSearchRequests: serverSideToolUsage.SERVER_SIDE_TOOL_WEB_SEARCH,
+      // The tier xAI applied: priority rates are billed only when the
+      // response says "priority", so cost follows this, not the request.
+      speed: xaiServedSpeed(response.service_tier),
     });
   }
 

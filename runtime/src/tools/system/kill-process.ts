@@ -36,6 +36,16 @@ export interface KillProcessToolConfig {
 const REMAINING_OWNED_WORK_NOTE =
   "these are the sessions this conversation started that are still running; stop them by session_id or with all=true. Do not search the process table for task filenames or command text: that also matches AgenC's own CLI and process brokers.";
 
+/**
+ * A signal returns before the process exits, so a session killed a moment
+ * ago is still live in the result. Naming it as stopping keeps the report
+ * honest (its exit is not observed yet) without reading as a failed kill.
+ * The wording says a stop was requested: the manager records the request
+ * even when it refuses to signal an unsafe pid.
+ */
+const STOPPING_SESSIONS_NOTE =
+  "a stop was requested for these sessions and their exit is not confirmed yet. Do not signal them again; check list_processes shortly.";
+
 function asNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value)
     ? value
@@ -55,17 +65,36 @@ type KillSelection =
   | { readonly kind: "many"; readonly sessionIds: readonly number[] }
   | { readonly kind: "all" };
 
+/**
+ * Models that fill every optional field send the empty value of each selector
+ * they did not mean: `session_ids: []`, `all: false`, and `session_id: 0`.
+ * None of those can select anything (session ids start at 1), so they count as
+ * absent instead of as a second selector. Any other value still counts, so a
+ * call that names two real targets is refused as before.
+ */
+function selectorGiven(
+  args: Record<string, unknown>,
+  key: "session_id" | "session_ids" | "all",
+): boolean {
+  const value = args[key];
+  if (value === undefined) return false;
+  if (key === "session_id") return value !== 0;
+  if (key === "session_ids") return !(Array.isArray(value) && value.length === 0);
+  return value !== false;
+}
+
 function selectTargets(
   args: Record<string, unknown>,
 ): KillSelection | { readonly error: string } {
-  const provided = [
-    args.session_id !== undefined,
-    args.session_ids !== undefined,
-    args.all !== undefined,
-  ].filter(Boolean).length;
+  const sessionIdGiven = selectorGiven(args, "session_id");
+  const sessionIdsGiven = selectorGiven(args, "session_ids");
+  const allGiven = selectorGiven(args, "all");
+  const provided = [sessionIdGiven, sessionIdsGiven, allGiven].filter(Boolean)
+    .length;
   if (provided === 0) {
     return {
-      error: "session_id must be a number (or pass session_ids, or all=true)",
+      error:
+        "session_id must be a number returned by exec_command (or pass session_ids, or all=true)",
     };
   }
   if (provided > 1) {
@@ -73,13 +102,13 @@ function selectTargets(
       error: "pass exactly one of session_id, session_ids, or all=true",
     };
   }
-  if (args.session_id !== undefined) {
+  if (sessionIdGiven) {
     const sessionId = asNumber(args.session_id);
     return sessionId === undefined
       ? { error: "session_id must be a number" }
       : { kind: "one", sessionId };
   }
-  if (args.session_ids !== undefined) {
+  if (sessionIdsGiven) {
     const sessionIds = asNumberArray(args.session_ids);
     if (sessionIds === undefined || sessionIds.length === 0) {
       return { error: "session_ids must be a non-empty array of numbers" };
@@ -106,6 +135,13 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
       ?.({ ...(ownerId !== undefined ? { ownerId } : {}) })
       .filter(isLiveOwnedProcess)
       .map((view) => view.sessionId);
+
+  /** Owned sessions signalled to stop whose exit is not observed yet. */
+  const ownedStoppingSessions = (ownerId: string | undefined): number[] =>
+    manager.listOwnedProcesses
+      ?.({ ...(ownerId !== undefined ? { ownerId } : {}) })
+      .filter((view) => view.status === "stopping")
+      .map((view) => view.sessionId) ?? [];
 
   return {
     name: "kill_process",
@@ -242,6 +278,7 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
           }
         }
         const remaining = ownedLiveSessions(ownerId);
+        const stopping = remaining === undefined ? [] : ownedStoppingSessions(ownerId);
         return {
           content: safeStringify({
             ...body,
@@ -250,6 +287,9 @@ export function createKillProcessTool(config?: KillProcessToolConfig): Tool {
                   owned_live_sessions: remaining,
                   ...(remaining.length > 0
                     ? { owned_live_sessions_note: REMAINING_OWNED_WORK_NOTE }
+                    : {}),
+                  ...(stopping.length > 0
+                    ? { stopping_sessions: stopping, stopping_sessions_note: STOPPING_SESSIONS_NOTE }
                     : {}),
                 }
               : {}),

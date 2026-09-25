@@ -2,7 +2,7 @@
  * Task 12: Claude Opus 4.8 onboarding + version-threshold hardening.
  *
  * Capabilities verified against provider docs 2026-07-07: 1M context,
- * 128K max output, $5/$25 pricing (fast premium $30/$150), fast mode
+ * 128K max output, $5/$25 pricing (fast mode $10/$50), fast mode
  * (4.8 is the durable fast tier) and effort including max. The threshold tests pin the hardening:
  * a hypothetical next minor release inherits family capabilities
  * instead of silently regressing (the 4.7 half-onboarding incident).
