@@ -145,7 +145,7 @@ describe("plugin config authority architecture", () => {
     const operations = source("plugins/cli/pluginOperations.ts");
 
     expect(operations).toContain("mutateCanonicalUserConfigSync(");
-    expect(operations.match(/mutateCanonicalUserConfigSync\(/gu)).toHaveLength(3);
+    expect(operations.match(/mutateCanonicalUserConfigSync\(/gu)).toHaveLength(2);
     expect(operations).not.toMatch(
       /(?:serializeConfigToml|parseToml|writeTextAtomic|MANAGED_CONFIG_|managedMarker|removeManagedBlock|renderManagedPluginBlock)/u,
     );

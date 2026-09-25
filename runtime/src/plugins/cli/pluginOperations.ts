@@ -3,8 +3,6 @@ import { constants } from "node:fs";
 import { cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import {
-  PluginInstallTransactionSimulatedCrash,
-  recoverPluginInstallTransactions,
   runPluginInstallTransaction,
   type PluginInstallTransactionHooks,
 } from "./plugin-install-transaction.js";
@@ -12,8 +10,12 @@ import { resolveHomeContext } from "../../config/home.js";
 import { loadCanonicalConfig } from "../../config/repository.js";
 import type { PluginEntryConfig } from "../../config/schema.js";
 import { ConfigStore } from "../../config/store.js";
-import { validatePluginsConfig } from "../../config/schema.js";
 import { mutateCanonicalUserConfigSync, readCanonicalUserConfigSnapshotSync } from "../../config/update-sync.js";
+import {
+  parsePluginConfigRollbackSnapshot,
+  writePluginConfigRollback,
+  type PluginConfigRollbackSnapshot,
+} from "../plugin-config-rollback.js";
 import { writeDurableAtomicFile } from "../../utils/durable-atomic-file.js";
 import { isRecord } from "../../utils/record.js";
 import { createPluginFromPath, loadPlugins, type LoadedPlugin } from "../loader.js";
@@ -87,7 +89,7 @@ export interface PluginOperationOptions {
 export {
   PluginInstallTransactionSimulatedCrash,
   recoverPluginInstallTransactions,
-};
+} from "./plugin-install-transaction.js";
 export type { PluginInstallTransactionHooks };
 
 export interface PluginComponentRow {
@@ -325,6 +327,7 @@ export async function listInstalledPlugins(
     pluginStorageRoot: options.pluginStorageRoot,
     workspaceRoot,
     config,
+    userConfigPath: pluginConfigPath(options),
   });
   let settingsStorePromise: Promise<ConfigStore> | undefined;
   const getSettingsStore = (): Promise<ConfigStore> => {
@@ -617,15 +620,7 @@ export async function installPluginOp(
       );
     }
     const destination = existingRoots[0] ?? join(installRoot, safeName);
-    if (await pathExists(destination)) {
-      const sourceReal = await realpath(source);
-      const destinationReal = await realpath(destination);
-      if (isPathInside(sourceReal, destinationReal)) {
-        throw new Error(
-          `plugin source cannot be the installed plugin root or its descendant: ${source}`,
-        );
-      }
-    }
+    await assertInstallSourceOutsideDestination(source, destination);
     let stagedPlugin: LoadedPlugin | null = null;
     await runPluginInstallTransaction({
       pluginId,
@@ -1299,13 +1294,6 @@ export function __isPathInsideForTesting(
   return isPathInsideWithApi(path, root, platform === "win32" ? win32 : posix);
 }
 
-interface PluginConfigRollbackSnapshot {
-  readonly entryPresent: boolean;
-  readonly entry?: unknown;
-  readonly pluginsEnabledPresent: boolean;
-  readonly pluginsEnabled?: unknown;
-}
-
 function readPluginConfigSnapshot(
   pluginId: string,
   options: PluginOperationOptions,
@@ -1323,38 +1311,6 @@ function readPluginConfigSnapshot(
   };
 }
 
-function parsePluginConfigRollbackSnapshot(
-  value: unknown,
-): PluginConfigRollbackSnapshot | undefined {
-  if (!isRecord(value)) return undefined;
-  if (typeof value.entryPresent !== "boolean") return undefined;
-  if (typeof value.pluginsEnabledPresent !== "boolean") return undefined;
-  return {
-    entryPresent: value.entryPresent,
-    ...(value.entryPresent ? { entry: value.entry } : {}),
-    pluginsEnabledPresent: value.pluginsEnabledPresent,
-    ...(value.pluginsEnabledPresent ? { pluginsEnabled: value.pluginsEnabled } : {}),
-  };
-}
-
-export function restoreTrustedUserPluginConfig(
-  configPath: string,
-  pluginId: string,
-  previous: unknown,
-): void {
-  const snapshot = parsePluginConfigRollbackSnapshot(previous);
-  if (snapshot === undefined) {
-    throw new Error("plugin config snapshot is not a rollback record");
-  }
-  if (snapshot.entryPresent) {
-    validatePluginsConfig({ plugins: { [pluginId]: snapshot.entry } });
-  }
-  if (snapshot.pluginsEnabledPresent && typeof snapshot.pluginsEnabled !== "boolean") {
-    throw new Error("plugin config snapshot enabled flag is not a boolean");
-  }
-  writePluginConfigRollback(configPath, pluginId, snapshot);
-}
-
 async function restorePluginConfigSnapshot(
   pluginId: string,
   previous: unknown,
@@ -1367,28 +1323,17 @@ async function restorePluginConfigSnapshot(
   writePluginConfigRollback(pluginConfigPath(options), pluginId, snapshot);
 }
 
-function writePluginConfigRollback(
-  configPath: string,
-  pluginId: string,
-  snapshot: PluginConfigRollbackSnapshot,
-): void {
-  mutateCanonicalUserConfigSync(configPath, (raw) => {
-    const plugins = isRecord(raw.plugins) ? raw.plugins : {};
-    if (!isRecord(raw.plugins)) raw.plugins = plugins;
-    const pluginEntries = isRecord(plugins.plugins) ? plugins.plugins : {};
-    if (!isRecord(plugins.plugins)) plugins.plugins = pluginEntries;
-    if (!snapshot.entryPresent) delete pluginEntries[pluginId];
-    else {
-      Object.defineProperty(pluginEntries, pluginId, {
-        value: snapshot.entry,
-        enumerable: true,
-        configurable: true,
-        writable: true,
-      });
-    }
-    if (snapshot.pluginsEnabledPresent) plugins.enabled = snapshot.pluginsEnabled;
-    else delete plugins.enabled;
-  });
+async function assertInstallSourceOutsideDestination(
+  source: string,
+  destination: string,
+): Promise<void> {
+  if (!(await pathExists(destination))) return;
+  const sourceReal = await realpath(source);
+  const destinationReal = await realpath(destination);
+  if (!isPathInside(sourceReal, destinationReal)) return;
+  throw new Error(
+    `plugin source cannot be the installed plugin root or its descendant: ${source}`,
+  );
 }
 
 async function writePluginConfigEntry(
