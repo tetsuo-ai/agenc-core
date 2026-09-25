@@ -4922,6 +4922,20 @@ const MAX_RESUME_CANONICAL_SCAN_BYTES =
 const MAX_RESUME_CANONICAL_LINE_BYTES = MAX_RECOVERY_CANONICAL_LINE_BYTES;
 const MAX_RESUME_CANONICAL_LINES = 2_048;
 const MAX_RESUME_CANONICAL_VALIDATION_MS = DEFAULT_MAX_STARTUP_RECOVERY_MS;
+/**
+ * The objective of a resumed interactive session that never received a user
+ * message, so its rollout has no canonical objective to read. It is the label
+ * such a session already carries before its first message: the SDK's
+ * createSession, and so the desktop app, create interactive sessions with
+ * "Interactive session" and an empty first input.
+ *
+ * It is display and bookkeeping only. On the resume path the objective goes
+ * to the agent record (agent.list, the agent run row), the session record
+ * (initialPrompt, metadata.objective) and runner.restoreAgent, which does not
+ * read it. The only place an agent objective becomes model input is a fresh
+ * agent.create without a first input, which a resume never takes.
+ */
+const NEVER_MESSAGED_INTERACTIVE_OBJECTIVE = "Interactive session";
 
 /**
  * The retained agent record stamps `createdAt` with the daemon clock at
@@ -5241,7 +5255,7 @@ function assertAuthoritativeResumeSource(params: {
       rolloutDev: params.sourceProof.dev,
       rolloutIno: params.sourceProof.ino,
       createdAt: meta.timestamp,
-      objective: canonical.objective,
+      objective: canonical.objective ?? NEVER_MESSAGED_INTERACTIVE_OBJECTIVE,
       agentPath: "/root",
       activeEpoch: canonical.activeEpoch,
       lifecycleState: canonical.lifecycleState,
@@ -5283,7 +5297,12 @@ function assertAuthoritativeResumeSource(params: {
 
 interface CanonicalResumeSource {
   readonly meta: SessionMetaLine;
-  readonly objective: string;
+  /**
+   * The first user message's text. Absent only for a rollout that never
+   * received a user message: a well-formed session_meta and journal, read to
+   * a clean end within the scan budget, with no user input at all.
+   */
+  readonly objective?: string;
   readonly activeEpoch: number;
   readonly lifecycleState: "open" | "suspended" | "terminal";
   readonly sourceSha256: string;
@@ -5308,6 +5327,8 @@ function readCanonicalResumeSource(
   let lineCount = 0;
   let meta: SessionMetaLine | undefined;
   let objective: string | undefined;
+  // Any user input, even one with no text (an image-only first message).
+  let sawUserInput = false;
   const validationDeadline = Date.now() + MAX_RESUME_CANONICAL_VALIDATION_MS;
   const validator = new StrictCanonicalJournalValidator({
     expectedRunId: expectedSessionId,
@@ -5359,6 +5380,7 @@ function readCanonicalResumeSource(
       meta = item.payload;
       return undefined;
     }
+    if (isUserInputItem(item)) sawUserInput = true;
     return canonicalObjectiveFromItem(item);
   };
   for (;;) {
@@ -5372,7 +5394,12 @@ function readCanonicalResumeSource(
       if (objective === undefined && pending.byteLength > 0) {
         objective = inspectLine(pending);
       }
-      if (objective === undefined || meta === undefined) {
+      // A rollout with no user input at all is a session that was created
+      // and never messaged (a Goal's chat, a new chat the user left empty).
+      // It resumes as the empty conversation it is, and only after the
+      // journal below validates to a clean end. A rollout whose user input
+      // has no text, or with no session_meta, is refused as before.
+      if (meta === undefined || (objective === undefined && sawUserInput)) {
         return fail(
           "agent.create resume rollout has no bounded canonical user objective",
         );
@@ -5385,7 +5412,7 @@ function readCanonicalResumeSource(
       }
       return {
         meta,
-        objective,
+        ...(objective !== undefined ? { objective } : {}),
         activeEpoch: journal.activeEpoch,
         lifecycleState: journal.activeLifecycleState,
         sourceSha256: journal.sourceSha256,
@@ -5462,6 +5489,13 @@ function isValidResumeMeta(value: SessionMetaLine): boolean {
     typeof value.agencVersion === "string" &&
     Number.isSafeInteger(value.rolloutSchemaVersion) &&
     value.rolloutSchemaVersion >= 0
+  );
+}
+
+function isUserInputItem(item: RolloutItem): boolean {
+  return (
+    (item.type === "response_item" && item.payload.role === "user") ||
+    (item.type === "event_msg" && item.payload.msg.type === "user_message")
   );
 }
 
