@@ -584,6 +584,15 @@ prompt into an allow; it lifts only the working-directory prompt. This holds
 for rules from every source, so a managed `permissions.ask` entry still
 prompts when user settings allow the same path.
 
+`auto` mode is the exception: path validation reports the `ask`, but the
+auto-mode pipeline, not the user, then decides it. A tool on the auto-mode
+safe allowlist (`FileRead`, `Grep`, `Glob`) is approved by that allowlist, so
+an allowlisted read such as `FileRead(./.env)` runs without a prompt even
+though an `ask` rule matches it. A write `ask` in `auto` goes to the auto-mode
+classifier, which can approve it. In `auto` mode a content-specific `ask` rule
+does not force a confirmation; use a `deny` rule for a path that must never be
+read or written without the user.
+
 Neither bypass setting removes a planning worker's permanent read-only
 constraint. See [read-only planning workers](agents.md#read-only-planning-workers).
 Normal coding and verification workers retain the configured bypass behavior.
