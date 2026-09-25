@@ -3,14 +3,15 @@
  *
  * Translation of Rust `Arc<Mutex<T>>` per `docs/plan/translation-conventions.md`.
  * Critical sections are serialized via a Promise chain. Concurrent callers
- * await each other's completion in arrival order.
+ * await each other's completion in arrival order. Lock-free projections are
+ * explicitly best effort and must never authorize effects.
  *
  * @module
  */
 
 /**
- * Async mutex guarding a value of type `T`. All access goes through `with`
- * which serializes critical sections.
+ * Async mutex guarding a value of type `T`. Authoritative access goes through
+ * `with`, which serializes critical sections.
  */
 export class AsyncLock<T> {
   private value: T;
@@ -78,5 +79,16 @@ export class AsyncLock<T> {
    */
   unsafePeek(): T {
     return this.value;
+  }
+
+  /**
+   * Synchronously project the current value without acquiring the lock.
+   * Use only for best-effort decisions that are checked again under the lock
+   * before any effect. The callback must not mutate or retain the value, and
+   * its result must not be treated as an authoritative snapshot: a `with`
+   * callback can be suspended with a partially updated value.
+   */
+  peek<R>(project: (value: Readonly<T>) => R): R {
+    return project(this.value);
   }
 }

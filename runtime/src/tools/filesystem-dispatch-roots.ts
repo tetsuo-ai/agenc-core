@@ -1,15 +1,19 @@
-import { statSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { lstatSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { withSignedAllowedRoots } from "./system/filesystem.js";
 
-/** The file tools whose `file_path` the dispatcher may widen a root for. */
-const APPROVED_FILE_PATH_TOOLS: ReadonlySet<string> = new Set([
-  "FileRead",
-  "Write",
-  "Edit",
-  "MultiEdit",
-  "NotebookEdit",
+/**
+ * The file tools the dispatcher may widen a root for, each with the argument
+ * that names its file. NotebookEdit's schema has `notebook_path` and no
+ * `file_path`.
+ */
+const APPROVED_FILE_PATH_ARGS: ReadonlyMap<string, string> = new Map([
+  ["FileRead", "file_path"],
+  ["Write", "file_path"],
+  ["Edit", "file_path"],
+  ["MultiEdit", "file_path"],
+  ["NotebookEdit", "notebook_path"],
 ]);
 
 /**
@@ -28,8 +32,9 @@ export function approvedFilePathForTool(
   toolName: string,
   args: Record<string, unknown>,
 ): string | null {
-  if (!APPROVED_FILE_PATH_TOOLS.has(toolName)) return null;
-  return nonEmptyString(args["file_path"]) ?? null;
+  const pathArg = APPROVED_FILE_PATH_ARGS.get(toolName);
+  if (pathArg === undefined) return null;
+  return nonEmptyString(args[pathArg]) ?? null;
 }
 
 /** The directory an absolute glob pattern is anchored at: everything before the first segment with a metacharacter. */
@@ -71,6 +76,12 @@ export type FilesystemRootSessionLike = {
 export interface FilesystemRootDispatchParams {
   /** The approval resolver accepted this exact call. */
   readonly approvalResolved: boolean;
+  /**
+   * The root {@link approvalRootForDispatch} captured before the approval
+   * prompt. An approval widens to exactly this root, never to one derived
+   * from the path afterwards; without it an approval widens nothing.
+   */
+  readonly approvalRoot?: string | null;
   /** The sandbox mode this dispatch runs under (`danger_full_access` means none). */
   readonly sandboxMode?: string;
   readonly session?: FilesystemRootSessionLike | undefined;
@@ -90,6 +101,86 @@ function resolveFilePath(
 function isInside(candidate: string, root: string): boolean {
   const rel = relative(resolve(root), candidate);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/** The absolute path a file or search tool call names, or null when it names none. */
+function requestedTarget(
+  toolName: string,
+  args: Record<string, unknown>,
+): { readonly path: string; readonly isFile: boolean } | null {
+  const filePath = approvedFilePathForTool(toolName, args);
+  if (filePath !== null) {
+    return { path: resolveFilePath(filePath, args), isFile: true };
+  }
+  const searchPath = requestedSearchPath(toolName, args);
+  return searchPath === null
+    ? null
+    : { path: resolveFilePath(searchPath, args), isFile: false };
+}
+
+/**
+ * `path` with every symlink in its longest existing prefix resolved and the
+ * missing tail (a file about to be created) kept as written: the form the
+ * tools' own confinement checks. Null when it cannot be resolved safely (a
+ * loop, a permission error, a FIFO or a device).
+ */
+function canonicalPath(path: string): string | null {
+  const missing: string[] = [];
+  let current = path;
+  for (;;) {
+    try {
+      const stats = lstatSync(current);
+      if (
+        stats.isFIFO() ||
+        stats.isSocket() ||
+        stats.isCharacterDevice() ||
+        stats.isBlockDevice()
+      ) {
+        return null;
+      }
+      const real = realpathSync(current);
+      return missing.length === 0 ? real : join(real, ...missing);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return null;
+      const parent = dirname(current);
+      if (parent === current) return null;
+      missing.unshift(basename(current));
+      current = parent;
+    }
+  }
+}
+
+/** A file's directory, or a search path itself when it is a directory. */
+function rootForCanonicalTarget(canonical: string, isFile: boolean): string {
+  if (isFile) return dirname(canonical);
+  try {
+    return statSync(canonical).isDirectory() ? canonical : dirname(canonical);
+  } catch {
+    return dirname(canonical);
+  }
+}
+
+/**
+ * The root an approval of this call grants, captured before the prompt.
+ *
+ * It is resolved through symlinks now, while the permission decision that led
+ * to the prompt still describes the filesystem. Signing the path's directory
+ * after the prompt instead let a symlink retargeted while the prompt was open
+ * carry an approved write into a directory nobody approved, because the
+ * tool's confinement resolves a signed root through symlinks again when it
+ * runs. Null when the call names no file or search path, or the path cannot
+ * be resolved.
+ */
+export function approvalRootForDispatch(
+  toolName: string,
+  args: Record<string, unknown>,
+): string | null {
+  const target = requestedTarget(toolName, args);
+  if (target === null) return null;
+  const canonical = canonicalPath(target.path);
+  return canonical === null
+    ? null
+    : rootForCanonicalTarget(canonical, target.isFile);
 }
 
 /**
@@ -128,45 +219,45 @@ function addedDirectories(context: ReturnType<typeof publishedPermissionContext>
 /**
  * Hand a file tool the directory of the file it is about to touch, signed, so
  * its own confinement (the workspace root plus signed roots) accepts a path
- * the session has already allowed. An approval always did this. The same is
- * owed when no prompt ran: the path lies in a directory the user added
- * (`--add-dir`, or approved during the session), or the session bypasses
- * approvals and runs without a sandbox, where the evaluator is skipped and
- * the tool's confinement was the only thing left saying no (observed:
- * "Path is outside allowed directories" on FileRead /build/... and on
- * `Glob path=/` under --dangerously-bypass-approvals-and-sandbox with
- * --add-dir /). Anything else leaves the args untouched, and tools without a
- * `file_path` or a search path are never widened.
+ * the session has already allowed. An approval grants the root captured
+ * before its prompt ({@link approvalRootForDispatch}). The same is owed when
+ * no prompt ran: the path lies in a directory the user added (`--add-dir`, or
+ * approved during the session), or the session bypasses approvals and runs
+ * without a sandbox, where the evaluator is skipped and the tool's
+ * confinement was the only thing left saying no (observed: "Path is outside
+ * allowed directories" on FileRead /build/... and on `Glob path=/` under
+ * --dangerously-bypass-approvals-and-sandbox with --add-dir /). Those roots
+ * are the canonical directory, and an added directory must hold the resolved
+ * path, not only its text, since a symlink inside it may lead anywhere.
+ * Anything else leaves the args untouched, and tools without a file path
+ * argument or a search path are never widened.
  */
 export function filesystemRootsForDispatch(
   toolName: string,
   args: Record<string, unknown>,
   params: FilesystemRootDispatchParams,
 ): Record<string, unknown> {
-  const filePath = approvedFilePathForTool(toolName, args);
-  const searchPath = filePath === null ? requestedSearchPath(toolName, args) : null;
-  if (filePath === null && searchPath === null) return args;
-  const resolvedPath = resolveFilePath((filePath ?? searchPath)!, args);
-  const rootForPath = (): string => {
-    if (filePath !== null) return dirname(resolvedPath);
-    try {
-      return statSync(resolvedPath).isDirectory() ? resolvedPath : dirname(resolvedPath);
-    } catch {
-      return dirname(resolvedPath);
-    }
-  };
-  const widen = (): Record<string, unknown> =>
-    withSignedAllowedRoots(args, [rootForPath()]);
-  if (params.approvalResolved) return widen();
+  const target = requestedTarget(toolName, args);
+  if (target === null) return args;
+  if (params.approvalResolved && typeof params.approvalRoot === "string") {
+    return withSignedAllowedRoots(args, [params.approvalRoot]);
+  }
   const context = publishedPermissionContext(params.session);
-  if (
+  const fullBypass =
     context?.mode === "bypassPermissions" &&
-    params.sandboxMode === "danger_full_access"
-  ) {
-    return widen();
-  }
-  if (addedDirectories(context).some((root) => isInside(resolvedPath, root))) {
-    return widen();
-  }
-  return args;
+    params.sandboxMode === "danger_full_access";
+  const added = fullBypass ? [] : addedDirectories(context);
+  if (!fullBypass && added.length === 0) return args;
+  const canonical = canonicalPath(target.path);
+  if (canonical === null) return args;
+  const widen = (): Record<string, unknown> =>
+    withSignedAllowedRoots(args, [
+      rootForCanonicalTarget(canonical, target.isFile),
+    ]);
+  if (fullBypass) return widen();
+  const inAddedDirectory = added.some((directory) => {
+    const canonicalDirectory = canonicalPath(resolve(directory));
+    return canonicalDirectory !== null && isInside(canonical, canonicalDirectory);
+  });
+  return inAddedDirectory ? widen() : args;
 }

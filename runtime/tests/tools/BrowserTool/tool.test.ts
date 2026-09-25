@@ -38,6 +38,12 @@ async function check(input: Record<string, unknown>): Promise<PermissionResult> 
 }
 
 describe("Browser tool contract", () => {
+  test("rejects an unsupported key without touching a browser or gating later tools", async () => {
+    const result = await createBrowserTool().execute({ action: "press_key", key: "Control+a" });
+    expect(result.isError).toBe(true);
+    expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    expect(result.content).toContain("Tab");
+  });
   test("declares the deferred, side-effecting catalog contract", () => {
     const tool = createBrowserTool();
     expect(tool.name).toBe(BROWSER_TOOL_NAME);
@@ -120,6 +126,31 @@ describe("Browser tool validation (no browser launched)", () => {
       expect(result.isError).toBe(true);
       expect(result.content).toContain(message);
       expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    }
+  });
+
+  test("refuses a url the browser may not navigate before touching the browser", async () => {
+    // A file: url reached page.navigate, whose plain error left an unknown
+    // outcome that blocked every later side-effecting call in the session.
+    for (const [input, message] of [
+      [{ action: "navigate", url: "file:///tmp/preview.html" }, 'unsupported scheme "file:"'],
+      [{ action: "new_tab", url: "file:///tmp/preview.html" }, 'unsupported scheme "file:"'],
+      [{ action: "navigate", url: "http://user:secret@example.com/" }, "embedded credentials"],
+      [{ action: "navigate", url: "not a url" }, "invalid URL"],
+    ] as const) {
+      const result = await createBrowserTool().execute({ ...input });
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain(message);
+      expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    }
+  });
+
+  test("still lets about:blank through to the manager", async () => {
+    // #createTab opens about:blank without navigating; the early check must not
+    // refuse what the manager has always accepted.
+    for (const action of ["new_tab", "navigate"] as const) {
+      const result = await createBrowserTool().execute({ action, url: "about:blank" });
+      expect(String(result.content)).not.toContain("unsupported scheme");
     }
   });
 

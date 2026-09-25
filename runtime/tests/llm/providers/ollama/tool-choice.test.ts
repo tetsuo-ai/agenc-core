@@ -135,11 +135,16 @@ describe("resolveOllamaToolChoice", () => {
     expect(resolution.advertisedNames.salvageTools).toEqual([]);
   });
 
-  test("rejects required as an unsupported native capability", () => {
-    expect(() => resolveOllamaToolChoice("required", names)).toThrow(LLMProviderError);
-    expect(() => resolveOllamaToolChoice("required", names)).toThrow(
-      /unsupported provider capability[\s\S]*toolChoice=required/u,
-    );
+  test("required keeps the full catalog and is effective auto", () => {
+    const resolution = resolveOllamaToolChoice("required", names);
+    expect(resolution).toMatchObject({
+      requested: "required",
+      effective: "auto",
+    });
+    expect(resolution.advertisedWireTools.map((tool) => tool.function.name)).toEqual([
+      "system.echo",
+      "system.search",
+    ]);
   });
 
   test("a specific function advertises only that tool", () => {
@@ -307,26 +312,52 @@ describe("Ollama adapter toolChoice", () => {
   );
 
   test.each([false, true])(
-    "plan-mode required toolChoice fails locally before the request (stream=%s)",
+    "plan-mode required toolChoice sends the full catalog as auto (stream=%s)",
     async (streaming) => {
-      const { result, error, requests } = await invoke(
+      const { result, error, requests, traces } = await invoke(
         providerWithTools(),
         streaming,
         // Plan mode sets toolChoice: "required" when tools are available.
         { toolChoice: "required" },
-        textResponse("should not run"),
+        textResponse("planning"),
       );
 
-      expect(result).toBeUndefined();
-      expect(requests).toEqual([]);
-      expect(error).toBeInstanceOf(LLMProviderError);
-      expect(error).toEqual(
-        expect.objectContaining({
-          message: expect.stringMatching(
-            /unsupported provider capability[\s\S]*toolChoice=required/u,
-          ),
-        }),
+      expect(error).toBeUndefined();
+      expect(result?.content).toBe("planning");
+      expect(requests[0]?.tools).toHaveLength(2);
+      expect(requests[0]).not.toHaveProperty("tool_choice");
+      expect(result?.requestMetrics).toMatchObject({ toolChoice: "auto" });
+      expect(traces.find((event) => event.kind === "request")?.context).toMatchObject({
+        requestedToolChoice: "required",
+        effectiveToolChoice: "auto",
+      });
+    },
+  );
+
+  test.each([false, true])(
+    "a truncated named choice recovers instead of failing the check (stream=%s)",
+    async (streaming) => {
+      const truncated = {
+        ...toolCallResponse("system.echo"),
+        done: true,
+        done_reason: "length",
+        message: {
+          role: "assistant",
+          content: "partial",
+          tool_calls: [{ function: { name: "system.echo", arguments: { text: "hi" } } }],
+        },
+      };
+      const { result, error } = await invoke(
+        providerWithTools(),
+        streaming,
+        { toolChoice: { type: "function", name: "system.echo" } },
+        truncated,
       );
+
+      expect(error).toBeUndefined();
+      expect(result?.finishReason).toBe("length");
+      expect(result?.toolCalls).toEqual([]);
+      expect(result?.content).toBe("partial");
     },
   );
 

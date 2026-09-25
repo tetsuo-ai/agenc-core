@@ -5,6 +5,7 @@
 
 import spawn from 'cross-spawn'
 import path from 'node:path'
+import { childProcessAbortError, stopChildOnAbort } from './child-signal.js'
 import { getCwd } from './cwd.js'
 import { logError } from './log.js'
 
@@ -217,16 +218,29 @@ export function execFileNoThrowWithCwd(
     })
   }
 
+  // Nothing starts for an abort that already happened.
+  if (abortSignal?.aborted === true) {
+    return Promise.resolve({
+      stdout: '',
+      stderr: '',
+      code: 1,
+      error: childProcessAbortError(abortSignal.reason).message,
+    })
+  }
+
   return new Promise(resolve => {
     const stdinMode = finalInput !== undefined ? 'pipe' : finalStdin ?? 'pipe'
+    // No `signal` option: Node's own abort handler kills a child whose spawn
+    // failed before its pid-less handle closes, and that kill is kill(0), the
+    // caller's whole process group. stopChildOnAbort only signals a real pid.
     const child = spawn(file, args, {
       cwd: finalCwd,
       env: sanitizedEnv.value,
       argv0: finalArgv0,
       shell: false,
-      signal: abortSignal,
       stdio: [stdinMode, 'pipe', 'pipe'],
     })
+    stopChildOnAbort(child, abortSignal)
 
     let settled = false
     let stdout = ''

@@ -135,3 +135,21 @@ describe("session usage projection", () => {
     expect(buildCostReport(commandContext()).hasUnknownCost).toBe(true);
   });
 });
+
+describe("transcript cost for fast mode", () => {
+  it("prices a fast-served token_count at the model's fast-mode rates", () => {
+    // 1M input tokens on Claude Opus 5.5: $4 standard, $8 fast.
+    const tokenCount = (speed?: "fast") => ({
+      type: "token_count",
+      payload: {
+        promptTokens: 1_000_000,
+        completionTokens: 0,
+        model: "claude-opus-5-5",
+        provider: "anthropic",
+        ...(speed !== undefined ? { speed } : {}),
+      },
+    });
+    expect(adaptTranscriptEvents([tokenCount()]).sessionCostUsd).toBeCloseTo(4, 6);
+    expect(adaptTranscriptEvents([tokenCount("fast")]).sessionCostUsd).toBeCloseTo(8, 6);
+  });
+});

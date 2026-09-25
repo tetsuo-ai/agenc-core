@@ -47,7 +47,7 @@ import {
   type ResumableTurn,
 } from "../session/durable-turns.js";
 import { isResumeReplaySafe } from "../tool-registry.js";
-import type { Session, SessionState } from "../session/session.js";
+import type { Session, SessionRunTurnOptions, SessionState } from "../session/session.js";
 
 export type ConversationPrewarmState =
   | "not_started"
@@ -134,6 +134,17 @@ interface MutableConversationThreadRecord {
   lastSubmittedAtMs?: number;
 }
 
+/**
+ * Automatic continuation needs proof that every descendant of the root
+ * finished. A store that cannot give that proof keeps main's bootstrap path.
+ */
+function rootCanContinueAfterRestart(session: Session): boolean {
+  const store = session.rolloutStore;
+  if (store === null || store === undefined) return true;
+  return typeof store.rootHasOnlyTerminalDescendants === "function" &&
+    store.rootHasOnlyTerminalDescendants(session.conversationId);
+}
+
 export class ConversationThreadManager extends ThreadManager {
   readonly threadManager: ThreadManager;
   private readonly prewarm: ConversationStartupPrewarm;
@@ -146,6 +157,8 @@ export class ConversationThreadManager extends ThreadManager {
    * once per session.
    */
   private readonly pendingDurableTurnResumes = new WeakSet<Session>();
+  private readonly attemptedDurableTurnResumes = new WeakSet<Session>();
+  private readonly inFlightDurableTurnResumes = new WeakMap<Session, Promise<DurableResumeAttempt>>();
   private readonly sessionTurnLocks = new WeakMap<Session, AsyncLock<void>>();
   private forkSequence = 0;
   private readonly records = new Map<
@@ -202,6 +215,9 @@ export class ConversationThreadManager extends ThreadManager {
 
     if (opts.prewarm === false) {
       record.prewarm = "skipped";
+      if (this.deferDurableTurnResume) {
+        this.pendingDurableTurnResumes.add(session);
+      }
     } else {
       await this.runStartupPrewarm(session);
     }
@@ -276,6 +292,7 @@ export class ConversationThreadManager extends ThreadManager {
     ...args: Parameters<ThreadManager["forkThread"]>
   ): ReturnType<ThreadManager["forkThread"]> {
     const [session, snapshot] = args;
+    await session.settleInterruptedTurnHandoff();
     const sourceRollout = session.rolloutStore?.readAll() ?? [];
     const forkedRollout = forkSnapshotRollout(
       sourceRollout,
@@ -357,7 +374,12 @@ export class ConversationThreadManager extends ThreadManager {
       session,
       "root-reconstruction",
     );
-    const reconstruction = reconstructFromRollout(rolloutItems, {
+    const rootCanContinue = rootCanContinueAfterRestart(session);
+    if (!rootCanContinue && typeof session.rolloutStore?.useOrdinaryRootBootstrapAfterWorkers === "function") {
+      session.rolloutStore.useOrdinaryRootBootstrapAfterWorkers();
+    }
+    const reconstruction = reconstructFromRollout(rootCanContinue
+      ? withoutSyntheticProcessKilledAborts(rolloutItems) : rolloutItems, {
       ...(opts.indexSnapshot !== undefined
         ? { indexSnapshot: opts.indexSnapshot }
         : {}),
@@ -384,11 +406,41 @@ export class ConversationThreadManager extends ThreadManager {
     session.seedInternalSubId(
       highestInternalSubId(rolloutItems, session.conversationId) + 1,
     );
-    appliedState = await closeTrailingDanglingToolCalls(
-      session,
-      appliedState,
-      opts.emitSynthesized === true,
-    );
+    const checkpointedTurn = reconstruction.resumableTurns.at(-1);
+    if (rootCanContinue && checkpointedTurn !== undefined) {
+      // Bootstrap must reconcile authenticated effect acknowledgements before
+      // it considers closing tool pairings. A recovery placeholder is a retry
+      // suggestion, not a settled effect, and must never erase an unknown
+      // outcome or replace an acknowledged write. Continuation owns the
+      // remaining calls until the next admitted submission or history boundary
+      // claims the handoff.
+      const openCalls = new Set(trailingDanglingToolCalls(appliedState.history).map((call) => call.id));
+      const reconciled = (checkpointedTurn.reconciledToolResults ?? []).filter((result) =>
+        result.toolCallId !== undefined && openCalls.has(result.toolCallId));
+      for (const result of reconciled) {
+        session.rolloutStore?.appendRollout({ type: "response_item", payload: result }, { durable: true });
+      }
+      if (reconciled.length > 0) {
+        appliedState = await session.state.update((current) => {
+          const next = { ...current, history: [...current.history, ...reconciled] };
+          return { next, result: next };
+        });
+      }
+      const checkpointCalls = trailingDanglingToolCalls(reconstruction.history);
+      if (checkpointCalls.length > 0) {
+        session.installInterruptedTurnHandoff?.(async () => {
+          await this.inFlightDurableTurnResumes.get(session);
+          await closeCheckpointToolCallsBeforePrompt(session, checkpointedTurn, checkpointCalls);
+        });
+      }
+    } else {
+      session.installInterruptedTurnHandoff?.(null);
+      appliedState = await closeTrailingDanglingToolCalls(
+        session,
+        appliedState,
+        opts.emitSynthesized === true,
+      );
+    }
 
     // GOAL #4b Stage 1 — stash the reconstruction so the prewarm hook can
     // consult its `resumableTurns` and resume-continue an orphaned in-flight
@@ -518,7 +570,7 @@ export class ConversationThreadManager extends ThreadManager {
     // Claim the deferral BEFORE the prewarm runs: `defaultStartupPrewarm`
     // reads the same flag and skips the resume, so the pending marker and the
     // skip must be decided from one value.
-    if (this.deferDurableTurnResume) {
+    if (this.deferDurableTurnResume && !this.attemptedDurableTurnResumes.has(session)) {
       this.pendingDurableTurnResumes.add(session);
     }
     try {
@@ -554,15 +606,30 @@ export class ConversationThreadManager extends ThreadManager {
   async runDeferredDurableTurnResume(
     session: Session,
   ): Promise<DurableResumeAttempt> {
+    if (!rootCanContinueAfterRestart(session)) {
+      this.pendingDurableTurnResumes.delete(session);
+      return { resumed: false };
+    }
+    if (session.rolloutStore?.hasPendingEffectReviews?.()) {
+      return { resumed: false, reason: "side-effect-review-required" };
+    }
     if (!this.pendingDurableTurnResumes.delete(session)) {
       return { resumed: false };
     }
+    this.attemptedDurableTurnResumes.add(session);
     const thread = this.threadManager.hasThread(session.conversationId)
       ? this.threadManager.getThread(session.conversationId)
       : this.registerRootSession(session);
     const record = this.upsertRecord(thread);
     try {
-      const attempt = await attemptDurableTurnResume(session);
+      const resume = attemptDurableTurnResume(session);
+      this.inFlightDurableTurnResumes.set(session, resume);
+      let attempt: DurableResumeAttempt;
+      try {
+        attempt = await resume;
+      } finally {
+        this.inFlightDurableTurnResumes.delete(session);
+      }
       if (attempt.freshTurnAllowed === false) {
         // Same disposition the inline prewarm gives this case: the failure is
         // reported on the record, the session keeps the fresh turn the
@@ -840,6 +907,95 @@ async function closeTrailingDanglingToolCalls(
   return next;
 }
 
+/** Finish a checkpoint's tool exchange before new history or a boundary. */
+async function closeCheckpointToolCallsBeforePrompt(
+  session: Session,
+  turn: ResumableTurn,
+  calls: ReadonlyArray<{ readonly id: string; readonly name: string }>,
+): Promise<void> {
+  const store = session.rolloutStore;
+  if (store === null || store === undefined) return;
+  // An unresolved effect remains an operator decision, even after Stop.
+  store.assertModelExecutionAllowed();
+  const items = store.readAll();
+  const checkpointIndex = items.findLastIndex((item) =>
+    item.type === "event_msg" && item.payload.msg.type === "turn_checkpoint" &&
+    item.payload.msg.payload.turnId === turn.turnId &&
+    item.payload.msg.payload.checkpointSeq === turn.lastCheckpoint.checkpointSeq);
+  if (checkpointIndex < 0) throw new Error("checkpoint handoff lost its durable checkpoint");
+
+  const durableResults = new Map<string, ResponseItem>();
+  for (const item of items) {
+    if (item.type === "response_item" && item.payload.role === "tool" &&
+        item.payload.toolCallId !== undefined) {
+      durableResults.set(item.payload.toolCallId, item.payload);
+    }
+  }
+  const intents = new Map<string, { stepId: string; eventSeq: number; toolName: string;
+    recoveryCategory: string }>();
+  const outcomes = new Map<string, string>();
+  for (const item of items.slice(checkpointIndex + 1)) {
+    if (item.type !== "event_msg") continue;
+    const event = item.payload.msg;
+    if (event.type === "turn_started" && event.payload.turnId !== turn.turnId) break;
+    if (event.type === "history_cleared") break;
+    if (event.type === "effect_intent" && event.payload.runId === session.conversationId) {
+      intents.set(event.payload.callId, { stepId: event.payload.stepId,
+        eventSeq: item.payload.seq ?? -1, toolName: event.payload.toolName,
+        recoveryCategory: event.payload.recoveryCategory });
+    } else if (event.type === "effect_result" && event.payload.runId === session.conversationId) {
+      const intent = intents.get(event.payload.callId);
+      if (intent?.stepId === event.payload.stepId &&
+          intent.eventSeq === event.payload.intentEventSeq &&
+          intent.toolName === event.payload.toolName) {
+        outcomes.set(event.payload.callId,
+          `The ${intent.toolName} call finished before restart (${event.payload.outcome}); its response was not recorded.`);
+      }
+    } else if (event.type === "effect_unknown_outcome" &&
+        event.payload.runId === session.conversationId) {
+      const intent = intents.get(event.payload.callId);
+      if (intent?.stepId === event.payload.stepId &&
+          intent.eventSeq === event.payload.intentEventSeq) {
+        outcomes.set(event.payload.callId,
+          intent.recoveryCategory === "idempotent"
+            ? `The ${intent.toolName} call's outcome is unknown after restart. This idempotent call is safe to retry.`
+            : `The ${intent.toolName} call's outcome is unknown after restart. Check the effect before retrying.`);
+      }
+    } else if (event.type === "effect_review_resolved" &&
+        event.payload.runId === session.conversationId &&
+        typeof event.payload.resolution !== "string" &&
+        event.payload.resolution.workflowStatus === "resolved") {
+      const intent = intents.get(event.payload.callId);
+      if (intent?.stepId === event.payload.stepId) {
+        outcomes.set(event.payload.callId,
+          `Operator review resolved the ${intent.toolName} call (${event.payload.resolution.disposition}); its response was not recorded.`);
+      }
+    }
+  }
+
+  for (const call of calls) {
+    if (durableResults.has(call.id) || store.liveToolCallResolved(call.id)) continue;
+    const content = outcomes.get(call.id) ?? interruptedToolCallResultContent(call);
+    const result = llmMessageToDurableResponseItem({ role: "tool", content,
+      toolCallId: call.id, toolName: call.name, runtimeOnly: {
+        toolResultIntegrity: createToolResultIntegrity({
+          runId: session.conversationId, toolCallId: call.id, content,
+        }),
+      } });
+    store.appendRollout({ type: "response_item", payload: result }, { durable: true });
+    durableResults.set(call.id, result);
+  }
+  await session.state.update((current) => {
+    const dangling = new Set(trailingDanglingToolCalls(current.history).map((call) => call.id));
+    const missing = calls.flatMap((call) => {
+      const result = durableResults.get(call.id);
+      return dangling.has(call.id) && result !== undefined ? [result] : [];
+    });
+    if (missing.length === 0) return { next: current, result: undefined };
+    return { next: { ...current, history: [...current.history, ...missing] }, result: undefined };
+  });
+}
+
 async function applyRolloutReconstructionToSession(
   session: Session,
   reconstruction: RolloutReconstruction,
@@ -898,7 +1054,8 @@ export interface DurableResumeAttempt {
     | "integrity-invalid"
     | "integrity-deferred"
     | "provider-restore-failed"
-    | "lease-unavailable";
+    | "lease-unavailable"
+    | "side-effect-review-required";
   /** Tool names the safe policy halted on (surfaced, not retried). */
   readonly halted?: ReadonlyArray<string>;
   /** False when provider restoration could not prove an exact rollback. */
@@ -1126,23 +1283,42 @@ async function driveResumedTurn(
   reconstruction: RolloutReconstruction,
   turn: ResumableTurn,
   plan: DurableResumePlan,
+  signal?: AbortSignal,
+  turnOptions?: Pick<SessionRunTurnOptions, "ctx" | "systemPrompt" | "systemPromptTrust">,
 ): Promise<void> {
   const reconstructedPrefix = reconstruction.history.slice(
     0,
-    turn.lastCheckpoint.persistedMessageCount,
+    turn.resumeHistoryMessageCount ?? turn.lastCheckpoint.persistedMessageCount,
   );
   const history = reconstructedPrefix.map((item) =>
     responseItemToLlmMessage(item),
   );
+  for (const result of turn.reconciledToolResults ?? []) {
+    if (session.rolloutStore?.liveToolCallResolved?.(result.toolCallId!) === true) {
+      if (!history.some((message) => message.role === "tool" &&
+        message.toolCallId === result.toolCallId)) {
+        history.push(responseItemToLlmMessage(result));
+      }
+      continue;
+    }
+    // Persist the pairing before the provider can issue another request. A
+    // second crash then replays this authenticated response as ordinary tail.
+    session.rolloutStore?.appendRollout({ type: "response_item", payload: result }, { durable: true });
+    history.push(responseItemToLlmMessage(result));
+  }
   const iter = session.runTurn("", {
-    subId: turn.turnId,
+    ...(signal !== undefined ? { signal } : {}),
+    ...(turnOptions?.ctx === undefined ? { subId: turn.turnId } : { ctx: turnOptions.ctx }),
+    ...(turnOptions?.systemPrompt !== undefined ? { systemPrompt: turnOptions.systemPrompt } : {}),
+    ...(turnOptions?.systemPromptTrust !== undefined
+      ? { systemPromptTrust: turnOptions.systemPromptTrust } : {}),
     history,
     displayUserMessage: null,
     resume: {
       turnId: turn.turnId,
       fromIteration: turn.lastCheckpoint.iterationIndex,
       fromCheckpointSeq: turn.lastCheckpoint.checkpointSeq,
-      persistedMessageCount: turn.lastCheckpoint.persistedMessageCount,
+      persistedMessageCount: turn.resumeHistoryMessageCount ?? turn.lastCheckpoint.persistedMessageCount,
       restoreSlice: turn.lastCheckpoint
         .resumableState as unknown as import("../session/turn-state.js").TurnCheckpointSlice,
       ...(plan.haltedSideEffectingTools.length > 0
@@ -1156,6 +1332,15 @@ async function driveResumedTurn(
   while (!(await iter.next()).done) {
     // Drain the resumed turn to its terminal event.
   }
+}
+
+/** Ignore bootstrap's crash marker when deciding whether a turn was retired. */
+export function withoutSyntheticProcessKilledAborts(
+  items: ReadonlyArray<RolloutItem>,
+): RolloutItem[] {
+  return items.filter((item) =>
+    !(item.type === "event_msg" && item.payload.msg.type === "turn_aborted" &&
+      item.payload.msg.payload.reason === "process_killed"));
 }
 
 /**
@@ -1177,11 +1362,50 @@ async function driveResumedTurn(
 export async function resumeTurnFromCheckpoint(
   session: Session,
   reconstruction: RolloutReconstruction,
+  signal?: AbortSignal,
+  turnOptions?: Pick<SessionRunTurnOptions, "ctx" | "systemPrompt" | "systemPromptTrust">,
 ): Promise<DurableResumeAttempt> {
+  if (!rootCanContinueAfterRestart(session)) {
+    return { resumed: false };
+  }
+  // Review can be resolved after startup reconstructed the checkpoint. Read
+  // the current canonical tail before classifying dangling calls or dispatching
+  // another model step. Synthetic process_killed aborts are replay markers,
+  // not user intent to retire the checkpoint.
+  const store = session.rolloutStore;
+  const currentItems = store !== null && store !== undefined &&
+    typeof store.readAll === "function" ? store.readAll() : undefined;
+  const currentReconstruction = currentItems !== undefined &&
+    store !== null && store !== undefined &&
+    typeof store.checkpointProjectionContext === "function"
+    ? reconstructFromRollout(withoutSyntheticProcessKilledAborts(currentItems), {
+        checkpointProjection: store.checkpointProjectionContext("durable-resume-current"),
+      })
+    : reconstruction;
+  const latestCandidate = currentReconstruction.resumableTurns.at(-1);
+  if (latestCandidate !== undefined && currentItems !== undefined) {
+    const checkpointIndex = currentItems.findLastIndex((item) =>
+      item.type === "event_msg" && item.payload.msg.type === "turn_checkpoint" &&
+      item.payload.msg.payload.turnId === latestCandidate.turnId &&
+      item.payload.msg.payload.checkpointSeq === latestCandidate.lastCheckpoint.checkpointSeq);
+    // Older bootstraps could seal a retry placeholder after the checkpoint.
+    // It passes integrity checks but says nothing about the effect outcome.
+    // Refuse automatic continuation rather than treating that old pairing as
+    // a tool result or dispatching a side effect twice.
+    if (checkpointIndex >= 0 && currentItems.slice(checkpointIndex + 1).some((item) =>
+      item.type === "response_item" && item.payload.role === "tool" &&
+      typeof item.payload.toolCallId === "string" &&
+      typeof item.payload.toolName === "string" &&
+      item.payload.content === interruptedToolCallResultContent({
+        id: item.payload.toolCallId, name: item.payload.toolName,
+      }))) {
+      return { resumed: false, reason: "integrity-deferred" };
+    }
+  }
   const cfg = resolveDurableTurnsConfig(
     (session as { readonly config?: unknown }).config,
   );
-  const { turn, reason } = selectResumableTurn(reconstruction, cfg);
+  const { turn, reason } = selectResumableTurn(currentReconstruction, cfg);
   if (turn === undefined || reason !== undefined) {
     return reason !== undefined ? { resumed: false, reason } : { resumed: false };
   }
@@ -1196,7 +1420,25 @@ export async function resumeTurnFromCheckpoint(
   }
 
   try {
+    signal?.throwIfAborted();
+    const plan = planDanglingToolResume(session, turn);
+    if (plan.haltedSideEffectingTools.length > 0) {
+      // The next daemon can offer a user-controlled continuation, but must
+      // not sample a new model step while a side effect's outcome is unknown.
+      // The recovered history and tool gate remain intact for that prompt.
+      for (const toolName of plan.haltedSideEffectingTools) {
+        session.emit({
+          id: session.nextInternalSubId(),
+          msg: { type: "warning", payload: {
+            cause: "durable_resume_side_effect_halt",
+            message: `${toolName} was in flight when the app restarted. Check its outcome before continuing. The call was not retried.`,
+          } },
+        });
+      }
+      return { resumed: false, reason: "side-effect-review-required", halted: plan.haltedSideEffectingTools };
+    }
     const providerRestore = await restoreCheckpointProviderRoute(session, turn);
+    signal?.throwIfAborted();
     if (providerRestore.status !== "restored") {
       return {
         resumed: false,
@@ -1209,8 +1451,7 @@ export async function resumeTurnFromCheckpoint(
           : {}),
       };
     }
-    const plan = planDanglingToolResume(session, turn);
-    await driveResumedTurn(session, reconstruction, turn, plan);
+    await driveResumedTurn(session, currentReconstruction, turn, plan, signal, turnOptions);
     return {
       resumed: true,
       ...(plan.haltedSideEffectingTools.length > 0

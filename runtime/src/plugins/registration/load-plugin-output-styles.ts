@@ -72,7 +72,7 @@ async function loadStylesFromPath(
   loadedPaths: Set<string>,
 ): Promise<readonly PluginOutputStyle[]> {
   if (await pathIsDirectory(path)) {
-    const files = await collectMarkdownFiles(path);
+    const files = await collectMarkdownFiles(path, plugin.root);
     const styles = await Promise.all(
       files.map((filePath) => loadStyleFile(plugin, filePath, path, loadedPaths)),
     );

@@ -720,14 +720,34 @@ function macosDirParams(
     : [["DARWIN_USER_CACHE_DIR", normalizePathForPolicy(cacheDir)]];
 }
 
+/**
+ * The per-user cache directory is fixed for the life of the process, but
+ * asking for it runs getconf synchronously (about 3 ms of blocked event loop)
+ * and every sandboxed command transform needs it: an agent step with a
+ * sandboxed Glob, Grep, or exec_command paid that once or twice. Only an
+ * answer whose real path resolved is remembered; a failed lookup, or a
+ * directory that does not exist yet, is asked again next time as before.
+ */
+let resolvedDarwinUserCacheDir: string | undefined;
+
 function darwinUserCacheDir(): string | null {
+  if (resolvedDarwinUserCacheDir !== undefined) {
+    return resolvedDarwinUserCacheDir;
+  }
   const result = spawnSync("/usr/bin/getconf", ["DARWIN_USER_CACHE_DIR"], {
     encoding: "utf8",
   });
   if (result.error !== undefined || result.status !== 0) return null;
   const value = result.stdout.trim();
   if (value.length === 0 || !path.isAbsolute(value)) return null;
-  return normalizePathForSandbox(value);
+  let realPath: string;
+  try {
+    realPath = fs.realpathSync(value);
+  } catch {
+    return normalizePathForPolicy(value);
+  }
+  resolvedDarwinUserCacheDir = normalizePathForPolicy(realPath);
+  return resolvedDarwinUserCacheDir;
 }
 
 function normalizePathForSandbox(candidate: string): string | null {

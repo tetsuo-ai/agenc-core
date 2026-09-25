@@ -25,6 +25,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { RolloutStore } from "./rollout-store.js";
+import { createToolBridge } from "../mcp-client/tools.js";
+import { readDisplayArtifact } from "./display-artifact-store.js";
 
 import {
   buildRealtimeSessionConfig,
@@ -376,6 +379,44 @@ function buildSession(
   };
   return new Session(opts);
 }
+
+it("commits plugin MCP chart and file attachments while the model sees only captions", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "display-plugin-e2e-"));
+  const chart = { version: 1, kind: "timeseries", title: "NVDA, daily", series: [{ name: "Close", type: "line", data: [{ time: "2026-06-08", value: 100 }] }] };
+  const bridge = await createToolBridge({
+    listTools: async () => ({ tools: [{ name: "show", description: "Show chart and calendar", inputSchema: { type: "object", properties: {} } }] }),
+    callTool: async () => ({ content: [
+      { type: "resource", annotations: { audience: ["user"] }, resource: { uri: "agenc:chart", mimeType: "application/vnd.agenc.chart+json", text: JSON.stringify(chart) } },
+      { type: "resource", annotations: { audience: ["user"] }, resource: { uri: "agenc:talk.ics", name: "talk.ics", mimeType: "text/calendar", blob: Buffer.from("BEGIN:VCALENDAR\nEND:VCALENDAR\n").toString("base64") } },
+    ] }),
+    close: async () => {},
+  }, "fixture", undefined, { environment: { MAX_MCP_OUTPUT_TOKENS: "100000" }, serverConfig: { displayDataRoot: cwd } });
+  const rollout = new RolloutStore({ cwd, sessionId: "conv-test", agencVersion: "0.2.0", sessionTempRoot: cwd });
+  try {
+    rollout.open({ sessionId: "conv-test", timestamp: "2026-09-23T00:00:00.000Z", cwd, originator: "agenc-cli", source: "interactive-root", agencVersion: "0.2.0", model: "grok-4", modelProvider: "grok" });
+    const session = buildSession();
+    session.mountRolloutStore(rollout);
+    const result = await bridge.tools[0]!.execute({});
+    expect(result.content).toContain('chart "NVDA, daily"');
+    expect(result.content).toContain('file "talk.ics"');
+    expect(result.content).not.toContain('"value":100');
+    expect(JSON.stringify(result.codeModeResult)).not.toContain('"value":100');
+    const completed = session.emit({ id: "display-complete", msg: { type: "tool_call_completed", payload: { callId: "call-1", toolName: "mcp.fixture.show", result: result.content, isError: false, metadata: result.metadata } } });
+    expect(completed.msg.type).toBe("tool_call_completed");
+    if (completed.msg.type !== "tool_call_completed") throw new Error("wrong event");
+    expect(completed.msg.payload.displayAttachments?.map(item => item.kind)).toEqual(["chart", "file"]);
+    expect(completed.msg.payload.metadata?.displayAttachments).toBeUndefined();
+    const fileAttachment = completed.msg.payload.displayAttachments?.find(item => item.kind === "file");
+    expect(fileAttachment).toBeDefined();
+    expect(readDisplayArtifact(rollout.store.sessionDir, fileAttachment!.id).toString()).toContain("BEGIN:VCALENDAR");
+    const reread = rollout.readAll().find(item => item.type === "event_msg" && item.payload.msg.type === "tool_call_completed");
+    expect(reread?.type === "event_msg" && reread.payload.msg.type === "tool_call_completed" ? reread.payload.msg.payload.displayAttachments?.map(item => item.kind) : undefined).toEqual(["chart", "file"]);
+  } finally {
+    rollout.close();
+    await bridge.dispose();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 function consumePendingProviderSwitch(session: Session) {
   return runWithCurrentRuntimeSession(session, () =>
@@ -804,6 +845,46 @@ describe("Session.abortTerminal", () => {
         },
       },
     });
+  });
+
+  it("scopes provider_switched to the turn in flight and keeps the session promptable", async () => {
+    const session = buildSession();
+    const turn = new AbortController();
+    const child = new AbortController();
+    await session.activeTurn.swap({
+      turnId: "turn-live",
+      startedAtMs: 123,
+      abortController: turn,
+      tasks: new Map([
+        ["turn-live", { abortController: turn }],
+        ["turn-live:child", { abortController: child }],
+      ]),
+    } as never);
+
+    session.abortTerminal("provider_switched");
+
+    expect(turn.signal.reason).toBe("provider_switched");
+    expect(child.signal.reason).toBe("provider_switched");
+    expect(session.abortController.signal.aborted).toBe(false);
+    expect(session.txEvent.tryRecv()).toMatchObject({
+      msg: {
+        type: "turn_aborted",
+        payload: { turnId: "turn-live", reason: "provider_switched" },
+      },
+    });
+
+    // The lifetime token is untouched: a real terminal abort still works.
+    session.abortTerminal("stdin_lost");
+    expect(session.abortController.signal.reason).toBe("stdin_lost");
+  });
+
+  it("treats provider_switched as a no-op when no turn is active", () => {
+    const session = buildSession();
+
+    session.abortTerminal("provider_switched");
+
+    expect(session.abortController.signal.aborted).toBe(false);
+    expect(session.txEvent.tryRecv()).toBeUndefined();
   });
 
   it("omits turnId when no turn is active", () => {
@@ -1918,39 +1999,6 @@ describe("Session turn-driver hooks", () => {
     expect(started).toEqual(["first", "second"]);
   });
 
-  it("defers Agent startup work across Editor turns and flushes it before an ordinary submit", async () => {
-    const session = buildSession();
-    const sequence: string[] = [];
-    session.appendDeferredOrdinarySubmitHook(async () => {
-      sequence.push("agent-startup");
-    });
-    session.installTurnDriverHooks({
-      submit: vi.fn(async (message: string) => {
-        sequence.push(`turn:${message}`);
-      }),
-    });
-    const editorInteraction = {
-      interactionId: "interaction-deferred-startup-ask",
-      kind: "ask" as const,
-      policy: "read_only" as const,
-      editorInstanceId: "editor-deferred-startup",
-      bufferHandle: 12,
-      changedtick: 5,
-      contentSha256: "e".repeat(64),
-      path: "/tmp/example.ts",
-      range: {
-        start: { line: 1, column: 0 },
-        end: { line: 1, column: 1 },
-      },
-    };
-
-    await session.submit("editor", { editorInteraction });
-    expect(sequence).toEqual(["turn:editor"]);
-
-    await session.submit("agent");
-    expect(sequence).toEqual(["turn:editor", "agent-startup", "turn:agent"]);
-  });
-
   it("discards never-started deferred work when shutdown wins", async () => {
     const cancel = vi.fn();
     const session = buildSession({
@@ -2917,29 +2965,6 @@ describe("Session.shutdown dispatches SessionEnd hooks", () => {
       const session = buildSession();
       await session.shutdown();
       expect(seen).toEqual([{ reason: "exit", session_id: "conv-test" }]);
-    } finally {
-      resetLifecycleHookRegistry();
-    }
-  });
-
-  it("does not run unmatched lifecycle hooks for an Editor-only deferred session", async () => {
-    const { registerSessionEndHook, resetLifecycleHookRegistry } =
-      await import("../llm/hooks/registry.js");
-    const sessionStart = vi.fn(async () => {});
-    const sessionEnd = vi.fn(async () => ({
-      succeeded: true,
-      output: "",
-    }));
-    resetLifecycleHookRegistry();
-    registerSessionEndHook(sessionEnd);
-    try {
-      const session = buildSession();
-      session.installDeferredSessionStartHook(sessionStart);
-
-      await session.shutdown();
-
-      expect(sessionStart).not.toHaveBeenCalled();
-      expect(sessionEnd).not.toHaveBeenCalled();
     } finally {
       resetLifecycleHookRegistry();
     }

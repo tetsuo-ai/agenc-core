@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   OfflineRolloutSourceMissingError,
   withPinnedOfflineRolloutLease,
@@ -107,6 +108,35 @@ export function createOperatorEffectReviewResolution(options: {
     evidenceSha256: options.evidenceSha256,
     reviewedAt: options.reviewedAt,
     ...terminal,
+  };
+}
+
+/**
+ * Evidence for an operator who attests an outcome from their own knowledge
+ * and holds no separate evidence document. The attestation itself is the
+ * operator evidence: the reference names the session and call, and the digest
+ * covers the canonical statement (who attested which disposition, when), so
+ * the review remains distinguishable from document-backed evidence.
+ */
+export function createOperatorAttestationEvidence(options: {
+  readonly sessionId: string;
+  readonly toolCallId: string;
+  readonly disposition: EffectReviewDisposition;
+  readonly actorId: string;
+  readonly attestedAt: string;
+}): { readonly evidenceRef: string; readonly evidenceSha256: string } {
+  const statement = JSON.stringify({
+    version: 1,
+    kind: "operator_attestation",
+    sessionId: options.sessionId,
+    toolCallId: options.toolCallId,
+    disposition: options.disposition,
+    actorId: options.actorId,
+    attestedAt: options.attestedAt,
+  });
+  return {
+    evidenceRef: `operator-attestation:${options.sessionId}:${options.toolCallId}`,
+    evidenceSha256: createHash("sha256").update(statement, "utf8").digest("hex"),
   };
 }
 

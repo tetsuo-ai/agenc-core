@@ -55,7 +55,7 @@ export type TaskKind = "regular" | "compact" | "review";
  *     (`spawnTask` calls `abortAllTasks("replaced")`).
  *   - `review_ended`: review session concluded.
  */
-export type TurnAbortReason = "interrupted" | "replaced" | "review_ended";
+export type TurnAbortReason = "interrupted" | "replaced" | "review_ended" | "daemon_shutdown";
 
 /**
  * Mailbox delivery phase for the active turn.

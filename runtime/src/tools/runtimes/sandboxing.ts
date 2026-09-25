@@ -4,6 +4,7 @@ import {
   externalFileSystemPolicy,
   canReadPathWithCwd,
   canWritePathWithCwd,
+  canWriteRuntimeOwnedPathWithCwd,
   permissionProfileFromRuntimePermissions,
   restrictedFileSystemPolicy,
   unrestrictedFileSystemPolicy,
@@ -38,6 +39,7 @@ import { analyzeShellRuntimeAccess } from "./shell.js";
 import { isSessionCronMemoryMutation } from "./session-cron.js";
 import { cronLockAuthorityRoots, overlapsCronAuthority, protectCronAuthority } from "../../sandbox/cron-authority-protection.js";
 import { desktopAuthorityRoot, overlapsDesktopAuthority, protectDesktopAuthority } from "../../sandbox/desktop-authority-protection.js";
+import { routineRunOptions } from "../../session/runtime-options.js";
 
 export interface RuntimeSandboxProfileOptions {
   readonly cwd: string;
@@ -54,6 +56,8 @@ interface WriteAnalysis {
   readonly targets: readonly string[];
   readonly indeterminate: boolean;
   readonly knownSafeWhenTargetless: boolean;
+  /** Targets the tool declared through ToolMetadata.fixedWriteTargets. */
+  readonly declared?: readonly string[];
 }
 
 export interface RuntimePlatformSandboxStatus {
@@ -296,10 +300,49 @@ export function permissionProfileForRuntimeContext(
         network,
       })
     : permissionProfileFromRuntimePermissions(fileSystem, network);
-  return protectCronAuthority(protectDesktopAuthority(
+  const protectedProfile = protectCronAuthority(protectDesktopAuthority(
     applyRuntimeAdditionalPermissions(profile, context, options.cwd),
     runtimeDesktopAuthorityRoot(context),
   ));
+  return routineRunOptions(context.invocation.session) === undefined
+    ? protectedProfile
+    : confineRoutineProfile(protectedProfile);
+}
+
+/**
+ * A scheduled routine's shell writes only inside its workspace. Every write
+ * entry except the workspace itself (the project root) is dropped: the
+ * session temp root, configured extra writable folders and granted
+ * additional permissions alike (reads stay as they were). Dropping rather
+ * than downgrading keeps a downgraded entry from reading as a read-only
+ * carve-out inside the workspace. The run's scratch folder is inside the
+ * workspace and needs no writable root of its own; a separate root there
+ * could be swapped for a link, and roots are resolved when the sandbox starts.
+ */
+export function confineRoutineProfile(profile: PermissionProfile): PermissionProfile {
+  const fileSystem = profile.fileSystem;
+  if (fileSystem.kind !== "restricted") return profile;
+  const entries = fileSystem.entries.filter((entry): boolean =>
+    entry.access !== "write" ||
+    (entry.path.kind === "special" &&
+      entry.path.value.kind === "project_roots" &&
+      entry.path.value.subpath === undefined));
+  return { ...profile, fileSystem: { ...fileSystem, entries } };
+}
+
+/**
+ * The TMPDIR a shell command in this session gets: a routine run's scratch
+ * folder inside its workspace (or the workspace itself when it has none),
+ * otherwise the session temp root.
+ */
+export function runtimeChildTempRoot(
+  context: ToolRuntimeAttemptContext,
+  sessionTempRoot: string,
+  workspaceRoot: string,
+): string {
+  const routine = routineRunOptions(context.invocation.session);
+  if (routine === undefined) return sessionTempRoot;
+  return routine.scratchRoot ?? workspaceRoot;
 }
 
 function runtimeDesktopAuthorityRoot(context: ToolRuntimeAttemptContext): string {
@@ -455,7 +498,10 @@ export function enforceRuntimeSandboxAttempt(
       !(shellAccess === null &&
         (isActiveSessionPlanFile(input.context, target) ||
           isDurableMemoryWritePath(target)) &&
-        agencHomeCarveOutAllowsWrite(profile.fileSystem, target, cwd, sessionTempRoot))
+        agencHomeCarveOutAllowsWrite(profile.fileSystem, target, cwd, sessionTempRoot)) &&
+      !(shellAccess === null &&
+        (writes.declared ?? []).includes(target) &&
+        canWriteRuntimeOwnedPathWithCwd(profile.fileSystem, target, cwd, sessionTempRoot))
     ) {
       throw new SandboxDeniedError(
         `sandbox workspace_write blocked write outside workspace: ${target}`,
@@ -584,11 +630,15 @@ function analyzeWrites(
       knownSafeWhenTargetless: false,
     };
   }
-  const targets = writeTargets(args, cwd);
+  const declared = (tool.metadata?.fixedWriteTargets?.() ?? []).map(
+    (target) => resolveRuntimePathTarget(target, cwd),
+  );
+  const targets = [...new Set([...writeTargets(args, cwd), ...declared])];
   return {
     targets,
     indeterminate: targets.length === 0,
     knownSafeWhenTargetless: false,
+    declared,
   };
 }
 

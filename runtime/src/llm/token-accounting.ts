@@ -516,6 +516,12 @@ export class TokenAccountingService {
   recordProviderUsage(
     result: TokenAccountingResult,
     reportedInputTokens: number,
+    /**
+     * `calibrate: false` records the sample for metrics without learning from
+     * it. Callers pass it when the provider added input this process could not
+     * count, such as provider-native server tool results.
+     */
+    options: { readonly calibrate?: boolean } = {},
   ): void {
     if (!isNonNegativeSafeInteger(reportedInputTokens)) return;
     const contentTypes = [...result.coverage.contentTypes].sort();
@@ -579,6 +585,7 @@ export class TokenAccountingService {
     this.#metrics.set(key, metric);
     const calibration = this.#calibrationBases.get(result);
     if (
+      options.calibrate !== false &&
       calibration !== undefined &&
       result.source === "conservative_fallback" &&
       reportedInputTokens > 0 &&

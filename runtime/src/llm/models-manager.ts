@@ -53,6 +53,10 @@ export class StaticModelsManager implements ModelsManager {
     );
   }
 
+  async getModelInfoForProvider(provider: string, model: string): Promise<ModelInfo> {
+    return await this.resolveModelInfo({ provider, model });
+  }
+
   tryListModels(): ReadonlyArray<ModelInfo> | undefined {
     return this.availableModels;
   }

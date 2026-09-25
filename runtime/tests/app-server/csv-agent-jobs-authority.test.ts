@@ -18,6 +18,57 @@ afterEach(async () => {
 });
 
 describe("CsvAgentJobsRepositoryAuthority", () => {
+  it("closes a sessionless review repository after its final lease", async () => {
+    const root = await workspace("authority-sessionless-");
+    const close = vi.fn();
+    const openRepository = vi.fn(async () => ({}) as CsvAgentJobsRepository);
+    const authority = authorityWith({ close, openRepository });
+    try {
+      await authority.withRepository(root, () => "reviewed");
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      await authority.withRepository(root, () => "reviewed again");
+      await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(2));
+      expect(openRepository).toHaveBeenCalledTimes(2);
+    } finally {
+      await authority.close();
+    }
+  });
+
+  it("closes after a lease starts while workspace release waits", async () => {
+    const root = await workspace("authority-release-overlap-");
+    const close = vi.fn();
+    const authority = authorityWith({ close });
+    const releaseWorkspace = authority.retainWorkspace(root);
+    const firstStarted = deferred<void>();
+    const finishFirst = deferred<void>();
+    const secondStarted = deferred<void>();
+    const finishSecond = deferred<void>();
+    const first = authority.withRepository(root, async () => {
+      firstStarted.resolve();
+      await finishFirst.promise;
+    });
+    try {
+      await firstStarted.promise;
+      const release = releaseWorkspace();
+      const second = authority.withRepository(root, async () => {
+        secondStarted.resolve();
+        await finishSecond.promise;
+      });
+      await secondStarted.promise;
+      finishFirst.resolve();
+      await first;
+      await release;
+      expect(close).not.toHaveBeenCalled();
+      finishSecond.resolve();
+      await second;
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    } finally {
+      finishFirst.resolve();
+      finishSecond.resolve();
+      await authority.close();
+    }
+  });
+
   it("shares one canonical database open when one alias waiter aborts", async () => {
     const root = await workspace("authority-alias-");
     const alias = `${root}-alias`;
@@ -377,6 +428,8 @@ describe("CsvAgentJobsRepositoryAuthority", () => {
         }) as unknown as StateSqliteDriver,
       openRepository: async () => ({}) as CsvAgentJobsRepository,
     });
+    authority.retainWorkspace(firstRoot);
+    authority.retainWorkspace(secondRoot);
     await authority.withRepository(firstRoot, () => undefined);
     await authority.withRepository(secondRoot, () => undefined);
 

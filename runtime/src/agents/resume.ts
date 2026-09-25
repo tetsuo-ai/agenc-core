@@ -18,6 +18,7 @@
  */
 
 import { isTransientProviderError } from "../recovery/api-errors.js";
+import { isProviderFundsFailure } from "../llm/funds.js";
 
 export type ResumeDecision =
   | { readonly kind: "resume"; readonly reason: string }
@@ -38,6 +39,9 @@ export const RESUME_MAX_ATTEMPTS = 3;
  * non-transient → restart; parent-aborted or over-cap → abort.
  */
 export function decideResume(ctx: ResumePolicyContext): ResumeDecision {
+  if (isProviderFundsFailure((ctx.error as { providerName?: string } | null)?.providerName ?? "", ctx.error)) {
+    return { kind: "abort", reason: "insufficient_funds" };
+  }
   if (ctx.parentAborted) {
     return { kind: "abort", reason: "parent_aborted" };
   }

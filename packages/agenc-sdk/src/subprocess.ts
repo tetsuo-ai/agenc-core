@@ -24,13 +24,12 @@ import { spawn as nodeSpawn } from "node:child_process";
 import { isJsonObject, type JsonObject } from "./protocol.js";
 import {
   promptEventFromNotification,
+  sessionIdFromNotification,
   stopReasonFromExitCode,
   type AgencPromptEvent,
   type AgencPromptResult,
 } from "./events.js";
-
-/** Cap on internally buffered, not-yet-consumed prompt events (mirrors client.ts). */
-const MAX_BUFFERED_PROMPT_EVENTS = 1_000;
+import { createPromptEventQueue } from "./prompt-event-queue.js";
 
 export interface AgencSubprocessChild {
   readonly stdin: {
@@ -146,7 +145,12 @@ export function promptViaSubprocess(
     stdio: ["pipe", "pipe", "pipe"],
   });
 
-  const buffered: AgencPromptEvent[] = [];
+  // `agenc -p` stamps every stream-json event line with the session it runs
+  // in; a local-overflow gap reports that session so the loss is attributable.
+  let observedSessionId: string | undefined;
+  const buffered = createPromptEventQueue({
+    sessionId: () => observedSessionId,
+  });
   let wake: (() => void) | null = null;
   let done = false;
   let failure: Error | null = null;
@@ -202,10 +206,15 @@ export function promptViaSubprocess(
     }
     if (!isJsonObject(parsed)) return;
     if (parsed.type === "event" && isJsonObject(parsed.event)) {
+      if (observedSessionId === undefined) {
+        observedSessionId =
+          typeof parsed.sessionId === "string"
+            ? parsed.sessionId
+            : sessionIdFromNotification(parsed.event) ?? undefined;
+      }
       const event = promptEventFromNotification(parsed.event);
       if (event !== null && !done) {
         buffered.push(event);
-        while (buffered.length > MAX_BUFFERED_PROMPT_EVENTS) buffered.shift();
         notify();
       }
       return;

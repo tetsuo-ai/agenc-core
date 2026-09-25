@@ -7,7 +7,10 @@
  * (`agenc state resolve-tool-call`) cannot run while the daemon holds the
  * session lock — this command resolves through the live daemon instead.
  *
- * Usage: /resolve <call-id> <disposition> <evidence-ref> <evidence-sha256>
+ * Usage: /resolve <call-id> <disposition> [<evidence-ref> <evidence-sha256>]
+ *
+ * With only the call id and a disposition, the user attests the outcome from
+ * their own knowledge and Core records that attestation as the evidence.
  */
 
 import {
@@ -16,17 +19,31 @@ import {
   type SlashCommandResult,
 } from "./types.js";
 
+type Disposition =
+  | "confirmed_committed"
+  | "confirmed_no_effect"
+  | "remains_unknown";
+
+export type ResolveDaemonToolCallParams =
+  | {
+      readonly toolCallId: string;
+      readonly disposition: Disposition;
+      readonly evidenceRef: string;
+      readonly evidenceSha256: string;
+      readonly reviewer?: string;
+    }
+  | {
+      readonly toolCallId: string;
+      readonly disposition: Disposition;
+      readonly attestation: "operator";
+      readonly reviewer?: string;
+    };
+
+const USAGE =
+  "Usage: /resolve <call-id> <confirmed_committed|confirmed_no_effect|remains_unknown> [<evidence-ref> <evidence-sha256>]";
+
 type ResolvableSession = {
-  readonly resolveDaemonToolCall?: (params: {
-    readonly toolCallId: string;
-    readonly disposition:
-      | "confirmed_committed"
-      | "confirmed_no_effect"
-      | "remains_unknown";
-    readonly evidenceRef: string;
-    readonly evidenceSha256: string;
-    readonly reviewer?: string;
-  }) => Promise<{
+  readonly resolveDaemonToolCall?: (params: ResolveDaemonToolCallParams) => Promise<{
     readonly sessionId: string;
     readonly resolved: readonly {
       readonly toolCallId: string;
@@ -57,27 +74,23 @@ export const resolveCommand: SlashCommand = {
         ctx.argsRaw.trim().split(/\s+/u);
       if (
         toolCallId === undefined ||
-        evidenceRef === undefined ||
-        evidenceSha256 === undefined ||
+        toolCallId.length === 0 ||
         extra !== undefined ||
         (disposition !== "confirmed_committed" &&
           disposition !== "confirmed_no_effect" &&
           disposition !== "remains_unknown") ||
-        !/^[0-9a-f]{64}$/u.test(evidenceSha256)
+        (evidenceRef === undefined) !== (evidenceSha256 === undefined) ||
+        (evidenceSha256 !== undefined &&
+          !/^[0-9a-f]{64}$/u.test(evidenceSha256))
       ) {
-        return {
-          kind: "error",
-          message:
-            "Usage: /resolve <call-id> <confirmed_committed|confirmed_no_effect|remains_unknown> <evidence-ref> <evidence-sha256>",
-        };
+        return { kind: "error", message: USAGE };
       }
-      const result = await session.resolveDaemonToolCall({
-        toolCallId,
-        disposition,
-        evidenceRef,
-        evidenceSha256,
-        reviewer: "tui_operator",
-      });
+      // The daemon records the reviewer from this client's attachment.
+      const result = await session.resolveDaemonToolCall(
+        evidenceRef === undefined || evidenceSha256 === undefined
+          ? { toolCallId, disposition, attestation: "operator" }
+          : { toolCallId, disposition, evidenceRef, evidenceSha256 },
+      );
       if (result.resolved.length === 0) {
         return {
           kind: "text",

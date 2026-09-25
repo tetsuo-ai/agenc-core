@@ -52,6 +52,7 @@ const KnownMarketplaceSchema = z.object({
       "Stored marketplace manifestPath must be absolute; remove and re-add this marketplace",
   }),
   lastUpdated: z.string(),
+  lastChecked: z.string().optional(),
   autoUpdate: z.boolean().optional(),
   revision: z.string().optional(),
   refreshable: z.boolean().optional(),

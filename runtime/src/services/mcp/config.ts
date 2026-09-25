@@ -17,6 +17,7 @@ import {
 import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from '../../utils/log.js'
 import { loadPluginMcpServerRegistrations } from '../../plugins/registration/mcp-plugin-integration.js'
+import { redactSavedPluginSecrets } from '../../plugins/secret-redaction.js'
 import type { PluginLoadIssue } from '../../plugins/loader.js'
 import { isRestrictedToPluginOnly } from '../../utils/settings/pluginOnlyPolicy.js'
 import {
@@ -1324,17 +1325,13 @@ export async function getAllMcpConfigs(
     if (options.signal?.aborted === true) {
       throw mcpResolutionAbortError(options.signal)
     }
-    const message = error instanceof Error ? error.message : String(error)
+    const message = redactSavedPluginSecrets(error instanceof Error ? error.message : String(error), resolutionAuthority.homeContext)
     registrationFailure = {
       type: 'generic-error',
       source: 'MCP plugin discovery',
       error: message,
     }
-    logError(
-      error instanceof Error
-        ? error
-        : new Error(`MCP plugin discovery failed: ${message}`),
-    )
+    logError(new Error(`MCP plugin discovery failed: ${message}`))
   }
   const mcpErrors: PluginError[] = [
     ...validationErrorsToPluginErrors([
@@ -1345,21 +1342,43 @@ export async function getAllMcpConfigs(
       type: 'generic-error' as const,
       source: issue.source,
       ...(issue.plugin !== undefined ? { plugin: issue.plugin } : {}),
-      error: issue.message,
+      error: redactSavedPluginSecrets(issue.message, resolutionAuthority.homeContext),
     })),
     ...(registrationFailure === undefined ? [] : [registrationFailure]),
   ]
   for (const issue of registrationIssues) {
-    logError(new Error(`Plugin MCP server error: ${issue.message}`))
+    logError(new Error(`Plugin MCP server error: ${redactSavedPluginSecrets(issue.message, resolutionAuthority.homeContext)}`))
   }
   for (const registration of registrations) {
     pluginMcpServers[registration.name] = {
       ...canonicalMcpServerToServiceConfig(registration.server),
+      // Policy, deduplication, definition IDs, status and catalog fingerprints
+      // use the historical installed-path command identity.
+      ...(registration.installationIdentity?.command !== undefined
+        ? { command: registration.installationIdentity.command } : {}),
+      ...(registration.installationIdentity?.args !== undefined
+        ? { args: [...registration.installationIdentity.args] } : {}),
+      ...(registration.installationIdentity?.cwd !== undefined
+        ? { cwd: registration.installationIdentity.cwd } : {}),
       scope: 'dynamic',
       pluginSource: registration.pluginSource,
       pluginServer: {
         pluginName: registration.pluginName,
         serverName: registration.serverName,
+        ...(registration.version !== undefined ? { version: registration.version } : {}),
+        digest: registration.digest,
+        pluginRoot: registration.pluginRoot,
+        snapshotRoot: registration.snapshotRoot,
+        snapshotLaunch: {
+          ...(registration.server.command !== undefined ? { command: registration.server.command } : {}),
+          ...(registration.server.args !== undefined ? { args: [...registration.server.args] } : {}),
+          ...(registration.server.cwd !== undefined ? { cwd: registration.server.cwd } : {}),
+          ...(registration.server.env !== undefined ? { env: { ...registration.server.env } } : {}),
+        },
+        ...(registration.userConfigDigest !== undefined ? { userConfigDigest: registration.userConfigDigest } : {}),
+        eager: registration.eager,
+        idleTimeoutMs: registration.idleTimeoutMs,
+        maxProcesses: registration.maxProcesses,
       },
     }
   }

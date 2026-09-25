@@ -16,11 +16,6 @@ import {
 import { UnifiedExecError } from "./types.js";
 import { UnifiedExecProcessManager } from "./process-manager.js";
 import {
-  beginWorkspaceToolOperation,
-  endWorkspaceToolOperation,
-  workspaceMutationCoordinators,
-} from "../workspace/mutation-coordinator.js";
-import {
   createWorkspaceOperationLifetime,
   runWithWorkspaceOperationLifetime,
 } from "../workspace/tool-operation-lifetime.js";
@@ -76,7 +71,14 @@ function installFakePty(
       readonly env?: Record<string, string>;
     },
   ) => void,
-): void {
+): { readonly exitAll: () => void } {
+  // pid 0 keeps these fakes away from real signals, and the manager never
+  // signals a PTY without a pid above 1 (node-pty's kill() would reach pid 0,
+  // the test runner's own group). exitAll() stands in for the PTY exiting so
+  // cleanup does not wait out closeAll's bound.
+  const exitListeners: Array<
+    (event: { readonly exitCode: number; readonly signal?: number | string }) => void
+  > = [];
   (
     manager as unknown as {
       loadPty: () => Promise<{
@@ -121,11 +123,19 @@ function installFakePty(
         onData: () => ({ dispose: vi.fn() }),
         onExit: (listener) => {
           exitListener = listener;
+          exitListeners.push(listener);
           return { dispose: vi.fn() };
         },
       };
     },
   });
+  return {
+    exitAll: () => {
+      for (const listener of exitListeners.splice(0)) {
+        listener({ exitCode: 0 });
+      }
+    },
+  };
 }
 
 function markerPids(marker: string): number[] {
@@ -254,7 +264,7 @@ describe("UnifiedExecProcessManager", () => {
         },
       },
     });
-    installFakePty(manager, (_file, _args, options) => {
+    const fakePty = installFakePty(manager, (_file, _args, options) => {
       spawnedEnvironment = options.env;
     });
     try {
@@ -281,20 +291,18 @@ describe("UnifiedExecProcessManager", () => {
         TMP: sessionTempRoot,
       });
     } finally {
+      fakePty.exitAll();
       await manager.closeAll("test_cleanup");
     }
   });
 
-  test("keeps Editor acquisition fenced until a yielded process exits", async () => {
+  test("keeps the operation lifetime open until a yielded process exits", async () => {
     if (process.platform === "win32") return;
     const root = await mkdtemp(join(tmpdir(), "agenc-exec-editor-fence-"));
     const target = join(root, "loaded.ts");
     await writeFile(target, "before\n", "utf8");
     const manager = new UnifiedExecProcessManager({ cwd: root });
-    const token = beginWorkspaceToolOperation(root, "exec_command");
-    const lifetime = createWorkspaceOperationLifetime(() => {
-      endWorkspaceToolOperation(token);
-    });
+    const lifetime = createWorkspaceOperationLifetime(() => {});
     const script = [
       "const fs=require('node:fs');",
       `setTimeout(()=>fs.writeFileSync(${JSON.stringify(target)},'after\\n'),600);`,
@@ -310,38 +318,22 @@ describe("UnifiedExecProcessManager", () => {
       expect(result.process_id).toEqual(expect.any(Number));
       await lifetime.release();
 
-      expect(() =>
-        workspaceMutationCoordinators.acquireEditor(root, {
-          workspaceRoot: root,
-          editorInstanceId: "editor-during-yielded-process",
-        }),
-      ).toThrow(/waiting for active tool 'exec_command'/u);
 
       await lifetime.settled();
       expect(await readFile(target, "utf8")).toBe("after\n");
-      expect(() =>
-        workspaceMutationCoordinators.acquireEditor(root, {
-          workspaceRoot: root,
-          editorInstanceId: "editor-after-yielded-process",
-        }),
-      ).not.toThrow();
     } finally {
       await manager.closeAll("test cleanup");
-      workspaceMutationCoordinators.clearForTests();
     }
   });
 
-  test("contains a detached delayed descendant before Editor acquisition can cross the fence", async () => {
+  test("contains a detached delayed descendant before the operation lifetime settles", async () => {
     if (process.platform === "win32") return;
     const root = await mkdtemp(join(tmpdir(), "agenc-exec-editor-descendant-"));
     const target = join(root, "loaded.ts");
     const marker = `agenc-delayed-descendant-${process.pid}-${Date.now()}`;
     await writeFile(target, "before\n", "utf8");
     const manager = new UnifiedExecProcessManager({ cwd: root });
-    const token = beginWorkspaceToolOperation(root, "exec_command");
-    const lifetime = createWorkspaceOperationLifetime(() => {
-      endWorkspaceToolOperation(token);
-    });
+    const lifetime = createWorkspaceOperationLifetime(() => {});
     const delayedWriter = [
       `process.title=${JSON.stringify(marker)};`,
       "const fs=require('node:fs');",
@@ -364,31 +356,21 @@ describe("UnifiedExecProcessManager", () => {
       await lifetime.release();
       await lifetime.settled();
 
-      expect(() =>
-        workspaceMutationCoordinators.acquireEditor(root, {
-          workspaceRoot: root,
-          editorInstanceId: "editor-after-detached-launcher",
-        }),
-      ).not.toThrow();
 
       await delay(900);
       expect(await readFile(target, "utf8")).toBe("before\n");
     } finally {
       killMarker(marker);
       await manager.closeAll("test cleanup");
-      workspaceMutationCoordinators.clearForTests();
     }
   });
 
-  test("rejects an uncontainable PTY before it can launch a delayed writer across the Editor fence", async () => {
+  test("rejects an uncontainable PTY before it can launch a delayed writer inside a contained operation", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-exec-editor-pty-"));
     const target = join(root, "loaded.ts");
     await writeFile(target, "before\n", "utf8");
     const manager = new UnifiedExecProcessManager({ cwd: root });
-    const token = beginWorkspaceToolOperation(root, "exec_command");
-    const lifetime = createWorkspaceOperationLifetime(() => {
-      endWorkspaceToolOperation(token);
-    });
+    const lifetime = createWorkspaceOperationLifetime(() => {});
     const delayedWriter = [
       "const fs=require('node:fs');",
       `setTimeout(()=>fs.writeFileSync(${JSON.stringify(target)},'after\\n'),500);`,
@@ -411,17 +393,10 @@ describe("UnifiedExecProcessManager", () => {
       await lifetime.release();
       await lifetime.settled();
 
-      expect(() =>
-        workspaceMutationCoordinators.acquireEditor(root, {
-          workspaceRoot: root,
-          editorInstanceId: "editor-after-rejected-pty",
-        }),
-      ).not.toThrow();
       await delay(700);
       expect(await readFile(target, "utf8")).toBe("before\n");
     } finally {
       await manager.closeAll("test cleanup");
-      workspaceMutationCoordinators.clearForTests();
     }
   });
 
@@ -800,7 +775,7 @@ describe("UnifiedExecProcessManager", () => {
     });
     let spawned:
       { readonly file: string; readonly args: readonly string[] } | undefined;
-    installFakePty(manager, (file, args) => {
+    const fakePty = installFakePty(manager, (file, args) => {
       spawned = { file, args };
     });
 
@@ -823,6 +798,7 @@ describe("UnifiedExecProcessManager", () => {
         expect.arrayContaining(["agenc-sandbox-test", "bash -i"]),
       );
     } finally {
+      fakePty.exitAll();
       await manager.closeAll("test_cleanup");
     }
   });
@@ -842,7 +818,7 @@ describe("UnifiedExecProcessManager", () => {
       cwd: process.cwd(),
       sandboxManager: ptyCompatibleSandboxManager(),
     });
-    installFakePty(manager);
+    const fakePty = installFakePty(manager);
     try {
       const started = await manager.execCommand({
         cmd: "bash -i",
@@ -905,6 +881,7 @@ describe("UnifiedExecProcessManager", () => {
         code: "write_stdin",
       } satisfies Partial<UnifiedExecError>);
     } finally {
+      fakePty.exitAll();
       await manager.closeAll("test_cleanup");
     }
   });
@@ -1012,6 +989,85 @@ describe("UnifiedExecProcessManager", () => {
       expect(polled.exit_code).toBeNull();
       expect(polled.timedOut).toBe(true);
     } finally {
+      await manager.closeAll("test_cleanup");
+    }
+  });
+
+  test("never reports a session its own hard timeout already stopped", async () => {
+    // Live run (luna-mac F7): a model filled timeoutMs=1000 next to
+    // yield_time_ms=1000. The hard timeout fired first and signalled the
+    // process, then the yield window closed before its exit was observed, so
+    // the result named session_id=1 as a live yielded process and the next
+    // list_processes found nothing.
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      maxTimeoutMs: 5_000,
+    });
+    try {
+      const started = await manager.execCommand({
+        cmd: "sleep 30",
+        yield_time_ms: 300,
+        timeoutMs: 300,
+        ownerId: "owner-f7",
+      });
+      expect(started.timedOut).toBe(true);
+      expect(started.process_id).toBeUndefined();
+      expect(started.session_id).toBeUndefined();
+      expect(
+        manager
+          .listOwnedProcesses({ ownerId: "owner-f7" })
+          .filter((view) => view.status === "running" || view.status === "stopping"),
+      ).toEqual([]);
+    } finally {
+      await manager.closeAll("test_cleanup");
+    }
+  });
+
+  test("reports a hard timeout with delayed exit observation as stopping", async () => {
+    const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
+    const fakePty = installFakePty(manager);
+    try {
+      const result = await manager.execCommand({
+        cmd: "bash -i",
+        tty: true,
+        yield_time_ms: 250,
+        timeoutMs: 100,
+        ownerId: "delayed-exit",
+      });
+      expect(result.timedOut).toBe(true);
+      expect(result.session_id).toBeUndefined();
+      expect(result.process_id).toBeUndefined();
+      expect(manager.listOwnedProcesses({ ownerId: "delayed-exit" })).toMatchObject([
+        { status: "stopping" },
+      ]);
+    } finally {
+      fakePty.exitAll();
+      await manager.closeAll("test_cleanup");
+    }
+  });
+
+  test("does not return a session id when a poll observes a hard timeout without exit", async () => {
+    const manager = new UnifiedExecProcessManager({ cwd: process.cwd() });
+    const fakePty = installFakePty(manager);
+    try {
+      const started = await manager.execCommand({
+        cmd: "bash -i",
+        tty: true,
+        yield_time_ms: 250,
+        timeoutMs: 400,
+      });
+      expect(started.session_id).toEqual(expect.any(Number));
+      await delay(450);
+      const result = await manager.writeStdin({
+        session_id: started.session_id!,
+        chars: "x",
+        yield_time_ms: 250,
+      });
+      expect(result.timedOut).toBe(true);
+      expect(result.session_id).toBeUndefined();
+      expect(result.process_id).toBeUndefined();
+    } finally {
+      fakePty.exitAll();
       await manager.closeAll("test_cleanup");
     }
   });

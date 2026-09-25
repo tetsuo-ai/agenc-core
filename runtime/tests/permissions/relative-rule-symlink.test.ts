@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, realpath, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "vitest";
 import { ConfigStore } from "../../src/config/store.js";
@@ -16,7 +17,11 @@ test.each([
   "project $behavior resolves root consistently, symlinked=$aliasRoot",
   async ({ behavior, aliasRoot }) => {
     // Disposable synthetic fixture only, deliberately retained for inspection.
-    const parent = await mkdtemp("/private/tmp/agenc-rule-symlink-review-");
+    // Resolve the temp base first: on macOS both /tmp and /var are symlinks,
+    // so an unresolved base would add a link layer this test is not measuring.
+    const parent = await mkdtemp(
+      join(await realpath(tmpdir()), "agenc-rule-symlink-review-"),
+    );
     const project = join(parent, "real-project");
     const alias = join(parent, "project-alias");
     await mkdir(join(project, "src"), { recursive: true });

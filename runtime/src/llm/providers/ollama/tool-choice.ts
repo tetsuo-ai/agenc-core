@@ -2,9 +2,10 @@
  * Local enforcement of AgenC toolChoice against Ollama's native chat API.
  *
  * `/api/chat` accepts a tools list but has no tool_choice field and no
- * versioned capability that would let AgenC treat required as a checked
- * contract. Constraints we can honor locally are applied here; the rest
- * fail before the request.
+ * versioned capability that would let AgenC force a call. `required` is
+ * normalized to `auto` with the full catalog, matching providers whose
+ * tool-choice policy cannot force a call. `none` and a named function
+ * are enforced locally.
  *
  * @module
  */
@@ -101,8 +102,9 @@ function advertisedSubset(
 
 /**
  * Resolve the caller's toolChoice into the tools Ollama may see and the
- * catalog used to validate the response. `required` is rejected: native
- * Ollama chat has no checked tool-choice contract.
+ * catalog used to validate the response. `required` keeps the full catalog
+ * and is recorded as effective `auto`, the same downgrade chat-completions
+ * providers use when they cannot force a call.
  */
 export function resolveOllamaToolChoice(
   toolChoice: LLMToolChoice | undefined,
@@ -126,10 +128,12 @@ export function resolveOllamaToolChoice(
         toolSuppressionReason: "tool_choice_none",
       };
     case "required":
-      throw new LLMProviderError(
-        "ollama",
-        "unsupported provider capability: native chat API does not expose tool_choice, so toolChoice=required cannot be enforced. Use auto, none, or a specific function.",
-      );
+      return {
+        requested: "required",
+        effective: "auto",
+        advertisedWireTools: names.wireTools,
+        advertisedNames: names,
+      };
     case "function": {
       const canonicalName = (toolChoice as { name: string }).name.trim();
       if (canonicalName.length === 0) {

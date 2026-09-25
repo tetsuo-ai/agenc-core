@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { hasLocalMcpAccess, withLocalMcpAccess, sessionMcpAttachmentIssue, attachmentLogger, desktopControlEffectReceipt, withDesktopMcpDispatchGuard, assertDesktopMcpDispatchGuard, DesktopMcpPreflightRefusal } from "./local-control.js";
+import { hasLocalMcpAccess, withLocalMcpAccess, sessionMcpAttachmentIssue, attachmentLogger, desktopControlEffectReceipt, withDesktopMcpDispatchGuard, assertDesktopMcpDispatchGuard, DesktopMcpPreflightRefusal, redactMcpAttachmentText, redactMcpAttachmentValue } from "./local-control.js";
 import { createToolBridge } from "./tools.js";
 import { toToolCatalogPolicyConfig } from "./resilient-client.js";
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
@@ -10,6 +10,43 @@ const headers = { Authorization: `Bearer ${token}` };
 const config = { name: "agenc-desktop-control", transport: "http" as const, endpoint: "http://127.0.0.1:43118/mcp", localOnly: true, headers, origin: { scope: "session" as const } };
 
 describe("ephemeral local MCP authority", () => {
+  it("matches overlapping secrets against the original text", () => {
+    expect(redactMcpAttachmentText("abcdefgh-secret", { first: "abcd", second: "abcdefgh-secret" })).toBe("[REDACTED]");
+    expect(redactMcpAttachmentText("abcdefghi-secret", { first: "abcdef", second: "defghi-secret" })).toBe("[REDACTED]");
+  });
+  it("redacts MIME parameters, URI paths and ordinary payload even when routing words are protected", () => {
+    const headers = { token: "image" };
+    const safe = redactMcpAttachmentValue({ content: [{ type: "image", mimeType: "image/png; note=image", uri: "file:///image/report.png", text: "image" }] }, headers, undefined, "tool-result");
+    expect(safe.content[0]).toMatchObject({ type: "image", mimeType: "image/png; note=[REDACTED]", uri: "file:///[REDACTED]/report.png", text: "[REDACTED]" });
+  });
+  it("keeps annotation and encoding markers only in their structural positions", () => {
+    const headers = { token: "base64", audience: "user" };
+    const safe = redactMcpAttachmentValue({ content: [{ type: "text", annotations: { audience: ["user"] }, encoding: "base64", source: { type: "base64", data: "ordinary" }, text: "base64 user" }], structuredContent: { encoding: "base64", audience: "user" } }, headers, undefined, "tool-result");
+    expect(safe.content[0]).toMatchObject({ annotations: { audience: ["user"] }, encoding: "base64", source: { type: "base64" }, text: "[REDACTED] [REDACTED]" });
+    expect(safe.structuredContent).toEqual({ encoding: "[REDACTED]", audience: "[REDACTED]" });
+  });
+
+  it("preserves schema controls while visiting property-name maps and nested subschemas", () => {
+    const schema = { type: "object", properties: { type: { type: "string", description: "private-phrase", enum: ["private-phrase"] }, nested: { type: "object", properties: { required: { type: "string", description: "private-phrase" } } } } };
+    const safe = redactMcpAttachmentValue(schema, { token: "private-phrase" }, undefined, "schema");
+    expect(safe.type).toBe("object");
+    expect(safe.properties.type.type).toBe("string");
+    expect(safe.properties.type.description).toBe("[REDACTED]");
+    expect(safe.properties.type.enum).toEqual(["[REDACTED]"]);
+    expect(safe.properties.nested.properties.required.description).toBe("[REDACTED]");
+    const additional = redactMcpAttachmentValue({ type: "object", additionalProperties: { description: "private-phrase" } }, { token: "private-phrase" }, undefined, "schema");
+    expect(additional.additionalProperties.description).toBe("[REDACTED]");
+    expect(redactMcpAttachmentValue({ additionalProperties: true }, { token: "true" }, undefined, "schema").additionalProperties).toBe(true);
+  });
+  it("redacts a DOMException and keeps its native name", () => {
+    const error = new DOMException("Timed out waiting for private-phrase", "TimeoutError");
+    const safe = redactMcpAttachmentValue(error, { token: "private-phrase" });
+    expect(safe).toBeInstanceOf(DOMException);
+    expect(safe.name).toBe("TimeoutError");
+    expect(safe.message).toBe("Timed out waiting for [REDACTED]");
+    expect(String(safe)).toBe("TimeoutError: Timed out waiting for [REDACTED]");
+    expect(error.message).toContain("private-phrase");
+  });
   it("does not claim no effect for a refused retry after a request was already sent", async () => {
     let revoked = false;
     await withDesktopMcpDispatchGuard(() => { if (revoked) throw new DesktopMcpPreflightRefusal("expired"); }, async () => {
@@ -148,7 +185,7 @@ describe("ephemeral local MCP authority", () => {
     });
   });
 
-  it("keeps unsigned same-name and generic MCP failure receipts unknown", async () => {
+  it("never honors an unsigned same-name receipt beyond the generic server-answer receipt", async () => {
     const makeClient = () => ({
       listTools: async () => ({ tools: [{ name: "open_settings" }] }), close: async () => {},
       callTool: vi.fn(async (request: { _meta?: Record<string, unknown> }) => ({ isError: true,
@@ -161,11 +198,18 @@ describe("ephemeral local MCP authority", () => {
       const args = {};
       Object.defineProperty(args, "__callId", { value: "trusted-call-1", enumerable: false });
       await withLocalMcpAccess(true, async () => {
+        // The server answered, so the call settles on the generic receipt;
+        // the forged Desktop receipt is ignored and never earns its
+        // disposition or its product-owned evidence reference.
         const result = await bridge.tools[0]!.execute(args);
         expect(result.isError).toBe(true);
-        expect(result.effectDisposition).toBeUndefined();
+        expect(result.effectDisposition).toMatchObject({
+          disposition: "confirmed_committed",
+          evidenceKind: "provider_receipt",
+          evidenceRef: `mcp-response:${serverName}:open_settings:trusted-call-1`,
+        });
         const forged = await bridge.tools[0]!.execute({ __callId: "trusted-call-1" });
-        expect(forged.effectDisposition).toBeUndefined();
+        expect(forged.effectDisposition?.evidenceRef).toMatch(new RegExp(`^mcp-response:${serverName}:open_settings:mcp-`, "u"));
       });
       await bridge.dispose();
     }

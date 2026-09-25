@@ -236,6 +236,24 @@ export const AGENC_FABLE_5_1_CONFIG = {
   minimax: 'MiniMax-M3',
 } as const satisfies ModelConfig
 
+// Claude Opus 5.5 (released 2026-09-22): $4/$20 per MTok, 1M context, 128K
+// max output, always-on adaptive thinking with effort defaulting to medium.
+// The API, Google Cloud, Foundry and Claude Platform on AWS all use the API
+// id; the documented Bedrock id is `anthropic.claude-opus-5-5`, which the
+// bedrock value below spells in this file's inference-profile convention.
+export const AGENC_OPUS_5_5_CONFIG = {
+  firstParty: 'claude-opus-5-5',
+  bedrock: 'us.anthropic.agenc-opus-5-5-v1',
+  vertex: 'claude-opus-5-5',
+  foundry: 'claude-opus-5-5',
+  openai: 'gpt-4o',
+  gemini: 'gemini-2.5-pro',
+  github: 'github:copilot',
+  agenc: 'gpt-5.5',
+  'nvidia-nim': 'nvidia/llama-3.1-nemotron-70b-instruct',
+  minimax: 'MiniMax-M3',
+} as const satisfies ModelConfig
+
 export const AGENC_OPUS_5_CONFIG = {
   firstParty: 'claude-opus-5',
   bedrock: 'us.anthropic.agenc-opus-5-v1',
@@ -277,6 +295,7 @@ export const ALL_MODEL_CONFIGS = {
   opus46: AGENC_OPUS_4_6_CONFIG,
   opus47: AGENC_OPUS_4_7_CONFIG,
   opus48: AGENC_OPUS_4_8_CONFIG,
+  opus55: AGENC_OPUS_5_5_CONFIG,
   opus5: AGENC_OPUS_5_CONFIG,
   sonnet5: AGENC_SONNET_5_CONFIG,
   fable51: AGENC_FABLE_5_1_CONFIG,
