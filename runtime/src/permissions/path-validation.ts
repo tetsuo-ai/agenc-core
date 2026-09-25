@@ -33,6 +33,7 @@ import {
   parseComparisonRoot,
   pathForComparison,
   type PathCaseSemantics,
+  type WildcardTailFold,
 } from "./path-case.js";
 import { withSignedAllowedRoots } from "../agents/_deps/filesystem-args.js";
 import { getSettingsRootPathForSource } from "../utils/settings/settings.js";
@@ -338,6 +339,7 @@ export function matchPathRuleContent(
   ruleContent: string,
   filePath: string,
   caseSemantics?: PathCaseSemantics,
+  tail: WildcardTailFold = "narrow",
 ): boolean {
   const ruleSlash = normalizeComparisonSlashes(expandTilde(ruleContent));
   const pathSlash = normalizeComparisonSlashes(filePath);
@@ -349,7 +351,7 @@ export function matchPathRuleContent(
   }
   if (contentMatches(ruleSlash, pathSlash)) return true;
   return contentMatches(
-    foldRuleForCandidate(ruleSlash, pathSlash),
+    foldRuleForCandidate(ruleSlash, pathSlash, tail),
     pathForComparison(pathSlash),
   );
 }
@@ -439,7 +441,12 @@ function matchingRuleForPath(
       const resolvedContent = resolvePathRulePattern(content, rule.source, cwd);
       if (
         pathsToCheck.some((candidate) =>
-          matchPathRuleContent(resolvedContent, candidate),
+          matchPathRuleContent(
+            resolvedContent,
+            candidate,
+            undefined,
+            behavior === "allow" ? "narrow" : "wide",
+          ),
         )
       ) {
         return rule;

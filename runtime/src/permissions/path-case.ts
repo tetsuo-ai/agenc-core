@@ -156,8 +156,11 @@ function probeEntry(entry: string): ProbeVerdict | null {
   if (twins.length !== 1) return null;
 
   try {
-    lstatEntry(join(parent, flipped));
-    return { semantics: "insensitive", cacheable: true };
+    const alternate = lstatEntry(join(parent, flipped));
+    const sameEntry = alternate.dev === original.dev && alternate.ino === original.ino;
+    return sameEntry
+      ? { semantics: "insensitive", cacheable: true }
+      : { semantics: "sensitive", cacheable: true };
   } catch (err) {
     const code = errnoCode(err);
     if (code === "ENOENT" || code === "ENOTDIR") {
@@ -278,32 +281,36 @@ export type ParsedComparisonPath = {
 
 /**
  * Split a path into the directory root and the segments under it.
- * A UNC path keeps `//server/share` instead of collapsing to `/server/...`.
- * Platform-independent: callers decide whether to probe that root.
+ * On Windows a UNC path keeps `//server/share`. Everywhere else a leading
+ * `//` collapses the way normal path normalization does.
  */
-export function parseComparisonRoot(path: string): ParsedComparisonPath {
+export function parseComparisonRoot(
+  path: string,
+  platform: NodeJS.Platform = process.platform,
+): ParsedComparisonPath {
   const slash = path.replaceAll("\\", "/");
-  if (slash.startsWith("//")) return parseUncRoot(slash);
-  if (slash.startsWith("/")) {
+  if (platform === "win32" && slash.startsWith("//")) return parseUncRoot(slash);
+  const collapsed = slash.replaceAll(/\/{2,}/g, "/");
+  if (collapsed.startsWith("/")) {
     return {
       kind: "absolute",
       root: "/",
-      segments: slash.split("/").slice(1).filter((segment) => segment !== ""),
+      segments: collapsed.split("/").slice(1).filter((segment) => segment !== ""),
     };
   }
-  const segments = slash.split("/");
-  const drive = segments[0] ?? "";
-  if (/^[A-Za-z]:$/.test(drive)) {
+  const collapsedSegments = collapsed.split("/");
+  const collapsedDrive = collapsedSegments[0] ?? "";
+  if (/^[A-Za-z]:$/.test(collapsedDrive)) {
     return {
       kind: "drive",
-      root: drive,
-      segments: segments.slice(1).filter((segment) => segment !== ""),
+      root: collapsedDrive,
+      segments: collapsedSegments.slice(1).filter((segment) => segment !== ""),
     };
   }
   return {
     kind: "relative",
     root: "",
-    segments: segments.filter((segment) => segment !== ""),
+    segments: collapsedSegments.filter((segment) => segment !== ""),
   };
 }
 
@@ -324,7 +331,7 @@ function comparisonOrigin(
   segments: readonly string[],
 ): ComparisonOrigin {
   const inherited = platformDefaultPathCaseSemantics();
-  if (slash.startsWith("//")) {
+  if (process.platform === "win32" && slash.startsWith("//")) {
     const unc = parseUncRoot(slash);
     const verdict = semanticsInside(unc.root) ?? inherited;
     return {
@@ -377,22 +384,50 @@ function joinUnderRoot(root: string, segments: readonly string[]): string {
   return `${root}/${body}`;
 }
 
+/** How much of a wildcard tail may fold. */
+export type WildcardTailFold = "narrow" | "wide";
+
+/**
+ * Verdict for the wildcard tail.
+ * `wide` (deny and ask) uses the candidate's last directory, so a block is
+ * not missed when a later mount is case-insensitive. `narrow` (allow) folds
+ * only when every candidate directory below the literal prefix is
+ * case-insensitive. A filename glob with no directory below that prefix
+ * uses the directory that holds the file.
+ */
+function wildcardTailVerdict(
+  candidateSlash: string,
+  wildcardAt: number,
+  tail: WildcardTailFold,
+): PathCaseSemantics {
+  if (tail === "wide") return pathCaseSemantics(candidateSlash);
+  const parsed = parseComparisonRoot(candidateSlash);
+  const lastDirectory = parsed.segments.length - 1;
+  if (wildcardAt >= lastDirectory) return pathCaseSemantics(candidateSlash);
+  for (let index = wildcardAt; index < lastDirectory; index++) {
+    const dir = joinUnderRoot(parsed.root, parsed.segments.slice(0, index + 1));
+    const inside = dir === "/" ? "/x" : `${dir}/x`;
+    if (pathCaseSemantics(inside) !== "insensitive") return "sensitive";
+  }
+  return "insensitive";
+}
+
 /**
  * Fold a rule for comparison against `candidateSlash`.
  * Concrete segments before the first wildcard use the rule path's own
- * directories. The wildcard and everything after it use the candidate's
- * leaf verdict, so a glob does not keep a parent volume the candidate has
- * left. A rule with no concrete directory (unanchored) uses only that
- * candidate verdict, not `process.cwd()`.
+ * directories. The wildcard and everything after it use `tail`. A rule
+ * with no concrete directory (unanchored) has an empty prefix, so every
+ * candidate directory counts. Neither mode uses `process.cwd()`.
  */
 export function foldRuleForCandidate(
   ruleSlash: string,
   candidateSlash: string,
+  tail: WildcardTailFold = "narrow",
 ): string {
   const parsed = parseComparisonRoot(ruleSlash);
   const wildcardAt = parsed.segments.findIndex((segment) => isWildcardSegment(segment));
   if (wildcardAt === -1) return pathForComparison(ruleSlash);
-  const verdict = pathCaseSemantics(candidateSlash);
+  const verdict = wildcardTailVerdict(candidateSlash, wildcardAt, tail);
   const remainder = parsed.segments
     .slice(wildcardAt)
     .map((segment) => foldSegment(segment, verdict))
