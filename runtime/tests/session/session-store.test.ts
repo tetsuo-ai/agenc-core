@@ -463,6 +463,38 @@ describe("session-store", () => {
     },
   );
 
+  test("failed-payload rewrite loops live ordinals instead of spreading Math.max", () => {
+    const cwd = mkdtempSync(join(home, "failed-payload-ordinal-loop-cwd-"));
+    mkdirSync(join(cwd, ".git"));
+    const sessionId = "sess-failed-payload-ordinal-loop";
+    const store = new SessionStore({
+      cwd,
+      sessionId,
+      agencVersion: "0.2.0",
+    });
+    store.open({
+      sessionId,
+      timestamp: "2026-09-24T00:00:00.000Z",
+      cwd,
+      originator: "agenc-cli",
+      agencVersion: "0.2.0",
+    });
+    try {
+      const manyRefs = Array.from({ length: 80_000 }, (_, index) => ({
+        first_sequence: index + 1,
+        last_sequence: index + 1,
+      }));
+      expect(() =>
+        store.rewriteFailedCompactionPayloadChunksAtomically(
+          "failed-payload-ordinal-loop",
+          manyRefs,
+        ),
+      ).not.toThrow();
+    } finally {
+      store.close();
+    }
+  });
+
   test("descriptor handoff rejects a source swap before SessionStore adoption", () => {
     const cwd = mkdtempSync(join(home, "resume-handoff-swap-cwd-"));
     mkdirSync(join(cwd, ".git"));
