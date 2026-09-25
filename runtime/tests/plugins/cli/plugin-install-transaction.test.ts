@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -476,12 +476,295 @@ describe("plugin install transaction", () => {
     await expect(readFile(join(traversal, "keep"), "utf8")).resolves.toBe("stay");
     await expect(readFile(join(linkOutside, "keep"), "utf8")).resolves.toBe("stay");
   });
+
+  it("keeps the lease until in-process rollback finishes", async () => {
+    const installed = await installDemoV1();
+    let releaseRollback: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseRollback = resolve;
+    });
+    let opened = () => {};
+    const openedGate = new Promise<void>((resolve) => {
+      opened = resolve;
+    });
+    const pending = updateDemo(installed, {
+      beforePublishConfig: async () => {
+        throw new Error("hold rollback");
+      },
+      beforeRollback: async () => {
+        opened();
+        await gate;
+      },
+    });
+    await openedGate;
+    const during = await recoverLocal(installed);
+    expect(during.recovered).toBe(0);
+    expect(during.issues).toEqual([]);
+    expect(await readPluginVersion(installed.destination)).toBe("2.0.0");
+    releaseRollback();
+    await expect(pending).rejects.toThrow(/hold rollback/u);
+    expect(await readPluginVersion(installed.destination)).toBe("1.0.0");
+  });
+
+  it("restores version 1 after a crash at destination-replace-intended", async () => {
+    const installed = await crashDemoUpdate(await installDemoV1(), "destination-replace-intended");
+    expect(await listedVersions(installed)).toEqual(["1.0.0"]);
+    expect(await readPluginVersion(installed.destination)).toBe("1.0.0");
+    expect(namesInclude(await storageNames(installed), ".bak-", ".stage-")).toBe(false);
+  });
+
+  it("rolls back when the stage rename fails in process", async () => {
+    const installed = await installDemoV1();
+    await expect(updateDemo(installed, {
+      beforeRename: async (phase) => {
+        if (phase === "destination-replace-intended") throw new Error("stage rename failed");
+      },
+    })).rejects.toThrow(/stage rename failed/u);
+    expect(await readPluginVersion(installed.destination)).toBe("1.0.0");
+    expect(namesInclude(await storageNames(installed), ".bak-", ".stage-")).toBe(false);
+  });
+
+  it("restores version 1 after a backup rename and after a crash before that rename", async () => {
+    const afterRename = await installDemoV1();
+    await expect(updateDemo(afterRename, {
+      afterDirectoryRename: async (phase) => {
+        if (phase === "destination-backup-intended") {
+          throw new PluginInstallTransactionSimulatedCrash("destination-backup-intended");
+        }
+      },
+    })).rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
+    expect(await listedVersions(afterRename)).toEqual(["1.0.0"]);
+    expect(await readPluginVersion(afterRename.destination)).toBe("1.0.0");
+
+    const beforeRename = await crashDemoUpdate(await installDemoV1(), "destination-backup-intended");
+    expect(await listedVersions(beforeRename)).toEqual(["1.0.0"]);
+    expect(await readPluginVersion(beforeRename.destination)).toBe("1.0.0");
+    expect(namesInclude(await storageNames(beforeRename), ".stage-")).toBe(false);
+  });
+
+  it("finishes a backup restore that crashed after the new destination was removed", async () => {
+    const installed = await crashDemoUpdate(await installDemoV1(), "destination-replaced");
+    await expect(recoverPluginInstallTransactions({
+      installRoots: [installed.pluginStorageRoot],
+      hooks: {
+        afterRollbackDestinationRemoved: async () => {
+          throw new PluginInstallTransactionSimulatedCrash("rollback-restore-intended");
+        },
+      },
+    })).rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
+    expect(await pathExists(installed.destination)).toBe(false);
+    expect(namesInclude(await storageNames(installed), ".bak-")).toBe(true);
+    const finished = await recoverLocal(installed);
+    expect(finished.recovered).toBe(1);
+    expect(await readPluginVersion(installed.destination)).toBe("1.0.0");
+    expect(namesInclude(await storageNames(installed), ".bak-", ".stage-")).toBe(false);
+  });
+
+  it("reports a recovery throw from loadPlugins instead of rejecting", async () => {
+    const world = await createWorld();
+    await expect(installFresh(world, "fresh", crashAfter("destination-replaced")))
+      .rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
+    await chmod(world.pluginStorageRoot, 0o555);
+    try {
+      const loaded = await loadPlugins({
+        pluginStorageRoot: world.pluginStorageRoot,
+        workspaceRoot: world.workspaceRoot,
+        config: { plugins: { enabled: true } },
+      });
+      expect(loaded.errors.some((issue) => issue.type === "install-recovery")).toBe(true);
+    } finally {
+      await chmod(world.pluginStorageRoot, 0o700);
+    }
+  });
+
+  it("restores an absent or false global enabled flag after a failed first install", async () => {
+    const world = await createWorld();
+    await writeFile(join(world.agencHome, "config.toml"), "config_version = 2\n\n[plugins]\nenabled = false\n");
+    await expect(installFresh(world, "fresh", {
+      afterPublishConfig: async () => {
+        throw new Error("publish failed");
+      },
+    })).rejects.toThrow(/publish failed/u);
+    const raw = await readFile(join(world.agencHome, "config.toml"), "utf8");
+    expect(raw).not.toContain("fresh");
+    expect(raw).toContain("\"enabled\" = false");
+    expect(raw).not.toContain("\"enabled\" = true");
+  });
+
+  it("restores the previous plugin entry exactly, including extra fields", async () => {
+    const installed = await installDemoV1();
+    const configPath = join(installed.agencHome, "config.toml");
+    const original = await readFile(configPath, "utf8");
+    await writeFile(configPath, original.replace(
+      "[\"plugins\".\"plugins\".\"demo\"]\n\"enabled\" = true",
+      "[\"plugins\".\"plugins\".\"demo\"]\n\"enabled\" = true\n\"path\" = \"/plugin/extra\"",
+    ));
+    await expect(updateDemo(installed, {
+      beforePublishConfig: async () => {
+        const current = await readFile(configPath, "utf8");
+        await writeFile(configPath, current.replace("\"path\" = \"/plugin/extra\"\n", ""));
+      },
+      afterPublishConfig: async () => {
+        throw new Error("publish failed");
+      },
+    })).rejects.toThrow(/publish failed/u);
+    expect(await readFile(configPath, "utf8")).toContain("\"path\" = \"/plugin/extra\"");
+    expect(await readPluginVersion(installed.destination)).toBe("1.0.0");
+  });
+
+  it("does not copy a project plugin config value into the user config on rollback", async () => {
+    const installed = await installDemoV1();
+    await mkdir(join(installed.workspaceRoot, ".agenc"), { recursive: true });
+    await writeFile(
+      join(installed.workspaceRoot, ".agenc", "config.toml"),
+      "config_version = 2\n\n[plugins.plugins.demo]\npath = \"/from/project/config\"\n",
+    );
+    await expect(updateDemo(installed, {
+      afterPublishConfig: async () => {
+        throw new Error("publish failed");
+      },
+    })).rejects.toThrow(/publish failed/u);
+    const userConfig = await readFile(join(installed.agencHome, "config.toml"), "utf8");
+    expect(userConfig).not.toContain("/from/project/config");
+  });
+
+  it("restores user config from loadPlugins after a crash before config-published", async () => {
+    const installed = await installDemoV1();
+    const configPath = join(installed.agencHome, "config.toml");
+    const original = await readFile(configPath, "utf8");
+    await writeFile(configPath, original.replace(
+      "[\"plugins\".\"plugins\".\"demo\"]\n\"enabled\" = true",
+      "[\"plugins\".\"plugins\".\"demo\"]\n\"enabled\" = true\n\"path\" = \"/plugin/crash-keep\"",
+    ));
+    await expect(updateDemo(installed, {
+      beforePublishConfig: async () => {
+        const current = await readFile(configPath, "utf8");
+        await writeFile(configPath, current.replace("\"path\" = \"/plugin/crash-keep\"\n", ""));
+      },
+      afterPublishConfig: async () => {
+        throw new PluginInstallTransactionSimulatedCrash("destination-replaced");
+      },
+    })).rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
+    expect(await readFile(configPath, "utf8")).not.toContain("/plugin/crash-keep");
+    const loaded = await loadPlugins({
+      pluginStorageRoot: installed.pluginStorageRoot,
+      workspaceRoot: installed.workspaceRoot,
+      config: { plugins: { enabled: true } },
+    });
+    expect(loaded.errors.filter((issue) => issue.type === "install-recovery")).toEqual([]);
+    expect(await readFile(configPath, "utf8")).toContain("\"path\" = \"/plugin/crash-keep\"");
+    expect(await readPluginVersion(installed.destination)).toBe("1.0.0");
+  });
+
+  it("does not apply a forged project-root config snapshot", async () => {
+    const world = await createWorld();
+    await writeFile(join(world.agencHome, "config.toml"), "config_version = 2\n\n[plugins]\nenabled = true\n\n[plugins.plugins.demo]\nenabled = true\n");
+    const before = await readFile(join(world.agencHome, "config.toml"), "utf8");
+    const repoPlugins = join(world.workspaceRoot, ".agents", "plugins");
+    await writeForgedRecord({ ...world, pluginStorageRoot: repoPlugins }, "projectcfg", join(repoPlugins, "demo"), {
+      previousPluginConfig: {
+        entryPresent: false,
+        pluginsEnabledPresent: true,
+        pluginsEnabled: false,
+      },
+    });
+    const loaded = await loadPlugins({
+      pluginStorageRoot: world.pluginStorageRoot,
+      workspaceRoot: world.workspaceRoot,
+      config: { plugins: { enabled: true } },
+    });
+    expect(await readFile(join(world.agencHome, "config.toml"), "utf8")).toBe(before);
+    expect(loaded.errors.some((issue) =>
+      issue.type === "install-recovery" && /not restored/u.test(issue.message),
+    )).toBe(true);
+  });
+
+  it("loadPlugins ignores forged workspace records that would delete outside files", async () => {
+    const world = await createWorld();
+    const repoPlugins = join(world.workspaceRoot, ".agents", "plugins");
+    await mkdir(repoPlugins, { recursive: true });
+    const outside = await mkdtemp(join(world.root, "outside-load-"));
+    await writeFile(join(outside, "keep"), "stay");
+    const traversal = join(repoPlugins, "..", "outside-dotdot");
+    await mkdir(traversal, { recursive: true });
+    await writeFile(join(traversal, "keep"), "stay");
+    const linkTarget = await mkdtemp(join(world.root, "link-load-"));
+    await writeFile(join(linkTarget, "keep"), "stay");
+    await symlink(linkTarget, join(repoPlugins, "linked-plugin"));
+    const opsTarget = await mkdtemp(join(world.root, "ops-target-"));
+    await writeFile(join(opsTarget, "keep"), "stay");
+
+    const identity = await directoryIdentity(outside);
+    await writeForgedRecord({ ...world, pluginStorageRoot: repoPlugins }, "absolute", outside, {
+      phase: "destination-replaced",
+      stageIdentity: identity,
+    });
+    await writeForgedRecord({ ...world, pluginStorageRoot: repoPlugins }, "traversal", traversal, {
+      phase: "destination-replaced",
+      stageIdentity: await directoryIdentity(traversal),
+    });
+    await writeForgedRecord({ ...world, pluginStorageRoot: repoPlugins }, "symlink", join(repoPlugins, "linked-plugin"), {
+      phase: "destination-replaced",
+      stageIdentity: await directoryIdentity(linkTarget),
+    });
+    const confined = await loadPlugins({
+      pluginStorageRoot: world.pluginStorageRoot,
+      workspaceRoot: world.workspaceRoot,
+      config: { plugins: { enabled: true } },
+    });
+    expect(confined.errors.filter((issue) => issue.type === "install-recovery").length).toBeGreaterThan(0);
+    await rm(join(repoPlugins, ".plugin-install-ops"), { recursive: true, force: true });
+    await writeFile(join(opsTarget, "00000000-0000-4000-8000-opsdir000000.json"), `${JSON.stringify({
+      version: 1,
+      operationId: "00000000-0000-4000-8000-opsdir000000",
+      kind: "install",
+      pluginId: "forged",
+      destination: outside,
+      stagePath: join(outside, "stage"),
+      phase: "committed",
+      backupPath: join(opsTarget, "keep"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+    })}\n`);
+    await symlink(opsTarget, join(repoPlugins, ".plugin-install-ops"));
+    const linkedOps = await loadPlugins({
+      pluginStorageRoot: world.pluginStorageRoot,
+      workspaceRoot: world.workspaceRoot,
+      config: { plugins: { enabled: true } },
+    });
+    expect(linkedOps.errors.some((issue) =>
+      issue.type === "install-recovery" && /not a real directory/u.test(issue.message),
+    )).toBe(true);
+    await expect(readFile(join(outside, "keep"), "utf8")).resolves.toBe("stay");
+    await expect(readFile(join(traversal, "keep"), "utf8")).resolves.toBe("stay");
+    await expect(readFile(join(linkTarget, "keep"), "utf8")).resolves.toBe("stay");
+    await expect(readFile(join(opsTarget, "keep"), "utf8")).resolves.toBe("stay");
+  });
 });
+
+async function directoryIdentity(path: string): Promise<{
+  readonly path: string;
+  readonly dev: string;
+  readonly ino: string;
+  readonly mode: number;
+  readonly manifestSha256: string;
+  readonly metadataSha256: string;
+}> {
+  const info = await stat(path);
+  return {
+    path,
+    dev: String(info.dev),
+    ino: String(info.ino),
+    mode: info.mode,
+    manifestSha256: "",
+    metadataSha256: "",
+  };
+}
 
 async function writeForgedRecord(
   world: TxnWorld,
   label: string,
   destination: string,
+  extra: Record<string, unknown> = {},
 ): Promise<void> {
   const ops = join(world.pluginStorageRoot, ".plugin-install-ops");
   await mkdir(ops, { recursive: true });
@@ -495,5 +778,6 @@ async function writeForgedRecord(
     stagePath: `${destination}.stage-${operationId}`,
     phase: "stage-ready",
     createdAt: "2026-01-01T00:00:00.000Z",
+    ...extra,
   })}\n`);
 }

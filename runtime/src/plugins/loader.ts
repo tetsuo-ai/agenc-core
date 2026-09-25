@@ -1,5 +1,5 @@
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isValidPermissionDefaultMode, validateHooksConfig, validateMcpServersConfig } from "../config/schema.js";
 import type {
   AgenCConfig,
@@ -22,6 +22,7 @@ import {
   isPluginInstallTransactionArtifactName,
   recoverPluginInstallTransactions,
 } from "./cli/plugin-install-transaction.js";
+import { restoreTrustedUserPluginConfig } from "./cli/pluginOperations.js";
 import { pluginScopedServerIdentifier } from "./identifier-normalization.js";
 import {
   assertNoRetiredRootPluginManifest,
@@ -557,23 +558,65 @@ export async function discoverPluginRoots(
   return [...deduped.values()].sort((a, b) => a.path.localeCompare(b.path));
 }
 
+function installRecoveryIssue(
+  issue: { readonly destination?: string; readonly pluginId?: string; readonly preservedPaths: readonly string[]; readonly message: string },
+  fallbackSource: string,
+): PluginLoadIssue {
+  return {
+    type: "install-recovery",
+    source: issue.destination ?? fallbackSource,
+    ...(issue.pluginId === undefined ? {} : { plugin: issue.pluginId }),
+    path: issue.preservedPaths[0],
+    message: issue.message,
+  };
+}
+
+async function recoverRootIssues(
+  installRoot: string,
+  restorePluginConfig: ((pluginId: string, previous: unknown) => Promise<void>) | undefined,
+  reportUnrestoredConfig: boolean,
+): Promise<readonly PluginLoadIssue[]> {
+  try {
+    const result = await recoverPluginInstallTransactions({
+      installRoots: [installRoot],
+      ...(restorePluginConfig === undefined ? {} : { restorePluginConfig }),
+      ...(reportUnrestoredConfig ? { reportUnrestoredConfig: true } : {}),
+    });
+    return result.issues.map((issue) => installRecoveryIssue(issue, installRoot));
+  } catch (error) {
+    return [{
+      type: "install-recovery",
+      source: installRoot,
+      message: error instanceof Error ? error.message : String(error),
+    }];
+  }
+}
+
+async function loadPluginInstallRecoveryIssues(
+  options: PluginLoaderOptions,
+): Promise<readonly PluginLoadIssue[]> {
+  const userRoot = resolve(options.pluginStorageRoot);
+  const repoRoot = resolve(join(options.workspaceRoot, ".agents", "plugins"));
+  const userIssues = await recoverRootIssues(
+    userRoot,
+    (pluginId, previous) => Promise.resolve(restoreTrustedUserPluginConfig(
+      join(dirname(userRoot), "config.toml"),
+      pluginId,
+      previous,
+    )),
+    false,
+  );
+  if (repoRoot === userRoot) return userIssues;
+  const repoIssues = await recoverRootIssues(repoRoot, undefined, true);
+  return [...userIssues, ...repoIssues];
+}
+
 export async function loadPlugins(
   options: PluginLoaderOptions,
 ): Promise<PluginLoadResult> {
   const recoveryIssues = options.readOnly === true
     ? []
-    : (await recoverPluginInstallTransactions({
-      installRoots: [
-        options.pluginStorageRoot,
-        join(options.workspaceRoot, ".agents", "plugins"),
-      ],
-    })).issues.map((issue): PluginLoadIssue => ({
-      type: "install-recovery",
-      source: issue.destination ?? options.pluginStorageRoot,
-      ...(issue.pluginId === undefined ? {} : { plugin: issue.pluginId }),
-      path: issue.preservedPaths[0],
-      message: issue.message,
-    }));
+    : await loadPluginInstallRecoveryIssues(options);
   const roots = await discoverPluginRoots(options);
   const configured = configuredPluginEntries(options.config);
   const allowlist = configuredPluginAllowlist(options.config);

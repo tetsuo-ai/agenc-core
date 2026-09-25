@@ -12,7 +12,8 @@ import { resolveHomeContext } from "../../config/home.js";
 import { loadCanonicalConfig } from "../../config/repository.js";
 import type { PluginEntryConfig } from "../../config/schema.js";
 import { ConfigStore } from "../../config/store.js";
-import { mutateCanonicalUserConfigSync } from "../../config/update-sync.js";
+import { validatePluginsConfig } from "../../config/schema.js";
+import { mutateCanonicalUserConfigSync, readCanonicalUserConfigSnapshotSync } from "../../config/update-sync.js";
 import { writeDurableAtomicFile } from "../../utils/durable-atomic-file.js";
 import { isRecord } from "../../utils/record.js";
 import { createPluginFromPath, loadPlugins, type LoadedPlugin } from "../loader.js";
@@ -678,7 +679,7 @@ export async function installPluginOp(
         await writePluginConfigEntry(pluginId, { enabled: true }, input);
       },
       readPluginConfig: () => readPluginConfigSnapshot(pluginId, input),
-      restorePluginConfig: (previous) => restorePluginConfigSnapshot(pluginId, previous, input),
+      restorePluginConfig: (_pluginId, previous) => restorePluginConfigSnapshot(pluginId, previous, input),
     });
     const result = {
       plugin: summarizeLoadedPlugin({
@@ -1298,15 +1299,60 @@ export function __isPathInsideForTesting(
   return isPathInsideWithApi(path, root, platform === "win32" ? win32 : posix);
 }
 
-async function readPluginConfigSnapshot(
+interface PluginConfigRollbackSnapshot {
+  readonly entryPresent: boolean;
+  readonly entry?: unknown;
+  readonly pluginsEnabledPresent: boolean;
+  readonly pluginsEnabled?: unknown;
+}
+
+function readPluginConfigSnapshot(
   pluginId: string,
   options: PluginOperationOptions,
-): Promise<unknown> {
-  const warnings: string[] = [];
-  const config = await loadPluginOperationConfig(options, warnings);
-  const plugins = config.plugins?.plugins;
-  if (plugins === undefined || !Object.hasOwn(plugins, pluginId)) return null;
-  return plugins[pluginId] ?? null;
+): PluginConfigRollbackSnapshot {
+  const snap = readCanonicalUserConfigSnapshotSync(pluginConfigPath(options));
+  const plugins = isRecord(snap.raw.plugins) ? snap.raw.plugins : undefined;
+  const entries = plugins !== undefined && isRecord(plugins.plugins) ? plugins.plugins : undefined;
+  const entryPresent = entries !== undefined && Object.hasOwn(entries, pluginId);
+  const pluginsEnabledPresent = plugins !== undefined && Object.hasOwn(plugins, "enabled");
+  return {
+    entryPresent,
+    ...(entryPresent ? { entry: entries?.[pluginId] } : {}),
+    pluginsEnabledPresent,
+    ...(pluginsEnabledPresent ? { pluginsEnabled: plugins?.enabled } : {}),
+  };
+}
+
+function parsePluginConfigRollbackSnapshot(
+  value: unknown,
+): PluginConfigRollbackSnapshot | undefined {
+  if (!isRecord(value)) return undefined;
+  if (typeof value.entryPresent !== "boolean") return undefined;
+  if (typeof value.pluginsEnabledPresent !== "boolean") return undefined;
+  return {
+    entryPresent: value.entryPresent,
+    ...(value.entryPresent ? { entry: value.entry } : {}),
+    pluginsEnabledPresent: value.pluginsEnabledPresent,
+    ...(value.pluginsEnabledPresent ? { pluginsEnabled: value.pluginsEnabled } : {}),
+  };
+}
+
+export function restoreTrustedUserPluginConfig(
+  configPath: string,
+  pluginId: string,
+  previous: unknown,
+): void {
+  const snapshot = parsePluginConfigRollbackSnapshot(previous);
+  if (snapshot === undefined) {
+    throw new Error("plugin config snapshot is not a rollback record");
+  }
+  if (snapshot.entryPresent) {
+    validatePluginsConfig({ plugins: { [pluginId]: snapshot.entry } });
+  }
+  if (snapshot.pluginsEnabledPresent && typeof snapshot.pluginsEnabled !== "boolean") {
+    throw new Error("plugin config snapshot enabled flag is not a boolean");
+  }
+  writePluginConfigRollback(configPath, pluginId, snapshot);
 }
 
 async function restorePluginConfigSnapshot(
@@ -1314,12 +1360,35 @@ async function restorePluginConfigSnapshot(
   previous: unknown,
   options: PluginOperationOptions,
 ): Promise<void> {
-  if (previous === null || previous === undefined) {
-    await removePluginConfigEntry(pluginId, options);
-    return;
+  const snapshot = parsePluginConfigRollbackSnapshot(previous);
+  if (snapshot === undefined) {
+    throw new Error("plugin config snapshot is not a rollback record");
   }
-  if (!isRecord(previous)) return;
-  await writePluginConfigEntry(pluginId, previous as PluginEntryConfig, options);
+  writePluginConfigRollback(pluginConfigPath(options), pluginId, snapshot);
+}
+
+function writePluginConfigRollback(
+  configPath: string,
+  pluginId: string,
+  snapshot: PluginConfigRollbackSnapshot,
+): void {
+  mutateCanonicalUserConfigSync(configPath, (raw) => {
+    const plugins = isRecord(raw.plugins) ? raw.plugins : {};
+    if (!isRecord(raw.plugins)) raw.plugins = plugins;
+    const pluginEntries = isRecord(plugins.plugins) ? plugins.plugins : {};
+    if (!isRecord(plugins.plugins)) plugins.plugins = pluginEntries;
+    if (!snapshot.entryPresent) delete pluginEntries[pluginId];
+    else {
+      Object.defineProperty(pluginEntries, pluginId, {
+        value: snapshot.entry,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    if (snapshot.pluginsEnabledPresent) plugins.enabled = snapshot.pluginsEnabled;
+    else delete plugins.enabled;
+  });
 }
 
 async function writePluginConfigEntry(
