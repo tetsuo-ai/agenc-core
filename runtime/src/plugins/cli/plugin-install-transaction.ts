@@ -1174,10 +1174,8 @@ async function removeEmptyOpsDirectory(
   }
 }
 
-const LEASE_ARTIFACT_NAME = new RegExp(
-  String.raw`^.+\.json\.lease\.(?:claim|tmp)-(\d+)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`,
-  "u",
-);
+const LEASE_ARTIFACT_NAME =
+  /^.+\.json\.lease\.(?:claim|tmp)-(\d+)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
 async function claimDeadInstallLease(
   leasePath: string,
