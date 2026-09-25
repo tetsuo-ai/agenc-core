@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
+import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import {
   AGENC_DAEMON_PROTOCOL_VERSION,
   JSON_RPC_VERSION,
@@ -69,11 +71,23 @@ describe("daemon session-control internal method dispatch", () => {
       resolved: [],
       remaining: 0,
     }));
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({ sessionId: "session_1", agentId: "conv-1", cwd: process.cwd() });
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      sessionManager: sessions,
+      clientMultiplexer: new AgenCDaemonClientMultiplexer({ sessionManager: sessions }),
       agentManager: { resolveSessionToolCall } as never,
     });
-    const connection = dispatcher.createConnection();
+    const connection = dispatcher.createConnection({ sendNotification: () => {} });
     await initialize(connection);
+    // Only a client attached to the session may review it; the reviewer is
+    // derived from that attachment, whatever the request body says.
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "attach",
+      method: "session.attach",
+      params: { sessionId: "session_1", clientId: "operator-client" },
+    });
 
     await expect(
       connection.dispatch({
@@ -90,7 +104,7 @@ describe("daemon session-control internal method dispatch", () => {
     expect(resolveSessionToolCall).toHaveBeenLastCalledWith({
       sessionId: "session_1",
       toolCallId: "call_legacy",
-      reviewer: "sdk-0.3.0",
+      reviewer: "local-client:operator-client",
     });
 
     await expect(
@@ -114,7 +128,7 @@ describe("daemon session-control internal method dispatch", () => {
       disposition: "confirmed_no_effect",
       evidenceRef: "ticket:INC-14",
       evidenceSha256: "a".repeat(64),
-      reviewer: "operator",
+      reviewer: "local-client:operator-client",
     });
 
     await expect(
@@ -129,6 +143,43 @@ describe("daemon session-control internal method dispatch", () => {
         },
       }),
     ).resolves.toMatchObject({ error: { code: -32602 } });
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "attestation",
+        method: "session.resolveToolCall",
+        params: {
+          sessionId: "session_1",
+          toolCallId: "call_v2",
+          disposition: "confirmed_no_effect",
+          attestation: "operator",
+          reviewer: "desktop_user",
+        },
+      }),
+    ).resolves.toMatchObject({ result: { sessionId: "session_1" } });
+    expect(resolveSessionToolCall).toHaveBeenLastCalledWith({
+      sessionId: "session_1",
+      toolCallId: "call_v2",
+      disposition: "confirmed_no_effect",
+      attestation: "operator",
+      reviewer: "local-client:operator-client",
+    });
+
+    for (const [id, params] of [
+      ["attestation-with-evidence", { disposition: "confirmed_no_effect", attestation: "operator", evidenceRef: "x", evidenceSha256: "a".repeat(64) }],
+      ["attestation-unknown-kind", { disposition: "confirmed_no_effect", attestation: "system" }],
+      ["attestation-without-disposition", { attestation: "operator" }],
+    ] as const) {
+      await expect(
+        connection.dispatch({
+          jsonrpc: JSON_RPC_VERSION,
+          id,
+          method: "session.resolveToolCall",
+          params: { sessionId: "session_1", toolCallId: "call_v2", ...params },
+        }),
+      ).resolves.toMatchObject({ error: { code: -32602 } });
+    }
 
     for (const [id, field] of [
       ["empty-tool-call", "toolCallId"],
@@ -146,7 +197,7 @@ describe("daemon session-control internal method dispatch", () => {
         }),
       ).resolves.toMatchObject({ error: { code: -32602 } });
     }
-    expect(resolveSessionToolCall).toHaveBeenCalledTimes(2);
+    expect(resolveSessionToolCall).toHaveBeenCalledTimes(3);
   });
 
   it("routes both compaction operator methods", async () => {
@@ -304,6 +355,67 @@ describe("daemon session-control internal method dispatch", () => {
       error: { code: -32602 },
     });
     expect(setSessionModel).not.toHaveBeenCalled();
+  });
+
+  it("routes session.goal to the agent manager and rejects malformed goals before it", async () => {
+    const updateSessionGoal = vi.fn(async () => ({ ok: true }));
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: { updateSessionGoal } as never,
+    });
+    const connection = dispatcher.createConnection();
+    // session.goal is a protocol 1.14 method.
+    await initialize(connection, AGENC_DAEMON_PROTOCOL_VERSION);
+    const send = (id: string, params: Record<string, unknown>) =>
+      connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id, method: "session.goal", params });
+    const request = {
+      objective: "npm test passes",
+      verify: [{ label: "tests", script: "npm test" }],
+      noVerify: false,
+      maxRounds: 5,
+    };
+
+    await expect(send("set", { sessionId: "s1", action: "set", request })).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION, id: "set", result: { ok: true },
+    });
+    await expect(send("get", { sessionId: "s1", action: "get" })).resolves.toMatchObject({ result: { ok: true } });
+    expect(updateSessionGoal.mock.calls.map(([params]) => params)).toEqual([
+      { sessionId: "s1", action: "set", request },
+      { sessionId: "s1", action: "get" },
+    ]);
+
+    updateSessionGoal.mockClear();
+    const malformed: Array<Record<string, unknown>> = [
+      { action: "get" },
+      { sessionId: "s1", action: "achieve" },
+      { sessionId: "s1", action: "set" },
+      { sessionId: "s1", action: "pause", request },
+      { sessionId: "s1", action: "set", request: { ...request, objective: "  " } },
+      { sessionId: "s1", action: "set", request: { ...request, objective: "x".repeat(4_001) } },
+      { sessionId: "s1", action: "set", request: { ...request, noVerify: "no" } },
+      { sessionId: "s1", action: "set", request: { ...request, verify: [{ label: "t", script: "" }] } },
+      { sessionId: "s1", action: "set", request: { ...request, verify: Array.from({ length: 9 }, () => ({ label: "t", script: "true" })) } },
+      { sessionId: "s1", action: "set", request: { ...request, maxRounds: 101 } },
+      { sessionId: "s1", action: "set", request: { ...request, maxCostUsd: 0 } },
+    ];
+    for (const [index, params] of malformed.entries()) {
+      await expect(send(`bad-${index}`, params), JSON.stringify(params).slice(0, 80)).resolves.toMatchObject({
+        id: `bad-${index}`, error: { code: -32602 },
+      });
+    }
+    expect(updateSessionGoal).not.toHaveBeenCalled();
+  });
+
+  it("does not offer session.goal to a client that negotiated an older protocol", async () => {
+    const updateSessionGoal = vi.fn(async () => ({ ok: true }));
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: { updateSessionGoal } as never,
+    });
+    const connection = dispatcher.createConnection();
+    await initialize(connection, "1.13.0");
+    await expect(
+      connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "old", method: "session.goal", params: { sessionId: "s1", action: "get" } }),
+    ).resolves.toMatchObject({ id: "old", error: expect.anything() });
+    expect(updateSessionGoal).not.toHaveBeenCalled();
   });
 
   it("routes session.setPermissionMode to the agent manager", async () => {

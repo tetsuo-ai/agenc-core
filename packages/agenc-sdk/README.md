@@ -32,6 +32,12 @@ Prompt events on protocol 1.2 also include `message_committed`,
 `history_reset`, `elicitation_request`, `gap`, and `session_event`. The sample
 loop below only prints `text`.
 
+Both transports buffer at most `MAX_BUFFERED_PROMPT_EVENTS` (1,000) events
+that a consumer has not iterated yet. Past that the oldest buffered events are
+discarded and reported by a non-evictable `gap` event with
+`reason: "local_overflow"` and the exact `retiredCount`; `reason: "retention"`
+is the daemon's own replay gap. Neither is safe to skip.
+
 The protocol mirror preserves trusted `event.user_input_request.clientAction`
 objects, typed `elicitation.respond.clientResult` receipts,
 `ToolApproveParams.allowAllToolsForSession`, and remote subscription-tier

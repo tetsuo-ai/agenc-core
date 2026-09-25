@@ -21,8 +21,8 @@ import {
   digestWithDomain,
   sha256Hex,
 } from "./summary-v1.js";
+import { redactDurableSecrets } from "../../session/provider-replay-redaction.js";
 import { canonicalizeJson as canonicalizePayloadJson } from "../../eval-contract/canonical-json.js";
-import { redactSecretsInValue } from "../../secrets/sanitizer.js";
 
 const COMPACTION_ROLLOUT_ITEM_VERSION = 2;
 const INITIAL_CHUNK_DIGEST = "0".repeat(64);
@@ -41,7 +41,7 @@ export function createCompactionPayloadBundleV1(params: {
   // a secret fail its own digest on read: the commit failed and every later
   // strict read of the session rejected the chunk (soak session, 2026-09-05).
   const canonicalJson = canonicalizePayloadJson(
-    redactSecretsInValue(params.value),
+    redactDurableSecrets(params.value, params.payloadKind === "replacement_history" || params.payloadKind === "source_history" ? "history" : "ordinary"),
   );
   const canonicalBytes = Buffer.byteLength(canonicalJson, "utf8");
   if (canonicalBytes > MAX_COMPACTION_PAYLOAD_CANONICAL_UTF8_BYTES) {

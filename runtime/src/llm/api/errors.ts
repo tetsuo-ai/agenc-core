@@ -15,10 +15,12 @@ import {
   LLMAuthenticationError,
   LLMContextWindowExceededError,
   LLMProviderError,
+  LLMFundsError,
   LLMRateLimitError,
   LLMServerError,
   LLMTimeoutError,
 } from "../errors.js";
+import { isProviderFundsFailure } from "../funds.js";
 
 export {
   AgenCApiError,
@@ -55,6 +57,10 @@ export function mapAgenCApiErrorToLLMError(
   error: unknown,
   timeoutMs: number,
 ): Error {
+  if (isProviderFundsFailure(providerName, error)) {
+    return new LLMFundsError(providerName,
+      error instanceof AgenCApiError ? error.status : undefined);
+  }
   const unwrapped = unwrapCannotRetryError(error);
   if (unwrapped !== error) {
     return mapAgenCApiErrorToLLMError(providerName, unwrapped, timeoutMs);

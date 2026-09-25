@@ -216,6 +216,43 @@ export interface AgentConfig {
   readonly retention?: AgentRunRetentionConfig;
 }
 
+/** Sub-agent effort limits, lowest first. */
+export const SUBAGENT_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type SubagentEffort = (typeof SUBAGENT_EFFORTS)[number];
+/** Sub-agent speed limits, lowest first. `fast` is the priority service tier. */
+export const SUBAGENT_SPEEDS = ["standard", "fast"] as const;
+export type SubagentSpeed = (typeof SUBAGENT_SPEEDS)[number];
+
+/**
+ * The effort and speed sub-agents on one provider run at. A model may ask
+ * for less, never more. Unset, effort is each model's lowest level other than
+ * none, and speed is standard. "minimal" and "standard" run sub-agents the
+ * same way as unset; the config store ranks them together.
+ */
+export interface SubagentLimit {
+  readonly effort?: SubagentEffort;
+  readonly speed?: SubagentSpeed;
+}
+
+/** Operator authority for routing subagents to another provider. */
+export interface AgentsConfig {
+  readonly cross_provider_enabled?: boolean;
+  readonly allowed_providers?: readonly string[];
+  /**
+   * Ask before every cross-provider spawn. Off by default: enabling
+   * cross_provider_enabled with allowed_providers is the user's consent.
+   */
+  readonly cross_provider_ask_each_spawn?: boolean;
+  /**
+   * Let the agent choose an allowed provider on its own. Off by default: a
+   * sub-agent then runs on another provider only when the user named that
+   * provider or one of its models in the conversation.
+   */
+  readonly cross_provider_auto?: boolean;
+  /** Per built-in provider, the limits for every sub-agent that runs on it. */
+  readonly subagent_limits?: Readonly<Record<string, SubagentLimit>>;
+}
+
 /**
  * GOAL #4b Stage 1 — durable / checkpointed turns.
  *
@@ -256,6 +293,21 @@ export interface CompletionGateConfig {
   readonly mode?: "auto" | "always" | "never";
   /** Verification prompts per turn; default 3, at most 10. */
   readonly max_rounds?: number;
+}
+
+/**
+ * `/goal`: the session keeps working until the runtime's own verification and
+ * an independent reviewer agree the goal is met. See docs/reference/goal.md.
+ */
+export interface GoalConfig {
+  /** Continuations a goal may use before it stops as budget_exhausted; default 20, at most 100. */
+  readonly max_rounds?: number;
+  /** Consecutive rounds without a successful tool call before the goal stalls; default 3. */
+  readonly stall_rounds?: number;
+  /** Model for the independent goal reviewer; defaults to the session model. */
+  readonly judge_model?: string;
+  /** Per-command verification timeout in milliseconds; default 600000. */
+  readonly verify_timeout_ms?: number;
 }
 
 /**
@@ -515,7 +567,6 @@ export interface TuiKeybindingConfig {
 }
 
 export interface TuiConfig {
-  readonly vimMode?: boolean;
   readonly theme?: TuiThemeSetting;
   readonly showTurnDuration?: boolean;
   readonly terminalProgressBarEnabled?: boolean;
@@ -534,45 +585,6 @@ export interface TeammatesConfig {
   /** "inherit" follows the leader model; absent uses the built-in teammate default. */
   readonly defaultModel?: string;
   readonly preferTmuxOverIterm2?: boolean;
-}
-
-export type BufferProviderMode = "auto" | "neovim" | "inline" | "external";
-export type BufferTabsMode = "auto" | "always" | "never";
-export type BufferNeovimInitMode = "auto" | "user" | "clean";
-export type BufferPredictionEnabledMode = "ask" | "on" | "off";
-
-export interface BufferNeovimConfig {
-  readonly executable?: string;
-  readonly init?: BufferNeovimInitMode;
-  readonly discovery_timeout_ms?: number;
-  readonly startup_timeout_ms?: number;
-  readonly operation_timeout_ms?: number;
-  readonly cleanup_timeout_ms?: number;
-}
-
-/**
- * Low-latency, transcript-free code prediction for the embedded editor.
- *
- * `ask` is the safe default: the TUI must obtain one-time user consent before
- * sending source context. Provider/model are optional owner-selected route
- * overrides; when omitted the prediction service independently clones the
- * active session route. RPC callers cannot override these trusted settings.
- */
-export interface BufferPredictionConfig {
-  readonly enabled?: BufferPredictionEnabledMode;
-  readonly debounce_ms?: number;
-  readonly timeout_ms?: number;
-  readonly max_output_tokens?: number;
-  readonly provider?: string;
-  readonly model?: string;
-}
-
-/** Embedded editor configuration for the TUI BUFFER workspace. */
-export interface BufferConfig {
-  readonly provider?: BufferProviderMode;
-  readonly show_tabs?: BufferTabsMode;
-  readonly neovim?: BufferNeovimConfig;
-  readonly prediction?: BufferPredictionConfig;
 }
 
 /**
@@ -738,6 +750,10 @@ export interface PluginEntryConfig {
 
 export interface PluginMcpServerConfig {
   readonly enabled?: boolean;
+  /** Keep this plugin MCP process connected for channels or notifications. */
+  readonly eager?: boolean;
+  /** Idle process lifetime. Zero disables idle eviction. */
+  readonly idle_timeout_ms?: number;
   readonly default_tools_approval_mode?: PermissionDefaultMode;
   readonly enabled_tools?: readonly string[];
   readonly disabled_tools?: readonly string[];
@@ -748,6 +764,8 @@ export interface PluginsConfig {
   readonly dirs?: readonly string[];
   readonly enabled?: boolean;
   readonly allowlist?: readonly string[];
+  readonly mcp_idle_timeout_ms?: number;
+  readonly mcp_max_processes?: number;
   readonly plugins?: Readonly<Record<string, PluginEntryConfig>>;
 }
 
@@ -872,7 +890,6 @@ export interface AgenCConfig {
   /** Named assistant response style. Terminal colors live under `[tui]`. */
   readonly outputStyle?: string;
   readonly attachments?: AttachmentsConfig;
-  readonly buffer?: BufferConfig;
   readonly tui?: TuiConfig;
   readonly autoFix?: AutoFixInputConfig;
   readonly fileSuggestion?: FileSuggestionConfig;
@@ -930,8 +947,10 @@ export interface AgenCConfig {
 
   // ── AgenC-specific additions ──────────────────────────────────────
   readonly agent?: AgentConfig;
+  readonly agents?: AgentsConfig;
   readonly durableTurns?: DurableTurnsConfig;
   readonly completion_gate?: CompletionGateConfig;
+  readonly goal?: GoalConfig;
   readonly compaction?: CompactionConfig;
   readonly stream_watchdog_timeout_ms?: number;
   readonly provider_outage_wait_ms?: number;
@@ -1021,7 +1040,6 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "statusLine",
   "outputStyle",
   "attachments",
-  "buffer",
   "tui",
   "autoFix",
   "fileSuggestion",
@@ -1073,6 +1091,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "agencMdExcludes",
   "pluginTrustMessage",
   "agent",
+  "agents",
   "stream_watchdog_timeout_ms",
   "provider_outage_wait_ms",
   "provider_outage_retry_ms",
@@ -1088,6 +1107,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "heartbeat",
   "durableTurns",
   "completion_gate",
+  "goal",
   "compaction",
   "_unknown",
 ]);
@@ -1172,22 +1192,6 @@ export function defaultConfig(): AgenCConfig {
     // max_turns intentionally unset.
     // `autoUpdates` is intentionally not defaulted. An absent operator setting
     // means enabled; every consumer reads the effective ConfigStore snapshot.
-    buffer: Object.freeze({
-      provider: "auto",
-      show_tabs: "auto",
-      neovim: Object.freeze({
-        init: "auto",
-        startup_timeout_ms: 10_000,
-        operation_timeout_ms: 10_000,
-        cleanup_timeout_ms: 1_000,
-      }) as BufferNeovimConfig,
-      prediction: Object.freeze({
-        enabled: "ask",
-        debounce_ms: 160,
-        timeout_ms: 2_500,
-        max_output_tokens: 256,
-      }) as BufferPredictionConfig,
-    }) as BufferConfig,
     tui: Object.freeze({
       theme: "dark",
       showTurnDuration: true,
@@ -1207,6 +1211,12 @@ export function defaultConfig(): AgenCConfig {
     fileCheckpointingEnabled: true,
     transcriptPersistenceEnabled: true,
     promptSuggestionEnabled: false,
+    agents: Object.freeze({
+      cross_provider_enabled: false,
+      allowed_providers: Object.freeze([]),
+      cross_provider_ask_each_spawn: false,
+      cross_provider_auto: false,
+    }) as AgentsConfig,
     agent: Object.freeze({
       // Default budget is intentionally empty: caps are designed for
       // explicit `agenc agent start` background agents, but the daemon
@@ -1354,6 +1364,12 @@ export class InvalidAgentConfigError extends InvalidNamedConfigError {
   }
 }
 
+export class InvalidAgentsConfigError extends InvalidNamedConfigError {
+  constructor(field: string, detail: string) {
+    super("agents", "InvalidAgentsConfigError", field, detail);
+  }
+}
+
 export class InvalidPluginsConfigError extends InvalidNamedConfigError {
   constructor(field: string, detail: string) {
     super("plugins", "InvalidPluginsConfigError", field, detail);
@@ -1392,12 +1408,6 @@ export class InvalidMcpConfigError extends InvalidNamedConfigError {
 export class InvalidProtocolConfigError extends InvalidNamedConfigError {
   constructor(field: string, detail: string) {
     super("protocol", "InvalidProtocolConfigError", field, detail);
-  }
-}
-
-export class InvalidBufferConfigError extends InvalidNamedConfigError {
-  constructor(field: string, detail: string) {
-    super("buffer", "InvalidBufferConfigError", field, detail);
   }
 }
 
@@ -2173,6 +2183,86 @@ export function validateAgentConfig(raw: unknown): AgentConfig | undefined {
   return Object.freeze(out as AgentConfig);
 }
 
+function optionalAgentsBoolean(
+  record: Record<string, unknown>,
+  field: string,
+  fail: (field: string, detail: string) => InvalidAgentsConfigError,
+): boolean | undefined {
+  const value = record[field];
+  if (value !== undefined && typeof value !== "boolean") throw fail(field, "expected boolean");
+  return value as boolean | undefined;
+}
+
+export function validateAgentsConfig(raw: unknown): AgentsConfig | undefined {
+  if (raw === undefined) return undefined;
+  const fail = (field: string, detail: string): InvalidAgentsConfigError =>
+    new InvalidAgentsConfigError(field, detail);
+  const record = requirePlainObject(raw, "", fail);
+  rejectUnknownFields(record,
+    new Set(["cross_provider_enabled", "allowed_providers", "cross_provider_ask_each_spawn",
+      "cross_provider_auto", "subagent_limits"]), fail);
+  const enabled = optionalAgentsBoolean(record, "cross_provider_enabled", fail);
+  const askEachSpawn = optionalAgentsBoolean(record, "cross_provider_ask_each_spawn", fail);
+  const auto = optionalAgentsBoolean(record, "cross_provider_auto", fail);
+  const limits = record.subagent_limits === undefined
+    ? undefined : validateSubagentLimits(record.subagent_limits, fail);
+  const allowed = record.allowed_providers;
+  if (allowed !== undefined && !Array.isArray(allowed)) {
+    throw fail("allowed_providers", "expected array of provider names");
+  }
+  const providers: string[] = [];
+  for (const item of (allowed as readonly unknown[] | undefined) ?? []) {
+    const provider = typeof item === "string" ? resolveBuiltInProviderSlug(item) : undefined;
+    if (provider === undefined) {
+      throw fail("allowed_providers", `unknown provider ${JSON.stringify(item)}`);
+    }
+    if (providers.includes(provider)) {
+      throw fail("allowed_providers", `duplicate provider ${JSON.stringify(provider)}`);
+    }
+    providers.push(provider);
+  }
+  return Object.freeze({
+    ...(enabled !== undefined ? { cross_provider_enabled: enabled } : {}),
+    ...(allowed !== undefined ? { allowed_providers: Object.freeze(providers) } : {}),
+    ...(askEachSpawn !== undefined ? { cross_provider_ask_each_spawn: askEachSpawn } : {}),
+    ...(auto !== undefined ? { cross_provider_auto: auto } : {}),
+    ...(limits !== undefined ? { subagent_limits: limits } : {}),
+  });
+}
+
+function oneOf<T extends string>(values: readonly T[], value: unknown): value is T {
+  return (values as readonly unknown[]).includes(value);
+}
+
+/** `[agents.subagent_limits.<provider>]` tables, keyed by built-in provider name. */
+function validateSubagentLimits(
+  raw: unknown,
+  fail: (field: string, detail: string) => InvalidAgentsConfigError,
+): Readonly<Record<string, SubagentLimit>> {
+  const record = requirePlainObject(raw, "subagent_limits", fail);
+  const limits: Record<string, SubagentLimit> = {};
+  for (const [name, value] of Object.entries(record)) {
+    const field = `subagent_limits.${name}`;
+    const provider = resolveBuiltInProviderSlug(name);
+    if (provider === undefined) throw fail(field, "unknown provider");
+    if (Object.hasOwn(limits, provider)) throw fail(field, `duplicate provider ${JSON.stringify(provider)}`);
+    const entry = requirePlainObject(value, field, fail);
+    rejectUnknownFields(entry, new Set(["effort", "speed"]), fail, field);
+    const { effort, speed } = entry;
+    if (effort !== undefined && !oneOf(SUBAGENT_EFFORTS, effort)) {
+      throw fail(`${field}.effort`, `expected one of ${SUBAGENT_EFFORTS.join(", ")}`);
+    }
+    if (speed !== undefined && !oneOf(SUBAGENT_SPEEDS, speed)) {
+      throw fail(`${field}.speed`, `expected one of ${SUBAGENT_SPEEDS.join(", ")}`);
+    }
+    limits[provider] = Object.freeze({
+      ...(effort !== undefined ? { effort } : {}),
+      ...(speed !== undefined ? { speed } : {}),
+    });
+  }
+  return Object.freeze(limits);
+}
+
 const PER_TOOL_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "default_permission_mode",
 ]);
@@ -2204,6 +2294,8 @@ function validatePerToolConfig(raw: unknown, field: string): PerToolConfig {
 
 const PLUGIN_MCP_SERVER_KEYS: ReadonlySet<string> = new Set([
   "enabled",
+  "eager",
+  "idle_timeout_ms",
   "default_tools_approval_mode",
   "enabled_tools",
   "disabled_tools",
@@ -2234,6 +2326,12 @@ function validatePluginMcpServerConfig(
     (path, detail) => new InvalidPluginsConfigError(path, detail),
   );
   if (enabled !== undefined) out.enabled = enabled;
+  const eager = optionalBoolean(record.eager, fieldPath(field, "eager"), (path, detail) => new InvalidPluginsConfigError(path, detail));
+  if (eager !== undefined) out.eager = eager;
+  if (record.idle_timeout_ms !== undefined) {
+    if (!Number.isSafeInteger(record.idle_timeout_ms) || (record.idle_timeout_ms as number) < 0) throw new InvalidPluginsConfigError(fieldPath(field, "idle_timeout_ms"), "must be a non-negative integer");
+    out.idle_timeout_ms = record.idle_timeout_ms as number;
+  }
   if (record.default_tools_approval_mode !== undefined) {
     if (!isValidPermissionDefaultMode(record.default_tools_approval_mode)) {
       throw new InvalidPluginsConfigError(
@@ -2350,6 +2448,8 @@ const PLUGINS_KEYS: ReadonlySet<string> = new Set([
   "enabled",
   "allowlist",
   "plugins",
+  "mcp_idle_timeout_ms",
+  "mcp_max_processes",
 ]);
 
 export function validatePluginsConfig(raw: unknown): PluginsConfig | undefined {
@@ -2382,6 +2482,13 @@ export function validatePluginsConfig(raw: unknown): PluginsConfig | undefined {
       throw new InvalidPluginsConfigError("enabled", "must be a boolean");
     }
     out.enabled = record.enabled;
+  }
+  for (const key of ["mcp_idle_timeout_ms", "mcp_max_processes"] as const) {
+    if (record[key] === undefined) continue;
+    if (!Number.isSafeInteger(record[key]) || (key === "mcp_max_processes" ? (record[key] as number) < 1 : (record[key] as number) < 0)) {
+      throw new InvalidPluginsConfigError(key, key === "mcp_max_processes" ? "must be a positive integer" : "must be a non-negative integer");
+    }
+    out[key] = record[key];
   }
   const plugins = validatePluginEntryMap(record.plugins, "plugins");
   if (plugins !== undefined) out.plugins = plugins;
@@ -3561,6 +3668,10 @@ export function validateAgenCConfigBlocks(config: AgenCConfig): AgenCConfig {
     out.agent = validateAgentConfig(config.agent);
     changed = true;
   }
+  if (config.agents !== undefined) {
+    out.agents = validateAgentsConfig(config.agents);
+    changed = true;
+  }
   if (config.plugins !== undefined) {
     out.plugins = validatePluginsConfig(config.plugins);
     changed = true;
@@ -3571,10 +3682,6 @@ export function validateAgenCConfigBlocks(config: AgenCConfig): AgenCConfig {
   }
   if (config.tui !== undefined) {
     out.tui = validateTuiConfig(config.tui);
-    changed = true;
-  }
-  if (config.buffer !== undefined) {
-    out.buffer = validateBufferConfig(config.buffer);
     changed = true;
   }
   if (config.browser !== undefined) {
@@ -3740,7 +3847,6 @@ export function validateTuiConfig(raw: unknown): TuiConfig | undefined {
   rejectUnknownFields(
     raw,
     new Set([
-      "vimMode",
       "theme",
       "showTurnDuration",
       "terminalProgressBarEnabled",
@@ -3753,12 +3859,6 @@ export function validateTuiConfig(raw: unknown): TuiConfig | undefined {
   );
 
   const out: { -readonly [K in keyof TuiConfig]: TuiConfig[K] } = {};
-  if (raw.vimMode !== undefined) {
-    if (typeof raw.vimMode !== "boolean") {
-      throw new InvalidTuiConfigError("vimMode", "expected boolean");
-    }
-    out.vimMode = raw.vimMode;
-  }
   if (raw.theme !== undefined) {
     if (!TUI_THEME_SETTINGS.includes(raw.theme as TuiThemeSetting)) {
       throw new InvalidTuiConfigError(
@@ -3785,188 +3885,6 @@ export function validateTuiConfig(raw: unknown): TuiConfig | undefined {
   const keybindings = validateTuiKeybindings(raw.keybindings);
   if (keybindings !== undefined) out.keybindings = keybindings;
   return Object.freeze(out as TuiConfig);
-}
-
-export function validateBufferConfig(raw: unknown): BufferConfig | undefined {
-  if (raw === undefined) return undefined;
-  const makeError: InvalidConfigFactory = (field, detail) =>
-    new InvalidBufferConfigError(field, detail);
-  const record = requirePlainObject(raw, "", makeError);
-  rejectUnknownFields(
-    record,
-    new Set(["provider", "show_tabs", "neovim", "prediction"]),
-    makeError,
-  );
-  const out: { -readonly [K in keyof BufferConfig]: BufferConfig[K] } = {};
-  if (record.provider !== undefined) {
-    if (
-      record.provider !== "auto" &&
-      record.provider !== "neovim" &&
-      record.provider !== "inline" &&
-      record.provider !== "external"
-    ) {
-      throw makeError(
-        "provider",
-        'expected "auto", "neovim", "inline", or "external"',
-      );
-    }
-    out.provider = record.provider;
-  }
-  if (record.show_tabs !== undefined) {
-    if (
-      record.show_tabs !== "auto" &&
-      record.show_tabs !== "always" &&
-      record.show_tabs !== "never"
-    ) {
-      throw makeError("show_tabs", 'expected "auto", "always", or "never"');
-    }
-    out.show_tabs = record.show_tabs;
-  }
-  if (record.neovim !== undefined) {
-    const neovim = requirePlainObject(record.neovim, "neovim", makeError);
-    rejectUnknownFields(
-      neovim,
-      new Set([
-        "executable",
-        "init",
-        "discovery_timeout_ms",
-        "startup_timeout_ms",
-        "operation_timeout_ms",
-        "cleanup_timeout_ms",
-      ]),
-      makeError,
-      "neovim",
-    );
-    const validated: {
-      -readonly [K in keyof BufferNeovimConfig]: BufferNeovimConfig[K];
-    } = {};
-    const executable = optionalString(
-      neovim.executable,
-      "neovim.executable",
-      makeError,
-    );
-    if (executable !== undefined) {
-      if (executable.trim().length === 0) {
-        throw makeError("neovim.executable", "expected non-empty string");
-      }
-      validated.executable = executable;
-    }
-    if (neovim.init !== undefined) {
-      if (
-        neovim.init !== "auto" &&
-        neovim.init !== "user" &&
-        neovim.init !== "clean"
-      ) {
-        throw makeError("neovim.init", 'expected "auto", "user", or "clean"');
-      }
-      validated.init = neovim.init;
-    }
-    for (const key of [
-      "discovery_timeout_ms",
-      "startup_timeout_ms",
-      "operation_timeout_ms",
-      "cleanup_timeout_ms",
-    ] as const) {
-      const value = optionalPositiveInteger(
-        neovim[key],
-        `neovim.${key}`,
-        makeError,
-      );
-      if (value !== undefined) validated[key] = value;
-    }
-    out.neovim = Object.freeze(validated as BufferNeovimConfig);
-  }
-  if (record.prediction !== undefined) {
-    const prediction = requirePlainObject(
-      record.prediction,
-      "prediction",
-      makeError,
-    );
-    rejectUnknownFields(
-      prediction,
-      new Set([
-        "enabled",
-        "debounce_ms",
-        "timeout_ms",
-        "max_output_tokens",
-        "provider",
-        "model",
-      ]),
-      makeError,
-      "prediction",
-    );
-    const validated: {
-      -readonly [K in keyof BufferPredictionConfig]: BufferPredictionConfig[K];
-    } = {};
-    if (prediction.enabled !== undefined) {
-      if (
-        prediction.enabled !== "ask" &&
-        prediction.enabled !== "on" &&
-        prediction.enabled !== "off"
-      ) {
-        throw makeError("prediction.enabled", 'expected "ask", "on", or "off"');
-      }
-      validated.enabled = prediction.enabled;
-    }
-    const debounceMs = optionalPositiveInteger(
-      prediction.debounce_ms,
-      "prediction.debounce_ms",
-      makeError,
-    );
-    if (debounceMs !== undefined) {
-      if (debounceMs < 25 || debounceMs > 5_000) {
-        throw makeError(
-          "prediction.debounce_ms",
-          "expected integer between 25 and 5000",
-        );
-      }
-      validated.debounce_ms = debounceMs;
-    }
-    const timeoutMs = optionalPositiveInteger(
-      prediction.timeout_ms,
-      "prediction.timeout_ms",
-      makeError,
-    );
-    if (timeoutMs !== undefined) {
-      if (timeoutMs < 100 || timeoutMs > 30_000) {
-        throw makeError(
-          "prediction.timeout_ms",
-          "expected integer between 100 and 30000",
-        );
-      }
-      validated.timeout_ms = timeoutMs;
-    }
-    const maxOutputTokens = optionalPositiveInteger(
-      prediction.max_output_tokens,
-      "prediction.max_output_tokens",
-      makeError,
-    );
-    if (maxOutputTokens !== undefined) {
-      if (maxOutputTokens > 2_048) {
-        throw makeError(
-          "prediction.max_output_tokens",
-          "expected integer between 1 and 2048",
-        );
-      }
-      validated.max_output_tokens = maxOutputTokens;
-    }
-    for (const key of ["provider", "model"] as const) {
-      const value = optionalString(
-        prediction[key],
-        `prediction.${key}`,
-        makeError,
-      );
-      if (value !== undefined) {
-        const trimmed = value.trim();
-        if (trimmed.length === 0) {
-          throw makeError(`prediction.${key}`, "expected non-empty string");
-        }
-        validated[key] = trimmed;
-      }
-    }
-    out.prediction = Object.freeze(validated as BufferPredictionConfig);
-  }
-  return Object.freeze(out as BufferConfig);
 }
 
 export class InvalidBrowserConfigError extends Error {

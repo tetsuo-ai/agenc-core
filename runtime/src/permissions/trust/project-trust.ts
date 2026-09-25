@@ -285,6 +285,34 @@ export function resolveProjectTrustStateSync(
   return isProjectTrustedSync(options) ? "trusted" : "untrusted";
 }
 
+export interface ProjectTrustStatus {
+  /** The working directory in its canonical on-disk spelling. */
+  readonly cwd: string;
+  /** The root trust is keyed by: the nearest marker ancestor, else `cwd`. */
+  readonly projectRoot: string;
+  readonly trusted: boolean;
+}
+
+/**
+ * Trust for a working directory the way a session started there sees it: the
+ * directory resolves to its project root, and that root is looked up exactly.
+ * Both paths use the canonical spelling the lookup compares.
+ */
+export function resolveProjectTrustStatusSync(
+  options: ProjectTrustPathOptions & ProjectTrustRootOptions,
+): ProjectTrustStatus {
+  const projectRoot = resolveProjectTrustRootSync(options);
+  return {
+    cwd: canonicalizePathSync(options.cwd),
+    projectRoot,
+    trusted: isProjectTrustedSync({
+      ...(options.agencHome !== undefined ? { agencHome: options.agencHome } : {}),
+      ...(options.env !== undefined ? { env: options.env } : {}),
+      projectRoot,
+    }),
+  };
+}
+
 function projectMcpChoicesForRoot(
   file: TrustedProjectsFile,
   projectRoot: string,

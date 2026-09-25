@@ -515,8 +515,8 @@ session when the feature is available (`AGENC_COORDINATOR_MODE` /
 | `agent.logs` | Fetch agent logs |
 
 `agent.create` accepts `deferInitialTurn: true` to provision a live session
-without submitting a first model turn (Editor cold-start). Startup hooks
-and Agent side effects stay deferred until the first non-Editor message.
+without submitting a first model turn. Startup hooks and Agent side effects
+stay deferred until the first message.
 The flag cannot combine with `initialContent` or other first-turn fields
 (`runtime/src/app-server/daemon-dispatcher.ts`). The thread sits in
 `pending_init`; `ifBusy: "reject"` on `message.send` refuses only an
@@ -531,6 +531,48 @@ SDK helpers on `AgencClient`: `spawnAgent`, `listAgents`, `attachAgent`,
 Background agents use the **unattended** permission policy when no interactive
 client is attached (internal mode; not a user-facing CLI default). Unattended
 allow/deny lists can be supplied at create time via CLI flags or the RPC.
+
+### Routine runs
+
+A scheduled routine run is a background agent with nobody attached, started
+in the permission mode its routine stores (`runtime/src/routines/`).
+
+- A routine's mode is the mode of the session that created it. On
+  `routine.create` and `routine.update` a client names a
+  `permissionAuthority`. `{ kind: "session", sessionId }` makes Core read that
+  live session's current mode from its own permission registry; the session
+  must be attached to the connection that sends the request, and the request
+  may only narrow its mode. With `routine.sessionAuthority.v1`, the session
+  authority may also carry the `toolCallId` of a tool call executing in that
+  session's active turn. Core answers that write during the turn using the
+  session's mode then. Without `toolCallId`, routine methods keep the
+  connection's ordinary FIFO. `{ kind: "operator" }` is a Routines screen: Core
+  accepts it only on a connection that declared `routine.operator.v1` at
+  initialize and has no session attached, so a connection that relays a
+  model's requests can never also speak for the person. A request without an
+  authority keeps the original contract, default or plan only. Changing a
+  routine's instructions, workspace, provider, model or mode needs an
+  authority at least as wide as the routine's resulting mode.
+- The wider contract is negotiated: a connection that declared
+  `routine.permissionModes.v2` sees four modes and may send an authority. Any
+  other connection keeps the original contract exactly: two modes, and a
+  routine in acceptEdits or bypassPermissions answers as not found.
+- `default` and `plan` runs keep the read-only grant.
+- `acceptEdits` and `bypassPermissions` runs keep their mode. Whatever would
+  ask a person is refused instead of waiting (questions, plan hand-offs,
+  sandbox escalations included). File tools write only inside the routine's
+  workspace, even under bypass, measured where a write lands after following
+  every link.
+- Every routine run's commands stay in the OS sandbox and write only inside
+  the workspace: an escalation, an exec-policy decision or a sandbox denial
+  never reruns a command unsandboxed, the session temp root and configured
+  extra writable folders are read-only for it, and its TMPDIR is a scratch
+  folder, `<workspace>/.agenc-routine/<runId>`, removed when the run ends and
+  ignored by git. A server-initiated MCP question is declined in every mode.
+- A Bypass routine in a folder that is not a trusted project, or an
+  acceptEdits or Bypass routine whose configuration turns the OS sandbox off
+  or hands it to an external sandbox, fails with that reason instead of
+  running with a different authority.
 
 The channel gateway provisions passive agents
 (`initialContent: []` suppresses an objective turn) and adopts each agent's
@@ -557,7 +599,6 @@ and automation.
 | Worktree isolation | `runtime/src/agents/worktree.ts` |
 | Thread / mailbox | `runtime/src/agents/thread*.ts`, `mailbox.ts` |
 | Job orchestrator (CSV multi-spawn etc.) | `runtime/src/agents/jobs/` |
-| TUI Agents rail | `runtime/src/tui/workbench/` (Agents pane at wide widths) |
 
 ### Workspace-scoped custom roles
 

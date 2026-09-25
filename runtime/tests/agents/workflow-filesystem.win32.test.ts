@@ -32,47 +32,53 @@ afterEach(async () => {
   await rm(temporaryDirectory, { recursive: true, force: true });
 });
 
-it("loads regular and hard-linked shared manifests on Windows", async () => {
+it("refuses regular and hard-linked shared manifests without descriptor traversal on Windows", async () => {
   const root = join(temporaryDirectory, "manifests");
   await mkdir(root);
   await writeFile(join(root, "example.json"), manifest);
   await link(join(root, "example.json"), join(root, "linked.json"));
   for (const name of ["example", "linked"]) {
-    const loaded = await loadNamedWorkflowManifest({ name, roots: [root] });
-    expect(loaded.document.manifest.steps[0]?.id).toBe("step");
+    await expect(loadNamedWorkflowManifest({ name, roots: [root] }))
+      .rejects.toMatchObject({ code: "WORKFLOW_ROOT_OPEN" });
   }
 });
 
-it("rejects a Windows manifest root replaced after opening", async () => {
+it("refuses a Windows manifest before a root replacement hook", async () => {
   const root = join(temporaryDirectory, "manifests");
   await mkdir(root);
   await writeFile(join(root, "example.json"), manifest);
+  let rootOpened = false;
   await expect(loadNamedWorkflowManifest({
     name: "example", roots: [root],
     hooks: {
       async afterRootOpen() {
+        rootOpened = true;
         await rename(root, `${root}.old`);
         await mkdir(root);
         await writeFile(join(root, "example.json"), manifest);
       },
     },
-  })).rejects.toMatchObject({ code: "WORKFLOW_ROOT_RACE" });
+  })).rejects.toMatchObject({ code: "WORKFLOW_ROOT_OPEN" });
+  expect(rootOpened).toBe(false);
 });
 
-it("rejects a Windows manifest child replaced after opening", async () => {
+it("refuses a Windows manifest before a child replacement hook", async () => {
   const root = join(temporaryDirectory, "manifests");
   const candidate = join(root, "example.json");
   await mkdir(root);
   await writeFile(candidate, manifest);
+  let childOpened = false;
   await expect(loadNamedWorkflowManifest({
     name: "example", roots: [root],
     hooks: {
       async afterCandidateOpen() {
+        childOpened = true;
         await rename(candidate, `${candidate}.old`);
         await writeFile(candidate, manifest);
       },
     },
-  })).rejects.toMatchObject({ code: "WORKFLOW_MANIFEST_RACE" });
+  })).rejects.toMatchObject({ code: "WORKFLOW_ROOT_OPEN" });
+  expect(childOpened).toBe(false);
 });
 
 it("rejects Windows junction roots in both workflow consumers", async () => {

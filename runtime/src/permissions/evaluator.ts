@@ -57,6 +57,8 @@ import { checkPathConstraints } from "../tools/BashTool/pathValidation.js";
 import {
   readOnlyGrantRefusalMessage,
   readOnlyGrantVerdict,
+  shellCallRequestsSandboxEscalation,
+  toolReachesAPerson,
   type ShellGateDeps,
 } from "./read-only-grant.js";
 import {
@@ -70,7 +72,9 @@ import {
   unattendedDenyDecision,
   unattendedPauseDecision,
   unattendedPolicyForContext,
+  unattendedWriteRoots,
 } from "./unattended-policy.js";
+import { runWithCwdOverride } from "../utils/cwd.js";
 import type { Session } from "../session/session.js";
 import { isSessionPlanMutation } from "../planning/session-plan-authority.js";
 import {
@@ -641,7 +645,158 @@ export async function hasPermissionsToUseToolInner(
   if (context.signal?.aborted) {
     throw new DOMException("aborted", "AbortError");
   }
+  const withoutApprover = noApproverRun(context);
+  if (withoutApprover !== undefined) {
+    return decideWithoutApprover(tool, input, context, withoutApprover);
+  }
+  return evaluateToolPermission(tool, input, context);
+}
 
+/**
+ * A routine run in acceptEdits or bypassPermissions (unattended policy
+ * `noApprover`), with the roots its file writes are confined to.
+ */
+function noApproverRun(
+  context: ToolEvaluatorContext,
+): { readonly permissionContext: ToolPermissionContext; readonly roots: readonly string[] } | undefined {
+  const appState = context.getAppState();
+  const permissionContext = context.toolPermissionContext
+    ? context.toolPermissionContext(appState)
+    : appState.toolPermissionContext;
+  const roots = unattendedWriteRoots(permissionContext);
+  return roots === undefined ? undefined : { permissionContext, roots };
+}
+
+/**
+ * The run's own workspace as the only process-independent working root, the
+ * way the read-only grant measures shell paths (`withRunFolderAsRoot`). The
+ * daemon hosts every session in one process whose folder is its own home, so
+ * a path check that falls back to the process folder would measure a
+ * routine's writes against the daemon instead of the routine's project.
+ */
+function withRunWorkspace(
+  context: ToolEvaluatorContext,
+  roots: readonly string[],
+): ToolEvaluatorContext {
+  const scope = (permissionContext: ToolPermissionContext): ToolPermissionContext => {
+    const directories = new Map(permissionContext.additionalWorkingDirectories);
+    for (const root of roots) {
+      if (!directories.has(root)) directories.set(root, { path: root, source: "session" });
+    }
+    return {
+      ...permissionContext,
+      additionalWorkingDirectories: directories,
+      excludeProcessWorkingDirectory: true,
+    };
+  };
+  return {
+    ...context,
+    getAppState(): AppStateSnapshot {
+      const state = context.getAppState();
+      return { ...state, toolPermissionContext: scope(state.toolPermissionContext) };
+    },
+    toolPermissionContext(appState: AppStateSnapshot): ToolPermissionContext {
+      return scope(
+        context.toolPermissionContext
+          ? context.toolPermissionContext(appState)
+          : appState.toolPermissionContext,
+      );
+    },
+  };
+}
+
+function noApproverRefusalMessage(toolName: string): string {
+  return (
+    `${toolName} needs approval in this routine's permission mode, and a scheduled run has ` +
+    "nobody attached to give it. Do not retry. Write what you found into your final answer instead."
+  );
+}
+
+/**
+ * The whole decision for a routine run that keeps acceptEdits or
+ * bypassPermissions: exactly what an attended session in that mode would
+ * decide, measured against the routine's own workspace, except that nothing
+ * can ask. An ask becomes a refusal, unless the call is read-only work the
+ * read-only grant would let a default-mode routine do, so a wider mode never
+ * does less than default. Never returns "ask".
+ */
+async function decideWithoutApprover(
+  tool: ToolLike,
+  input: unknown,
+  context: ToolEvaluatorContext,
+  run: { readonly permissionContext: ToolPermissionContext; readonly roots: readonly string[] },
+): Promise<PermissionDecision> {
+  const appState = context.getAppState();
+  const tracking = (): DenialTrackingState =>
+    context.denialTracking ?? appState.denialTracking ?? freshDenialTracking();
+  const refuse = (
+    message: string,
+    decisionReason: PermissionDenyDecision["decisionReason"] = {
+      type: "other",
+      reason: `unattended routine run refused ${tool.name}`,
+    },
+  ): PermissionDecision => {
+    const next = recordDenial(tracking());
+    persistDenialState(context, next);
+    return Object.freeze({
+      behavior: "deny" as const,
+      message: next.consecutiveDenials >= 2
+        ? `${message} This run has now been refused ${next.consecutiveDenials} times. Stop calling tools and write your findings as your final answer.`
+        : message,
+      decisionReason,
+      ruleSuggestions: null,
+    });
+  };
+  const runFolder = run.roots[0] ?? readOnlyGrantWorkingDirectory(context);
+  if (runFolder === null) return refuse(noApproverRefusalMessage(tool.name));
+  // Running these waits on a person whatever the mode says, so even bypass,
+  // which would allow them, must not start them.
+  if (toolReachesAPerson(tool)) {
+    return refuse(readOnlyGrantRefusalMessage(tool.name, { kind: "interactive" }));
+  }
+  // bypassPermissions grants a sandbox escalation without asking, and an
+  // escalated command runs outside the OS sandbox: that is exactly how a
+  // routine's writes would leave its workspace. Every other mode would ask.
+  if (shellCallRequestsSandboxEscalation(input)) {
+    return refuse(
+      `${tool.name} asked to run outside the OS sandbox. A routine runs inside it and writes only in its workspace, ` +
+      "and nobody is attached to approve anything else. Do not retry. Run the command without sandbox_permissions, or report that it could not run.",
+    );
+  }
+  const scoped = withRunWorkspace(context, run.roots);
+  // Relative shell paths resolve from the routine's folder, not the daemon's.
+  const decision = await runWithCwdOverride(runFolder, () =>
+    evaluateToolPermission(tool, input, scoped));
+  if (decision.behavior === "allow") {
+    persistDenialState(context, recordSuccess(tracking()));
+    return decision;
+  }
+  if (decision.behavior === "deny") {
+    return refuse(decision.message ?? noApproverRefusalMessage(tool.name), decision.decisionReason);
+  }
+  const verdict = readOnlyGrantVerdict(
+    tool,
+    input,
+    runFolder,
+    run.permissionContext,
+    READ_ONLY_GRANT_DEPS,
+  );
+  if (verdict.granted) {
+    const toolResult = await runWithCwdOverride(runFolder, () =>
+      resolveToolPermissionResult(tool, input, scoped));
+    if (toolResult.behavior !== "ask" && toolResult.behavior !== "deny") {
+      persistDenialState(context, recordSuccess(tracking()));
+      return unattendedAllowDecision(tool.name, input);
+    }
+  }
+  return refuse(noApproverRefusalMessage(tool.name));
+}
+
+async function evaluateToolPermission(
+  tool: ToolLike,
+  input: unknown,
+  context: ToolEvaluatorContext,
+): Promise<PermissionDecision> {
   // Run the rule-based layer. This handles steps 1a-1g. When it
   // returns a deny, or an ask with a bypass-immune reason
   // (requiresUserInteraction, content ask rule, safetyCheck), that

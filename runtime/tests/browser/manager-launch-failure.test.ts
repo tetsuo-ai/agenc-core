@@ -131,7 +131,7 @@ exitWhenReady();
       let descendant: number | undefined;
       try {
         terminationSeam.failuresRemaining = 1;
-        await expect(manager.page()).rejects.toMatchObject({
+        await expect(manager.newTab()).rejects.toMatchObject({
           name: "BrowserLaunchCleanupError",
           cleanupError: expect.objectContaining({
             message: "injected browser launch cleanup failure",
@@ -143,7 +143,7 @@ exitWhenReady();
         ).descendant;
         expect(isLivePid(descendant)).toBe(true);
 
-        await expect(manager.page()).rejects.toThrow(
+        await expect(manager.newTab()).rejects.toThrow(
           "injected browser launch cleanup failure",
         );
         expect(prepareSpawn).toHaveBeenCalledTimes(1);

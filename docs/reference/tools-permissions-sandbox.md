@@ -111,6 +111,23 @@ rejected on Windows. `head_limit: 0` removes user pagination only, not the hard
 record, decoded-output, 32 MiB rendered-output, 100,000 rendered-line/result,
 context, diagnostic, or 120-second process ceilings.
 
+`Glob` patterns are relative to `path` (or the workspace root) and mean what
+ripgrep's `--glob` means there. A pattern without `/` matches file names at any
+depth. A pattern with `/` must match the whole relative path: `*` and `?` stay
+inside one directory and a `**` segment spans directories. ripgrep lists the
+files whose names fit the pattern's last segment, newest first, so ignore rules
+stay in force. Glob reads that listing, checks each full path, and stops once
+it has a page of matches, so an old match behind many newer files is still
+found. The listing is read up to 64 MiB, and matching work is capped; a
+result cut short by either cap says it is truncated. Brace groups may nest 32
+levels deep.
+
+Three differences from ripgrep's `--glob` are deliberate. A leading `./` names
+the search root, so `./src/*.ts` means `src/*.ts` (ripgrep matches nothing for
+it). On Windows a backslash in a pattern is a path separator, never an escape.
+A leading `!` or `#` is an ordinary character, where ripgrep reads an
+exclusion or a comment.
+
 Search children do **not** inherit the session's workspace-write or network
 profile. `Grep`, `Glob`, and `Orient` (`Orient` via `runRipgrepFiles`) call
 `applyReadOnlyRuntimeSandboxToSpawn` (`tools/system/apply-runtime-sandbox.ts`).
@@ -287,7 +304,6 @@ its server-side native search through a separately authenticated Grok backend.
 | `request_ledger_transfer` | Built-in typed Android/Ledger SOL transfer handoff; exact active root-turn `@ledger` authorization only |
 | `ledger_wallet_cli_status` | Read-only Ledger Wallet CLI / device status |
 | `install_ledger_wallet_cli` | Prompted install of the official wallet CLI under `AGENC_HOME` |
-| `EditorProposal` | Editor-turn reviewable edit proposal (workbench BUFFER). Request-scoped; [editor request bounds](../embedded-neovim-buffer.md#editor-request-bounds) |
 | `SendUserMessage` | Short progress message to the user |
 | `Sleep` | Sleep / yield; **deferred** by default |
 | `Monitor` | Canonical unified-exec background process monitor; **deferred** by default |
@@ -323,9 +339,15 @@ each host once and connects to that exact IP (no DNS-rebinding window); private,
 loopback, and cloud-metadata addresses are blocked by default (`[browser]
 allow_private_network` opts in for local-dev targets; metadata stays blocked
 regardless, in every address representation). Non-proxied WebRTC UDP is disabled
-so it cannot open a side channel around the proxy. The browser uses a dedicated profile under
-`<agenc_home>/browser/profile`, never the user's real profile, and launches
-lazily on first use. `snapshot` / `screenshot` / `get_text` / `tabs` are
+so it cannot open a side channel around the proxy. By default, root sessions
+use `<agenc_home>/browser/profiles/<key>`, where the key is a digest of the
+realpathed project trust root. Sessions in one project share logins; different
+projects are isolated. Child sessions use temporary profiles. A configured
+`profile_dir` is shared across projects. The old `<agenc_home>/browser/profile`
+is left unused. The browser never uses the user's real profile and launches
+lazily on first use. While one session's browser holds a persistent profile,
+another session targeting that profile gets a private temporary profile that
+is removed when it closes. `snapshot` / `screenshot` / `get_text` / `tabs` are
 read-only and auto-approved; `navigate` and acting actions prompt in default
 mode (`navigate` can be granted a persistent per-domain allow rule). Config:
 `[browser]` (`executable_path`, `headless`, `allow_private_network`,

@@ -20,7 +20,6 @@ const harness = vi.hoisted(() => ({
     tui: {
       copyOnSelect: true as boolean | undefined,
       prStatusFooterEnabled: true as boolean | undefined,
-      vimMode: false,
     },
   },
   features: new Set<string>(),
@@ -56,7 +55,6 @@ const harness = vi.hoisted(() => ({
       tui: {
         copyOnSelect: true,
         prStatusFooterEnabled: true,
-        vimMode: false,
       },
     };
     harness.features = new Set();
@@ -207,7 +205,6 @@ vi.mock("./utils.js", async importOriginal => {
   const actual = await importOriginal<typeof import("./utils.js")>();
   return {
     ...actual,
-    isVimModeEnabled: () => harness.config.tui.vimMode === true,
   };
 });
 
@@ -319,7 +316,6 @@ async function renderFooter(
       tasksSelected={false}
       teamsSelected={false}
       toolPermissionContext={{ mode: "default" } as never}
-      vimMode={undefined}
       {...overrides}
     />,
   );
@@ -353,36 +349,6 @@ describe("PromptInputFooterLeftSide render paths", () => {
       expect(paste.output()).toContain("Pasting text");
     } finally {
       await paste.dispose();
-    }
-  });
-
-  test("renders history search, vim mode, and bash mode states", async () => {
-    const search = await renderFooter({
-      historyFailedMatch: true,
-      historyQuery: "needle",
-      isSearching: true,
-      vimMode: "INSERT",
-    });
-    try {
-      expect(search.output()).toContain("History:needle:true");
-      expect(search.output()).not.toContain("-- INSERT --");
-    } finally {
-      await search.dispose();
-    }
-
-    harness.config.tui.vimMode = true;
-    const vim = await renderFooter({ vimMode: "NORMAL" });
-    try {
-      expect(vim.output()).toContain("-- NORMAL --");
-    } finally {
-      await vim.dispose();
-    }
-
-    const bash = await renderFooter({ mode: "bash" });
-    try {
-      expect(bash.output()).toContain("! for bash mode");
-    } finally {
-      await bash.dispose();
     }
   });
 

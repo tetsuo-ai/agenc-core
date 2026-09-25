@@ -1,3 +1,5 @@
+import { lstatSync } from "node:fs";
+
 import type { WatchRegistration } from "../file-watcher/index.js";
 import { FileWatcher } from "../file-watcher/index.js";
 import { createSignal } from "../utils/signal.js";
@@ -48,6 +50,7 @@ export function createSkillChangeDetector(): SkillChangeDetector {
   let disposed = false;
   let lifecycleVersion = 0;
   let activeOptions: SkillChangeDetectorOptions | null = null;
+  let watchedRoots: readonly string[] = [];
   const pendingChangedPaths = new Set<string>();
   let firstPendingChangedPath: string | null = null;
 
@@ -72,6 +75,7 @@ export function createSkillChangeDetector(): SkillChangeDetector {
       throw error;
     }
     if (disposed || version !== lifecycleVersion) return;
+    watchedRoots = roots;
     if (roots.length === 0) return;
 
     fileWatcher = options.fileWatcher ?? FileWatcher.create();
@@ -107,6 +111,7 @@ export function createSkillChangeDetector(): SkillChangeDetector {
     firstPendingChangedPath = null;
     registration?.close();
     registration = null;
+    watchedRoots = [];
     subscriber?.close();
     subscriber = null;
     if (ownsFileWatcher) fileWatcher?.close();
@@ -163,14 +168,36 @@ export function createSkillChangeDetector(): SkillChangeDetector {
     const event = { changedPaths };
     await activeOptions?.onReload?.(event);
     if (disposed) return;
+    // A missing root can become writable by others before the watcher sees
+    // its creation. Re-evaluate the roots on every reload and drop unsafe ones.
+    // A dropped root returns on the next skills reload after its permissions are fixed.
+    const version = lifecycleVersion;
     const options = activeOptions;
-    if (options?.clearRuntimeCaches !== false) {
+    if (options !== null) {
+      try {
+        const nextRoots = await options.getWatchRoots();
+        if (disposed || version !== lifecycleVersion) return;
+        if (nextRoots.length !== watchedRoots.length ||
+          nextRoots.some((root, index) => root !== watchedRoots[index])) {
+          registration?.close();
+          registration = subscriber?.registerPaths(
+            nextRoots.map((root) => ({ path: root, recursive: true })),
+          ) ?? null;
+          watchedRoots = nextRoots;
+        }
+      } catch {
+        // Keep the previous watches if root discovery failed transiently.
+      }
+    }
+    if (disposed) return;
+    const reloadOptions = activeOptions;
+    if (reloadOptions?.clearRuntimeCaches !== false) {
       await resetSkillAnnouncementState();
       await clearCommandCaches();
     }
     if (disposed) return;
     notify(event);
-    options?.forwardTo?.notify(event);
+    reloadOptions?.forwardTo?.notify(event);
   }
 
   async function configChangeHookBlocked(changedPath: string): Promise<boolean> {
@@ -224,8 +251,27 @@ async function clearCommandCaches(): Promise<void> {
   }
 }
 
+/**
+ * Whether a change at this path can alter the skill catalog. The loader
+ * reads SKILL.md files and the directories that lead to them, nothing else,
+ * so an existing regular file under any other name (a skill's scripts,
+ * references, logs, caches) cannot add, remove or edit a skill. Anything
+ * that is gone, a directory, a link or a SKILL.md still reloads, including
+ * scratch-looking names that could belong to a directory. On the audited
+ * catalog four bursts of regular file writes caused four full reloads.
+ */
 function shouldIgnorePath(path: string): boolean {
-  return path.split(/[\\/]/u).includes(".git");
+  const parts = path.split(/[\\/]/u);
+  if (parts.includes(".git")) return true;
+  const name = parts.at(-1) ?? "";
+  if (name.toLowerCase() === "skill.md") return false;
+  // A plugin manifest names the skills' owner; a root can sit on a plugin.
+  if (parts.includes(".agenc-plugin")) return false;
+  try {
+    return lstatSync(path).isFile();
+  } catch {
+    return false;
+  }
 }
 
 export const skillChangeDetector = createSkillChangeDetector();

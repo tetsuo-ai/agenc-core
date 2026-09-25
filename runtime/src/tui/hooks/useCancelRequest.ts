@@ -10,7 +10,6 @@ import {
   useAppStateStore,
   useSetAppState,
 } from "../state/AppState.js";
-import { isVimModeEnabled } from "../components/PromptInput/utils.js";
 import type { ToolUseConfirm } from "../permission-types.js";
 import type { SpinnerMode } from "../components/spinner/types.js";
 import { useNotifications } from "../context/notifications";
@@ -32,7 +31,6 @@ import type {
   PromptInputMode,
   QueuedCommand,
   QueuedCommandOwner,
-  VimMode,
 } from "../../types/textInputTypes";
 import { isStoppableLocalAgentStatus } from "../components/spinner/agentActivity.js";
 import { registerUrgentCancelInputHandler } from "../urgentCancelInput.js";
@@ -59,7 +57,6 @@ type CancelRequestHandlerProps = {
   screen: Screen;
   abortSignal?: AbortSignal;
   popCommandFromQueue?: () => void;
-  vimMode?: VimMode;
   isLocalJSXCommand?: boolean;
   isSearchingHistory?: boolean;
   isHelpOpen?: boolean;
@@ -83,7 +80,6 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
     screen,
     abortSignal,
     popCommandFromQueue,
-    vimMode,
     isLocalJSXCommand,
     isSearchingHistory,
     isHelpOpen,
@@ -176,8 +172,6 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
   const isViewingTeammate = viewSelectionMode === "viewing-agent";
   const isScreenBlockingCancel =
     screen === "transcript" && !hasActiveTurnToCancel;
-  const shouldDeferToVimInsert =
-    isVimModeEnabled() && vimMode === "INSERT" && !hasActiveTurnToCancel;
   // Context guards: other screens/overlays handle their own cancel
   const isContextActive =
     !isScreenBlockingCancel &&
@@ -185,8 +179,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
     !isMessageSelectorVisible &&
     !isLocalJSXCommand &&
     !isHelpOpen &&
-    !isModalOverlayActive &&
-    !shouldDeferToVimInsert;
+    !isModalOverlayActive;
 
   // Escape (chat:cancel) defers to mode-exit when in special mode with empty
   // input, and to useBackgroundTaskNavigation when viewing a teammate

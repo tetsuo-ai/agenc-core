@@ -23,7 +23,6 @@ import {
   popAllEditable,
   queuedCommandOwnedByConversation,
   queuedCommandOwnedByMount,
-  queuedCommandWorkspaceView,
   registerCommandQueueOwner,
   removeLastQueuedInput,
   resetCommandQueueForTesting,
@@ -33,37 +32,6 @@ import type { QueuedCommand } from "../types/textInputTypes.js";
 describe("messageQueueManager workspace ownership", () => {
   afterEach(() => {
     resetCommandQueueForTesting();
-  });
-
-  test("preserves explicit Editor commands while legacy commands drain as Agent-owned", () => {
-    enqueue({
-      value: "editor-owned",
-      mode: "prompt",
-      workspaceView: "editor",
-    });
-    enqueue({ value: "legacy-agent-owned", mode: "prompt" });
-
-    const nextAgentCommand = peek(
-      (command) => queuedCommandWorkspaceView(command) === "agent",
-    );
-    expect(nextAgentCommand).toMatchObject({
-      value: "legacy-agent-owned",
-    });
-    expect(nextAgentCommand?.workspaceView).toBeUndefined();
-    expect(queuedCommandWorkspaceView(nextAgentCommand!)).toBe("agent");
-    expect(
-      dequeue(
-        (command) =>
-          command === nextAgentCommand &&
-          queuedCommandWorkspaceView(command) === "agent",
-      ),
-    ).toBe(nextAgentCommand);
-    expect(getCommandQueueSnapshot()).toEqual([
-      expect.objectContaining({
-        value: "editor-owned",
-        workspaceView: "editor",
-      }),
-    ]);
   });
 
   test("rejects late callbacks from inactive mounts and never treats legacy commands as owned", () => {

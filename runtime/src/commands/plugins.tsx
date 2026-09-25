@@ -175,6 +175,7 @@ export function createPluginMenuActions(
         ...options,
         source,
         name: resolved.pluginId,
+        marketplace: record.name,
         requireSignature: installRequiresSignature(record),
       });
       return installed.plugin;

@@ -19,25 +19,15 @@
  */
 
 import { stat } from "node:fs/promises";
-import { extname, isAbsolute, relative, resolve, sep, win32 } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 
 import { buildOrientationMap } from "../../context/orientation-map.js";
-import {
-  beginWorkspaceReadToolOperation,
-  captureWorkspaceAuthoritativeDirtySnapshots,
-  endWorkspaceToolOperation,
-  type WorkspaceToolOperationToken,
-} from "../../workspace/mutation-coordinator.js";
 import type { Tool, ToolResult } from "../types.js";
 import {
   resolveToolAllowedPaths,
   safePath,
   type FilesystemToolConfig,
 } from "./filesystem.js";
-import {
-  createSearchIgnoreMatcher,
-  searchPathUsesDefaultExcludedDirectory,
-} from "./grep.js";
 import {
   discoverRipgrepRootIgnoreFiles,
   formatRipgrepFilesError,
@@ -75,34 +65,6 @@ const MAX_RANKED = 20;
 const MAP_TOKEN_BUDGET = 1000;
 const PINNED_RIPGREP_UNAVAILABLE_MESSAGE =
   "Orient error [PINNED_RIPGREP_UNAVAILABLE]: AgenC's packaged ripgrep executable is unavailable. Run `agenc doctor`, then reinstall the same AgenC version.";
-const SOURCE_EXTENSIONS = new Set([
-  ".ts",
-  ".tsx",
-  ".js",
-  ".jsx",
-  ".mjs",
-  ".cjs",
-  ".py",
-  ".rs",
-  ".go",
-  ".java",
-  ".rb",
-  ".php",
-  ".c",
-  ".cc",
-  ".cpp",
-  ".cxx",
-  ".h",
-  ".hpp",
-  ".cs",
-  ".kt",
-  ".kts",
-  ".swift",
-  ".scala",
-  ".m",
-  ".mm",
-]);
-
 interface OrientToolInput {
   readonly query?: unknown;
   readonly path?: unknown;
@@ -121,18 +83,6 @@ function errorResult(content: string): ToolResult {
   return { content, isError: true };
 }
 
-function editorCoherenceError(error?: unknown): ToolResult {
-  const detail =
-    error === undefined
-      ? "an Editor buffer changed while orientation was running"
-      : error instanceof Error
-        ? error.message
-        : String(error);
-  return errorResult(
-    `Orient error: authoritative Editor workspace contents are unavailable: ${detail}. Retry after Editor synchronization settles.`,
-  );
-}
-
 function asNonEmptyString(v: unknown): string | undefined {
   return typeof v === "string" && v.trim().length > 0 ? v : undefined;
 }
@@ -148,8 +98,6 @@ export interface OrientToolConfig {
   readonly allowedPaths: readonly string[];
   /** Test override for the ripgrep binary. Production uses the pinned runtime binary. */
   readonly ripgrepCommand?: string;
-  /** Deterministic test seam for a revision change immediately before return. */
-  readonly beforeAuthoritativeSnapshotValidation?: () => void | Promise<void>;
   /** Deterministic test seam immediately after the final path check. */
   readonly __testAfterFinalPathCheck?: () => void | Promise<void>;
   /** Deterministic test seam after admission but before capability binding. */
@@ -182,10 +130,6 @@ export function createOrientTool(
     "ripgrepCommand" in config && typeof config.ripgrepCommand === "string"
       ? config.ripgrepCommand
       : selectPinnedRipgrepPath();
-  const beforeAuthoritativeSnapshotValidation =
-    "beforeAuthoritativeSnapshotValidation" in config
-      ? config.beforeAuthoritativeSnapshotValidation
-      : undefined;
   const afterFinalPathCheck =
     "__testAfterFinalPathCheck" in config
       ? config.__testAfterFinalPathCheck
@@ -307,7 +251,6 @@ export function createOrientTool(
       }
       let readCapability: WorkspaceBoundReadCapability | undefined;
       let ignoreReadCapability: WorkspaceBoundReadCapability | undefined;
-      let toolOperation: WorkspaceToolOperationToken | undefined;
       const bindReadCapabilities = async (): Promise<void> => {
         await beforeReadCapabilityBind?.();
         readCapability = await bindWorkspaceDirectoryReadCapability(baseDir, {
@@ -321,50 +264,19 @@ export function createOrientTool(
               });
       };
       try {
-        toolOperation = beginWorkspaceReadToolOperation(
-          root,
-          ORIENT_TOOL_NAME,
-        ).token;
         await bindReadCapabilities();
       } catch (error) {
         await ignoreReadCapability?.dispose().catch(() => {});
         await readCapability?.dispose().catch(() => {});
-        if (toolOperation !== undefined) {
-          endWorkspaceToolOperation(toolOperation);
-        }
         return errorResult(
-          `Orient error: authoritative Editor workspace files cannot be read safely: ${
+          `Orient error: workspace files cannot be read safely: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
       }
 
       try {
-        let authoritativeCapture: ReturnType<
-          typeof captureWorkspaceAuthoritativeDirtySnapshots
-        >;
-        try {
-          authoritativeCapture =
-            captureWorkspaceAuthoritativeDirtySnapshots(baseDir, {
-              includeDescendants: true,
-            });
-        } catch (error) {
-          return editorCoherenceError(error);
-        }
-        const authoritativeSnapshots = authoritativeCapture.snapshots;
         await afterFinalPathCheck?.();
-        const finalizeAuthoritativeResult = async (
-          result: ToolResult,
-        ): Promise<ToolResult> => {
-          await beforeAuthoritativeSnapshotValidation?.();
-          try {
-            return authoritativeCapture.isCurrent()
-              ? result
-              : editorCoherenceError();
-          } catch (error) {
-            return editorCoherenceError(error);
-          }
-        };
 
         const cap = clampMaxFiles(args.maxFiles);
         let rootIgnoreFiles: Awaited<
@@ -379,7 +291,9 @@ export function createOrientTool(
               : {}),
           });
         } catch (error) {
-          return finalizeAuthoritativeResult(editorCoherenceError(error));
+          return errorResult(
+            `Orient error: ${error instanceof Error ? error.message : String(error)}`,
+          );
         }
         await afterRootIgnoreSnapshot?.();
         const enumerationLimit = cap + 1;
@@ -404,15 +318,13 @@ export function createOrientTool(
             : {}),
         });
         if (signal?.aborted || listed.aborted) {
-          return finalizeAuthoritativeResult(errorResult("Orient aborted"));
+          return errorResult("Orient aborted");
         }
         if (listed.spawnError) {
-          return finalizeAuthoritativeResult(
-            errorResult(
-              listed.spawnError instanceof GrepBoundaryError
-                ? `Orient error: ${formatRipgrepFilesError(listed.spawnError)}`
-                : PINNED_RIPGREP_UNAVAILABLE_MESSAGE,
-            ),
+          return errorResult(
+            listed.spawnError instanceof GrepBoundaryError
+              ? `Orient error: ${formatRipgrepFilesError(listed.spawnError)}`
+              : PINNED_RIPGREP_UNAVAILABLE_MESSAGE,
           );
         }
         if (
@@ -425,40 +337,9 @@ export function createOrientTool(
               : listed.stopReason === "output_limit"
                 ? "ripgrep exceeded the output safety limit"
                 : `ripgrep stopped before enumeration completed (${listed.stopReason})`;
-          return finalizeAuthoritativeResult(
-            errorResult(`Orient error: ${detail}.`),
-          );
+          return errorResult(`Orient error: ${detail}.`);
         }
-        const snapshotsByPath = new Map(
-          authoritativeSnapshots.map((snapshot) => [
-            normalizedAbsolutePath(snapshot.path),
-            snapshot,
-          ]),
-        );
-        const isIgnored = await createSearchIgnoreMatcher(root, {
-          ...(ignoreReadCapability !== undefined
-            ? { readCapability: ignoreReadCapability }
-            : {}),
-        });
-        const dirtyRelPaths: string[] = [];
-        for (const snapshot of authoritativeSnapshots) {
-          const rel = normalizedRelativePath(relative(baseDir, snapshot.path));
-          if (
-            !isOrientSourcePath(rel) ||
-            !isSafeOrientDisplayPath(rel) ||
-            searchPathUsesDefaultExcludedDirectory(rel, false) ||
-            (await isIgnored(snapshot.path))
-          ) {
-            continue;
-          }
-          dirtyRelPaths.push(rel);
-        }
-        dirtyRelPaths.sort((left, right) => left.localeCompare(right));
-        const dirtyRelPathSet = new Set(
-          dirtyRelPaths.map(normalizedRelativePath),
-        );
         const candidatePaths = [
-          ...dirtyRelPaths,
           ...listed.pathRecords
             .map((path) => decodeRipgrepPathBytes(path))
             .filter((path): path is string => path !== undefined)
@@ -470,35 +351,23 @@ export function createOrientTool(
                 path !== ".." &&
                 !path.startsWith(`..${sep}`) &&
                 !isAbsolute(path),
-            )
-            .filter(
-              (path) => !dirtyRelPathSet.has(normalizedRelativePath(path)),
             ),
         ];
         const capExceeded =
           listed.killedAfterLimit || candidatePaths.length > cap;
         const relPaths = candidatePaths.slice(0, cap);
         if (relPaths.length === 0) {
-          return finalizeAuthoritativeResult(
-            textResult(
-              "No source files found to orient over (after ignoring generated/build/vendored dirs).",
-            ),
+          return textResult(
+            "No source files found to orient over (after ignoring generated/build/vendored dirs).",
           );
         }
 
         const files = new Map<string, string>();
         for (const rel of relPaths) {
           if (signal?.aborted) {
-            return finalizeAuthoritativeResult(errorResult("Orient aborted"));
+            return errorResult("Orient aborted");
           }
           const abs = resolve(baseDir, rel);
-          const editorSnapshot = snapshotsByPath.get(
-            normalizedAbsolutePath(abs),
-          );
-          if (editorSnapshot !== undefined) {
-            files.set(rel, truncateSnapshotForOrient(editorSnapshot.content));
-            continue;
-          }
           try {
             if (readCapability !== undefined) {
               const result = await readCapability.readRelativeFile(
@@ -523,9 +392,7 @@ export function createOrientTool(
           }
         }
         if (files.size === 0) {
-          return finalizeAuthoritativeResult(
-            textResult("No readable source files found to orient over."),
-          );
+          return textResult("No readable source files found to orient over.");
         }
 
         const map = buildOrientationMap(files, query);
@@ -546,75 +413,25 @@ export function createOrientTool(
           ? `\n\nKey symbols by file:\n${rendered}`
           : "";
 
-        return finalizeAuthoritativeResult(
-          textResult(header + body + mapSection, {
-            fileCount: files.size,
-            topFiles: top,
-          }),
-        );
+        return textResult(header + body + mapSection, {
+          fileCount: files.size,
+          topFiles: top,
+        });
       } finally {
         try {
-          try {
-            if (ignoreReadCapability !== readCapability) {
-              await ignoreReadCapability?.dispose();
-            }
-          } finally {
-            await readCapability?.dispose();
+          if (ignoreReadCapability !== readCapability) {
+            await ignoreReadCapability?.dispose();
           }
         } finally {
-          if (toolOperation !== undefined) {
-            endWorkspaceToolOperation(toolOperation);
-          }
+          await readCapability?.dispose();
         }
       }
     },
   };
 }
 
-function normalizedAbsolutePath(path: string): string {
-  if (/^[A-Za-z]:[\\/]/u.test(path) || /^\\\\/u.test(path)) {
-    return win32.normalize(path).toLowerCase().normalize("NFC");
-  }
-  // POSIX path spelling is identity. Canonical filesystem boundaries already
-  // coalesce aliases when realpath proves they name the same existing entry.
-  return resolve(path);
-}
-
-function normalizedRelativePath(path: string): string {
-  const normalized =
-    process.platform === "win32" ? path.replace(/\\/gu, "/") : path;
-  return normalized;
-}
-
 function isSafeOrientDisplayPath(path: string): boolean {
   // The orientation map is line-oriented user output. Reject control-bearing
   // filenames instead of letting one filesystem record invent output lines.
   return !/[\u0000-\u001f\u007f]/u.test(path);
-}
-
-function isOrientSourcePath(path: string): boolean {
-  const normalized = normalizedRelativePath(path);
-  return (
-    normalized.length > 0 &&
-    normalized !== ".." &&
-    !normalized.startsWith("../") &&
-    !isAbsolute(path) &&
-    SOURCE_EXTENSIONS.has(extname(normalized).toLowerCase())
-  );
-}
-
-function truncateSnapshotForOrient(content: string): string {
-  if (Buffer.byteLength(content, "utf8") <= MAX_BYTES_PER_FILE) {
-    return content;
-  }
-  const lines: string[] = [];
-  let bytes = 0;
-  for (const line of content.split(/\r?\n/u)) {
-    const nextBytes =
-      bytes + (lines.length === 0 ? 0 : 1) + Buffer.byteLength(line, "utf8");
-    if (nextBytes > MAX_BYTES_PER_FILE) break;
-    lines.push(line);
-    bytes = nextBytes;
-  }
-  return lines.join("\n");
 }

@@ -405,6 +405,9 @@ function startBridge(args: ConnectorArgs): void {
   }
   const peers = new Map<string, WebSocket>();
   let relay: WebSocket | null = null;
+  // Relays deployed before the subprotocol transport select no protocol, which
+  // `ws` treats as a failed handshake; fall back to the query form once.
+  let queryFallback = false;
   let keepalive: ReturnType<typeof setInterval> | null = null;
   let ticket = args.initialHostTicket;
   const stop = () => {
@@ -510,8 +513,12 @@ function startBridge(args: ConnectorArgs): void {
   function connect(): void {
     checkRevocation();
     if (stopped) return;
-    relay = new WebSocket(`${relayUrl}/v1/host?ticket=${encodeURIComponent(ticket)}`);
+    const handshake = legacyHostHandshake(relayUrl, ticket, queryFallback);
+    relay = new WebSocket(handshake.url, handshake.protocols);
+    let opened = false;
+    let subprotocolRefused = false;
     relay.on("open", () => {
+      opened = true;
       if (stopped) { relay?.terminate(); return; }
       out(`● Remote access ON — “${machineName}” reachable from your phone (pairing ${pairingId}).\n`);
       if (keepalive) clearInterval(keepalive);
@@ -563,6 +570,11 @@ function startBridge(args: ConnectorArgs): void {
       }
       peers.clear();
       if (stopped) return;
+      if (!opened && subprotocolRefused && !queryFallback) {
+        queryFallback = true;
+        reconnect = setTimeout(connect, 500);
+        return;
+      }
       void freshTicket().then((t) => {
         checkRevocation();
         if (stopped) return;
@@ -575,12 +587,38 @@ function startBridge(args: ConnectorArgs): void {
         reconnect = setTimeout(connect, 2000);
       });
     });
-    relay.on("error", () => {
-      /* close handler drives the reconnect */
+    relay.on("error", (error: Error) => {
+      // `ws` aborts the handshake when the server selects no subprotocol; the
+      // close handler then retries once with the query form.
+      if (!opened && /subprotocol/i.test(error.message)) subprotocolRefused = true;
     });
   }
 
   connect();
+}
+
+/** Subprotocol name under which a legacy host offers its relay ticket. */
+export const LEGACY_HOST_PROTOCOL = "agenc-relay-v1";
+
+/**
+ * How a legacy host presents its ticket to the relay. The ticket rides in the
+ * `Sec-WebSocket-Protocol` header, base64url-encoded because `s1` tickets
+ * contain ":" which is not a valid subprotocol token character, so it never
+ * appears in a request URL that edge observability logs record. `fallback`
+ * selects the old query form for relays that predate the subprotocol.
+ */
+export function legacyHostHandshake(
+  relayUrl: string,
+  ticket: string,
+  fallback: boolean,
+): { readonly url: string; readonly protocols: string[] } {
+  if (fallback) {
+    return { url: `${relayUrl}/v1/host?ticket=${encodeURIComponent(ticket)}`, protocols: [] };
+  }
+  return {
+    url: `${relayUrl}/v1/host`,
+    protocols: [LEGACY_HOST_PROTOCOL, Buffer.from(ticket, "utf8").toString("base64url")],
+  };
 }
 
 /** Blocking wrapper for the foreground CLI: start the bridge, then never resolve (Ctrl-C exits). */

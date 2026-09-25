@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { GIT_CHECKOUT_BYTES_ARGS } from "../gitAcquisitionArgs.js";
 import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -63,6 +64,7 @@ export interface MarketplaceRecord {
   readonly autoUpdate?: boolean;
   readonly refreshable?: boolean;
   readonly updatedAt: string;
+  readonly lastCheckedAt?: string;
 }
 
 export interface MarketplaceIndex {
@@ -167,6 +169,7 @@ export type Fetcher = (
 ) => Promise<FetchResponse>;
 
 export interface MarketplaceOperationOptions {
+  readonly agencHome?: string;
   readonly pluginStorageRoot: string;
   readonly workspaceRoot?: string;
   readonly env?: NodeJS.ProcessEnv;
@@ -226,6 +229,8 @@ const DEFAULT_GIT_TIMEOUT_MS = 120_000;
 const DEFAULT_GIT_MAX_OUTPUT_BYTES = 1_048_576;
 const MARKETPLACE_URL_MANIFEST_MAX_BYTES = 1 * 1024 * 1024;
 const GIT_NO_HOOKS_ARGS = ["-c", "core.hooksPath=/dev/null"] as const;
+/** Hooks off and repository bytes verbatim: see gitAcquisitionArgs.ts. */
+const GIT_ACQUISITION_ARGS = [...GIT_NO_HOOKS_ARGS, ...GIT_CHECKOUT_BYTES_ARGS] as const;
 
 export function marketplaceStoreRoot(options: MarketplaceOperationOptions): string {
   return pluginMarketplaceRootPath({
@@ -335,6 +340,7 @@ function marketplaceRecordFromInventory(
       ? { refreshable: entry.refreshable }
       : {}),
     updatedAt: entry.lastUpdated,
+    ...(entry.lastChecked !== undefined ? { lastCheckedAt: entry.lastChecked } : {}),
   };
 }
 
@@ -346,6 +352,7 @@ function marketplaceInventoryFromRecord(
     installLocation: record.installedPath,
     manifestPath: record.manifestPath,
     lastUpdated: record.updatedAt,
+    ...(record.lastCheckedAt !== undefined ? { lastChecked: record.lastCheckedAt } : {}),
     ...(record.autoUpdate !== undefined
       ? { autoUpdate: record.autoUpdate }
       : {}),
@@ -724,6 +731,12 @@ export async function defaultRunProcess(
         GIT_ASKPASS: "",
       },
     });
+    // A failed spawn reports on the next tick, and EMFILE or ENFILE also leave
+    // stdout and stderr undefined: listen before touching them.
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
     let timedOut = false;
     const timeout = setTimeout(() => {
       timedOut = true;
@@ -737,23 +750,19 @@ export async function defaultRunProcess(
     let stderrBytes = 0;
     let stdoutTruncated = false;
     let stderrTruncated = false;
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
       const appended = appendBoundedOutput(stdout, stdoutBytes, chunk, maxOutputBytes);
       stdout = appended.text;
       stdoutBytes = appended.bytes;
       stdoutTruncated ||= appended.truncated;
     });
-    child.stderr.on("data", (chunk: string) => {
+    child.stderr?.on("data", (chunk: string) => {
       const appended = appendBoundedOutput(stderr, stderrBytes, chunk, maxOutputBytes);
       stderr = appended.text;
       stderrBytes = appended.bytes;
       stderrTruncated ||= appended.truncated;
-    });
-    child.once("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
     });
     child.once("close", (code) => {
       clearTimeout(timeout);
@@ -859,7 +868,7 @@ async function stageMarketplaceSource(
         if (sparse !== undefined) {
           const sparsePath = normalizeSparsePath(sparse);
           await run("git", [
-            ...GIT_NO_HOOKS_ARGS,
+            ...GIT_ACQUISITION_ARGS,
             "clone",
             "--depth",
             "1",
@@ -870,7 +879,7 @@ async function stageMarketplaceSource(
             root,
           ], processOptions);
           await run("git", [
-            ...GIT_NO_HOOKS_ARGS,
+            ...GIT_ACQUISITION_ARGS,
             "sparse-checkout",
             "set",
             "--cone",
@@ -878,18 +887,18 @@ async function stageMarketplaceSource(
             sparsePath,
           ], { ...processOptions, cwd: root });
           await run("git", [
-            ...GIT_NO_HOOKS_ARGS,
+            ...GIT_ACQUISITION_ARGS,
             "checkout",
             ref ?? "HEAD",
           ], { ...processOptions, cwd: root });
         } else {
-          const args = [...GIT_NO_HOOKS_ARGS, "clone", "--depth", "1"];
+          const args = [...GIT_ACQUISITION_ARGS, "clone", "--depth", "1"];
           if (ref !== undefined) args.push("--branch", ref);
           args.push("--", gitUrl, root);
           await run("git", args, processOptions);
         }
         const revision = (await run("git", [
-          ...GIT_NO_HOOKS_ARGS,
+          ...GIT_ACQUISITION_ARGS,
           "rev-parse",
           "HEAD",
         ], { ...processOptions, cwd: root })).stdout.trim();

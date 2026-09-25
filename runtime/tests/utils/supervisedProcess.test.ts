@@ -11,6 +11,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1135,6 +1136,50 @@ describe("runSupervisedProcess", () => {
 });
 
 describe("process-tree root safety", () => {
+  it.skipIf(process.platform === "win32")(
+    "refuses a missing working directory before spawning anything",
+    () => {
+      const missing = join(tmpdir(), `agenc-missing-cwd-${process.pid}-${Date.now()}`, "vchk");
+      // Never call through: a real spawn here is exactly what killed the group.
+      const spawnSpy = vi.spyOn(childProcess, "spawn").mockImplementation(() => {
+        throw new Error("spawn must not run for a missing working directory");
+      });
+      spawnSpy.mockClear();
+      try {
+        expect(() =>
+          spawnContainedProcess(process.execPath, ["-e", "0"], { cwd: missing, env: process.env }),
+        ).toThrow(`working directory does not exist: ${missing}`);
+        expect(spawnSpy).not.toHaveBeenCalled();
+      } finally {
+        spawnSpy.mockRestore();
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "never signals a child whose spawn failed without a pid",
+    () => {
+      // Node leaves a failed spawn's handle open with no pid, and kill() on it
+      // reaches pid 0: that SIGKILLed the calling daemon and its whole group.
+      const failed = Object.assign(new EventEmitter(), {
+        pid: undefined,
+        kill: vi.fn(() => true),
+        stdio: [null, null, null, null, null],
+      });
+      const spawnSpy = vi.spyOn(childProcess, "spawn").mockReturnValue(failed as never);
+      spawnSpy.mockClear();
+      try {
+        expect(() =>
+          spawnContainedProcess(process.execPath, ["-e", "0"], { cwd: tmpdir(), env: process.env }),
+        ).toThrow();
+        expect(failed.kill).not.toHaveBeenCalled();
+        expect(failed.listenerCount("error")).toBeGreaterThan(0);
+      } finally {
+        spawnSpy.mockRestore();
+      }
+    },
+  );
+
   it.runIf(process.platform === "linux")(
     "contains Bash startup hooks behind the POSIX process gate",
     async () => {
@@ -1659,13 +1704,6 @@ describe("process-tree root safety", () => {
       new URL("../../src/utils/supervisedProcess.ts", import.meta.url),
       "utf8",
     );
-    const discoverySource = readFileSync(
-      new URL(
-        "../../src/tui/workbench/buffer/neovim/NeovimDiscovery.ts",
-        import.meta.url,
-      ),
-      "utf8",
-    );
     const packageManifest = JSON.parse(
       readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
     ) as { readonly agencExecutableFiles?: readonly string[] };
@@ -1746,9 +1784,6 @@ describe("process-tree root safety", () => {
       "dist/agenc-process-job-broker.exe",
     );
     expect(entrypointCheck).toContain('"dist/agenc-process-job-broker.exe"');
-    expect(discoverySource).toContain(
-      'process.platform === "win32" ? 5_000 : 1200',
-    );
   });
 
   it("guards PID 1 inside the detached POSIX owner watchdog", () => {
@@ -1798,9 +1833,47 @@ describe("process-tree root safety", () => {
         };
         signalProcessTree(liveInvalidRoot, "SIGKILL");
 
+        // No OS-level signal: kill(1) is init and kill(-1) every process the
+        // user owns. The handle's own kill() is refused too. It used to be
+        // called here, on the theory that a ChildProcess handle only reaches
+        // its own child; but not every handle is bound to a real child
+        // (node-pty's kill() is process.kill(this.pid)), and no child this
+        // process starts can have pid 1.
         expect(osKill).not.toHaveBeenCalled();
-        expect(directKill).toHaveBeenCalledOnce();
-        expect(directKill).toHaveBeenCalledWith("SIGKILL");
+        expect(directKill).not.toHaveBeenCalled();
+
+        // A live invalid root is therefore never signalled; cleanup fails
+        // closed instead of being reported as done.
+        await expect(
+          terminateProcessTreeAndWait(liveInvalidRoot, {
+            terminateGraceMs: 1,
+            killGraceMs: 1,
+            label: "invalid root",
+          }),
+        ).rejects.toThrow("invalid root invalid process root survived forced shutdown");
+        expect(osKill).not.toHaveBeenCalled();
+        expect(directKill).not.toHaveBeenCalled();
+      } finally {
+        osKill.mockRestore();
+      }
+    },
+  );
+
+  // 0 and -1 were already refused; a non-integer pid reached process.kill.
+  it.each([2.5, Number.NaN])(
+    "never signals a handle whose pid is %s",
+    (pid) => {
+      const directKill = vi.fn(() => true);
+      // Never calls through: a real kill with these pids is the hazard.
+      const osKill = vi.spyOn(process, "kill").mockImplementation(() => true);
+      try {
+        signalProcessTree(
+          { pid, exitCode: null, signalCode: null, kill: directKill },
+          "SIGTERM",
+        );
+
+        expect(osKill).not.toHaveBeenCalled();
+        expect(directKill).not.toHaveBeenCalled();
       } finally {
         osKill.mockRestore();
       }

@@ -4,7 +4,7 @@
  * The desktop's provider pane lists which GPT models the stored credential
  * can actually reach. With a ChatGPT subscription sign-in it asks the
  * ChatGPT backend; with a platform API key (stored or OPENAI_API_KEY) it
- * asks api.openai.com. JSON mode ends with one result record:
+ * asks the configured OpenAI endpoint. JSON mode ends with one result record:
  * `{ok, models, authMode}` on success, `{ok:false, error}` otherwise —
  * tokens never appear in the output.
  */
@@ -19,6 +19,7 @@ import { readOpenAiOauthCredentials } from "../utils/openAiOauthCredentials.js";
 import type { HomeContext } from "../config/home.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
 import { providerAuthPreference } from "../llm/provider-auth-selection.js";
+import { resolveProviderBaseURLEnvironment } from "../llm/registry/provider-ingress.js";
 
 export type OpenAiModelsCliCommand =
   | { readonly kind: "list"; readonly json: boolean }
@@ -68,7 +69,8 @@ export function formatOpenAiModelsCliHelpText(): string {
     "",
     "List the OpenAI models the stored credential can reach. A ChatGPT",
     "subscription sign-in queries the ChatGPT backend; a platform API key",
-    "(stored, or OPENAI_API_KEY in the environment) queries api.openai.com.",
+    "(stored, or OPENAI_API_KEY in the environment) queries OPENAI_BASE_URL",
+    "when set, or api.openai.com otherwise.",
   ].join("\n");
 }
 
@@ -178,7 +180,15 @@ export async function runOpenAiModelsCli(
   }
   let payload: unknown;
   try {
-    const response = await fetchImpl("https://api.openai.com/v1/models", {
+    const baseURL = resolveProviderBaseURLEnvironment("openai", runtime.environment)?.value ??
+      "https://api.openai.com/v1";
+    const trimmed = baseURL.replace(/\/+$/, "");
+    const modelsURL = trimmed.endsWith("/models")
+      ? trimmed
+      : /\/(?:v\d+(?:beta)?|api\/v\d+)$/i.test(trimmed)
+        ? `${trimmed}/models`
+        : `${trimmed}/v1/models`;
+    const response = await fetchImpl(modelsURL, {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
     if (!response.ok) {
