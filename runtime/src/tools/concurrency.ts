@@ -36,6 +36,8 @@
  * @module
  */
 
+import { validateToolArgs } from "./argument-validation.js";
+
 import { AsyncRwLock } from "../utils/async-rwlock.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -314,6 +316,7 @@ export class ToolCallRuntime {
  * the static class unchanged"; a boolean narrows exclusive → shared_read.
  */
 export interface ConcurrencyClassifiable {
+  readonly inputSchema?: Record<string, unknown>;
   readonly name: string;
   readonly concurrencyClass?: ConcurrencyClass;
   readonly isConcurrencySafe?: (args: Record<string, unknown>) => boolean;
@@ -343,6 +346,9 @@ export function classify(
   tool: ConcurrencyClassifiable,
   args: Record<string, unknown>,
 ): ConcurrencyClass {
+  const validation = validateToolArgs(tool.inputSchema, args);
+  if (!validation.valid) return EXCLUSIVE;
+  args = validation.args ?? args;
   const base = tool.concurrencyClass ?? EXCLUSIVE;
 
   // Per-call downgrade hook (AgenC pattern).

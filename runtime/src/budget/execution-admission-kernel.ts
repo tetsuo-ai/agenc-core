@@ -61,6 +61,7 @@ interface WorkspaceBinding {
   readonly repository: ExecutionAdmissionRepository;
   readonly aliases: Set<string>;
   lastJournalSequence: number;
+  clientRefs: number;
 }
 
 interface UsageSubscription {
@@ -181,6 +182,8 @@ export class ExecutionAdmissionKernel {
   readonly #queueAgingMs: number;
   readonly #scheduler = new AsyncLock<void>(undefined);
   readonly #byStatePath = new Map<string, WorkspaceBinding>();
+  readonly #knownPaths = new Map<string, StateDatabasePaths>();
+  readonly #journalCursors = new Map<string, number>();
   readonly #byWorkspace = new Map<string, WorkspaceBinding>();
   /**
    * runId -> owning workspace. `live` marks a binding made by an actual
@@ -277,12 +280,17 @@ export class ExecutionAdmissionKernel {
       } catch (error) {
         const binding = this.#byStatePath.get(paths.stateDbPath);
         if (binding !== undefined) this.#unregisterBinding(binding);
+        this.#knownPaths.delete(paths.stateDbPath);
         failures.push({
           projectDir: paths.projectDir,
           stateDbPath: paths.stateDbPath,
           message: error instanceof Error ? error.message : String(error),
         });
       }
+    }
+    // Deleting the visited entry during Map iteration is safe.
+    for (const binding of this.#byStatePath.values()) {
+      this.#evictIdleBinding(binding);
     }
     return {
       ...totals,
@@ -304,71 +312,83 @@ export class ExecutionAdmissionKernel {
     });
     const workspaceId = options.workspaceId ?? paths.projectDir;
     const workspace = this.#registerPaths(paths, workspaceId);
-    this.#bindRunWorkspace(options.scope.runId, workspace);
-    const deadlineAt = workspace.repository.bindRunDeadline(
-      options.scope.runId,
-      earliestDeadline(options.scope.deadlineAt, options.budget?.deadlineAt),
-    );
-    const scope: AdmissionClientScope = {
-      ...options.scope,
-      workspaceId: workspace.workspaceId,
-      budgetIdentity: normalizeBudgetIdentity(
-        options.budgetIdentity ?? workspace.workspaceId,
-      ),
-      ...(deadlineAt !== undefined ? { deadlineAt } : {}),
-      ...(minimumDefined(
-        options.scope.maxCostUsd,
-        options.budget?.runMaxCostUsd,
-      ) !== undefined
-        ? {
-            maxCostUsd: minimumDefined(
-              options.scope.maxCostUsd,
-              options.budget?.runMaxCostUsd,
-            ),
-          }
-        : {}),
-      ...(minimumDefined(
-        options.scope.maxTokens,
-        options.budget?.runMaxTokens,
-      ) !== undefined
-        ? {
-            maxTokens: minimumDefined(
-              options.scope.maxTokens,
-              options.budget?.runMaxTokens,
-            ),
-          }
-        : {}),
-      ...(options.scope.maxCostUsd !== undefined ||
-      options.budget?.dailyUsd !== undefined ||
-      options.budget?.monthlyUsd !== undefined ||
-      options.budget?.runMaxCostUsd !== undefined
-        ? { hasHardCostCap: true }
-        : {}),
-      ...(options.scope.maxTokens !== undefined ||
-      options.budget?.dailyTokens !== undefined ||
-      options.budget?.monthlyTokens !== undefined ||
-      options.budget?.runMaxTokens !== undefined
-        ? { hasHardTokenCap: true }
-        : {}),
-    };
-    if (deadlineAt !== undefined && deadlineAt <= this.#timestamp()) {
-      this.cancelRun(options.scope.runId, "deadline_expired");
+    workspace.clientRefs += 1;
+    try {
+      this.#bindRunWorkspace(options.scope.runId, workspace);
+      const deadlineAt = workspace.repository.bindRunDeadline(
+        options.scope.runId,
+        earliestDeadline(options.scope.deadlineAt, options.budget?.deadlineAt),
+      );
+      const scope: AdmissionClientScope = {
+        ...options.scope,
+        workspaceId: workspace.workspaceId,
+        budgetIdentity: normalizeBudgetIdentity(
+          options.budgetIdentity ?? workspace.workspaceId,
+        ),
+        ...(deadlineAt !== undefined ? { deadlineAt } : {}),
+        ...(minimumDefined(
+          options.scope.maxCostUsd,
+          options.budget?.runMaxCostUsd,
+        ) !== undefined
+          ? {
+              maxCostUsd: minimumDefined(
+                options.scope.maxCostUsd,
+                options.budget?.runMaxCostUsd,
+              ),
+            }
+          : {}),
+        ...(minimumDefined(
+          options.scope.maxTokens,
+          options.budget?.runMaxTokens,
+        ) !== undefined
+          ? {
+              maxTokens: minimumDefined(
+                options.scope.maxTokens,
+                options.budget?.runMaxTokens,
+              ),
+            }
+          : {}),
+        ...(options.scope.maxCostUsd !== undefined ||
+        options.budget?.dailyUsd !== undefined ||
+        options.budget?.monthlyUsd !== undefined ||
+        options.budget?.runMaxCostUsd !== undefined
+          ? { hasHardCostCap: true }
+          : {}),
+        ...(options.scope.maxTokens !== undefined ||
+        options.budget?.dailyTokens !== undefined ||
+        options.budget?.monthlyTokens !== undefined ||
+        options.budget?.runMaxTokens !== undefined
+          ? { hasHardTokenCap: true }
+          : {}),
+      };
+      if (deadlineAt !== undefined && deadlineAt <= this.#timestamp()) {
+        this.cancelRun(options.scope.runId, "deadline_expired");
+      }
+      const proposedBudget = rootBudgetState(scope, options.budget);
+      const maxCostUsd = workspace.repository.bindRunCostLimit(
+        scope.runId,
+        proposedBudget.scopes[0]!,
+      );
+      const effectiveScope: AdmissionClientScope = {
+        ...scope,
+        ...(maxCostUsd !== undefined ? { maxCostUsd, hasHardCostCap: true } : {}),
+      };
+      const budget = rootBudgetState(effectiveScope, options.budget);
+      return new KernelAdmissionClient(this, {
+        workspace,
+        scope: effectiveScope,
+        budget,
+      }, () => this.releaseClient(workspace));
+    } catch (error) {
+      this.releaseClient(workspace);
+      throw error;
     }
-    const proposedBudget = rootBudgetState(scope, options.budget);
-    const maxCostUsd = workspace.repository.bindRunCostLimit(
-      scope.runId,
-      proposedBudget.scopes[0]!,
-    );
-    const effectiveScope: AdmissionClientScope = {
-      ...scope,
-      ...(maxCostUsd !== undefined ? { maxCostUsd, hasHardCostCap: true } : {}),
-    };
-    const budget = rootBudgetState(effectiveScope, options.budget);
-    return new KernelAdmissionClient(this, {
-      workspace,
-      scope: effectiveScope,
-      budget,
-    });
+  }
+
+  releaseClient(binding: WorkspaceBinding): void {
+    if (binding.clientRefs === 0) return;
+    binding.clientRefs -= 1;
+    this.#evictIdleBinding(binding);
   }
 
   updateLimits(limits: AdmissionConcurrencyLimits): void {
@@ -585,65 +605,88 @@ export class ExecutionAdmissionKernel {
     this.#publishNewJournal(binding.workspace);
   }
 
+  recordDetachedFallback(
+    binding: ClientBinding,
+    event: Parameters<ExecutionAdmissionClient["recordFallback"]>[0],
+  ): void {
+    this.#assertOpen();
+    const workspace = this.#registerPaths(
+      binding.workspace.paths,
+      binding.workspace.workspaceId,
+    );
+    try {
+      this.recordFallback({ ...binding, workspace }, event);
+    } finally {
+      this.#evictIdleBinding(workspace);
+    }
+  }
+
   forSession(
     binding: ClientBinding,
     options: Parameters<ExecutionAdmissionClient["forSession"]>[0],
   ): ExecutionAdmissionClient {
-    const runId = options.runId ?? binding.scope.runId;
-    const createsChildRun = runId !== binding.scope.runId;
-    const expectedParentRunId = createsChildRun
-      ? binding.scope.runId
-      : binding.scope.parentRunId;
-    if (
-      options.parentRunId !== undefined &&
-      options.parentRunId !== expectedParentRunId
-    ) {
-      throw new AdmissionDeniedError("admission_parent_run_conflict");
+    this.#assertOpen();
+    binding.workspace.clientRefs += 1;
+    try {
+      const runId = options.runId ?? binding.scope.runId;
+      const createsChildRun = runId !== binding.scope.runId;
+      const expectedParentRunId = createsChildRun
+        ? binding.scope.runId
+        : binding.scope.parentRunId;
+      if (
+        options.parentRunId !== undefined &&
+        options.parentRunId !== expectedParentRunId
+      ) {
+        throw new AdmissionDeniedError("admission_parent_run_conflict");
+      }
+      const parentRunId = options.parentRunId ?? expectedParentRunId;
+      this.#bindRunWorkspace(runId, binding.workspace);
+      const deadlineAt = binding.workspace.repository.bindRunDeadline(
+        runId,
+        earliestDeadline(binding.scope.deadlineAt, options.deadlineAt),
+      );
+      const scope: AdmissionClientScope = {
+        ...binding.scope,
+        runId,
+        sessionId: options.sessionId,
+        parentRunId,
+        ...(options.parentScopeId !== undefined
+          ? { parentScopeId: options.parentScopeId }
+          : {}),
+        ...(deadlineAt !== undefined ? { deadlineAt } : {}),
+      };
+      if (deadlineAt !== undefined && deadlineAt <= this.#timestamp()) {
+        this.cancelRun(runId, "deadline_expired");
+      }
+      const runAllocationKey = allocationKey(runId);
+      const budget: ClientBudgetState = createsChildRun
+        ? {
+            ...binding.budget,
+            scopes: [
+              ...binding.budget.scopes,
+              {
+                key: runAllocationKey,
+                parentKey: binding.budget.runAllocationKey,
+              },
+            ],
+            runAllocationKey,
+          }
+        : binding.budget;
+      const stepPrefix = createsChildRun
+        ? undefined
+        : options.sessionId === binding.scope.sessionId
+          ? binding.stepPrefix
+          : `${binding.stepPrefix ?? ""}session:${options.sessionId}:`;
+      return new KernelAdmissionClient(this, {
+        workspace: binding.workspace,
+        scope,
+        budget,
+        ...(stepPrefix !== undefined ? { stepPrefix } : {}),
+      }, () => this.releaseClient(binding.workspace));
+    } catch (error) {
+      this.releaseClient(binding.workspace);
+      throw error;
     }
-    const parentRunId = options.parentRunId ?? expectedParentRunId;
-    this.#bindRunWorkspace(runId, binding.workspace);
-    const deadlineAt = binding.workspace.repository.bindRunDeadline(
-      runId,
-      earliestDeadline(binding.scope.deadlineAt, options.deadlineAt),
-    );
-    const scope: AdmissionClientScope = {
-      ...binding.scope,
-      runId,
-      sessionId: options.sessionId,
-      parentRunId,
-      ...(options.parentScopeId !== undefined
-        ? { parentScopeId: options.parentScopeId }
-        : {}),
-      ...(deadlineAt !== undefined ? { deadlineAt } : {}),
-    };
-    if (deadlineAt !== undefined && deadlineAt <= this.#timestamp()) {
-      this.cancelRun(runId, "deadline_expired");
-    }
-    const runAllocationKey = allocationKey(runId);
-    const budget: ClientBudgetState = createsChildRun
-      ? {
-          ...binding.budget,
-          scopes: [
-            ...binding.budget.scopes,
-            {
-              key: runAllocationKey,
-              parentKey: binding.budget.runAllocationKey,
-            },
-          ],
-          runAllocationKey,
-        }
-      : binding.budget;
-    const stepPrefix = createsChildRun
-      ? undefined
-      : options.sessionId === binding.scope.sessionId
-        ? binding.stepPrefix
-        : `${binding.stepPrefix ?? ""}session:${options.sessionId}:`;
-    return new KernelAdmissionClient(this, {
-      workspace: binding.workspace,
-      scope,
-      budget,
-      ...(stepPrefix !== undefined ? { stepPrefix } : {}),
-    });
   }
 
   getUsageSummary(binding: ClientBinding): AdmissionUsageSummary {
@@ -719,35 +762,31 @@ export class ExecutionAdmissionKernel {
    * Sum the ACTUAL reconciled usage recorded for one run id (additive read
    * over the repository's `sumReconciledUsageByRunId`). The run's own
    * workspace database is used when a binding is known; otherwise every
-   * open workspace database is swept — reservation rows for one run id live
+   * known workspace database is swept — reservation rows for one run id live
    * in exactly one database, so component-wise addition is exact.
    */
   sumReconciledUsageByRunId(runId: string): AdmissionRunUsageSummary {
     this.#assertOpen();
-    const statePath = this.#runStatePath.get(runId)?.statePath;
-    const bound =
-      statePath === undefined ? undefined : this.#byStatePath.get(statePath);
-    if (bound !== undefined) {
-      return bound.repository.sumReconciledUsageByRunId(runId);
-    }
-    const total = {
-      reconciledCount: 0,
-      heldUnknownCount: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      totalTokens: 0,
-      costUsd: 0,
-    };
-    for (const binding of this.#byStatePath.values()) {
-      const summary = binding.repository.sumReconciledUsageByRunId(runId);
-      total.reconciledCount += summary.reconciledCount;
-      total.heldUnknownCount += summary.heldUnknownCount;
-      total.inputTokens += summary.inputTokens;
-      total.outputTokens += summary.outputTokens;
-      total.totalTokens += summary.totalTokens;
-      total.costUsd += summary.costUsd;
-    }
-    return total;
+    return this.#withBindingsForRun(runId, (bindings) => {
+      const total = {
+        reconciledCount: 0,
+        heldUnknownCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        costUsd: 0,
+      };
+      for (const binding of bindings) {
+        const summary = binding.repository.sumReconciledUsageByRunId(runId);
+        total.reconciledCount += summary.reconciledCount;
+        total.heldUnknownCount += summary.heldUnknownCount;
+        total.inputTokens += summary.inputTokens;
+        total.outputTokens += summary.outputTokens;
+        total.totalTokens += summary.totalTokens;
+        total.costUsd += summary.costUsd;
+      }
+      return total;
+    });
   }
 
   cancelRun(
@@ -758,21 +797,23 @@ export class ExecutionAdmissionKernel {
     const affected = new Set<string>();
     let voidedReservations = 0;
     let heldUnknownReservations = 0;
-    for (const binding of this.#byStatePath.values()) {
-      const report = cancelRunTreeAndAdmission(
-        binding.driver,
-        binding.repository,
-        {
-          runId,
-          reason,
-          cancelledAt: this.#timestamp(),
-        },
-      ).admission;
-      for (const id of report.affectedRunIds) affected.add(id);
-      voidedReservations += report.voidedReservationIds.length;
-      heldUnknownReservations += report.heldUnknownReservationIds.length;
-      this.#publishNewJournal(binding);
-    }
+    this.#withBindingsForRun(runId, (bindings) => {
+      for (const binding of bindings) {
+        const report = cancelRunTreeAndAdmission(
+          binding.driver,
+          binding.repository,
+          {
+            runId,
+            reason,
+            cancelledAt: this.#timestamp(),
+          },
+        ).admission;
+        for (const id of report.affectedRunIds) affected.add(id);
+        voidedReservations += report.voidedReservationIds.length;
+        heldUnknownReservations += report.heldUnknownReservationIds.length;
+        this.#publishNewJournal(binding);
+      }
+    });
     this.#abortCancelledAdmissionWork(affected, reason);
     return {
       affectedRunIds: [...affected],
@@ -795,16 +836,18 @@ export class ExecutionAdmissionKernel {
     const affected = new Set<string>();
     let voidedReservations = 0;
     let heldUnknownReservations = 0;
-    for (const binding of this.#byStatePath.values()) {
-      const report = binding.repository.cancel(runId, {
-        reason,
-        cancelledAt: this.#timestamp(),
-      });
-      for (const id of report.affectedRunIds) affected.add(id);
-      voidedReservations += report.voidedReservationIds.length;
-      heldUnknownReservations += report.heldUnknownReservationIds.length;
-      this.#publishNewJournal(binding);
-    }
+    this.#withBindingsForRun(runId, (bindings) => {
+      for (const binding of bindings) {
+        const report = binding.repository.cancel(runId, {
+          reason,
+          cancelledAt: this.#timestamp(),
+        });
+        for (const id of report.affectedRunIds) affected.add(id);
+        voidedReservations += report.voidedReservationIds.length;
+        heldUnknownReservations += report.heldUnknownReservationIds.length;
+        this.#publishNewJournal(binding);
+      }
+    });
     this.#abortCancelledAdmissionWork(affected, reason);
     return {
       affectedRunIds: [...affected],
@@ -863,13 +906,17 @@ export class ExecutionAdmissionKernel {
         : {}),
     });
     const binding = this.#registerPaths(paths, paths.projectDir);
-    return binding.repository.listJournal({
-      ...(params.runId !== undefined ? { runId: params.runId } : {}),
-      ...(params.afterSequence !== undefined
-        ? { afterSequence: params.afterSequence }
-        : {}),
-      ...(params.limit !== undefined ? { limit: params.limit } : {}),
-    });
+    try {
+      return binding.repository.listJournal({
+        ...(params.runId !== undefined ? { runId: params.runId } : {}),
+        ...(params.afterSequence !== undefined
+          ? { afterSequence: params.afterSequence }
+          : {}),
+        ...(params.limit !== undefined ? { limit: params.limit } : {}),
+      });
+    } finally {
+      this.#evictIdleBinding(binding);
+    }
   }
 
   close(): void {
@@ -905,6 +952,8 @@ export class ExecutionAdmissionKernel {
     this.#byStatePath.clear();
     this.#byWorkspace.clear();
     this.#runStatePath.clear();
+    this.#knownPaths.clear();
+    this.#journalCursors.clear();
   }
 
   #registerPaths(
@@ -930,41 +979,81 @@ export class ExecutionAdmissionKernel {
         ownerPid: this.#ownerPid,
       }),
       aliases: new Set([workspaceAlias, paths.projectDir]),
-      lastJournalSequence: 0,
+      lastJournalSequence: this.#journalCursors.get(paths.stateDbPath) ?? 0,
+      clientRefs: 0,
     };
-    this.#byStatePath.set(paths.stateDbPath, binding);
-    for (const alias of binding.aliases) this.#byWorkspace.set(alias, binding);
-    for (const runId of binding.repository.listBoundRunIds()) {
-      // Hydration replays persisted rows; it does not admit anything. A run id
-      // already owned by another workspace here is stale data — the same
-      // conversation opened once under a different cwd leaves its id in two
-      // project databases — and throwing would exclude this whole workspace
-      // from admission for the life of the daemon. The user sees only
-      // "Message not sent: execution admission deny:
-      // admission_run_workspace_conflict" on every turn, with no way back
-      // short of deleting state. Skip the row; live binds still throw.
-      if (!this.#tryBindRunWorkspace(runId, binding, false)) {
-        this.#staleRunBindingSkips += 1;
+    try {
+      this.#byStatePath.set(paths.stateDbPath, binding);
+      for (const alias of binding.aliases) this.#byWorkspace.set(alias, binding);
+      for (const runId of binding.repository.listBoundRunIds()) {
+        // Hydration replays persisted rows; it does not admit anything. A run id
+        // already owned by another workspace here is stale data — the same
+        // conversation opened once under a different cwd leaves its id in two
+        // project databases — and throwing would exclude this whole workspace
+        // from admission for the life of the daemon. The user sees only
+        // "Message not sent: execution admission deny:
+        // admission_run_workspace_conflict" on every turn, with no way back
+        // short of deleting state. Skip the row; live binds still throw.
+        if (!this.#tryBindRunWorkspace(runId, binding, false)) {
+          this.#staleRunBindingSkips += 1;
+        }
       }
+      if (recover) {
+        // A newly discovered workspace is recovered before its first admission.
+        binding.repository.recover({
+          now: this.#timestamp(),
+          activeOwnerIds: new Set([this.#ownerId]),
+        });
+        recoverExecutionAdmissionCanonicalJournals(
+          binding.driver,
+          binding.repository,
+        );
+        this.#hydrateQueued(binding);
+        this.#publishNewJournal(binding);
+      }
+      this.#knownPaths.set(paths.stateDbPath, paths);
+      return binding;
+    } catch (error) {
+      this.#unregisterBinding(binding);
+      throw error;
     }
-    if (recover) {
-      // A newly discovered workspace is recovered before its first admission.
-      binding.repository.recover({
-        now: this.#timestamp(),
-        activeOwnerIds: new Set([this.#ownerId]),
-      });
-      recoverExecutionAdmissionCanonicalJournals(
-        binding.driver,
-        binding.repository,
-      );
-      this.#hydrateQueued(binding);
-      this.#publishNewJournal(binding);
-    }
-    return binding;
   }
 
-  #unregisterBinding(binding: WorkspaceBinding): void {
+  /** Reopen idle project databases only for a process-wide query or cancel. */
+  #withKnownBindings<T>(operation: (bindings: readonly WorkspaceBinding[]) => T): T {
+    const bindings: WorkspaceBinding[] = [];
+    try {
+      for (const paths of this.#knownPaths.values()) {
+        bindings.push(this.#registerPaths(paths, paths.projectDir, false));
+      }
+      return operation(bindings);
+    } finally {
+      for (const binding of bindings) this.#evictIdleBinding(binding);
+    }
+  }
+
+  #withBindingsForRun<T>(
+    runId: string,
+    operation: (bindings: readonly WorkspaceBinding[]) => T,
+  ): T {
+    const statePath = this.#runStatePath.get(runId)?.statePath;
+    const paths = statePath === undefined ? undefined : this.#knownPaths.get(statePath);
+    if (paths === undefined) return this.#withKnownBindings(operation);
+    const binding = this.#registerPaths(paths, paths.projectDir, false);
+    try {
+      return operation([binding]);
+    } finally {
+      this.#evictIdleBinding(binding);
+    }
+  }
+
+  #unregisterBinding(binding: WorkspaceBinding, idle = false): void {
     this.#byStatePath.delete(binding.paths.stateDbPath);
+    if (idle) {
+      this.#journalCursors.set(binding.paths.stateDbPath, binding.lastJournalSequence);
+    } else {
+      this.#journalCursors.delete(binding.paths.stateDbPath);
+    }
     for (const alias of binding.aliases) {
       if (this.#byWorkspace.get(alias) === binding) {
         this.#byWorkspace.delete(alias);
@@ -972,13 +1061,29 @@ export class ExecutionAdmissionKernel {
     }
     for (const [runId, bound] of this.#runStatePath) {
       if (bound.statePath === binding.paths.stateDbPath) {
-        this.#runStatePath.delete(runId);
+        if (idle) {
+          this.#runStatePath.set(runId, { ...bound, live: false });
+        } else {
+          this.#runStatePath.delete(runId);
+        }
+        this.#listeners.delete(runId);
+        this.#criticalListeners.delete(runId);
       }
     }
+    this.#usageListeners.delete(binding);
     try {
       binding.driver.close();
     } catch {
       // The driver may already be unusable; exclusion must still complete.
+    }
+  }
+
+  #evictIdleBinding(binding: WorkspaceBinding): void {
+    if (binding.clientRefs > 0 || this.#closed) return;
+    if ([...this.#active.values()].some((active) => active.binding === binding)) return;
+    if ([...this.#pending.values()].some((pending) => pending.binding === binding)) return;
+    if (this.#byStatePath.get(binding.paths.stateDbPath) === binding) {
+      this.#unregisterBinding(binding, true);
     }
   }
 
@@ -1236,6 +1341,7 @@ export class ExecutionAdmissionKernel {
       active.sourceSignal.removeEventListener("abort", active.onSourceAbort);
     }
     this.#active.delete(active.reservationId);
+    this.#evictIdleBinding(active.binding);
   }
 
   #hydrateQueued(binding: WorkspaceBinding): void {
@@ -1341,6 +1447,7 @@ export class ExecutionAdmissionKernel {
     delete pending.onAbort;
     if (error !== undefined) reject?.(error);
     else if (lease !== undefined) resolve?.(lease);
+    queueMicrotask(() => this.#evictIdleBinding(pending.binding));
   }
 
   #findReservation(reservationId: string):
@@ -1435,10 +1542,18 @@ export class ExecutionAdmissionKernel {
 }
 
 class KernelAdmissionClient implements ExecutionAdmissionClient {
+  private released = false;
   constructor(
     private readonly kernel: ExecutionAdmissionKernel,
     private readonly binding: ClientBinding,
+    private readonly releaseClient?: () => void,
   ) {}
+
+  release(): void {
+    if (this.released) return;
+    this.released = true;
+    this.releaseClient?.();
+  }
 
   get scope(): AdmissionClientScope {
     return this.binding.scope;
@@ -1488,7 +1603,11 @@ class KernelAdmissionClient implements ExecutionAdmissionClient {
   recordFallback(
     event: Parameters<ExecutionAdmissionClient["recordFallback"]>[0],
   ): void {
-    this.kernel.recordFallback(this.binding, event);
+    if (this.released) {
+      this.kernel.recordDetachedFallback(this.binding, event);
+    } else {
+      this.kernel.recordFallback(this.binding, event);
+    }
   }
 
   forSession(

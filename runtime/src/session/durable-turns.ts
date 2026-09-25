@@ -351,6 +351,10 @@ export interface ResumableTurn {
     readonly prefixHash: string;
     readonly resumableState: TurnCheckpointSliceLine;
   };
+  /** Authenticated tool results appended after the checkpoint, before shutdown. */
+  readonly resumeHistoryMessageCount?: number;
   /** Dangling tool_use blocks in the persisted prefix (unclassified). */
   readonly danglingToolUses: ReadonlyArray<DanglingToolUse>;
+  /** Tool responses reconstructed from durable effect or operator evidence. */
+  readonly reconciledToolResults?: ReadonlyArray<import("./rollout-item.js").ResponseItem>;
 }

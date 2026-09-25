@@ -25,6 +25,8 @@ vi.mock('../utils/secureStorage/native.js', async importOriginal => {
     ...actual,
     readNativeSecureStorage: (home: { path: string }) =>
       structuredClone(secureStorageRecords.get(home.path) ?? {}),
+    readNativeSecureStorageFresh: (home: { path: string }) =>
+      structuredClone(secureStorageRecords.get(home.path) ?? {}),
     readNativeSecureStorageAsync: async (home: { path: string }) =>
       structuredClone(secureStorageRecords.get(home.path) ?? {}),
     updateNativeSecureStorage: (
@@ -60,6 +62,7 @@ import {
   type UserConfigSchema,
 } from '../../src/utils/plugins/mcpbHandler.js'
 import { PlaintextPluginSecretError } from '../../src/utils/plugins/pluginConfigAuthority.js'
+import { decodeStoredPluginSecret } from '../../src/utils/plugins/plugin-secret-codec.js'
 import {
   loadPluginOptions,
   savePluginOptions,
@@ -227,10 +230,11 @@ describe('plugin secret authority', () => {
       OPTION_SCHEMA,
     )
 
-    expect(
-      secureStorageRecords.get(store.homeContext.path)?.pluginSecrets?.[PLUGIN_ID],
-    ).toEqual({ token: 'new-stored-secret' })
-    expect(loadPluginOptions(PLUGIN_ID, OPTION_SCHEMA)).toEqual({
+    const storedToken = secureStorageRecords.get(store.homeContext.path)?.pluginSecrets?.[PLUGIN_ID]?.token ?? ''
+    expect(storedToken).toBe('new-stored-secret')
+    expect(secureStorageRecords.get(store.homeContext.path)?.pluginSecretFormats?.[PLUGIN_ID]?.token).toBe('literal-v1')
+    expect(decodeStoredPluginSecret(storedToken, OPTION_SCHEMA.token)).toBe('new-stored-secret')
+    expect(loadPluginOptions(PLUGIN_ID, OPTION_SCHEMA, { fresh: true })).toEqual({
       color: 'green',
       token: 'new-stored-secret',
     })
@@ -297,11 +301,10 @@ describe('plugin secret authority', () => {
       SERVER_SCHEMA,
     )
 
-    expect(
-      secureStorageRecords.get(store.homeContext.path)?.pluginSecrets?.[
-        `${PLUGIN_ID}/telegram`
-      ],
-    ).toEqual({ bot_token: 'new-bot-secret' })
+    const storedBotToken = secureStorageRecords.get(store.homeContext.path)?.pluginSecrets?.[`${PLUGIN_ID}/telegram`]?.bot_token ?? ''
+    expect(storedBotToken).toBe('new-bot-secret')
+    expect(secureStorageRecords.get(store.homeContext.path)?.pluginSecretFormats?.[`${PLUGIN_ID}/telegram`]?.bot_token).toBe('literal-v1')
+    expect(decodeStoredPluginSecret(storedBotToken, SERVER_SCHEMA.bot_token)).toBe('new-bot-secret')
     expect(
       loadMcpServerUserConfig(PLUGIN_ID, 'telegram', SERVER_SCHEMA),
     ).toEqual({ owner: 'bob', bot_token: 'new-bot-secret' })
@@ -311,6 +314,18 @@ describe('plugin secret authority', () => {
       .join('\n')
     expect(diskText).not.toContain('old-bot-secret')
     expect(diskText).not.toContain('new-bot-secret')
+  })
+
+  test('keeps per-server multiple credentials readable by the base substitution', async () => {
+    const store = await activateConfig('config_version = 2\n')
+    const schema: UserConfigSchema = { ...SERVER_SCHEMA, bot_token: { ...SERVER_SCHEMA.bot_token, multiple: true } }
+    for (const input of [['first', 'second'], 'first,second'] as const) {
+      await saveMcpServerUserConfig(PLUGIN_ID, 'telegram', { bot_token: input }, schema)
+      const stored = secureStorageRecords.get(store.homeContext.path)?.pluginSecrets?.[`${PLUGIN_ID}/telegram`]?.bot_token
+      expect(stored).toBe('first,second')
+      expect(`Bearer ${String(stored)}`).toBe('Bearer first,second')
+      expect(loadMcpServerUserConfig(PLUGIN_ID, 'telegram', schema)?.bot_token).toEqual(input)
+    }
   })
 
   test('refuses values absent from the supplied schema instead of guessing storage', async () => {

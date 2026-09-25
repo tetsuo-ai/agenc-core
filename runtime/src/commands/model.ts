@@ -27,6 +27,7 @@ import type { Session } from "../session/session.js";
 import { readProviderConfig } from "../config/resolve-provider.js";
 import type { ProviderSlug } from "../config/provider-model-authority.js";
 import { resolveProviderCapabilityEntry } from "../llm/capabilities.js";
+import { resolveBedrockModelIdentity } from "../utils/model/claudeModelId.js";
 import {
   analyzeSessionHistoryRequirements,
   validateHistoryCompatibility,
@@ -97,7 +98,11 @@ export function checkModelHistoryCompat(
       : undefined;
   const caps = resolveProviderCapabilityEntry({
     provider,
-    model: targetModel,
+    // A Bedrock profile id that names no model is checked as the Claude
+    // model a configured override maps it to, as the Converse adapter reads it.
+    model: provider.trim().toLowerCase() === "amazon-bedrock"
+      ? resolveBedrockModelIdentity(targetModel, config?.modelOverrides)
+      : targetModel,
     overrides,
   });
   const requirements = analyzeSessionHistoryRequirements(snapshot);

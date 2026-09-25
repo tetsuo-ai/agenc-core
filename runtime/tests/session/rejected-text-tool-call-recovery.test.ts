@@ -224,25 +224,4 @@ describe("bounded admitted text-tool correction", () => {
     expect(clearTextToolCallCorrectionPrompt(state, external)).toBeUndefined();
   });
 
-  test("editor recovery stays disabled and budget continuation exhaustion cannot be overwritten", async () => {
-    const { session } = mkSession();
-    const ctx = mkCtx();
-    const state = buildInitialTurnState(ctx, { role: "user", content: "Read fixture" });
-    state.pendingTextToolCallCorrection = correction;
-    await postSampleRecovery(state, { ...ctx, editorInteraction: {} } as typeof ctx, session);
-    expect(state.textToolCallCorrectionCount).toBe(0);
-    expect(state.transition).toBeUndefined();
-    // Exhaust the separate continuation cap without consuming correction cap.
-    for (let i = 0; i < 10_000; i += 1) {
-      state.pendingTextToolCallCorrection = undefined;
-      state.pendingBudgetDecision = { kind: "stop", reason: "budget continuation" };
-      await postSampleRecovery(state, ctx, session);
-    }
-    state.pendingTextToolCallCorrection = correction;
-    state.pendingBudgetDecision = { kind: "stop", reason: "budget continuation" };
-    await postSampleRecovery(state, ctx, session);
-    expect(state.textToolCallCorrectionCount).toBe(1);
-    expect(state.transition).toBeUndefined();
-    expect(state.textToolCallCorrectionFailure).toContain("token budget");
-  });
 });

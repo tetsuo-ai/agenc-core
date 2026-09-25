@@ -29,7 +29,7 @@ describe("session memory runtime contract", () => {
       /function launchSessionMemoryPostSampling\([\s\S]*?querySource: string/,
     );
     expect(runTurnSource).toMatch(
-      /function launchTerminalPostSampling\([\s\S]*?if \(ctx\.editorInteraction !== undefined\) return;[\s\S]*?launchSessionMemoryPostSampling\(state, session, ctx, querySource, signal\);/,
+      /function launchTerminalPostSampling\([\s\S]*?launchSessionMemoryPostSampling\(state, session, ctx, querySource, signal\);/,
     );
     expect(runTurnSource).toMatch(
       /launchTerminalPostSampling\(\s*state,\s*session,\s*ctx,\s*turnQuerySource,\s*signal,?\s*\);/,

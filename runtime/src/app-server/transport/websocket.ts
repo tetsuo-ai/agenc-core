@@ -28,9 +28,14 @@ import WebSocket, { WebSocketServer, type RawData } from "ws";
 import type { JsonObject, JsonValue } from "../protocol/index.js";
 import {
   daemonOverloadErrorResponse,
+  isDaemonCausalRoutineForStream,
+  isDaemonCausalRoutineMessage,
   isDaemonPreemptiveMessage,
   isDaemonPriorityMessage,
+  daemonStreamHeadSessionId,
   maxQueuedRequestsFromOptions,
+  tagDaemonCausalRoutineHead,
+  type ResolveRoutineSessionId,
 } from "../overload.js";
 import { isRecord } from "../../utils/record.js";
 import { drainAgenCTransportRequests, type AgenCTransportCloseOptions } from "./request-drain.js";
@@ -89,6 +94,7 @@ export interface AgenCWebSocketServerOptions {
   ) => boolean | Promise<boolean>;
   readonly acceptAuthenticationTimeoutMs?: number;
   readonly maxQueuedRequests?: number;
+  readonly resolveRoutineSessionId?: ResolveRoutineSessionId;
   readonly onAuthenticationFailed?: (
     message: JsonObject,
     context: AgenCWebSocketMessageContext,
@@ -104,11 +110,10 @@ export interface AgenCWebSocketServerOptions {
 interface ActiveWebSocketConnection {
   readonly socket: WebSocket;
   readonly pendingMessages: Set<Promise<void>>;
-  // Per-connection dispatch chain. Pipelined, order-dependent requests on a
-  // single connection are handed to onMessage in arrival order rather than
-  // racing as fire-and-forget promises. Each connection owns its own chain so
-  // cross-connection concurrency is preserved.
+  // Ordinary requests, including routines, keep arrival order here.
   dispatchChain: Promise<void>;
+  normalQueue: JsonObject[];
+  causalRoutineChain: Promise<void>;
   // Priority requests can bypass model turns only after initialize/auth state
   // for this connection has settled.
   initializeBarrier: Promise<void>;
@@ -351,6 +356,8 @@ export class AgenCWebSocketServer {
       socket,
       pendingMessages: new Set(),
       dispatchChain: Promise.resolve(),
+      normalQueue: [],
+      causalRoutineChain: Promise.resolve(),
       initializeBarrier: Promise.resolve(),
       hasInitializeBarrier: false,
       queuedPriorityMessages: { priority: 0, control: 0 },
@@ -503,7 +510,20 @@ export class AgenCWebSocketServer {
       return;
     }
 
-    if (isDaemonPriorityMessage(message)) {
+    this.#dispatchMessage(message, active, context);
+  }
+
+  #dispatchMessage(
+    message: JsonObject,
+    active: ActiveWebSocketConnection,
+    context: AgenCWebSocketMessageContext,
+  ): void {
+    const causalRoutine = isDaemonCausalRoutineMessage(message);
+    const sameStreamingHead = causalRoutine &&
+      isDaemonCausalRoutineForStream(
+        message, active.normalQueue[0], this.#options.resolveRoutineSessionId,
+      );
+    if (isDaemonPriorityMessage(message) && (!causalRoutine || sameStreamingHead)) {
       const lane = isDaemonPreemptiveMessage(message) ? "control" : "priority";
       const maxQueuedRequests = maxQueuedRequestsFromOptions(this.#options);
       if (active.queuedPriorityMessages[lane] >= maxQueuedRequests) {
@@ -513,6 +533,10 @@ export class AgenCWebSocketServer {
         return;
       }
       active.queuedPriorityMessages[lane] += 1;
+      if (causalRoutine) {
+        const headSessionId = daemonStreamHeadSessionId(active.normalQueue[0]!);
+        if (headSessionId !== undefined) tagDaemonCausalRoutineHead(message, headSessionId);
+      }
       // Control-plane requests must NOT queue behind a full model stream.
       // Dispatch them off-chain while keeping ordinary, order-dependent work
       // FIFO. The promise is still tracked so close() drains it.
@@ -521,9 +545,11 @@ export class AgenCWebSocketServer {
       // not `initialize`), so it waits for the connection's initialization
       // barrier before checking the accepted state.
       const initializeBarrier = active.initializeBarrier;
+      const priorCausalRoutine = active.causalRoutineChain;
       const pending = Promise.resolve()
         .then(async () => {
           await initializeBarrier;
+          if (causalRoutine) await priorCausalRoutine;
           if (
             active.accepted &&
             !active.closingUnauthenticated &&
@@ -537,6 +563,10 @@ export class AgenCWebSocketServer {
         });
       if (message.method === "agent.create") {
         // Preserve create-to-attach ordering without delaying creation behind a stream.
+        active.dispatchChain = Promise.all([active.dispatchChain, pending]).then(() => {});
+      }
+      if (causalRoutine) {
+        active.causalRoutineChain = pending;
         active.dispatchChain = Promise.all([active.dispatchChain, pending]).then(() => {});
       }
       active.pendingMessages.add(pending);
@@ -563,7 +593,7 @@ export class AgenCWebSocketServer {
       return;
     }
     active.queuedNormalMessages += 1;
-
+    active.normalQueue.push(message);
     const pending = (active.dispatchChain = active.dispatchChain.then(
       async () => {
         try {
@@ -573,6 +603,7 @@ export class AgenCWebSocketServer {
           if (!proceed || active.socket.readyState !== WebSocket.OPEN) return;
           await this.#options.onMessage(message, context);
         } finally {
+          active.normalQueue.shift();
           active.queuedNormalMessages = Math.max(
             0,
             active.queuedNormalMessages - 1,

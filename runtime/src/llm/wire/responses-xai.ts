@@ -12,6 +12,7 @@
 import type {
   LLMChatOptions,
   LLMMessage,
+  LLMResponse,
   LLMToolChoice,
 } from "../types.js";
 import {
@@ -82,8 +83,41 @@ export function resolveXaiResponsesToolChoice(
   return normalizeXaiResponsesToolChoice(toolChoice);
 }
 
+/** Preserve whole encrypted items through the existing durable reasoning channel. */
+export function extractXaiReasoningReplay(
+  output: unknown,
+  model: string,
+): Pick<LLMResponse, "providerReasoningContent" | "providerReasoningProvenance"> {
+  const items = Array.isArray(output) ? output.filter(isEncryptedReasoningItem) : [];
+  return items.length === 0 ? {} : {
+    providerReasoningContent: JSON.stringify(items),
+    providerReasoningProvenance: { provider: "grok", model },
+  };
+}
+
+function isEncryptedReasoningItem(item: unknown): item is Record<string, unknown> & { type: "reasoning"; encrypted_content: string } {
+  return item !== null && typeof item === "object" && !Array.isArray(item) &&
+    (item as Record<string, unknown>).type === "reasoning" &&
+    typeof (item as Record<string, unknown>).encrypted_content === "string" &&
+    ((item as Record<string, unknown>).encrypted_content as string).length > 0;
+}
+
+function replayXaiReasoning(message: LLMMessage, model: string | undefined): Record<string, unknown>[] {
+  if (message.role !== "assistant" || !model ||
+      message.providerReasoningProvenance?.provider !== "grok" ||
+      message.providerReasoningProvenance.model.trim().toLowerCase() !== model.trim().toLowerCase() ||
+      !message.providerReasoningContent) return [];
+  try {
+    const items: unknown = JSON.parse(message.providerReasoningContent);
+    return Array.isArray(items) && items.every(isEncryptedReasoningItem) ? items : [];
+  } catch {
+    return [];
+  }
+}
+
 export function buildXaiResponsesInputItems(
   messages: readonly LLMMessage[],
+  model?: string,
 ): XaiResponsesInputBuildResult {
   validateAgentInvocationMessageSequence(messages);
   const mapped: Record<string, unknown>[] = [];
@@ -106,6 +140,7 @@ export function buildXaiResponsesInputItems(
       }
     }
 
+    mapped.push(...replayXaiReasoning(message, model));
     mapped.push(toXaiOpenAIMessage(message));
 
     if (pendingImages.length > 0) {
@@ -157,7 +192,7 @@ export function buildXaiResponsesRequest(input: {
     readonly structuredOutputsStrict?: boolean;
   };
 }): Record<string, unknown> {
-  const built = buildXaiResponsesInputItems(input.messages);
+  const built = buildXaiResponsesInputItems(input.messages, input.model);
   const params: Record<string, unknown> = {
     model: input.model,
     input: built.input,
@@ -276,6 +311,7 @@ function toXaiOpenAIMessage(message: LLMMessage): Record<string, unknown> {
 function toXaiResponseInputItems(
   message: Record<string, unknown>,
 ): Record<string, unknown>[] {
+  if (isEncryptedReasoningItem(message)) return [message];
   const role = String(message.role ?? "");
   const content = message.content;
 

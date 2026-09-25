@@ -8,10 +8,10 @@
 
 /**
  * Always false in AgenC.
- * Replaces all `process.env.USER_TYPE === 'ant'` checks so that no external
- * user can activate internal-only features (commit attribution hooks,
- * system-prompt section clearing, approval and sandbox bypass, etc.)
- * by setting USER_TYPE in their shell environment.
+ * Replaces the upstream internal-build `USER_TYPE === 'ant'` environment
+ * checks so that no external user can activate internal-only features (commit
+ * attribution hooks, system-prompt section clearing, approval and sandbox
+ * bypass, etc.) by setting USER_TYPE in their shell environment.
  */
 export function isAntEmployee(): boolean {
   return false

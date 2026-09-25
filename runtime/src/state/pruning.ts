@@ -16,6 +16,7 @@ import { agentIdFromThreadSourceJson } from "../thread-store/thread-source.js";
 import { StateRunDurabilityRepository } from "./run-durability.js";
 import { parseRolloutLine } from "../session/rollout-item.js";
 import { SessionLock, SessionLockedError } from "../session/session-store.js";
+import { ThreadRegistryLock } from "../thread-store/registry-lock.js";
 import { timed } from "../utils/slow-store-op.js";
 
 const COMPLETED_AGENT_RUN_STATUSES = ["completed", "stopped"] as const;
@@ -434,62 +435,76 @@ export function pruneRolloutSessions(
     // block pruning, so a crashed session is still reclaimable.
     if (sessionHasLiveRolloutLock(sessionDir)) continue;
 
-    // Close the check/use race by acquiring every canonical rollout lease and
-    // holding it through retirement plus rename/removal. The preliminary live
-    // check above is still required because SessionLock ownership is per
-    // instance, not merely per PID; acquisition is the authoritative gate.
-    const heldLocks = acquireRolloutLocks(rollout.rolloutPaths, onError);
-    if (heldLocks === undefined) continue;
-
+    // Publication and archive hold the same cross-process registry lock.
+    // Take it before the rollout leases so publication can safely use an
+    // already-held writer lease without mistaking retention for that writer.
+    // Retention runs on the daemon's periodic timer, so it never waits for a
+    // busy registry: the rest of this sweep is left to the next run.
+    const registryLock = new ThreadRegistryLock(driver.projectDir);
+    let registryHeld: boolean;
+    try { registryHeld = registryLock.tryAcquire(); }
+    catch (error) { onError(error); continue; }
+    if (!registryHeld) break;
     try {
-      // Close the observation/acquisition race under the canonical leases.
-      if (sessionHasUnreleasedCompactionSource(driver, sessionId)) continue;
-      // Retire each durable binding and drop its SQLite mirror rows in one
-      // transaction before removing the canonical file. A crash can therefore
-      // leave either the complete pre-prune state or an inactive binding that
-      // explicitly explains the missing journal; it cannot leave an active
-      // binding pointing at a deleted source.
-      let removedRows = 0;
+      // An archive may have moved the journal since the first observation.
+      const currentRollout = describeSessionRollouts(sessionDir);
+      if (currentRollout === undefined || currentRollout.newestMtimeMs >= cutoffMs) continue;
+      // Close the check/use race by acquiring every canonical rollout lease
+      // and holding it through retirement plus rename/removal.
+      const heldLocks = acquireRolloutLocks(currentRollout.rolloutPaths, onError);
+      if (heldLocks === undefined) continue;
       try {
-        const canonicalTails = new Map<string, number>();
-        for (const sourcePath of rollout.rolloutPaths) {
-          // Parse every candidate, including legacy/unbound sources. Deleting
-          // the enclosing directory is unsafe if any canonical sibling cannot
-          // be validated under its lease.
-          const canonicalTail = canonicalRolloutLastSequence(sourcePath);
-          if (runs.getJournalBinding(sourcePath) !== undefined) {
-            canonicalTails.set(sourcePath, canonicalTail);
+        // Close the observation/acquisition race under the canonical leases.
+        if (sessionHasUnreleasedCompactionSource(driver, sessionId)) continue;
+        // Retire each durable binding and drop its SQLite mirror rows in one
+        // transaction before removing the canonical file. A crash can therefore
+        // leave either the complete pre-prune state or an inactive binding that
+        // explicitly explains the missing journal; it cannot leave an active
+        // binding pointing at a deleted source.
+        let removedRows = 0;
+        try {
+          const canonicalTails = new Map<string, number>();
+          for (const sourcePath of currentRollout.rolloutPaths) {
+            // Parse every candidate, including legacy/unbound sources. Deleting
+            // the enclosing directory is unsafe if any canonical sibling cannot
+            // be validated under its lease.
+            const canonicalTail = canonicalRolloutLastSequence(sourcePath);
+            if (runs.getJournalBinding(sourcePath) !== undefined) {
+              canonicalTails.set(sourcePath, canonicalTail);
+            }
           }
+          removedRows = driver.transactionImmediate(() => {
+            let removed = 0;
+            for (const sourcePath of currentRollout.rolloutPaths) {
+              runs.retireJournalSource({
+                sourcePath,
+                reason: "retention",
+                observedAt,
+                ...(canonicalTails.has(sourcePath)
+                  ? { canonicalLastSequence: canonicalTails.get(sourcePath)! }
+                  : {}),
+              });
+              removed += threads.deleteRolloutItemsForSource(sourcePath);
+            }
+            return removed;
+          });
+        } catch (error) {
+          onError(error);
+          continue;
         }
-        removedRows = driver.transactionImmediate(() => {
-          let removed = 0;
-          for (const sourcePath of rollout.rolloutPaths) {
-            runs.retireJournalSource({
-              sourcePath,
-              reason: "retention",
-              observedAt,
-              ...(canonicalTails.has(sourcePath)
-                ? { canonicalLastSequence: canonicalTails.get(sourcePath)! }
-                : {}),
-            });
-            removed += threads.deleteRolloutItemsForSource(sourcePath);
-          }
-          return removed;
-        });
-      } catch (error) {
-        onError(error);
-        continue;
+
+        // Atomic directory removal: rename aside so a crash mid-rm never leaves a
+        // partially-deleted session dir under its real name, then recursive rm.
+        if (!removeSessionDirAtomically(sessionDir, heldLocks, onError)) continue;
+
+        prunedSessionIds.push(sessionId);
+        prunedRolloutFiles += currentRollout.rolloutPaths.length;
+        prunedMirrorRows += removedRows;
+      } finally {
+        releaseRolloutLocks(heldLocks);
       }
-
-      // Atomic directory removal: rename aside so a crash mid-rm never leaves a
-      // partially-deleted session dir under its real name, then recursive rm.
-      if (!removeSessionDirAtomically(sessionDir, heldLocks, onError)) continue;
-
-      prunedSessionIds.push(sessionId);
-      prunedRolloutFiles += rollout.rolloutPaths.length;
-      prunedMirrorRows += removedRows;
     } finally {
-      releaseRolloutLocks(heldLocks);
+      registryLock.release();
     }
   }
 

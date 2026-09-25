@@ -853,7 +853,7 @@ test('agent MCP tool rejects oversized base64 before legacy binary transformatio
   })
   const serialized = JSON.stringify(result)
 
-  assert.match(serialized, /Invalid or oversized MCP binary content omitted/)
+  assert.match(serialized, /MCP image omitted: invalid, unsupported, or oversized image/)
   assert.equal(serialized.includes(oversizedBase64.slice(0, 1_024)), false)
   assert.deepEqual(await readdir(toolResultsDir), [])
 })
@@ -1983,7 +1983,7 @@ test('callIdeRpc reports binary persistence failures without exposing raw base64
 
 test('callIdeRpc transforms image and resource image content into image blocks', async () => {
   const pngBase64 =
-    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII='
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII='
   const client = connectedClient({
     name: 'ide',
     client: {

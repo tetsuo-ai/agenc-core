@@ -20,6 +20,7 @@ Order matches `buildDefaultRegistry`.
 | `/help` | | Show help and available commands |
 | `/hello` | | Print a greeting card with the current model and workspace |
 | `/status` | | Show current session and runtime status |
+| `/goal` | | Set an end condition the agent works toward until verified checks and an independent reviewer agree it is met; `/goal` alone shows status. See [goal.md](goal.md) |
 | `/login` | | Sign in with your AgenC account |
 | `/logout` | | Sign out of your AgenC account |
 | `/whoami` | `account` | Show the signed-in AgenC account |
@@ -33,7 +34,7 @@ Order matches `buildDefaultRegistry`.
 | `/model` | | Switch the model (picker or pass a name) |
 | `/provider` | | Switch the LLM provider for subsequent turns |
 | `/effort` | | Show or set reasoning effort for the current model (the exact model catalog levels, including `minimal` where supported; `default` restores the model default) |
-| `/resolve` | `resolve-effects` | Resolve a blocked unknown-outcome tool effect in the **live** session (`<call-id> <disposition> <evidence-ref> <evidence-sha256>`). Resume a settled terminal first. |
+| `/resolve` | `resolve-effects` | Resolve a blocked unknown-outcome tool effect in the **live** session (`<call-id> <disposition> [<evidence-ref> <evidence-sha256>]`). Resume a settled terminal first. |
 | `/swarm` | | Show or set conservative adaptive routing (`on`, `off`, `status`) |
 | `/ledger` | `wallet` | Ledger wallet CLI: `status`, `install`, `session`, `discover`, `balances`, `operations`, `receive`, `send`, `swap`, `earn`, `ring`, `help` |
 | `/permissions` | `approvals`, `allowed-tools` | Manage permission mode and rules |
@@ -197,8 +198,17 @@ session**. It is the same daemon path as `session.resolveToolCall`.
 
 ```text
 /resolve <call-id> <confirmed_committed|confirmed_no_effect|remains_unknown> \
-  <evidence-ref> <evidence-sha256>
+  [<evidence-ref> <evidence-sha256>]
 ```
+
+With only the call id and a disposition, you attest the outcome from your own
+knowledge (for example, "that stopped MCP call never reached anything that
+writes"). Core records the attestation itself as the operator evidence: the
+reference `operator-attestation:<session>:<call-id>` and the SHA-256 of the
+canonical attestation (reviewer, disposition, time). Pass an evidence
+reference and its SHA-256 instead when you hold a receipt or ticket. Only a
+client attached to the session can resolve it, and the recorded reviewer is
+that client, not a name given in the command.
 
 Resume first (`--resume` / `/resume`) when the previous epoch ended as
 `completed`, `failed`, or `cancelled`. Pending reviews do not block those
@@ -234,4 +244,4 @@ an unclassified path, or the journal predates that attestation. Operator detail:
 | Help groups | Presentation metadata in `runtime/src/commands/help-groups.ts` |
 | Plugin-added commands | Plugins can register additional commands outside this minimal registry (see [skills-plugins.md](skills-plugins.md)) |
 
-Related: [cli.md](cli.md) (top-level `agenc` subcommands), [tui-workbench.md](tui-workbench.md).
+Related: [cli.md](cli.md) (top-level `agenc` subcommands).

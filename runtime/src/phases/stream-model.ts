@@ -31,6 +31,7 @@
  * @module
  */
 
+import { resolveReasoningEffort } from "../llm/reasoning-effort.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -121,7 +122,32 @@ function resolveSessionReasoningEffort(
     );
   }
   const requested = turnEffort ?? getInitialEffortSetting();
-  if (requested === undefined || requested === "none") return undefined;
+  if (requested === undefined) return undefined;
+  // Hosted providers can expose an effort contract absent from ModelInfo.
+  // Preserve accepted literal tiers before applying legacy max/xhigh aliases.
+  const contract = selection === undefined ? undefined : resolveReasoningEffort(selection);
+  if (requested === "none") {
+    // OpenAI models that document `none` (GPT-6 Sol and Luna) run a
+    // reasoning default when the field is omitted, so the opt-out has to be
+    // sent literally. Elsewhere `none` still means "send no effort".
+    return selection?.provider === "openai" &&
+      (supportedReasoningLevels?.includes("none") === true ||
+        contract?.levels.includes("none") === true)
+      ? "none"
+      : undefined;
+  }
+  if (selection?.provider === "anthropic" && contract?.registered === false) {
+    // Settings fallback is legacy configuration, not a literal session choice.
+    // Configured max is seeded as xhigh for these older models; an explicit
+    // applyConfig max remains max and must be forwarded exactly as accepted.
+    if (turnEffort === undefined && !contract.levels.includes("xhigh") &&
+        (requested === "max" || requested === "xhigh")) return "high";
+    if (contract.levels.includes(requested)) return requested;
+    if (requested === "max" || requested === "xhigh") return "high";
+  }
+  if (contract?.registered === false && contract.levels.includes(requested)) {
+    return requested;
+  }
   if (requested === "max" || requested === "xhigh") {
     if (supportedReasoningLevels === undefined) {
       return requested === "max" ? "xhigh" : requested;
@@ -1452,10 +1478,7 @@ export async function streamModel(
     state.needsFollowUp = false;
   } else {
     const mergedToolBlocks = new Map(streamedToolBlocks);
-    const admittedAssistantToolCalls = assistant.toolCalls.filter(
-      (call) => !state.editorToolCallLimitDeniedIds.has(call.id),
-    );
-    for (const block of parseToolUseBlocks(admittedAssistantToolCalls)) {
+    for (const block of parseToolUseBlocks([...assistant.toolCalls])) {
       mergedToolBlocks.set(block.id, block);
     }
     state.toolUseBlocks = [...mergedToolBlocks.values()];
@@ -1636,6 +1659,9 @@ export async function streamModel(
             ? { reasoningOutputTokens: reasoning }
             : {}),
           ...(webSearch !== undefined ? { webSearchRequests: webSearch } : {}),
+          // Served speed, not requested speed: fast mode bills at its own
+          // rates only when the provider says the turn ran fast.
+          ...(response.usage.speed === "fast" ? { speed: "fast" as const } : {}),
         },
       },
     });

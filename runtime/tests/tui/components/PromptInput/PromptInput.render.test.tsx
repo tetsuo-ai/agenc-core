@@ -38,7 +38,6 @@ const harness = vi.hoisted(() => {
     },
     viewingAgentTaskId: null,
     viewSelectionMode: null,
-    workbench: undefined as unknown,
   };
 
   return {
@@ -46,10 +45,6 @@ const harness = vi.hoisted(() => {
     appState,
     baseProps: undefined as undefined | Record<string, unknown>,
     clearBuffer: vi.fn(),
-    editPromptResult: { content: null, error: null } as {
-      content: string | null;
-      error: string | null;
-    },
     keybindings: {} as Record<string, () => unknown>,
     inputHandlers: [] as Array<{
       handler: (
@@ -162,7 +157,6 @@ const harness = vi.hoisted(() => {
       harness.pushToBuffer.mockClear();
       harness.removeNotification.mockClear();
       harness.baseProps = undefined;
-      harness.editPromptResult = { content: null, error: null };
       harness.keybindings = {};
       harness.inputHandlers = [];
       appState.coordinatorTaskIndex = -1;
@@ -185,7 +179,6 @@ const harness = vi.hoisted(() => {
       };
       appState.viewingAgentTaskId = null;
       appState.viewSelectionMode = null;
-      appState.workbench = undefined;
       harness.activeAgent = { type: "leader" };
       harness.autoModeOptInProps = undefined;
       harness.backgroundTasksPanelProps = undefined;
@@ -571,9 +564,6 @@ vi.mock("../../../utils/platform.js", () => ({
   getPlatform: () => harness.platform,
 }));
 
-vi.mock("../../../utils/promptEditor.js", () => ({
-  editPromptInEditor: vi.fn(async () => harness.editPromptResult),
-}));
 
 vi.mock("../../input/processBashCommand.js", () => ({
   processBashCommand: harness.processBashCommand,
@@ -761,24 +751,11 @@ vi.mock("./useSwarmBanner.js", () => ({
   useSwarmBanner: () => harness.swarmBanner,
 }));
 
-vi.mock("./utils.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./utils.js")>();
-  return {
-    ...actual,
-    isVimModeEnabled: () => false,
-  };
-});
-
 import { createRoot } from "../../ink/root.js";
 import { sendDirectMemberMessage } from "../../../utils/directMemberMessage.js";
 import { getImageFromClipboard } from "../../../utils/imagePaste.js";
 import { cacheImagePath, storeImage } from "../../../utils/imageStore.js";
 import { logError } from "../../../utils/log.js";
-import { editPromptInEditor } from "../../../utils/promptEditor.js";
-import {
-  getDefaultWorkbenchState,
-  workbenchReducer,
-} from "../../../../src/tui/workbench/reducer.js";
 import PromptInput from "./PromptInput.js";
 
 function sleep(ms: number): Promise<void> {
@@ -878,13 +855,11 @@ function basePromptInputProps(overrides: Record<string, unknown> = {}) {
     setShowBashesDialog: vi.fn(),
     setStashedPrompt: vi.fn(),
     setToolPermissionContext: vi.fn(),
-    setVimMode: vi.fn(),
     showBashesDialog: false,
     stashedPrompt: undefined,
     submitCount: 0,
     toolPermissionContext: harness.appState.toolPermissionContext,
     verbose: false,
-    vimMode: "INSERT",
     ...overrides,
   };
 }
@@ -947,7 +922,6 @@ describe("PromptInput render surface", () => {
     vi.mocked(storeImage).mockClear();
     vi.mocked(sendDirectMemberMessage).mockClear();
     vi.mocked(logError).mockClear();
-    vi.mocked(editPromptInEditor).mockClear();
   });
 
   test("does not register the retired fast-mode keybinding", async () => {
@@ -974,95 +948,6 @@ describe("PromptInput render surface", () => {
       expect(baseProps.columns).toBe(95);
       expect(baseProps.multiline).toBe(true);
       expect(baseProps.disableCursorMovementForUpDownKeys).toBe(false);
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("shows the armed Ctrl+D exit confirmation in the workbench composer", async () => {
-    const rendered = await renderPromptInput({ input: "" });
-
-    try {
-      const baseProps = await waitForPromptInputProps();
-      expect(harness.promptInputFooterProps).toBeUndefined();
-
-      (baseProps.onExitMessage as (show: boolean, key?: string) => void)(
-        true,
-        "Ctrl-D",
-      );
-
-      await vi.waitFor(() => {
-        expect(harness.promptInputFooterProps).toEqual(
-          expect.objectContaining({
-            exitMessage: { show: true, key: "Ctrl-D" },
-          }),
-        );
-      });
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("renders onboarding as a distinct input surface and submits empty Enter", async () => {
-    const onSubmit = vi.fn(async () => {});
-    const rendered = await renderPromptInput({
-      input: "",
-      onSubmit,
-      onboardingInput: {
-        placeholder: "Press Enter to start setup",
-        footerHint: "Enter confirms the shown default",
-        allowEmptySubmit: true,
-      },
-    });
-
-    try {
-      const baseProps = await waitForPromptInputProps();
-
-      expect(baseProps.placeholder).toBe("Press Enter to start setup");
-      expect(baseProps.onHistoryUp).toBeUndefined();
-      expect(baseProps.onHistoryDown).toBeUndefined();
-
-      await (baseProps.onSubmit as (value: string) => Promise<void>)("");
-
-      expect(onSubmit).toHaveBeenCalledWith(
-        "",
-        expect.objectContaining({
-          clearBuffer: harness.clearBuffer,
-          resetHistory: expect.any(Function),
-          setCursorOffset: expect.any(Function),
-        }),
-        undefined,
-        expect.objectContaining({
-          mode: "prompt",
-          vimRoutingState: expect.objectContaining({ enabled: false }),
-        }),
-      );
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("submits normal prompt input through the leader path", async () => {
-    const onSubmit = vi.fn(async () => {});
-    const rendered = await renderPromptInput({ input: "hello", onSubmit });
-
-    try {
-      const baseProps = await waitForPromptInputProps();
-      await (baseProps.onSubmit as (value: string) => Promise<void>)("hello");
-
-      expect(onSubmit).toHaveBeenCalledWith(
-        "hello",
-        expect.objectContaining({
-          clearBuffer: harness.clearBuffer,
-          resetHistory: expect.any(Function),
-          setCursorOffset: expect.any(Function),
-        }),
-        undefined,
-        expect.objectContaining({
-          mode: "prompt",
-          vimRoutingState: expect.objectContaining({ enabled: false }),
-        }),
-      );
     } finally {
       await rendered.dispose();
     }
@@ -1222,63 +1107,6 @@ describe("PromptInput render surface", () => {
     }
   });
 
-  test("handles stash, newline, and external editor chat actions", async () => {
-    const onInputChange = vi.fn();
-    const setPastedContents = vi.fn();
-    const setStashedPrompt = vi.fn();
-    harness.editPromptResult = { content: "edited draft", error: null };
-
-    const rendered = await renderPromptInput({
-      input: "draft",
-      onInputChange,
-      setPastedContents,
-      setStashedPrompt,
-    });
-
-    try {
-      await waitForPromptInputProps();
-
-      harness.keybindings["chat:newline"]?.();
-      expect(onInputChange).toHaveBeenCalledWith("draft\n");
-
-      harness.keybindings["chat:stash"]?.();
-      expect(setStashedPrompt).toHaveBeenCalledWith({
-        text: "draft\n",
-        cursorOffset: "draft\n".length,
-        pastedContents: {},
-      });
-      expect(onInputChange).toHaveBeenCalledWith("");
-      expect(setPastedContents).toHaveBeenCalledWith({});
-
-      await harness.keybindings["chat:externalEditor"]?.();
-      expect(onInputChange).toHaveBeenCalledWith("edited draft");
-
-      const unstash = await renderPromptInput({
-        input: "",
-        onInputChange,
-        setPastedContents,
-        setStashedPrompt,
-        stashedPrompt: {
-          text: "restored",
-          cursorOffset: 4,
-          pastedContents: { 7: { id: 7, type: "text", content: "saved" } },
-        },
-      });
-      try {
-        await waitForPromptInputProps();
-        harness.keybindings["chat:stash"]?.();
-        expect(onInputChange).toHaveBeenCalledWith("restored");
-        expect(setPastedContents).toHaveBeenCalledWith({
-          7: { id: 7, type: "text", content: "saved" },
-        });
-      } finally {
-        await unstash.dispose();
-      }
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
   test("inserts keybound text at current cursor offset before rerender", async () => {
     const onInputChange = vi.fn();
     const rendered = await renderPromptInput({
@@ -1369,42 +1197,6 @@ describe("PromptInput render surface", () => {
   });
 
   test.each([
-    { input: "/tasks", blocked: true, busy: false },
-    { input: "/jobs", blocked: true, busy: true },
-    { input: "/bashes", blocked: true, busy: true },
-    { input: "/status", blocked: false, busy: true },
-    { input: "/swarm status", blocked: true, busy: true },
-  ])("routes $input locally while blocked=$blocked and busy=$busy without consuming attachments", async ({ input, blocked, busy }) => {
-    const onSubmit = vi.fn(async () => {});
-    const onSubmissionBlocked = vi.fn();
-    const pastedState = createPastedContentsState({ 4: { id: 4, type: "text", content: "keep attachment" } });
-    harness.appState.workbench = {
-      ...getDefaultWorkbenchState(),
-      attachments: [{ id: "file:src/keep.ts", kind: "file", label: "src/keep.ts", path: "src/keep.ts" }],
-      composerAttachmentIds: ["file:src/keep.ts"],
-      agentComposerAttachmentIds: ["file:src/keep.ts"],
-    };
-    const rendered = await renderPromptInput({
-      input, mode: "prompt", isLoading: busy, onSubmit,
-      pastedContents: pastedState.current, setPastedContents: pastedState.setPastedContents,
-      submissionBlockedReason: blocked ? "Editor synchronization is pending." : null,
-      onSubmissionBlocked,
-    });
-    try {
-      const baseProps = await waitForPromptInputProps();
-      pastedState.setPastedContents.mockClear();
-      await (baseProps.onSubmit as (value: string) => Promise<void>)(input);
-      expect(onSubmit).toHaveBeenCalledWith(input, expect.any(Object));
-      expect(onSubmissionBlocked).not.toHaveBeenCalled();
-      expect(harness.processBashCommand).not.toHaveBeenCalled();
-      expect(pastedState.setPastedContents).not.toHaveBeenCalled();
-      expect(harness.appState.workbench).toMatchObject({ composerAttachmentIds: ["file:src/keep.ts"] });
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test.each([
     { input: "/tasks", mode: "bash" },
     { input: "/swarm off", mode: "prompt" },
     { input: "/tasks\nchange files", mode: "prompt" },
@@ -1420,72 +1212,6 @@ describe("PromptInput render surface", () => {
       expect(onSubmit).not.toHaveBeenCalled();
       expect(harness.processBashCommand).not.toHaveBeenCalled();
       expect(harness.clearBuffer).not.toHaveBeenCalled();
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("blocks before bash routing without clearing the draft or attachments", async () => {
-    const onSubmit = vi.fn(async () => {});
-    const onInputChange = vi.fn();
-    const onSubmissionBlocked = vi.fn();
-    const pastedState = createPastedContentsState({
-      4: {
-        id: 4,
-        type: "text",
-        content: "blocked attachment",
-      },
-    });
-    harness.appState.workbench = {
-      ...getDefaultWorkbenchState(),
-      attachments: [
-        {
-          id: "file:src/blocked.ts",
-          kind: "file",
-          label: "src/blocked.ts",
-          path: "src/blocked.ts",
-        },
-      ],
-      composerAttachmentIds: ["file:src/blocked.ts"],
-      agentComposerAttachmentIds: ["file:src/blocked.ts"],
-    };
-    const rendered = await renderPromptInput({
-      input: "echo unsafe",
-      mode: "bash",
-      onInputChange,
-      onSubmit,
-      pastedContents: pastedState.current,
-      setPastedContents: pastedState.setPastedContents,
-      submissionBlockedReason: "Editor synchronization is pending.",
-      onSubmissionBlocked,
-    });
-
-    try {
-      const baseProps = await waitForPromptInputProps();
-      pastedState.setPastedContents.mockClear();
-      await (baseProps.onSubmit as (value: string) => Promise<void>)(
-        "echo unsafe",
-      );
-
-      expect(onSubmissionBlocked).toHaveBeenCalledWith(
-        "Editor synchronization is pending.",
-      );
-      expect(harness.processBashCommand).not.toHaveBeenCalled();
-      expect(onSubmit).not.toHaveBeenCalled();
-      expect(onInputChange).not.toHaveBeenCalled();
-      expect(pastedState.setPastedContents).not.toHaveBeenCalled();
-      expect(pastedState.current).toEqual({
-        4: {
-          id: 4,
-          type: "text",
-          content: "blocked attachment",
-        },
-      });
-      expect(harness.clearBuffer).not.toHaveBeenCalled();
-      expect(harness.appState.workbench).toMatchObject({
-        composerAttachmentIds: ["file:src/blocked.ts"],
-        agentComposerAttachmentIds: ["file:src/blocked.ts"],
-      });
     } finally {
       await rendered.dispose();
     }
@@ -1575,530 +1301,6 @@ describe("PromptInput render surface", () => {
       }
 
       expect(setToolPermissionContext).not.toHaveBeenCalled();
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("submits only composer-selected workbench attachments", async () => {
-    harness.appState.workbench = {
-      ...getDefaultWorkbenchState(),
-      attachments: [
-        {
-          id: "file:src/active.ts",
-          kind: "file",
-          label: "src/active.ts",
-          path: "src/active.ts",
-        },
-        {
-          id: "file:src/stale.ts",
-          kind: "file",
-          label: "src/stale.ts",
-          path: "src/stale.ts",
-        },
-      ],
-      composerAttachmentIds: ["file:src/active.ts"],
-    };
-    const onSubmit = vi.fn(async () => {});
-    const rendered = await renderPromptInput({ input: "review", onSubmit });
-
-    try {
-      const baseProps = await waitForPromptInputProps();
-      await (baseProps.onSubmit as (value: string) => Promise<void>)("review");
-
-      expect(onSubmit).toHaveBeenCalledWith(
-        "@src/active.ts\n\nreview",
-        expect.anything(),
-        undefined,
-        expect.objectContaining({ mode: "prompt" }),
-      );
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("fails closed when a synchronous tab switch leaves a stale composer render", async () => {
-    harness.appState.workbench = workbenchReducer(getDefaultWorkbenchState(), {
-      type: "attach",
-      attachment: {
-        id: "file:src/agent.ts",
-        kind: "file",
-        label: "src/agent.ts",
-        path: "src/agent.ts",
-      },
-    });
-    const agentPastes = createPastedContentsState({
-      4: {
-        id: 4,
-        type: "text",
-        content: "agent-only pasted context",
-      },
-    });
-    const onSubmit = vi.fn(async () => {});
-    const rendered = await renderPromptInput({
-      input: "agent-only draft",
-      onSubmit,
-      pastedContents: agentPastes.current,
-      setPastedContents: agentPastes.setPastedContents,
-    });
-
-    try {
-      const staleAgentSubmit = (await waitForPromptInputProps()).onSubmit as (
-        value: string,
-      ) => Promise<void>;
-      agentPastes.setPastedContents.mockClear();
-      harness.appState.workbench = workbenchReducer(
-        workbenchReducer(
-          harness.appState.workbench as ReturnType<
-            typeof getDefaultWorkbenchState
-          >,
-          { type: "switchWorkspaceView", view: "editor" },
-        ),
-        {
-          type: "attach",
-          attachment: {
-            id: "editor-selection:src/editor.ts:1-1",
-            kind: "editor-selection",
-            label: "src/editor.ts:1",
-            path: "src/editor.ts",
-            line: 1,
-            endLine: 1,
-            content: "editor-only selection",
-            changedtick: 5,
-          },
-        },
-      );
-
-      await staleAgentSubmit("agent-only draft");
-
-      expect(onSubmit).not.toHaveBeenCalled();
-      expect(harness.clearBuffer).not.toHaveBeenCalled();
-      expect(agentPastes.setPastedContents).not.toHaveBeenCalled();
-      expect(harness.appState.workbench).toMatchObject({
-        activeWorkspaceView: "editor",
-        agentComposerAttachmentIds: ["file:src/agent.ts"],
-        editorComposerAttachmentIds: ["editor-selection:src/editor.ts:1-1"],
-      });
-    } finally {
-      await rendered.dispose();
-    }
-
-    const editorPastes = createPastedContentsState();
-    const editorRendered = await renderPromptInput({
-      input: "explain this selection",
-      onSubmit,
-      pastedContents: editorPastes.current,
-      setPastedContents: editorPastes.setPastedContents,
-    });
-    try {
-      const staleEditorSubmit = (await waitForPromptInputProps()).onSubmit as (
-        value: string,
-      ) => Promise<void>;
-      await staleEditorSubmit("explain this selection");
-
-      expect(onSubmit).toHaveBeenCalledOnce();
-      const submittedPastes = (
-        onSubmit.mock.calls[0]?.[3] as {
-          readonly pastedContentsOverride?: Record<number, PastedContent>;
-        }
-      ).pastedContentsOverride;
-      expect(submittedPastes).toBeDefined();
-      expect(JSON.stringify(submittedPastes)).toContain(
-        "editor-only selection",
-      );
-      expect(JSON.stringify(submittedPastes)).not.toContain(
-        "agent-only pasted context",
-      );
-
-      harness.appState.workbench = workbenchReducer(
-        harness.appState.workbench as ReturnType<
-          typeof getDefaultWorkbenchState
-        >,
-        { type: "switchWorkspaceView", view: "agent" },
-      );
-      await staleEditorSubmit("explain this selection");
-      expect(onSubmit).toHaveBeenCalledOnce();
-    } finally {
-      await editorRendered.dispose();
-    }
-  });
-
-  test("clears only the originating attachment snapshot when submit settles after a tab switch", async () => {
-    harness.appState.workbench = {
-      ...getDefaultWorkbenchState(),
-      attachments: [
-        {
-          id: "file:src/agent.ts",
-          kind: "file",
-          label: "src/agent.ts",
-          path: "src/agent.ts",
-        },
-      ],
-      composerAttachmentIds: ["file:src/agent.ts"],
-      agentComposerAttachmentIds: ["file:src/agent.ts"],
-    };
-    let resolveSubmit: (() => void) | undefined;
-    let acknowledgeAttachments: (() => void) | undefined;
-    const onSubmit = vi.fn(
-      (
-        _input: string,
-        _helpers: unknown,
-        _speculation: unknown,
-        options?: { onWorkbenchAttachmentsAdmitted?: () => void },
-      ) =>
-        new Promise<void>((resolve) => {
-          acknowledgeAttachments = options?.onWorkbenchAttachmentsAdmitted;
-          resolveSubmit = resolve;
-        }),
-    );
-    const rendered = await renderPromptInput({ input: "review", onSubmit });
-
-    try {
-      const baseProps = await waitForPromptInputProps();
-      const pending = (baseProps.onSubmit as (value: string) => Promise<void>)(
-        "review",
-      );
-      await vi.waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
-
-      const editor = workbenchReducer(
-        workbenchReducer(
-          harness.appState.workbench as ReturnType<
-            typeof getDefaultWorkbenchState
-          >,
-          { type: "switchWorkspaceView", view: "editor" },
-        ),
-        {
-          type: "attach",
-          attachment: {
-            id: "file:src/editor.ts",
-            kind: "file",
-            label: "src/editor.ts",
-            path: "src/editor.ts",
-          },
-        },
-      );
-      harness.appState.workbench = editor;
-      acknowledgeAttachments?.();
-      resolveSubmit?.();
-      await pending;
-
-      expect(harness.appState.workbench).toEqual(
-        expect.objectContaining({
-          activeWorkspaceView: "editor",
-          agentComposerAttachmentIds: [],
-          editorComposerAttachmentIds: ["file:src/editor.ts"],
-          composerAttachmentIds: ["file:src/editor.ts"],
-          attachments: [expect.objectContaining({ id: "file:src/editor.ts" })],
-        }),
-      );
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("retains file and captured-selection attachments until the app acknowledges admission", async () => {
-    harness.appState.workbench = {
-      ...getDefaultWorkbenchState(),
-      attachments: [
-        {
-          id: "file:src/agent.ts",
-          kind: "file",
-          label: "src/agent.ts",
-          path: "src/agent.ts",
-        },
-        {
-          id: "editor-selection:src/agent.ts:4-4",
-          kind: "editor-selection",
-          label: "src/agent.ts:4",
-          path: "src/agent.ts",
-          line: 4,
-          endLine: 4,
-          content: "const privateValue = 42",
-        },
-        {
-          id: "file:src/editor.ts",
-          kind: "file",
-          label: "src/editor.ts",
-          path: "src/editor.ts",
-        },
-      ],
-      composerAttachmentIds: [
-        "file:src/agent.ts",
-        "editor-selection:src/agent.ts:4-4",
-      ],
-      agentComposerAttachmentIds: [
-        "file:src/agent.ts",
-        "editor-selection:src/agent.ts:4-4",
-      ],
-      editorComposerAttachmentIds: ["file:src/editor.ts"],
-    };
-    let acknowledgeAttachments: (() => void) | undefined;
-    const onSubmit = vi.fn(
-      async (
-        _input: string,
-        _helpers: unknown,
-        _speculation: unknown,
-        options?: { onWorkbenchAttachmentsAdmitted?: () => void },
-      ) => {
-        acknowledgeAttachments = options?.onWorkbenchAttachmentsAdmitted;
-      },
-    );
-    const rendered = await renderPromptInput({ input: "inspect", onSubmit });
-
-    try {
-      const baseProps = await waitForPromptInputProps();
-      await (baseProps.onSubmit as (value: string) => Promise<void>)("inspect");
-
-      expect(acknowledgeAttachments).toBeDefined();
-      expect(harness.appState.workbench).toMatchObject({
-        agentComposerAttachmentIds: [
-          "file:src/agent.ts",
-          "editor-selection:src/agent.ts:4-4",
-        ],
-        editorComposerAttachmentIds: ["file:src/editor.ts"],
-        composerAttachmentIds: [
-          "file:src/agent.ts",
-          "editor-selection:src/agent.ts:4-4",
-        ],
-      });
-      expect(
-        (
-          harness.appState.workbench as {
-            attachments: Array<{ id: string; content?: string }>;
-          }
-        ).attachments,
-      ).toEqual([
-        expect.objectContaining({ id: "file:src/agent.ts" }),
-        expect.objectContaining({
-          id: "editor-selection:src/agent.ts:4-4",
-          content: "const privateValue = 42",
-        }),
-        expect.objectContaining({ id: "file:src/editor.ts" }),
-      ]);
-
-      acknowledgeAttachments?.();
-
-      expect(harness.appState.workbench).toMatchObject({
-        agentComposerAttachmentIds: [],
-        editorComposerAttachmentIds: ["file:src/editor.ts"],
-        composerAttachmentIds: [],
-        attachments: [expect.objectContaining({ id: "file:src/editor.ts" })],
-      });
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("preserves a busy Editor interaction draft and trusted attachment", async () => {
-    harness.appState.workbench = {
-      ...getDefaultWorkbenchState(),
-      activeWorkspaceView: "editor",
-      activeSurfaceMode: "buffer",
-      attachments: [
-        {
-          id: "editor-selection:src/value.ts:2-2",
-          kind: "editor-selection",
-          label: "src/value.ts:2",
-          path: "src/value.ts",
-          line: 2,
-          endLine: 2,
-          content: "value",
-          editorInteraction: {
-            kind: "explain",
-            bufferHandle: 7,
-            path: "src/value.ts",
-            changedtick: 11,
-            range: {
-              start: { line: 2, column: 0 },
-              end: { line: 2, column: 5 },
-            },
-          },
-        },
-      ],
-      composerAttachmentIds: ["editor-selection:src/value.ts:2-2"],
-      editorComposerAttachmentIds: ["editor-selection:src/value.ts:2-2"],
-    };
-    const onSubmit = vi.fn(async () => {});
-    const onInputChange = vi.fn();
-    const rendered = await renderPromptInput({
-      input: "explain this",
-      isLoading: true,
-      onInputChange,
-      onSubmit,
-    });
-
-    try {
-      const baseProps = await waitForPromptInputProps();
-      await (baseProps.onSubmit as (value: string) => Promise<void>)(
-        "explain this",
-      );
-
-      expect(onSubmit).not.toHaveBeenCalled();
-      expect(onInputChange).not.toHaveBeenCalled();
-      expect(harness.clearBuffer).not.toHaveBeenCalled();
-      expect(harness.addNotification).toHaveBeenCalledWith(
-        expect.objectContaining({
-          key: "busy-editor-interaction-preserved",
-        }),
-      );
-      expect(harness.appState.workbench).toMatchObject({
-        composerAttachmentIds: ["editor-selection:src/value.ts:2-2"],
-        editorComposerAttachmentIds: ["editor-selection:src/value.ts:2-2"],
-      });
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("routes the Editor composer to the canonical session instead of the selected teammate", async () => {
-    harness.appState.workbench = {
-      ...getDefaultWorkbenchState(),
-      activeWorkspaceView: "editor",
-      activeSurfaceMode: "buffer",
-    };
-    harness.activeAgent = {
-      type: "in-process",
-      task: { id: "selected-teammate" },
-    };
-    harness.isAgentSwarmsEnabled = true;
-    harness.directMessage = {
-      message: "ask the canonical agent",
-      recipientName: "selected-teammate",
-    };
-    harness.directMessageResult = {
-      recipientName: "selected-teammate",
-      success: true,
-    };
-    const onSubmit = vi.fn(async () => {});
-    const onAgentSubmit = vi.fn(async () => {});
-    const rendered = await renderPromptInput({
-      input: "ask the canonical agent",
-      onAgentSubmit,
-      onSubmit,
-    });
-
-    try {
-      const baseProps = await waitForPromptInputProps();
-      await (baseProps.onSubmit as (value: string) => Promise<void>)(
-        "ask the canonical agent",
-      );
-
-      expect(onAgentSubmit).not.toHaveBeenCalled();
-      expect(sendDirectMemberMessage).not.toHaveBeenCalled();
-      expect(onSubmit).toHaveBeenCalledWith(
-        "ask the canonical agent",
-        expect.anything(),
-        undefined,
-        expect.objectContaining({ mode: "prompt" }),
-      );
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("never applies a delayed Editor handoff to the Agent composer", async () => {
-    harness.appState.workbench = {
-      ...getDefaultWorkbenchState(),
-      composerDraftRequest: {
-        id: 1,
-        text: "Explain the selected code.",
-        view: "editor",
-      },
-    };
-    const onInputChange = vi.fn();
-    const rendered = await renderPromptInput({
-      input: "agent draft",
-      onInputChange,
-    });
-
-    try {
-      await sleep(25);
-      expect(onInputChange).not.toHaveBeenCalled();
-      expect(
-        (
-          harness.appState.workbench as {
-            composerDraftRequest: unknown;
-          }
-        ).composerDraftRequest,
-      ).not.toBeNull();
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("applies and acknowledges a handoff only in its owning composer", async () => {
-    harness.appState.workbench = {
-      ...getDefaultWorkbenchState(),
-      activeWorkspaceView: "editor",
-      activeSurfaceMode: "buffer",
-      focusedPane: "composer",
-      composerDraftRequest: {
-        id: 1,
-        text: "Explain the selected code.",
-        view: "editor",
-      },
-    };
-    const onInputChange = vi.fn();
-    const rendered = await renderPromptInput({
-      input: "editor draft",
-      onInputChange,
-    });
-
-    try {
-      await vi.waitFor(() => {
-        expect(onInputChange).toHaveBeenCalledWith(
-          "editor draft\n\nExplain the selected code.",
-        );
-      });
-      expect(
-        (
-          harness.appState.workbench as {
-            composerDraftRequest: unknown;
-          }
-        ).composerDraftRequest,
-      ).toBeNull();
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("backspace on an empty composer removes only the latest workbench attachment", async () => {
-    harness.appState.workbench = {
-      ...getDefaultWorkbenchState(),
-      attachments: [
-        {
-          id: "file:src/first.ts",
-          kind: "file",
-          label: "src/first.ts",
-          path: "src/first.ts",
-        },
-        {
-          id: "file:src/latest.ts",
-          kind: "file",
-          label: "src/latest.ts",
-          path: "src/latest.ts",
-        },
-      ],
-      composerAttachmentIds: ["file:src/first.ts", "file:src/latest.ts"],
-    };
-    const stopImmediatePropagation = vi.fn();
-    const rendered = await renderPromptInput({ input: "" });
-
-    try {
-      latestInputHandler()(
-        "",
-        { backspace: true },
-        { stopImmediatePropagation },
-      );
-
-      expect(
-        (
-          harness.appState.workbench as {
-            composerAttachmentIds: readonly string[];
-          }
-        ).composerAttachmentIds,
-      ).toEqual(["file:src/first.ts"]);
-      expect(stopImmediatePropagation).toHaveBeenCalledOnce();
     } finally {
       await rendered.dispose();
     }
@@ -2283,37 +1485,6 @@ describe("PromptInput render surface", () => {
     }
   });
 
-  test("opens workbench global search against current paste draft before parent rerender", async () => {
-    harness.features.QUICK_SEARCH = true;
-    const onInputChange = vi.fn();
-    const setHelpOpen = vi.fn();
-    const rendered = await renderPromptInput({
-      input: "",
-      onInputChange,
-      setHelpOpen,
-    });
-
-    try {
-      const baseProps = await waitForPromptInputProps();
-
-      (baseProps.onPaste as (text: string) => void)("search term");
-      expect(onInputChange).toHaveBeenCalledWith("search term");
-
-      harness.keybindings["app:globalSearch"]?.();
-
-      expect(setHelpOpen).toHaveBeenCalledWith(false);
-      expect(harness.appState.workbench).toEqual(
-        expect.objectContaining({
-          activeSurfaceMode: "search",
-          focusedPane: "surface",
-          searchQuery: "search term",
-        }),
-      );
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
   test("opens history search against current paste draft before parent rerender", async () => {
     harness.features.HISTORY_PICKER = true;
     const onInputChange = vi.fn();
@@ -2464,53 +1635,6 @@ describe("PromptInput render surface", () => {
         },
       );
       expect(onInputChange).toHaveBeenCalledWith("[Image #1]\n");
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("opens external editor with current image paste drafts before parent rerender", async () => {
-    vi.mocked(getImageFromClipboard).mockResolvedValue({
-      base64: "editor-image",
-      mediaType: "image/jpeg",
-    });
-    harness.editPromptResult = { content: "edited image draft", error: null };
-    const onInputChange = vi.fn();
-    const pastedContents = createPastedContentsState();
-    const rendered = await renderPromptInput({
-      input: "",
-      onInputChange,
-      pastedContents: pastedContents.current,
-      setPastedContents: pastedContents.setPastedContents,
-    });
-
-    try {
-      await waitForPromptInputProps();
-
-      await harness.keybindings["chat:imagePaste"]?.();
-      await sleep(25);
-      harness.pushToBuffer.mockClear();
-
-      await harness.keybindings["chat:externalEditor"]?.();
-
-      const expectedPastedContents = {
-        1: expect.objectContaining({
-          content: "editor-image",
-          id: 1,
-          mediaType: "image/jpeg",
-          type: "image",
-        }),
-      };
-      expect(editPromptInEditor).toHaveBeenCalledWith(
-        "[Image #1]",
-        expectedPastedContents,
-      );
-      expect(harness.pushToBuffer).toHaveBeenCalledWith(
-        "[Image #1]",
-        "[Image #1]".length,
-        expectedPastedContents,
-      );
-      expect(onInputChange).toHaveBeenCalledWith("edited image draft");
     } finally {
       await rendered.dispose();
     }
@@ -2752,172 +1876,6 @@ describe("PromptInput render surface", () => {
     }
   });
 
-  test("accepts a visible prompt suggestion on empty submit", async () => {
-    harness.appState.promptSuggestion = {
-      acceptedAt: 0,
-      generationRequestId: "generation-1",
-      promptId: "prompt-1",
-      shownAt: 100,
-      text: "run the test suite",
-    };
-    const onSubmit = vi.fn(async () => {});
-    const rendered = await renderPromptInput({ input: "", onSubmit });
-
-    try {
-      const baseProps = await waitForPromptInputProps();
-      await (baseProps.onSubmit as (value: string) => Promise<void>)("");
-
-      expect(onSubmit).toHaveBeenCalledWith(
-        "run the test suite",
-        expect.objectContaining({
-          clearBuffer: harness.clearBuffer,
-          resetHistory: expect.any(Function),
-          setCursorOffset: expect.any(Function),
-        }),
-        undefined,
-        expect.objectContaining({
-          mode: "prompt",
-          vimRoutingState: expect.objectContaining({ enabled: false }),
-        }),
-      );
-      expect(harness.appState.promptSuggestion).toEqual({
-        acceptedAt: 0,
-        generationRequestId: null,
-        promptId: null,
-        shownAt: 0,
-        text: null,
-      });
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("routes accepted prompt suggestions through active speculation state", async () => {
-    harness.appState.promptSuggestion = {
-      acceptedAt: 0,
-      generationRequestId: null,
-      promptId: "prompt-spec",
-      shownAt: 100,
-      text: "finish via speculation",
-    };
-    harness.appState.speculation = {
-      status: "active",
-      taskId: "spec-task",
-    };
-    harness.appState.speculationSessionTimeSavedMs = 1234;
-    const onSubmit = vi.fn(async () => {});
-    const rendered = await renderPromptInput({ input: "", onSubmit });
-
-    try {
-      const baseProps = await waitForPromptInputProps();
-      await (baseProps.onSubmit as (value: string) => Promise<void>)("");
-
-      expect(onSubmit).toHaveBeenCalledWith(
-        "finish via speculation",
-        expect.objectContaining({
-          clearBuffer: harness.clearBuffer,
-          resetHistory: expect.any(Function),
-          setCursorOffset: expect.any(Function),
-        }),
-        expect.objectContaining({
-          speculationSessionTimeSavedMs: 1234,
-          state: expect.objectContaining({
-            status: "active",
-            taskId: "spec-task",
-          }),
-          setAppState: harness.setAppState,
-        }),
-        expect.objectContaining({
-          vimRoutingState: expect.objectContaining({ enabled: false }),
-        }),
-      );
-      expect(harness.appState.promptSuggestion.text).toBe(
-        "finish via speculation",
-      );
-      expect(harness.appState.promptSuggestion.acceptedAt).toBeGreaterThan(0);
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("submits workbench attachments without auto-accepting an empty prompt suggestion", async () => {
-    harness.appState.promptSuggestion = {
-      acceptedAt: 0,
-      generationRequestId: "generation-attachments",
-      promptId: "prompt-attachments",
-      shownAt: 100,
-      text: "run the unrelated suggestion",
-    };
-    harness.appState.workbench = {
-      ...getDefaultWorkbenchState(),
-      attachments: [
-        {
-          id: "file:src/app.ts",
-          kind: "file",
-          label: "src/app.ts",
-          path: "src/app.ts",
-        },
-      ],
-      composerAttachmentIds: ["file:src/app.ts"],
-    };
-    const onSubmit = vi.fn(
-      async (
-        _input: string,
-        _helpers: unknown,
-        _speculation: unknown,
-        options?: { onWorkbenchAttachmentsAdmitted?: () => void },
-      ) => {
-        options?.onWorkbenchAttachmentsAdmitted?.();
-      },
-    );
-    const rendered = await renderPromptInput({ input: "", onSubmit });
-
-    try {
-      const baseProps = await waitForPromptInputProps();
-      await (baseProps.onSubmit as (value: string) => Promise<void>)("");
-
-      expect(onSubmit).toHaveBeenCalledWith(
-        "@src/app.ts\n\n",
-        expect.objectContaining({
-          clearBuffer: harness.clearBuffer,
-          resetHistory: expect.any(Function),
-          setCursorOffset: expect.any(Function),
-        }),
-        undefined,
-        expect.objectContaining({
-          mode: "prompt",
-        }),
-      );
-      expect(harness.appState.workbench).toEqual(
-        expect.objectContaining({
-          attachments: [],
-          composerAttachmentIds: [],
-        }),
-      );
-      expect(harness.appState.promptSuggestion).toEqual({
-        acceptedAt: 0,
-        generationRequestId: null,
-        promptId: null,
-        shownAt: 0,
-        text: null,
-      });
-
-      await (baseProps.onSubmit as (value: string) => Promise<void>)(
-        "next prompt",
-      );
-      expect(onSubmit).toHaveBeenCalledTimes(2);
-      expect(onSubmit.mock.calls[1]?.[0]).toBe("next prompt");
-      expect(onSubmit.mock.calls[1]?.[3]).not.toHaveProperty(
-        "onWorkbenchAttachmentsAdmitted",
-      );
-      expect(onSubmit.mock.calls[1]?.[3]).toMatchObject({
-        pastedContentsOverride: {},
-      });
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
   test("executes bash-mode input locally and emits transcript events", async () => {
     const emitted: unknown[] = [];
     const setToolJSX = vi.fn();
@@ -3108,63 +2066,6 @@ describe("PromptInput render surface", () => {
       expect(onModeChange).toHaveBeenCalledWith("prompt");
     } finally {
       dateNow.mockRestore();
-      await rendered.dispose();
-    }
-  });
-
-  test("does not clear the Editor draft when Agent Bash settles after a tab switch", async () => {
-    harness.appState.workbench = getDefaultWorkbenchState();
-    let visibleInput = "sleep 1";
-    let visibleMode = "bash";
-    let resolveBash: (() => void) | undefined;
-    const onInputChange = vi.fn((value: string) => {
-      visibleInput = value;
-    });
-    const onModeChange = vi.fn((value: string) => {
-      visibleMode = value;
-    });
-    const onBashSubmit = vi.fn(
-      () =>
-        new Promise<void>((resolve) => {
-          resolveBash = resolve;
-        }),
-    );
-    const rendered = await renderPromptInput({
-      input: visibleInput,
-      mode: visibleMode,
-      onInputChange,
-      onModeChange,
-      onBashSubmit,
-    });
-
-    try {
-      const baseProps = await waitForPromptInputProps();
-      const pending = (baseProps.onSubmit as (value: string) => Promise<void>)(
-        "sleep 1",
-      );
-      await vi.waitFor(() => expect(onBashSubmit).toHaveBeenCalledOnce());
-      expect(visibleInput).toBe("");
-      expect(visibleMode).toBe("prompt");
-
-      harness.appState.workbench = workbenchReducer(
-        harness.appState.workbench as ReturnType<
-          typeof getDefaultWorkbenchState
-        >,
-        { type: "switchWorkspaceView", view: "editor" },
-      );
-      visibleInput = "editor draft";
-      visibleMode = "memory";
-      onInputChange.mockClear();
-      onModeChange.mockClear();
-
-      resolveBash?.();
-      await pending;
-
-      expect(visibleInput).toBe("editor draft");
-      expect(visibleMode).toBe("memory");
-      expect(onInputChange).not.toHaveBeenCalled();
-      expect(onModeChange).not.toHaveBeenCalled();
-    } finally {
       await rendered.dispose();
     }
   });
@@ -3530,70 +2431,6 @@ describe("PromptInput render surface", () => {
     }
   });
 
-  test("does not clear the Editor draft when an Agent direct message settles after a tab switch", async () => {
-    harness.isAgentSwarmsEnabled = true;
-    harness.directMessage = {
-      message: "take this",
-      recipientName: "teammate",
-    };
-    harness.appState.teamContext = {
-      teamName: "alpha",
-      teammates: {
-        teammate: { name: "teammate" },
-      },
-    };
-    harness.appState.workbench = getDefaultWorkbenchState();
-    let resolveDirectMessage:
-      ((result: { success: true; recipientName: string }) => void) | undefined;
-    vi.mocked(sendDirectMemberMessage).mockReturnValueOnce(
-      new Promise((resolve) => {
-        resolveDirectMessage = resolve;
-      }),
-    );
-    let visibleInput = "@teammate take this";
-    const onInputChange = vi.fn((value: string) => {
-      visibleInput = value;
-    });
-    const onSubmit = vi.fn(async () => {});
-    const rendered = await renderPromptInput({
-      input: visibleInput,
-      onInputChange,
-      onSubmit,
-    });
-
-    try {
-      const baseProps = await waitForPromptInputProps();
-      const pending = (baseProps.onSubmit as (value: string) => Promise<void>)(
-        "@teammate take this",
-      );
-      await vi.waitFor(() =>
-        expect(sendDirectMemberMessage).toHaveBeenCalledOnce(),
-      );
-      expect(visibleInput).toBe("");
-
-      harness.appState.workbench = workbenchReducer(
-        harness.appState.workbench as ReturnType<
-          typeof getDefaultWorkbenchState
-        >,
-        { type: "switchWorkspaceView", view: "editor" },
-      );
-      visibleInput = "editor draft";
-      onInputChange.mockClear();
-
-      resolveDirectMessage?.({
-        success: true,
-        recipientName: "teammate",
-      });
-      await pending;
-
-      expect(visibleInput).toBe("editor draft");
-      expect(onInputChange).not.toHaveBeenCalled();
-      expect(onSubmit).not.toHaveBeenCalled();
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
   test("expands pasted text refs before sending direct member messages", async () => {
     harness.isAgentSwarmsEnabled = true;
     harness.directMessage = {
@@ -3639,61 +2476,6 @@ describe("PromptInput render surface", () => {
         expect.any(Function),
       );
       expect(pastedContents.current).toEqual({});
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("falls through to leader submit when direct-looking input references an image", async () => {
-    harness.isAgentSwarmsEnabled = true;
-    harness.directMessage = {
-      message: "review [Image #2]",
-      recipientName: "teammate",
-    };
-    harness.directMessageResult = {
-      recipientName: "teammate",
-      success: true,
-    };
-    harness.appState.teamContext = {
-      teamName: "alpha",
-      teammates: {
-        teammate: { name: "teammate" },
-      },
-    };
-    const onSubmit = vi.fn(async () => {});
-    const rendered = await renderPromptInput({
-      input: "@teammate review [Image #2]",
-      onSubmit,
-      pastedContents: {
-        2: {
-          content: "png-data",
-          id: 2,
-          mediaType: "image/png",
-          type: "image",
-        },
-      },
-    });
-
-    try {
-      const baseProps = await waitForPromptInputProps();
-      await (baseProps.onSubmit as (value: string) => Promise<void>)(
-        "@teammate review [Image #2]",
-      );
-
-      expect(sendDirectMemberMessage).not.toHaveBeenCalled();
-      expect(onSubmit).toHaveBeenCalledWith(
-        "@teammate review [Image #2]",
-        expect.objectContaining({
-          clearBuffer: harness.clearBuffer,
-          resetHistory: expect.any(Function),
-          setCursorOffset: expect.any(Function),
-        }),
-        undefined,
-        expect.objectContaining({
-          mode: "prompt",
-          vimRoutingState: expect.objectContaining({ enabled: false }),
-        }),
-      );
     } finally {
       await rendered.dispose();
     }
@@ -3978,65 +2760,6 @@ describe("PromptInput render surface", () => {
       expect(setPastedContents).toHaveBeenCalledWith({});
       expect(setHelpOpen).not.toHaveBeenCalledWith(expect.any(Function));
     } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("opens team footer dialog and global search dialog callbacks", async () => {
-    const previousWorkbenchEnv = process.env.AGENC_TUI_WORKBENCH;
-    process.env.AGENC_TUI_WORKBENCH = "0";
-    harness.isAgentSwarmsEnabled = true;
-    harness.features.QUICK_SEARCH = true;
-    harness.appState.teamContext = {
-      teamName: "runtime",
-      teammates: {
-        alice: { color: "cyan", name: "alice" },
-        "team-lead": { color: "purple", name: "team-lead" },
-      },
-    };
-    harness.appState.footerSelection = "teams";
-    const onInputChange = vi.fn();
-    const setHelpOpen = vi.fn();
-    const rendered = await renderPromptInput({
-      input: "abc",
-      onInputChange,
-      setHelpOpen,
-    });
-
-    try {
-      await waitForPromptInputProps();
-
-      harness.keybindings["footer:openSelected"]?.();
-      await sleep(25);
-      expect(harness.teamsDialogProps).toEqual(
-        expect.objectContaining({
-          initialTeams: [
-            expect.objectContaining({
-              memberCount: 1,
-              name: "runtime",
-            }),
-          ],
-        }),
-      );
-
-      (harness.teamsDialogProps?.onDone as () => void)();
-      await sleep(25);
-
-      harness.keybindings["app:globalSearch"]?.();
-      await sleep(25);
-      expect(setHelpOpen).toHaveBeenCalledWith(false);
-      expect(harness.globalSearchProps).toBeDefined();
-
-      (harness.globalSearchProps?.onInsert as (text: string) => void)(
-        "@global-result",
-      );
-      expect(onInputChange).toHaveBeenCalledWith("abc @global-result");
-    } finally {
-      if (previousWorkbenchEnv === undefined) {
-        delete process.env.AGENC_TUI_WORKBENCH;
-      } else {
-        process.env.AGENC_TUI_WORKBENCH = previousWorkbenchEnv;
-      }
       await rendered.dispose();
     }
   });

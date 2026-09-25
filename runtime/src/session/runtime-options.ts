@@ -64,6 +64,39 @@ export interface AgentRuntimeOptions {
   readonly deadlineAt?: number;
   /** How long before {@link deadlineAt} the reserve starts, in ms. */
   readonly deadlineReserveMs?: number;
+  /**
+   * Set by the daemon runner on a scheduled routine run, which nobody is
+   * attached to. Its shell commands never leave the OS sandbox and write only
+   * inside the routine's workspace, and server-initiated questions to a
+   * person are declined.
+   */
+  readonly routineRun?: boolean;
+  /**
+   * A routine run's scratch folder, inside its workspace: the TMPDIR its
+   * shell commands get, since the session temp root is not writable there.
+   */
+  readonly routineScratchRoot?: string;
+}
+
+/** The routine-run facts a session's captured runtime options carry. */
+export interface RoutineRunOptions {
+  readonly scratchRoot?: string;
+}
+
+/**
+ * Whether a session (or anything carrying `services.runtimeOptions`) is a
+ * scheduled routine run. Read from the immutable options captured at
+ * bootstrap, never from permission state that can change or be fenced.
+ */
+export function routineRunOptions(session: unknown): RoutineRunOptions | undefined {
+  const options = (session as {
+    readonly services?: { readonly runtimeOptions?: Partial<AgentRuntimeOptions> };
+  } | null | undefined)?.services?.runtimeOptions;
+  if (options?.routineRun !== true) return undefined;
+  const scratchRoot = options.routineScratchRoot;
+  return typeof scratchRoot === "string" && isAbsolute(scratchRoot)
+    ? { scratchRoot: normalize(scratchRoot) }
+    : {};
 }
 
 /** Immutable command policy captured from one client environment at ingress. */
@@ -442,6 +475,17 @@ function resolveAgentRuntimeOptionsAtIngress(
       overrides.allowUntrustedHooks ??
       parseBoolean(env, "AGENC_ALLOW_UNTRUSTED_HOOKS", false),
     ...runDeadlineOptions(overrides),
+    // Only ever set by the daemon for a scheduled routine run; a caller that
+    // sets it only confines its own session further.
+    ...(overrides.routineRun === true ? { routineRun: true } : {}),
+    ...(overrides.routineScratchRoot !== undefined
+      ? {
+          routineScratchRoot: optionalAbsolutePath(
+            overrides.routineScratchRoot,
+            "runtimeOptions.routineScratchRoot",
+          ),
+        }
+      : {}),
   };
   return Object.freeze(resolved);
 }
@@ -562,6 +606,8 @@ export function validateAgentRuntimeOptions(
     "allowUntrustedHooks",
     "deadlineAt",
     "deadlineReserveMs",
+    "routineRun",
+    "routineScratchRoot",
   ]);
   if (Object.prototype.hasOwnProperty.call(input, "pluginZipCache")) {
     throw new AgentRuntimeOptionsError(
@@ -587,6 +633,15 @@ export function validateAgentRuntimeOptions(
     throw new AgentRuntimeOptionsError(
       "runtimeOptions.dangerouslyBypassApprovalsAndSandbox must be boolean",
     );
+  }
+  if (input.routineRun !== undefined && typeof input.routineRun !== "boolean") {
+    throw new AgentRuntimeOptionsError("runtimeOptions.routineRun must be boolean");
+  }
+  if (
+    input.routineScratchRoot !== undefined &&
+    typeof input.routineScratchRoot !== "string"
+  ) {
+    throw new AgentRuntimeOptionsError("runtimeOptions.routineScratchRoot must be a string");
   }
   if (
     input.nonInteractive !== undefined &&

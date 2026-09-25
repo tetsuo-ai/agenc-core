@@ -6,6 +6,7 @@ import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { afterEach, test, vi } from 'vitest'
 import type { McpSamplingHandlers } from './hostCapabilities.js'
 import { resolveHomeContext } from '../../../src/config/home.js'
+import { ConfigStore } from '../../../src/config/store.js'
 
 const TEST_HOME = resolveHomeContext(
   { AGENC_HOME: '/tmp/agenc-mcp-client-transports-test' },
@@ -114,6 +115,49 @@ class FakeClient {
         transport.stderr.emit('data', Buffer.from('boot failed'))
       }
       throw new Error('connect failed')
+    }
+    if (transport instanceof FakeStdioTransport && transport.command === 'split-secret-server') {
+      const bytes = Buffer.from(`credential ${transport.env.TOKEN!}`)
+      // Split inside the two-byte UTF-8 encoding of "é".
+      const cut = bytes.indexOf(0xc3) + 1
+      transport.stderr.emit('data', bytes.subarray(0, cut))
+      transport.stderr.emit('data', bytes.subarray(cut))
+      throw new Error('initialize failed')
+    }
+    if (transport instanceof FakeStdioTransport && transport.command.startsWith('successful-split-secret-')) {
+      const bytes = Buffer.from(`startup: ${transport.env.TOKEN!}\n`)
+      const cut = transport.command.endsWith('-ascii')
+        ? bytes.indexOf(Buffer.from('private')) + 4
+        : bytes.indexOf(0xc3) + 1
+      transport.stderr.emit('data', bytes.subarray(0, cut))
+      setTimeout(() => {
+        transport.stderr.emit('data', bytes.subarray(cut))
+        transport.stderr.emit('end')
+      }, 0)
+    }
+    if (transport instanceof FakeStdioTransport && transport.command === 'successful-overlap-secret-server') {
+      // The shorter saved value is complete here; the longer one is not.
+      transport.stderr.emit('data', Buffer.from('startup: credential-private'))
+      setTimeout(() => {
+        transport.stderr.emit('data', Buffer.from('-\u00e9-phrase\n'))
+        transport.stderr.emit('end')
+      }, 0)
+    }
+    if (transport instanceof FakeStdioTransport && transport.command === 'unfinished-secret-server') {
+      transport.stderr.emit('data', Buffer.from(`startup: ${transport.env.TOKEN!.slice(0, 17)}`))
+    }
+    if (transport instanceof FakeStdioTransport && transport.command === 'unfinished-utf8-secret-server') {
+      const bytes = Buffer.from(`startup: ${transport.env.TOKEN!}`)
+      transport.stderr.emit('data', bytes.subarray(0, bytes.indexOf(0xc3) + 1))
+    }
+    if (transport instanceof FakeStdioTransport && transport.command === 'failed-partial-secret-server') {
+      transport.stderr.emit('data', Buffer.from(`startup: ${transport.env.TOKEN!.slice(0, 17)}`))
+      throw new Error('initialize failed')
+    }
+    if (transport instanceof FakeStdioTransport && transport.command === 'secret-server') {
+      const secret = transport.env.TOKEN!
+      transport.stderr.emit('data', Buffer.from(`credential ${secret}`))
+      throw new Error(`initialize failed: ${secret}`)
     }
     if (this.serverName === 'hanging') {
       return new Promise(() => {})
@@ -305,6 +349,7 @@ afterEach(async () => {
   vi.doUnmock('../../../src/utils/auth.js')
   vi.doUnmock('../../../src/utils/proxy.js')
   vi.doUnmock('../../../src/utils/ide.js')
+	vi.doUnmock('../../../src/utils/log.js')
 	  vi.doUnmock('../../../src/utils/mcpNodeWsClient.js')
 	  vi.doUnmock('../../../src/utils/mcpWebSocketTransport.js')
 	  vi.doUnmock('../../../src/utils/mcpValidation.js')
@@ -1552,6 +1597,190 @@ test('connectToServer returns failed stdio clients after connect errors and clos
     error: 'connect failed',
   })
   assert.equal(fakeStdioTransports[0]?.closed, true)
+})
+
+test('plugin initialization failure redacts stderr, logs, connection error, and doctor report', async () => {
+  vi.resetModules()
+  const secret = 'credential-private-phrase'
+  const logs: string[] = []
+  vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({ Client: FakeClient }))
+  vi.doMock('@modelcontextprotocol/sdk/client/stdio.js', () => ({ StdioClientTransport: FakeStdioTransport }))
+  vi.doMock('../../../src/utils/log.js', async importOriginal => ({
+    ...(await importOriginal<typeof import('../../../src/utils/log.js')>()),
+    logMCPError: (_name: string, value: unknown) => { logs.push(String(value)) },
+    logMCPDebug: (_name: string, value: string) => { logs.push(value) },
+  }))
+  const { connectToServer, clearServerCache } = await import('./client.js')
+  const { doctorServer } = await import('./doctor.js')
+  ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??= { VERSION: 'test' }
+  const name = 'plugin:demo:secret'
+  const config = {
+    type: 'stdio' as const, command: 'secret-server', args: [], scope: 'dynamic' as const,
+    pluginSource: 'demo', env: { TOKEN: secret }, pluginSecretValues: [secret],
+  }
+  const authority = new ConfigStore({
+    home: TEST_HOME.path, cwd: '/tmp', projectRoot: '/tmp',
+    env: { AGENC_HOME: TEST_HOME.path, HOME: '/tmp' },
+  })
+  const deps = {
+    getAllMcpConfigs: async () => ({ servers: { [name]: config }, errors: [] }),
+    getMcpConfigsByScope: () => ({ servers: {}, errors: [] }),
+    getProjectMcpServerStatus: () => 'approved' as const,
+    isMcpServerDisabled: () => false,
+    describeMcpConfigFilePath: (scope: string) => `scope://${scope}`,
+    connectToServer,
+    clearServerCache,
+  }
+  const connection = await connectToServer(name, config)
+  assert.equal(connection.type, 'failed')
+  if (connection.type === 'failed') {
+    assert.match(connection.error, /\[REDACTED\]/)
+    assert.doesNotMatch(connection.error, /credential-private-phrase/)
+  }
+  const report = await doctorServer(authority, name, {
+    configOnly: false, pluginStorageRoot: '/tmp/plugins',
+  }, deps)
+  assert.equal(report.servers[0]?.liveCheck.result, 'failed')
+  assert.match(JSON.stringify(report), /\[REDACTED\]/)
+  assert.doesNotMatch(JSON.stringify(report), /credential-private-phrase/)
+  assert.match(logs.join('\n'), /\[REDACTED\]/)
+  assert.doesNotMatch(logs.join('\n'), /credential-private-phrase/)
+})
+
+test('HTTP transport diagnostics redact a saved header credential that JSON escapes', async () => {
+  vi.resetModules()
+  const secret = 'credential-private"phrase\\tail'
+  const logs: string[] = []
+  vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({ Client: FakeClient }))
+  vi.doMock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({ StreamableHTTPClientTransport: FakeHttpTransport }))
+  vi.doMock('../../../src/utils/log.js', async importOriginal => ({
+    ...(await importOriginal<typeof import('../../../src/utils/log.js')>()),
+    logMCPError: (_name: string, value: unknown) => { logs.push(String(value)) },
+    logMCPDebug: (_name: string, value: string) => { logs.push(value) },
+  }))
+  const { connectToServer } = await import('./client.js')
+  ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??= { VERSION: 'test' }
+  await connectToServer('plugin:demo:http-secret', {
+    type: 'http', url: 'https://example.test/mcp', scope: 'dynamic',
+    pluginSource: 'demo', headers: { 'X-Service-Credential': secret }, pluginSecretValues: [secret],
+  }, undefined, { home: TEST_HOME })
+  const text = logs.join('\n')
+  assert.match(text, /HTTP transport options/)
+  assert.match(text, /\[REDACTED\]/)
+  assert.doesNotMatch(text, /credential-private/)
+})
+
+test('health-check stderr redaction survives a chunk boundary inside a multibyte character', async () => {
+  vi.resetModules()
+  const secret = 'credential-private-\u00e9-phrase'
+  const logs: string[] = []
+  vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({ Client: FakeClient }))
+  vi.doMock('@modelcontextprotocol/sdk/client/stdio.js', () => ({ StdioClientTransport: FakeStdioTransport }))
+  vi.doMock('../../../src/utils/log.js', async importOriginal => ({
+    ...(await importOriginal<typeof import('../../../src/utils/log.js')>()),
+    logMCPError: (_name: string, value: unknown) => { logs.push(String(value)) },
+    logMCPDebug: (_name: string, value: string) => { logs.push(value) },
+  }))
+  const { connectToServer } = await import('./client.js')
+  ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??= { VERSION: 'test' }
+  const connection = await connectToServer('plugin:demo:split-secret', {
+    type: 'stdio', command: 'split-secret-server', args: [], scope: 'dynamic',
+    pluginSource: 'demo', env: { TOKEN: secret }, pluginSecretValues: [secret],
+  })
+  assert.equal(connection.type, 'failed')
+  const text = logs.join('\n')
+  assert.match(text, /Server stderr: credential \[REDACTED\]/)
+  assert.doesNotMatch(text, /private/)
+  assert.doesNotMatch(text, /phrase/)
+})
+
+test.each(['ascii', 'utf8'])(
+  'successful health-check holds stderr secret split inside %s until the next chunk',
+  async split => {
+    vi.resetModules()
+    const secret = 'credential-private-\u00e9-phrase'
+    const logs: string[] = []
+    vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({ Client: FakeClient }))
+    vi.doMock('@modelcontextprotocol/sdk/client/stdio.js', () => ({ StdioClientTransport: FakeStdioTransport }))
+    vi.doMock('../../../src/utils/log.js', async importOriginal => ({
+      ...(await importOriginal<typeof import('../../../src/utils/log.js')>()),
+      logMCPError: (_name: string, value: unknown) => { logs.push(String(value)) },
+      logMCPDebug: (_name: string, value: string) => { logs.push(value) },
+    }))
+    const { connectToServer } = await import('./client.js')
+    ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??= { VERSION: 'test' }
+    const connection = await connectToServer(`plugin:demo:success-split-${split}`, {
+      type: 'stdio', command: `successful-split-secret-${split}`, args: [], scope: 'dynamic',
+      pluginSource: 'demo', env: { TOKEN: secret }, pluginSecretValues: [secret],
+    })
+    assert.equal(connection.type, 'connected')
+    assert.deepEqual(logs.filter(line => line.startsWith('Server stderr:')), ['Server stderr: startup: '])
+    assert.doesNotMatch(logs.join('\n'), /credential|private|phrase/)
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.deepEqual(logs.filter(line => line.startsWith('Server stderr:')), [
+      'Server stderr: startup: ',
+      'Server stderr: [REDACTED]\n',
+    ])
+    assert.doesNotMatch(logs.join('\n'), /credential|private|phrase|\ufffd/)
+    if (connection.type === 'connected') await connection.cleanup()
+  },
+)
+
+test.each([
+  ['unfinished-secret-server', 'connected'],
+  ['unfinished-utf8-secret-server', 'connected'],
+  ['failed-partial-secret-server', 'failed'],
+] as const)(
+  'health-check %s hides an unfinished secret at cleanup or failure',
+  async (command, expectedType) => {
+    vi.resetModules()
+    const secret = 'credential-private-\u00e9-phrase'
+    const logs: string[] = []
+    vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({ Client: FakeClient }))
+    vi.doMock('@modelcontextprotocol/sdk/client/stdio.js', () => ({ StdioClientTransport: FakeStdioTransport }))
+    vi.doMock('../../../src/utils/log.js', async importOriginal => ({
+      ...(await importOriginal<typeof import('../../../src/utils/log.js')>()),
+      logMCPError: (_name: string, value: unknown) => { logs.push(String(value)) },
+      logMCPDebug: (_name: string, value: string) => { logs.push(value) },
+    }))
+    const { connectToServer } = await import('./client.js')
+    ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??= { VERSION: 'test' }
+    const connection = await connectToServer(`plugin:demo:${command}`, {
+      type: 'stdio', command, args: [], scope: 'dynamic',
+      pluginSource: 'demo', env: { TOKEN: secret }, pluginSecretValues: [secret],
+    })
+    assert.equal(connection.type, expectedType)
+    assert.doesNotMatch(logs.join('\n'), /credential|private|phrase/)
+    if (connection.type === 'connected') await connection.cleanup()
+    assert.match(logs.join('\n'), /Server stderr: (?:startup: )?\[REDACTED\]/)
+    assert.doesNotMatch(logs.join('\n'), /credential|private|phrase/)
+  },
+)
+
+test('health-check stderr holds a shorter saved value while a longer one is still arriving', async () => {
+  vi.resetModules()
+  const logs: string[] = []
+  vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({ Client: FakeClient }))
+  vi.doMock('@modelcontextprotocol/sdk/client/stdio.js', () => ({ StdioClientTransport: FakeStdioTransport }))
+  vi.doMock('../../../src/utils/log.js', async importOriginal => ({
+    ...(await importOriginal<typeof import('../../../src/utils/log.js')>()),
+    logMCPError: (_name: string, value: unknown) => { logs.push(String(value)) },
+    logMCPDebug: (_name: string, value: string) => { logs.push(value) },
+  }))
+  const { connectToServer } = await import('./client.js')
+  ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??= { VERSION: 'test' }
+  const connection = await connectToServer('plugin:demo:overlap-secret', {
+    type: 'stdio', command: 'successful-overlap-secret-server', args: [], scope: 'dynamic',
+    pluginSource: 'demo', env: { TOKEN: 'credential-private' },
+    pluginSecretValues: ['credential-private', 'credential-private-\u00e9-phrase'],
+  })
+  assert.equal(connection.type, 'connected')
+  await new Promise(resolve => setTimeout(resolve, 0))
+  if (connection.type === 'connected') await connection.cleanup()
+  const text = logs.join('\n')
+  assert.match(text, /\[REDACTED\]/)
+  assert.doesNotMatch(text, /credential|private|phrase|\ufffd/)
 })
 
 test('connectToServer returns failed stdio clients after connection timeout', async () => {

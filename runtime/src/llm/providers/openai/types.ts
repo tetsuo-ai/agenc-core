@@ -10,6 +10,7 @@ import type { OAuthRefreshCallbacks } from "../../oauth/refresh-loop.js";
 export interface OpenAIOAuthConfig extends OAuthRefreshCallbacks {
   readonly accessToken: string;
   readonly refreshToken?: string;
+  readonly maxRefreshAttempts?: number;
 }
 
 export type OpenAIProviderAuthStrategy =

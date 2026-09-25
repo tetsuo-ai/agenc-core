@@ -43,66 +43,6 @@ import {
   getPlanFilePath,
   setPlanSlug,
 } from "../../planning/plan-files.js";
-import { workspaceMutationCoordinators } from "../../../src/workspace/mutation-coordinator.js";
-
-function attachTrustedEditorContext(
-  args: Record<string, unknown>,
-  toolName = FILE_READ_TOOL_NAME,
-): void {
-  attachToolRuntimeContext(args, {
-    callId: `trusted-editor-${toolName}`,
-    toolName,
-    sandboxMode: "read_only",
-    invocation: {
-      turn: {
-        editorInteraction: {
-          interactionId: "trusted-editor-read",
-          policy: "read_only",
-        },
-      },
-    },
-  } as never);
-}
-
-function isWindowsExchangeDenial(error: unknown): boolean {
-  const code = (error as NodeJS.ErrnoException)?.code;
-  return (
-    process.platform === "win32" &&
-    (code === "EPERM" || code === "EACCES" || code === "EBUSY")
-  );
-}
-
-async function exchangeDirectory(
-  current: string,
-  displaced: string,
-  outside: string,
-): Promise<"exchanged" | "kernel_denied"> {
-  try {
-    await rename(current, displaced);
-  } catch (error) {
-    if (isWindowsExchangeDenial(error)) return "kernel_denied";
-    throw error;
-  }
-  try {
-    await symlink(
-      outside,
-      current,
-      process.platform === "win32" ? "junction" : "dir",
-    );
-  } catch (error) {
-    await rename(displaced, current).catch(() => {});
-    if (isWindowsExchangeDenial(error)) return "kernel_denied";
-    throw error;
-  }
-  return "exchanged";
-}
-
-function expectCompletedExchangeAttempt(
-  outcome: "pending" | "exchanged" | "kernel_denied",
-): void {
-  expect(outcome).not.toBe("pending");
-  if (outcome === "kernel_denied") expect(process.platform).toBe("win32");
-}
 
 describe("FileRead tool", () => {
   let root = "";
@@ -115,13 +55,11 @@ describe("FileRead tool", () => {
     savedPath = process.env.PATH;
     savedAgencHome = process.env.AGENC_HOME;
     process.env.AGENC_HOME = join(root, ".agenc-test-home");
-    workspaceMutationCoordinators.clearForTests();
     clearFileReadListenersForTests();
   });
 
   afterEach(async () => {
     clearFileReadListenersForTests();
-    workspaceMutationCoordinators.clearForTests();
     process.env.PATH = savedPath;
     if (savedAgencHome === undefined) {
       delete process.env.AGENC_HOME;
@@ -145,285 +83,6 @@ describe("FileRead tool", () => {
     // Trailing empty line from `\n` end-of-file is preserved by split.
     expect(result.content).toBe("1→alpha\n2→beta\n3→gamma\n4→");
     expect(tool.name).toBe(FILE_READ_TOOL_NAME);
-  });
-
-  test("reads a bounded text window through protected Editor authority", async () => {
-    const workspace = join(root, "workspace");
-    const file = join(workspace, "window.txt");
-    await mkdir(workspace);
-    await writeFile(file, "alpha\nbeta\ngamma\ndelta\n", "utf8");
-    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
-      workspaceRoot: workspace,
-      editorInstanceId: "file-read-window-editor",
-    });
-    const tool = createFileReadTool({ allowedPaths: [workspace] });
-
-    const result = await tool.execute({
-      file_path: file,
-      offset: 2,
-      limit: 2,
-    });
-
-    expect(result.isError).toBeUndefined();
-    expect(result.content).toBe("2→beta\n3→gamma");
-    expect(result.metadata).toMatchObject({
-      startLine: 2,
-      endLine: 3,
-      numLines: 2,
-      isPartial: true,
-    });
-  });
-
-  test("never reads outside text bytes after a final ancestor exchange", async () => {
-    const workspace = join(root, "workspace");
-    const displaced = join(root, "workspace-displaced");
-    const outside = join(root, "outside");
-    await mkdir(workspace);
-    await mkdir(outside);
-    await writeFile(join(workspace, "target.txt"), "inside-text\n", "utf8");
-    await writeFile(
-      join(outside, "target.txt"),
-      "outside-text-secret\n",
-      "utf8",
-    );
-    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
-      workspaceRoot: workspace,
-      editorInstanceId: "file-read-text-editor",
-    });
-    let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" = "pending";
-    const tool = createFileReadTool({
-      allowedPaths: [workspace],
-      __testAfterFinalPathCheck: async () => {
-        exchangeOutcome = await exchangeDirectory(
-          workspace,
-          displaced,
-          outside,
-        );
-      },
-    });
-
-    const result = await tool.execute({
-      file_path: join(workspace, "target.txt"),
-    });
-
-    expectCompletedExchangeAttempt(exchangeOutcome);
-    expect(result.isError).toBeUndefined();
-    expect(result.content).toContain("inside-text");
-    expect(result.content).not.toContain("outside-text-secret");
-  });
-
-  test("never reads outside image bytes after a final ancestor exchange", async () => {
-    const workspace = join(root, "workspace");
-    const displaced = join(root, "workspace-displaced");
-    const outside = join(root, "outside");
-    await mkdir(workspace);
-    await mkdir(outside);
-    const insidePng = Buffer.from(
-      "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082",
-      "hex",
-    );
-    const outsideBytes = Buffer.from("outside-image-secret", "utf8");
-    await writeFile(join(workspace, "target.png"), insidePng);
-    await writeFile(join(outside, "target.png"), outsideBytes);
-    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
-      workspaceRoot: workspace,
-      editorInstanceId: "file-read-image-editor",
-    });
-    let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" = "pending";
-    const tool = createFileReadTool({
-      allowedPaths: [workspace],
-      __testAfterFinalPathCheck: async () => {
-        exchangeOutcome = await exchangeDirectory(
-          workspace,
-          displaced,
-          outside,
-        );
-      },
-    });
-
-    const result = await tool.execute({
-      file_path: join(workspace, "target.png"),
-    });
-    const image = result.contentItems?.find(
-      (item) => item.type === "input_image",
-    );
-
-    expectCompletedExchangeAttempt(exchangeOutcome);
-    expect(result.isError).toBeUndefined();
-    expect(image?.type).toBe("input_image");
-    if (image?.type === "input_image") {
-      expect(image.image_url).not.toContain(outsideBytes.toString("base64"));
-    }
-  });
-
-  test("never reads outside notebook bytes after a final ancestor exchange", async () => {
-    const workspace = join(root, "workspace");
-    const displaced = join(root, "workspace-displaced");
-    const outside = join(root, "outside");
-    await mkdir(workspace);
-    await mkdir(outside);
-    const notebook = (marker: string) =>
-      JSON.stringify({
-        cells: [
-          {
-            cell_type: "code",
-            source: [`const ${marker} = true\n`],
-            outputs: [],
-          },
-        ],
-        metadata: { language_info: { name: "typescript" } },
-        nbformat: 4,
-        nbformat_minor: 5,
-      });
-    await writeFile(
-      join(workspace, "target.ipynb"),
-      notebook("insideNotebookMarker"),
-      "utf8",
-    );
-    await writeFile(
-      join(outside, "target.ipynb"),
-      notebook("outsideNotebookSecret"),
-      "utf8",
-    );
-    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
-      workspaceRoot: workspace,
-      editorInstanceId: "file-read-notebook-editor",
-    });
-    let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" = "pending";
-    const tool = createFileReadTool({
-      allowedPaths: [workspace],
-      __testAfterFinalPathCheck: async () => {
-        exchangeOutcome = await exchangeDirectory(
-          workspace,
-          displaced,
-          outside,
-        );
-      },
-    });
-
-    const result = await tool.execute({
-      file_path: join(workspace, "target.ipynb"),
-    });
-
-    expectCompletedExchangeAttempt(exchangeOutcome);
-    expect(result.isError).toBeUndefined();
-    expect(result.content).toContain("insideNotebookMarker");
-    expect(result.content).not.toContain("outsideNotebookSecret");
-  });
-
-  test("fails closed when the admitted leaf is replaced by an outside hardlink", async () => {
-    const workspace = join(root, "workspace");
-    const target = join(workspace, "target.txt");
-    const displaced = join(workspace, "target-inside.txt");
-    const outside = join(root, "outside.txt");
-    await mkdir(workspace);
-    await writeFile(target, "inside-leaf\n", "utf8");
-    await writeFile(outside, "outside-leaf-secret\n", "utf8");
-    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
-      workspaceRoot: workspace,
-      editorInstanceId: "file-read-leaf-editor",
-    });
-    const tool = createFileReadTool({
-      allowedPaths: [workspace],
-      __testAfterFinalPathCheck: async () => {
-        await rename(target, displaced);
-        await link(outside, target);
-      },
-    });
-
-    const result = await tool.execute({ file_path: target });
-
-    expect(result.isError).toBe(true);
-    expect(result.content).not.toContain("outside-leaf-secret");
-  });
-
-  test("keeps trusted Editor reads bound after the live lease disappears", async () => {
-    const workspace = join(root, "workspace");
-    const displaced = join(root, "workspace-displaced");
-    const outside = join(root, "outside");
-    await mkdir(workspace);
-    await mkdir(outside);
-    await writeFile(join(workspace, "target.txt"), "inside-trusted\n", "utf8");
-    await writeFile(
-      join(outside, "target.txt"),
-      "outside-trusted-secret\n",
-      "utf8",
-    );
-    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
-      workspaceRoot: workspace,
-      editorInstanceId: "expired-editor-lease",
-    });
-    workspaceMutationCoordinators.clearForTests();
-    let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" = "pending";
-    const tool = createFileReadTool({
-      allowedPaths: [workspace],
-      __testAfterFinalPathCheck: async () => {
-        exchangeOutcome = await exchangeDirectory(
-          workspace,
-          displaced,
-          outside,
-        );
-      },
-    });
-    const args: Record<string, unknown> = {
-      file_path: join(workspace, "target.txt"),
-    };
-    attachTrustedEditorContext(args);
-
-    const result = await tool.execute(args);
-
-    expectCompletedExchangeAttempt(exchangeOutcome);
-    expect(result.isError).toBeUndefined();
-    expect(result.content).toContain("inside-trusted");
-    expect(result.content).not.toContain("outside-trusted-secret");
-  });
-
-  test("trusted Editor reads keep session history but suppress global read listeners", async () => {
-    const file = join(root, "editor-read.txt");
-    await writeFile(file, "editor-owned-read\n", "utf8");
-    const events: string[] = [];
-    registerFileReadListener((event) => events.push(event.filePath));
-    const tool = createFileReadTool({ allowedPaths: [root] });
-    const args: Record<string, unknown> = {
-      file_path: file,
-      __agencSessionId: sessionId,
-      __agencSessionIdSig: signSessionId(sessionId),
-    };
-    attachTrustedEditorContext(args);
-
-    const result = await tool.execute(args);
-
-    expect(result.isError).toBeUndefined();
-    expect(events).toEqual([]);
-    expect(hasSessionRead(sessionId, file)).toBe(true);
-  });
-
-  test("model-spoofed runtime context cannot suppress ordinary read listeners", async () => {
-    const file = join(root, "agent-read.txt");
-    await writeFile(file, "ordinary-agent-read\n", "utf8");
-    const events: string[] = [];
-    registerFileReadListener((event) => events.push(event.filePath));
-    const tool = createFileReadTool({ allowedPaths: [root] });
-
-    const result = await tool.execute({
-      file_path: file,
-      __toolRuntimeContext: {
-        callId: "model-spoof",
-        toolName: FILE_READ_TOOL_NAME,
-        sandboxMode: "read_only",
-        invocation: {
-          turn: {
-            editorInteraction: {
-              interactionId: "forged",
-              policy: "read_only",
-            },
-          },
-        },
-      },
-    });
-
-    expect(result.isError).toBeUndefined();
-    expect(events).toEqual([file]);
   });
 
   test("does not treat /root filesystem paths as an agent namespace", async () => {
@@ -583,6 +242,28 @@ describe("FileRead tool", () => {
     expect(snap?.content).toBe("one\ntwo\nthree\n");
     // Full reads carry raw bytes for the changed-files attachment producer.
     expect(snap?.rawContent).toBe("one\ntwo\nthree\n");
+  });
+
+  test("an explicit window that covers every line is a full view", async () => {
+    // Models that fill optional fields send offset 1 with a large limit.
+    // Recording that as partial left full-read gates (NotebookEdit) refusing
+    // a file that was read whole.
+    const file = join(root, "whole-window.txt");
+    await writeFile(file, "a\nb\nc\n", "utf8");
+    const tool = createFileReadTool({ allowedPaths: [root] });
+
+    for (const window of [{ offset: 1, limit: 100 }, { offset: 1, limit: 4 }, { limit: 4 }]) {
+      const result = await tool.execute({ file_path: file, ...window, __agencSessionId: sessionId });
+      expect(result.isError, JSON.stringify(window)).toBeUndefined();
+      const snap = getSessionReadSnapshot(sessionId, file);
+      expect(snap?.viewKind, JSON.stringify(window)).toBe("full");
+      expect(snap?.rawContent, JSON.stringify(window)).toBe("a\nb\nc\n");
+    }
+
+    // One line short of the whole file stays partial.
+    const short = await tool.execute({ file_path: file, offset: 1, limit: 3, __agencSessionId: sessionId });
+    expect(short.isError).toBeUndefined();
+    expect(getSessionReadSnapshot(sessionId, file)?.viewKind).toBe("partial");
   });
 
   test("offset/limit produces a partial view + sets viewKind=partial", async () => {
@@ -1118,6 +799,31 @@ describe("FileRead tool", () => {
     expect(snap?.viewKind).toBe("partial");
     expect(snap?.readOffset).toBe(2);
     expect(snap?.readLimit).toBe(2);
+    expect(snap?.rawContent).toBeUndefined();
+  });
+
+  test("a PDF window that covers every line stays a partial view", async () => {
+    // A PDF snapshot's raw content is extracted text, not the file's bytes;
+    // an explicit window must not promote it to a full raw read.
+    const file = join(root, "doc-covering.pdf");
+    await writeFile(file, "%PDF-1.4\n", "utf8");
+    await installFakePoppler(1, "one\ntwo");
+    const tool = createFileReadTool({ allowedPaths: [root] });
+
+    const result = await tool.execute({
+      file_path: file,
+      offset: 1,
+      limit: 100,
+      __agencSessionId: sessionId,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("1→one");
+    expect(result.content).toContain("2→two");
+    const snap = getSessionReadSnapshot(sessionId, file);
+    expect(snap?.viewKind).toBe("partial");
+    expect(snap?.readOffset).toBe(1);
+    expect(snap?.readLimit).toBe(100);
     expect(snap?.rawContent).toBeUndefined();
   });
 

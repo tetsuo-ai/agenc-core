@@ -510,11 +510,9 @@ describe("first-run onboarding wizard", () => {
 
       expect(result).toMatchObject({
         ok: false,
-        status: "auth-failed",
+        status: "credentials-required",
         detail:
-          "Refusing to send the stored xAI OAuth credential to a custom Grok base URL.",
-        credentialProvenance: { kind: "oauth", provider: "grok" },
-        baseURL: "https://untrusted.example/v1",
+          "xAI sign-in credentials are bound to the first-party xAI API endpoint. Select API-key mode to use a custom Grok base URL, or unset the base URL override.",
       });
       expect(fetchImpl).not.toHaveBeenCalled();
     } finally {

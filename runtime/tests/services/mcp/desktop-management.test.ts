@@ -125,9 +125,11 @@ describe("desktop MCP contract", () => {
     const inventory = await mcpDesktopInventory(context);
     expect(inventory.errors).toEqual([]);
     expect(inventory.servers.map(server => server.pluginId).sort()).toEqual(["first-plugin", "second-plugin"]);
+    // Inventory shows the installed identity; the snapshot is only where a server launches from.
     for (const server of inventory.servers) {
       expect(server.cwd).toBe(join(context.pluginStorageRoot, server.pluginId!));
     }
+    expect(new Set(inventory.servers.map(server => server.cwd)).size).toBe(2);
   });
   test("does not report an intentional duplicate suppression as a load failure", async () => {
     await seed("manual", { transport: "http", endpoint: "https://example.test/mcp" });

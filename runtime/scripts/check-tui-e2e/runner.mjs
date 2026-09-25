@@ -15,7 +15,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { TuiSession, tuiE2eGateEnv } from "./harness.mjs";
-import { selectPlatformScenarios } from "./platform-scenarios.mjs";
 import {
   MOCK_MODEL,
   buildMockProviderEnv,
@@ -78,39 +77,8 @@ async function loadScenario(name) {
   };
 }
 
-export function platformSelectionFromArgv(argv) {
-  const indexes = argv
-    .map((value, index) => value === "--platform" ? index : -1)
-    .filter((index) => index >= 0);
-  if (indexes.length > 1) {
-    throw new Error("--platform may be specified only once");
-  }
-  if (indexes.length === 0) return null;
-  const value = argv[indexes[0] + 1];
-  if (value === undefined || value.startsWith("--")) {
-    throw new Error("--platform requires a target slug");
-  }
-  return value;
-}
-
-export function shouldSeedTuiGateDefaultConfig(meta = {}) {
-  const firstUsePredictionConsent = meta.firstUsePredictionConsent;
-  if (
-    firstUsePredictionConsent !== undefined &&
-    typeof firstUsePredictionConsent !== "boolean"
-  ) {
-    throw new Error(
-      "firstUsePredictionConsent scenario metadata must be boolean",
-    );
-  }
-  return firstUsePredictionConsent !== true;
-}
-
 export function applyScenarioFilters(names, argv) {
-  const platform = platformSelectionFromArgv(argv);
-  let filtered = platform === null
-    ? names
-    : selectPlatformScenarios(names, platform);
+  let filtered = names;
   const filterIndex = argv.findIndex((a) => a === "--filter");
   if (filterIndex >= 0 && argv[filterIndex + 1] !== undefined) {
     const needle = argv[filterIndex + 1];
@@ -265,16 +233,13 @@ async function startMockedGate() {
   };
 }
 
-function printGateHeader(names, mockServer, platform) {
+function printGateHeader(names, mockServer) {
   console.log(
     color("bold", `agenc TUI e2e gate (${names.length} scenarios)`),
   );
   console.log(
     color("dim", `  model: openai-compatible:${MOCK_MODEL} (${mockServer.baseUrl})`),
   );
-  if (platform !== null) {
-    console.log(color("dim", `  platform: ${platform} (required scenario set)`));
-  }
   console.log(color("dim", "  state: private HOME/AGENC_HOME + ephemeral daemon per scenario"));
   console.log("");
 }
@@ -319,7 +284,6 @@ async function runScenarioEntry(
   gateBaseEnv,
   gateInjectedEnv,
   lifecycle,
-  requiredPlatform,
 ) {
   const originalEnv = { ...process.env };
   const gateStatePromise = createTuiGateState({
@@ -343,13 +307,6 @@ async function runScenarioEntry(
     scenario = await loadScenario(name);
     process.stdout.write(`  ${color("dim", "→")} ${name} … `);
     if (scenario.meta.skip) {
-      if (requiredPlatform !== null) {
-        throw new Error(
-          `required platform ${requiredPlatform} scenario ${name} declared a skip: ${
-            scenario.meta.skip
-          }`,
-        );
-      }
       console.log(`${color("yellow", "SKIP")} ${color("dim", `(${scenario.meta.skip})`)}`);
       state.skipped.push({ name, reason: scenario.meta.skip });
     } else {
@@ -358,9 +315,7 @@ async function runScenarioEntry(
         scenario.meta.env ?? {},
       );
       replaceProcessEnvironment(gateState.env);
-      if (shouldSeedTuiGateDefaultConfig(scenario.meta)) {
-        await writeTuiGateDefaultConfig(gateState);
-      }
+      await writeTuiGateDefaultConfig(gateState);
       await configureTuiGateSandbox(
         gateState,
         BIN_AGENC,
@@ -511,13 +466,12 @@ async function main() {
   });
   try {
     const argv = process.argv.slice(2);
-    const requiredPlatform = platformSelectionFromArgv(argv);
     const names = applyScenarioFilters(await discoverScenarios(), argv);
     if (names.length === 0) {
       console.error(color("red", "no scenarios matched the requested selection"));
       return 1;
     }
-    printGateHeader(names, mockServer, requiredPlatform);
+    printGateHeader(names, mockServer);
     const state = { failed: [], skipped: [], passed: 0 };
     for (const name of names) {
       if (lifecycle.interrupted) return 1;
@@ -527,7 +481,6 @@ async function main() {
         gateBaseEnv,
         injectedEnv,
         lifecycle,
-        requiredPlatform,
       );
       if (lifecycle.interrupted) return 1;
     }

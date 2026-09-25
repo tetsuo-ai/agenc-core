@@ -21,11 +21,9 @@ import {
   plainTextErrorToolResult as errorResult,
   validationErrorToolResult,
 } from "../results.js";
-import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { SESSION_ID_ARG } from "../system/filesystem.js";
 import { parsePatch } from "./parser.js";
 import { applyPatchText } from "./runtime.js";
-import { WorkspaceMutationRejectedError } from "../../workspace/mutation-coordinator.js";
 import type { ApplyPatchHunk } from "./types.js";
 import {
   ApplyPatchInputError,
@@ -254,18 +252,6 @@ export function createApplyPatchTool(config: ApplyPatchToolConfig): Tool {
         // the session until an operator runs /resolve (#2190). That includes
         // planning-phase ApplyPatchRuntimeError (unread file, missing path,
         // allowlist). A failure after the mutation boundary stays undecided.
-        if (error instanceof WorkspaceMutationRejectedError) {
-          // Admission refused the proposal before any byte was written.
-          return {
-            ...error.toolResult,
-            effectDisposition: createToolEffectDispositionEvidence({
-              disposition: "confirmed_no_effect",
-              evidenceKind: "boundary_not_crossed",
-              evidenceRef: "tool:apply_patch:admission-rejected",
-              evidenceMaterial: error.toolResult.content,
-            }),
-          };
-        }
         if (
           error instanceof ApplyPatchParseError ||
           error instanceof ApplyPatchInputError

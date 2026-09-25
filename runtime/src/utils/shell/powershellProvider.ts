@@ -26,7 +26,11 @@ export function createPowerShellProvider(shellPath: string): ShellProvider {
   return {
     type: 'powershell' as ShellProvider['type'],
     shellPath,
-    detached: false,
+    // POSIX: its own process group (setsid), as the bash provider does, so
+    // stopping the command reaches everything it started through -pid even
+    // when the process table cannot be read. Windows: detached would give
+    // pwsh its own console, and taskkill /T stops the tree there anyway.
+    detached: process.platform !== 'win32',
 
     async prepareExecCommand(
       command: string,

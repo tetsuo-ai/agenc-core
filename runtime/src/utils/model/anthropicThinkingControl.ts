@@ -4,9 +4,11 @@
  * probed live on 2026-09-11 and agrees with platform.claude.com (models
  * overview, effort, extended thinking):
  *
- * - `always_on`: the Fable / Mythos 5 family. `thinking` must be omitted
- *   (`disabled`, `enabled` + `budget_tokens` return 400); depth is the
- *   effort parameter's job.
+ * - `always_on`: the Fable / Mythos 5 family and Opus 5.5. `thinking` must
+ *   be omitted (`disabled`, `enabled` + `budget_tokens` return 400); depth
+ *   is the effort parameter's job. Opus 5.5 joined from the platform.claude.com
+ *   docs of 2026-09-22 (thinking troubleshooting table, Opus 5.5 migration
+ *   guide), not from a live probe.
  * - `adaptive`: Opus 5, Sonnet 5, Opus 4.8, Opus 4.7, Opus 4.6, Sonnet 4.6.
  *   `thinking: {type: "adaptive"}` turns thinking on and effort steers it.
  *   Opus 5, Sonnet 5, Opus 4.8 and Opus 4.7 return 400 for `enabled` +
@@ -23,6 +25,7 @@
  * layer can import it.
  */
 import { isAlwaysOnThinkingAnthropicModel } from "./alwaysOnThinking.js";
+import { CLAUDE_OPUS_5_5, isClaudeModel } from "./claudeModelId.js";
 
 export type AnthropicThinkingControl = "always_on" | "adaptive" | "budget";
 
@@ -55,6 +58,28 @@ export function anthropicAcceptsSamplingParameters(model: string): boolean {
     /(?:opus|sonnet)-5(?!\d)/.test(spelled) ||
     /opus-4[.-][78](?!\d)/.test(spelled)
   );
+}
+
+// Verified 2026-09-21 against https://platform.claude.com/docs/en/build-with-claude/effort.
+// Field support alone does not establish which tiers a generation accepts.
+const ANTHROPIC_EFFORT_CONTRACTS: readonly {
+  pattern: RegExp;
+  levels: readonly AnthropicEffort[];
+}[] = [
+  { pattern: /(?:fable|mythos)-5(?:[.-]1)?(?:$|-\d{8}$|-v\d)/, levels: ["low", "medium", "high", "xhigh", "max"] },
+  { pattern: /(?:(?:opus|sonnet)-5|opus-4[.-][78])(?:$|-\d{8}$|-v\d)/, levels: ["low", "medium", "high", "xhigh", "max"] },
+  { pattern: /(?:(?:opus|sonnet)-4[.-]6|mythos-preview)(?:$|-\d{8}$|-v\d)/, levels: ["low", "medium", "high", "max"] },
+  { pattern: /opus-4[.-]5(?:$|-\d{8}$|-v\d)/, levels: ["low", "medium", "high"] },
+];
+
+// Opus 5.5 (effort doc, 2026-09-22) takes all five levels. It is matched by
+// exact identity, ahead of the patterns above, so no Opus 5 row can claim it
+// and it can claim no other id.
+const OPUS_5_5_EFFORT_LEVELS: readonly AnthropicEffort[] = ["low", "medium", "high", "xhigh", "max"];
+
+export function anthropicEffortLevels(model: string): readonly AnthropicEffort[] {
+  if (isClaudeModel(model, CLAUDE_OPUS_5_5)) return OPUS_5_5_EFFORT_LEVELS;
+  return ANTHROPIC_EFFORT_CONTRACTS.find(row => row.pattern.test(familySpelling(model)))?.levels ?? [];
 }
 
 export function anthropicAcceptsEffort(model: string): boolean {
