@@ -1,8 +1,50 @@
-import { spawn } from "node:child_process";
-import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const durableControl = vi.hoisted(() => ({
+  failRecordPath: undefined as string | undefined,
+}));
+
+const renameGate = vi.hoisted(() => ({
+  before: undefined as undefined | ((from: string, to: string) => Promise<void>),
+}));
+
+vi.mock("../../../src/utils/durable-atomic-file.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../src/utils/durable-atomic-file.js")>();
+  return {
+    ...actual,
+    writeDurableAtomicFile: async (
+      ...args: Parameters<typeof actual.writeDurableAtomicFile>
+    ) => {
+      if (durableControl.failRecordPath !== undefined && args[0] === durableControl.failRecordPath) {
+        durableControl.failRecordPath = undefined;
+        throw Object.assign(new Error("injected EIO writing committed record"), { code: "EIO" });
+      }
+      return actual.writeDurableAtomicFile(...args);
+    },
+  };
+});
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    rename: (
+      from: Parameters<typeof actual.rename>[0],
+      to: Parameters<typeof actual.rename>[1],
+    ) => {
+      if (renameGate.before === undefined) return actual.rename(from, to);
+      return (async () => {
+        await renameGate.before?.(String(from), String(to));
+        await actual.rename(from, to);
+      })();
+    },
+  };
+});
 
 import { parseToml } from "../../../src/config/loader.js";
 import {
@@ -351,12 +393,13 @@ describe("plugin install transaction", () => {
     expect(await demoEnabledInConfig(installed)).toBe(true);
   });
 
-  it("rolls the published update forward after a crash before backup removal", async () => {
+  it("restores version 1 after a crash once config is published but before the commit record", async () => {
     const installed = await crashDemoUpdate(await installDemoV1(), "config-published");
     expect(await readPluginVersion(installed.destination)).toBe("2.0.0");
     expect(namesInclude(await storageNames(installed), ".bak-")).toBe(true);
-    expect(await listedVersions(installed)).toEqual(["2.0.0"]);
-    expect(await readPluginVersion(installed.destination)).toBe("2.0.0");
+    expect(await listedVersions(installed)).toEqual(["1.0.0"]);
+    expect(await readPluginVersion(installed.destination)).toBe("1.0.0");
+    expect(await demoEnabledInConfig(installed)).toBe(true);
     expect(namesInclude(await storageNames(installed), ".bak-")).toBe(false);
   });
 
@@ -710,7 +753,7 @@ describe("plugin install transaction", () => {
       phase: "record-created",
       createdAt: "2026-01-01T00:00:00.000Z",
     })}\n`);
-    await writeFile(`${recordPath}.lease`, `${JSON.stringify({ pid: child.pid })}\n`);
+    await writeFile(`${recordPath}.lease`, `${JSON.stringify({ pid: child.pid, nonce: randomUUID() })}\n`);
     const loaded = await loadPlugins({
       pluginStorageRoot: world.pluginStorageRoot,
       workspaceRoot: world.workspaceRoot,
@@ -931,9 +974,12 @@ describe("plugin install transaction", () => {
       workspaceRoot: world.workspaceRoot,
       config: { plugins: { enabled: true } },
     });
-    expect(loaded.errors.filter((issue) => issue.type === "install-recovery")).toEqual([]);
-    await expect(access(recordPath)).rejects.toThrow();
-    await expect(access(join(world.pluginStorageRoot, ".plugin-install-ops"))).rejects.toThrow();
+    const issues = loaded.errors.filter((issue) => issue.type === "install-recovery");
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.message).toContain("inspect and remove it manually");
+    expect(issues[0]?.message).toContain(`${recordPath}.lease`);
+    expect(await readFile(recordPath, "utf8")).toContain(operationId);
+    await expect(lstat(`${recordPath}.lease`)).resolves.toMatchObject({});
   });
 
   it("treats two spellings of a missing config file as the same target", async () => {
@@ -1157,9 +1203,10 @@ describe("plugin install transaction", () => {
       config: { plugins: { enabled: true } },
     });
     expect(await readFile(join(world.agencHome, "config.toml"), "utf8")).toBe(before);
-    expect(loaded.errors.some((issue) =>
-      issue.type === "install-recovery" && /not restored/u.test(issue.message),
-    )).toBe(true);
+    const issues = loaded.errors.filter((issue) => issue.type === "install-recovery");
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.message).toContain("remove them manually");
+    expect(await pathExists(join(repoPlugins, ".plugin-install-ops", "00000000-0000-4000-8000-projectcfg00.json"))).toBe(true);
   });
 
   it("loadPlugins ignores forged workspace records that would delete outside files", async () => {
@@ -1195,7 +1242,10 @@ describe("plugin install transaction", () => {
       workspaceRoot: world.workspaceRoot,
       config: { plugins: { enabled: true } },
     });
-    expect(confined.errors.filter((issue) => issue.type === "install-recovery").length).toBeGreaterThan(0);
+    const confinedIssues = confined.errors.filter((issue) => issue.type === "install-recovery");
+    expect(confinedIssues).toHaveLength(1);
+    expect(confinedIssues[0]?.message).toContain("remove them manually");
+    expect(confinedIssues[0]?.message).toContain("absolute0000.json");
     await rm(join(repoPlugins, ".plugin-install-ops"), { recursive: true, force: true });
     await writeFile(join(opsTarget, "00000000-0000-4000-8000-opsdir000000.json"), `${JSON.stringify({
       version: 1,
@@ -1214,13 +1264,346 @@ describe("plugin install transaction", () => {
       workspaceRoot: world.workspaceRoot,
       config: { plugins: { enabled: true } },
     });
-    expect(linkedOps.errors.some((issue) =>
-      issue.type === "install-recovery" && /not a real directory/u.test(issue.message),
-    )).toBe(true);
+    const linkedIssues = linkedOps.errors.filter((issue) => issue.type === "install-recovery");
+    expect(linkedIssues).toHaveLength(1);
+    expect(linkedIssues[0]?.message).toContain("not a real directory");
     await expect(readFile(join(outside, "keep"), "utf8")).resolves.toBe("stay");
     await expect(readFile(join(traversal, "keep"), "utf8")).resolves.toBe("stay");
     await expect(readFile(join(linkTarget, "keep"), "utf8")).resolves.toBe("stay");
     await expect(readFile(join(opsTarget, "keep"), "utf8")).resolves.toBe("stay");
+  });
+
+  it("does not roll back an install that commits before recovery claims the lease", async () => {
+    const world = await createWorld();
+    const destination = join(world.pluginStorageRoot, "fresh");
+    await mkdir(destination, { recursive: true });
+    const operationId = "00000000-0000-4000-8000-staleread0001";
+    const recordPath = await writeDeadRecord(world, operationId);
+    const identity = await directoryIdentity(destination);
+    await writeFile(recordPath, `${JSON.stringify({
+      version: 1,
+      operationId,
+      kind: "install",
+      pluginId: "fresh",
+      destination,
+      stagePath: join(world.pluginStorageRoot, `fresh.stage-${operationId}`),
+      phase: "destination-replaced",
+      stageIdentity: identity,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    })}\n`);
+    const recovered = await recoverPluginInstallTransactions({
+      installRoots: [world.pluginStorageRoot],
+      hooks: {
+        afterLeaseClaimed: async () => {
+          await rm(recordPath, { force: true });
+        },
+      },
+    });
+    expect(recovered.recovered).toBe(0);
+    expect(recovered.issues).toEqual([]);
+    expect(await pathExists(destination)).toBe(true);
+  });
+
+  it("does not delete lease artifacts through a symlinked operations directory", async () => {
+    const world = await createWorld();
+    const outside = await mkdtemp(join(world.root, "outside-ops-"));
+    const dead = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+    const sentinel = join(
+      outside,
+      `sentinel.json.lease.tmp-${dead.pid}-${randomUUID()}`,
+    );
+    await writeFile(sentinel, "preserve this outside file");
+    await symlink(outside, join(world.pluginStorageRoot, ".plugin-install-ops"));
+    const swept = await recoverPluginInstallTransactions({
+      installRoots: [world.pluginStorageRoot],
+    });
+    expect(await pathExists(sentinel)).toBe(true);
+    expect(swept.recovered).toBe(0);
+    expect(swept.issues.some((issue) => /not a real directory/u.test(issue.message))).toBe(true);
+  });
+
+  it("does not reclaim a lease owned by live pid 1", async () => {
+    const world = await createWorld();
+    const operationId = "00000000-0000-4000-8000-pidone000001";
+    const ops = join(world.pluginStorageRoot, ".plugin-install-ops");
+    await mkdir(ops, { recursive: true });
+    const recordPath = join(ops, `${operationId}.json`);
+    await writeFile(recordPath, deadRecordJson(world, operationId));
+    await writeFile(`${recordPath}.lease`, `${JSON.stringify({ pid: 1, nonce: "pid-one" })}\n`);
+    const recovered = await recoverPluginInstallTransactions({
+      installRoots: [world.pluginStorageRoot],
+    });
+    expect(recovered.recovered).toBe(0);
+    expect(recovered.issues).toEqual([]);
+    expect(await readFile(recordPath, "utf8")).toContain(operationId);
+    expect(await readFile(`${recordPath}.lease`, "utf8")).toContain('"pid":1');
+  });
+
+  it("restores version 1 when the committed record write fails after config publication", async () => {
+    const installed = await installDemoV1();
+    try {
+      await expect(updateDemo(installed, {
+        afterPhase: async (phase, context) => {
+          if (phase !== "config-published") return;
+          durableControl.failRecordPath = context.recordPath;
+        },
+      })).rejects.toThrow(/injected EIO writing committed record/u);
+    } finally {
+      durableControl.failRecordPath = undefined;
+    }
+    expect(await readPluginVersion(installed.destination)).toBe("1.0.0");
+    expect(await listedVersions(installed)).toEqual(["1.0.0"]);
+    expect(await demoEnabledInConfig(installed)).toBe(true);
+    expect(namesInclude(await storageNames(installed), ".bak-")).toBe(false);
+  });
+
+  it("does not recover install records under the workspace plugin root", async () => {
+    const world = await createWorld();
+    const repoPlugins = join(world.workspaceRoot, ".agents", "plugins");
+    const operationId = "00000000-0000-4000-8000-workspaceroot";
+    const recordPath = join(repoPlugins, ".plugin-install-ops", `${operationId}.json`);
+    await mkdir(join(repoPlugins, ".plugin-install-ops"), { recursive: true });
+    await writeFile(recordPath, `${JSON.stringify({
+      version: 1,
+      operationId,
+      kind: "install",
+      pluginId: "fresh",
+      destination: join(repoPlugins, "fresh"),
+      stagePath: join(repoPlugins, `fresh.stage-${operationId}`),
+      phase: "record-created",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    })}\n`);
+    const loaded = await loadPlugins({
+      pluginStorageRoot: world.pluginStorageRoot,
+      workspaceRoot: world.workspaceRoot,
+      config: { plugins: { enabled: true } },
+    });
+    const issues = loaded.errors.filter((issue) => issue.type === "install-recovery");
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.message).toContain("remove them manually");
+    expect(issues[0]?.message).toContain(recordPath);
+    expect(await pathExists(recordPath)).toBe(true);
+  });
+
+  it("does not reject a symlinked storage root when no install operation directory exists", async () => {
+    const world = await createWorld();
+    const linkedRoot = join(world.root, "plugins-link");
+    await symlink(world.pluginStorageRoot, linkedRoot);
+    const idle = await loadPlugins({
+      pluginStorageRoot: linkedRoot,
+      workspaceRoot: world.workspaceRoot,
+      config: { plugins: { enabled: true } },
+    });
+    expect(idle.errors.filter((issue) => issue.type === "install-recovery")).toEqual([]);
+    const ops = join(linkedRoot, ".plugin-install-ops");
+    await mkdir(ops);
+    const operationId = "00000000-0000-4000-8000-symlinkroot01";
+    await writeFile(join(ops, `${operationId}.json`), deadRecordJson(
+      { ...world, pluginStorageRoot: world.pluginStorageRoot },
+      operationId,
+    ));
+    const pending = await recoverPluginInstallTransactions({ installRoots: [linkedRoot] });
+    expect(pending.recovered).toBe(0);
+    expect(pending.issues.some((issue) => /not a real directory/u.test(issue.message))).toBe(true);
+  });
+
+  it("keeps the committed record when backup removal does not match its identity", async () => {
+    const installed = await installDemoV1();
+    let recordPath = "";
+    let backupPath = "";
+    const updated = await updateDemo(installed, {
+      afterPhase: async (phase, context) => {
+        if (phase !== "committed" || context.backupPath === undefined) return;
+        recordPath = context.recordPath;
+        backupPath = context.backupPath;
+        await writeManifest(backupPath, "demo", "9.9.9");
+      },
+    });
+    expect(await readPluginVersion(updated.destination)).toBe("2.0.0");
+    expect(await pathExists(backupPath)).toBe(true);
+    expect(await pathExists(recordPath)).toBe(true);
+    const recovered = await recoverLocal(installed);
+    expect(recovered.issues.some((issue) => /identity changed/u.test(issue.message))).toBe(true);
+    expect(await pathExists(backupPath)).toBe(true);
+    expect(await pathExists(recordPath)).toBe(true);
+  });
+
+  it("keeps plugin id and destination on a recovery throw after the record parses", async () => {
+    const world = await createWorld();
+    const destination = join(world.pluginStorageRoot, "fresh");
+    await mkdir(destination, { recursive: true });
+    const operationId = "00000000-0000-4000-8000-parsedthrow01";
+    const recordPath = await writeDeadRecord(world, operationId);
+    const userConfig = join(world.agencHome, "config.toml");
+    await writeFile(userConfig, "config_version = 2\n");
+    await writeFile(recordPath, `${JSON.stringify({
+      version: 1,
+      operationId,
+      kind: "install",
+      pluginId: "fresh",
+      destination,
+      stagePath: join(world.pluginStorageRoot, `fresh.stage-${operationId}`),
+      phase: "destination-replaced",
+      stageIdentity: await directoryIdentity(destination),
+      previousPluginConfig: { entryPresent: false },
+      configTargetPath: userConfig,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    })}\n`);
+    const recovered = await recoverPluginInstallTransactions({
+      installRoots: [world.pluginStorageRoot],
+      userConfigPath: userConfig,
+      restorePluginConfig: async () => {
+        throw new Error("restore blew up");
+      },
+    });
+    expect(recovered.recovered).toBe(0);
+    expect(recovered.issues).toEqual([expect.objectContaining({
+      pluginId: "fresh",
+      destination,
+      message: "restore blew up",
+    })]);
+  });
+
+  it("documents install recovery for the default storage root, not only the env override", async () => {
+    const repoRoot = join(import.meta.dirname, "../../../..");
+    const envDoc = await readFile(join(repoRoot, "docs/reference/env.md"), "utf8");
+    expect(envDoc).toContain(
+      "Interrupted install recovery runs only for the plugin storage root (this directory when set, else the default)",
+    );
+    const skills = await readFile(join(repoRoot, "docs/reference/skills-plugins.md"), "utf8");
+    expect(skills).toContain(
+      "Interrupted install recovery runs only for that storage root. It does not recover `<workspace>/.agents/plugins` unless that path is the storage root.",
+    );
+    expect(skills).toContain("Remove that directory manually.");
+  });
+
+  it("does not let a second recovery claim a symlinked dead lease", async () => {
+    const world = await createWorld();
+    const operationId = "00000000-0000-4000-8000-symlinkrace1";
+    const ops = join(world.pluginStorageRoot, ".plugin-install-ops");
+    await mkdir(ops, { recursive: true });
+    const recordPath = join(ops, `${operationId}.json`);
+    const child = spawn(process.execPath, ["-e", "process.exit(0)"]);
+    await new Promise<void>((resolve, reject) => {
+      child.once("exit", () => resolve());
+      child.once("error", reject);
+    });
+    const leaseBody = join(world.root, "lease-body");
+    await writeFile(leaseBody, `${JSON.stringify({ pid: child.pid, nonce: "dead-nonce-value" })}\n`);
+    await symlink(leaseBody, `${recordPath}.lease`);
+    await writeFile(recordPath, `${JSON.stringify({
+      version: 1,
+      operationId,
+      kind: "install",
+      pluginId: "fresh",
+      destination: join(world.pluginStorageRoot, "fresh"),
+      stagePath: join(world.pluginStorageRoot, `fresh.stage-${operationId}`),
+      phase: "record-created",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    })}\n`);
+    await mkdir(join(world.pluginStorageRoot, "fresh"), { recursive: true });
+    const owners: string[] = [];
+    let releaseFirst: () => void = () => {};
+    const firstMayRename = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let releaseSecond: () => void = () => {};
+    const secondMayRename = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    let arrivals = 0;
+    renameGate.before = async (from, to) => {
+      if (!to.endsWith(".json.lease") || !from.includes(".tmp-")) return;
+      arrivals += 1;
+      if (arrivals === 1) await firstMayRename;
+      else {
+        releaseFirst();
+        await secondMayRename;
+      }
+    };
+    let r2Entered: () => void = () => {};
+    const r2EnteredGate = new Promise<void>((resolve) => {
+      r2Entered = resolve;
+    });
+    let r2: Promise<{ readonly recovered: number }> = Promise.resolve({ recovered: 0 });
+    const result = await recoverPluginInstallTransactions({
+      installRoots: [world.pluginStorageRoot],
+      hooks: {
+        beforeLeaseReplace: async () => {
+          r2 = recoverPluginInstallTransactions({
+            installRoots: [world.pluginStorageRoot],
+            hooks: {
+              beforeLeaseReplace: async () => {
+                r2Entered();
+              },
+              afterLeaseClaimed: async () => {
+                owners.push("r2");
+                if (owners.length === 1) releaseSecond();
+              },
+            },
+          });
+          await r2EnteredGate;
+        },
+        afterLeaseClaimed: async () => {
+          owners.push("r1");
+          if (owners.length === 1) releaseSecond();
+        },
+      },
+    });
+    let second: { readonly recovered: number };
+    try {
+      second = await r2;
+    } finally {
+      renameGate.before = undefined;
+    }
+    expect(owners).toEqual([]);
+    expect(result.recovered + second.recovered).toBe(0);
+    expect(result.issues.map((issue) => issue.message)).toEqual([
+      expect.stringContaining(`inspect and remove it manually: ${recordPath}.lease`),
+    ]);
+    expect(await readFile(recordPath, "utf8")).toContain(operationId);
+  });
+
+  it.skipIf(process.platform === "win32")("does not block on a fifo install lease", async () => {
+    const world = await createWorld();
+    const operationId = "00000000-0000-4000-8000-fifolease001";
+    const ops = join(world.pluginStorageRoot, ".plugin-install-ops");
+    await mkdir(ops, { recursive: true });
+    const recordPath = join(ops, `${operationId}.json`);
+    const leasePath = `${recordPath}.lease`;
+    const made = spawnSync("mkfifo", [leasePath]);
+    expect(made.status).toBe(0);
+    await writeFile(recordPath, deadRecordJson(world, operationId));
+    const result = await recoverPluginInstallTransactions({
+      installRoots: [world.pluginStorageRoot],
+    });
+    expect(result.recovered).toBe(0);
+    expect(result.issues.map((issue) => issue.message)).toEqual([
+      expect.stringContaining(`inspect and remove it manually: ${leasePath}`),
+    ]);
+    expect(await readFile(recordPath, "utf8")).toContain(operationId);
+    expect((await lstat(leasePath)).isFIFO()).toBe(true);
+  }, 3_000);
+
+  it("reports one untouched project-scope install leftover", async () => {
+    const world = await createWorld();
+    const ops = join(world.workspaceRoot, ".agents", "plugins", ".plugin-install-ops");
+    await mkdir(ops, { recursive: true });
+    const record = join(ops, "00000000-0000-4000-8000-project00001.json");
+    const body = "{\"phase\":\"record-created\"}\n";
+    await writeFile(record, body);
+    const before = await stat(record);
+    const loaded = await loadPlugins({
+      pluginStorageRoot: world.pluginStorageRoot,
+      workspaceRoot: world.workspaceRoot,
+      config: { plugins: { enabled: true } },
+    });
+    const issues = loaded.errors.filter((issue) => issue.type === "install-recovery");
+    expect(issues).toHaveLength(1);
+    expect(issues[0]?.message).toContain("remove them manually");
+    expect(issues[0]?.message).toContain(record);
+    expect(await readFile(record, "utf8")).toBe(body);
+    expect((await stat(record)).mtimeMs).toBe(before.mtimeMs);
   });
 });
 
@@ -1266,7 +1649,7 @@ async function writeDeadRecord(world: TxnWorld, operationId: string): Promise<st
   await mkdir(ops, { recursive: true });
   const recordPath = join(ops, `${operationId}.json`);
   await writeFile(recordPath, deadRecordJson(world, operationId));
-  await writeFile(`${recordPath}.lease`, `${JSON.stringify({ pid: child.pid })}\n`);
+  await writeFile(`${recordPath}.lease`, `${JSON.stringify({ pid: child.pid, nonce: randomUUID() })}\n`);
   return recordPath;
 }
 
