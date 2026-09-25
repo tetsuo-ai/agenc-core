@@ -894,6 +894,32 @@ describe("plugin install transaction", () => {
     await expect(access(ops)).rejects.toThrow();
   });
 
+  it("sweeps a dead partial lease file and removes the emptied ops directory", async () => {
+    const world = await createWorld();
+    const operationId = "00000000-0000-4000-8000-sweep0000002";
+    await writeDeadRecord(world, operationId);
+    const child = spawn(process.execPath, ["-e", "process.exit(0)"]);
+    await new Promise<void>((resolve, reject) => {
+      child.once("exit", () => resolve());
+      child.once("error", reject);
+    });
+    const ops = join(world.pluginStorageRoot, ".plugin-install-ops");
+    await writeFile(
+      join(
+        ops,
+        `${operationId}.json.lease.tmp-${child.pid}-01234567-89ab-4cde-8fab-0123456789ab.partial-01234567-89ab-4cde-8fab-0123456789ab`,
+      ),
+      "partial\n",
+    );
+    const loaded = await loadPlugins({
+      pluginStorageRoot: world.pluginStorageRoot,
+      workspaceRoot: world.workspaceRoot,
+      config: { plugins: { enabled: true } },
+    });
+    expect(loaded.errors.filter((issue) => issue.type === "install-recovery")).toEqual([]);
+    await expect(access(ops)).rejects.toThrow();
+  });
+
   it("treats two spellings of a missing config file as the same target", async () => {
     const world = await createWorld();
     const realHome = join(world.root, "real-home");

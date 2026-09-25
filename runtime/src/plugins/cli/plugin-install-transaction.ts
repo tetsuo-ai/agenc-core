@@ -1175,7 +1175,7 @@ async function removeEmptyOpsDirectory(
 }
 
 const LEASE_ARTIFACT_NAME =
-  /^.+\.json\.lease\.(?:claim|tmp)-(\d+)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+  /^.+\.json\.lease\.(?:claim|tmp)-(\d+)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\.partial-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/u;
 
 async function claimDeadInstallLease(
   leasePath: string,
