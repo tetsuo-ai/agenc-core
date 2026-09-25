@@ -16,6 +16,7 @@ import {
   eventStreamFrame,
   eventStreamFrameFromBytes,
   HELLO_SUCCESS_CHUNKS,
+  PARTIAL_TEXT_CHUNK,
   sseFetch,
   type StreamTerminalAdapter,
 } from "./shared/stream-terminal.js";
@@ -80,12 +81,63 @@ const OPENAI_SUCCESS = [
 ] as const;
 const OPENAI_MALFORMED = [OPENAI_PARTIAL, "data: {not-json}\n\n", OPENAI_DONE] as const;
 
+const GEMINI_FINISHED =
+  'data: {"candidates":[{"content":{"parts":[{"text":"Hello"}]},"finishReason":"STOP"}]}\n\n' +
+  'data: {"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1,"totalTokenCount":4}}\n\n';
 const GEMINI_EXTRAS = [
   {
     name: "a recognized prompt-level blockReason is a successful terminal",
     fetchImpl: sseFetch(['data: {"promptFeedback":{"blockReason":"SAFETY"}}\n\n']),
     finishReason: "content_filter" as const,
     expectedChunks: [{ content: "", done: true }],
+  },
+  {
+    name: "a finished reply followed by unterminated [DONE] still completes",
+    fetchImpl: sseFetch([`${GEMINI_FINISHED}data: [DONE]`]),
+    content: "Hello",
+    finishReason: "stop" as const,
+    usage: {
+      promptTokens: 3,
+      completionTokens: 1,
+      totalTokens: 4,
+    },
+    expectedChunks: HELLO_SUCCESS_CHUNKS,
+  },
+  {
+    name: "a finished reply followed by an unterminated keep-alive still completes",
+    fetchImpl: sseFetch([`${GEMINI_FINISHED}: keep-alive`]),
+    content: "Hello",
+    finishReason: "stop" as const,
+    usage: {
+      promptTokens: 3,
+      completionTokens: 1,
+      totalTokens: 4,
+    },
+    expectedChunks: HELLO_SUCCESS_CHUNKS,
+  },
+  {
+    name: "a final finishReason frame without a trailing blank line still completes",
+    fetchImpl: sseFetch([
+      'data: {"candidates":[{"content":{"parts":[{"text":"Hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1,"totalTokenCount":4}}',
+    ]),
+    content: "Hello",
+    finishReason: "stop" as const,
+    usage: {
+      promptTokens: 3,
+      completionTokens: 1,
+      totalTokens: 4,
+    },
+    expectedChunks: HELLO_SUCCESS_CHUNKS,
+  },
+];
+const GEMINI_EOF_ERRORS = [
+  {
+    name: "an unterminated [DONE] after a partial reply is still truncated",
+    fetchImpl: sseFetch([`${GEMINI_PARTIAL}data: [DONE]`]),
+    kind: "truncated" as const,
+    errorPattern: /closed before a candidate finishReason/i,
+    expectedChunks: [PARTIAL_TEXT_CHUNK],
+    expectNoDone: true,
   },
 ];
 const OPENAI_FINISHED =
@@ -166,6 +218,7 @@ describeSseStreamTerminalEvents({
   malformedFrames: GEMINI_MALFORMED,
   cancelFrame: GEMINI_PARTIAL,
   extraSuccesses: GEMINI_EXTRAS,
+  extraErrors: GEMINI_EOF_ERRORS,
 });
 describeSseStreamTerminalEvents({
   title: "OpenAI-compatible",

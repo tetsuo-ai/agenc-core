@@ -2968,6 +2968,52 @@ function parseGeminiSseData(raw: string): Record<string, unknown> {
   return parsed;
 }
 
+function geminiRemainderIsCommentOnly(remainder: string): boolean {
+  const lines = remainder.replace(/\r/g, "").split("\n");
+  const nonempty = lines
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  return nonempty.length > 0 && nonempty.every((line) => line.startsWith(":"));
+}
+
+function geminiEventsFromEofRemainder(remainder: string): {
+  readonly events: readonly GeminiSseEvent[];
+  readonly done: boolean;
+} {
+  if (geminiRemainderIsCommentOnly(remainder)) {
+    return { events: [], done: false };
+  }
+  const flushed = parseSSEFrames(`${remainder}\n\n`, "gemini");
+  const events: GeminiSseEvent[] = [];
+  for (const frame of flushed.frames) {
+    if (!frame.data) continue;
+    if (frame.data === "[DONE]") return { events, done: true };
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(frame.data) as unknown;
+    } catch {
+      throw new LLMStreamTruncatedError(
+        "gemini",
+        "Gemini SSE stream ended with an unterminated event",
+      );
+    }
+    if (!isRecord(parsed)) {
+      throw new LLMInvalidResponseError(
+        "gemini",
+        "Malformed JSON in Gemini SSE event: expected an object",
+      );
+    }
+    events.push({ data: parsed });
+  }
+  if (events.length === 0) {
+    throw new LLMStreamTruncatedError(
+      "gemini",
+      "Gemini SSE stream ended with an unterminated event",
+    );
+  }
+  return { events, done: false };
+}
+
 function geminiSseEventsFromFrames(
   frames: readonly { readonly data?: string }[],
 ): { readonly events: readonly GeminiSseEvent[]; readonly done: boolean } {
@@ -3001,10 +3047,8 @@ async function* readGeminiSseEvents(
   for (const event of batch.events) yield event;
   if (batch.done) return;
   if (parsed.remaining.trim().length > 0) {
-    throw new LLMStreamTruncatedError(
-      "gemini",
-      "Gemini SSE stream ended with an unterminated event",
-    );
+    const tail = geminiEventsFromEofRemainder(parsed.remaining);
+    for (const event of tail.events) yield event;
   }
 }
 
