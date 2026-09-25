@@ -146,6 +146,10 @@ function normalizeSlashes(path: string): string {
  * volume holding the candidate does, so a working root spelled `/Users/me`
  * still contains `/users/me/file` where those are one directory.
  */
+export function __isPathInsideForTesting(candidate: string, root: string): boolean {
+  return isPathInside(candidate, root);
+}
+
 function isPathInside(candidate: string, root: string): boolean {
   const normalizedCandidate = pathForComparison(
     normalize(candidate).normalize("NFC"),

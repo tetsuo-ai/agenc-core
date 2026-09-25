@@ -591,8 +591,10 @@ written either way governs both spellings, drive letter and separators
 included. Where they are two files (Linux, case-sensitive APFS) they stay
 distinct. The probe flips ASCII letters only and reads the directory entry,
 so a symlink or hard link is not a second spelling of the same name. A
-case-sensitive mount does not inherit its parent volume's folding. When
-nothing on the path exists yet, the platform default applies. Rule text and
+case-sensitive mount does not inherit its parent volume's folding. A name
+that does not exist yet inherits the nearest existing directory, including
+through a wildcard rule. The platform default applies only when no existing
+directory on the path can be probed. Rule text and
 the decision recorded for audit keep their original spelling.
 
 **Internal-only** (valid runtime state, not CLI defaults):
