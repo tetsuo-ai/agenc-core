@@ -18,11 +18,13 @@ import {
   __setPathCaseDirectorySemanticsForTesting,
   type PathCaseSemantics,
 } from "../../src/permissions/path-case.js";
+import { readOnlyDelegationPathAllowed } from "../../src/agents/readonly-delegation.js";
 import {
   __isPathInsideForTesting,
   checkToolPathPermission,
   matchPathRuleContent,
 } from "../../src/permissions/path-validation.js";
+import type { Session } from "../../src/session/session.js";
 import { applyPermissionUpdate } from "../../src/permissions/permission-updates.js";
 import { createEmptyToolPermissionContext } from "../../src/permissions/types.js";
 
@@ -79,12 +81,12 @@ describe("pathForComparison inherits only the probed volume", () => {
       expect(
         __isPathInsideForTesting("/parent/Mount/New/Secret.txt", "/parent/Mount"),
       ).toBe(true);
-      expect(matchPathRuleContent("/parent/**/Secret.txt", "/parent/mount/Secret.txt")).toBe(true);
-      expect(matchPathRuleContent("/parent/*/Secret.txt", "/parent/mount/Secret.txt")).toBe(true);
-      expect(matchPathRuleContent("/parent/**/Secret.txt", "/parent/mount/secret.txt")).toBe(false);
-      expect(matchPathRuleContent("**/Secret.txt", "/parent/mount/Secret.txt")).toBe(true);
-      expect(matchPathRuleContent("**/Secret.txt", "/parent/mount/secret.txt")).toBe(false);
-      expect(matchPathRuleContent("**/*.TS", "/parent/mount/app.ts")).toBe(false);
+      expect(matchPathRuleContent("/parent/**/Secret.txt", "/parent/mount/Secret.txt", undefined, "narrow")).toBe(true);
+      expect(matchPathRuleContent("/parent/*/Secret.txt", "/parent/mount/Secret.txt", undefined, "narrow")).toBe(true);
+      expect(matchPathRuleContent("/parent/**/Secret.txt", "/parent/mount/secret.txt", undefined, "narrow")).toBe(false);
+      expect(matchPathRuleContent("**/Secret.txt", "/parent/mount/Secret.txt", undefined, "narrow")).toBe(true);
+      expect(matchPathRuleContent("**/Secret.txt", "/parent/mount/secret.txt", undefined, "narrow")).toBe(false);
+      expect(matchPathRuleContent("**/*.TS", "/parent/mount/app.ts", undefined, "narrow")).toBe(false);
     });
   });
 
@@ -96,13 +98,12 @@ describe("pathForComparison inherits only the probed volume", () => {
         ["/mnt/smb", "insensitive"],
       ]),
       () => {
-        expect(matchPathRuleContent("/mnt/**/Secret.txt", "/mnt/smb/Secret.txt")).toBe(true);
+        expect(matchPathRuleContent("/mnt/**/Secret.txt", "/mnt/smb/Secret.txt", undefined, "narrow")).toBe(true);
+        expect(matchPathRuleContent("/mnt/**/Secret.txt", "/mnt/smb/secret.txt", undefined, "narrow")).toBe(false);
         expect(matchPathRuleContent("/mnt/**/Secret.txt", "/mnt/smb/secret.txt")).toBe(true);
-        expect(matchPathRuleContent("**/Secret.txt", "/mnt/smb/secret.txt")).toBe(false);
-        expect(matchPathRuleContent("**/*.TS", "/mnt/smb/app.ts")).toBe(false);
-        expect(
-          matchPathRuleContent("**/Secret.txt", "/mnt/smb/secret.txt", undefined, "wide"),
-        ).toBe(true);
+        expect(matchPathRuleContent("**/Secret.txt", "/mnt/smb/secret.txt", undefined, "narrow")).toBe(false);
+        expect(matchPathRuleContent("**/*.TS", "/mnt/smb/app.ts", undefined, "narrow")).toBe(false);
+        expect(matchPathRuleContent("**/Secret.txt", "/mnt/smb/secret.txt")).toBe(true);
       },
     );
   });
@@ -149,7 +150,7 @@ describe("pathForComparison inherits only the probed volume", () => {
     ]);
     withVolumes(mixed, () => {
       expect(
-        matchPathRuleContent("/home/u/*/Private/*.txt", "/home/u/proj/private/a.txt"),
+        matchPathRuleContent("/home/u/*/Private/*.txt", "/home/u/proj/private/a.txt", undefined, "narrow"),
       ).toBe(false);
       expect(
         matchPathRuleContent(
@@ -169,7 +170,7 @@ describe("pathForComparison inherits only the probed volume", () => {
       ]),
       () => {
         expect(
-          matchPathRuleContent("/home/u/*/Private/*.txt", "/home/u/proj/private/a.txt"),
+          matchPathRuleContent("/home/u/*/Private/*.txt", "/home/u/proj/private/a.txt", undefined, "narrow"),
         ).toBe(true);
       },
     );
@@ -213,6 +214,121 @@ describe("pathForComparison inherits only the probed volume", () => {
       __setPathCaseDirectorySemanticsForTesting(null);
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  test.each([
+    {
+      label: "allow skips a sensitive directory that holds the first wildcard",
+      volumes: [
+        ["/home/u", "sensitive"],
+        ["/home/u/proj", "insensitive"],
+      ] as const,
+      rule: "/home/u/Pro*/a.txt",
+      candidate: "/home/u/proj/a.txt",
+      tail: "narrow" as const,
+      matches: false,
+    },
+    {
+      label: "allow folds the first wildcard when that directory is insensitive",
+      volumes: [
+        ["/home/u", "insensitive"],
+        ["/home/u/proj", "insensitive"],
+      ] as const,
+      rule: "/home/u/Pro*/a.txt",
+      candidate: "/home/u/proj/a.txt",
+      tail: "narrow" as const,
+      matches: true,
+    },
+    {
+      label: "deny still folds when a later mount is insensitive",
+      volumes: [
+        ["/home/u", "sensitive"],
+        ["/home/u/proj", "insensitive"],
+      ] as const,
+      rule: "/home/u/Pro*/a.txt",
+      candidate: "/home/u/proj/a.txt",
+      tail: "wide" as const,
+      matches: true,
+    },
+    {
+      label: "allow does not fold a sensitive leaf under an insensitive folder",
+      volumes: [
+        ["/home/u", "insensitive"],
+        ["/home/u/proj", "insensitive"],
+        ["/home/u/proj/private", "sensitive"],
+      ] as const,
+      rule: "/home/u/*/Private/*.txt",
+      candidate: "/home/u/proj/PRIVATE/a.txt",
+      tail: "narrow" as const,
+      matches: false,
+    },
+    {
+      label: "deny folds when any directory from the wildcard down is insensitive",
+      volumes: [
+        ["/home/u", "insensitive"],
+        ["/home/u/proj", "insensitive"],
+        ["/home/u/proj/private", "sensitive"],
+      ] as const,
+      rule: "/home/u/*/Private/*.txt",
+      candidate: "/home/u/proj/PRIVATE/a.txt",
+      tail: "wide" as const,
+      matches: true,
+    },
+  ])("$label", ({ volumes, rule, candidate, tail, matches }) => {
+    withVolumes(new Map<string, PathCaseSemantics>(volumes), () => {
+      expect(matchPathRuleContent(rule, candidate, undefined, tail)).toBe(matches);
+      if (tail !== "wide") return;
+      const seeded = applyPermissionUpdate(createEmptyToolPermissionContext(), {
+        type: "addRules",
+        destination: "session",
+        behavior: "deny",
+        rules: [{ toolName: "Write", ruleContent: rule }],
+      });
+      const result = checkToolPathPermission({
+        toolName: "Write",
+        input: { file_path: candidate },
+        path: candidate,
+        cwd: "/home/u",
+        context: seeded,
+        operationType: "write",
+      });
+      expect(result.behavior).toBe("deny");
+    });
+  });
+
+  test("a read-only none glob uses the wide fold", () => {
+    withVolumes(
+      new Map<string, PathCaseSemantics>([
+        ["/home/u", "insensitive"],
+        ["/home/u/proj", "insensitive"],
+        ["/home/u/proj/private", "sensitive"],
+      ]),
+      () => {
+        const session = {
+          sessionConfiguration: { cwd: "/home/u" },
+          permissionModeRegistry: { current: () => createEmptyToolPermissionContext() },
+          services: {
+            sandboxExecutionBroker: {
+              cwd: "/home/u",
+              sessionTempRoot: "/tmp/agenc-readonly",
+              executionAuthority: () => ({
+                permissionProfile: {
+                  fileSystem: {
+                    entries: [
+                      {
+                        path: { kind: "glob", pattern: "/home/u/*/Private/*.txt" },
+                        access: "none",
+                      },
+                    ],
+                  },
+                },
+              }),
+            },
+          },
+        } as Session;
+        expect(readOnlyDelegationPathAllowed(session, "/home/u/proj/PRIVATE/a.txt")).toBe(false);
+      },
+    );
   });
 
   test("deny still matches a recased path under a not-yet-existing directory", async () => {

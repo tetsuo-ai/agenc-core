@@ -57,6 +57,7 @@ type EntryStats = {
 let resolverOverride: PathCaseSemanticsResolver | null = null;
 let directoryOverride: DirectorySemanticsOverride | null = null;
 let lstatEntry: (path: string) => EntryStats = lstatSync;
+let readDirectory: (path: string) => string[] = readdirSync;
 
 /**
  * Case-insensitive volumes are the default on Windows and macOS; everything
@@ -137,7 +138,7 @@ function probeEntry(entry: string): ProbeVerdict | null {
 
   let listed: string[];
   try {
-    listed = readdirSync(parent);
+    listed = readDirectory(parent);
   } catch {
     return null;
   }
@@ -157,10 +158,10 @@ function probeEntry(entry: string): ProbeVerdict | null {
 
   try {
     const alternate = lstatEntry(join(parent, flipped));
-    const sameEntry = alternate.dev === original.dev && alternate.ino === original.ino;
-    return sameEntry
-      ? { semantics: "insensitive", cacheable: true }
-      : { semantics: "sensitive", cacheable: true };
+    if (alternate.dev === original.dev && alternate.ino === original.ino) {
+      return { semantics: "insensitive", cacheable: true };
+    }
+    return verdictForDistinctInode(parent, name, flipped);
   } catch (err) {
     const code = errnoCode(err);
     if (code === "ENOENT" || code === "ENOTDIR") {
@@ -168,6 +169,29 @@ function probeEntry(entry: string): ProbeVerdict | null {
     }
     return null;
   }
+}
+
+/**
+ * A different dev/ino on the flipped spelling is sensitive only when both
+ * names are actually in the listing. Filesystems that invent an inode per
+ * lookup (SMB `noserverino`) must not be cached as sensitive, or a deny
+ * misses the recased name.
+ */
+function verdictForDistinctInode(
+  parent: string,
+  name: string,
+  flipped: string,
+): ProbeVerdict {
+  let listed: string[];
+  try {
+    listed = readDirectory(parent);
+  } catch {
+    return { semantics: "insensitive", cacheable: false };
+  }
+  const bothListed = listed.includes(name) && listed.includes(flipped);
+  return bothListed
+    ? { semantics: "sensitive", cacheable: true }
+    : { semantics: "insensitive", cacheable: false };
 }
 
 function sensitiveIfStillPresent(entry: string, original: EntryStats): ProbeVerdict {
@@ -233,7 +257,7 @@ function semanticsInside(dir: string): PathCaseSemantics | null {
 
   let names: string[];
   try {
-    names = readdirSync(real);
+    names = readDirectory(real);
   } catch {
     return null;
   }
@@ -388,28 +412,57 @@ function joinUnderRoot(root: string, segments: readonly string[]): string {
 export type WildcardTailFold = "narrow" | "wide";
 
 /**
+ * Directories that govern the wildcard tail, starting at the directory that
+ * contains the first wildcard segment (the root, for an unanchored pattern)
+ * and continuing through the file's parent.
+ */
+function tailDirectoryPaths(candidateSlash: string, wildcardAt: number): readonly string[] {
+  const parsed = parseComparisonRoot(candidateSlash);
+  const lastDirectory = parsed.segments.length - 1;
+  const paths: string[] = [];
+  for (let index = wildcardAt - 1; index < lastDirectory; index++) {
+    paths.push(
+      index < 0
+        ? parsed.root
+        : joinUnderRoot(parsed.root, parsed.segments.slice(0, index + 1)),
+    );
+  }
+  return paths;
+}
+
+function semanticsOfDirectory(dir: string): PathCaseSemantics {
+  if (dir === "" || dir === "/") return pathCaseSemantics("/x");
+  const inside = dir.endsWith("/") ? `${dir}x` : `${dir}/x`;
+  return pathCaseSemantics(inside);
+}
+
+function foldTail(tail: WildcardTailFold, verdicts: readonly PathCaseSemantics[]): boolean {
+  switch (tail) {
+    case "wide":
+      return verdicts.length === 0 || verdicts.some((verdict) => verdict === "insensitive");
+    case "narrow":
+      return verdicts.length > 0 && verdicts.every((verdict) => verdict === "insensitive");
+    default: {
+      const unreachable: never = tail;
+      return unreachable;
+    }
+  }
+}
+
+/**
  * Verdict for the wildcard tail.
- * `wide` (deny and ask) uses the candidate's last directory, so a block is
- * not missed when a later mount is case-insensitive. `narrow` (allow) folds
- * only when every candidate directory below the literal prefix is
- * case-insensitive. A filename glob with no directory below that prefix
- * uses the directory that holds the file.
+ * `narrow` (allow) folds only when every directory from the one holding the
+ * first wildcard segment through the file's parent is case-insensitive.
+ * `wide` (deny and ask) folds when any of those directories is
+ * case-insensitive, so a block is not missed in either mixed layout.
  */
 function wildcardTailVerdict(
   candidateSlash: string,
   wildcardAt: number,
   tail: WildcardTailFold,
 ): PathCaseSemantics {
-  if (tail === "wide") return pathCaseSemantics(candidateSlash);
-  const parsed = parseComparisonRoot(candidateSlash);
-  const lastDirectory = parsed.segments.length - 1;
-  if (wildcardAt >= lastDirectory) return pathCaseSemantics(candidateSlash);
-  for (let index = wildcardAt; index < lastDirectory; index++) {
-    const dir = joinUnderRoot(parsed.root, parsed.segments.slice(0, index + 1));
-    const inside = dir === "/" ? "/x" : `${dir}/x`;
-    if (pathCaseSemantics(inside) !== "insensitive") return "sensitive";
-  }
-  return "insensitive";
+  const verdicts = tailDirectoryPaths(candidateSlash, wildcardAt).map(semanticsOfDirectory);
+  return foldTail(tail, verdicts) ? "insensitive" : "sensitive";
 }
 
 /**
@@ -422,7 +475,7 @@ function wildcardTailVerdict(
 export function foldRuleForCandidate(
   ruleSlash: string,
   candidateSlash: string,
-  tail: WildcardTailFold = "narrow",
+  tail: WildcardTailFold = "wide",
 ): string {
   const parsed = parseComparisonRoot(ruleSlash);
   const wildcardAt = parsed.segments.findIndex((segment) => isWildcardSegment(segment));
@@ -535,6 +588,14 @@ export function __setPathCaseLstatForTesting(
   impl: ((path: string) => EntryStats) | null,
 ): void {
   lstatEntry = impl ?? lstatSync;
+  semanticsByDirectory.clear();
+}
+
+/** Replace `readdir` inside the probe. Pass null to restore the real call. */
+export function __setPathCaseReaddirForTesting(
+  impl: ((path: string) => string[]) | null,
+): void {
+  readDirectory = impl ?? readdirSync;
   semanticsByDirectory.clear();
 }
 

@@ -339,7 +339,7 @@ export function matchPathRuleContent(
   ruleContent: string,
   filePath: string,
   caseSemantics?: PathCaseSemantics,
-  tail: WildcardTailFold = "narrow",
+  tail: WildcardTailFold = "wide",
 ): boolean {
   const ruleSlash = normalizeComparisonSlashes(expandTilde(ruleContent));
   const pathSlash = normalizeComparisonSlashes(filePath);
