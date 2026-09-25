@@ -1318,19 +1318,8 @@ async function restorePluginConfigSnapshot(
     await removePluginConfigEntry(pluginId, options);
     return;
   }
-  const path = pluginConfigPath(options);
-  mutateCanonicalUserConfigSync(path, (raw) => {
-    const plugins = isRecord(raw.plugins) ? raw.plugins : {};
-    if (!isRecord(raw.plugins)) raw.plugins = plugins;
-    const pluginEntries = isRecord(plugins.plugins) ? plugins.plugins : {};
-    if (!isRecord(plugins.plugins)) plugins.plugins = pluginEntries;
-    Object.defineProperty(pluginEntries, pluginId, {
-      value: previous,
-      enumerable: true,
-      configurable: true,
-      writable: true,
-    });
-  });
+  if (!isRecord(previous)) return;
+  await writePluginConfigEntry(pluginId, previous as PluginEntryConfig, options);
 }
 
 async function writePluginConfigEntry(
