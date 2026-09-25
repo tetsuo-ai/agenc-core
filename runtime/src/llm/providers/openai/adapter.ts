@@ -148,7 +148,7 @@ type CompatibleSseRemainder =
   | { readonly kind: "unparsed" };
 
 function remainderIsCommentOnly(remainder: string): boolean {
-  const lines = remainder.replace(/\r/g, "").split("\n");
+  const lines = remainder.replaceAll("\r", "").split("\n");
   const nonempty = lines
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
