@@ -309,7 +309,7 @@ Defaults are "feature on unless the disable var is set" unless noted.
 | `AGENC_SHELL` | Absolute executable path whose filename is `bash` or `zsh`; an unsupported or non-executable explicit path fails instead of falling back |
 | `AGENC_SHELL_PREFIX` | Wrap bash/hook command argv (POSIX) |
 | `AGENC_TMPDIR` | Exact session temp root for sandbox and permission paths. Child processes receive the same root as `TMPDIR`, `TEMP`, and `TMP` |
-| `AGENC_PLUGIN_CACHE_DIR` | Explicit sole plugin storage root (the versioned cache remains its `cache/` child). CLI/runtime ingress captures it once; `AgencClient` callers pass `pluginStorageRoot` directly |
+| `AGENC_PLUGIN_CACHE_DIR` | Explicit sole plugin storage root (the versioned cache remains its `cache/` child). CLI/runtime ingress captures it once; `AgencClient` callers pass `pluginStorageRoot` directly. Interrupted install recovery runs only for the plugin storage root (this directory when set, else the default). It does not recover `<workspace>/.agents/plugins` unless that path is the storage root. When it is not, each load reports one issue for a non-empty `.plugin-install-ops` there (at most the first 20 names, plus the total count) and leaves the entries for manual removal; an empty directory is not reported |
 | `AGENC_SKIP_OFFICIAL_MARKETPLACE` | `1` stops the first marketplace catalog on a profile with none configured from auto-registering the official `agenc-plugins` marketplace |
 | `AGENC_ALLOW_UNTRUSTED_HOOKS` | Permit command hook effects in an untrusted workspace; captured once at runtime ingress; see below |
 | `AGENC_ENABLE_TASKS` | TUI task-board pool only. LIVE Task* tools are always registered and deferred |

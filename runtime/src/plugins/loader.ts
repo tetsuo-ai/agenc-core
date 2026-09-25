@@ -1,4 +1,4 @@
-import { readFile, readdir, realpath, stat } from "node:fs/promises";
+import { lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { isValidPermissionDefaultMode, validateHooksConfig, validateMcpServersConfig } from "../config/schema.js";
 import type {
@@ -602,13 +602,6 @@ function pathIsInsideOrEqual(candidate: string, root: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-async function samePluginRoot(userRoot: string, repoRoot: string): Promise<boolean> {
-  if (pathIsInsideOrEqual(userRoot, repoRoot) && pathIsInsideOrEqual(repoRoot, userRoot)) return true;
-  const userReal = await nearestExistingRealpath(userRoot);
-  const repoReal = await nearestExistingRealpath(repoRoot);
-  return userReal !== undefined && userReal === repoReal;
-}
-
 async function storageRootIsRepositoryPlugins(userRoot: string, repoRoot: string): Promise<boolean> {
   if (pathIsInsideOrEqual(userRoot, repoRoot)) return true;
   const userReal = await nearestExistingRealpath(userRoot);
@@ -625,7 +618,10 @@ async function loadPluginInstallRecoveryIssues(
   const userConfigPath = options.userConfigPath;
   const repositoryOwned = await storageRootIsRepositoryPlugins(userRoot, repoRoot);
   const restoreUserConfig = userConfigPath !== undefined && !repositoryOwned;
-  const userIssues = await recoverRootIssues(
+  const leftover = repositoryOwned
+    ? undefined
+    : await reportProjectScopeInstallLeftovers(join(repoRoot, ".plugin-install-ops"));
+  const recovered = await recoverRootIssues(
     userRoot,
     restoreUserConfig
       ? (pluginId, previous) => Promise.resolve(restoreTrustedUserPluginConfig(
@@ -637,9 +633,57 @@ async function loadPluginInstallRecoveryIssues(
     !restoreUserConfig,
     restoreUserConfig ? userConfigPath : undefined,
   );
-  if (await samePluginRoot(userRoot, repoRoot)) return userIssues;
-  const repoIssues = await recoverRootIssues(repoRoot, undefined, true, undefined);
-  return [...userIssues, ...repoIssues];
+  return leftover === undefined ? recovered : [leftover, ...recovered];
+}
+
+const PROJECT_SCOPE_LEFTOVER_LIMIT = 20;
+
+async function reportProjectScopeInstallLeftovers(
+  opsDir: string,
+): Promise<PluginLoadIssue | undefined> {
+  let info: Awaited<ReturnType<typeof lstat>>;
+  try {
+    info = await lstat(opsDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    return {
+      type: "install-recovery",
+      source: opsDir,
+      path: opsDir,
+      message: `project-scope install records were left behind and were not recovered; remove ${opsDir} manually: ${(error as Error).message}`,
+    };
+  }
+  if (info.isSymbolicLink() || !info.isDirectory()) {
+    return {
+      type: "install-recovery",
+      source: opsDir,
+      path: opsDir,
+      message: `project-scope install operation directory is not a real directory; remove ${opsDir} manually`,
+    };
+  }
+  let names: string[];
+  try {
+    names = await readdir(opsDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    return {
+      type: "install-recovery",
+      source: opsDir,
+      path: opsDir,
+      message: `project-scope install records were left behind and were not recovered; remove ${opsDir} manually: ${(error as Error).message}`,
+    };
+  }
+  const sorted = names.toSorted((a, b) => a.localeCompare(b));
+  if (sorted.length === 0) return undefined;
+  const shown = sorted.slice(0, PROJECT_SCOPE_LEFTOVER_LIMIT);
+  const listed = shown.map((name) => join(opsDir, name)).join(", ");
+  const extra = sorted.length > shown.length ? ` (${String(sorted.length)} entries)` : "";
+  return {
+    type: "install-recovery",
+    source: opsDir,
+    path: opsDir,
+    message: `project-scope install records were left behind and were not recovered; remove them manually: ${listed}${extra}`,
+  };
 }
 
 export async function loadPlugins(

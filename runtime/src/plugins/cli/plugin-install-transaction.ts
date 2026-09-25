@@ -102,8 +102,10 @@ export interface PluginInstallTransactionHooks {
 export interface PluginInstallRecoveryHooks {
   /** Test seam: crash after the new destination is removed and before the backup is renamed back. */
   readonly afterRollbackDestinationRemoved?: () => Promise<void>;
-  /** Test seam: runs after the dead-lease read and before the claim rename. */
+  /** Test seam: runs after the dead-lease read and before the claim. */
   readonly beforeLeaseRename?: () => Promise<void>;
+  /** Test seam: runs after a dead-lease takeover wins its marker and before the lease path is replaced. */
+  readonly beforeLeaseReplace?: () => Promise<void>;
   /** Test seam: runs after this process has claimed a dead lease. */
   readonly afterLeaseClaimed?: () => Promise<void>;
   /** Test seam: runs after an empty ops listing and before rmdir. */
@@ -220,12 +222,11 @@ export async function runPluginInstallTransaction(input: {
     await moveUpdateBackup(input, state, recordPath, destination, backupPath, parent);
     await replaceDestinationWithStage(input, state, recordPath, stagePath, destination, parent);
     await publishTransactionConfig(input, state, recordPath);
-    if (backupPath !== undefined) {
-      await removeMatchingDirectory(backupPath, state.record.backupIdentity);
-    }
+    // The committed record is the commit point. The backup stays until that
+    // write succeeds so a failure here can still restore version 1.
     state.record = await persistPhase(recordPath, state.record, { phase: "committed" });
     await invokeAfterPhase(input.hooks, state.record, recordPath);
-    await removeOperationRecord(recordPath);
+    await cleanupCommittedInstall(state.record, recordPath, backupPath);
   } catch (error) {
     await rethrowAfterRollback(error, state, recordPath, input);
   } finally {
@@ -336,6 +337,8 @@ async function recoverInstallRoot(
   options: Parameters<typeof recoverPluginInstallTransactions>[0],
 ): Promise<PluginInstallRecoveryResult> {
   const opsDir = pluginInstallOpsDir(installRoot);
+  const rejected = await validateTrustedRecoveryRoot(installRoot, opsDir);
+  if (rejected !== undefined) return { recovered: 0, issues: [rejected] };
   await sweepStaleLeaseArtifacts(opsDir);
   const listed = await listOperationRecords(opsDir);
   if (listed.issue !== undefined) return { recovered: 0, issues: [listed.issue] };
@@ -389,31 +392,63 @@ async function recoverNamedRecord(
 ): Promise<{ readonly recovered: boolean; readonly issue?: PluginInstallRecoveryIssue }> {
   if (!name.endsWith(".json")) return { recovered: false };
   const recordPath = join(opsDir, name);
-  const parsed = await readOperationRecord(recordPath);
-  if (parsed === undefined) {
-    return {
-      recovered: false,
-      issue: {
-        operationId: name.replace(/\.json$/u, ""),
-        message: `plugin install operation record is unreadable: ${recordPath}`,
-        preservedPaths: [recordPath],
-      },
-    };
-  }
+  const leasePath = pluginInstallLeasePath(recordPath);
+  const seen = await readLeaseText(leasePath);
+  if (leaseTextIsLive(seen)) return { recovered: false };
+  await options.hooks?.beforeLeaseRename?.();
+  let nonce: string | undefined;
   try {
-    return await recoverParsedRecord(installRoot, parsed, recordPath, options);
+    const claimed = await claimDeadInstallLease(leasePath, seen, options.hooks);
+    if (claimed === undefined) return { recovered: false };
+    if ("issue" in claimed) return { recovered: false, issue: claimed.issue };
+    nonce = claimed.nonce;
+    await options.hooks?.afterLeaseClaimed?.();
+    const parsed = await readOperationRecord(recordPath);
+    if (parsed === undefined) {
+      if (!(await pathExists(recordPath))) return { recovered: false };
+      return {
+        recovered: false,
+        issue: {
+          operationId: name.replace(/\.json$/u, ""),
+          message: `plugin install operation record is unreadable: ${recordPath}`,
+          preservedPaths: [recordPath],
+        },
+      };
+    }
+    try {
+      return await recoverParsedRecord(installRoot, parsed, recordPath, options);
+    } catch (error) {
+      if (error instanceof PluginInstallTransactionSimulatedCrash) throw error;
+      return {
+        recovered: false,
+        issue: {
+          operationId: parsed.operationId,
+          pluginId: parsed.pluginId,
+          destination: parsed.destination,
+          message: errorMessage(error),
+          preservedPaths: [recordPath, parsed.destination],
+        },
+      };
+    }
   } catch (error) {
     if (error instanceof PluginInstallTransactionSimulatedCrash) throw error;
     return {
       recovered: false,
       issue: {
-        operationId: parsed.operationId,
-        pluginId: parsed.pluginId,
-        destination: parsed.destination,
+        operationId: name.replace(/\.json$/u, ""),
         message: errorMessage(error),
         preservedPaths: [recordPath],
       },
     };
+  } finally {
+    if (nonce !== undefined) {
+      await removeInstallLeaseIfNonce(leasePath, nonce);
+      await sweepStaleLeaseArtifacts(dirname(recordPath));
+      await removeEmptyOpsDirectory(
+        dirname(recordPath),
+        options.hooks?.beforeRemoveEmptyOpsDirectory,
+      );
+    }
   }
 }
 
@@ -423,40 +458,24 @@ async function recoverParsedRecord(
   recordPath: string,
   options: Parameters<typeof recoverPluginInstallTransactions>[0],
 ): Promise<{ readonly recovered: boolean; readonly issue?: PluginInstallRecoveryIssue }> {
-  const leasePath = pluginInstallLeasePath(recordPath);
-  const seen = await readLeaseText(leasePath);
-  if (leaseTextIsLive(seen)) return { recovered: false };
-  await options.hooks?.beforeLeaseRename?.();
-  const nonce = await claimDeadInstallLease(leasePath, seen);
-  if (nonce === undefined) return { recovered: false };
-  try {
-    await options.hooks?.afterLeaseClaimed?.();
-    const confined = await confineRecordPaths(installRoot, parsed);
-    if (confined !== undefined) return { recovered: false, issue: confined };
-    const decision = await configRestoreDecision(parsed, options);
-    if (decision === "defer") {
-      return { recovered: false, issue: unrestoredConfigIssue(parsed, true) };
-    }
-    const reportUnrestored = decision === "skip";
-    const unrestored = unrestoredConfigIssue(parsed, reportUnrestored);
-    const result = await recoverRecord(
-      parsed,
-      recordPath,
-      reportUnrestored ? undefined : options.restorePluginConfig,
-      options.hooks,
-    );
-    if (result.issue !== undefined) return { recovered: false, issue: result.issue };
-    return unrestored === undefined
-      ? { recovered: true }
-      : { recovered: true, issue: unrestored };
-  } finally {
-    await removeInstallLeaseIfNonce(leasePath, nonce);
-    await sweepStaleLeaseArtifacts(dirname(recordPath));
-    await removeEmptyOpsDirectory(
-      dirname(recordPath),
-      options.hooks?.beforeRemoveEmptyOpsDirectory,
-    );
+  const confined = await confineRecordPaths(installRoot, parsed);
+  if (confined !== undefined) return { recovered: false, issue: confined };
+  const decision = await configRestoreDecision(parsed, options);
+  if (decision === "defer") {
+    return { recovered: false, issue: unrestoredConfigIssue(parsed, true) };
   }
+  const reportUnrestored = decision === "skip";
+  const unrestored = unrestoredConfigIssue(parsed, reportUnrestored);
+  const result = await recoverRecord(
+    parsed,
+    recordPath,
+    reportUnrestored ? undefined : options.restorePluginConfig,
+    options.hooks,
+  );
+  if (result.issue !== undefined) return { recovered: false, issue: result.issue };
+  return unrestored === undefined
+    ? { recovered: true }
+    : { recovered: true, issue: unrestored };
 }
 
 function unrestoredConfigIssue(
@@ -499,7 +518,7 @@ async function recoverRecord(
     case "rollback-restore-intended":
       return finishBackupRestore(record, recordPath, restorePluginConfig, hooks);
     case "config-published":
-      return recoverConfigPublished(record, recordPath);
+      return recoverDestinationReplaced(record, recordPath, restorePluginConfig, hooks);
     case "committed":
       return recoverCommitted(record, recordPath);
     default: {
@@ -742,26 +761,21 @@ async function finishBackupRestore(
   );
 }
 
-async function recoverConfigPublished(
+async function cleanupCommittedInstall(
   record: PluginInstallOperationRecord,
   recordPath: string,
-): Promise<{ readonly issue?: PluginInstallRecoveryIssue }> {
-  const destinationMatches = await directoryMatchesIdentity(
-    record.destination,
-    record.stageIdentity,
-  );
-  if (!destinationMatches.ok) {
-    return identityIssue(record, recordPath, destinationMatches);
+  backupPath: string | undefined,
+): Promise<void> {
+  try {
+    if (backupPath !== undefined) {
+      const removed = await removeMatchingDirectory(backupPath, record.backupIdentity);
+      if (!removed.ok) return;
+    }
+    await removeOperationRecord(recordPath);
+  } catch {
+    // The committed record is already durable. Leaving it in place lets the
+    // next recovery pass retry backup cleanup or report an identity mismatch.
   }
-  if (record.backupPath !== undefined) {
-    const removed = await removeMatchingDirectory(
-      record.backupPath,
-      record.backupIdentity,
-    );
-    if (!removed.ok) return identityIssue(record, recordPath, removed);
-  }
-  await removeOperationRecord(recordPath);
-  return {};
 }
 
 async function recoverCommitted(
@@ -1181,38 +1195,54 @@ const LEASE_ARTIFACT_NAME =
   /^.+\.json\.lease\.(claim|tmp)-(\d+)-([0-9a-f-]{36})(?:\.partial-([0-9a-f-]{36}))?$/u;
 const LEASE_ARTIFACT_UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+const RECLAIM_MARKER_NAME =
+  /^(.+\.json\.lease)\.reclaim-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/u;
 const MAX_LEASE_BYTES = 4096;
 const MAX_RECORD_BYTES = 1024 * 1024;
 
 async function claimDeadInstallLease(
   leasePath: string,
   seen: string | undefined,
-): Promise<string | undefined> {
-  const displaced = `${leasePath}.claim-${process.pid}-${randomUUID()}`;
+  hooks: PluginInstallRecoveryHooks | undefined,
+): Promise<{ readonly nonce: string } | { readonly issue: PluginInstallRecoveryIssue } | undefined> {
+  const deadNonce = parseLease(seen)?.nonce;
+  if (deadNonce === undefined) {
+    if (seen === undefined && !(await leasePathExists(leasePath))) {
+      const published = await publishExclusiveLease(leasePath);
+      return published === undefined ? undefined : { nonce: published };
+    }
+    return { issue: manualLeaseIssue(leasePath) };
+  }
+  const nonce = randomUUID();
+  const newTemp = `${leasePath}.tmp-${process.pid}-${nonce}`;
+  const marker = `${leasePath}.reclaim-${deadNonce}`;
+  await writeDurableAtomicFile(
+    newTemp,
+    `${newTemp}.partial-${randomUUID()}`,
+    `${JSON.stringify({ pid: process.pid, nonce })}\n`,
+    0o600,
+  );
   try {
-    await rename(leasePath, displaced);
+    await link(newTemp, marker);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    return publishExclusiveLease(leasePath);
+    await rm(newTemp, { force: true });
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return undefined;
+    throw error;
   }
-  const displacedText = await readLeaseText(displaced);
-  const displacedLive = leaseTextIsLive(displacedText);
-  if (displacedLive || displacedText !== seen) {
-    await restoreDisplacedLease(displaced, leasePath);
-    return undefined;
-  }
-  await rm(displaced, { force: true });
-  return publishExclusiveLease(leasePath);
-}
-
-async function restoreDisplacedLease(displaced: string, leasePath: string): Promise<void> {
   try {
-    await link(displaced, leasePath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    return;
+    await hooks?.beforeLeaseReplace?.();
+    const current = await readLeaseText(leasePath);
+    if (leaseNonce(current) !== deadNonce || current !== seen) return undefined;
+    await rename(newTemp, leasePath);
+    const confirmed = parseLease(await readLeaseText(leasePath));
+    if (confirmed?.nonce !== nonce || !pidIsLive(confirmed.pid) || confirmed.pid !== process.pid) {
+      return undefined;
+    }
+    return { nonce };
+  } finally {
+    await rm(marker, { force: true });
+    await rm(newTemp, { force: true });
   }
-  await rm(displaced, { force: true });
 }
 
 async function publishExclusiveLease(leasePath: string): Promise<string | undefined> {
@@ -1235,7 +1265,47 @@ async function publishExclusiveLease(leasePath: string): Promise<string | undefi
   }
 }
 
+async function validateTrustedRecoveryRoot(
+  installRoot: string,
+  opsDir: string,
+): Promise<PluginInstallRecoveryIssue | undefined> {
+  let opsInfo: Awaited<ReturnType<typeof lstat>>;
+  try {
+    opsInfo = await lstat(opsDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    return opsDirectoryIssue(opsDir, errorMessage(error));
+  }
+  let rootInfo: Awaited<ReturnType<typeof lstat>>;
+  try {
+    rootInfo = await lstat(installRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    return opsDirectoryIssue(installRoot, errorMessage(error));
+  }
+  if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
+    return opsDirectoryIssue(installRoot, "plugin install root is not a real directory");
+  }
+  if (opsInfo.isSymbolicLink() || !opsInfo.isDirectory()) {
+    return opsDirectoryIssue(opsDir, "plugin install operation directory is not a real directory");
+  }
+  const rootReal = await realpath(installRoot);
+  const opsReal = await realpath(opsDir);
+  if (opsReal !== join(rootReal, PLUGIN_INSTALL_OPS_DIR)) {
+    return opsDirectoryIssue(opsDir, "plugin install operation directory is not inside the install root");
+  }
+  return undefined;
+}
+
 async function sweepStaleLeaseArtifacts(opsDir: string): Promise<void> {
+  let opsInfo: Awaited<ReturnType<typeof lstat>>;
+  try {
+    opsInfo = await lstat(opsDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (opsInfo.isSymbolicLink() || !opsInfo.isDirectory()) return;
   let names: string[];
   try {
     names = await readdir(opsDir);
@@ -1256,6 +1326,49 @@ async function sweepStaleLeaseArtifacts(opsDir: string): Promise<void> {
     }
     if (info.isSymbolicLink() || !info.isFile()) continue;
     await rm(path);
+  }
+  for (const name of names) {
+    const marker = RECLAIM_MARKER_NAME.exec(name);
+    const leaseName = marker?.[1];
+    const markerNonce = marker?.[2];
+    if (leaseName === undefined || markerNonce === undefined) continue;
+    if (!LEASE_ARTIFACT_UUID.test(markerNonce)) continue;
+    const path = join(opsDir, name);
+    let info: Awaited<ReturnType<typeof lstat>>;
+    try {
+      info = await lstat(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    if (info.isSymbolicLink() || !info.isFile()) continue;
+    const holder = parseLease(await readLeaseText(path));
+    if (holder !== undefined && pidIsLive(holder.pid)) continue;
+    const currentNonce = leaseNonce(await readLeaseText(join(opsDir, leaseName)));
+    if (currentNonce === undefined) continue;
+    await rm(path);
+  }
+}
+
+function leaseNonce(text: string | undefined): string | undefined {
+  return parseLease(text)?.nonce;
+}
+
+function manualLeaseIssue(leasePath: string): PluginInstallRecoveryIssue {
+  return {
+    operationId: basename(leasePath).replace(/\.json\.lease$/u, ""),
+    message: `plugin install lease could not be read; inspect and remove it manually: ${leasePath}`,
+    preservedPaths: [leasePath],
+  };
+}
+
+async function leasePathExists(leasePath: string): Promise<boolean> {
+  try {
+    await lstat(leasePath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
   }
 }
 
@@ -1320,14 +1433,28 @@ async function removeInstallLeaseIfNonce(leasePath: string, nonce: string): Prom
 }
 
 async function readLeaseText(leasePath: string): Promise<string | undefined> {
+  let info: Awaited<ReturnType<typeof lstat>>;
+  try {
+    info = await lstat(leasePath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ELOOP") return undefined;
+    throw error;
+  }
+  // Opening a FIFO blocks until a writer appears. Reject any non-regular
+  // lease (FIFO, socket, device, directory, symlink) before open.
+  if (info.isSymbolicLink() || !info.isFile()) return undefined;
   return readBoundedRegularFile(leasePath, MAX_LEASE_BYTES);
 }
 
 async function readBoundedRegularFile(path: string, maxBytes: number): Promise<string | undefined> {
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    // win32 has no O_NOFOLLOW; the fstat regular-file and size checks are the bound there.
-    handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    // win32 has no O_NOFOLLOW. O_NONBLOCK is absent there too; where it exists
+    // it keeps a FIFO swapped in after lstat from blocking in open.
+    const follow = constants.O_NOFOLLOW ?? 0;
+    const nonblock = constants.O_NONBLOCK ?? 0;
+    handle = await open(path, constants.O_RDONLY | follow | nonblock);
     const info = await handle.stat();
     if (!info.isFile() || info.size > maxBytes) return undefined;
     const buffer = Buffer.alloc(info.size);
@@ -1350,7 +1477,7 @@ function parseLease(text: string | undefined): { readonly pid: number; readonly 
   } catch {
     return undefined;
   }
-  if (!isRecord(raw) || !Number.isInteger(raw.pid) || (raw.pid as number) <= 1) return undefined;
+  if (!isRecord(raw) || !Number.isInteger(raw.pid) || (raw.pid as number) < 1) return undefined;
   return {
     pid: raw.pid as number,
     ...(typeof raw.nonce === "string" && raw.nonce !== "" ? { nonce: raw.nonce } : {}),
@@ -1363,7 +1490,7 @@ function leaseTextIsLive(text: string | undefined): boolean {
 }
 
 function pidIsLive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 1) return false;
+  if (!Number.isInteger(pid) || pid < 1) return false;
   try {
     process.kill(pid, 0);
     return true;

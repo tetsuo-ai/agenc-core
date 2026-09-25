@@ -259,6 +259,8 @@ memory disabled), since they ride that child run.
   data share one plugin storage root. The default is `$AGENC_HOME/plugins`.
   `AGENC_PLUGIN_CACHE_DIR` replaces that root as one unit. Project-scoped
   packages remain under the project path shown in the CLI section.
+  Interrupted install recovery runs only for that storage root. It does not recover `<workspace>/.agents/plugins` unless that path is the storage root.
+  A non-empty `<workspace>/.agents/plugins/.plugin-install-ops` is a known limitation when it is not the storage root: each load lists at most 20 entry names (and the total count when there are more), reports one issue, and does not open, parse, or delete those entries. The directory itself is only lstat'd and read by name. An empty directory is left in place with no issue. A symlink is reported as not a real directory and is not followed. Remove that directory manually.
 - Plugin private data uses a collision-resistant child name:
   `<plugin-storage-root>/data/<readable-id>--<sha256>/`.
 
