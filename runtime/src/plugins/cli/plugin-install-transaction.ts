@@ -13,10 +13,9 @@ const PLUGIN_INSTALL_TRANSACTION_RECORD_VERSION = 1;
 
 const STAGE_SUFFIX = ".stage-";
 const BACKUP_SUFFIX = ".bak-";
-const UUID_PATTERN =
-  "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+const UUID_PATTERN = String.raw`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`;
 const ARTIFACT_NAME_PATTERN = new RegExp(
-  `\\.(?:stage|bak)-${UUID_PATTERN}$`,
+  String.raw`\.(?:stage|bak)-${UUID_PATTERN}$`,
   "iu",
 );
 const INSTALL_METADATA_RELATIVE_PATH = join(".agenc-plugin", "agenc-install.json");
@@ -31,6 +30,7 @@ export type PluginInstallTransactionPhase =
   | "destination-backed-up"
   | "destination-replace-intended"
   | "destination-replaced"
+  | "rollback-restore-intended"
   | "config-published"
   | "committed";
 
@@ -83,6 +83,21 @@ export interface PluginInstallTransactionHooks {
     phase: PluginInstallTransactionPhase,
     context: PluginInstallTransactionContext,
   ) => Promise<void>;
+  /** Runs immediately before a stage or backup rename. A throw is an in-process failure. */
+  readonly beforeRename?: (phase: PluginInstallTransactionPhase) => Promise<void>;
+  /** Runs after a rename while the record is still the intended phase. */
+  readonly afterDirectoryRename?: (
+    phase: PluginInstallTransactionPhase,
+  ) => Promise<void>;
+  /** Runs after publishConfig and before the config-published record is written. */
+  readonly afterPublishConfig?: () => Promise<void>;
+  /** Runs at the start of in-process rollback, while the lease is still held. */
+  readonly beforeRollback?: () => Promise<void>;
+}
+
+export interface PluginInstallRecoveryHooks {
+  /** Test seam: crash after the new destination is removed and before the backup is renamed back. */
+  readonly afterRollbackDestinationRemoved?: () => Promise<void>;
 }
 
 export interface PluginInstallRecoveryIssue {
@@ -126,15 +141,18 @@ function pluginInstallTransactionRecordPath(
 export async function recoverPluginInstallTransactions(
   options: {
     readonly installRoots: readonly string[];
-    readonly restorePluginConfig?: (previous: unknown) => Promise<void>;
+    readonly restorePluginConfig?: (pluginId: string, previous: unknown) => Promise<void>;
+    /** Repo-controlled roots must not apply previousPluginConfig. Report that instead. */
+    readonly reportUnrestoredConfig?: boolean;
+    readonly hooks?: PluginInstallRecoveryHooks;
   },
 ): Promise<PluginInstallRecoveryResult> {
   const issues: PluginInstallRecoveryIssue[] = [];
   let recovered = 0;
   const roots = [...new Set(options.installRoots.map((root) => resolve(root)))]
-    .sort((a, b) => a.localeCompare(b));
+    .toSorted((a, b) => a.localeCompare(b));
   for (const installRoot of roots) {
-    const result = await recoverInstallRoot(installRoot, options.restorePluginConfig);
+    const result = await recoverInstallRoot(installRoot, options);
     recovered += result.recovered;
     issues.push(...result.issues);
   }
@@ -151,8 +169,8 @@ export async function runPluginInstallTransaction(input: {
   readonly writeStageMetadata: (stagePath: string) => Promise<void>;
   readonly validateStage: (stagePath: string) => Promise<void>;
   readonly publishConfig: () => Promise<void>;
-  readonly readPluginConfig?: () => Promise<unknown>;
-  readonly restorePluginConfig?: (previous: unknown) => Promise<void>;
+  readonly readPluginConfig?: () => unknown | Promise<unknown>;
+  readonly restorePluginConfig?: (pluginId: string, previous: unknown) => Promise<void>;
   readonly hooks?: PluginInstallTransactionHooks;
 }): Promise<void> {
   const destination = resolve(input.destination);
@@ -182,147 +200,267 @@ export async function runPluginInstallTransaction(input: {
   };
 
   const leasePath = pluginInstallLeasePath(recordPath);
+  const state = { record };
+  await writeInstallLease(leasePath);
   try {
-    await writeOperationRecord(recordPath, record);
-    await writeInstallLease(leasePath);
-    await invokeAfterPhase(input.hooks, record, recordPath);
-    await input.copyDirectory(input.source, stagePath);
-    const context = transactionContext(record, recordPath);
-    await input.hooks?.beforeWriteMetadata?.(context);
-    await input.writeStageMetadata(stagePath);
-    await input.hooks?.beforeValidate?.(context);
-    await input.validateStage(stagePath);
-    record = await persistPhase(recordPath, record, {
-      phase: "stage-ready",
-      stageIdentity: await captureDirectoryIdentity(stagePath),
-    });
-    await invokeAfterPhase(input.hooks, record, recordPath);
-
-    if (kind === "update") {
-      if (backupPath === undefined) {
-        throw new Error("plugin update transaction is missing a backup path");
-      }
-      record = await persistPhase(recordPath, record, {
-        phase: "destination-backup-intended",
-      });
-      await rename(destination, backupPath);
-      await syncDirectory(parent);
-      record = await persistPhase(recordPath, record, {
-        phase: "destination-backed-up",
-        backupIdentity: await captureDirectoryIdentity(backupPath),
-      });
-      await invokeAfterPhase(input.hooks, record, recordPath);
-    }
-
-    record = await persistPhase(recordPath, record, {
-      phase: "destination-replace-intended",
-    });
-    await rename(stagePath, destination);
-    await syncDirectory(parent);
-    record = await persistPhase(recordPath, record, {
-      phase: "destination-replaced",
-    });
-    await invokeAfterPhase(input.hooks, record, recordPath);
-
-    const previousPluginConfig = await input.readPluginConfig?.();
-    record = await persistPhase(recordPath, record, {
-      phase: "destination-replaced",
-      ...(previousPluginConfig === undefined ? {} : { previousPluginConfig }),
-    });
-    await input.hooks?.beforePublishConfig?.(transactionContext(record, recordPath));
-    await input.publishConfig();
-    record = await persistPhase(recordPath, record, {
-      phase: "config-published",
-    });
-    await invokeAfterPhase(input.hooks, record, recordPath);
-
+    await writeOperationRecord(recordPath, state.record);
+    await activateStagedPlugin(input, state, recordPath, stagePath);
+    await moveUpdateBackup(input, state, recordPath, destination, backupPath, parent);
+    await replaceDestinationWithStage(input, state, recordPath, stagePath, destination, parent);
+    await publishTransactionConfig(input, state, recordPath);
     if (backupPath !== undefined) {
-      await removeMatchingDirectory(backupPath, record.backupIdentity);
+      await removeMatchingDirectory(backupPath, state.record.backupIdentity);
     }
-    record = await persistPhase(recordPath, record, { phase: "committed" });
-    await invokeAfterPhase(input.hooks, record, recordPath);
-    await removeInstallLease(leasePath);
+    state.record = await persistPhase(recordPath, state.record, { phase: "committed" });
+    await invokeAfterPhase(input.hooks, state.record, recordPath);
     await removeOperationRecord(recordPath);
   } catch (error) {
-    await removeInstallLease(leasePath);
-    if (error instanceof PluginInstallTransactionSimulatedCrash) {
-      throw error;
-    }
-    const rollbackError = await rollbackInProcess(
-      record,
-      recordPath,
-      input.restorePluginConfig,
-    ).catch((cause) => cause);
-    if (rollbackError !== undefined) {
-      throw new AggregateError(
-        [error, rollbackError],
-        error instanceof Error ? error.message : String(error),
-        { cause: error },
-      );
+    if (!(error instanceof PluginInstallTransactionSimulatedCrash)) {
+      const rollbackError = await rollbackInProcess(
+        state.record,
+        recordPath,
+        input.restorePluginConfig,
+        input.hooks,
+      ).catch((cause: unknown) => cause);
+      if (rollbackError !== undefined) {
+        throw new AggregateError(
+          [error, rollbackError],
+          error instanceof Error ? error.message : String(error),
+          { cause: error },
+        );
+      }
     }
     throw error;
+  } finally {
+    await removeInstallLease(leasePath);
   }
+}
+
+interface TransactionState {
+  record: PluginInstallOperationRecord;
+}
+
+async function activateStagedPlugin(
+  input: Parameters<typeof runPluginInstallTransaction>[0],
+  state: TransactionState,
+  recordPath: string,
+  stagePath: string,
+): Promise<void> {
+  await invokeAfterPhase(input.hooks, state.record, recordPath);
+  await input.copyDirectory(input.source, stagePath);
+  const context = transactionContext(state.record, recordPath);
+  await input.hooks?.beforeWriteMetadata?.(context);
+  await input.writeStageMetadata(stagePath);
+  await input.hooks?.beforeValidate?.(context);
+  await input.validateStage(stagePath);
+  state.record = await persistPhase(recordPath, state.record, {
+    phase: "stage-ready",
+    stageIdentity: await captureDirectoryIdentity(stagePath),
+  });
+  await invokeAfterPhase(input.hooks, state.record, recordPath);
+}
+
+async function moveUpdateBackup(
+  input: Parameters<typeof runPluginInstallTransaction>[0],
+  state: TransactionState,
+  recordPath: string,
+  destination: string,
+  backupPath: string | undefined,
+  parent: string,
+): Promise<void> {
+  if (state.record.kind !== "update") return;
+  if (backupPath === undefined) {
+    throw new Error("plugin update transaction is missing a backup path");
+  }
+  state.record = await persistPhase(recordPath, state.record, {
+    phase: "destination-backup-intended",
+    backupIdentity: await captureDirectoryIdentity(destination),
+  });
+  await invokeAfterPhase(input.hooks, state.record, recordPath);
+  await input.hooks?.beforeRename?.("destination-backup-intended");
+  await rename(destination, backupPath);
+  await syncDirectory(parent);
+  await input.hooks?.afterDirectoryRename?.("destination-backup-intended");
+  state.record = await persistPhase(recordPath, state.record, {
+    phase: "destination-backed-up",
+    backupIdentity: await captureDirectoryIdentity(backupPath),
+  });
+  await invokeAfterPhase(input.hooks, state.record, recordPath);
+}
+
+async function replaceDestinationWithStage(
+  input: Parameters<typeof runPluginInstallTransaction>[0],
+  state: TransactionState,
+  recordPath: string,
+  stagePath: string,
+  destination: string,
+  parent: string,
+): Promise<void> {
+  state.record = await persistPhase(recordPath, state.record, {
+    phase: "destination-replace-intended",
+  });
+  await invokeAfterPhase(input.hooks, state.record, recordPath);
+  await input.hooks?.beforeRename?.("destination-replace-intended");
+  await rename(stagePath, destination);
+  await syncDirectory(parent);
+  await input.hooks?.afterDirectoryRename?.("destination-replace-intended");
+  state.record = await persistPhase(recordPath, state.record, {
+    phase: "destination-replaced",
+  });
+  await invokeAfterPhase(input.hooks, state.record, recordPath);
+}
+
+async function publishTransactionConfig(
+  input: Parameters<typeof runPluginInstallTransaction>[0],
+  state: TransactionState,
+  recordPath: string,
+): Promise<void> {
+  const previousPluginConfig = await input.readPluginConfig?.();
+  state.record = await persistPhase(recordPath, state.record, {
+    phase: "destination-replaced",
+    ...(previousPluginConfig === undefined ? {} : { previousPluginConfig }),
+  });
+  await input.hooks?.beforePublishConfig?.(transactionContext(state.record, recordPath));
+  await input.publishConfig();
+  await input.hooks?.afterPublishConfig?.();
+  state.record = await persistPhase(recordPath, state.record, {
+    phase: "config-published",
+  });
+  await invokeAfterPhase(input.hooks, state.record, recordPath);
 }
 
 async function recoverInstallRoot(
   installRoot: string,
-  restorePluginConfig: ((previous: unknown) => Promise<void>) | undefined,
+  options: Parameters<typeof recoverPluginInstallTransactions>[0],
 ): Promise<PluginInstallRecoveryResult> {
   const opsDir = pluginInstallOpsDir(installRoot);
-  let names: string[];
-  try {
-    names = await readdir(opsDir);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { recovered: 0, issues: [] };
-    }
-    return {
-      recovered: 0,
-      issues: [{
-        operationId: PLUGIN_INSTALL_OPS_DIR,
-        message: `plugin install recovery could not read ${opsDir}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-        preservedPaths: [opsDir],
-      }],
-    };
-  }
+  const listed = await listOperationRecords(opsDir);
+  if (listed.issue !== undefined) return { recovered: 0, issues: [listed.issue] };
   const issues: PluginInstallRecoveryIssue[] = [];
   let recovered = 0;
-  for (const name of names.sort((a, b) => a.localeCompare(b))) {
-    if (!name.endsWith(".json")) continue;
-    const recordPath = join(opsDir, name);
-    const parsed = await readOperationRecord(recordPath);
-    if (parsed === undefined) {
-      issues.push({
+  for (const name of listed.names) {
+    const outcome = await recoverNamedRecord(installRoot, opsDir, name, options);
+    if (outcome.issue !== undefined) issues.push(outcome.issue);
+    if (outcome.recovered) recovered += 1;
+  }
+  return { recovered, issues };
+}
+
+async function listOperationRecords(
+  opsDir: string,
+): Promise<{ readonly names: readonly string[]; readonly issue?: PluginInstallRecoveryIssue }> {
+  try {
+    const info = await lstat(opsDir);
+    if (!info.isDirectory()) {
+      return {
+        names: [],
+        issue: opsDirectoryIssue(opsDir, "plugin install operation directory is not a real directory"),
+      };
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { names: [] };
+    return { names: [], issue: opsDirectoryIssue(opsDir, errorMessage(error)) };
+  }
+  try {
+    const names = await readdir(opsDir);
+    return { names: names.toSorted((a, b) => a.localeCompare(b)) };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { names: [] };
+    return { names: [], issue: opsDirectoryIssue(opsDir, errorMessage(error)) };
+  }
+}
+
+function opsDirectoryIssue(opsDir: string, detail: string): PluginInstallRecoveryIssue {
+  return {
+    operationId: PLUGIN_INSTALL_OPS_DIR,
+    message: `plugin install recovery could not read ${opsDir}: ${detail}`,
+    preservedPaths: [opsDir],
+  };
+}
+
+async function recoverNamedRecord(
+  installRoot: string,
+  opsDir: string,
+  name: string,
+  options: Parameters<typeof recoverPluginInstallTransactions>[0],
+): Promise<{ readonly recovered: boolean; readonly issue?: PluginInstallRecoveryIssue }> {
+  if (!name.endsWith(".json")) return { recovered: false };
+  const recordPath = join(opsDir, name);
+  const parsed = await readOperationRecord(recordPath);
+  if (parsed === undefined) {
+    return {
+      recovered: false,
+      issue: {
         operationId: name.replace(/\.json$/u, ""),
         message: `plugin install operation record is unreadable: ${recordPath}`,
         preservedPaths: [recordPath],
-      });
-      continue;
-    }
-    if (await installLeaseIsLive(pluginInstallLeasePath(recordPath))) {
-      continue;
-    }
-    const confined = await confineRecordPaths(installRoot, parsed);
-    if (confined !== undefined) {
-      issues.push(confined);
-      continue;
-    }
-    const result = await recoverRecord(parsed, recordPath, restorePluginConfig);
-    if (result.issue !== undefined) {
-      issues.push(result.issue);
-      continue;
-    }
-    recovered += 1;
+      },
+    };
   }
-  return { recovered, issues };
+  try {
+    return await recoverParsedRecord(installRoot, parsed, recordPath, options);
+  } catch (error) {
+    if (error instanceof PluginInstallTransactionSimulatedCrash) throw error;
+    return {
+      recovered: false,
+      issue: {
+        operationId: parsed.operationId,
+        pluginId: parsed.pluginId,
+        destination: parsed.destination,
+        message: errorMessage(error),
+        preservedPaths: [recordPath],
+      },
+    };
+  }
+}
+
+async function recoverParsedRecord(
+  installRoot: string,
+  parsed: PluginInstallOperationRecord,
+  recordPath: string,
+  options: Parameters<typeof recoverPluginInstallTransactions>[0],
+): Promise<{ readonly recovered: boolean; readonly issue?: PluginInstallRecoveryIssue }> {
+  if (await installLeaseIsLive(pluginInstallLeasePath(recordPath))) {
+    return { recovered: false };
+  }
+  const confined = await confineRecordPaths(installRoot, parsed);
+  if (confined !== undefined) return { recovered: false, issue: confined };
+  const unrestored = unrestoredConfigIssue(parsed, options.reportUnrestoredConfig === true);
+  const result = await recoverRecord(
+    parsed,
+    recordPath,
+    options.reportUnrestoredConfig === true ? undefined : options.restorePluginConfig,
+    options.hooks,
+  );
+  if (result.issue !== undefined) return { recovered: false, issue: result.issue };
+  return unrestored === undefined
+    ? { recovered: true }
+    : { recovered: true, issue: unrestored };
+}
+
+function unrestoredConfigIssue(
+  record: PluginInstallOperationRecord,
+  reportUnrestoredConfig: boolean,
+): PluginInstallRecoveryIssue | undefined {
+  if (!reportUnrestoredConfig || record.previousPluginConfig === undefined) return undefined;
+  return {
+    operationId: record.operationId,
+    pluginId: record.pluginId,
+    destination: record.destination,
+    message: "plugin config was not restored because the operation record is outside the user plugin storage root",
+    preservedPaths: [record.destination],
+  };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function recoverRecord(
   record: PluginInstallOperationRecord,
   recordPath: string,
-  restorePluginConfig: ((previous: unknown) => Promise<void>) | undefined,
+  restorePluginConfig: ((pluginId: string, previous: unknown) => Promise<void>) | undefined,
+  hooks: PluginInstallRecoveryHooks | undefined,
 ): Promise<{ readonly issue?: PluginInstallRecoveryIssue }> {
   switch (record.phase) {
     case "record-created":
@@ -330,13 +468,15 @@ async function recoverRecord(
     case "stage-ready":
       return recoverStageReady(record, recordPath);
     case "destination-backup-intended":
-      return recoverBackupIntended(record, recordPath, restorePluginConfig);
+      return recoverBackupIntended(record, recordPath, restorePluginConfig, hooks);
     case "destination-backed-up":
-      return recoverDestinationBackedUp(record, recordPath, restorePluginConfig);
+      return recoverDestinationBackedUp(record, recordPath, restorePluginConfig, hooks);
     case "destination-replace-intended":
-      return recoverReplaceIntended(record, recordPath, restorePluginConfig);
+      return recoverReplaceIntended(record, recordPath, restorePluginConfig, hooks);
     case "destination-replaced":
-      return recoverDestinationReplaced(record, recordPath, restorePluginConfig);
+      return recoverDestinationReplaced(record, recordPath, restorePluginConfig, hooks);
+    case "rollback-restore-intended":
+      return finishBackupRestore(record, recordPath, restorePluginConfig, hooks);
     case "config-published":
       return recoverConfigPublished(record, recordPath);
     case "committed":
@@ -407,10 +547,11 @@ async function recoverStageReady(
 async function recoverBackupIntended(
   record: PluginInstallOperationRecord,
   recordPath: string,
-  restorePluginConfig: ((previous: unknown) => Promise<void>) | undefined,
+  restorePluginConfig: ((pluginId: string, previous: unknown) => Promise<void>) | undefined,
+  hooks: PluginInstallRecoveryHooks | undefined,
 ): Promise<{ readonly issue?: PluginInstallRecoveryIssue }> {
   if (record.backupPath !== undefined && await pathExists(record.backupPath)) {
-    return recoverDestinationBackedUp(record, recordPath, restorePluginConfig);
+    return recoverDestinationBackedUp(record, recordPath, restorePluginConfig, hooks);
   }
   return recoverStageReady(record, recordPath);
 }
@@ -418,7 +559,8 @@ async function recoverBackupIntended(
 async function recoverDestinationBackedUp(
   record: PluginInstallOperationRecord,
   recordPath: string,
-  restorePluginConfig: ((previous: unknown) => Promise<void>) | undefined,
+  restorePluginConfig: ((pluginId: string, previous: unknown) => Promise<void>) | undefined,
+  hooks: PluginInstallRecoveryHooks | undefined,
 ): Promise<{ readonly issue?: PluginInstallRecoveryIssue }> {
   if (record.backupPath !== undefined && !(await pathExists(record.backupPath))) {
     return recoverStageReady(record, recordPath);
@@ -442,12 +584,19 @@ async function recoverDestinationBackedUp(
     record.backupIdentity,
   );
   if (!backupMatches.ok) return identityIssue(record, recordPath, backupMatches);
-  const restored = await restoreMatchingDirectory(
-    record.backupPath,
-    record.destination,
-    record.backupIdentity,
+  return finishBackupRestore(
+    await persistPhase(recordPath, record, { phase: "rollback-restore-intended" }),
+    recordPath,
+    restorePluginConfig,
+    hooks,
   );
-  if (!restored.ok) return identityIssue(record, recordPath, restored);
+}
+
+async function cleanupRestoredPlugin(
+  record: PluginInstallOperationRecord,
+  recordPath: string,
+  restorePluginConfig: ((pluginId: string, previous: unknown) => Promise<void>) | undefined,
+): Promise<{ readonly issue?: PluginInstallRecoveryIssue }> {
   if (await pathExists(record.stagePath)) {
     const stageRemoved = await removeMatchingDirectory(
       record.stagePath,
@@ -466,18 +615,23 @@ async function recoverDestinationBackedUp(
 async function recoverReplaceIntended(
   record: PluginInstallOperationRecord,
   recordPath: string,
-  restorePluginConfig: ((previous: unknown) => Promise<void>) | undefined,
+  restorePluginConfig: ((pluginId: string, previous: unknown) => Promise<void>) | undefined,
+  hooks: PluginInstallRecoveryHooks | undefined,
 ): Promise<{ readonly issue?: PluginInstallRecoveryIssue }> {
   if (await pathExists(record.stagePath)) {
+    if (record.kind === "update") {
+      return recoverDestinationBackedUp(record, recordPath, restorePluginConfig, hooks);
+    }
     return recoverStageReady(record, recordPath);
   }
-  return recoverDestinationReplaced(record, recordPath, restorePluginConfig);
+  return recoverDestinationReplaced(record, recordPath, restorePluginConfig, hooks);
 }
 
 async function recoverDestinationReplaced(
   record: PluginInstallOperationRecord,
   recordPath: string,
-  restorePluginConfig: ((previous: unknown) => Promise<void>) | undefined,
+  restorePluginConfig: ((pluginId: string, previous: unknown) => Promise<void>) | undefined,
+  hooks: PluginInstallRecoveryHooks | undefined,
 ): Promise<{ readonly issue?: PluginInstallRecoveryIssue }> {
   const destinationMatches = await directoryMatchesIdentity(
     record.destination,
@@ -513,20 +667,58 @@ async function recoverDestinationReplaced(
     record.backupIdentity,
   );
   if (!backupMatches.ok) return identityIssue(record, recordPath, backupMatches);
-  const removed = await removeMatchingDirectory(
-    record.destination,
-    record.stageIdentity,
+  return finishBackupRestore(
+    await persistPhase(recordPath, record, { phase: "rollback-restore-intended" }),
+    recordPath,
+    restorePluginConfig,
+    hooks,
   );
-  if (!removed.ok) return identityIssue(record, recordPath, removed);
-  const restored = await restoreMatchingDirectory(
-    record.backupPath,
+}
+
+async function finishBackupRestore(
+  record: PluginInstallOperationRecord,
+  recordPath: string,
+  restorePluginConfig: ((pluginId: string, previous: unknown) => Promise<void>) | undefined,
+  hooks: PluginInstallRecoveryHooks | undefined,
+): Promise<{ readonly issue?: PluginInstallRecoveryIssue }> {
+  if (record.backupPath === undefined || record.backupIdentity === undefined) {
+    return ambiguousIssue(record, recordPath, "plugin update backup identity is missing");
+  }
+  const destinationMatchesBackup = await directoryMatchesIdentity(
     record.destination,
     record.backupIdentity,
   );
-  if (!restored.ok) return identityIssue(record, recordPath, restored);
-  await restoreRecordedPluginConfig(record, restorePluginConfig);
-  await removeOperationRecord(recordPath);
-  return {};
+  if (destinationMatchesBackup.ok && !(await pathExists(record.backupPath))) {
+    return cleanupRestoredPlugin(record, recordPath, restorePluginConfig);
+  }
+  const destinationMatchesStage = await directoryMatchesIdentity(
+    record.destination,
+    record.stageIdentity,
+  );
+  if (destinationMatchesStage.ok) {
+    const removed = await removeMatchingDirectory(record.destination, record.stageIdentity);
+    if (!removed.ok) return identityIssue(record, recordPath, removed);
+    await hooks?.afterRollbackDestinationRemoved?.();
+  }
+  if (!(await pathExists(record.destination)) && await pathExists(record.backupPath)) {
+    const backupMatches = await directoryMatchesIdentity(record.backupPath, record.backupIdentity);
+    if (!backupMatches.ok) return identityIssue(record, recordPath, backupMatches);
+    const restored = await restoreMatchingDirectory(
+      record.backupPath,
+      record.destination,
+      record.backupIdentity,
+    );
+    if (!restored.ok) return identityIssue(record, recordPath, restored);
+    return cleanupRestoredPlugin(record, recordPath, restorePluginConfig);
+  }
+  if (destinationMatchesBackup.ok) {
+    return cleanupRestoredPlugin(record, recordPath, restorePluginConfig);
+  }
+  return ambiguousIssue(
+    record,
+    recordPath,
+    `plugin backup restore is ambiguous: ${record.destination}`,
+  );
 }
 
 async function recoverConfigPublished(
@@ -576,8 +768,10 @@ async function recoverCommitted(
 async function rollbackInProcess(
   record: PluginInstallOperationRecord,
   recordPath: string,
-  restorePluginConfig: ((previous: unknown) => Promise<void>) | undefined,
+  restorePluginConfig: ((pluginId: string, previous: unknown) => Promise<void>) | undefined,
+  hooks: PluginInstallTransactionHooks | undefined,
 ): Promise<void> {
+  await hooks?.beforeRollback?.();
   if (record.phase === "record-created") {
     if (await pathExists(record.stagePath)) {
       await rm(record.stagePath, { recursive: true, force: true });
@@ -586,7 +780,7 @@ async function rollbackInProcess(
     await removeOperationRecord(recordPath);
     return;
   }
-  const result = await recoverRecord(record, recordPath, restorePluginConfig);
+  const result = await recoverRecord(record, recordPath, restorePluginConfig, undefined);
   if (result.issue !== undefined) {
     throw new Error(result.issue.message);
   }
@@ -643,24 +837,40 @@ async function writeOperationRecord(
 async function readOperationRecord(
   recordPath: string,
 ): Promise<PluginInstallOperationRecord | undefined> {
-  let raw: unknown;
+  const raw = await readJsonRecord(recordPath);
+  if (raw === undefined || !operationRecordShapeIsValid(raw)) return undefined;
+  const identities = parsedRecordIdentities(raw);
+  if (identities === undefined) return undefined;
+  return assembleOperationRecord(raw, identities);
+}
+
+async function readJsonRecord(recordPath: string): Promise<Record<string, unknown> | undefined> {
   try {
-    raw = JSON.parse(await readFile(recordPath, "utf8"));
+    const raw: unknown = JSON.parse(await readFile(recordPath, "utf8"));
+    return isRecord(raw) ? raw : undefined;
   } catch {
     return undefined;
   }
-  if (!isRecord(raw) || raw.version !== PLUGIN_INSTALL_TRANSACTION_RECORD_VERSION) {
-    return undefined;
-  }
-  if (typeof raw.operationId !== "string" || typeof raw.pluginId !== "string") {
-    return undefined;
-  }
-  if (raw.kind !== "install" && raw.kind !== "update") return undefined;
-  if (!isPluginInstallTransactionPhase(raw.phase)) return undefined;
-  if (typeof raw.destination !== "string" || typeof raw.stagePath !== "string") {
-    return undefined;
-  }
-  if (typeof raw.createdAt !== "string") return undefined;
+}
+
+function operationRecordShapeIsValid(raw: Record<string, unknown>): boolean {
+  return raw.version === PLUGIN_INSTALL_TRANSACTION_RECORD_VERSION &&
+    typeof raw.operationId === "string" &&
+    typeof raw.pluginId === "string" &&
+    (raw.kind === "install" || raw.kind === "update") &&
+    isPluginInstallTransactionPhase(raw.phase) &&
+    typeof raw.destination === "string" &&
+    typeof raw.stagePath === "string" &&
+    typeof raw.createdAt === "string" &&
+    (raw.backupPath === undefined || typeof raw.backupPath === "string");
+}
+
+function parsedRecordIdentities(
+  raw: Record<string, unknown>,
+): {
+  readonly stageIdentity?: PluginInstallDirectoryIdentity;
+  readonly backupIdentity?: PluginInstallDirectoryIdentity;
+} | undefined {
   const stageIdentity = raw.stageIdentity === undefined
     ? undefined
     : parseDirectoryIdentity(raw.stageIdentity);
@@ -669,24 +879,35 @@ async function readOperationRecord(
     : parseDirectoryIdentity(raw.backupIdentity);
   if (raw.stageIdentity !== undefined && stageIdentity === undefined) return undefined;
   if (raw.backupIdentity !== undefined && backupIdentity === undefined) return undefined;
-  if (
-    raw.backupPath !== undefined &&
-    typeof raw.backupPath !== "string"
-  ) {
-    return undefined;
+  return {
+    ...(stageIdentity === undefined ? {} : { stageIdentity }),
+    ...(backupIdentity === undefined ? {} : { backupIdentity }),
+  };
+}
+
+function assembleOperationRecord(
+  raw: Record<string, unknown>,
+  identities: {
+    readonly stageIdentity?: PluginInstallDirectoryIdentity;
+    readonly backupIdentity?: PluginInstallDirectoryIdentity;
+  },
+): PluginInstallOperationRecord {
+  const phase = raw.phase;
+  const kind = raw.kind;
+  if (!isPluginInstallTransactionPhase(phase) || (kind !== "install" && kind !== "update")) {
+    throw new Error("plugin install operation record failed validation");
   }
   return {
     version: PLUGIN_INSTALL_TRANSACTION_RECORD_VERSION,
-    operationId: raw.operationId,
-    kind: raw.kind,
-    pluginId: raw.pluginId,
-    destination: raw.destination,
-    stagePath: raw.stagePath,
+    operationId: String(raw.operationId),
+    kind,
+    pluginId: String(raw.pluginId),
+    destination: String(raw.destination),
+    stagePath: String(raw.stagePath),
     ...(typeof raw.backupPath === "string" ? { backupPath: raw.backupPath } : {}),
-    phase: raw.phase,
-    ...(stageIdentity === undefined ? {} : { stageIdentity }),
-    ...(backupIdentity === undefined ? {} : { backupIdentity }),
-    createdAt: raw.createdAt,
+    phase,
+    ...identities,
+    createdAt: String(raw.createdAt),
     ...(Object.hasOwn(raw, "previousPluginConfig")
       ? { previousPluginConfig: raw.previousPluginConfig }
       : {}),
@@ -702,6 +923,7 @@ function isPluginInstallTransactionPhase(
     value === "destination-backed-up" ||
     value === "destination-replace-intended" ||
     value === "destination-replaced" ||
+    value === "rollback-restore-intended" ||
     value === "config-published" ||
     value === "committed";
 }
@@ -900,7 +1122,7 @@ async function writeInstallLease(leasePath: string): Promise<void> {
   await writeDurableAtomicFile(
     leasePath,
     `${leasePath}.tmp-${process.pid}-${randomUUID()}`,
-    `${JSON.stringify({ pid: process.pid, heartbeatAtMs: Date.now() })}\n`,
+    `${JSON.stringify({ pid: process.pid })}\n`,
     0o600,
   );
 }
@@ -909,6 +1131,9 @@ async function removeInstallLease(leasePath: string): Promise<void> {
   await rm(leasePath, { force: true }).catch(() => {});
 }
 
+// Liveness is pid-only. A lease is live while its recorded pid answers signal 0
+// or the check is denied (EPERM). heartbeatAtMs is not stored: a long copy or
+// validate must not look expired, and recovery does not guess a TTL.
 async function installLeaseIsLive(leasePath: string): Promise<boolean> {
   let raw: unknown;
   try {
@@ -957,33 +1182,41 @@ async function pathIsUnderInstallRoot(installRoot: string, candidate: string): P
   } catch {
     return false;
   }
-  const resolved = resolve(candidate);
-  let cursor = resolved;
+  return existingAncestorIsInside(rootReal, resolve(candidate));
+}
+
+async function existingAncestorIsInside(rootReal: string, candidate: string): Promise<boolean> {
+  const walked = await walkToExistingPath(candidate);
+  if (walked === undefined) return false;
+  if (walked.info.isSymbolicLink()) return false;
+  let realCursor: string;
+  try {
+    realCursor = await realpath(walked.path);
+  } catch {
+    return false;
+  }
+  const cursorRel = relative(rootReal, realCursor);
+  if (cursorRel.startsWith("..") || isAbsolute(cursorRel)) return false;
+  if (walked.pending.length === 0) return cursorRel !== "";
+  const full = walked.pending.reduceRight((parent, name) => join(parent, name), realCursor);
+  return isPathInsideRoot(rootReal, resolve(full));
+}
+
+async function walkToExistingPath(
+  candidate: string,
+): Promise<{ readonly path: string; readonly info: Awaited<ReturnType<typeof lstat>>; readonly pending: string[] } | undefined> {
+  let cursor = candidate;
   const pending: string[] = [];
   for (;;) {
-    let info: Awaited<ReturnType<typeof lstat>>;
     try {
-      info = await lstat(cursor);
+      return { path: cursor, info: await lstat(cursor), pending };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
       const parent = dirname(cursor);
-      if (parent === cursor) return false;
+      if (parent === cursor) return undefined;
       pending.push(basename(cursor));
       cursor = parent;
-      continue;
     }
-    if (info.isSymbolicLink()) return false;
-    let realCursor: string;
-    try {
-      realCursor = await realpath(cursor);
-    } catch {
-      return false;
-    }
-    const cursorRel = relative(rootReal, realCursor);
-    if (cursorRel.startsWith("..") || isAbsolute(cursorRel)) return false;
-    if (pending.length === 0) return cursorRel !== "";
-    const full = pending.reduceRight((parent, name) => join(parent, name), realCursor);
-    return isPathInsideRoot(rootReal, resolve(full));
   }
 }
 
@@ -994,10 +1227,10 @@ function isPathInsideRoot(rootReal: string, candidate: string): boolean {
 
 async function restoreRecordedPluginConfig(
   record: PluginInstallOperationRecord,
-  restorePluginConfig: ((previous: unknown) => Promise<void>) | undefined,
+  restorePluginConfig: ((pluginId: string, previous: unknown) => Promise<void>) | undefined,
 ): Promise<void> {
   if (restorePluginConfig === undefined || record.previousPluginConfig === undefined) return;
-  await restorePluginConfig(record.previousPluginConfig);
+  await restorePluginConfig(record.pluginId, record.previousPluginConfig);
 }
 
 async function inspectExistingPath(
