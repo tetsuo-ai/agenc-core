@@ -2,10 +2,13 @@ import { describe, expect, test } from "vitest";
 
 import {
   anthropicAcceptsEffort,
+  anthropicAcceptsSamplingParameters,
   anthropicEffort,
+  anthropicEffortLevels,
   anthropicManualBudgetTokens,
   anthropicThinkingControl,
 } from "../../../src/utils/model/anthropicThinkingControl.js";
+import { isAlwaysOnThinkingAnthropicModel } from "../../../src/utils/model/alwaysOnThinking.js";
 
 describe("anthropicThinkingControl", () => {
   test("classifies every generation the way the Messages API answered on 2026-09-11", () => {
@@ -32,6 +35,46 @@ describe("anthropicThinkingControl", () => {
     ]) {
       expect(anthropicThinkingControl(model), model).toBe("budget");
     }
+  });
+
+  // platform.claude.com, 2026-09-22: Opus 5.5 is "Adaptive only, Always on,
+  // rejects enabled and disabled" (thinking troubleshooting table), takes all
+  // five effort levels with medium as the default (effort doc), and rejects
+  // sampling parameters like every model from Opus 4.7 on.
+  test("Opus 5.5 is always-on while Opus 5 and its snapshots stay adaptive", () => {
+    for (const model of [
+      "claude-opus-5-5",
+      "anthropic.claude-opus-5-5",
+      "us.anthropic.agenc-opus-5-5-v1",
+      "anthropic/claude-opus-5-5",
+      "claude-opus-5.5",
+      "claude-opus-5-5[1m]",
+    ]) {
+      expect(isAlwaysOnThinkingAnthropicModel(model), model).toBe(true);
+      expect(anthropicThinkingControl(model), model).toBe("always_on");
+      expect(anthropicAcceptsSamplingParameters(model), model).toBe(false);
+      expect(anthropicAcceptsEffort(model), model).toBe(true);
+    }
+    for (const model of [
+      "claude-opus-5",
+      "claude-opus-5-20260601",
+      "us.anthropic.agenc-opus-5-v1",
+      "claude-opus-5-50",
+    ]) {
+      expect(isAlwaysOnThinkingAnthropicModel(model), model).toBe(false);
+    }
+    expect(anthropicThinkingControl("claude-opus-5")).toBe("adaptive");
+    expect(anthropicThinkingControl("claude-opus-5-20260601")).toBe("adaptive");
+  });
+
+  test("Opus 5.5 offers all five effort levels", () => {
+    const all = ["low", "medium", "high", "xhigh", "max"];
+    expect(anthropicEffortLevels("claude-opus-5-5")).toEqual(all);
+    expect(anthropicEffortLevels("us.anthropic.agenc-opus-5-5-v1")).toEqual(all);
+    expect(anthropicEffortLevels("claude-opus-5.5")).toEqual(all);
+    // The neighbours keep their own rows.
+    expect(anthropicEffortLevels("claude-opus-5")).toEqual(all);
+    expect(anthropicEffortLevels("claude-opus-4-6")).toEqual(["low", "medium", "high", "max"]);
   });
 
   test("effort is accepted on the always-on and adaptive families and on Opus 4.5 only", () => {

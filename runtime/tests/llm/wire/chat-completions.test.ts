@@ -195,7 +195,7 @@ describe("buildChatCompletionsRequest", () => {
     ]);
   });
 
-  test("preserves mixed text and image tool results without forcing store", () => {
+  test("omits image parts from Chat Completions tool messages", () => {
     const request = buildChatCompletionsRequest({
       model: "gpt-4.1",
       messages: [
@@ -219,7 +219,7 @@ describe("buildChatCompletionsRequest", () => {
             { type: "text", text: "Screenshot captured" },
             {
               type: "image_url",
-              image_url: { url: "https://example.com/cat.png" },
+              image_url: { url: "data:image/png;base64,YWJj" },
             },
           ],
         },
@@ -229,6 +229,7 @@ describe("buildChatCompletionsRequest", () => {
 
     expect("store" in request).toBe(false);
     expect(request.stream).toBe(false);
+    expect(JSON.stringify(request.messages)).not.toContain("YWJj");
     expect(request.messages).toEqual([
       {
         role: "user",
@@ -251,13 +252,7 @@ describe("buildChatCompletionsRequest", () => {
       {
         role: "tool",
         tool_call_id: "call_1",
-        content: [
-          { type: "text", text: "Screenshot captured" },
-          {
-            type: "image_url",
-            image_url: { url: "https://example.com/cat.png" },
-          },
-        ],
+        content: "Screenshot captured\n[Image not shown: this model does not accept image input, so the image in this tool result was left out.]",
       },
     ]);
   });
@@ -593,5 +588,42 @@ describe("buildChatCompletionsRequest", () => {
 
     expect(response.content).toBe("");
     expect(response.providerReasoningContent).toBe("opaque replay state");
+  });
+
+  // Codex review, P1: unlike Responses' input_tokens_details.cache_write_tokens,
+  // Chat Completions has no field for prompt-cache writes, so a real write is
+  // folded into prompt_tokens with no way to tell it apart from ordinary
+  // input. Budget reconciliation (admitted-model-call.ts) needs this flag to
+  // avoid under-pricing those writes as ordinary input.
+  test("flags Chat Completions usage as unable to report prompt-cache writes", () => {
+    const response = parseChatCompletionsResponse(
+      "gpt-6-sol",
+      {
+        id: "chatcmpl_cache_write",
+        choices: [
+          {
+            message: { role: "assistant", content: "ok" },
+            finish_reason: "stop",
+          },
+        ],
+        usage: {
+          prompt_tokens: 1000,
+          completion_tokens: 50,
+          total_tokens: 1050,
+          prompt_tokens_details: { cached_tokens: 200 },
+        },
+      },
+      {
+        model: "gpt-6-sol",
+        messages: [{ role: "user", content: "hello" }],
+        tools: [],
+      },
+    );
+
+    expect(response.usage.cacheWritesUnreported).toBe(true);
+    // Cached reads are still reported normally; only cache WRITES have no
+    // wire field on this path.
+    expect(response.usage.cachedInputTokens).toBe(200);
+    expect(response.usage.cacheCreationInputTokens).toBeUndefined();
   });
 });

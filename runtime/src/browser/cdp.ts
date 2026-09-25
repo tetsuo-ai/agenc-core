@@ -335,6 +335,8 @@ export interface LaunchBrowserOptions {
   readonly proxyPort: number;
   /** Authenticated session boundary for the Chromium process. */
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+  /** Persist the detached child identity before waiting for CDP readiness. */
+  readonly onSpawn?: (child: ChildProcess) => void;
 }
 
 export interface LaunchedBrowser {
@@ -395,10 +397,16 @@ export async function launchBrowser(
     throw missingSandboxExecutionBoundary("browser");
   }
   const env = scrubEnvForChildProcess(process.env);
+  // Crashpad needs writable config and cache directories within the private profile.
+  if (process.platform === "linux") {
+    env.XDG_CONFIG_HOME = options.userDataDir;
+    env.XDG_CACHE_HOME = options.userDataDir;
+  }
   const preparedSpawn = sandboxExecutionBroker.prepareSpawn(
     "browser",
     {
       program: options.executablePath,
+      browserCdp: true,
       args: buildChromiumArgs(options),
       cwd: sandboxExecutionBroker.cwd,
       env,
@@ -416,44 +424,72 @@ export async function launchBrowser(
     },
     { lifecycleParticipant: "browser" },
   );
+  // The POSIX gate does not exec Chromium until its PID has been persisted in
+  // the profile marker. A daemon crash before publication closes fd 5, so the
+  // gated child exits without ever opening the profile.
+  const gated = process.platform !== "win32";
+  let browserCdpOverStdio = false;
   const child = preparedSpawn.spawnLifecycleParticipant(
     "browser",
-    (spawnCommand) =>
-      spawn(spawnCommand.program, [...spawnCommand.args], {
+    (spawnCommand) => {
+      browserCdpOverStdio = spawnCommand.browserCdpOverStdio === true;
+      return spawn(gated ? "/bin/sh" : spawnCommand.program,
+        gated
+          ? ["-c", 'IFS= read -r gate <&5 || exit 0; [ "$gate" = go ] || exit 0; exec "$@"',
+            "agenc-browser-gate", spawnCommand.program, ...spawnCommand.args]
+          : [...spawnCommand.args], {
         cwd: spawnCommand.cwd,
         env: spawnCommand.env,
-        argv0: spawnCommand.argv0,
-        stdio: ["ignore", "ignore", "pipe", "pipe", "pipe"],
+        ...(!gated ? { argv0: spawnCommand.argv0 } : {}),
+        stdio: spawnCommand.browserCdpOverStdio
+          ? gated
+            ? ["pipe", "pipe", "pipe", "ignore", "ignore", "pipe"]
+            : ["pipe", "pipe", "pipe"]
+          : gated
+            ? ["ignore", "ignore", "pipe", "pipe", "pipe", "pipe"]
+            : ["ignore", "ignore", "pipe", "pipe", "pipe"],
         detached: process.platform !== "win32",
-      }),
-  );
-
-  let stderrTail = "";
-  child.stderr?.setEncoding("utf8");
-  child.stderr?.on("data", (chunk: string) => {
-    stderrTail = (stderrTail + chunk).slice(-2000);
-  });
-
-  const writePipe = child.stdio[3] as Writable | null;
-  const readPipe = child.stdio[4] as Readable | null;
-  if (writePipe === null || readPipe === null) {
-    try {
-      await terminateProcessTreeAndWait(child, {
-        label: "browser launch",
       });
+    },
+  );
+  if (child.pid !== undefined) {
+    try {
+      options.onSpawn?.(child);
     } catch (error) {
-      const cleanupError = toError(error);
-      throw new BrowserLaunchCleanupError(
-        `browser did not expose the CDP pipe file descriptors; cleanup failed: ${cleanupError.message}`,
-        child,
-        cleanupError,
-      );
+      try {
+        await terminateProcessTreeAndWait(child, { label: "browser launch marker" });
+      } catch (cleanupError) {
+        throw new BrowserLaunchCleanupError(
+          "browser launch marker update failed and cleanup remains incomplete",
+          child,
+          cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError)),
+        );
+      }
+      throw error;
     }
-    throw new CdpError(
-      "browser did not expose the CDP pipe file descriptors",
-    );
+    if (gated) {
+      const gate = (child.stdio as unknown as Array<Writable | null | undefined> | undefined)?.[5];
+      if (gate === null || gate === undefined) {
+        try {
+          await terminateProcessTreeAndWait(child, { label: "browser launch gate" });
+        } catch (cleanupError) {
+          throw new BrowserLaunchCleanupError(
+            "browser launch gate pipe was unavailable and cleanup remains incomplete",
+            child,
+            cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError)),
+          );
+        }
+        throw new CdpError("browser launch gate pipe was unavailable");
+      }
+      gate.on("error", () => { /* Child exit is reported by spawnError below. */ });
+      gate.end("go\n");
+    }
   }
 
+  let stderrTail = "";
+  // A failed spawn reports on the next tick, and EMFILE or ENFILE also leave
+  // stdio undefined. Listen before touching stdio or taking the branch below
+  // that awaits cleanup, so that report is never an uncaught exception.
   const spawnError = new Promise<never>((_, reject) => {
     child.once("error", (err) =>
       reject(new CdpError(`failed to spawn browser: ${err.message}`)),
@@ -468,6 +504,45 @@ export async function launchBrowser(
       ),
     );
   });
+  // Raced below; a launch that fails earlier leaves nobody to await it.
+  spawnError.catch(() => {});
+
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (chunk: string) => {
+    stderrTail = (stderrTail + chunk).slice(-2000);
+  });
+
+  const writePipe = (browserCdpOverStdio
+    ? child.stdin
+    : child.stdio?.[3]) as Writable | null | undefined;
+  const readPipe = (browserCdpOverStdio
+    ? child.stdout
+    : child.stdio?.[4]) as Readable | null | undefined;
+  if (
+    writePipe === null ||
+    writePipe === undefined ||
+    readPipe === null ||
+    readPipe === undefined
+  ) {
+    try {
+      await terminateProcessTreeAndWait(child, {
+        label: "browser launch",
+      });
+    } catch (error) {
+      const cleanupError = toError(error);
+      throw new BrowserLaunchCleanupError(
+        `browser did not expose the CDP pipe file descriptors; cleanup failed: ${cleanupError.message}`,
+        child,
+        cleanupError,
+      );
+    }
+    // Without a pid the spawn itself failed (EMFILE and ENFILE leave no
+    // stdio at all); the cleanup above waited for its report, so say that.
+    if (child.pid === undefined) await spawnError;
+    throw new CdpError(
+      "browser did not expose the CDP pipe file descriptors",
+    );
+  }
 
   const connection = new CdpConnection(writePipe, readPipe);
   try {
@@ -487,16 +562,38 @@ export async function launchBrowser(
     } catch (error) {
       const cleanupError = toError(error);
       throw new BrowserLaunchCleanupError(
-        `browser did not establish a CDP pipe: ${detail}. Cleanup also failed: ${cleanupError.message}. If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.`,
+        `browser did not establish a CDP pipe: ${detail}${stderrTail ? ` (${stderrTail.trim()})` : ""}. Cleanup also failed: ${cleanupError.message}. ${launchFailureHint(stderrTail, browserCdpOverStdio)}`,
         child,
         cleanupError,
       );
     }
     throw new CdpError(
-      `browser did not establish a CDP pipe: ${detail}. If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.`,
+      `browser did not establish a CDP pipe: ${detail}${stderrTail ? ` (${stderrTail.trim()})` : ""}. ${launchFailureHint(stderrTail, browserCdpOverStdio)}`,
     );
   }
   return { child, connection };
+}
+
+/**
+ * Chromium aborts with one of these when its own sandbox cannot start. Inside
+ * AgenC's Linux sandbox that always happens: the setuid helper loses its bit on
+ * a nosuid mount, and nested user namespaces are not available.
+ */
+const CHROMIUM_OWN_SANDBOX_ABORT =
+  /SUID sandbox helper binary was found, but is not configured correctly|No usable sandbox!/;
+
+/**
+ * The next step for a launch failure, chosen from what Chromium printed and
+ * whether it ran inside AgenC's Linux sandbox. Outside it, turning Chromium's
+ * sandbox off would leave the browser with no sandbox at all.
+ */
+export function launchFailureHint(stderrTail: string, insideAgencLinuxSandbox: boolean): string {
+  if (!CHROMIUM_OWN_SANDBOX_ABORT.test(stderrTail)) {
+    return "If the executable is a wrapper script that does not forward file descriptors, set [browser].executable_path to a real Chromium binary.";
+  }
+  return insideAgencLinuxSandbox
+    ? "Chromium's own sandbox cannot start inside AgenC's sandbox on this system. Set [browser] no_sandbox = true to run it under AgenC's sandbox alone."
+    : "Chromium's own sandbox is not set up correctly on this system. Fix the Chromium installation as its message above says.";
 }
 
 function toError(error: unknown): Error {

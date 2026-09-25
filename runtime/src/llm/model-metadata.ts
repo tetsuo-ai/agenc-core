@@ -6,6 +6,7 @@ import { resolveModelCatalogMetadata } from "./registry/model-catalog.js";
 import { rememberSuccessfulLookup } from "./remember-successful-lookup.js";
 import { normalizeProviderMetadataIdentity } from "../provider-identity.js";
 import {
+  allowsOpenAICompatibleKeyFallback,
   resolveProviderApiKeyEnvironment,
   resolveProviderBaseURLEnvironment,
 } from "./registry/provider-ingress.js";
@@ -22,6 +23,7 @@ import {
 } from "./openai-compatible-token-limits.js";
 import { OLLAMA_CLOUD_BASE_URL } from "./registry/ollama-cloud-models.js";
 import { asRecord } from "../utils/record.js";
+import { fetchProviderRequest } from "./credential-redirect-fetch.js";
 
 export const CONSERVATIVE_CONTEXT_WINDOW_TOKENS =
   OPENAI_COMPATIBLE_FALLBACK_CONTEXT_WINDOW;
@@ -198,9 +200,14 @@ export class ModelMetadataResolver {
     source: ModelMetadataSource,
     usedFallbackModelMetadata: boolean,
   ): ResolvedModelMetadata {
+    // An explicit output cap overrides that field, not the model's remaining
+    // metadata. Dropping its known context window makes session admission fail.
+    const mergedMetadata = source === "explicit_config"
+      ? { ...inferBuiltInMetadata(params.provider, params.model), ...metadata }
+      : metadata;
     const effectiveMetadata = applyRegisteredModelOutputContract(
       params,
-      metadata,
+      mergedMetadata,
     );
     const output = resolveEffectiveOutputTokens({
       config: params.config,
@@ -209,8 +216,8 @@ export class ModelMetadataResolver {
       onWarn: this.warnOnce.bind(this),
     });
     return {
-      ...(metadata.contextWindow !== undefined
-        ? { contextWindow: metadata.contextWindow }
+      ...(mergedMetadata.contextWindow !== undefined
+        ? { contextWindow: mergedMetadata.contextWindow }
         : {}),
       maxOutputTokens: output.maxOutputTokens,
       maxOutputTokensUpperLimit: output.maxOutputTokensUpperLimit,
@@ -236,7 +243,7 @@ export class ModelMetadataResolver {
     const baseUrl = providerBaseUrl(params.config, provider, this.env);
     if (!baseUrl) return undefined;
     if (provider === "ollama-cloud" && baseUrl.replace(/\/+$/, "") !== OLLAMA_CLOUD_BASE_URL) return undefined;
-    const headers = authHeaders(provider, this.env);
+    const headers = authHeaders(provider, params.config, this.env);
     // Ollama serves no context length over its OpenAI-compatible surface, so
     // the native endpoint is the only place the real number exists.
     if (provider !== "ollama" && provider !== "ollama-cloud") {
@@ -246,7 +253,16 @@ export class ModelMetadataResolver {
       const openAi = metadataFromOpenAiModelsResponse(response, params.model);
       if (hasAnyMetadata(openAi)) return openAi;
     }
-    return await this.resolveOllamaNativeMetadata(baseUrl, params, headers);
+    if (
+      provider !== "ollama" &&
+      provider !== "ollama-cloud" &&
+      !isLocalOllamaCompatibleEndpoint(provider, baseUrl)
+    ) return undefined;
+    return await this.resolveOllamaNativeMetadata(
+      baseUrl,
+      params,
+      provider === "ollama-cloud" ? headers : undefined,
+    );
   }
 
   /**
@@ -254,9 +270,8 @@ export class ModelMetadataResolver {
    * context length -- so a local model silently inherited the conservative
    * 128k fallback while really being 32k (qwen2.5-coder) or 2k (moondream).
    * `/api/show` reports the true window under an architecture-prefixed key
-   * (`qwen2.context_length`). This also runs for `openai-compatible` and
-   * `lmstudio` pointed at an Ollama endpoint, which is a common setup; a
-   * non-Ollama server simply 404s and the caller falls through.
+   * (`qwen2.context_length`). Compatible local providers pointed at Ollama's
+   * default port also use this endpoint, without forwarding their API keys.
    */
   private async resolveOllamaNativeMetadata(
     baseUrl: string,
@@ -315,7 +330,7 @@ export class ModelMetadataResolver {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await this.fetchImpl!(url, {
+      const response = await fetchProviderRequest(url, {
         ...(options.jsonBody !== undefined
           ? {
             method: "POST",
@@ -327,7 +342,7 @@ export class ModelMetadataResolver {
           }
           : { headers: options.headers }),
         signal: controller.signal,
-      });
+      }, this.fetchImpl!);
       if (!response.ok) return undefined;
       return await response.json();
     } catch {
@@ -880,6 +895,24 @@ function providerBaseUrl(
   return envBaseURL || configured || defaultProviderBaseUrl(provider);
 }
 
+function isLocalOllamaCompatibleEndpoint(
+  provider: string,
+  baseUrl: string,
+): boolean {
+  if (provider !== "openai-compatible" && provider !== "lmstudio") {
+    return false;
+  }
+  try {
+    const url = new URL(baseUrl);
+    return url.port === "11434" &&
+      (url.hostname === "localhost" ||
+        url.hostname === "[::1]" ||
+        /^127\./.test(url.hostname));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Ollama's native API sits at the origin while its OpenAI-compatible surface
  * lives under `/v1`, so a base URL configured for either one has to collapse
@@ -919,10 +952,18 @@ function modelsUrlFromBaseUrl(baseUrl: string): string {
 
 function authHeaders(
   provider: string,
+  config: AgenCConfig,
   env: Readonly<Record<string, string | undefined>>,
 ): Readonly<Record<string, string>> | undefined {
-  const apiKey = envApiKey(provider, env);
-  return apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
+  const credential = resolveProviderApiKeyEnvironment(provider, env);
+  if (
+    provider === "openai-compatible" &&
+    credential?.envVar === "OPENAI_API_KEY" &&
+    !allowsOpenAICompatibleKeyFallback(
+      envBaseUrl(provider, env) ?? readProviderConfig(config, provider)?.base_url?.trim(),
+    )
+  ) return undefined;
+  return credential ? { Authorization: `Bearer ${credential.value}` } : undefined;
 }
 
 function envBaseUrl(
@@ -930,13 +971,6 @@ function envBaseUrl(
   env: Readonly<Record<string, string | undefined>>,
 ): string | undefined {
   return resolveProviderBaseURLEnvironment(provider, env)?.value;
-}
-
-function envApiKey(
-  provider: string,
-  env: Readonly<Record<string, string | undefined>>,
-): string | undefined {
-  return resolveProviderApiKeyEnvironment(provider, env)?.value;
 }
 
 function defaultProviderBaseUrl(provider: string): string | undefined {

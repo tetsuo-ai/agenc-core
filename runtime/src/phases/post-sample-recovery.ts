@@ -79,6 +79,15 @@ import type { StreamingToolExecutor } from "./_deps/tool-runtime.js";
 import { tombstoneOrphans } from "../recovery/tombstone.js";
 import { executeStopFailureHooks } from "./stop-hooks.js";
 import { recoverRejectedTextToolCall } from "../recovery/rejected-text-tool-call.js";
+import {
+  isRecoverableImageRejection,
+  rejectImagesForRetry,
+} from "../recovery/image-rejection.js";
+import {
+  imageRoute,
+  requestImageRoute,
+} from "../session/query-image-safety.js";
+import { restoreWithheldImages } from "../session/query-image-withheld.js";
 
 /** One compaction ladder tier that declined during a 413 collapse, with history unchanged. */
 export interface ContextCollapseTierFailure {
@@ -147,7 +156,9 @@ export async function runContextCollapseOverflowRecovery(params: {
     return { kind: "pass" } as const;
   }
   const recovered = await recoverFromOverflow(
-    toCollapseRuntimeMessages(params.state.messagesForQuery),
+    // Image placeholders are request-only; compaction must see what history
+    // holds.
+    toCollapseRuntimeMessages(restoreWithheldImages(params.state.messagesForQuery)),
     session,
     params.state,
     params.turnContext,
@@ -501,17 +512,6 @@ export async function postSampleRecovery(
 ): Promise<TurnState> {
   if (signal?.aborted) return state;
 
-  // Defense in depth for direct/future callers: an Editor interaction is
-  // bounded to its immutable request plus trusted read/proposal tool loop.
-  // The recovery ladder can compact/rewrite messages, inject prompts, execute
-  // hooks, or stage a model/provider switch, so no ladder transition may
-  // survive this request-scoped boundary.
-  if (ctx.editorInteraction !== undefined) {
-    state.pendingBudgetDecision = undefined;
-    state.transition = undefined;
-    return state;
-  }
-
   // Invalid text-shaped tool calls never enter the executable tool ledger.
   // This separate cap survives other recovery strategies and durable resume.
   // Any budget continuation is still honored; the outer request boundary
@@ -602,6 +602,33 @@ export async function postSampleRecovery(
       },
 
       async onMedia(c) {
+        // A provider refused the request for an image it carries, before any
+        // tool call streamed. Replaying the same history fails the same way on
+        // this and every later turn, so leave the images out (the query
+        // projection puts a note in their place) and sample again. A withheld
+        // media-size message (a PDF page limit, for one) is not that: it keeps
+        // its original handling below.
+        const withheld = isRecoverableImageRejection(c.state, c.streamError)
+          ? rejectImagesForRetry(
+              c.session,
+              c.state,
+              c.streamError,
+              requestImageRoute(c.state) ??
+                imageRoute(c.session.services.provider.name, ctx.modelInfo.slug),
+            )
+          : undefined;
+        if (withheld !== undefined) {
+          emitWarning(
+            c.session.eventLog,
+            c.session.nextInternalSubId(),
+            "provider_rejected_image",
+            `${c.session.services.provider.name} refused an image in the request ` +
+              `(${withheld.reason}); retrying with ${withheld.rejected} ` +
+              `${withheld.scope === "newest" ? "new " : ""}image(s) replaced by a text note`,
+          );
+          c.state.transition = { reason: "image_rejection_retry" };
+          return { kind: "applied", reason: "image_rejection" };
+        }
         emitError(c.session, c.session.nextInternalSubId(), {
           cause: "image_error",
           message: "media-size recovery exhausted",

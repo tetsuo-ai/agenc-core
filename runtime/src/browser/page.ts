@@ -52,6 +52,25 @@ export interface BrowserNavigationFailureReceipt {
 
 const NAVIGATION_FAILURE_RECEIPTS = new WeakMap<object, BrowserNavigationFailureReceipt>();
 
+/** Chromium answered Page.navigate and the browser proxy refused the host by policy. */
+export interface BrowserNavigationPolicyRefusal {
+  readonly command: "Page.navigate";
+  readonly url: string;
+  readonly host: string;
+  readonly reason: string;
+}
+
+const NAVIGATION_POLICY_REFUSALS = new WeakMap<object, BrowserNavigationPolicyRefusal>();
+
+/** Only this adapter can attest that a completed navigation was refused by the proxy. */
+export function readBrowserNavigationPolicyRefusal(
+  error: unknown,
+): BrowserNavigationPolicyRefusal | undefined {
+  return typeof error === "object" && error !== null
+    ? NAVIGATION_POLICY_REFUSALS.get(error)
+    : undefined;
+}
+
 /** Only this adapter can attest that Chromium actually answered the command. */
 export function readBrowserNavigationFailureReceipt(
   error: unknown,
@@ -83,6 +102,8 @@ const NAMED_KEYS: Readonly<Record<string, NamedKey>> = {
   Home: { keyCode: 36, key: "Home", code: "Home" },
   End: { keyCode: 35, key: "End", code: "End" },
 };
+
+export const BROWSER_NAMED_KEYS = Object.freeze(Object.keys(NAMED_KEYS));
 
 export class BrowserPage {
   readonly #conn: CdpConnection;
@@ -157,7 +178,17 @@ export class BrowserPage {
     }
     const blocked = this.#blockReporter?.(parsed.hostname);
     if (blocked !== undefined) {
-      throw new BrowserActionError(`navigation blocked: ${blocked}`);
+      const error = new BrowserActionError(`navigation blocked: ${blocked}`);
+      // Page.navigate completed and the tab now holds the proxy's refusal. That
+      // is a known outcome, distinct from a received network error: without a
+      // record of it the refusal settled as unknown and locked the session.
+      NAVIGATION_POLICY_REFUSALS.set(error, Object.freeze({
+        command: "Page.navigate",
+        url,
+        host: parsed.hostname,
+        reason: blocked,
+      }));
+      throw error;
     }
     if (errorText !== undefined && errorText !== "") {
       const error = new BrowserActionError(`navigation failed: ${errorText} (${url})`);

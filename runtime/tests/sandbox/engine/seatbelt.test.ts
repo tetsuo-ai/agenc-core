@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { restrictedFileSystemPolicy, unrestrictedFileSystemPolicy } from "./index.js";
 import {
@@ -159,6 +163,84 @@ describe("macOS seatbelt policy generation", () => {
         process.env["DARWIN_USER_CACHE_DIR"] = previous;
       }
     }
+  });
+
+  describe("macOS user cache directory lookup", () => {
+    type SpawnSync = typeof import("node:child_process").spawnSync;
+    let cacheDir = "";
+    let platform: PropertyDescriptor | undefined;
+
+    beforeEach(() => {
+      cacheDir = realpathSync(mkdtempSync(join(tmpdir(), "agenc-darwin-cache-")));
+      platform = Object.getOwnPropertyDescriptor(process, "platform");
+      Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
+    });
+
+    afterEach(() => {
+      if (platform !== undefined) Object.defineProperty(process, "platform", platform);
+      vi.doUnmock("node:child_process");
+      vi.resetModules();
+      rmSync(cacheDir, { recursive: true, force: true });
+    });
+
+    async function seatbeltWithGetconf(
+      answer: (call: number) => { readonly status: number; readonly stdout: string },
+    ): Promise<{
+      readonly calls: string[][];
+      readonly argsFor: () => string[];
+    }> {
+      const calls: string[][] = [];
+      // The shared setup already loaded the sandbox engine; count getconf in
+      // a fresh module graph.
+      vi.resetModules();
+      vi.doMock("node:child_process", async (importOriginal) => {
+        const actual = await importOriginal<typeof import("node:child_process")>();
+        const spawnSync = ((command: string, args?: readonly string[], options?: unknown) => {
+          if (command === "/usr/bin/getconf") {
+            calls.push([...(args ?? [])]);
+            const { status, stdout } = answer(calls.length);
+            return { pid: 0, output: [null, stdout, ""], stdout, stderr: "", status, signal: null };
+          }
+          return (actual.spawnSync as (...rest: unknown[]) => unknown)(command, args, options);
+        }) as unknown as SpawnSync;
+        return { ...actual, default: { ...actual, spawnSync }, spawnSync };
+      });
+      const seatbelt = await import("../../../src/sandbox/engine/seatbelt.js");
+      return {
+        calls,
+        argsFor: () =>
+          seatbelt.createSeatbeltCommandArgs({
+            command: ["true"],
+            fileSystemSandboxPolicy: unrestrictedFileSystemPolicy(),
+            networkSandboxPolicy: "enabled",
+            sandboxPolicyCwd: "/repo",
+            sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+            enforceManagedNetwork: false,
+          }),
+      };
+    }
+
+    it("asks getconf once per process and keeps the same policy", async () => {
+      const seatbelt = await seatbeltWithGetconf(() => ({ status: 0, stdout: `${cacheDir}\n` }));
+
+      const first = seatbelt.argsFor();
+      const second = seatbelt.argsFor();
+
+      expect(seatbelt.calls).toEqual([["DARWIN_USER_CACHE_DIR"]]);
+      expect(first).toContain(`-DDARWIN_USER_CACHE_DIR=${cacheDir}`);
+      expect(second).toEqual(first);
+    });
+
+    it("asks again after a failed lookup", async () => {
+      const seatbelt = await seatbeltWithGetconf((call) =>
+        call === 1 ? { status: 1, stdout: "" } : { status: 0, stdout: `${cacheDir}\n` },
+      );
+
+      expect(seatbelt.argsFor().some((arg) => arg.startsWith("-DDARWIN_USER_CACHE_DIR="))).toBe(false);
+      expect(seatbelt.argsFor()).toContain(`-DDARWIN_USER_CACHE_DIR=${cacheDir}`);
+      expect(seatbelt.argsFor()).toContain(`-DDARWIN_USER_CACHE_DIR=${cacheDir}`);
+      expect(seatbelt.calls).toHaveLength(2);
+    });
   });
 
   it("translates unreadable glob patterns into anchored seatbelt regexes", () => {

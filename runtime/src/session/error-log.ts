@@ -206,6 +206,7 @@ export class ErrorLogSidecar implements Sidecar {
   private readonly degraded: DegradedStore<ErrorLogEntry>;
   private readonly stateDriver: StateSqliteDriver;
   private readonly logsRepository: LogsRepository;
+  private stopped = false;
 
   constructor(opts: ErrorLogSidecarOpts) {
     this.errorsDir = join(opts.projectDir, "errors");
@@ -224,6 +225,7 @@ export class ErrorLogSidecar implements Sidecar {
   }
 
   async start(): Promise<void> {
+    if (this.stopped) throw new Error("error-log sidecar is stopped");
     try {
       mkdirSync(this.errorsDir, { recursive: true });
     } catch (err) {
@@ -239,12 +241,27 @@ export class ErrorLogSidecar implements Sidecar {
   }
 
   async stop(): Promise<void> {
+    if (this.stopped) return;
+    this.stopped = true;
+    const errors: unknown[] = [];
     for (const writer of this.writers.values()) {
-      writer.dispose();
+      try {
+        writer.dispose();
+      } catch (error) {
+        errors.push(error);
+      }
     }
     this.writers.clear();
-    this.stateDriver.close();
-    this.degraded.stop();
+    try {
+      this.stateDriver.close();
+    } catch (error) {
+      errors.push(error);
+    } finally {
+      this.degraded.stop();
+    }
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "error-log sidecar shutdown failed");
+    }
   }
 
   isDegraded(): boolean {
@@ -252,6 +269,7 @@ export class ErrorLogSidecar implements Sidecar {
   }
 
   onEvent(event: Event): void {
+    if (this.stopped) return;
     const classification = classifyErrorLogEvent(event);
     if (!classification.persist) {
       return;

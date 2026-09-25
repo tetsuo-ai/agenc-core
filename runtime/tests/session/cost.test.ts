@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   CostSidecar,
   computeUsdCostWithResolution,
@@ -184,6 +184,78 @@ describe("cost helpers", () => {
       );
     },
   );
+
+  // developers.openai.com/api/docs/pricing and the model pages, Standard
+  // rows for prompts up to 272K input tokens (read 2026-09-22), per 1M:
+  // Astra $10 / $1 cached / $50 output, GPT-6 Sol $2 / $0.20 / $10, GPT-6
+  // Luna $0.10 / $0.01 / $0.50, GPT-5.6 Sol $4 / $0.40 / $20 (promotional,
+  // at least through 2026-11-21), Terra $2 / $0.20 / $12, GPT-5.6 Luna
+  // $0.20 / $0.02 / $1.20, GPT-5.5 $5 / $0.50 / $30, GPT-5.3 Codex
+  // $1.75 / $0.175 / $14.
+  test.each([
+    ["gpt-6-astra", 0.01, 0.001, 0.05],
+    ["gpt-6-sol", 0.002, 0.0002, 0.01],
+    ["gpt-6-luna", 0.0001, 0.00001, 0.0005],
+    ["gpt-5.6-sol", 0.004, 0.0004, 0.02],
+    ["gpt-5.6-terra", 0.002, 0.0002, 0.012],
+    ["gpt-5.6-luna", 0.0002, 0.00002, 0.0012],
+    ["gpt-5.5", 0.005, 0.0005, 0.03],
+    ["gpt-5.3-codex", 0.00175, 0.000175, 0.014],
+  ])(
+    "prices %s at its documented standard rates",
+    (model, inputUsdPer1K, cachedInputUsdPer1K, outputUsdPer1K) => {
+      const resolution = computeUsdCostWithResolution(
+        {
+          provider: "openai",
+          model,
+          inputTokens: 2_000,
+          outputTokens: 1_000,
+          cachedInputTokens: 500,
+          cacheCreationInputTokens: 0,
+          // Reasoning tokens are part of output_tokens and bill at the
+          // output rate; there is no separate reasoning rate.
+          reasoningOutputTokens: 400,
+          webSearchRequests: 0,
+          totalTokens: 3_000,
+          turns: 1,
+        },
+        DEFAULT_MODEL_COSTS,
+      );
+      expect(resolution.known).toBe(true);
+      expect(resolution.matchedKey).toBe(`openai:${model}`);
+      expect(resolution.costUsd).toBeCloseTo(
+        1.5 * inputUsdPer1K + 0.5 * cachedInputUsdPer1K + outputUsdPer1K,
+        10,
+      );
+      for (const alias of [model, `openai/${model}`, `openrouter:openai/${model}`]) {
+        expect(DEFAULT_MODEL_COSTS[alias]).toBe(DEFAULT_MODEL_COSTS[`openai:${model}`]);
+      }
+    },
+  );
+
+  test("keeps GPT-5.x ids from collapsing onto another model's price", () => {
+    const matchedKey = (model: string) =>
+      resolveModelCostEntry({ provider: "openai", model }, DEFAULT_MODEL_COSTS)
+        ?.key ?? null;
+    // Dated snapshots and documented aliases keep their model's price.
+    expect(matchedKey("gpt-5.5-2026-04-23")).toBe("openai:gpt-5.5");
+    expect(matchedKey("gpt-5.6")).toBe("openai:gpt-5.6-sol");
+    expect(matchedKey("gpt-5-2025-08-07")).toBe("openai:gpt-5");
+    expect(matchedKey("gpt-5-codex")).toBe("openai:gpt-5");
+    // A Pro sibling has its own documented row, never its base model's.
+    expect(matchedKey("gpt-5.5-pro")).toBe("openai:gpt-5.5-pro");
+    // A dotted minor is a different model, and a sibling of a priced model
+    // is not that model: unpriced beats a borrowed price.
+    for (const model of [
+      "gpt-5.5-turbo",
+      "gpt-5.6-cyber",
+      "gpt-5.6-sol-unverified",
+      "gpt-5.3-codex-spark",
+      "gpt-5.9",
+    ]) {
+      expect(matchedKey(model), model).toBeNull();
+    }
+  });
 
   test("computeUsdCost reports unknown pricing without throwing", () => {
     const usage = {
@@ -441,6 +513,15 @@ describe("cost helpers", () => {
       });
   });
 
+  test("Grok 4.7 uses the documented base token rates", () => {
+    const match = resolveModelCostEntry({ model: "grok-4.7", provider: "grok" }, DEFAULT_MODEL_COSTS);
+    expect(match?.entry).toMatchObject({
+      inputUsdPer1K: 0.002,
+      cachedInputUsdPer1K: 0.0005,
+      outputUsdPer1K: 0.006,
+    });
+  });
+
   test("default + catalog grok models price as known and non-reasoning ones are not charged the reasoning surcharge", () => {
     // grok-4.3 is the grok provider default (provider-info.ts). Both it and
     // grok-build-0.1 used to mis-resolve: grok-4.3 collapsed onto the
@@ -448,6 +529,7 @@ describe("cost helpers", () => {
     // DEFAULT_UNKNOWN_MODEL_COST. Since DEFAULT_MODEL_COSTS feeds dollar_cap
     // enforcement, mispricing here enforces budgets at the wrong threshold.
     const nonReasoningModels = [
+      "grok-4.7",
       "grok-4.6",
       "grok-4.5",
       "grok-4.3",
@@ -870,6 +952,21 @@ describe("CostSidecar", () => {
 
     expect(handlers).toHaveLength(0);
     expect(writes).toEqual(["\nlifecycle-summary\n"]);
+  });
+
+  test("exitSummary false registers no process exit hook and writes nothing on stop", async () => {
+    const on = vi.spyOn(process, "on");
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const sidecar = new CostSidecar({ exitSummary: false });
+      sidecar.start();
+      expect(on.mock.calls.filter(([event]) => event === "exit")).toHaveLength(0);
+      await sidecar.stop();
+      expect(write).not.toHaveBeenCalled();
+    } finally {
+      on.mockRestore();
+      write.mockRestore();
+    }
   });
 
   test("formatSummary produces one-line output", () => {

@@ -1,5 +1,14 @@
+import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, relative, resolve as resolvePath, sep } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve as resolvePath,
+  sep,
+} from "node:path";
 
 import {
   getShellRedirectOperator,
@@ -7,6 +16,7 @@ import {
   lexShellCommand,
   type ShellToken,
 } from "../utils/shell/command-line.js";
+import { analyzeSedWrites } from "../utils/shell/sed-writes.js";
 
 const SHELL_WORKSPACE_WRITE_TOOL_NAMES = new Set([
   "exec_command",
@@ -82,12 +92,9 @@ const SAFE_PSEUDO_DEVICE_TARGETS = new Set([
 ]);
 const SAFE_PSEUDO_DEVICE_FD_RE = /^\/dev\/fd\/\d+$/;
 
-export function isSafePseudoDevicePath(rawPath: string): boolean {
-  const trimmed = rawPath.trim();
-  return (
-    SAFE_PSEUDO_DEVICE_TARGETS.has(trimmed) ||
-    SAFE_PSEUDO_DEVICE_FD_RE.test(trimmed)
-  );
+/** Matches the name exactly: ` /dev/null` with a blank is a workspace path. */
+export function isSafePseudoDevicePath(path: string): boolean {
+  return SAFE_PSEUDO_DEVICE_TARGETS.has(path) || SAFE_PSEUDO_DEVICE_FD_RE.test(path);
 }
 
 export interface ShellWorkspaceWritePolicyDecision {
@@ -143,6 +150,11 @@ export interface ShellWorkspaceWritePolicyInput {
    * AgenC home, shell and git config files) stay refused.
    */
   readonly bypassesApprovalsAndSandbox?: boolean;
+  /**
+   * The host the command runs on; `process.platform` when absent. On macOS
+   * and the BSDs `sed` may be BSD sed, which reads `-i` differently.
+   */
+  readonly platform?: NodeJS.Platform;
 }
 
 interface ShellMove {
@@ -152,6 +164,16 @@ interface ShellMove {
 
 interface ShellWriteTargetCollection {
   targets: string[];
+  /**
+   * Targets whose protected-path check runs before the generated-root and
+   * outside-workspace exemptions (sed's, which are resolved through symlinks).
+   */
+  protectedFirstTargets: string[];
+  /**
+   * sed targets whose destination could not be determined, such as a symlink
+   * loop. They are refused in every mode, since they could reach a protected path.
+   */
+  unresolvedProtectedFirst: string[];
   deletions: string[];
   moves: ShellMove[];
   indeterminate: boolean;
@@ -173,7 +195,7 @@ function resolveWorkingDirectory(
 }
 
 function emptyTargetCollection(): ShellWriteTargetCollection {
-  return { targets: [], deletions: [], moves: [], indeterminate: false };
+  return { targets: [], protectedFirstTargets: [], unresolvedProtectedFirst: [], deletions: [], moves: [], indeterminate: false };
 }
 
 function indeterminateTargetCollection(): ShellWriteTargetCollection {
@@ -189,30 +211,28 @@ function mergeTargetCollections(
   from: ShellWriteTargetCollection,
 ): void {
   for (const target of from.targets) pushUnique(into.targets, target);
+  for (const target of from.protectedFirstTargets) pushUnique(into.protectedFirstTargets, target);
+  for (const target of from.unresolvedProtectedFirst) pushUnique(into.unresolvedProtectedFirst, target);
   for (const target of from.deletions) pushUnique(into.deletions, target);
   into.moves.push(...from.moves);
   into.indeterminate ||= from.indeterminate;
 }
 
+/**
+ * A target exactly as the command names it: a blank at either end is part
+ * of the name, so ` tmp/x` is not under tmp.
+ */
 function normalizeConcreteTargetPath(
   rawPath: string,
   cwd: string,
 ): ShellWriteTargetCollection {
-  const trimmed = rawPath.trim();
-  if (trimmed.length === 0 || trimmed === "-") {
+  if (rawPath.length === 0 || rawPath === "-") {
     return emptyTargetCollection();
   }
-  if (DYNAMIC_SHELL_TARGET_RE.test(trimmed)) {
+  if (DYNAMIC_SHELL_TARGET_RE.test(rawPath)) {
     return indeterminateTargetCollection();
   }
-  return {
-    ...emptyTargetCollection(),
-    targets: [
-      trimmed.startsWith("/")
-        ? resolvePath(trimmed)
-        : resolvePath(cwd, trimmed),
-    ],
-  };
+  return { ...emptyTargetCollection(), targets: [resolvePath(cwd, rawPath)] };
 }
 
 function collectOperandTargets(
@@ -435,32 +455,231 @@ function collectMoveTargets(
   return collection;
 }
 
-function collectDirectCommandWriteTargets(params: {
-  readonly command: string;
+/** Where the command runs, as far as the targets depend on it. */
+interface ShellWriteEnvironment {
+  /** `sed` may be BSD sed on this host (macOS and the BSDs). */
+  readonly bsdSed: boolean;
+  readonly workspaceRoot: string;
+}
+
+/** Hosts whose `sed` is BSD sed unless GNU sed comes first on the PATH. */
+const BSD_SED_PLATFORMS: ReadonlySet<NodeJS.Platform> = new Set([
+  "darwin",
+  "freebsd",
+  "netbsd",
+  "openbsd",
+]);
+
+/** The path the kernel opens: a `..` after a symlink is not collapsed first. */
+function kernelPath(cwd: string, name: string): string {
+  return isAbsolute(name) ? name : `${cwd}${sep}${name}`;
+}
+
+function pathExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The file a write to `path` reaches once the filesystem follows the
+ * symlinks in it, named under the workspace root when it lands inside.
+ * A symlink to something that does not exist yet is followed to the file
+ * the write would create. Undefined when that cannot be read, as with a
+ * symlink loop.
+ */
+function resolveWriteThroughSymlinks(path: string, workspaceRoot: string, depth = 0): string | undefined {
+  // The kernel gives up after about 40 links; so does this.
+  if (depth > 40) return undefined;
+  let existing = path;
+  const missing: string[] = [];
+  while (!pathExists(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) break;
+    missing.unshift(basename(existing));
+    existing = parent;
+  }
+  let reached: string;
+  try {
+    reached = join(realpathSync.native(existing), ...missing);
+  } catch {
+    // A symlink whose destination does not exist yet: writing through it
+    // creates that destination, so judge the destination. A relative link is
+    // read from the link's own directory as the filesystem reaches it.
+    let destination: string;
+    try {
+      if (!lstatSync(existing).isSymbolicLink()) return undefined;
+      destination = resolvePath(realpathSync.native(dirname(existing)), readlinkSync(existing));
+    } catch {
+      return undefined;
+    }
+    return resolveWriteThroughSymlinks(join(destination, ...missing), workspaceRoot, depth + 1);
+  }
+  let realRoot: string;
+  try {
+    realRoot = realpathSync.native(workspaceRoot);
+  } catch {
+    return reached;
+  }
+  const rel = relative(realRoot, reached);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return reached;
+  return resolvePath(workspaceRoot, rel);
+}
+
+/**
+ * The file `sed -i` replaces: its directory as the filesystem reaches it,
+ * its name as written, since sed replaces a symlink there rather than the
+ * file it points to. Undefined when the directory cannot be resolved.
+ */
+function resolveInPlaceTarget(path: string, workspaceRoot: string): string | undefined {
+  const directory = resolveWriteThroughSymlinks(dirname(path), workspaceRoot);
+  return directory === undefined ? undefined : join(directory, basename(path));
+}
+
+/**
+ * `sed` writes its in-place files, their backups, and the files its script
+ * names in `w` commands. The script itself is not a path. Names are taken
+ * exactly as sed opens them, blanks included. An in-place edit replaces the
+ * named file; a `w` file is opened through any symlink in its path, so it is
+ * judged by the file it reaches.
+ */
+function collectSedWriteTargets(params: {
   readonly args: readonly string[];
+  readonly argsRequiringExpansion?: readonly boolean[];
   readonly cwd: string;
+  readonly environment: ShellWriteEnvironment;
+  /** Whether BSD sed may run it, or only shows which words are disputed. */
+  readonly bsd: "runs" | "disputes" | "absent";
 }): ShellWriteTargetCollection {
-  const command = basename(params.command);
-  if (command === "env") {
-    const shellIndex = params.args.findIndex((token) =>
-      SHELL_WRAPPER_COMMANDS.has(basename(token)) ||
-      token === "env"
-    );
-    if (shellIndex >= 0) {
-      const nestedCommand = extractWrappedShellCommand(
-        params.args.slice(shellIndex + 1),
-      );
-      if (nestedCommand) {
-        return collectShellCommandWriteTargets(nestedCommand, params.cwd);
+  const { cwd, environment } = params;
+  const writes = analyzeSedWrites(params.args, params.argsRequiringExpansion, { bsd: params.bsd });
+  const collection = emptyTargetCollection();
+  collection.indeterminate = writes.indeterminate;
+  const addTarget = (name: string, reached: string | undefined): void => {
+    if (reached === undefined) {
+      collection.indeterminate = true;
+      pushUnique(collection.unresolvedProtectedFirst, resolvePath(cwd, name));
+    }
+    const target = reached ?? resolvePath(cwd, name);
+    pushUnique(collection.targets, target);
+    pushUnique(collection.protectedFirstTargets, target);
+  };
+  // sed opens the `w` files while it compiles, before it edits anything.
+  for (const name of writes.scriptWrites) {
+    if (isSafePseudoDevicePath(name)) continue;
+    addTarget(name, resolveWriteThroughSymlinks(kernelPath(cwd, name), environment.workspaceRoot));
+  }
+  for (const edit of writes.edits) {
+    // sed -i never creates a file.
+    if (edit.onlyIfExists && !pathExists(kernelPath(cwd, edit.file))) continue;
+    for (const name of edit.backup === undefined ? [edit.file] : [edit.file, edit.backup]) {
+      addTarget(name, resolveInPlaceTarget(kernelPath(cwd, name), environment.workspaceRoot));
+    }
+  }
+  // The commands an `e` runs already make the result indeterminate; their
+  // known targets are still checked.
+  for (const command of writes.commands) {
+    mergeTargetCollections(collection, collectShellCommandWriteTargets(command, cwd, environment));
+  }
+  return collection;
+}
+
+/** env's long options that take no argument, or only an attached one. */
+const ENV_LONG_FLAGS = new Set([
+  "block-signal",
+  "debug",
+  "default-signal",
+  "ignore-environment",
+  "ignore-signal",
+  "list-signal-handling",
+  "null",
+]);
+
+/**
+ * `env [option]... [NAME=VALUE]... [command [argument]...]` runs the command
+ * with a changed environment, so it writes what the command writes. An
+ * option that moves or rebuilds the command (`-C`, `-S`), an option env does
+ * not document, and a command or option the shell still expands leave the
+ * command unknown.
+ */
+function collectEnvCommandWriteTargets(params: {
+  readonly args: readonly string[];
+  readonly argsRequiringExpansion?: readonly boolean[];
+  readonly cwd: string;
+  readonly environment: ShellWriteEnvironment;
+}): ShellWriteTargetCollection {
+  const { args } = params;
+  const expands = (index: number): boolean => params.argsRequiringExpansion?.[index] === true;
+  let index = 0;
+  let assigning = false;
+  words: for (; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (ENV_ASSIGNMENT_RE.test(token)) {
+      assigning = true;
+      continue;
+    }
+    // Options come before the assignments; `-` is `-i`.
+    if (assigning || !token.startsWith("-")) break;
+    if (expands(index)) return indeterminateTargetCollection();
+    if (token === "-") continue;
+    if (token === "--") {
+      index += 1;
+      break;
+    }
+    if (token.startsWith("--")) {
+      const equals = token.indexOf("=");
+      const name = token.slice(2, equals < 0 ? undefined : equals);
+      if (ENV_LONG_FLAGS.has(name)) continue;
+      if (name === "unset" || name === "argv0") {
+        if (equals < 0) index += 1;
+        continue;
+      }
+      if (name === "help" || name === "version") return emptyTargetCollection();
+      return indeterminateTargetCollection();
+    }
+    for (let at = 1; at < token.length; at += 1) {
+      const option = token[at]!;
+      if (option === "i" || option === "0" || option === "v") continue;
+      if (option === "u" || option === "P" || option === "a") {
+        if (at + 1 === token.length) index += 1;
+        continue words;
       }
       return indeterminateTargetCollection();
     }
-    return emptyTargetCollection();
+  }
+  // Without a command, env only prints the environment.
+  if (index >= args.length) return emptyTargetCollection();
+  if (expands(index)) return indeterminateTargetCollection();
+  return collectDirectCommandWriteTargets({
+    command: args[index]!,
+    args: args.slice(index + 1),
+    ...(params.argsRequiringExpansion === undefined
+      ? {}
+      : { argsRequiringExpansion: params.argsRequiringExpansion.slice(index + 1) }),
+    cwd: params.cwd,
+    environment: params.environment,
+  });
+}
+
+function collectDirectCommandWriteTargets(params: {
+  readonly command: string;
+  readonly args: readonly string[];
+  /** Which of `args` the shell still expands; absent for an argument vector. */
+  readonly argsRequiringExpansion?: readonly boolean[];
+  readonly cwd: string;
+  readonly environment: ShellWriteEnvironment;
+}): ShellWriteTargetCollection {
+  const command = basename(params.command);
+  if (command === "env") {
+    return collectEnvCommandWriteTargets(params);
   }
   if (SHELL_WRAPPER_COMMANDS.has(command)) {
     const nestedCommand = extractWrappedShellCommand(params.args);
     return nestedCommand
-      ? collectShellCommandWriteTargets(nestedCommand, params.cwd)
+      ? collectShellCommandWriteTargets(nestedCommand, params.cwd, params.environment)
       : hasWrapperScriptOperand(params.args)
         ? emptyTargetCollection()
         : indeterminateTargetCollection();
@@ -502,7 +721,12 @@ function collectDirectCommandWriteTargets(params: {
     }
     return collection;
   }
-  if (command === "sed" || command === "perl") {
+  if (command === "sed" || command === "gsed") {
+    // `gsed` is GNU sed installed next to a BSD `sed`.
+    const bsd = command === "gsed" ? "absent" : params.environment.bsdSed ? "runs" : "disputes";
+    return collectSedWriteTargets({ ...params, bsd });
+  }
+  if (command === "perl") {
     const inPlace = params.args.some((token) => token === "-i" || token.startsWith("-i"));
     if (!inPlace) {
       return emptyTargetCollection();
@@ -547,6 +771,7 @@ function collectRedirectionTargets(
 function collectSegmentCommandWriteTargets(
   segment: readonly ShellToken[],
   cwd: string,
+  environment: ShellWriteEnvironment,
 ): ShellWriteTargetCollection {
   const stripped = stripRedirections(segment);
   if (stripped.length === 0) {
@@ -564,16 +789,20 @@ function collectSegmentCommandWriteTargets(
     return emptyTargetCollection();
   }
   if (command.requiresExpansion) return indeterminateTargetCollection();
+  const args = stripped.slice(commandIndex + 1);
   return collectDirectCommandWriteTargets({
     command: command.value,
-    args: stripped.slice(commandIndex + 1).map((token) => token.value),
+    args: args.map((token) => token.value),
+    argsRequiringExpansion: args.map((token) => token.requiresExpansion),
     cwd,
+    environment,
   });
 }
 
 function collectShellCommandWriteTargets(
   commandLine: string,
   cwd: string,
+  environment: ShellWriteEnvironment,
 ): ShellWriteTargetCollection {
   const parsed = lexShellCommand(commandLine);
   const collection = collectRedirectionTargets(parsed.tokens, cwd);
@@ -582,7 +811,7 @@ function collectShellCommandWriteTargets(
   const flushSegment = (): void => {
     mergeTargetCollections(
       collection,
-      collectSegmentCommandWriteTargets(segment, cwd),
+      collectSegmentCommandWriteTargets(segment, cwd, environment),
     );
     segment = [];
   };
@@ -626,6 +855,30 @@ function isDangerousRemovalRoot(absolutePath: string): boolean {
   const normalized = absolutePath.replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   if (normalized === "/" || WINDOWS_DRIVE_ROOT_RE.test(absolutePath)) return true;
   return normalized === homedir().replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+/**
+ * A path no shell command may write: a .git, .agenc or .agents directory, a
+ * shell or git config file, or the AgenC home. Inside the workspace only the
+ * part below its root counts, so a worktree placed under .agenc is not
+ * protected as a whole.
+ */
+function isProtectedWriteTarget(
+  absolutePath: string,
+  workspaceRoot: string,
+  protectedRoots: readonly string[],
+): boolean {
+  const relation = workspaceRelation(workspaceRoot, absolutePath);
+  const named = relation === "outside" ? absolutePath : relative(workspaceRoot, absolutePath);
+  if (named.split(/[\\/]/).some((segment) => PROTECTED_DELETION_SEGMENTS.has(segment))) {
+    return true;
+  }
+  if (PROTECTED_DELETION_FILES.has(basename(absolutePath))) return true;
+  return protectedRoots.some(
+    (root) =>
+      (absolutePath === root || isStrictlyUnder(root, absolutePath)) &&
+      (relation === "outside" || workspaceRelation(root, workspaceRoot) === "outside"),
+  );
 }
 
 function isProtectedDeletionPath(
@@ -709,6 +962,16 @@ function buildPolicyMessage(blockedTargets: readonly string[]): string {
   );
 }
 
+function buildProtectedWritePolicyMessage(blockedTargets: readonly string[]): string {
+  return (
+    "shell_workspace_file_write_disallowed: shell commands may not write protected " +
+    "paths (.git, .agenc, .agents, the AgenC home, shell and git config files), " +
+    "including through a symlink or under tmp and the other generated directories; " +
+    "ask the user to change them themselves. Blocked target(s): " +
+    blockedTargets.join(", ")
+  );
+}
+
 function buildDeletionPolicyMessage(
   reasons: ReadonlySet<DeletionBlockReason>,
   blockedDeletions: readonly string[],
@@ -781,6 +1044,10 @@ export function classifyShellWorkspaceWritePolicy(
 
   const workspaceRoot = params.workspaceRoot;
   const cwd = resolveWorkingDirectory(workspaceRoot, params.args.cwd);
+  const environment: ShellWriteEnvironment = {
+    bsdSed: BSD_SED_PLATFORMS.has(params.platform ?? process.platform),
+    workspaceRoot,
+  };
   let collected: ShellWriteTargetCollection = emptyTargetCollection();
   if (Array.isArray(params.args.args)) {
     collected = collectDirectCommandWriteTargets({
@@ -788,9 +1055,10 @@ export function classifyShellWorkspaceWritePolicy(
         typeof params.args.command === "string" ? params.args.command : "",
       args: params.args.args.filter((value): value is string => typeof value === "string"),
       cwd,
+      environment,
     });
   } else if (typeof params.args.command === "string") {
-    collected = collectShellCommandWriteTargets(params.args.command, cwd);
+    collected = collectShellCommandWriteTargets(params.args.command, cwd, environment);
   }
 
   // A move keeps workspace content in the workspace when every source is a
@@ -814,18 +1082,30 @@ export function classifyShellWorkspaceWritePolicy(
     }
   }
 
-  const blockedTargets = writes.filter(
+  const protectedRoots = params.protectedRoots ?? [];
+  // A protected path stays refused under a generated root and outside the
+  // workspace. For now only sed's targets are checked this way.
+  const protectedTargets = writes.filter(
     (target) =>
+      collected.protectedFirstTargets.includes(target) &&
+      isProtectedWriteTarget(target, workspaceRoot, protectedRoots),
+  );
+  const routedTargets = writes.filter(
+    (target) =>
+      !protectedTargets.includes(target) &&
       workspaceRelation(workspaceRoot, target) === "inside" &&
       !isWorkspaceGeneratedOutputPath(workspaceRoot, target),
   );
+  const unresolvedTargets = writes.filter((target) => collected.unresolvedProtectedFirst.includes(target));
+  const blockedTargets = [...protectedTargets, ...routedTargets];
+  for (const target of unresolvedTargets) pushUnique(blockedTargets, target);
   const deletionTargets: string[] = [];
   const blockedDeletions: string[] = [];
   const deletionReasons = new Set<DeletionBlockReason>();
   const bypassesApprovalsAndSandbox = params.bypassesApprovalsAndSandbox === true;
   const deletionScope: DeletionPolicyScope = {
     workspaceRoot,
-    protectedRoots: params.protectedRoots ?? [],
+    protectedRoots,
     additionalRoots: (params.additionalRoots ?? []).map((root) => resolvePath(root)),
     allowWorkspaceDeletions: params.allowWorkspaceDeletions === true,
     bypassesApprovalsAndSandbox,
@@ -846,7 +1126,17 @@ export function classifyShellWorkspaceWritePolicy(
   const observedTargets = [...writes];
   for (const target of removals) pushUnique(observedTargets, target);
   const messages: string[] = [];
-  if (blockedTargets.length > 0) messages.push(buildPolicyMessage(blockedTargets));
+  if (protectedTargets.length > 0) {
+    messages.push(buildProtectedWritePolicyMessage(protectedTargets));
+  }
+  if (routedTargets.length > 0) messages.push(buildPolicyMessage(routedTargets));
+  // Refused even with approvals bypassed: where these land is unknown, so they
+  // could reach a protected path.
+  if (unresolvedTargets.length > 0) {
+    messages.push(
+      `sed would write through a path whose destination cannot be determined (${unresolvedTargets.join(", ")}); the command was not run. Write to a path without a symlink loop.`,
+    );
+  }
   if (blockedDeletions.length > 0) {
     messages.push(buildDeletionPolicyMessage(deletionReasons, blockedDeletions));
   }

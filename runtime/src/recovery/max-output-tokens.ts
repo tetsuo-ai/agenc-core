@@ -29,6 +29,7 @@ import type { LLMMessage, LLMToolCall } from "../llm/types.js";
 import { emitWarning } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { TurnState } from "../session/turn-state.js";
+import { isAttachmentMessage } from "../session/attachment-retention.js";
 import type { StreamingToolExecutor } from "./_deps/streaming-executor.js";
 import {
   appendTerminalToolResults,
@@ -373,9 +374,31 @@ function appendTerminalExecutorClosureHistory(
 }
 
 function removeTruncatedAssistantForRetry(state: TurnState): void {
-  // Escalation retries the same request with a larger output ceiling.
-  // Do not carry the truncated assistant/tool batch into that retry.
-  state.messages = [...state.messagesForQuery];
+  // Escalation retries the same request with a larger output ceiling. Do not
+  // carry the truncated assistant/tool batch into that retry: cut the durable
+  // history back to where this sample started. The query projection is not a
+  // substitute. It carries the per-request attachments, pointer-swapped tool
+  // bodies and microcompacted history the rollout never stores; copying it
+  // here left a 1252-byte skill reminder inside the durable prefix, and the
+  // next durable compaction refused the whole turn with "caller history is
+  // not an ordered projection of canonical active history".
+  const mark = state.messagesAtSampleStart;
+  if (
+    mark !== undefined &&
+    Number.isInteger(mark) &&
+    mark >= 0 &&
+    mark <= state.messages.length
+  ) {
+    state.messages = state.messages.slice(0, mark);
+  } else {
+    // The request was not prepared through the sampling boundary (no mark):
+    // fall back to the projection minus what is context, not history.
+    state.messages = state.messagesForQuery.filter(
+      (message) =>
+        !isAttachmentMessage(message) ||
+        message.runtimeOnly?.agentInvocation !== undefined,
+    );
+  }
   state.assistantMessages = [];
   state.toolUseBlocks = [];
   state.toolResults = [];

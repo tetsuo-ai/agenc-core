@@ -6,6 +6,27 @@ import {
 } from "../../../packages/agenc-sdk/src/events";
 
 describe("agenc-sdk prompt event mapping", () => {
+  it("keeps the requesting sub-agent on a forwarded permission request", () => {
+    expect(promptEventFromNotification({
+      method: "event.permission_request",
+      params: {
+        sessionId: "conv-parent", requestId: "child-approval:ns:event:14", callId: "call_exec",
+        turnId: "sub-child-0", toolName: "exec_command", permissions: ["tool.use"],
+        input: { cmd: "echo SUBAGENT_OK" }, sourceConversationId: "child-1",
+        sourceAgentNickname: "Braindance", sourceAgentPath: "/root/echo_probe",
+      },
+    })).toMatchObject({
+      type: "permission_request", requestId: "child-approval:ns:event:14",
+      sourceConversationId: "child-1", sourceAgentNickname: "Braindance", sourceAgentPath: "/root/echo_probe",
+    });
+    const own = promptEventFromNotification({
+      method: "event.permission_request",
+      params: { sessionId: "conv-parent", requestId: "event:46", permissions: [], sourceAgentNickname: "" },
+    });
+    expect(own).not.toHaveProperty("sourceConversationId");
+    expect(own).not.toHaveProperty("sourceAgentNickname");
+  });
+
   it("preserves only the bounded public compaction failure message", () => {
     const message = "Auto-compaction failed: invalid summary. " + "x".repeat(2_100);
     expect(terminalStatusFromNotification({

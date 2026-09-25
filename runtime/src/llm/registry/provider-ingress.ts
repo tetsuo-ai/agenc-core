@@ -290,3 +290,17 @@ export function resolveProviderBaseURLEnvironment(
     ? undefined
     : firstEnvironmentMatch(env, info.baseURLEnvVars);
 }
+
+/** A shared OpenAI key may authorize a configured compatible server, but not Ollama. */
+export function allowsOpenAICompatibleKeyFallback(
+  configuredBaseURL: string | undefined,
+): boolean {
+  if (configuredBaseURL === undefined) return false;
+  try {
+    const url = new URL(configuredBaseURL);
+    return (url.protocol === "http:" || url.protocol === "https:") &&
+      url.port !== "11434";
+  } catch {
+    return false;
+  }
+}

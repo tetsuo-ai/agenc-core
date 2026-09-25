@@ -10,6 +10,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
+import { defaultConfig } from "../config/schema.js";
+import { StaticModelsManager } from "../llm/models-manager.js";
 import { runAdmittedToolCall } from "../budget/admitted-tool-call.js";
 import { EventLog, type Event } from "../session/event-log.js";
 import { resetCronSchedulerForTests } from "../utils/cronScheduler.js";
@@ -18,7 +20,7 @@ import type { LLMProvider, LLMResponse } from "../llm/types.js";
 import type { ToolEvaluatorContext } from "../permissions/evaluator.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import type { Session } from "../session/session.js";
-import { backgroundTaskLifecycle, isBackgroundTask } from "../tasks/index.js";
+import { backgroundTaskLifecycleForSession, isBackgroundTask } from "../tasks/index.js";
 import {
   createModelFacingTools,
   __setLiveWebFetchDnsAllLookupForTests,
@@ -33,6 +35,8 @@ import {
   _setAgentControlForTesting,
 } from "./delegate-tool.js";
 import { AgentControl } from "../agents/control.js";
+import type { LiveAgent } from "../agents/control.js";
+import { bindLiveAgentSession } from "../agents/live-session.js";
 import { AgentRegistry } from "../agents/registry.js";
 import {
   checkForLSPDiagnostics,
@@ -151,6 +155,17 @@ function fakeSession(cwd = process.cwd()): Session {
     // The runtime's active-turn slot: tools read the live turn id off it,
     // and these fixtures run outside any turn.
     activeTurn: { unsafePeek: () => null },
+    // v2 spawn owns a durable-close finalizer and an agent-status
+    // subscription, and disposes both. These fixtures never shut down, so the
+    // listeners are dropped and the status stays at its initial value.
+    onBeforeDurableClose: () => () => {},
+    agentStatus: {
+      // A session executing a tool is live; the spawn path rejects a caller
+      // whose status is not, with invalid-runtime-identity.
+      value: { status: "running", turnId: "t", startedAtMs: 1 },
+      subscribe: () => () => {},
+      next: () => {},
+    },
     roleWorkspace,
     agentDefinitions: {
       agentRoleWorkspaceId: roleWorkspace.id,
@@ -232,6 +247,20 @@ function addSessionAgentDefinition(
   definition: AgentDefinition,
 ): void {
   session.agentDefinitions.activeAgents.push(definition);
+}
+
+/**
+ * Sets the user's sub-agent limits for the fake session's provider (grok:
+ * it has no provider service or config store). Without them a child runs at
+ * the model's lowest effort and standard speed.
+ */
+function withSubagentLimits(
+  session: Session,
+  limit: { readonly effort?: string; readonly speed?: string },
+): void {
+  (session.config as { agents?: unknown }).agents = {
+    subagent_limits: { grok: limit },
+  };
 }
 
 async function writeTestSkill(
@@ -3132,11 +3161,17 @@ describe("model-facing tools", () => {
       const missing = await skill.execute({ skill: "missing-skill" });
 
       expect(missing.isError).toBe(true);
-      // Full parity: every name `/skills` shows the user is a name the model
-      // can actually load, bundled ones included.
-      expect(JSON.parse(missing.content).available).toEqual(
-        slashSnapshot.availableSkills.map((entry) => entry.name),
+      // Full parity: every name `/skills` shows the user that the model may
+      // load is offered, bundled ones included. Model-proof skills (batch,
+      // debug) are refused by the Skill tool, so offering them misleads.
+      const offered = JSON.parse(missing.content).available as string[];
+      expect(offered).toEqual(
+        slashSnapshot.availableSkills
+          .filter((entry) => entry.disableModelInvocation !== true)
+          .map((entry) => entry.name),
       );
+      expect(offered).not.toContain("batch");
+      expect(offered).not.toContain("debug");
 
       const retired = await skill.execute({ skill: "legacy-visible" });
       expect(retired.isError).toBe(true);
@@ -3394,8 +3429,10 @@ describe("model-facing tools", () => {
     const delegated = delegateMock.mock.calls.at(-1)?.[0];
     expect(delegated).not.toHaveProperty("role");
     expect(delegated).not.toHaveProperty("model");
-    expect(delegated).not.toHaveProperty("reasoningEffort");
-    expect(delegated).not.toHaveProperty("serviceTier");
+    // Blank overrides ask for nothing: the child runs at its provider's
+    // limits, the model's lowest effort at standard speed (null: no tier).
+    expect(delegated.reasoningEffort).toBe("low");
+    expect(delegated.serviceTier).toBeNull();
     expect(delegated).not.toHaveProperty("forkMode");
     expect(delegated).not.toHaveProperty("isolation");
   });
@@ -3549,6 +3586,8 @@ describe("model-facing tools", () => {
       serviceTiers: [],
     };
     const session = fakeSession();
+    // Only a fast speed limit lets a child ask for the priority tier.
+    withSubagentLimits(session, { speed: "fast" });
     (
       session.services as unknown as {
         modelsManager: {
@@ -3688,6 +3727,8 @@ describe("model-facing tools", () => {
       baseDir: "programmatic",
       getSystemPrompt: () => "",
     });
+    // Limits above the role's, so its effort and tier apply as configured.
+    withSubagentLimits(session, { effort: "xhigh", speed: "fast" });
     delegateMock.mockResolvedValue({
       kind: "async_launched",
       thread: {
@@ -3802,7 +3843,7 @@ describe("model-facing tools", () => {
     expect(delegateMock).not.toHaveBeenCalled();
   });
 
-  it("allows explicit service_tier on full-history spawn_agent forks", async () => {
+  it("refuses an explicit service_tier on full-history spawn_agent forks, which keep the parent's", async () => {
     const session = fakeSession();
     delegateMock.mockResolvedValue({
       kind: "async_launched",
@@ -3841,13 +3882,159 @@ describe("model-facing tools", () => {
         service_tier: "priority",
       });
 
-    expect(result.isError).not.toBe(true);
-    expect(delegateMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        forkMode: { kind: "full_history" },
-        serviceTier: "priority",
-      }),
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content).error).toBe(
+      "Full-history forked agents inherit the parent agent type, model, reasoning effort, and service tier; omit agent_type, model, reasoning_effort, and service_tier, or spawn without a full-history fork.",
     );
+    expect(delegateMock).not.toHaveBeenCalled();
+  });
+
+  // Shared by the Opus 5.5 registry-validation tests below: a session wired
+  // to a StaticModelsManager for the given config, and a spawn_agent tool
+  // whose delegateMock resolves a live thread named after `agentSlug`.
+  function sessionWithStaticModels(
+    configOverrides: Partial<ReturnType<typeof defaultConfig>> = {},
+    fallbackProvider = "anthropic",
+  ) {
+    const session = fakeSession();
+    (session.services as unknown as { modelsManager: unknown }).modelsManager =
+      new StaticModelsManager({
+        config: { ...defaultConfig(), ...configOverrides },
+        fallbackProvider,
+        metadata: { fetchImpl: vi.fn<typeof fetch>() },
+      });
+    return session;
+  }
+
+  function spawnAgentTool(session: Session, agentSlug: string) {
+    const nickname = agentSlug[0]!.toUpperCase() + agentSlug.slice(1);
+    delegateMock.mockResolvedValue({
+      kind: "async_launched",
+      thread: {
+        live: {
+          agentId: `thread-${agentSlug}`,
+          agentPath: `/root/${agentSlug}`,
+          nickname,
+          role: { name: "runner" },
+          status: {
+            value: { status: "running", turnId: `turn-${agentSlug}`, startedAtMs: 1 },
+          },
+        },
+        join: vi.fn(async () => ({
+          threadId: `thread-${agentSlug}`,
+          durationMs: 1,
+          outcome: "completed",
+          finalMessage: "done",
+        })),
+      },
+    });
+    return createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    }).find((tool) => tool.name === "spawn_agent")!;
+  }
+
+  it("validates Claude Opus 5.5 sub-agent effort against the real model registry", async () => {
+    const session = sessionWithStaticModels();
+    const spawn = spawnAgentTool(session, "opus");
+
+    for (const effort of ["xhigh", "max"] as const) {
+      const result = await spawn.execute({
+        message: "inspect",
+        task_name: `opus_${effort}`,
+        model: "claude-opus-5-5",
+        reasoning_effort: effort,
+        fork_turns: "none",
+      });
+      expect(result.isError, effort).not.toBe(true);
+      expect(delegateMock.mock.calls.at(-1)?.[0]).toMatchObject({
+        model: "claude-opus-5-5",
+        reasoningEffort: effort,
+      });
+    }
+
+    const rejected = await spawn.execute({
+      message: "inspect",
+      task_name: "opus_minimal",
+      model: "claude-opus-5-5",
+      reasoning_effort: "minimal",
+      fork_turns: "none",
+    });
+    expect(rejected.isError).toBe(true);
+    expect(JSON.parse(rejected.content).error).toBe(
+      "Reasoning effort `minimal` is not supported for model `claude-opus-5-5`. Supported reasoning efforts: low, medium, high, xhigh, max",
+    );
+  });
+
+  it("validates Bedrock Claude Opus 5.5 sub-agent effort against the real model registry", async () => {
+    const model = "global.anthropic.claude-opus-5-5";
+    const session = sessionWithStaticModels({ model_provider: "amazon-bedrock", model }, "amazon-bedrock");
+    const spawn = spawnAgentTool(session, "bedrock");
+
+    for (const effort of ["xhigh", "max"] as const) {
+      const result = await spawn.execute({
+        message: "inspect",
+        task_name: `bedrock_${effort}`,
+        model,
+        reasoning_effort: effort,
+        fork_turns: "none",
+      });
+      expect(result.isError, effort).not.toBe(true);
+      expect(delegateMock.mock.calls.at(-1)?.[0]).toMatchObject({
+        model,
+        reasoningEffort: effort,
+      });
+    }
+    const rejected = await spawn.execute({
+      message: "inspect",
+      task_name: "bedrock_minimal",
+      model,
+      reasoning_effort: "minimal",
+      fork_turns: "none",
+    });
+    expect(rejected.isError).toBe(true);
+    expect(JSON.parse(rejected.content).error).toBe(
+      `Reasoning effort \`minimal\` is not supported for model \`${model}\`. Supported reasoning efforts: low, medium, high, xhigh, max`,
+    );
+  });
+
+  describe("sub-agent effort by the shared Claude parser's identity", () => {
+    const spawnWithConfiguredModel = async (model: string, effort: "max" | "xhigh") => {
+      // The configured selection is listed, so spawn_agent accepts the id
+      // and validates its effort against the registry's ModelInfo.
+      const session = sessionWithStaticModels({ model_provider: "anthropic", model });
+      const spawn = spawnAgentTool(session, "claude");
+      return await spawn.execute({
+        message: "inspect",
+        task_name: `claude_${effort}`,
+        model,
+        reasoning_effort: effort,
+        fork_turns: "none",
+      });
+    };
+
+    it("accepts the top tiers for the dotted and dated Opus 5.5 spellings", async () => {
+      for (const model of ["claude-opus-5.5", "claude-opus-5-5-20260922"]) {
+        for (const effort of ["xhigh", "max"] as const) {
+          const result = await spawnWithConfiguredModel(model, effort);
+          expect(result.isError, `${model} ${effort}`).not.toBe(true);
+          expect(delegateMock.mock.calls.at(-1)?.[0]).toMatchObject({
+            model,
+            reasoningEffort: effort,
+          });
+        }
+      }
+    });
+
+    it("rejects them for ids the parser rejects instead of lending them by prefix", async () => {
+      for (const model of ["claude-opus-5-5-fast", "claude-opus-5-5-preview"]) {
+        const rejected = await spawnWithConfiguredModel(model, "max");
+        expect(rejected.isError, model).toBe(true);
+        expect(JSON.parse(rejected.content).error, model).toContain(
+          `Reasoning effort \`max\` is not supported for model \`${model}\``,
+        );
+      }
+    });
   });
 
   it("uses a clean fork when spawn_agent role or effort overrides explicitly set fork_turns none", async () => {
@@ -3877,6 +4064,8 @@ describe("model-facing tools", () => {
       },
     });
 
+    // A limit at xhigh, so the requested effort applies as asked.
+    withSubagentLimits(session, { effort: "xhigh" });
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
       getSession: () => session,
@@ -3905,23 +4094,33 @@ describe("model-facing tools", () => {
     const session = fakeSession();
     (session.config as { agent_max_depth?: number }).agent_max_depth = 1;
     const emit = vi.fn();
-    (session as unknown as { emit: typeof emit }).emit = emit;
+    // A nested caller spawns from its own Session, and that Session is
+    // authoritative only through the live handle its AgentControl hands out:
+    // one stable object, bound by runAgent. Both are required here, or the
+    // spawn path refuses the caller as invalid-runtime-identity.
+    const callerSession = {
+      ...session,
+      conversationId: "child-1",
+      abortController: new AbortController(),
+      emit,
+    } as unknown as Session;
+    const callerLive = {
+      agentId: "child-1",
+      agentPath: "/root/child_1",
+      depth: 1,
+      nickname: "Deckard",
+      role: { name: "runner" },
+      abortController: new AbortController(),
+      status: {
+        value: { status: "running", turnId: "t", startedAtMs: 1 },
+      },
+    } as unknown as LiveAgent;
+    const revokeCallerSession = bindLiveAgentSession(callerLive, callerSession);
     const control = {
       roleWorkspace: DEFAULT_ROLE_WORKSPACE,
       assertRoleWorkspace: vi.fn(),
       getLive: vi.fn((threadId: string) =>
-        threadId === "child-1"
-          ? {
-              agentId: "child-1",
-              agentPath: "/root/child_1",
-              depth: 1,
-              nickname: "Deckard",
-              role: { name: "runner" },
-              status: {
-                value: { status: "running", turnId: "t", startedAtMs: 1 },
-              },
-            }
-          : undefined,
+        threadId === "child-1" ? callerLive : undefined,
       ),
     };
     delegateMock.mockResolvedValue({
@@ -3968,7 +4167,7 @@ describe("model-facing tools", () => {
       });
       expect(delegateMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          parent: session,
+          parent: callerSession,
           parentPath: "/root/child_1",
           taskPrompt: "inspect",
           agentName: "grandchild",
@@ -3993,6 +4192,7 @@ describe("model-facing tools", () => {
       expect(endEnvelope?.msg?.payload?.status?.status).toBe("running");
       expect(endEnvelope?.msg?.payload?.status?.error).toBeUndefined();
     } finally {
+      revokeCallerSession();
       _clearAgentControlCacheForTesting(session);
     }
   });
@@ -4040,6 +4240,8 @@ describe("model-facing tools", () => {
       },
     });
 
+    // A limit at xhigh, so the requested effort applies as asked.
+    withSubagentLimits(session, { effort: "xhigh" });
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
       getSession: () => session,
@@ -4330,9 +4532,11 @@ describe("model-facing tools", () => {
 
       expect(resultA.isError).not.toBe(true);
       expect(resultB.isError).not.toBe(true);
+      // Neither role sets an effort: each child runs at its provider's
+      // limit, the model's lowest level.
       expect(observed).toEqual([
-        { effort: undefined, prompt: "Workspace A prompt." },
-        { effort: undefined, prompt: "Workspace B prompt." },
+        { effort: "low", prompt: "Workspace A prompt." },
+        { effort: "low", prompt: "Workspace B prompt." },
       ]);
 
       const coldMismatchedSession = fakeSession(workspaceB);
@@ -4401,7 +4605,7 @@ describe("model-facing tools", () => {
     const handle = (JSON.parse(spawned.content) as { task_name: string })
       .task_name;
     expect(handle).toBe("/root/task_handle");
-    backgroundTaskLifecycle.appendOutput("thread-handle-1", "alias output");
+    backgroundTaskLifecycleForSession(session).appendOutput("thread-handle-1", "alias output");
 
     const output = await byName.get("TaskOutput")!.execute({
       task_id: handle,
@@ -4572,7 +4776,10 @@ describe("model-facing tools", () => {
       sendInterAgentCommunication: vi.fn(async () => {
         throw new Error("agent with id agent-1 is closed");
       }),
-      getStatus: vi.fn(async () => ({ status: "shutdown" as const })),
+      sendPassiveMessageToActiveAgent: vi.fn(() => {
+        throw new Error("agent with id agent-1 is closed");
+      }),
+      getStatus: vi.fn().mockResolvedValue({ status: "shutdown" as const }),
     };
     _setAgentControlForTesting(session, {
       control: control as never,
@@ -5930,13 +6137,14 @@ describe("model-facing tools", () => {
         context,
       );
       expect(allowed?.behavior).toBe("allow");
-      expect(
-        (allowed as { updatedInput?: Record<string, unknown> } | undefined)
-          ?.updatedInput,
-      ).toMatchObject({
-        file_path: notebookPath,
-        notebook_path: notebookPath,
-      });
+      const allowedInput = (
+        allowed as { updatedInput?: Record<string, unknown> } | undefined
+      )?.updatedInput;
+      expect(allowedInput).toMatchObject({ notebook_path: notebookPath });
+      // The dispatcher validates this against NotebookRead's strict schema
+      // again, so FileRead's own fields must not come back in it.
+      expect(allowedInput).not.toHaveProperty("file_path");
+      expect(allowedInput).not.toHaveProperty("cwd");
 
       const blocked = await tool.checkPermissions?.(
         { notebook_path: outsidePath },
@@ -5985,13 +6193,12 @@ describe("model-facing tools", () => {
         context,
       );
       expect(allowed?.behavior).toBe("allow");
-      expect(
-        (allowed as { updatedInput?: Record<string, unknown> } | undefined)
-          ?.updatedInput,
-      ).toMatchObject({
-        file_path: notebookPath,
-        notebook_path: notebookPath,
-      });
+      const allowedInput = (
+        allowed as { updatedInput?: Record<string, unknown> } | undefined
+      )?.updatedInput;
+      expect(allowedInput).toMatchObject({ notebook_path: notebookPath });
+      // NotebookEdit's schema has no file_path; the dispatcher re-validates.
+      expect(allowedInput).not.toHaveProperty("file_path");
 
       const blocked = await tool.checkPermissions?.(
         {

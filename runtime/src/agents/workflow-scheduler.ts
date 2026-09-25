@@ -10,7 +10,7 @@ import type { Sha256Digest } from "../eval-contract/index.js";
 import { estimateUtf8TokenUnits } from "../llm/token-accounting.js";
 import type { Session } from "../session/session.js";
 import {
-  backgroundTaskLifecycle,
+  backgroundTaskLifecycleForSession,
   registerAgentThreadTask,
   type BackgroundTaskLifecycle,
 } from "../tasks/index.js";
@@ -167,7 +167,8 @@ export async function runAgentWorkflowV2(
   const runId = options.runId ?? randomUUID();
   assertWorstCaseResultBudget(options, graph, runId);
   const parentPath = options.parentPath ?? "/root";
-  const lifecycle = options.lifecycle ?? backgroundTaskLifecycle;
+  const lifecycle =
+    options.lifecycle ?? backgroundTaskLifecycleForSession(options.session);
   const delegateFn = options.delegateFn ?? delegate;
   const acquireCapacity =
     options.acquireCapacity ??

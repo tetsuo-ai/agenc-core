@@ -12,6 +12,12 @@ const generatedPath = resolve(
 );
 
 describe("SDK wire parity compiler", () => {
+  it("includes projected run terminals in the generated status event type", async () => {
+    const generated = await readFile(generatedPath, "utf8");
+    const status = generated.split("export interface EventAgentStatusParams")[1]?.split("export interface EventSessionEventParams")[0];
+    expect(status).toContain('readonly type: "turn_started" | "turn_complete" | "turn_aborted" | "run_terminal";');
+  });
+
   it("rejects optional, required and nested producer drift until regeneration", async () => {
     const original = await readFile(protocolPath, "utf8");
     const mutated = original

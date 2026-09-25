@@ -160,18 +160,6 @@ export function getCommandQueueSnapshot(): readonly QueuedCommand[] {
 }
 
 /**
- * Resolve the workspace that owns a queued command.
- *
- * Commands created before workspace ownership was recorded have no
- * `workspaceView`; they are legacy Agent inputs and must retain that behavior.
- */
-export function queuedCommandWorkspaceView(
-  command: Pick<QueuedCommand, "workspaceView">,
-): "agent" | "editor" {
-  return command.workspaceView ?? "agent";
-}
-
-/**
  * Check if there are commands in the queue.
  */
 export function hasCommandsInQueue(

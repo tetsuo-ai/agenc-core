@@ -13,6 +13,7 @@ import type {
 } from "./types.js";
 import { helpCommand } from "./help.js";
 import { helloCommand } from "./hello.js";
+import { goalCommand } from "./goal.js";
 import { statusCommand } from "./status.js";
 import { costCommand } from "./cost.js";
 import { diffCommand } from "./diff.js";
@@ -162,6 +163,7 @@ export function buildDefaultRegistry(
     helpCommand,
     helloCommand,
     statusCommand,
+    goalCommand,
     ...authCommands,
     ...xaiAuthCommands,
     ...openaiAuthCommands,

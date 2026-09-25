@@ -256,6 +256,7 @@ export interface UnifiedExecProcessManagerLike {
 export class UnifiedExecError extends Error {
   readonly code:
     | "create_process"
+    | "tty_unavailable_in_contained_operation"
     | "missing_command"
     | "unknown_process"
     | "stdin_closed"

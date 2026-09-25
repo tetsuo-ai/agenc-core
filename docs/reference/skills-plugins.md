@@ -306,6 +306,7 @@ of becoming a second authority.
 | `skills` | Skill roots / files |
 | `hooks` | Lifecycle hooks map |
 | `mcpServers` | Outbound MCP server configs |
+| `mcpEagerServers` | Array of MCP server names that must remain connected for notifications or listeners |
 | `lspServers` | LSP server configs |
 | `outputStyles` | Output styles |
 | `apps` / `channels` / `userConfig` | Extended packaging metadata |
@@ -325,6 +326,26 @@ merge those registrations into the live `MCPManager`
 (`getAllMcpConfigs` in `runtime/src/services/mcp/config.ts`). Enabled
 user-scoped plugins then appear in `/mcp` as `plugin:<id>:<server>` and
 as model tools `mcp.plugin:<id>:<server>.<tool>`.
+
+Core runs plugin MCP servers from a content-addressed snapshot of the
+installation. It verifies the snapshot off the event loop before publishing
+the server and makes snapshot files read-only for the user where the platform
+permits; directories stay writable so the cache can always be removed.
+Plugin changes apply to new sessions. A running session keeps
+the plugin configuration and settings it resolved, as with eager servers. Its
+own config refresh, or a reconnect of the server, reads them again and
+restarts affected servers. Before a lazy server's first launch in that
+session, Core re-reads the installed plugin with that session's ConfigStore
+sources (including an explicit `--config` path) and `/mcp` enable or disable
+overrides. It checks only that the installation still matches the session's
+verified snapshot and that the plugin server is effectively enabled. It does
+not read plugin settings or secure storage, so saving or resetting settings
+never makes a server fail before its first launch. If either check fails, the
+launch fails; reconnect the server or start a new session. Tool policy,
+lifecycle settings and plugin settings remain those resolved by the session,
+including after that server restarts. A session refresh retires only its own
+superseded verified generation. There are no lifecycle revision files,
+cross-process revocation checks, installation watchers, or pollers.
 
 Project- and local-scope installs are **repository-controlled**
 (`isRepositoryControlledPlugin`). The loader strips their `mcpServers`,
@@ -439,6 +460,50 @@ contains a value. Open `/plugin`, choose the plugin, and use **Configure** to
 write the value to secure storage and scrub the plaintext field. AgenC never treats
 TOML as a secret fallback and never creates a plaintext secret archive during
 this reconfiguration.
+
+Local app-server clients can call `plugin.settings.get` with `{ pluginId }` to
+read the installed manifest's schema, ordinary effective values, a
+`sensitiveSet` boolean per secret, and missing or invalid keys in `needsSetup`.
+Secret values never appear in that result. `plugin.settings.set` accepts
+`{ pluginId, values }`, validates the resulting settings against the manifest,
+and writes only the changed keys to their schema-selected stores.
+`plugin.settings.reset` accepts `{ pluginId }` and clears all declared saved
+values. If native secure storage is unavailable, reset fails without reporting
+deletion or clearing the ordinary settings. `agenc plugin list --json` also includes `needsSetup` keys on installed
+plugins when settings need setup. These app-server methods are
+available only on authenticated local connections.
+
+A session resolves each plugin MCP server's configuration, including its
+settings, when the session starts and again when it refreshes or reconnects
+that server. An on-demand server that launches later uses the values its
+session already resolved. A settings change does not alter a running process
+or a session that resolved the earlier value. Reconnect that plugin server in
+the active session, or start a new session, to use the new value.
+
+A plugin MCP server receives its saved secrets by design. Redaction protects
+against a non-malicious plugin accidentally disclosing them. Core covers its
+own diagnostics, the plugin's stderr and logs, tool result content and errors,
+progress text, resource contents and resource URIs (including signed URLs),
+prompt descriptions, and rendered prompt messages. Core redacts a complete
+literal secret before it splits, normalizes, or truncates output. It never
+corrupts binary output with text markers: a binary payload containing a secret
+is omitted and marked as omitted. Values shorter than four characters are not
+redacted, preserving ordinary output and protocol structure.
+
+Plugin-declared identifiers and schemas, including tool names and literal
+values in input schemas, are outside this guarantee. A plugin can also encode
+or split its own secret before sending it; those transformed copies are outside
+the literal-match guarantee. The plugin can deliberately send its secrets
+elsewhere.
+
+Secret format metadata is stored separately from the credential payload.
+Unmarked legacy credentials retain their schema-based decoding rules; a literal
+such as `agenc:secret:v2:"literal-secret"` remains literal. An unmarked value
+written by the earlier preview of the `v2` envelope is indistinguishable from
+such a literal and must be re-entered. New writes use
+the older compatible payload formats, so downgrading to a build that ignores
+the metadata never substitutes a new envelope as a credential. The older build
+can still read the credential using its previous format rules.
 
 ### CLI: `agenc plugin`
 

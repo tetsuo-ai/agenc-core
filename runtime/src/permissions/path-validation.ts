@@ -16,13 +16,16 @@ import { homedir } from "node:os";
 import {
   dirname,
   isAbsolute,
+  join,
   normalize,
+  parse,
   relative,
   resolve,
   sep,
 } from "node:path";
 
 import { getRuleByContentsForTool } from "./rules.js";
+import { unattendedWriteRoots } from "./unattended-policy.js";
 import { checkProtectedPathSafety } from "./protected-paths.js";
 import { withSignedAllowedRoots } from "../agents/_deps/filesystem-args.js";
 import { getSettingsRootPathForSource } from "../utils/settings/settings.js";
@@ -806,9 +809,112 @@ function withTransientAllowedRoot(
   return withSignedAllowedRoots(input, [dirname(resolvedPath)]);
 }
 
+const PATH_SEPARATORS = process.platform === "win32" ? /[\\/]+/u : /\/+/u;
+/** SYMLOOP_MAX on common systems. Past it the OS refuses the path as well. */
+const MAX_LINKS_FOLLOWED = 40;
+
+function pathParts(path: string): string[] {
+  return path.split(PATH_SEPARATORS).filter((part) => part.length > 0);
+}
+
+/**
+ * Where a write to `start` lands once the OS has followed every symlink on
+ * the way: a dangling link too (a write through it creates the link's
+ * target), and a `..` after a link taken from where that link points.
+ * Undefined when the links loop or cannot be read.
+ */
+function followWritePath(start: string): string | undefined {
+  const { root } = parse(start);
+  let current = root;
+  let pending = pathParts(start.slice(root.length));
+  let followed = 0;
+  while (pending.length > 0) {
+    const [part, ...rest] = pending;
+    pending = rest;
+    if (part === undefined || part === ".") continue;
+    if (part === "..") {
+      current = dirname(current);
+      continue;
+    }
+    const candidate = join(current, part);
+    let isLink = false;
+    try {
+      isLink = lstatSync(candidate).isSymbolicLink();
+    } catch {
+      // Missing: a new file or folder, nothing to follow.
+    }
+    if (!isLink) {
+      current = candidate;
+      continue;
+    }
+    followed += 1;
+    if (followed > MAX_LINKS_FOLLOWED) return undefined;
+    let target: string;
+    try {
+      target = readlinkSync(candidate);
+    } catch {
+      return undefined;
+    }
+    // An absolute target starts again from its root; a relative one from
+    // the folder that holds the link, which `current` still is.
+    const targetRoot = parse(target).root;
+    if (isAbsolute(target)) current = targetRoot;
+    pending = [...pathParts(target.slice(targetRoot.length)), ...pending];
+  }
+  return current;
+}
+
+/**
+ * Every place a write to `path` can land: the path as given, and the path as
+ * a tool that normalizes it first would open it. Undefined when either
+ * cannot be followed.
+ */
+function writeLandingPaths(path: string, cwd: string): readonly string[] | undefined {
+  const cleanPath = expandTilde(path.replace(/^['"]|['"]$/g, ""));
+  // Never touch a network path to find out where it leads.
+  if (containsVulnerableUncPath(cleanPath)) return undefined;
+  const given = isAbsolute(cleanPath) ? cleanPath : `${cwd}${sep}${cleanPath}`;
+  const landings: string[] = [];
+  for (const start of uniquePaths([given, resolve(given)])) {
+    const landing = followWritePath(start);
+    if (landing === undefined) return undefined;
+    landings.push(landing);
+  }
+  return landings;
+}
+
+function insideAnyRoot(path: string, roots: readonly string[]): boolean {
+  return roots.some((root) =>
+    uniquePaths([resolve(root), safeResolvePath(root).resolvedPath])
+      .some((candidate) => isPathInside(path, candidate)));
+}
+
 export function checkToolPathPermission(
   opts: ToolPathPermissionOptions,
 ): PermissionResult {
+  // A routine run with nobody attached writes files only inside its own
+  // workspace, whatever its mode: bypassPermissions skips approvals, not this
+  // confinement, and acceptEdits would otherwise ask about a path outside it
+  // with nobody there to answer. Checked before any rule or mode can allow
+  // the write, and measured where the write actually lands.
+  const writeRoots = opts.operationType === "read"
+    ? undefined
+    : unattendedWriteRoots(opts.context);
+  if (writeRoots !== undefined) {
+    const landings = writeLandingPaths(opts.path, opts.cwd);
+    if (landings === undefined || !landings.every((landing) => insideAnyRoot(landing, writeRoots))) {
+      return {
+        behavior: "deny",
+        message:
+          `This routine writes files only inside its workspace (${writeRoots.join(", ")}); ${opts.path} is outside it or leads out of it through a link. ` +
+          "Nobody is attached to approve anything else. Do not retry; write inside the workspace or report what you could not do.",
+        decisionReason: {
+          type: "other",
+          reason: "unattended routine writes stay inside its workspace",
+        },
+      };
+    }
+  }
   const result = validatePath(
     opts.path,
     opts.cwd,

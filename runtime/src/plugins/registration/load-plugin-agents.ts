@@ -246,7 +246,7 @@ async function loadAgentsFromPath(
   pluginStorageRoot: string | undefined,
 ): Promise<readonly PluginAgentDefinition[]> {
   if (await pathIsDirectory(path)) {
-    const files = await collectMarkdownFiles(path);
+    const files = await collectMarkdownFiles(path, plugin.root);
     const agents = await Promise.all(
       files.map((filePath) =>
         loadAgentFile(

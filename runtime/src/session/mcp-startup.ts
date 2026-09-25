@@ -53,6 +53,7 @@ import {
 } from "../llm/provider.js";
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 import type { CanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
+import { ConfigStore } from "../config/store.js";
 import {
   createUnavailableSamplingResult,
   type McpSamplingHandlers,
@@ -85,6 +86,7 @@ import { createSessionMcpElicitationHandlers } from "../elicitation/mcp.js";
 import type { McpGranularElicitationPolicy } from "../elicitation/mcp.js";
 import { logForDebugging } from "../utils/debug.js";
 import { redactSecrets } from "../secrets/index.js";
+import { createSavedPluginSecretRedactor } from '../plugins/secret-redaction.js';
 import { sessionMcpAttachmentIssue, redactMcpAttachmentText } from "../mcp-client/local-control.js";
 import { isDesktopAuthorityGrant, verifyDesktopAuthority } from "../mcp-client/desktop-authority.js";
 
@@ -168,6 +170,7 @@ function getServerInstructions(
 
 function buildEffectiveServerMap(
   manager: RuntimeMcpManagerWithMetadata,
+  redact: (value: string) => string = value => value,
 ): Map<string, EffectiveServerWithInstructions> {
   const connectedNames = new Set(manager.getConnectedServers?.() ?? []);
   const configs = manager.getConfiguredServers?.() ?? [];
@@ -182,9 +185,9 @@ function buildEffectiveServerMap(
     map.set(config.name, {
       enabled: connected,
       required: config.required ?? false,
-      ...(config.endpoint !== undefined ? { url: config.endpoint } : {}),
-      ...(config.command !== undefined ? { command: config.command } : {}),
-      ...(instructions !== undefined ? { instructions } : {}),
+      ...(config.endpoint !== undefined ? { url: redact(config.endpoint) } : {}),
+      ...(config.command !== undefined ? { command: redact(config.command) } : {}),
+      ...(instructions !== undefined ? { instructions: redact(instructions) } : {}),
     } as EffectiveServerWithInstructions);
   }
 
@@ -199,17 +202,17 @@ function buildEffectiveServerMap(
     map.set(name, {
       enabled: true,
       required: config?.required ?? false,
-      ...(config?.endpoint !== undefined ? { url: config.endpoint } : {}),
-      ...(config?.command !== undefined ? { command: config.command } : {}),
-      ...(instructions !== undefined ? { instructions } : {}),
+      ...(config?.endpoint !== undefined ? { url: redact(config.endpoint) } : {}),
+      ...(config?.command !== undefined ? { command: redact(config.command) } : {}),
+      ...(instructions !== undefined ? { instructions: redact(instructions) } : {}),
     } as EffectiveServerWithInstructions);
   }
 
   return map;
 }
 
-function sanitizeMcpSurfaceText(value: string, maxLength = 4_096): string {
-  const printable = redactSecrets(value)
+function sanitizeMcpSurfaceText(value: string, maxLength = 4_096, redact: (value: string) => string = value => value): string {
+  const printable = redact(redactSecrets(value))
     .replace(/[\u0000-\u001F\u007F-\u009F]/gu, " ")
     .trim();
   const codePoints = Array.from(printable);
@@ -220,12 +223,13 @@ function sanitizeMcpSurfaceText(value: string, maxLength = 4_096): string {
 
 function mcpSurfaceDisplayTarget(
   config: ConfiguredServerWithExtras,
+  redact: (value: string) => string,
 ): string | undefined {
   if ((config.transport ?? "stdio") === "stdio") {
-    const command = config.command?.trim();
+    const command = config.command === undefined ? undefined : redact(config.command.trim());
     if (!command) return undefined;
     const executable = command.split(/[\\/]/u).at(-1) ?? command;
-    const displayTarget = sanitizeMcpSurfaceText(executable, 256);
+    const displayTarget = sanitizeMcpSurfaceText(executable, 256, redact);
     return displayTarget.length > 0 ? displayTarget : undefined;
   }
   if (config.endpoint === undefined) return undefined;
@@ -246,7 +250,7 @@ function mcpSurfaceDisplayTarget(
     ) {
       return "remote endpoint";
     }
-    return origin;
+    return redact(origin);
   } catch {
     return "remote endpoint";
   }
@@ -255,6 +259,7 @@ function mcpSurfaceDisplayTarget(
 function projectMcpSurface(
   manager: RuntimeMcpManagerWithMetadata,
   revision: number,
+  redact: (value: string) => string = value => value,
 ): McpSurfaceSnapshot {
   const configs = [...(manager.getConfiguredServers?.() ?? [])].sort((a, b) =>
     a.name.localeCompare(b.name),
@@ -271,7 +276,7 @@ function projectMcpSurface(
       tools.push(
         Object.freeze({
           serverName: config.name,
-          name: sanitizeMcpSurfaceText(tool.name, 512),
+          name: sanitizeMcpSurfaceText(tool.name, 512, redact),
         }),
       );
     }
@@ -284,7 +289,7 @@ function projectMcpSurface(
             manager.isConnected(config.name))
         ? "connected"
         : connectionState?.type ?? "disconnected";
-    const displayTarget = mcpSurfaceDisplayTarget(config);
+    const displayTarget = mcpSurfaceDisplayTarget(config, redact);
     return Object.freeze({
       name: config.name,
       transport: config.transport ?? "stdio",
@@ -850,6 +855,10 @@ export async function resolveSessionMcpPlan(
   );
   const configs: MCPServerConfig[] = Object.entries(servers).map(([name, config]) => ({
       ...toRuntimeMcpServerConfig(name, config),
+      ...(config.pluginServer !== undefined ? {
+        pluginCatalogHome: authority.homeContext.path,
+        pluginWorkspaceRoot: authority.projectRoot,
+      } : {}),
       // This restriction is runtime-owned, not a configurable permission grant.
       ...(sessionDispositions[name] === "active" && sessionServers[name]?.localOnly === true
         ? { localOnly: true, ...(sessionServers[name]?.desktopAuthorityGrant ? { desktopAuthorityGrant: sessionServers[name].desktopAuthorityGrant } : {}) } : {}),
@@ -949,7 +958,7 @@ interface SessionMcpOverlayState {
 
 const MAX_MCP_AUTHORITY_RETRIES = 5;
 
-function mcpMutationFailure(
+function rawMcpMutationFailure(
   serverName: string,
   error: unknown,
 ): McpServerMutationResult {
@@ -981,16 +990,38 @@ export function createSessionMcpService(
   options: CreateSessionMcpServiceOptions,
 ): SessionServices["mcpManager"] {
   const runtimeManager = manager as RuntimeMcpManagerWithMetadata;
+  const redactProjection = () => {
+    const redactSaved = createSavedPluginSecretRedactor(options.authority.homeContext);
+    return (value: string) => {
+      const saved = redactSaved(value);
+      return runtimeManager.redactPluginSecrets?.(saved) ?? saved;
+    };
+  };
+  const mcpMutationFailure = (serverName: string, error: unknown): McpServerMutationResult =>
+    rawMcpMutationFailure(serverName, new Error(redactProjection()(error instanceof Error ? error.message : String(error))));
+  const redactedErrorText = (error: unknown): string =>
+    redactProjection()(error instanceof Error ? error.message : String(error));
   let overlay: SessionMcpOverlayState = {
     servers: new Map(),
     enabledOverrides: new Map(),
   };
+  let committedDefinitions: ReadonlyMap<string, ResolvedMcpServerDefinition> = new Map();
+  if (options.authority instanceof ConfigStore) {
+    runtimeManager.setPluginFirstLaunchContext?.(
+      options.authority,
+      options.pluginStorageRoot,
+      name => {
+        const id = committedDefinitions.get(name)?.id;
+        return id === undefined ? undefined : overlay.enabledOverrides.get(id)?.enabled;
+      },
+    );
+  }
   let mutationTail: Promise<void> = Promise.resolve();
   let serviceMutationActive = false;
   let managerSurfaceDirty = false;
   let managerSurfaceCommitScheduled = false;
   let closed = false;
-  let surfaceSnapshot = projectMcpSurface(runtimeManager, 0);
+  let surfaceSnapshot = projectMcpSurface(runtimeManager, 0, redactProjection());
   let surfaceSignature = mcpSurfaceSignature(surfaceSnapshot);
   const surfaceInvalidationListeners = new Set<(revision: number) => void>();
   let authorityGeneration = 0;
@@ -1021,12 +1052,12 @@ export function createSessionMcpService(
     let candidate: McpSurfaceSnapshot;
     let candidateSignature: string;
     try {
-      candidate = projectMcpSurface(runtimeManager, surfaceSnapshot.revision);
+      candidate = projectMcpSurface(runtimeManager, surfaceSnapshot.revision, redactProjection());
       candidateSignature = mcpSurfaceSignature(candidate);
     } catch (error) {
       logForDebugging(
         `MCP committed surface projection failed: ${
-          error instanceof Error ? error.message : String(error)
+          redactedErrorText(error)
         }`,
         { level: "error" },
       );
@@ -1049,7 +1080,7 @@ export function createSessionMcpService(
       } catch (error) {
         logForDebugging(
           `MCP surface invalidation listener failed: ${
-            error instanceof Error ? error.message : String(error)
+            redactedErrorText(error)
           }`,
           { level: "error" },
         );
@@ -1092,7 +1123,7 @@ export function createSessionMcpService(
     void run.catch((error: unknown) => {
       logForDebugging(
         `MCP manager surface reconciliation failed: ${
-          error instanceof Error ? error.message : String(error)
+          redactedErrorText(error)
         }`,
         { level: "error" },
       );
@@ -1241,7 +1272,7 @@ export function createSessionMcpService(
               } catch (error) {
                 logForDebugging(
                   `MCP sandbox-refresh deferral observer failed: ${
-                    error instanceof Error ? error.message : String(error)
+                    redactedErrorText(error)
                   }`,
                   { level: "error" },
                 );
@@ -1347,6 +1378,7 @@ export function createSessionMcpService(
         // apply. Callers may await this promise without opening a stale-overlay
         // assignment window after authority invalidation.
         overlay = committedOverlay;
+        committedDefinitions = plan.definitions;
         appliedAuthorityGeneration = authorityGeneration;
         lastCommittedRefreshResult = result;
         return {
@@ -1374,6 +1406,7 @@ export function createSessionMcpService(
   ): Promise<AggregateError> => {
     const errors = [...causes];
     overlay = { servers: new Map(), enabledOverrides: new Map() };
+    committedDefinitions = new Map();
     appliedAuthorityGeneration = -1;
     lastCommittedRefreshResult = {
       configuredServers: [],
@@ -1517,7 +1550,7 @@ export function createSessionMcpService(
     }
     const state = manager.getConnectionState(name);
     const ready = enabled
-      ? state?.type === "connected"
+      ? state?.type === "connected" || state?.type === "stopped"
       : state?.type === "disabled";
     if (!ready) {
       const error =
@@ -1683,6 +1716,14 @@ export function createSessionMcpService(
         new Error(`MCP server "${name}" is disabled in config.`),
       );
     }
+    // Reconciliation has already restarted every eager server. Only an
+    // on-demand server it left stopped still needs an explicit start.
+    if (manager.getConnectionState(name)?.type === "stopped") {
+      const reconnect = await manager.reconnectServer(name);
+      if (!reconnect.success) {
+        return mcpMutationFailure(name, new Error(reconnect.error ?? `MCP server "${name}" did not become ready.`));
+      }
+    }
     const state = manager.getConnectionState(name);
     if (state?.type !== "connected") {
       const error =
@@ -1700,7 +1741,7 @@ export function createSessionMcpService(
   const reportBackgroundRefreshFailure = (error: unknown): void => {
     logForDebugging(
       `Canonical MCP authority reconciliation failed: ${
-        error instanceof Error ? error.message : String(error)
+        redactedErrorText(error)
       }`,
       { level: "error" },
     );
@@ -1900,7 +1941,7 @@ export function createSessionMcpService(
     );
   };
   return {
-    effectiveServers: async () => buildEffectiveServerMap(runtimeManager),
+    effectiveServers: async () => buildEffectiveServerMap(runtimeManager, redactProjection()),
     toolPluginProvenance: async () => null,
     refreshFromAuthority: enqueueRefresh,
     reconnectServer: (name) =>

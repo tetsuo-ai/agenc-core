@@ -3,7 +3,7 @@
 Canonical map of docs under `docs/`. Product overview and install entry:
 [`../README.md`](../README.md).
 
-Version in tree: **runtime / launcher 0.17.0**; embedding SDK
+Version in tree: **runtime / launcher 0.18.0**; embedding SDK
 **0.3.0**. Default provider **grok**; fresh-config session and direct-provider
 default **grok-4.6**. Managed OpenRouter's paid default remains
 **`x-ai/grok-4.5`** (see [providers.md](reference/providers.md)).
@@ -44,7 +44,6 @@ history; the linked pages below are current product truth.
 | [eval/seed-baseline-2026-07-17.md](eval/seed-baseline-2026-07-17.md) | Dated snapshot: first contained 10-task real-agent scorecard (2026-07-17, runtime 0.6.1). Not a reproduction contract |
 | [ci-required-gates.md](ci-required-gates.md) | Fast `test:fast` classification, typecheck-only native/policy-inventory surfaces, exact-SHA release gates, and the inactive optional GitHub App/ruleset design |
 | [provider-tool-compat.md](provider-tool-compat.md) | Provider-independent tool backends plus wire-schema shaping: object-root tools, llama.cpp grammar-safe schemas, Gemini native JSON Schema, Gemini object-applicator roots that omit type, and the LM Studio/openai-compatible 8192 ceiling |
-| [embedded-neovim-buffer.md](embedded-neovim-buffer.md) | Embedded Neovim workspace, multi-buffer safety, recovery, editor/chat handoff, request-scoped Editor turn bounds, configuration, troubleshooting, and hosted PTY split |
 | [browser.md](browser.md) | Browser tool, Chromium profile, SSRF proxy, `[browser]` config |
 | [imagine.md](imagine.md) | Provider-independent image/video tools backed by Meta Muse Image or direct xAI Imagine |
 | [sdk.md](sdk.md) | Embed via `@tetsuo-ai/agenc-sdk` (socket + subprocess), including `startRun` model/provider, the generated transcript.v2 protocol slice, and marker-checked workflow-result types |
@@ -70,7 +69,6 @@ history; the linked pages below are current product truth.
 | [reference/skills-plugins.md](reference/skills-plugins.md) | Skills, `agenc skills list`, plugin registration, marketplace install, publisher signatures, plugin-update signature policy, explicit local install sources, HTTP(S) archive fetch limits, recorded-source and update-success redaction, native archive fetch error redaction, repository-controlled scope stripping, and canonical `plugins.allowlist` identity |
 | [reference/hooks.md](reference/hooks.md) | Session lifecycle hooks vs gateway HTTP hooks, including UserPromptSubmit block/warn, daemon session survival, Stop-hook throw telemetry that does not close a turn, and PreToolUse allow that cannot skip interactive prompts |
 | [reference/tools-permissions-sandbox.md](reference/tools-permissions-sandbox.md) | LIVE tool catalog (by family), dual catalog note, permission modes, interactive-tool prompts that survive bypass, live bypass consent, OS sandbox, home-workspace remediation, launcher contract, and plugin MCP confinement |
-| [reference/tui-workbench.md](reference/tui-workbench.md) | TUI shell, workbench layout, BUFFER operator shortcuts, safety prompts, and the AskUserQuestion picker that bypass cannot skip |
 
 ## Explanation
 
@@ -100,6 +98,7 @@ history; the linked pages below are current product truth.
 
 | Doc | Summary |
 | --- | --- |
+| [releases/0.18.0.md](releases/0.18.0.md) | AgenC 0.18.0: the `/goal` session goal with independent verification, removal of the embedded editor and workbench, four new providers, and compaction that degrades instead of ending the turn |
 | [releases/0.17.0.md](releases/0.17.0.md) | AgenC 0.17.0: restart-safe resumable sessions, race-safe protocol 1.2 client sync, Linux Landlock fallback, and reliable large tool-output handling |
 | [releases/0.16.1.md](releases/0.16.1.md) | AgenC 0.16.1: stock-macOS installer repair, live install progress, launcher portability, and reliable supervised-process teardown |
 | [releases/0.16.0.md](releases/0.16.0.md) | AgenC 0.16.0: grok-4.6 as the startup default, first-party security plugin, and recovery from stale workspace process state |
@@ -133,7 +132,7 @@ Tracked in the repo (safe for GitHub clones):
 
 | Path | Summary |
 | --- | --- |
-| [`../README.md`](../README.md) | Product README (0.17.0) |
+| [`../README.md`](../README.md) | Product README (0.18.0) |
 | [`../packages/agenc-sdk/README.md`](../packages/agenc-sdk/README.md) | SDK package readme |
 | [`../runtime/eval/README.md`](../runtime/eval/README.md) | Agent-eval harness notes |
 | [`../runtime/src/tui/README.md`](../runtime/src/tui/README.md) | TUI architecture (Ink fork, themes) |

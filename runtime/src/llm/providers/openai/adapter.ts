@@ -24,6 +24,7 @@ import {
   LLMContextWindowExceededError,
   LLMInvalidResponseError,
   LLMProviderError,
+  LLMFundsError,
   LLMStreamTruncatedError,
   LLMManagedAdmissionError,
   LLMManagedUsagePendingError,
@@ -31,6 +32,7 @@ import {
   LLMServerError,
   mapLLMError,
 } from "../../errors.js";
+import { isProviderFundsFailure } from "../../funds.js";
 import { ProviderHttpClient } from "../../client.js";
 import {
   ProviderHttpError,
@@ -74,6 +76,7 @@ import {
   type ProviderFallbackDecision,
 } from "../../api/fallback-ladder.js";
 import { getRetryDelay, sleepMs } from "../../api/retry.js";
+import { openAiChatCompletionsRejectsFunctionTools } from "../../registry/openai-reasoning-models.js";
 import {
   providerApiKeyEnvironmentLabel,
   resolveBuiltInProviderInfo,
@@ -81,6 +84,12 @@ import {
 const OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE =
   "OpenAI Responses stream emitted invalid function_call";
 const OPENAI_STREAM_FAILED_MESSAGE = "OpenAI stream failed";
+const OPENAI_STREAM_RATE_LIMIT_CODES: ReadonlySet<string> = new Set([
+  "rate_limit_exceeded",
+  "rate_limit",
+  "rate_limited",
+  "too_many_requests",
+]);
 const OPENAI_CHAT_COMPLETIONS_INVALID_TOOL_CALL_MESSAGE =
   "OpenAI chat-completions stream emitted invalid tool_call";
 const CHAT_COMPLETIONS_CONTEXT_SAFETY_BUFFER_TOKENS = 1024;
@@ -223,12 +232,9 @@ function isOpenRouterBudgetLimitFailure(args: {
   const nested = readNestedProviderMessage(args.body);
   const text = `${args.message}\n${nested ?? ""}\n${providerHttpBodyToString(args.body)}`;
   const lower = text.toLowerCase();
-  return (
-    lower.includes("requires more credits") ||
-    lower.includes("insufficient credits") ||
-    lower.includes("monthly limit") ||
-    (lower.includes("can only afford") && lower.includes("max_tokens"))
-  );
+  // A request can exceed its output reservation even when the account still
+  // has funds. Keep that redacted guidance separate from exhausted billing.
+  return lower.includes("can only afford") && lower.includes("max_tokens");
 }
 
 function readNestedProviderCode(
@@ -254,6 +260,7 @@ function isZaiProviderName(providerName: string): boolean {
 function strictSseProviderLabel(providerName: string): string {
   if (providerName === "kimi") return "Kimi";
   if (providerName === "deepseek") return "DeepSeek";
+  if (providerName === "meta") return "Meta";
   return "Z.AI";
 }
 
@@ -262,7 +269,8 @@ function strictSseProviderLabel(providerName: string): string {
  * cut. DeepSeek documents a last chunk with a non-null finish_reason and usage, then `data: [DONE]`.
  */
 function requiresStrictChatCompletionsSse(providerName: string): boolean {
-  return isZaiProviderName(providerName) || providerName === "kimi" || providerName === "deepseek";
+  return isZaiProviderName(providerName) || providerName === "kimi" ||
+    providerName === "deepseek" || providerName === "meta";
 }
 
 /**
@@ -519,19 +527,27 @@ function mapOpenAIHttpFailureToError(args: {
       args.status,
     );
   }
+  if (isProviderFundsFailure(args.providerName, {
+    status: args.status, body: args.body, message: args.message,
+  })) {
+    const error = new LLMFundsError(args.providerName, args.status);
+    const retryAfterMs = args.retryAfterMs ?? readRetryAfterMs(args.body);
+    if (retryAfterMs !== undefined) Object.assign(error, { retryAfterMs });
+    return error;
+  }
   if (isZaiInsufficientBalanceFailure(args)) {
-    return new LLMProviderError(
+    return new LLMFundsError(
       args.providerName,
-      zaiInsufficientBalanceErrorMessage(),
       args.status,
+      zaiInsufficientBalanceErrorMessage(),
     );
   }
   const zaiPlanRefusal = readZaiPlanRefusal(args);
   if (zaiPlanRefusal !== undefined) {
-    return new LLMProviderError(
+    return new LLMFundsError(
       args.providerName,
-      zaiPlanRefusalErrorMessage(zaiPlanRefusal),
       args.status,
+      zaiPlanRefusalErrorMessage(zaiPlanRefusal),
     );
   }
   const bodyText = providerHttpBodyToString(args.body);
@@ -604,6 +620,24 @@ function mapOpenAIStreamError(args: {
             }).error.message,
           )
         : args.fallbackMessage;
+  if (isProviderFundsFailure(args.providerName, {
+    status, body: args.errorBody, message,
+  })) {
+    const error = new LLMFundsError(args.providerName, status);
+    const retryAfterMs = readRetryAfterMs(args.errorBody);
+    if (retryAfterMs !== undefined) Object.assign(error, { retryAfterMs });
+    return error;
+  }
+  if (OPENAI_STREAM_RATE_LIMIT_CODES.has(readNestedProviderCode(args.errorBody) ?? "")) {
+    return new LLMRateLimitError(
+      args.providerName,
+      readRetryAfterMs(args.errorBody),
+      buildOpenAICompatibilityErrorMessage(
+        message,
+        classifyOpenAIHttpFailure({ status: 429, body: message }),
+      ),
+    );
+  }
   if (typeof status === "number") {
     return mapOpenAIHttpFailureToError({
       providerName: args.providerName,
@@ -726,6 +760,7 @@ export class OpenAIProvider implements LLMProvider {
     consecutiveFailures: number,
     model: string = this.config.model,
   ): ProviderFallbackDecision | null {
+    if (isProviderFundsFailure(this.name, error)) return null;
     if (!this.config.providerFallback) return null;
     const decision = evaluateProviderFallback({
       ...this.config.providerFallback,
@@ -779,7 +814,7 @@ export class OpenAIProvider implements LLMProvider {
 
     try {
       return await this.auth.withAuthorizedOperation(async () => {
-        if (this.config.useResponsesApi !== false) {
+        if (this.usesResponsesApi(model, requestTools, options)) {
           assertProviderStructuredOutputCompatibility({
             providerName: this.name,
             model,
@@ -909,7 +944,13 @@ export class OpenAIProvider implements LLMProvider {
 
     try {
       return await this.auth.withAuthorizedOperation(async () => {
-        if (this.config.useResponsesApi !== false) {
+        if (
+          this.usesResponsesApi(
+            options?.model?.trim() || this.config.model,
+            options?.tools ?? this.config.tools ?? [],
+            options,
+          )
+        ) {
           return await this.streamResponses(messages, onChunk, options, timeoutMs, headers);
         }
         return await this.streamChatCompletions(
@@ -945,6 +986,25 @@ export class OpenAIProvider implements LLMProvider {
       }
       throw mapLLMError(this.name, error, timeoutMs ?? 0);
     }
+  }
+
+  /**
+   * Chat Completions unless configured otherwise. OpenAI's Chat Completions
+   * rejects function tools with a reasoning effort on GPT-6 Sol and Luna and
+   * any function tool on GPT-6 Astra, so such a request goes to the
+   * Responses API of the same endpoint, which accepts it.
+   */
+  private usesResponsesApi(
+    model: string,
+    tools: readonly LLMTool[],
+    options: LLMChatOptions | undefined,
+  ): boolean {
+    if (this.config.useResponsesApi !== false) return true;
+    return (
+      this.name === "openai" &&
+      tools.length > 0 &&
+      openAiChatCompletionsRejectsFunctionTools(model, options?.reasoningEffort)
+    );
   }
 
   async healthCheck(): Promise<boolean> {
@@ -1471,7 +1531,8 @@ export class OpenAIProvider implements LLMProvider {
             errorBody,
             fallbackMessage: message,
           });
-          if (streamedContent.length === 0 && streamedToolCalls.size === 0) {
+          if (!isProviderFundsFailure(this.name, streamError) &&
+            streamedContent.length === 0 && streamedToolCalls.size === 0) {
             const fallbackDecision = this.evaluateConfiguredFallback(
               openAIStreamFallbackCandidate(errorBody, message),
               consecutiveFallbackFailures,
@@ -1642,6 +1703,7 @@ export class OpenAIProvider implements LLMProvider {
       let unterminatedFragmentNamesToolCalls = false;
       const rawFinishReasons = new Set<string>();
       let usage: Record<string, unknown> = {};
+      let servedServiceTier: unknown;
       const toolCallAccumulator = new Map<
         number,
         { id: string; name: string; arguments: string }
@@ -1662,7 +1724,8 @@ export class OpenAIProvider implements LLMProvider {
             errorBody: chunk.error,
             fallbackMessage: OPENAI_STREAM_FAILED_MESSAGE,
           });
-          if (content.length === 0 && toolCallAccumulator.size === 0) {
+          if (!isProviderFundsFailure(this.name, streamError) &&
+            content.length === 0 && toolCallAccumulator.size === 0) {
             const fallbackDecision = this.evaluateConfiguredFallback(
               openAIStreamFallbackCandidate(
                 chunk.error,
@@ -1692,6 +1755,9 @@ export class OpenAIProvider implements LLMProvider {
         }
         if (chunk.usage && typeof chunk.usage === "object") {
           usage = chunk.usage as Record<string, unknown>;
+        }
+        if (typeof chunk.service_tier === "string") {
+          servedServiceTier = chunk.service_tier;
         }
 
         const choices = Array.isArray(chunk.choices)
@@ -1851,11 +1917,18 @@ export class OpenAIProvider implements LLMProvider {
           `${strictSseProviderLabel(this.name)} SSE stream ended with an unterminated event`,
         );
       }
+      // A single `length` finish is the documented output-limit cutoff. Its
+      // unfinished tool calls are dropped below and never dispatched; the turn
+      // then takes max-output recovery. Failing the response instead ended a
+      // DeepSeek subagent whose Write call ran into its 64k output cap.
+      const cutOffByOutputLimit =
+        rawFinishReasons.size === 1 && rawFinishReasons.has("length");
       if (
         streamCapabilityHints.requiresExplicitFinishReason === true &&
         (!sawFinishReason ||
           rawFinishReasons.size > 1 ||
           (toolCallAccumulator.size > 0 &&
+            !cutOffByOutputLimit &&
             (streamCapabilityHints.rejectsPartialToolCalls === true ||
               finishReason === "stop" ||
               finishReason === "tool_calls") &&
@@ -1870,7 +1943,11 @@ export class OpenAIProvider implements LLMProvider {
                 (streamCapabilityHints.rejectsPartialToolCalls === true ||
                   finishReason === "stop" ||
                   finishReason === "tool_calls")
-            ? "Streamed tool calls arrived without finish_reason=tool_calls"
+            ? `Streamed tool calls arrived without finish_reason=tool_calls (${
+              sawFinishReason
+                ? `received ${JSON.stringify([...rawFinishReasons][0])}`
+                : "no finish_reason"
+            })`
             : "Stream closed without an explicit finish_reason",
         );
       }
@@ -1956,6 +2033,9 @@ export class OpenAIProvider implements LLMProvider {
               },
             ],
             usage,
+            ...(servedServiceTier !== undefined
+              ? { service_tier: servedServiceTier }
+              : {}),
           },
           requestOptions,
         ),

@@ -7,6 +7,7 @@ type TranscriptV2JsonValue =
   | TranscriptV2JsonPrimitive
   | readonly TranscriptV2JsonValue[]
   | TranscriptV2JsonObject;
+type JsonValue = TranscriptV2JsonValue;
 interface TranscriptV2JsonObject {
   readonly [key: string]: TranscriptV2JsonValue | undefined;
 }
@@ -16,6 +17,8 @@ export interface SessionTranscriptV2Message extends TranscriptV2JsonObject {
   readonly commitEventId: string;
   readonly role: "user" | "assistant";
   readonly text: string;
+  /** Full UTF-8 text when the snapshot substitutes a bounded reference. */
+  readonly textArtifact?: { readonly id: string; readonly digest: string; readonly size: number; readonly mimeType: "text/plain" };
   readonly turnId?: string;
   readonly clientMessageId?: string;
   /** Zero only for migrated response_item rows that predate event sequencing. */
@@ -40,10 +43,24 @@ export interface SessionTranscriptV2TurnResult extends TranscriptV2JsonObject {
   readonly provider?: string;
 }
 
+export interface DisplayAttachment extends TranscriptV2JsonObject {
+  readonly id: string;
+  readonly kind: "chart" | "table" | "image" | "file";
+  readonly title: string;
+  readonly mimeType: string;
+  readonly size: number;
+  readonly digest: string;
+  readonly data?: JsonValue;
+}
+
 export interface SessionTranscriptV2Event extends TranscriptV2JsonObject {
   readonly eventId: string;
   readonly committedSequence: number;
-  readonly type: "token_count" | "session_usage" | "turn_failed" | "turn_aborted";
+  /**
+   * `approval_denied` names a call the user denied (`callId`, `toolName`,
+   * `stage`, and `input` bounded to the fields that identify its target).
+   */
+  readonly type: "token_count" | "session_usage" | "turn_failed" | "turn_aborted" | "approval_denied" | "tool_call_completed";
   readonly payload: {
     readonly runId?: string;
     readonly sequence?: number;
@@ -87,6 +104,13 @@ export interface SessionTranscriptV2Event extends TranscriptV2JsonObject {
     readonly code?: string;
     readonly message?: string;
     readonly reason?: string;
+    readonly callId?: string;
+    readonly toolName?: string;
+    readonly result?: string;
+    readonly isError?: boolean;
+    readonly input?: { readonly [key: string]: string };
+    readonly stage?: "before_execution" | "sandbox_escalation";
+    readonly displayAttachments?: readonly DisplayAttachment[];
   };
 }
 
@@ -97,7 +121,17 @@ export interface SessionTranscriptV2Result extends TranscriptV2JsonObject {
   readonly historyEpoch: string;
   readonly asOfSequence: number;
   readonly messages: readonly SessionTranscriptV2Message[];
+  /** Older rows were omitted to keep the response within transport limits. */
+  readonly truncated?: boolean;
   readonly activeTurn?: SessionTranscriptV2ActiveTurn;
   readonly turnResults?: readonly SessionTranscriptV2TurnResult[];
   readonly events?: readonly SessionTranscriptV2Event[];
+  /**
+   * Plan-mode state at `asOfSequence`, taken from the latest
+   * run_runtime_settings_changed event in the same history the transcript was
+   * rebuilt from. Absent when that history holds no settings event. A client
+   * that receives it needs no run-journal replay to learn it.
+   */
+  readonly planModeActive?: boolean;
+  readonly planModeSequence?: number;
 }

@@ -1042,7 +1042,6 @@ function parseCheckpointRetryCounts(
 }
 
 interface ParsedCheckpointAdmissionState {
-  editorToolCallsAdmitted?: number;
   pendingAdmissionFallback?: PendingAdmissionFallbackSlice;
 }
 
@@ -1050,12 +1049,7 @@ function parseCheckpointAdmissionState(
   value: Record<string, unknown>,
 ): ParsedCheckpointAdmissionState {
   const result: ParsedCheckpointAdmissionState = {};
-  if (value.editorToolCallsAdmitted !== undefined) {
-    result.editorToolCallsAdmitted = nonNegativeInteger(
-      value.editorToolCallsAdmitted,
-      "resumableState.editorToolCallsAdmitted",
-    );
-  }
+  // `editorToolCallsAdmitted` (retired editor quota) is accepted and ignored.
   if (value.pendingAdmissionFallback !== undefined) {
     const fallback = validatePendingAdmissionFallbackSlice(
       value.pendingAdmissionFallback,
