@@ -36,6 +36,7 @@ import type { ShellProvider, ShellType } from "./shell/shellProvider.js";
 import {
   isExecutableShellPath,
   isSupportedPosixShellPath,
+  probePosixShellPath,
   supportedPosixShellKind,
 } from "./shell/posixShellPath.js";
 import { subprocessEnv } from "./subprocessEnv.js";
@@ -88,9 +89,10 @@ export async function findSuitableShell(
         `Configured shell ${JSON.stringify(shellOverride)} must name a bash or zsh executable`,
       );
     }
-    if (!isExecutableShellPath(shellOverride, childEnvironment)) {
+    const overrideProbe = probePosixShellPath(shellOverride, childEnvironment);
+    if (!overrideProbe.ok) {
       throw new Error(
-        `Configured shell ${JSON.stringify(shellOverride)} is not executable`,
+        `Configured shell ${JSON.stringify(shellOverride)} is not executable: ${overrideProbe.reason}`,
       );
     }
     logForDebugging(`Using shell override: ${shellOverride}`);
@@ -111,10 +113,16 @@ export async function findSuitableShell(
   const platformIsWindows = getPlatform() === "windows";
   // Automatic discovery is restricted to fixed platform locations. Client
   // PATH is not executable authority; use AGENC_SHELL for non-standard paths.
+  // On Windows those are the Git for Windows install roots: machine-wide
+  // under Program Files, and the per-user default under LOCALAPPDATA.
+  const localAppData = environment.LOCALAPPDATA;
   const shellPaths = platformIsWindows
     ? [
         "C:\\Program Files\\Git\\bin",
         "C:\\Program Files (x86)\\Git\\bin",
+        ...(localAppData !== undefined && isAbsolute(localAppData)
+          ? [join(localAppData, "Programs", "Git", "bin")]
+          : []),
       ]
     : ["/bin", "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"];
 
@@ -137,20 +145,23 @@ export async function findSuitableShell(
     supportedShells.unshift(env_shell);
   }
 
-  const shellPath = supportedShells.find(
-    (shell) => shell && isExecutableShellPath(shell, childEnvironment),
-  );
-
-  // If no valid shell found, throw a helpful error
-  if (!shellPath) {
-    const errorMsg =
-      "No suitable shell found. AgenC CLI requires a Posix shell environment. " +
-      "Install bash or zsh, or set AGENC_SHELL to its absolute executable path.";
-    logError(new Error(errorMsg));
-    throw new Error(errorMsg);
+  const failures: string[] = [];
+  for (const shell of supportedShells) {
+    if (!shell) continue;
+    const probe = probePosixShellPath(shell, childEnvironment);
+    if (probe.ok) return shell;
+    failures.push(`${shell} (${probe.reason})`);
   }
 
-  return shellPath;
+  // No valid shell found: say which candidates were tried and why each one
+  // was rejected, so a Windows install without Git Bash, or a machine whose
+  // shells hang or crash, can be diagnosed from the message alone.
+  const errorMsg =
+    "No suitable shell found. AgenC CLI requires a Posix shell environment. " +
+    "Install bash or zsh, or set AGENC_SHELL to its absolute executable path. " +
+    `Checked: ${failures.join("; ")}`;
+  logError(new Error(errorMsg));
+  throw new Error(errorMsg);
 }
 
 async function getShellConfigImpl(

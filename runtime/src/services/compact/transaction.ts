@@ -99,6 +99,7 @@ import {
   compactActiveHistoryEntries,
   createCompactionPayloadBundleV1,
 } from "./payload-manifest.js";
+import { redactDurableSecrets } from "../../session/provider-replay-redaction.js";
 import { redactSecretsInValue } from "../../secrets/sanitizer.js";
 import { durableRedactionDropsProviderReplay } from "../../session/message-history-conversion.js";
 import type { ProviderReasoningReplay } from "../../llm/types.js";
@@ -262,10 +263,22 @@ function createCompactionAdmissionScope(
   const childSession = Object.assign(Object.create(session) as object, {
     services: { ...session.services, executionAdmission: child },
   }) as typeof session;
-  const unbind = bindExecutionAdmissionJournal(childSession, child);
+  let unbind: () => void;
+  try {
+    unbind = bindExecutionAdmissionJournal(childSession, child);
+  } catch (error) {
+    child.release?.();
+    throw error;
+  }
   return {
     context: { ...context, admissionSession: childSession },
-    unbind,
+    unbind: () => {
+      try {
+        unbind();
+      } finally {
+        child.release?.();
+      }
+    },
   };
 }
 
@@ -1750,8 +1763,9 @@ function createAuthoritativeSelectionMapper(
     // caller's live message the same way so a secret in a user or assistant
     // message does not read as "no canonical match" (redaction is idempotent).
     return canonicalizeJson(
-      redactSecretsInValue(
+      redactDurableSecrets(
         canonicalCompactionSourceMessages([durablyProjected(message)]),
+        "source_history",
       ),
     );
   };
@@ -1769,6 +1783,15 @@ function createAuthoritativeSelectionMapper(
     const positions = preparedByKey.get(key(message)) ?? [];
     const positionIndex = lastIndexLessThan(positions, nextPreparedIndex);
     if (positionIndex < 0) {
+      if (isTransientContextMessage(message)) {
+        // A per-request context message (a skill listing, a permission
+        // reminder) is rendered for the model and never written to the
+        // rollout, so it cannot have a canonical record. It carries nothing
+        // to summarize or keep: leave it out rather than refuse the whole
+        // compaction over it.
+        callerToPrepared[callerIndex] = -1;
+        continue;
+      }
       // Name the message that broke the projection. Without this the
       // sentence alone could not distinguish a rewritten tool result from a
       // message the canonical rollout never saw, so a live failure could not
@@ -1828,7 +1851,9 @@ function createAuthoritativeSelectionMapper(
       used.add(callerIndex);
       return callerIndex;
     });
-    const preparedIndexes = callerIndexes.map((index) => callerToPrepared[index]!);
+    const preparedIndexes = callerIndexes
+      .map((index) => callerToPrepared[index]!)
+      .filter((index) => index >= 0);
     return {
       messages: preparedIndexes.map((index) => prepared.messages[index]!),
       sourceRefs: preparedIndexes.map(
@@ -1837,6 +1862,22 @@ function createAuthoritativeSelectionMapper(
       preparedIndexes,
     };
   };
+}
+
+/**
+ * A user-channel context message the runtime renders for one request (a
+ * skill listing, a permission reminder, hook context). It is never history:
+ * `isAttachmentMessage` in session/attachment-retention.ts names the same
+ * shape. An agent-invocation channel also carries the user_context boundary
+ * but is durable, so it is excluded here.
+ */
+function isTransientContextMessage(message: RuntimeMessage): boolean {
+  const role = message.originalRole ?? message.role ?? message.message?.role ?? "user";
+  return (
+    role === "user" &&
+    message.runtimeOnly?.mergeBoundary === "user_context" &&
+    message.runtimeOnly?.agentInvocation === undefined
+  );
 }
 
 function lastIndexLessThan(values: readonly number[], threshold: number): number {

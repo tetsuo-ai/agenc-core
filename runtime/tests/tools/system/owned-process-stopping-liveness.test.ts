@@ -47,9 +47,30 @@ describe("owned-process liveness independent review", () => {
       const views = manager.listOwnedProcesses({ ownerId: "independent-review-owner" });
       expect(result.isError).toBeUndefined();
       expect(views.find((view) => view.sessionId === sessionId)?.status).toBe("stopping");
-      expect(JSON.parse(String(result.content)).owned_live_sessions).toContain(sessionId);
+      const body = JSON.parse(String(result.content));
+      expect(body.owned_live_sessions).toContain(sessionId);
+      // Named as stopping, so a kill in progress does not read as a failure.
+      expect(body.stopping_sessions).toEqual([sessionId]);
+      expect(body.stopping_sessions_note).toMatch(/not confirmed yet/);
     } finally {
       await manager.closeAll();
     }
+  });
+
+  it("names only sessions still stopping, not ones merely running", async () => {
+    const running: OwnedProcessView = { ...stopping, sessionId: 102, status: "running" };
+    const tool = createKillProcessTool({
+      unifiedExecManager: {
+        maxTimeoutMs: 1000,
+        execCommand: vi.fn(),
+        writeStdin: vi.fn(),
+        closeAll: vi.fn(),
+        terminateProcess: vi.fn(() => ({ terminated: true })),
+        listOwnedProcesses: vi.fn(() => [stopping, running]),
+      },
+    });
+    const body = JSON.parse(String((await tool.execute({ session_id: stopping.sessionId })).content));
+    expect(body.owned_live_sessions).toEqual([stopping.sessionId, running.sessionId]);
+    expect(body.stopping_sessions).toEqual([stopping.sessionId]);
   });
 });

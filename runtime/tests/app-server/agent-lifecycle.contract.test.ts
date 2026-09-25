@@ -1,5 +1,6 @@
 import {
   copyFileSync,
+  existsSync,
   lstatSync,
   linkSync,
   mkdirSync,
@@ -10,13 +11,16 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgenCSessionSnapshotPolicy } from "../state/snapshot-policy.js";
+import { pruneRolloutSessions } from "../state/pruning.js";
 import { upsertAgentRun } from "../state/agent-runs.js";
 import { RolloutStore } from "../session/rollout-store.js";
+import { persistDisplayAttachments, readDisplayArtifact } from "../session/display-artifact-store.js";
+import { validateDisplayBlock } from "../mcp-client/display-attachments.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
 import { FileThreadStore } from "../thread-store/store.js";
@@ -25,8 +29,12 @@ import {
   type StateSqliteDriver,
 } from "../state/sqlite-driver.js";
 import { StateRunDurabilityRepository } from "../state/run-durability.js";
-import { listUnresolvedUnknownOutcomeEffects } from "../state/unknown-outcome-gate.js";
+import {
+  listUnresolvedUnknownOutcomeEffects,
+  resolveUnknownOutcomeEffect,
+} from "../state/unknown-outcome-gate.js";
 import { recordInFlightToolCallUnknownOutcome } from "../state/tool-output-rotation.js";
+import type { ResolveDurableEffectReviewOptions } from "../state/effect-review.js";
 import {
   __setAgentLifecycleResumeSourceTestHooksForTest,
   AgenCDaemonAgentLifecycleError,
@@ -40,6 +48,7 @@ import {
   AGENC_DAEMON_PROTOCOL_VERSION,
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
   JSON_RPC_VERSION,
+  type SessionResolveToolCallParams,
 } from "./protocol/index.js";
 import {
   AGENC_PORTAL_CLIENT_CAPABILITY_FLAGS,
@@ -98,6 +107,12 @@ function createThreadStoreTestDirs(): {
   };
 }
 
+function cleanupThreadStoreTestDirs(cwd: string, home: string, restoreEnv: () => void): void {
+  restoreEnv();
+  rmSync(home, { recursive: true, force: true });
+  rmSync(cwd, { recursive: true, force: true });
+}
+
 function openRollout(
   cwd: string,
   sessionId: string,
@@ -121,6 +136,67 @@ function openRollout(
     modelProvider: "grok",
   });
   return rollout;
+}
+
+function appendOversizedSnapshotAnswer(
+  store: FileThreadStore,
+  rollout: RolloutStore,
+  threadId: string,
+  cwd: string,
+): string {
+  const answer = "A".repeat(400_000);
+  store.createThread({ threadId, rolloutStore: rollout, source: "cli_main", cwd });
+  rollout.appendRollout({ type: "event_msg", payload: { id: "answer", eventId: "answer", seq: 1, msg: { type: "agent_message", payload: { message: answer } } } });
+  rollout.flushDurable();
+  return answer;
+}
+
+type LifecycleRunner = NonNullable<
+  ConstructorParameters<typeof AgenCDaemonAgentManager>[0]["runner"]
+>;
+
+/** A runner whose live-agent transcript methods all say the agent is not running. */
+function noLiveAgentRunner(agentId: string): LifecycleRunner {
+  return {
+    startAgent: async () => ({
+      agentId: "unused",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      status: "running",
+    }),
+    getAgentSessionTranscript: async () => {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    },
+    getAgentSessionTranscriptV2: async () => {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    },
+  };
+}
+
+/** Persist one user/assistant exchange as sequenced daemon events. */
+function appendSequencedExchange(
+  rollout: ReturnType<typeof openRollout>,
+  user: string,
+  assistant: string,
+  startSeq = 1,
+): void {
+  rollout.appendRollout({
+    type: "event_msg",
+    payload: {
+      id: `user-event-${startSeq}`,
+      eventId: `user-event-${startSeq}`,
+      seq: startSeq,
+      msg: { type: "user_message", payload: { message: user, displayText: user } },
+    },
+  });
+  rollout.appendRollout({
+    type: "event_msg",
+    payload: {
+      id: `agent-event-${startSeq + 1}`,
+      eventId: `agent-event-${startSeq + 1}`,
+      seq: startSeq + 1,
+      msg: { type: "agent_message", payload: { message: assistant } },
+    },
+  });
 }
 
 const resumeFixtureCleanups: Array<() => void> = [];
@@ -597,6 +673,51 @@ describe("AgenC background agent lifecycle", () => {
     }
   });
 
+  it("reads a 13 MiB artifact through bounded session-scoped responses after a manager restart", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const first = openRollout(cwd, "conv-display-one");
+    const second = openRollout(cwd, "conv-display-two");
+    const threadStore = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      for (const [id, rollout] of [["conv-display-one", first], ["conv-display-two", second]] as const) {
+        threadStore.createThread({ threadId: id, rolloutStore: rollout, source: "cli_main", cwd });
+        threadStore.shutdownThread(id);
+      }
+      const bytes = randomBytes(13 * 1024 * 1024);
+      const id = createHash("sha256").update(bytes).digest("hex");
+      const display = await validateDisplayBlock({ type: "resource", resource: { uri: "agenc:large.bin", name: "large.bin", mimeType: "application/octet-stream", blob: bytes.toString("base64") } }, []);
+      const stored = persistDisplayAttachments(first.store.sessionDir, [display.attachment]);
+      first.appendRollout({ type: "event_msg", payload: { id: "display-complete", seq: 1, msg: { type: "tool_call_completed", payload: { callId: "call-1", result: '[Shown to the user: file "talk.ics"]', isError: false, displayAttachments: stored } } } });
+      first.flushDurable();
+      const sessionManager = new AgenCDaemonSessionManager({ createSessionId: () => "conv-display-one" });
+      await sessionManager.createSession({ agentId: "agent-display", cwd });
+      const restarted = new AgenCDaemonAgentManager({ threadStore, sessionManager });
+      const threadReads = vi.spyOn(threadStore, "readThread");
+      let offset = 0;
+      const chunks: Buffer[] = [];
+      for (;;) {
+        const response = await restarted.readSessionArtifact({ sessionId: "conv-display-one", id, offset });
+        expect(response).toMatchObject({ sessionId: "conv-display-one", id, size: bytes.length, offset });
+        expect(Buffer.byteLength(JSON.stringify({ jsonrpc: "2.0", id: "read", result: response }))).toBeLessThan(1024 * 1024);
+        chunks.push(Buffer.from(response.data, "base64"));
+        if (response.nextOffset === null) break;
+        offset = response.nextOffset;
+      }
+      expect(chunks.length).toBeGreaterThan(1);
+      expect(threadReads).toHaveBeenCalled();
+      expect(threadReads.mock.calls.every(([params]) => params.includeHistory === false)).toBe(true);
+      expect(createHash("sha256").update(Buffer.concat(chunks)).digest("hex")).toBe(id);
+      await expect(restarted.getSessionTranscriptV2({ sessionId: "conv-display-one" })).resolves.toMatchObject({ events: expect.arrayContaining([expect.objectContaining({ type: "tool_call_completed", payload: expect.objectContaining({ displayAttachments: stored }) })]) });
+      await expect(restarted.readSessionArtifact({ sessionId: "conv-display-two", id })).rejects.toThrow("session artifact not found");
+      first.close();
+      threadStore.archiveThread({ threadId: "conv-display-one" });
+      expect(() => readDisplayArtifact(first.store.sessionDir, id)).toThrow();
+    } finally {
+      threadStore.close(); first.close(); second.close();
+      cleanupThreadStoreTestDirs(cwd, home, restoreEnv);
+    }
+  });
+
   it("serves session.transcript from the persisted thread when no live agent exists", async () => {
     // A `conv-*` terminal session (source "cli_main") persists a thread but
     // runs its agent in its OWN process, so the daemon has no live agent for
@@ -684,16 +805,7 @@ describe("AgenC background agent lifecycle", () => {
       const liveCapableRunner = new AgenCDaemonAgentManager({
         threadStore,
         sessionManager: sessions,
-        runner: {
-          startAgent: async () => ({
-            agentId: "unused",
-            startedAt: "2026-05-01T12:00:00.000Z",
-            status: "running",
-          }),
-          getAgentSessionTranscript: async () => {
-            throw new Error("AgenC daemon agent not running: agent_default");
-          },
-        },
+        runner: noLiveAgentRunner("agent_default"),
       });
       await expect(
         liveCapableRunner.getSessionTranscript({
@@ -712,6 +824,140 @@ describe("AgenC background agent lifecycle", () => {
       restoreEnv();
       rmSync(home, { recursive: true, force: true });
       rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("serves the persisted transcript for a daemon session addressed by its session id", async () => {
+    // The desktop attaches a session and then addresses it by the daemon's
+    // session record id (session_<uuid>), while the rollout is filed under
+    // the agent id. After a daemon restart the agent row is recovered without
+    // a runtime, so the transcript must come from the persisted thread; the
+    // fallback used to look the session id up as a thread id and miss.
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const rollout = openRollout(cwd, "conv-desktop-thread");
+    const threadStore = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      threadStore.createThread({
+        threadId: "conv-desktop-thread",
+        rolloutStore: rollout,
+        source: "cli_main",
+        cwd,
+      });
+      // Sequenced events, as a daemon session writes them: the v2 snapshot
+      // reconstruction keys its messages on eventId and seq.
+      appendSequencedExchange(rollout, "sleep for a while", "starting");
+      threadStore.shutdownThread("conv-desktop-thread");
+
+      const sessions = new AgenCDaemonSessionManager({ threadStore });
+      const created = await sessions.createSession({
+        agentId: "conv-desktop-thread",
+        cwd,
+      });
+      expect(created.sessionId).not.toBe("conv-desktop-thread");
+
+      const manager = new AgenCDaemonAgentManager({
+        threadStore,
+        sessionManager: sessions,
+        runner: noLiveAgentRunner("conv-desktop-thread"),
+      });
+      await expect(
+        manager.getSessionTranscriptV2({ sessionId: created.sessionId }),
+      ).resolves.toMatchObject({
+        sessionId: created.sessionId,
+        runId: "conv-desktop-thread",
+        messages: expect.arrayContaining([
+          expect.objectContaining({ role: "user", text: "sleep for a while" }),
+          expect.objectContaining({ role: "assistant", text: "starting" }),
+        ]),
+      });
+      await expect(
+        manager.getSessionTranscript({ sessionId: created.sessionId }),
+      ).resolves.toEqual({
+        sessionId: created.sessionId,
+        messages: [
+          { role: "user", text: "sleep for a while" },
+          { role: "assistant", text: "starting" },
+        ],
+      });
+    } finally {
+      threadStore.close();
+      rollout.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("publishes an oversized persisted snapshot in the archived location after lookup", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const threadId = "conv-snapshot-archive-race";
+    const rollout = openRollout(cwd, threadId);
+    const threadStore = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      const answer = appendOversizedSnapshotAnswer(threadStore, rollout, threadId, cwd);
+      threadStore.shutdownThread(threadId);
+      rollout.close();
+      const oldArtifacts = join(dirname(rollout.rolloutPath), "display-artifacts");
+      const sessions = new AgenCDaemonSessionManager({ threadStore, createSessionId: () => threadId });
+      await sessions.createSession({ agentId: threadId, cwd });
+      const manager = new AgenCDaemonAgentManager({ threadStore, sessionManager: sessions });
+      const originalRead = threadStore.readThread.bind(threadStore);
+      let moved = false;
+      vi.spyOn(threadStore, "readThread").mockImplementation((params) => {
+        const thread = originalRead(params);
+        if (params.includeHistory && !moved) {
+          moved = true;
+          threadStore.archiveThread({ threadId });
+        }
+        return thread;
+      });
+
+      const snapshot = await manager.getSessionTranscriptV2({ sessionId: threadId });
+      expect(moved).toBe(true);
+      const artifact = snapshot.messages.at(-1)?.textArtifact;
+      expect(artifact).toBeDefined();
+      const read = await manager.readSessionArtifact({ sessionId: threadId, id: artifact!.id });
+      expect(Buffer.from(read.data, "base64").toString()).toBe(answer);
+      expect(existsSync(oldArtifacts)).toBe(false);
+
+      const driver = openStateDatabases({ cwd, agencHome: home });
+      try {
+        const report = pruneRolloutSessions(driver, {
+          sessionsDir: join(threadStore.getProjectDir(), "sessions"),
+          retention_days: 30,
+          now: () => "2026-06-01T00:00:00.000Z",
+        });
+        expect(report.prunedSessions).toBe(0);
+      } finally { driver.close(); }
+      expect(existsSync(oldArtifacts)).toBe(false);
+    } finally {
+      threadStore.close(); rollout.close();
+      cleanupThreadStoreTestDirs(cwd, home, restoreEnv);
+    }
+  });
+
+  it("publishes an oversized persisted snapshot while a separate store owns the writer lease", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const threadId = "conv-snapshot-foreign-writer";
+    const rollout = openRollout(cwd, threadId);
+    const owner = new FileThreadStore({ cwd, agencHome: home });
+    const reader = new FileThreadStore({ cwd, agencHome: home });
+    try {
+      const answer = appendOversizedSnapshotAnswer(owner, rollout, threadId, cwd);
+      expect(existsSync(`${rollout.rolloutPath}.lock`)).toBe(true);
+
+      const sessions = new AgenCDaemonSessionManager({ threadStore: reader, createSessionId: () => threadId });
+      await sessions.createSession({ agentId: threadId, cwd });
+      const manager = new AgenCDaemonAgentManager({ threadStore: reader, sessionManager: sessions });
+      const snapshot = await manager.getSessionTranscriptV2({ sessionId: threadId });
+      const artifact = snapshot.messages.at(-1)?.textArtifact;
+      expect(artifact).toBeDefined();
+      const read = await manager.readSessionArtifact({ sessionId: threadId, id: artifact!.id });
+      expect(Buffer.from(read.data, "base64").toString()).toBe(answer);
+      expect(existsSync(`${rollout.rolloutPath}.lock`)).toBe(true);
+    } finally {
+      reader.close(); owner.close(); rollout.close();
+      cleanupThreadStoreTestDirs(cwd, home, restoreEnv);
     }
   });
 
@@ -1387,7 +1633,7 @@ describe("AgenC background agent lifecycle", () => {
           transport: "stdio" as const,
           enabled: true,
           required: false,
-          state: "connected" as const,
+          state: "stopped" as const,
           displayTarget: "node",
           toolCount: 1,
           error: "https://operator:hunter2@example.test/private",
@@ -1440,7 +1686,7 @@ describe("AgenC background agent lifecycle", () => {
           transport: "stdio",
           enabled: true,
           required: false,
-          state: "connected",
+          state: "disconnected",
           displayTarget: "node",
           toolCount: 1,
         },
@@ -1451,6 +1697,11 @@ describe("AgenC background agent lifecycle", () => {
           name: "mcp.audit-ping.check",
         },
       ],
+    });
+    await expect(agents.getMcpStatusForSession({
+      sessionId: "session-mcp-status", includeStoppedState: true,
+    })).resolves.toMatchObject({
+      servers: [expect.objectContaining({ state: "stopped" })],
     });
     expect(getMcpStatus).toHaveBeenCalledWith("agent-mcp-status");
   });
@@ -2071,8 +2322,9 @@ describe("AgenC background agent lifecycle", () => {
         registerNoopSessionRoute,
       ),
     ).rejects.toMatchObject({
-      code: "INVALID_ARGUMENT",
-      message: expect.stringContaining("live runtime-settings authority"),
+      code: "BACKGROUND_RUNNER_UNAVAILABLE",
+      message:
+        "AgenC daemon agent recovered without a live runtime: agent-cancel-recovered",
     });
     await expect(
       agents.cancelSessionTurn({
@@ -5245,21 +5497,6 @@ describe("AgenC background agent lifecycle", () => {
       runner,
       sessionManager: sessions,
     });
-    const initialEditorInteraction = {
-      interactionId: "interaction-startup-explain",
-      kind: "explain" as const,
-      policy: "read_only" as const,
-      editorInstanceId: "editor-startup",
-      bufferHandle: 4,
-      changedtick: 9,
-      contentSha256: "b".repeat(64),
-      path: "/workspace/src/main.ts",
-      range: {
-        start: { line: 1, column: 0 },
-        end: { line: 2, column: 0 },
-      },
-      selectionMode: "line" as const,
-    };
 
     await expect(
       createTestAgent(agents, {
@@ -5273,7 +5510,6 @@ describe("AgenC background agent lifecycle", () => {
           },
         ],
         initialDisplayUserMessage: "Explain the selected code",
-        initialEditorInteraction,
       }),
     ).resolves.toMatchObject({
       agentId: "agent_image",
@@ -5291,7 +5527,6 @@ describe("AgenC background agent lifecycle", () => {
           },
         ],
         initialDisplayUserMessage: "Explain the selected code",
-        initialEditorInteraction,
       }),
     ]);
     await expect(sessions.getSession("session_image")).resolves.toMatchObject({
@@ -5997,6 +6232,131 @@ describe("AgenC background agent lifecycle", () => {
     }
   });
 
+  // Stands in for the live runner's journal append: project the operator
+  // review onto the durable effect row the way the canonical event would.
+  const projectLiveReview = (driver: StateSqliteDriver, params: ResolveDurableEffectReviewOptions) => {
+    const repository = new StateRunDurabilityRepository(driver);
+    const effect = repository.getEffectBySessionCall(params.sessionId, params.toolCallId);
+    if (effect === undefined) return { kind: "not_found" as const };
+    repository.resolveEffectReview({ runId: effect.runId, stepId: effect.stepId, resolution: params.resolution, eventId: `${effect.stepId}:review` });
+    resolveUnknownOutcomeEffect(driver, { sessionId: params.sessionId, toolCallId: params.toolCallId });
+    return { kind: "resolved" as const, durable: false as const, resolution: params.resolution };
+  };
+
+  // Seeds a durable effect row left at an unknown outcome for a tool call,
+  // then starts the agent's daemon session: the fixture both /resolve-by
+  // -daemon-session-id tests below start from.
+  const seedUnknownEffectSession = async (
+    driver: StateSqliteDriver,
+    sessions: AgenCDaemonSessionManager,
+    params: { readonly cwd: string; readonly agentId: string; readonly callId: string; readonly toolName: string },
+  ) => {
+    const effects = new StateRunDurabilityRepository(driver);
+    effects.ensureInitialEpoch({ runId: params.agentId, openedAt: "2026-09-22T00:00:00.000Z", openedEventId: `${params.agentId}:opened` });
+    effects.beginEffect({
+      runId: params.agentId, epoch: 1, stepId: `tool:turn:${params.callId}`, sessionId: params.agentId,
+      callId: params.callId, toolName: params.toolName, recoveryCategory: "side-effecting",
+      intentDigest: "intent-digest", eventId: "intent", eventSequence: 1,
+      intentAt: "2026-09-22T00:00:01.000Z", effectFormatVersion: 2,
+    });
+    effects.markEffectUnknown({
+      runId: params.agentId, stepId: `tool:turn:${params.callId}`, eventId: "unknown", eventSequence: 2,
+      reason: "caller_abort_after_effect_boundary", observedAt: "2026-09-22T00:00:02.000Z",
+    });
+    await sessions.createSession({ cwd: params.cwd, agentId: params.agentId });
+    return effects;
+  };
+
+  it("resolves a live Desktop session by its daemon session id against the agent's durable effects", async () => {
+    // A Desktop sends the daemon session id (`session_...`); the durable
+    // effect rows and the live runtime session are keyed by the agent's
+    // conversation id (`conv-...`). /resolve must translate, not compare.
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const daemonSessionId = "session_desktop_review";
+    const agentId = "conv-desktop-review";
+    const sessions = new AgenCDaemonSessionManager({ createSessionId: () => daemonSessionId });
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      const effects = await seedUnknownEffectSession(driver, sessions, {
+        cwd, agentId, callId: "call_mcp_fail", toolName: "mcp.lane.lane_fail",
+      });
+      const seen: { agentId: string; sessionId: string }[] = [];
+      const runner = {
+        // Mirrors the production runner's ownership rule: the live session
+        // it owns is the agent's conversation, never a daemon session id.
+        resolveLiveEffectReview: vi.fn(async (owner: string, params: ResolveDurableEffectReviewOptions) => {
+          seen.push({ agentId: owner, sessionId: params.sessionId });
+          if (params.sessionId !== owner) {
+            throw new Error(`AgenC daemon agent ${owner} does not own session ${params.sessionId}`);
+          }
+          return projectLiveReview(driver, params);
+        }),
+      } as unknown as AgenCBackgroundAgentRunner;
+      const agents = new AgenCDaemonAgentManager({ sessionManager: sessions, runner, agencHome: home });
+      await expect(agents.resolveSessionToolCall({
+        sessionId: daemonSessionId,
+        toolCallId: "call_mcp_fail",
+        disposition: "confirmed_no_effect",
+        evidenceRef: "operator-note",
+        evidenceSha256: "a".repeat(64),
+        reviewer: "desktop_user",
+      })).resolves.toMatchObject({
+        sessionId: daemonSessionId,
+        resolved: [{ toolCallId: "call_mcp_fail" }],
+        remaining: 0,
+      });
+      expect(seen).toEqual([{ agentId, sessionId: agentId }]);
+      expect(effects.getEffect(agentId, "tool:turn:call_mcp_fail")).toMatchObject({ reviewStatus: "resolved" });
+    } finally {
+      driver.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("records an operator attestation when /resolve carries a disposition without an evidence file", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const daemonSessionId = "session_desktop_attest";
+    const agentId = "conv-desktop-attest";
+    const sessions = new AgenCDaemonSessionManager({ createSessionId: () => daemonSessionId });
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      const effects = await seedUnknownEffectSession(driver, sessions, {
+        cwd, agentId, callId: "call_hang", toolName: "mcp.lane.lane_hang",
+      });
+      const runner = {
+        resolveLiveEffectReview: vi.fn(async (_owner: string, params: ResolveDurableEffectReviewOptions) =>
+          projectLiveReview(driver, params)),
+      } as unknown as AgenCBackgroundAgentRunner;
+      const agents = new AgenCDaemonAgentManager({ sessionManager: sessions, runner, agencHome: home });
+      await expect(agents.resolveSessionToolCall({
+        sessionId: daemonSessionId,
+        toolCallId: "call_hang",
+        disposition: "confirmed_no_effect",
+        attestation: "operator",
+        reviewer: "desktop_user",
+      } as SessionResolveToolCallParams)).resolves.toMatchObject({
+        resolved: [{ toolCallId: "call_hang" }],
+        remaining: 0,
+      });
+      const review = effects.getEffect(agentId, "tool:turn:call_hang")?.review;
+      expect(review).toMatchObject({
+        disposition: "confirmed_no_effect",
+        actorKind: "operator",
+        actorId: "desktop_user",
+        evidenceKind: "operator_evidence",
+        evidenceRef: `operator-attestation:${agentId}:call_hang`,
+      });
+      expect(review?.evidenceSha256).toMatch(/^[0-9a-f]{64}$/u);
+    } finally {
+      driver.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("stops a launched agent when lifecycle session creation fails", async () => {
     const stopAgent = vi.fn(async () => {});
     const agents = new AgenCDaemonAgentManager({
@@ -6106,6 +6466,7 @@ describe("AgenC background agent lifecycle", () => {
   });
 
   it("requires initialize before agent.create on a daemon JSON-RPC connection", async () => {
+    const futureProtocolVersion = `1.${Number(AGENC_DAEMON_PROTOCOL_VERSION.split(".")[1]) + 1}.0`;
     const startAgent = vi.fn(async () => ({
       agentId: "agent_rpc",
       startedAt: "2026-05-01T12:00:00.500Z",
@@ -6184,7 +6545,7 @@ describe("AgenC background agent lifecycle", () => {
         id: "future-protocol",
         method: "initialize",
         params: {
-          protocol: { version: "1.14.0" },
+          protocol: { version: futureProtocolVersion },
           clientName: "contract-test",
         },
       }),
@@ -6196,8 +6557,8 @@ describe("AgenC background agent lifecycle", () => {
         message: "Unsupported protocol version",
         data: {
           code: "PROTOCOL_VERSION_UNSUPPORTED",
-          clientVersion: "1.14.0",
-          serverVersion: "1.13.0",
+          clientVersion: futureProtocolVersion,
+          serverVersion: AGENC_DAEMON_PROTOCOL_VERSION,
         },
       },
     });
@@ -6262,16 +6623,16 @@ describe("AgenC background agent lifecycle", () => {
       id: 1,
       result: {
         type: "initialized",
-        protocolVersion: "1.13.0",
-        protocol: { version: "1.13.0" },
+        protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+        protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
         capabilities: {},
       },
     });
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.13.0");
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.18.0");
     expect(connection.initializeState).toMatchObject({
-      protocol: { version: "1.13.0" },
+      protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
       clientProtocol: { version: "1.0.0" },
-      serverProtocol: { version: "1.13.0" },
+      serverProtocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
       clientCapabilities: { experimentalApi: true },
     });
     expect(

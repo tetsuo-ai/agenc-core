@@ -23,7 +23,6 @@ const footerMock = vi.hoisted(() => ({
     tui: {
       copyOnSelect: true,
       prStatusFooterEnabled: true,
-      vimMode: false,
     },
   } as Record<string, any>,
   hasSelection: false,
@@ -148,7 +147,6 @@ vi.mock("./utils.js", async importOriginal => {
   const actual = await importOriginal<typeof import("./utils.js")>();
   return {
     ...actual,
-    isVimModeEnabled: () => footerMock.globalConfig.tui?.vimMode === true,
   };
 });
 
@@ -216,7 +214,6 @@ function defaultProps(
     tasksSelected: false,
     teamsSelected: false,
     toolPermissionContext: { mode: "default" } as any,
-    vimMode: undefined,
     ...overrides,
   };
 }
@@ -270,7 +267,6 @@ beforeEach(() => {
     tui: {
       copyOnSelect: true,
       prStatusFooterEnabled: true,
-      vimMode: false,
     },
   };
   footerMock.hasSelection = false;
@@ -289,32 +285,6 @@ beforeEach(() => {
 });
 
 describe("PromptInputFooterLeftSide rendering", () => {
-  test("prioritizes exit, paste, search, and vim states", async () => {
-    await expect(
-      renderToText(<PromptInputFooterLeftSide {...defaultProps({ exitMessage: { show: true, key: "ctrl-c" } })} />),
-    ).resolves.toContain("Press the same key again to exit");
-
-    await expect(
-      renderToText(<PromptInputFooterLeftSide {...defaultProps({ isPasting: true })} />),
-    ).resolves.toContain("Pasting text");
-
-    await expect(
-      renderToText(
-        <PromptInputFooterLeftSide
-          {...defaultProps({
-            historyFailedMatch: true,
-            historyQuery: "needle",
-            isSearching: true,
-          })}
-        />,
-      ),
-    ).resolves.toContain("SEARCH needle failed:true");
-
-    footerMock.globalConfig = { tui: { vimMode: true } };
-    await expect(
-      renderToText(<PromptInputFooterLeftSide {...defaultProps({ vimMode: "NORMAL" })} />),
-    ).resolves.toContain("-- NORMAL --");
-  });
 
   test("renders bash mode, permission mode, remote, and PR status branches", async () => {
     await expect(

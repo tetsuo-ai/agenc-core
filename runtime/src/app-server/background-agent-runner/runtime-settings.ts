@@ -1422,29 +1422,75 @@ function buildBootstrapArgv(
  * FileRead of a workspace file included, paused for approval in the TUI and
  * was refused in print mode. A run carries a policy only when an operator
  * declared one (`agent start --unattended-allow/--unattended-deny`, the
- * gateway, a workflow spec) or the routine service asked for the read-only
- * grant; every other run keeps the permission mode it was created with.
+ * gateway, a workflow spec) or it is a routine run; every other run keeps the
+ * permission mode it was created with.
+ *
+ * A routine run has nobody attached, and runs in the mode its routine stores
+ * (the mode of the session that created it). default and plan get the
+ * read-only grant. acceptEdits and bypassPermissions keep their mode, refuse
+ * whatever would ask a person, and write files only inside `workspaceRoot`.
  */
 async function installUnattendedPermissionPolicy(
   registry: PermissionModeRegistry,
   allow: readonly string[] | undefined,
   deny: readonly string[] | undefined,
-  readOnly = false,
+  routine?: { readonly workspaceRoot: string },
 ): Promise<void> {
   if (
     normalizeUnattendedToolList(allow).length === 0 &&
     normalizeUnattendedToolList(deny).length === 0 &&
-    !readOnly
+    routine === undefined
   ) {
     return;
   }
-  const next = applyUnattendedPermissionPolicyToContext(registry.current(), {
+  const current = registry.current();
+  const routineMayWrite =
+    current.mode === "acceptEdits" || current.mode === "bypassPermissions";
+  const next = applyUnattendedPermissionPolicyToContext(current, {
     ...(allow !== undefined ? { allowlist: allow } : {}),
     ...(deny !== undefined ? { denylist: deny } : {}),
-    // Defaults off, so every caller that does not pass it is byte-identical.
-    ...(readOnly ? { readOnly: true } : {}),
+    // Both default off, so every caller that is not a routine is byte-identical.
+    ...(routine === undefined
+      ? {}
+      : routineMayWrite
+        ? { noApprover: true, workspaceRoots: [routine.workspaceRoot] }
+        : { readOnly: true }),
   });
   await registry.update(next);
+}
+
+/**
+ * Refuse to start a routine run that would not run with the authority its
+ * routine carries, instead of letting it run quietly with a different one.
+ *
+ * - A Bypass routine keeps the OS sandbox (routines never get the dangerous
+ *   combined flag), and a sandboxed session gets bypassPermissions only in a
+ *   trusted project or where managed policy allows it; otherwise bootstrap
+ *   falls back to default. Running that read-only would fail every write
+ *   with a misleading message.
+ * - A routine that may write relies on the OS sandbox to keep shell writes
+ *   inside its workspace. A configuration that turns the sandbox off, or
+ *   hands it to an external sandbox Core cannot narrow, would let them land
+ *   anywhere.
+ */
+function assertRoutineRunAuthority(
+  requestedMode: string | undefined,
+  context: Pick<ToolPermissionContext, "mode" | "bypassPermissionsModeDisabledByPolicy">,
+  sandboxMode: string | undefined,
+): void {
+  if (requestedMode === "bypassPermissions" && context.mode !== "bypassPermissions") {
+    throw new Error(
+      context.bypassPermissionsModeDisabledByPolicy === true
+        ? "routine bypass permissions are disabled by managed policy"
+        : "routine workspace is not trusted for bypass permissions",
+    );
+  }
+  if (
+    (context.mode === "acceptEdits" || context.mode === "bypassPermissions") &&
+    (sandboxMode === "danger_full_access" || sandboxMode === "external_sandbox")
+  ) {
+    throw new Error("routine writes need the OS sandbox, which this configuration turns off");
+  }
 }
 
 export {
@@ -1469,5 +1515,6 @@ export {
   runtimeSettingsWithRestoreOverrides,
   buildBootstrapArgv,
   installUnattendedPermissionPolicy,
+  assertRoutineRunAuthority,
 };
 export type { PreparedRuntimeSettingsChange };

@@ -9,13 +9,6 @@ import type { AgenCDaemonTuiClient } from "../../src/tui/daemon-session.js";
 import { createDaemonTuiSessionFixture } from "../helpers/daemon-tui-session.js";
 
 const sessionId = "submission-ownership-session";
-const interaction = {
-  interactionId: "editor-input", kind: "explain" as const, policy: "read_only" as const,
-  editorInstanceId: "editor-1", bufferHandle: 7, changedtick: 3,
-  contentSha256: "a".repeat(64), path: "src/value.ts",
-  range: { start: { line: 1, column: 0 }, end: { line: 1, column: 5 } },
-};
-
 async function connectedDaemon(stream: (params: JsonObject) => Promise<unknown>) {
   const sessions = new AgenCDaemonSessionManager();
   await sessions.restoreSession({ sessionId, agentId: "agent_1", cwd: process.cwd() });
@@ -68,57 +61,6 @@ async function connectedDaemon(stream: (params: JsonObject) => Promise<unknown>)
 }
 
 describe("connected client submission ownership", () => {
-  it.each(["submitted", "rolled_back"] as const)(
-    "does not restore editor input %s while another submission fails",
-    async (editorOutcome) => {
-      const entered = Promise.withResolvers<void>();
-      const failFirst = Promise.withResolvers<void>();
-      const daemon = await connectedDaemon(async (params) => {
-        if (params.messageId === "agent-first") {
-          entered.resolve();
-          await failFirst.promise;
-          throw new Error("agent submission rejected");
-        }
-        return { disposition: "started", acceptedAt: params.acceptedAt, terminal: { code: 0 } };
-      });
-      try {
-        await daemon.transport.initialize();
-        await daemon.tuiClient.request("session.attach", { sessionId, clientId: "tui-owner" });
-        const session = createDaemonTuiSessionFixture({
-          baseSession: { conversationId: sessionId, services: {} },
-          client: daemon.tuiClient, sessionId, clientId: "tui-owner",
-        });
-        session.enqueueIdleInput({ role: "user", content: "agent attachment" });
-        const editorAdmission = session.enqueueIdleInputBatchOwned!([
-          { role: "user", content: "editor attachment" },
-        ], { workspaceView: "editor", editorInteractionId: interaction.interactionId });
-        const first = session.submit("agent prompt", { clientMessageId: "agent-first" });
-        const failed = expect(first).rejects.toThrow("agent submission rejected");
-        await entered.promise;
-        if (editorOutcome === "submitted") {
-          await session.submit("editor prompt", { clientMessageId: "editor-first", editorInteraction: interaction });
-        } else {
-          expect(session.rollbackIdleInputAdmission!(editorAdmission.token)).toBe(true);
-        }
-        session.enqueueIdleInput({ role: "user", content: "new agent attachment" });
-        failFirst.resolve();
-        await failed;
-        await session.submit("retry agent", { clientMessageId: "agent-retry" });
-        expect(daemon.submissions.at(-1)?.content).toEqual([
-          { type: "text", text: "agent attachment" },
-          { type: "text", text: "new agent attachment" },
-          { type: "text", text: "retry agent" },
-        ]);
-        await session.submit("next editor prompt", { clientMessageId: "editor-next", editorInteraction: interaction });
-        expect(daemon.submissions.at(-1)?.content).toBe("next editor prompt");
-        expect(session.enqueueIdleInput({ role: "user", content: "next attachment" })).toBe(1);
-      } finally {
-        failFirst.resolve();
-        await daemon.close();
-      }
-    },
-  );
-
   it.each(["conflict", "duplicate"] as const)(
     "does not treat attach replay as admission of an SDK %s submission",
     async (outcome) => {

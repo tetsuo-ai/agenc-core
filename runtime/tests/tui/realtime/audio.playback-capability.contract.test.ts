@@ -109,7 +109,7 @@ describe("realtime playback readiness and failure reporting", () => {
     const spawnProcess = vi.fn<RealtimeAudioPlayerSpawn>(() => child);
     voice.resolveRealtimePlaybackBackend.mockReturnValue("aplay");
     const player = createProcessRealtimeAudioPlayer(spawnProcess, {
-      resolveBackend: () => "aplay",
+      backend: "aplay",
     });
 
     player.enqueue(outputAudio(Buffer.from([1, 2, 3, 4])));

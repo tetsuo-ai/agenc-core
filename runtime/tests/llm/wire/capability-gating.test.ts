@@ -85,6 +85,19 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
       expect(request.reasoning_effort).toBe("xhigh");
     });
 
+    test("grok-4.7 chat completions serializes reasoning_effort=xhigh", () => {
+      const request = buildChatCompletionsRequest({
+        model: "grok-4.7",
+        messages: [{ role: "user", content: "hello" }],
+        tools: [],
+        options: { reasoningEffort: "xhigh" },
+        providerCapabilityHints:
+          chatCompletionsCapabilityHintsForProvider("grok", "grok-4.7"),
+      });
+
+      expect(request.reasoning_effort).toBe("xhigh");
+    });
+
     test("undocumented grok models do not accept reasoning_effort", () => {
       expect(
         chatCompletionsCapabilityHintsForProvider("grok", "grok-4")
@@ -421,6 +434,36 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
         chatCompletionsCapabilityHintsForProvider(
           "openrouter",
           "deepseek/deepseek-v4-flash-0731",
+        ),
+      ).not.toMatchObject(FINALIZATION);
+      expect(
+        chatCompletionsCapabilityHintsForProvider("openai", "gpt-4o"),
+      ).not.toMatchObject(FINALIZATION);
+    });
+  });
+
+  describe("Meta stream finalization", () => {
+    const FINALIZATION = {
+      requiresToolCallsFinishReason: true,
+      rejectsPartialToolCalls: true,
+      requiresExplicitFinishReason: true,
+    } as const;
+
+    test("the native Meta slug requires a finish_reason and finalized tool calls", () => {
+      expect(
+        chatCompletionsCapabilityHintsForProvider("meta", "llama-3.3-70b"),
+      ).toMatchObject(FINALIZATION);
+      expect(
+        chatCompletionsCapabilityHintsForProvider("meta", "any-model"),
+      ).toMatchObject(FINALIZATION);
+    });
+
+    test("managed and third-party Meta routes keep their own stream contracts", () => {
+      expect(
+        chatCompletionsCapabilityHintsForProvider(
+          "openrouter",
+          "meta/llama-3.3-70b-instruct",
+          { managedGateway: true },
         ),
       ).not.toMatchObject(FINALIZATION);
       expect(

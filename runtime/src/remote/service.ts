@@ -27,7 +27,7 @@ export interface RemoteServiceOptions {
   readonly home: string;
   readonly backend: RemoteBackend;
   readonly lookupSession: RemoteSessionLookup;
-  readonly createConnection: (access: RemoteAccessBoundary) => BrowserConnection;
+  readonly createConnection: (access: RemoteAccessBoundary, cid: string) => BrowserConnection;
   readonly socket?: (url: string, protocols: string[]) => WebSocket;
   readonly now?: () => number;
   readonly qrDataUrl?: (value: string) => Promise<string>;
@@ -114,7 +114,10 @@ export class RemoteService {
       return this.status();
     } catch (error) {
       if (pair) this.#revokeBackend(pair);
-      if (generation === this.#generation && operation === this.#pairingOperation) this.#error = error instanceof RemoteError ? error.code : "REMOTE_PAIRING_FAILED";
+      // The caller receives this refusal. It describes one request (a task
+      // that cannot be shared, a folder outside the project), not the
+      // service, so it is not kept as the service's error: that turned every
+      // later status into "error" until the next successful pairing.
       throw error instanceof RemoteError ? error : new RemoteError("REMOTE_PAIRING_FAILED");
     } finally { if (generation === this.#generation && operation === this.#pairingOperation) { this.#beginning = false; this.#beginController = undefined; } }
   }
@@ -246,7 +249,7 @@ export class RemoteService {
         try { return await this.#options.createSession!(record.grant.workspacePath, title, record.controller.signal); }
         finally { record.creatingSession = false; }
       } } : {}) });
-      peer = { connection: this.#options.createConnection(access), queued: 0, bytes: 0 };
+      peer = { connection: this.#options.createConnection(access, cid), queued: 0, bytes: 0 };
       record.peers.set(cid, peer);
     }
     const bytes = Buffer.byteLength(frame.payload);

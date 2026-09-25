@@ -1,7 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
-import { AgentStatusTracker, agentStatusFromEvent, isFinal } from "./status.js";
+import { AgentStatusTracker, agentStatusFromEvent, isFinal,
+  terminalFromAgentStatus, toAgentStatusJson, turnIdFromAgentStatus } from "./status.js";
 
 describe("AgentStatusTracker", () => {
+  it("reads terminal and turn IDs only from object statuses", () => {
+    const terminal = { provider: "fake", model: "fake-model", reason: "completed",
+      retryable: false, dispatch: "sent", completedWork: "done", unfinishedWork: "" } as const;
+    expect(terminalFromAgentStatus("running")).toBeUndefined();
+    expect(turnIdFromAgentStatus("running")).toBeUndefined();
+    expect(terminalFromAgentStatus({ status: "idle", terminal })).toBe(terminal);
+    expect(turnIdFromAgentStatus({ status: "running", turnId: "turn-1" })).toBe("turn-1");
+    expect(toAgentStatusJson("running")).toBe("running");
+    expect(toAgentStatusJson({ completed: "done", terminal })).toEqual({ completed: "done", terminal });
+  });
   it("records one epoch interval per executing turn and freezes it through idle, duplicate marks and shutdown", () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(100_000);
     try {
@@ -77,6 +88,9 @@ describe("AgentStatusTracker", () => {
 
   it("isFinal classifies terminal states", () => {
     expect(isFinal({ status: "pending_init" })).toBe(false);
+    expect(isFinal("running")).toBe(false);
+    expect(isFinal("shutdown")).toBe(true);
+    expect(isFinal({ completed: "done" })).toBe(true);
     expect(isFinal({ status: "shutdown", endedAtMs: 0 })).toBe(true);
     expect(isFinal({ status: "not_found" })).toBe(true);
     // interrupted is non-final (matches AgenC semantics).

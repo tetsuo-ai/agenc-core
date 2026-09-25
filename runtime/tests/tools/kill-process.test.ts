@@ -109,6 +109,47 @@ describe("kill_process tool", () => {
     expect(manager.terminateOwnedProcesses).not.toHaveBeenCalled();
   });
 
+  // GPT models fill every optional field with its empty value. A live run sent
+  // {"session_id":1,"session_ids":[],"all":false} four times and every call was
+  // refused as two selectors (luna-mac F7), so the model could not stop its
+  // own background process.
+  it("stops one session when the other selectors hold their empty values", async () => {
+    const manager = inventoryManager([1]);
+    const tool = createKillProcessTool({ unifiedExecManager: manager as never });
+    const result = await tool.execute({ session_id: 1, session_ids: [], all: false });
+    expect(result.isError).toBeUndefined();
+    expect(manager.terminateProcess).toHaveBeenCalledWith({ processId: 1 });
+    expect(JSON.parse(String(result.content))).toMatchObject({ session_id: 1, terminated: true });
+  });
+
+  it("lets all=true or a non-empty session_ids win over a zero session_id", async () => {
+    // Session ids start at 1, so 0 is the filled-in default, never a session.
+    const all = inventoryManager([83, 86]);
+    const allResult = await createKillProcessTool({ unifiedExecManager: all as never })
+      .execute({ session_id: 0, session_ids: [], all: true });
+    expect(allResult.isError).toBeUndefined();
+    expect(all.terminateOwnedProcesses).toHaveBeenCalledWith({});
+    expect(all.terminateProcess).not.toHaveBeenCalled();
+
+    const many = inventoryManager([83, 86]);
+    const manyResult = await createKillProcessTool({ unifiedExecManager: many as never })
+      .execute({ session_id: 0, session_ids: [83, 86], all: false });
+    expect(manyResult.isError).toBeUndefined();
+    expect(many.terminateOwnedProcesses).toHaveBeenCalledWith({ processIds: [83, 86] });
+    expect(many.terminateProcess).not.toHaveBeenCalled();
+  });
+
+  it("refuses with no effect when only empty values were filled in", async () => {
+    const manager = inventoryManager([83]);
+    const tool = createKillProcessTool({ unifiedExecManager: manager as never });
+    const result = await tool.execute({ session_id: 0, session_ids: [], all: false });
+    expect(result.isError).toBe(true);
+    expect(String(result.content)).toContain("session_id");
+    expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    expect(manager.terminateProcess).not.toHaveBeenCalled();
+    expect(manager.terminateOwnedProcesses).not.toHaveBeenCalled();
+  });
+
   it("is audited as performing no filesystem write so the sandbox admits it", () => {
     // The sandbox classifies a mutating tool with no resolvable write target
     // as indeterminate and denies it. kill_process only signals a process,

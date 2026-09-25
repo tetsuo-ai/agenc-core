@@ -1471,6 +1471,9 @@ function projectRunEvents(
         eventSequence: row.event_seq,
         reason: requireSuspensionReason(payload.reason),
         suspendedAt,
+        // The strict reader has already established settlement evidence for
+        // every intent. Unknown outcomes may await review after resume.
+        allowUnsettledEffects: true,
       });
       pendingStartupActivationResumeEventId = undefined;
       lifecycleBoundaryAt = suspendedAt;
@@ -1953,9 +1956,6 @@ function projectUnknownEffect(
   const callId = requireString(payload.callId, "callId");
   const toolName = requireString(payload.toolName, "toolName");
   const category = requireRecoveryCategory(payload.recoveryCategory);
-  if (category === "idempotent") {
-    throw invalidEvent(row, runId, "idempotent effect has unknown outcome");
-  }
   const existing = repository.getEffect(runId, stepId);
   if (
     existing === undefined ||
@@ -1993,14 +1993,16 @@ function projectUnknownEffect(
     },
     observedAt: recordedAt,
   });
-  recordInFlightToolCallUnknownOutcome(driver, {
-    sessionId: existing.sessionId,
-    agentId: runId,
-    toolCallId: callId,
-    toolName,
-    observedAt: recordedAt,
-    recoveryCategory: category,
-  });
+  if (category !== "idempotent") {
+    recordInFlightToolCallUnknownOutcome(driver, {
+      sessionId: existing.sessionId,
+      agentId: runId,
+      toolCallId: callId,
+      toolName,
+      observedAt: recordedAt,
+      recoveryCategory: category,
+    });
+  }
 }
 
 function projectEffectReview(

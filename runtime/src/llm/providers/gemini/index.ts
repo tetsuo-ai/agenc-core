@@ -11,7 +11,7 @@ import {
   type ProviderHttpStreamResponse,
 } from "../../client-session.js";
 import { parseSSEFrames } from "../../_deps/sse.js";
-import { LLMProviderError } from "../../errors.js";
+import { LLMInvalidResponseError, LLMProviderError, mapLLMError } from "../../errors.js";
 import { resolveGeminiReasoningEffort } from "../../registry/gemini-thinking-models.js";
 import type {
   LLMChatOptions,
@@ -27,7 +27,8 @@ import type {
   StreamProgressCallback,
 } from "../../types.js";
 import { validateToolCallDetailed } from "../../types.js";
-import { coerceUsage } from "../../wire/shared.js";
+import { coerceUsage, messageTextContent } from "../../wire/shared.js";
+import { encodeMcpToolNameForWire } from "../../wire/mcp-tool-naming.js";
 import { isFallbackTriggeredError } from "../../../recovery/api-errors.js";
 import {
   geminiCredentialHeaders,
@@ -184,6 +185,153 @@ function geminiFinishReason(
   }
 }
 
+const GEMINI_PROMPT_CONTENT_FILTER_BLOCK_REASONS = [
+  "SAFETY",
+  "BLOCKLIST",
+  "PROHIBITED_CONTENT",
+  "IMAGE_SAFETY",
+] as const;
+
+type GeminiPromptContentFilterBlockReason =
+  (typeof GEMINI_PROMPT_CONTENT_FILTER_BLOCK_REASONS)[number];
+
+type GeminiPromptBlock =
+  | {
+      readonly kind: "content_filter";
+      readonly reason: GeminiPromptContentFilterBlockReason;
+      readonly diagnostic: string;
+    }
+  | {
+      readonly kind: "provider_error";
+      readonly reason: string;
+      readonly diagnostic: string;
+    };
+
+const GEMINI_PROMPT_CONTENT_FILTER_BLOCK_REASON_SET: ReadonlySet<string> =
+  new Set(GEMINI_PROMPT_CONTENT_FILTER_BLOCK_REASONS);
+
+function isGeminiPromptContentFilterBlockReason(
+  reason: string,
+): reason is GeminiPromptContentFilterBlockReason {
+  return GEMINI_PROMPT_CONTENT_FILTER_BLOCK_REASON_SET.has(reason);
+}
+
+function readGeminiPromptFeedback(
+  response: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const feedback = response.promptFeedback ?? response.prompt_feedback;
+  return isRecord(feedback) ? feedback : undefined;
+}
+
+function geminiCandidateRecords(
+  response: Record<string, unknown>,
+): readonly Record<string, unknown>[] {
+  return Array.isArray(response.candidates)
+    ? response.candidates.filter(isRecord)
+    : [];
+}
+
+function boundGeminiDiagnosticToken(
+  value: unknown,
+  maxLength = 64,
+): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > maxLength) return undefined;
+  if (!/^[A-Za-z0-9_.-]+$/u.test(trimmed)) return undefined;
+  return trimmed;
+}
+
+function boundGeminiDiagnosticMessage(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const compact = value.replace(/[\u0000-\u001f\u007f]/gu, " ").trim();
+  if (compact.length === 0) return undefined;
+  return compact.slice(0, 160);
+}
+
+function geminiSafetyRatingSummaries(
+  feedback: Record<string, unknown>,
+): readonly string[] {
+  const ratings = feedback.safetyRatings ?? feedback.safety_ratings;
+  if (!Array.isArray(ratings)) return [];
+  const summaries: string[] = [];
+  for (const rating of ratings) {
+    if (!isRecord(rating) || summaries.length >= 8) continue;
+    const category = boundGeminiDiagnosticToken(rating.category);
+    const probability = boundGeminiDiagnosticToken(rating.probability);
+    if (!category || !probability) continue;
+    summaries.push(`${category}=${probability}`);
+  }
+  return summaries;
+}
+
+function geminiPromptBlockDiagnostic(
+  blockReason: string,
+  feedback: Record<string, unknown>,
+): string {
+  const parts = [`blockReason=${blockReason}`];
+  const ratings = geminiSafetyRatingSummaries(feedback);
+  if (ratings.length > 0) {
+    parts.push(`safetyRatings=${ratings.join(",")}`);
+  }
+  const message = boundGeminiDiagnosticMessage(
+    feedback.blockReasonMessage ?? feedback.block_reason_message,
+  );
+  if (message) {
+    parts.push(`message=${message}`);
+  }
+  return parts.join(" ");
+}
+
+function readGeminiPromptBlock(
+  response: Record<string, unknown>,
+): GeminiPromptBlock | undefined {
+  const feedback = readGeminiPromptFeedback(response);
+  if (!feedback) return undefined;
+  const reason = nonEmptyString(
+    feedback.blockReason ?? feedback.block_reason,
+  )?.toUpperCase();
+  if (!reason || reason === "BLOCK_REASON_UNSPECIFIED") {
+    return undefined;
+  }
+  const diagnostic = geminiPromptBlockDiagnostic(reason, feedback);
+  if (isGeminiPromptContentFilterBlockReason(reason)) {
+    return { kind: "content_filter", reason, diagnostic };
+  }
+  return { kind: "provider_error", reason, diagnostic };
+}
+
+function geminiPromptBlockError(block: GeminiPromptBlock): LLMProviderError {
+  return new LLMProviderError(
+    "gemini",
+    `Prompt blocked (${block.diagnostic})`,
+  );
+}
+
+function geminiMissingCandidatesError(stream: boolean): LLMInvalidResponseError {
+  return new LLMInvalidResponseError(
+    "gemini",
+    stream
+      ? "GenerateContent stream ended without candidates or a prompt block reason"
+      : "GenerateContent response contained no candidates",
+  );
+}
+
+function assertGeminiPromptBlockAllowed(
+  block: GeminiPromptBlock,
+): asserts block is Extract<GeminiPromptBlock, { kind: "content_filter" }> {
+  switch (block.kind) {
+    case "content_filter":
+      return;
+    case "provider_error":
+      throw geminiPromptBlockError(block);
+    default: {
+      const _exhaustive: never = block;
+      throw _exhaustive;
+    }
+  }
+}
+
 function parseJsonObjectText(text: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(text) as unknown;
@@ -195,6 +343,18 @@ function parseJsonObjectText(text: string): Record<string, unknown> | null {
 
 function functionResponsePayload(content: string): Record<string, unknown> {
   return parseJsonObjectText(content) ?? { result: content };
+}
+
+function functionResponseText(content: LLMMessage["content"]): string {
+  if (typeof content === "string") return content;
+  const text = content
+    .filter((part) => part.type !== "image_url")
+    .map((part) => messageTextContent([part]))
+    .filter((part) => part.length > 0)
+    .join("\n");
+  const hasImage = content.some((part) => part.type === "image_url");
+  const note = "[image omitted: this provider cannot receive images in tool results]";
+  return hasImage ? (text.length > 0 ? `${text}\n${note}` : note) : text;
 }
 
 function parseDataUrl(
@@ -347,9 +507,7 @@ function buildGeminiContents(messages: readonly LLMMessage[]): {
             functionResponse: {
               name,
               response: functionResponsePayload(
-                typeof message.content === "string"
-                  ? message.content
-                  : JSON.stringify(message.content),
+                functionResponseText(message.content),
               ),
             },
           },
@@ -378,6 +536,35 @@ function buildGeminiContents(messages: readonly LLMMessage[]): {
       ? { systemInstruction: { parts: systemParts } }
       : {}),
   };
+}
+
+function geminiWireToolName(name: string): string {
+  return name.startsWith("mcp.") ? encodeMcpToolNameForWire(name) : name;
+}
+
+/** Keep aliases scoped to the request that advertised them. */
+function geminiToolNames(tools: readonly LLMTool[]): ReadonlyMap<string, string> {
+  const lookup = new Map<string, string>();
+  for (const tool of tools) {
+    const canonical = tool.function.name;
+    const wire = geminiWireToolName(canonical);
+    const previous = lookup.get(wire);
+    if (previous !== undefined && previous !== canonical) {
+      throw new LLMProviderError("gemini", `Tool-name collision on ${wire}`);
+    }
+    lookup.set(wire, canonical);
+  }
+  return lookup;
+}
+
+function projectGeminiHistoryToolNames(messages: readonly LLMMessage[]): LLMMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    ...(message.toolName === undefined ? {} : { toolName: geminiWireToolName(message.toolName) }),
+    ...(message.toolCalls === undefined ? {} : {
+      toolCalls: message.toolCalls.map((call) => ({ ...call, name: geminiWireToolName(call.name) })),
+    }),
+  }));
 }
 
 function geminiSchemaError(path: string, detail: string): never {
@@ -2460,7 +2647,7 @@ function geminiTools(
   return [
     {
       functionDeclarations: tools.map((tool) => ({
-        name: tool.function.name,
+        name: geminiWireToolName(tool.function.name),
         description: tool.function.description,
         parametersJsonSchema: validateGeminiToolSchemaRoot(
           tool.function.parameters,
@@ -2486,7 +2673,7 @@ function geminiToolConfig(
   return {
     functionCallingConfig: {
       mode: "ANY",
-      allowedFunctionNames: [choice.name],
+      allowedFunctionNames: [geminiWireToolName(choice.name)],
     },
   };
 }
@@ -2552,11 +2739,12 @@ function buildGeminiRequest(args: {
   readonly options?: LLMChatOptions;
 }): Record<string, unknown> {
   validateAgentInvocationMessageSequence(args.messages);
+  geminiToolNames(args.tools);
   const contents = buildGeminiContents([
     ...(args.options?.systemPrompt
       ? [{ role: "system" as const, content: args.options.systemPrompt }]
       : []),
-    ...args.messages,
+    ...projectGeminiHistoryToolNames(args.messages),
   ]);
   const schemaCapabilities = geminiResponseJsonSchemaCapabilities(
     args.config.endpointPlan,
@@ -2596,10 +2784,12 @@ function validateGeminiToolCall(raw: unknown): LLMToolCall {
 function toolCallFromGeminiFunctionCall(
   functionCall: Record<string, unknown>,
   index: number,
+  names: ReadonlyMap<string, string>,
 ): LLMToolCall {
+  const wireName = String(functionCall.name ?? "");
   return validateGeminiToolCall({
     id: `gemini_call_${index}`,
-    name: String(functionCall.name ?? ""),
+    name: names.get(wireName) ?? wireName,
     arguments: JSON.stringify(
       isRecord(functionCall.args) ? functionCall.args : {},
     ),
@@ -2609,10 +2799,7 @@ function toolCallFromGeminiFunctionCall(
 function readCandidateParts(
   response: Record<string, unknown>,
 ): readonly GeminiPart[] {
-  const candidates = Array.isArray(response.candidates)
-    ? (response.candidates as readonly unknown[])
-    : [];
-  const firstCandidate = isRecord(candidates[0]) ? candidates[0] : {};
+  const firstCandidate = readFirstCandidate(response);
   const content = isRecord(firstCandidate.content)
     ? firstCandidate.content
     : {};
@@ -2624,16 +2811,30 @@ function readCandidateParts(
 function readFirstCandidate(
   response: Record<string, unknown>,
 ): Record<string, unknown> {
-  const candidates = Array.isArray(response.candidates)
-    ? (response.candidates as readonly unknown[])
-    : [];
-  return isRecord(candidates[0]) ? candidates[0] : {};
+  return geminiCandidateRecords(response)[0] ?? {};
 }
 
 function parseGeminiResponse(
   model: string,
   response: Record<string, unknown>,
+  names: ReadonlyMap<string, string>,
 ): GeminiParsedResponse {
+  const usage = requestUsageFromGemini(response.usageMetadata);
+  const promptBlock = readGeminiPromptBlock(response);
+  if (promptBlock) {
+    assertGeminiPromptBlockAllowed(promptBlock);
+    return {
+      content: "",
+      toolCalls: [],
+      usage,
+      model,
+      finishReason: "content_filter",
+    };
+  }
+  if (geminiCandidateRecords(response).length === 0) {
+    throw geminiMissingCandidatesError(false);
+  }
+
   const parts = readCandidateParts(response);
   let content = "";
   const toolCalls: LLMToolCall[] = [];
@@ -2660,7 +2861,7 @@ function parseGeminiResponse(
       continue;
     }
     if (isRecord(part.functionCall)) {
-      toolCalls.push(toolCallFromGeminiFunctionCall(part.functionCall, index));
+      toolCalls.push(toolCallFromGeminiFunctionCall(part.functionCall, index, names));
     }
   }
 
@@ -2668,7 +2869,7 @@ function parseGeminiResponse(
   return {
     content,
     toolCalls,
-    usage: requestUsageFromGemini(response.usageMetadata),
+    usage,
     model,
     ...(thinking.length > 0 ? { thinking } : {}),
     finishReason: geminiFinishReason(candidate.finishReason, toolCalls),
@@ -2735,7 +2936,7 @@ function mapProviderError(error: unknown): never {
     throw error;
   }
   if (error instanceof ProviderHttpError) {
-    throw new LLMProviderError("gemini", error.message, error.status);
+    throw mapLLMError("gemini", error, 0);
   }
   if (error instanceof LLMProviderError) {
     throw error;
@@ -2796,8 +2997,10 @@ class GeminiStreamState {
   readonly toolCalls: LLMToolCall[] = [];
   readonly thinking: GeminiThinkingBlock[] = [];
   private thinkingOpen = new Set<number>();
+  private promptBlocked = false;
+  private sawCandidate = false;
 
-  constructor(model: string) {
+  constructor(model: string, private readonly names: ReadonlyMap<string, string>) {
     this.model = model;
   }
 
@@ -2807,6 +3010,17 @@ class GeminiStreamState {
   ): void {
     if (response.usageMetadata) {
       this.usage = requestUsageFromGemini(response.usageMetadata);
+    }
+    const promptBlock = readGeminiPromptBlock(response);
+    if (promptBlock) {
+      assertGeminiPromptBlockAllowed(promptBlock);
+      this.promptBlocked = true;
+      this.finishReason = "content_filter";
+      return;
+    }
+    if (this.promptBlocked) return;
+    if (geminiCandidateRecords(response).length > 0) {
+      this.sawCandidate = true;
     }
     const candidate = readFirstCandidate(response);
     const parts = readCandidateParts(response);
@@ -2820,6 +3034,9 @@ class GeminiStreamState {
   }
 
   finalize(onChunk: StreamProgressCallback): LLMResponse {
+    if (!this.promptBlocked && !this.sawCandidate) {
+      throw geminiMissingCandidatesError(true);
+    }
     for (const index of Array.from(this.thinkingOpen)) {
       onChunk({ content: "", done: false, thinkingBlockStop: { index } });
       this.thinkingOpen.delete(index);
@@ -2883,6 +3100,7 @@ class GeminiStreamState {
       const toolCall = toolCallFromGeminiFunctionCall(
         part.functionCall,
         this.toolCalls.length,
+        this.names,
       );
       this.toolCalls.push(toolCall);
       const startChunk: LLMStreamChunk = {
@@ -3031,6 +3249,7 @@ export class GeminiProvider implements LLMProvider {
     const tools = options?.tools
       ? [...options.tools]
       : (this.config.tools ?? []);
+    const toolNames = geminiToolNames(tools);
     const body = buildGeminiRequest({
       config: this.config,
       model,
@@ -3056,7 +3275,7 @@ export class GeminiProvider implements LLMProvider {
           : undefined,
         singleWireAttempt: options?.singleWireAttempt,
       });
-      return withMetrics(parseGeminiResponse(model, response.data), metrics);
+      return withMetrics(parseGeminiResponse(model, response.data, toolNames), metrics);
     } catch (error) {
       mapProviderError(error);
     }
@@ -3071,6 +3290,7 @@ export class GeminiProvider implements LLMProvider {
     const tools = options?.tools
       ? [...options.tools]
       : (this.config.tools ?? []);
+    const toolNames = geminiToolNames(tools);
     const body = buildGeminiRequest({
       config: this.config,
       model,
@@ -3099,7 +3319,7 @@ export class GeminiProvider implements LLMProvider {
         singleWireAttempt: options?.singleWireAttempt,
         retryBudget: { maxRetries: 0 },
       });
-      const state = new GeminiStreamState(model);
+      const state = new GeminiStreamState(model, toolNames);
       for await (const event of readGeminiSseEvents(response)) {
         state.consumeResponse(event.data, onChunk);
       }

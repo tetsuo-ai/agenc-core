@@ -24,7 +24,8 @@ import type {
 } from "../../types.js";
 import type { ProviderFactoryOptions, ProviderName } from "../../provider.js";
 import { normalizeProviderIdentity } from "../../../provider-identity.js";
-import { BUILT_IN_PROVIDER_DEFAULT_MODELS } from "../../registry/provider-info.js";
+import { BUILT_IN_PROVIDER_DEFAULT_MODELS, resolveBuiltInProviderInfo } from "../../registry/provider-info.js";
+import { createPinnedProviderFetch } from "../../credential-redirect-fetch.js";
 
 type ConcreteProviderName = Exclude<ProviderName, "agenc">;
 
@@ -109,65 +110,6 @@ export class AgenCProvider implements LLMProvider {
     } catch {
       return false;
     }
-  }
-
-  /**
-   * Create a tool-free provider owned by the editor prediction service.
-   *
-   * This intentionally does not share delegate instances or provider-side
-   * conversation state with the primary Agent session. A concrete override
-   * vends its own short-lived credential through the same session-scoped auth
-   * backend; the default route remains hosted AgenC model inference.
-   */
-  async forkForCodePrediction(options: {
-    readonly provider?: ProviderName;
-    readonly model?: string;
-    readonly timeoutMs: number;
-    readonly maxOutputTokens: number;
-  }): Promise<LLMProvider> {
-    if (options.provider === undefined || options.provider === "agenc") {
-      return new AgenCProvider({
-        ...this.#config,
-        model:
-          firstNonEmpty(options.model, this.#config.model) ??
-          BUILT_IN_PROVIDER_DEFAULT_MODELS.agenc,
-        tools: [],
-        timeoutMs: options.timeoutMs,
-        maxTokens: options.maxOutputTokens,
-        maxRetries: 0,
-        providerFallback: undefined,
-      });
-    }
-    const provider = concreteProviderName(options.provider);
-    const key = await this.#config.authBackend.vendKey(
-      provider,
-      this.#config.sessionId,
-    );
-    if (key.provider !== provider || key.sessionId !== this.#config.sessionId) {
-      throw new Error(`prediction credential route mismatch for ${provider}`);
-    }
-    const apiKey = requireVendedApiKey(
-      key,
-      `prediction credential vending for ${provider}`,
-    );
-    const baseURL = firstNonEmpty(
-      key.baseUrl,
-      this.#config.providerOptions?.baseURL,
-    );
-    return this.#config.providerFactory(provider, {
-      apiKey,
-      ...(baseURL !== undefined ? { baseURL } : {}),
-      ...(options.model !== undefined ? { model: options.model } : {}),
-      tools: [],
-      timeoutMs: options.timeoutMs,
-      extra: {
-        ...(this.#config.providerOptions?.extra ?? {}),
-        maxTokens: options.maxOutputTokens,
-        maxRetries: 0,
-        temperature: 0,
-        ...(key.baseUrl !== undefined ? { managedGateway: true } : {}),
-      },
-    });
   }
 
   async dispose(): Promise<void> {
@@ -297,6 +239,16 @@ export class AgenCProvider implements LLMProvider {
     if (model === undefined) {
       throw new Error("AgenCProvider model inference returned an empty model");
     }
+    const approved = this.#config.providerOptions?.extra?.approvedConcreteDestination as
+      | { readonly provider: string; readonly model: string } | undefined;
+    if (approved !== undefined &&
+        (provider !== approved.provider || model !== approved.model)) {
+      throw new Error(`Managed child destination changed from approved ${approved.provider}/${approved.model}`);
+    }
+    if (this.#config.providerOptions?.extra?.canonicalEndpointRequired === true &&
+        provider === "grok" && model.toLowerCase().startsWith("grok-composer")) {
+      throw new Error("Cross-provider Grok Composer children cannot use the CLI transport");
+    }
     const key = await this.#config.authBackend.vendKey(
       provider,
       this.#config.sessionId,
@@ -306,6 +258,22 @@ export class AgenCProvider implements LLMProvider {
       "AgenCProvider managed credential vending",
     );
     const baseURL = firstNonEmpty(key.baseUrl);
+    const pinConcreteEndpoint = this.#config.providerOptions?.extra?.canonicalEndpointRequired === true;
+    if (pinConcreteEndpoint) {
+      const canonical = resolveBuiltInProviderInfo(provider)!.baseURL;
+      const isCanonical = (value: string | undefined): boolean => {
+        if (value === undefined) return true;
+        try {
+          return new URL(value).href.replace(/\/+$/u, "") ===
+            new URL(canonical).href.replace(/\/+$/u, "");
+        } catch {
+          return false;
+        }
+      };
+      if (!isCanonical(baseURL) || !isCanonical(this.#config.providerOptions?.baseURL)) {
+        throw new Error("AgenC child vending returned a noncanonical concrete provider endpoint");
+      }
+    }
     const expiresAtMs =
       parseExpiresAtMs(key.expiresAt) ??
       this.nowMs() + this.delegateCacheTtlMs();
@@ -327,6 +295,12 @@ export class AgenCProvider implements LLMProvider {
         extra: {
           ...(this.#config.providerOptions?.extra ?? {}),
           ...(baseURL !== undefined ? { managedGateway: true } : {}),
+          ...(pinConcreteEndpoint ? {
+            fetchImpl: typeof this.#config.providerOptions?.extra?.agencDelegateFetchFactory === "function"
+              ? (this.#config.providerOptions.extra.agencDelegateFetchFactory as
+                  (provider: ConcreteProviderName) => typeof fetch)(provider)
+              : createPinnedProviderFetch([resolveBuiltInProviderInfo(provider)!.baseURL]),
+          } : {}),
         },
       }),
       ...(expiresAtMs !== undefined ? { expiresAtMs } : {}),

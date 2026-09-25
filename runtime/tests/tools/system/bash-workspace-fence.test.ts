@@ -7,22 +7,13 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createBashTool as createUnboundBashTool } from "../../../src/tools/system/bash.js";
 import {
-  beginWorkspaceToolOperation,
-  endWorkspaceToolOperation,
-  workspaceMutationCoordinators,
-} from "../../../src/workspace/mutation-coordinator.js";
-import {
   createWorkspaceOperationLifetime,
   runWithWorkspaceOperationLifetime,
 } from "../../../src/workspace/tool-operation-lifetime.js";
 import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
 
-afterEach(() => {
-  workspaceMutationCoordinators.clearForTests();
-});
-
 describe("system.bash workspace-operation containment", () => {
-  it("removes a detached delayed writer before Editor can acquire the workspace", async () => {
+  it("removes a detached delayed writer before the operation lifetime settles", async () => {
     if (process.platform === "win32") return;
     const workspaceRoot = await mkdtemp(
       join(tmpdir(), "agenc-bash-editor-descendant-"),
@@ -47,13 +38,7 @@ describe("system.bash workspace-operation containment", () => {
         unrestricted: true,
       }),
     );
-    const operation = beginWorkspaceToolOperation(
-      workspaceRoot,
-      "direct-composer-bash",
-    );
-    const lifetime = createWorkspaceOperationLifetime(() => {
-      endWorkspaceToolOperation(operation);
-    });
+    const lifetime = createWorkspaceOperationLifetime(() => {});
 
     const result = await runWithWorkspaceOperationLifetime(lifetime, () =>
       tool.execute({
@@ -73,12 +58,6 @@ describe("system.bash workspace-operation containment", () => {
     await lifetime.release();
     await lifetime.settled();
 
-    expect(() =>
-      workspaceMutationCoordinators.acquireEditor(workspaceRoot, {
-        workspaceRoot,
-        editorInstanceId: "editor-after-composer-bash",
-      }),
-    ).not.toThrow();
     await delay(900);
     expect(await readFile(path, "utf8")).toBe("before\n");
   });

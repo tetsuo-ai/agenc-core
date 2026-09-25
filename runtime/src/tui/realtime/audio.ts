@@ -2,6 +2,7 @@ import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 
 import type { ThreadRealtimeAudioChunk } from "../../app-server/protocol/index.js";
 import type { RealtimePlaybackBackend } from "../../services/voice.js";
+import { isSignalablePid } from "../../utils/child-signal.js";
 
 export interface RealtimeAudioCaptureCallbacks {
   readonly onAudio: (audio: ThreadRealtimeAudioChunk) => void;
@@ -21,6 +22,8 @@ export type StartRealtimeAudioCapture = (
 export interface RealtimeAudioPlayer {
   enqueue(audio: ThreadRealtimeAudioChunk): void;
   close(): void;
+  /** Clears a permanent-unavailable latch and installs the backend resolved at readiness. */
+  beginSession?(backend: RealtimePlaybackBackend | null): void;
 }
 
 export type RealtimeAudioPlayerSpawn = (
@@ -33,7 +36,8 @@ export type { RealtimePlaybackBackend };
 
 export interface CreateProcessRealtimeAudioPlayerOptions {
   readonly onError?: (message: string) => void;
-  readonly resolveBackend?: () => RealtimePlaybackBackend | null;
+  /** Backend already resolved at readiness. enqueue never probes PATH. */
+  readonly backend?: RealtimePlaybackBackend | null;
 }
 
 const INPUT_SAMPLE_RATE = 16_000;
@@ -84,6 +88,12 @@ export function createProcessRealtimeAudioPlayer(
   const queue: Buffer[] = [];
   let queuedBytes = 0;
   let waitingForDrain = false;
+  // Set once `play` turns out to be missing or not executable (stock macOS
+  // has no SoX). Without it every audio chunk spawned `play` again.
+  // Cleared on session start so a later session can retry.
+  let playerUnavailable = false;
+  let backend: RealtimePlaybackBackend | null =
+    options.backend === undefined ? "play" : options.backend;
 
   const reset = (active: ChildProcess | null): void => {
     if (active !== child) return;
@@ -101,12 +111,21 @@ export function createProcessRealtimeAudioPlayer(
     active?.stdin?.removeAllListeners("error");
     active?.stdin?.removeAllListeners("close");
     active?.stdin?.destroy();
-    active?.kill("SIGTERM");
+    // A failed spawn has no pid, but until Node reports the failure its open
+    // handle sends kill() to pid 0: the TUI's whole process group, including
+    // the shell job it runs in. Its error event does the cleanup instead.
+    if (active !== null && isSignalablePid(active.pid)) active.kill("SIGTERM");
   };
 
   const flush = (): void => {
     const active = child;
-    if (active === null || active.stdin === null || active.stdin.destroyed) {
+    // EMFILE and ENFILE leave a failed child's stdin undefined, not null.
+    if (
+      active === null ||
+      active.stdin === null ||
+      active.stdin === undefined ||
+      active.stdin.destroyed
+    ) {
       queue.length = 0;
       queuedBytes = 0;
       waitingForDrain = false;
@@ -150,7 +169,12 @@ export function createProcessRealtimeAudioPlayer(
   };
 
   return {
+    beginSession(next) {
+      playerUnavailable = false;
+      backend = next;
+    },
     enqueue(audio) {
+      if (playerUnavailable) return;
       const decoded = decodeRealtimeOutputAudioChunk(audio);
       if (decoded === null) return;
       const nextFormat = {
@@ -164,25 +188,29 @@ export function createProcessRealtimeAudioPlayer(
         format.numChannels !== nextFormat.numChannels
       ) {
         close();
-        const backend = options.resolveBackend
-          ? options.resolveBackend()
-          : "play";
-        if (backend === null) {
+        const selected = backend;
+        if (selected === null) {
+          playerUnavailable = true;
           options.onError?.(
             "Realtime voice playback requires a local `play` (SoX) or `aplay` (ALSA) command.",
           );
           return;
         }
         child = spawnProcess(
-          backend,
-          playbackBackendArgs(backend, nextFormat),
+          selected,
+          playbackBackendArgs(selected, nextFormat),
           { stdio: ["pipe", "ignore", "ignore"] },
         );
         format = nextFormat;
         const active = child;
-        active?.on("error", (error: unknown) => {
+        active?.on("error", (error: NodeJS.ErrnoException) => {
+          if (active !== child) return;
+          const permanent = isPermanentSpawnFailure(active, error);
+          if (permanent) playerUnavailable = true;
           reset(active);
-          options.onError?.(playbackFailureMessage(error, backend));
+          if (permanent) {
+            options.onError?.(playbackFailureMessage(error, selected));
+          }
         });
         active?.on("close", () => reset(active));
         active?.stdin?.on("error", () => reset(active));
@@ -192,6 +220,16 @@ export function createProcessRealtimeAudioPlayer(
     },
     close,
   };
+}
+
+function isPermanentSpawnFailure(
+  active: ChildProcess,
+  error: NodeJS.ErrnoException,
+): boolean {
+  return (
+    active.pid === undefined &&
+    (error.code === "ENOENT" || error.code === "EACCES")
+  );
 }
 
 function playbackBackendArgs(

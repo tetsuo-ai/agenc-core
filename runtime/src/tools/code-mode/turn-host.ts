@@ -46,6 +46,21 @@ async function invokeNestedCodeModeTool(
     input: call.input,
     abortSignal: signal,
   });
+  if (Array.isArray(result.metadata?.displayAttachments) && result.metadata.displayAttachments.length > 0) {
+    session.emit({
+      id: session.nextInternalSubId(),
+      msg: {
+        type: "tool_call_completed",
+        payload: {
+          callId: id,
+          toolName: call.toolName,
+          result: result.content,
+          isError: result.isError === true,
+          metadata: result.metadata,
+        },
+      },
+    });
+  }
   if (result.isError === true) {
     throw new Error(result.content);
   }

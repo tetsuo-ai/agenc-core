@@ -139,6 +139,35 @@ describe("ImagineVideo catalog gate", () => {
 });
 
 describe("ImagineVideo execute", () => {
+  it("uses a Grok session API key for video requests on its custom URL", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-video-gateway-"));
+    const provider = createProvider("grok", {
+      apiKey: "gateway-api-key",
+      model: "grok-4.6",
+      baseURL: "https://gateway.example.test/v1",
+      extra: { authMode: "api_key" },
+    });
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ request_id: "gateway-video" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        status: "done", video: { url: "https://cdn.example.test/video.mp4" },
+      })))
+      .mockResolvedValueOnce(new Response(Uint8Array.from([0, 0, 0, 24])));
+    const tool = createImagineVideoTool({
+      workspaceRoot: root,
+      home: testHome(root),
+      getSession: () => ({ services: { provider } }) as unknown as Session,
+      env: {},
+      fetchImpl,
+    });
+
+    const result = await tool.execute({ prompt: "a rocket", duration: 3, resolution: "480p" });
+
+    expect(result.isError).toBeUndefined();
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe("https://gateway.example.test/v1/videos/generations");
+    expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({ authorization: "Bearer gateway-api-key" });
+  });
+
   it("submits, polls, downloads mp4 with OAuth session bearer", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-vid-"));
     const provider = createProvider("grok", {
@@ -463,6 +492,70 @@ describe("ImagineVideo execute", () => {
     // response body was ever followed.
     expect(String(calls.at(-1)?.[0])).toBe(
       "https://api.openai.com/v1/videos/video_abc/content",
+    );
+  });
+
+  /** Asserts the video request goes to `expectedUrl` bearing `expectedKey`. */
+  async function expectVideoRequestUses(
+    provider: ReturnType<typeof createProvider>,
+    env: Record<string, string>,
+    expectedUrl: string,
+    expectedKey: string,
+  ) {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ error: "unavailable" }), { status: 503 })) as unknown as typeof fetch;
+    const tool = createImagineVideoTool({
+      workspaceRoot: process.cwd(),
+      home: testHome(process.cwd()),
+      getSession: () => ({ services: { provider } }) as unknown as Session,
+      env,
+      fetchImpl,
+    });
+
+    await tool.execute({ prompt: "a rotating cube" });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      expectedUrl,
+      expect.objectContaining({
+        headers: expect.objectContaining({ authorization: `Bearer ${expectedKey}` }),
+      }),
+    );
+  }
+
+  it("sends the OpenAI video key to the session's configured URL", async () => {
+    const provider = createProvider("openai", {
+      apiKey: "session-key",
+      model: "gpt-6-astra",
+      baseURL: "https://custom.example/v1",
+    });
+    await expectVideoRequestUses(
+      provider, { OPENAI_API_KEY: "custom-key" },
+      "https://custom.example/v1/videos", "custom-key",
+    );
+  });
+
+  it("uses OPENAI_BASE_URL before the OpenAI session's default factory URL", async () => {
+    const provider = createProvider("openai", {
+      apiKey: "session-key",
+      model: "gpt-6-astra",
+      baseURL: "https://api.openai.com/v1",
+    });
+    await expectVideoRequestUses(
+      provider,
+      { OPENAI_API_KEY: "env-key", OPENAI_BASE_URL: "https://env-openai.example/v1" },
+      "https://env-openai.example/v1/videos", "env-key",
+    );
+  });
+
+  it("uses MINIMAX_BASE_URL before the MiniMax session's default factory URL", async () => {
+    const provider = createProvider("minimax", {
+      apiKey: "session-key",
+      model: "MiniMax-M2.5",
+      baseURL: "https://api.minimax.io/v1",
+    });
+    await expectVideoRequestUses(
+      provider,
+      { MINIMAX_API_KEY: "env-key", MINIMAX_BASE_URL: "https://env-minimax.example/v1" },
+      "https://env-minimax.example/v1/video_generation", "env-key",
     );
   });
 

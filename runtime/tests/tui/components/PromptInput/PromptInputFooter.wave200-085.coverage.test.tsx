@@ -210,7 +210,6 @@ function props(overrides: Partial<FooterProps> = {}): FooterProps {
       mode: 'default',
     } as FooterProps['toolPermissionContext'],
     verbose: false,
-    vimMode: 'INSERT',
     runtimeState: {},
     ...overrides,
   }
@@ -286,7 +285,7 @@ describe('PromptInputFooter coverage branch render', () => {
       },
     )
 
-    expect(footerOutput).toContain('Left:false:INSERT:true:true')
+    expect(footerOutput).toContain('Left:false:none:true:true')
     expect(footerOutput).toContain('Notifications:true:true:0')
     expect(footerOutput).not.toContain('Suggestions:')
     expect(harness.overlays.at(-1)).toBeNull()

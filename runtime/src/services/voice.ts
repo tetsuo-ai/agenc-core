@@ -19,6 +19,7 @@ import { getPlatform } from '../utils/platform.js'
 import { getSelectedProviderEnvironment } from '../utils/model/providers.js'
 import { isSessionRemoteMode } from '../session/runtime-options.js'
 import { getIsRemoteMode } from '../bootstrap/state.js'
+import { isSignalablePid } from '../utils/child-signal.js'
 
 // Lazy-loaded native audio module. audio-capture.node links against
 // CoreAudio.framework + AudioUnit.framework; dlopen is synchronous and
@@ -157,9 +158,13 @@ type PackageManagerInfo = {
   displayCommand: string
 }
 
-function detectPackageManager(): PackageManagerInfo | null {
-  if (process.platform === 'darwin') {
-    if (hasCommand('brew')) {
+function detectPackageManager(
+  deps: Pick<PlaybackAvailabilityDeps, 'hasCommand' | 'platform'> = {},
+): PackageManagerInfo | null {
+  const platform = deps.platform ?? process.platform
+  const commandExists = deps.hasCommand ?? hasCommand
+  if (platform === 'darwin') {
+    if (commandExists('brew')) {
       return {
         cmd: 'brew',
         args: ['install', 'sox'],
@@ -169,22 +174,22 @@ function detectPackageManager(): PackageManagerInfo | null {
     return null
   }
 
-  if (process.platform === 'linux') {
-    if (hasCommand('apt-get')) {
+  if (platform === 'linux') {
+    if (commandExists('apt-get')) {
       return {
         cmd: 'sudo',
         args: ['apt-get', 'install', '-y', 'sox'],
         displayCommand: 'sudo apt-get install sox',
       }
     }
-    if (hasCommand('dnf')) {
+    if (commandExists('dnf')) {
       return {
         cmd: 'sudo',
         args: ['dnf', 'install', '-y', 'sox'],
         displayCommand: 'sudo dnf install sox',
       }
     }
-    if (hasCommand('pacman')) {
+    if (commandExists('pacman')) {
       return {
         cmd: 'sudo',
         args: ['pacman', '-S', '--noconfirm', 'sox'],
@@ -286,17 +291,28 @@ export type PlaybackAvailabilityDeps = {
 const REMOTE_PLAYBACK_REASON =
   'Realtime voice playback requires a local speaker, but no audio device is available in this environment.\n\nTo use voice mode, run AgenC locally instead.'
 
+let hostPlaybackBackend: RealtimePlaybackBackend | null | undefined
+
 export function resolveRealtimePlaybackBackend(
   deps: Pick<PlaybackAvailabilityDeps, 'hasCommand' | 'platform'> = {},
 ): RealtimePlaybackBackend | null {
   const commandExists = deps.hasCommand ?? hasCommand
   const platform = deps.platform ?? process.platform
-  if (commandExists('play')) return 'play'
-  if (platform === 'linux' && commandExists('aplay')) return 'aplay'
-  return null
+  const hostProbe = deps.hasCommand === undefined && deps.platform === undefined
+  if (hostProbe && hostPlaybackBackend !== undefined) return hostPlaybackBackend
+  const backend = commandExists('play')
+    ? 'play'
+    : platform === 'linux' && commandExists('aplay')
+      ? 'aplay'
+      : null
+  if (hostProbe) hostPlaybackBackend = backend
+  return backend
 }
 
-function missingPlaybackReason(platform: NodeJS.Platform): string {
+function missingPlaybackReason(
+  deps: Pick<PlaybackAvailabilityDeps, 'hasCommand' | 'platform'>,
+): string {
+  const platform = deps.platform ?? process.platform
   if (platform === 'darwin') {
     return 'Realtime voice playback requires SoX `play`. Native audio capture cannot play assistant audio. Install it with: brew install sox'
   }
@@ -304,7 +320,7 @@ function missingPlaybackReason(platform: NodeJS.Platform): string {
     return 'Realtime voice playback requires SoX `play` on PATH. The native audio module can record but cannot play assistant audio. Install SoX and ensure the `play` command is available.'
   }
   if (platform === 'linux') {
-    const pm = detectPackageManager()
+    const pm = detectPackageManager(deps)
     const soxHint = pm?.displayCommand ?? 'sudo apt-get install sox'
     return `Realtime voice playback requires SoX \`play\` or ALSA \`aplay\`. Native audio capture cannot play assistant audio. Install SoX with: ${soxHint}  (or install alsa-utils for aplay)`
   }
@@ -319,11 +335,10 @@ export async function checkPlaybackAvailability(
   if (deps.isRemote ?? isRemoteAudioEnvironment()) {
     return { available: false, reason: REMOTE_PLAYBACK_REASON }
   }
-  const platform = deps.platform ?? process.platform
   if (resolveRealtimePlaybackBackend(deps) !== null) {
     return { available: true, reason: null }
   }
-  return { available: false, reason: missingPlaybackReason(platform) }
+  return { available: false, reason: missingPlaybackReason(deps) }
 }
 
 export async function checkRealtimeAudioAvailability(
@@ -599,7 +614,10 @@ export function stopRecording(): void {
     return
   }
   if (activeRecorder) {
-    activeRecorder.kill('SIGTERM')
+    // A recorder whose spawn failed has no pid. Until Node reports that on
+    // the next tick, its open handle sends kill() to pid 0: the TUI's whole
+    // process group. Its error handler ends the recording instead.
+    if (isSignalablePid(activeRecorder.pid)) activeRecorder.kill('SIGTERM')
     activeRecorder = null
   }
 }

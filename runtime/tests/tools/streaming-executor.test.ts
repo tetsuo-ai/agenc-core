@@ -5,7 +5,7 @@ import {
   StreamingToolExecutor,
   type StreamingToolUpdate,
 } from "./streaming-executor.js";
-import { routerFromRegistry } from "./router.js";
+import { routerFromRegistry, ToolRouter } from "./router.js";
 import { EventLog } from "../session/event-log.js";
 import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
 import type { LLMTool, LLMToolCall } from "../llm/types.js";
@@ -117,6 +117,61 @@ function testTool(overrides: Partial<Tool> & { name: string }): Tool {
     execute: async () => ({ content: "" }),
     ...overrides,
   };
+}
+
+/** A registry whose `toLLMTools` offers only `offered`, like deferred tools. */
+function unknownToolRegistry(
+  tools: readonly Tool[],
+  offered: readonly string[],
+): ToolRegistry {
+  return {
+    tools,
+    toLLMTools: () =>
+      tools
+        .filter((tool) => offered.includes(tool.name))
+        .map((tool) => ({
+          type: "function" as const,
+          function: { name: tool.name, description: "", parameters: {} },
+        })),
+    dispatch: async () => ({ content: "must not dispatch" }),
+  };
+}
+
+/** Queue one unknown call through live dispatch and return its error text. */
+async function unknownToolError(
+  registry: ToolRegistry,
+  name: string,
+  opts: {
+    readonly router?: ToolRouter;
+    readonly advertisedToolNames?: readonly string[];
+  } = {},
+): Promise<string> {
+  const exec = new StreamingToolExecutor({
+    registry,
+    liveToolDispatch: {
+      router: opts.router ?? routerFromRegistry(registry),
+      options: {
+        session: {
+          eventLog: new EventLog(),
+          services: { admissionRequired: false },
+        } as never,
+        turn: { subId: "turn-suggest" } as never,
+        tracker: { appendFileDiff: () => {}, snapshot: () => [], clear: () => {} },
+        approvalPolicy: "never",
+        sandboxMode: "workspace_write",
+        ...(opts.advertisedToolNames !== undefined
+          ? { advertisedToolNames: opts.advertisedToolNames }
+          : {}),
+      },
+    },
+  });
+  exec.addTool(makeBlock("c-unknown", name), makeCall("c-unknown", name));
+  exec.close();
+  const results = [];
+  for await (const result of exec.getRemainingResults()) results.push(result);
+  expect(results).toHaveLength(1);
+  expect(results[0]!.result.isError).toBe(true);
+  return JSON.parse(results[0]!.result.content).content as string;
 }
 
 interface DrainedResult {
@@ -645,6 +700,137 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     expect(results).toHaveLength(1);
     expect(results[0]!.result.isError).toBe(true);
     expect(results[0]!.result.content).toContain("No such tool available: Read");
+    // Not an alias: the call fails, and the error names the real tool.
+    expect(JSON.parse(results[0]!.result.content)).toEqual({
+      tool_use_id: "read-alias",
+      is_error: true,
+      content:
+        "<tool_use_error>Error: No such tool available: Read. " +
+        "The closest available tool is FileRead, which has its own parameters.</tool_use_error>",
+    });
+  });
+
+  test("unknown foreign tool names get the closest available tool, never a dispatch", async () => {
+    const dispatch = vi.fn(async () => ({ content: "must not dispatch" }));
+    const tools = ["FileRead", "Edit", "Write", "exec_command", "Grep"].map(
+      (name) => testTool({ name }),
+    );
+    const exec = new StreamingToolExecutor(mockGuardedDispatch(dispatch, tools));
+    const calls = [
+      ["c-read", "Read", "FileRead"],
+      ["c-edit", "edit_file", "Edit"],
+      ["c-write", "write_file", "Write"],
+      ["c-bash", "bash", "exec_command"],
+      ["c-grep", "grep", "Grep"],
+    ] as const;
+    for (const [id, name] of calls) exec.addTool(makeBlock(id, name), makeCall(id, name));
+    exec.close();
+
+    const results = [];
+    for await (const result of exec.getRemainingResults()) results.push(result);
+
+    expect(dispatch).not.toHaveBeenCalled();
+    // Every tool_use still gets exactly one paired terminal result.
+    expect(results.map((result) => result.toolCall.id)).toEqual(calls.map(([id]) => id));
+    for (const [index, [id, name, suggestion]] of calls.entries()) {
+      expect(results[index]!.result.isError).toBe(true);
+      expect(JSON.parse(results[index]!.result.content)).toEqual({
+        tool_use_id: id,
+        is_error: true,
+        content:
+          `<tool_use_error>Error: No such tool available: ${name}. ` +
+          `The closest available tool is ${suggestion}, which has its own parameters.</tool_use_error>`,
+      });
+    }
+  });
+
+  test("unknown tool suggestions come only from tools the session has", async () => {
+    const exec = new StreamingToolExecutor(
+      mockGuardedDispatch(async () => ({ content: "must not dispatch" }), [
+        testTool({ name: "Grep" }),
+      ]),
+    );
+    exec.addTool(makeBlock("c-read", "Read"), makeCall("c-read", "Read"));
+    exec.close();
+    const results = [];
+    for await (const result of exec.getRemainingResults()) results.push(result);
+    expect(JSON.parse(results[0]!.result.content).content).toBe(
+      "<tool_use_error>Error: No such tool available: Read</tool_use_error>",
+    );
+  });
+
+  test("unknown tool suggestions prefer a tool the model was offered", async () => {
+    const glob = testTool({ name: "Glob" });
+    const listDir = testTool({ name: "system.listDir", metadata: { deferred: true } });
+    // A deferred tool is registered but its schema was not sent.
+    const registry = unknownToolRegistry([glob, listDir], ["Glob"]);
+
+    expect(await unknownToolError(registry, "ls")).toContain(
+      "The closest available tool is Glob,",
+    );
+    expect(
+      await unknownToolError(registry, "ls", {
+        advertisedToolNames: ["Glob", "system.listDir"],
+      }),
+    ).toContain("The closest available tool is system.listDir,");
+    // Nothing offered and no tool search: a deferred tool cannot be loaded.
+    expect(
+      await unknownToolError(registry, "ls", { advertisedToolNames: [] }),
+    ).toBe("<tool_use_error>Error: No such tool available: ls</tool_use_error>");
+  });
+
+  test("unknown tool suggestions skip router specs marked unavailable", async () => {
+    const fileRead = testTool({ name: "FileRead" });
+    // Unavailable specs stay in the router for telemetry only, even when the
+    // registry also lists the name.
+    for (const registered of [[], [fileRead]]) {
+      const registry = unknownToolRegistry(registered, registered.map((tool) => tool.name));
+      const router = new ToolRouter([
+        { tool: fileRead, supportsParallelToolCalls: false, unavailable: true },
+      ]);
+      expect(await unknownToolError(registry, "Read", { router })).toBe(
+        "<tool_use_error>Error: No such tool available: Read</tool_use_error>",
+      );
+    }
+  });
+
+  test("unknown tool suggestions never name a tool withheld from the model", async () => {
+    const search = testTool({ name: "system.searchTools" });
+    // Deferred but hidden from discovery.
+    const bash = testTool({
+      name: "system.bash",
+      metadata: { deferred: true, hiddenByDefault: true },
+    });
+    // Registered and not deferred, but left out of this request.
+    const grep = testTool({ name: "Grep" });
+    const registry = unknownToolRegistry([search, bash, grep], ["system.searchTools"]);
+    const offered = { advertisedToolNames: ["system.searchTools"] };
+    expect(await unknownToolError(registry, "bash", offered)).toBe(
+      "<tool_use_error>Error: No such tool available: bash</tool_use_error>",
+    );
+    expect(await unknownToolError(registry, "grep", offered)).toBe(
+      "<tool_use_error>Error: No such tool available: grep</tool_use_error>",
+    );
+  });
+
+  test("unknown tool suggestions name a loadable deferred tool and how to load it", async () => {
+    const search = testTool({ name: "system.searchTools" });
+    const listDir = testTool({ name: "system.listDir", metadata: { deferred: true } });
+    const registry = unknownToolRegistry([search, listDir], ["system.searchTools"]);
+    expect(
+      await unknownToolError(registry, "ls", {
+        advertisedToolNames: ["system.searchTools"],
+      }),
+    ).toBe(
+      "<tool_use_error>Error: No such tool available: ls. " +
+        "The closest available tool is system.listDir, which has its own parameters. " +
+        "Its schema is not loaded yet; system.searchTools with select:system.listDir loads it." +
+        "</tool_use_error>",
+    );
+    // Without the search tool on offer, the deferred tool cannot be loaded.
+    expect(
+      await unknownToolError(registry, "ls", { advertisedToolNames: [] }),
+    ).toBe("<tool_use_error>Error: No such tool available: ls</tool_use_error>");
   });
 
   test("external abort reasons are preserved in synthetic terminal results", async () => {
@@ -717,7 +903,7 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     expect(peak).toBe(1);
   });
 
-  test("normalizes array-shaped parsed arguments before concurrency hooks", async () => {
+  test("fails closed on array-shaped arguments without invoking concurrency hooks", async () => {
     let observedArgs: Record<string, unknown> | undefined;
     const tool: Tool = {
       name: "FileRead",
@@ -747,8 +933,7 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     }
 
     expect(seenIds).toEqual(["array-args"]);
-    expect(observedArgs).toEqual({});
-    expect(Array.isArray(observedArgs)).toBe(false);
+    expect(observedArgs).toBeUndefined();
   });
 
   test("maxConcurrency caps safe tools without changing yield order", async () => {
@@ -808,6 +993,10 @@ describe("StreamingToolExecutor AgenC behavior (T6)", () => {
     expect(results[0]!.id).toBe("u1");
     expect(results[0]!.isError).toBe(true);
     expect(results[0]!.content).toContain("No such tool available: no.such.tool");
+    // No clear match: the error text is unchanged.
+    expect(JSON.parse(results[0]!.content).content).toBe(
+      "<tool_use_error>Error: No such tool available: no.such.tool</tool_use_error>",
+    );
   });
 
   test("addTool on a closed executor still emits a synthetic completion (regression: pwd-storm silent drop)", async () => {

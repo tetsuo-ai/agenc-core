@@ -4,6 +4,7 @@ import {
   AgencCapabilityUnavailableError,
   AgencDuplicateSubmissionIncompleteError,
   AgencPromptRunInProgressError,
+  collectClientEnvOverrides,
   createAgencClient,
   type AgencClient,
   type AgencDaemonMethod,
@@ -13,6 +14,8 @@ import {
   type AgencTransport,
   type JsonObject,
 } from "../../../packages/agenc-sdk/src/index";
+import { notificationFromDaemonEvent } from "../../src/app-server/background-agent-runner/daemon-events.js";
+import { AGENC_SDK_DAEMON_PROTOCOL_VERSION } from "../../../packages/agenc-sdk/src/protocol.js";
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -75,7 +78,7 @@ class PromptTransport implements AgencTransport {
     readonly response: Deferred<AgencDaemonResponse<"message.send">>;
   }> = [];
   client?: AgencClient;
-  initializeVersion = "1.13.0";
+  initializeVersion: string = AGENC_SDK_DAEMON_PROTOCOL_VERSION;
   initializeFailures = 0;
   attachRuntimeOptions: unknown;
   attachRuntimeSettings: unknown = VALID_ATTACH_RUNTIME_SETTINGS;
@@ -121,7 +124,8 @@ class PromptTransport implements AgencTransport {
               this.initializeVersion === "1.9.0" ||
               this.initializeVersion === "1.10.0" ||
               this.initializeVersion === "1.11.0" ||
-              this.initializeVersion === "1.13.0",
+              this.initializeVersion === "1.16.0" ||
+              this.initializeVersion === AGENC_SDK_DAEMON_PROTOCOL_VERSION,
           },
         },
       });
@@ -448,7 +452,7 @@ describe("agenc-sdk prompt race safety", () => {
       );
       expect(initializes).toHaveLength(2);
       expect(initializes.map((request) => request.params)).toEqual([
-        expect.objectContaining({ protocol: { version: "1.13.0" } }),
+        expect.objectContaining({ protocol: { version: AGENC_SDK_DAEMON_PROTOCOL_VERSION }, capabilities: {}, clientName: "agenc-sdk" }),
         expect.objectContaining({ protocol: { version } }),
       ]);
       expect(client.negotiatedProtocolVersion).toBe(version);
@@ -612,6 +616,9 @@ describe("agenc-sdk prompt race safety", () => {
       (request) => request.method === "agent.create",
     );
     expect(createRequests).toHaveLength(1);
+    // createSession() with no explicit envOverrides forwards this process's
+    // allowlisted environment, so the exact-params assertion has to carry it.
+    const forwardedEnv = collectClientEnvOverrides();
     expect(createRequests[0]?.params).toEqual({
       objective: "Interactive session",
       cwd: VALID_ATTACH_CWD,
@@ -621,6 +628,9 @@ describe("agenc-sdk prompt race safety", () => {
         request: { id: "request_1" },
       },
       runtimeOptions: VALID_ATTACH_RUNTIME_OPTIONS,
+      ...(Object.keys(forwardedEnv).length > 0
+        ? { envOverrides: forwardedEnv }
+        : {}),
     });
     expect(
       transport.requests.filter(
@@ -841,6 +851,26 @@ describe("agenc-sdk prompt race safety", () => {
     const nextSend = await waitForSend(transport, 1);
     resolveSend(nextSend, "next-turn");
     await expect(next.result()).resolves.toMatchObject({ exitCode: 0 });
+    await client.close();
+  });
+
+  it("settles a prompt the user ended by denying approval as stopped, not completed", async () => {
+    const transport = new PromptTransport();
+    const client = await initializedClient(transport);
+    const run = client.runPrompt("session_1", "write it", { clientMessageId: "denied-message", includeUsage: false });
+    const send = await waitForSend(transport, 0);
+    transport.emit(userMessage("denied-message", "write it"));
+    transport.emit(turnStarted("turn-denied"));
+    // The daemon's own projection of the denial terminal.
+    transport.emit(notificationFromDaemonEvent("session_1", "session_1", {
+      id: "aborted-denied", eventId: "aborted-denied", type: "turn_aborted",
+      payload: { turnId: "turn-denied", reason: "approval_denied" },
+    }) as unknown as JsonObject);
+    const clientMessageId = String((send.request.params as JsonObject).clientMessageId);
+    send.response.resolve(success(send.request, {
+      messageId: clientMessageId, acceptedAt: "2026-08-17T00:00:00.000Z", disposition: "started", turnId: "turn-denied",
+    }));
+    await expect(run.result()).resolves.toMatchObject({ stopReason: "stopped", exitCode: 130 });
     await client.close();
   });
 

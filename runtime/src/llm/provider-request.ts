@@ -234,6 +234,12 @@ export function resolveProviderRuntimeRequest(params: {
     params.config.providers?.openrouter?.zero_data_retention === true
       ? { zeroDataRetention: true }
       : {}),
+    // Bedrock reads the configured profile mapping to apply the right
+    // request contract to ids that name no model.
+    ...(params.provider === "amazon-bedrock" &&
+    params.config.modelOverrides !== undefined
+      ? { modelOverrides: params.config.modelOverrides }
+      : {}),
   };
   return Object.freeze({
     settings,

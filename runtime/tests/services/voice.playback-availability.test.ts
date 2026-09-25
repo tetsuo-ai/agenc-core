@@ -29,6 +29,26 @@ describe("realtime playback capability detection", () => {
     });
   });
 
+  test("linux install hint uses the injected package manager", async () => {
+    const probed: string[] = [];
+    const hasCommand = (command: string): boolean => {
+      probed.push(command);
+      return command === "dnf";
+    };
+
+    await expect(
+      checkPlaybackAvailability({
+        hasCommand,
+        platform: "linux",
+        isRemote: false,
+      }),
+    ).resolves.toMatchObject({
+      available: false,
+      reason: expect.stringContaining("sudo dnf install sox"),
+    });
+    expect(probed).toEqual(["play", "aplay", "apt-get", "dnf"]);
+  });
+
   test.each([
     ["darwin", "play", "play"],
     ["linux", "play", "play"],

@@ -1,3 +1,6 @@
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import type { ChildProcess } from "node:child_process";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 const logMock = vi.hoisted(() => ({
@@ -25,6 +28,7 @@ import type {
   StartRealtimeAudioCapture,
 } from "./audio.js";
 import { createRealtimeTuiControls } from "./controller.js";
+import { createFailedSpawnChild } from "../../helpers/failed-spawn-child.js";
 
 function createClient(): {
   readonly requests: Array<{
@@ -52,6 +56,30 @@ function createClient(): {
 function createNoopAudioCapture(): StartRealtimeAudioCapture {
   return async () => ({
     stop: vi.fn(),
+  });
+}
+
+function createStartedPlaybackChild(): ChildProcess {
+  const child = new EventEmitter() as ChildProcess & { stdin: PassThrough };
+  child.stdin = new PassThrough();
+  child.kill = vi.fn(() => true) as never;
+  Object.assign(child, { pid: 424_242 });
+  return child;
+}
+
+function pushOutputAudio(
+  controls: ReturnType<typeof createRealtimeTuiControls>,
+  sampleRate: number,
+): void {
+  controls.handleTranscriptEvent({
+    type: "realtime_output_audio_delta",
+    payload: {
+      audio: {
+        data: Buffer.from([1, 2, 3, 4]).toString("base64"),
+        sampleRate,
+        numChannels: 1,
+      },
+    },
   });
 }
 
@@ -727,6 +755,119 @@ describe("AgenC realtime TUI controller", () => {
         message: "play: command not found",
       },
     });
+  });
+
+  test.each([
+    {
+      label: "permanent ENOENT from the active child",
+      code: "ENOENT" as const,
+      stale: false,
+      endsSession: true,
+    },
+    {
+      label: "transient EAGAIN from the active child",
+      code: "EAGAIN" as const,
+      stale: false,
+      endsSession: false,
+    },
+    {
+      label: "ENOENT from a replaced child",
+      code: "ENOENT" as const,
+      stale: true,
+      endsSession: false,
+    },
+  ])(
+    "a spawned player child error ($label) ends the session only for a permanent active failure",
+    async ({ code, stale, endsSession }) => {
+      const failed = createFailedSpawnChild({ code, command: "play" });
+      const live = createStartedPlaybackChild();
+      const spawned: ChildProcess[] = [];
+      const client = createClient();
+      const controls = createRealtimeTuiControls({
+        threadId: "agent_1",
+        client,
+        emitEvent: () => {},
+        startAudioCapture: createNoopAudioCapture(),
+        playbackBackend: "play",
+        spawnPlaybackProcess: () => {
+          const next = spawned.length === 0 ? failed : live;
+          spawned.push(next);
+          return next;
+        },
+      });
+
+      await controls.start({ transport: "websocket" });
+      controls.handleTranscriptEvent({
+        type: "realtime_started",
+        payload: { realtimeSessionId: "rt_1" },
+      });
+      pushOutputAudio(controls, 24_000);
+      if (stale) pushOutputAudio(controls, 48_000);
+      await failed.reported;
+
+      if (endsSession) {
+        await waitFor(
+          () =>
+            controls.getState().phase === "inactive" &&
+            controls.getState().errorBanner !== null,
+          "permanent playback failure ends the session",
+        );
+        expect(spawned).toHaveLength(1);
+        return;
+      }
+
+      expect(controls.getState().phase).toBe("active");
+      expect(controls.getState().errorBanner).toBeNull();
+      expect(
+        client.requests.some(
+          (request) => request.method === "thread/realtime/stop",
+        ),
+      ).toBe(false);
+
+      if (!stale) pushOutputAudio(controls, 24_000);
+      expect(spawned).toHaveLength(2);
+    },
+  );
+
+  test("a new session clears the playback-unavailable latch and spawns again", async () => {
+    const first = createFailedSpawnChild({ code: "ENOENT", command: "play" });
+    const second = createStartedPlaybackChild();
+    const spawned: ChildProcess[] = [];
+    const controls = createRealtimeTuiControls({
+      threadId: "agent_1",
+      client: createClient(),
+      emitEvent: () => {},
+      startAudioCapture: createNoopAudioCapture(),
+      playbackBackend: "play",
+      spawnPlaybackProcess: () => {
+        const next = spawned.length === 0 ? first : second;
+        spawned.push(next);
+        return next;
+      },
+    });
+
+    await controls.start({ transport: "websocket" });
+    controls.handleTranscriptEvent({
+      type: "realtime_started",
+      payload: { realtimeSessionId: "rt_1" },
+    });
+    pushOutputAudio(controls, 24_000);
+    await first.reported;
+    await waitFor(
+      () => controls.getState().phase === "inactive",
+      "first session ended",
+    );
+
+    await controls.start({ transport: "websocket" });
+    controls.handleTranscriptEvent({
+      type: "realtime_started",
+      payload: { realtimeSessionId: "rt_2" },
+    });
+    pushOutputAudio(controls, 24_000);
+
+    expect(spawned).toHaveLength(2);
+    expect(controls.getState().phase).toBe("active");
+    expect(controls.getState().errorBanner).toBeNull();
   });
 
   test("ignores stale media and transcript notifications after stop", async () => {

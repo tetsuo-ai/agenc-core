@@ -18,6 +18,7 @@ import {
   readFileSync,
   rmSync,
   rmdirSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,6 +26,7 @@ import { dirname, isAbsolute, join, resolve, win32 } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { serializeProcessBrokerPayload } from "./process-broker-protocol.js";
+import { isSignalablePid } from "./child-signal.js";
 
 import {
   resolveTrustedWindowsSystemExecutable,
@@ -635,6 +637,7 @@ export function spawnContainedProcess(
   args: readonly string[],
   options: ContainedProcessSpawnOptions,
 ): ChildProcessWithoutNullStreams {
+  assertSpawnableWorkingDirectory(options.cwd);
   if (process.platform === "win32") {
     return spawnWindowsJobContainedProcess(program, args, options);
   }
@@ -683,15 +686,14 @@ export function spawnContainedProcess(
     // surface ECONNRESET on this private stream. It is not a user-visible I/O
     // failure and must not become an unhandled process-level exception.
     gate.on("error", () => {});
-    launchPosixOwnerWatchdog(child, gate, gatePayload, options.cwd, cgroupPath);
+    launchPosixOwnerWatchdog(child, gate, gatePayload, cgroupPath);
     return child;
   } catch (error) {
     if (child !== undefined) {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // The gated wrapper never reached the target process.
-      }
+      // A failed spawn still emits its error on the next tick; with no
+      // listener that is an uncaught exception in the daemon.
+      child.on("error", () => {});
+      safeKill(child, "SIGKILL");
     }
     if (cgroupPath !== null) removeEmptyLinuxCgroup(cgroupPath);
     throw error;
@@ -725,6 +727,7 @@ function spawnLinuxSubreaperContainedProcess(
     },
   ) as ChildProcessWithoutNullStreams;
   if (child.pid === undefined || child.pid <= 1) {
+    child.on("error", () => {});
     safeKill(child, "SIGKILL");
     throw new Error(
       "Linux process containment broker did not publish a safe pid",
@@ -1046,7 +1049,6 @@ function launchPosixOwnerWatchdog(
   child: ChildProcessWithoutNullStreams,
   gate: Writable,
   gatePayload: string,
-  cwd: string,
   cgroupPath: string | null,
 ): void {
   if (cgroupPath !== null && process.platform === "linux") {
@@ -1069,7 +1071,10 @@ function launchPosixOwnerWatchdog(
     process.execPath,
     ["-e", POSIX_OWNER_WATCHDOG_SCRIPT],
     {
-      cwd,
+      // The watchdog uses only absolute paths. Starting it in the command's
+      // directory let a directory removed after the gate spawn fail it, and
+      // fail() then reported the never-run command as SIGKILLed.
+      cwd: "/",
       env: trustedPosixBootstrapEnvironment({
         AGENC_PROCESS_WATCHDOG_CONFIG: config,
       }),
@@ -1078,8 +1083,12 @@ function launchPosixOwnerWatchdog(
       windowsHide: true,
     },
   );
+  // A failed spawn reports on the next tick; EMFILE and ENFILE also leave
+  // stdio undefined. Listen before touching it. fail() below acts on errors
+  // once the readiness pipe is wired.
+  watchdog.on("error", () => {});
   posixOwnerWatchdogs.set(child, watchdog);
-  const readiness = watchdog.stdio[3];
+  const readiness = watchdog.stdio?.[3];
   if (
     readiness === undefined ||
     readiness === null ||
@@ -1185,7 +1194,25 @@ function getLinuxCgroupOwnerWatchdog(): LinuxCgroupWatchdogState {
     stdoutBuffer: "",
     failed: false,
   };
-  linuxCgroupOwnerWatchdog = state;
+  // A failed spawn reports on the next tick; EMFILE and ENFILE also leave
+  // stdio undefined. Listen first, and publish the singleton only once it is
+  // set up: a published broken watchdog would be reused by every contained
+  // command started in the meantime.
+  child.once("error", (error) => {
+    failLinuxCgroupOwnerWatchdog(state, error);
+  });
+  if (
+    child.pid === undefined ||
+    child.stdin === null ||
+    child.stdin === undefined ||
+    child.stdout === null ||
+    child.stdout === undefined ||
+    child.stderr === null ||
+    child.stderr === undefined
+  ) {
+    state.failed = true;
+    throw new Error("contained process watchdog could not be started");
+  }
   child.unref();
   unrefProcessPipe(child.stdin);
   unrefProcessPipe(child.stdout);
@@ -1196,9 +1223,6 @@ function getLinuxCgroupOwnerWatchdog(): LinuxCgroupWatchdogState {
     handleLinuxCgroupWatchdogOutput(state, chunk);
   });
   child.stdin.on("error", (error) => {
-    failLinuxCgroupOwnerWatchdog(state, error);
-  });
-  child.once("error", (error) => {
     failLinuxCgroupOwnerWatchdog(state, error);
   });
   child.once("exit", (code, signal) => {
@@ -1212,6 +1236,7 @@ function getLinuxCgroupOwnerWatchdog(): LinuxCgroupWatchdogState {
       ),
     );
   });
+  linuxCgroupOwnerWatchdog = state;
   return state;
 }
 
@@ -2004,7 +2029,7 @@ export function isProcessTreeAlive(
   // walking `/proc/1` adopts the whole container/host namespace. Apply the
   // guard before every native ownership boundary so corrupt handles remain
   // direct-child-only on every platform.
-  if (child.pid !== undefined && child.pid <= 1) {
+  if (child.pid !== undefined && !isSignalablePid(child.pid)) {
     return child.exitCode === null && child.signalCode === null;
   }
   if (linuxSubreaperBoundaries.has(child)) {
@@ -2026,6 +2051,9 @@ export function isProcessTreeAlive(
     captureProcessTreeDescendants(child);
   }
   const ownedDescendantAlive = ownedBoundaryHasLiveMember(child);
+  // The leader was reaped and its pid now belongs to another process: a
+  // group with that id is not ours, so only recorded descendants count.
+  if (processIdReused(child)) return ownedDescendantAlive;
   if (process.platform === "linux") {
     const procState = linuxProcessGroupHasLiveMember(child.pid);
     if (procState === true) return true;
@@ -2059,8 +2087,7 @@ export function captureProcessTreeDescendants(
 ): void {
   const rootPid = child.pid;
   if (
-    rootPid === undefined ||
-    rootPid <= 1 ||
+    !isSignalablePid(rootPid) ||
     process.platform === "win32" ||
     linuxSubreaperBoundaries.has(child)
   ) {
@@ -2069,6 +2096,9 @@ export function captureProcessTreeDescendants(
 
   const snapshot = readNativeProcessSnapshot();
   let boundary = ownedProcessBoundaries.get(child);
+  // Once the leader has been reaped its pid may belong to another process.
+  // Only identities recorded while it was ours can still be matched.
+  const reaped = leaderReaped(child);
   if (snapshot === undefined) {
     boundary ??= {
       rootPid,
@@ -2084,6 +2114,7 @@ export function captureProcessTreeDescendants(
   }
 
   if (boundary === undefined) {
+    if (reaped) return;
     const root = snapshot.records.get(rootPid);
     if (root === undefined && snapshot.complete) return;
     boundary = {
@@ -2097,7 +2128,7 @@ export function captureProcessTreeDescendants(
   } else if (!snapshot.complete) {
     boundary.snapshotComplete = false;
   }
-  extendOwnedProcessBoundary(boundary, snapshot);
+  extendOwnedProcessBoundary(boundary, snapshot, !reaped);
 }
 
 /**
@@ -2123,8 +2154,9 @@ export async function terminateProcessTreeAndReport(
   options: TerminateProcessTreeOptions = {},
 ): Promise<TerminateProcessTreeOutcome> {
   // Never pass an invalid synthetic root to taskkill, a Job Object, a cgroup,
-  // process-table discovery, or POSIX negative-PID signalling.
-  if (child.pid !== undefined && child.pid <= 1) {
+  // process-table discovery, or POSIX negative-PID signalling. Such a root is
+  // not signalled at all (see safeKill); it only settles if it exits.
+  if (child.pid !== undefined && !isSignalablePid(child.pid)) {
     if (!isProcessTreeAlive(child)) return TREE_ALREADY_GONE;
     safeKill(child, "SIGTERM");
     if (
@@ -2576,9 +2608,10 @@ function readPsProcessSnapshot(): NativeProcessSnapshot | undefined {
 function extendOwnedProcessBoundary(
   boundary: OwnedProcessBoundary,
   snapshot: NativeProcessSnapshot,
+  adoptRoot: boolean,
 ): void {
   const root = snapshot.records.get(boundary.rootPid);
-  if (boundary.identities.size === 0 && root !== undefined) {
+  if (adoptRoot && boundary.identities.size === 0 && root !== undefined) {
     boundary.identities.set(nativeProcessIdentity(root), root);
   }
 
@@ -2736,10 +2769,10 @@ export function signalProcessTree(
   child: Pick<ChildProcess, "pid" | "kill">,
   signal: "SIGTERM" | "SIGKILL",
 ): void {
-  if (child.pid !== undefined && child.pid <= 1) {
-    safeKill(child, signal);
-    return;
-  }
+  // No pid (a spawn that failed), 0, -1, 1 or a non-integer: there is no
+  // process of ours to reach, and any signal could hit this process's
+  // group, every process of the user, or init.
+  if (!isSignalablePid(child.pid)) return;
   if (linuxSubreaperBoundaries.has(child)) {
     safeKill(child, signal === "SIGKILL" ? "SIGUSR2" : signal);
     return;
@@ -2753,18 +2786,20 @@ export function signalProcessTree(
     signalLinuxCgroup(cgroupBoundary, signal);
     return;
   }
-  if (child.pid === undefined) {
-    safeKill(child, signal);
-    return;
-  }
   if (process.platform !== "win32") {
     captureProcessTreeDescendants(child);
     signalOwnedDescendants(child, signal);
+    // The leader was reaped and its pid now belongs to another process:
+    // neither the pid nor -pid is ours. Recorded descendants were matched by
+    // identity above.
+    if (processIdReused(child)) return;
     try {
       process.kill(-child.pid, signal);
       return;
     } catch {
-      safeKill(child, signal);
+      // No group with that id. Only a leader that has not been reaped may
+      // still be signalled directly; a reaped one may have been replaced.
+      if (!leaderReaped(child)) safeKill(child, signal);
       return;
     }
   }
@@ -2793,6 +2828,40 @@ export function signalProcessTree(
   killer.once("close", (code) => {
     if (code !== 0) fallback();
   });
+}
+
+/**
+ * Whether the leader this handle started has been reaped. Node sets exitCode
+ * or signalCode only after waiting for the process, and the PTY handles do
+ * the same when node-pty reports an exit. From then on the kernel may hand
+ * the pid to an unrelated process.
+ */
+function leaderReaped(child: object): boolean {
+  const state = child as {
+    readonly exitCode?: number | null;
+    readonly signalCode?: NodeJS.Signals | null;
+  };
+  return (
+    (state.exitCode !== undefined && state.exitCode !== null) ||
+    (state.signalCode !== undefined && state.signalCode !== null)
+  );
+}
+
+/**
+ * Whether the handle's pid now belongs to a process it did not start: the
+ * leader was reaped and a live process holds the pid. The kernel does not
+ * hand out a pid that is still in use as a process group id, so while no
+ * process holds it, a group with that id is still the leader's own.
+ */
+function processIdReused(child: Pick<ChildProcess, "pid">): boolean {
+  if (!leaderReaped(child) || !isSignalablePid(child.pid)) return false;
+  try {
+    process.kill(child.pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: the pid exists and belongs to another user.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 function signalOwnedDescendants(
@@ -2840,13 +2909,36 @@ function trustedWindowsTaskkill(): TrustedWindowsTaskkill | undefined {
 }
 
 function safeKill(
-  child: Pick<ChildProcessWithoutNullStreams, "kill">,
+  child: Pick<ChildProcessWithoutNullStreams, "kill" | "pid">,
   signal: NodeJS.Signals,
 ): void {
+  // A child whose spawn failed has no pid, but its open handle still routes
+  // kill() to pid 0, which signals this process's own group: that SIGKILLed
+  // the daemon and everything it spawned. There is nothing to signal. Pid 1
+  // (init) and non-integers are refused too: a handle's kill() is not always
+  // bound to a real child (node-pty's is process.kill(this.pid)).
+  if (!isSignalablePid(child.pid)) return;
   try {
     child.kill(signal);
   } catch {
     // The process has already exited.
+  }
+}
+
+/**
+ * Spawning in a missing directory fails with ENOENT while the child handle
+ * stays open without a pid (see safeKill). A model asked for a `workdir` its
+ * own command was about to create; refuse that before anything is spawned.
+ */
+function assertSpawnableWorkingDirectory(cwd: string): void {
+  let isDirectory = false;
+  try {
+    isDirectory = statSync(cwd).isDirectory();
+  } catch {
+    isDirectory = false;
+  }
+  if (!isDirectory) {
+    throw new Error(`working directory does not exist: ${cwd}`);
   }
 }
 

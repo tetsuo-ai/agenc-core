@@ -1,4 +1,11 @@
 import { describe, expect, test, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { mkSession } from "../../fixtures.js";
+import { normalizeMcpToolOutput } from "../../../src/mcp-client/tool-output.js";
+import { readDisplayArtifact } from "../../../src/session/display-artifact-store.js";
+import type { ToolRegistry } from "../../../src/tool-registry.js";
 import {
   startCodeModeTurnWorker,
   type CodeModeWorkerSession,
@@ -93,6 +100,27 @@ function signal(): AbortSignal {
 }
 
 describe("code-mode turn host", () => {
+  test("persists attachments from an actual nested call without a manually emitted completion", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "code-mode-attachment-"));
+    try {
+      const normalized = await normalizeMcpToolOutput({
+        raw: { content: [{ type: "resource", annotations: { audience: ["user"] }, resource: { uri: "agenc:test", mimeType: "application/vnd.agenc.table+json", text: JSON.stringify({ version: 1, title: "T", columns: [{ key: "name", label: "Name" }], rows: [{ name: "A" }] }) } }] },
+        serverName: "fixture", toolName: "show", callId: "nested", environment: {}, logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      });
+      const service = new CapturingCodeModeService();
+      const registry = { dispatchCodeModeNestedTool: vi.fn(async () => normalized) } as unknown as ToolRegistry;
+      const { session, events } = mkSession({ registry, services: { codeModeService: service } });
+      session.rolloutStore = { store: { sessionDir: directory }, append: vi.fn(() => true) } as unknown as typeof session.rolloutStore;
+      startCodeModeTurnWorker(session);
+      const result = await service.host!.invokeTool({ cellId: "1", runtimeToolCallId: "nested", toolName: "mcp.fixture.show", input: {} }, signal());
+      expect(JSON.stringify(result)).toContain("Shown to the user");
+      const completed = events.find(event => event.msg.type === "tool_call_completed");
+      expect(completed?.msg).toMatchObject({ payload: { displayAttachments: [expect.objectContaining({ kind: "table" })] } });
+      if (completed?.msg.type !== "tool_call_completed") throw new Error("missing completion");
+      const item = completed.msg.payload.displayAttachments![0]!;
+      expect(readDisplayArtifact(directory, item.id)).toEqual(Buffer.from(JSON.stringify(item.data)));
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
   test("dispatches read-only nested tools and returns the code-mode projection", async () => {
     const dispatchCodeModeNestedTool = vi.fn(async () => ({
       content: '{"fallback":true}',

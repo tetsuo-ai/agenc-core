@@ -6,6 +6,7 @@ import {
 } from "./client-multiplexer.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import {
+  AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY,
   AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
   JSON_RPC_VERSION,
   type AgenCDaemonSessionNotification,
@@ -64,6 +65,21 @@ async function createSession(
 }
 
 describe("AgenC daemon client multiplexer", () => {
+  it("requires a currently attached client that advertises cross-provider consent", async () => {
+    const { sessionManager, multiplexer } = createHarness();
+    await createSession(sessionManager);
+    await multiplexer.registerClient({ clientId: "old", send: () => {} });
+    await multiplexer.registerClient({ clientId: "consent", send: () => {},
+      capabilities: { [AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY]: true } });
+    expect(await multiplexer.hasAttachedClientWithCapability("session_1", AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY)).toBe(false);
+    await multiplexer.attachClientToSession("session_1", "old");
+    expect(await multiplexer.hasAttachedClientWithCapability("session_1", AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY)).toBe(false);
+    await multiplexer.attachClientToSession("session_1", "consent");
+    expect(await multiplexer.hasAttachedClientWithCapability("session_1", AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY)).toBe(true);
+    await multiplexer.detachClientFromSession("session_1", "consent");
+    expect(await multiplexer.hasAttachedClientWithCapability("session_1", AGENC_CROSS_PROVIDER_CONSENT_CAPABILITY)).toBe(false);
+  });
+
   it("routes Ledger client actions by initialized capability without session attachment", async () => {
     const { sessionManager, multiplexer } = createHarness();
     const phone: JsonObject[] = [];
