@@ -87,9 +87,11 @@ export function toPluginLoaderOptions(
   const pluginStorageRoot = resolvePluginStorageAuthority(
     options.pluginStorageRoot,
   ).pluginStorageRoot;
+  const userConfigPath = authority?.homeContext.configTomlPath;
   return {
     pluginStorageRoot,
     workspaceRoot,
+    ...(userConfigPath === undefined ? {} : { userConfigPath }),
     ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
     ...(options.config !== undefined ? { config: options.config } : {}),
     ...(options.extraPluginDirs !== undefined ? { extraPluginDirs: options.extraPluginDirs } : {}),

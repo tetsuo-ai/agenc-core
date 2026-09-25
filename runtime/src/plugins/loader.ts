@@ -1,5 +1,5 @@
 import { readFile, readdir, realpath, stat } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { isValidPermissionDefaultMode, validateHooksConfig, validateMcpServersConfig } from "../config/schema.js";
 import type {
   AgenCConfig,
@@ -22,7 +22,7 @@ import {
   isPluginInstallTransactionArtifactName,
   recoverPluginInstallTransactions,
 } from "./cli/plugin-install-transaction.js";
-import { restoreTrustedUserPluginConfig } from "./cli/pluginOperations.js";
+import { restoreTrustedUserPluginConfig } from "./plugin-config-rollback.js";
 import { pluginScopedServerIdentifier } from "./identifier-normalization.js";
 import {
   assertNoRetiredRootPluginManifest,
@@ -177,6 +177,8 @@ export interface PluginLoaderOptions {
   readonly readOnly?: boolean;
   readonly pluginStorageRoot: string;
   readonly workspaceRoot: string;
+  /** Canonical user config.toml. The loader never derives this from the storage root. */
+  readonly userConfigPath?: string;
   readonly config?: Pick<AgenCConfig, "plugins"> | undefined;
   readonly extraPluginDirs?: readonly string[];
 }
@@ -592,19 +594,29 @@ async function recoverRootIssues(
   }
 }
 
+function storageRootIsRepositoryPlugins(userRoot: string, repoRoot: string): boolean {
+  const rel = relative(repoRoot, userRoot);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
 async function loadPluginInstallRecoveryIssues(
   options: PluginLoaderOptions,
 ): Promise<readonly PluginLoadIssue[]> {
   const userRoot = resolve(options.pluginStorageRoot);
   const repoRoot = resolve(join(options.workspaceRoot, ".agents", "plugins"));
+  const userConfigPath = options.userConfigPath;
+  const restoreUserConfig = userConfigPath !== undefined &&
+    !storageRootIsRepositoryPlugins(userRoot, repoRoot);
   const userIssues = await recoverRootIssues(
     userRoot,
-    (pluginId, previous) => Promise.resolve(restoreTrustedUserPluginConfig(
-      join(dirname(userRoot), "config.toml"),
-      pluginId,
-      previous,
-    )),
-    false,
+    restoreUserConfig
+      ? (pluginId, previous) => Promise.resolve(restoreTrustedUserPluginConfig(
+        userConfigPath,
+        pluginId,
+        previous,
+      ))
+      : undefined,
+    !restoreUserConfig,
   );
   if (repoRoot === userRoot) return userIssues;
   const repoIssues = await recoverRootIssues(repoRoot, undefined, true);

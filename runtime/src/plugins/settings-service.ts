@@ -50,7 +50,7 @@ export class PluginSettingsService {
     await store.reload()
     try {
       return await runWithCanonicalSettingsAuthority(store, async () => {
-        const loaded = await loadPlugins({ pluginStorageRoot: this.options.pluginStorageRoot, workspaceRoot: this.options.workspaceRoot, config: store.current() })
+        const loaded = await loadPlugins({ pluginStorageRoot: this.options.pluginStorageRoot, workspaceRoot: this.options.workspaceRoot, config: store.current(), userConfigPath: store.homeContext.configTomlPath })
         const matches = [...loaded.enabled, ...loaded.disabled].filter(plugin => plugin.id === pluginId)
         if (matches.length !== 1) throw new Error(matches.length ? `Plugin ${pluginId} is ambiguous` : `Plugin ${pluginId} is not installed`)
         return operation({ ...matches[0]!.manifest.userConfig })
