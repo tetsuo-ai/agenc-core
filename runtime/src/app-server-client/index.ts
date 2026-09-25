@@ -21,11 +21,9 @@ import {
 import type {
   AgentCreateResult,
   AgentSummary,
-  EditorInteractionParams,
   JsonObject,
   MessageContentBlock,
 } from "../app-server/protocol/index.js";
-import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
 import { sessionConfigurationFromAgenCConfig } from "../session/configuration.js";
 import {
   resolveAgentRuntimeOptions,
@@ -92,7 +90,6 @@ export interface AgenCDaemonPromptAgentOptions {
   readonly initialContent?: string | readonly MessageContentBlock[];
   readonly deferInitialTurn?: boolean;
   readonly initialDisplayUserMessage?: string | null;
-  readonly initialEditorInteraction?: SessionEditorInteraction;
   readonly metadata?: JsonObject;
   /** See `AgentCreateParams.permissionMode`. Forwarded verbatim. */
   readonly permissionMode?:
@@ -185,13 +182,6 @@ export async function startAgenCDaemonPromptAgent(
     ...(options.initialDisplayUserMessage !== undefined
       ? { initialDisplayUserMessage: options.initialDisplayUserMessage }
       : {}),
-    ...(options.initialEditorInteraction !== undefined
-      ? {
-          initialEditorInteraction: editorInteractionParams(
-            options.initialEditorInteraction,
-          ),
-        }
-      : {}),
     ...(options.permissionMode !== undefined
       ? { permissionMode: options.permissionMode }
       : {}),
@@ -238,33 +228,6 @@ export async function resumeAgenCDaemonPromptAgent(
   });
 }
 
-function editorInteractionParams(
-  interaction: SessionEditorInteraction,
-): EditorInteractionParams {
-  return {
-    interactionId: interaction.interactionId,
-    kind: interaction.kind,
-    policy: interaction.policy,
-    editorInstanceId: interaction.editorInstanceId,
-    bufferHandle: interaction.bufferHandle,
-    changedtick: interaction.changedtick,
-    contentSha256: interaction.contentSha256,
-    ...(interaction.path !== undefined ? { path: interaction.path } : {}),
-    range: {
-      start: {
-        line: interaction.range.start.line,
-        column: interaction.range.start.column,
-      },
-      end: {
-        line: interaction.range.end.line,
-        column: interaction.range.end.column,
-      },
-    },
-    ...(interaction.selectionMode !== undefined
-      ? { selectionMode: interaction.selectionMode }
-      : {}),
-  };
-}
 
 export async function stopAgenCDaemonPromptAgent(
   options: StopAgenCDaemonPromptAgentOptions,

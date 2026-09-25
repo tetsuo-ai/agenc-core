@@ -87,9 +87,24 @@ describe("ResilientMCPBridge", () => {
         command: "node",
         origin: { scope },
         virtual_no_fs_write_tools: ["browser_navigate"],
-      })).toBeUndefined();
+      })?.virtualNoFsWriteTools).toBeUndefined();
     },
   );
+
+  it("carries only decoded plugin secrets in the catalog policy", () => {
+    const config: MCPServerConfig = {
+      name: "plugin:demo:desktop",
+      command: "node",
+      origin: { scope: "plugin" },
+      env: { DEBUG: "1", LOG_LEVEL: "info", TOKEN: "decoded-secret" },
+      headers: { "X-Mode": "info", Authorization: "Bearer decoded-secret" },
+      pluginSecretValues: ["decoded-secret"],
+    };
+    expect(toToolCatalogPolicyConfig(config)?.sensitiveHeaders).toEqual({
+      "decoded:0": "decoded-secret",
+    });
+    expect(toToolCatalogPolicyConfig({ ...config, pluginSecretValues: [] })).toBeUndefined();
+  });
 
   it("retries a rejected inner disposal and caches the successful retry", async () => {
     const cleanupError = new Error("owned client still alive");

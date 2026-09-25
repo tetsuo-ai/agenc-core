@@ -36,6 +36,7 @@ import {
   EMPTY_MCP_REQUEST_ENVIRONMENT,
   snapshotMcpRequestEnvironment,
 } from "../environment.js";
+import { assertMcpTransportToolDispatch } from "../local-control.js";
 
 const MCP_WEBSOCKET_SUBPROTOCOL = "mcp";
 export const WEBSOCKET_CLOSE_WAIT_MS = 1_000;
@@ -134,6 +135,7 @@ export class MCPWebSocketClientTransport implements Transport {
       throw new Error("WebSocket is not open");
     }
 
+    assertMcpTransportToolDispatch(message);
     await new Promise<void>((resolve, reject) => {
       socket.send(JSON.stringify(message), (error) => {
         if (error) {

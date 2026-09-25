@@ -16,20 +16,9 @@ import {
   sep as pathSeparator,
 } from "node:path";
 
-import {
-  beginWorkspaceMutation,
-  cancelWorkspaceMutation,
-  commitWorkspaceMutation,
-  reconcileUnknownMutation,
-  WorkspaceMutationCoordinatorError,
-  type WorkspaceMutationAdmission,
-  type WorkspaceMutationObservedState,
-} from "./mutation-coordinator.js";
+import { WorkspaceMutationError } from "./mutation-error.js";
 import { windowsCommandLineUtf16CodeUnits } from "../utils/supervisedProcess.js";
 import { issueBoundReadOnlyCwdCapability, type BoundReadOnlyCwdCapability } from "../sandbox/bound-readonly-cwd.js";
-
-type WorkspaceMutationAdmissionResult =
-  WorkspaceMutationAdmission | { readonly decision: "uncoordinated" };
 
 interface WorkspaceFileBackup {
   readonly existed: boolean;
@@ -99,27 +88,27 @@ export interface WorkspaceFilePathTransactionGuard {
   readonly dispose: () => Promise<void>;
 }
 
-class WorkspacePathIdentityChangedError extends WorkspaceMutationCoordinatorError {
+class WorkspacePathIdentityChangedError extends WorkspaceMutationError {
   constructor(path: string) {
     super(
-      "EDITOR_LEASE_MISMATCH",
+      "PATH_IDENTITY_CHANGED",
       `Workspace path identity changed or its content no longer matches before the write to ${path}; no filesystem mutation was authorized.`,
     );
     this.name = "WorkspacePathIdentityChangedError";
   }
 }
 
-export class WorkspaceFileMutationPreEffectConflictError extends WorkspaceMutationCoordinatorError {
+export class WorkspaceFileMutationPreEffectConflictError extends WorkspaceMutationError {
   constructor(path: string) {
     super(
-      "EDITOR_LEASE_MISMATCH",
+      "PRE_EFFECT_CONFLICT",
       `Workspace target appeared before the exclusive write to ${path}; no filesystem mutation was authorized.`,
     );
     this.name = "WorkspaceFileMutationPreEffectConflictError";
   }
 }
 
-export class WorkspaceFileMutationPathBindingUnavailableError extends WorkspaceMutationCoordinatorError {
+export class WorkspaceFileMutationPathBindingUnavailableError extends WorkspaceMutationError {
   constructor(path: string, cause?: unknown) {
     super(
       "MUTATION_AUDIT_FAILED",
@@ -132,7 +121,7 @@ export class WorkspaceFileMutationPathBindingUnavailableError extends WorkspaceM
 }
 
 /**
- * A transaction that cancelled its admission proved the target holds its
+ * A transaction that settled as no-effect proved the target holds its
  * original bytes (#2500). That verdict rides on the rethrown error so the
  * tool can settle the call as `confirmed_no_effect` instead of an unknown
  * outcome that poisons the session's side-effecting tools.
@@ -358,11 +347,11 @@ export class WorkspaceBoundReadFileTooLargeError extends Error {
   }
 }
 
-export class WorkspaceReadCapabilityUnavailableError extends WorkspaceMutationCoordinatorError {
+export class WorkspaceReadCapabilityUnavailableError extends WorkspaceMutationError {
   constructor(path: string, cause?: unknown) {
     super(
       "MUTATION_AUDIT_FAILED",
-      `Safe descriptor-bound Editor reads are unavailable for ${path}; refusing to fall back to a pathname that a final path exchange could redirect${
+      `Safe descriptor-bound reads are unavailable for ${path}; refusing to fall back to a pathname that a final path exchange could redirect${
         cause === undefined ? "." : ` (${errorMessage(cause)}).`
       }`,
     );
@@ -693,7 +682,8 @@ async function writeBoundSourcePipe(
   descriptor: number,
   source: BoundSourceDescriptor,
 ): Promise<void> {
-  const pipe = (child.stdio as readonly unknown[])[descriptor] as
+  // EMFILE and ENFILE leave a failed child's stdio undefined.
+  const pipe = (child.stdio as readonly unknown[] | undefined)?.[descriptor] as
     Writable | null | undefined;
   if (pipe === null || pipe === undefined || typeof pipe.end !== "function") {
     throw new Error(`bound helper source pipe ${descriptor} is unavailable`);
@@ -1603,13 +1593,21 @@ const runPinnedRipgrep = async (command, inputHandle) => {
     stdio: [inputHandle.fd, "pipe", "pipe"],
   });
   activeChild = child;
+  // A failed spawn reports on the next tick, and EMFILE or ENFILE also leave
+  // stdout and stderr undefined: listen before touching them.
+  child.once("error", (error) => {
+    spawnError = {
+      message: error instanceof Error ? error.message : String(error),
+      ...(typeof error?.code === "string" ? { code: error.code } : {}),
+    };
+  });
   const timeout = setTimeout(() => {
     if (stopReason !== undefined) return;
     stopReason = "timeout";
     child.kill();
   }, timeoutMs);
   timeout.unref();
-  child.stdout.on("data", (rawChunk) => {
+  child.stdout?.on("data", (rawChunk) => {
     if (killedAfterLimit || structuredLimitFailed) return;
     const chunk = Buffer.from(rawChunk);
     totalOutputBytes += chunk.length;
@@ -1655,7 +1653,7 @@ const runPinnedRipgrep = async (command, inputHandle) => {
       child.kill();
     }
   });
-  child.stderr.on("data", (rawChunk) => {
+  child.stderr?.on("data", (rawChunk) => {
     const chunk = Buffer.from(rawChunk);
     totalOutputBytes += chunk.length;
     stderrBytes += append(stderrParts, chunk);
@@ -1663,12 +1661,6 @@ const runPinnedRipgrep = async (command, inputHandle) => {
       stopReason = "output_limit";
       child.kill();
     }
-  });
-  child.once("error", (error) => {
-    spawnError = {
-      message: error instanceof Error ? error.message : String(error),
-      ...(typeof error?.code === "string" ? { code: error.code } : {}),
-    };
   });
   const closed = await new Promise((resolveClose) => {
     child.once("close", (exitCode, signal) =>
@@ -2060,6 +2052,18 @@ const runBoundReadWorker = async (command) => {
     },
   );
   activeChild = child;
+  // A failed spawn reports on the next tick, and EMFILE or ENFILE also leave
+  // its stdio undefined: listen before touching it. A child without a pid
+  // never started, and its kill() would reach pid 0 while that report is
+  // pending: this helper's own process group, which it shares with its
+  // owner.
+  let spawnError;
+  child.once("error", (error) => {
+    spawnError = error;
+  });
+  const killChild = () => {
+    if (Number.isSafeInteger(child.pid) && child.pid > 1) child.kill();
+  };
   const stdout = [];
   const stderr = [];
   let outputBytes = 0;
@@ -2068,24 +2072,20 @@ const runBoundReadWorker = async (command) => {
     const chunk = Buffer.from(rawChunk);
     outputBytes += chunk.length;
     if (outputBytes > maxWorkerOutputBytes) {
-      child.kill();
+      killChild();
       return;
     }
     target.push(chunk);
   };
-  child.stdout.on("data", (chunk) => capture(stdout, chunk));
-  child.stderr.on("data", (chunk) => capture(stderr, chunk));
-  let spawnError;
-  child.once("error", (error) => {
-    spawnError = error;
-  });
+  child.stdout?.on("data", (chunk) => capture(stdout, chunk));
+  child.stderr?.on("data", (chunk) => capture(stderr, chunk));
   const closedPromise = new Promise((resolveClose) => {
     child.once("close", (exitCode, signal) =>
       resolveClose({ exitCode, signal }),
     );
   });
   const sourceWrite = new Promise((resolveWrite, rejectWrite) => {
-    const pipe = child.stdio[SOURCE_PIPE_FD];
+    const pipe = child.stdio?.[SOURCE_PIPE_FD];
     if (pipe === null || pipe === undefined || typeof pipe.end !== "function") {
       rejectWrite(new Error("bound read worker source pipe is unavailable"));
       return;
@@ -2103,7 +2103,7 @@ const runBoundReadWorker = async (command) => {
   const sourceWriteOutcome = sourceWrite.then(
     () => undefined,
     (error) => {
-      child.kill();
+      killChild();
       return error instanceof Error ? error : new Error(String(error));
     },
   );
@@ -2112,7 +2112,7 @@ const runBoundReadWorker = async (command) => {
     const settle = (error) => {
       if (settled) return;
       settled = true;
-      if (error !== undefined) child.kill();
+      if (error !== undefined) killChild();
       resolveWrite(
         error === undefined
           ? undefined
@@ -2121,6 +2121,10 @@ const runBoundReadWorker = async (command) => {
             : new Error(String(error)),
       );
     };
+    if (child.stdin === null || child.stdin === undefined) {
+      settle(new Error("bound read worker stdin is unavailable"));
+      return;
+    }
     child.stdin.once("error", settle);
     child.stdin.end(
       JSON.stringify({
@@ -2136,9 +2140,10 @@ const runBoundReadWorker = async (command) => {
     stdinWriteOutcome,
   ]);
   activeChild = null;
+  // A spawn that failed also fails both handoffs; report the cause.
+  if (spawnError !== undefined) throw spawnError;
   if (sourceWriteError !== undefined) throw sourceWriteError;
   if (stdinWriteError !== undefined) throw stdinWriteError;
-  if (spawnError !== undefined) throw spawnError;
   if (outputBytes > maxWorkerOutputBytes) {
     throw Object.assign(new Error("bound read worker output exceeded limit"), {
       code: "OUTPUT_LIMIT",
@@ -2437,13 +2442,21 @@ try {
             stdio: ["pipe", "pipe", "pipe"],
           });
           activeChild = child;
+          // A failed spawn reports on the next tick, and EMFILE or ENFILE
+          // also leave its stdio undefined: listen before touching it.
+          child.once("error", (error) => {
+            spawnError = {
+              message: error instanceof Error ? error.message : String(error),
+              ...(typeof error?.code === "string" ? { code: error.code } : {}),
+            };
+          });
           const timeout = setTimeout(() => {
             if (stopReason !== undefined) return;
             stopReason = "timeout";
             child.kill();
           }, timeoutMs);
           timeout.unref();
-          child.stdout.on("data", (rawChunk) => {
+          child.stdout?.on("data", (rawChunk) => {
             if (killedAfterLimit || structuredLimitFailed) return;
             const chunk = Buffer.from(rawChunk);
             if (spoolHandle !== undefined) {
@@ -2535,7 +2548,7 @@ try {
               child.kill();
             }
           });
-          child.stderr.on("data", (rawChunk) => {
+          child.stderr?.on("data", (rawChunk) => {
             const chunk = Buffer.from(rawChunk);
             totalOutputBytes += chunk.length;
             stderrBytes += append(stderrParts, chunk);
@@ -2547,17 +2560,11 @@ try {
               child.kill();
             }
           });
-          child.once("error", (error) => {
-            spawnError = {
-              message: error instanceof Error ? error.message : String(error),
-              ...(typeof error?.code === "string" ? { code: error.code } : {}),
-            };
-          });
           const stdin =
             typeof command.stdinBase64 === "string"
               ? Buffer.from(command.stdinBase64, "base64")
               : null;
-          child.stdin.end(stdin ?? undefined);
+          child.stdin?.end(stdin ?? undefined);
           const closed = await new Promise((resolveClose) => {
             child.once("close", (exitCode, signal) =>
               resolveClose({ exitCode, signal }),
@@ -2902,6 +2909,28 @@ class BoundDirectoryHelper {
     this.#child = child;
     this.#anchorPath = anchorPath;
     this.#readRootPath = anchorPath;
+    // A failed spawn reports on the next tick, and EMFILE or ENFILE also leave
+    // its stdio undefined. Listen before touching stdio: without a listener
+    // that report is an uncaught exception in the daemon.
+    child.once("error", (error) => {
+      // A helper whose spawn failed never ran and never emits exit, so
+      // dispose() must not wait for one. It waited 2 s and then threw
+      // "did not exit", which replaced the real spawn error.
+      if (child.pid === undefined) this.#closed = true;
+      this.#rejectWaiters(error);
+    });
+    if (
+      child.stdin === null ||
+      child.stdin === undefined ||
+      child.stdout === null ||
+      child.stdout === undefined ||
+      child.stderr === null ||
+      child.stderr === undefined
+    ) {
+      // Nothing started; #nextMessage() and dispose() see a closed helper.
+      this.#closed = true;
+      return;
+    }
     const lines = createInterface({
       input: child.stdout,
       crlfDelay: Infinity,
@@ -2924,7 +2953,6 @@ class BoundDirectoryHelper {
       if (this.#stderr.length >= 4096) return;
       this.#stderr += String(chunk).slice(0, 4096 - this.#stderr.length);
     });
-    child.once("error", (error) => this.#rejectWaiters(error));
     child.once("exit", (code, signal) => {
       this.#closed = true;
       this.#rejectWaiters(
@@ -3497,7 +3525,7 @@ class BoundDirectoryHelper {
         ) {
           throw new WorkspacePathIdentityChangedError(expectedPath);
         }
-        throw new WorkspaceMutationCoordinatorError(
+        throw new WorkspaceMutationError(
           "MUTATION_AUDIT_FAILED",
           `The identity-bound filesystem helper could not safely access ${expectedPath}: ${
             message.message ?? message.code ?? "unknown helper failure"
@@ -4319,27 +4347,17 @@ async function guardedStateMatches(
   }
 }
 
-function observedStateForCoordinator(
-  observed: WorkspaceFilePathObservedState,
-  decode: (content: Buffer) => string,
-): WorkspaceMutationObservedState {
-  return observed.kind === "content"
-    ? { kind: "content", content: decode(observed.content) }
-    : observed;
-}
-
 /**
- * Execute one coordinated file write with a verified rollback boundary.
+ * Execute one file write with a verified rollback boundary.
  *
  * Bound callbacks mark the target at the helper/FileHandle's exact effect
  * boundary; legacy raw callbacks remain conservatively marked before
- * invocation. A rejected syscall therefore never cancels its durable mutation
- * intent merely because the promise rejected: cancellation happens only after
- * the exact pre-write bytes/existence are verified restored. Otherwise the
- * admission is reconciled as unknown so Editor receives a durable reload event.
+ * invocation. A rejected syscall therefore never settles as no-effect merely
+ * because the promise rejected: that verdict is reached only after the exact
+ * pre-write bytes/existence are verified restored. Otherwise the outcome is
+ * reported as unknown so the caller re-reads the file.
  */
 export async function executeWorkspaceFileMutation(input: {
-  readonly admission: WorkspaceMutationAdmissionResult;
   readonly path: string;
   readonly afterText: string;
   readonly write: (
@@ -4353,26 +4371,15 @@ export async function executeWorkspaceFileMutation(input: {
    * once invoked.
    */
   readonly writeUsesBoundMutation?: boolean;
-  readonly metadata?: {
-    readonly sessionId?: string;
-    readonly toolCallId?: string;
-  };
+  /** Decodes the observed post-write bytes before comparing to afterText. */
   readonly decodeObserved?: (content: Buffer) => string;
   readonly testHooks?: WorkspaceFileMutationTestHooks;
 }): Promise<void> {
-  try {
-    beginWorkspaceMutation(input.admission);
-  } catch (error) {
-    cancelWorkspaceMutation(input.admission);
-    throw markWorkspaceMutationNoEffect(error, "pre_effect");
-  }
-
   let guard: WorkspaceFilePathTransactionGuard;
   try {
     guard = await captureWorkspaceFilePathTransactionGuard(input.path);
   } catch (error) {
     // No target syscall has run, so this remains a true pre-effect failure.
-    cancelWorkspaceMutation(input.admission);
     throw markWorkspaceMutationNoEffect(error, "pre_effect");
   }
 
@@ -4445,9 +4452,8 @@ export async function executeWorkspaceFileMutation(input: {
     } catch (writeError) {
       if (writeError instanceof WorkspaceFileMutationPreEffectConflictError) {
         // Exclusive creation reported that another writer published the target.
-        // EEXIST guarantees this callback did not touch the file, so cancelling
-        // is safe even though the open syscall itself was attempted.
-        cancelWorkspaceMutation(input.admission);
+        // EEXIST guarantees this callback did not touch the file, so settling
+        // as no-effect is safe even though the open syscall itself was attempted.
         throw markWorkspaceMutationNoEffect(writeError, "pre_effect");
       }
       if (
@@ -4457,38 +4463,15 @@ export async function executeWorkspaceFileMutation(input: {
         // The identity guard rejected the operation before invoking the caller's
         // filesystem callback. Restoring through the now-aliased pathname would
         // itself risk modifying an unrelated file.
-        cancelWorkspaceMutation(input.admission);
         throw markWorkspaceMutationNoEffect(writeError, "pre_effect");
       }
       if (writeError instanceof WorkspacePathIdentityChangedError) {
         // Once a syscall has started and the path identity changes, a path-based
-        // rollback is no longer trustworthy. Preserve the original coordinator
-        // intent as unknown instead of writing backup bytes through an alias.
-        const observed = observedStateForCoordinator(
-          await guard.observeState(),
-          input.decodeObserved ?? ((content) => content.toString("utf8")),
-        );
-        let reconciliationError: unknown;
-        if (input.admission.decision === "allow") {
-          try {
-            await reconcileUnknownMutation(
-              input.admission.token,
-              observed,
-              input.metadata,
-            );
-          } catch (error) {
-            reconciliationError = error;
-          }
-        } else {
-          cancelWorkspaceMutation(input.admission);
-        }
-        throw new WorkspaceMutationCoordinatorError(
+        // rollback is no longer trustworthy. Report the outcome as unknown
+        // instead of writing backup bytes through an alias.
+        throw new WorkspaceMutationError(
           "MUTATION_AUDIT_FAILED",
-          `The write to ${input.path} crossed a changed filesystem path identity after a syscall began. Its outcome is unknown; re-read the file before another mutation${
-            reconciliationError === undefined
-              ? "."
-              : ` (unknown-outcome audit failure: ${errorMessage(reconciliationError)}).`
-          }`,
+          `The write to ${input.path} crossed a changed filesystem path identity after a syscall began. Its outcome is unknown; re-read the file before another mutation.`,
         );
       }
 
@@ -4499,7 +4482,6 @@ export async function executeWorkspaceFileMutation(input: {
         // The helper may have announced its effect boundary before the failing
         // syscall (an exclusive open refused with EACCES/EROFS/ENOSPC), but the
         // target verifiably holds its original bytes: nothing happened.
-        cancelWorkspaceMutation(input.admission);
         throw markWorkspaceMutationNoEffect(writeError, "original_state_verified");
       }
 
@@ -4536,28 +4518,9 @@ export async function executeWorkspaceFileMutation(input: {
         transactionPostState !== undefined &&
         (await guardedStateMatches(guard, originalState))
       ) {
-        cancelWorkspaceMutation(input.admission);
         throw markWorkspaceMutationNoEffect(writeError, "rollback_verified");
       }
 
-      const observed = observedStateForCoordinator(
-        await guard.observeState(),
-        input.decodeObserved ?? ((content) => content.toString("utf8")),
-      );
-      let reconciliationError: unknown;
-      if (input.admission.decision === "allow") {
-        try {
-          await reconcileUnknownMutation(
-            input.admission.token,
-            observed,
-            input.metadata,
-          );
-        } catch (error) {
-          reconciliationError = error;
-        }
-      } else {
-        cancelWorkspaceMutation(input.admission);
-      }
       const details = [
         `original write failure: ${errorMessage(writeError)}`,
         ...(restoreError !== undefined
@@ -4565,23 +4528,12 @@ export async function executeWorkspaceFileMutation(input: {
           : transactionPostState === undefined
             ? ["current bytes were not a proved transaction-owned post-state"]
             : ["restored bytes could not be verified"]),
-        ...(reconciliationError !== undefined
-          ? [
-              `unknown-outcome audit failure: ${errorMessage(reconciliationError)}`,
-            ]
-          : []),
       ].join("; ");
-      throw new WorkspaceMutationCoordinatorError(
+      throw new WorkspaceMutationError(
         "MUTATION_AUDIT_FAILED",
         `The write to ${input.path} may have partially changed the file and rollback was not verified. Its outcome is unknown; re-read the file before another mutation (${details}).`,
       );
     }
-
-    await commitWorkspaceMutation(
-      input.admission,
-      input.afterText,
-      input.metadata,
-    );
   } finally {
     await guard.dispose();
   }

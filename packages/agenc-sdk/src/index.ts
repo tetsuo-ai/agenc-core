@@ -5,7 +5,12 @@
  */
 
 export * from "./protocol.js";
+export * from "./plugin-inventory.js";
 export * from "./events.js";
+export {
+  MAX_BUFFERED_PROMPT_EVENTS,
+  type AgencLocalOverflowGapEvent,
+} from "./prompt-event-queue.js";
 export * from "./client.js";
 export { AGENC_SDK_MAX_FRAME_BYTES } from "./limits.js";
 export * from "./csv-jobs.js";

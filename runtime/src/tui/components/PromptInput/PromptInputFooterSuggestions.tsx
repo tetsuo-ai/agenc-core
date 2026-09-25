@@ -43,7 +43,7 @@ export type SuggestionType =
 export const OVERLAY_MAX_ITEMS = 5
 
 export function getSuggestionPopupWidth(columns: number, overlay?: boolean): number {
-  // In overlay (fullscreen/workbench) mode the popup floats directly above the
+  // In overlay (fullscreen) mode the popup floats directly above the
   // composer box, which spans the full terminal width (width="100%"). The popup
   // therefore takes the full width too — with no horizontal margin — so its
   // border corners line up with the composer's border corners below it. Any
@@ -357,7 +357,7 @@ export function PromptInputFooterSuggestions({
     overflowRowBudget > (showHiddenBefore ? 1 : 0)
 
   const glyphs = selectAgenCTuiGlyphs()
-  // Overlay popups live inside a frame in workbench mode. Their parent can be
+  // Overlay popups live inside a frame in fullscreen mode. Their parent can be
   // narrower than the terminal, so use that measured width when supplied;
   // sizing to terminal columns pushes the right border outside the viewport.
   const width = getSuggestionPopupWidth(availableColumns ?? columns, overlay)

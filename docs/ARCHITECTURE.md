@@ -1,6 +1,6 @@
 # AgenC Architecture
 
-A current map of how `agenc` is put together (runtime **0.17.0**). For the
+A current map of how `agenc` is put together (runtime **0.18.0**). For the
 user-facing CLI, quick start, and install paths see [`../README.md`](../README.md)
 and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders:
 
@@ -105,7 +105,7 @@ Everything past the launcher lives in the single runtime workspace
 | `transport/`                                                             | Transport fallback ladder                                                                                                                                                                                                                      |
 | `services/`                                                              | Wire-layer helpers the turn loop and daemon call: LLM API adapters (`api/`), compaction (`compact/`), LSP, Ledger wallet CLI, code prediction, MCP transport glue, memory extraction, autoFix post-tool hook, heap watchdog. [CP-0006](design/critical-path/0006-compaction-transaction.md#operator-contract-current-main) documents compact thresholds, disable flags, admitted summary calls, the [900 s transaction wall budget](design/critical-path/0006-compaction-transaction.md#compaction-transaction-wall-budget), and [compact-skip session survival](design/critical-path/0006-compaction-transaction.md#compact-skip-and-session-survival). Most of these are not separate CLIs.                                                                                                                                                                                |
 | `search/`                                                                | Persistent fuzzy file index used by `fs.fuzzy_search`                                                                                                                                                                                          |
-| `workspace/`                                                             | Editor mutation leases and topology fences for BUFFER (`workspace.editor.*`)                                                                                                                                                                   |
+| `workspace/`                                                             | Verified file-mutation transactions (rollback boundary, no-effect evidence) and the per-tool-call operation lifetime that keeps shell descendants contained                                                                                    |
 | `contracts/`                                                             | Frozen run/admission/CSV/invocation types shared by daemon, SDK, and tests                                                                                                                                                                     |
 | `recovery/`                                                              | Crash/recovery helpers for in-flight work                                                                                                                                                                                                      |
 | `onboarding/`                                                            | Guided `agenc onboard` wizard UI                                                                                                                                                                                                               |
@@ -118,7 +118,7 @@ Everything past the launcher lives in the single runtime workspace
 | `bootstrap/` / `lifecycle/` / `conversation/`                            | Bootstrap state, shutdown/signals, conversation token-budget and realtime                                                                                                                                                                      |
 | `constants/` / `types/` / `errors/` / `utils/` / `context/` / `schemas/` | Shared constants, pure types, error shaping, utilities                                                                                                                                                                                         |
 | `browser/`                                                               | Isolated Chromium CDP driver + SSRF proxy for the LIVE `Browser` tool                                                                                                                                                                          |
-| `build/` / `version.ts` / `index.ts`                                     | Feature flags, version stamp (`0.17.0`), public barrel                                                                                                                                                                                         |
+| `build/` / `version.ts` / `index.ts`                                     | Feature flags, version stamp (`0.18.0`), public barrel                                                                                                                                                                                         |
 
 ## State on disk (`AGENC_HOME`, default `~/.agenc`)
 
@@ -416,16 +416,24 @@ recovery condition, triggers are evaluated in a **fixed priority order**
 | Order | Trigger name                | Intent                                               |
 | ----- | --------------------------- | ---------------------------------------------------- |
 | 1     | `isWithheld413`             | Prompt-too-long → collapse / reactive recovery       |
-| 2     | `isWithheldMedia`           | Media-too-large → reactive recovery (skips collapse) |
+| 2     | `isWithheldMedia`           | Media-too-large or a provider-refused image → leave the images out and re-sample |
 | 3     | `isWithheldMaxOutputTokens` | Max-output-tokens → escalate or continuation         |
 | 4     | `stopHookBlocking`          | Stop-hook inject + re-enter                          |
 | 5     | `streamingFallbackOccured`  | Streaming fallback tombstone + recreate executor     |
 | 6     | `FallbackTriggeredError`    | Model fallback swap                                  |
 
-Related modules: `api-errors.ts` (match predicates), `model-fallback.ts`,
-`max-output-tokens.ts`, `reconnection.ts`, `tombstone.ts`,
+Related modules: `api-errors.ts` (match predicates), `image-rejection.ts`,
+`model-fallback.ts`, `max-output-tokens.ts`, `reconnection.ts`, `tombstone.ts`,
 `withhold-cascading.ts`. Do not reorder the trigger array without updating
 the I-10 tests that pin `I10_TRIGGER_ORDER`.
+
+A refused image is recorded for the session and replaced in every later
+request by a short note (`session/query-image-safety.ts`), so a replayed tool
+result cannot fail each turn that follows. The same projection leaves out
+every image for a model the registry documents as text-only
+(`resolveImageInputSupport` in `llm/capabilities.ts`) and any tool-result
+image whose bytes are not a complete PNG, JPEG, GIF or WebP image
+(`utils/image-validation.ts`). Durable history keeps the original content.
 
 ## LLM / providers
 
@@ -485,18 +493,7 @@ Heartbeat: **disabled by default**, interval **1800s**, env
 The TUI is a **custom `react-reconciler` Ink fork** under
 `runtime/src/tui/ink` (own renderer, double-buffered frame diffing, event
 dispatch, bidi/ANSI) — not the upstream `ink` package. On top: app shell,
-prompt input, transcript, and the **workbench** (project explorer, preview,
-and editable `BUFFER`).
-
-BUFFER prefers a supervised `nvim --embed` workspace session. Neovim owns
-editing, modes, command-line UI, messages, popups, buffers, and plugins; AgenC
-attaches a line-grid UI, renders that native grid into the measured center
-pane, routes terminal input, and owns process and file-safety boundaries.
-Loaded and hidden Neovim buffers form one safety unit: navigation reuses the
-session, dirty state is aggregated across the buffer manifest, and a workbench
-transition cannot abandon edits in a non-active buffer. Request-scoped
-Editor turns cap sampling, tool calls, and query tokens; see
-[editor request bounds](embedded-neovim-buffer.md#editor-request-bounds).
+prompt input, and transcript.
 
 A throwing frame is contained; the next frame full-repaints rather than
 crashing the process.
@@ -522,7 +519,7 @@ crashing the process.
   [ci-required-gates.md](ci-required-gates.md#fast-testfast-checks).
 - Releases use the complete local suite and the manual hosted matrix from
   exact current `main`. The matrix covers Linux kernel
-  sandboxing, PowerShell, Neovim, macOS, and Windows. The optional GitHub App
+  sandboxing, PowerShell, macOS, and Windows. The optional GitHub App
   and ruleset design remains inactive. See
   [`ci-required-gates.md`](ci-required-gates.md).
 
@@ -549,7 +546,7 @@ compression, and timestamp policy, validates the descriptor graph, compares
 every compressed blob, then starts the bound image under read-only-root,
 capability-free, no-network hardening and verifies native socket credentials.
 
-## Current status (0.17.0)
+## Current status (0.18.0)
 
 Daemon-backed process model, multi-provider LLM layer, permissions/sandbox,
 gateway multi-channel surface, heartbeat + cron delivery + hooks with

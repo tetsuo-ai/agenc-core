@@ -43,7 +43,10 @@ import {
   startMcpManagerForSession,
 } from "./mcp-startup.js";
 import type { Session } from "./session.js";
+import { OpenAIProvider } from "../llm/providers/openai/adapter.js";
 import { ConfigStore } from "../config/store.js";
+import { readCanonicalUserConfigSnapshotSync } from "../config/update-sync.js";
+import { PluginSettingsService } from "../plugins/settings-service.js";
 import { withLocalMcpAccess } from "../mcp-client/local-control.js";
 import { verifyDesktopAuthority } from "../mcp-client/desktop-authority.js";
 import type { AgenCConfig } from "../config/schema.js";
@@ -371,6 +374,62 @@ describe("mcp-startup.attachMcpManagerToSession", () => {
         type: "text",
         text: "sampled response",
       },
+    });
+  });
+
+  it("keeps an MCP sampling temperature off the OpenAI reasoning model's Responses request", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: "completed",
+          model: "gpt-6-luna",
+          output: [
+            { type: "message", content: [{ type: "output_text", text: "ok" }] },
+          ],
+          usage: { input_tokens: 3, output_tokens: 1, total_tokens: 4 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "sk-test",
+      model: "gpt-6-luna",
+      fetchImpl,
+    });
+    const session = {
+      provider,
+      services: { provider, admissionRequired: false },
+      emit: vi.fn(),
+      nextInternalSubId: vi.fn(() => "sub-0"),
+      sessionConfiguration: { approvalPolicy: { value: "never" } },
+    } as unknown as Session;
+
+    const result = await createSessionMcpSamplingHandlers(session).createMessage({
+      serverName: "srv",
+      requestId: 9,
+      request: {
+        id: 9,
+        method: "sampling/createMessage",
+        params: {
+          messages: [
+            { role: "user", content: { type: "text", text: "Summarize this" } },
+          ],
+          temperature: 0.2,
+          maxTokens: 32,
+        },
+      } as never,
+    });
+
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(
+      "https://api.openai.com/v1/responses",
+    );
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as
+      Record<string, unknown>;
+    expect(body.model).toBe("gpt-6-luna");
+    expect(body).not.toHaveProperty("temperature");
+    expect(result).toMatchObject({
+      model: "gpt-6-luna",
+      content: { type: "text", text: "ok" },
     });
   });
 
@@ -1095,6 +1154,82 @@ describe("mcp-startup session-owned manager helpers", () => {
     } finally {
       fixture.cleanup();
     }
+  });
+
+  it.each([false, true])("denies an installed-path plugin command with eager=%s", async eager => {
+    const fixture = await createMcpAuthorityFixture();
+    const installedRoot = join(fixture.cwd, "installed-plugin");
+    const snapshotRoot = join(fixture.cwd, "plugin-snapshot");
+    const installedEntry = join(installedRoot, "server.js");
+    const snapshotEntry = join(snapshotRoot, "server.js");
+    const managed = `deniedMcpServers = [{ serverCommand = ["node", ${JSON.stringify(installedEntry)}] }]`;
+    try {
+      writeCanonicalFixtureConfig(fixture.managedConfigPath, [managed]);
+      await fixture.store.reload();
+      const registrations = [{
+        name: "plugin:sample:local", pluginName: "sample", pluginSource: "sample@registry",
+        serverName: "local", pluginRoot: installedRoot, snapshotRoot,
+        digest: "a".repeat(64), eager, idleTimeoutMs: 600_000, maxProcesses: 8,
+        server: { transport: "stdio" as const, command: "node", args: [snapshotEntry], cwd: snapshotRoot },
+        installationIdentity: { command: "node", args: [installedEntry], cwd: installedRoot },
+      }];
+      mockLoadPluginMcpServerRegistrations.mockResolvedValueOnce(registrations).mockResolvedValueOnce(registrations);
+      expect(await resolveSessionMcpConfig(fixture.store, {})).toEqual([]);
+      expect(await resolveSessionMcpConfig(fixture.store, {})).toEqual([]);
+    } finally { fixture.cleanup(); }
+  });
+
+  it("admits an allowed installed-path command and preserves its visible identity", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const installedRoot = join(fixture.cwd, "installed-plugin");
+    const snapshotRoot = join(fixture.cwd, "plugin-snapshot");
+    const installedEntry = join(installedRoot, "server.js");
+    const snapshotEntry = join(snapshotRoot, "server.js");
+    try {
+      writeCanonicalFixtureConfig(fixture.managedConfigPath, [
+        `allowedMcpServers = [{ serverCommand = ["node", ${JSON.stringify(installedEntry)}] }]`,
+      ]);
+      await fixture.store.reload();
+      const registrations = [{
+        name: "plugin:sample:local", pluginName: "sample", pluginSource: "sample@registry",
+        serverName: "local", pluginRoot: installedRoot, snapshotRoot,
+        digest: "a".repeat(64), eager: false, idleTimeoutMs: 600_000, maxProcesses: 8,
+        server: { transport: "stdio" as const, command: "node", args: [snapshotEntry], cwd: snapshotRoot },
+        installationIdentity: { command: "node", args: [installedEntry], cwd: installedRoot },
+      }];
+      mockLoadPluginMcpServerRegistrations.mockResolvedValueOnce(registrations).mockResolvedValueOnce(registrations);
+      for (let resolution = 0; resolution < 2; resolution++) {
+        expect(await resolveSessionMcpConfig(fixture.store, {})).toEqual([
+          expect.objectContaining({
+            name: "plugin:sample:local", command: "node", args: [installedEntry], cwd: installedRoot,
+          }),
+        ]);
+      }
+    } finally { fixture.cleanup(); }
+  });
+
+  it("deduplicates a plugin against the installed-path manual command and cwd", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const installedRoot = join(fixture.cwd, "installed-plugin");
+    const snapshotRoot = join(fixture.cwd, "plugin-snapshot");
+    const installedEntry = join(installedRoot, "server.js");
+    const snapshotEntry = join(snapshotRoot, "server.js");
+    try {
+      writeCanonicalFixtureConfig(fixture.userConfigPath, [
+        "[mcp_servers.manual]", 'command = "node"',
+        `args = [${JSON.stringify(installedEntry)}]`,
+        `cwd = ${JSON.stringify(installedRoot)}`,
+      ]);
+      await fixture.store.reload();
+      mockLoadPluginMcpServerRegistrations.mockResolvedValueOnce([{
+        name: "plugin:sample:local", pluginName: "sample", pluginSource: "sample@registry",
+        serverName: "local", pluginRoot: installedRoot, snapshotRoot,
+        digest: "a".repeat(64), eager: false, idleTimeoutMs: 600_000, maxProcesses: 8,
+        server: { transport: "stdio", command: "node", args: [snapshotEntry], cwd: snapshotRoot },
+        installationIdentity: { command: "node", args: [installedEntry], cwd: installedRoot },
+      }]);
+      expect((await resolveSessionMcpConfig(fixture.store, {})).map(config => config.name)).toEqual(["manual"]);
+    } finally { fixture.cleanup(); }
   });
 
   it("deduplicates plugins against the final manual precedence winner", async () => {
@@ -2544,6 +2679,124 @@ describe("private Desktop session legacy migration", () => {
 });
 
 describe("session MCP mutation transactions", () => {
+  it("enables a stopped plugin and explicitly starts it on session reconnect", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const name = "plugin:sample:lazy";
+    mockLoadPluginMcpServerRegistrations.mockResolvedValue([{
+      name, pluginName: "sample", pluginSource: "sample@registry", serverName: "lazy",
+      digest: "a".repeat(64), eager: false, idleTimeoutMs: 10_000, maxProcesses: 8,
+      server: { transport: "stdio", command: "node", args: ["lazy.js"] },
+    } as never]);
+    const manager = createSessionMcpManager([]);
+    const service = createSessionMcpService(manager, { authority: fixture.store, environment: {} });
+    try {
+      await service.refreshFromAuthority?.();
+      expect(manager.getConnectionState(name)?.type).toBe("stopped");
+      await expect(service.disableServer?.(name)).resolves.toMatchObject({ success: true });
+      await expect(service.enableServer?.(name)).resolves.toMatchObject({ success: true });
+      expect(manager.getConnectionState(name)?.type).toBe("stopped");
+      await expect(service.reconnectServer?.(name)).resolves.toMatchObject({ success: true });
+      expect(manager.getConnectionState(name)?.type).toBe("connected");
+      expect(mockCreateMCPConnection).toHaveBeenCalledTimes(1);
+    } finally { await service.dispose?.(); fixture.cleanup(); }
+  });
+  it("leaves another session's bridges intact when a session starts or reconnects on the same store", async () => {
+    const fixture = await createMcpAuthorityFixture({ user: [
+      '[mcp_servers.alpha]', 'command = "alpha-cmd"',
+    ] });
+    const firstManager = createSessionMcpManager([]);
+    const secondManager = createSessionMcpManager([]);
+    const first = createSessionMcpService(firstManager, { authority: fixture.store, environment: {} });
+    const second = createSessionMcpService(secondManager, { authority: fixture.store, environment: {} });
+    const bridges: ReturnType<typeof makeMockBridge>[] = [];
+    mockCreateToolBridge.mockImplementation(async (_client, name, _logger, options) => {
+      const bridge = makeMockBridge(name, options?.callObserver);
+      bridges.push(bridge);
+      return bridge as never;
+    });
+    try {
+      await first.refreshFromAuthority?.();
+      const firstTool = firstManager.getToolsByServer('alpha')[0];
+      const firstBridge = bridges[0]!;
+      expect(bridges).toHaveLength(1);
+      await second.refreshFromAuthority?.();
+      expect(bridges).toHaveLength(2);
+      expect(firstBridge.dispose).not.toHaveBeenCalled();
+      expect(firstManager.getToolsByServer('alpha')[0]).toBe(firstTool);
+      await expect(second.reconnectServer?.('alpha')).resolves.toMatchObject({ success: true });
+      expect(bridges).toHaveLength(3);
+      expect(firstBridge.dispose).not.toHaveBeenCalled();
+      expect(firstManager.getToolsByServer('alpha')[0]).toBe(firstTool);
+    } finally {
+      await first.dispose?.();
+      await second.dispose?.();
+      fixture.cleanup();
+    }
+  });
+
+  it("keeps running servers in two sessions connected on save and uses settings on reconnect", async () => {
+    const fixture = await createMcpAuthorityFixture({ user: ['[plugins]', 'enabled = true'] });
+    const pluginStorageRoot = join(fixture.home, 'plugins');
+    const manifestDirectory = join(pluginStorageRoot, 'demo', '.agenc-plugin');
+    mkdirSync(manifestDirectory, { recursive: true });
+    writeFileSync(join(manifestDirectory, 'plugin.json'), JSON.stringify({
+      name: 'demo',
+      userConfig: { contact: { type: 'string', title: 'Contact', description: 'Contact', required: true }, token: { type: 'string', title: 'Token', description: 'Token', sensitive: true } },
+      mcpServers: { alpha: { command: 'alpha-cmd', env: { CONTACT: '${user_config.contact}' } } },
+    }));
+    const settings = new PluginSettingsService({
+      home: fixture.home, pluginStorageRoot, workspaceRoot: fixture.cwd,
+      env: { AGENC_HOME: fixture.home, HOME: fixture.root },
+    });
+    let activeToken = 'old-private-phrase';
+    mockLoadPluginMcpServerRegistrations.mockImplementation(async () => {
+      const raw = readCanonicalUserConfigSnapshotSync(fixture.userConfigPath).raw as { pluginConfigs?: { demo?: { options?: { contact?: string } } } };
+      const contact = raw.pluginConfigs?.demo?.options?.contact;
+      return typeof contact === 'string' ? [{
+        name: 'plugin:demo:alpha', pluginName: 'demo', pluginSource: 'demo@local', serverName: 'alpha',
+        server: { transport: 'stdio', command: 'alpha-cmd', env: { CONTACT: contact, TOKEN: activeToken } },
+      }, {
+        name: 'plugin:other:unrelated', pluginName: 'other', pluginSource: 'other@local', serverName: 'unrelated',
+        server: { transport: 'stdio', command: 'unrelated-cmd' },
+      }] : [];
+    });
+    const manager = createSessionMcpManager([]);
+    const service = createSessionMcpService(manager, { authority: fixture.store, environment: {}, pluginStorageRoot });
+    const otherManager = createSessionMcpManager([]);
+    const otherSession = createSessionMcpService(otherManager, { authority: fixture.store, environment: {}, pluginStorageRoot });
+    try {
+      await settings.set({ pluginId: 'demo', values: { contact: 'first@example.test', token: activeToken } });
+      await service.refreshFromAuthority?.();
+      await otherSession.refreshFromAuthority?.();
+      vi.spyOn(otherManager, 'getServerInstructions').mockReturnValue('Bearer old-private-phrase');
+      expect(manager.getServerConfig('plugin:demo:alpha')?.env?.CONTACT).toBe('first@example.test');
+      expect(otherManager.getServerConfig('plugin:demo:alpha')?.env?.CONTACT).toBe('first@example.test');
+      activeToken = 'new-private-phrase';
+      await settings.set({ pluginId: 'demo', values: { contact: 'second@example.test', token: activeToken } });
+      expect(manager.getConnectionState('plugin:demo:alpha')?.type).toBe('connected');
+      expect(manager.getConnectionState('plugin:other:unrelated')?.type).toBe('connected');
+      expect(otherManager.getConnectionState('plugin:demo:alpha')?.type).toBe('connected');
+      expect(manager.getServerConfig('plugin:demo:alpha')?.env?.CONTACT).toBe('first@example.test');
+      expect(otherManager.getServerConfig('plugin:demo:alpha')?.env?.CONTACT).toBe('first@example.test');
+      const oldProjection = () => projectMcpManagerToConnections(otherManager, value => otherManager.redactPluginSecrets(value));
+      expect(JSON.stringify(oldProjection())).not.toContain('old-private-phrase');
+      expect(JSON.stringify(await otherSession.effectiveServers({}, null))).not.toContain('old-private-phrase');
+      mockCreateMCPConnection.mockRejectedValueOnce(new Error('spawn failed: new-private-phrase'));
+      const failedReconnect = await service.reconnectServer?.('plugin:demo:alpha');
+      expect(failedReconnect?.success).toBe(false);
+      expect(JSON.stringify(failedReconnect)).not.toContain('new-private-phrase');
+      await expect(service.reconnectServer?.('plugin:demo:alpha')).resolves.toMatchObject({ success: true });
+      expect(manager.getServerConfig('plugin:demo:alpha')?.env?.CONTACT).toBe('second@example.test');
+      expect(otherManager.getServerConfig('plugin:demo:alpha')?.env?.CONTACT).toBe('first@example.test');
+      await settings.reset({ pluginId: 'demo' });
+      expect(otherManager.getConnectionState('plugin:demo:alpha')?.type).toBe('connected');
+      expect(JSON.stringify(oldProjection())).not.toContain('old-private-phrase');
+      expect(JSON.stringify(await otherSession.effectiveServers({}, null))).not.toContain('old-private-phrase');
+      await service.refreshFromAuthority?.();
+      expect(manager.getServerConfig('plugin:demo:alpha')).toBeUndefined();
+    } finally { await service.dispose?.(); await otherSession.dispose?.(); fixture.cleanup(); }
+  });
+
   it("attaches, idempotently replaces and rotates authenticated local HTTP state without persisting credentials", async () => {
     const fixture = await createMcpAuthorityFixture();
     const before = readFileSync(fixture.userConfigPath, "utf8");

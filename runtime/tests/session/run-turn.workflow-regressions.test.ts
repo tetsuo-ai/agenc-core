@@ -24,7 +24,7 @@ describe("workflow turn boundaries", () => {
     const reason = "Do not commit. Explain the pending changes instead.";
     const registry = registryFor({ name: "approved_action", description: "Action requiring approval", inputSchema: { type: "object" }, requiresApproval: true, execute: vi.fn(async () => ({ content: "must not run" })) });
     const provider = mkProvider({ content: "Requesting approval", toolCalls: [{ id: "feedback-call", name: "approved_action", arguments: "{}" }], finishReason: "tool_calls" });
-    const { session, events } = mkSession({ provider, registry, services: { approvalResolver: { request: async () => ({ kind: "denied", reason }) } } });
+    const { session, events } = mkSession({ provider, registry, services: { approvalResolver: { request: async () => ({ kind: "denied", reason, decidedBy: "user" }) } } });
     const unmark = workflow ? markWorkflowApprovalSession(session) : () => {};
     try {
       await drain(runTurn(session, mkCtx({ approvalPolicy: { value: "on_request" }, sandboxPolicy: { value: "workspace_write" } }), "Run the action"));
@@ -32,6 +32,10 @@ describe("workflow turn boundaries", () => {
       expect(closure?.msg).toMatchObject({ payload: { isError: true, metadata: { approvalFailure: { decision: "denied", source: "resolver", reason } } } });
       expect(session.snapshotHistoryMessages().at(-1)?.content).toContain(reason);
       expect(registry.tools[0]!.execute).not.toHaveBeenCalled();
+      // A person's denial is their stop, never a failed turn, in a workflow too.
+      expect(events.some((event) => event.msg.type === "turn_aborted"
+        && (event.msg.payload as { readonly reason?: string } | undefined)?.reason === "approval_denied")).toBe(true);
+      expect(events.some((event) => event.msg.type === "turn_failed")).toBe(false);
     } finally {
       unmark();
       await session.shutdown();
@@ -62,7 +66,7 @@ describe("workflow turn boundaries", () => {
     expect(events.filter((event) => event.msg.type === "turn_complete")).toHaveLength(1);
   });
 
-  test("fails a resolver-denied action with truthful text while keeping the session reusable", async () => {
+  test("ends a resolver-denied action as a user stop, not an error, while keeping the session reusable", async () => {
     const execute = vi.fn(async () => ({ content: "must not execute" }));
     const registry = registryFor({ name: "spawn_agent", description: "Spawn a verifier", inputSchema: { type: "object" }, requiresApproval: true, execute });
     const provider = mkProvider({
@@ -72,7 +76,7 @@ describe("workflow turn boundaries", () => {
     });
     const sample = vi.fn(provider.chatStream);
     provider.chatStream = sample;
-    const request = vi.fn(async () => ({ kind: "denied" as const }));
+    const request = vi.fn(async () => ({ kind: "denied" as const, decidedBy: "user" as const }));
     const stop = vi.fn(async () => ({}));
     const { session, events } = mkSession({
       provider,
@@ -91,12 +95,15 @@ describe("workflow turn boundaries", () => {
     expect(events.flatMap((event) => {
       const terminal = classifyTurnTerminal(event.msg);
       return terminal === undefined ? [] : [terminal];
-    })).toEqual([expect.objectContaining({ outcome: "errored", code: 1, message: expect.stringMatching(/approval.*denied/i) })]);
+    })).toEqual([expect.objectContaining({ outcome: "aborted", code: 130, message: "approval_denied" })]);
+    expect(events.some((event) => event.msg.type === "turn_failed")).toBe(false);
     const closures = events.filter((event) => event.msg.type === "tool_call_completed" && event.msg.payload.callId === "denied-spawn");
     expect(closures).toHaveLength(1);
     expect(closures[0]?.msg).toMatchObject({ payload: { isError: true, metadata: { approvalDenied: true } } });
-    expect(events.indexOf(closures[0]!)).toBeLessThan(events.findIndex((event) => event.msg.type === "turn_failed"));
-    expect(phases.at(-1)).toMatchObject({ type: "turn_complete", stopReason: "error", content: expect.stringMatching(/approval.*denied/i) });
+    expect(events.indexOf(closures[0]!)).toBeLessThan(events.findIndex((event) => event.msg.type === "turn_aborted"));
+    // The denied call never ran, so the effect gate has nothing to settle.
+    expect(events.some((event) => /^effect_/u.test(event.msg.type))).toBe(false);
+    expect(phases.at(-1)).toMatchObject({ type: "turn_complete", stopReason: "cancelled", content: expect.stringMatching(/approval.*denied/i) });
     expect(session.snapshotHistoryMessages().at(-1)).toMatchObject({ role: "assistant", content: expect.stringMatching(/approval.*denied/i) });
     expect(findToolTurnValidationIssue(session.snapshotHistoryMessages())).toBeNull();
     expect(session.abortController.signal.aborted).toBe(false);
@@ -109,26 +116,61 @@ describe("workflow turn boundaries", () => {
       .toContainEqual(expect.objectContaining({ outcome: "completed", code: 0 }));
   });
 
-  test("lets the model explain an unavailable approval resolver rather than marking a user denial", async () => {
+  // Both denial-without-a-user tests below replay the same two-turn script:
+  // the model requests approval_required once, is auto-denied by something
+  // other than the user, then explains rather than retrying or aborting.
+  function twoTurnApprovalScript(callId: string, requesting: string, explaining: string) {
     const execute = vi.fn(async () => ({ content: "must not execute" }));
     const registry = registryFor({ name: "approval_required", description: "Requires approval", inputSchema: { type: "object" }, requiresApproval: true, execute });
     const provider = mkProvider();
-    let samples = 0;
+    const samples = { count: 0 };
     provider.chatStream = async () => {
-      samples += 1;
+      samples.count += 1;
       return {
-        content: samples === 1 ? "Checking whether this action is permitted." : "No approval resolver is available, so I made no changes.",
-        toolCalls: samples === 1 ? [{ id: "default-denial", name: "approval_required", arguments: "{}" }] : [],
+        content: samples.count === 1 ? requesting : explaining,
+        toolCalls: samples.count === 1 ? [{ id: callId, name: "approval_required", arguments: "{}" }] : [],
         usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20 },
         model: "test-model",
-        finishReason: samples === 1 ? "tool_calls" : "stop",
+        finishReason: samples.count === 1 ? "tool_calls" : "stop",
       };
     };
+    return { execute, registry, provider, samples };
+  }
+
+  test("lets the model continue after a resolver denial that no person made", async () => {
+    // The live broker refuses some requests itself (inactive or mismatched
+    // owner, duplicate occurrence) and a non-interactive client auto-denies.
+    // Those are not the user's decision, so they neither end the turn nor
+    // claim that the user denied anything.
+    const { execute, registry, provider, samples } = twoTurnApprovalScript(
+      "runtime-denial",
+      "Trying the action.",
+      "The action was not permitted, so I made no changes.",
+    );
+    const { session, events } = mkSession({ provider, registry, services: { approvalResolver: { request: async () => ({ kind: "denied" as const }) } } });
+
+    await drain(runTurn(session, mkCtx({ approvalPolicy: { value: "on_request" }, sandboxPolicy: { value: "workspace_write" } }), "Do the action."));
+
+    expect(samples.count).toBe(2);
+    expect(execute).not.toHaveBeenCalled();
+    const closure = events.find((event) => event.msg.type === "tool_call_completed" && event.msg.payload.callId === "runtime-denial");
+    expect(closure?.msg).toMatchObject({ payload: { isError: true } });
+    if (closure?.msg.type === "tool_call_completed") expect(closure.msg.payload.metadata?.approvalDenied).toBeUndefined();
+    expect(events.some((event) => event.msg.type === "turn_aborted" || event.msg.type === "turn_failed")).toBe(false);
+    expect(session.stoppedByUserSinceLastPrompt).toBe(false);
+  });
+
+  test("lets the model explain an unavailable approval resolver rather than marking a user denial", async () => {
+    const { execute, registry, provider, samples } = twoTurnApprovalScript(
+      "default-denial",
+      "Checking whether this action is permitted.",
+      "No approval resolver is available, so I made no changes.",
+    );
     const { session, events } = mkSession({ provider, registry });
 
     await drain(runTurn(session, mkCtx({ approvalPolicy: { value: "on_request" }, sandboxPolicy: { value: "workspace_write" } }), "Explain whether this action can run."));
 
-    expect(samples).toBe(2);
+    expect(samples.count).toBe(2);
     expect(execute).not.toHaveBeenCalled();
     const closure = events.find((event) => event.msg.type === "tool_call_completed" && event.msg.payload.callId === "default-denial");
     expect(closure?.msg).toMatchObject({ payload: { isError: true } });

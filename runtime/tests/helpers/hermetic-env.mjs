@@ -70,6 +70,7 @@ export const HERMETIC_PROVIDER_CREDENTIAL_ENV_VARS = Object.freeze([
   'ANTHROPIC_CUSTOM_HEADERS',
   // remaining built-in providers
   'LMSTUDIO_API_KEY',
+  'OLLAMA_API_KEY',
   'OPENROUTER_API_KEY',
   'GROQ_API_KEY',
   'DEEPSEEK_API_KEY',

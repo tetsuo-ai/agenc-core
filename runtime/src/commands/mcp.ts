@@ -36,6 +36,7 @@ export interface McpServerStatus {
     | "failed"
     | "disabled"
     | "needs-auth"
+    | "stopped"
     | "pending";
   readonly error?: string;
   readonly url?: string;
@@ -215,6 +216,8 @@ export async function collectMcpServerStatus(
             ? "needs-auth"
             : projected?.type === "pending"
               ? "pending"
+              : projected?.type === "stopped"
+                ? "stopped"
               : projected?.type === "disabled" || !info.enabled
               ? "disabled"
               : projected?.type === "connected" || connected
@@ -256,7 +259,8 @@ export function formatMcpServerStatus(
       tools !== undefined
         ? `, ${tools.length} ${tools.length === 1 ? "tool" : "tools"}`
         : "";
-    lines.push(`  ${server.name}: ${server.state}${required} (${target}${toolCount})`);
+    const state = server.state === "stopped" ? "stopped (on demand)" : server.state;
+    lines.push(`  ${server.name}: ${state}${required} (${target}${toolCount})`);
     if (server.error) {
       lines.push(`    error: ${server.error}`);
     }

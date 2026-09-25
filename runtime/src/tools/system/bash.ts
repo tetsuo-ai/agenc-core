@@ -9,7 +9,7 @@
  */
 
 import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, resolve as resolvePath } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { Tool, ToolExecutionInjectedArgs, ToolPreflightFailure, ToolResult } from "../types.js";
 import type { BashToolConfig, BashToolInput } from "./types.js";
@@ -849,7 +849,11 @@ async function bashContentRulePermission(
   if (candidate === undefined) {
     return { behavior: "passthrough", message: "Run shell command" };
   }
-  return bashToolHasPermission(
+  // Rules and the safety checks see `command` joined with `args`, but that
+  // remapped object is not the call: the router executes an allow's
+  // `updatedInput`, so hand back what the model sent (`cwd`, `args`,
+  // `timeoutMs` and any runtime-injected fields included).
+  const result = await bashToolHasPermission(
     {
       command: candidate.command,
       ...(typeof input.description === "string"
@@ -873,6 +877,9 @@ async function bashContentRulePermission(
       },
     },
   );
+  return "updatedInput" in result && result.updatedInput !== undefined
+    ? { ...result, updatedInput: { ...input } }
+    : result;
 }
 
 /**
@@ -929,7 +936,10 @@ export function createBashTool(config?: BashToolConfig): Tool {
     const shellCommand = builtinFallback ?? command;
     if (input.cwd !== undefined && lockCwd) return failure("Per-call cwd override is disabled (lockCwd is enabled)");
     if (input.cwd !== undefined && typeof input.cwd !== "string") return failure("cwd must be a string");
-    const cwd = input.cwd ?? defaultCwd;
+    // A relative cwd means the workspace's, never the daemon's own working
+    // directory: the write policy, the approval and the launch all use this
+    // one absolute path.
+    const cwd = input.cwd === undefined ? defaultCwd : resolvePath(defaultCwd, input.cwd);
     const useShellMode = shellModeEnabled && (builtinFallback !== undefined || isShellModeCommand(command, normalized.args));
     const directArgs = normalized.args ?? [];
     if (useShellMode) {
@@ -1032,7 +1042,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
         args: prepared.useShellMode
           ? { command: prepared.shellCommand, cwd: prepared.cwd }
           : { command: prepared.command, args: prepared.directArgs, cwd: prepared.cwd },
-        workspaceRoot: prepared.cwd,
+        workspaceRoot: defaultCwd,
         ...shellWorkspaceMutationPermission(input),
       });
     },
@@ -1093,7 +1103,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
         args: useShellMode
           ? { command: shellCommand, cwd }
           : { command, args: execArgs, cwd },
-        workspaceRoot: cwd,
+        workspaceRoot: defaultCwd,
         ...shellWorkspaceMutationPermission(rawArgs),
       });
       if (workspaceWriteDecision.blocked) {

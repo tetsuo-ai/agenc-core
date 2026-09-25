@@ -190,10 +190,11 @@ describe("canonical provider catalogs preserve supported selection rows", () => 
 
   it("keeps the complete unique NVIDIA NIM selection surface", () => {
     const models = BUILT_IN_PROVIDER_MODEL_CATALOG["nvidia-nim"];
-    expect(models).toHaveLength(110);
-    expect(new Set(models)).toHaveLength(110);
+    expect(models).toHaveLength(111);
+    expect(new Set(models)).toHaveLength(111);
     expect(models).toEqual(
       expect.arrayContaining([
+        "openai/gpt-oss-120b",
         "nvidia/cosmos-reason2-8b",
         "meta/codellama-70b",
         "nvidia/llama-3.3-nemotron-super-49b-v1.5",

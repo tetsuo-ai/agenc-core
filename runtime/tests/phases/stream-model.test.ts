@@ -563,6 +563,24 @@ describe("streamModel — live assistant text sanitization", () => {
     expect(seenOptions[0]).toMatchObject({ promptCacheKey: "conv-stream" });
   });
 
+  test("ChatGPT sign-in child calls keep their child session cache key", async () => {
+    const seen: Array<Record<string, unknown> | undefined> = [];
+    const provider = { ...mkProvider(async (_messages, _onChunk, options) => {
+      seen.push(options as Record<string, unknown> | undefined);
+      return { content: "ok", toolCalls: [], usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "gpt-6-luna", finishReason: "stop" };
+    }), name: "openai" };
+    const { session } = mkSession(provider);
+    Object.assign(session, { conversationId: "child-luna-session" });
+    for (let i = 0; i < 2; i += 1) {
+      const ctx = mkCtx("chat");
+      await streamModel(mkState(ctx), ctx, session,
+        mkRequest([{ role: "user", content: `turn ${i}` }]));
+    }
+    expect(seen.map((options) => options?.promptCacheKey))
+      .toEqual(["child-luna-session", "child-luna-session"]);
+  });
+
   test("the default ten-minute stream watchdog aborts a stalled provider with a retryable stream_idle", async () => {
     vi.useFakeTimers();
     try {
@@ -1746,6 +1764,53 @@ describe("streamModel — SessionState.totalTokenUsage accumulator", () => {
     expect(sidecar.getTotalCacheCreationInputTokens()).toBe(300);
     expect(sidecar.getTotalWebSearchRequests()).toBe(2);
     expect(sidecar.getTotalCostUsd()).toBeGreaterThan(0.02);
+  });
+
+  test("a fast-served Anthropic turn reaches CostSidecar at fast-mode rates", async () => {
+    // 1M input tokens on Opus 5.5: $4 standard, $8 in fast mode. A turn that
+    // asked for fast but was served standard carries speed "standard".
+    for (const [servedSpeed, expectedUsd] of [
+      ["fast", 8],
+      ["standard", 4],
+    ] as const) {
+      const ctx = mkCtx("chat");
+      const provider = mkProvider(async () =>
+        parseAnthropicMessagesResponse(
+          "claude-opus-5-5",
+          {
+            model: "claude-opus-5-5",
+            content: [{ type: "text", text: "ok" }],
+            stop_reason: "end_turn",
+            usage: { input_tokens: 1_000_000, output_tokens: 0, speed: servedSpeed },
+          },
+          {
+            model: "claude-opus-5-5",
+            messages: [{ role: "user", content: "fast" }],
+            tools: [],
+          },
+        )
+      );
+      const { session, events } = mkSession(provider);
+      const sidecar = new CostSidecar();
+      session.eventLog.subscribe((event) => sidecar.onEvent(event));
+
+      await streamModel(
+        mkState(ctx),
+        ctx,
+        session,
+        mkRequest([{ role: "user", content: "fast" }]),
+      );
+
+      const tokenCount = events.find((event) => event.msg.type === "token_count");
+      const payload = (tokenCount?.msg as { payload?: Record<string, unknown> } | undefined)
+        ?.payload;
+      if (servedSpeed === "fast") {
+        expect(payload?.speed, servedSpeed).toBe("fast");
+      } else {
+        expect(payload, servedSpeed).not.toHaveProperty("speed");
+      }
+      expect(sidecar.getTotalCostUsd(), servedSpeed).toBeCloseTo(expectedUsd, 6);
+    }
   });
 
   test("survives a non-compacting turn — a third call keeps adding onto the prior two", async () => {

@@ -1,4 +1,6 @@
 import type { HomeContext } from '../../config/home.js'
+import type { AgenCConfig } from '../../config/schema.js'
+import { readCanonicalUserConfigSnapshotSync } from '../../config/update-sync.js'
 import type { SecureStorageData } from '../secureStorage/index.js'
 import {
   NativeSecureStorageError,
@@ -49,6 +51,13 @@ export function requirePluginConfigAuthority(): CanonicalSettingsAuthority {
     )
   }
   return authority
+}
+
+/** Read plugin preferences from the current canonical document without publishing a store reload. */
+export function readFreshPluginConfigs(): AgenCConfig['pluginConfigs'] {
+  const authority = requirePluginConfigAuthority()
+  const document = readCanonicalUserConfigSnapshotSync(authority.homeContext.configTomlPath).raw
+  return (document as unknown as AgenCConfig).pluginConfigs
 }
 
 function copyStoredValue(value: PluginConfigStoredValue): PluginConfigStoredValue {
@@ -135,7 +144,26 @@ export function withPluginSecretBucket(
   } else {
     next.pluginSecrets = pluginSecrets
   }
+  const formats = { ...(current.pluginSecretFormats ?? {}) }
+  const retained = Object.fromEntries(Object.entries(formats[bucketKey] ?? {}).filter(([key]) => values !== undefined && Object.hasOwn(values, key)))
+  if (Object.keys(retained).length) formats[bucketKey] = retained
+  else delete formats[bucketKey]
+  if (Object.keys(formats).length) next.pluginSecretFormats = formats
+  else delete next.pluginSecretFormats
   return next
+}
+
+export function withPluginSecretFormats(
+  current: SecureStorageData,
+  bucketKey: string,
+  formats: Readonly<Record<string, 'literal-v1' | 'typed-v1' | `typed-v2:${string}`>> | undefined,
+): SecureStorageData {
+  const all = { ...(current.pluginSecretFormats ?? {}) }
+  if (formats && Object.keys(formats).length) all[bucketKey] = { ...formats }
+  else delete all[bucketKey]
+  if (Object.keys(all).length) current.pluginSecretFormats = all
+  else delete current.pluginSecretFormats
+  return current
 }
 
 function samePluginSecretBucket(
@@ -170,17 +198,20 @@ export function rollbackPluginSecretBucket(
         !samePluginSecretBucket(
           current.pluginSecrets?.[bucketKey],
           completed.written.pluginSecrets?.[bucketKey],
+        ) || !samePluginSecretBucket(
+          current.pluginSecretFormats?.[bucketKey],
+          completed.written.pluginSecretFormats?.[bucketKey],
         )
       ) {
         throw new NativeSecureStorageError(
           `Plugin secret bucket ${JSON.stringify(bucketKey)} changed during rollback`,
         )
       }
-      return withPluginSecretBucket(
+      return withPluginSecretFormats(withPluginSecretBucket(
         current,
         bucketKey,
         completed.previous.pluginSecrets?.[bucketKey],
-      )
+      ), bucketKey, completed.previous.pluginSecretFormats?.[bucketKey])
     },
     failureMessage,
   )

@@ -34,7 +34,6 @@ import {
   enterStartupProviderSelectionSnapshotForTests as enterStartupProviderSelectionForTestingOnly,
 } from './src/utils/model/provider-selection-context.js'
 import { enterCanonicalSettingsAuthority } from './src/utils/settings/canonicalAuthority.js'
-import { installWorkspaceMutationHomeResolverForTestingOnly } from './src/workspace/mutation-coordinator.js'
 import { installNetworkTripwire } from './tests/helpers/network-tripwire.mjs'
 
 // Re-assert at every test-file boundary. The helper also self-installs when
@@ -50,18 +49,6 @@ installNetworkTripwire()
 const hermeticHome = getOrCreateHermeticTestHome()
 sanitizeHermeticEnv(process.env, hermeticHome)
 process.env.AGENC_TEST_HERMETIC_HOME = hermeticHome
-
-// Production workspace-mutation state is partitioned by the ConfigStore
-// authority. Low-level unit tests intentionally exercise the facade without a
-// bootstrapped store, so bind their explicit hermetic home through a test-only
-// resolver instead of letting production code rediscover process.env.
-installWorkspaceMutationHomeResolverForTestingOnly(() => {
-  const home = process.env.AGENC_HOME
-  if (home === undefined || home.length === 0) {
-    throw new Error('AGENC_HOME is required by the workspace test harness')
-  }
-  return home
-})
 
 // Ordinary unit tests execute without a bootstrapped Session. Give each test
 // an explicit canonical startup authority so production code can remain

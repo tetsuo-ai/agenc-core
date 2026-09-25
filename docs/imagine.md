@@ -13,7 +13,7 @@ Coding-Plan-only session fails closed without making HTTP.
 
 | Tool | Backend availability |
 | --- | --- |
-| `ImagineImage` | Meta Muse Image (`MODEL_API_KEY`), QwenCloud image APIs (`DASHSCOPE_API_KEY` / `QWEN_API_KEY` or `QWEN_TOKEN_PLAN_API_KEY`), Z.AI GLM-Image (`ZAI_API_KEY`), or xAI Imagine (`XAI_API_KEY`, `GROK_API_KEY`, or `/grok-login` OAuth) |
+| `ImagineImage` | Meta Muse Image (`MODEL_API_KEY`), QwenCloud image APIs (`DASHSCOPE_API_KEY` / `QWEN_API_KEY` or `QWEN_TOKEN_PLAN_API_KEY`), Z.AI GLM-Image (`ZAI_API_KEY`), OpenAI GPT Image (`OPENAI_API_KEY`), or xAI Imagine (`XAI_API_KEY`, `GROK_API_KEY`, or `/grok-login` OAuth) |
 | `ImagineVideo` | xAI Imagine with `XAI_API_KEY`, `GROK_API_KEY`, or `/grok-login` OAuth |
 
 Backend authority is credential-isolated. A provider session key is reused
@@ -48,6 +48,12 @@ Source: `runtime/src/tools/system/imagine-image.ts`.
   can authorize it.
 - xAI backend: POST `https://api.x.ai/v1/images/generations` with
   `grok-imagine-image` or `grok-imagine-image-quality`.
+- OpenAI backend (`OPENAI_API_KEY` only; a ChatGPT sign-in cannot authorize
+  it): POST
+  `${OPENAI_BASE_URL:-https://api.openai.com/v1}/images/generations` with
+  `gpt-image-2` (default), `gpt-image-2.5-sunburst`, `gpt-image-2.5-flare`,
+  `gpt-image-1.5`, `gpt-image-1`, `gpt-image-1-mini`, or
+  `chatgpt-image-latest`.
 
 The tool timeout is 210 s; the request/polling path uses a 180 s abort.
 
@@ -58,7 +64,7 @@ The tool timeout is 210 s; the request/polling path uses a 180 s abort.
 | `n` | no | Default 1. Z.AI returns exactly one. Other backend/model limits are clamped by their documented maximum |
 | `aspect_ratio` | no | `1:1`, `16:9`, `9:16`, `4:3`, `3:4`, `3:2`, `2:3`, `2:1`, `1:2`, `19.5:9`, `9:19.5`, `20:9`, `9:20`, `auto` |
 | `resolution` | no | QwenCloud/xAI: `1k` or `2k` |
-| `quality` | no | Z.AI only: `hd` or `standard`; defaults to `hd` for `glm-image` and `standard` for CogView |
+| `quality` | no | Z.AI: `hd` or `standard`; defaults to `hd` for `glm-image` and `standard` for CogView. OpenAI: `low`, `medium`, `high`, or `auto` (default), plus `xhigh` and `max` on the GPT Image 2.5 models; `hd` and `standard` map to `high` and `medium` |
 
 For Meta, aspect ratios map to `1024x1024`, `1536x1024`, or `1024x1536`.
 QwenCloud sizes use the provider's grid/area constraints. Z.AI aspect ratios

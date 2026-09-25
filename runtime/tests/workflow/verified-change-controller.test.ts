@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -174,6 +174,7 @@ class TestJournal implements WorkflowRunJournal {
 }
 
 class FakeAdmission implements ExecutionAdmissionClient {
+  readonly release = vi.fn();
   readonly scope = {
     runId: "unbound",
     workspaceId: "ws",
@@ -505,6 +506,7 @@ interface Harness {
   /** Test seams: `failJournalOpenWith` makes the next journal open throw. */
   hooks: {
     failJournalOpenWith?: Error;
+    failEvidenceLedgerWith?: Error;
     effectivePermissionMode?: PermissionMode;
     currentPermissionMode?: PermissionMode;
   };
@@ -557,6 +559,7 @@ function makeHarness(
       ? { defaultReviewerModel: options.defaultReviewerModel }
       : {}),
     evidenceLedger: async (spec) => {
+      if (hooks.failEvidenceLedgerWith !== undefined) throw hooks.failEvidenceLedgerWith;
       let ledger = ledgers.get(spec.runId);
       if (ledger === undefined) {
         ledger = new MemoryLedger(spec.runId);
@@ -616,6 +619,68 @@ let harness: Harness;
 
 beforeEach(() => {
   harness = makeHarness();
+});
+
+describe("workflow admission ownership", () => {
+  it.skipIf(process.platform === "win32")("returns to each project's descriptor baseline after completed workflows", async () => {
+    const baseline = readdirSync("/dev/fd").length;
+    const counts: number[] = [];
+    const kernels: ExecutionAdmissionKernel[] = [];
+    try {
+      for (let index = 0; index < 3; index += 1) {
+        let project!: Harness;
+        let kernel!: ExecutionAdmissionKernel;
+        project = makeHarness({
+          admission: () => kernel.bindClient({
+            cwd: project.cwd,
+            scope: { runId: `workflow-fd-${index}`, sessionId: `workflow-fd-${index}`, autonomous: false },
+          }),
+        });
+        kernel = new ExecutionAdmissionKernel({ agencHome: project.home });
+        kernels.push(kernel);
+        try {
+          await runToTerminal(project, { runId: `workflow-fd-${index}` });
+        } finally {
+          project.cleanup();
+        }
+        counts.push(readdirSync("/dev/fd").length);
+      }
+    } finally {
+      for (const kernel of kernels) kernel.close();
+    }
+    console.info(`workflow fd counts: baseline=${baseline} closed=${counts.join(",")}`);
+    expect(counts).toEqual([baseline, baseline, baseline]);
+  });
+
+  it("releases admission after intake failure and resume setup failure", async () => {
+    harness.cleanup();
+    const clients: FakeAdmission[] = [];
+    harness = makeHarness({ admission: () => {
+      const client = new FakeAdmission();
+      clients.push(client);
+      return client;
+    } });
+    clients.length = 0;
+    armFailpoint("before_worktree_provision");
+    const started = await harness.controller.start(startParams(harness));
+    await expect(harness.controller.awaitRun(started.runId)).rejects.toThrow(/failpoint/u);
+    disarmFailpoint();
+    expect(clients[0]!.release).toHaveBeenCalledOnce();
+    harness.hooks.failEvidenceLedgerWith = new Error("resume setup failed");
+    await harness.controller.resumeOpenWorkflows();
+    expect(clients[1]!.release).toHaveBeenCalledOnce();
+    delete harness.hooks.failEvidenceLedgerWith;
+
+    const intakeClient = new FakeAdmission();
+    intakeClient.denials.push({
+      match: (stepId) => stepId === "workflow.intake",
+      error: new AdmissionDeniedError("intake denied", "deny"),
+    });
+    harness.cleanup();
+    harness = makeHarness({ admission: () => intakeClient });
+    await expect(harness.controller.start(startParams(harness))).rejects.toThrow(/intake/u);
+    expect(intakeClient.release).toHaveBeenCalledOnce();
+  });
 });
 
 describe("verifier prompt", () => {

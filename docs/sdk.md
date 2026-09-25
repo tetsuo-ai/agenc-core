@@ -35,6 +35,21 @@ one byte over — whether or not a delimiter has arrived. Overflow stops
 further reads, SIGTERMs the child, and keeps only the existing 8 KiB stderr
 tail.
 
+Both transports also share one bounded event buffer. A run keeps at most
+`MAX_BUFFERED_PROMPT_EVENTS` (1,000) events that the consumer has not iterated
+yet; past that the oldest buffered event is discarded. Loss is never silent:
+the consumer receives one `gap` event with `reason: "local_overflow"` in the
+position of the discarded events, carrying the exact `retiredCount`, the
+`afterSequence` it last received, and the `firstAvailableSequence` that
+follows. The marker is not a buffer entry, so further overflow cannot evict
+it, and memory stays bounded even when the iterator is never drained (for
+example when a caller only awaits `run.result()`). `reason: "retention"` on
+the same `gap` type is the daemon's own replay gap; only `local_overflow`
+means this process fell behind. On the daemon transport the events still
+exist: replay from `afterSequence` with `reattachRun`. The subprocess
+transport has no replay path, so drain its iterator concurrently or treat the
+transcript as incomplete.
+
 ## Daemon transport
 
 ```js
@@ -75,7 +90,7 @@ for await (const event of run) {
     case "history_reset":
       /* drop buffered history and turn markers; reload transcriptV2() */ break;
     case "gap":
-      /* event.event_gap; do not skip */ break;
+      /* event.event_gap ("retention") or SDK buffer loss ("local_overflow"); do not skip */ break;
     case "session_event":
       /* lifecycle / session status */ break;
     case "status":
@@ -734,12 +749,17 @@ daemon projects it as diagnostic with `statusProjection: "session_only"`.
   on the **real** in-process transport (real dispatcher, session lifecycle,
   and client multiplexer).
 - `subprocess-transport.test.ts` — stream-json adaptation with a fake child
-  process (argv contract, event mapping, exit-code-2 mapping, error paths).
+  process (argv contract, event mapping, exit-code-2 mapping, error paths,
+  bounded buffer with a visible `local_overflow` gap).
 - `newline-frame.test.ts` — subprocess payload ceiling rules (exact limit,
   overflow, CRLF, split UTF-8, multi-frame chunks).
 - `subprocess-stdout-framing.test.ts` — overflow settlement, listener cleanup,
   and child reaping at the production 16 MiB bound.
 - `frame-limits.contract.test.ts` — SDK / daemon / MCP 16 MiB ceiling pin.
+- `prompt-event-queue.test.ts` and `prompt-event-overflow.contract.test.ts` —
+  the shared bounded event buffer and its socket-transport contract:
+  result-first, slow, and never-draining consumers see exact loss counts and
+  unchanged ordering below the cap.
 - `events.contract.test.ts` — trusted object `clientAction` preservation and
   malformed/scalar rejection at the SDK event boundary.
 - `replay-safe-client.contract.test.ts` — reconnect cursors, duplicate
@@ -764,9 +784,6 @@ Thrown by `connect()`, `AgencClient`, and `promptViaSubprocess`
 | `AgencCapabilityUnavailableError` | Caller asked for a protocol 1.2 (or later) guarantee the negotiated daemon does not have |
 | `AgencRunReplayGapError` | Replay cursor hit an explicit `event_gap` / `cursor_ahead` / retention gap. Do not skip it |
 | `AgencRunReplayProtocolError` | Replay page would hide loss or corruption |
-
-Internal workbench RPCs (`workspace.editor.*`) are not on this client. See
-[daemon.md](reference/daemon.md) internal methods.
 
 ## Related
 

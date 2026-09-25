@@ -165,6 +165,27 @@ describe("forkSubagent", () => {
     expect(res.messages.length).toBe(history.length + 1);
   });
 
+  it("drops inherited model instructions for a child on another model", async () => {
+    const parentMessages: ReadonlyArray<LLMMessage> = [
+      ...history.slice(0, 3),
+      { role: "system", content: "Model: grok-4.7 (provider: grok)" },
+      { role: "developer", content: "Grok-only instructions" },
+      ...history.slice(3),
+    ];
+    const changed = await forkSubagent({ parent: stubSession(), parentMessages,
+      mode: { kind: "last_n_turns", n: 2 },
+      inheritParentInstructions: false, taskPrompt: "inspect" });
+    expect(changed.messages.some((message) => message.role === "system" ||
+      message.role === "developer")).toBe(false);
+    expect(changed.messages.map((message) => message.content)).toContain("turn 2 user");
+    expect(String(changed.messages.at(-1)?.content)).toContain("Task: inspect");
+
+    const same = await forkSubagent({ parent: stubSession(), parentMessages,
+      mode: { kind: "full_history" }, taskPrompt: "inspect" });
+    expect(same.messages).toContainEqual(parentMessages[3]);
+    expect(same.messages).toContainEqual(parentMessages[4]);
+  });
+
   it("a fork taken mid-batch stops before the parent's unanswered tool calls", async () => {
     // The memory-extraction subagent forked a parent with four running tools
     // and the provider refused its first request (tool_result_missing).
@@ -252,6 +273,30 @@ describe("forkSubagent", () => {
         .map((message) => message.runtimeOnly?.agentInvocation?.channelIndex),
     ).toEqual([0, 1, 2]);
     expect(res.messages[3]?.content).toBe("job answer");
+  });
+
+  it("keeps a workflow invocation intact when another model inherits one turn", async () => {
+    const invocation = materializeAgentInvocationMessages(createCsvAgentInvocationEnvelope({
+      jobId: "workflow-job", itemId: "workflow-item", rowIndex: 0,
+      rowSha256: `sha256:${"d".repeat(64)}`,
+      instruction: "Process this workflow item.", row: { payload: "untrusted" },
+    }));
+    const res = await forkSubagent({
+      parent: stubSession(),
+      parentMessages: [
+        { role: "system", content: "Parent model instructions" },
+        { role: "developer", content: "Parent developer instructions" },
+        ...invocation,
+        { role: "assistant", content: "workflow result" },
+      ],
+      mode: { kind: "last_n_turns", n: 1 },
+      inheritParentInstructions: false,
+      taskPrompt: "continue on another model",
+    });
+    expect(res.messages.slice(0, 3).map((message) => message.role)).toEqual(["developer", "user", "user"]);
+    expect(res.messages.slice(0, 3).map((message) => message.runtimeOnly?.agentInvocation?.channelIndex)).toEqual([0, 1, 2]);
+    expect(res.messages.some((message) => message.content === "Parent model instructions" ||
+      message.content === "Parent developer instructions")).toBe(false);
   });
 
   it("fails closed when rollout history loses invocation metadata", async () => {

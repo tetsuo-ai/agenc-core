@@ -531,6 +531,36 @@ export class Mailbox {
     );
   }
 
+  /** Take passive communication before the next task without consuming other records. */
+  drainPassiveCommunications(): ReadonlyArray<InterAgentCommunication> {
+    const firstTrigger = this.queue.findIndex((item) => item.triggerTurn);
+    const limit = firstTrigger < 0 ? this.queue.length : firstTrigger;
+    let afterHistoryClear = 0;
+    for (let index = 0; index < limit; index += 1) {
+      const metadata = this.queue[index]?.metadata;
+      if (metadata !== undefined &&
+        getMailboxMetadataValue(metadata).kind === "history_clear") {
+        afterHistoryClear = index + 1;
+      }
+    }
+    const items: InterAgentCommunication[] = [];
+    for (let index = limit - 1; index >= afterHistoryClear; index -= 1) {
+      const item = this.queue[index]!;
+      if (
+        item.metadata !== undefined &&
+        getMailboxMetadataValue(item.metadata).kind ===
+          "inter_agent_communication"
+      ) {
+        items.unshift(...this.queue.splice(index, 1));
+      }
+    }
+    if (items.length === 0) return items;
+    for (const item of items) this.releasePassiveBytes(item);
+    this.appendPassiveOmissionIfReady(items);
+    this.promoteOverflowAfterPartialDrain();
+    return [...items, ...this.drainPassiveCommunications()];
+  }
+
   /**
    * Drain only the bounded FIFO prefix through the first turn-triggering
    * message. Passive context after that trigger remains in this Mailbox, where
