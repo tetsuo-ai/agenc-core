@@ -282,14 +282,18 @@ describe("AnthropicProvider thinking-stream fallback retry (#2107)", () => {
 type PostThinkingFault =
   | "transient"
   | "transient-after-tool"
-  | "abort"
-  | "invalid-tool-json";
+  | "caller-abort"
+  | "invalid-tool-json"
+  | "idle-after-text"
+  | "text-then-invalid-tool-json";
 
 const POST_THINKING_FAULTS = [
   "transient",
   "transient-after-tool",
-  "abort",
+  "caller-abort",
   "invalid-tool-json",
+  "idle-after-text",
+  "text-then-invalid-tool-json",
 ] as const;
 
 function transientSocketError(): Error {
@@ -311,6 +315,21 @@ function toolUseFrames(partialJson: string): string[] {
   ];
 }
 
+function textThenToolFrames(partialJson: string): string[] {
+  return [
+    ...framesThrough("text"),
+    sseFrame("content_block_start", {
+      index: 2,
+      content_block: { type: "tool_use", id: "toolu_1", name: "Read", input: {} },
+    }),
+    sseFrame("content_block_delta", {
+      index: 2,
+      delta: { type: "input_json_delta", partial_json: partialJson },
+    }),
+    sseFrame("content_block_stop", { index: 2 }),
+  ];
+}
+
 function postThinkingFaultResponse(fault: PostThinkingFault): Response {
   switch (fault) {
     case "transient":
@@ -320,16 +339,17 @@ function postThinkingFaultResponse(fault: PostThinkingFault): Response {
         toolUseFrames("{\"path\":\"a\"}"),
         transientSocketError(),
       );
-    case "abort":
-      // client-session rewrites the watchdog's "provider stream timed out"
-      // into "<provider> stream idle for Nms". The adapter must rethrow that
-      // so stream-model can convert an aborted watchdog into stream_idle.
-      return sseResponseThenError(
-        framesThrough("delta"),
-        new Error("provider stream timed out"),
-      );
+    case "caller-abort":
+      return sseResponse(framesThrough("delta"));
     case "invalid-tool-json":
       return sseResponse(toolUseFrames("{\"path\":"));
+    case "idle-after-text":
+      return sseResponseThenError(
+        framesThrough("text"),
+        new Error("provider stream timed out"),
+      );
+    case "text-then-invalid-tool-json":
+      return sseResponse(textThenToolFrames("{\"path\":"));
     default: {
       const _exhaustive: never = fault;
       return _exhaustive;
@@ -345,7 +365,16 @@ describe("AnthropicProvider thinking faults the reconnect ladder can still see",
         const fetchImpl = fetchThatRetriesOnSuccess(
           postThinkingFaultResponse(fault),
         );
-        const outcome = await settleFallbackChatStream(fetchImpl);
+        const abortController = new AbortController();
+        const outcome = await settleFallbackChatStream(
+          fetchImpl,
+          fault === "caller-abort" ? abortController.signal : undefined,
+          fault === "caller-abort"
+            ? (chunk) => {
+                if (chunk.thinkingDelta) abortController.abort("stream_idle");
+              }
+            : undefined,
+        );
         const chunks = outcome.chunks;
 
         expect(streamedThinkingText(chunks)).toBe("Let me ");
@@ -378,22 +407,31 @@ describe("AnthropicProvider thinking faults the reconnect ladder can still see",
             ).toBe(false);
             break;
           }
-          case "abort": {
+          case "caller-abort": {
             expect(outcome.ok).toBe(false);
-            if (outcome.ok) break;
-            expect(outcome.error).toBeInstanceOf(Error);
-            if (outcome.error instanceof Error) {
-              expect(outcome.error.message).toMatch(/stream idle for \d+ms/);
-            }
+            expect(abortController.signal.aborted).toBe(true);
             break;
           }
-          case "invalid-tool-json": {
+          case "invalid-tool-json":
+          case "text-then-invalid-tool-json": {
             expect(outcome.ok).toBe(false);
             if (outcome.ok) break;
             expect(outcome.error).toBeInstanceOf(LLMInvalidResponseError);
-            expect(outcome.error).toBeInstanceOf(Error);
-            if (outcome.error instanceof Error) {
+            if (outcome.error instanceof LLMInvalidResponseError) {
               expect(outcome.error.message).toMatch(/invalid tool_use JSON/);
+              expect(outcome.error.statusCode).toBe(502);
+            }
+            break;
+          }
+          case "idle-after-text": {
+            expect(outcome.ok).toBe(true);
+            if (!outcome.ok) break;
+            expect(outcome.response.partial).toBe(true);
+            expect(outcome.response.content).toBe("partial");
+            expect(outcome.response.finishReason).toBe("error");
+            expect(outcome.response.error).toBeInstanceOf(Error);
+            if (outcome.response.error instanceof Error) {
+              expect(outcome.response.error.message).toMatch(/stream idle for \d+ms/);
             }
             break;
           }

@@ -242,18 +242,16 @@ function isAnthropicStreamAbort(
   error: unknown,
   signal: AbortSignal | undefined,
 ): boolean {
+  // Caller aborts only. stream-model's watchdog aborts options.signal, so
+  // this rethrow still lets that path convert to stream_idle. client-session's
+  // per-attempt idle watchdog never aborts options.signal; its
+  // "provider stream timed out" / "stream idle for Nms" text is not an abort
+  // here. Treating that text as transient for the #2463 ladder would be a
+  // classifier change in api-errors.ts, not this check.
   if (signal?.aborted === true) return true;
   if (!(error instanceof Error)) return false;
   const code = (error as { code?: unknown }).code;
-  if (error.name === "AbortError" || code === "ABORT_ERR") return true;
-  // readWithAbort turns the watchdog reason "stream_idle" into
-  // "provider stream timed out", and client-session then rewrites that to
-  // "<provider> stream idle for Nms" before this catch runs. Rethrowing
-  // either form lets stream-model convert a watchdog abort into stream_idle.
-  return (
-    error.message === "provider stream timed out" ||
-    /stream idle for \d+ms$/.test(error.message)
-  );
+  return error.name === "AbortError" || code === "ABORT_ERR";
 }
 
 function thinkingFromCompletedBlocks(
@@ -1040,9 +1038,12 @@ export class AnthropicProvider implements LLMProvider {
       // it. A partial is only for a fault the ladder cannot re-sample when
       // user-visible text or thinking was already delivered — rethrowing a
       // non-transient fault would drop that content, and a streamed tool call
-      // may already have been dispatched. Aborts rethrow so stream-model can
-      // turn a watchdog abort into `stream_idle`. Protocol errors (invalid
-      // tool_use JSON) rethrow even after thinking.
+      // may already have been dispatched. A caller abort (options.signal or
+      // AbortError) rethrows so stream-model can turn its own watchdog abort
+      // into `stream_idle`. client-session's per-attempt idle timeout does not
+      // abort options.signal, so delivered text still becomes a partial.
+      // Protocol errors (invalid tool_use JSON) rethrow even after text or
+      // thinking.
       const deliveredVisibleContent =
         content.length > 0 || thinking !== undefined;
       const shouldSurfacePartial =

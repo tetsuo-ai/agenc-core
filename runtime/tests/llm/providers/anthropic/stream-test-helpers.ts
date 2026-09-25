@@ -60,6 +60,8 @@ export function sseResponseThenError(
 
 export async function settleFallbackChatStream(
   fetchImpl: typeof fetch,
+  signal?: AbortSignal,
+  onChunk?: (chunk: LLMStreamChunk) => void,
 ): Promise<
   {
     chunks: LLMStreamChunk[];
@@ -73,7 +75,9 @@ export async function settleFallbackChatStream(
     [{ role: "user", content: "think" }],
     (chunk) => {
       chunks.push(chunk);
+      onChunk?.(chunk);
     },
+    signal !== undefined ? { signal } : undefined,
   );
   const settled = pending.then(
     (response) => ({ ok: true as const, response, chunks }),
