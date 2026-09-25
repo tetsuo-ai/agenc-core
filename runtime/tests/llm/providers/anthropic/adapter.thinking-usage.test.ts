@@ -14,6 +14,7 @@ const EXPECTED_USAGE = {
   availability: "reported" as const,
   provenance: "provider" as const,
   reasoningOutputTokens: 312,
+  reasoningIncludedInCompletion: true,
 };
 
 function jsonResponse(body: Record<string, unknown>): Response {
@@ -151,5 +152,6 @@ describe("AnthropicProvider thinking-token usage (#2112)", () => {
     expect(response.partial ?? false).toBe(partial);
     expect(response.usage.completionTokens).toBe(348);
     expect(response.usage.reasoningOutputTokens).toBe(312);
+    expect(response.usage.reasoningIncludedInCompletion).toBe(true);
   });
 });

@@ -1788,9 +1788,14 @@ export class CostSidecar implements Sidecar {
           this.unknownCostModels.add(key);
         }
         if (this.budgetTracker) {
+          // Reasoning already inside completion is not added again. Providers
+          // that leave the flag unset still add reasoning on top, matching main.
+          const reasoningOutsideCompletion =
+            msg.payload.reasoningIncludedInCompletion === true
+              ? 0
+              : (msg.payload.reasoningOutputTokens ?? 0);
           this.budgetTracker.addEmitted(
-            (msg.payload.completionTokens ?? 0) +
-              (msg.payload.reasoningOutputTokens ?? 0),
+            (msg.payload.completionTokens ?? 0) + reasoningOutsideCompletion,
           );
         }
         break;

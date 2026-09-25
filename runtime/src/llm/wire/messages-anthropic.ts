@@ -15,6 +15,7 @@ import type {
   LLMResponse,
   LLMTool,
   LLMToolCall,
+  LLMUsage,
 } from "../types.js";
 import {
   ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
@@ -527,6 +528,22 @@ export function readAnthropicReasoningOutputTokens(
   return raw;
 }
 
+/**
+ * Anthropic thinking counts are a subset of inclusive `output_tokens`, which
+ * is stored as `completionTokens`. Mark that subset so the session budget
+ * adds completion once. A reasoning count above completion stays unmarked
+ * and is still added on top.
+ */
+export function markAnthropicReasoningIncludedInCompletion(
+  usage: LLMUsage,
+): LLMUsage {
+  const reasoning = usage.reasoningOutputTokens;
+  if (reasoning === undefined || reasoning > usage.completionTokens) {
+    return usage;
+  }
+  return { ...usage, reasoningIncludedInCompletion: true };
+}
+
 export function parseAnthropicMessagesResponse(
   model: string,
   response: Record<string, unknown>,
@@ -627,19 +644,23 @@ export function parseAnthropicMessagesResponse(
       ? usageRecord.speed
       : undefined;
 
+  const normalizedUsage = markAnthropicReasoningIncludedInCompletion(
+    coerceUsage({
+      promptTokens: usageRecord.input_tokens,
+      completionTokens: usageRecord.output_tokens,
+      totalTokens: undefined,
+      cachedInputTokens: usageRecord.cache_read_input_tokens,
+      cacheCreationInputTokens: usageRecord.cache_creation_input_tokens,
+      reasoningOutputTokens: readAnthropicReasoningOutputTokens(usageRecord),
+      webSearchRequests: serverToolUse.web_search_requests,
+    }),
+  );
+
   return {
     content,
     toolCalls,
     usage: {
-      ...coerceUsage({
-        promptTokens: usageRecord.input_tokens,
-        completionTokens: usageRecord.output_tokens,
-        totalTokens: undefined,
-        cachedInputTokens: usageRecord.cache_read_input_tokens,
-        cacheCreationInputTokens: usageRecord.cache_creation_input_tokens,
-        reasoningOutputTokens: readAnthropicReasoningOutputTokens(usageRecord),
-        webSearchRequests: serverToolUse.web_search_requests,
-      }),
+      ...normalizedUsage,
       ...(servedSpeed !== undefined ? { speed: servedSpeed } : {}),
     },
     model:

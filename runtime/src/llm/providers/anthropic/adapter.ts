@@ -32,6 +32,7 @@ import {
 } from "../../auth/bearer.js";
 import {
   buildAnthropicMessagesRequest,
+  markAnthropicReasoningIncludedInCompletion,
   parseAnthropicMessagesResponse,
   readAnthropicReasoningOutputTokens,
   readAnthropicThinkingTokenDetails,
@@ -972,7 +973,7 @@ export class AnthropicProvider implements LLMProvider {
         return {
           content,
           toolCalls: partialToolCalls,
-          usage: coerceUsage({
+          usage: markAnthropicReasoningIncludedInCompletion(coerceUsage({
             promptTokens: usage.input_tokens,
             completionTokens: usage.output_tokens,
             cachedInputTokens: usage.cache_read_input_tokens,
@@ -983,7 +984,7 @@ export class AnthropicProvider implements LLMProvider {
             webSearchRequests: usage.server_tool_use?.web_search_requests,
             availability: "unknown",
             provenance: "synthetic",
-          }),
+          })),
           model,
           finishReason: "error",
           error: mappedError,

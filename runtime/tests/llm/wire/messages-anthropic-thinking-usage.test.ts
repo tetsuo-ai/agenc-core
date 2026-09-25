@@ -43,13 +43,18 @@ describe("parseAnthropicMessagesResponse thinking-token usage (#2112)", () => {
         promptTokens: 120,
         completionTokens: 348,
         reasoningOutputTokens: 312,
+        reasoningIncludedInCompletion: true,
         totalTokens: 468,
       },
     },
     {
       name: "falls back to legacy reasoning_output_tokens when details are absent",
       usage: { ...BASE_USAGE, reasoning_output_tokens: 312 },
-      expected: { completionTokens: 348, reasoningOutputTokens: 312 },
+      expected: {
+        completionTokens: 348,
+        reasoningOutputTokens: 312,
+        reasoningIncludedInCompletion: true,
+      },
     },
     {
       name: "prefers nested thinking_tokens over the legacy flat field",
@@ -58,22 +63,38 @@ describe("parseAnthropicMessagesResponse thinking-token usage (#2112)", () => {
         reasoning_output_tokens: 99,
         output_tokens_details: { thinking_tokens: 312 },
       },
-      expected: { reasoningOutputTokens: 312, completionTokens: 348 },
+      expected: {
+        reasoningOutputTokens: 312,
+        completionTokens: 348,
+        reasoningIncludedInCompletion: true,
+      },
     },
     {
       name: "keeps a reported zero thinking count",
       usage: { ...BASE_USAGE, output_tokens_details: { thinking_tokens: 0 } },
-      expected: { completionTokens: 348, reasoningOutputTokens: 0 },
+      expected: {
+        completionTokens: 348,
+        reasoningOutputTokens: 0,
+        reasoningIncludedInCompletion: true,
+      },
     },
     {
       name: "clamps a thinking count above inclusive output",
       usage: { ...BASE_USAGE, output_tokens_details: { thinking_tokens: 400 } },
-      expected: { completionTokens: 348, reasoningOutputTokens: 348 },
+      expected: {
+        completionTokens: 348,
+        reasoningOutputTokens: 348,
+        reasoningIncludedInCompletion: true,
+      },
     },
     {
       name: "clamps a legacy reasoning count above inclusive output",
       usage: { ...BASE_USAGE, reasoning_output_tokens: 400 },
-      expected: { completionTokens: 348, reasoningOutputTokens: 348 },
+      expected: {
+        completionTokens: 348,
+        reasoningOutputTokens: 348,
+        reasoningIncludedInCompletion: true,
+      },
     },
   ] as const)("$name", ({ usage, expected }) => {
     expect(parseUsage(usage)).toMatchObject(expected);
@@ -83,6 +104,7 @@ describe("parseAnthropicMessagesResponse thinking-token usage (#2112)", () => {
     const usage = parseUsage({ ...BASE_USAGE });
     expect(usage.completionTokens).toBe(348);
     expect(usage.reasoningOutputTokens).toBeUndefined();
+    expect(usage.reasoningIncludedInCompletion).toBeUndefined();
   });
 
   test.each([
@@ -103,6 +125,7 @@ describe("parseAnthropicMessagesResponse thinking-token usage (#2112)", () => {
       });
       expect(usage.completionTokens).toBe(348);
       expect(usage.reasoningOutputTokens).toBeUndefined();
+      expect(usage.reasoningIncludedInCompletion).toBeUndefined();
     },
   );
 

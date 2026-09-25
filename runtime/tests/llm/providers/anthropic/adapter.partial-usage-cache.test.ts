@@ -105,6 +105,7 @@ describe("AnthropicProvider streaming usage (cache tokens + stale merge)", () =>
       expect(response.usage.cachedInputTokens).toBe(7);
       expect(response.usage.cacheCreationInputTokens).toBe(5);
       expect(response.usage.reasoningOutputTokens).toBe(2);
+      expect(response.usage.reasoningIncludedInCompletion).toBe(true);
       expect(response.usage.webSearchRequests).toBe(2);
     },
   );
