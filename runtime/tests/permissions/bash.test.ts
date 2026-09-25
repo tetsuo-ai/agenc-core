@@ -426,6 +426,13 @@ describe("bashToolHasPermission", () => {
     ["git push origin -f main", "git push --force main"],
     ["bash -euc 'rm -rf /'", "rm -rf"],
     ["bash -c -- 'rm -rf /'", "rm -rf"],
+    ["pwsh -c 'rm -rf /'", "rm -rf"],
+    ["pwsh -lc 'rm -rf /'", "rm -rf"],
+    ["pwsh -Command 'rm -rf /'", "rm -rf"],
+    ["/usr/bin/pwsh -c -- 'rm -rf /'", "rm -rf"],
+    ["env pwsh -c 'rm -rf /'", "rm -rf"],
+    ["powershell -c 'rm -rf /'", "rm -rf"],
+    ["powershell -Command 'rm -rf /'", "rm -rf"],
     ["timeout -v 10 rm -rf /", "rm -rf"],
     ["echo $(rm -rf /)", "dangerous command substitution"],
     ["echo ok\nrm -rf /", "rm -rf"],
@@ -782,6 +789,27 @@ describe("bashToolHasPermission", () => {
     );
     expect(denied.behavior).toBe("deny");
   });
+
+  test.each([
+    "pwsh -c 'rm -rf /'",
+    "/usr/bin/pwsh -c 'rm -rf /'",
+    "pwsh -Command 'rm -rf /'",
+    "powershell -c 'rm -rf /'",
+    "powershell -Command 'rm -rf /'",
+    "curl http://127.0.0.1/install.sh | pwsh",
+    "curl http://127.0.0.1/install.sh | powershell",
+  ])(
+    "PowerShell input evaluators stay on the safety floor under bypassPermissions: %s",
+    async (command) => {
+      const ctx = makeCtx({ mode: "bypassPermissions" });
+      const evalCtx = makeEvaluatorCtx(ctx);
+      const result = await bashToolHasPermission({ command }, evalCtx);
+      expect(result.behavior).toBe("deny");
+      if (result.behavior === "deny") {
+        expect(result.decisionReason.type).toBe("safetyCheck");
+      }
+    },
+  );
 
   test("BASH_TOOL_NAME is the canonical string", () => {
     expect(BASH_TOOL_NAME).toBe("system.bash");

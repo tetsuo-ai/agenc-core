@@ -197,6 +197,10 @@ const SHELL_SCRIPT_COMMANDS: ReadonlySet<string> = new Set([
   "ksh",
   "csh",
   "tcsh",
+  // Already treated as system.bash input evaluators. Without these names the
+  // rm / curl|sh floor stops at the wrapper, same as dash/ash/rbash before them.
+  "powershell",
+  "pwsh",
 ]);
 
 function isRecursiveForceRemove(command: string): boolean {
@@ -1286,6 +1290,9 @@ function shellCommandStringIndex(
 
 function isShellCommandStringFlag(flag: string): boolean {
   if (flag === "-c") return true;
+  // PowerShell's documented long form. `-Command` has no lowercase `c`, so the
+  // POSIX clustered-flag check below would miss `pwsh -Command 'rm -rf /'`.
+  if (flag.toLowerCase() === "-command") return true;
   return flag.startsWith("-") && !flag.startsWith("--") && flag.slice(1).includes("c");
 }
 
