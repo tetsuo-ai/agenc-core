@@ -53,26 +53,6 @@ function ollamaToolChoiceKind(
   return "function";
 }
 
-export function summarizeOllamaRequestedToolChoice(
-  toolChoice: LLMToolChoice | undefined,
-): OllamaRequestedToolChoice {
-  const kind = ollamaToolChoiceKind(toolChoice);
-  switch (kind) {
-    case "auto":
-      return "auto";
-    case "none":
-      return "none";
-    case "required":
-      return "required";
-    case "function":
-      return `function:${(toolChoice as { name: string }).name}`;
-    default: {
-      const exhaustive: never = kind;
-      return exhaustive;
-    }
-  }
-}
-
 function emptyAdvertisedNames(): OllamaToolNameProjection {
   return createOllamaToolNameProjection([]);
 }
