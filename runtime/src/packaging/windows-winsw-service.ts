@@ -289,7 +289,8 @@ export function renderAgencDaemonWinSWService(
 }
 
 function xmlText(xml: string, tag: string): string {
-  const match = xml.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "u"));
+  const pattern = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "u");
+  const match = pattern.exec(xml);
   if (match?.[1] === undefined) {
     throw new Error(`WinSW XML is missing <${tag}>`);
   }
@@ -297,9 +298,8 @@ function xmlText(xml: string, tag: string): string {
 }
 
 function xmlEnvValue(xml: string, name: string): string {
-  const match = xml.match(
-    new RegExp(`<env name="${name}" value="([^"]*)"/>`, "u"),
-  );
+  const pattern = new RegExp(`<env name="${name}" value="([^"]*)"/>`, "u");
+  const match = pattern.exec(xml);
   if (match?.[1] === undefined) {
     throw new Error(`WinSW XML is missing env ${name}`);
   }
@@ -310,9 +310,9 @@ export function parseAgencDaemonWinSWServiceXml(
   xml: string,
 ): ParsedAgencDaemonWinSWServiceXml {
   const argumentsText = xmlText(xml, "arguments");
-  const launcherMatch = argumentsText.match(
-    /^\/d \/v:off \/s \/c ""([\s\S]+)" daemon start --foreground"$/u,
-  );
+  const launcherPattern =
+    /^\/d \/v:off \/s \/c ""([\s\S]+)" daemon start --foreground"$/u;
+  const launcherMatch = launcherPattern.exec(argumentsText);
   if (launcherMatch?.[1] === undefined) {
     throw new Error("WinSW arguments are not a PATH-independent cmd invocation");
   }
@@ -347,7 +347,7 @@ export function writeAgencDaemonWinSWServiceXml(
 
 function winsw212ExecutableForXml(outputPath: string): string {
   const base = win32.basename(outputPath);
-  const stem = base.match(/^([A-Za-z0-9][A-Za-z0-9._-]*)\.xml$/u)?.[1];
+  const stem = /^([A-Za-z0-9][A-Za-z0-9._-]*)\.xml$/u.exec(base)?.[1];
   if (stem === undefined) {
     throw new Error(
       "WinSW 2.12.0 loads <exe-basename>.xml beside the executable; AGENC_WINSW_XML must be named like agenc-daemon.xml",
@@ -384,16 +384,21 @@ function formatWinSWServiceInstallInstructions(input: {
     "installs as LocalSystem. Password: is skipped for LocalSystem,",
     "LocalService, and NetworkService.",
     "",
-    "install with no /p passes DOMAIN\\user and a null password to CreateService.",
-    "Program.cs does not show whether Windows accepts that null password.",
-    "Set the logon password outside the XML (Services Log On tab, or",
-    `sc.exe config ${AGENC_DAEMON_WINSW_SERVICE_ID} obj= "${input.accountUsername}" password= ...).`,
+    "install with no /p passes DOMAIN\\user and a null password to CreateServiceW.",
+    "CreateServiceW checks that the account exists, not the password.",
+    "install records the XML account with no password. start fails with error 1069",
+    "until the password is set.",
+    "Set that password in services.msc: AgenC Daemon, Log On, This account.",
+    `sc.exe config ${AGENC_DAEMON_WINSW_SERVICE_ID} obj= "${input.accountUsername}" password= ...`,
+    "puts the password on the command line, where shell history and process",
+    "listings can capture it.",
     "Before start, confirm the account:",
     `  sc.exe qc ${AGENC_DAEMON_WINSW_SERVICE_ID}`,
     `SERVICE_START_NAME must be ${input.accountUsername}.`,
     "Do not start the service when it is LocalSystem.",
     "",
     `  "${executable}" install`,
+    `  services.msc → AgenC Daemon → Log On → This account: ${input.accountUsername}`,
     `  sc.exe qc ${AGENC_DAEMON_WINSW_SERVICE_ID}`,
     `  "${executable}" start`,
     `  "${executable}" stop`,

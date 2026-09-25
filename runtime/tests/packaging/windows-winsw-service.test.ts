@@ -254,15 +254,33 @@ describe("installer and CLI WinSW generation", () => {
     expect(parsed.launcher).toBe(launcher);
     expect(parsed.agencHome).toBe(HOME);
     expect(parsed.accountUsername).toBe(ACCOUNT);
-    expect(lines.join("\n")).toContain("does not install or start a Windows service");
-    expect(lines.join("\n")).toContain("Pinned WinSW version: 2.12.0");
-    expect(lines.join("\n")).toContain('agenc-daemon.exe" install\n');
-    expect(lines.join("\n")).toContain("Do not run install /p");
-    expect(lines.join("\n")).toContain("sc.exe qc agenc-daemon");
-    expect(lines.join("\n")).toContain(`SERVICE_START_NAME must be ${ACCOUNT}`);
-    expect(lines.join("\n")).toContain('agenc-daemon.exe" start');
-    expect(lines.join("\n")).toContain('agenc-daemon.exe" stop');
-    expect(lines.join("\n")).toContain('agenc-daemon.exe" restart');
+    const printed = lines.join("\n");
+    expect(printed).toContain("does not install or start a Windows service");
+    expect(printed).toContain("Pinned WinSW version: 2.12.0");
+    expect(printed).toContain('agenc-daemon.exe" install\n');
+    expect(printed).toContain("Do not run install /p");
+    expect(printed).toContain("sc.exe qc agenc-daemon");
+    expect(printed).toContain(`SERVICE_START_NAME must be ${ACCOUNT}`);
+    expect(printed).toContain('agenc-daemon.exe" start');
+    expect(printed).toContain('agenc-daemon.exe" stop');
+    expect(printed).toContain('agenc-daemon.exe" restart');
+    expect(printed).toContain(
+      "CreateServiceW checks that the account exists, not the password.",
+    );
+    expect(printed).toContain("start fails with error 1069");
+    expect(printed).toContain("puts the password on the command line");
+    expect(printed).not.toContain("does not show whether");
+    const commandLines = printed
+      .slice(printed.indexOf('agenc-daemon.exe" install'))
+      .split("\n")
+      .slice(0, 4)
+      .map((line) => line.trim());
+    expect(commandLines[0]).toMatch(/agenc-daemon\.exe" install$/);
+    expect(commandLines[1]).toBe(
+      `services.msc → AgenC Daemon → Log On → This account: ${ACCOUNT}`,
+    );
+    expect(commandLines[2]).toBe("sc.exe qc agenc-daemon");
+    expect(commandLines[3]).toMatch(/agenc-daemon\.exe" start$/);
     expect(readFileSync(outputPath, "utf8")).not.toContain("<password>");
     expect(readFileSync(outputPath, "utf8")).not.toContain("<username>");
 
@@ -405,10 +423,17 @@ describe("installer and CLI WinSW generation", () => {
     const cli = readFileSync(join(REPO_ROOT, "docs/reference/cli.md"), "utf8");
     expect(install).toContain("That is not a service install");
     expect(install).toContain("agenc daemon install-service");
+    expect(install).toContain(
+      "Packaging does not download WinSW; use the v2.12.0 binary",
+    );
+    expect(install).toContain("WinSW-x64.exe");
     expect(install).not.toContain(
       "Running the\ndaemon as a Windows service uses WinSW with `packaging/windows/agenc-daemon.xml`",
     );
     expect(daemon).toContain("separate elevated step");
+    expect(daemon).toContain("Services Log On tab");
+    expect(daemon).toContain("error 1069");
+    expect(daemon).not.toContain("does not show whether");
     expect(cli).toContain("Does not install or start the Windows service");
   });
 });

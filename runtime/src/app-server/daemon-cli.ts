@@ -1074,6 +1074,18 @@ export function formatAgenCDaemonCliHelpText(): string {
   ].join("\n");
 }
 
+function parseDaemonInstallServiceArgs(
+  extra: readonly string[],
+): AgenCDaemonCliCommand {
+  if (extra.length > 0) {
+    return {
+      kind: "error",
+      message: `unknown daemon install-service option: ${extra[0]}`,
+    };
+  }
+  return { kind: "install-service" };
+}
+
 export function parseAgenCDaemonCliArgs(
   argv: readonly string[],
 ): AgenCDaemonCliCommand | null {
@@ -1111,13 +1123,7 @@ export function parseAgenCDaemonCliArgs(
     return { kind: "command", action };
   }
   if (action === "install-service") {
-    if (extra.length > 0) {
-      return {
-        kind: "error",
-        message: `unknown daemon install-service option: ${extra[0]}`,
-      };
-    }
-    return { kind: "install-service" };
+    return parseDaemonInstallServiceArgs(extra);
   }
   if (action === "run") {
     return {
