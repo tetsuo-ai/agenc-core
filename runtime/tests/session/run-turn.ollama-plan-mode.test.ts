@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 
 import { OllamaProvider } from "../../src/llm/providers/ollama/adapter.js";
+import type { LLMProviderTraceEvent } from "../../src/llm/types.js";
 import { runTurn } from "../../src/session/run-turn.js";
 import type { ToolRegistry } from "../../src/tool-registry.js";
 import { drain, mkCtx, mkSession } from "../fixtures.js";
@@ -8,6 +9,7 @@ import { drain, mkCtx, mkSession } from "../fixtures.js";
 describe("Ollama plan mode", () => {
   test("sends the turn when plan mode sets toolChoice required", async () => {
     const requests: Record<string, unknown>[] = [];
+    const traces: LLMProviderTraceEvent[] = [];
     const registry = {
       tools: [],
       toLLMTools: () => [{
@@ -33,6 +35,15 @@ describe("Ollama plan mode", () => {
       };
     });
     Object.assign(provider, { client: { chat, list: async () => ({ models: [] }) } });
+    const chatStream = provider.chatStream.bind(provider);
+    provider.chatStream = (messages, onChunk, options) => chatStream(messages, onChunk, {
+      ...options,
+      trace: {
+        onProviderTraceEvent: (event) => {
+          traces.push(event);
+        },
+      },
+    });
     const { session } = mkSession({ provider, registry });
     await session.permissionModeRegistry.update({
       ...session.permissionModeRegistry.current(),
@@ -57,6 +68,10 @@ describe("Ollama plan mode", () => {
       }),
     ]);
     expect(requests[0]).not.toHaveProperty("tool_choice");
+    expect(traces.find((event) => event.kind === "request")?.context).toMatchObject({
+      requestedToolChoice: "required",
+      effectiveToolChoice: "auto",
+    });
     const message = failure instanceof Error ? failure.message : "";
     expect(message).not.toMatch(/unsupported provider capability/u);
   });
