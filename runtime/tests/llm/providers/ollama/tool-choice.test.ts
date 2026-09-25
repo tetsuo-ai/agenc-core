@@ -362,6 +362,49 @@ describe("Ollama adapter toolChoice", () => {
   );
 
   test.each([false, true])(
+    "an unknown done_reason under a named choice keeps the finish error (stream=%s)",
+    async (streaming) => {
+      const { result, error } = await invoke(
+        providerWithTools(),
+        streaming,
+        { toolChoice: { type: "function", name: "system.echo" } },
+        {
+          ...toolCallResponse("system.echo"),
+          done: true,
+          done_reason: "mystery",
+        },
+      );
+
+      expect(error).toBeUndefined();
+      expect(result?.finishReason).toBe("error");
+      expect(result?.toolCalls).toEqual([]);
+      expect(result?.error).toEqual(expect.objectContaining({
+        message: expect.stringContaining("Unknown Ollama done_reason"),
+      }));
+    },
+  );
+
+  test.each([false, true])(
+    "an unknown done_reason under none keeps the finish error (stream=%s)",
+    async (streaming) => {
+      const { result, error } = await invoke(
+        providerWithTools(),
+        streaming,
+        { toolChoice: "none" },
+        {
+          ...toolCallResponse("system.echo"),
+          done: true,
+          done_reason: "mystery",
+        },
+      );
+
+      expect(error).toBeUndefined();
+      expect(result?.finishReason).toBe("error");
+      expect(result?.toolCalls).toEqual([]);
+    },
+  );
+
+  test.each([false, true])(
     "a specific function ships only that tool and accepts its call (stream=%s)",
     async (streaming) => {
       const { result, error, requests, traces } = await invoke(

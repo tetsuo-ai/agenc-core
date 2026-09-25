@@ -784,15 +784,16 @@ export class OllamaProvider implements LLMProvider {
           if (toolCallRecovery) content = "";
         }
       }
-      // A truncated reply withholds calls so max-output recovery can run.
-      // Checking a named choice after that clear would reject the recovery.
-      if (!normalizedDoneReason.truncated && toolChoice.effective === "none" && toolCalls.length > 0) {
+      // Calls are withheld for truncation and for an unknown done_reason.
+      // Skip the choice check in both cases so that finish reason, and the
+      // unknown-reason error, stay visible to recovery.
+      if (acceptToolCalls && toolChoice.effective === "none" && toolCalls.length > 0) {
         assertOllamaToolChoiceResponse(toolChoice, toolCalls);
       }
       toolCalls = acceptToolCalls
         ? this.canonicalizeCalls(toolCalls, toolChoice.advertisedNames)
         : [];
-      if (!normalizedDoneReason.truncated) {
+      if (acceptToolCalls) {
         assertOllamaToolChoiceResponse(toolChoice, toolCalls);
       }
       if (toolCallRecovery) toolCallRecovery = {
@@ -1262,8 +1263,9 @@ export class OllamaProvider implements LLMProvider {
     const reported = acceptToolCalls ? normalizeOllamaToolCalls(message.tool_calls) : [];
     // Same recovery as the streaming path: a reply that IS a call becomes one.
     // `none` advertises an empty salvage catalog so text cannot become a call.
-    // Truncation withholds calls first; the choice check must not reject that.
-    if (!normalizedDoneReason.truncated && toolChoice.effective === "none" && reported.length > 0) {
+    // Skip the choice check whenever calls are withheld (truncation or an
+    // unknown done_reason) so main's finish reason stays visible.
+    if (acceptToolCalls && toolChoice.effective === "none" && reported.length > 0) {
       assertOllamaToolChoiceResponse(toolChoice, reported);
     }
     const salvaged =
@@ -1274,7 +1276,7 @@ export class OllamaProvider implements LLMProvider {
       salvaged.toolCalls.length > 0 ? salvaged.toolCalls : reported,
       toolChoice.advertisedNames,
     );
-    if (!normalizedDoneReason.truncated) {
+    if (acceptToolCalls) {
       assertOllamaToolChoiceResponse(toolChoice, toolCalls);
     }
     const toolCallRecovery = toolCalls.length === 0 && acceptToolCalls
