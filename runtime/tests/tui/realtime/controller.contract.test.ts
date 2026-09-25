@@ -1,11 +1,33 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const logMock = vi.hoisted(() => ({
   logError: vi.fn(),
 }));
+
+const hostProbe = vi.hoisted(() => ({
+  calls: [] as string[],
+  playAvailable: false,
+  allow: false,
+}));
+
+vi.mock("child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("child_process")>();
+  return {
+    ...actual,
+    spawnSync(command: string) {
+      hostProbe.calls.push(String(command));
+      if (!hostProbe.allow) {
+        throw new Error(`unexpected host spawnSync ${String(command)}`);
+      }
+      const found =
+        hostProbe.playAvailable && (command === "play" || command === "aplay");
+      return found ? {} : { error: new Error("spawn ENOENT") };
+    },
+  };
+});
 
 vi.mock("../../utils/log.js", () => ({
   logError: logMock.logError,
@@ -27,8 +49,24 @@ import type {
   RealtimeAudioPlayer,
   StartRealtimeAudioCapture,
 } from "./audio.js";
-import { createRealtimeTuiControls } from "./controller.js";
+import {
+  createRealtimeTuiControls,
+  type CreateRealtimeTuiControlsOptions,
+} from "./controller.js";
 import { createFailedSpawnChild } from "../../helpers/failed-spawn-child.js";
+
+function createControls(
+  options: CreateRealtimeTuiControlsOptions,
+): ReturnType<typeof createRealtimeTuiControls> {
+  if (
+    options.audioPlayer === undefined &&
+    options.playbackBackend === undefined &&
+    options.resolvePlaybackBackend === undefined
+  ) {
+    return createRealtimeTuiControls({ ...options, playbackBackend: "play" });
+  }
+  return createRealtimeTuiControls(options);
+}
 
 function createClient(): {
   readonly requests: Array<{
@@ -109,6 +147,15 @@ async function waitFor(
 }
 
 describe("AgenC realtime TUI controller", () => {
+  afterEach(() => {
+    if (!hostProbe.allow) {
+      expect(hostProbe.calls).toEqual([]);
+    }
+    hostProbe.calls = [];
+    hostProbe.allow = false;
+    hostProbe.playAvailable = false;
+  });
+
   beforeEach(() => {
     logMock.logError.mockReset();
   });
@@ -117,7 +164,7 @@ describe("AgenC realtime TUI controller", () => {
     const client = createClient();
     const audioPlayer = createAudioPlayer();
     const emitted: JsonObject[] = [];
-    const controls = createRealtimeTuiControls({
+    const controls = createControls({
       threadId: "agent_1",
       client,
       emitEvent: (event) => emitted.push(event),
@@ -188,7 +235,7 @@ describe("AgenC realtime TUI controller", () => {
       events: channel.receiver,
     };
     const emitted: JsonObject[] = [];
-    const controls = createRealtimeTuiControls({
+    const controls = createControls({
       threadId: "agent_1",
       client,
       emitEvent: (event) => emitted.push(event),
@@ -282,7 +329,7 @@ describe("AgenC realtime TUI controller", () => {
           throw new Error("microphone state failed");
         }
       });
-      const controls = createRealtimeTuiControls({
+      const controls = createControls({
         threadId: "agent_1",
         client,
         emitEvent: (event) => emitted.push(event),
@@ -344,7 +391,7 @@ describe("AgenC realtime TUI controller", () => {
   test("serializes overlapping start and stop lifecycle operations", async () => {
     const client = createClient();
     let releaseCapture: (() => void) | null = null;
-    const controls = createRealtimeTuiControls({
+    const controls = createControls({
       threadId: "agent_1",
       client,
       emitEvent: () => {},
@@ -390,7 +437,7 @@ describe("AgenC realtime TUI controller", () => {
       }),
       events: channel.receiver,
     };
-    const controls = createRealtimeTuiControls({
+    const controls = createControls({
       threadId: "agent_1",
       client,
       emitEvent: (event) => emitted.push(event),
@@ -420,7 +467,7 @@ describe("AgenC realtime TUI controller", () => {
 
   test("gates audio chunk appends with mute and push-to-talk state", async () => {
     const client = createClient();
-    const controls = createRealtimeTuiControls({
+    const controls = createControls({
       threadId: "agent_1",
       client,
       emitEvent: () => {},
@@ -458,7 +505,7 @@ describe("AgenC realtime TUI controller", () => {
 
   test("does not send text or audio appends while realtime is inactive", async () => {
     const client = createClient();
-    const controls = createRealtimeTuiControls({
+    const controls = createControls({
       threadId: "agent_1",
       client,
       emitEvent: () => {},
@@ -487,7 +534,7 @@ describe("AgenC realtime TUI controller", () => {
     const client = createClient();
     let callbacks: RealtimeAudioCaptureCallbacks | null = null;
     const stop = vi.fn();
-    const controls = createRealtimeTuiControls({
+    const controls = createControls({
       threadId: "agent_1",
       client,
       emitEvent: () => {},
@@ -554,7 +601,7 @@ describe("AgenC realtime TUI controller", () => {
     const emitted: JsonObject[] = [];
     let callbacks: RealtimeAudioCaptureCallbacks | null = null;
     const stop = vi.fn();
-    const controls = createRealtimeTuiControls({
+    const controls = createControls({
       threadId: "agent_1",
       client,
       emitEvent: (event) => emitted.push(event),
@@ -591,7 +638,7 @@ describe("AgenC realtime TUI controller", () => {
   test("stops daemon realtime if websocket capture fails after daemon start", async () => {
     const client = createClient();
     const emitted: JsonObject[] = [];
-    const controls = createRealtimeTuiControls({
+    const controls = createControls({
       threadId: "agent_1",
       client,
       emitEvent: (event) => emitted.push(event),
@@ -631,7 +678,7 @@ describe("AgenC realtime TUI controller", () => {
       const stop = vi.fn(async () => {
         throw cleanupError;
       });
-      const controls = createRealtimeTuiControls({
+      const controls = createControls({
         threadId: "agent_1",
         client,
         emitEvent: (event) => emitted.push(event),
@@ -663,7 +710,7 @@ describe("AgenC realtime TUI controller", () => {
   test("enqueues realtime output audio deltas into the audio player", async () => {
     const client = createClient();
     const audioPlayer = createAudioPlayer();
-    const controls = createRealtimeTuiControls({
+    const controls = createControls({
       threadId: "agent_1",
       client,
       emitEvent: () => {},
@@ -713,7 +760,7 @@ describe("AgenC realtime TUI controller", () => {
       }),
       close: vi.fn(),
     };
-    const controls = createRealtimeTuiControls({
+    const controls = createControls({
       threadId: "agent_1",
       client,
       emitEvent: (event) => emitted.push(event),
@@ -771,6 +818,18 @@ describe("AgenC realtime TUI controller", () => {
       endsSession: false,
     },
     {
+      label: "transient EMFILE from the active child",
+      code: "EMFILE" as const,
+      stale: false,
+      endsSession: false,
+    },
+    {
+      label: "transient ENFILE from the active child",
+      code: "ENFILE" as const,
+      stale: false,
+      endsSession: false,
+    },
+    {
       label: "ENOENT from a replaced child",
       code: "ENOENT" as const,
       stale: true,
@@ -783,7 +842,7 @@ describe("AgenC realtime TUI controller", () => {
       const live = createStartedPlaybackChild();
       const spawned: ChildProcess[] = [];
       const client = createClient();
-      const controls = createRealtimeTuiControls({
+      const controls = createControls({
         threadId: "agent_1",
         client,
         emitEvent: () => {},
@@ -824,16 +883,59 @@ describe("AgenC realtime TUI controller", () => {
         ),
       ).toBe(false);
 
-      if (!stale) pushOutputAudio(controls, 24_000);
+      if (stale) {
+        pushOutputAudio(controls, 16_000);
+        expect(spawned).toHaveLength(3);
+        return;
+      }
+      pushOutputAudio(controls, 24_000);
       expect(spawned).toHaveLength(2);
     },
   );
+
+  test("the next start is ready after a missing player appears", async () => {
+    hostProbe.allow = true;
+    const spawned: string[] = [];
+    const controls = createRealtimeTuiControls({
+      threadId: "agent_1",
+      client: createClient(),
+      emitEvent: () => {},
+      startAudioCapture: createNoopAudioCapture(),
+      spawnPlaybackProcess: (command) => {
+        spawned.push(command);
+        return createStartedPlaybackChild();
+      },
+    });
+
+    await controls.start({ transport: "websocket" });
+    await controls.stop();
+    expect(hostProbe.calls.length).toBeGreaterThan(0);
+    expect(spawned).toEqual([]);
+
+    hostProbe.calls = [];
+    hostProbe.playAvailable = true;
+    await controls.start({ transport: "websocket" });
+    controls.handleTranscriptEvent({
+      type: "realtime_started",
+      payload: { realtimeSessionId: "rt_2" },
+    });
+    pushOutputAudio(controls, 24_000);
+
+    expect(spawned).toEqual(["play"]);
+    expect(hostProbe.calls).toContain("play");
+
+    hostProbe.calls = [];
+    await controls.stop();
+    await controls.start({ transport: "websocket" });
+    expect(hostProbe.calls).toEqual([]);
+    expect(controls.getState().phase).not.toBe("inactive");
+  });
 
   test("a new session clears the playback-unavailable latch and spawns again", async () => {
     const first = createFailedSpawnChild({ code: "ENOENT", command: "play" });
     const second = createStartedPlaybackChild();
     const spawned: ChildProcess[] = [];
-    const controls = createRealtimeTuiControls({
+    const controls = createControls({
       threadId: "agent_1",
       client: createClient(),
       emitEvent: () => {},
@@ -873,7 +975,7 @@ describe("AgenC realtime TUI controller", () => {
   test("ignores stale media and transcript notifications after stop", async () => {
     const client = createClient();
     const audioPlayer = createAudioPlayer();
-    const controls = createRealtimeTuiControls({
+    const controls = createControls({
       threadId: "agent_1",
       client,
       emitEvent: () => {},
@@ -952,7 +1054,7 @@ describe("AgenC realtime TUI controller", () => {
           throw closeError;
         }),
       };
-      const controls = createRealtimeTuiControls({
+      const controls = createControls({
         threadId: "agent_1",
         client,
         emitEvent: () => {},
@@ -975,7 +1077,7 @@ describe("AgenC realtime TUI controller", () => {
       const stop = vi.fn(async () => {
         throw cleanupError;
       });
-      const controls = createRealtimeTuiControls({
+      const controls = createControls({
         threadId: "agent_1",
         client,
         emitEvent: () => {},
@@ -1001,7 +1103,7 @@ describe("AgenC realtime TUI controller", () => {
 
   test("ignores stale started notifications after a stopped session", async () => {
     const client = createClient();
-    const controls = createRealtimeTuiControls({
+    const controls = createControls({
       threadId: "agent_1",
       client,
       emitEvent: () => {},
@@ -1038,7 +1140,7 @@ describe("AgenC realtime TUI controller", () => {
     const channel = createRealtimeWebrtcEventChannel();
     const emitted: JsonObject[] = [];
     const close = vi.fn();
-    const controls = createRealtimeTuiControls({
+    const controls = createControls({
       threadId: "agent_1",
       client,
       emitEvent: (event) => emitted.push(event),
@@ -1073,7 +1175,7 @@ describe("AgenC realtime TUI controller", () => {
     const stop = vi.fn(async () => {
       throw new Error("capture stop failed");
     });
-    const controls = createRealtimeTuiControls({
+    const controls = createControls({
       threadId: "agent_1",
       client,
       emitEvent: (event) => emitted.push(event),
@@ -1123,7 +1225,7 @@ describe("AgenC realtime TUI controller", () => {
       };
       const channel = createRealtimeWebrtcEventChannel();
       const emitted: JsonObject[] = [];
-      const controls = createRealtimeTuiControls({
+      const controls = createControls({
         threadId: "agent_1",
         client,
         emitEvent: (nextEvent) => emitted.push(nextEvent),
@@ -1184,7 +1286,7 @@ describe("AgenC realtime TUI controller", () => {
         }),
         events: channel.receiver,
       };
-      const controls = createRealtimeTuiControls({
+      const controls = createControls({
         threadId: "agent_1",
         client,
         emitEvent: () => {},

@@ -291,7 +291,16 @@ export type PlaybackAvailabilityDeps = {
 const REMOTE_PLAYBACK_REASON =
   'Realtime voice playback requires a local speaker, but no audio device is available in this environment.\n\nTo use voice mode, run AgenC locally instead.'
 
-let hostPlaybackBackend: RealtimePlaybackBackend | null | undefined
+let hostPlaybackBackend: RealtimePlaybackBackend | undefined
+
+function selectPlaybackBackend(
+  commandExists: (command: string) => boolean,
+  platform: NodeJS.Platform,
+): RealtimePlaybackBackend | null {
+  if (commandExists('play')) return 'play'
+  if (platform === 'linux' && commandExists('aplay')) return 'aplay'
+  return null
+}
 
 export function resolveRealtimePlaybackBackend(
   deps: Pick<PlaybackAvailabilityDeps, 'hasCommand' | 'platform'> = {},
@@ -300,12 +309,9 @@ export function resolveRealtimePlaybackBackend(
   const platform = deps.platform ?? process.platform
   const hostProbe = deps.hasCommand === undefined && deps.platform === undefined
   if (hostProbe && hostPlaybackBackend !== undefined) return hostPlaybackBackend
-  const backend = commandExists('play')
-    ? 'play'
-    : platform === 'linux' && commandExists('aplay')
-      ? 'aplay'
-      : null
-  if (hostProbe) hostPlaybackBackend = backend
+  const backend = selectPlaybackBackend(commandExists, platform)
+  // A missing player can be installed later. Remember only a backend we found.
+  if (hostProbe && backend !== null) hostPlaybackBackend = backend
   return backend
 }
 

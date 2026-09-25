@@ -73,8 +73,10 @@ export interface CreateRealtimeTuiControlsOptions {
   readonly startAudioCapture?: StartRealtimeAudioCapture;
   readonly audioPlayer?: RealtimeAudioPlayer;
   readonly spawnPlaybackProcess?: RealtimeAudioPlayerSpawn;
-  /** Backend already resolved at readiness. Omit to resolve once on the first session start. */
+  /** Backend already resolved at readiness. Omit to resolve on session start. */
   readonly playbackBackend?: RealtimePlaybackBackend | null;
+  /** Host probe used when playbackBackend is omitted. A null result is not cached. */
+  readonly resolvePlaybackBackend?: () => RealtimePlaybackBackend | null;
 }
 
 export function createRealtimeTuiControls(
@@ -96,7 +98,9 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
   #audioCapture: RealtimeAudioCaptureSession | null = null;
   #eventSequence = 0;
   #lifecycleOperation: Promise<void> = Promise.resolve();
-  #playbackBackend: RealtimePlaybackBackend | null | undefined;
+  #playbackBackend: RealtimePlaybackBackend | null;
+  readonly #playbackBackendProvided: boolean;
+  readonly #resolvePlaybackBackend: () => RealtimePlaybackBackend | null;
 
   constructor(options: CreateRealtimeTuiControlsOptions) {
     this.#threadId = options.threadId;
@@ -106,7 +110,10 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
       options.startWebrtcSession ?? (() => RealtimeWebrtcSession.start());
     this.#startAudioCapture =
       options.startAudioCapture ?? startDefaultRealtimeAudioCapture;
-    this.#playbackBackend = options.playbackBackend;
+    this.#playbackBackendProvided = options.playbackBackend !== undefined;
+    this.#playbackBackend = options.playbackBackend ?? null;
+    this.#resolvePlaybackBackend =
+      options.resolvePlaybackBackend ?? resolveRealtimePlaybackBackend;
     this.#audioPlayer =
       options.audioPlayer ??
       createProcessRealtimeAudioPlayer(options.spawnPlaybackProcess, {
@@ -175,10 +182,12 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
   }
 
   #backendForSession(): RealtimePlaybackBackend | null {
-    if (this.#playbackBackend === undefined) {
-      this.#playbackBackend = resolveRealtimePlaybackBackend();
+    if (this.#playbackBackendProvided || this.#playbackBackend !== null) {
+      return this.#playbackBackend;
     }
-    return this.#playbackBackend;
+    const resolved = this.#resolvePlaybackBackend();
+    if (resolved !== null) this.#playbackBackend = resolved;
+    return resolved;
   }
 
   async #stop(): Promise<void> {
