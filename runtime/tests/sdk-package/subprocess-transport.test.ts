@@ -130,15 +130,30 @@ function createManualChild(): {
   };
   stderr.setEncoding = () => {};
   const child: AgencSubprocessChild = {
-    stdin: { write: () => true, on: () => {}, end: () => {} },
+    stdin: {
+      write: () => true,
+      on: () => {},
+      removeListener: () => {},
+      end: () => {},
+    },
     stdout: stdout as unknown as AgencSubprocessChild["stdout"],
     stderr: stderr as unknown as AgencSubprocessChild["stderr"],
     once: (event: string, listener: (...args: never[]) => void) => {
       emitter.once(event, listener as (...args: unknown[]) => void);
       return child;
     },
+    on: (event: string, listener: (...args: never[]) => void) => {
+      emitter.on(event, listener as (...args: unknown[]) => void);
+      return child;
+    },
+    removeListener: (event: string, listener: (...args: never[]) => void) => {
+      emitter.removeListener(event, listener as (...args: unknown[]) => void);
+      return child;
+    },
     kill: () => {
       emitter.emit("exit", null, "SIGTERM");
+      stdout.emit("end");
+      emitter.emit("close", null, "SIGTERM");
       return true;
     },
   };
@@ -149,6 +164,8 @@ function createManualChild(): {
     },
     exit: (code) => {
       emitter.emit("exit", code, null);
+      stdout.emit("end");
+      emitter.emit("close", code, null);
     },
   };
 }
