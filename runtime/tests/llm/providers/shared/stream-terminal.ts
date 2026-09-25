@@ -316,52 +316,56 @@ async function expectCancelledAfterPartial(
   expect(chunks.some((chunk) => chunk.done)).toBe(false);
 }
 
-export function describeSseStreamTerminalEvents(
-  title: string,
-  createProvider: (fetchImpl: typeof fetch) => StreamTerminalAdapter,
-  missingTerminalLabel: string,
-  missingTerminalPattern: RegExp,
-  missingTerminalFrames: readonly string[],
-  midFramePattern: RegExp,
-  midFrameFrames: readonly string[],
-  successfulTerminalLabel: string,
-  successfulTerminalFrames: readonly string[],
-  malformedPattern: RegExp,
-  malformedFrames: readonly string[],
-  cancelFrame: string,
-  extraSuccesses: readonly (StreamTerminalSuccessExpectation & {
+export type SseStreamTerminalSuite = {
+  readonly title: string;
+  readonly createProvider: (fetchImpl: typeof fetch) => StreamTerminalAdapter;
+  readonly missingTerminalLabel: string;
+  readonly missingTerminalPattern: RegExp;
+  readonly missingTerminalFrames: readonly string[];
+  readonly midFramePattern: RegExp;
+  readonly midFrameFrames: readonly string[];
+  readonly successfulTerminalLabel: string;
+  readonly successfulTerminalFrames: readonly string[];
+  readonly malformedPattern: RegExp;
+  readonly malformedFrames: readonly string[];
+  readonly cancelFrame: string;
+  readonly extraSuccesses?: readonly (StreamTerminalSuccessExpectation & {
     readonly name: string;
-  })[] = [],
-  extraErrors: readonly (StreamTerminalErrorExpectation & {
+  })[];
+  readonly extraErrors?: readonly (StreamTerminalErrorExpectation & {
     readonly name: string;
     readonly kind: StreamTerminalErrorKind;
-  })[] = [],
+  })[];
+};
+
+export function describeSseStreamTerminalEvents(
+  suite: SseStreamTerminalSuite,
 ): void {
   describeStreamTerminalEvents({
-    title,
-    createProvider,
-    missingTerminalLabel,
+    title: suite.title,
+    createProvider: suite.createProvider,
+    missingTerminalLabel: suite.missingTerminalLabel,
     missingTerminal: {
-      fetchImpl: sseFetch(missingTerminalFrames),
-      errorPattern: missingTerminalPattern,
+      fetchImpl: sseFetch(suite.missingTerminalFrames),
+      errorPattern: suite.missingTerminalPattern,
     },
     midFrame: {
-      fetchImpl: sseFetch(midFrameFrames),
-      errorPattern: midFramePattern,
+      fetchImpl: sseFetch(suite.midFrameFrames),
+      errorPattern: suite.midFramePattern,
     },
-    successfulTerminalLabel,
+    successfulTerminalLabel: suite.successfulTerminalLabel,
     successfulTerminal: {
-      fetchImpl: sseFetch(successfulTerminalFrames),
+      fetchImpl: sseFetch(suite.successfulTerminalFrames),
     },
     malformedJson: {
-      fetchImpl: sseFetch(malformedFrames),
-      errorPattern: malformedPattern,
+      fetchImpl: sseFetch(suite.malformedFrames),
+      errorPattern: suite.malformedPattern,
     },
     cancelAfterPartial: {
-      fetchImpl: abortableSseResponse(cancelFrame),
+      fetchImpl: abortableSseResponse(suite.cancelFrame),
     },
-    extraSuccesses,
-    extraErrors,
+    extraSuccesses: suite.extraSuccesses,
+    extraErrors: suite.extraErrors,
   });
 }
 

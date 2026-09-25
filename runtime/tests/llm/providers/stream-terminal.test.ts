@@ -1,3 +1,5 @@
+import { describe, expect, test, vi } from "vitest";
+
 import { BUILT_IN_PROVIDER_DEFAULT_MODELS } from "../registry/provider-info.js";
 import { ECHO_TOOL } from "./openai-compatible-test-helpers.js";
 import { BedrockProvider } from "./bedrock/index.js";
@@ -86,6 +88,8 @@ const GEMINI_EXTRAS = [
     expectedChunks: [{ content: "", done: true }],
   },
 ];
+const OPENAI_FINISHED =
+  'data: {"choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}\n\n';
 const OPENAI_EXTRAS = [
   {
     name: "[DONE] without finish_reason is a valid text terminal",
@@ -94,8 +98,42 @@ const OPENAI_EXTRAS = [
     finishReason: "stop" as const,
     expectedChunks: HELLO_SUCCESS_CHUNKS,
   },
+  {
+    name: "[DONE] without a trailing blank line still completes the turn",
+    fetchImpl: sseFetch([`${OPENAI_FINISHED}data: [DONE]`]),
+    content: "Hello",
+    finishReason: "stop" as const,
+    usage: {
+      promptTokens: 3,
+      completionTokens: 1,
+      totalTokens: 4,
+    },
+    expectedChunks: HELLO_SUCCESS_CHUNKS,
+  },
+  {
+    name: "a keep-alive line without a trailing blank line still completes the turn",
+    fetchImpl: sseFetch([`${OPENAI_FINISHED}: keep-alive`]),
+    content: "Hello",
+    finishReason: "stop" as const,
+    usage: {
+      promptTokens: 3,
+      completionTokens: 1,
+      totalTokens: 4,
+    },
+    expectedChunks: HELLO_SUCCESS_CHUNKS,
+  },
 ];
 const OPENAI_TOOL_ERRORS = [
+  {
+    name: "a truncated tool_calls fragment is an unterminated event",
+    fetchImpl: sseFetch([
+      'data: {"choices":[{"index":0,"delta":{"content":"Hi"}}]}\n\n',
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0',
+    ]),
+    kind: "invalid" as const,
+    errorPattern: /unterminated event/i,
+    expectNoDone: true,
+  },
   {
     name: "open streamed tool calls at [DONE] fail with a typed provider error",
     createProvider: (fetchImpl: typeof fetch) =>
@@ -114,37 +152,76 @@ const OPENAI_TOOL_ERRORS = [
   },
 ];
 
-describeSseStreamTerminalEvents(
-  "Gemini",
-  geminiProvider,
-  "finishReason",
-  /finishReason/i,
-  [GEMINI_PARTIAL],
-  /unterminated event/i,
-  GEMINI_MID,
-  "a candidate finishReason",
-  GEMINI_SUCCESS,
-  /Malformed JSON in Gemini SSE/i,
-  GEMINI_MALFORMED,
-  GEMINI_PARTIAL,
-  GEMINI_EXTRAS,
-);
-describeSseStreamTerminalEvents(
-  "OpenAI-compatible",
-  openaiCompatible,
-  "finish_reason or [DONE]",
-  /finish_reason or \[DONE\]/i,
-  [OPENAI_PARTIAL],
-  /unterminated event/i,
-  OPENAI_MID,
-  "a choice finish_reason",
-  OPENAI_SUCCESS,
-  /Malformed JSON/i,
-  OPENAI_MALFORMED,
-  OPENAI_PARTIAL,
-  OPENAI_EXTRAS,
-  OPENAI_TOOL_ERRORS,
-);
+describeSseStreamTerminalEvents({
+  title: "Gemini",
+  createProvider: geminiProvider,
+  missingTerminalLabel: "finishReason",
+  missingTerminalPattern: /finishReason/i,
+  missingTerminalFrames: [GEMINI_PARTIAL],
+  midFramePattern: /unterminated event/i,
+  midFrameFrames: GEMINI_MID,
+  successfulTerminalLabel: "a candidate finishReason",
+  successfulTerminalFrames: GEMINI_SUCCESS,
+  malformedPattern: /Malformed JSON in Gemini SSE/i,
+  malformedFrames: GEMINI_MALFORMED,
+  cancelFrame: GEMINI_PARTIAL,
+  extraSuccesses: GEMINI_EXTRAS,
+});
+describeSseStreamTerminalEvents({
+  title: "OpenAI-compatible",
+  createProvider: openaiCompatible,
+  missingTerminalLabel: "finish_reason or [DONE]",
+  missingTerminalPattern: /finish_reason or \[DONE\]/i,
+  missingTerminalFrames: [OPENAI_PARTIAL],
+  midFramePattern: /closed before a finish_reason or \[DONE\]/i,
+  midFrameFrames: OPENAI_MID,
+  successfulTerminalLabel: "a choice finish_reason",
+  successfulTerminalFrames: OPENAI_SUCCESS,
+  malformedPattern: /Malformed JSON/i,
+  malformedFrames: OPENAI_MALFORMED,
+  cancelFrame: OPENAI_PARTIAL,
+  extraSuccesses: OPENAI_EXTRAS,
+  extraErrors: OPENAI_TOOL_ERRORS,
+});
+
+describe("Gemini [DONE] while the proxy holds the socket", () => {
+  test("returns after [DONE] instead of waiting for EOF", async () => {
+    const encoder = new TextEncoder();
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(() =>
+      Promise.resolve(new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(
+            'data: {"candidates":[{"content":{"parts":[{"text":"Hello"}]},"finishReason":"STOP"}]}\n\n' +
+            'data: {"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":1,"totalTokenCount":4}}\n\n' +
+            "data: [DONE]\n\n",
+          ));
+        },
+      }), { headers: { "content-type": "text/event-stream" } })),
+    );
+    const provider = geminiProvider(fetchImpl);
+    const chunks: { content: string; done: boolean }[] = [];
+    const pending = provider.chatStream(
+      [{ role: "user", content: "hello" }],
+      (chunk) => {
+        chunks.push({ content: chunk.content, done: chunk.done });
+      },
+    );
+    const response = await Promise.race([
+      pending,
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error("stream stalled after [DONE]")), 500);
+      }),
+    ]);
+    expect(response.content).toBe("Hello");
+    expect(response.finishReason).toBe("stop");
+    expect(response.usage).toMatchObject({
+      promptTokens: 3,
+      completionTokens: 1,
+      totalTokens: 4,
+    });
+    expect(chunks).toEqual(HELLO_SUCCESS_CHUNKS);
+  });
+});
 
 describeStreamTerminalEvents({
   title: "Bedrock",

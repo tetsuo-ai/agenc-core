@@ -38,6 +38,7 @@ import {
 } from "../../token-accounting.js";
 import {
   LLMInvalidResponseError,
+  LLMProviderError,
   LLMStreamTruncatedError,
 } from "../../errors.js";
 import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
@@ -57,7 +58,6 @@ import {
   resolveBuiltInProviderRegionalEndpoint,
 } from "../../registry/provider-info.js";
 import { fetchProviderRequest } from "../../credential-redirect-fetch.js";
-import { LLMProviderError } from "../../errors.js";
 
 const BEDROCK_PROVIDER_ID = "amazon-bedrock";
 const BEDROCK_SERVICE = "bedrock";
