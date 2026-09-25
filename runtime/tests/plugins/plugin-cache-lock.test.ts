@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { renameSync, writeFileSync } from "node:fs";
 import { access, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -60,7 +61,7 @@ describe("plugin cache lock leases", () => {
     await ownerA.release();
   });
 
-  test("a delayed heartbeat past the lease ttl can be reclaimed", async () => {
+  test("a delayed heartbeat past the lease ttl is kept while the pid is alive", async () => {
     const { cacheRoot, clock } = await setup();
     const live = new Set(["owner-a", "owner-b"]);
     const ownerA = await acquirePluginCacheLock(
@@ -69,19 +70,15 @@ describe("plugin cache lock leases", () => {
     );
 
     clock.advance(5_000);
-    const ownerB = await acquirePluginCacheLock(
+    await expect(acquirePluginCacheLock(
       cacheRoot,
-      trackedOwner(clock, "owner-b", live, { leaseTtlMs: 1_000 }),
-    );
-
-    expect(ownerB.ownerToken).toBe("owner-b");
-    await expect(readdir(pluginCacheLockDirectory(cacheRoot))).resolves.toEqual(["owner.owner-b"]);
+      trackedOwner(clock, "owner-b", live, { acquireTimeoutMs: 0, leaseTtlMs: 1_000 }),
+    )).rejects.toThrow(manualRemoval(cacheRoot));
+    await expect(readdir(pluginCacheLockDirectory(cacheRoot))).resolves.toEqual(["owner.owner-a"]);
     await ownerA.release();
-    await expect(readdir(pluginCacheLockDirectory(cacheRoot))).resolves.toEqual(["owner.owner-b"]);
-    await ownerB.release();
   });
 
-  test("a dead owner is reclaimed even while its heartbeat would still be current", async () => {
+  test("a dead owner with a current heartbeat is not reclaimed", async () => {
     const { cacheRoot, clock } = await setup();
     const live = new Set(["owner-a"]);
     const ownerA = await acquirePluginCacheLock(
@@ -90,15 +87,12 @@ describe("plugin cache lock leases", () => {
     );
 
     live.delete("owner-a");
-    const ownerB = await acquirePluginCacheLock(
+    await expect(acquirePluginCacheLock(
       cacheRoot,
-      trackedOwner(clock, "owner-b", live, { leaseTtlMs: PROCESS_BUDGET_MS }),
-    );
-
-    expect(ownerB.ownerToken).toBe("owner-b");
+      trackedOwner(clock, "owner-b", live, { acquireTimeoutMs: 0, leaseTtlMs: PROCESS_BUDGET_MS }),
+    )).rejects.toThrow(manualRemoval(cacheRoot));
+    await expect(readdir(pluginCacheLockDirectory(cacheRoot))).resolves.toEqual(["owner.owner-a"]);
     await ownerA.release();
-    await expect(readdir(pluginCacheLockDirectory(cacheRoot))).resolves.toEqual(["owner.owner-b"]);
-    await ownerB.release();
   });
 
   test("A/B/C: an old owner release cannot drop a replacement lock", async () => {
@@ -116,6 +110,7 @@ describe("plugin cache lock leases", () => {
 
     live.delete("owner-a");
     live.add("owner-b");
+    clock.advance(1_000);
     const ownerB = await acquirePluginCacheLock(
       cacheRoot,
       trackedOwner(clock, "owner-b", live, { leaseTtlMs: 1_000 }),
@@ -200,6 +195,7 @@ describe("plugin cache lock leases", () => {
       const parent = await acquirePluginCacheLock(cacheRoot, {
         createOwnerToken: () => "parent-owner",
         acquireTimeoutMs: 200,
+        nowMs: () => Date.now() + PLUGIN_CACHE_LOCK_LEASE_TTL_MS,
         isProcessAlive: (pid) => {
           try {
             process.kill(pid, 0);
@@ -384,17 +380,32 @@ describe("plugin cache lock leases", () => {
     await expect(readdir(freshLock)).resolves.toEqual(["owner.fresh.1.tmp"]);
   });
 
-  test("a corrupt owner file past the grace period is reclaimed and a fresh one is kept", async () => {
+  test("a stale owner temp file for a live pid is kept", async () => {
+    const { cacheRoot, clock } = await setup();
+    const lockDir = pluginCacheLockDirectory(cacheRoot);
+    await mkdir(lockDir, { mode: 0o700 });
+    await writeFile(join(lockDir, "owner.stale.4242.tmp"), "{}\n");
+    clock.advance(5_000);
+    await expect(acquirePluginCacheLock(cacheRoot, clockedOwner(clock, "owner-b", {
+      pid: 4243,
+      acquireTimeoutMs: 0,
+      leaseTtlMs: 1_000,
+      isProcessAlive: (pid) => pid === 4242,
+    }))).rejects.toThrow(manualRemoval(cacheRoot));
+    await expect(readdir(lockDir)).resolves.toEqual(["owner.stale.4242.tmp"]);
+  });
+
+  test("a corrupt owner file past the grace period is kept and a fresh one is kept", async () => {
     const { cacheRoot, clock } = await setup();
     const lockDir = pluginCacheLockDirectory(cacheRoot);
     await mkdir(lockDir, { mode: 0o700 });
     await writeFile(join(lockDir, "owner.corrupt"), "not-json");
     clock.advance(5_000);
-    const owner = await acquirePluginCacheLock(cacheRoot, liveOwner(clock, "owner-a", {
+    await expect(acquirePluginCacheLock(cacheRoot, liveOwner(clock, "owner-a", {
+      acquireTimeoutMs: 0,
       incompleteGraceMs: 1_000,
-    }));
-    await expect(readdir(lockDir)).resolves.toEqual(["owner.owner-a"]);
-    await owner.release();
+    }))).rejects.toThrow(manualRemoval(cacheRoot));
+    await expect(readdir(lockDir)).resolves.toEqual(["owner.corrupt"]);
 
     const fresh = await setup();
     const freshLock = pluginCacheLockDirectory(fresh.cacheRoot);
@@ -406,7 +417,227 @@ describe("plugin cache lock leases", () => {
     }))).rejects.toThrow(/timed out waiting for plugin cache lock/u);
     await expect(readdir(freshLock)).resolves.toEqual(["owner.corrupt"]);
   });
+
+  test("a live owner past the lease ttl is not reclaimed and acquire asks for manual removal", async () => {
+    const { cacheRoot, clock } = await setup();
+    const owner = await acquirePluginCacheLock(cacheRoot, clockedOwner(clock, "owner-a", {
+      pid: 4242,
+      leaseTtlMs: 1_000,
+      isProcessAlive: () => true,
+    }));
+    clock.advance(5_000);
+
+    await expect(acquirePluginCacheLock(cacheRoot, clockedOwner(clock, "owner-b", {
+      pid: 4243,
+      acquireTimeoutMs: 0,
+      leaseTtlMs: 1_000,
+      isProcessAlive: () => true,
+    }))).rejects.toThrow(manualRemoval(cacheRoot));
+    await expect(readdir(pluginCacheLockDirectory(cacheRoot))).resolves.toEqual(["owner.owner-a"]);
+    await owner.release();
+  });
+
+  test("a heartbeat rewritten between read and unlink keeps the original owner", async () => {
+    const { cacheRoot, clock } = await setup();
+    const lockDir = pluginCacheLockDirectory(cacheRoot);
+    const owner = await acquirePluginCacheLock(cacheRoot, clockedOwner(clock, "owner-a", {
+      pid: 4242,
+      leaseTtlMs: 1_000,
+      isProcessAlive: () => true,
+    }));
+    clock.advance(5_000);
+    const freshHeartbeatAtMs = clock.nowMs();
+    let rewrote = false;
+
+    await expect(acquirePluginCacheLock(cacheRoot, clockedOwner(clock, "owner-b", {
+      pid: 4243,
+      acquireTimeoutMs: 0,
+      leaseTtlMs: 1_000,
+      isProcessAlive: () => {
+        if (!rewrote) {
+          rewrote = true;
+          const dest = join(lockDir, "owner.owner-a");
+          const temp = `${dest}.4242.tmp`;
+          writeFileSync(temp, `${JSON.stringify({
+            ownerToken: "owner-a",
+            pid: 4242,
+            heartbeatAtMs: freshHeartbeatAtMs,
+          })}\n`);
+          renameSync(temp, dest);
+        }
+        return false;
+      },
+    }))).rejects.toThrow(manualRemoval(cacheRoot));
+
+    expect(rewrote).toBe(true);
+    await expect(readdir(lockDir)).resolves.toEqual(["owner.owner-a"]);
+    const body = JSON.parse(await readFile(join(lockDir, "owner.owner-a"), "utf8")) as {
+      heartbeatAtMs: number;
+    };
+    expect(body.heartbeatAtMs).toBe(freshHeartbeatAtMs);
+    await owner.release();
+  });
+
+  test("a corrupt owner file is kept and acquire asks for manual removal", async () => {
+    const { cacheRoot, clock } = await setup();
+    const lockDir = pluginCacheLockDirectory(cacheRoot);
+    await mkdir(lockDir, { mode: 0o700 });
+    await writeFile(join(lockDir, "owner.corrupt"), "not-json");
+    clock.advance(5_000);
+
+    await expect(acquirePluginCacheLock(cacheRoot, clockedOwner(clock, "owner-b", {
+      acquireTimeoutMs: 0,
+      incompleteGraceMs: 1_000,
+      isProcessAlive: () => true,
+    }))).rejects.toThrow(manualRemoval(cacheRoot));
+    await expect(readdir(lockDir)).resolves.toEqual(["owner.corrupt"]);
+  });
+
+  test("a symlinked owner file is kept and acquire asks for manual removal", async () => {
+    const { cacheRoot, clock, root } = await setup();
+    const lockDir = pluginCacheLockDirectory(cacheRoot);
+    const target = join(root, "lease-target");
+    await mkdir(lockDir, { mode: 0o700 });
+    await writeFile(target, "not-a-lease");
+    await symlink(target, join(lockDir, "owner.linked"));
+    clock.advance(5_000);
+
+    await expect(acquirePluginCacheLock(cacheRoot, clockedOwner(clock, "owner-b", {
+      acquireTimeoutMs: 0,
+      incompleteGraceMs: 1_000,
+      isProcessAlive: () => true,
+    }))).rejects.toThrow(manualRemoval(cacheRoot));
+    await expect(readFile(target, "utf8")).resolves.toBe("not-a-lease");
+    await expect(readdir(lockDir)).resolves.toEqual(["owner.linked"]);
+  });
+
+  test("a false ESRCH after a fresh rewrite still keeps the current heartbeat", async () => {
+    const { cacheRoot, clock } = await setup();
+    const lockDir = pluginCacheLockDirectory(cacheRoot);
+    const ownerA = await acquirePluginCacheLock(cacheRoot, clockedOwner(clock, "owner-a", {
+      pid: 4242,
+      leaseTtlMs: 1_000,
+      isProcessAlive: () => true,
+    }));
+    clock.advance(1_000);
+    const freshHeartbeatAtMs = clock.nowMs();
+    let rewrote = false;
+
+    await expect(acquirePluginCacheLock(cacheRoot, clockedOwner(clock, "owner-b", {
+      pid: 4243,
+      acquireTimeoutMs: 0,
+      leaseTtlMs: 1_000,
+      isProcessAlive: (pid) => {
+        if (pid === 4242 && !rewrote) {
+          rewrote = true;
+          const dest = join(lockDir, "owner.owner-a");
+          const temp = `${dest}.4242.tmp`;
+          writeFileSync(temp, `${JSON.stringify({
+            ownerToken: "owner-a",
+            pid: 4242,
+            heartbeatAtMs: freshHeartbeatAtMs,
+          })}\n`);
+          renameSync(temp, dest);
+        }
+        return pid !== 4242;
+      },
+    }))).rejects.toThrow(manualRemoval(cacheRoot));
+
+    expect(rewrote).toBe(true);
+    await expect(readdir(lockDir)).resolves.toEqual(["owner.owner-a"]);
+    const body = JSON.parse(await readFile(join(lockDir, "owner.owner-a"), "utf8")) as {
+      heartbeatAtMs: number;
+    };
+    expect(body.heartbeatAtMs).toBe(freshHeartbeatAtMs);
+    await ownerA.release();
+  });
+
+  test("a false ESRCH does not reclaim a current heartbeat or admit a second owner", async () => {
+    const { cacheRoot, clock } = await setup();
+    let inCriticalSection = false;
+    const ownerA = await acquirePluginCacheLock(cacheRoot, clockedOwner(clock, "owner-a", {
+      pid: 4242,
+      leaseTtlMs: 1_000,
+      isProcessAlive: () => true,
+    }));
+    inCriticalSection = true;
+    clock.advance(100);
+
+    await expect(acquirePluginCacheLock(cacheRoot, clockedOwner(clock, "owner-b", {
+      pid: 4243,
+      acquireTimeoutMs: 0,
+      leaseTtlMs: 1_000,
+      isProcessAlive: (pid) => pid !== 4242,
+    }))).rejects.toThrow(manualRemoval(cacheRoot));
+
+    expect(inCriticalSection).toBe(true);
+    await expect(readdir(pluginCacheLockDirectory(cacheRoot))).resolves.toEqual(["owner.owner-a"]);
+    await ownerA.refresh();
+    await expect(readdir(pluginCacheLockDirectory(cacheRoot))).resolves.toEqual(["owner.owner-a"]);
+    inCriticalSection = false;
+    await ownerA.release();
+  });
+
+  test("an ESRCH pid with an expired heartbeat is reclaimed", async () => {
+    const { cacheRoot, clock } = await setup();
+    const ownerA = await acquirePluginCacheLock(cacheRoot, clockedOwner(clock, "owner-a", {
+      pid: 4242,
+      leaseTtlMs: 1_000,
+      isProcessAlive: () => true,
+    }));
+    clock.advance(1_000);
+    const ownerB = await acquirePluginCacheLock(cacheRoot, clockedOwner(clock, "owner-b", {
+      pid: 4243,
+      leaseTtlMs: 1_000,
+      isProcessAlive: (pid) => pid !== 4242,
+    }));
+    expect(ownerB.ownerToken).toBe("owner-b");
+    await expect(readdir(pluginCacheLockDirectory(cacheRoot))).resolves.toEqual(["owner.owner-b"]);
+    await ownerA.release();
+    await expect(readdir(pluginCacheLockDirectory(cacheRoot))).resolves.toEqual(["owner.owner-b"]);
+    await ownerB.release();
+  });
+
+  test("an ESRCH pid inside the incomplete grace is kept while its heartbeat is current", async () => {
+    const { cacheRoot, clock } = await setup();
+    const owner = await acquirePluginCacheLock(cacheRoot, clockedOwner(clock, "owner-a", {
+      pid: 1,
+      leaseTtlMs: 1_000,
+      isProcessAlive: () => true,
+    }));
+    await expect(acquirePluginCacheLock(cacheRoot, clockedOwner(clock, "owner-b", {
+      pid: 4243,
+      acquireTimeoutMs: 0,
+      leaseTtlMs: 1_000,
+      isProcessAlive: (pid) => pid !== 1,
+    }))).rejects.toThrow(manualRemoval(cacheRoot));
+    await expect(readdir(pluginCacheLockDirectory(cacheRoot))).resolves.toEqual(["owner.owner-a"]);
+    await owner.release();
+  });
 });
+
+function manualRemoval(cacheRoot: string): RegExp {
+  const escaped = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    `timed out waiting for plugin cache lock: ${escaped(cacheRoot)}[\\s\\S]*${escaped(pluginCacheLockDirectory(cacheRoot))}[\\s\\S]*remove it manually if the owner is gone`,
+    "u",
+  );
+}
+
+function clockedOwner(
+  clock: FakeClock,
+  token: string,
+  overrides: PluginCacheLockHooks = {},
+): PluginCacheLockHooks {
+  return {
+    nowMs: clock.nowMs,
+    sleep: async () => {},
+    createOwnerToken: () => token,
+    acquireTimeoutMs: 50,
+    pollIntervalMs: 0,
+    ...overrides,
+  };
+}
 
 function liveOwner(
   clock: FakeClock,

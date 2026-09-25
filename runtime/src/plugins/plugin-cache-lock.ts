@@ -6,7 +6,6 @@ import {
   readFile,
   rename,
   rmdir,
-  stat,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -115,7 +114,7 @@ export async function acquirePluginCacheLock(
     const retried = await tryAcquire(lockDir, ownerToken, resolved);
     if (retried !== undefined) return retried;
     if (resolved.nowMs() - startedAt >= resolved.acquireTimeoutMs) {
-      throw new Error(`timed out waiting for plugin cache lock: ${cacheRoot}`);
+      throw await lockWaitError(cacheRoot, lockDir);
     }
     await resolved.sleep(resolved.pollIntervalMs);
   }
@@ -139,9 +138,19 @@ function resolveHooks(hooks: PluginCacheLockHooks): ResolvedLockHooks {
 
 function noteHeartbeatFailure(error: unknown): void {
   // A failed heartbeat must not reject the daemon. The lease stays at its last
-  // successful write, and a later tick retries until the lease expires.
+  // successful write. A live pid is not reclaimed when the heartbeat goes stale.
   const detail = error instanceof Error ? error.message : "unknown heartbeat failure";
   console.error(`plugin cache lock heartbeat failed: ${detail}`);
+}
+
+async function lockWaitError(cacheRoot: string, lockDir: string): Promise<Error> {
+  const entries = await readLockEntries(lockDir);
+  if (entries !== undefined && entries.length > 0) {
+    return new Error(
+      `timed out waiting for plugin cache lock: ${cacheRoot}. The lock directory ${lockDir} still holds an entry that was not reclaimed; remove it manually if the owner is gone.`,
+    );
+  }
+  return new Error(`timed out waiting for plugin cache lock: ${cacheRoot}`);
 }
 
 async function tryAcquire(
@@ -252,21 +261,33 @@ async function reclaimExpiredOwners(
   const now = hooks.nowMs();
   for (const entry of entries) {
     if (entry.endsWith(".tmp")) {
-      if (await fileAgeMs(lockDir, entry, now) >= hooks.leaseTtlMs) {
+      if (await deadOwnerTempIsStale(lockDir, entry, now, hooks)) {
         await unlinkLockEntry(lockDir, entry);
       }
       continue;
     }
-    const lease = await readOwnerLease(lockDir, entry);
-    if (lease === undefined) {
-      if (await fileAgeMs(lockDir, entry, now) >= hooks.incompleteGraceMs) {
-        await unlinkLockEntry(lockDir, entry);
-      }
+    let info;
+    try {
+      info = await lstat(join(lockDir, entry));
+    } catch {
       continue;
     }
-    if (shouldReclaimLease(lease, now, hooks)) {
-      await unlinkLockEntry(lockDir, lease.fileName);
+    if (!info.isFile()) continue;
+    let lease: OwnerLease | undefined;
+    try {
+      lease = await readOwnerLease(lockDir, entry);
+    } catch {
+      continue;
     }
+    if (lease === undefined || !ownerLeaseIsReclaimable(lease, now, hooks)) continue;
+    let current: OwnerLease | undefined;
+    try {
+      current = await readOwnerLease(lockDir, lease.fileName);
+    } catch {
+      continue;
+    }
+    if (current === undefined || !ownerLeaseIsReclaimable(current, hooks.nowMs(), hooks)) continue;
+    await unlinkLockEntry(lockDir, current.fileName);
   }
   if (!await isRealLockDirectory(lockDir)) return;
   await rmdir(lockDir).catch(() => {});
@@ -303,13 +324,39 @@ async function reclaimIncompleteLockDir(
   await rmdir(lockDir).catch(() => {});
 }
 
-function shouldReclaimLease(
+function pidIsDefinitelyDead(pid: number, hooks: ResolvedLockHooks): boolean {
+  return isLockOwnerPid(pid) && !hooks.isProcessAlive(pid);
+}
+
+function ownerLeaseIsReclaimable(
   lease: OwnerLease,
   nowMs: number,
   hooks: ResolvedLockHooks,
 ): boolean {
-  if (!hooks.isProcessAlive(lease.pid)) return true;
-  return nowMs - lease.heartbeatAtMs >= hooks.leaseTtlMs;
+  return pidIsDefinitelyDead(lease.pid, hooks) &&
+    nowMs - lease.heartbeatAtMs >= hooks.leaseTtlMs;
+}
+
+async function deadOwnerTempIsStale(
+  lockDir: string,
+  fileName: string,
+  nowMs: number,
+  hooks: ResolvedLockHooks,
+): Promise<boolean> {
+  const pid = pidFromOwnerTemp(fileName);
+  if (pid === undefined || !pidIsDefinitelyDead(pid, hooks)) return false;
+  return await fileAgeMs(lockDir, fileName, nowMs) >= hooks.leaseTtlMs;
+}
+
+function pidFromOwnerTemp(fileName: string): number | undefined {
+  const match = /^owner\.(.+)\.(\d+)\.tmp$/u.exec(fileName);
+  if (match === null || !OWNER_TOKEN_PATTERN.test(match[1] ?? "")) return undefined;
+  const pid = Number(match[2]);
+  return isLockOwnerPid(pid) ? pid : undefined;
+}
+
+function isLockOwnerPid(pid: number): boolean {
+  return Number.isInteger(pid) && pid > 0;
 }
 
 async function writeOwnerLease(
@@ -355,7 +402,7 @@ async function readOwnerLease(
   }
   if (!isRecord(parsed)) return undefined;
   if (parsed.ownerToken !== ownerToken) return undefined;
-  if (!Number.isInteger(parsed.pid) || (parsed.pid as number) <= 1) return undefined;
+  if (!isLockOwnerPid(parsed.pid as number)) return undefined;
   if (!Number.isInteger(parsed.heartbeatAtMs)) return undefined;
   return {
     fileName,
@@ -384,7 +431,7 @@ function assertSafeOwnerToken(ownerToken: string): string {
 
 async function ownerFileExists(lockDir: string, ownerToken: string): Promise<boolean> {
   try {
-    await stat(ownerFilePath(lockDir, ownerToken));
+    await lstat(ownerFilePath(lockDir, ownerToken));
     return true;
   } catch (error) {
     if (isENOENT(error)) return false;
@@ -422,7 +469,7 @@ async function lockIdentityMatches(
 
 async function fileAgeMs(lockDir: string, fileName: string, nowMs: number): Promise<number> {
   try {
-    const fileStat = await stat(join(lockDir, fileName));
+    const fileStat = await lstat(join(lockDir, fileName));
     return nowMs - fileStat.mtimeMs;
   } catch (error) {
     if (isENOENT(error)) return Number.POSITIVE_INFINITY;
@@ -431,12 +478,12 @@ async function fileAgeMs(lockDir: string, fileName: string, nowMs: number): Prom
 }
 
 function defaultIsProcessAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 1) return false;
+  if (!isLockOwnerPid(pid)) return false;
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return getErrnoCode(error) === "EPERM";
+    return getErrnoCode(error) !== "ESRCH";
   }
 }
 
