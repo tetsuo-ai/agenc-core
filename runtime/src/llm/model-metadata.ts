@@ -73,6 +73,11 @@ export interface ModelMetadataResolverOptions {
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly timeoutMs?: number;
   readonly onWarn?: (msg: string) => void;
+  /**
+   * Share downloads of the public catalogs (models.dev, the LiteLLM model
+   * map) with other resolvers. Without it, this resolver downloads its own.
+   */
+  readonly publicCatalogs?: PublicModelCatalogCache;
 }
 
 interface LookupParams {
@@ -98,11 +103,69 @@ interface FetchJsonOptions {
 
 type MetadataJson = object | string | number | boolean | null;
 
+/** How long later sessions reuse one download of a public model catalog. */
+const PUBLIC_CATALOG_REUSE_MS = 10 * 60_000;
+
+/**
+ * One download of each public model catalog (models.dev and the LiteLLM model
+ * map), shared by the resolvers given this cache. Every session builds its
+ * own resolver, so a daemon restoring 32 sessions at startup downloaded and
+ * parsed each catalog 32 times. Now concurrent lookups share one request, a
+ * successful download is reused for PUBLIC_CATALOG_REUSE_MS, and a failed one
+ * is not kept, so the next lookup tries again, as each session did before.
+ */
+export class PublicModelCatalogCache {
+  readonly #now: () => number;
+  readonly #reuseMs: number;
+  readonly #inFlight = new Map<string, Promise<MetadataJson | undefined>>();
+  readonly #downloaded = new Map<
+    string,
+    { readonly value: MetadataJson; readonly at: number }
+  >();
+
+  constructor(
+    options: { readonly now?: () => number; readonly reuseMs?: number } = {},
+  ) {
+    this.#now = options.now ?? Date.now;
+    this.#reuseMs = options.reuseMs ?? PUBLIC_CATALOG_REUSE_MS;
+  }
+
+  async get(
+    url: string,
+    download: () => Promise<MetadataJson | undefined>,
+  ): Promise<MetadataJson | undefined> {
+    const downloaded = this.#downloaded.get(url);
+    if (
+      downloaded !== undefined &&
+      this.#now() - downloaded.at < this.#reuseMs
+    ) {
+      return downloaded.value;
+    }
+    const pending = this.#inFlight.get(url);
+    if (pending !== undefined) return await pending;
+    const request = download();
+    this.#inFlight.set(url, request);
+    try {
+      const value = await request;
+      if (value !== undefined) {
+        this.#downloaded.set(url, { value, at: this.#now() });
+      }
+      return value;
+    } finally {
+      this.#inFlight.delete(url);
+    }
+  }
+}
+
+/** The process-wide cache sessions use when they fetch over the network. */
+export const SHARED_PUBLIC_MODEL_CATALOGS = new PublicModelCatalogCache();
+
 export class ModelMetadataResolver {
   private readonly fetchImpl?: typeof fetch;
   private readonly env: Readonly<Record<string, string | undefined>>;
   private readonly timeoutMs: number;
   private readonly onWarn?: (msg: string) => void;
+  private readonly publicCatalogs?: PublicModelCatalogCache;
   private readonly inFlightJson = new Map<
     string,
     Promise<MetadataJson | undefined>
@@ -115,6 +178,7 @@ export class ModelMetadataResolver {
     this.env = options.env ?? process.env;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_METADATA_TIMEOUT_MS;
     this.onWarn = options.onWarn;
+    this.publicCatalogs = options.publicCatalogs;
   }
 
   resolveSync(params: LookupParams): ResolvedModelMetadata {
@@ -296,20 +360,38 @@ export class ModelMetadataResolver {
   private async resolveModelsDevMetadata(
     params: LookupParams,
   ): Promise<ModelMetadataValues | undefined> {
-    const response = await this.fetchJson(MODELS_DEV_API_URL);
+    const response = await this.fetchPublicCatalog(MODELS_DEV_API_URL);
     return metadataFromModelsDev(response, params.provider, params.model);
   }
 
   private async resolveLiteLlmMetadata(
     params: LookupParams,
   ): Promise<ModelMetadataValues | undefined> {
-    const response = await this.fetchJson(LITELLM_MODEL_MAP_URL);
+    const response = await this.fetchPublicCatalog(LITELLM_MODEL_MAP_URL);
     return metadataFromLiteLlm(response, params.provider, params.model);
+  }
+
+  /**
+   * A public catalog is requested without headers or a body, so every
+   * resolver's download of it is the same. With a shared cache this resolver
+   * takes the shared download, and still keeps what it read for its own
+   * lifetime, as it does for every other lookup.
+   */
+  private async fetchPublicCatalog(
+    url: string,
+  ): Promise<MetadataJson | undefined> {
+    const shared = this.publicCatalogs;
+    if (shared === undefined) return await this.fetchJson(url);
+    return await this.fetchJson(url, {}, () =>
+      shared.get(url, () => this.fetchJsonUncached(url, {})),
+    );
   }
 
   private async fetchJson(
     url: string,
     options: FetchJsonOptions = {},
+    download: () => Promise<MetadataJson | undefined> = () =>
+      this.fetchJsonUncached(url, options),
   ): Promise<MetadataJson | undefined> {
     if (!this.fetchImpl) return undefined;
     const cacheKey = `${url}\n${JSON.stringify(options.headers ?? {})}\n${
@@ -318,7 +400,7 @@ export class ModelMetadataResolver {
     return await rememberSuccessfulLookup(
       { inFlight: this.inFlightJson, success: this.jsonCache },
       cacheKey,
-      () => this.fetchJsonUncached(url, options),
+      download,
       (value) => value !== undefined,
     );
   }

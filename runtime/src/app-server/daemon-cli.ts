@@ -5535,6 +5535,82 @@ export class AgenCDaemonSnapshotPolicyRegistry {
   }
 }
 
+/**
+ * How many recovered sessions have their runtime rebuilt at the same time
+ * while the daemon starts. The control socket listens only after every
+ * rebuild has finished or failed, and a rebuild is a full session bootstrap,
+ * so rebuilding one at a time added every bootstrap's network waits to
+ * startup. On 32 sessions whose bootstraps waited on catalog downloads it
+ * took 14 to 21 s one at a time, 6.3 to 7.7 s four at a time and 6.0 to
+ * 6.3 s eight at a time. Without those waits every bound from one to eight
+ * took 5.1 to 5.7 s. Four keeps most of the gain with fewer bootstraps in
+ * flight.
+ */
+const STARTUP_RUNTIME_RESTORE_CONCURRENCY = 4;
+
+type SettledStartupRestore<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: unknown };
+
+interface StartupRestoresInOrder<T> {
+  readonly settledAt: (index: number) => Promise<SettledStartupRestore<T>>;
+  readonly started: (index: number) => boolean;
+  readonly stop: () => void;
+  readonly idle: () => Promise<void>;
+}
+
+type StartupRuntimeRestore = Awaited<
+  ReturnType<typeof restoreRecoveredAgentRuntime>
+>;
+
+/**
+ * Run `load(0)` to `load(count - 1)`, starting them in index order with at
+ * most `limit` in flight. A load never rejects the caller: `settledAt(index)`
+ * resolves with its value or its error. `stop()` starts no further loads, and
+ * `idle()` resolves once every load already started has settled.
+ */
+function runStartupRestoresInOrder<T>(
+  count: number,
+  limit: number,
+  load: (index: number) => Promise<T>,
+): StartupRestoresInOrder<T> {
+  const settle: Array<(outcome: SettledStartupRestore<T>) => void> = [];
+  const settled = Array.from(
+    { length: count },
+    (_, index) =>
+      new Promise<SettledStartupRestore<T>>((resolve) => {
+        settle[index] = resolve;
+      }),
+  );
+  let next = 0;
+  let stopped = false;
+  const worker = async (): Promise<void> => {
+    while (!stopped && next < count) {
+      const index = next;
+      next += 1;
+      try {
+        settle[index]!({ ok: true, value: await load(index) });
+      } catch (error) {
+        settle[index]!({ ok: false, error });
+      }
+    }
+  };
+  const workers = Array.from(
+    { length: Math.min(Math.max(1, limit), count) },
+    () => worker(),
+  );
+  return {
+    settledAt: (index) => settled[index]!,
+    started: (index) => index < next,
+    stop: () => {
+      stopped = true;
+    },
+    idle: async () => {
+      await Promise.all(workers);
+    },
+  };
+}
+
 async function hydrateAgenCDaemonStartupRecovery(
   sessionManager: AgenCDaemonSessionManager,
   agentManager: AgenCDaemonAgentManager,
@@ -5546,99 +5622,183 @@ async function hydrateAgenCDaemonStartupRecovery(
     ) => void | Promise<void>;
   } = {},
 ): Promise<void> {
-  for (const run of report.recoveredRuns) {
-    const runtimeRestore = await restoreRecoveredAgentRuntime(
-      runner,
-      run,
-      options,
-    );
-    const metadata = recoveryMetadataForRun(
-      report,
-      run,
-      runtimeRestore.available,
-    );
-    let restoredSessionId: string | undefined;
+  const runs = report.recoveredRuns;
+  // Runtimes are rebuilt a few at a time, started in recovery order. A failed
+  // rebuild only marks its own run unavailable (restoreRecoveredAgentRuntime
+  // does not throw for it). Publication stays one run at a time in recovery
+  // order, so sessions and agents register in the same order as before, and a
+  // publication failure still stops startup at that run.
+  const restores = runStartupRestoresInOrder(
+    runs.length,
+    STARTUP_RUNTIME_RESTORE_CONCURRENCY,
+    (index) => restoreRecoveredAgentRuntime(runner, runs[index]!, options),
+  );
+  for (let index = 0; index < runs.length; index += 1) {
+    const run = runs[index]!;
     try {
-      if (run.currentSessionId !== undefined) {
-        const restoredSession = await sessionManager.restoreSession({
-          sessionId: run.currentSessionId,
-          agentId: run.id,
-          status: sessionStatusForRecoveredRun(run),
-          createdAt: run.startedAt,
-          ...(run.resumeSource !== undefined
-            ? { cwd: run.resumeSource.cwd }
-            : {}),
-          initialPrompt: run.objective,
-          metadata,
-        });
-        if (restoredSession.agentId === run.id) {
-          restoredSessionId = restoredSession.sessionId;
-        }
+      const outcome = await restores.settledAt(index);
+      if (!outcome.ok) throw outcome.error;
+      await publishRecoveredAgentRun(
+        sessionManager,
+        agentManager,
+        runner,
+        report,
+        run,
+        outcome.value,
+      );
+    } catch (error) {
+      throw await abandonUnpublishedStartupRestores(
+        error,
+        runner,
+        runs,
+        restores,
+        index + 1,
+      );
+    }
+  }
+}
+
+/**
+ * Startup stops at a run whose publication failed, as it did when runtimes
+ * were rebuilt one at a time. Later runs are no longer started, and the ones
+ * already rebuilt are rolled back, since nothing will publish them. Their
+ * rollback failures join the primary failure, which stays first.
+ */
+async function abandonUnpublishedStartupRestores(
+  error: unknown,
+  runner: AgenCBackgroundAgentRunner,
+  runs: readonly RecoveredAgentRun[],
+  restores: StartupRestoresInOrder<StartupRuntimeRestore>,
+  firstUnpublished: number,
+): Promise<unknown> {
+  restores.stop();
+  await restores.idle();
+  const cleanupErrors: unknown[] = [];
+  for (
+    let index = firstUnpublished;
+    index < runs.length && restores.started(index);
+    index += 1
+  ) {
+    const outcome = await restores.settledAt(index);
+    if (!outcome.ok || outcome.value.restoreAttemptId === undefined) continue;
+    try {
+      if (runner.rollbackRestoredAgent === undefined) {
+        throw new Error(
+          "restored runtime has no pre-publication rollback support",
+        );
       }
-      await agentManager.restoreAgent({
+      await runner.rollbackRestoredAgent(
+        runs[index]!.id,
+        outcome.value.restoreAttemptId,
+      );
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+  }
+  if (cleanupErrors.length === 0) return error;
+  const primaryErrors =
+    error instanceof AggregateError ? error.errors : [error];
+  return new AggregateError(
+    [...primaryErrors, ...cleanupErrors],
+    error instanceof Error ? error.message : "startup restore publication failed",
+    { cause: error instanceof AggregateError ? error.cause : error },
+  );
+}
+
+async function publishRecoveredAgentRun(
+  sessionManager: AgenCDaemonSessionManager,
+  agentManager: AgenCDaemonAgentManager,
+  runner: AgenCBackgroundAgentRunner,
+  report: DaemonStartupRecoveryReport,
+  run: RecoveredAgentRun,
+  runtimeRestore: StartupRuntimeRestore,
+): Promise<void> {
+  const metadata = recoveryMetadataForRun(
+    report,
+    run,
+    runtimeRestore.available,
+  );
+  let restoredSessionId: string | undefined;
+  try {
+    if (run.currentSessionId !== undefined) {
+      const restoredSession = await sessionManager.restoreSession({
+        sessionId: run.currentSessionId,
         agentId: run.id,
-        objective: run.objective,
-        status: agentStatusForRecoveredRun(run),
+        status: sessionStatusForRecoveredRun(run),
         createdAt: run.startedAt,
-        startedAt: run.startedAt,
-        lastActiveAt: run.lastActiveAt,
         ...(run.resumeSource !== undefined
           ? { cwd: run.resumeSource.cwd }
           : {}),
-        stateProjectDir: run.projectDir,
+        initialPrompt: run.objective,
         metadata,
-        runtimeAvailable: runtimeRestore.available,
-        ...(runtimeRestore.restoreAttemptId !== undefined
-          ? { restoreAttemptId: runtimeRestore.restoreAttemptId }
-          : {}),
-        ...(run.currentSessionId !== undefined
-          ? { sessionIds: [run.currentSessionId] }
-          : {}),
       });
-    } catch (error) {
-      const cleanupErrors: unknown[] = [];
-      if (runtimeRestore.restoreAttemptId !== undefined) {
-        try {
-          await agentManager.rollbackRestoredAgentRecord(
-            run.id,
-            runtimeRestore.restoreAttemptId,
-          );
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
-        try {
-          if (runner.rollbackRestoredAgent === undefined) {
-            throw new Error(
-              "restored runtime has no pre-publication rollback support",
-            );
-          }
-          await runner.rollbackRestoredAgent(
-            run.id,
-            runtimeRestore.restoreAttemptId,
-          );
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
+      if (restoredSession.agentId === run.id) {
+        restoredSessionId = restoredSession.sessionId;
       }
-      if (restoredSessionId !== undefined) {
-        try {
-          await sessionManager.terminateSession({
-            sessionId: restoredSessionId,
-            reason: "startup_restore_publication_failed",
-          });
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
-      }
-      if (cleanupErrors.length > 0) {
-        throw new AggregateError(
-          [error, ...cleanupErrors],
-          `startup restore publication failed for run ${run.id}`,
-          { cause: error },
-        );
-      }
-      throw error;
     }
+    await agentManager.restoreAgent({
+      agentId: run.id,
+      objective: run.objective,
+      status: agentStatusForRecoveredRun(run),
+      createdAt: run.startedAt,
+      startedAt: run.startedAt,
+      lastActiveAt: run.lastActiveAt,
+      ...(run.resumeSource !== undefined
+        ? { cwd: run.resumeSource.cwd }
+        : {}),
+      stateProjectDir: run.projectDir,
+      metadata,
+      runtimeAvailable: runtimeRestore.available,
+      ...(runtimeRestore.restoreAttemptId !== undefined
+        ? { restoreAttemptId: runtimeRestore.restoreAttemptId }
+        : {}),
+      ...(run.currentSessionId !== undefined
+        ? { sessionIds: [run.currentSessionId] }
+        : {}),
+    });
+  } catch (error) {
+    const cleanupErrors: unknown[] = [];
+    if (runtimeRestore.restoreAttemptId !== undefined) {
+      try {
+        await agentManager.rollbackRestoredAgentRecord(
+          run.id,
+          runtimeRestore.restoreAttemptId,
+        );
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+      try {
+        if (runner.rollbackRestoredAgent === undefined) {
+          throw new Error(
+            "restored runtime has no pre-publication rollback support",
+          );
+        }
+        await runner.rollbackRestoredAgent(
+          run.id,
+          runtimeRestore.restoreAttemptId,
+        );
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    if (restoredSessionId !== undefined) {
+      try {
+        await sessionManager.terminateSession({
+          sessionId: restoredSessionId,
+          reason: "startup_restore_publication_failed",
+        });
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...cleanupErrors],
+        `startup restore publication failed for run ${run.id}`,
+        { cause: error },
+      );
+    }
+    throw error;
   }
 }
 
