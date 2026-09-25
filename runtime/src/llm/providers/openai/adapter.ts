@@ -61,6 +61,7 @@ import {
 import { ThinkTagStreamFilter } from "../../wire/think-tags.js";
 import {
   buildOpenAIResponsesRequest,
+  extractOpenAIReasoningReplay,
   parseOpenAIResponsesResponse,
 } from "../../wire/responses-openai.js";
 import { assertKimiRequestPayloadSize } from "../../wire/kimi-contract.js";
@@ -81,6 +82,8 @@ import {
   providerApiKeyEnvironmentLabel,
   resolveBuiltInProviderInfo,
 } from "../../registry/provider-info.js";
+import { getSelectedProviderEnvironment } from "../../../utils/model/providers.js";
+import { isEnvTruthy } from "../../../utils/envBoolean.js";
 const OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE =
   "OpenAI Responses stream emitted invalid function_call";
 const OPENAI_STREAM_FAILED_MESSAGE = "OpenAI stream failed";
@@ -454,6 +457,22 @@ function isTransportFailure(error: unknown): boolean {
   );
 }
 
+/**
+ * Encrypted reasoning replay on the Responses API is opt-in
+ * (`AGENC_OPENAI_REASONING_REPLAY=1`), read from the environment the session
+ * captured at ingress. Without a session or startup scope there is no such
+ * environment, and replay stays off.
+ */
+function openAiReasoningReplayEnabled(): boolean {
+  try {
+    return isEnvTruthy(
+      getSelectedProviderEnvironment().AGENC_OPENAI_REASONING_REPLAY,
+    );
+  } catch {
+    return false;
+  }
+}
+
 function withStreamingMetrics(response: LLMResponse): LLMResponse {
   return {
     ...response,
@@ -825,6 +844,7 @@ export class OpenAIProvider implements LLMProvider {
           const session = this.client.createTurnSession({
             wireApi: "responses",
           });
+          const reasoningReplay = this.reasoningReplayOptions();
           const request = buildOpenAIResponsesRequest({
             model,
             messages,
@@ -833,6 +853,7 @@ export class OpenAIProvider implements LLMProvider {
             store: this.config.store,
             maxOutputTokens: this.resolveRequestMaxTokens(options),
             ...(this.isChatGptBackend() ? { chatgptBackend: true as const } : {}),
+            ...reasoningReplay,
           });
           const response = await session.requestJson<Record<string, unknown>>({
             api: "responses",
@@ -858,6 +879,7 @@ export class OpenAIProvider implements LLMProvider {
               options,
               store: this.config.store,
               maxOutputTokens: this.resolveRequestMaxTokens(options),
+              ...reasoningReplay,
             },
           );
         }
@@ -1307,6 +1329,17 @@ export class OpenAIProvider implements LLMProvider {
     return this.config.chatgptBackend === true;
   }
 
+  /**
+   * Encrypted reasoning replay for OpenAI itself, platform API and ChatGPT
+   * subscription alike. Other providers served by this adapter keep their
+   * current Responses wire.
+   */
+  private reasoningReplayOptions(): { readonly reasoningReplayProvider?: string } {
+    return this.name === "openai" && openAiReasoningReplayEnabled()
+      ? { reasoningReplayProvider: this.name }
+      : {};
+  }
+
   private managedRequestHeaders(
     options: LLMChatOptions | undefined,
   ): Readonly<Record<string, string>> | undefined {
@@ -1354,6 +1387,7 @@ export class OpenAIProvider implements LLMProvider {
       store: this.config.store,
       maxOutputTokens: this.resolveRequestMaxTokens(options),
       ...(this.isChatGptBackend() ? { chatgptBackend: true as const } : {}),
+      ...this.reasoningReplayOptions(),
     };
     assertProviderStructuredOutputCompatibility({
       providerName: this.name,
@@ -1410,6 +1444,7 @@ export class OpenAIProvider implements LLMProvider {
         string,
         { id: string; name: string; arguments: string }
       >();
+      const streamedReasoningItems: Record<string, unknown>[] = [];
       let completedResponse: Record<string, unknown> | null = null;
 
       for await (const event of this.readSseEvents(response)) {
@@ -1430,6 +1465,12 @@ export class OpenAIProvider implements LLMProvider {
             event.data.item && typeof event.data.item === "object"
               ? (event.data.item as Record<string, unknown>)
               : undefined;
+          if (
+            item?.type === "reasoning" &&
+            requestOptions.reasoningReplayProvider !== undefined
+          ) {
+            streamedReasoningItems.push(item);
+          }
           if (item?.type === "function_call") {
             let toolCall: LLMToolCall;
             try {
@@ -1575,6 +1616,11 @@ export class OpenAIProvider implements LLMProvider {
           : Array.from(streamedToolCalls.values());
       const finalResponse: LLMResponse = {
         ...parsed,
+        // The ChatGPT backend completes with an empty `output`, so its
+        // reasoning comes from the items streamed before completion.
+        ...(parsed.providerReasoningContent === undefined
+          ? extractOpenAIReasoningReplay(streamedReasoningItems, requestOptions)
+          : {}),
         content: parsed.content.length > 0 ? parsed.content : streamedContent,
         toolCalls,
         finishReason:

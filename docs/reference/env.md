@@ -48,7 +48,7 @@ Credential values are not written into the canonical config snapshot.
 | Provider | Vars |
 | --- | --- |
 | grok | `XAI_API_KEY`, `GROK_API_KEY` (key order); `XAI_BASE_URL`, `GROK_BASE_URL` (endpoint aliases); `AGENC_XAI_STORE` and the `AGENC_XAI_*` capability switches below; `AGENC_GROK_CLI` and `AGENC_GROK_ACP_PERMISSIONS` for composer sessions |
-| OpenAI | `OPENAI_API_KEY`, `PROVIDER_CODE_API_KEY`, `PROVIDER_CODE_ACCOUNT_ID`, `PROVIDER_CODE_OAUTH_CLIENT_ID`, `PROVIDER_CODE_OAUTH_CALLBACK_PORT`, `CHATGPT_ACCOUNT_ID`, `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_ORGANIZATION`, `OPENAI_PROJECT`, `OPENAI_AUTH_HEADER`, `OPENAI_AUTH_HEADER_VALUE`, `OPENAI_AUTH_SCHEME`, `OPENAI_API_FORMAT` |
+| OpenAI | `OPENAI_API_KEY`, `PROVIDER_CODE_API_KEY`, `PROVIDER_CODE_ACCOUNT_ID`, `PROVIDER_CODE_OAUTH_CLIENT_ID`, `PROVIDER_CODE_OAUTH_CALLBACK_PORT`, `CHATGPT_ACCOUNT_ID`, `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_ORGANIZATION`, `OPENAI_PROJECT`, `OPENAI_AUTH_HEADER`, `OPENAI_AUTH_HEADER_VALUE`, `OPENAI_AUTH_SCHEME`, `OPENAI_API_FORMAT`; `AGENC_OPENAI_REASONING_REPLAY` (encrypted reasoning replay, below) |
 | OpenAI-compatible | `OPENAI_COMPATIBLE_API_KEY`, then `OPENAI_API_KEY`; `OPENAI_COMPATIBLE_BASE_URL`, then `OPENAI_BASE_URL`, then `OPENAI_API_BASE` |
 | Anthropic | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` |
 | LM Studio | `LMSTUDIO_API_KEY`, `LMSTUDIO_BASE_URL` |
@@ -112,6 +112,16 @@ to paid API keys if sign-in is absent; explicit API-key selection cannot use an
 OAuth sign-in. Neither explicit selection silently obtains managed credentials.
 These values are captured with the session environment and do not delete saved
 credentials or change another session's selection.
+
+`AGENC_OPENAI_REASONING_REPLAY` (boolean-like, off by default) makes the
+`openai` provider keep the encrypted reasoning of its Responses calls and send
+it back. A stateless request (`store: false`, which is always the case on a
+ChatGPT subscription) then asks for `reasoning.encrypted_content`. Each
+reasoning item a response returns stays with the assistant message it
+preceded. Later requests to the same provider and model replay it right before
+that message's function calls, or before its text when it called none. A model
+or provider switch drops it. Requests with `store: true` and other providers
+on the Responses wire are unchanged.
 
 Gemini project identity has one ordered surface: `GEMINI_PROJECT_ID` wins over
 `GOOGLE_CLOUD_PROJECT`. Other Google project-name aliases are not consumed.
@@ -388,7 +398,7 @@ The sections above explain the common operator controls. The index below makes t
 
 ### AGENC_O*
 
-`AGENC_OAUTH_CLIENT_ID`, `AGENC_OAUTH_DEV_ENDPOINTS` (test-only switch that points the local OAuth flows at the development endpoints), `AGENC_OAUTH_TOKEN`, `AGENC_ONBOARDING`, `AGENC_ONE_SHOT_COMPACT_RETRIES`, `AGENC_OPENAI_CONTEXT_WINDOWS`, `AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW`, `AGENC_OPENAI_MAX_OUTPUT_TOKENS`, `AGENC_ORGANIZATION_UUID`, `AGENC_OVERRIDE_DATE`.
+`AGENC_OAUTH_CLIENT_ID`, `AGENC_OAUTH_DEV_ENDPOINTS` (test-only switch that points the local OAuth flows at the development endpoints), `AGENC_OAUTH_TOKEN`, `AGENC_ONBOARDING`, `AGENC_ONE_SHOT_COMPACT_RETRIES`, `AGENC_OPENAI_CONTEXT_WINDOWS`, `AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW`, `AGENC_OPENAI_MAX_OUTPUT_TOKENS`, `AGENC_OPENAI_REASONING_REPLAY`, `AGENC_ORGANIZATION_UUID`, `AGENC_OVERRIDE_DATE`.
 
 ### AGENC_P*
 
