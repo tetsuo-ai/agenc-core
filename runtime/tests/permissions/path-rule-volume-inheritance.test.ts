@@ -79,7 +79,29 @@ describe("pathForComparison inherits only the probed volume", () => {
       expect(
         __isPathInsideForTesting("/parent/Mount/New/Secret.txt", "/parent/Mount"),
       ).toBe(true);
+      expect(matchPathRuleContent("/parent/**/Secret.txt", "/parent/mount/Secret.txt")).toBe(true);
+      expect(matchPathRuleContent("/parent/*/Secret.txt", "/parent/mount/Secret.txt")).toBe(true);
+      expect(matchPathRuleContent("/parent/**/Secret.txt", "/parent/mount/secret.txt")).toBe(false);
+      expect(matchPathRuleContent("**/Secret.txt", "/parent/mount/Secret.txt")).toBe(true);
+      expect(matchPathRuleContent("**/Secret.txt", "/parent/mount/secret.txt")).toBe(false);
+      expect(matchPathRuleContent("**/*.TS", "/parent/mount/app.ts")).toBe(false);
     });
+  });
+
+  test("a wildcard tail follows an insensitive share, not the parent volume", () => {
+    withVolumes(
+      new Map<string, PathCaseSemantics>([
+        ["/", "sensitive"],
+        ["/mnt", "sensitive"],
+        ["/mnt/smb", "insensitive"],
+      ]),
+      () => {
+        expect(matchPathRuleContent("/mnt/**/Secret.txt", "/mnt/smb/Secret.txt")).toBe(true);
+        expect(matchPathRuleContent("/mnt/**/Secret.txt", "/mnt/smb/secret.txt")).toBe(true);
+        expect(matchPathRuleContent("**/Secret.txt", "/mnt/smb/secret.txt")).toBe(true);
+        expect(matchPathRuleContent("**/*.TS", "/mnt/smb/app.ts")).toBe(true);
+      },
+    );
   });
 
   test.each([

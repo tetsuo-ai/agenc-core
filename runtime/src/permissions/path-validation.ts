@@ -29,6 +29,8 @@ import { unattendedWriteRoots } from "./unattended-policy.js";
 import { checkProtectedPathSafety } from "./protected-paths.js";
 import {
   comparablePath,
+  foldRuleForCandidate,
+  parseComparisonRoot,
   pathForComparison,
   type PathCaseSemantics,
 } from "./path-case.js";
@@ -310,26 +312,46 @@ function wildcardPatternToRegExp(pattern: string): RegExp {
  * Callers keep the original spellings for display and audit; only the
  * comparison folds.
  */
+function normalizeComparisonSlashes(path: string): string {
+  const parsed = parseComparisonRoot(path);
+  if (parsed.kind === "unc") {
+    return parsed.segments.length === 0
+      ? parsed.root
+      : `${parsed.root}/${parsed.segments.join("/")}`;
+  }
+  return path.replaceAll(/[\\/]+/g, "/");
+}
+
+function contentMatches(rule: string, filePath: string): boolean {
+  if (rule === filePath) return true;
+  if (rule.endsWith("/**")) {
+    const root = rule.slice(0, -3).replaceAll(/\/$/g, "");
+    return filePath === root || filePath.startsWith(`${root}/`);
+  }
+  if (GLOB_PATTERN_REGEX.test(rule)) {
+    return wildcardPatternToRegExp(rule).test(filePath);
+  }
+  return false;
+}
+
 export function matchPathRuleContent(
   ruleContent: string,
   filePath: string,
   caseSemantics?: PathCaseSemantics,
 ): boolean {
-  const apply = (value: string): string =>
-    caseSemantics === undefined
-      ? pathForComparison(value)
-      : comparablePath(value, caseSemantics);
-  const expandedRule = apply(normalizeSlashes(expandTilde(ruleContent)));
-  const expandedPath = apply(normalizeSlashes(filePath));
-  if (expandedRule === expandedPath) return true;
-  if (expandedRule.endsWith("/**")) {
-    const root = expandedRule.slice(0, -3).replace(/\/$/, "");
-    return expandedPath === root || expandedPath.startsWith(`${root}/`);
+  const ruleSlash = normalizeComparisonSlashes(expandTilde(ruleContent));
+  const pathSlash = normalizeComparisonSlashes(filePath);
+  if (caseSemantics !== undefined) {
+    return contentMatches(
+      comparablePath(ruleSlash, caseSemantics),
+      comparablePath(pathSlash, caseSemantics),
+    );
   }
-  if (GLOB_PATTERN_REGEX.test(expandedRule)) {
-    return wildcardPatternToRegExp(expandedRule).test(expandedPath);
-  }
-  return false;
+  if (contentMatches(ruleSlash, pathSlash)) return true;
+  return contentMatches(
+    foldRuleForCandidate(ruleSlash, pathSlash),
+    pathForComparison(pathSlash),
+  );
 }
 
 /**

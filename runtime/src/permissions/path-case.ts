@@ -16,7 +16,7 @@
  * existing directory on the path can be probed.
  */
 
-import { lstatSync, readdirSync, realpathSync } from "node:fs";
+import { lstatSync, readdirSync, realpathSync, type Stats } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 import { normalizeCaseForComparison } from "./protected-paths.js";
@@ -48,8 +48,15 @@ const MAX_CACHED_DIRECTORIES = 1024;
 /** Semantics for entries directly inside a directory, keyed by its real path. */
 const semanticsByDirectory = new Map<string, PathCaseSemantics>();
 
+type EntryStats = {
+  readonly dev: Stats["dev"];
+  readonly ino: Stats["ino"];
+  isDirectory(): boolean;
+};
+
 let resolverOverride: PathCaseSemanticsResolver | null = null;
 let directoryOverride: DirectorySemanticsOverride | null = null;
+let lstatEntry: (path: string) => EntryStats = lstatSync;
 
 /**
  * Case-insensitive volumes are the default on Windows and macOS; everything
@@ -62,6 +69,10 @@ export function platformDefaultPathCaseSemantics(): PathCaseSemantics {
 }
 
 /** ASCII A-Z/a-z only. Unicode case folds such as `ß` → `SS` are not applied. */
+export function __swapAsciiCaseForTesting(name: string): string | null {
+  return swapAsciiCase(name);
+}
+
 function swapAsciiCase(name: string): string | null {
   let out = "";
   let changed = false;
@@ -136,22 +147,33 @@ function probeEntry(entry: string): ProbeVerdict | null {
     return { semantics: "sensitive", cacheable: true };
   }
 
+  let original: EntryStats;
   try {
-    lstatSync(entry);
+    original = lstatEntry(entry);
   } catch {
     return null;
   }
   if (twins.length !== 1) return null;
 
   try {
-    lstatSync(join(parent, flipped));
+    lstatEntry(join(parent, flipped));
     return { semantics: "insensitive", cacheable: true };
   } catch (err) {
     const code = errnoCode(err);
     if (code === "ENOENT" || code === "ENOTDIR") {
-      return { semantics: "sensitive", cacheable: true };
+      return sensitiveIfStillPresent(entry, original);
     }
     return null;
+  }
+}
+
+function sensitiveIfStillPresent(entry: string, original: EntryStats): ProbeVerdict {
+  try {
+    const again = lstatEntry(entry);
+    const stillThere = again.dev === original.dev && again.ino === original.ino;
+    return { semantics: "sensitive", cacheable: stillThere };
+  } catch {
+    return { semantics: "sensitive", cacheable: false };
   }
 }
 
@@ -171,8 +193,8 @@ function isMountRoot(dir: string): boolean {
   const parent = dirname(dir);
   if (parent === dir) return false;
   try {
-    const self = lstatSync(dir);
-    const up = lstatSync(parent);
+    const self = lstatEntry(dir);
+    const up = lstatEntry(parent);
     return self.isDirectory() && self.dev !== up.dev;
   } catch {
     return false;
@@ -181,7 +203,7 @@ function isMountRoot(dir: string): boolean {
 
 function isExistingDirectory(dir: string): boolean {
   try {
-    return lstatSync(dir).isDirectory();
+    return lstatEntry(dir).isDirectory();
   } catch {
     return false;
   }
@@ -246,11 +268,72 @@ function driveSemantics(
   );
 }
 
+export type ComparisonRootKind = "unc" | "absolute" | "drive" | "relative";
+
+export type ParsedComparisonPath = {
+  readonly kind: ComparisonRootKind;
+  readonly root: string;
+  readonly segments: readonly string[];
+};
+
+/**
+ * Split a path into the directory root and the segments under it.
+ * A UNC path keeps `//server/share` instead of collapsing to `/server/...`.
+ * Platform-independent: callers decide whether to probe that root.
+ */
+export function parseComparisonRoot(path: string): ParsedComparisonPath {
+  const slash = path.replaceAll("\\", "/");
+  if (slash.startsWith("//")) return parseUncRoot(slash);
+  if (slash.startsWith("/")) {
+    return {
+      kind: "absolute",
+      root: "/",
+      segments: slash.split("/").slice(1).filter((segment) => segment !== ""),
+    };
+  }
+  const segments = slash.split("/");
+  const drive = segments[0] ?? "";
+  if (/^[A-Za-z]:$/.test(drive)) {
+    return {
+      kind: "drive",
+      root: drive,
+      segments: segments.slice(1).filter((segment) => segment !== ""),
+    };
+  }
+  return {
+    kind: "relative",
+    root: "",
+    segments: segments.filter((segment) => segment !== ""),
+  };
+}
+
+function parseUncRoot(slash: string): ParsedComparisonPath {
+  const body = slash.split("/").filter((segment) => segment !== "");
+  const server = body[0] ?? "";
+  const share = body[1] ?? "";
+  const root = share === "" ? `//${server}` : `//${server}/${share}`;
+  return {
+    kind: "unc",
+    root,
+    segments: share === "" ? body.slice(1) : body.slice(2),
+  };
+}
+
 function comparisonOrigin(
   slash: string,
   segments: readonly string[],
 ): ComparisonOrigin {
   const inherited = platformDefaultPathCaseSemantics();
+  if (slash.startsWith("//")) {
+    const unc = parseUncRoot(slash);
+    const verdict = semanticsInside(unc.root) ?? inherited;
+    return {
+      built: unc.root,
+      folded: foldSegment(unc.root, verdict),
+      index: segments.length - unc.segments.length,
+      verdict,
+    };
+  }
   if (slash.startsWith("/")) {
     return { built: "/", folded: "/", index: 1, verdict: inherited };
   }
@@ -284,6 +367,44 @@ function isWildcardSegment(segment: string): boolean {
 
 function foldSegment(segment: string, verdict: PathCaseSemantics): string {
   return verdict === "insensitive" ? normalizeCaseForComparison(segment) : segment;
+}
+
+function joinUnderRoot(root: string, segments: readonly string[]): string {
+  const body = segments.join("/");
+  if (body === "") return root === "" ? "" : root;
+  if (root === "" ) return body;
+  if (root === "/") return `/${body}`;
+  return `${root}/${body}`;
+}
+
+/**
+ * Fold a rule for comparison against `candidateSlash`.
+ * Concrete segments before the first wildcard use the rule path's own
+ * directories. The wildcard and everything after it use the candidate's
+ * leaf verdict, so a glob does not keep a parent volume the candidate has
+ * left. A rule with no concrete directory (unanchored) uses only that
+ * candidate verdict, not `process.cwd()`.
+ */
+export function foldRuleForCandidate(
+  ruleSlash: string,
+  candidateSlash: string,
+): string {
+  const parsed = parseComparisonRoot(ruleSlash);
+  const wildcardAt = parsed.segments.findIndex((segment) => isWildcardSegment(segment));
+  if (wildcardAt === -1) return pathForComparison(ruleSlash);
+  const verdict = pathCaseSemantics(candidateSlash);
+  const remainder = parsed.segments
+    .slice(wildcardAt)
+    .map((segment) => foldSegment(segment, verdict))
+    .join("/");
+  if (wildcardAt === 0 && parsed.kind === "relative") return remainder;
+  const prefix = joinUnderRoot(parsed.root, parsed.segments.slice(0, wildcardAt));
+  const foldedPrefix = pathForComparison(prefix);
+  if (remainder === "") return foldedPrefix;
+  if (foldedPrefix === "/" || foldedPrefix === "") {
+    return foldedPrefix === "/" ? `/${remainder}` : remainder;
+  }
+  return `${foldedPrefix}/${remainder}`;
 }
 
 function walkComparison(
@@ -371,6 +492,17 @@ export function __setPathCaseSemanticsResolverForTesting(
  * does not answer is probed on disk. Missing descendants inherit the nearest
  * answered ancestor. Pass null to restore probing.
  */
+/**
+ * Replace `lstat` inside the probe. Pass null to restore the real call.
+ * Used to simulate a file disappearing between the two spellings.
+ */
+export function __setPathCaseLstatForTesting(
+  impl: ((path: string) => EntryStats) | null,
+): void {
+  lstatEntry = impl ?? lstatSync;
+  semanticsByDirectory.clear();
+}
+
 export function __setPathCaseDirectorySemanticsForTesting(
   resolver: DirectorySemanticsOverride | null,
 ): void {
@@ -382,4 +514,9 @@ export function __setPathCaseDirectorySemanticsForTesting(
 /** How many directory verdicts are cached. */
 export function __pathCaseSemanticsCacheSizeForTesting(): number {
   return semanticsByDirectory.size;
+}
+
+/** Whether `directory` itself has a cached verdict. */
+export function __pathCaseDirectoryCachedForTesting(directory: string): boolean {
+  return semanticsByDirectory.has(realDirectory(directory));
 }

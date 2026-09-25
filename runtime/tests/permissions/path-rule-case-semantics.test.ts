@@ -8,6 +8,7 @@
  * one host; the probe itself is checked against the real temp volume.
  */
 
+import { lstatSync, unlinkSync } from "node:fs";
 import { link, mkdtemp, mkdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,9 +16,13 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 
 import {
+  __pathCaseDirectoryCachedForTesting,
   __pathCaseSemanticsCacheSizeForTesting,
   __setPathCaseDirectorySemanticsForTesting,
+  __setPathCaseLstatForTesting,
   __setPathCaseSemanticsResolverForTesting,
+  __swapAsciiCaseForTesting,
+  parseComparisonRoot,
   pathCaseSemantics,
   pathForComparison,
   platformDefaultPathCaseSemantics,
@@ -184,25 +189,21 @@ describe("pathCaseSemantics probes the volume that holds the path", () => {
     });
   });
 
-  test("ß.txt is not probed as SS.TXT, and a real sensitive miss is cached", async () => {
+  test("ß.txt is probed as ß.TXT, not SS.TXT", async () => {
+    expect(__swapAsciiCaseForTesting("ß.txt")).toBe("ß.TXT");
     await withCaseFixtures(async (root) => {
       const dir = join(root, "unicode");
       await mkdir(dir);
       const eszett = join(dir, "ß.txt");
       await writeFile(eszett, "eszett");
       __setPathCaseSemanticsResolverForTesting(null);
-      try {
+      const volume = await observedSemantics(dir);
+      expect(pathCaseSemantics(eszett)).toBe(volume);
+      if (volume === "sensitive") {
+        expect(pathForComparison(join(dir, "Notes.TXT"))).toBe(join(dir, "Notes.TXT"));
         await link(eszett, join(dir, "SS.TXT"));
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-        await writeFile(join(dir, "SS.TXT"), "ascii");
-      }
-      const verdict = pathCaseSemantics(eszett);
-      if (verdict === "sensitive") {
-        expect(__pathCaseSemanticsCacheSizeForTesting()).toBeGreaterThan(0);
-        expect(pathForComparison(eszett)).toBe(eszett);
-      } else {
-        expect(verdict).toBe("insensitive");
+        __setPathCaseSemanticsResolverForTesting(null);
+        expect(pathCaseSemantics(eszett)).toBe("sensitive");
       }
     });
   });
@@ -304,4 +305,87 @@ describe("allow, ask, and deny rules agree with filesystem identity", () => {
       });
     },
   );
+});
+
+describe("parseComparisonRoot keeps a UNC share root", () => {
+  test("\\\\server\\share\\Secret.txt", () => {
+    expect(parseComparisonRoot("\\\\server\\share\\Secret.txt")).toEqual({
+      kind: "unc",
+      root: "//server/share",
+      segments: ["Secret.txt"],
+    });
+    expect(parseComparisonRoot("//server/share")).toEqual({
+      kind: "unc",
+      root: "//server/share",
+      segments: [],
+    });
+  });
+});
+
+describe("real filesystem probe", () => {
+  test("a missing intermediate and a wildcard use the real volume", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-case-real-"));
+    try {
+      await writeFile(join(root, "Probe.txt"), "probe");
+      const missing = join(root, "New", "Secret.txt");
+      const volume = pathCaseSemantics(join(root, "Probe.txt"));
+      expect(pathForComparison(missing)).toBe(
+        volume === "insensitive" ? missing.toLowerCase() : missing,
+      );
+      expect(
+        matchPathRuleContent(join(root, "**", "Secret.txt"), missing),
+      ).toBe(true);
+      expect(
+        matchPathRuleContent(join(root, "**", "Secret.txt"), join(root, "New", "secret.txt")),
+      ).toBe(volume === "insensitive");
+    } finally {
+      __setPathCaseSemanticsResolverForTesting(null);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a deleted entry between the two lstats is not cached as sensitive", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-case-race-"));
+    const file = join(root, "Keep.txt");
+    const flipped = join(root, "kEEP.TXT");
+    await writeFile(file, "keep");
+    try {
+      __setPathCaseLstatForTesting((target) => {
+        if (target === flipped) {
+          unlinkSync(file);
+          throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+        }
+        return lstatSync(target);
+      });
+      expect(pathCaseSemantics(file)).toBe("sensitive");
+      expect(__pathCaseDirectoryCachedForTesting(root)).toBe(false);
+    } finally {
+      __setPathCaseLstatForTesting(null);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("an empty directory on another device does not inherit its parent", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "agenc-case-mount-"));
+    const empty = join(parent, "empty");
+    await mkdir(empty);
+    await writeFile(join(parent, "Probe.txt"), "probe");
+    try {
+      __setPathCaseDirectorySemanticsForTesting((directory) =>
+        directory === parent ? "insensitive" : undefined,
+      );
+      __setPathCaseLstatForTesting((target) => {
+        const stats = lstatSync(target);
+        if (target !== empty) return stats;
+        const dev = typeof stats.dev === "bigint" ? stats.dev + 1n : stats.dev + 1;
+        return { dev, ino: stats.ino, isDirectory: () => true };
+      });
+      const folded = pathForComparison(join(empty, "New", "Secret.txt"));
+      expect(folded.endsWith("/New/Secret.txt") || folded.endsWith("\\New\\Secret.txt")).toBe(true);
+    } finally {
+      __setPathCaseLstatForTesting(null);
+      __setPathCaseDirectorySemanticsForTesting(null);
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
 });
