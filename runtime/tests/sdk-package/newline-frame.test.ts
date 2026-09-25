@@ -17,13 +17,27 @@ describe("SdkNewlineFrameDecoder", () => {
     expect(AGENC_SDK_MAX_FRAME_BYTES).toBe(16 * 1024 * 1024);
   });
 
-  it("accepts an exact-limit payload and then a later frame", () => {
+  it.each([
+    ["LF", "\n"],
+    ["CRLF", "\r\n"],
+    ["lone CR", "\r"],
+  ])("accepts an exact-limit payload terminated by %s", (_label, delimiter) => {
     const decoder = new SdkNewlineFrameDecoder(LIMIT);
-    expect(decoder.push(Buffer.concat([Buffer.alloc(LIMIT, 0x61), Buffer.from("\n")]))).toEqual([
+    const payload = Buffer.alloc(LIMIT, 0x61);
+    expect(decoder.push(Buffer.concat([payload, Buffer.from(delimiter)]))).toEqual([
       "a".repeat(LIMIT),
     ]);
     expect(decoder.overflowed).toBe(false);
     expect(decoder.push(Buffer.from('{"type":"result"}\n'))).toEqual(['{"type":"result"}']);
+  });
+
+  it("does not count a CRLF CR that arrives in the next chunk", () => {
+    const decoder = new SdkNewlineFrameDecoder(LIMIT);
+    expect(decoder.push(Buffer.concat([Buffer.alloc(LIMIT, 0x61), Buffer.from("\r")]))).toEqual([
+      "a".repeat(LIMIT),
+    ]);
+    expect(decoder.push(Buffer.from("\n"))).toEqual([]);
+    expect(decoder.overflowed).toBe(false);
   });
 
   it("rejects a limit-plus-one payload when the newline is in the same chunk", () => {

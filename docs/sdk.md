@@ -25,15 +25,14 @@ Both produce the same typed event iterable (`AgencPromptEvent`) and the same
 final `AgencPromptResult`, so downstream consumption code is shared.
 
 Both transports share `AGENC_SDK_MAX_FRAME_BYTES` (16 MiB), the same numeric
-ceiling as the daemon socket and MCP stdio servers. Measurement is versioned
-on purpose: the socket transport still measures UTF-8 bytes of the unsliced
-receive buffer before line split, so a completed frame plus its delimiter can
-trip that ceiling one byte earlier. The subprocess transport counts raw
-payload bytes excluding the LF (and a preceding CR), decodes UTF-8 only after
-the payload is within the bound, and fails the run once when the payload is
-one byte over — whether or not a delimiter has arrived. Overflow stops
-further reads, SIGTERMs the child, and keeps only the existing 8 KiB stderr
-tail.
+ceiling as the daemon socket and MCP stdio servers, and the same delimiter
+rule: LF, CRLF, and a lone CR end a frame and do not count toward the limit.
+An exact-limit payload is accepted, including when it arrives across chunks.
+One extra payload byte fails whether or not a delimiter has arrived. The
+socket applies that limit to the frame, not to the unread chunk. Subprocess
+overflow stops further reads, sends SIGTERM, and SIGKILLs after a short grace
+through the same guarded process-group path as a drain timeout (a custom
+`spawn` is never group-signalled). Only the existing 8 KiB stderr tail is kept.
 
 Both transports also share one bounded event buffer. A run keeps at most
 `MAX_BUFFERED_PROMPT_EVENTS` (1,000) events that the consumer has not iterated

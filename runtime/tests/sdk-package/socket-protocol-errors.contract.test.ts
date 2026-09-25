@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate as nextTick } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AGENC_SDK_MAX_FRAME_BYTES } from "../../../packages/agenc-sdk/src/limits";
 import { AgencSocketTransport } from "../../../packages/agenc-sdk/src/socket";
 
 function startPendingRequests(transport: AgencSocketTransport) {
@@ -203,6 +204,27 @@ describe("SDK socket protocol failures", () => {
     await vi.waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     await pending.settled;
     expect(pending.outcomes.every((outcome) => outcome.status === "rejected")).toBe(true);
+  });
+
+  it("accepts an exact-limit frame split across chunks and rejects one extra byte", async () => {
+    const prefix = '{"jsonrpc":"2.0","id":"send","result":{"pad":"';
+    const suffix = '"}}';
+    const padLength = AGENC_SDK_MAX_FRAME_BYTES - Buffer.byteLength(prefix) - Buffer.byteLength(suffix);
+    const frame = `${prefix}${"a".repeat(padLength)}${suffix}`;
+    expect(Buffer.byteLength(frame)).toBe(AGENC_SDK_MAX_FRAME_BYTES);
+    const pending = transport.request({
+      jsonrpc: "2.0", id: "send", method: "message.send",
+      params: { sessionId: "session", content: "test" },
+    });
+    const split = Math.floor(frame.length / 2);
+    peer.write(frame.slice(0, split));
+    await nextTick();
+    expect(onClose).not.toHaveBeenCalled();
+    peer.write(`${frame.slice(split)}\n`);
+    await expect(pending).resolves.toMatchObject({ id: "send" });
+    peer.write(`${"x".repeat(AGENC_SDK_MAX_FRAME_BYTES + 1)}`);
+    await vi.waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect((onClose.mock.calls[0]?.[0] as Error).message).toContain("exceeded 16777216 bytes");
   });
 
   it("still rejects incomplete-buffer overflow and closes once", async () => {

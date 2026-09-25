@@ -25,12 +25,12 @@ The socket transport rejects every pending request and closes the connection
 when a completed line contains malformed JSON or an invalid JSON-RPC response
 or notification envelope. `onClose` receives the protocol error once, and later
 requests fail immediately. Partial lines may span chunks within the shared
-`AGENC_SDK_MAX_FRAME_BYTES` (16 MiB) ceiling. The socket decoder measures
-UTF-8 bytes of the unsliced receive buffer (so a completed frame plus its
-delimiter can trip the ceiling one byte earlier). `promptViaSubprocess()`
-counts raw payload bytes excluding LF/CRLF, decodes UTF-8 only after the
-payload is within the bound, and fails the run once on overflow — terminating
-the child and retaining only the bounded stderr tail. Valid `message.send` and
+`AGENC_SDK_MAX_FRAME_BYTES` (16 MiB) ceiling. Both transports count payload
+bytes excluding an LF, CRLF, or lone CR delimiter, and they apply the limit
+to the frame rather than the read chunk. `promptViaSubprocess()` decodes
+UTF-8 only after the payload is within the bound, and fails the run once on
+overflow — SIGTERM, then SIGKILL after a short grace, retaining only the
+bounded stderr tail. Valid `message.send` and
 `message.stream` calls remain unbounded by the control-request timeout.
 
 Prompt events on protocol 1.2 also include `message_committed`,

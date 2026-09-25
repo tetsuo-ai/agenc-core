@@ -40,6 +40,9 @@ import { createPromptEventQueue } from "./prompt-event-queue.js";
 /** Default bound on waiting for stdio to close after the child process exits. */
 export const DEFAULT_POST_EXIT_DRAIN_TIMEOUT_MS = 5_000;
 
+/** Grace after an overflow SIGTERM before the same guarded path sends SIGKILL. */
+export const STDOUT_OVERFLOW_KILL_GRACE_MS = 100;
+
 /**
  * Signal a process group this transport's default spawner created with
  * `detached: true`. Returns false without signalling when `ownsDetachedProcessGroup`
@@ -266,6 +269,7 @@ export function promptViaSubprocess(
   // does not accumulate one dead listener per prompt run.
   let removeAbortListener: (() => void) | null = null;
   let drainTimer: ReturnType<typeof setTimeout> | undefined;
+  let killEscalation: ReturnType<typeof setTimeout> | undefined;
   let exited = false;
   let closed = false;
   let stdoutEnded = child.stdout === null;
@@ -341,7 +345,7 @@ export function promptViaSubprocess(
     } catch {
       // Stream already closed.
     }
-    signalChild("SIGTERM");
+    escalateTermination();
     finishError(error);
   };
   const consumeStdout = (chunk: string | Buffer) => {
@@ -406,6 +410,19 @@ export function promptViaSubprocess(
       ownsDetachedProcessGroup,
     );
   };
+  const clearKillEscalation = () => {
+    if (killEscalation === undefined) return;
+    clearTimeout(killEscalation);
+    killEscalation = undefined;
+  };
+  const escalateTermination = () => {
+    signalChild("SIGTERM");
+    clearKillEscalation();
+    killEscalation = setTimeout(() => {
+      killEscalation = undefined;
+      signalChild("SIGKILL");
+    }, STDOUT_OVERFLOW_KILL_GRACE_MS);
+  };
   const terminateRetainedDescendants = () => {
     signalChild("SIGKILL");
     try {
@@ -454,6 +471,7 @@ export function promptViaSubprocess(
   };
   const onExit = (code: number | null, signal: string | null) => {
     if (exited) return;
+    clearKillEscalation();
     exited = true;
     exitCode = code;
     exitSignal = signal;
@@ -462,6 +480,7 @@ export function promptViaSubprocess(
   };
   const onClose = (code: number | null, signal: string | null) => {
     if (closed) return;
+    clearKillEscalation();
     closed = true;
     if (!exited) {
       exited = true;

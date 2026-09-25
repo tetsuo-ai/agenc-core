@@ -6,13 +6,14 @@
 
 import { spawn as nodeSpawn } from "node:child_process";
 import { EventEmitter, getEventListeners } from "node:events";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AGENC_SDK_MAX_FRAME_BYTES,
   promptViaSubprocess,
   type AgencSubprocessChild,
   type AgencSubprocessSpawnFn,
 } from "../../../packages/agenc-sdk/src/index";
+import { STDOUT_OVERFLOW_KILL_GRACE_MS } from "../../../packages/agenc-sdk/src/subprocess";
 
 const sessionId = "session_frame_1";
 const agentId = "agent_frame_1";
@@ -154,23 +155,31 @@ describe("SDK subprocess stdout frame limit", () => {
     expect(child.listenerCounts().stdoutData).toBe(1);
     expect(child.listenerCounts().abort).toBe(1);
 
-    child.emitStderr("child-warning\n");
-    child.emitStdout(Buffer.alloc(AGENC_SDK_MAX_FRAME_BYTES + 1, 0x61));
-    const first = run.result();
-    await expect(first).rejects.toThrow(/stdout frame exceeded 16777216 bytes/i);
+    const processKill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    try {
+      child.emitStderr("child-warning\n");
+      child.emitStdout(Buffer.alloc(AGENC_SDK_MAX_FRAME_BYTES + 1, 0x61));
+      const first = run.result();
+      await expect(first).rejects.toThrow(/stdout frame exceeded 16777216 bytes/i);
+      expect(child.kills).toEqual(["SIGTERM"]);
+      await new Promise((resolve) => setTimeout(resolve, STDOUT_OVERFLOW_KILL_GRACE_MS + 30));
+      expect(child.kills).toEqual(["SIGTERM", "SIGKILL"]);
+      expect(processKill).not.toHaveBeenCalled();
 
-    child.emitStdout(resultChunk("must-not-win"));
-    child.exit(0);
-    await expect(run.result()).rejects.toBe(await first.catch((error) => error));
+      child.emitStdout(resultChunk("must-not-win"));
+      child.exit(0);
+      await expect(run.result()).rejects.toBe(await first.catch((error) => error));
 
-    const drained = await drain(run);
-    expect(drained).toBeInstanceOf(Error);
-    expect((drained as Error).message).toMatch(/stdout frame exceeded/i);
-    expect((drained as Error).message).not.toContain("a".repeat(64));
-    expect((drained as Error).message).toContain("child-warning");
-    expect(child.kills).toEqual(["SIGTERM"]);
-    expect(child.listenerCounts().stdoutData).toBe(0);
-    expect(child.listenerCounts().abort).toBe(0);
+      const drained = await drain(run);
+      expect(drained).toBeInstanceOf(Error);
+      expect((drained as Error).message).toMatch(/stdout frame exceeded/i);
+      expect((drained as Error).message).not.toContain("a".repeat(64));
+      expect((drained as Error).message).toContain("child-warning");
+      expect(child.listenerCounts().stdoutData).toBe(0);
+      expect(child.listenerCounts().abort).toBe(0);
+    } finally {
+      processKill.mockRestore();
+    }
   });
 });
 

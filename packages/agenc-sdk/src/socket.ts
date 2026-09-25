@@ -27,6 +27,8 @@ import { basename, dirname, isAbsolute, join, win32 } from "node:path";
 import { createConnection, type Socket } from "node:net";
 import { spawn as nodeSpawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
+import { AGENC_SDK_MAX_FRAME_BYTES } from "./limits.js";
+import { SdkNewlineFrameDecoder } from "./newline-frame.js";
 import { StartupDeadline } from "./startup-deadline.js";
 import { waitForStartupChild, type StartupChild } from "./startup-child.js";
 import {
@@ -49,8 +51,6 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_READY_TIMEOUT_MS = 45_000;
 const MAX_TIMER_TIMEOUT_MS = 2_147_483_647;
 const READY_POLL_MS = 50;
-/** Mirrors the daemon transports' 16 MiB max-line bound. */
-const MAX_CLIENT_BUFFER_BYTES = 16 * 1024 * 1024;
 // These RPCs respond only after the full model/tool turn. They must not inherit
 // the short control-RPC timeout: SDK-backed agents may legitimately run for
 // hours. Explicit cancellation, socket closure, and daemon shutdown still
@@ -206,7 +206,7 @@ export class AgencSocketTransport implements AgencTransport {
   readonly #requestTimeoutMs: number;
   readonly #onNotification: ((message: JsonObject) => void) | undefined;
   readonly #onClose: ((error: Error | null) => void) | undefined;
-  #buffer = "";
+  #decoder = new SdkNewlineFrameDecoder();
   #closed = false;
 
   private constructor(socket: Socket, options: AgencSocketTransportOptions) {
@@ -311,7 +311,7 @@ export class AgencSocketTransport implements AgencTransport {
   #terminate(error: Error | null, notifyClose = true): void {
     if (this.#closed) return;
     this.#closed = true;
-    this.#buffer = "";
+    this.#decoder.reset();
     this.#failAll(error ?? new Error("AgenC daemon connection closed"));
     this.#socket.destroy();
     if (notifyClose) this.#onClose?.(error);
@@ -319,20 +319,19 @@ export class AgencSocketTransport implements AgencTransport {
 
   #handleData(chunk: string): void {
     if (this.#closed) return;
-    this.#buffer += chunk;
-    if (Buffer.byteLength(this.#buffer, "utf8") > MAX_CLIENT_BUFFER_BYTES) {
-      const overflow = new Error(
-        `AgenC daemon connection exceeded ${MAX_CLIENT_BUFFER_BYTES} bytes without a complete message`,
+    const frames = this.#decoder.push(chunk);
+    if (this.#decoder.overflowed) {
+      this.#terminate(
+        new Error(
+          `AgenC daemon connection exceeded ${AGENC_SDK_MAX_FRAME_BYTES} bytes without a complete message`,
+        ),
       );
-      this.#terminate(overflow);
       return;
     }
-    let newlineIndex = this.#buffer.indexOf("\n");
-    while (newlineIndex >= 0 && !this.#closed) {
-      const line = this.#buffer.slice(0, newlineIndex).trim();
-      this.#buffer = this.#buffer.slice(newlineIndex + 1);
+    for (const frame of frames) {
+      if (this.#closed) return;
+      const line = frame.trim();
       if (line.length > 0) this.#handleLine(line);
-      newlineIndex = this.#buffer.indexOf("\n");
     }
   }
 

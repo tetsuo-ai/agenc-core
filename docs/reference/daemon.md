@@ -181,13 +181,14 @@ The daemon's local socket, the MCP stdio server, and the embedding SDK's
 socket and subprocess transports accept at most 16 MiB per JSON line
 (`AGENC_SDK_MAX_FRAME_BYTES`). A line exactly at the limit is valid. An
 oversized line closes the input before JSON parsing or dispatch, including
-when the terminating newline arrives in the chunk that crosses the limit.
-Multiple bounded lines can share a chunk.
+when the delimiter arrives in the chunk that crosses the limit. Multiple
+bounded lines can share a chunk. The limit is the frame, not the read chunk:
+an exact-limit frame split across chunks is accepted.
 
-The daemon socket, MCP stdio, and SDK subprocess paths measure payload bytes
-excluding the LF, CRLF, or CR delimiter. The SDK socket transport still
-measures UTF-8 bytes of the unsliced receive buffer before line split, so a
-completed frame plus its delimiter can trip that ceiling one byte earlier.
+Those paths measure payload bytes excluding the delimiter. LF, CRLF, and a
+lone CR are delimiters. A CR that ends a frame does not count, and a following
+LF is the same delimiter rather than an empty extra frame. The SDK socket and
+subprocess transports share that rule and `AGENC_SDK_MAX_FRAME_BYTES`.
 
 - Envelope: **JSON-RPC 2.0** over newline-delimited messages.
 - Protocol version constant: **`1.16.0`**
