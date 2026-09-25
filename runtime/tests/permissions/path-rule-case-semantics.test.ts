@@ -20,6 +20,7 @@ import {
   __pathCaseSemanticsCacheSizeForTesting,
   __setPathCaseDirectorySemanticsForTesting,
   __setPathCaseLstatForTesting,
+  __setPathCaseReaddirForTesting,
   __setPathCaseSemanticsResolverForTesting,
   __swapAsciiCaseForTesting,
   parseComparisonRoot,
@@ -374,6 +375,38 @@ describe("real filesystem probe", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  test.each([
+    { bothListed: true, semantics: "sensitive" as const, cached: true },
+    { bothListed: false, semantics: "insensitive" as const, cached: false },
+  ])(
+    "a different inode is sensitive only when both spellings are listed (both=$bothListed)",
+    async ({ bothListed, semantics, cached }) => {
+      const root = await mkdtemp(join(tmpdir(), "agenc-case-ino-"));
+      const file = join(root, "Keep.txt");
+      const flipped = join(root, "kEEP.TXT");
+      await writeFile(file, "keep");
+      let sawFlipped = false;
+      try {
+        __setPathCaseLstatForTesting((target) => {
+          if (target === flipped) {
+            sawFlipped = true;
+            return { dev: 9, ino: 9, isDirectory: () => false };
+          }
+          return lstatSync(target);
+        });
+        __setPathCaseReaddirForTesting(() =>
+          sawFlipped && bothListed ? ["Keep.txt", "kEEP.TXT"] : ["Keep.txt"],
+        );
+        expect(pathCaseSemantics(file)).toBe(semantics);
+        expect(__pathCaseDirectoryCachedForTesting(root)).toBe(cached);
+      } finally {
+        __setPathCaseReaddirForTesting(null);
+        __setPathCaseLstatForTesting(null);
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   test("an empty directory on another device does not inherit its parent", async () => {
     const parent = await mkdtemp(join(tmpdir(), "agenc-case-mount-"));
