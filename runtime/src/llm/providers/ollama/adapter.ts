@@ -567,6 +567,7 @@ export class OllamaProvider implements LLMProvider {
         params,
         options,
         toolSelection,
+        toolChoice,
         requestTimeoutMs,
         requestMetrics,
         signal,
@@ -579,11 +580,12 @@ export class OllamaProvider implements LLMProvider {
     readonly params: Record<string, unknown>;
     readonly options: LLMChatOptions | undefined;
     readonly toolSelection: ReturnType<OllamaProvider["selectTools"]>;
+    readonly toolChoice: OllamaToolChoiceResolution;
     readonly requestTimeoutMs: number | undefined;
     readonly requestMetrics: ReturnType<typeof collectParamDiagnostics>;
     readonly signal: AbortSignal;
   }): Promise<LLMResponse> {
-    const { client, params, options, toolSelection, requestTimeoutMs, requestMetrics, signal } = args;
+    const { client, params, options, toolSelection, toolChoice, requestTimeoutMs, requestMetrics, signal } = args;
     try {
       emitProviderTraceEvent(options, {
         kind: "request",
@@ -596,7 +598,7 @@ export class OllamaProvider implements LLMProvider {
         context: buildToolSelectionTraceContext(
           toolSelection,
           requestTimeoutMs,
-          this.resolveToolChoice(options),
+          toolChoice,
         ),
       });
       const response = await withTimeout(
