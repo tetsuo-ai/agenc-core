@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, open, readFile, readdir, realpath, rename, rm, rmdir, stat } from "node:fs/promises";
+import { link, lstat, open, readFile, readdir, realpath, rename, rm, rmdir, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import {
   isUnsupportedDirectorySync,
   writeDurableAtomicFile,
 } from "../../utils/durable-atomic-file.js";
+import { nearestExistingRealpath } from "../nearest-existing-realpath.js";
 import { isRecord } from "../../utils/record.js";
 
 const PLUGIN_INSTALL_OPS_DIR = ".plugin-install-ops";
@@ -100,6 +101,8 @@ export interface PluginInstallTransactionHooks {
 export interface PluginInstallRecoveryHooks {
   /** Test seam: crash after the new destination is removed and before the backup is renamed back. */
   readonly afterRollbackDestinationRemoved?: () => Promise<void>;
+  /** Test seam: runs after the dead-lease read and before the claim rename. */
+  readonly beforeLeaseRename?: () => Promise<void>;
   /** Test seam: runs after this process has claimed a dead lease. */
   readonly afterLeaseClaimed?: () => Promise<void>;
   /** Test seam: runs after an empty ops listing and before rmdir. */
@@ -209,7 +212,7 @@ export async function runPluginInstallTransaction(input: {
 
   const leasePath = pluginInstallLeasePath(recordPath);
   const state = { record };
-  await writeInstallLease(leasePath);
+  const nonce = await writeInstallLease(leasePath);
   try {
     await writeOperationRecord(recordPath, state.record);
     await activateStagedPlugin(input, state, recordPath, stagePath);
@@ -225,7 +228,7 @@ export async function runPluginInstallTransaction(input: {
   } catch (error) {
     await rethrowAfterRollback(error, state, recordPath, input);
   } finally {
-    await removeInstallLease(leasePath);
+    await removeInstallLeaseIfNonce(leasePath, nonce);
   }
 }
 
@@ -332,6 +335,7 @@ async function recoverInstallRoot(
   options: Parameters<typeof recoverPluginInstallTransactions>[0],
 ): Promise<PluginInstallRecoveryResult> {
   const opsDir = pluginInstallOpsDir(installRoot);
+  await sweepStaleLeaseArtifacts(opsDir);
   const listed = await listOperationRecords(opsDir);
   if (listed.issue !== undefined) return { recovered: 0, issues: [listed.issue] };
   const issues: PluginInstallRecoveryIssue[] = [];
@@ -419,14 +423,13 @@ async function recoverParsedRecord(
   options: Parameters<typeof recoverPluginInstallTransactions>[0],
 ): Promise<{ readonly recovered: boolean; readonly issue?: PluginInstallRecoveryIssue }> {
   const leasePath = pluginInstallLeasePath(recordPath);
-  if (await installLeaseIsLive(leasePath)) {
-    return { recovered: false };
-  }
-  if (!(await claimDeadInstallLease(leasePath))) {
-    return { recovered: false };
-  }
-  await options.hooks?.afterLeaseClaimed?.();
+  const seen = await readLeaseText(leasePath);
+  if (leaseTextIsLive(seen)) return { recovered: false };
+  await options.hooks?.beforeLeaseRename?.();
+  const nonce = await claimDeadInstallLease(leasePath, seen);
+  if (nonce === undefined) return { recovered: false };
   try {
+    await options.hooks?.afterLeaseClaimed?.();
     const confined = await confineRecordPaths(installRoot, parsed);
     if (confined !== undefined) return { recovered: false, issue: confined };
     const decision = await configRestoreDecision(parsed, options);
@@ -446,7 +449,8 @@ async function recoverParsedRecord(
       ? { recovered: true }
       : { recovered: true, issue: unrestored };
   } finally {
-    await removeInstallLease(leasePath);
+    await removeInstallLeaseIfNonce(leasePath, nonce);
+    await sweepStaleLeaseArtifacts(dirname(recordPath));
     await removeEmptyOpsDirectory(
       dirname(recordPath),
       options.hooks?.beforeRemoveEmptyOpsDirectory,
@@ -1170,29 +1174,91 @@ async function removeEmptyOpsDirectory(
   }
 }
 
-async function claimDeadInstallLease(leasePath: string): Promise<boolean> {
+const LEASE_ARTIFACT_NAME = new RegExp(
+  String.raw`^.+\.json\.lease\.(?:claim|tmp)-(\d+)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`,
+  "u",
+);
+
+async function claimDeadInstallLease(
+  leasePath: string,
+  seen: string | undefined,
+): Promise<string | undefined> {
   const displaced = `${leasePath}.claim-${process.pid}-${randomUUID()}`;
   try {
     await rename(leasePath, displaced);
-    await rm(displaced, { force: true });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return publishExclusiveLease(leasePath);
   }
-  return createExclusiveLease(leasePath);
+  const displacedText = await readFile(displaced, "utf8").catch(() => undefined);
+  const displacedLive = leaseTextIsLive(displacedText);
+  if (displacedLive || displacedText !== seen) {
+    await restoreDisplacedLease(displaced, leasePath);
+    return undefined;
+  }
+  await rm(displaced, { force: true });
+  return publishExclusiveLease(leasePath);
 }
 
-async function createExclusiveLease(leasePath: string): Promise<boolean> {
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
+async function restoreDisplacedLease(displaced: string, leasePath: string): Promise<void> {
   try {
-    handle = await open(leasePath, "wx", 0o600);
-    await handle.writeFile(`${JSON.stringify({ pid: process.pid })}\n`);
-    return true;
+    await link(displaced, leasePath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    return;
+  }
+  await rm(displaced, { force: true });
+}
+
+async function publishExclusiveLease(leasePath: string): Promise<string | undefined> {
+  const nonce = randomUUID();
+  const temp = `${leasePath}.tmp-${process.pid}-${nonce}`;
+  await writeDurableAtomicFile(
+    temp,
+    `${temp}.partial-${randomUUID()}`,
+    `${JSON.stringify({ pid: process.pid, nonce })}\n`,
+    0o600,
+  );
+  try {
+    await link(temp, leasePath);
+    return nonce;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return undefined;
     throw error;
   } finally {
-    await handle?.close();
+    await rm(temp, { force: true });
   }
+}
+
+async function sweepStaleLeaseArtifacts(opsDir: string): Promise<void> {
+  let names: string[];
+  try {
+    names = await readdir(opsDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  for (const name of names) {
+    const pid = leaseArtifactPid(name);
+    if (pid === undefined || pidIsLive(pid)) continue;
+    const path = join(opsDir, name);
+    let info: Awaited<ReturnType<typeof lstat>>;
+    try {
+      info = await lstat(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    if (info.isSymbolicLink() || !info.isFile()) continue;
+    await rm(path);
+  }
+}
+
+function leaseArtifactPid(name: string): number | undefined {
+  const match = LEASE_ARTIFACT_NAME.exec(name);
+  if (match?.[1] === undefined) return undefined;
+  const pid = Number(match[1]);
+  return Number.isInteger(pid) ? pid : undefined;
 }
 
 function splitPluginConfigSnapshot(
@@ -1217,54 +1283,73 @@ async function configRestoreDecision(
   if (options.userConfigPath === undefined) return "skip";
   const supplied = await canonicalConfigPath(options.userConfigPath);
   const recorded = await canonicalConfigPath(record.configTargetPath);
+  if (supplied === undefined || recorded === undefined) return "defer";
   return supplied === recorded ? "apply" : "defer";
 }
 
-async function canonicalConfigPath(path: string): Promise<string> {
-  try {
-    return await realpath(path);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return resolve(path);
-    throw error;
-  }
+async function canonicalConfigPath(path: string): Promise<string | undefined> {
+  return nearestExistingRealpath(path);
 }
 
 function pluginInstallLeasePath(recordPath: string): string {
   return `${recordPath}.lease`;
 }
 
-async function writeInstallLease(leasePath: string): Promise<void> {
-  await writeDurableAtomicFile(
-    leasePath,
-    `${leasePath}.tmp-${process.pid}-${randomUUID()}`,
-    `${JSON.stringify({ pid: process.pid })}\n`,
-    0o600,
-  );
+async function writeInstallLease(leasePath: string): Promise<string> {
+  const nonce = await publishExclusiveLease(leasePath);
+  if (nonce === undefined) throw new Error(`plugin install lease already exists: ${leasePath}`);
+  return nonce;
 }
 
-async function removeInstallLease(leasePath: string): Promise<void> {
+async function removeInstallLeaseIfNonce(leasePath: string, nonce: string): Promise<void> {
+  const text = await readLeaseText(leasePath);
+  const parsed = parseLease(text);
+  if (parsed?.nonce !== nonce) return;
   await rm(leasePath, { force: true }).catch(() => {});
 }
 
-// Liveness is pid-only. A lease is live while its recorded pid answers signal 0
-// or the check is denied (EPERM). heartbeatAtMs is not stored: a long copy or
-// validate must not look expired, and recovery does not guess a TTL.
-async function installLeaseIsLive(leasePath: string): Promise<boolean> {
+async function readLeaseText(leasePath: string): Promise<string | undefined> {
+  try {
+    return await readFile(leasePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function parseLease(text: string | undefined): { readonly pid: number; readonly nonce?: string } | undefined {
+  if (text === undefined) return undefined;
   let raw: unknown;
   try {
-    raw = JSON.parse(await readFile(leasePath, "utf8"));
+    raw = JSON.parse(text);
   } catch {
-    return false;
+    return undefined;
   }
-  if (!isRecord(raw) || !Number.isInteger(raw.pid) || (raw.pid as number) <= 1) return false;
+  if (!isRecord(raw) || !Number.isInteger(raw.pid) || (raw.pid as number) <= 1) return undefined;
+  return {
+    pid: raw.pid as number,
+    ...(typeof raw.nonce === "string" && raw.nonce !== "" ? { nonce: raw.nonce } : {}),
+  };
+}
+
+function leaseTextIsLive(text: string | undefined): boolean {
+  const parsed = parseLease(text);
+  return parsed !== undefined && pidIsLive(parsed.pid);
+}
+
+function pidIsLive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 1) return false;
   try {
-    process.kill(raw.pid as number, 0);
+    process.kill(pid, 0);
     return true;
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
+// Liveness is pid-only. A lease is live while its recorded pid answers signal 0
+// or the check is denied (EPERM). heartbeatAtMs is not stored: a long copy or
+// validate must not look expired, and recovery does not guess a TTL.
 async function confineRecordPaths(
   installRoot: string,
   record: PluginInstallOperationRecord,
