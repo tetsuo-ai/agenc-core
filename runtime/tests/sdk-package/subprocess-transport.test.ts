@@ -9,6 +9,9 @@
 
 import { spawn as nodeSpawn } from "node:child_process";
 import { EventEmitter, getEventListeners } from "node:events";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MAX_BUFFERED_PROMPT_EVENTS,
@@ -304,6 +307,66 @@ function createControllableSpawn(): {
       return handle;
     },
   };
+}
+
+function isLiveProcess(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function pollUntil(
+  predicate: () => boolean,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (predicate()) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 15));
+  }
+}
+
+function reapProcess(pid: number): void {
+  if (!Number.isSafeInteger(pid) || pid <= 1 || pid === process.pid) return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Already exited.
+  }
+}
+
+/**
+ * Default-spawner argv: node runs a wrapper that leaves a descendant holding
+ * inherited stdout, writes that pid, then exits with no stream-json result.
+ * `signalPath` makes the descendant record SIGTERM before it exits.
+ */
+function detachedHolderCommand(
+  pidPath: string,
+  signalPath?: string,
+): readonly [string, string] {
+  const readyPath = `${pidPath}.ready`;
+  const onTerm =
+    signalPath === undefined
+      ? ""
+      : `process.on("SIGTERM",()=>{require("node:fs").writeFileSync(${JSON.stringify(signalPath)},"SIGTERM");process.exit(0);});`;
+  const descendant = `${onTerm}require("node:fs").writeFileSync(${JSON.stringify(readyPath)},"1");setInterval(()=>{},1000);`;
+  const wrapper = [
+    'const {spawn}=require("node:child_process");const fs=require("node:fs");',
+    `const child=spawn(process.execPath,["-e",${JSON.stringify(descendant)}],{stdio:["ignore","inherit","inherit"]});`,
+    "child.unref();",
+    `const ready=${JSON.stringify(readyPath)};const deadline=Date.now()+2000;`,
+    "while(!fs.existsSync(ready)){if(Date.now()>deadline)process.exit(1);",
+    "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);}",
+    `fs.writeFileSync(${JSON.stringify(pidPath)},String(child.pid));process.exit(0);`,
+  ].join("");
+  const scriptPath = `${pidPath}.wrapper.cjs`;
+  writeFileSync(scriptPath, wrapper);
+  return [process.execPath, scriptPath];
 }
 
 function spawnLateResultWrapper(): AgencSubprocessSpawnFn {
@@ -867,6 +930,74 @@ describe("agenc-sdk subprocess transport", () => {
     } finally {
       kill.mockRestore();
     }
+  });
+
+  describe("owned detached process group", () => {
+    const descendants: number[] = [];
+
+    afterEach(() => {
+      for (const pid of descendants.splice(0)) reapProcess(pid);
+    });
+
+    async function readLiveDescendantPid(pidPath: string): Promise<number> {
+      expect(await pollUntil(() => existsSync(pidPath), 2_000)).toBe(true);
+      const pid = Number(readFileSync(pidPath, "utf8"));
+      expect(pid).toBeGreaterThan(1);
+      expect(pid).not.toBe(process.pid);
+      descendants.push(pid);
+      expect(await pollUntil(() => isLiveProcess(pid), 1_000)).toBe(true);
+      return pid;
+    }
+
+    it.skipIf(process.platform === "win32")(
+      "SIGKILLs a detached descendant that keeps stdout open after the wrapper exits",
+      async () => {
+        const root = mkdtempSync(join(tmpdir(), "agenc-sdk-drain-group-"));
+        const pidPath = join(root, "descendant.pid");
+        try {
+          const run = promptViaSubprocess("held stdout", {
+            agencCommand: detachedHolderCommand(pidPath),
+            detachProcessGroup: true,
+            postExitDrainTimeoutMs: 80,
+          });
+          const pending = run.result();
+          const pid = await readLiveDescendantPid(pidPath);
+
+          await expect(pending).rejects.toThrow(/did not close within 80ms/);
+          expect(await pollUntil(() => !isLiveProcess(pid), 2_000)).toBe(true);
+          expect(isLiveProcess(process.pid)).toBe(true);
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      },
+    );
+
+    it.skipIf(process.platform === "win32")(
+      "forwards SIGTERM to a detached descendant on cancel",
+      async () => {
+        const root = mkdtempSync(join(tmpdir(), "agenc-sdk-cancel-group-"));
+        const pidPath = join(root, "descendant.pid");
+        const signalPath = join(root, "signal");
+        try {
+          const run = promptViaSubprocess("cancel group", {
+            agencCommand: detachedHolderCommand(pidPath, signalPath),
+            detachProcessGroup: true,
+            postExitDrainTimeoutMs: 2_000,
+          });
+          const pending = run.result();
+          const pid = await readLiveDescendantPid(pidPath);
+
+          run.cancel();
+          await expect(pending).rejects.toThrow(/without a stream-json result/);
+          expect(await pollUntil(() => existsSync(signalPath), 2_000)).toBe(true);
+          expect(readFileSync(signalPath, "utf8")).toBe("SIGTERM");
+          expect(await pollUntil(() => !isLiveProcess(pid), 2_000)).toBe(true);
+          expect(isLiveProcess(process.pid)).toBe(true);
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      },
+    );
   });
 
   it("accepts a real wrapper that exits before an inherited-stdout descendant writes the result", async () => {
