@@ -637,7 +637,7 @@ export function parseAnthropicMessagesResponse(
         totalTokens: undefined,
         cachedInputTokens: usageRecord.cache_read_input_tokens,
         cacheCreationInputTokens: usageRecord.cache_creation_input_tokens,
-        reasoningOutputTokens: usageRecord.reasoning_output_tokens,
+        reasoningOutputTokens: readAnthropicReasoningOutputTokens(usageRecord),
         webSearchRequests: serverToolUse.web_search_requests,
       }),
       ...(servedSpeed !== undefined ? { speed: servedSpeed } : {}),
