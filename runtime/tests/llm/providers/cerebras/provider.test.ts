@@ -664,7 +664,11 @@ describe("CerebrasProvider", () => {
       }>(fetchImpl);
       expect(body.messages[2]).toEqual({
         role: "tool",
-        content: "Image Size: 10x10.",
+        // A text-only model is told the image was left out; a vision model
+        // receives it in the relayed user message instead.
+        content: relaysImage
+          ? "Image Size: 10x10."
+          : "Image Size: 10x10.\n[Image not shown: this model does not accept image input, so the image in this tool result was left out.]",
         tool_call_id: "call_read",
       });
       expect(JSON.stringify(body).includes("image_url")).toBe(relaysImage);

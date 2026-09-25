@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -8,7 +8,10 @@ import {
   SESSION_ALLOWED_ROOTS_SIG_ARG,
   verifyAllowedRoots,
 } from "../../src/agents/_deps/filesystem-args.js";
-import { filesystemRootsForDispatch } from "../../src/tools/filesystem-dispatch-roots.js";
+import {
+  approvalRootForDispatch,
+  filesystemRootsForDispatch,
+} from "../../src/tools/filesystem-dispatch-roots.js";
 
 function signedRoots(args: Record<string, unknown>): string[] {
   return verifyAllowedRoots(args[SESSION_ALLOWED_ROOTS_ARG], args[SESSION_ALLOWED_ROOTS_SIG_ARG]);
@@ -41,12 +44,34 @@ describe("filesystemRootsForDispatch", () => {
 
   test("an approval hands the tool the file's directory, as before", () => {
     const target = join(outside, "nginx.conf");
+    const approvalRoot = approvalRootForDispatch("Edit", { file_path: target });
     const args = filesystemRootsForDispatch("Edit", { file_path: target }, {
       approvalResolved: true,
+      approvalRoot,
       sandboxMode: "workspace_write",
       session: session("default"),
     });
     expect(signedRoots(args)).toContain(dirname(target));
+  });
+
+  test("NotebookEdit is widened from notebook_path, the only path field its schema has", () => {
+    const target = join(outside, "shared.ipynb");
+    const input = { notebook_path: target, cell_id: "0", new_source: "# Shared" };
+    for (const [approvalResolved, sandboxMode, mode] of [
+      [true, "workspace_write", "default"],
+      [false, "danger_full_access", "bypassPermissions"],
+    ] as const) {
+      const args = filesystemRootsForDispatch("NotebookEdit", input, {
+        approvalResolved,
+        approvalRoot: approvalRootForDispatch("NotebookEdit", input),
+        sandboxMode,
+        session: session(mode),
+      });
+      expect(signedRoots(args)).toContain(dirname(target));
+      // The widening rides the internal channel; no file_path is invented.
+      expect(Object.keys(args).filter((key) => !key.startsWith("__agenc")).sort())
+        .toEqual(["cell_id", "new_source", "notebook_path"]);
+    }
   });
 
   test("the full bypass hands it out without a prompt", () => {
@@ -153,5 +178,94 @@ describe("filesystemRootsForDispatch", () => {
         sandboxMode: "danger_full_access",
       }),
     ).toBe(noSession);
+  });
+
+  describe.skipIf(process.platform === "win32")("symlinks", () => {
+    let dirA = "";
+    let dirB = "";
+    let link = "";
+
+    beforeEach(async () => {
+      await mkdir(join(outside, "a"));
+      await mkdir(join(outside, "b"));
+      dirA = await realpath(join(outside, "a"));
+      dirB = await realpath(join(outside, "b"));
+      link = join(outside, "link");
+      await symlink(dirA, link);
+    });
+
+    async function retargetLinkToB(): Promise<void> {
+      await symlink(dirB, `${link}.next`);
+      await rename(`${link}.next`, link);
+    }
+
+    test.each([
+      ["NotebookEdit", "notebook_path", "shared.ipynb"],
+      ["Edit", "file_path", "notes.txt"],
+      ["Write", "file_path", "created.txt"],
+    ] as const)(
+      "%s: an approval grants the root resolved before the prompt, not where the link points after it",
+      async (toolName, pathArg, name) => {
+        const input = { [pathArg]: join(link, name) };
+        const approvalRoot = approvalRootForDispatch(toolName, input);
+        expect(approvalRoot).toBe(dirA);
+
+        await retargetLinkToB();
+        const args = filesystemRootsForDispatch(toolName, input, {
+          approvalResolved: true,
+          approvalRoot,
+          sandboxMode: "workspace_write",
+          session: session("default"),
+        });
+
+        expect(signedRoots(args)).toEqual([dirA]);
+      },
+    );
+
+    test("an approval without a root captured before the prompt widens nothing", () => {
+      const input = { file_path: join(link, "notes.txt") };
+      expect(
+        filesystemRootsForDispatch("Edit", input, {
+          approvalResolved: true,
+          sandboxMode: "workspace_write",
+          session: session("default"),
+        }),
+      ).toBe(input);
+    });
+
+    test("a symlink inside an added directory that leads out of it is not widened", async () => {
+      const added = join(outside, "added");
+      await mkdir(added);
+      await symlink(dirA, join(added, "escape"));
+      const input = { file_path: join(added, "escape", "notes.txt") };
+
+      expect(
+        filesystemRootsForDispatch("Write", input, {
+          approvalResolved: false,
+          sandboxMode: "workspace_write",
+          session: session("default", [added]),
+        }),
+      ).toBe(input);
+    });
+
+    test("a path whose resolved form lies in an added directory gets that canonical directory", () => {
+      const input = { file_path: join(link, "notes.txt") };
+      const args = filesystemRootsForDispatch("Write", input, {
+        approvalResolved: false,
+        sandboxMode: "workspace_write",
+        session: session("default", [dirA]),
+      });
+      expect(signedRoots(args)).toEqual([dirA]);
+    });
+
+    test("the full bypass signs the canonical directory, not the link", () => {
+      const input = { file_path: join(link, "notes.txt") };
+      const args = filesystemRootsForDispatch("FileRead", input, {
+        approvalResolved: false,
+        sandboxMode: "danger_full_access",
+        session: session("bypassPermissions"),
+      });
+      expect(signedRoots(args)).toEqual([dirA]);
+    });
   });
 });

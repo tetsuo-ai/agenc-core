@@ -24,6 +24,7 @@ import {
 import type { JsonObject, JsonValue } from "../protocol/index.js";
 import { resolveHomeContext } from "../../config/home.js";
 import { AgenCStdioTransport, writeJsonLine } from "./stdio.js";
+import type { ResolveRoutineSessionId } from "../overload.js";
 import { drainAgenCTransportRequests, type AgenCTransportCloseOptions } from "./request-drain.js";
 import {
   loadAgenCNativePeerCredentialBinding,
@@ -96,6 +97,7 @@ export interface AgenCUnixSocketServerOptions {
   ) => boolean | Promise<boolean>;
   readonly acceptAuthenticationTimeoutMs?: number;
   readonly maxQueuedRequests?: number;
+  readonly resolveRoutineSessionId?: ResolveRoutineSessionId;
   readonly onAuthenticationFailed?: (
     message: JsonObject,
     context: AgenCUnixSocketMessageContext,
@@ -380,6 +382,7 @@ export class AgenCUnixSocketServer {
       input: socket,
       output: socket,
       maxQueuedRequests: this.#options.maxQueuedRequests,
+      resolveRoutineSessionId: this.#options.resolveRoutineSessionId,
       onMessage: async (message) => {
         // Parsed frames can still be queued behind an active request after
         // disconnect. They must never recreate a daemon connection or start

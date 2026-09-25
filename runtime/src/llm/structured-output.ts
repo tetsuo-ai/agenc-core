@@ -5,7 +5,7 @@
  * xAI MCP source of truth:
  * - Structured outputs are supported by all language models.
  * - Structured outputs with tools are only supported by the Grok 4 family.
- * - `reasoning_effort` is supported by Grok 4.3, Grok 4.5, and Grok 4.6,
+ * - `reasoning_effort` is supported by Grok 4.3, Grok 4.5, Grok 4.6, and Grok 4.7,
  *   where it controls reasoning depth, and by `grok-4.20-multi-agent`, where
  *   it controls agent count. Other Grok families remain fail-closed.
  *
@@ -198,7 +198,7 @@ export function resolveProviderStructuredOutputMode(input: {
 
 /**
  * Returns true when the xAI model accepts the `reasoning_effort` request
- * parameter. Grok 4.3, Grok 4.5, and Grok 4.6 use it for reasoning depth;
+ * parameter. Grok 4.3, Grok 4.5, Grok 4.6, and Grok 4.7 use it for reasoning depth;
  * `grok-4.20-multi-agent*` uses it for agent count.
  *
  * Keep this model allowlist fail-closed. xAI's OpenAI-compatible surfaces
@@ -215,7 +215,7 @@ export function supportsXaiReasoningEffortParam(
     Math.max(normalized.lastIndexOf("/"), normalized.lastIndexOf(":")) + 1,
   );
   return (
-    /^grok-4\.(?:3|5|6)(?:$|[-_.])/.test(unqualified) ||
+    /^grok-4\.(?:3|5|6|7)(?:$|[-_.])/.test(unqualified) ||
     /^grok-4[.-]20-multi-agent(?:$|[-_.])/.test(unqualified) ||
     unqualified === "grok-build-latest"
   );

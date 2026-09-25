@@ -27,10 +27,16 @@ export interface MCPListChangedHandlers {
   readonly onResourcesListChanged: () => void;
 }
 
+export interface McpSdkListChangedHandler {
+  readonly onChanged: (error?: unknown) => void;
+  /** SDK 1.29 lists once itself when this is omitted. AgenC refreshes on its own. */
+  readonly autoRefresh: false;
+}
+
 export interface McpSdkListChangedOption {
-  readonly tools: { readonly onChanged: (error?: unknown) => void };
-  readonly prompts: { readonly onChanged: (error?: unknown) => void };
-  readonly resources: { readonly onChanged: (error?: unknown) => void };
+  readonly tools: McpSdkListChangedHandler;
+  readonly prompts: McpSdkListChangedHandler;
+  readonly resources: McpSdkListChangedHandler;
 }
 
 export interface McpRuntimeClientOptions {
@@ -41,22 +47,18 @@ export interface McpRuntimeClientOptions {
 export function toSdkListChangedHandlers(
   handlers: MCPListChangedHandlers,
 ): McpSdkListChangedOption {
+  const handler = (
+    notify: () => void,
+  ): McpSdkListChangedHandler => ({
+    onChanged: () => {
+      notify();
+    },
+    autoRefresh: false,
+  });
   return {
-    tools: {
-      onChanged: () => {
-        handlers.onToolsListChanged();
-      },
-    },
-    prompts: {
-      onChanged: () => {
-        handlers.onPromptsListChanged();
-      },
-    },
-    resources: {
-      onChanged: () => {
-        handlers.onResourcesListChanged();
-      },
-    },
+    tools: handler(handlers.onToolsListChanged),
+    prompts: handler(handlers.onPromptsListChanged),
+    resources: handler(handlers.onResourcesListChanged),
   };
 }
 

@@ -59,7 +59,37 @@ export { getPillLabel } from "./pillLabel.js";
 
 import { BackgroundTaskLifecycle } from "./lifecycle.js";
 
+/** The lifecycle for callers that have no owning session. */
 export const backgroundTaskLifecycle = new BackgroundTaskLifecycle();
+
+const rootSessionLifecycles = new WeakMap<object, BackgroundTaskLifecycle>();
+
+/**
+ * The background task lifecycle of one root session (a conversation).
+ *
+ * Every agent a session spawns is registered with its agent path as an alias,
+ * and agent paths come from that session's own tree: two sessions of one
+ * daemon both name `/root/<task_name>`. In one daemon-wide lifecycle the
+ * second registration collided with the first session's live alias, was
+ * dropped, and the spawn then failed with `task <id> not found` after its
+ * child already existed (luna-mac F1). TaskOutput and TaskStop could also
+ * read or stop another session's agent by name. One lifecycle per root
+ * session keeps ids, aliases, output and stop requests inside the session
+ * that owns them. The entry lives as long as the session object.
+ */
+export function backgroundTaskLifecycleForSession(
+  rootSession: object | null | undefined,
+): BackgroundTaskLifecycle {
+  if (typeof rootSession !== "object" || rootSession === null) {
+    return backgroundTaskLifecycle;
+  }
+  let lifecycle = rootSessionLifecycles.get(rootSession);
+  if (lifecycle === undefined) {
+    lifecycle = new BackgroundTaskLifecycle();
+    rootSessionLifecycles.set(rootSession, lifecycle);
+  }
+  return lifecycle;
+}
 
 export {
   observeAgentThreadTask,

@@ -39,6 +39,14 @@ export const ROOT_AGENT_PATH = "/root" as AgentPath;
 export const MEMORY_AGENT_PATH = "/morpheus" as AgentPath;
 
 export interface AgentMetadata {
+  readonly terminalOutcome?: import("./child-terminal.js").ChildTerminalOutcome;
+  readonly executionPlan?: import("./cross-provider.js").ChildExecutionPlan;
+  /** Durable routing decision and operator policy origin for child recovery. */
+  readonly crossProvider?: {
+    readonly provider: string;
+    readonly model: string;
+    readonly policy: "user-or-managed-agents-v1";
+  };
   readonly executionConstraint?: ReadOnlyDelegationConstraint;
   readonly agentId?: ThreadId;
   readonly agentPath?: AgentPath;
@@ -128,6 +136,31 @@ export function normalizeAgentMetadata(metadata: unknown): AgentMetadata {
     "lastTaskMessage",
     false,
   );
+  const crossProvider = record.crossProvider;
+  const executionPlan = record.executionPlan;
+  const terminalOutcome = record.terminalOutcome;
+  if (terminalOutcome !== undefined && (
+    typeof terminalOutcome !== "object" || terminalOutcome === null ||
+    typeof (terminalOutcome as Record<string, unknown>).provider !== "string" ||
+    typeof (terminalOutcome as Record<string, unknown>).model !== "string" ||
+    typeof (terminalOutcome as Record<string, unknown>).reason !== "string"
+  )) throw new InvalidAgentMetadataError("invalid agent metadata terminalOutcome");
+  if (executionPlan !== undefined && (
+    typeof executionPlan !== "object" || executionPlan === null ||
+    (executionPlan as Record<string, unknown>).version !== 1 ||
+    typeof (executionPlan as Record<string, unknown>).destination !== "object" ||
+    typeof (executionPlan as Record<string, unknown>).route !== "object"
+  )) {
+    throw new InvalidAgentMetadataError("invalid agent metadata executionPlan");
+  }
+  if (crossProvider !== undefined && (
+    typeof crossProvider !== "object" || crossProvider === null || Array.isArray(crossProvider) ||
+    typeof (crossProvider as Record<string, unknown>).provider !== "string" ||
+    typeof (crossProvider as Record<string, unknown>).model !== "string" ||
+    (crossProvider as Record<string, unknown>).policy !== "user-or-managed-agents-v1"
+  )) {
+    throw new InvalidAgentMetadataError("invalid agent metadata crossProvider");
+  }
   return {
     depth: record.depth,
     ...(executionConstraint !== undefined ? { executionConstraint } : {}),
@@ -136,6 +169,9 @@ export function normalizeAgentMetadata(metadata: unknown): AgentMetadata {
     ...(agentNickname !== undefined ? { agentNickname } : {}),
     ...roleMetadata,
     ...(lastTaskMessage !== undefined ? { lastTaskMessage } : {}),
+    ...(crossProvider !== undefined ? { crossProvider: crossProvider as NonNullable<AgentMetadata["crossProvider"]> } : {}),
+    ...(executionPlan !== undefined ? { executionPlan: executionPlan as NonNullable<AgentMetadata["executionPlan"]> } : {}),
+    ...(terminalOutcome !== undefined ? { terminalOutcome: terminalOutcome as NonNullable<AgentMetadata["terminalOutcome"]> } : {}),
   };
 }
 
@@ -622,6 +658,20 @@ export class AgentRegistry {
     if (!entry) return;
     const [path, prev] = entry;
     this.byPath.set(path, { ...prev, lastTaskMessage: message });
+  }
+
+  updateExecutionPlan(threadId: ThreadId, plan: import("./cross-provider.js").ChildExecutionPlan): void {
+    const entry = this.findEntryByThreadId(threadId);
+    if (!entry) return;
+    const [path, prev] = entry;
+    this.byPath.set(path, { ...prev, executionPlan: plan });
+  }
+
+  updateTerminalOutcome(threadId: ThreadId, terminal: import("./child-terminal.js").ChildTerminalOutcome): void {
+    const entry = this.findEntryByThreadId(threadId);
+    if (!entry) return;
+    const [path, prev] = entry;
+    this.byPath.set(path, { ...prev, terminalOutcome: terminal });
   }
 
   /** Reserve an agentPath before child startup. */

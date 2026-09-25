@@ -62,7 +62,15 @@ export type ReviewDecision =
       readonly kind: "network_policy_amendment";
       readonly amendment: NetworkPolicyAmendment;
     }
-  | { readonly kind: "denied"; readonly reason?: string }
+  | {
+      readonly kind: "denied";
+      readonly reason?: string;
+      /**
+       * Set only when a person answered the permission request with Deny.
+       * Resolver guards and non-interactive auto-denials leave it unset.
+       */
+      readonly decidedBy?: "user";
+    }
   | { readonly kind: "timed_out" }
   | { readonly kind: "abort" };
 

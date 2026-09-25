@@ -775,7 +775,7 @@ function replaceOutputFormatWithXml(systemPrompt: string): string {
 function getClassifierThinkingConfig(
   model: string,
 ): [false | undefined, number] {
-  // Claude Fable/Mythos 5: always-on thinking —
+  // Always-on thinking (Claude Fable/Mythos 5, Claude Opus 5.5):
   // `thinking: {type:'disabled'}` returns a 400, so omit and pad instead.
   if (isAlwaysOnThinkingAnthropicModel(model)) {
     return [undefined, 2048]

@@ -40,11 +40,13 @@ describe('endpoint trust', () => {
     expect(isTrustedXaiOauthEndpoint('not a url')).toBe(false)
   })
 
-  test('inference base URL allows api.x.ai and the grok.com CLI proxy', () => {
+  test('inference base URL allows only the canonical xAI API path', () => {
     expect(isTrustedXaiOauthInferenceBaseUrl('https://api.x.ai/v1')).toBe(true)
+    expect(isTrustedXaiOauthInferenceBaseUrl('https://api.x.ai/v1/')).toBe(true)
+    expect(isTrustedXaiOauthInferenceBaseUrl('https://api.x.ai/proxy/v1')).toBe(false)
     expect(
       isTrustedXaiOauthInferenceBaseUrl('https://cli-chat-proxy.grok.com/v1'),
-    ).toBe(true)
+    ).toBe(false)
     expect(isTrustedXaiOauthInferenceBaseUrl('https://attacker.example/v1')).toBe(false)
     expect(isTrustedXaiOauthInferenceBaseUrl('http://api.x.ai/v1')).toBe(false)
     expect(isTrustedXaiOauthInferenceBaseUrl(undefined)).toBe(false)
@@ -284,6 +286,22 @@ describe('device flow', () => {
 })
 
 describe('refresh', () => {
+  test('refuses a refresh-token redirect away from the trusted token endpoint', async () => {
+    const leaked: string[] = []
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.redirect !== 'manual') {
+        leaked.push(String(init?.body))
+        return jsonResponse({ access_token: 'attacker-accepted' })
+      }
+      return Response.redirect('https://attacker.example/token', 308)
+    })
+    await expect(refreshXaiOauthTokens({
+      tokenEndpoint: 'https://auth.x.ai/oauth2/token', refreshToken: 'refresh-secret', fetchImpl,
+    })).rejects.toThrow(/token endpoint redirect/u)
+    expect(leaked).toEqual([])
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
   test('does NOT retry transport failures (rotating refresh token)', async () => {
     const fetchImpl = vi.fn(async () => {
       throw new Error('connection reset')

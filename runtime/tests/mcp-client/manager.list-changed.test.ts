@@ -98,6 +98,34 @@ describe("MCPManager list_changed catalog refresh", () => {
     await manager.stop();
   });
 
+  it("finishes an in-flight tools refresh when a prompts notification arrives", async () => {
+    const initial = makeMockBridge("srv1", ["toolA"]);
+    const refreshed = makeMockBridge("srv1", ["toolB"]);
+    const prompts = makeMockPromptBridge("srv1", [{ name: "promptA" }]);
+    mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
+    mockCreateToolBridge.mockResolvedValueOnce(initial);
+    const releaseRefresh = holdNextToolBridge();
+    mockCreatePromptBridge.mockResolvedValue(prompts);
+
+    const manager = await startManager([makeConfig("srv1")]);
+    try {
+      const handlers = listChangedHandlersFromConnect();
+      handlers.onToolsListChanged();
+      await vi.waitFor(() => {
+        expect(mockCreateToolBridge).toHaveBeenCalledTimes(2);
+      });
+      handlers.onPromptsListChanged();
+      releaseRefresh(refreshed);
+      await waitForTools(manager, ["mcp.srv1.toolB"]);
+      await vi.waitFor(() => {
+        expect(prompts.refreshPrompts).toHaveBeenCalled();
+      });
+      expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+    } finally {
+      await manager.stop();
+    }
+  });
+
   it("replaces the published tool surface without reconnecting", async () => {
     const initial = makeMockBridge("srv1", ["toolA"]);
     const refreshed = makeMockBridge("srv1", ["toolB"]);

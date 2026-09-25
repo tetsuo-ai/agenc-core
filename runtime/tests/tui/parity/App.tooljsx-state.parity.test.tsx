@@ -124,9 +124,6 @@ describe("R2 toolJSX state contract (tool-jsx-state + App.tsx wiring)", () => {
       /modalToolJSX\s*=\s*toolOwnsPrompt\s*\?\s*toolJSX\.jsx\s*:\s*null/,
     );
     expect(source).toMatch(
-      /<WorkbenchLayout[\s\S]{0,500}modal=\{\s*modalToolJSX !== null/,
-    );
-    expect(source).toMatch(
       /<FullscreenLayout[\s\S]{0,500}modal=\{\s*modalToolJSX !== null/,
     );
   });

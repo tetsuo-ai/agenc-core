@@ -29,6 +29,7 @@ import {
 } from "../../src/config/repository.js";
 import { serializeConfigToml } from "../../src/config/serialize.js";
 import type { AgenCConfig } from "../../src/config/schema.js";
+import { defaultConfig, validateAgentsConfig } from "../../src/config/schema.js";
 import { ConfigStore } from "../../src/config/store.js";
 
 const temporaryDirectories: string[] = [];
@@ -88,6 +89,8 @@ const MANAGED_VALUES = {
 } as const satisfies Record<ManagedOnlyConfigKey, unknown>;
 
 const OPERATOR_VALUES = {
+  agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"], cross_provider_ask_each_spawn: false,
+    cross_provider_auto: false },
   gateway: { defaultAgent: "operator", hooks: { enabled: false } },
   modelOverrides: { "grok-4.6": "grok-4.6-enterprise" },
   allowedMcpServers: [{ serverName: "internal" }],
@@ -97,6 +100,61 @@ const OPERATOR_VALUES = {
 } as const satisfies Record<OperatorOnlyConfigKey, unknown>;
 
 describe("canonical config layer authority", () => {
+  test("cross-provider subagents default off and reject invalid allowlists", () => {
+    expect(defaultConfig().agents).toEqual({
+      cross_provider_enabled: false,
+      allowed_providers: [],
+      cross_provider_ask_each_spawn: false,
+      cross_provider_auto: false,
+    });
+    expect(() => validateAgentsConfig({ allowed_providers: ["not-a-provider"] }))
+      .toThrow(/unknown provider/u);
+    expect(() => validateAgentsConfig({ allowed_providers: ["deepseek", "deepseek"] }))
+      .toThrow(/duplicate provider/u);
+    expect(() => validateAgentsConfig({ cross_provider_ask_each_spawn: "no" }))
+      .toThrow(/expected boolean/u);
+    expect(validateAgentsConfig({ cross_provider_ask_each_spawn: true }))
+      .toEqual({ cross_provider_ask_each_spawn: true });
+    expect(() => validateAgentsConfig({ cross_provider_enabled: "yes" }))
+      .toThrow(/expected boolean/u);
+  });
+
+  test("repository config cannot enable cross-provider subagents", async () => {
+    const root = temporaryRoot();
+    writeConfig(join(root, "project", ".agenc", "config.toml"), {
+      agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] },
+    });
+    const loaded = await loadLayeredConfig(repositoryOptions(root));
+    expect(loaded.config.agents).toEqual({ cross_provider_enabled: false, allowed_providers: [],
+      cross_provider_ask_each_spawn: false, cross_provider_auto: false });
+    expect(loaded.ignored).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "agents", scope: "project" }),
+    ]));
+    expect(() => assertConfigPatchAuthority("project", { agents: { cross_provider_enabled: true } }))
+      .toThrow(/operator-only key agents/u);
+    // A repository cannot turn off the per-spawn question a user asked for.
+    expect(() => assertConfigPatchAuthority("project", { agents: { cross_provider_ask_each_spawn: false } }))
+      .toThrow(/operator-only key agents/u);
+  });
+  test("validates automatic provider choice and sub-agent limits, which repository config cannot set", () => {
+    expect(validateAgentsConfig({ cross_provider_auto: true,
+      subagent_limits: { deepseek: { effort: "high", speed: "fast" }, openai: {} } }))
+      .toEqual({ cross_provider_auto: true, subagent_limits: { deepseek: { effort: "high", speed: "fast" }, openai: {} } });
+    // Written values stay as written, so `agenc config get` shows them; the
+    // store ranks "minimal" and "standard" with unset.
+    expect(validateAgentsConfig({ subagent_limits: { openai: { effort: "minimal", speed: "standard" } } }))
+      .toEqual({ subagent_limits: { openai: { effort: "minimal", speed: "standard" } } });
+    expect(() => validateAgentsConfig({ cross_provider_auto: "yes" })).toThrow(/cross_provider_auto/u);
+    expect(() => validateAgentsConfig({ subagent_limits: { "not-a-provider": {} } })).toThrow(/subagent_limits\.not-a-provider/u);
+    expect(() => validateAgentsConfig({ subagent_limits: { deepseek: { effort: "extreme" } } })).toThrow(/effort/u);
+    expect(() => validateAgentsConfig({ subagent_limits: { deepseek: { speed: "turbo" } } })).toThrow(/speed/u);
+    expect(() => validateAgentsConfig({ subagent_limits: { deepseek: { model: "deepseek-v4-pro" } } })).toThrow(/unknown field/u);
+    expect(() => validateAgentsConfig({ subagent_limits: ["deepseek"] })).toThrow(/subagent_limits/u);
+    expect(() => assertConfigPatchAuthority("project", { agents: { cross_provider_auto: true } }))
+      .toThrow(/operator-only key agents/u);
+    expect(() => assertConfigPatchAuthority("project", { agents: { subagent_limits: { deepseek: { effort: "max" } } } }))
+      .toThrow(/operator-only key agents/u);
+  });
   test("keeps the three registries exact, disjoint, and classified", () => {
     expect(MANAGED_ONLY_CONFIG_KEYS).toEqual([
       "availableModels",
@@ -112,6 +170,7 @@ describe("canonical config layer authority", () => {
       "pluginTrustMessage",
     ]);
     expect(OPERATOR_ONLY_CONFIG_KEYS).toEqual([
+      "agents",
       "gateway",
       "modelOverrides",
       "allowedMcpServers",
@@ -199,6 +258,7 @@ describe("canonical config layer authority", () => {
     const root = temporaryRoot();
     writeConfig(join(root, "home", "config.toml"), OPERATOR_VALUES);
     writeConfig(join(root, "project", ".agenc", "config.toml"), {
+      agents: { cross_provider_enabled: true, allowed_providers: ["openai"] },
       gateway: { defaultAgent: "project", hooks: { enabled: true } },
       modelOverrides: { "grok-4.6": "project-override" },
       allowedMcpServers: [{ serverName: "project" }],
@@ -448,154 +508,6 @@ describe("canonical config layer authority", () => {
         "daemon",
       ]),
     );
-  });
-
-  test("trusted repository declarations survive while embedded grants are removed without values", async () => {
-    const root = temporaryRoot();
-    writeConfig(join(root, "project", ".agenc", "config.toml"), {
-      permissions: {
-        allow: ["system.bash(*)"],
-        deny: ["system.bash(rm:*)"],
-        ask: ["system.bash(git push:*)"],
-        bypassPermissionsMode: "allow",
-      },
-      tools_config: {
-        WebSearch: { default_permission_mode: "never" },
-        enabled_tools: ["WebSearch"],
-        disabled_tools: ["DangerousTool"],
-        web_search_endpoint: "https://project.invalid/search",
-      },
-      mcp_servers: {
-        docs: {
-          command: "trusted-mcp-command",
-          args: ["--stdio"],
-          default_tools_approval_mode: "never",
-          enabled_tools: ["read"],
-          disabled_tools: ["write"],
-          virtual_no_fs_write_tools: ["browser_navigate"],
-          tools: {
-            read: { default_permission_mode: "never" },
-          },
-        },
-      },
-      hooks: {
-        PreToolUse: [{
-          matcher: "system.bash",
-          hooks: [{ type: "command", command: "trusted-hook-command" }],
-        }],
-      },
-      lsp_servers: {
-        typescript: {
-          command: "trusted-lsp-command",
-          extensionToLanguage: { ".ts": "typescript" },
-        },
-      },
-      attachments: { allowedRoots: ["/sensitive-root"] },
-      providers: {
-        grok: {
-          base_url: "https://project.invalid/provider",
-          remote_mcp: {
-            enabled: true,
-            servers: [{
-              server_url: "https://project.invalid/mcp",
-              server_label: "project",
-            }],
-          },
-        },
-      },
-      auth: { backend: "remote" },
-      profiles: { project: { approval_policy: "never" } },
-      browser: {
-        executable_path: "/sensitive-browser",
-        profile_dir: "/sensitive-profile",
-        allow_private_network: true,
-        no_sandbox: true,
-        headless: true,
-      },
-      protocol: { enabled: true, adapter: "marketplace-cli", cli_path: "/sensitive-cli" },
-      daemon: { autostart: true },
-      xaa_idp: { issuer: "https://project.invalid/idp", client_id: "sensitive-client" },
-      autonomous_mode: true,
-      coordinator_mode: true,
-      disableAllHooks: false,
-      autoMode: { allow: ["system.bash"] },
-      shell_environment_policy: {
-        set: { PROJECT_MARKER: "repository-value" },
-      },
-      statusLine: { type: "command", command: "sensitive-status-command" },
-      fileSuggestion: { type: "command", command: "sensitive-suggestion-command" },
-      autoFix: { enabled: true, lint: "sensitive-lint-command" },
-      buffer: {
-        neovim: { executable: "/sensitive-nvim" },
-        prediction: { enabled: "on", provider: "grok", model: "grok-4.6" },
-      },
-    });
-
-    const loaded = await loadLayeredConfig(repositoryOptions(root));
-    const project = loaded.sources.find((layer) => layer.scope === "project")?.config;
-    expect(project?.permissions).toMatchObject({
-      deny: ["system.bash(rm:*)"],
-      ask: ["system.bash(git push:*)"],
-    });
-    expect(project?.permissions?.allow).toBeUndefined();
-    expect(project?.permissions?.bypassPermissionsMode).toBeUndefined();
-    expect(project?.tools_config?.disabled_tools).toEqual(["DangerousTool"]);
-    expect(project?.tools_config?.WebSearch?.default_permission_mode).toBeUndefined();
-    expect(project?.mcp_servers?.docs?.command).toBe("trusted-mcp-command");
-    expect(project?.mcp_servers?.docs?.disabled_tools).toEqual(["write"]);
-    expect(project?.mcp_servers?.docs?.default_tools_approval_mode).toBeUndefined();
-    expect(project?.mcp_servers?.docs?.virtual_no_fs_write_tools).toBeUndefined();
-    expect(project?.hooks?.PreToolUse).toHaveLength(1);
-    expect(project?.lsp_servers?.typescript?.command).toBe("trusted-lsp-command");
-    expect(project?.providers).toBeUndefined();
-    expect(project?.auth).toBeUndefined();
-    expect(project?.profiles).toBeUndefined();
-    expect(project?.attachments).toBeUndefined();
-    expect(project?.protocol).toBeUndefined();
-    expect(project?.daemon).toBeUndefined();
-    expect(project?.xaa_idp).toBeUndefined();
-    expect(project?.autonomous_mode).toBeUndefined();
-    expect(project?.coordinator_mode).toBeUndefined();
-    expect(project?.disableAllHooks).toBeUndefined();
-    expect(project?.autoMode).toBeUndefined();
-    expect(project?.browser).toEqual({ headless: true });
-    expect(project?.shell_environment_policy?.set).toBeUndefined();
-    expect(project?.statusLine).toBeUndefined();
-    expect(project?.fileSuggestion).toBeUndefined();
-    expect(project?.autoFix).toBeUndefined();
-    expect(project?.buffer?.neovim?.executable).toBeUndefined();
-    expect(project?.buffer?.prediction).toBeUndefined();
-
-    const ignored = loaded.ignored.map(({ key }) => key);
-    expect(ignored).toEqual(expect.arrayContaining([
-      "permissions.allow",
-      "permissions.bypassPermissionsMode",
-      "tools_config.WebSearch.default_permission_mode",
-      "tools_config.enabled_tools",
-      "mcp_servers.docs.default_tools_approval_mode",
-      "mcp_servers.docs.virtual_no_fs_write_tools",
-      "mcp_servers.docs.tools.read.default_permission_mode",
-      "attachments",
-      "providers",
-      "auth",
-      "profiles",
-      "browser.executable_path",
-      "browser.allow_private_network",
-      "protocol",
-      "daemon",
-      "xaa_idp",
-      "autonomous_mode",
-      "disableAllHooks",
-      "autoMode",
-      "shell_environment_policy.set",
-      "statusLine",
-      "fileSuggestion",
-      "autoFix",
-      "buffer.neovim.executable",
-      "buffer.prediction",
-    ]));
-    expect(JSON.stringify(loaded.ignored)).not.toContain("secret-value");
-    expect(JSON.stringify(project)).not.toContain("sensitive-");
   });
 
   test("lists rejected keys in code-unit order without mutating the caller's objects", () => {

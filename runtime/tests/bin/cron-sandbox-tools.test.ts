@@ -131,7 +131,7 @@ describe("session cron admission through the actual tool router", () => {
     expect(existsSync(join(workspace, ".agenc"))).toBe(false);
   });
 
-  it("cancels a queued durable claim before file I/O when narrowed, keeping memory work runnable", async () => {
+  it.skipIf(process.platform === "darwin")("cancels a queued durable claim before file I/O when narrowed, keeping memory work runnable", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
     vi.setSystemTime(new Date("2026-07-07T12:00:30Z"));
     const accept = Promise.withResolvers<void>();

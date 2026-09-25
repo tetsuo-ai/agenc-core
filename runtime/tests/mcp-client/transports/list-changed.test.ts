@@ -46,22 +46,30 @@ const handlers = {
   onResourcesListChanged: vi.fn(),
 };
 
+const LIST_CHANGED_KINDS = ["tools", "prompts", "resources"] as const;
+
 function expectListChangedClientOptions(): void {
   const options = captured.clientOptions as {
     readonly listChanged?: {
-      readonly tools?: { readonly onChanged?: (error?: unknown) => void };
-      readonly prompts?: { readonly onChanged?: (error?: unknown) => void };
-      readonly resources?: { readonly onChanged?: (error?: unknown) => void };
+      readonly tools?: {
+        readonly onChanged?: (error?: unknown) => void;
+        readonly autoRefresh?: boolean;
+      };
+      readonly prompts?: {
+        readonly onChanged?: (error?: unknown) => void;
+        readonly autoRefresh?: boolean;
+      };
+      readonly resources?: {
+        readonly onChanged?: (error?: unknown) => void;
+        readonly autoRefresh?: boolean;
+      };
     };
   };
-  expect(options.listChanged?.tools?.onChanged).toEqual(expect.any(Function));
-  expect(options.listChanged?.prompts?.onChanged).toEqual(expect.any(Function));
-  expect(options.listChanged?.resources?.onChanged).toEqual(
-    expect.any(Function),
-  );
-  options.listChanged?.tools?.onChanged?.();
-  options.listChanged?.prompts?.onChanged?.();
-  options.listChanged?.resources?.onChanged?.();
+  for (const kind of LIST_CHANGED_KINDS) {
+    expect(options.listChanged?.[kind]?.onChanged).toEqual(expect.any(Function));
+    expect(options.listChanged?.[kind]?.autoRefresh).toBe(false);
+    options.listChanged?.[kind]?.onChanged?.();
+  }
   expect(handlers.onToolsListChanged).toHaveBeenCalledOnce();
   expect(handlers.onPromptsListChanged).toHaveBeenCalledOnce();
   expect(handlers.onResourcesListChanged).toHaveBeenCalledOnce();

@@ -8,9 +8,11 @@
  */
 
 import type { Tool, ToolResult, JSONSchema } from "./_deps/tools-types.js";
-import { hasLocalMcpAccess, redactMcpAttachmentText, redactMcpAttachmentValue, desktopControlEffectReceipt, withDesktopMcpDispatchGuard, DesktopMcpPreflightRefusal } from "./local-control.js";
+import { hasLocalMcpAccess, redactMcpAttachmentText, redactMcpAttachmentValue, desktopControlEffectReceipt, withDesktopMcpDispatchGuard, assertDesktopMcpDispatchGuard, DesktopMcpPreflightRefusal } from "./local-control.js";
 import { desktopToolClassification, hasDesktopAuthority } from "./desktop-authority.js";
 import { preEffectRefusal } from "../tools/results.js";
+import { createToolEffectDispositionEvidence } from "../tools/effect-boundary.js";
+import type { ToolEffectDispositionEvidence } from "../contracts/run-contracts.js";
 import { readToolRuntimeContext, type ToolRuntimeAttemptContext } from "../tools/runtimes/context.js";
 import { readSandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import type { MCPToolBridge } from "./types.js";
@@ -62,9 +64,15 @@ import {
 import { asRecord } from "../utils/record.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
 import { MAX_TOOL_CALL_ID_UTF8_BYTES } from "../session/tool-result-integrity.js";
-import { sleep } from "../utils/sleep.js";
 import { snapshotMcpRequestEnvironment } from "./environment.js";
+import {
+  collectMcpListPages,
+  MAX_MCP_LIST_AGGREGATE_BYTES,
+  MAX_MCP_LIST_ITEMS,
+  MAX_MCP_LIST_PAGES,
+} from "./list-pagination.js";
 import { normalizeMcpToolOutput } from "./tool-output.js";
+import { isMcpConnectionError, markMcpConnectionFailure } from "./connection-errors.js";
 import {
   sanitizeMcpOutputText,
   truncateMcpUtf8,
@@ -74,12 +82,14 @@ import {
   sanitizeMcpInputSchemaForModel,
 } from "./model-facing-sanitization.js";
 
+
 /**
  * Policy knobs forwarded from server config to the bridge. `allowedTools`
  * / `deniedTools` are post-list filters; `pinnedCatalogSha256` is the
  * I-74 supply-chain pin.
  */
 export interface MCPToolCatalogPolicyConfig {
+  readonly displayDataRoot?: string;
   readonly desktopAuthorityGrant?: import("./desktop-authority.js").DesktopAuthorityGrant;
   readonly localOnly?: boolean;
   readonly sensitiveHeaders?: Readonly<Record<string, string>>;
@@ -252,19 +262,28 @@ interface ToolBridgeOptions {
    * When false, `dispose()` marks the bridge unusable but does not close
    * the shared live client. Catalog refresh replacements use this so a
    * failed or superseded list_changed rebuild cannot tear down the
-   * connection that still owns the prior known-good surface.
+   * connection that still serves the previously published tool surface.
    */
   ownClient?: boolean;
+  /** Raw, unfiltered descriptors for the installed-plugin catalog cache. */
+  onCatalog?: (tools: readonly Record<string, unknown>[]) => void;
+  /** Revokes an owning configuration across authorization and RPC dispatch. */
+  revocationGuard?: () => boolean;
+  revocationSignal?: AbortSignal;
+  /** Optional abort for the catalog-list pagination walk. */
+  signal?: AbortSignal;
+  /** Test seam; production remains bounded by `MAX_MCP_LIST_PAGES`. */
+  maxListPages?: number;
+  /** Test seam; production remains bounded by `MAX_MCP_LIST_ITEMS`. */
+  maxListItems?: number;
+  /** Test seam; production remains bounded by `MAX_MCP_LIST_AGGREGATE_BYTES`. */
+  maxListAggregateBytes?: number;
 }
 
 interface MCPToolDescriptor {
   name: string;
   description?: string;
   inputSchema?: JSONSchema;
-}
-
-interface MCPListToolsResponse {
-  tools?: unknown;
 }
 
 type PermissionResolution =
@@ -614,6 +633,17 @@ async function authorizeMcpClientToolCall(
   return { ok: true, args: executionArgs };
 }
 
+/** Cancel the whole authorization wait, including a stalled canUseTool evaluator. */
+function awaitAuthorization<T>(task: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return task;
+  if (signal.aborted) return Promise.reject(new DesktopMcpPreflightRefusal("MCP authorization was revoked."));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new DesktopMcpPreflightRefusal("MCP authorization was revoked."));
+    signal.addEventListener("abort", onAbort, { once: true });
+    void task.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
 /** Reuse only the executor's exact, already-approved invocation. JSON/model
  * arguments cannot mint the private runtime-context marker. Rechecking the
  * same approval in an MCP bridge otherwise asks twice with the same call ID,
@@ -662,8 +692,10 @@ function desktopRoutineMutationAllowed(args: Record<string, unknown>, callId: st
   toolName: string, options: MCPToolBridgePermissionOptions | undefined): boolean {
   const context = exactMcpInvocation(args, callId, toolName, options);
   const broker = readSandboxExecutionBroker(args);
-  // A routine does not inherit a one-shot escalation or the parent's bypass.
-  // Its separate child policy cannot be used to escape a read-only parent.
+  // A routine never inherits a one-shot escalation. Its mode is at most this
+  // session's current mode, which Core reads from the session's own registry
+  // when the Desktop relays the call (routines/permission-authority.ts), so a
+  // routine cannot be used to escape a read-only or plan parent.
   if (!context || !broker || broker !== context.invocation.session.services.sandboxExecutionBroker ||
       context.requestedSandboxMode === "read_only" || context.sandboxMode === "read_only" ||
       broker.mode === "read_only") return false;
@@ -750,6 +782,29 @@ async function callRequestPermissionsTool(
   }
 }
 
+/**
+ * A `tools/call` result is the server's own answer: the call ran to
+ * completion there, whether it reports `isError` or not. Like a process exit
+ * for a shell command, that answer is the provider receipt that settles the
+ * effect as committed (whatever the tool did, it is done; nothing is still in
+ * flight). It never claims `confirmed_no_effect`, so a failed call is not
+ * retried as if it had changed nothing. Transport loss, a local deadline and
+ * a stop with no answer produce no receipt and stay unknown outcomes.
+ */
+function mcpServerAnswerReceipt(
+  serverName: string,
+  toolName: string,
+  callId: string,
+  isError: boolean,
+): ToolEffectDispositionEvidence {
+  return createToolEffectDispositionEvidence({
+    disposition: "confirmed_committed",
+    evidenceKind: "provider_receipt",
+    evidenceRef: `mcp-response:${serverName}:${toolName}:${callId}`,
+    evidenceMaterial: JSON.stringify({ serverName, toolName, callId, isError }),
+  });
+}
+
 async function withRPCDeadline<T>(
   operation: string,
   timeoutMs: number | undefined,
@@ -797,31 +852,39 @@ async function withRPCDeadline<T>(
   }
 }
 
-async function listMcpToolsWithRetry(
+async function listMcpToolsCatalog(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   client: any,
   serverName: string,
   timeoutMs: number,
   logger: Logger,
-): Promise<MCPListToolsResponse> {
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= MAX_MCP_LIST_TOOLS_ATTEMPTS; attempt += 1) {
-    try {
-      return await withRPCDeadline<MCPListToolsResponse>(
-        `MCP server "${serverName}" listTools`,
-        timeoutMs,
-        (signal) => client.listTools(undefined, { signal, timeout: timeoutMs }),
-      );
-    } catch (error) {
-      lastError = error;
-      if (attempt === MAX_MCP_LIST_TOOLS_ATTEMPTS) break;
-      logger.warn?.(
-        `MCP server ${JSON.stringify(serverName)} listTools attempt ${attempt} failed; retrying`,
-      );
-      await sleep(MCP_LIST_TOOLS_RETRY_BASE_DELAY_MS * attempt);
-    }
-  }
-  throw lastError;
+  options: Pick<
+    ToolBridgeOptions,
+    "signal" | "maxListPages" | "maxListItems" | "maxListAggregateBytes"
+  >,
+): Promise<unknown[]> {
+  return collectMcpListPages({
+    serverName,
+    method: "tools/list",
+    itemsKey: "tools",
+    deadlineMs: timeoutMs,
+    ...(options.signal !== undefined ? { signal: options.signal } : {}),
+    maxPages: options.maxListPages ?? MAX_MCP_LIST_PAGES,
+    maxItems: options.maxListItems ?? MAX_MCP_LIST_ITEMS,
+    maxAggregateBytes:
+      options.maxListAggregateBytes ?? MAX_MCP_LIST_AGGREGATE_BYTES,
+    retry: {
+      maxAttempts: MAX_MCP_LIST_TOOLS_ATTEMPTS,
+      baseDelayMs: MCP_LIST_TOOLS_RETRY_BASE_DELAY_MS,
+      logger,
+      operationName: "listTools",
+    },
+    fetchPage: (cursor, callOptions) =>
+      client.listTools(cursor === undefined ? undefined : { cursor }, {
+        signal: callOptions.signal,
+        timeout: callOptions.timeout,
+      }),
+  });
 }
 
 function abortSignalFromArgs(
@@ -859,14 +922,12 @@ function trustedCallIdFromArgs(
     : undefined;
 }
 
-function renderMcpProgress(raw: unknown): string | undefined {
+function renderMcpProgress(raw: unknown, sensitiveHeaders?: Readonly<Record<string, string>>): string | undefined {
   const record = asRecord(raw);
   if (!record) return undefined;
   const parts: string[] = [];
   if (typeof record.message === "string") {
-    parts.push(
-      sanitizeMcpOutputText(truncateMcpUtf8(record.message, 896)),
-    );
+    parts.push(sanitizeMcpOutputText(truncateMcpUtf8(redactMcpAttachmentText(record.message, sensitiveHeaders), 896)));
   }
   if (typeof record.progress === "number" && Number.isFinite(record.progress)) {
     const progress = String(record.progress);
@@ -876,7 +937,7 @@ function renderMcpProgress(raw: unknown): string | undefined {
     parts.push(`progress ${progress}${total}`);
   }
   if (parts.length === 0) return undefined;
-  return truncateMcpUtf8(parts.join(" — "), 1_024);
+  return parts.join(" — ");
 }
 
 function forwardMcpProgress(
@@ -884,9 +945,11 @@ function forwardMcpProgress(
   callback: MCPProgressCallback | undefined,
   logger: Logger,
   toolName: string,
+  sensitiveHeaders?: Readonly<Record<string, string>>,
 ): void {
   if (callback === undefined) return;
-  const chunk = renderMcpProgress(raw);
+  const rendered = renderMcpProgress(raw, sensitiveHeaders);
+  const chunk = rendered === undefined ? undefined : truncateMcpUtf8(sanitizeMcpOutputText(redactMcpAttachmentText(rendered, sensitiveHeaders)), 1_024);
   if (chunk === undefined || chunk.length === 0) return;
   try {
     callback({ chunk, stream: "status" });
@@ -901,9 +964,10 @@ function forwardMcpProgress(
 /**
  * Create a tool bridge from an MCP client connection.
  *
- * Queries the server for available tools via `client.listTools()`,
- * then wraps each as a runtime `Tool` with namespaced names:
- * `mcp.{serverName}.{toolName}`
+ * Queries the server for available tools via bounded `tools/list`
+ * pagination, then wraps each as a runtime `Tool` with namespaced names:
+ * `mcp.{serverName}.{toolName}`. Allow/deny filters and catalog hashing
+ * run only after every page has been collected.
  *
  * @param client - Connected MCP Client instance (from createMCPConnection)
  * @param serverName - Server name for tool namespacing
@@ -929,13 +993,12 @@ export async function createToolBridge(
       ? Math.max(1, Math.floor(options.callToolTimeoutMs))
       : undefined;
 
-  const response = await listMcpToolsWithRetry(
-    client,
-    serverName,
-    listToolsTimeoutMs,
-    logger,
+  const listedTools = await listMcpToolsCatalog(
+    client, serverName, listToolsTimeoutMs, logger, options,
   );
-  const rawTools = normalizeMCPToolCatalog(response.tools);
+  const rawTools = normalizeMCPToolCatalog(listedTools);
+  options.onCatalog?.(listedTools.filter((tool): tool is Record<string, unknown> =>
+    typeof tool === "object" && tool !== null && !Array.isArray(tool)));
   const mcpTools: MCPToolDescriptorLike[] = options.serverConfig
     ? (filterMCPToolCatalog(
         options.serverConfig,
@@ -999,7 +1062,7 @@ export async function createToolBridge(
       inputSchema: modelFacingMcpInputSchema(
         serverName,
         mcpTool.name,
-        redactMcpAttachmentValue(mcpTool.inputSchema ?? { type: "object", properties: {} }, options.serverConfig?.sensitiveHeaders),
+        redactMcpAttachmentValue(mcpTool.inputSchema ?? { type: "object", properties: {} }, options.serverConfig?.sensitiveHeaders, undefined, "schema"),
         logger,
       ),
       serverId: serverName,
@@ -1060,21 +1123,33 @@ export async function createToolBridge(
           return callRequestPermissionsTool(args, callId, options.permissions);
         }
         const startedAtMs = Date.now();
+        let dispatched = false;
 
         try {
+          const permissions = options.revocationSignal && options.permissions
+            ? { ...options.permissions, signal: options.permissions.signal
+                ? AbortSignal.any([options.permissions.signal, options.revocationSignal])
+                : options.revocationSignal }
+            : options.permissions;
           const authorization: PermissionResolution =
             exactMcpInvocation(args, callId, namespacedName, options.permissions)?.approvalResolved === true
             ? { ok: true, args }
-            : await authorizeMcpClientToolCall(
+            : await awaitAuthorization(authorizeMcpClientToolCall(
             bridgeTool,
             serverName,
             mcpTool,
             callId,
             args,
-            options.permissions,
-          );
+            permissions,
+          ), permissions?.signal);
           if (!authorization.ok) {
+            if (options.revocationGuard?.() === false || options.revocationSignal?.aborted) {
+              return preEffectRefusal(namespacedName, "The owning MCP plugin was revoked during authorization.");
+            }
             return authorization.result;
+          }
+          if (options.revocationGuard?.() === false || options.revocationSignal?.aborted) {
+            return preEffectRefusal(namespacedName, "The owning MCP plugin was revoked during authorization.");
           }
           // Approval can outlive the originating turn. A captured proxy must
           // not carry a revoked local lease across that asynchronous boundary.
@@ -1102,12 +1177,18 @@ export async function createToolBridge(
             `MCP tool "${mcpTool.name}" callTool`,
             callToolTimeoutMs,
             (signal) => withDesktopMcpDispatchGuard(() => {
+              if (options.revocationGuard?.() === false || options.revocationSignal?.aborted) throw new DesktopMcpPreflightRefusal("The owning MCP plugin was revoked before dispatch.");
               if (options.serverConfig?.localOnly === true && !hasLocalMcpAccess()) throw new DesktopMcpPreflightRefusal("The local app-control turn has ended.");
               if (options.serverConfig?.desktopAuthorityGrant && !hasDesktopAuthority(options.serverConfig.desktopAuthorityGrant)) throw new DesktopMcpPreflightRefusal("Desktop host authority expired before dispatch.");
               if (signal.aborted || effectSignal?.aborted) throw new DesktopMcpPreflightRefusal("The app-control operation was cancelled before dispatch.");
               if (nativeTerminal && !nativeDesktopTerminalAllowed(args, callId, namespacedName, options.permissions)) throw new DesktopMcpPreflightRefusal("The visible terminal no longer has full-access authority.");
               if (routineMutation && !desktopRoutineMutationAllowed(args, callId, namespacedName, options.permissions)) throw new DesktopMcpPreflightRefusal("The Desktop Routine call no longer has writable local authority.");
-            }, () => client.callTool(
+            }, () => {
+              // The SDK can dispatch synchronously on stdio. Check here after
+              // observers; HTTP checks again after its asynchronous binding work.
+              assertDesktopMcpDispatchGuard(false, false);
+              dispatched = true;
+              return client.callTool(
                 {
                   name: mcpTool.name,
                   arguments: executionArgs,
@@ -1131,25 +1212,36 @@ export async function createToolBridge(
                     ? {
                         onprogress: (progress: unknown) => {
                           forwardMcpProgress(
-                            redactMcpAttachmentValue(progress, options.serverConfig?.sensitiveHeaders),
+                            progress,
                             progressCallback,
                             logger,
                             mcpTool.name,
+                            options.serverConfig?.sensitiveHeaders,
                           );
                         },
                       }
                     : {}),
                 },
-              )),
+              );
+            }),
             effectSignal,
           );
           const result = await normalizeMcpToolOutput({
-            raw: redactMcpAttachmentValue(rawResult, options.serverConfig?.sensitiveHeaders),
+            raw: redactMcpAttachmentValue(rawResult, options.serverConfig?.sensitiveHeaders, undefined, "tool-result"),
+            originalRaw: rawResult,
+            ...(options.serverConfig?.sensitiveHeaders !== undefined
+              ? { sensitiveHeaders: options.serverConfig.sensitiveHeaders }
+              : {}),
             serverName,
             toolName: mcpTool.name,
             callId,
             environment,
             logger,
+            displayRoots: [
+              ...(options.serverConfig?.displayDataRoot ? [options.serverConfig.displayDataRoot] : []),
+              ...(options.permissions?.cwd ? [options.permissions.cwd] : []),
+            ],
+            displayDataRoot: options.serverConfig?.displayDataRoot,
           });
           const effectDisposition = desktopControlEffectReceipt(rawResult, {
             serverName,
@@ -1171,7 +1263,12 @@ export async function createToolBridge(
             isError,
             durationMs,
           });
-          return effectDisposition === undefined ? result : { ...result, effectDisposition };
+          return {
+            ...result,
+            effectDisposition:
+              effectDisposition ??
+              mcpServerAnswerReceipt(serverName, mcpTool.name, callId, isError),
+          };
         } catch (error) {
           const effectiveError = effectSignal?.aborted
             ? effectSignal.reason
@@ -1190,12 +1287,17 @@ export async function createToolBridge(
             isError: true,
             durationMs,
           });
-          if (error instanceof DesktopMcpPreflightRefusal) return preEffectRefusal(namespacedName, errMessage);
+          if (error instanceof DesktopMcpPreflightRefusal ||
+              (!dispatched && (options.revocationSignal?.aborted || options.revocationGuard?.() === false))) {
+            return preEffectRefusal(namespacedName, errMessage);
+          }
           effectSignal?.throwIfAborted();
-          return {
+          const failure: ToolResult = {
             content: errMessage,
             isError: true,
           };
+          markMcpConnectionFailure(failure, isMcpConnectionError(rawErrorMessage));
+          return failure;
         }
       },
     };

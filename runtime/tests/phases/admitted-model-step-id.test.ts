@@ -554,7 +554,7 @@ describe("admitted model sample identity", () => {
     );
   });
 
-  test("resumes a reserved sample with its runtime prompt and exact id", async () => {
+  test("resumes with its runtime prompt and a new physical sample id", async () => {
     const seen: LLMMessage[][] = [];
     await withAdmittedHarness(
       ["finished"],
@@ -594,7 +594,7 @@ describe("admitted model sample identity", () => {
             "Continue with the task. Use the appropriate tools to proceed.",
         });
         expect(reconciledStepIds(admission)).toEqual([
-          "model:turn-stream:1:0:sample-1:primary",
+          "model:turn-stream:1:0:sample-2:primary",
         ]);
       },
       (messages) => seen.push(messages.map((message) => ({ ...message }))),
@@ -734,7 +734,7 @@ describe("admitted model sample identity", () => {
       expect(journal).toContainEqual(
         expect.objectContaining({
           event: "fallback",
-          stepId: "model:turn-cross-provider-resume:1:0:sample-1:primary",
+          stepId: "model:turn-cross-provider-resume:1:0:sample-2:primary",
           provider: "openai",
           model: "gpt-5",
           reason: "provider_fallback_ladder",
@@ -750,7 +750,7 @@ describe("admitted model sample identity", () => {
         journal.filter((event) => event.event === "fallback"),
       ).toHaveLength(1);
       expect(reconciledStepIds(admission)).toContain(
-        "model:turn-cross-provider-resume:1:0:sample-1:primary",
+        "model:turn-cross-provider-resume:1:0:sample-2:primary",
       );
     } finally {
       admission.close();

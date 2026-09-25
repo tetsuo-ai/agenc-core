@@ -183,10 +183,26 @@ export type McpServerConfig = z.infer<ReturnType<typeof McpServerConfigSchema>>
 export type PluginMcpServerIdentity = {
   pluginName: string
   serverName: string
+  version?: string
+  digest?: string
+  pluginRoot?: string
+  snapshotRoot?: string
+  snapshotLaunch?: {
+    command?: string
+    args?: readonly string[]
+    cwd?: string
+    env?: Readonly<Record<string, string>>
+  }
+  userConfigDigest?: string
+  eager?: boolean
+  idleTimeoutMs?: number
+  maxProcesses?: number
 }
 
 export type ScopedMcpServerConfig = McpServerConfig & {
   scope: ConfigScope
+  /** Decoded saved plugin credentials for redacting this connection's output. */
+  pluginSecretValues?: readonly string[]
   /** Exact canonical repository authority that supplied the winning definition. */
   authoritySource?: RepositoryConfigScope | 'session'
   // For plugin-provided servers: the providing plugin's LoadedPlugin.source
@@ -246,6 +262,12 @@ export type PendingMCPServer = {
   maxReconnectAttempts?: number
 }
 
+export type StoppedMCPServer = {
+  name: string
+  type: 'stopped'
+  config: ScopedMcpServerConfig
+}
+
 export type DisabledMCPServer = {
   name: string
   type: 'disabled'
@@ -257,6 +279,7 @@ export type MCPServerConnection =
   | FailedMCPServer
   | NeedsAuthMCPServer
   | PendingMCPServer
+  | StoppedMCPServer
   | DisabledMCPServer
 
 // Resource types

@@ -69,6 +69,11 @@ request carries `referrer=agenc` so xAI can attribute usage (their request).
 - The OAuth bearer is only ever sent to `api.x.ai` / `*.grok.com`. A custom
   grok base-URL override refuses to start in OAuth mode — set a real API
   key (and no OAuth token) to use gateways.
+- Fast (xAI priority processing, `service_tier = "priority"`) is sent only
+  with API-key billing. xAI does not document whether the sign-in grant can
+  use it or how it would be billed, so a signed-in session ignores the Fast
+  setting and does not list a Fast tier. To use Fast while signed in, select
+  API-key billing with `GROK_AUTH_MODE=api-key` and an `XAI_API_KEY`.
 
 ## Troubleshooting
 

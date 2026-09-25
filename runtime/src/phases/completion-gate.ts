@@ -175,7 +175,6 @@ export function planCompletionGateForTurn(input: {
   if (!policy.enabled) return undefined;
   if (!input.isRootHumanTurn) return undefined;
   if (ctx.depth !== 0) return undefined;
-  if (ctx.editorInteraction !== undefined) return undefined;
   if (ctx.config.autonomousMode === true) return undefined;
   if (isPlanMode(ctx)) return undefined;
   const source = session.sessionConfiguration?.sessionSource;
