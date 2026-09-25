@@ -722,6 +722,151 @@ describe("plugin install transaction", () => {
     await expect(access(ops)).rejects.toThrow();
   });
 
+  it("does not rmdir the ops directory after a concurrent lease appears", async () => {
+    const world = await createWorld();
+    const ops = join(world.pluginStorageRoot, ".plugin-install-ops");
+    await writeDeadRecord(world, "00000000-0000-4000-8000-rmdir0000001");
+    const liveLease = join(ops, "00000000-0000-4000-8000-rmdir0000002.json.lease");
+    await recoverPluginInstallTransactions({
+      installRoots: [world.pluginStorageRoot],
+      hooks: {
+        beforeRemoveEmptyOpsDirectory: async (opsDir) => {
+          await writeFile(liveLease, `${JSON.stringify({ pid: process.pid })}\n`);
+          expect(opsDir).toBe(ops);
+        },
+      },
+    });
+    expect(await readFile(liveLease, "utf8")).toContain(String(process.pid));
+    expect((await readdir(ops)).some((name) => name.endsWith(".lease"))).toBe(true);
+  });
+
+  it("keeps a live lease when another dead record is recovered", async () => {
+    const world = await createWorld();
+    const ops = join(world.pluginStorageRoot, ".plugin-install-ops");
+    await writeDeadRecord(world, "00000000-0000-4000-8000-deadrec00001");
+    const liveId = "00000000-0000-4000-8000-liverec00001";
+    const liveRecord = join(ops, `${liveId}.json`);
+    await writeFile(liveRecord, deadRecordJson(world, liveId));
+    await writeFile(`${liveRecord}.lease`, `${JSON.stringify({ pid: process.pid })}\n`);
+    const loaded = await loadPlugins({
+      pluginStorageRoot: world.pluginStorageRoot,
+      workspaceRoot: world.workspaceRoot,
+      config: { plugins: { enabled: true } },
+    });
+    expect(loaded.errors.filter((issue) => issue.type === "install-recovery")).toEqual([]);
+    expect(await readFile(liveRecord, "utf8")).toContain(liveId);
+    expect(await readFile(`${liveRecord}.lease`, "utf8")).toContain(String(process.pid));
+    expect((await readdir(ops)).length).toBeGreaterThan(0);
+  });
+
+  it("skips a record whose recovery lease is held by a live pid", async () => {
+    const world = await createWorld();
+    const operationId = "00000000-0000-4000-8000-claim0000001";
+    const recordPath = await writeDeadRecord(world, operationId);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let opened: () => void = () => {};
+    const openedGate = new Promise<void>((resolve) => {
+      opened = resolve;
+    });
+    const first = recoverPluginInstallTransactions({
+      installRoots: [world.pluginStorageRoot],
+      hooks: {
+        afterLeaseClaimed: async () => {
+          opened();
+          await gate;
+        },
+      },
+    });
+    await openedGate;
+    const second = await recoverPluginInstallTransactions({
+      installRoots: [world.pluginStorageRoot],
+    });
+    expect(second.recovered).toBe(0);
+    expect(await readFile(recordPath, "utf8")).toContain(operationId);
+    release();
+    await expect(first).resolves.toMatchObject({ recovered: 1 });
+    await expect(access(recordPath)).rejects.toThrow();
+  });
+
+  it.each([
+    ["symlinked parent", async (world: TxnWorld) => {
+      const repoPlugins = join(world.workspaceRoot, ".agents", "plugins");
+      await mkdir(repoPlugins, { recursive: true });
+      const linkParent = join(world.root, "link-parent");
+      await mkdir(linkParent, { recursive: true });
+      await symlink(join(world.workspaceRoot, ".agents"), join(linkParent, "link"));
+      return join(linkParent, "link", "plugins");
+    }],
+    ["trailing slash", async (world: TxnWorld) => `${join(world.workspaceRoot, ".agents", "plugins")}/`],
+    ["parent segment", async (world: TxnWorld) => join(world.workspaceRoot, ".agents", "x", "..", "plugins")],
+  ])("does not restore user config for a repository storage root via %s", async (_label, storagePath) => {
+    const world = await createWorld();
+    const pluginStorageRoot = await storagePath(world);
+    await mkdir(join(world.workspaceRoot, ".agents", "plugins"), { recursive: true });
+    const userConfig = join(world.agencHome, "config.toml");
+    const before = "config_version = 2\n\n[plugins]\nenabled = true\n";
+    await writeFile(userConfig, before);
+    await writeForgedRecord({ ...world, pluginStorageRoot }, "repocfg", join(pluginStorageRoot, "demo"), {
+      phase: "record-created",
+      previousPluginConfig: {
+        entryPresent: false,
+        pluginsEnabledPresent: true,
+        pluginsEnabled: false,
+      },
+      configTargetPath: userConfig,
+    });
+    const loaded = await loadPlugins({
+      pluginStorageRoot,
+      workspaceRoot: world.workspaceRoot,
+      config: { plugins: { enabled: true } },
+      userConfigPath: userConfig,
+    });
+    expect(await readFile(userConfig, "utf8")).toBe(before);
+    expect(loaded.errors.some((issue) =>
+      issue.type === "install-recovery" && /plugin config not restored/u.test(issue.message),
+    )).toBe(true);
+    await expect(access(join(world.workspaceRoot, ".agents", "config.toml"))).rejects.toThrow();
+  });
+
+  it("does not restore a snapshot into a different user config", async () => {
+    const world = await createWorld();
+    const userConfig = join(world.agencHome, "config.toml");
+    await writeFile(userConfig, "config_version = 2\n");
+    await expect(installFresh(world, "fresh", {
+      afterPublishConfig: async () => {
+        throw new PluginInstallTransactionSimulatedCrash("destination-replaced");
+      },
+    })).rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
+    const afterCrash = await readFile(userConfig, "utf8");
+    const otherHome = join(world.root, "other-home");
+    await mkdir(otherHome, { recursive: true });
+    const otherConfig = join(otherHome, "config.toml");
+    await writeFile(otherConfig, "config_version = 2\n");
+    const wrong = await loadPlugins({
+      pluginStorageRoot: world.pluginStorageRoot,
+      workspaceRoot: world.workspaceRoot,
+      config: { plugins: { enabled: true } },
+      userConfigPath: otherConfig,
+    });
+    expect(wrong.errors.some((issue) =>
+      issue.type === "install-recovery" && /plugin config not restored/u.test(issue.message),
+    )).toBe(true);
+    expect(await readFile(otherConfig, "utf8")).toBe("config_version = 2\n");
+    expect(await readFile(userConfig, "utf8")).toBe(afterCrash);
+    const right = await loadPlugins({
+      pluginStorageRoot: world.pluginStorageRoot,
+      workspaceRoot: world.workspaceRoot,
+      config: { plugins: { enabled: true } },
+      userConfigPath: userConfig,
+    });
+    expect(right.errors.filter((issue) => issue.type === "install-recovery")).toEqual([]);
+    expect(await readFile(userConfig, "utf8")).not.toContain("fresh");
+    expect(await readFile(otherConfig, "utf8")).toBe("config_version = 2\n");
+  });
+
   it("restores the previous plugin entry exactly, including extra fields", async () => {
     const installed = await installDemoV1();
     const configPath = join(installed.agencHome, "config.toml");
@@ -890,6 +1035,33 @@ async function directoryIdentity(path: string): Promise<{
     manifestSha256: "",
     metadataSha256: "",
   };
+}
+
+function deadRecordJson(world: TxnWorld, operationId: string): string {
+  return `${JSON.stringify({
+    version: 1,
+    operationId,
+    kind: "install",
+    pluginId: "fresh",
+    destination: join(world.pluginStorageRoot, "fresh"),
+    stagePath: join(world.pluginStorageRoot, `fresh.stage-${operationId}`),
+    phase: "record-created",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  })}\n`;
+}
+
+async function writeDeadRecord(world: TxnWorld, operationId: string): Promise<string> {
+  const child = spawn(process.execPath, ["-e", "process.exit(0)"]);
+  await new Promise<void>((resolve, reject) => {
+    child.once("exit", () => resolve());
+    child.once("error", reject);
+  });
+  const ops = join(world.pluginStorageRoot, ".plugin-install-ops");
+  await mkdir(ops, { recursive: true });
+  const recordPath = join(ops, `${operationId}.json`);
+  await writeFile(recordPath, deadRecordJson(world, operationId));
+  await writeFile(`${recordPath}.lease`, `${JSON.stringify({ pid: child.pid })}\n`);
+  return recordPath;
 }
 
 async function writeForgedRecord(
