@@ -209,6 +209,8 @@ const SHELL_SCRIPT_COMMANDS: ReadonlySet<string> = new Set([
   "rbash",
   "rksh",
   "ksh93",
+  "powershell",
+  "pwsh",
 ]);
 
 function isRecursiveForceRemove(command: string): boolean {
@@ -1325,6 +1327,9 @@ function shellCommandStringIndex(
 
 function isShellCommandStringFlag(flag: string): boolean {
   if (flag === "-c") return true;
+  // PowerShell's documented long form. `-Command` has no lowercase `c`, so the
+  // POSIX clustered-flag check below would miss `pwsh -Command 'rm -rf /'`.
+  if (flag.toLowerCase() === "-command") return true;
   return flag.startsWith("-") && !flag.startsWith("--") && flag.slice(1).includes("c");
 }
 
