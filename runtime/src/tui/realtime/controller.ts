@@ -455,6 +455,10 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
 
   async #startWebsocketAudioCapture(): Promise<void> {
     await this.#stopAudioCapture();
+    // A realtime_closed or realtime_error handled during the
+    // thread/realtime/start RPC already ended this session; opening the mic
+    // now would leave a live capture that stop() cannot clear.
+    if (!this.#canApplyRealtimeSessionEvent()) return;
     const generation = this.#captureGeneration;
     const capture = await this.#startAudioCapture({
       onAudio: (audio) => {
@@ -485,7 +489,11 @@ class RealtimeTuiController implements AgenCRealtimeTuiControls {
       },
     });
     if (!this.#isCurrentCaptureGeneration(generation)) {
-      await Promise.resolve(capture.stop()).catch(logError);
+      // Defer into the chain so a synchronous throw from stop() is logged
+      // instead of rejecting start() for a session that already closed.
+      await Promise.resolve()
+        .then(() => capture.stop())
+        .catch(logError);
       return;
     }
     this.#audioCapture = capture;
