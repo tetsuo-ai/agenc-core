@@ -59,6 +59,7 @@ import {
   type AgencPromptEvent,
   type AgencPromptResult,
 } from "./events.js";
+import { createPromptEventQueue } from "./prompt-event-queue.js";
 import type {
   CsvJobReviewListParams,
   CsvJobReviewListResult,
@@ -400,9 +401,6 @@ export interface AgencRunAttachment extends AsyncIterable<RunReplayEvent> {
   diagnostics(): AgencRunReplayDiagnostics;
 }
 
-/** Cap on internally buffered, not-yet-consumed prompt events. */
-const MAX_BUFFERED_PROMPT_EVENTS = 1_000;
-
 interface EventChannel {
   push(event: AgencPromptEvent): void;
   end(result: AgencPromptResult): void;
@@ -411,8 +409,8 @@ interface EventChannel {
   readonly result: Promise<AgencPromptResult>;
 }
 
-function createEventChannel(): EventChannel {
-  const buffered: AgencPromptEvent[] = [];
+function createEventChannel(sessionId: string): EventChannel {
+  const buffered = createPromptEventQueue({ sessionId: () => sessionId });
   let done = false;
   let finalResult: AgencPromptResult | null = null;
   let failure: Error | null = null;
@@ -436,7 +434,6 @@ function createEventChannel(): EventChannel {
     push(event) {
       if (done) return;
       buffered.push(event);
-      while (buffered.length > MAX_BUFFERED_PROMPT_EVENTS) buffered.shift();
       notify();
     },
     end(value) {
@@ -1303,7 +1300,7 @@ export class AgencClient {
         this.#activePromptRuns.delete(sessionId);
       }
     };
-    const channel = createEventChannel();
+    const channel = createEventChannel(sessionId);
     const onPermissionRequest =
       options.onPermissionRequest ?? this.#onPermissionRequest;
     const onElicitationRequest =

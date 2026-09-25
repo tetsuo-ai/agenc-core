@@ -13,6 +13,11 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
+import { registerSandboxExecutionLifecycleParticipant } from "../../src/sandbox/execution-lifecycle.js";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { BrowserManager } from "../../src/browser/manager.js";
@@ -39,7 +44,15 @@ describe.skipIf(!LIVE)("Browser tool live e2e", () => {
   let base: string;
   // Local dev target → allow private network so the loopback fixture is
   // reachable; the metadata block is asserted independently below.
+  // AGENC_BROWSER_WORKSPACE_E2E=1 runs Chromium through the real workspace
+  // sandbox (linux_seccomp on Linux), where CDP travels over stdio.
+  const fixtureRoot = LIVE ? mkdtempSync(join(tmpdir(), "agenc-browser-live-"))
+    : join(tmpdir(), "agenc-browser-live-not-started");
+  const broker = process.env.AGENC_BROWSER_WORKSPACE_E2E === "1"
+    ? new SandboxExecutionBroker({ mode: "workspace_write", cwd: fixtureRoot })
+    : explicitDangerBroker;
   const manager = new BrowserManager({
+    agencHome: fixtureRoot,
     policy: {
       headless: true,
       allowPrivateNetwork: true,
@@ -47,10 +60,16 @@ describe.skipIf(!LIVE)("Browser tool live e2e", () => {
       navigationTimeoutMs: 30_000,
     },
     idleShutdownMs: 120_000,
-    sandboxExecutionBroker: explicitDangerBroker,
+    sandboxExecutionBroker: broker,
   });
 
+  let unregisterBrowser: (() => void) | undefined;
   beforeAll(async () => {
+    // The browser owns its spawns through the broker, as BrowserTool registers it.
+    unregisterBrowser = registerSandboxExecutionLifecycleParticipant(broker, {
+      name: "browser", spawnSurfaces: ["browser"],
+      quiesce: () => manager.closeAll(), resume: async () => {},
+    });
     // Fail loudly (not skip) if opted in but no browser is present.
     expect(
       resolveBrowserExecutable(process.env.AGENC_BROWSER_EXECUTABLE),
@@ -72,6 +91,8 @@ describe.skipIf(!LIVE)("Browser tool live e2e", () => {
 
   afterAll(async () => {
     await manager.closeAll();
+    unregisterBrowser?.();
+    if (LIVE) rmSync(fixtureRoot, { recursive: true, force: true });
     await new Promise<void>((r) => server.close(() => r()));
   });
 

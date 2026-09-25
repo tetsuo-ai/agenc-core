@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +12,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AgenCDelegateBackgroundAgentRunner } from "../../src/app-server/background-agent-runner.js";
+import { ensureAgentControl } from "../../src/bin/delegate-tool.js";
 import type { AgenCDelegateBackgroundAgentRunnerOptions } from "../../src/app-server/background-agent-runner/shared.js";
 import { DAEMON_AGENT_CREATE_TIMEOUT_MS } from "../../src/app-server/operation-deadline.js";
 import {
@@ -20,7 +22,8 @@ import {
 import { requestApproval } from "../../src/permissions/guardian/arbiter.js";
 import type { ReviewDecision } from "../../src/permissions/review-decision.js";
 import { resolveUnattendedPermissionDecision } from "../../src/permissions/unattended-policy.js";
-import { computeCheckpointPrefixHashV3 } from "../../src/session/durable-checkpoint-reader.js";
+import { computeCheckpointPrefixHashV3, validateCheckpointPrefix } from "../../src/session/durable-checkpoint-reader.js";
+import { createToolResultIntegrity } from "../../src/session/tool-result-integrity.js";
 import {
   currentBuildId,
   resetBuildIdForTestingOnly,
@@ -28,10 +31,13 @@ import {
 import {
   parseRolloutLine,
   type RolloutItem,
+  type ResponseItem,
 } from "../../src/session/rollout-item.js";
 import { reconstructFromRollout } from "../../src/session/rollout-reconstruction.js";
 import { RolloutStore } from "../../src/session/rollout-store.js";
 import { Session } from "../../src/session/session.js";
+import type { Event } from "../../src/session/event-log.js";
+import { createOperatorEffectReviewResolution } from "../../src/state/effect-review.js";
 import { VERSION } from "../../src/version.js";
 
 /**
@@ -174,21 +180,48 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
     rmSync(workspace, { recursive: true, force: true });
   });
 
+  function seedCheckpointedRoot(prefix: ResponseItem[], checkpointId: string) {
+    const root = new RolloutStore({ cwd: workspace, sessionId: CONVERSATION_ID,
+      agencVersion: VERSION, agencHome: home, sessionTempRoot: tmpdir(),
+      resume: true, autoStartScheduler: false });
+    root.open({ sessionId: CONVERSATION_ID, timestamp: new Date().toISOString(),
+      cwd: workspace, originator: "agenc-cli", agencVersion: VERSION,
+      model: "base-model", modelProvider: "grok" });
+    for (const payload of prefix) root.appendRollout({ type: "response_item", payload });
+    const appended = root.append({ eventId: checkpointId, id: checkpointId, seq: 3,
+      msg: { type: "turn_checkpoint", payload: { turnId: TURN_ID,
+        checkpointVersion: 4, prefixHashVersion: 3, toolResultIntegrityVersion: 1,
+        iterationIndex: 2, boundary: "postAssistant", checkpointSeq: 2,
+        persistedMessageCount: 2, prefixHash: computeCheckpointPrefixHashV3(prefix, 2),
+        resumableState: { turnCount: 1, recoveryReentryCount: 0,
+          maxOutputTokensRecoveryCount: 0, continuationNudgeCount: 0,
+          stopHookBlockingCount: 0 } } } }, { durable: true });
+    return { root, appended };
+  }
+
   function stubProviderAndMcp(): void {
     vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
   }
 
-  async function stubProvider(): Promise<void> {
+  async function stubProvider(stream = false, firstToolCallId?: string): Promise<void> {
     const providerMod = await import("../../src/llm/provider.js");
+    let firstCall = true;
+    const reply = () => {
+      const toolCalls = firstCall && firstToolCallId !== undefined
+        ? [{ id: firstToolCallId, name: "FileRead", arguments: "{}" }] : [];
+      firstCall = false;
+      return {
+        content: toolCalls.length > 0 ? "" : "ok",
+        toolCalls,
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      };
+    };
     vi.spyOn(providerMod, "createProvider").mockImplementation(
       () =>
         ({
           name: "stub",
-          chat: async () => ({
-            content: "ok",
-            toolCalls: [],
-            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-          }),
+          chat: async () => reply(),
+          ...(stream ? { chatStream: async () => reply() } : {}),
         }) as never,
     );
   }
@@ -645,6 +678,592 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
     return { runner, bootstrap: booted! };
   }
 
+  it("restores a suspended reviewable session and resumes only after live review", async () => {
+    await stubProvider();
+    stubProviderAndMcp();
+    const seed = new RolloutStore({ cwd: workspace, sessionId: CONVERSATION_ID,
+      agencVersion: VERSION, agencHome: home, sessionTempRoot: tmpdir(),
+      resume: true, autoStartScheduler: false });
+    seed.open({ sessionId: CONVERSATION_ID, timestamp: new Date().toISOString(),
+      cwd: workspace, originator: "agenc-cli", agencVersion: VERSION,
+      model: "base-model", modelProvider: "grok" });
+    const recordedAt = new Date().toISOString();
+    const intent: Event = { eventId: "restore-review-intent", id: "restore-review-intent", seq: 3,
+      msg: { type: "effect_intent", payload: { formatVersion: 2,
+        minimumReaderRuntime: "0.14.0", runId: CONVERSATION_ID,
+        stepId: "tool:orphan:write", callId: "write", toolName: "Write",
+        recoveryCategory: "side-effecting", intentDigest: "write-digest",
+        attempt: 1, recordedAt } } };
+    const unknown: Event = { eventId: "restore-review-unknown", id: "restore-review-unknown", seq: 4,
+      msg: { type: "effect_unknown_outcome", payload: { formatVersion: 2,
+        minimumReaderRuntime: "0.14.0", runId: CONVERSATION_ID,
+        stepId: "tool:orphan:write", callId: "write", toolName: "Write",
+        recoveryCategory: "side-effecting", intentEventSeq: 3,
+        outcome: "unknown_outcome", reason: "acknowledgement_lost",
+        requiresReview: true, recordedAt } } };
+    const suspension: Event = { eventId: "restore-review-suspended", id: "restore-review-suspended", seq: 5,
+      msg: { type: "run_suspended", payload: { runId: CONVERSATION_ID,
+        epoch: 1, reason: "daemon_shutdown_idle", suspendedAt: recordedAt } } };
+    try {
+      for (const event of [intent, unknown]) {
+        expect(seed.append(event, { durable: true })).toBe(true);
+        seed.recordEffectEvent(event);
+      }
+      expect(seed.append(suspension, { durable: true })).toBe(true);
+      seed.recordRunSuspensionEvent(suspension);
+    } finally { seed.close(); }
+
+    const observations = recordResumeObservations();
+    let booted: LocalRuntimeBootstrap | undefined;
+    const runner = makeRunner((bootstrap) => { booted = bootstrap; });
+    try {
+      await expect(runner.restoreAgent(restoreParams({ resumeSuspendedRun: true })))
+        .resolves.toBe(true);
+      expect(booted!.rolloutStore.hasPendingEffectReviews()).toBe(true);
+      expect(observations).toEqual([]);
+      await expect(runner.submitAgentMessage(CONVERSATION_ID, {
+        sessionId: CONVERSATION_ID, content: "do more", originalContent: "do more",
+        messageId: "reject-during-review", streamId: "reject-during-review",
+        acceptedAt: recordedAt, ifBusy: "reject",
+      })).rejects.toMatchObject({ code: "TURN_IN_PROGRESS" });
+      const queued = runner.submitAgentMessage(CONVERSATION_ID, {
+        sessionId: CONVERSATION_ID, content: "do more", originalContent: "do more",
+        messageId: "queued-during-review", streamId: "queued-during-review",
+        acceptedAt: recordedAt,
+      });
+      const resolution = createOperatorEffectReviewResolution({
+        disposition: "confirmed_no_effect", actorId: "operator",
+        evidenceRef: "test:verified-no-write", evidenceSha256: "a".repeat(64),
+        reviewedAt: new Date().toISOString(),
+      });
+      await expect(runner.resolveLiveEffectReview(CONVERSATION_ID, {
+        sessionId: CONVERSATION_ID, toolCallId: "write", resolution,
+      })).resolves.toMatchObject({ kind: "resolved", durable: true });
+      await waitUntil(() => observations.length >= 1, "reviewed turn continuation");
+      await expect(queued).resolves.toMatchObject({ disposition: "started" });
+      expect(booted!.rolloutStore.hasPendingEffectReviews()).toBe(false);
+      expect(observations[0]).toMatchObject({ resume: true, hasApprovalResolver: true });
+      expect(observations).toContainEqual(expect.objectContaining({ resume: false }));
+    } finally {
+      await runner.stopAgent(CONVERSATION_ID).catch(() => undefined);
+    }
+  }, 60_000);
+
+  function seedWorker(childId: string, status: "open" | "closed", terminal: boolean,
+    childCwd = workspace): void {
+    const root = new RolloutStore({ cwd: workspace, sessionId: CONVERSATION_ID,
+      agencVersion: VERSION, agencHome: home, sessionTempRoot: tmpdir(),
+      resume: true, autoStartScheduler: false });
+    root.open({ sessionId: CONVERSATION_ID, timestamp: new Date().toISOString(),
+      cwd: workspace, originator: "agenc-cli", agencVersion: VERSION,
+      model: "base-model", modelProvider: "grok" });
+    root.createThreadSpawnEdge({ childThreadId: childId,
+      parentThreadId: CONVERSATION_ID, parentPath: "/root",
+      metadata: { agentId: childId, agentPath: `/root/${childId.replaceAll("-", "_")}`, depth: 1 }, status });
+    root.close();
+    const child = new RolloutStore({ cwd: childCwd, sessionId: childId,
+      agencVersion: VERSION, agencHome: home, sessionTempRoot: tmpdir(),
+      autoStartScheduler: false });
+    child.open({ sessionId: childId, timestamp: new Date().toISOString(),
+      cwd: childCwd, originator: "agenc-subagent", agencVersion: VERSION,
+      model: "base-model", modelProvider: "grok" });
+    if (terminal) {
+      expect(child.append({ eventId: `terminal:${childId}`, id: `terminal:${childId}`,
+        seq: 1, msg: { type: "run_terminal", payload: { runId: childId,
+          epoch: 1, status: "completed", exitCode: 0, stopReason: "turn_completed",
+          finalMessage: "done", usage: null, lastSequenceBeforeTerminal: null,
+          finishedAt: new Date().toISOString() } } }, { durable: true })).toBe(true);
+    }
+    child.close();
+  }
+
+  function seedCheckpointedCall(callId: string, toolName = "FileRead",
+    alsoCallId?: string): void {
+    const prefix = [
+      { role: "user" as const, content: "Inspect the file" },
+      { role: "assistant" as const, content: "", toolCalls: [
+        { id: callId, name: toolName, arguments: "{}" },
+        ...(alsoCallId === undefined ? [] : [{ id: alsoCallId, name: toolName,
+          arguments: "{}" }]),
+      ] },
+    ];
+    const root = new RolloutStore({ cwd: workspace, sessionId: CONVERSATION_ID,
+      agencVersion: VERSION, agencHome: home, sessionTempRoot: tmpdir(),
+      resume: true, autoStartScheduler: false });
+    root.open({ sessionId: CONVERSATION_ID, timestamp: new Date().toISOString(),
+      cwd: workspace, originator: "agenc-cli", agencVersion: VERSION,
+      model: "base-model", modelProvider: "grok" });
+    for (const payload of prefix) root.appendRollout({ type: "response_item", payload });
+    expect(root.append({ eventId: `${callId}-checkpoint`, id: `${callId}-checkpoint`, seq: 3,
+      msg: { type: "turn_checkpoint", payload: { turnId: TURN_ID,
+        checkpointVersion: 4, prefixHashVersion: 3, toolResultIntegrityVersion: 1,
+        iterationIndex: 2, boundary: "postAssistant", checkpointSeq: 2,
+        persistedMessageCount: 2, prefixHash: computeCheckpointPrefixHashV3(prefix, 2),
+        resumableState: { turnCount: 1, recoveryReentryCount: 0,
+          maxOutputTokensRecoveryCount: 0, continuationNudgeCount: 0,
+          stopHookBlockingCount: 0 } } } }, { durable: true })).toBe(true);
+    root.close();
+  }
+
+  it.each(["resume disabled", "build mismatch"] as const)(
+    "accepts Continue after %s with one durable result", async (cause) => {
+      await stubProvider();
+      stubProviderAndMcp();
+      seedCheckpointedCall(`declined-${cause.replaceAll(" ", "-")}`);
+      if (cause === "build mismatch") {
+        process.env.AGENC_BUILD_ID = "different-build";
+        resetBuildIdForTestingOnly();
+      }
+      let booted: LocalRuntimeBootstrap | undefined;
+      const runner = makeRunner((bootstrap) => {
+        booted = bootstrap;
+        if (cause === "resume disabled") {
+          Object.assign(bootstrap.session, { config: {
+            ...bootstrap.session.config,
+            durableTurns: { resume: { onRestart: false } },
+          } });
+        }
+      });
+      const callId = `declined-${cause.replaceAll(" ", "-")}`;
+      try {
+        await expect(runner.restoreAgent(restoreParams())).resolves.toBe(true);
+        await expect(runner.submitAgentMessage(CONVERSATION_ID, {
+          sessionId: CONVERSATION_ID, content: "Continue", originalContent: "Continue",
+          messageId: `continue-${callId}`, streamId: `continue-${callId}`,
+          acceptedAt: new Date().toISOString(),
+        })).resolves.toMatchObject({ disposition: "started" });
+        const items = booted!.rolloutStore.readAll();
+        expect(items.filter((item) => item.type === "response_item" &&
+          item.payload.role === "tool" && item.payload.toolCallId === callId)).toHaveLength(1);
+        expect(items.some((item) => item.type === "response_item" &&
+          item.payload.role === "user" && item.payload.content === "Continue")).toBe(true);
+        expect(items.findIndex((item) => item.type === "response_item" &&
+          item.payload.role === "tool" && item.payload.toolCallId === callId))
+          .toBeLessThan(items.findIndex((item) => item.type === "response_item" &&
+            item.payload.role === "user" && item.payload.content === "Continue"));
+        expect(booted!.rolloutStore.liveHistoryBlockedReason()).toBeUndefined();
+      } finally {
+        await runner.stopAgent(CONVERSATION_ID).catch(() => undefined);
+      }
+    }, 60_000);
+
+  it("pairs a declined continuation before a hidden scheduled submission and a visible Continue", async () => {
+    await stubProvider(true);
+    stubProviderAndMcp();
+    const callId = "scheduled-after-decline";
+    seedCheckpointedCall(callId);
+    let booted: LocalRuntimeBootstrap | undefined;
+    const runner = makeRunner((bootstrap) => {
+      booted = bootstrap;
+      Object.assign(bootstrap.session, { config: {
+        ...bootstrap.session.config,
+        durableTurns: { resume: { onRestart: false } },
+      } });
+    });
+    try {
+      await expect(runner.restoreAgent(restoreParams())).resolves.toBe(true);
+      // This is the exact Session.submit shape used by the cron scheduler.
+      await expect(booted!.session.submit("scheduled audit", {
+        displayUserMessage: null,
+      })).resolves.toBeUndefined();
+      await expect(runner.submitAgentMessage(CONVERSATION_ID, {
+        sessionId: CONVERSATION_ID, content: "Continue", originalContent: "Continue",
+        messageId: "continue-after-schedule", streamId: "continue-after-schedule",
+        acceptedAt: new Date().toISOString(),
+      })).resolves.toMatchObject({ disposition: "started" });
+      const items = booted!.rolloutStore.readAll();
+      const pairIndex = items.findIndex((item) => item.type === "response_item" &&
+        item.payload.role === "tool" && item.payload.toolCallId === callId);
+      expect(pairIndex).toBeGreaterThan(-1);
+      expect(items.filter((item) => item.type === "response_item" &&
+        item.payload.role === "tool" && item.payload.toolCallId === callId)).toHaveLength(1);
+      expect(items.slice(pairIndex + 1).some((item) => item.type === "response_item" &&
+        item.payload.role === "user" && item.payload.content === "scheduled audit")).toBe(true);
+      expect(items.some((item) => item.type === "response_item" &&
+        item.payload.role === "user" && item.payload.content === "Continue")).toBe(true);
+      expect(booted!.rolloutStore.liveHistoryBlockedReason()).toBeUndefined();
+    } finally { await runner.stopAgent(CONVERSATION_ID).catch(() => undefined); }
+  }, 60_000);
+
+  it("settles a declined continuation before clear and reconstructs the next turn", async () => {
+    await stubProvider(true, "new-turn-checkpoint-call");
+    stubProviderAndMcp();
+    const callId = "clear-after-decline";
+    seedCheckpointedCall(callId);
+    process.env.AGENC_BUILD_ID = "different-build-after-clear";
+    resetBuildIdForTestingOnly();
+    let booted: LocalRuntimeBootstrap | undefined;
+    const runner = makeRunner((bootstrap) => { booted = bootstrap; });
+    try {
+      await expect(runner.restoreAgent(restoreParams())).resolves.toBe(true);
+      await runner.clearAgentSession(CONVERSATION_ID, {
+        sessionId: CONVERSATION_ID, clearedAt: new Date().toISOString(),
+      });
+      await expect(runner.submitAgentMessage(CONVERSATION_ID, {
+        sessionId: CONVERSATION_ID, content: "New request", originalContent: "New request",
+        messageId: "after-clear", streamId: "after-clear",
+        acceptedAt: new Date().toISOString(),
+      })).resolves.toMatchObject({ disposition: "started" });
+      const items = readRollout(rolloutPath);
+      const clearIndex = items.findIndex((item) => item.type === "event_msg" &&
+        item.payload.msg.type === "history_cleared");
+      const pairIndices = items.flatMap((item, index) => item.type === "response_item" &&
+        item.payload.role === "tool" && item.payload.toolCallId === callId ? [index] : []);
+      expect(clearIndex).toBeGreaterThan(-1);
+      expect(pairIndices).toHaveLength(1);
+      expect(pairIndices[0]).toBeLessThan(clearIndex);
+      expect(booted!.rolloutStore.liveHistoryBlockedReason()).toBeUndefined();
+      const projection = booted!.rolloutStore.checkpointProjectionContext("clear-next-turn-test");
+      const reconstructed = reconstructFromRollout(items, { checkpointProjection: projection });
+      expect(reconstructed.history.some((item) => item.role === "tool" &&
+        item.toolCallId === callId)).toBe(false);
+      const nextCheckpoint = items.slice(clearIndex + 1).findLast((item) =>
+        item.type === "event_msg" && item.payload.msg.type === "turn_checkpoint");
+      expect(nextCheckpoint?.type).toBe("event_msg");
+      if (nextCheckpoint?.type !== "event_msg" || nextCheckpoint.payload.msg.type !== "turn_checkpoint")
+        throw new Error("new turn checkpoint missing");
+      const checkpointIndex = items.indexOf(nextCheckpoint);
+      const messages = items.slice(clearIndex + 1, checkpointIndex)
+        .filter((item): item is Extract<RolloutItem, { type: "response_item" }> =>
+          item.type === "response_item").map((item) => item.payload);
+      expect(validateCheckpointPrefix({
+        checkpoint: nextCheckpoint.payload.msg.payload,
+        messages, ...booted!.rolloutStore.checkpointProjectionContext("clear-checkpoint-test"),
+      }).status).toBe("valid");
+    } finally { await runner.stopAgent(CONVERSATION_ID).catch(() => undefined); }
+    // Re-read the durable journal as a fresh process would after restart.
+    const reconstructedAfterRestart = reconstructFromRollout(readRollout(rolloutPath));
+    expect(reconstructedAfterRestart.history.some((item) => item.role === "tool" &&
+      item.toolCallId === callId)).toBe(false);
+    expect(reconstructedAfterRestart.history.some((item) => item.role === "user" &&
+      item.content === "New request")).toBe(true);
+  }, 60_000);
+
+  it("does not pair a checkpoint call a second time during declined continuation", async () => {
+    await stubProvider();
+    stubProviderAndMcp();
+    seedCheckpointedCall("already-paired", "FileRead", "still-open");
+    const seed = new RolloutStore({ cwd: workspace, sessionId: CONVERSATION_ID,
+      agencVersion: VERSION, agencHome: home, sessionTempRoot: tmpdir(),
+      resume: true, autoStartScheduler: false });
+    seed.open({ sessionId: CONVERSATION_ID, timestamp: new Date().toISOString(),
+      cwd: workspace, originator: "agenc-cli", agencVersion: VERSION,
+      model: "base-model", modelProvider: "grok" });
+    const content = "read finished before the crash";
+    seed.appendRollout({ type: "response_item", payload: { role: "tool", content,
+      toolCallId: "already-paired", toolName: "FileRead",
+      toolResultIntegrity: createToolResultIntegrity({ runId: CONVERSATION_ID,
+        toolCallId: "already-paired", content }) } }, { durable: true });
+    seed.close();
+    let booted: LocalRuntimeBootstrap | undefined;
+    const runner = makeRunner((bootstrap) => {
+      booted = bootstrap;
+      Object.assign(bootstrap.session, { config: {
+        ...bootstrap.session.config,
+        durableTurns: { resume: { onRestart: false } },
+      } });
+    });
+    try {
+      await expect(runner.restoreAgent(restoreParams())).resolves.toBe(true);
+      await expect(runner.submitAgentMessage(CONVERSATION_ID, {
+        sessionId: CONVERSATION_ID, content: "Continue", originalContent: "Continue",
+        messageId: "continue-partially-paired", streamId: "continue-partially-paired",
+        acceptedAt: new Date().toISOString(),
+      })).resolves.toMatchObject({ disposition: "started" });
+      const items = booted!.rolloutStore.readAll();
+      for (const callId of ["already-paired", "still-open"]) {
+        expect(items.filter((item) => item.type === "response_item" &&
+          item.payload.role === "tool" && item.payload.toolCallId === callId))
+          .toHaveLength(1);
+      }
+      expect(booted!.rolloutStore.liveHistoryBlockedReason()).toBeUndefined();
+    } finally { await runner.stopAgent(CONVERSATION_ID).catch(() => undefined); }
+  }, 60_000);
+
+  it("accepts Continue after Stop during effect review and a durable resolution", async () => {
+    await stubProvider();
+    stubProviderAndMcp();
+    seedCheckpointedCall("stopped-write", "Write");
+    const seed = new RolloutStore({ cwd: workspace, sessionId: CONVERSATION_ID,
+      agencVersion: VERSION, agencHome: home, sessionTempRoot: tmpdir(),
+      resume: true, autoStartScheduler: false });
+    seed.open({ sessionId: CONVERSATION_ID, timestamp: new Date().toISOString(),
+      cwd: workspace, originator: "agenc-cli", agencVersion: VERSION,
+      model: "base-model", modelProvider: "grok" });
+    const recordedAt = new Date().toISOString();
+    const intent: Event = { eventId: "stopped-write-intent", id: "stopped-write-intent", seq: 4,
+      msg: { type: "effect_intent", payload: { formatVersion: 2,
+        minimumReaderRuntime: "0.14.0", runId: CONVERSATION_ID,
+        stepId: "tool:stopped:write", callId: "stopped-write", toolName: "Write",
+        recoveryCategory: "side-effecting", intentDigest: "write-digest",
+        attempt: 1, recordedAt } } };
+    const unknown: Event = { eventId: "stopped-write-unknown", id: "stopped-write-unknown", seq: 5,
+      msg: { type: "effect_unknown_outcome", payload: { formatVersion: 2,
+        minimumReaderRuntime: "0.14.0", runId: CONVERSATION_ID,
+        stepId: "tool:stopped:write", callId: "stopped-write", toolName: "Write",
+        recoveryCategory: "side-effecting", intentEventSeq: 4,
+        outcome: "unknown_outcome", reason: "acknowledgement_lost",
+        requiresReview: true, recordedAt } } };
+    try {
+      for (const event of [intent, unknown]) {
+        expect(seed.append(event, { durable: true })).toBe(true);
+        seed.recordEffectEvent(event);
+      }
+    } finally { seed.close(); }
+    let booted: LocalRuntimeBootstrap | undefined;
+    const runner = makeRunner((bootstrap) => { booted = bootstrap; });
+    try {
+      await expect(runner.restoreAgent(restoreParams())).resolves.toBe(true);
+      expect(booted!.rolloutStore.hasPendingEffectReviews()).toBe(true);
+      expect(() => booted!.rolloutStore.assertModelExecutionAllowed())
+        .toThrow("requires effect review");
+      expect(await runner.interruptAgentTurn(CONVERSATION_ID, "user_cancel")).toBe(true);
+      const resolution = createOperatorEffectReviewResolution({
+        disposition: "confirmed_no_effect", actorId: "operator",
+        evidenceRef: "test:stopped-write", evidenceSha256: "a".repeat(64),
+        reviewedAt: new Date().toISOString(),
+      });
+      await expect(runner.resolveLiveEffectReview(CONVERSATION_ID, {
+        sessionId: CONVERSATION_ID, toolCallId: "stopped-write", resolution,
+      })).resolves.toMatchObject({ kind: "resolved", durable: true });
+      await expect(runner.submitAgentMessage(CONVERSATION_ID, {
+        sessionId: CONVERSATION_ID, content: "Continue", originalContent: "Continue",
+        messageId: "continue-after-stop-review", streamId: "continue-after-stop-review",
+        acceptedAt: new Date().toISOString(),
+      })).resolves.toMatchObject({ disposition: "started" });
+      const items = booted!.rolloutStore.readAll();
+      expect(items.filter((item) => item.type === "response_item" &&
+        item.payload.role === "tool" && item.payload.toolCallId === "stopped-write")).toHaveLength(1);
+      expect(items.find((item) => item.type === "response_item" &&
+        item.payload.role === "tool" && item.payload.toolCallId === "stopped-write"))
+        .toMatchObject({ payload: { content: expect.stringContaining("Operator review resolved") } });
+      expect(items.some((item) => item.type === "response_item" &&
+        item.payload.role === "user" && item.payload.content === "Continue")).toBe(true);
+      expect(items.findIndex((item) => item.type === "response_item" &&
+        item.payload.role === "tool" && item.payload.toolCallId === "stopped-write"))
+        .toBeLessThan(items.findIndex((item) => item.type === "response_item" &&
+          item.payload.role === "user" && item.payload.content === "Continue"));
+      expect(booted!.rolloutStore.liveHistoryBlockedReason()).toBeUndefined();
+    } finally { await runner.stopAgent(CONVERSATION_ID).catch(() => undefined); }
+  }, 60_000);
+
+  it.each([
+    ["open worker", "open", false],
+    ["completed worker with open edge", "open", true],
+    ["closed worker without terminal outcome", "closed", false],
+  ] as const)("uses main bootstrap for %s", async (_name, status, terminal) => {
+    await stubProvider();
+    stubProviderAndMcp();
+    seedWorker("worker-at-restart", status, terminal);
+    const observations = recordResumeObservations();
+    let booted: LocalRuntimeBootstrap | undefined;
+    const runner = makeRunner((bootstrap) => { booted = bootstrap; });
+    try {
+      await expect(runner.restoreAgent(restoreParams())).resolves.toBe(true);
+      expect(observations).toEqual([]);
+      expect(ensureAgentControl(booted!.session).control.getLive("worker-at-restart"))
+        .toBeUndefined();
+      expect(() => booted!.rolloutStore.assertModelExecutionAllowed()).not.toThrow();
+      await expect(runner.resolveLiveEffectReview(CONVERSATION_ID, {
+        sessionId: "worker-at-restart", toolCallId: "worker-call",
+        resolution: createOperatorEffectReviewResolution({
+          disposition: "confirmed_no_effect", actorId: "operator",
+          evidenceRef: "test:worker", evidenceSha256: "a".repeat(64),
+          reviewedAt: new Date().toISOString(),
+        }),
+      })).rejects.toThrow(/does not own session/);
+      await expect(runner.submitAgentMessage(CONVERSATION_ID, {
+        sessionId: CONVERSATION_ID, content: "New turn", originalContent: "New turn",
+        messageId: "new-turn", streamId: "new-turn", acceptedAt: new Date().toISOString(),
+      })).resolves.toMatchObject({ disposition: "started" });
+      expect(observations.some((item) => item.resume)).toBe(false);
+    } finally { await runner.stopAgent(CONVERSATION_ID).catch(() => undefined); }
+  }, 60_000);
+
+  it("automatically continues a root whose worker closed with a terminal outcome", async () => {
+    await stubProvider();
+    stubProviderAndMcp();
+    seedWorker("finished-worker", "closed", true);
+    const observations = recordResumeObservations();
+    let booted: LocalRuntimeBootstrap | undefined;
+    const runner = makeRunner((bootstrap) => { booted = bootstrap; });
+    try {
+      await expect(runner.restoreAgent(restoreParams())).resolves.toBe(true);
+      expect(observations).toContainEqual(expect.objectContaining({ resume: true }));
+      expect(ensureAgentControl(booted!.session).control.getLive("finished-worker"))
+        .toBeUndefined();
+    } finally { await runner.stopAgent(CONVERSATION_ID).catch(() => undefined); }
+  }, 60_000);
+
+  it("automatically continues after a closed worktree worker's terminal outcome", async () => {
+    await stubProvider();
+    stubProviderAndMcp();
+    const workerCwd = join(workspace, "worker-worktree");
+    mkdirSync(join(workerCwd, ".git"), { recursive: true });
+    seedWorker("finished_worktree_worker", "closed", true, workerCwd);
+    const observations = recordResumeObservations();
+    const runner = makeRunner();
+    try {
+      await expect(runner.restoreAgent(restoreParams())).resolves.toBe(true);
+      expect(observations).toContainEqual(expect.objectContaining({ resume: true }));
+    } finally { await runner.stopAgent(CONVERSATION_ID).catch(() => undefined); }
+  }, 60_000);
+
+  it("keeps a grandchild behind a closed parent on the ordinary bootstrap path", async () => {
+    await stubProvider();
+    stubProviderAndMcp();
+    seedWorker("finished_parent", "closed", true);
+    const root = new RolloutStore({ cwd: workspace, sessionId: CONVERSATION_ID,
+      agencVersion: VERSION, agencHome: home, sessionTempRoot: tmpdir(),
+      resume: true, autoStartScheduler: false });
+    root.open({ sessionId: CONVERSATION_ID, timestamp: new Date().toISOString(),
+      cwd: workspace, originator: "agenc-cli", agencVersion: VERSION,
+      model: "base-model", modelProvider: "grok" });
+    root.createThreadSpawnEdge({ childThreadId: "open_grandchild",
+      parentThreadId: "finished_parent", parentPath: "/root/finished_parent",
+      metadata: { agentId: "open_grandchild",
+        agentPath: "/root/finished_parent/open_grandchild", depth: 2 },
+      status: "open" });
+    root.close();
+    const observations = recordResumeObservations();
+    let booted: LocalRuntimeBootstrap | undefined;
+    const runner = makeRunner((bootstrap) => { booted = bootstrap; });
+    try {
+      await expect(runner.restoreAgent(restoreParams())).resolves.toBe(true);
+      expect(observations).toEqual([]);
+      expect(ensureAgentControl(booted!.session).control.getLive("open_grandchild"))
+        .toBeUndefined();
+      expect(booted!.rolloutStore.rootHasOnlyTerminalDescendants(CONVERSATION_ID))
+        .toBe(false);
+    } finally { await runner.stopAgent(CONVERSATION_ID).catch(() => undefined); }
+  }, 60_000);
+
+  it("pairs an open worker root's dangling Read during bootstrap", async () => {
+    await stubProvider();
+    stubProviderAndMcp();
+    const prefix = [
+      { role: "user" as const, content: "Inspect the file" },
+      { role: "assistant" as const, content: "", toolCalls: [
+        { id: "dangling-read", name: "Read", arguments: "{}" },
+      ] },
+    ];
+    const { root, appended } = seedCheckpointedRoot(prefix, "read-checkpoint");
+    expect(appended).toBe(true);
+    root.close();
+    seedWorker("open_worker", "open", false);
+    const observations = recordResumeObservations();
+    let booted: LocalRuntimeBootstrap | undefined;
+    const runner = makeRunner((bootstrap) => { booted = bootstrap; });
+    try {
+      await expect(runner.restoreAgent(restoreParams())).resolves.toBe(true);
+      expect(observations).toEqual([]);
+      const pairings = booted!.rolloutStore.readAll().filter((item) =>
+        item.type === "response_item" && item.payload.role === "tool" &&
+        item.payload.toolCallId === "dangling-read");
+      expect(pairings).toHaveLength(1);
+      expect(pairings[0]).toMatchObject({ payload: {
+        content: expect.stringContaining("interrupted") } });
+    } finally { await runner.stopAgent(CONVERSATION_ID).catch(() => undefined); }
+  }, 60_000);
+
+  it("applies ifBusy while the resumed root turn owns the turn slot", async () => {
+    await stubProvider();
+    stubProviderAndMcp();
+    const release = Promise.withResolvers<void>();
+    const started = Promise.withResolvers<void>();
+    vi.spyOn(Session.prototype, "runTurn").mockImplementation(function (
+      this: Session, _input: unknown, options?: { readonly resume?: unknown },
+    ) {
+      const session = this;
+      return (async function* () {
+        if (options?.resume !== undefined) {
+          session.emit({ id: session.nextInternalSubId(), msg: { type: "turn_resumed",
+            payload: { turnId: TURN_ID, fromCheckpointSeq: 1, fromIteration: 1 } } } as never);
+          started.resolve();
+          await release.promise;
+        }
+        return { reason: "completed" as const };
+      })() as never;
+    });
+    let booted: LocalRuntimeBootstrap | undefined;
+    const runner = makeRunner((bootstrap) => { booted = bootstrap; });
+    try {
+      await expect(runner.restoreAgent(restoreParams())).resolves.toBe(true);
+      await started.promise;
+      vi.spyOn(booted!.session.activeTurn, "unsafePeek").mockReturnValue({
+        turnId: TURN_ID,
+      } as never);
+      await expect(runner.submitAgentMessage(CONVERSATION_ID, {
+        sessionId: CONVERSATION_ID, content: "Wait", originalContent: "Wait",
+        messageId: "busy-during-resume", streamId: "busy-during-resume",
+        acceptedAt: new Date().toISOString(), ifBusy: "reject",
+      })).rejects.toMatchObject({ code: "TURN_IN_PROGRESS" });
+    } finally {
+      release.resolve();
+      await runner.stopAgent(CONVERSATION_ID).catch(() => undefined);
+    }
+  }, 60_000);
+
+  it("serializes a new prompt during the first resumed model request without a second Read pairing", async () => {
+    const firstModelEntered = Promise.withResolvers<void>();
+    const releaseFirstModel = Promise.withResolvers<void>();
+    let modelRequests = 0;
+    const providerMod = await import("../../src/llm/provider.js");
+    const modelRequest = async () => {
+      if (modelRequests++ === 0) {
+        firstModelEntered.resolve();
+        await releaseFirstModel.promise;
+      }
+      return { content: "ok", toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    };
+    vi.spyOn(providerMod, "createProvider").mockImplementation(() => ({
+      name: "stub",
+      chat: modelRequest,
+      chatStream: modelRequest,
+    }) as never);
+    stubProviderAndMcp();
+    const prefix = [
+      { role: "user" as const, content: "Inspect the file" },
+      { role: "assistant" as const, content: "", toolCalls: [
+        { id: "resume-read", name: "FileRead", arguments: "{}" },
+      ] },
+    ];
+    const { root, appended } = seedCheckpointedRoot(prefix, "resume-read-checkpoint");
+    expect(appended).toBe(true);
+    root.close();
+    let booted: LocalRuntimeBootstrap | undefined;
+    const runner = makeRunner((bootstrap) => { booted = bootstrap; });
+    try {
+      await expect(runner.restoreAgent(restoreParams())).resolves.toBe(true);
+      await Promise.race([firstModelEntered.promise,
+        new Promise((_resolve, reject) => setTimeout(() => reject(new Error(
+          `resumed model did not start: ${JSON.stringify(booted!.rolloutStore.readAll()
+            .filter((item) => item.type === "event_msg")
+            .map((item) => item.payload.msg).slice(-12))}`)), 5_000))]);
+      await expect(runner.submitAgentMessage(CONVERSATION_ID, {
+        sessionId: CONVERSATION_ID, content: "Follow up", originalContent: "Follow up",
+        messageId: "reject-first-request", streamId: "reject-first-request",
+        acceptedAt: new Date().toISOString(), ifBusy: "reject",
+      })).rejects.toMatchObject({ code: "TURN_IN_PROGRESS" });
+      const next = runner.submitAgentMessage(CONVERSATION_ID, {
+        sessionId: CONVERSATION_ID, content: "Follow up", originalContent: "Follow up",
+        messageId: "queue-first-request", streamId: "queue-first-request",
+        acceptedAt: new Date().toISOString(),
+      });
+      releaseFirstModel.resolve();
+      await expect(next).resolves.toMatchObject({ disposition: "started" });
+      const paired = booted!.rolloutStore.readAll().filter((item) =>
+        item.type === "response_item" && item.payload.role === "tool" &&
+        item.payload.toolCallId === "resume-read");
+      expect(paired).toHaveLength(1);
+      expect(booted!.rolloutStore.liveHistoryBlockedReason()).toBeUndefined();
+    } finally {
+      releaseFirstModel.resolve();
+      await runner.stopAgent(CONVERSATION_ID).catch(() => undefined);
+    }
+  }, 60_000);
+
   it("drives the recovered turn only once a client can answer its approvals", async () => {
     await stubProvider();
     stubProviderAndMcp();
@@ -1012,20 +1631,7 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
   }, 60_000);
 
 
-  it("never withholds the resume from a restore that defers startup side effects", async () => {
-    // A suspended / startup-activation-pending restore passes
-    // `deferAgentStartupSideEffects: true`, which hands the WHOLE startup
-    // prewarm — the durable resume with it — to whoever activates it later,
-    // by which time the approval bridge and the `#active` entry exist. The two
-    // deferrals must therefore be mutually exclusive: setting both would mark
-    // the resume pending inside a prewarm nobody can pair with a
-    // `runDeferredDurableTurnResume` call, and the orphan is single-shot, so
-    // the turn would be lost rather than late.
-    //
-    // Out of scope, unchanged, pre-existing: `bin/bootstrap.ts` gates the
-    // prewarm block itself on the same flag, so today nothing runs it for
-    // those restores at all. This test pins that whoever does run it resumes
-    // the orphan, with the daemon approval bridge already installed.
+  it("restores an interrupted suspended turn once before the next user prompt", async () => {
     await stubProvider();
     stubProviderAndMcp();
     seedPendingStartupActivation();
@@ -1050,12 +1656,15 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
 
     expect(bootstrapOptions).toHaveLength(1);
     expect(bootstrapOptions[0]!.deferAgentStartupSideEffects).toBe(true);
-    expect(bootstrapOptions[0]!.deferDurableTurnResume).toBeUndefined();
-    // Nothing ran the prewarm yet, so no turn of any kind was driven.
-    expect(observations).toEqual([]);
+    expect(bootstrapOptions[0]!.deferDurableTurnResume).toBe(true);
+    expect(observations).toEqual([
+      {
+        resume: true,
+        hasApprovalResolver: true,
+        hasGuardianApprovalReviewer: true,
+      },
+    ]);
 
-    // Whoever activates the deferred startup work drives the resume inline,
-    // and by then the bridge this issue is about is installed.
     const manager = (
       booted!.session.services as {
         readonly conversationThreadManager?: {
@@ -1064,7 +1673,6 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
       }
     ).conversationThreadManager;
     await manager!.runStartupPrewarm(booted!.session);
-
     expect(observations).toEqual([
       {
         resume: true,

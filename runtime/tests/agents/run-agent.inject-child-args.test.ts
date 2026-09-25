@@ -30,20 +30,28 @@ describe("injectChildToolArgs pins the worktree through each tool's own field", 
     expect(Object.hasOwn(args, "cwd")).toBe(false);
   });
 
-  it("uses cwd for system.bash and apply_patch, and touches nothing else", () => {
+  it("uses cwd for the shell, patch, search and file tools", () => {
     expect(injectChildToolArgs({ command: "ls" }, "system.bash", opts).cwd).toBe(
       worktree.path,
     );
     expect(injectChildToolArgs({ patch: "" }, "apply_patch", opts).cwd).toBe(
       worktree.path,
     );
-    const other = injectChildToolArgs({ path: "x" }, "FileRead", opts);
-    expect(Object.hasOwn(other, "cwd")).toBe(false);
-    expect(Object.hasOwn(other, "workdir")).toBe(false);
+    // Delegated file and search tools resolve in the caller's directory, so
+    // they carry the worktree through `cwd` too; exec_command keeps `workdir`.
+    const fileRead = injectChildToolArgs({ path: "x" }, "FileRead", opts);
+    expect(fileRead.cwd).toBe(worktree.path);
+    expect(Object.hasOwn(fileRead, "workdir")).toBe(false);
     expect(WORKTREE_CWD_FIELD_BY_TOOL).toEqual({
       "system.bash": "cwd",
       exec_command: "workdir",
       apply_patch: "cwd",
+      Glob: "cwd",
+      Grep: "cwd",
+      FileRead: "cwd",
+      Write: "cwd",
+      Edit: "cwd",
+      MultiEdit: "cwd",
     });
   });
 

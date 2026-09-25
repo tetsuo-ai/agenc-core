@@ -322,6 +322,69 @@ describe("SandboxExecutionBroker", () => {
     expect(transform).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    { sandbox: "linux_seccomp" as const, browserCdp: true, expected: true },
+    { sandbox: "linux_seccomp" as const, browserCdp: false, expected: false },
+    { sandbox: "macos_seatbelt" as const, browserCdp: true, expected: false },
+  ])("marks CDP stdio only for a browser CDP spawn under $sandbox (browserCdp=$browserCdp)",
+    ({ sandbox, browserCdp, expected }) => {
+      const root = tempRoot("agenc-browser-cdp-transport-");
+      const broker = new SandboxExecutionBroker({
+        mode: "workspace_write",
+        cwd: root,
+        sandboxManager: {
+          selectInitial: () => sandbox,
+          transform: () => ({
+            command: ["/sandbox/helper", "--sandbox-policy-cwd", root, "--", "/bin/echo"],
+            cwd: root,
+            env: {},
+          }),
+        } as never,
+        probe: () => readyStatus("workspace_write"),
+      });
+
+      const command = broker.prepareSpawn("browser", {
+        program: "/bin/echo",
+        args: [],
+        cwd: root,
+        env: {},
+        browserCdp,
+      }).runSync(resolved => resolved);
+
+      expect(command.browserCdpOverStdio === true).toBe(expected);
+      expect(command.args.includes("--browser-cdp-over-stdio")).toBe(expected);
+      if (expected) {
+        expect(command.args.indexOf("--browser-cdp-over-stdio"))
+          .toBeLessThan(command.args.indexOf("--"));
+      }
+    },
+  );
+
+  it("refuses CDP stdio for any surface but the browser", () => {
+    const root = tempRoot("agenc-browser-cdp-surface-");
+    const broker = new SandboxExecutionBroker({
+      mode: "workspace_write",
+      cwd: root,
+      sandboxManager: {
+        selectInitial: () => "linux_seccomp",
+        transform: () => ({
+          command: ["/sandbox/helper", "--sandbox-policy-cwd", root, "--", "/bin/echo"],
+          cwd: root,
+          env: {},
+        }),
+      } as never,
+      probe: () => readyStatus("workspace_write"),
+    });
+
+    expect(() => broker.prepareSpawn("tool", {
+      program: "/bin/echo",
+      args: [],
+      cwd: root,
+      env: {},
+      browserCdp: true,
+    })).toThrow(/only valid for the browser surface/);
+  });
+
   describe("Landlock-fallback pre-flight", () => {
     function fallbackStatus(): SandboxExecutionStatus {
       return {

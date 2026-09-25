@@ -128,7 +128,6 @@ describe("collabAgentTaskSync coverage swarm row 140", () => {
       model: "model-140",
       error: "missing worker",
       notified: true,
-      endTime: 10_000,
       // now(10_000) + PANEL_GRACE_MS(1_800_000) — terminal result-board retention
       evictAfter: 1_810_000,
     });
@@ -245,7 +244,6 @@ describe("collabAgentTaskSync coverage swarm row 140", () => {
     expect(next.tasks?.complete).toMatchObject({
       status: "completed",
       notified: true,
-      endTime: 10_000,
     });
     expect(next.tasks?.interrupted).toMatchObject({
       status: "running",
@@ -254,7 +252,6 @@ describe("collabAgentTaskSync coverage swarm row 140", () => {
     expect(next.tasks?.shutdown).toMatchObject({
       status: "killed",
       notified: true,
-      endTime: 10_000,
     });
   });
 });

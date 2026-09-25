@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { enterDaemonWorkingDirectory } from "../../src/app-server/daemon-working-directory.js";
 import { createNodeDaemonCliHost } from "../../src/app-server/daemon-cli.js";
+import { failingSpawn } from "../helpers/failed-spawn-child.js";
 
 describe("daemon working directory", () => {
   it("enters the home and reports a directory it cannot enter without throwing", () => {
@@ -36,6 +37,30 @@ describe("daemon working directory", () => {
       const parsed = JSON.parse(result.stdout.trim());
       expect(parsed.ok).toBe(true);
       expect(realpathSync(parsed.cwd)).toBe(realpathSync(home));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("a daemon spawn that failed is refused without an uncaught error", async () => {
+    // The executable was replaced by an update, or the process table is full.
+    // The throw below used to come before any error listener existed, so the
+    // spawn error Node reports on the next tick was uncaught in the CLI.
+    const home = mkdtempSync(join(tmpdir(), "agenc-daemon-spawn-fail-"));
+    try {
+      const failures = failingSpawn({ code: "EAGAIN" });
+      const host = createNodeDaemonCliHost({
+        spawnProcess: failures.spawn as unknown as typeof import("node:child_process").spawn,
+      });
+
+      expect(() =>
+        host.spawnDetachedDaemon({ ...process.env, AGENC_HOME: home }),
+      ).toThrow("AgenC daemon child process did not expose a pid");
+      await Promise.all(failures.children.map((child) => child.reported));
+
+      expect(failures.children).toHaveLength(1);
+      expect(failures.children[0]!.uncaught).toEqual([]);
+      expect(failures.children[0]!.groupSignals).toEqual([]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

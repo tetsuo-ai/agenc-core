@@ -9,7 +9,12 @@
  * because xAI's shared CLI OAuth client is used.
  */
 
+import { useContext, useState } from "react";
+
 import { Box, Text, useInput } from "../tui/ink.js";
+import { setClipboard } from "../tui/ink/termio/osc.js";
+import { TerminalWriteContext } from "../tui/ink/useTerminalNotification.js";
+import { env as hostEnv } from "../utils/env.js";
 import {
   runXaiBrowserLogin,
   runXaiDeviceLogin,
@@ -96,8 +101,14 @@ async function executeGrokLogin(
     const controller = new AbortController();
     let login: XaiBrowserLoginResult;
     try {
-      login = arg === "device"
-        ? await runDeviceFlow(ctx, controller)
+      // The browser flow redirects to 127.0.0.1 on THIS machine and opens
+      // the browser on THIS machine's desktop. Over SSH the user sees neither:
+      // their own browser cannot reach the loopback callback, so the sign-in
+      // waited out its timeout with input paused. The device-code flow works
+      // from any browser, so a remote session goes straight to it.
+      const remote = hostEnv.isSSH();
+      login = arg === "device" || remote
+        ? await runDeviceFlow(ctx, controller, { openBrowser: !remote })
         : await runBrowserFlowWithDeviceFallback(ctx, controller);
       if (controller.signal.aborted) {
         return { kind: "text", text: "xAI sign-in cancelled." };
@@ -190,6 +201,7 @@ async function runBrowserFlowWithDeviceFallback(
 async function runDeviceFlow(
   ctx: SlashCommandContext,
   controller: AbortController,
+  options: { readonly openBrowser?: boolean } = {},
 ): Promise<XaiBrowserLoginResult> {
   const onCancel = () => controller.abort();
   let pending = true;
@@ -201,6 +213,14 @@ async function runDeviceFlow(
       signal: controller.signal,
       onUserCode: ({ userCode, verificationUri, verificationUriComplete }) => {
         const url = verificationUriComplete ?? verificationUri;
+        if (options.openBrowser === false) {
+          // A browser launched here would open on the remote desktop.
+          showLoginNotice(ctx, {
+            heading: "Open this URL in a browser on your own device to sign in:",
+            url, userCode, onCancel,
+          });
+          return;
+        }
         showLoginNotice(ctx, {
           heading: "Sign in with your X / xAI account to continue.",
           url, userCode, onCancel,
@@ -228,8 +248,24 @@ type LoginNoticeInfo = {
 };
 
 function LoginNotice(info: LoginNoticeInfo) {
+  const writeRaw = useContext(TerminalWriteContext);
+  const [copied, setCopied] = useState(false);
   useInput((input, key) => {
-    if (key.escape || (key.ctrl && input === "c")) info.onCancel?.();
+    if (key.escape || (key.ctrl && input === "c")) {
+      info.onCancel?.();
+      return;
+    }
+    // The fullscreen TUI owns the mouse, so the URL cannot be selected with a
+    // plain drag. `c` sends it to the clipboard (OSC 52 / tmux buffer), which
+    // also reaches the local clipboard over SSH.
+    if (input === "c" && !key.ctrl && !key.meta && info.url) {
+      void setClipboard(info.url)
+        .then((sequence) => {
+          if (sequence) writeRaw?.(sequence);
+          setCopied(true);
+        })
+        .catch(() => {});
+    }
   }, { isActive: info.onCancel !== undefined });
   return (
     <Box flexDirection="column" paddingX={1} borderStyle="round">
@@ -238,8 +274,17 @@ function LoginNotice(info: LoginNoticeInfo) {
         The consent page may say "Grok Build" — that is xAI's shared sign-in.
       </Text>
       {info.userCode ? <Text>Code: {info.userCode}</Text> : null}
-      {info.url ? <Text dimColor>URL: {info.url}</Text> : null}
-      {info.onCancel ? <Text dimColor>Esc or Ctrl+C to cancel</Text> : null}
+      {info.url ? <Text>URL: {info.url}</Text> : null}
+      {info.url ? (
+        <Text dimColor>
+          {copied ? "URL copied to the clipboard." : "Press c to copy the URL."}
+        </Text>
+      ) : null}
+      {info.onCancel ? (
+        <Text dimColor>
+          Waiting for the sign-in to finish; typing is paused. Esc or Ctrl+C cancels.
+        </Text>
+      ) : null}
     </Box>
   );
 }

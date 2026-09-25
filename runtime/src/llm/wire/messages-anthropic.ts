@@ -4,6 +4,7 @@
  * @module
  */
 
+import { resolveReasoningEffort } from "../reasoning-effort.js";
 import {
   anthropicFastModeRequested,
   anthropicSupportsFastMode,
@@ -37,7 +38,6 @@ import {
   encodeMcpToolNameForWire,
 } from "./mcp-tool-naming.js";
 import {
-  anthropicAcceptsEffort,
   anthropicAcceptsSamplingParameters,
   anthropicEffort,
   anthropicManualBudgetTokens,
@@ -399,11 +399,12 @@ export function buildAnthropicMessagesRequest(
   // by omitting any forced tool_choice (falling back to auto) whenever
   // thinking will be enabled on this request.
   //
-  // Task 28: on the Fable/Mythos 5 family thinking is ALWAYS on server-side
-  // regardless of `reasoningEffort`, so the forced-tool_choice constraint
-  // applies unconditionally there. The docs do not state that the family
-  // relaxed the forced-tool_choice-with-thinking rule, so we conservatively
-  // keep it (falling back to auto never 400s; forcing could).
+  // Task 28: on the always-on family (Fable/Mythos 5, Opus 5.5) thinking is
+  // ALWAYS on server-side regardless of `reasoningEffort`, so the
+  // forced-tool_choice constraint applies unconditionally there. Fable 5.1
+  // and Opus 5.5 reject forced tool use outright ("tool_choice: type "tool"
+  // and "any" are not supported for this model", Opus 5.5 migration guide,
+  // 2026-09-22); falling back to auto never 400s.
   const thinkingEnabled =
     alwaysOnThinking || input.options?.reasoningEffort !== undefined;
   if (input.options?.toolChoice !== undefined) {
@@ -418,11 +419,11 @@ export function buildAnthropicMessagesRequest(
       name: ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
     };
   }
-  // Task 28: never attach a `thinking` config for the Fable/Mythos 5
-  // family — thinking is always on and any explicit configuration other
-  // than `{type:"adaptive"}` (incl. `disabled` and `enabled`/budget_tokens)
-  // returns a 400; omitting the param runs adaptive thinking. Depth is the
-  // effort parameter's job on that family.
+  // Task 28: never attach a `thinking` config for the always-on family
+  // (Fable/Mythos 5, Opus 5.5): thinking is always on and any explicit
+  // configuration other than `{type:"adaptive"}` (incl. `disabled` and
+  // `enabled`/budget_tokens) returns a 400; omitting the param runs adaptive
+  // thinking. Depth is the effort parameter's job on that family.
   //
   // Opus 5, Sonnet 5, Opus 4.8 and Opus 4.7 return the same 400 for
   // `enabled` + `budget_tokens` ("Use thinking.type.adaptive and
@@ -430,21 +431,28 @@ export function buildAnthropicMessagesRequest(
   // thinking, with depth steered by effort. Only Opus 4.5, Sonnet 4.5,
   // Haiku 4.5 and older still budget their thinking. Probed live
   // 2026-09-11; see anthropicThinkingControl.ts.
+  const effortLevels = resolveReasoningEffort({ provider: "anthropic", model: input.model }).levels;
+  const requestedEffort = input.options?.reasoningEffort;
+  const normalizedEffort = (requestedEffort === "max" || requestedEffort === "xhigh") &&
+    !effortLevels.includes(requestedEffort) ? "high" : requestedEffort;
   if (thinkingEnabled && !alwaysOnThinking) {
     body.thinking = thinkingControl === "adaptive"
       ? { type: "adaptive" }
       : {
           type: "enabled",
           budget_tokens: anthropicManualBudgetTokens(
-            input.options?.reasoningEffort,
+            normalizedEffort,
             maxTokens,
           ),
         };
   }
   // The effort dial only means something on the wire as output_config.effort;
   // Sonnet 4.5 and Haiku 4.5 reject the field, so it stays off for them.
-  const effort = anthropicEffort(input.options?.reasoningEffort);
-  if (effort !== undefined && anthropicAcceptsEffort(input.model)) {
+  const effort = anthropicEffort(normalizedEffort);
+  if (
+    effort !== undefined &&
+    effortLevels.includes(effort)
+  ) {
     body.output_config = { effort };
   }
   // Fast mode rides the session's "priority" service tier. It is sent only
@@ -553,18 +561,29 @@ export function parseAnthropicMessagesResponse(
     request.options,
   );
 
+  // `usage.speed` is the speed the turn was actually served at. Fast mode
+  // bills at its own rates, and a request that asked for fast can still be
+  // served (and billed) at standard speed, so cost follows this field.
+  const servedSpeed =
+    usageRecord.speed === "fast" || usageRecord.speed === "standard"
+      ? usageRecord.speed
+      : undefined;
+
   return {
     content,
     toolCalls,
-    usage: coerceUsage({
-      promptTokens: usageRecord.input_tokens,
-      completionTokens: usageRecord.output_tokens,
-      totalTokens: undefined,
-      cachedInputTokens: usageRecord.cache_read_input_tokens,
-      cacheCreationInputTokens: usageRecord.cache_creation_input_tokens,
-      reasoningOutputTokens: usageRecord.reasoning_output_tokens,
-      webSearchRequests: serverToolUse.web_search_requests,
-    }),
+    usage: {
+      ...coerceUsage({
+        promptTokens: usageRecord.input_tokens,
+        completionTokens: usageRecord.output_tokens,
+        totalTokens: undefined,
+        cachedInputTokens: usageRecord.cache_read_input_tokens,
+        cacheCreationInputTokens: usageRecord.cache_creation_input_tokens,
+        reasoningOutputTokens: usageRecord.reasoning_output_tokens,
+        webSearchRequests: serverToolUse.web_search_requests,
+      }),
+      ...(servedSpeed !== undefined ? { speed: servedSpeed } : {}),
+    },
     model:
       typeof response.model === "string" ? response.model : model,
     finishReason:

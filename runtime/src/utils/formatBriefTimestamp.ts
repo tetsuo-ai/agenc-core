@@ -51,7 +51,7 @@ export function formatBriefTimestamp(
 }
 
 /**
- * Compact but unambiguous metadata stamp for the workbench chat header.
+ * Compact but unambiguous metadata stamp for the chat header.
  * Unlike `formatBriefTimestamp`, this always includes the calendar date so a
  * long-running transcript never leaves the reader guessing which day a reply
  * belongs to.

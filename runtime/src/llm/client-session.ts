@@ -34,12 +34,14 @@ import {
 import { isFallbackTriggeredError } from "../recovery/api-errors.js";
 import { isProviderCapabilityMismatch } from "./capabilities.js";
 import { parseProviderRetryAfterDirective } from "./retry-after.js";
+import { isProviderFundsFailure } from "./funds.js";
 import {
   RECONNECT_RETRY_AFTER_CEILING_MS,
   classifyRetryAfterMilliseconds,
   validateRetryAfterDirective,
   type RetryAfterDirective,
 } from "../recovery/reconnect-policy.js";
+import { fetchProviderRequest } from "./credential-redirect-fetch.js";
 
 const DEFAULT_REQUEST_MAX_RETRIES = 4;
 const DEFAULT_STREAM_MAX_RETRIES = 5;
@@ -1199,7 +1201,7 @@ export class ProviderHttpClientSession {
             attemptState.signal,
           );
           attemptState.cleanup();
-          const fallbackDecision = evaluateConfiguredProviderFallback(
+          const fallbackDecision = isProviderFundsFailure(this.config.providerName, error) ? undefined : evaluateConfiguredProviderFallback(
             options.providerFallback ?? this.config.providerFallback,
             error,
             consecutiveFallbackFailures,
@@ -1212,7 +1214,7 @@ export class ProviderHttpClientSession {
           if (
             !options.singleWireAttempt &&
             attempt < retryBudget.maxRetries &&
-            (shouldRetryHttpStatus(response.status, retryBudget) ||
+            (!isProviderFundsFailure(this.config.providerName, error) && shouldRetryHttpStatus(response.status, retryBudget) ||
               shouldRetryFallback)
           ) {
             const retryDelay = resolveRetryDelayMs(
@@ -1276,7 +1278,7 @@ export class ProviderHttpClientSession {
             response,
             attemptState.signal,
           );
-          const fallbackDecision = evaluateConfiguredProviderFallback(
+          const fallbackDecision = isProviderFundsFailure(this.config.providerName, error) ? undefined : evaluateConfiguredProviderFallback(
             options.providerFallback ?? this.config.providerFallback,
             error,
             consecutiveFallbackFailures,
@@ -1289,7 +1291,7 @@ export class ProviderHttpClientSession {
           if (
             !options.singleWireAttempt &&
             attempt < retryBudget.maxRetries &&
-            (shouldRetryHttpStatus(response.status, retryBudget) ||
+            (!isProviderFundsFailure(this.config.providerName, error) && shouldRetryHttpStatus(response.status, retryBudget) ||
               shouldRetryFallback)
           ) {
             attemptState.cleanup();
@@ -1404,12 +1406,12 @@ export class ProviderHttpClientSession {
     }
 
     const fetchImpl = this.config.fetchImpl ?? fetch;
-    return await fetchImpl(url, {
+    return await fetchProviderRequest(url, {
       method,
       headers,
       body,
       signal,
-    });
+    }, fetchImpl);
   }
 
   private prepareRequest(

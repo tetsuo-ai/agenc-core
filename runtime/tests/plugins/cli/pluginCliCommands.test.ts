@@ -1,4 +1,5 @@
 import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -15,12 +16,18 @@ import { updateMarketplaceInventory } from "../marketplace/inventory.js";
 import {
   formatAgenCPluginCliHelpText,
   parseAgenCPluginCliArgs,
+  pluginListWithCatalog,
   runAgenCPluginCli,
   type AgenCPluginCliOptions,
 } from "./pluginCliCommands.js";
 import type { PluginCliIo } from "./pluginOperations.js";
 import { loadPlugins } from "../loader.js";
+import { installPluginOp, listInstalledPlugins, uninstallPluginOp } from "./pluginOperations.js";
+import { addMarketplaceOp } from "../marketplace/marketplace.js";
+import { buildMarketplaceCatalog, OFFICIAL_MARKETPLACE_NAME,
+  OFFICIAL_MARKETPLACE_REFRESH_MS, OFFICIAL_MARKETPLACE_URL } from "../marketplace/catalog-cli.js";
 import { substitutePluginTemplate } from "../registration/common.js";
+import { pluginSignaturePayloadBytes } from "../resolution.js";
 
 function createIo(): PluginCliIo & {
   readonly stdoutText: () => string;
@@ -126,7 +133,277 @@ function marketplaceGitRunner(
   };
 }
 
+async function installedLocalTeamMarketplace(
+  runtime: Awaited<ReturnType<typeof tempRuntime>>,
+) {
+  const source = join(runtime.root, "market");
+  const pluginRoot = await writePlugin(source, "alpha");
+  await mkdir(join(source, ".agenc-plugin"), { recursive: true });
+  await writeFile(join(source, ".agenc-plugin", "marketplace.json"), JSON.stringify({
+    metadata: { name: "team" }, plugins: [{ name: "alpha", source: "./alpha",
+      policy: { installation: "AVAILABLE", authentication: "ON_USE" } }],
+  }));
+  const opts = options(runtime.agencHome, runtime.workspaceRoot, createIo());
+  await addMarketplaceOp({ ...opts, source, name: "team" });
+  expect(await runAgenCPluginCli({ kind: "marketplace-install", pluginId: "alpha@team",
+    scope: "user", force: false, json: true }, opts)).toBe(0);
+  return { source, pluginRoot, opts };
+}
+
 describe("agenc plugin CLI", () => {
+  it("does not reconnect a detached Git subdirectory to the former marketplace", () => {
+    const base = { id: "alpha", name: "alpha", version: "1.0.0", enabled: true,
+      root: "/plugins/alpha", source: "user" as const,
+      sourceLocation: "https://github.com/team/plugins.git", sourceKind: "git" as const,
+      verificationState: "verified" as const, payloadDigest: "sha256:old" };
+    const catalog = { schemaVersion: 1, kind: "agenc.plugin.marketplace.catalog",
+      errors: [], marketplaces: [{ name: "team", sourceType: "local" as const,
+        source: "/market", plugins: [{ id: "alpha@team", name: "alpha", marketplace: "team",
+          source: { type: "git" as const, url: base.sourceLocation, path: "plugins/old" },
+          root: "/market", policy: { installation: "AVAILABLE" as const,
+            authentication: "ON_USE" as const }, payloadDigest: "sha256:new" }] }] };
+    for (const sourcePath of ["plugins/new", undefined]) {
+      const result = pluginListWithCatalog({ plugins: [{ ...base, sourcePath }], errors: [] }, catalog);
+      expect(result.plugins[0]).toMatchObject({ updateAvailable: false,
+        updateVerificationState: "unavailable" });
+    }
+  });
+  it("does not prefetch an old marketplace subdirectory for a detached install", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const io = createIo();
+    const opts = options(agencHome, workspaceRoot, io);
+    const source = await writePlugin(root, "alpha");
+    const installed = await installPluginOp({ ...opts, source });
+    await writeFile(join(installed.destination, ".agenc-plugin", "agenc-install.json"),
+      JSON.stringify({ provenanceVersion: 1, source: { type: "git",
+        url: "https://github.com/team/plugins.git", path: "plugins/new" },
+      resolutionKind: "git", signatureRequired: false }));
+    const market = join(root, "market");
+    await mkdir(join(market, ".agenc-plugin"), { recursive: true });
+    await writeFile(join(market, ".agenc-plugin", "marketplace.json"), JSON.stringify({
+      metadata: { name: "team" }, plugins: [{ name: "alpha",
+        source: { source: "git", url: "https://github.com/team/plugins.git",
+          path: "plugins/old", sha: "a".repeat(40) },
+        policy: { installation: "AVAILABLE", authentication: "ON_USE" } }],
+    }));
+    await addMarketplaceOp({ ...opts, source: market, name: "team" });
+    const requests: string[] = [];
+    const fetcher: NonNullable<AgenCPluginCliOptions["fetcher"]> = async (url) => {
+      requests.push(url);
+      return jsonResponse({ error: "missing" }, false, 404);
+    };
+    expect(await runAgenCPluginCli({ kind: "list", json: true }, { ...opts, fetcher })).toBe(0);
+    expect(requests).toEqual([]);
+    expect(JSON.parse(io.stdoutText()).plugins[0]).toMatchObject({
+      sourcePath: "plugins/new", updateAvailable: false, updateVerificationState: "unavailable",
+    });
+  });
+  it("marks a signed payload changed at the same version, with the marketplace refresh time", () => {
+    const result = pluginListWithCatalog({ plugins: [{ id: "stonks", name: "stonks", version: "0.2.5",
+      enabled: true, root: "/plugins/stonks", source: "stonks", sourceKind: "marketplace",
+      marketplace: "team", payloadDigest: "sha256:old" }], errors: [] }, {
+      schemaVersion: 1, kind: "agenc.plugin.marketplace.catalog", marketplaces: [{
+        name: "team", sourceType: "local", source: "/market", plugins: [{
+          id: "stonks@team", name: "stonks", marketplace: "team",
+          source: { type: "local", path: "/market/stonks" }, root: "/market",
+          policy: { installation: "AVAILABLE", authentication: "ON_USE" },
+          version: "0.2.5", payloadDigest: "sha256:new", lastRefreshTime: "2026-09-23T00:00:00Z",
+        }],
+      }], errors: [],
+    });
+    expect(result.plugins[0]).toMatchObject({ updateAvailable: true,
+      lastRefreshTime: "2026-09-23T00:00:00Z" });
+  });
+  it("does not call an unsigned advertised version an authenticated update", () => {
+    const result = pluginListWithCatalog({ plugins: [{ id: "alpha", name: "alpha", version: "1.0.0",
+      enabled: true, root: "/plugins/alpha", source: "alpha", marketplace: "team",
+      verificationState: "verified", payloadDigest: "sha256:old" }], errors: [] }, {
+      schemaVersion: 1, kind: "agenc.plugin.marketplace.catalog", marketplaces: [{
+        name: "team", sourceType: "local", source: "/market", plugins: [{
+          id: "alpha@team", name: "alpha", marketplace: "team",
+          source: { type: "local", path: "/market/alpha" }, root: "/market",
+          policy: { installation: "AVAILABLE", authentication: "ON_USE" }, version: "99.0.0",
+        }],
+      }], errors: [],
+    });
+    expect(result.plugins[0]).toMatchObject({ updateAvailable: false,
+      updateVerificationState: "unavailable" });
+  });
+
+  it("keeps legacy signed metadata signature-required when the signature disappears", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const pluginRoot = await writePlugin(root, "alpha");
+    const opts = options(agencHome, workspaceRoot, createIo());
+    const installed = await installPluginOp({ ...opts, source: pluginRoot });
+    await writeFile(join(installed.destination, ".agenc-plugin", "agenc-install.json"), JSON.stringify({
+      name: "alpha", source: pluginRoot, resolutionKind: "local", signatureVerified: true,
+    }));
+    const listed = await listInstalledPlugins(opts);
+    expect(listed.plugins[0]?.verificationState).toBe("failed");
+    const compared = pluginListWithCatalog(listed, { schemaVersion: 1,
+      kind: "agenc.plugin.marketplace.catalog", errors: [], marketplaces: [{
+        name: "team", sourceType: "local", source: root, plugins: [{
+          id: "alpha@team", name: "alpha", marketplace: "team",
+          source: { type: "local", path: pluginRoot }, root,
+          policy: { installation: "AVAILABLE", authentication: "ON_USE" }, version: "2.0.0",
+        }],
+      }] });
+    expect(compared.plugins[0]).toMatchObject({ updateAvailable: false,
+      updateVerificationState: "unavailable" });
+  });
+
+  it("contains corrupt install metadata per plugin and still removes that install", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const io = createIo();
+    const opts = options(agencHome, workspaceRoot, io);
+    const good = await writePlugin(root, "good");
+    const damaged = await writePlugin(root, "damaged");
+    await installPluginOp({ ...opts, source: good });
+    const installed = await installPluginOp({ ...opts, source: damaged });
+    await writeFile(join(installed.destination, ".agenc-plugin", "agenc-install.json"), "{broken");
+    const listed = await listInstalledPlugins(opts);
+    expect(listed.plugins.map((plugin) => plugin.id)).toEqual(["damaged", "good"]);
+    expect(listed.plugins.find((plugin) => plugin.id === "damaged")?.verificationState).toBe("failed");
+    expect(listed.errors.some((error) => error.includes("damaged") && error.includes("agenc-install.json"))).toBe(true);
+    expect((await uninstallPluginOp({ ...opts, pluginId: "damaged" })).removedRoots)
+      .toContain(installed.destination);
+  });
+
+  it("retains local marketplace provenance across install, update, and list", async () => {
+    const { source, opts } = await installedLocalTeamMarketplace(await tempRuntime());
+    expect(await runAgenCPluginCli({ kind: "update", pluginId: "alpha", scope: "user" }, opts)).toBe(0);
+    const listed = await listInstalledPlugins(opts);
+    expect(listed.plugins[0]).toMatchObject({ marketplace: "team", sourceKind: "marketplace" });
+    const location = listed.plugins[0]?.sourceLocation ?? "";
+    const compared = pluginListWithCatalog(listed, { schemaVersion: 1,
+      kind: "agenc.plugin.marketplace.catalog", errors: [], marketplaces: ["team", "other"].map((name) => ({
+        name, sourceType: "local" as const, source: location, plugins: [{
+          id: `alpha@${name}`, name: "alpha", marketplace: name,
+          source: { type: "local" as const, path: location }, root: source,
+          policy: { installation: "AVAILABLE" as const, authentication: "ON_USE" as const },
+          version: "2.0.0",
+        }],
+      })) });
+    expect(compared.plugins[0]?.updateAvailable).toBe(true);
+  });
+
+  it("finds an unsigned local marketplace update from the changed manifest", async () => {
+    const { source, pluginRoot, opts } = await installedLocalTeamMarketplace(await tempRuntime());
+    await writeFile(join(pluginRoot, ".agenc-plugin", "plugin.json"), JSON.stringify({
+      name: "alpha", version: "2.0.0", commands: "./commands",
+    }));
+    await addMarketplaceOp({ ...opts, source, name: "team", force: true });
+    const io = createIo();
+    expect(await runAgenCPluginCli({ kind: "list", json: true }, { ...opts, io })).toBe(0);
+    expect(JSON.parse(io.stdoutText()).plugins[0]).toMatchObject({
+      version: "1.0.0", verificationState: "unsigned-local", updateAvailable: true,
+    });
+  });
+
+  it("refreshes an already configured official marketplace from installed list", async () => {
+    const { agencHome, workspaceRoot } = await tempRuntime();
+    const t0 = Date.parse("2026-09-23T00:00:00Z");
+    let fetches = 0;
+    const fetcher = async (_url: string) => {
+      fetches += 1;
+      return jsonResponse({ metadata: { name: OFFICIAL_MARKETPLACE_NAME }, plugins: [] });
+    };
+    const opts = options(agencHome, workspaceRoot, createIo());
+    await addMarketplaceOp({ ...opts, source: OFFICIAL_MARKETPLACE_URL,
+      name: OFFICIAL_MARKETPLACE_NAME, fetcher, now: () => new Date(t0) });
+    expect(fetches).toBe(1);
+    const stale = { ...opts, fetcher, now: () => new Date(t0 + OFFICIAL_MARKETPLACE_REFRESH_MS + 1) };
+    expect(await runAgenCPluginCli({ kind: "list", json: true }, stale)).toBe(0);
+    expect(await runAgenCPluginCli({ kind: "list", json: true }, stale)).toBe(0);
+    expect(fetches).toBe(2);
+  });
+
+  it("throttles a failing installed pin across three polls and skips unrelated pins", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const opts = options(agencHome, workspaceRoot, createIo());
+    const pluginRoot = await writePlugin(root, "alpha");
+    const installed = await installPluginOp({ ...opts, source: pluginRoot });
+    await writeFile(join(installed.destination, ".agenc-plugin", "agenc-install.json"), JSON.stringify({
+      source: "https://github.com/team/plugins.git", marketplace: "team",
+      resolutionKind: "local", signatureRequired: false,
+    }));
+    const market = join(root, "market");
+    await mkdir(join(market, ".agenc-plugin"), { recursive: true });
+    await writeFile(join(market, ".agenc-plugin", "marketplace.json"), JSON.stringify({
+      metadata: { name: "team" }, plugins: ["alpha", "unrelated"].map((name) => ({ name,
+        source: { source: "git", url: "https://github.com/team/plugins.git",
+          sha: name === "alpha" ? "a".repeat(40) : "b".repeat(40) },
+        policy: { installation: "AVAILABLE", authentication: "ON_USE" },
+      })),
+    }));
+    await addMarketplaceOp({ ...opts, source: market, name: "team" });
+    const requests: string[] = [];
+    const fetcher: NonNullable<AgenCPluginCliOptions["fetcher"]> = async (url) => {
+      requests.push(url);
+      return jsonResponse({ error: "missing" }, false, 404);
+    };
+    for (let poll = 0; poll < 3; poll++) {
+      expect(await runAgenCPluginCli({ kind: "list", json: true }, { ...opts,
+        fetcher, io: createIo() })).toBe(0);
+    }
+    expect(requests).toEqual([
+      `https://raw.githubusercontent.com/team/plugins/${"a".repeat(40)}/.agenc-plugin/plugin.json`,
+    ]);
+    const key = createHash("sha256").update(requests[0]!).digest("hex").slice(0, 24);
+    const sidecar = JSON.parse(await readFile(join(opts.pluginStorageRoot, "marketplaces",
+      ".logo-cache", `${key}.meta.json`), "utf8"));
+    expect(Date.parse(sidecar.advertRetryAfter)).toBeGreaterThan(opts.now!().getTime());
+  });
+
+  it("reports a valid unsigned local-marketplace install as unsigned-local", async () => {
+    const { opts } = await installedLocalTeamMarketplace(await tempRuntime());
+    expect((await listInstalledPlugins(opts)).plugins[0]).toMatchObject({
+      marketplace: "team", verificationState: "unsigned-local",
+    });
+  });
+
+  it("finds updates for a plugin offered only to cli users", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const source = join(root, "market");
+    const pluginRoot = await writePlugin(source, "alpha");
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    await writeFile(join(agencHome, "plugin-publishers.json"), JSON.stringify({ publishers: {
+      team: { publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64") },
+    } }));
+    const files = { "commands/hello.md": `sha256:${createHash("sha256")
+      .update(await readFile(join(pluginRoot, "commands", "hello.md"))).digest("hex")}` };
+    const signPlugin = async () => {
+      const manifest = await readFile(join(pluginRoot, ".agenc-plugin", "plugin.json"));
+      await writeFile(join(pluginRoot, ".agenc-plugin", "signature.json"), JSON.stringify({
+        publisher: "team", files,
+        signature: sign(null, pluginSignaturePayloadBytes(manifest, files), privateKey).toString("base64"),
+      }));
+    };
+    await signPlugin();
+    await mkdir(join(source, ".agenc-plugin"), { recursive: true });
+    await writeFile(join(source, ".agenc-plugin", "marketplace.json"), JSON.stringify({
+      metadata: { name: "team" }, plugins: [{ name: "alpha", source: "./alpha",
+        policy: { installation: "AVAILABLE", authentication: "ON_USE", products: ["cli"] } }],
+    }));
+    const opts = options(agencHome, workspaceRoot, createIo());
+    await addMarketplaceOp({ ...opts, source, name: "team" });
+    expect(await runAgenCPluginCli({ kind: "marketplace-install", pluginId: "alpha@team",
+      product: "cli", scope: "user", force: false, json: true }, opts)).toBe(0);
+    await writeFile(join(pluginRoot, ".agenc-plugin", "plugin.json"), JSON.stringify({
+      name: "alpha", version: "2.0.0", commands: "./commands",
+    }));
+    await signPlugin();
+    await addMarketplaceOp({ ...opts, source, name: "team", force: true });
+    const installedBeforeList = await listInstalledPlugins(opts);
+    const advertised = await buildMarketplaceCatalog(opts, undefined, true, true);
+    expect(installedBeforeList.plugins[0]?.payloadDigest).toBeDefined();
+    expect(advertised.marketplaces[0]?.plugins[0]?.payloadDigest).toBeDefined();
+    expect(advertised.marketplaces[0]?.plugins[0]?.payloadDigest)
+      .not.toBe(installedBeforeList.plugins[0]?.payloadDigest);
+    const io = createIo();
+    expect(await runAgenCPluginCli({ kind: "list", json: true }, { ...opts, io })).toBe(0);
+    expect(JSON.parse(io.stdoutText()).plugins[0].updateAvailable).toBe(true);
+  });
   it("documents marketplace and plugin source forms in help text", () => {
     const help = formatAgenCPluginCliHelpText();
 
@@ -668,6 +945,12 @@ describe("agenc plugin CLI", () => {
       force: false,
     }, options(agencHome, workspaceRoot, installIo));
     expect(installExit).toBe(0);
+
+    const inventory = JSON.stringify(await listInstalledPlugins(options(
+      agencHome, workspaceRoot, createIo(),
+    )));
+    expect(inventory).not.toContain(firstSecret);
+    expect(inventory).not.toContain(secondSecret);
 
     const updateIo = createIo();
     const updateExit = await runAgenCPluginCli({

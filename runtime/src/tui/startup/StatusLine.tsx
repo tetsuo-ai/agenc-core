@@ -15,7 +15,6 @@ import { useMainLoopModel } from '../hooks/useMainLoopModel.js';
 import { type ReadonlySettings, useSettings } from '../hooks/useSettings.js';
 import type { Message } from '../../types/message.js';
 import type { StatusLineCommandInput } from '../../types/statusLine.js';
-import type { VimMode } from '../../types/textInputTypes.js';
 import { resolveAmbientHookExecutionDecision } from '../../hooks/execution-authority.js';
 import { calculateContextPercentages, getContextWindowForModelForContext } from '../../utils/context.js';
 import { getCwd } from '../../utils/cwd.js';
@@ -29,14 +28,13 @@ import { getCurrentWorktreeSession } from '../../utils/worktree.js';
 import { logForDebugging } from '../../utils/debug.js';
 import { Ansi, Box, Text } from '../ink.js';
 import { useAppState, useSetAppState } from '../state/AppState.js';
-import { formatVimModeIndicator, isVimModeEnabled } from '../components/PromptInput/utils.js';
 export function statusLineShouldDisplay(settings: ReadonlySettings): boolean {
   // Assistant mode: statusline fields (model, permission mode, cwd) reflect the
   // REPL/daemon process, not what the agent child is actually running. Hide it.
   if (feature('KAIROS') && getKairosActive()) return false;
   return settings?.statusLine !== undefined;
 }
-function buildStatusLineCommandInput(exceeds200kTokens: boolean, settings: ReadonlySettings, messages: Message[], addedDirs: string[], mainLoopModel: ModelName, providerContext: ProviderAuthReadContext, vimMode?: VimMode, sessionUsage?: SessionUsageSnapshot | null): StatusLineCommandInput {
+function buildStatusLineCommandInput(exceeds200kTokens: boolean, settings: ReadonlySettings, messages: Message[], addedDirs: string[], mainLoopModel: ModelName, providerContext: ProviderAuthReadContext, sessionUsage?: SessionUsageSnapshot | null): StatusLineCommandInput {
   const agentType = getMainThreadAgentType();
   const worktreeSession = getCurrentWorktreeSession();
   const outputStyleName = settings?.outputStyle || DEFAULT_OUTPUT_STYLE_NAME;
@@ -80,11 +78,6 @@ function buildStatusLineCommandInput(exceeds200kTokens: boolean, settings: Reado
       remaining_percentage: contextPercentages.remaining
     },
     exceeds_200k_tokens: exceeds200kTokens,
-    ...(isVimModeEnabled() && {
-      vim: {
-        mode: vimMode ?? 'INSERT'
-      }
-    }),
     ...(agentType && {
       agent: {
         name: agentType
@@ -112,7 +105,6 @@ type Props = {
   messagesRef: React.RefObject<Message[]>;
   lastAssistantMessageId: string | null;
   providerContext: ProviderAuthReadContext;
-  vimMode?: VimMode;
 };
 export function getLastAssistantMessageId(messages: Message[]): string | null {
   return getLastAssistantMessage(messages)?.uuid ?? null;
@@ -158,7 +150,6 @@ function StatusLineInner({
   messagesRef,
   lastAssistantMessageId,
   providerContext,
-  vimMode
 }: Props): React.ReactNode {
   const abortControllerRef = useRef<AbortController | undefined>(undefined);
   const permissionMode = useAppState(s => s.toolPermissionContext.mode);
@@ -186,8 +177,6 @@ function StatusLineInner({
   // Keep latest values in refs for stable callback access
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
-  const vimModeRef = useRef(vimMode);
-  vimModeRef.current = vimMode;
   const addedDirsRef = useRef(additionalWorkingDirectories);
   addedDirsRef.current = additionalWorkingDirectories;
   const mainLoopModelRef = useRef(mainLoopModel);
@@ -202,7 +191,6 @@ function StatusLineInner({
     messageId: string | null;
     exceeds200kTokens: boolean;
     permissionMode: PermissionMode;
-    vimMode: VimMode | undefined;
     mainLoopModel: ModelName;
     usageCost: number | undefined;
     usageUnknown: boolean | undefined;
@@ -210,7 +198,6 @@ function StatusLineInner({
     messageId: null,
     exceeds200kTokens: false,
     permissionMode,
-    vimMode,
     mainLoopModel,
     usageCost,
     usageUnknown,
@@ -241,7 +228,7 @@ function StatusLineInner({
       if (executeDaemonStatusLine !== undefined) {
         const result = await executeDaemonStatusLineWhenReady(
           executeDaemonStatusLine,
-          isVimModeEnabled() ? { vimMode: vimModeRef.current ?? 'INSERT' } : {},
+          {},
           controller.signal,
         );
         if (controller.signal.aborted) return;
@@ -261,7 +248,7 @@ function StatusLineInner({
           previousStateRef.current.messageId = currentMessageId;
           previousStateRef.current.exceeds200kTokens = exceeds200kTokens;
         }
-        const statusInput = buildStatusLineCommandInput(exceeds200kTokens, settingsRef.current, msgs, Array.from(addedDirsRef.current.keys()), mainLoopModelRef.current, providerContext, vimModeRef.current, sessionUsageRef.current);
+        const statusInput = buildStatusLineCommandInput(exceeds200kTokens, settingsRef.current, msgs, Array.from(addedDirsRef.current.keys()), mainLoopModelRef.current, providerContext, sessionUsageRef.current);
         text = await executeStatusLineCommand(statusInput, controller.signal, undefined, logResult);
       }
       if (!controller.signal.aborted) {
@@ -294,19 +281,18 @@ function StatusLineInner({
     }, 300, debounceTimerRef, doUpdate);
   }, [doUpdate]);
 
-  // Only trigger update when assistant message, permission mode, vim mode, or model actually changes
+  // Only trigger update when assistant message, permission mode, or model actually changes
   useEffect(() => {
-    if (lastAssistantMessageId !== previousStateRef.current.messageId || permissionMode !== previousStateRef.current.permissionMode || vimMode !== previousStateRef.current.vimMode || mainLoopModel !== previousStateRef.current.mainLoopModel || usageCost !== previousStateRef.current.usageCost || usageUnknown !== previousStateRef.current.usageUnknown) {
+    if (lastAssistantMessageId !== previousStateRef.current.messageId || permissionMode !== previousStateRef.current.permissionMode || mainLoopModel !== previousStateRef.current.mainLoopModel || usageCost !== previousStateRef.current.usageCost || usageUnknown !== previousStateRef.current.usageUnknown) {
       // Don't update messageId here — let doUpdate handle it so
       // exceeds200kTokens is recalculated with the latest messages
       previousStateRef.current.permissionMode = permissionMode;
-      previousStateRef.current.vimMode = vimMode;
       previousStateRef.current.mainLoopModel = mainLoopModel;
       previousStateRef.current.usageCost = usageCost;
       previousStateRef.current.usageUnknown = usageUnknown;
       scheduleUpdate();
     }
-  }, [lastAssistantMessageId, permissionMode, vimMode, mainLoopModel, usageCost, usageUnknown, scheduleUpdate]);
+  }, [lastAssistantMessageId, permissionMode, mainLoopModel, usageCost, usageUnknown, scheduleUpdate]);
 
   // When the statusLine command changes (hot reload), log the next result
   const statusLineCommand = settings?.statusLine?.command;
@@ -361,14 +347,12 @@ function StatusLineInner({
 
   // Get padding from settings or default to 0
   const paddingX = settings?.statusLine?.padding ?? 0;
-  const vimModeIndicator = isVimModeEnabled() ? formatVimModeIndicator(vimMode) : null;
 
   // StatusLine must have stable height in fullscreen — the footer is
   // flexShrink:0 so a 0→1 row change when the command finishes steals
   // a row from ScrollBox and shifts content. Reserve the row while loading
   // (same trick as PromptInputFooterLeftSide).
   return <Box paddingX={paddingX} gap={2}>
-      {vimModeIndicator ? <Text dimColor>{vimModeIndicator}</Text> : null}
       {statusLineText ? <Text dimColor wrap="truncate">
           <Ansi>{statusLineText}</Ansi>
         </Text> : isFullscreen ? <Text> </Text> : null}

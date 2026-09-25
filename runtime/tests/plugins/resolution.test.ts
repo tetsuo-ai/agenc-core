@@ -24,6 +24,7 @@ import {
 import {
   __isPathInsideForTesting,
   installPluginOp as installPluginOpWithAuthority,
+  listInstalledPlugins,
   updatePluginOp as updatePluginOpWithAuthority,
 } from "./cli/pluginOperations.js";
 import {
@@ -765,7 +766,7 @@ describe("plugin source resolution", () => {
       expect(first.pluginRoot).toBe(pluginSourceCacheRoot(agencHome, "git@github.com:tetsuo-ai/plugin.git"));
       expect(second.pluginRoot).toBe(first.pluginRoot);
       expect(runs).toBe(1);
-      expect(calls[0]).toMatch(/^git clone --depth 1 -- git@github.com:tetsuo-ai\/plugin.git /u);
+      expect(calls[0]).toMatch(/^git -c core\.hooksPath=\/dev\/null -c core\.autocrlf=false -c core\.eol=lf clone --depth 1 -- git@github.com:tetsuo-ai\/plugin.git /u);
       await second.cleanup();
     });
   });
@@ -955,6 +956,26 @@ describe("plugin source resolution", () => {
       });
       expect(installed.signatureVerified).toBe(true);
       expect(installed.resolutionKind).toBe("local");
+      const authority = {
+        agencHome, workspaceRoot: root, env: {},
+        pluginStorageRoot: join(agencHome, "plugins"),
+        sessionTempRoot: join(agencHome, "tmp"), publishersPath,
+      };
+      const [listedSigned] = (await listInstalledPlugins(authority)).plugins;
+      expect(listedSigned).toMatchObject({
+        verificationState: "verified", publisherKeyId: "tetsuo",
+        sourceKind: "local", payloadDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+      });
+      const unsignedRoot = join(root, "unsigned-local");
+      await writePlugin(unsignedRoot, "unsigned-local");
+      await installPluginOp({ source: unsignedRoot, agencHome, workspaceRoot: root });
+      expect((await listInstalledPlugins(authority)).plugins.find((plugin) => plugin.name === "unsigned-local"))
+        .toMatchObject({ verificationState: "unsigned-local", sourceKind: "local" });
+      await writeFile(join(installed.destination, ".agenc-plugin", "plugin.json"),
+        JSON.stringify({ name: "bundled-unsigned", version: "2.0.0" }));
+      expect((await listInstalledPlugins(authority)).plugins.find((plugin) => plugin.name === "bundled-unsigned")).toMatchObject({
+        verificationState: "failed",
+      });
 
       await writeFile(
         join(pluginRoot, ".agenc-plugin", "plugin.json"),
@@ -968,6 +989,25 @@ describe("plugin source resolution", () => {
           publishersPath,
         }),
       ).rejects.toThrow(/signature verification failed/u);
+    });
+  });
+
+  test("lists the runtime slash command name and its argument hint", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const pluginRoot = join(root, "stonks-source");
+      await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+        name: "stonks-copilot", version: "0.2.5",
+        commands: { stock: { source: "./commands/stock.md", argumentHint: "<ticker>" } },
+      });
+      await mkdir(join(pluginRoot, "commands"), { recursive: true });
+      await writeFile(join(pluginRoot, "commands", "stock.md"), "# Stock\n");
+      await installPluginOp({ source: pluginRoot, agencHome, workspaceRoot: root });
+      const result = await listInstalledPlugins({ agencHome, workspaceRoot: root, env: {},
+        pluginStorageRoot: join(agencHome, "plugins"), sessionTempRoot: join(agencHome, "tmp") });
+      expect(result.plugins[0]?.commands).toEqual([expect.objectContaining({
+        name: "stonks-copilot:stock", argumentHint: "<ticker>",
+      })]);
     });
   });
 
@@ -1984,8 +2024,10 @@ describe("plugin source resolution", () => {
           "known-host-tarball",
           "known-host-bundle",
         );
+        const gitCloneArgs: string[][] = [];
         const runProcess: PluginProcessRunner = async (command, args) => {
-          if (command === "git" && args[0] === "clone") {
+          if (command === "git" && args.includes("clone")) {
+            gitCloneArgs.push([...args]);
             const separator = args.indexOf("--");
             forwardedSources.push({
               seam: "clone",
@@ -2011,6 +2053,14 @@ describe("plugin source resolution", () => {
 
         expect(resolved.kind).toBe(expectedKind);
         expect(forwardedSources).toEqual([{ seam: downstream, source }]);
+        // Repository bytes must reach the signature check verbatim: Git for
+        // Windows converts LF to CRLF by default, which broke every signed
+        // marketplace install there.
+        for (const args of gitCloneArgs) {
+          expect(args).toEqual(
+            expect.arrayContaining(["core.hooksPath=/dev/null", "core.autocrlf=false", "core.eol=lf"]),
+          );
+        }
         await resolved.cleanup();
       });
     },

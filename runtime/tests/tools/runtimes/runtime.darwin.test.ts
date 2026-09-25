@@ -7,7 +7,6 @@ import { expect, test } from "vitest";
 import { SandboxManager } from "../../sandbox/engine/manager.js";
 import { safePath } from "../../tools/system/filesystem.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
-import { WorkspaceMutationCoordinatorRegistry } from "../../workspace/mutation-coordinator.js";
 import { permissionProfileForRuntimeContext } from "./sandboxing.js";
 
 if (process.platform !== "darwin") {
@@ -82,7 +81,6 @@ test(
     );
     const decomposedRoot = join(temporaryRoot, "cafe\u0301");
     const composedRoot = join(temporaryRoot, "caf\u00e9");
-    const agencHome = join(temporaryRoot, "agenc-home");
 
     try {
       await mkdir(decomposedRoot);
@@ -108,9 +106,6 @@ test(
       expect(createdDistinctSpelling).toBe(!spellingsAliasSameEntry);
 
       const pathCheck = await safePath(composedRoot, [decomposedRoot]);
-      const registry = new WorkspaceMutationCoordinatorRegistry({ agencHome });
-      const decomposedCoordinator = registry.getOrCreate(decomposedRoot);
-      const composedCoordinator = registry.getOrCreate(composedRoot);
 
       if (spellingsAliasSameEntry) {
         expect(pathCheck.safe).toBe(true);
@@ -119,16 +114,12 @@ test(
         });
         expect(resolvedIdentity.dev).toBe(decomposedIdentity.dev);
         expect(resolvedIdentity.ino).toBe(decomposedIdentity.ino);
-        expect(composedCoordinator).toBe(decomposedCoordinator);
       } else {
         expect(pathCheck).toMatchObject({
           safe: false,
           resolved: "",
           reason: "Path is outside allowed directories",
         });
-        expect(composedCoordinator).not.toBe(decomposedCoordinator);
-        expect(composedCoordinator.workspaceRoot).toBe(composedRoot);
-        expect(decomposedCoordinator.workspaceRoot).toBe(decomposedRoot);
       }
     } finally {
       await rm(temporaryRoot, { recursive: true, force: true });

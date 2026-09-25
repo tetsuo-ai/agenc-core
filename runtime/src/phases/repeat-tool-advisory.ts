@@ -231,6 +231,7 @@ function blockedCallMessage(
   count: number,
   lastError: string,
   endsTurn: boolean,
+  nonRetryable: boolean,
 ): string {
   const preview =
     lastError.length > LAST_ERROR_PREVIEW_CHARS
@@ -241,11 +242,28 @@ function blockedCallMessage(
     : "Take a different action now: change the arguments, use another tool, " +
       "work around what is failing, or finish with what you have. Issuing " +
       "this same call again stops the turn.";
+  if (nonRetryable) {
+    return (
+      `This exact ${call.name} call was refused as not retryable with the same arguments. ` +
+      `${consequence} Last error: ${preview}`
+    );
+  }
   return (
     `This exact ${call.name} call already failed ${count} times with the ` +
     "same error in this turn and will not run again. The error is not going " +
     `to change. ${consequence} Last error: ${preview}`
   );
+}
+
+function lastFailureIsNonRetryable(state: TurnState, call: LLMToolCall): boolean {
+  const key = canonicalCallKey(call);
+  for (let index = state.completedToolResults.length - 1; index >= 0; index -= 1) {
+    const record = state.completedToolResults[index]!;
+    if (completedRecordKey(record) !== key) continue;
+    if (record.metadata?.[REPEATED_FAILURE_BLOCKED_METADATA_KEY] === true) continue;
+    return record.isError && record.metadata?.retryable === false;
+  }
+  return false;
 }
 
 /**
@@ -305,9 +323,8 @@ export function isRepeatedFailingCall(
   state: TurnState,
   call: LLMToolCall,
 ): boolean {
-  return (
-    identicalFailureRun(state, call).count >= REPEATED_FAILURE_BLOCK_THRESHOLD
-  );
+  const count = identicalFailureRun(state, call).count;
+  return count >= (lastFailureIsNonRetryable(state, call) ? 1 : REPEATED_FAILURE_BLOCK_THRESHOLD);
 }
 
 /**
@@ -327,9 +344,10 @@ export function blockRepeatedFailingCall(
   call: LLMToolCall,
 ): ToolDispatchResult | null {
   const { count, lastError } = identicalFailureRun(state, call);
-  if (count < REPEATED_FAILURE_BLOCK_THRESHOLD) return null;
+  const nonRetryable = lastFailureIsNonRetryable(state, call);
+  if (count < (nonRetryable ? 1 : REPEATED_FAILURE_BLOCK_THRESHOLD)) return null;
   const endsTurn = refusedInEarlierSample(state, call);
-  const message = blockedCallMessage(call, count, lastError, endsTurn);
+  const message = blockedCallMessage(call, count, lastError, endsTurn, nonRetryable);
   emitWarning(
     session.eventLog,
     session.nextInternalSubId(),
@@ -338,12 +356,13 @@ export function blockRepeatedFailingCall(
       (endsTurn ? "; refused twice, stopping the turn" : "; the model may change approach"),
   );
   return {
-    content: JSON.stringify({ error: message }),
+    content: JSON.stringify({ error: message, ...(nonRetryable ? { retryable: false } : {}) }),
     isError: true,
     metadata: {
       [REPEATED_FAILURE_BLOCKED_METADATA_KEY]: true,
       [REPEATED_FAILURE_SAMPLE_METADATA_KEY]: state.modelSampleOrdinal,
       repeatedFailures: count,
+      ...(nonRetryable ? { retryable: false } : {}),
     },
     ...(endsTurn ? { preventContinuation: true } : {}),
   };

@@ -15,7 +15,7 @@ import type { MCPServerConnection } from '../../../services/mcp/types.js';
 import { useAppState } from '../../state/AppState.js';
 import type { ToolPermissionContext } from '../../../tools/Tool.js';
 import type { Message } from '../../../types/message.js';
-import type { PromptInputMode, VimMode } from '../../../types/textInputTypes.js';
+import type { PromptInputMode } from '../../../types/textInputTypes.js';
 import type { AutoUpdaterResult } from '../../../utils/autoUpdater.js';
 import { useCoordinatorTaskCount } from '../CoordinatorAgentStatus.js';
 import { StatusLine, statusLineShouldDisplay } from '../../startup/StatusLine.js';
@@ -32,7 +32,6 @@ type Props = {
     show: boolean;
     key?: string;
   };
-  vimMode: VimMode | undefined;
   mode: PromptInputMode;
   autoUpdaterResult: AutoUpdaterResult | null;
   isAutoUpdating: boolean;
@@ -74,7 +73,6 @@ function PromptInputFooter({
   apiKeyStatus,
   debug,
   exitMessage,
-  vimMode,
   mode,
   autoUpdaterResult,
   isAutoUpdating,
@@ -143,7 +141,7 @@ function PromptInputFooter({
   } : null, [isFullscreen, shouldShowSuggestions, suggestions, selectedSuggestion, maxColumnWidth, suggestionType]);
   useSetPromptOverlay(overlayData);
   if (shouldShowSuggestions) {
-    // Fullscreen/workbench suggestions are rendered by
+    // Fullscreen suggestions are rendered by
     // PromptSuggestionsOverlay. Do not also render the ordinary footer below
     // the composer: it duplicated "? for shortcuts" while the popup was open.
     if (isFullscreen) return null;
@@ -157,8 +155,8 @@ function PromptInputFooter({
   return <>
       <Box flexDirection={isNarrow ? 'column' : 'row'} justifyContent={isNarrow ? 'flex-start' : 'space-between'} paddingX={2} gap={isNarrow ? 0 : 1} backgroundColor="surfaceBackground" opaque>
         <Box flexDirection="column" flexShrink={isNarrow ? 0 : 1}>
-          {showStatusLine && <StatusLine messagesRef={messagesRef} lastAssistantMessageId={lastAssistantMessageId} providerContext={remoteAuthSessionContext} vimMode={vimMode} />}
-          <PromptInputFooterLeftSide exitMessage={exitMessage} vimMode={showStatusLine ? undefined : vimMode} mode={mode} toolPermissionContext={toolPermissionContext} suppressHint={suppressHint} isLoading={isLoading} tasksSelected={pillSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} isPasting={isPasting} isSearching={isSearching} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={onOpenTasksDialog} />
+          {showStatusLine && <StatusLine messagesRef={messagesRef} lastAssistantMessageId={lastAssistantMessageId} providerContext={remoteAuthSessionContext} />}
+          <PromptInputFooterLeftSide exitMessage={exitMessage} mode={mode} toolPermissionContext={toolPermissionContext} suppressHint={suppressHint} isLoading={isLoading} tasksSelected={pillSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} isPasting={isPasting} isSearching={isSearching} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={onOpenTasksDialog} />
         </Box>
         <Box flexShrink={1} gap={1}>
           {isFullscreen ? null : <Notifications apiKeyStatus={apiKeyStatus} autoUpdaterResult={autoUpdaterResult} debug={debug} isAutoUpdating={isAutoUpdating} verbose={verbose} getMessages={getMessages} lastAssistantMessageId={lastAssistantMessageId} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} ideSelection={ideSelection} mcpClients={mcpClients} remoteAuthSessionContext={remoteAuthSessionContext} isInputWrapped={isInputWrapped} isNarrow={isNarrow} />}

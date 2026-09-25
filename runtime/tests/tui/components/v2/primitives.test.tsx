@@ -7,10 +7,6 @@ import { Box, Text } from '../../ink.js'
 import { QueuedMessageProvider } from '../../context/QueuedMessageContext.js'
 import { stringWidth } from '../../ink/stringWidth.js'
 import {
-  AssistantMessageMetadataProvider,
-  WorkbenchTranscriptLayoutProvider,
-} from '../../workbench/transcriptLayoutContext.js'
-import {
   AGENC_LOGO_RASTER_SIZE,
   AGENC_LOGO_RGBA_ZLIB_BASE64,
 } from './agencLogoGraphics.generated.js'
@@ -462,42 +458,6 @@ describe('Tool call header paren spacing', () => {
 })
 
 describe('Msg role gutter', () => {
-  it('aligns workbench prompt and response bodies with only the timestamp above the response', async () => {
-    const output = await renderToString(
-      <WorkbenchTranscriptLayoutProvider>
-        <Box flexDirection="column">
-          <Msg role="user">
-            <Text>question body</Text>
-          </Msg>
-          <AssistantMessageMetadataProvider timestamp="28 Jul · 21:42">
-            <Msg role="agenc" label="agenc">
-              <Text>answer body</Text>
-            </Msg>
-          </AssistantMessageMetadataProvider>
-        </Box>
-      </WorkbenchTranscriptLayoutProvider>,
-      { columns: 80, rows: 12 },
-    )
-
-    const lines = output.split('\n')
-    const questionLine = lines.find(line => line.includes('question body'))
-    const headerLine = lines.find(line => line.includes('28 Jul · 21:42'))
-    const answerLine = lines.find(line => line.includes('answer body'))
-
-    expect(questionLine).toBeDefined()
-    expect(headerLine).toContain('28 Jul · 21:42')
-    expect(output).not.toContain('AGENC')
-    expect(answerLine).toBeDefined()
-    expect(headerLine && answerLine).toBeTruthy()
-    expect(lines.indexOf(headerLine!)).toBeLessThan(lines.indexOf(answerLine!))
-    expect(questionLine!.indexOf('question body')).toBe(
-      answerLine!.indexOf('answer body'),
-    )
-    expect(headerLine!.indexOf('28 Jul · 21:42')).toBeGreaterThan(
-      answerLine!.indexOf('answer body'),
-    )
-    expect(answerLine).not.toContain('21:42')
-  })
 
   it('renders a full-height left gutter (no single-row ▮ marker)', async () => {
     const output = await renderToString(

@@ -85,14 +85,11 @@ export function phaseEventToProgressEvent(
           "Run stopped at its deadline; the files on disk are what was saved before it.",
         compact_failed:
           "Turn stopped: compaction could not shrink the context; send a new prompt to continue.",
-        editor_request_failed:
-          "Editor request stopped safely; send a new prompt to continue.",
       };
       const boundedFallback = boundedStopFallback[event.stopReason];
       if (boundedFallback !== undefined) {
         const preferredMessage =
-          (event.stopReason === "compact_failed" ||
-            event.stopReason === "editor_request_failed") &&
+          event.stopReason === "compact_failed" &&
           event.error instanceof Error &&
           event.error.message.length > 0
             ? event.error.message

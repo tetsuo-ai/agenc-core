@@ -345,7 +345,7 @@ async function readCommandPath(
   if (command.path === undefined) return [];
   if (await pathIsDirectory(command.path)) {
     const commandPath = command.path;
-    const files = await collectCommandMarkdownFiles(command.path);
+    const files = await collectCommandMarkdownFiles(command.path, plugin.root);
     return Promise.all(
       files.map(async (filePath) =>
         readFileAsCommand(plugin, filePath, commandPath, loadedPaths, command.metadata),
@@ -372,8 +372,8 @@ async function readCommandPath(
   ].filter((entry): entry is PluginMarkdownCommand => entry !== null);
 }
 
-async function collectCommandMarkdownFiles(root: string): Promise<readonly string[]> {
-  const files = await collectMarkdownFiles(root);
+async function collectCommandMarkdownFiles(root: string, pluginRoot: string): Promise<readonly string[]> {
+  const files = await collectMarkdownFiles(root, pluginRoot);
   const skillDirs = new Set(
     files
       .filter((filePath) => isSkillFile(filePath))
@@ -448,7 +448,7 @@ async function loadSkillEntriesFromPath(
 ): Promise<readonly PluginMarkdownCommand[]> {
   const paths = skillsPath.toLowerCase().endsWith(".md")
     ? [skillsPath]
-    : await collectMarkdownFiles(skillsPath);
+    : await collectMarkdownFiles(skillsPath, plugin.root);
   const entries = await Promise.all(
     paths
       .filter((filePath) => isSkillFile(filePath))

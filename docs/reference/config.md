@@ -326,16 +326,6 @@ otherwise.
 | `providers.grok.enable_image_search` | `true` |
 | `providers.grok.enable_image_understanding` | `true` |
 | `providers.grok.enable_video_understanding` | `true` |
-| `buffer.provider` | `auto` |
-| `buffer.show_tabs` | `auto` |
-| `buffer.neovim.init` | `auto` |
-| `buffer.neovim.startup_timeout_ms` | `10000` |
-| `buffer.neovim.operation_timeout_ms` | `10000` |
-| `buffer.neovim.cleanup_timeout_ms` | `1000` |
-| `buffer.prediction.enabled` | `ask` |
-| `buffer.prediction.debounce_ms` | `160` |
-| `buffer.prediction.timeout_ms` | `2500` |
-| `buffer.prediction.max_output_tokens` | `256` |
 | `tui.theme` | `dark` |
 | `tui.showTurnDuration` | `true` |
 | `tui.terminalProgressBarEnabled` | `true` |
@@ -350,6 +340,14 @@ otherwise.
 | `transcriptPersistenceEnabled` | `true` |
 | `promptSuggestionEnabled` | `false` |
 | `agent.budget` | no caps |
+| `agents.cross_provider_enabled` | `false`. User or managed config may enable cross-provider subagents. Enabling it is the user's consent for the providers in `allowed_providers`: a spawn to one of them runs without a question. This consent also covers unattended runs (goals, routines, workflows, `agenc -p`, and turns resumed after a restart), nested children, and `send_message` or `assign_task` to an existing child. Once any child in a session reports that its provider is out of funds, settings consent ends for the rest of that session, also after `/clear` and a daemon restart. Every later cross-provider spawn then asks, even after the user picks Allow for session. So does every `send_message` or `assign_task` to an existing child. An unattended run, or a run with no client that can answer, gets `consent_unavailable` instead of a question. The stop is kept in that session's own journal. A new session starts with settings consent again, including the reviewed session that `/compact-rollback --branch` creates. A nested child's stop recorded by a build before [#2704](https://github.com/tetsuo-ai/agenc-core/pull/2704) is not read back. A change to any `agents` setting reaches open sessions when the daemon reloads its config. Desktop does that when you save, and so does `agenc daemon reload`. Each open session reads these settings from its own config sources, so its `--config` file and managed config still apply. Its next spawn then follows the new settings. For `cross_provider_enabled`, `allowed_providers` and `cross_provider_ask_each_spawn` so does its next message to an existing child, and a child running on a provider that is no longer allowed stops. `cross_provider_auto` and `subagent_limits` apply to new sub-agents: a child already running keeps its provider, effort and tier, and `send_message` or `assign_task` reach it as it is. A consent card that was open during the reload grants nothing once its provider is no longer allowed. A session may fail to read its settings again, for example because a `.mcp.json` file or an invalid project `config.toml` now blocks its config load, or not finish within one second. That session fails closed for what the save took away. The daemon compares its own settings before and after the save. It reads them from user and managed config and its own profile, never from a workspace. The session loses each provider the save removed there, turns the feature or automatic choice off if the save turned it off, asks at each spawn if the save started asking, and lowers any sub-agent limit the save lowered. It keeps the rest, such as what its own `--config` file, profile or `-c` allows, and it never gains a provider this way. A save that took nothing away leaves it as it was. The reload result lists it in `crossProviderSettings.failed`, with `timedOut: true` when it only ran out of time, and `agenc daemon reload` prints it. It takes its own settings again once a later read succeeds. A read that ran out of time still runs once the session's config is free. A session that is still starting during the reload reads the settings again when it registers for approvals, before its first cross-provider decision. If that read fails, only the daemon log reports it. Other session settings, such as the model, still apply to new sessions. |
+| `agents.allowed_providers` | `[]`. Built-in provider names permitted for cross-provider subagents. |
+| `agents.cross_provider_ask_each_spawn` | `false`. Set `true` to be asked before every cross-provider spawn, as before. Repository config cannot change it. |
+| `agents.cross_provider_auto` | `false`. Whether the agent may choose an allowed provider on its own. Off, a sub-agent runs on another provider only when the message that started the current turn names that provider or one of its models: its name, its display name, a common alias such as GPT or Claude, or the model's name. Only a message a person sends counts. The conversation's history does not, so messages from sub-agents, compaction summaries and earlier messages are not read, and a turn that a schedule, a goal, a resumed run or a sub-agent's report starts names no provider. So the user names the provider in the message that asks for the work. New sub-agents start on it only during that turn: none do after it ends or in a later turn whose message does not name it, and the ones already running keep working. Some names are ordinary words and do not count: `github` is named by Copilot, GitHub Copilot or one of its models, `meta` by Llama, Meta AI or one of its models, and AgenC never by its own name. A managed AgenC child counts as named when the provider its route resolves to is named. "OpenAI-compatible" does not name OpenAI. Any other cross-provider spawn returns `not_requested`, and the agent continues the subtask itself. On, the tool description lists each allowed model's API price per 1M input and output tokens, so the agent can weigh cost when it picks one. A sign-in route (ChatGPT, X) bills the user's subscription instead. Repository config cannot change it. |
+| `agents.subagent_limits` | none. The effort and speed limits for sub-agents, one table per built-in provider. A provider without a table runs its sub-agents at each model's lowest effort other than none, at standard speed, which sends no service tier. Repository config cannot change it. |
+| `agents.subagent_limits.<name>` | none. The limits for every new sub-agent that runs on provider `<name>`, on the parent's provider or another one, however it starts: `spawn_agent`, `spawn_agents_on_csv` workers and workflow agents. A sub-agent runs at its limit, not at its parent's effort or tier. Its request (`reasoning_effort`, `service_tier`) or its role may ask for less effort or for the flex tier, never for more. A managed AgenC child runs at the limits of the provider its route resolves to. A fork of the full conversation (`fork_turns` `all`) keeps the parent's model, effort and tier, so it can reuse the parent's prompt cache, and its request cannot set them. |
+| `agents.subagent_limits.<name>.effort` | the model's lowest level other than `none`. One of `minimal`, `low`, `medium`, `high`, `xhigh` or `max`. `minimal` is the same as unset. Sub-agents run at this effort, as the model's nearest level at or below it. A model that lists no reasoning levels has no effort to limit. |
+| `agents.subagent_limits.<name>.speed` | `standard`. `standard`, which sends no service tier and is the same as unset, or `fast` to run sub-agents on the model's priority tier where it has one. |
 | `agent.retention.completed_days` | `30` |
 | `agent.retention.failed_days` | `90` |
 | `agent.retention.snapshot_days` | `3` |
@@ -503,7 +501,7 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `reasoning_summary` | `auto`, `concise`, `detailed`, or `none`. |
 | `approvals_reviewer` | `user` or `auto_review`. |
 | `model_verbosity` | `low`, `medium`, or `high`. |
-| `service_tier` | `priority` or `flex`. `priority` is the one "Fast" dial: OpenAI priority processing (`service_tier`, GPT-5 family and GPT-4.1/4o/o-series, 2x standard price) and Anthropic fast mode on Claude Opus 5 and Opus 4.8 (`speed: "fast"` plus the `fast-mode-2026-02-01` beta header, 2x price, research preview access from Anthropic). Providers and models without a fast tier ignore it; the model info `serviceTiers` list says which ones have it. |
+| `service_tier` | `priority` or `flex`. `priority` is the one "Fast" dial: OpenAI priority processing (`service_tier`, GPT-5 family and GPT-4.1/4o/o-series, 2x standard price), Anthropic fast mode on Claude Opus 5.5, Opus 5 and Opus 4.8 (`speed: "fast"` plus the `fast-mode-2026-02-01` beta header, 2x price, research preview access from Anthropic), and xAI priority processing on Grok 4.7 and Grok 4.6 (`service_tier: "priority"`, 2x price, API-key billing only; a session signed in with X does not send it). Providers and models without a fast tier ignore it; the model info `serviceTiers` list says which ones have it. |
 | `personality` | `none`, `friendly`, or `pragmatic`. |
 | `agent_max_threads` | Positive concurrent-agent thread cap. |
 | `agent_max_depth` | Non-negative subagent nesting cap. |
@@ -742,10 +740,14 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | --- | --- |
 | `plugins` | Plugin discovery and registration. |
 | `plugins.dirs`, `plugins.enabled`, `plugins.allowlist` | Search directories, global switch, and allowlist. An empty or blank-only allowlist applies no filter. Discovered and installed plugins match their canonical ID, which may be a manifest name, an unqualified install alias, or `name@marketplace`. Path-configured plugins match the manifest name. The unqualified portion of `name@marketplace` also matches. Discovery paths, directory names, and `plugins.plugins` keys are not authorization aliases. |
+| `plugins.mcp_idle_timeout_ms` | Plugin MCP idle lifetime in milliseconds; default `600000` (10 minutes). `0` disables idle eviction. |
+| `plugins.mcp_max_processes` | Daemon-wide plugin MCP process budget; default `8`. Busy and eager servers cannot be evicted. |
 | `plugins.plugins`, `plugins.plugins.<plugin>` | Named plugin map of plugin blocks. |
 | `plugins.plugins.<plugin>.enabled`, `plugins.plugins.<plugin>.path` | Plugin enablement and local path. |
 | `plugins.plugins.<plugin>.mcp_servers`, `plugins.plugins.<plugin>.mcp_servers.<name>` | Plugin-owned MCP server map. |
 | `plugins.plugins.<plugin>.mcp_servers.<name>.enabled`, `plugins.plugins.<plugin>.mcp_servers.<name>.default_tools_approval_mode` | Server switch and approval default. |
+| `plugins.plugins.<plugin>.mcp_servers.<name>.eager` | Start this server with the session and keep it connected. Channel servers are eager automatically. |
+| `plugins.plugins.<plugin>.mcp_servers.<name>.idle_timeout_ms` | Override the global plugin MCP idle lifetime for this server. |
 | `plugins.plugins.<plugin>.mcp_servers.<name>.enabled_tools`, `plugins.plugins.<plugin>.mcp_servers.<name>.disabled_tools` | Tool arrays. |
 | `plugins.plugins.<plugin>.mcp_servers.<name>.tools`, `plugins.plugins.<plugin>.mcp_servers.<name>.tools.<name>` | Per-tool blocks. |
 | `plugins.plugins.<plugin>.mcp_servers.<name>.tools.<name>.default_permission_mode` | Per-tool approval default. Enablement belongs only in the server lists. |
@@ -765,28 +767,19 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `lsp_servers.<server>.startupTimeout`, `lsp_servers.<server>.maxRestarts` | Startup/restart limits. |
 | `attachments`, `attachments.allowedRoots` | Extra roots allowed for `@file` attachment reads. |
 
-### TUI, editor, commands, and presentation
+### TUI, commands, and presentation
 
 | Paths | Type / meaning |
 | --- | --- |
-| `tui`, `tui.vimMode` | TUI block and vim-keybinding switch. |
+| `tui` | TUI block. |
 | `tui.theme` | `auto`, `dark`, `light`, one of the daltonized palettes, or one of the ANSI palettes. |
 | `tui.showTurnDuration`, `tui.terminalProgressBarEnabled`, `tui.copyOnSelect` | Turn-duration display, terminal progress, and selection-copy switches. |
 | `tui.flickerFreeMode`, `tui.prStatusFooterEnabled` | Flicker reduction and pull-request footer switches. |
 | `tui.keybindings`, `tui.keybindings[]` | Ordered canonical keybinding override blocks. This is operator-only: user config may set it and the final managed layer may replace and lock the complete array; plugin/project/local layers are ignored with diagnostics. |
-| `tui.keybindings[].context` | Required registered TUI context such as `Chat`, `Global`, `Buffer`, or `BufferHost`. |
+| `tui.keybindings[].context` | Required registered TUI context such as `Chat` or `Global`. |
 | `tui.keybindings[].bindings` | Chord-to-action map. `command:<name>` is accepted only in `Chat`. |
 | `tui.keybindings[].bindings.<name>` | Operator-chosen chord mapped to a registered action or a `command:<name>` binding. |
 | `tui.keybindings[].unbind` | Chords to unbind explicitly. A chord cannot also occur in `bindings`, including through aliases. |
-| `buffer` | Embedded editor block. |
-| `buffer.provider` | `auto`, `neovim`, `inline`, or `external`. |
-| `buffer.show_tabs` | `auto`, `always`, or `never`. |
-| `buffer.neovim` | Neovim process block. |
-| `buffer.neovim.executable`, `buffer.neovim.init`, `buffer.neovim.discovery_timeout_ms` | Executable, `auto`/`user`/`clean` init, and discovery timeout. |
-| `buffer.neovim.startup_timeout_ms`, `buffer.neovim.operation_timeout_ms`, `buffer.neovim.cleanup_timeout_ms` | Process timeouts. |
-| `buffer.prediction` | Code prediction block. |
-| `buffer.prediction.enabled`, `buffer.prediction.debounce_ms`, `buffer.prediction.timeout_ms`, `buffer.prediction.max_output_tokens` | `ask`/`on`/`off` and limits. |
-| `buffer.prediction.provider`, `buffer.prediction.model` | Optional independent route. |
 | `statusLine`, `statusLine.type`, `statusLine.command`, `statusLine.padding` | Operator-owned status command; `type` is literal `command`. Project/local layers cannot install it. Execution follows session command-hook policy and `--bare` suppression. |
 | `fileSuggestion`, `fileSuggestion.type`, `fileSuggestion.command` | Operator-owned file suggestion command; `type` is literal `command`. Project/local layers cannot install it. Execution follows session command-hook policy and `--bare` suppression. |
 | `attribution`, `attribution.commit`, `attribution.pr` | Commit and pull-request attribution strings. |
@@ -802,8 +795,8 @@ Commands have a five-second deadline including admission wait, accept at most
 command at a time. Cancelling a refresh or closing the session stops its process
 tree before releasing execution capacity. Before a live session exists, the
 custom status line remains unavailable; rendering never starts a model turn.
-Protected Editor workspaces block status commands. An executing command also
-blocks Editor acquisition until its process cleanup finishes.
+An executing status command holds its workspace operation open until its
+process cleanup finishes.
 
 The daemon reports current context usage from its own token records. If no
 recent record is available, `context_window.current_usage`, both context
@@ -842,8 +835,9 @@ keybinding file or watcher.
 | `agent.retention.snapshot_max_count`, `agent.retention.snapshot_max_bytes`, `agent.retention.rollout_days` | Snapshot/rollout retention. `rollout_days` is the disk session-directory sweep (default 30; 0 disables). See [session rollout retention](daemon.md#session-rollout-retention). |
 | `durableTurns` | Durable-turn block. |
 | `durableTurns.checkpoint`, `durableTurns.checkpoint.enabled`, `durableTurns.checkpoint.minIntervalMs` | Checkpoint switch and throttle. `enabled` defaults to `true`. When false, restart reports `no-checkpoint` and opens a fresh turn. `minIntervalMs` throttles ordinary `iteration` and `postAssistant` writes. It does not defer the forced pre-admission checkpoint after `modelSampleOrdinal` advances. |
-| `durableTurns.resume`, `durableTurns.resume.onRestart` | Resume-on-restart switch. Default `true`. When false, startup opens a fresh turn with reason `disabled`. The removed `resume.policy` key is stripped on migrate; it is not an operator setting. |
+| `durableTurns.resume`, `durableTurns.resume.onRestart` | Resume-on-restart switch. Default `true`. Automatic continuation applies only to a root whose descendant edges are all closed with recorded terminal outcomes. Turns with unfinished workers follow the ordinary bootstrap path; resuming them is follow-up work. When false, startup opens a fresh turn with reason `disabled`. The removed `resume.policy` key is stripped on migrate; it is not an operator setting. |
 | `completion_gate`, `completion_gate.mode`, `completion_gate.max_rounds` | Non-interactive verification round. `mode` is `auto` (default: only sessions created with `runtimeOptions.nonInteractive`), `always`, or `never`; `max_rounds` is `1..10`, default `3`. See [Built-in defaults](#built-in-defaults). |
+| `goal`, `goal.max_rounds`, `goal.stall_rounds`, `goal.judge_model`, `goal.verify_timeout_ms` | Policy for `/goal`. `max_rounds` is how many continuations a goal may use before it stops as `budget_exhausted` (`1..100`, default `20`); `stall_rounds` is how many rounds in a row may end without a successful tool call before the goal stalls (default `3`); `judge_model` pins the independent reviewer's model (default: the session model); `verify_timeout_ms` bounds each verification command the runtime runs (default `600000`). See [goal.md](goal.md). |
 | `durableTurns.resume.requireLease`, `durableTurns.resume.buildPinning` | Lease and build-pinning guards. Both default `true`. Resume fail-closes when an enabled guard finds a lease or build-id mismatch. The switches enable or disable individual guards. They do not select an idempotent replay policy. |
 
 ### Gateway

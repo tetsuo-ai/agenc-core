@@ -12,6 +12,8 @@ describe("anthropic fast mode", () => {
   });
 
   test.each([
+    "claude-opus-5-5",
+    "anthropic/claude-opus-5-5",
     "claude-opus-5",
     "claude-opus-4-8",
     "anthropic/claude-opus-5",

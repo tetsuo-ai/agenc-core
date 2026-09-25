@@ -83,13 +83,6 @@ import {
 import type { Tool, ToolResult } from "../types.js";
 import { validationErrorToolResult } from "../results.js";
 import { safeStringify } from "../types.js";
-import {
-  completeWorkspaceTopologyMutation,
-  reserveWorkspaceTopologyMutation,
-  WorkspaceMutationCoordinatorError,
-  workspaceLoadedEditorPathConflict,
-  workspaceMutationPathConflict,
-} from "../../workspace/mutation-coordinator.js";
 
 // Re-export the HMAC-signed trusted-roots and session-id channel
 // constants/helpers so existing importers of `filesystem.ts` keep a
@@ -931,7 +924,7 @@ function errorResult(message: string): ToolResult {
 /**
  * An error result for a refusal that happened before the tool touched the
  * filesystem: a bad argument, a path outside the allowed roots, a missing
- * source, an Editor conflict, a refused reservation. It carries a confirmed
+ * source. It carries a confirmed
  * no-effect disposition; a bare error from a side-effecting tool is filed as
  * an unknown outcome and gates the session behind /resolve (#2190). Failures
  * after mkdir, rm or rename started keep the bare result.
@@ -1541,57 +1534,11 @@ function createDeleteTool(
         if (targetStat.isDirectory() && args.recursive !== true) {
           return preEffectErrorResult("Cannot delete directory without recursive: true");
         }
-        const conflict = workspaceMutationPathConflict(resolved!, {
-          includeDescendants: targetStat.isDirectory(),
-        });
-        if (conflict !== null) {
-          return preEffectErrorResult(
-            `Cannot delete ${String(args.path)}: ${conflict.path} has ${
-              conflict.authority === "editor_dirty"
-                ? "unsaved editor changes"
-                : "unreconciled editor changes"
-            }. Resolve the Editor buffer first.`,
-          );
-        }
-        const loadedConflict = workspaceLoadedEditorPathConflict(resolved!, {
-          includeDescendants: targetStat.isDirectory(),
-        });
-        if (loadedConflict !== null) {
-          return preEffectErrorResult(
-            `Cannot delete ${String(args.path)}: ${loadedConflict.path} is loaded in Editor. Close that buffer or use the Editor project tree to delete it safely.`,
-          );
-        }
-
-        const reservation = await reserveWorkspaceTopologyMutation([
-          {
-            path: resolved!,
-            includeDescendants: targetStat.isDirectory(),
-          },
-        ]);
-        try {
-          await rm(resolved!, { recursive: args.recursive === true });
-        } catch (error) {
-          if (reservation.tokens.length > 0) {
-            await completeWorkspaceTopologyMutation(
-              reservation,
-              "unknown_outcome",
-            );
-            return errorResult(
-              `Delete did not complete cleanly for ${String(args.path)}. ` +
-                "Its disk outcome is unknown; re-read the path before continuing.",
-            );
-          }
-          throw error;
-        }
-        await completeWorkspaceTopologyMutation(reservation, "applied");
+        await rm(resolved!, { recursive: args.recursive === true });
         return {
           content: safeStringify({ path: args.path, deleted: true }),
         };
       } catch (err) {
-        if (err instanceof WorkspaceMutationCoordinatorError) {
-          // The reservation was refused before rm ran.
-          return preEffectErrorResult(err.message);
-        }
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes("ENOENT"))
           return preEffectErrorResult(`Path not found: ${args.path}`);
@@ -1639,75 +1586,10 @@ function createMoveTool(allowedPaths: readonly string[]): Tool {
         );
         if (dstErr) return dstErr;
 
-        const sourceStat = await stat(src!);
-        const sourceConflict = workspaceMutationPathConflict(src!, {
-          includeDescendants: sourceStat.isDirectory(),
-        });
-        if (sourceConflict !== null) {
-          return preEffectErrorResult(
-            `Cannot move ${String(args.source)}: ${sourceConflict.path} has ${
-              sourceConflict.authority === "editor_dirty"
-                ? "unsaved editor changes"
-                : "unreconciled editor changes"
-            }. Resolve the Editor buffer first.`,
-          );
-        }
-        const loadedSourceConflict = workspaceLoadedEditorPathConflict(src!, {
-          includeDescendants: sourceStat.isDirectory(),
-        });
-        if (loadedSourceConflict !== null) {
-          return preEffectErrorResult(
-            `Cannot move ${String(args.source)}: ${loadedSourceConflict.path} is loaded in Editor. Close that buffer or use the Editor project tree to move it safely.`,
-          );
-        }
-        const destinationConflict = workspaceMutationPathConflict(dst!, {
-          includeDescendants: true,
-        });
-        if (destinationConflict !== null) {
-          return preEffectErrorResult(
-            `Cannot move to ${String(args.destination)}: ${destinationConflict.path} has ${
-              destinationConflict.authority === "editor_dirty"
-                ? "unsaved editor changes"
-                : "unreconciled editor changes"
-            }. Resolve the Editor buffer first.`,
-          );
-        }
-        const loadedDestinationConflict = workspaceLoadedEditorPathConflict(
-          dst!,
-          {
-            includeDescendants: true,
-          },
-        );
-        if (loadedDestinationConflict !== null) {
-          return preEffectErrorResult(
-            `Cannot move to ${String(args.destination)}: ${loadedDestinationConflict.path} is loaded in Editor. Close that buffer or use the Editor project tree to move it safely.`,
-          );
-        }
-        const reservation = await reserveWorkspaceTopologyMutation([
-          {
-            path: src!,
-            includeDescendants: sourceStat.isDirectory(),
-          },
-          { path: dst!, includeDescendants: true },
-        ]);
-        try {
-          await mkdir(dirname(dst!), { recursive: true });
-          await rename(src!, dst!);
-        } catch (error) {
-          if (reservation.tokens.length > 0) {
-            await completeWorkspaceTopologyMutation(
-              reservation,
-              "unknown_outcome",
-            );
-            return errorResult(
-              `Move did not complete cleanly from ${String(args.source)} to ` +
-                `${String(args.destination)}. Its disk outcome is unknown; ` +
-                "re-read both paths before continuing.",
-            );
-          }
-          throw error;
-        }
-        await completeWorkspaceTopologyMutation(reservation, "applied");
+        // Fail fast on a missing source before creating the destination parent.
+        await stat(src!);
+        await mkdir(dirname(dst!), { recursive: true });
+        await rename(src!, dst!);
         return {
           content: safeStringify({
             source: args.source,
@@ -1716,10 +1598,6 @@ function createMoveTool(allowedPaths: readonly string[]): Tool {
           }),
         };
       } catch (err) {
-        if (err instanceof WorkspaceMutationCoordinatorError) {
-          // The reservation was refused before rename ran.
-          return preEffectErrorResult(err.message);
-        }
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes("ENOENT"))
           return preEffectErrorResult(`Source not found: ${args.source}`);
