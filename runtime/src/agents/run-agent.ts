@@ -19,7 +19,14 @@
 
 import { normalize } from "node:path";
 import { inheritBuiltinToolProvenance } from "../tools/builtin-provenance.js";
+import { SESSION_BOUND_TOOL_SURFACE, type SessionBoundToolSurface } from "../tools/session-bound-surface.js";
+import { SYSTEM_SEARCH_TOOLS_NAME } from "../tools/system/tool-search-name.js";
+import {
+  SESSION_ADVERTISED_TOOL_NAMES_ARG,
+  SESSION_TOOL_CATALOG_SCOPE_ARG,
+} from "../tools/system/coding-common.js";
 import { filesystemRootsForDispatch } from "../tools/filesystem-dispatch-roots.js";
+import { unavailableToolResult } from "../tools/router.js";
 import {
   attachToolRuntimeContext,
   readToolRuntimeContext,
@@ -29,6 +36,8 @@ import { LRUCache } from "lru-cache";
 import { registerChildApprovalSession, revokeChildApprovalSession } from "./child-approval-context.js";
 import { bindLiveAgentSession } from "./live-session.js";
 import { createInertMcpManager } from "../mcp-client/inert-manager.js";
+import { assembleBaseInstructionsForModel } from "../prompts/system-prompt.js";
+import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
 import { createChildAbortController } from "../utils/abortController.js";
 import type {
   LLMChatOptions,
@@ -47,6 +56,7 @@ import type {
 import { createCacheSafeParams } from "../services/PromptSuggestion/runtime.js";
 import { llmMessageToAgentSummaryMessage } from "../services/AgentSummary/transcript.js";
 import {
+  isFactoryProvider,
   preserveProviderFactoryState,
   readProviderIdentity,
 } from "../llm/provider.js";
@@ -100,9 +110,12 @@ import {
 import { TerminalRunEpochOpenError } from "../session/rollout-store.js";
 import {
   threadConfigSnapshot,
+  type ModelInfo,
   type ReasoningEffort,
   type TurnContext,
 } from "../session/turn-context.js";
+import type { ProviderSelection } from "../session/provider-service.js";
+import { assertChildExecutionPlan, assertPreparedChildMatchesPlan, consentGrantCoversPlan, type ChildExecutionPlan } from "./cross-provider.js";
 import type { LiveAgent } from "./control.js";
 import {
   createMailboxMetadata,
@@ -122,6 +135,7 @@ import {
   type ValidatedMailboxMetadata,
 } from "./mailbox-metadata.js";
 import type { AgentRoleConfig } from "./role.js";
+import type { AgenCConfig } from "../config/schema.js";
 import {
   captureWorktreeTurnEvidence,
   type WorktreeHandle,
@@ -137,6 +151,7 @@ import {
   isFinal,
   type AgentStatus,
 } from "./status.js";
+import { childDispatchCertainty, childTerminalOutcome, type ChildTerminalOutcome, type ChildTerminalReason } from "./child-terminal.js";
 import { asRecord } from "../utils/record.js";
 import {
   attachSandboxExecutionBroker,
@@ -170,10 +185,17 @@ export interface RunAgentParams {
   readonly timeoutMs?: number;
   /** Optional child model override. */
   readonly model?: string;
+  readonly modelInfo?: ModelInfo;
+  readonly providerSelection?: ProviderSelection;
+  readonly plan?: ChildExecutionPlan;
   /** Optional child reasoning-effort override. */
   readonly reasoningEffort?: ReasoningEffort;
-  /** Optional child service-tier override. */
-  readonly serviceTier?: string;
+  /**
+   * Optional child service-tier override. Null is standard: the child sends
+   * no tier, and takes neither its parent's nor its role's. Omitted, it takes
+   * its role's tier, else its parent's on the parent's provider.
+   */
+  readonly serviceTier?: string | null;
   /** Optional AbortSignal merged with the live agent's controller. */
   readonly externalSignal?: AbortSignal;
   /** Optional per-call child tool policy layered after allowlist filtering. */
@@ -206,6 +228,8 @@ export interface RunAgentParams {
   readonly worktreeBaseCommit?: string;
   /** Internal cleanup evidence, including receipts that cannot be persisted. */
   readonly onWorktreeEvidence?: (evidence: WorktreeTurnEvidence) => void;
+  /** Close the durable spawn edge before recording a funds terminal. */
+  readonly onTerminalFundsStop?: () => Promise<void>;
   /** Backpressured provider-delta sink for bounded workflow handoffs. */
   readonly finalMessageSink?: AssistantOutputStreamSink;
 }
@@ -1002,6 +1026,9 @@ interface TaskTurnReceipt {
   readonly outcome: "completed" | "errored" | "interrupted" | "nack";
   readonly message?: string;
   readonly reason?: string;
+  readonly terminalReason?: ChildTerminalReason;
+  readonly terminalRetryable?: boolean;
+  readonly terminal?: ChildTerminalOutcome;
   readonly toolCallCount: number;
   readonly worktreeEvidence?: WorktreeTurnEvidence;
 }
@@ -1026,6 +1053,11 @@ function projectTaskReceiptForParent(
 ): TaskTurnReceipt {
   return {
     ...receipt,
+    ...(receipt.terminal !== undefined ? { terminal: {
+      ...receipt.terminal,
+      completedWork: truncateReceiptField(receipt.terminal.completedWork),
+      unfinishedWork: truncateReceiptField(receipt.terminal.unfinishedWork),
+    } } : {}),
     ...(receipt.message !== undefined
       ? { message: truncateReceiptField(receipt.message) }
       : {}),
@@ -1109,6 +1141,7 @@ function taskTurnOutcomePayload(
     toolCallCount: receipt.toolCallCount,
     ...(receipt.message !== undefined ? { message: receipt.message } : {}),
     ...(receipt.reason !== undefined ? { reason: receipt.reason } : {}),
+    ...(receipt.terminal !== undefined ? { terminal: receipt.terminal } : {}),
     ...(receipt.worktreeEvidence !== undefined
       ? { worktreeEvidence: receipt.worktreeEvidence }
       : {}),
@@ -1126,6 +1159,7 @@ function statusForTaskTurnReceipt(receipt: TaskTurnReceipt): AgentStatus {
         ...(receipt.message !== undefined
           ? { lastMessage: receipt.message }
           : {}),
+        ...(receipt.terminal !== undefined ? { terminal: receipt.terminal } : {}),
       };
     case "errored":
       return {
@@ -1133,6 +1167,7 @@ function statusForTaskTurnReceipt(receipt: TaskTurnReceipt): AgentStatus {
         turnId: receipt.turnId,
         endedAtMs,
         error: receipt.reason ?? receipt.message ?? "task errored",
+        ...(receipt.terminal !== undefined ? { terminal: receipt.terminal } : {}),
       };
     case "interrupted":
     case "nack":
@@ -1145,6 +1180,7 @@ function statusForTaskTurnReceipt(receipt: TaskTurnReceipt): AgentStatus {
           (receipt.outcome === "nack"
             ? "accepted task was not started"
             : "task interrupted"),
+        ...(receipt.terminal !== undefined ? { terminal: receipt.terminal } : {}),
       };
   }
 }
@@ -1225,6 +1261,9 @@ function sendSubagentNotificationToParent(params: {
               : {}),
             ...(projectedReceipt.reason !== undefined
               ? { reason: projectedReceipt.reason }
+              : {}),
+            ...(projectedReceipt.terminal !== undefined
+              ? { terminal: projectedReceipt.terminal }
               : {}),
             ...(projectedReceipt.worktreeEvidence !== undefined
               ? {
@@ -2224,15 +2263,47 @@ export function buildFilteredRegistry(
   const constrainedTools = opts.executionConstraint === undefined ? undefined : new Set(
     base.tools.filter(readOnlyDelegationToolAvailable).map((tool) => tool.name),
   );
+  // `base.tools` keeps unavailable tools for telemetry. A child must never
+  // wrap, offer or run one, including through the fallback catalog below.
+  const unavailable: ReadonlySet<string> =
+    base.getUnavailableToolNames?.() ?? new Set<string>();
   const isEligible = (name: string): boolean =>
     (constrainedTools === undefined || constrainedTools.has(name)) &&
+    !unavailable.has(name) &&
     !disabled.has(name) &&
     !mcpOriginToolNames.has(name) &&
     !isMcpWireToolName(name) &&
     (allowed === null || allowed.has(name));
-  const wrappedTools = base.tools
-    .filter((tool) => isEligible(tool.name))
-    .map((tool) => wrapToolForChild(tool, opts));
+  const eligibleTools = base.tools.filter((tool) => isEligible(tool.name));
+  const toolCatalogScope: ReadonlySet<string> = new Set(eligibleTools.map((tool) => tool.name));
+  const wrappedTools = eligibleTools
+    .map((tool) => {
+      const wrapped = wrapToolForChild(tool, { ...opts, toolCatalogScope });
+      const sessionSurface = (wrapped as Tool & {
+        readonly [SESSION_BOUND_TOOL_SURFACE]?: SessionBoundToolSurface;
+      })[SESSION_BOUND_TOOL_SURFACE];
+      if (sessionSurface !== undefined) {
+        Object.defineProperties(wrapped, {
+          description: {
+            enumerable: true,
+            configurable: true,
+            get: () => {
+              const session = opts.getSession?.();
+              return session == null ? tool.description : sessionSurface(session).description;
+            },
+          },
+          inputSchema: {
+            enumerable: true,
+            configurable: true,
+            get: () => {
+              const session = opts.getSession?.();
+              return session == null ? tool.inputSchema : sessionSurface(session).inputSchema;
+            },
+          },
+        });
+      }
+      return wrapped;
+    });
   const wrappedByName = new Map(wrappedTools.map((tool) => [tool.name, tool]));
   const fallbackAdvertisedTools = () =>
     wrappedTools.map((tool) => ({
@@ -2245,12 +2316,20 @@ export function buildFilteredRegistry(
     }));
   const advertisedLLMTools = () => {
     const advertised = base.toLLMTools();
-    if (advertised.length === 0) {
-      return fallbackAdvertisedTools();
-    }
-    return advertised.filter((tool) =>
-      isEligible(tool.function.name as string),
-    );
+    const visible = (advertised.length === 0 ? fallbackAdvertisedTools() : advertised)
+      .filter((tool) => isEligible(tool.function.name as string));
+    const session = opts.getSession?.();
+    if (session === undefined || session === null) return visible;
+    return visible.map((tool) => {
+      const wrapped = wrappedByName.get(tool.function.name as string);
+      const surface = (wrapped as (Tool & {
+        readonly [SESSION_BOUND_TOOL_SURFACE]?: SessionBoundToolSurface;
+      }) | undefined)?.[SESSION_BOUND_TOOL_SURFACE]?.(session);
+      return surface === undefined ? tool : {
+        ...tool,
+        function: { ...tool.function, description: surface.description, parameters: surface.inputSchema },
+      };
+    });
   };
   const advertisedNames = () =>
     new Set(advertisedLLMTools().map((tool) => tool.function.name as string));
@@ -2263,7 +2342,13 @@ export function buildFilteredRegistry(
     toLLMTools() {
       return advertisedLLMTools();
     },
+    getUnavailableToolNames() {
+      return unavailable;
+    },
     async dispatch(toolCall): Promise<ToolDispatchResult> {
+      if (unavailable.has(toolCall.name)) {
+        return unavailableToolResult(toolCall.name);
+      }
       if (disabled.has(toolCall.name)) {
         return {
           content: safeStringify({
@@ -2301,6 +2386,13 @@ export function buildFilteredRegistry(
       // SECURITY: strip model-supplied `__agenc*` keys at the child
       // tool-call boundary, before any policy/injection runs.
       const parsedArgs = stripModelSuppliedChildArgs(parseResult.args);
+      if (toolCall.name === SYSTEM_SEARCH_TOOLS_NAME) {
+        Object.defineProperty(parsedArgs, SESSION_ADVERTISED_TOOL_NAMES_ARG, {
+          value: Object.freeze([...advertisedNames()]),
+          enumerable: false,
+          configurable: true,
+        });
+      }
       const wrappedTool = wrappedByName.get(toolCall.name);
       if (wrappedTool) {
         const binding = childToolBindings.get(wrappedTool);
@@ -2312,6 +2404,7 @@ export function buildFilteredRegistry(
         const baseTool = binding.source;
         const prepared = await prepareChildToolCall(baseTool, parsedArgs, {
           ...opts,
+          toolCatalogScope,
           ...(binding.policy !== undefined ? { childToolPolicy: binding.policy } : {}),
         });
         if ("result" in prepared) return prepared.result;
@@ -2396,6 +2489,9 @@ function childToolResultToDispatchResult(
 ): ToolDispatchResult {
   return {
     content: result.content,
+    ...(result.contentItems !== undefined
+      ? { contentItems: result.contentItems }
+      : {}),
     ...(result.isError !== undefined ? { isError: result.isError } : {}),
     ...(result.metadata !== undefined ? { metadata: result.metadata } : {}),
     ...(result.admissionUsage !== undefined
@@ -2577,12 +2673,11 @@ function stripModelSuppliedChildArgs(
     }
   }
   if (!needsStrip) return args;
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(args)) {
-    if (key.startsWith("__agenc")) continue;
-    out[key] = value;
-  }
-  return out;
+  // Own data properties only: assigning a model's JSON `__proto__` key onto
+  // `{}` would make it the copy's prototype instead of an argument.
+  return Object.fromEntries(
+    Object.entries(args).filter(([key]) => !key.startsWith("__agenc")),
+  );
 }
 
 export function injectChildToolArgs(
@@ -2728,6 +2823,7 @@ function wrapToolForChild(
     readonly childToolPolicy?: ChildToolPolicy;
     readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
     readonly getSession?: () => Session | null | undefined;
+    readonly toolCatalogScope?: ReadonlySet<string>;
   },
 ): Tool {
   const inherited = childToolBindings.get(tool);
@@ -2824,6 +2920,62 @@ function widenChildFilesystemRoots(
   });
 }
 
+/**
+ * The executor injects the names it sent to the model as a non-enumerable
+ * argument. An enumerable key of that name is model-supplied, never trusted.
+ */
+function runtimeAdvertisedToolNames(
+  args: Record<string, unknown>,
+): readonly string[] | undefined {
+  const field = Object.getOwnPropertyDescriptor(args, SESSION_ADVERTISED_TOOL_NAMES_ARG);
+  if (field === undefined || field.enumerable === true || !Array.isArray(field.value)) {
+    return undefined;
+  }
+  return Object.freeze(field.value.filter((name): name is string => typeof name === "string"));
+}
+
+/**
+ * The executor hands every tool call the signal that ends it (a Stop, the
+ * turn's abort, a timeout) as a non-enumerable `__abortSignal`. An
+ * enumerable key of that name came from the model and is never the call's
+ * lifetime.
+ */
+function runtimeAbortSignal(
+  args: Record<string, unknown>,
+): AbortSignal | undefined {
+  const field = Object.getOwnPropertyDescriptor(args, "__abortSignal");
+  if (field === undefined || field.enumerable === true) return undefined;
+  return field.value instanceof AbortSignal ? field.value : undefined;
+}
+
+/**
+ * A child's search tool is the parent's, bound to the parent's catalog. The
+ * child registry drops MCP-origin, disabled and out-of-allowlist tools, so the
+ * search must not offer or load them: a subagent was told a Desktop browser
+ * tool was "now available" and every call failed with "No such tool". Child
+ * argument copies also drop the non-enumerable advertised names; carry them.
+ */
+function attachChildToolSearchScope(
+  args: Record<string, unknown>,
+  advertisedToolNames: readonly string[] | undefined,
+  toolCatalogScope: ReadonlySet<string> | undefined,
+): void {
+  if (toolCatalogScope !== undefined) {
+    Object.defineProperty(args, SESSION_TOOL_CATALOG_SCOPE_ARG, {
+      value: Object.freeze([...toolCatalogScope]),
+      enumerable: false,
+      configurable: true,
+    });
+  }
+  if (advertisedToolNames !== undefined) {
+    Object.defineProperty(args, SESSION_ADVERTISED_TOOL_NAMES_ARG, {
+      value: advertisedToolNames,
+      enumerable: false,
+      configurable: true,
+    });
+  }
+}
+
 async function prepareChildToolCall(
   tool: Tool,
   args: Record<string, unknown>,
@@ -2833,6 +2985,7 @@ async function prepareChildToolCall(
     readonly childToolPolicy?: ChildToolPolicy;
     readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
     readonly getSession?: () => Session | null | undefined;
+    readonly toolCatalogScope?: ReadonlySet<string>;
   },
 ): Promise<
   | { readonly args: Record<string, unknown> }
@@ -2841,6 +2994,10 @@ async function prepareChildToolCall(
   // SECURITY: strip model-supplied `__agenc*` keys before the child
   // policy/injection runs (idempotent if the caller already stripped).
   const runtimeContext = readToolRuntimeContext(args);
+  const abortSignal = runtimeAbortSignal(args);
+  const advertisedToolNames = tool.name === SYSTEM_SEARCH_TOOLS_NAME
+    ? runtimeAdvertisedToolNames(args)
+    : undefined;
   const sanitizedArgs = stripModelSuppliedChildArgs(args);
   const childSession = opts.getSession?.();
   if (childSession !== undefined && childSession !== null) {
@@ -2867,6 +3024,21 @@ async function prepareChildToolCall(
   // private keys, so the execution sink does not fall back to the base sandbox.
   if (runtimeContext !== undefined) {
     attachToolRuntimeContext(childArgs, runtimeContext);
+  }
+  // The same copies dropped the call's abort signal, so a Stop never reached
+  // a child's exec: its process kept running and the admitted call was left
+  // an unknown outcome that nothing resolved. With the signal the tool ends
+  // its own work through its usual abort path and reports what it observed.
+  if (abortSignal !== undefined) {
+    Object.defineProperty(childArgs, "__abortSignal", {
+      value: abortSignal,
+      enumerable: false,
+      writable: false,
+      configurable: true,
+    });
+  }
+  if (tool.name === SYSTEM_SEARCH_TOOLS_NAME) {
+    attachChildToolSearchScope(childArgs, advertisedToolNames, opts.toolCatalogScope);
   }
   if (childSession?.services.readOnlyDelegation !== undefined) {
     attachReadOnlyDelegationReadGuard(childArgs, (target) => readOnlyDelegationPathAllowed(childSession, target));
@@ -2923,17 +3095,20 @@ function cloneSessionConfiguration(
   overrides: {
     readonly model?: string;
     readonly reasoningEffort?: ReasoningEffort;
-    readonly serviceTier?: string;
+    /** Null sends no tier; omitted keeps the parent's on its own provider. */
+    readonly serviceTier?: string | null;
+    readonly crossProvider?: boolean;
   } = {},
 ): Session["sessionConfiguration"] {
   const base = parent.sessionConfiguration;
   const cwd = worktree?.path ?? base.cwd;
-  const serviceTier =
-    overrides.serviceTier !== undefined
-      ? overrides.serviceTier
-      : base.serviceTier;
+  // A child on another provider, or one decided to run at standard speed,
+  // never keeps the parent's tier.
+  const replacesParentTier = overrides.crossProvider === true || overrides.serviceTier !== undefined;
+  const serviceTier = replacesParentTier ? overrides.serviceTier ?? undefined : base.serviceTier;
+  const { reasoningEffort: _parentReasoningEffort, ...withoutParentReasoningEffort } = base.collaborationMode;
   const collaborationMode = {
-    ...base.collaborationMode,
+    ...(overrides.crossProvider === true ? withoutParentReasoningEffort : base.collaborationMode),
     ...(overrides.model !== undefined ? { model: overrides.model } : {}),
     ...(overrides.reasoningEffort !== undefined
       ? { reasoningEffort: overrides.reasoningEffort }
@@ -2942,7 +3117,7 @@ function cloneSessionConfiguration(
   return {
     ...base,
     cwd,
-    ...(serviceTier !== undefined ? { serviceTier } : {}),
+    ...(serviceTier !== undefined || replacesParentTier ? { serviceTier } : {}),
     collaborationMode,
     sessionSource: {
       kind: "subagent",
@@ -2998,9 +3173,17 @@ function buildChildConfig(
 function buildChildModelInfo(
   parent: Session,
   sessionConfiguration: Session["sessionConfiguration"],
+  modelInfo?: ModelInfo,
 ): Session["modelInfo"] {
+  if (modelInfo !== undefined) return modelInfo;
+  if (sessionConfiguration.collaborationMode.model === parent.modelInfo.slug) {
+    return parent.modelInfo;
+  }
+  // A different model cannot reuse the parent's instruction template. The
+  // spawn path supplies the selected model's metadata when it is available.
+  const { modelMessages: _parentModelMessages, ...parentModelInfo } = parent.modelInfo;
   return {
-    ...parent.modelInfo,
+    ...parentModelInfo,
     slug: sessionConfiguration.collaborationMode.model,
   };
 }
@@ -3116,10 +3299,15 @@ function prepareChildSessionAuthority(
   params: RunAgentParams,
 ): ChildSessionAuthority {
   const roleConfig = params.live.role.config;
-  const childModel = params.model ?? roleConfig.model;
+  const childModel = params.model ?? roleConfig.model ??
+    params.parent.providerService.current().model;
   const childReasoningEffort =
     params.reasoningEffort ?? roleConfig.reasoningEffort;
-  const childServiceTier = params.serviceTier ?? roleConfig.serviceTier;
+  // A null tier was decided by the caller (standard); only an omitted one
+  // falls back to the role's.
+  const childServiceTier = params.serviceTier !== undefined
+    ? params.serviceTier
+    : roleConfig.serviceTier;
   const sessionConfiguration = cloneSessionConfiguration(
     params.parent,
     params.live,
@@ -3132,6 +3320,7 @@ function prepareChildSessionAuthority(
       ...(childServiceTier !== undefined
         ? { serviceTier: childServiceTier }
         : {}),
+      ...(params.providerSelection !== undefined ? { crossProvider: true } : {}),
     },
   );
   const sandboxExecutionBroker =
@@ -3201,7 +3390,7 @@ function buildChildSession(
         : {}),
     },
     initialState: {
-      sessionConfiguration,
+      sessionConfiguration: { ...sessionConfiguration, provider },
       history: [],
     },
     features: params.parent.features,
@@ -3213,7 +3402,11 @@ function buildChildSession(
       // A provider service is session-owned. Do not let the parent's service
       // survive the spread above and silently override the forked provider in
       // the ChildSession constructor.
-      providerService: undefined,
+      providerService: params.parent.providerService.forkForChild(provider, {
+        provider: params.providerSelection?.provider ??
+          params.parent.providerService.current().provider,
+        model: sessionConfiguration.collaborationMode.model,
+      }, params.plan?.crossProvider ? params.plan.route : undefined),
       providerEnvironment: params.parent.providerService.environment(),
       registry,
       ...(params.parent.services.executionAdmission !== undefined
@@ -3259,11 +3452,31 @@ function buildChildSession(
     },
     jsRepl: params.parent.jsRepl,
     config: buildChildConfig(params.parent, sessionConfiguration),
-    modelInfo: buildChildModelInfo(params.parent, sessionConfiguration),
+    modelInfo: buildChildModelInfo(params.parent, sessionConfiguration, params.modelInfo),
   });
   params.live.configSnapshot = threadConfigSnapshot(
     sessionConfiguration,
   ) as unknown as Record<string, unknown>;
+  if (params.plan !== undefined) {
+    params.live.configSnapshot = {
+      ...params.live.configSnapshot,
+      provider: params.plan.destination.provider,
+      model: params.plan.destination.model,
+      reasoningEffort: params.plan.reasoningEffort,
+      executionPlan: params.plan,
+    };
+  }
+  if (params.providerSelection !== undefined) {
+    // TODO(phase 4): project provider/model and reconciled child cost into the
+    // protocol/native worker status together with the admission run ID.
+    params.live.configSnapshot = {
+      ...params.live.configSnapshot,
+      crossProvider: {
+        ...params.providerSelection,
+        policy: "user-or-managed-agents-v1",
+      },
+    };
+  }
 
   try {
     const childRolloutStore = mountChildRunJournal({
@@ -3271,6 +3484,7 @@ function buildChildSession(
       child: childSession,
       originator: "agenc-subagent",
       terminalResult,
+      ...(params.plan !== undefined ? { destination: params.plan.destination } : {}),
     });
     if (childRolloutStore) {
       params.live.rolloutPath = childRolloutStore.rolloutPath;
@@ -3296,6 +3510,31 @@ function buildChildSession(
   return childSession;
 }
 
+/** A forked session must not carry the parent's model-specific base prompt. */
+async function refreshChildBaseInstructions(parent: Session, child: ChildSession,
+  promptIdentity?: ProviderSelection): Promise<void> {
+  const parentBinding = parent.providerService.current();
+  const childBinding = child.providerService.current();
+  const childIdentity = promptIdentity ?? childBinding;
+  if (parentBinding.provider === childIdentity.provider &&
+      parentBinding.model === childIdentity.model) return;
+
+  const baseInstructions = await assembleBaseInstructionsForModel({
+    session: child,
+    ctx: child.newDefaultTurnWithSubId(child.nextInternalSubId()),
+    registry: child.services.registry,
+    provider: childIdentity.provider,
+    ...(promptIdentity !== undefined ? { promptIdentity } : {}),
+    permissionContext: child.permissionModeRegistry.current(),
+    profile: child.config.coordinatorMode === true
+      ? "coordinator"
+      : usesLocalToolProfile(childIdentity.provider) ? "compact" : "standard",
+  });
+  await child.state.with((state) => {
+    state.sessionConfiguration = { ...state.sessionConfiguration, baseInstructions };
+  });
+}
+
 /**
  * Run the subagent to completion. Yields progress events to the
  * caller + returns the final RunAgentResult. Caller (delegate.ts)
@@ -3311,14 +3550,18 @@ export async function* runAgent(
   const { live, parent } = params;
   let childSession: ChildSession | null = null;
   let ownedChildProvider: LLMProvider | null = null;
+  let ownedPreparedProvider: LLMProvider | null = null;
+  let unsubscribeCrossPolicy: (() => void) | null = null;
   let childSandboxExecutionBroker: SandboxExecutionBrokerLike | undefined;
   let unsubscribeChildUsage: (() => void) | null = null;
   let forwardMergedAbort: (() => void) | null = null;
   let roleTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
   let currentTaskId = params.taskId;
+  let currentTaskText = params.taskPrompt;
   let currentTurnReceiptCommitted = false;
   let currentCommittedReceipt: TaskTurnReceipt | undefined;
   let currentTurnToolCallCount = 0;
+  let latestChildProgress = "";
   let currentWorktreeBaseCommit = params.worktreeBaseCommit;
   let currentReceiptWorktreeEvidence: WorktreeTurnEvidence | undefined;
   let reuseBlockedReason: string | undefined;
@@ -3331,16 +3574,19 @@ export async function* runAgent(
         readonly status: "completed";
         readonly turnId: string;
         readonly message?: string;
+        readonly terminal?: ChildTerminalOutcome;
       }
     | {
         readonly status: "errored";
         readonly turnId: string;
         readonly error: string;
+        readonly terminal?: ChildTerminalOutcome;
       }
     | {
         readonly status: "interrupted";
         readonly turnId: string;
         readonly reason: string;
+        readonly terminal?: ChildTerminalOutcome;
       }
     | undefined;
   const terminalResultForPendingWorker = (): ChildRunTerminalResult => {
@@ -3368,15 +3614,11 @@ export async function* runAgent(
     return terminalResultForLiveAgent(live);
   };
   const markInterruptedAfterDurability = (reason: string): void => {
+    pendingWorkerTerminal = { status: "interrupted", turnId, reason };
     if (childSession === null) {
-      pendingWorkerTerminal = {
-        status: "interrupted",
-        turnId,
-        reason,
-      };
       return;
     }
-    live.status.markInterrupted(turnId, reason);
+    live.status.markInterrupted(turnId, reason, currentCommittedReceipt?.terminal);
   };
   const relayAgentEvent = (
     event: Omit<Parameters<typeof relayToParentMailbox>[0], "live" | "parent">,
@@ -3412,12 +3654,52 @@ export async function* runAgent(
     }
     return disposition;
   };
+  const publishTerminalReceipt = (receipt: TaskTurnReceipt): void => {
+    if (receipt.terminal?.reason === "insufficient_funds") {
+      const provider = receipt.terminal.provider;
+      const model = receipt.terminal.model;
+      parent.emit({
+        id: parent.nextInternalSubId(),
+        msg: { type: "subagent_funds_notice", payload: {
+          agentPath: live.agentPath,
+          taskId: receipt.taskId,
+          taskText: currentTaskText,
+          terminal: projectTaskReceiptForParent(receipt).terminal!,
+          message: `${provider}/${model} ran out of credits. The child stopped; ask before switching providers.`,
+        } },
+      }, { durable: true });
+    }
+    sendParentNotification(receipt);
+  };
   const commitTaskReceipt = async (
     receipt: TaskTurnReceipt,
     options: { readonly deferParentNotification?: boolean } = {},
   ): Promise<boolean> => {
     if (currentTurnReceiptCommitted) return false;
-    let receiptToCommit = receipt;
+    const provider = params.plan?.destination.provider ??
+      params.providerSelection?.provider ??
+      readProviderIdentity(ownedChildProvider ?? parent.services.provider) ??
+      parent.services.provider.name;
+    const model = params.plan?.destination.model ?? params.model ??
+      live.role.config.model ?? parent.sessionConfiguration.collaborationMode.model;
+    const cost = parent.services.executionAdmission?.getUsageSummary?.().agents
+      .find((agent) => agent.runId === live.agentId);
+    let receiptToCommit: TaskTurnReceipt = {
+      ...receipt,
+      terminal: receipt.terminal ?? childTerminalOutcome({
+        provider, model,
+        ...(receipt.terminalReason !== undefined ? { reason: receipt.terminalReason } :
+          receipt.outcome === "completed" ? { reason: "completed" as const } :
+            receipt.outcome === "interrupted" || receipt.outcome === "nack"
+              ? { reason: "parent_cancelled" as const }
+              : { error: new Error(receipt.reason ?? receipt.message ?? "subagent failed") }),
+        ...(receipt.terminalRetryable !== undefined ? { retryable: receipt.terminalRetryable } : {}),
+        dispatch: receipt.outcome === "completed" ? "sent" : childSession === null ? "not_sent" : "unknown",
+        completedWork: receipt.message ?? latestChildProgress,
+        unfinishedWork: receipt.outcome === "completed" ? "" : currentTaskText,
+        ...(cost !== undefined && !cost.hasUnknownCost ? { costUsd: cost.costUsd } : {}),
+      }),
+    };
     if (params.worktree !== undefined) {
       let evidence: WorktreeTurnEvidence;
       if (
@@ -3450,10 +3732,20 @@ export async function* runAgent(
                 : "worktree sandbox authority is unavailable",
         };
       }
-      receiptToCommit = { ...receipt, worktreeEvidence: evidence };
+      receiptToCommit = { ...receiptToCommit, worktreeEvidence: evidence };
       // Cleanup must observe evidence on every exit path, independently of
       // progress events or whether this receipt can reach durable storage.
       params.onWorktreeEvidence?.(evidence);
+    }
+    if (receiptToCommit.terminal?.reason === "insufficient_funds") {
+      try {
+        await params.onTerminalFundsStop?.();
+      } catch (error) {
+        reuseBlockedReason = "funds stop spawn edge could not be closed";
+        emitWarning(parent.eventLog, parent.nextInternalSubId(),
+          "funds_stop_spawn_edge_close_failed",
+          error instanceof Error ? error.message : String(error));
+      }
     }
     if (childSession === null) {
       // Session construction has not reached the child-owned EventLog yet.
@@ -3503,6 +3795,7 @@ export async function* runAgent(
     live.lastTaskReceipt = {
       turnId: receiptToCommit.turnId,
       outcome: receiptToCommit.outcome,
+      ...(receiptToCommit.terminal !== undefined ? { terminal: receiptToCommit.terminal } : {}),
     };
     if (
       receiptToCommit.taskId !== undefined &&
@@ -3526,7 +3819,7 @@ export async function* runAgent(
       reuseBlockedReason = `worktree evidence is ${evidence.state}`;
     }
     if (!options.deferParentNotification) {
-      sendParentNotification(receiptToCommit);
+      publishTerminalReceipt(receiptToCommit);
     }
     return true;
   };
@@ -3540,6 +3833,8 @@ export async function* runAgent(
   const finishErroredRun = async (opts: {
     readonly message: string;
     readonly error: unknown;
+    readonly terminalReason?: ChildTerminalReason;
+    readonly terminalRetryable?: boolean;
     readonly toolCallCount?: number;
     readonly relayToParent?: boolean;
   }): Promise<RunAgentResult> => {
@@ -3547,6 +3842,22 @@ export async function* runAgent(
       ...taskCorrelation(),
       outcome: "errored",
       reason: opts.message,
+      terminal: childTerminalOutcome({
+        provider: params.plan?.destination.provider ?? params.providerSelection?.provider ??
+          readProviderIdentity(ownedChildProvider ?? parent.services.provider) ?? parent.services.provider.name,
+        model: params.plan?.destination.model ?? params.model ?? live.role.config.model ??
+          parent.sessionConfiguration.collaborationMode.model,
+        error: opts.error,
+        ...(opts.terminalReason !== undefined ? { reason: opts.terminalReason } : {}),
+        ...(opts.terminalRetryable !== undefined ? { retryable: opts.terminalRetryable } : {}),
+        dispatch: childSession === null ? "not_sent" : childDispatchCertainty(opts.error),
+        completedWork: latestChildProgress,
+        unfinishedWork: currentTaskText,
+        ...(parent.services.executionAdmission?.getUsageSummary?.().agents
+          .find((agent) => agent.runId === live.agentId && !agent.hasUnknownCost)?.costUsd !== undefined
+          ? { costUsd: parent.services.executionAdmission.getUsageSummary!().agents
+            .find((agent) => agent.runId === live.agentId)!.costUsd } : {}),
+      }),
       toolCallCount: currentTurnToolCallCount,
     });
     if (receiptCommitted) {
@@ -3617,6 +3928,36 @@ export async function* runAgent(
   if (params.externalSignal?.aborted) onExternalAbort?.();
 
   try {
+    const plan = params.plan ?? live.metadata.executionPlan;
+    if (plan !== undefined) {
+      await assertChildExecutionPlan(parent, plan);
+      if (params.taskId !== undefined && params.taskId !== plan.task.id) {
+        throw new Error("child execution plan task identity changed");
+      }
+      if (live.metadata.executionPlan !== undefined &&
+          JSON.stringify(live.metadata.executionPlan) !== JSON.stringify(plan)) {
+        throw new Error("child execution plan conflicts with durable spawn metadata");
+      }
+      params = {
+        ...params,
+        plan,
+        ...(plan.crossProvider && plan.budgetAllocation !== null
+          ? { maxTurns: Math.min(params.maxTurns ?? Number.POSITIVE_INFINITY,
+              plan.budgetAllocation.maxModelCalls) } : {}),
+        model: plan.route.model,
+        modelInfo: plan.modelInfo,
+        providerSelection: plan.crossProvider ? plan.route : undefined,
+        reasoningEffort: plan.reasoningEffort,
+        // spawn_agent decides a plan's tier, so none there is standard, not
+        // the role's or the parent's.
+        serviceTier: plan.serviceTier ?? null,
+        toolAllowlist: plan.scope.tools === "parent_filtered" ? params.toolAllowlist : plan.scope.tools,
+      };
+    } else {
+      if (params.providerSelection !== undefined || live.metadata.crossProvider !== undefined) {
+        throw new Error("consent_unavailable: cross-provider dispatch requires a granted execution plan");
+      }
+    }
     relayAgentEvent({
       content: `spawned subagent ${live.agentPath} (role=${live.role.name})`,
       triggerTurn: false,
@@ -3701,8 +4042,52 @@ export async function* runAgent(
       };
     }
 
-    // Resolve the parent provider (subagents share model access).
-    const provider = providerFromParent(parent);
+    // Resolve a child-owned provider through the session's captured credential
+    // sources. prepare() does not commit a switch to the parent session.
+    let provider = providerFromParent(parent);
+    if (params.providerSelection !== undefined) {
+      if (params.plan === undefined) throw new Error("consent_unavailable: child provider dispatch has no granted plan");
+      await assertChildExecutionPlan(parent, params.plan);
+      const prepared = await parent.providerService.prepareChild(params.providerSelection, undefined,
+        { signal: merged.signal }, true,
+        params.plan.route.provider === "agenc" ? params.plan.destination : undefined,
+        params.plan.destination);
+      provider = prepared.binding.instance;
+      ownedPreparedProvider = provider;
+      if (params.plan !== undefined) {
+        assertPreparedChildMatchesPlan(params.plan, prepared);
+        await assertChildExecutionPlan(parent, params.plan);
+      }
+      const crossPolicyRevoked = (config: AgenCConfig): boolean =>
+        config.agents?.cross_provider_enabled !== true ||
+        !(config.agents.allowed_providers ?? []).includes(params.providerSelection!.provider) ||
+        (params.plan?.route.provider === "agenc" &&
+         !(config.agents.allowed_providers ?? []).includes(params.plan.destination.provider));
+      const stopForPolicy = (): void => {
+        live.abortController.abort("cross-provider subagent policy was disabled or provider removed");
+      };
+      // Also when a daemon reload refreshes only the [agents] section.
+      unsubscribeCrossPolicy = parent.services.configStore?.subscribe((config) => {
+        if (crossPolicyRevoked(config)) stopForPolicy();
+      }, { sections: ["agents"] }) ?? null;
+      // A change published after the check above passed and before this
+      // subscription reached no listener. The live snapshot has it.
+      const policyNow = parent.services.configStore?.current();
+      if (policyNow !== undefined && crossPolicyRevoked(policyNow)) stopForPolicy();
+    } else if (provider && isFactoryProvider(provider)) {
+      const selectedModel = params.model ?? live.role.config.model ??
+        parent.providerService.current().model;
+      const currentBinding = parent.providerService.current();
+      if (currentBinding.model !== selectedModel) {
+        const prepared = await parent.providerService.prepareChild(
+          { provider: currentBinding.provider, model: selectedModel },
+          undefined,
+          { signal: merged.signal },
+        );
+        provider = prepared.binding.instance;
+        ownedPreparedProvider = provider;
+      }
+    }
     if (!provider) {
       const err = new Error(
         "subagent has no provider on parent.services.provider",
@@ -3822,6 +4207,7 @@ export async function* runAgent(
       childAuthority,
       terminalResultForPendingWorker,
     );
+    await refreshChildBaseInstructions(parent, childSession, params.plan?.destination);
     revokeLiveSession = bindLiveAgentSession(live, childSession);
     const {
       history,
@@ -3887,10 +4273,24 @@ export async function* runAgent(
       readonly taskId?: string;
       readonly turnId?: string;
     }): void => {
+      if (params.plan?.crossProvider && accepted.taskId !== undefined) {
+        const taskPlan = live.assignment?.executionPlan ?? live.metadata.executionPlan;
+        const epoch = parent.services.crossProviderConsent?.sessionEpoch;
+        if (taskPlan === undefined || epoch === undefined ||
+            taskPlan.task.id !== accepted.taskId ||
+            !consentGrantCoversPlan(taskPlan, parent.services.crossProviderConsent!.ownerSessionId,
+              taskPlan.task.text, taskPlan.task.attachments, epoch)) {
+          throw new Error("resume_blocked: reusable cross-provider worker has no grant for this task");
+        }
+      }
       nextUserMessage = accepted.nextUserMessage;
+      currentTaskText = live.assignment?.executionPlan?.task.text ??
+        live.metadata.executionPlan?.task.text ??
+        (typeof accepted.nextUserMessage === "string" ? accepted.nextUserMessage : currentTaskText);
       currentTaskId = accepted.taskId;
       turnId = accepted.turnId ?? crypto.randomUUID();
       currentTurnReceiptCommitted = false;
+      latestChildProgress = "";
       currentCommittedReceipt = undefined;
       currentTurnToolCallCount = 0;
       pendingWorkerTerminal = undefined;
@@ -4021,6 +4421,7 @@ export async function* runAgent(
         const event = step.value;
         if (event.type === "assistant_text") {
           turnAssistantText = event.content;
+          if (event.content.trim().length > 0) latestChildProgress = event.content;
           yield {
             kind: "message",
             message: {
@@ -4082,18 +4483,14 @@ export async function* runAgent(
 
         if (event.type === "turn_complete") {
           turnAssistantText = event.content;
-          // Child-agent turns do not carry an Editor interaction. Fail closed
-          // if that invariant is ever violated instead of making a worker
-          // session silently recoverable on a root-only stop reason.
-          stopReason = event.stopReason === "editor_request_failed"
-            ? "error"
-            : event.stopReason;
+          stopReason = event.stopReason;
           turnUsage = event.usage;
         }
       }
       stopTurnCall();
 
       assistantText = turnAssistantText;
+      if (turnAssistantText.trim().length > 0) latestChildProgress = turnAssistantText;
       // Each sampling iteration emits a durable token_count event. The
       // subscription above projects those counts immediately so a long,
       // tool-using turn does not sit at `tokens 0` until it finishes. Retain
@@ -4125,6 +4522,12 @@ export async function* runAgent(
         stopReason === "deadline_reached" ||
         stopReason === "compact_failed" ||
         stopReason === "empty_response";
+      const boundedTerminalReason: ChildTerminalReason | undefined =
+        stopReason === "max_budget_usd" ? "cost_cap_reached" :
+        stopReason === "effect_review_required" ? "effect_outcome_unknown" :
+        stopReason === "compact_failed" ? "context_insufficient" :
+        stopReason === "empty_response" ? "model_refused" :
+        boundedStop ? "timeout" : undefined;
       // A bounded stop in a keep-alive (interactive) run is a per-turn
       // outcome: the backstop's message already reached the transcript,
       // and the user must be able to keep prompting. Ending the run here
@@ -4168,6 +4571,8 @@ export async function* runAgent(
           message,
           error:
             terminalError instanceof Error ? terminalError : new Error(message),
+          ...(boundedTerminalReason !== undefined ? { terminalReason: boundedTerminalReason } : {}),
+          ...(boundedStop ? { terminalRetryable: false } : {}),
           toolCallCount,
         });
         yield { kind: "run_error", error: message, ...taskCorrelation() };
@@ -4239,6 +4644,8 @@ export async function* runAgent(
           ...taskCorrelation(),
           outcome: boundedStop ? "errored" : "completed",
           ...(turnFailureMessage !== undefined ? { reason: turnFailureMessage } : {}),
+          ...(boundedTerminalReason !== undefined ? { terminalReason: boundedTerminalReason } : {}),
+          ...(boundedStop ? { terminalRetryable: false } : {}),
           ...(assistantText ? { message: assistantText } : {}),
           toolCallCount: turnToolCallCount,
         };
@@ -4270,13 +4677,15 @@ export async function* runAgent(
           throw new Error("committed task receipt payload is unavailable");
         }
         if (reuseBlockedReason === undefined) {
-          live.status.markIdle(completedTurnId);
+          live.status.markIdle(completedTurnId, currentCommittedReceipt?.terminal);
           pendingWorkerTerminal = turnFailureMessage !== undefined
-            ? { status: "errored", turnId: completedTurnId, error: turnFailureMessage }
+            ? { status: "errored", turnId: completedTurnId, error: turnFailureMessage,
+                terminal: committedReceipt.terminal }
             : {
                 status: "completed",
                 turnId: completedTurnId,
                 ...(assistantText ? { message: assistantText } : {}),
+                terminal: committedReceipt.terminal,
               };
           // The completed receipt owns the previous correlation. While parked,
           // teardown is a worker-lifecycle event, not a second task outcome.
@@ -4516,6 +4925,8 @@ export async function* runAgent(
     yield { kind: "run_error", error: message, ...taskCorrelation() };
     return result;
   } finally {
+    unsubscribeCrossPolicy?.();
+    unsubscribeCrossPolicy = null;
     let taskReceiptFinalizeError: unknown;
     revokeLiveSession?.();
     const acceptedNotStarted =
@@ -4568,10 +4979,12 @@ export async function* runAgent(
           childRunId: live.agentId,
           cwd: params.worktree?.path ?? parent.sessionConfiguration.cwd,
           model:
+            params.plan?.destination.model ??
             params.model ??
             live.role.config.model ??
             parent.sessionConfiguration.collaborationMode.model,
           modelProvider:
+            params.plan?.destination.provider ??
             readProviderIdentity(parent.services.provider) ??
             parent.services.provider.name,
           originator: "agenc-subagent-preconstruction",
@@ -4588,9 +5001,12 @@ export async function* runAgent(
         if (rolloutPath !== null) live.rolloutPath = rolloutPath;
         if (pendingPreconstructionReceipt !== undefined) {
           const committedReceipt = pendingPreconstructionReceipt;
+          currentCommittedReceipt = committedReceipt;
+          currentReceiptWorktreeEvidence = committedReceipt.worktreeEvidence;
           live.lastTaskReceipt = {
             turnId: committedReceipt.turnId,
             outcome: committedReceipt.outcome,
+            ...(committedReceipt.terminal !== undefined ? { terminal: committedReceipt.terminal } : {}),
           };
           if (
             committedReceipt.taskId !== undefined &&
@@ -4598,7 +5014,7 @@ export async function* runAgent(
           ) {
             live.assignment = undefined;
           }
-          sendParentNotification(committedReceipt);
+          publishTerminalReceipt(committedReceipt);
           pendingPreconstructionReceipt = undefined;
         }
       } catch (error) {
@@ -4631,6 +5047,13 @@ export async function* runAgent(
     if (ownedChildProvider !== null) {
       try {
         await ownedChildProvider.dispose?.();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (ownedPreparedProvider !== null && ownedPreparedProvider !== ownedChildProvider) {
+      try {
+        await ownedPreparedProvider.dispose?.();
       } catch (error) {
         cleanupErrors.push(error);
       }
@@ -4696,16 +5119,19 @@ export async function* runAgent(
       live.status.markCompleted(
         pendingWorkerTerminal.turnId,
         pendingWorkerTerminal.message,
+        pendingWorkerTerminal.terminal ?? currentCommittedReceipt?.terminal,
       );
     } else if (pendingWorkerTerminal?.status === "errored") {
       live.status.markErrored(
         pendingWorkerTerminal.turnId,
         pendingWorkerTerminal.error,
+        pendingWorkerTerminal.terminal ?? currentCommittedReceipt?.terminal,
       );
     } else if (pendingWorkerTerminal?.status === "interrupted") {
       live.status.markInterrupted(
         pendingWorkerTerminal.turnId,
         pendingWorkerTerminal.reason,
+        pendingWorkerTerminal.terminal ?? currentCommittedReceipt?.terminal,
       );
     }
   }

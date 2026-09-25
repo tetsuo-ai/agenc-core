@@ -56,6 +56,43 @@ const NEVER_GRANTED = Object.freeze(
   ]),
 );
 
+/** The tools whose use is a hand-off to a person: a question, or a plan to approve. */
+const PERSON_TOOLS = Object.freeze(
+  new Set(["AskUserQuestion", "ExitPlanMode", "EnterPlanMode"]),
+);
+
+/**
+ * Whether running this tool waits on a person, whatever the permission
+ * decision: a question, a plan hand-off, a tool that says it needs user
+ * interaction, or an MCP server's request for more permissions. In a run with
+ * nobody attached none of these can ever be answered.
+ */
+export function toolReachesAPerson(
+  tool: Pick<ReadOnlyGrantTool, "name" | "requiresUserInteraction">,
+): boolean {
+  return (
+    PERSON_TOOLS.has(tool.name) ||
+    /^mcp\.[^.]+\.request_permissions$/u.test(tool.name) ||
+    tool.requiresUserInteraction?.() === true
+  );
+}
+
+/**
+ * Whether a shell call asks to leave or widen the OS sandbox: an escalation
+ * (`sandbox_permissions`), extra sandbox permissions, or system.bash's
+ * `dangerouslyDisableSandbox`. Any value but the default counts, so a
+ * malformed request fails closed.
+ */
+export function shellCallRequestsSandboxEscalation(input: unknown): boolean {
+  if (typeof input !== "object" || input === null) return false;
+  const args = input as Record<string, unknown>;
+  return (
+    args.dangerouslyDisableSandbox === true ||
+    (args.sandbox_permissions !== undefined && args.sandbox_permissions !== "default") ||
+    args.additional_permissions !== undefined
+  );
+}
+
 /**
  * Tool discovery, which declares itself side-effecting but changes nothing.
  *

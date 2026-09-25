@@ -78,6 +78,7 @@ function makeSession(conversationId = "root-thread") {
       subscribe: vi.fn(() => vi.fn()),
     },
     submit: vi.fn(async () => {}),
+    settleInterruptedTurnHandoff: vi.fn(async () => {}),
     shutdown: vi.fn(async () => {}),
     abortTerminal: vi.fn(),
     mailbox: { send: vi.fn(() => 1) },
@@ -199,6 +200,7 @@ function configureCheckpointProviderRestore(
     stagePreparedProviderSwitch: vi.fn(),
     consumePendingProviderSwitchTransaction: vi.fn(consume),
     rolloutStore: {
+      rootHasOnlyTerminalDescendants: () => true,
       acknowledgeCompactionReconstruction: vi.fn(),
       recordProjectionFailure: vi.fn(),
       checkpointProjectionContext: () => ({

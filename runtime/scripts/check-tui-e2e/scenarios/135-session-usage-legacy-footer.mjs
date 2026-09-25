@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { waitForFrameText } from "../helpers/workbench-buffer-neovim.mjs";
+import { waitForFrameText } from "../helpers/frame.mjs";
 
 export const meta = {
   description: "The alternate footer, custom status-line command, and cost dialog receive canonical daemon usage.",

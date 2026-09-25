@@ -93,7 +93,7 @@ export interface AdaptedTranscript {
    * assistant-message usage-block shape the context-percentage derivation
    * consumes. Daemon-bridge transcripts synthesize assistant messages with
    * zero usage (and a synthetic model that getTokenUsage skips), so without
-   * this the workbench ctx% reads 0 forever. `null` until the first
+   * this the header ctx% reads 0 forever. `null` until the first
    * token_count of the session.
    */
   readonly latestUsage: {
@@ -107,7 +107,7 @@ export interface AdaptedTranscript {
    * `token_count` event seen by the TUI bridge. The daemon owns the canonical
    * CostSidecar, so process-local getters in the TUI client stay at zero when
    * connected over the bridge. Keeping this projection beside `latestUsage`
-   * makes workbench chrome update on the same render as the completed turn.
+   * makes the header chrome update on the same render as the completed turn.
    */
   readonly sessionCostUsd: number;
   readonly sessionUsage?: AdmissionUsageSummary | null;
@@ -293,6 +293,7 @@ function clampResultContent(content: unknown): unknown {
  *     submitted was modified or dropped before being sent.
  */
 const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
+  "transcript_truncated",
   // User action / configuration
   "mcp_auth_required",
   "model_token_limit_config",
@@ -316,6 +317,15 @@ const USER_VISIBLE_WARNING_CAUSES: ReadonlySet<string> = new Set([
   "max_output_tokens_exhausted",
   "prompt_too_long_exhausted",
   "stop_hook_loop",
+  // `/goal`: the runtime, not the agent, decides when a goal is met. Each
+  // round's verdict and every stop explain why the turn kept going or ended.
+  "goal_round",
+  "goal_met",
+  "goal_budget_exhausted",
+  "goal_stalled",
+  "goal_blocked",
+  "goal_impossible",
+  "goal_judge_unavailable",
   // Provider / mode change the user just observed
   "provider_switched",
   "provider_switch_rejected",
@@ -1038,6 +1048,11 @@ function usageFromTokenCountPayload(payload: Record<string, unknown>): ModelUsag
     webSearchRequests,
     totalTokens,
     turns: 1,
+    // One token_count is one provider call, so per-request rates such as
+    // OpenAI long context apply to it.
+    singleCall: true,
+    // A turn served in fast mode bills at the model's fast-mode rates.
+    ...(payload.speed === "fast" ? { speed: "fast" as const } : {}),
   };
 }
 

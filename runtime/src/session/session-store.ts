@@ -587,9 +587,9 @@ export class SessionLock {
     this.startNs = `${Date.now()}-${process.hrtime.bigint().toString()}`;
   }
 
-  acquire(): void {
+  acquire(options: { readonly createParent?: boolean } = {}): void {
     if (this.acquired) return;
-    mkdirSync(dirname(this.lockPath), { recursive: true });
+    if (options.createParent !== false) mkdirSync(dirname(this.lockPath), { recursive: true });
 
     // Retry loop: up to 2 passes. First pass may observe a stale lock
     // and reclaim; second pass resolves the O_EXCL race if two
@@ -2094,20 +2094,23 @@ export class SessionStore {
 
       // Record byte offsets for each event row before write so the
       // index.json snapshot + fast-seek readers can jump to a specific
-      // seq without parsing the whole file.
+      // seq without parsing the whole file. Each item is serialized once:
+      // the same line sizes its offset and is written. Serialization redacts
+      // secrets across the whole item, so a second pass doubled the largest
+      // CPU cost of every flush.
       let offsetAccumulator = this.fileSize;
+      const serializedLines: string[] = [];
       for (const item of this.pending) {
         if (item.type === "event_msg" && item.payload.seq !== undefined) {
           this.offsetsBySeq.set(item.payload.seq, offsetAccumulator);
         }
-        offsetAccumulator += Buffer.byteLength(
-          serializeRolloutItem(item),
-          "utf8",
-        );
+        const line = serializeRolloutItem(item);
+        serializedLines.push(line);
+        offsetAccumulator += Buffer.byteLength(line, "utf8");
       }
       this.boundIndexMap(this.offsetsBySeq);
 
-      const lines = this.pending.map(serializeRolloutItem).join("");
+      const lines = serializedLines.join("");
       const toWrite = this.pending;
       this.pending = [];
       this.batchOpenedAtMs = null;

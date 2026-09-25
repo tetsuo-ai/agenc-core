@@ -220,7 +220,7 @@ describe("durable checkpoint reader", () => {
     ).toThrowError(/unversioned fields/);
   });
 
-  it("reads editor-quota and admission-fallback slice fields that the writer persists", () => {
+  it("reads admission-fallback slice fields and ignores the retired editor quota", () => {
     const legacy = legacyCheckpoint("a".repeat(64));
     const resumableState = {
       ...(legacy.resumableState as Record<string, unknown>),
@@ -248,7 +248,6 @@ describe("durable checkpoint reader", () => {
         checkpointVersion: 3,
         resumableState: {
           completionGateRound: 2,
-          editorToolCallsAdmitted: 3,
           pendingAdmissionFallback: {
             fromModel: "gemini-3.1-pro",
             toModel: "gemini-flash",
@@ -301,7 +300,6 @@ describe("durable checkpoint reader", () => {
       role: "user",
       content: "resume this turn",
     });
-    source.editorToolCallsAdmitted = 3;
     source.textToolCallCorrectionCount = 2;
     source.textToolCallCorrection = { toolName: "mcp.qa.lookup", reason: "not_advertised" };
     source.modelSampleResumePrompt = "text_tool_call_correction";
@@ -330,7 +328,6 @@ describe("durable checkpoint reader", () => {
       content: "resume this turn",
     });
     restoreFromCheckpoint(restored, readable.checkpoint.resumableState);
-    expect(restored.editorToolCallsAdmitted).toBe(3);
     expect(restored.textToolCallCorrectionCount).toBe(2);
     expect(restored.textToolCallCorrection).toEqual(source.textToolCallCorrection);
     expect(restored.modelSampleResumePrompt).toBe("text_tool_call_correction");
@@ -354,10 +351,6 @@ describe("durable checkpoint reader", () => {
         state: { ...resumableState, planToolRequiredRetryCount: -1 },
         reason:
           /planToolRequiredRetryCount must be a non-negative safe integer/,
-      },
-      {
-        state: { ...resumableState, editorToolCallsAdmitted: -1 },
-        reason: /editorToolCallsAdmitted must be a non-negative safe integer/,
       },
       {
         state: { ...resumableState, modelSampleResumePrompt: "retry_anyway" },
@@ -1097,7 +1090,6 @@ describe("legacy durable checkpoint upgrade planner", () => {
       checkpointVersion: 4,
       prefixHashVersion: 3,
       resumableState: {
-        editorToolCallsAdmitted: 2,
         pendingAdmissionFallback: {
           fromModel: "grok-4.5",
           toModel: "gemini-3.1-pro",
@@ -1184,7 +1176,6 @@ describe("legacy durable checkpoint upgrade planner", () => {
       checkpointVersion: 4,
       prefixHashVersion: 3,
       resumableState: {
-        editorToolCallsAdmitted: 2,
         pendingAdmissionFallback: {
           fromProvider: "grok",
           toProvider: "gemini",

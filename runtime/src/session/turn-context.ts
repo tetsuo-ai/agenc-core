@@ -33,8 +33,7 @@ import type {
 } from "../sandbox/network-policy.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
 import type { RunInstructionEvidence } from "../prompts/instruction-evidence.js";
-import type { SessionEditorInteraction } from "./autonomous-mode.js";
-import type { CompactionConfig, CompletionGateConfig, DurableTurnsConfig } from "../config/schema.js";
+import type { CompactionConfig, CompletionGateConfig, DurableTurnsConfig, GoalConfig } from "../config/schema.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Forward-dep structural types. Keep these narrow so TurnContext can carry
@@ -70,6 +69,8 @@ export interface ModelServiceTier {
 
 export interface ModelInfo {
   readonly slug: string;
+  /** Provider that supplied this catalog or discovery result. */
+  readonly provider?: string;
   readonly contextWindow?: number;
   readonly effectiveContextWindowPercent: number;
   readonly maxOutputTokens?: number;
@@ -461,6 +462,7 @@ export type SessionSource =
 
 /** The original config blob (large). */
 export interface Config {
+  readonly agents?: import("../config/schema.js").AgentsConfig;
   readonly model: string;
   readonly modelVerbosity?: "low" | "medium" | "high";
   readonly modelReasoningEffort?: ReasoningEffort;
@@ -509,6 +511,8 @@ export interface Config {
   readonly durableTurns?: DurableTurnsConfig;
   /** Completion gate policy for non-interactive verification rounds. */
   readonly completionGate?: CompletionGateConfig;
+  /** `/goal` policy: rounds, stall window, reviewer model, verification timeout. */
+  readonly goal?: GoalConfig;
   /** Degraded compaction ladder policy (#2497). */
   readonly compaction?: CompactionConfig;
   readonly experimental_realtime_start_instructions?: string;
@@ -725,9 +729,6 @@ export interface TurnContext {
    * the live registry value.
    */
   readonly permissionMode: PermissionMode;
-
-  /** Trusted editor context and mutation policy for an editor-originated turn. */
-  readonly editorInteraction?: SessionEditorInteraction;
 }
 
 // ─────────────────────────────────────────────────────────────────────

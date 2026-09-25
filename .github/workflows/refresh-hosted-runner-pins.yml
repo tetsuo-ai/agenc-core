@@ -1,0 +1,102 @@
+# Measure the live hosted-runner toolchains and print what they report.
+#
+# GitHub rotates its runner images on its own schedule, so
+# `check:hosted-runner-contract` starts failing whenever a new image ships and
+# `release-toolchain.json` has to pin the new one. The macOS fields all come
+# from the release's commit-pinned readme and can be derived locally, but a
+# win-x64 profile needs `msvcCompilerSha256` and `msvcLinkerSha256` — SHA-256
+# of the live `cl.exe` and `link.exe`, which only a real runner can measure.
+#
+# Obtaining them through release-runtime.yml's candidate preflight is circular:
+# that dispatch requires a `local_evidence_sha256` from a completed
+# `release:verify`, and `release:verify` cannot complete because this very
+# contract is one of its gates. This workflow breaks that cycle by running the
+# same validators for their observed output only. It builds nothing, publishes
+# nothing, attests nothing, and takes no evidence digest, so it makes no
+# provenance claim of any kind.
+#
+# Use: dispatch, read each job's printed report, update the matching profile in
+# release-toolchain.json, then confirm locally with
+# `npm run check:hosted-runner-contract`. All three targets are measured every
+# time; the jobs are short and a full picture is what makes the pins reviewable.
+
+name: refresh-hosted-runner-pins
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: measure (${{ matrix.runner }}, ${{ matrix.slug }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            slug: darwin-arm64
+          - runner: macos-15-intel
+            slug: darwin-x64
+          - runner: windows-2025-vs2026
+            slug: win-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      AGENC_RELEASE_SLUG: ${{ matrix.slug }}
+      AGENC_RUNNER_LABEL: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # The validators compare what they measure against the reviewed profile
+      # and throw on drift. That is the expected outcome here: drift is exactly
+      # what we are measuring. Both write their observed report before
+      # throwing, and both print steps run with `always()`, so the report is
+      # available either way.
+      - name: Measure the macOS image and native toolchain
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/validate-hosted-macos-runner.py \
+            --report "$RUNNER_TEMP/agenc-hosted-toolchain-${AGENC_RELEASE_SLUG}.json"
+
+      - name: Measure the Windows image and native toolchain
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          scripts/validate-hosted-windows-runner.ps1 `
+            -ReportPath "$env:RUNNER_TEMP/agenc-hosted-toolchain-$env:AGENC_RELEASE_SLUG.json"
+
+      - name: Print the observed macOS report
+        if: always() && runner.os == 'macOS'
+        shell: bash
+        run: |
+          report="$RUNNER_TEMP/agenc-hosted-toolchain-${AGENC_RELEASE_SLUG}.json"
+          echo "ImageOS=${ImageOS:-} ImageVersion=${ImageVersion:-} RUNNER_ARCH=${RUNNER_ARCH:-}"
+          if test -f "$report"; then
+            cat "$report"
+          else
+            echo "validator produced no report at $report" >&2
+            exit 1
+          fi
+
+      - name: Print the observed Windows report
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $report = "$env:RUNNER_TEMP/agenc-hosted-toolchain-$env:AGENC_RELEASE_SLUG.json"
+          Write-Host "ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion RUNNER_ARCH=$env:RUNNER_ARCH"
+          if (Test-Path -LiteralPath $report -PathType Leaf) {
+            Get-Content -Raw -LiteralPath $report
+          } else {
+            Write-Error "validator produced no report at $report"
+            exit 1
+          }

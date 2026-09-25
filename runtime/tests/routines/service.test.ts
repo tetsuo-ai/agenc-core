@@ -2,7 +2,8 @@ import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MAX_ROUTINE_RUNS, RoutineExecutionUnsettledError, RoutineService, type RoutineExecutor } from "../../src/routines/service.js";
+import { notificationFromDaemonEvent } from "../../src/app-server/background-agent-runner/daemon-events.js";
+import { MAX_ROUTINE_RUNS, RoutineExecutionUnsettledError, RoutineService, type RoutineExecutor, type RoutineRunFailure } from "../../src/routines/service.js";
 
 const roots: string[] = [];
 const services: RoutineService[] = [];
@@ -11,10 +12,10 @@ afterEach(async () => {
   vi.useRealTimers();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
-function setup(executor: RoutineExecutor = { execute: vi.fn(async () => "completed" as const) }) {
+function setup(executor: RoutineExecutor = { execute: vi.fn(async () => "completed" as const) }, extra: { onRunFailure?: (failure: RoutineRunFailure) => void } = {}) {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "agenc-routines-test-"))); roots.push(home);
   const cwd = join(home, "project"); mkdirSync(cwd);
-  const service = new RoutineService({ home, executor }); services.push(service); service.start();
+  const service = new RoutineService({ home, executor, ...extra }); services.push(service); service.start();
   const params = { name: "Daily check", instructions: "Inspect the workspace.", cwd, schedule: { kind: "manual" as const } };
   return { home, cwd, service, executor, params, path: join(home, "routines", "routines-v1.json") };
 }
@@ -205,6 +206,48 @@ describe("daemon-owned local routines", () => {
     expect(() => f.service.delete({ id: routine.id })).toThrow("Cancel");
   });
 
+  it("keeps a newer unsettled run fenced when an older terminal arrives late", async () => {
+    let number = 0;
+    const f = setup({ execute: async (_routine, _run, context) => {
+      const agentId = `agent-${++number}`;
+      context.bind({ agentId, sessionId: `session-${number}`, coreRunId: agentId });
+      if (number === 1) return "completed";
+      throw new RoutineExecutionUnsettledError("unsettled");
+    } });
+    const { routine } = f.service.create(f.params);
+    f.service.run({ id: routine.id }); await terminal(f.service, routine.id);
+    f.service.run({ id: routine.id });
+    await vi.waitFor(() => expect(f.service.runs({ id: routine.id }).runs[0]?.error).toContain("could not confirm"));
+    f.service.observeSessionEvent("session-1", notificationFromDaemonEvent("session-1", "agent-1", {
+      id: "terminal:agent-1:1", eventId: "terminal:agent-1:1", sequence: 3, runId: "agent-1",
+      type: "run_terminal", payload: { runId: "agent-1", status: "failed", exitCode: 1 },
+    }));
+    expect(f.service.runs({ id: routine.id }).runs[0]).toMatchObject({ status: "running", finishedAt: null });
+    expect(f.service.runs({ id: routine.id }).runs[1]).toMatchObject({ status: "completed", error: null });
+    expect(() => f.service.run({ id: routine.id })).toThrow("active run");
+  });
+
+  it("preserves an interrupted run when its terminal is replayed after restart", async () => {
+    const f = setup({ execute: async (_routine, _run, context) => {
+      context.bind({ agentId: "agent-replayed", sessionId: "session-replayed", coreRunId: "core-replayed" });
+      return new Promise<"cancelled">((resolve) => context.signal.addEventListener("abort", () => resolve("cancelled")));
+    } });
+    const { routine } = f.service.create(f.params);
+    f.service.run({ id: routine.id });
+    await vi.waitFor(() => expect(f.service.runs({ id: routine.id }).runs[0]?.coreRunId).toBe("core-replayed"));
+    await f.service.close();
+    const restored = new RoutineService({ home: f.home, executor: f.executor }); services.push(restored);
+    restored.start();
+    const before = readFileSync(f.path, "utf8");
+    expect(restored.runs({ id: routine.id }).runs[0]).toMatchObject({ status: "interrupted", error: expect.stringContaining("Daemon stopped") });
+    restored.observeSessionEvent("session-replayed", notificationFromDaemonEvent("session-replayed", "agent-replayed", {
+      id: "terminal:core-replayed:1", eventId: "terminal:core-replayed:1", sequence: 3, runId: "core-replayed",
+      type: "run_terminal", payload: { runId: "core-replayed", status: "completed", exitCode: 0 },
+    }));
+    expect(restored.runs({ id: routine.id }).runs[0]).toMatchObject({ status: "interrupted", error: expect.stringContaining("Daemon stopped") });
+    expect(readFileSync(f.path, "utf8")).toBe(before);
+  });
+
   it("can pause a routine whose workspace was removed, without rebinding its authority", () => {
     const f = setup(); const { routine } = f.service.create({ ...f.params, schedule: { kind: "cron", expression: "* * * * *" } });
     rmSync(f.cwd, { recursive: true });
@@ -253,6 +296,61 @@ describe("daemon-owned local routines", () => {
     f.service.run({ id: routine.id }); await vi.waitFor(() => expect(snapshots).toEqual([f.params.instructions, "Updated for future runs"])); finish("completed"); await terminal(f.service, routine.id);
   });
 
+  it("persists a permission denial as failed with an actionable explanation after restart", async () => {
+    const f = setup({ execute: async () => "permission_denied" });
+    const { routine } = f.service.create(f.params);
+    f.service.run({ id: routine.id }); await terminal(f.service, routine.id);
+    const run = f.service.runs({ id: routine.id }).runs[0]!;
+    expect(run).toMatchObject({ status: "failed", error: "A tool action was blocked by this routine's read-only permissions. Update its instructions to use only read-only actions, then run it again. Open its session for details." });
+    expect(run.finishedAt).not.toBeNull();
+    expect(f.service.get({ id: routine.id }).routine.lastRun).toEqual(run);
+    await f.service.close();
+    const restarted = new RoutineService({ home: f.home, executor: f.executor }); services.push(restarted);
+    expect(restarted.runs({ id: routine.id }).runs[0]).toEqual(run);
+  });
+
+  it("retains the generic explanation for failures without a permission denial", async () => {
+    const f = setup({ execute: async () => "failed" });
+    const { routine } = f.service.create(f.params);
+    f.service.run({ id: routine.id }); await terminal(f.service, routine.id);
+    expect(f.service.runs({ id: routine.id }).runs[0]).toMatchObject({ status: "failed", error: "Core could not complete this run. Open its session for details." });
+  });
+
+  it("hands the cause to the daemon diagnostic and stores a fixed reason for missing credentials", async () => {
+    const onRunFailure = vi.fn();
+    const cause = new Error("deepseek provider requires credentials. Set DEEPSEEK_API_KEY.");
+    const f = setup({ execute: async () => { throw cause; } }, { onRunFailure });
+    const { routine } = f.service.create({ ...f.params, provider: "deepseek" }); const { run } = f.service.run({ id: routine.id }); await terminal(f.service, routine.id);
+    expect(f.service.runs({ id: routine.id }).runs[0]).toMatchObject({ status: "failed", error: "Routine could not run: the daemon has no credentials for the deepseek provider." });
+    expect(JSON.stringify(f.service.runs({ id: routine.id }))).not.toContain("DEEPSEEK_API_KEY");
+    expect(onRunFailure).toHaveBeenCalledWith({ routineId: routine.id, runId: run.id, reason: "credentials_missing" });
+    expect(cause.message).toContain("DEEPSEEK_API_KEY"); // the sink never received it
+    expect(JSON.stringify(onRunFailure.mock.calls)).not.toContain("DEEPSEEK_API_KEY");
+  });
+  it("reduces an unknown cause to its class name and identifier code; secret text reaches neither the sink nor the record", async () => {
+    const onRunFailure = vi.fn();
+    class ProviderRefused extends Error { code = "PROVIDER_REFUSED"; }
+    const f = setup({ execute: async () => { throw Object.assign(new ProviderRefused("refused sk-live-private-password"), { name: "ProviderRefused" }); } }, { onRunFailure });
+    const { routine } = f.service.create(f.params); const { run } = f.service.run({ id: routine.id }); await terminal(f.service, routine.id);
+    expect(f.service.runs({ id: routine.id }).runs[0]).toMatchObject({ status: "failed", error: "Routine could not run. Check its workspace, provider configuration, and session details." });
+    expect(onRunFailure).toHaveBeenCalledWith({ routineId: routine.id, runId: run.id, reason: "unknown", errorName: "ProviderRefused", errorCode: "PROVIDER_REFUSED" });
+    expect(JSON.stringify(onRunFailure.mock.calls) + JSON.stringify(f.service.runs({ id: routine.id }))).not.toContain("sk-live");
+    const g = setup({ execute: async () => { throw Object.assign(new Error("odd"), { code: "not an identifier; sk-live-private-password" }); } }, { onRunFailure });
+    const created = g.service.create(g.params); g.service.run({ id: created.routine.id }); await terminal(g.service, created.routine.id);
+    expect(onRunFailure).toHaveBeenLastCalledWith({ routineId: created.routine.id, runId: expect.any(String), reason: "unknown" });
+  });
+  it("names a changed workspace and survives a throwing diagnostic sink", async () => {
+    const f = setup({ execute: vi.fn(async () => "completed" as const) }, { onRunFailure: () => { throw new Error("sink down"); } });
+    const { routine } = f.service.create(f.params);
+    // Move the approved directory aside rather than deleting it: its inode
+    // stays allocated, so the replacement is guaranteed a different one.
+    // ext4 and overlayfs reuse a freed inode number immediately, which
+    // made a delete-and-recreate look like the same workspace.
+    renameSync(f.cwd, join(f.home, "replaced-project")); mkdirSync(f.cwd);
+    f.service.run({ id: routine.id }); await terminal(f.service, routine.id);
+    expect(f.service.runs({ id: routine.id }).runs[0]).toMatchObject({ status: "failed", error: "Routine could not run: its workspace changed since it was approved." });
+    expect(f.executor.execute).not.toHaveBeenCalled();
+  });
   it("bounds run history and preserves failure/cancellation records without sensitive error text", async () => {
     let count = 0;
     const f = setup({ execute: async () => { count++; if (count === 1) throw new Error("sk-live-private-password"); return count === 2 ? "cancelled" : "completed"; } });
@@ -309,5 +407,22 @@ describe("daemon-owned local routines", () => {
     expect(() => new RoutineService({ home: f.home, executor: f.executor })).toThrow("private directory");
     rmSync(join(f.home, "routines")); mkdirSync(join(f.home, "routines"), { mode: 0o700 });
     if (process.platform !== "win32") { chmodSync(join(f.home, "routines"), 0o755); expect(() => new RoutineService({ home: f.home, executor: f.executor })).toThrow("private directory"); }
+  });
+});
+
+describe("routine Desktop preparation record", () => {
+  it("persists a declined reason through run completion and reload", async () => {
+    const executor: RoutineExecutor = { execute: vi.fn(async (_routine, _run, context) => {
+      context.setDesktopTools?.({ status: "declined", reason: "Desktop window is not open." });
+      return "completed" as const;
+    }) };
+    const f = setup(executor);
+    const routine = f.service.create(f.params).routine;
+    f.service.run({ id: routine.id });
+    await terminal(f.service, routine.id);
+    expect(f.service.runs({ id: routine.id }).runs[0]?.desktopTools).toEqual({ status: "declined", reason: "Desktop window is not open." });
+    await f.service.close();
+    const restored = new RoutineService({ home: f.home, executor }); services.push(restored);
+    expect(restored.runs({ id: routine.id }).runs[0]?.desktopTools).toEqual({ status: "declined", reason: "Desktop window is not open." });
   });
 });

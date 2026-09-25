@@ -104,6 +104,39 @@ Names are scoped as `plugin:<plugin-id>:<server>`
 with a SHA-256 suffix. Tools appear as
 `mcp.plugin:<plugin-id>:<server>.<tool>`.
 
+Plugin tool catalogs are stored at
+`AGENC_HOME/cache/plugin-mcp-catalogs/<plugin-sha256>/<sha256>.json`, one
+directory per plugin. Each format-1 record contains the `tools/list`
+descriptors, including input schemas and annotations, and any listed prompts
+and resources. The key includes plugin ID, server name, version, a SHA-256
+hash of the installed plugin files, and a hash of the resolved launch
+configuration and settings. An update or reinstall with changed bytes gets a
+new key. A catalog that contains a saved secret is never written to disk; the
+session keeps it in memory. Resetting a plugin's settings or uninstalling the
+plugin removes its catalogs.
+Warm catalogs let tool search list tools while the process is stopped. A
+missing catalog is primed on the first tool search by one connection and that
+connection is then stopped. A tool call or resource/prompt read starts the
+server again. Idle plugin servers show as `stopped` in MCP status; startup
+errors show as `failed`.
+
+Plugin MCP processes launch from Core-owned, verified snapshots. Plugin
+lifecycle commands and configuration changes revoke the affected generation;
+see [skills-plugins.md](skills-plugins.md#plugin-mcp-servers) for the local
+file modification boundary and update procedure.
+The snapshot pins bytes for launches described by manifest command, args, cwd,
+env, requested env vars, templates, and relative paths. It is not a sandbox:
+plugin code can deliberately read its installed copy at runtime with the
+user's permissions. Signatures and update checks establish trust in that code.
+
+Manifest `mcpEagerServers` lists server names that receive notifications or
+run listeners without a tool call. Servers named by manifest `channels` are
+eager automatically. Operators can also set
+`plugins.plugins.<id>.mcp_servers.<server>.eager = true`. The global idle
+timeout and process budget are `plugins.mcp_idle_timeout_ms = 600000` and
+`plugins.mcp_max_processes = 8`; a server-specific `idle_timeout_ms` overrides
+the global timeout. Zero disables idle eviction.
+
 | Winner | Loses |
 | --- | --- |
 | Operator `mcp_servers` with the same command/URL signature | Plugin server (content-based dedup). A **disabled** manual entry does not suppress a plugin server |

@@ -24,6 +24,8 @@ import {
   GEMINI_THINKING_MODELS,
   resolveGeminiThinkingModel,
 } from "./gemini-thinking-models.js";
+import { parseClaudeModelId } from "../../utils/model/claudeModelId.js";
+import { isAlwaysOnThinkingAnthropicModel } from "../../utils/model/alwaysOnThinking.js";
 
 export type ModelInputModality = "text" | "image" | "audio";
 export type ModelWebSearchToolType = "none" | "text" | "text_and_image";
@@ -564,11 +566,11 @@ const GROK_REASONING_LEVELS = Object.freeze([
   "high",
 ] as const satisfies readonly ReasoningEffort[]);
 /**
- * Grok 4.6 adds `xhigh` on top of the levels every earlier Grok exposes.
+ * Grok 4.6 and 4.7 expose the documented `xhigh` depth tier.
  * Reusing GROK_REASONING_LEVELS would silently drop the level xAI documents,
  * leaving the highest effort tier unreachable from the picker.
  */
-const GROK_4_6_REASONING_LEVELS = Object.freeze([
+const GROK_4_6_AND_4_7_REASONING_LEVELS = Object.freeze([
   "low",
   "medium",
   "high",
@@ -616,8 +618,47 @@ const GEMINI_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
     })),
   );
 
+// Claude Opus 5.5 (platform.claude.com model page, effort and pricing docs,
+// 2026-09-22): 1M context, 128K max output, all five effort levels with
+// medium as the API default. The default output reservation is 64K, the
+// starting point the Opus 5.5 guidance gives for agentic turns, since
+// always-on thinking counts toward max_tokens. Other Claude models have no
+// row here yet and keep the generic Anthropic fallbacks. Fast mode is not a
+// catalog tier: the registry derives it from the Anthropic fast-mode list.
+const ANTHROPIC_OPUS_5_5_ENTRY: RegisteredModelCatalogEntry = Object.freeze({
+  provider: "anthropic",
+  model: "claude-opus-5-5",
+  displayName: "Claude Opus 5.5",
+  contextWindow: 1_000_000,
+  maxContextWindow: 1_000_000,
+  maxOutputTokens: 64_000,
+  maxOutputTokensUpperLimit: 128_000,
+  inputModalities: TEXT_IMAGE_MODALITIES,
+  supportsToolUse: true,
+  supportsParallelToolCalls: true,
+  supportsStructuredOutput: true,
+  supportsStructuredOutputWithTools: true,
+  supportsSearchTool: false,
+  supportsVerbosity: false,
+  webSearchToolType: "none",
+  supportsReasoningSummaries: false,
+  defaultReasoningSummary: "auto",
+  supportedReasoningLevels: Object.freeze([
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+  ] as const satisfies readonly ReasoningEffort[]),
+  defaultReasoningLevel: "medium",
+  additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+  priority: 0,
+  visibility: "list",
+});
+
 export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
   Object.freeze([
+    ANTHROPIC_OPUS_5_5_ENTRY,
     ...GEMINI_MODEL_CATALOG.filter((entry) =>
       GEMINI_THINKING_MODELS.some((model) => model.curated && model.model === entry.model)
     ),
@@ -1120,6 +1161,32 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       visibility: "hide",
     },
     {
+      // https://docs.x.ai/developers/grok-4-7 (2026-09-21).
+      // No model output cap; native tools use provider-native-search.ts.
+      provider: "grok",
+      model: "grok-4.7",
+      displayName: "Grok 4.7",
+      contextWindow: 500_000,
+      maxContextWindow: 500_000,
+      inputModalities: TEXT_IMAGE_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: true,
+      supportsStructuredOutput: true,
+      supportsSearchTool: true,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: GROK_4_6_AND_4_7_REASONING_LEVELS,
+      defaultReasoningLevel: "high",
+      // The Fast tier is xAI priority processing (service_tier "priority",
+      // 2x every token rate), not the Grok 4.7 Fast model, which xAI serves
+      // only in Cursor and Grok Build. See providers/grok/priority-processing.ts.
+      additionalSpeedTiers: FAST_SPEED_TIER,
+      priority: 28,
+      visibility: "list",
+    },
+    {
       provider: "grok",
       model: "grok-4.6",
       displayName: "Grok 4.6",
@@ -1134,9 +1201,10 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       webSearchToolType: "none",
       supportsReasoningSummaries: false,
       defaultReasoningSummary: "none",
-      supportedReasoningLevels: GROK_4_6_REASONING_LEVELS,
+      supportedReasoningLevels: GROK_4_6_AND_4_7_REASONING_LEVELS,
       defaultReasoningLevel: "high",
-      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      // xAI priority processing, priced at 2x its $2 / $0.50 / $6 rates.
+      additionalSpeedTiers: FAST_SPEED_TIER,
       priority: 29,
       visibility: "list",
     },
@@ -1301,6 +1369,20 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
     },
   ]);
 
+/**
+ * The registered Claude rows, keyed by the canonical id the shared parser
+ * (utils/model/claudeModelId.ts) reads from each row.
+ */
+const CLAUDE_CATALOG_ROWS: ReadonlyMap<string, RegisteredModelCatalogEntry> =
+  new Map(
+    REGISTERED_MODEL_CATALOG.flatMap((entry) => {
+      const id = entry.provider === "anthropic"
+        ? parseClaudeModelId(entry.model)
+        : undefined;
+      return id === undefined ? [] : [[id.canonical, entry] as const];
+    }),
+  );
+
 export function listRegisteredModelCatalogEntries(
   provider?: string,
 ): readonly RegisteredModelCatalogEntry[] {
@@ -1327,6 +1409,8 @@ export function resolveRegisteredModelCatalogEntry(input: {
       GEMINI_MODEL_CATALOG,
     );
   }
+  if (provider === "anthropic") return resolveAnthropicCatalogEntry(model);
+  if (provider === "amazon-bedrock") return resolveBedrockCatalogEntry(model);
   const candidates = REGISTERED_MODEL_CATALOG.filter(
     (entry) => modelCatalogProviderIdentity(entry.provider) === provider,
   );
@@ -1431,6 +1515,87 @@ export function resolveModelCapabilityHints(input: {
     acceptsImageHistory: supportsImageInput,
     acceptsReasoningEffort: entry.supportedReasoningLevels.length > 0,
   };
+}
+
+/**
+ * Anthropic rows resolve through the shared Claude id parser, the same
+ * reading pricing and the wire use, and never by prefix. Every Claude API
+ * spelling the parser reads (dated, dotted `claude-opus-5.5`, `anthropic/`
+ * qualified, `[1m]`) finds the one row of its canonical model. An id the
+ * parser rejects (`claude-opus-5-5-fast`, `-preview`) or a canonical model
+ * with no row (`claude-opus-5-50`) finds nothing rather than a neighbour.
+ * Bedrock and Vertex spellings are not Anthropic-provider ids.
+ */
+function resolveAnthropicCatalogEntry(
+  model: string,
+): RegisteredModelCatalogEntry | undefined {
+  const id = parseClaudeModelId(model);
+  if (id === undefined || id.platform !== "anthropic") return undefined;
+  return CLAUDE_CATALOG_ROWS.get(id.canonical);
+}
+
+/**
+ * Bedrock ids of a registered Claude model (`anthropic.claude-opus-5-5`,
+ * the geo and `global.` inference profiles, their `-v1:0` versions and
+ * ARNs) resolve through the same parser to that model's Bedrock contract.
+ * Other Bedrock ids, including Claude models without a row, have none.
+ */
+function resolveBedrockCatalogEntry(
+  model: string,
+): RegisteredModelCatalogEntry | undefined {
+  const id = parseClaudeModelId(model);
+  if (id === undefined || id.platform !== "bedrock") return undefined;
+  const row = CLAUDE_CATALOG_ROWS.get(id.canonical);
+  return row === undefined ? undefined : bedrockClaudeCatalogEntry(row, model);
+}
+
+/**
+ * A registered Claude row as AgenC's Amazon Bedrock provider serves it
+ * through Converse. The context and output limits are the model's (the AWS
+ * model card for Opus 5.5 gives the same 1M context and 128K output as the
+ * Claude API). The Converse adapter sends text and tools only, and Bedrock
+ * serves these models no structured output, web search or fast mode, so
+ * those stay off. Effort levels carry over only for the always-on family,
+ * whose effort the adapter sends as `output_config.effort` inside
+ * `additionalModelRequestFields`.
+ */
+function bedrockClaudeCatalogEntry(
+  row: RegisteredModelCatalogEntry,
+  model: string,
+): RegisteredModelCatalogEntry {
+  const { defaultReasoningLevel, ...contract } = row;
+  const levels = isAlwaysOnThinkingAnthropicModel(row.model)
+    ? row.supportedReasoningLevels
+    : NO_REASONING_LEVELS;
+  return Object.freeze({
+    ...contract,
+    provider: "amazon-bedrock",
+    model,
+    inputModalities: TEXT_MODALITIES,
+    supportsParallelToolCalls: false,
+    supportsStructuredOutput: false,
+    supportsStructuredOutputWithTools: false,
+    supportsSearchTool: false,
+    webSearchToolType: "none",
+    supportedReasoningLevels: levels,
+    ...(defaultReasoningLevel !== undefined &&
+    levels.includes(defaultReasoningLevel)
+      ? { defaultReasoningLevel }
+      : {}),
+    additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+  });
+}
+
+/**
+ * The effort levels the Bedrock Converse adapter sends for `model`: those
+ * of its registered Bedrock contract, so session validation, spawn_agent
+ * and the wire agree. A model without one gets no effort field.
+ */
+export function bedrockConverseEffortLevels(
+  model: string,
+): readonly ReasoningEffort[] {
+  return resolveBedrockCatalogEntry(model)?.supportedReasoningLevels ??
+    NO_REASONING_LEVELS;
 }
 
 function findExactModel(

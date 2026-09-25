@@ -12,6 +12,7 @@ export interface MountChildRunJournalOptions {
   readonly child: Session;
   readonly originator: string;
   readonly terminalResult: () => ChildRunTerminalResult;
+  readonly destination?: { readonly provider: string; readonly model: string };
 }
 
 export interface ChildRunTerminalResult {
@@ -206,8 +207,9 @@ export function mountChildRunJournal(
     cwd: sessionConfiguration.cwd,
     originator: options.originator,
     agencVersion: parentRollout.store.agencVersion,
-    model: sessionConfiguration.collaborationMode.model,
+    model: options.destination?.model ?? sessionConfiguration.collaborationMode.model,
     modelProvider:
+      options.destination?.provider ??
       readProviderIdentity(child.services.provider) ??
       child.services.provider.name,
     ...(admission !== undefined

@@ -1770,6 +1770,13 @@ async function waitForAgenCDaemonReady(
   return host.isPidRunning(target.pid) ? "timeout" : "exited";
 }
 
+/**
+ * The socket must accept a connection, not merely exist. A daemon that was
+ * killed without cleanup (SIGKILL, OOM, power loss) leaves its socket inode and
+ * cookie behind; judged by presence alone, a replacement looks ready the
+ * instant it is spawned, fails the identity proof it has not had time to
+ * publish, and is terminated, on every cycle.
+ */
 async function isAgenCDaemonPidAndCookieReady(
   target: AgenCDaemonConnectionTarget,
   host: AgenCDaemonCliHost,
@@ -1784,12 +1791,13 @@ async function isAgenCDaemonPidAndCookieReady(
     if (isAgenCWindowsNamedPipePath(socketPath)) {
       return canConnectToUnixSocket(socketPath);
     }
-    return (await lstat(socketPath)).isSocket();
+    if (!(await lstat(socketPath)).isSocket()) return false;
   } catch (error) {
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
     if (code === "ENOENT") return false;
     throw error;
   }
+  return canConnectToUnixSocket(socketPath);
 }
 
 function silentIo(): AgenCDaemonCliIo {

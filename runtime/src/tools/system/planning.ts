@@ -38,7 +38,9 @@ import { applyPermissionUpdates } from "../../permissions/permission-updates.js"
 import {
   buildPlanPromptPermissionUpdates,
   consumeExitPlanModeApproval,
+  injectedExitPlanApprovedPlan,
   parseExitPlanAllowedPrompts,
+  samePlanText,
 } from "../../planning/exit-plan-approval.js";
 import type { PlanFileContext } from "../../planning/plan-files.js";
 import type { Tool, ToolResult } from "../types.js";
@@ -225,7 +227,9 @@ async function persistTodosToTaskBoard(todos: readonly TodoItem[]): Promise<void
 
 function inputPlan(args: Record<string, unknown>): string | undefined {
   const plan = args.plan;
-  return typeof plan === "string" ? plan : undefined;
+  // The approval request treats a blank plan argument as absent and shows
+  // the plan file instead, so execution must too.
+  return typeof plan === "string" && plan.trim().length > 0 ? plan : undefined;
 }
 
 async function updatePermissionMode(params: {
@@ -547,10 +551,29 @@ Remember: DO NOT write or edit any files except the plan file.`,
       }
       const approval = consumeExitPlanModeApproval(args);
       const editedPlan = approval?.plan ?? inputPlan(args);
+      // The approval request showed a snapshot of the plan file, and that
+      // text is what the user approved. Execute it, and only while the file
+      // still holds it: an edit made while the request was open was never
+      // shown, so it needs a new request, not this approval.
+      const approvedPlan = editedPlan === undefined && approval?.action !== "revise"
+        ? injectedExitPlanApprovedPlan(args)
+        : undefined;
+      if (
+        approvedPlan !== undefined &&
+        !samePlanText(options.workflowController?.readPlan?.() ?? null, approvedPlan.plan)
+      ) {
+        return validationErrorToolResult(
+          "tool:system.exit-plan-mode:plan-changed",
+          "The plan file changed after approval was requested, so the approval covered an earlier version. Nothing was approved and plan mode is still on. Call ExitPlanMode again to show the current plan.",
+        );
+      }
       if (editedPlan !== undefined) {
         await options.workflowController?.writePlan?.(editedPlan);
       }
-      const plan = editedPlan ?? options.workflowController?.readPlan?.() ?? null;
+      const plan = editedPlan ??
+        (approvedPlan !== undefined
+          ? approvedPlan.plan
+          : options.workflowController?.readPlan?.() ?? null);
       const filePath = options.workflowController?.getPlanFilePath?.();
       if (approval?.action === "revise") {
         const feedback = approval.feedback?.trim();

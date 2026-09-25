@@ -1212,13 +1212,14 @@ describe("runAdmittedModelCall provider-usage calibration", () => {
     state: ReturnType<typeof harness>,
     contextWindowTokens: number,
     reportedPromptTokens: (admittedInputTokens: number) => number = (input) => input,
+    extraOptions: Record<string, unknown> = {},
   ): Promise<{ input: number; output: number | undefined }> {
     let output: number | undefined;
     await runAdmittedModelCall({
       session: state.session,
       provider: state.provider,
       messages,
-      options: { maxOutputTokens: 4_096, contextWindowTokens },
+      options: { maxOutputTokens: 4_096, contextWindowTokens, ...extraOptions },
       stepId: `model:calibration:${state.acquire.mock.calls.length + 1}`,
       model: "grok-4.5",
       providerName: "grok",
@@ -1255,5 +1256,106 @@ describe("runAdmittedModelCall provider-usage calibration", () => {
     const control = harness({});
     Object.assign(control.session, { conversationId: "calibration-control" });
     expect(await admittedCall(control, window)).toEqual({ input: first.input, output: 4_096 });
+  });
+
+  test("a provider-native server tool turn does not calibrate the conversation's later turns", async () => {
+    // Observed on grok-4.7: two web_search steps reported 58,887 and 62,442
+    // input tokens against a query-sized count, the factor locked at its cap,
+    // and every later turn in the conversation ran about six times its real
+    // size until admission denied context_window_exceeded at 86k of 500k.
+    const state = harness({});
+    Object.assign(state.session, { conversationId: "calibration-server-tool" });
+    // runGrokNativeWebSearch enables native search on its provider and routes web_search.
+    Object.assign(state.provider, { config: { model: "grok-4.5", webSearch: true } });
+    await admittedCall(state, 1_048_576, () => 62_442, {
+      toolRouting: { allowedToolNames: ["web_search"] },
+    });
+    Object.assign(state.provider, { config: { model: "grok-4.5" } });
+    const afterSearch = await admittedCall(state, 1_048_576);
+
+    const control = harness({});
+    Object.assign(control.session, { conversationId: "calibration-server-tool-control" });
+    const plain = await admittedCall(control, 1_048_576);
+
+    expect(afterSearch).toEqual(plain);
+  });
+
+  test("a client tool that is only named web_search still calibrates", async () => {
+    // Ordinary turns route their client-tool catalog by name; without a
+    // configured provider-native tool the whole input is ours to count.
+    const control = harness({});
+    Object.assign(control.session, { conversationId: "calibration-client-tool-control" });
+    const plain = await admittedCall(control, 1_048_576);
+
+    const state = harness({});
+    Object.assign(state.session, { conversationId: "calibration-client-tool" });
+    await admittedCall(state, 1_048_576, () => plain.input * 2, {
+      toolRouting: { allowedToolNames: ["web_search"] },
+    });
+    const next = await admittedCall(state, 1_048_576);
+
+    expect(next.input).toBeGreaterThan(plain.input);
+  });
+});
+
+// Codex review, P1: the Chat Completions parser cannot report prompt-cache
+// writes (unlike Responses' input_tokens_details.cache_write_tokens), so it
+// flags its usage with cacheWritesUnreported instead. usageCostUsd only acts
+// on that flag when the priced entry bills cache writes above its input
+// rate; every other Chat Completions user (DeepSeek, Grok, ...) must be
+// unaffected.
+describe("runAdmittedModelCall Chat Completions cache-write reconciliation", () => {
+  function deepSeekCall(
+    stepId: string,
+    usage: LLMResponse["usage"],
+  ): { readonly state: ReturnType<typeof harness>; readonly run: Promise<LLMResponse> } {
+    const state = harness({ maxCostUsd: 10 });
+    const provider = {
+      name: "deepseek",
+      getExecutionProfile: async () => ({
+        usageReporting: "authoritative" as const,
+        supportsMaxOutputTokens: true,
+      }),
+    } as unknown as LLMProvider;
+    const run = runAdmittedModelCall({
+      session: state.session,
+      provider,
+      messages: [{ role: "user", content: "hello" }],
+      options: { maxOutputTokens: 200 },
+      stepId,
+      model: "deepseek-v4-pro",
+      providerName: "deepseek",
+      invoke: async () => response({ model: "deepseek-v4-pro", usage }),
+    });
+    return { state, run };
+  }
+
+  test("a DeepSeek usage without a higher cache-write rate prices exactly as before the flag", async () => {
+    const usage: LLMResponse["usage"] = {
+      promptTokens: 1000,
+      completionTokens: 50,
+      totalTokens: 1050,
+      availability: "reported",
+      provenance: "provider",
+      cachedInputTokens: 100,
+    };
+    const without = deepSeekCall("model:deepseek-no-flag", usage);
+    await without.run;
+    const withFlag = deepSeekCall("model:deepseek-flag", {
+      ...usage,
+      cacheWritesUnreported: true,
+    });
+    await withFlag.run;
+
+    const withoutCost = without.state.reconcile.mock.calls[0]?.[1].costUsd;
+    const withFlagCost = withFlag.state.reconcile.mock.calls[0]?.[1].costUsd;
+    expect(withFlagCost).toBe(withoutCost);
+    // Pins the actual DeepSeek native formula so a change on either path is
+    // caught: 900 uncached * $0.00132/1K + 100 cached * $0.000044/1K + 50 out
+    // * $0.00396/1K (COST_TIER_DEEPSEEK_V4_PRO_NATIVE, session/cost.ts).
+    expect(withFlagCost).toBeCloseTo(
+      0.9 * 0.00132 + 0.1 * 0.000044 + 0.05 * 0.00396,
+      12,
+    );
   });
 });

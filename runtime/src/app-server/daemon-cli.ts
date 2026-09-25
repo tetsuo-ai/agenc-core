@@ -6,7 +6,7 @@
  * later daemon rows.
  */
 
-import { LiveApprovalBroker } from "./live-approval-broker.js";
+import { LiveApprovalBroker, crossProviderConsentAvailability } from "./live-approval-broker.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { enterDaemonWorkingDirectory } from "./daemon-working-directory.js";
 import { randomUUID } from "node:crypto";
@@ -115,7 +115,9 @@ import {
   type JsonObject,
   type JsonValue,
   type SessionStatus,
+  AGENC_PENDING_APPROVALS_LIST_CAPABILITY,
 } from "./protocol/index.js";
+import { sessionEventDelivery } from "./approval-delivery.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import {
   AgenCUnixSocketServer,
@@ -134,6 +136,8 @@ import type { AgenCNativePeerCredentialBinding } from "./transport/peer-credenti
 import { AGENC_PORTAL_DEFAULT_LOCAL_DAEMON_ENDPOINT } from "../app-server-protocol/index.js";
 import { AgenCDaemonHealthService } from "./health.js";
 import { AgenCDaemonRunInspectionService } from "./run-inspection.js";
+import { AgenCProjectTrustService } from "./project-trust.js";
+import { PluginSettingsService } from "../plugins/settings-service.js";
 import { AgenCCleanupRegistry } from "../lifecycle/cleanup-registry.js";
 import { closeAllBrowserManagers } from "../browser/manager.js";
 import { installAgenCShutdownSignalHandlers } from "../lifecycle/signal-handlers.js";
@@ -164,14 +168,15 @@ import { resolveProviderBaseURL } from "../config/env.js";
 import {
   resolveAgentRuntimeOptions,
   resolveSessionTempRootAtIngress,
+  resolvePluginStorageRootAtIngress,
   validateAgentRuntimeOptions,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
 import { RoutineService } from "../routines/service.js";
 import { createDaemonRoutineExecutor } from "../routines/daemon-executor.js";
+import { RoutineSessionPreparation } from "../routines/session-preparation.js";
 import type { AgenCConfig, AgentRunRetentionConfig } from "../config/schema.js";
-import { CodePredictionService } from "../services/code-prediction/service.js";
-import { BUILT_IN_PROVIDER_BASE_URLS } from "../llm/registry/provider-info.js";
+import { BUILT_IN_PROVIDER_BASE_URLS, resolveBuiltInProviderSlug } from "../llm/registry/provider-info.js";
 import {
   prepareMcpSseServerReconfigurationFromConfig,
   resolveMcpServeDefaults,
@@ -233,7 +238,6 @@ import { isRecord } from "../utils/record.js";
 import { logForDebugging } from "../utils/debug.js";
 import { installAgenCDaemonErrorLogSink } from "./daemon-error-log.js";
 import { startHeapWatchdog } from "../services/heapWatchdog/heapWatchdog.js";
-import { workspaceMutationCoordinators } from "../workspace/mutation-coordinator.js";
 
 const AGENC_DAEMON_PID_FILENAME = "daemon.pid";
 const AGENC_DAEMON_COOKIE_FILENAME = "daemon.cookie";
@@ -349,6 +353,36 @@ export function resolveAgenCDaemonReadyTimeoutMs(
     }
   }
   return DEFAULT_DAEMON_READY_TIMEOUT_MS;
+}
+
+/**
+ * Env override (ms) for the total time `daemon start` keeps waiting for a
+ * spawned daemon that is still hydrating past the readiness budget.
+ */
+export const AGENC_DAEMON_START_MAX_WAIT_MS_ENV =
+  "AGENC_DAEMON_START_MAX_WAIT_MS";
+
+/**
+ * Bound for that extended wait. A home with hundreds of sessions takes longer
+ * than {@link DEFAULT_DAEMON_READY_TIMEOUT_MS} to open its state and recover
+ * its runs (observed: 60 s for 877 sessions). Cancelling such a daemon at the
+ * deadline and letting the caller start another one produced a loop in which
+ * no daemon ever finished starting. While the startup log keeps advancing the
+ * wait continues, in readiness-budget steps, up to this total.
+ */
+export const DEFAULT_DAEMON_START_MAX_WAIT_MS = 600_000;
+
+export function resolveAgenCDaemonStartMaxWaitMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const envValue = env[AGENC_DAEMON_START_MAX_WAIT_MS_ENV];
+  if (envValue !== undefined && envValue.trim().length > 0) {
+    const parsed = Number(envValue);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return DEFAULT_DAEMON_START_MAX_WAIT_MS;
 }
 
 const DEFAULT_DAEMON_WEBSOCKET_URL = new URL(
@@ -777,6 +811,31 @@ export function resolveAgenCDaemonSpawnStderrPath(
     resolveAgenCDaemonHome(env, userHome),
     AGENC_DAEMON_SPAWN_STDERR_FILENAME,
   );
+}
+
+/**
+ * Milliseconds since the daemon last wrote to a startup log (the spawn stderr
+ * capture or the daemon log), or undefined when neither file exists. A daemon
+ * that is hydrating writes to one of them every few seconds; a hung one goes
+ * quiet.
+ */
+function daemonStartupLogAgeMs(
+  host: AgenCDaemonCliHost,
+  now = Date.now(),
+): number | undefined {
+  let latest: number | undefined;
+  for (const path of [
+    resolveAgenCDaemonSpawnStderrPath(host.env, host.userHome),
+    resolveAgenCDaemonLogPath(host.env, host.userHome),
+  ]) {
+    try {
+      const { mtimeMs } = statSync(path);
+      if (latest === undefined || mtimeMs > latest) latest = mtimeMs;
+    } catch {
+      /* a missing capture is no evidence either way */
+    }
+  }
+  return latest === undefined ? undefined : Math.max(0, now - latest);
 }
 
 const DAEMON_SPAWN_STDERR_TAIL_BYTES = 2_048;
@@ -1548,7 +1607,32 @@ async function startAgenCDaemon(
   const targetPid = decision.pid;
   const waitForReady =
     options.waitForDaemonReady ?? defaultWaitForAgenCDaemonReady;
-  const ready = await waitForReady(host, false);
+  let ready = await waitForReady(host, false);
+  if (!ready) {
+    // A daemon that is alive and still writing its startup log at the
+    // deadline is hydrating, not hung. Keep waiting in readiness-budget
+    // steps while the log advances, up to DEFAULT_DAEMON_START_MAX_WAIT_MS;
+    // a quiet log or a dead pid falls through to the failure path below.
+    const budgetMs = resolveAgenCDaemonReadyTimeoutMs(host.env);
+    const extensions = Math.max(
+      0,
+      Math.ceil(resolveAgenCDaemonStartMaxWaitMs(host.env) / budgetMs) - 1,
+    );
+    for (
+      let extension = 1;
+      !ready && extension <= extensions && host.isPidRunning(targetPid);
+      extension += 1
+    ) {
+      const ageMs = daemonStartupLogAgeMs(host);
+      if (ageMs === undefined || ageMs > budgetMs) break;
+      io.stderr.write(
+        `agenc: daemon process (pid ${targetPid}) is still starting; its ` +
+          `startup log advanced ${Math.round(ageMs / 1000)} s ago, waiting ` +
+          `another ${Math.round(budgetMs / 1000)} s (${extension}/${extensions})\n`,
+      );
+      ready = await waitForReady(host, false);
+    }
+  }
   if (!ready) {
     const wasRunning = host.isPidRunning(targetPid);
     if (wasRunning) {
@@ -2806,6 +2890,7 @@ async function reloadAgenCDaemon(
   }
 
   let bound: BoundAgenCDaemonCliInstance;
+  let reloaded: DaemonReloadResult | undefined;
   try {
     bound = await proveAgenCDaemonCliInstance(
       host,
@@ -2815,7 +2900,7 @@ async function reloadAgenCDaemon(
     );
     const requestReload =
       options.requestDaemonReload ?? requestAgenCDaemonReload;
-    await Promise.resolve(requestReload(host, bound.identity));
+    reloaded = await Promise.resolve(requestReload(host, bound.identity));
   } catch (error) {
     io.stderr.write(
       `agenc: daemon reload failed (pid ${recorded.pid}): ${formatCleanupError(error)}\n`,
@@ -2825,6 +2910,9 @@ async function reloadAgenCDaemon(
   io.stdout.write(
     `AgenC daemon reloaded configuration (pid ${bound.identity.pid})\n`,
   );
+  for (const failure of reloaded?.crossProviderSettings?.failed ?? []) {
+    io.stderr.write(crossProviderSettingsFailureLine(failure));
+  }
   return 0;
 }
 
@@ -3369,12 +3457,7 @@ async function runAgenCDaemonForegroundLocked(
     cleanup.register("daemon-thread-store", async () => {
       threadStore.close();
     });
-    let codePrediction: CodePredictionService | undefined;
-    const sessionManager = new AgenCDaemonSessionManager({
-      threadStore,
-      onSessionTerminated: (sessionId) =>
-        codePrediction?.disposeSession(sessionId),
-    });
+    const sessionManager = new AgenCDaemonSessionManager({ threadStore });
     // Forward declaration: set once the connection registry below exists. Lets
     // the multiplexer ask the transport to tear down a slow consumer's socket
     // when that client's pending delivery backlog trips the per-client cap.
@@ -3517,7 +3600,18 @@ async function runAgenCDaemonForegroundLocked(
       },
     );
     let runner = options.runner;
-    const approvalBroker = new LiveApprovalBroker();
+    const approvalBroker: LiveApprovalBroker = new LiveApprovalBroker({
+      canAnswerCrossProviderConsent: crossProviderConsentAvailability({
+        sessionIdsForAgent: (agentId): Promise<readonly string[]> => agentManager.sessionIdsForAgent(agentId),
+        hasAttachedClientWithCapability: (sessionId, capability) =>
+          clientMultiplexer.hasAttachedClientWithCapability(sessionId, capability),
+      }),
+      // A session that was still starting during a reload reads the settings
+      // again when it registers. No reload result can name it, so log it.
+      onCrossProviderRefreshFailed: (failure) => {
+        io.stderr.write(crossProviderSettingsFailureLine(failure));
+      },
+    });
     let configuredRunner: AgenCDelegateBackgroundAgentRunner | undefined;
     if (runner === undefined) {
       configuredRunner = new AgenCDelegateBackgroundAgentRunner({
@@ -3572,7 +3666,15 @@ async function runAgenCDaemonForegroundLocked(
       agencHome: authStartup.daemonHome,
       runner,
       sessionManager,
-      terminateSession: (params) => clientMultiplexer.terminateSession(params),
+      terminateSession: async (params) => {
+        try {
+          return await clientMultiplexer.terminateSession(params);
+        } finally {
+          // Session teardown owns the last live reference to the project's
+          // snapshot and log databases. This is also reached on Stop/error.
+          snapshotPolicies.releaseSession(params.sessionId);
+        }
+      },
       threadStore,
       // DAE-02: prefer client/workspace env over frozen OS cwd when params omit cwd.
       defaultCwd: () => resolveDaemonDefaultCwd(host.env),
@@ -3589,7 +3691,16 @@ async function runAgenCDaemonForegroundLocked(
             `agenc: daemon snapshot policy failed: ${formatCleanupError(error)}\n`,
           );
         }
-        await clientMultiplexer.broadcastSessionEvent(sessionId, event);
+        // The result reaches the approval broker: a forwarded sub-agent
+        // request that nobody received and nobody will list is denied.
+        return await sessionEventDelivery(
+          event,
+          await clientMultiplexer.broadcastSessionEvent(sessionId, event),
+          async () =>
+            (await clientMultiplexer.hasClientWithCapability(
+              AGENC_PENDING_APPROVALS_LIST_CAPABILITY,
+            )) || (remote?.status().connectedDevices ?? 0) > 0,
+        );
       },
       recordMessageExchange: (exchange) => {
         try {
@@ -3640,6 +3751,8 @@ async function runAgenCDaemonForegroundLocked(
       },
       threadStoreForAgentLogs: (route) =>
         snapshotPolicies.threadStoreForAgentLogs(route),
+      releaseThreadStoreForAgentLogs: (route) =>
+        snapshotPolicies.releaseThreadStoreForAgentLogs(route),
       readAgentToolOutputs: ({ agentId, sessionIds }) =>
         snapshotPolicies.readAgentToolOutputs({ agentId, sessionIds }),
       onSnapshotError: (error) =>
@@ -3679,19 +3792,6 @@ async function runAgenCDaemonForegroundLocked(
       });
     };
     const unregisterAgentsCleanup = cleanup.register("daemon-agents", stopAgents);
-    codePrediction =
-      runner.resolveCodePredictionSource === undefined
-        ? undefined
-        : new CodePredictionService({
-            resolveSource: (sessionId) =>
-              agentManager.resolveCodePredictionSource(sessionId),
-            config: activeConfig.buffer?.prediction,
-          });
-    if (codePrediction !== undefined) {
-      cleanup.register("daemon-code-prediction", () =>
-        codePrediction.dispose(),
-      );
-    }
     // Wire the runner's terminal-status hook into the lifecycle so a
     // completed/errored agent's status transitions out of `running` in
     // `agent.list` immediately, instead of being lost in the race
@@ -3816,6 +3916,10 @@ async function runAgenCDaemonForegroundLocked(
             throw new Error("daemon is shutting down");
           }
           const previousMcpServer = activeMcpServer;
+          // The daemon's own [agents] view before this save: a session that
+          // cannot read its settings again loses only what the save took
+          // away from that view.
+          const previousAgents = activeConfig.agents;
           const preparedMcpChange =
             await prepareConfiguredDaemonMcpServerChange(
               previousMcpServer,
@@ -3848,7 +3952,6 @@ async function runAgenCDaemonForegroundLocked(
               }),
             );
             activeConfig = next.config;
-            await codePrediction?.updateConfig(next.config.buffer?.prediction);
             activeMcpServer = preparedMcpChange.adopt();
             adopted = true;
           } finally {
@@ -3859,10 +3962,33 @@ async function runAgenCDaemonForegroundLocked(
           if (preparedMcpChange.closePreviousAfterAdoption) {
             await closeReplacedDaemonMcpServer(previousMcpServer, io);
           }
+          // Open sessions keep the config they started with, except the
+          // cross-provider subagent settings: a provider the user turned off
+          // must stop taking spawns now, not after a restart. A session that
+          // cannot read them again loses what the save took away from the
+          // daemon's own view, which no workspace file can make unreadable.
+          const crossProvider = await approvalBroker.refreshCrossProviderPolicy({
+            previous: previousAgents,
+            next: next.config.agents,
+          });
+          for (const failure of crossProvider.failed) {
+            io.stderr.write(crossProviderSettingsFailureLine(failure));
+          }
           const result: DaemonReloadResult = {
             reloaded: true,
             configReloadedAt: new Date().toISOString(),
             mcpServer: daemonMcpServerReloadResult(activeMcpServer),
+            ...(crossProvider.failed.length > 0
+              ? {
+                  crossProviderSettings: {
+                    failed: crossProvider.failed.map(({ sessionId, reason, timedOut }) => ({
+                      sessionId,
+                      reason,
+                      ...(timedOut === true ? { timedOut } : {}),
+                    })),
+                  },
+                }
+              : {}),
           };
           io.stderr.write("AgenC daemon config reloaded\n");
           return result;
@@ -3878,16 +4004,23 @@ async function runAgenCDaemonForegroundLocked(
       shuttingDown = true;
       resolveRpcShutdown();
     });
+    const routinePreparation = new RoutineSessionPreparation(clientMultiplexer);
     try {
       routines = new RoutineService({
         home: authStartup.daemonHome,
         executor: createDaemonRoutineExecutor({
           agentManager,
+          prepareSession: (input, signal) => routinePreparation.prepare(input, signal),
+          environment: host.env,
+          defaultProvider: () => resolveBuiltInProviderSlug(activeConfig.model_provider),
           runtimeOptions: resolveAgentRuntimeOptions(
             { ...host.env, AGENC_HOME: authStartup.daemonHome },
             { dangerouslyBypassApprovalsAndSandbox: false, allowUntrustedHooks: false, remoteMode: false, stdinDataMode: false },
           ),
         }),
+        onRunFailure: ({ routineId, runId, reason, errorCode, errorName }) => {
+          io.stderr.write(`agenc: routine ${routineId} run ${runId} could not run: ${reason}${errorCode ? ` ${errorCode}` : ""}${errorName ? ` (${errorName})` : ""}\n`);
+        },
       });
       routines.start();
       cleanup.register("daemon-routines", () => routines?.close());
@@ -3922,7 +4055,7 @@ async function runAgenCDaemonForegroundLocked(
       home: authStartup.daemonHome,
       backend: createRemoteBackend({ backendUrl: host.env.AGENC_BACKEND_URL || "https://id.agenc.ag", token: () => remoteAuthSessionTokenSync(remoteContext) }),
       lookupSession: (sessionId) => sessionManager.getSession(sessionId),
-      createConnection: (remoteAccess) => dispatcher.createConnection({ remoteAccess }),
+      createConnection: (remoteAccess, remoteCid) => dispatcher.createConnection({ remoteAccess, remoteCid }),
       createSession: createRemoteSession,
       assertControlSession: assertRemoteControlSession,
     });
@@ -3943,11 +4076,18 @@ async function runAgenCDaemonForegroundLocked(
     }
     cleanup.register("daemon-owner-telegram", () => ownerTelegram?.close());
     const dispatcher: AgenCDaemonJsonRpcDispatcher = new AgenCDaemonJsonRpcDispatcher({
+      pluginSettings: new PluginSettingsService({
+        home: authStartup.daemonHome,
+        pluginStorageRoot: resolvePluginStorageRootAtIngress({ ...host.env, AGENC_HOME: authStartup.daemonHome }),
+        workspaceRoot: primaryCwd,
+        env: { ...host.env, AGENC_HOME: authStartup.daemonHome },
+      }),
       remote,
       ownerTelegram,
       agentManager,
       routines,
       clientMultiplexer,
+      routinePreparation,
       sessionManager,
       fuzzyAllowedRoots: [primaryCwd],
       commandExec,
@@ -3976,10 +4116,12 @@ async function runAgenCDaemonForegroundLocked(
       }),
       workflow: workflowStartService,
       csvJobReview: new AgenCCsvJobReviewStateService(csvAgentJobsRepositories),
-      workspaceMutations: workspaceMutationCoordinators.forHome(
-        authStartup.daemonHome,
-      ),
-      ...(codePrediction !== undefined ? { codePrediction } : {}),
+      // Sessions this daemon starts read trust from its home, with the
+      // operator's root markers; a reload replaces activeConfig.
+      projectTrust: new AgenCProjectTrustService({
+        agencHome: authStartup.daemonHome,
+        projectRootMarkers: () => activeConfig.project_root_markers,
+      }),
       daemonIdentity,
       initializeAuthenticator: (params) =>
         cookieAuthenticator.authenticateInitializeParams(params),
@@ -4044,8 +4186,10 @@ async function runAgenCDaemonForegroundLocked(
     const nativePeerCredentialAddonPath =
       options.nativePeerCredentialAddonPath ??
       systemNativePeerCredentialAddonPath;
+    const resolveRoutineSessionId = (id: string) => agentManager.peekRoutineSessionId(id);
     const socketServer = new AgenCUnixSocketServer({
       socketPath,
+      resolveRoutineSessionId,
       nativePeerCredentialAddonPath,
       requireRootOwnedNativePeerCredentialAddon:
         options.nativePeerCredentialAddonPath === undefined &&
@@ -4112,6 +4256,7 @@ async function runAgenCDaemonForegroundLocked(
     });
     const webSocketServer = new AgenCWebSocketServer({
       ...webSocketListenOptions,
+      resolveRoutineSessionId,
       ready: () => !shuttingDown,
       validateOrigin: validateAgenCDaemonWebSocketOrigin,
       // gaphunt3 #47: mirror the Unix socket accept-auth gate, but the ws path
@@ -4979,7 +5124,7 @@ interface AgenCDaemonSnapshotPolicyEntry {
   readonly policy: AgenCSessionSnapshotPolicy;
 }
 
-class AgenCDaemonSnapshotPolicyRegistry {
+export class AgenCDaemonSnapshotPolicyRegistry {
   readonly #agencHome: string;
   readonly #defaultCwd: string;
   #snapshotRetention: AgentRunRetentionConfig | undefined;
@@ -4988,6 +5133,8 @@ class AgenCDaemonSnapshotPolicyRegistry {
   readonly #log: (message: string) => void;
   readonly #policies = new Map<string, AgenCDaemonSnapshotPolicyEntry>();
   readonly #sessionPolicyKeys = new Map<string, string>();
+  readonly #liveSessions = new Set<string>();
+  readonly #endedSessions = new Set<string>();
   readonly #threadStores = new Map<string, FileThreadStore>();
   #periodicTimer: ReturnType<typeof setInterval> | undefined;
 
@@ -5009,6 +5156,7 @@ class AgenCDaemonSnapshotPolicyRegistry {
       if (run.currentSessionId === undefined) continue;
       const policy = this.#policyForProjectDir(run.projectDir);
       this.#rememberSession(run.currentSessionId, policy.driver.stateDbPath);
+      this.#liveSessions.add(run.currentSessionId);
       policy.policy.trackSession(run.currentSessionId, run.id);
       if (run.latestSnapshot !== undefined) {
         policy.policy.hydrateSession({
@@ -5086,7 +5234,12 @@ class AgenCDaemonSnapshotPolicyRegistry {
       }
     }
     for (const store of this.#threadStores.values()) {
-      store.close();
+      try {
+        store.close();
+      } catch (error) {
+        errors.push(error);
+        this.#onError(error);
+      }
     }
     for (const [sessionId, key] of this.#sessionPolicyKeys) {
       if (!this.#policies.has(key)) this.#sessionPolicyKeys.delete(sessionId);
@@ -5098,23 +5251,28 @@ class AgenCDaemonSnapshotPolicyRegistry {
   }
 
   recordSessionEvent(sessionId: string, event: JsonObject): void {
+    if (this.#endedSessions.has(sessionId)) return;
     const entry = this.#policyForSession(sessionId);
     entry.policy.recordSessionEvent(sessionId, event);
   }
 
   /** Write the session's snapshot now if it has unflushed changes. */
   flushSession(sessionId: string): void {
+    if (this.#endedSessions.has(sessionId)) return;
     const entry = this.#policyForSession(sessionId);
     entry.policy.flushSession(sessionId);
   }
 
   registerSession(session: AgenCDaemonSnapshotSessionRoute): void {
+    this.#endedSessions.delete(session.sessionId);
     const entry = this.#policyForRoute(session);
     this.#rememberSession(session.sessionId, entry.driver.stateDbPath);
+    this.#liveSessions.add(session.sessionId);
     entry.policy.trackSession(session.sessionId, session.agentId);
   }
 
   recordMessageExchange(exchange: AgenCDaemonMessageExchangeSnapshot): void {
+    if (this.#endedSessions.has(exchange.sessionId)) return;
     const entry = this.#policyForRoute(exchange);
     this.#rememberSession(exchange.sessionId, entry.driver.stateDbPath);
     entry.policy.recordMessageExchange(exchange);
@@ -5123,12 +5281,14 @@ class AgenCDaemonSnapshotPolicyRegistry {
   recordAgentStatusTransition(
     transition: AgenCDaemonAgentStatusSnapshot,
   ): void {
+    if (this.#endedSessions.has(transition.sessionId)) return;
     const entry = this.#policyForRoute(transition);
     this.#rememberSession(transition.sessionId, entry.driver.stateDbPath);
     entry.policy.recordAgentStatusTransition(transition);
   }
 
   recordAgentRun(run: AgenCDaemonAgentRunSnapshot): void {
+    if (run.currentSessionId !== undefined) this.#endedSessions.delete(run.currentSessionId);
     const entry = this.#policyForRoute(run);
     upsertAgentRun(entry.driver, run);
     new StateRunDurabilityRepository(entry.driver).ensureInitialEpoch({
@@ -5137,6 +5297,7 @@ class AgenCDaemonSnapshotPolicyRegistry {
     });
     if (run.currentSessionId !== undefined) {
       this.#rememberSession(run.currentSessionId, entry.driver.stateDbPath);
+      this.#liveSessions.add(run.currentSessionId);
       entry.policy.trackSession(run.currentSessionId, run.id);
     }
   }
@@ -5172,11 +5333,57 @@ class AgenCDaemonSnapshotPolicyRegistry {
       eventId: terminal.eventId,
     });
     hitM4DurabilityFailpoint("after_terminal_commit");
-    // The run is over: land any unflushed snapshot state and stop tracking
-    // the session in memory, so it neither rides the periodic tick nor holds
-    // its conversation tail until the LRU cap (1,024 sessions) evicts it.
-    entry.policy.flushSession(terminal.sessionId);
-    entry.policy.forgetSession(terminal.sessionId);
+    // The lifecycle still has to project the final agent status. Its session
+    // termination callback releases the snapshot after that projection.
+  }
+
+  /** Drop a project's daemon handles after its final live session ends. */
+  releaseSession(sessionId: string): void {
+    this.#liveSessions.delete(sessionId);
+    this.#endedSessions.add(sessionId);
+    const key = this.#sessionPolicyKeys.get(sessionId);
+    if (key === undefined) return;
+    const entry = this.#policies.get(key);
+    try {
+      entry?.policy.flushSession(sessionId);
+      entry?.policy.forgetSession(sessionId);
+    } catch (error) {
+      throw new AggregateError([error], "session snapshot release failed");
+    }
+    if (this.#projectHasLiveSession(key)) return;
+    const errors = this.#closeProjectHandles(key, entry);
+    if (errors.length > 0) throw new AggregateError(errors, "session snapshot release failed");
+  }
+
+  #projectHasLiveSession(key: string): boolean {
+    for (const liveId of this.#liveSessions) {
+      if (this.#sessionPolicyKeys.get(liveId) === key) return true;
+    }
+    return false;
+  }
+
+  /** Close a project's snapshot policy, driver and agent-log stores. */
+  #closeProjectHandles(key: string, entry: AgenCDaemonSnapshotPolicyEntry | undefined): unknown[] {
+    const errors: unknown[] = [];
+    if (entry !== undefined) {
+      try {
+        entry.policy.close();
+        entry.driver.close();
+        this.#policies.delete(key);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    for (const [storeKey, store] of this.#threadStores) {
+      if (store.getProjectDir() !== dirname(key)) continue;
+      this.#threadStores.delete(storeKey);
+      try {
+        store.close();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    return errors;
   }
 
   threadStoreForAgentLogs(
@@ -5185,63 +5392,84 @@ class AgenCDaemonSnapshotPolicyRegistry {
     return this.#threadStoreForRoute(route);
   }
 
+  releaseThreadStoreForAgentLogs(route: AgenCDaemonAgentLogThreadStoreRoute): void {
+    const key = route.stateProjectDir !== undefined
+      ? `project:${route.stateProjectDir}`
+      : `cwd:${route.cwd ?? this.#defaultCwd}`;
+    const store = this.#threadStores.get(key);
+    if (store === undefined) return;
+    const projectDir = store.getProjectDir();
+    for (const sessionId of this.#liveSessions) {
+      const statePath = this.#sessionPolicyKeys.get(sessionId);
+      if (statePath !== undefined && dirname(statePath) === projectDir) return;
+    }
+    this.#threadStores.delete(key);
+    store.close();
+  }
+
   readAgentToolOutputs(params: {
     readonly agentId: string;
     readonly sessionIds: readonly string[];
   }): readonly AgentToolOutputLog[] {
     void params.agentId;
     const outputs: AgentToolOutputLog[] = [];
-    for (const sessionId of params.sessionIds) {
-      const entry = this.#policyForSession(sessionId);
-      const rows = entry.driver
-        .prepareState<
-          [string],
-          {
-            tool_call_id: string;
-            tool_name: string;
-            status: string;
-            output_partial: string | null;
-            output_log_path: string | null;
-            output_log_bytes: number;
-            started_at: string;
-          }
-        >(
-          `SELECT
-             tool_call_id,
-             tool_name,
-             status,
-             output_partial,
-             output_log_path,
-             output_log_bytes,
-             started_at
-           FROM in_flight_tool_calls
-           WHERE session_id = ?
-           ORDER BY started_at ASC, tool_call_id ASC`,
-        )
-        .all(sessionId);
-      for (const row of rows) {
-        const rotated =
-          row.output_log_path === null
-            ? ""
-            : readRotatedToolOutputLog(row.output_log_path);
-        const output = `${row.output_partial ?? ""}${rotated}`;
-        outputs.push({
-          sessionId,
-          toolCallId: row.tool_call_id,
-          toolName: row.tool_name,
-          status: row.status,
-          output,
-          outputBytes: Buffer.byteLength(output, "utf8"),
-          ...(row.output_log_path !== null
-            ? { outputLogPath: row.output_log_path }
-            : {}),
-          ...(row.output_log_bytes > 0
-            ? { outputLogBytes: row.output_log_bytes }
-            : {}),
-        });
+    try {
+      for (const sessionId of params.sessionIds) {
+        const entry = this.#policyForSession(sessionId);
+        const rows = entry.driver
+          .prepareState<
+            [string],
+            {
+              tool_call_id: string;
+              tool_name: string;
+              status: string;
+              output_partial: string | null;
+              output_log_path: string | null;
+              output_log_bytes: number;
+              started_at: string;
+            }
+          >(
+            `SELECT
+               tool_call_id,
+               tool_name,
+               status,
+               output_partial,
+               output_log_path,
+               output_log_bytes,
+               started_at
+             FROM in_flight_tool_calls
+             WHERE session_id = ?
+             ORDER BY started_at ASC, tool_call_id ASC`,
+          )
+          .all(sessionId);
+        for (const row of rows) {
+          const rotated =
+            row.output_log_path === null
+              ? ""
+              : readRotatedToolOutputLog(row.output_log_path);
+          const output = `${row.output_partial ?? ""}${rotated}`;
+          outputs.push({
+            sessionId,
+            toolCallId: row.tool_call_id,
+            toolName: row.tool_name,
+            status: row.status,
+            output,
+            outputBytes: Buffer.byteLength(output, "utf8"),
+            ...(row.output_log_path !== null
+              ? { outputLogPath: row.output_log_path }
+              : {}),
+            ...(row.output_log_bytes > 0
+              ? { outputLogBytes: row.output_log_bytes }
+              : {}),
+          });
+        }
+      }
+      return outputs;
+    } finally {
+      for (const sessionId of params.sessionIds) {
+        if (this.#endedSessions.has(sessionId)) this.releaseSession(sessionId);
       }
     }
-    return outputs;
   }
 
   #policyForSession(sessionId: string): AgenCDaemonSnapshotPolicyEntry {
@@ -5249,6 +5477,7 @@ class AgenCDaemonSnapshotPolicyRegistry {
     if (key !== undefined) {
       const entry = this.#policies.get(key);
       if (entry !== undefined) return entry;
+      return this.#policyForProjectDir(dirname(key));
     }
     const entry = this.#policyForCwd(this.#defaultCwd);
     this.#rememberSession(sessionId, entry.driver.stateDbPath);
@@ -6464,6 +6693,10 @@ export function createNodeDaemonCliHost(
       } finally {
         if (stderrFd !== "ignore") closeSync(stderrFd);
       }
+      // A failed spawn (the executable replaced by an update, EAGAIN) reports
+      // on the next tick. Listen before the throw below, or that report is an
+      // uncaught exception in this CLI or TUI process.
+      child.on("error", () => {});
       child.unref();
       if (child.pid === undefined) {
         throw new Error("AgenC daemon child process did not expose a pid");
@@ -6629,7 +6862,34 @@ function isDaemonReloadResult(
   ) {
     return false;
   }
-  return mcpServer.url === undefined || typeof mcpServer.url === "string";
+  if (mcpServer.url !== undefined && typeof mcpServer.url !== "string") {
+    return false;
+  }
+  const crossProviderSettings = value.crossProviderSettings;
+  if (crossProviderSettings === undefined) return true;
+  return isJsonObject(crossProviderSettings) &&
+    Array.isArray(crossProviderSettings.failed) &&
+    crossProviderSettings.failed.every((failure) =>
+      isJsonObject(failure) &&
+      typeof failure.sessionId === "string" &&
+      typeof failure.reason === "string" &&
+      (failure.timedOut === undefined || failure.timedOut === true)
+    );
+}
+
+/**
+ * What the daemon and `agenc daemon reload` say about a session that could
+ * not read its cross-provider subagent settings again.
+ */
+function crossProviderSettingsFailureLine(failure: {
+  readonly sessionId: string;
+  readonly reason: string;
+  readonly timedOut?: boolean;
+}): string {
+  const retry = failure.timedOut === true
+    ? " Its read still runs once its config is free."
+    : "";
+  return `agenc: session ${failure.sessionId} could not read its cross-provider subagent settings again. Until it can, it keeps its earlier settings without what the save took away from the daemon's settings.${retry} Reason: ${failure.reason}\n`;
 }
 
 function daemonShuttingDownResponse(message: JsonObject): JsonObject {

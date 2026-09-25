@@ -5,6 +5,7 @@ import {
   fstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   utimesSync,
   writeFileSync,
@@ -16,6 +17,7 @@ import {
   rm,
   stat,
   symlink,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { createConnection, createServer, type Socket } from "node:net";
@@ -36,7 +38,7 @@ import {
   resolveAgentRuntimeOptions,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
-import type { PendingProviderSwitch } from "../session/session.js";
+import type { PendingProviderSwitch, Session } from "../session/session.js";
 import { createAgenCJsonLineDaemonRequestClient } from "./agent-cli.js";
 import { AGENC_DAEMON_PROTOCOL_VERSION, type JsonObject } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
@@ -78,6 +80,7 @@ import {
   type AgenCDaemonCliIo,
   validateAgenCDaemonWebSocketOrigin,
   writeAgenCDaemonPid,
+  resolveAgenCDaemonSpawnStderrPath,
 } from "./daemon-cli.js";
 import {
   AgenCDelegateBackgroundAgentRunner,
@@ -89,6 +92,11 @@ import {
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { ConfigStore } from "../config/store.js";
+import { LiveApprovalBroker } from "./live-approval-broker.js";
+import {
+  authorizeChildExecutionPlan,
+  type ChildExecutionPlan,
+} from "../agents/cross-provider.js";
 import {
   _resetErrorLogForTesting,
   getErrorLogQueueStats,
@@ -122,6 +130,29 @@ import {
 import type { AgenCDaemonInstanceIdentity } from "./daemon-instance-identity.js";
 
 const TEST_RUNTIME_OPTIONS = resolveAgentRuntimeOptions({});
+
+/** A deepseek child an open session asks to spawn. */
+const CROSS_PROVIDER_PLAN = {
+  version: 1,
+  route: { provider: "deepseek", model: "deepseek-v4-pro" },
+  destination: {
+    provider: "deepseek",
+    model: "deepseek-v4-pro",
+    endpoint: "https://api.deepseek.com/v1",
+    authProfile: "api_key",
+    billingSource: "byok",
+  },
+  modelInfo: { slug: "deepseek-v4-pro" },
+  catalogRevision: "catalog-v1:a",
+  requiredCapabilities: { clientTools: true },
+  parent: { sessionId: "open-session", agentPath: "/root" },
+  task: { id: "task-one", name: "research", text: "Read the design", attachments: [] },
+  scope: { tools: ["Read"], data: "task_only", cwd: "/workspace" },
+  policyRevision: "agents-v1:a",
+  consentGrant: null,
+  budgetAllocation: { maxModelCalls: 32 },
+  crossProvider: true,
+} as unknown as ChildExecutionPlan;
 
 function createRecoveredSession(
   threadId: string,
@@ -493,6 +524,9 @@ function createHost(agencHome: string): AgenCDaemonCliHost & {
 function inspectLegacyTestDaemon(pid: number) {
   return { pid, processStart: `test-process:${pid}:start` };
 }
+
+// The injected native peer binding is loaded only on Linux (SO_PEERCRED).
+const linuxNativePeerTest = process.platform === "linux" ? it : it.skip;
 
 function recordTestDaemon(
   agencHome: string,
@@ -910,6 +944,17 @@ function expectSameUserDaemonSocketIdentity(identity: unknown): void {
     expect(daemonIdentity.peerUid).toBe(currentUid);
     return;
   }
+  if (process.platform !== "linux") {
+    // Private socket ownership is proven only on Linux; elsewhere, without a
+    // native peer uid, the cookie is the proof.
+    expect(daemonIdentity).toEqual({
+      transport: "daemon",
+      verifiedBy: "cookie",
+      cookie: "verified",
+      peerUid: null,
+    });
+    return;
+  }
   expect(daemonIdentity).toEqual({
     transport: "daemon",
     verifiedBy: "privateSocketOwner",
@@ -1057,33 +1102,36 @@ describe("AgenC daemon readiness timeout resolution", () => {
 
 describe("AgenC daemon CLI", () => {
   it("resolves the required pid file path", () => {
+    // /home and /tmp can be symlinks on macOS; daemon paths use canonical homes.
+    const defaultHome = join(realpathSync("/home"), "test", ".agenc");
+    const configuredHome = join(realpathSync("/tmp"), "agenc-home");
     expect(defaultAgenCDaemonPidPath("/home/test")).toBe(
-      "/home/test/.agenc/daemon.pid",
+      join(defaultHome, "daemon.pid"),
     );
     expect(resolveAgenCDaemonPidPath({}, "/home/test")).toBe(
-      "/home/test/.agenc/daemon.pid",
+      join(defaultHome, "daemon.pid"),
     );
     expect(resolveAgenCDaemonPidPath({ AGENC_HOME: "/tmp/agenc-home" })).toBe(
-      "/tmp/agenc-home/daemon.pid",
+      join(configuredHome, "daemon.pid"),
     );
     expect(resolveAgenCDaemonSocketPath({}, "/home/test")).toBe(
-      "/home/test/.agenc/daemon.sock",
+      join(defaultHome, "daemon.sock"),
     );
     expect(
       resolveAgenCDaemonSocketPath({ AGENC_HOME: "/tmp/agenc-home" }),
-    ).toBe("/tmp/agenc-home/daemon.sock");
+    ).toBe(join(configuredHome, "daemon.sock"));
     expect(resolveAgenCDaemonCookiePath({}, "/home/test")).toBe(
-      "/home/test/.agenc/daemon.cookie",
+      join(defaultHome, "daemon.cookie"),
     );
     expect(
       resolveAgenCDaemonCookiePath({ AGENC_HOME: "/tmp/agenc-home" }),
-    ).toBe("/tmp/agenc-home/daemon.cookie");
+    ).toBe(join(configuredHome, "daemon.cookie"));
     expect(resolveAgenCDaemonSnapshotPath({}, "/home/test")).toBe(
-      "/home/test/.agenc/daemon-snapshot.json",
+      join(defaultHome, "daemon-snapshot.json"),
     );
     expect(
       resolveAgenCDaemonSnapshotPath({ AGENC_HOME: "/tmp/agenc-home" }),
-    ).toBe("/tmp/agenc-home/daemon-snapshot.json");
+    ).toBe(join(configuredHome, "daemon-snapshot.json"));
   });
 
   it("configures daemon realtime provider base URL and auth headers", async () => {
@@ -1481,6 +1529,75 @@ describe("AgenC daemon CLI", () => {
     await rm(agencHome, { recursive: true, force: true });
   });
 
+  it("keeps waiting for a spawned daemon whose startup log is still advancing", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const ready = createReadyPublishedDaemonOptions(agencHome, host);
+    let probes = 0;
+    const waitForDaemonReady = async (probeHost: AgenCDaemonCliHost, singleShot: boolean) => {
+      probes += 1;
+      if (probes < 3) {
+        // Hydration in progress: the spawn stderr capture keeps growing.
+        await writeFile(
+          resolveAgenCDaemonSpawnStderrPath(host.env, host.userHome),
+          `agenc: daemon opened state DB ${probes}\n`,
+        );
+        return false;
+      }
+      return ready.waitForDaemonReady(probeHost, singleShot);
+    };
+
+    try {
+      await expect(
+        runAgenCDaemonCli(
+          { kind: "command", action: "start" },
+          { host, io, ...ready, waitForDaemonReady },
+        ),
+      ).resolves.toBe(0);
+      expect(probes).toBe(3);
+      expect(io.stderrText()).toContain("daemon process (pid 4201) is still starting");
+      expect(io.stderrText()).not.toContain("did not become ready before timeout");
+      expect(host.terminatedPids).toEqual([]);
+      expect(io.stdoutText()).toContain("AgenC daemon started (pid 4201)");
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("gives up on a spawned daemon whose startup log went quiet", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const stderrPath = resolveAgenCDaemonSpawnStderrPath(host.env, host.userHome);
+    await writeFile(stderrPath, "agenc: daemon opened state DB 1\n");
+    const quietSince = new Date(Date.now() - 5 * 60_000);
+    await utimes(stderrPath, quietSince, quietSince);
+    let probes = 0;
+
+    try {
+      await expect(
+        runAgenCDaemonCli(
+          { kind: "command", action: "start" },
+          {
+            host,
+            io,
+            inspectLegacyDaemonProcess: inspectLegacyTestDaemon,
+            waitForDaemonReady: async () => {
+              probes += 1;
+              return false;
+            },
+          },
+        ),
+      ).resolves.toBe(1);
+      expect(probes).toBe(1);
+      expect(io.stderrText()).not.toContain("is still starting");
+      expect(io.stderrText()).toContain("did not become ready before timeout");
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("leaves canonical config validation to the spawned daemon", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
@@ -1579,7 +1696,7 @@ describe("AgenC daemon CLI", () => {
 
   it("status enriches the running line with health.stats over the socket", async () => {
     const agencHome = await tempAgencHome();
-    const host = createHost(agencHome);
+    const host = { ...createHost(agencHome), platform: "linux" as const };
     const io = createIo();
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
     host.runningPids.add(4555);
@@ -1638,7 +1755,7 @@ describe("AgenC daemon CLI", () => {
 
   it("status falls back to the pid-only line when health.stats is unreachable", async () => {
     const agencHome = await tempAgencHome();
-    const host = createHost(agencHome);
+    const host = { ...createHost(agencHome), platform: "linux" as const };
     const io = createIo();
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
     host.runningPids.add(4556);
@@ -1744,7 +1861,7 @@ describe("AgenC daemon CLI", () => {
 
   it("stops a running daemon and removes the pid file", async () => {
     const agencHome = await tempAgencHome();
-    const host = createHost(agencHome);
+    const host = { ...createHost(agencHome), platform: "linux" as const };
     const io = createIo();
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
     host.runningPids.add(4300);
@@ -1860,7 +1977,7 @@ describe("AgenC daemon CLI", () => {
 
   it("releases the lifecycle lock after TERM so cooperative cleanup avoids KILL", async () => {
     const agencHome = await tempAgencHome();
-    const baseHost = createHost(agencHome);
+    const baseHost = { ...createHost(agencHome), platform: "linux" as const };
     const io = createIo();
     const pid = 4314;
     const pidPath = resolveAgenCDaemonPidPath(baseHost.env, baseHost.userHome);
@@ -2130,7 +2247,7 @@ describe("AgenC daemon CLI", () => {
 
   it("allows a running daemon more than two seconds to stop by default", async () => {
     const agencHome = await tempAgencHome();
-    const baseHost = createHost(agencHome);
+    const baseHost = { ...createHost(agencHome), platform: "linux" as const };
     const io = createIo();
     const pidPath = resolveAgenCDaemonPidPath(baseHost.env, baseHost.userHome);
     const pid = 4301;
@@ -2171,7 +2288,7 @@ describe("AgenC daemon CLI", () => {
 
   it("force-stops a daemon that ignores graceful termination", async () => {
     const agencHome = await tempAgencHome();
-    const baseHost = createHost(agencHome);
+    const baseHost = { ...createHost(agencHome), platform: "linux" as const };
     const io = createIo();
     const pidPath = resolveAgenCDaemonPidPath(baseHost.env, baseHost.userHome);
     const pid = 4302;
@@ -3107,7 +3224,7 @@ describe("AgenC daemon CLI", () => {
 
   it("status flags a live pid whose control socket is not ready", async () => {
     const agencHome = await tempAgencHome();
-    const host = createHost(agencHome);
+    const host = { ...createHost(agencHome), platform: "linux" as const };
     const io = createIo();
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
     host.runningPids.add(4600);
@@ -3884,6 +4001,143 @@ token_cap = 123
     // Starts a real daemon and reloads its config; on a loaded runner that
     // does not fit in the shared 30s default. DEFAULT_DAEMON_READY_TIMEOUT_MS
     // is already >= 30s on its own, so the test bound has to clear it.
+  }, 90_000);
+
+  it("reload gives open sessions their new cross-provider settings and keeps the rest of their config", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    host.runningPids.add(host.pid);
+    const userConfig = join(agencHome, "config.toml");
+    const explicitConfig = join(agencHome, "explicit.toml");
+    const lateConfig = join(agencHome, "late.toml");
+    const settings = (enabled: boolean, extra: readonly string[] = []) =>
+      ["config_version = 2", ...extra, "[agents]", `cross_provider_enabled = ${enabled}`,
+        'allowed_providers = ["deepseek"]', ""].join("\n");
+    await writeFile(userConfig, settings(true, ['model = "grok-3"']));
+    await writeFile(explicitConfig, settings(true));
+    await writeFile(lateConfig, settings(true));
+    const refresh = vi.spyOn(LiveApprovalBroker.prototype, "refreshCrossProviderPolicy");
+    const unregister: (() => void)[] = [];
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess },
+    );
+    let stopped = false;
+    try {
+      await expect(waitForPid(pidPath)).resolves.toBe(4100);
+      // The daemon owns its broker. Its first reload hands it to the spy.
+      await expect(
+        runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io }),
+      ).resolves.toBe(0);
+      expect(refresh).toHaveBeenCalledTimes(1);
+      const broker = refresh.mock.contexts[0] as LiveApprovalBroker;
+      // Open sessions, registered as the runner registers its sessions. Two
+      // were started with an explicit --config file.
+      const openSession = async (conversationId: string, flagConfigPath?: string) => {
+        const configStore = new ConfigStore({
+          home: agencHome,
+          env: { AGENC_HOME: agencHome, HOME: agencHome },
+          cwd: agencHome,
+          managedConfigPath: join(agencHome, "missing-managed.toml"),
+          managedDropInDir: join(agencHome, "missing-managed.d"),
+          ...(flagConfigPath !== undefined ? { flagConfigPath } : {}),
+        });
+        await configStore.reload();
+        const session = {
+          conversationId,
+          services: { configStore, runtimeOptions: { nonInteractive: false } },
+          abortController: new AbortController(),
+          eventLog: { subscribe: () => () => {} },
+          onBeforeDurableClose: () => () => {},
+        } as unknown as Session;
+        return {
+          session,
+          configStore,
+          register: () => { unregister.push(broker.register(session, { isActive: () => true })); },
+        };
+      };
+      const open = await openSession("open-session");
+      const stale = await openSession("stale-session", explicitConfig);
+      const busy = await openSession("busy-session");
+      open.register();
+      stale.register();
+      busy.register();
+      // Still starting: it read its settings before the save and registers
+      // only after the reload.
+      const late = await openSession("late-session", lateConfig);
+      for (const session of [open.session, stale.session, busy.session]) {
+        expect((await authorizeChildExecutionPlan(session, CROSS_PROVIDER_PLAN)).kind)
+          .toBe("granted");
+      }
+
+      // A config apply of the busy session's own holds its config.
+      const held = await busy.configStore.prepareReload();
+      // Desktop saves the switch, which also changed the model, and reloads.
+      // The explicit files of the other sessions are gone by then.
+      await writeFile(userConfig, settings(false, ['model = "grok-4"']));
+      await rm(explicitConfig);
+      await rm(lateConfig);
+      const cliIo = createIo();
+      try {
+        await expect(
+          runAgenCDaemonCli({ kind: "command", action: "reload" }, { host, io: cliIo }),
+        ).resolves.toBe(0);
+      } finally {
+        held.rollback();
+        held.settle();
+      }
+      // The daemon's own view before and after the save, which no workspace
+      // file can make unreadable.
+      expect(refresh).toHaveBeenLastCalledWith({
+        previous: expect.objectContaining({ cross_provider_enabled: true }),
+        next: expect.objectContaining({ cross_provider_enabled: false }),
+      });
+
+      const nextTask = {
+        ...CROSS_PROVIDER_PLAN,
+        task: { ...CROSS_PROVIDER_PLAN.task, id: "task-two", text: "Another task" },
+      } as ChildExecutionPlan;
+      late.register();
+      // The sessions that could not read their settings again lose what the
+      // save took away from the daemon's view, and no longer grant from
+      // settings.
+      for (const session of [open.session, stale.session, busy.session, late.session]) {
+        await expect(authorizeChildExecutionPlan(session, nextTask)).resolves.toMatchObject({
+          kind: "consent_unavailable",
+          reason: expect.stringContaining("Cross-provider subagents are off"),
+        });
+      }
+      expect(open.configStore.current().model).toBe("grok-3");
+      const failureLine = (sessionId: string, end: string) =>
+        `agenc: session ${sessionId} could not read its cross-provider subagent settings again. Until it can, it keeps its earlier settings without what the save took away from the daemon's settings. ${end}`;
+      const missingFile = "Reason: explicit config file does not exist";
+      const timedOut = "Its read still runs once its config is free. Reason: Reading its settings took longer than 1000 ms.";
+      // The daemon logs all three. The reload result names the two it saw,
+      // marks the one that ran out of time, and `agenc daemon reload`
+      // prints them.
+      expect(io.stderrText()).toContain(failureLine("stale-session", missingFile));
+      expect(io.stderrText()).toContain(failureLine("busy-session", timedOut));
+      expect(io.stderrText()).toContain(failureLine("late-session", missingFile));
+      expect(cliIo.stdoutText()).toContain("AgenC daemon reloaded configuration");
+      expect(cliIo.stderrText()).toContain(failureLine("stale-session", missingFile));
+      expect(cliIo.stderrText()).toContain(failureLine("busy-session", timedOut));
+      expect(cliIo.stderrText()).not.toContain("late-session");
+
+      signalProcess.emit("SIGTERM");
+      stopped = true;
+      await expect(running).resolves.toBe(0);
+    } finally {
+      for (const close of unregister) close();
+      refresh.mockRestore();
+      if (!stopped) {
+        signalProcess.emit("SIGTERM");
+        await running.catch(() => {});
+      }
+      await rm(agencHome, { recursive: true, force: true });
+    }
   }, 90_000);
 
   it("reload reuses a fixed MCP listener, revokes old sessions, and keeps direct tools fail-closed", async () => {
@@ -4713,10 +4967,18 @@ backend = "local"
         socketAcceptAuthenticationTimeoutMs: 20,
       },
     );
-    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+    // Real daemon startup is allowed the same cold-start window as the CLI.
+    // Watching the run reports a bind failure instead of a blind PID timeout.
+    await expect(waitForPid(pidPath, DEFAULT_DAEMON_READY_TIMEOUT_MS, {
+      running,
+      stderrText: io.stderrText,
+    })).resolves.toBe(4100);
 
     const authCookie = (await readFile(cookiePath, "utf8")).trim();
-    const sameUserProofAvailable = typeof process.getuid === "function";
+    // Same-user proof without the cookie is the private socket owner check,
+    // which exists only on Linux.
+    const sameUserProofAvailable =
+      process.platform === "linux" && typeof process.getuid === "function";
     const sameUserClient = createAgenCJsonLineDaemonRequestClient({
       socketPath,
       authCookie: "wrong-daemon-cookie",
@@ -4847,10 +5109,12 @@ backend = "local"
     await expect(running).resolves.toBe(0);
 
     await rm(agencHome, { recursive: true, force: true });
-  });
+  }, 90_000);
 
-  it("foreground daemon rejects mismatched native peer uid without cookie", async () => {
-    if (typeof process.getuid !== "function") return;
+  linuxNativePeerTest("foreground daemon rejects mismatched native peer uid without cookie (Linux SO_PEERCRED only)", async () => {
+    if (typeof process.getuid !== "function") {
+      throw new Error("Linux native peer credential test requires process.getuid");
+    }
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
     const io = createIo();
@@ -4899,8 +5163,7 @@ backend = "local"
     await rm(agencHome, { recursive: true, force: true });
   });
 
-  it("required native peer lookup failure shuts the daemon down nonzero", async () => {
-    if (typeof process.getuid !== "function") return;
+  linuxNativePeerTest("required native peer lookup failure shuts the daemon down nonzero (Linux SO_PEERCRED only)", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
     const io = createIo();
@@ -5277,13 +5540,6 @@ backend = "local"
         authCookie,
         timeoutMs: 1000,
       });
-
-      await expect(
-        client.request("workspace.editor.acquire", {
-          workspaceRoot: process.cwd(),
-          editorInstanceId: "editor_boot_injection",
-        }),
-      ).resolves.toMatchObject({ sequence: -1 });
 
       const created = await client.request("agent.create", {
         cwd: process.cwd(),
@@ -6489,6 +6745,68 @@ snapshot_max_bytes = 64
     signalProcess.emit("SIGTERM");
     await expect(running).resolves.toBe(0);
 
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("SIGTERM mid-turn suspends the run and restores its completed tool history", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const runId = "run-g3-sigterm";
+    seedRecoverableCompletedToolState(agencHome, {
+      cwd: process.cwd(), runId, sessionId: "session-g3-sigterm",
+      result: "File created successfully at: one.txt",
+    });
+    const restoredSessions: Array<ReturnType<typeof createRecoveredSession>> = [];
+    const permissionModeRegistry = new PermissionModeRegistry(createEmptyToolPermissionContext());
+    const makeRunner = (activeTurn: boolean): AgenCBackgroundAgentRunner =>
+      new AgenCDelegateBackgroundAgentRunner({
+        bootstrap: (async options => {
+          const rolloutStore = openRecoveredRolloutStore(agencHome, options);
+          const session = createRecoveredSession(runId, permissionModeRegistry, {
+            runtimeOptions: options.runtimeOptions, rolloutStore, enableDurableClose: true,
+            ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+          });
+          restoredSessions.push(session);
+          Object.assign(session, { activeTurn: { unsafePeek: () =>
+            activeTurn ? { turnId: "turn-g3-sigterm" } : null } });
+          const bootstrap = session.createBootstrap();
+          return { ...bootstrap, shutdown: async () => {
+            if (activeTurn) session.emit({ id: "shutdown-interrupted", msg: {
+              type: "turn_aborted", payload: { turnId: "turn-g3-sigterm", reason: "daemon_shutdown" },
+            } });
+            await bootstrap.shutdown();
+          } };
+        }) as AgenCBootstrapFunction,
+        ensureAgentControl: (() => ({ control: {
+          sendInput: async () => {}, shutdown: async () => {},
+          liveThreadSpawnChildren: () => new Map(), openThreadSpawnChildren: () => new Map(),
+        }, registry: {} })) as AgenCEnsureAgentControlFunction,
+      });
+    const firstSignal = createSignalProcess();
+    const first = runAgenCDaemonCli({ kind: "command", action: "run" }, {
+      host, io: createIo(), signalProcess: firstSignal, runner: makeRunner(true),
+    });
+    await expect(waitForPid(resolveAgenCDaemonPidPath(host.env, host.userHome))).resolves.toBe(4100);
+    expect(restoredSessions[0]?.state.unsafePeek().history).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "tool", toolCallId: "tool-completed" }),
+    ]));
+    restoredSessions[0]?.emit({ id: "started-g3", msg: {
+      type: "turn_started", payload: { turnId: "turn-g3-sigterm" },
+    } });
+    firstSignal.emit("SIGTERM");
+    await expect(first).resolves.toBe(0);
+    expect(readAgentRunStatus(agencHome, process.cwd(), runId)).toBe("suspended");
+
+    const secondSignal = createSignalProcess();
+    const second = runAgenCDaemonCli({ kind: "command", action: "run" }, {
+      host, io: createIo(), signalProcess: secondSignal, runner: makeRunner(false),
+    });
+    await expect(waitForPid(resolveAgenCDaemonPidPath(host.env, host.userHome))).resolves.toBe(4100);
+    expect(restoredSessions[1]?.state.unsafePeek().history).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: "tool", toolCallId: "tool-completed" }),
+    ]));
+    secondSignal.emit("SIGTERM");
+    await expect(second).resolves.toBe(0);
     await rm(agencHome, { recursive: true, force: true });
   });
 

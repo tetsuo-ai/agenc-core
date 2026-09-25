@@ -34,7 +34,6 @@ import { UnifiedExecProcessManager } from "../../../src/unified-exec/process-man
 import { INHERITED_CWD_SANDBOX_PATH } from "../../../src/sandbox/linux-launcher/config.js";
 import { findSystemBubblewrapInPath } from "../../../src/sandbox/linux-launcher/launcher.js";
 import { bindWorkspaceDirectoryReadCapability, bindWorkspaceFileReadCapability, workspaceBoundReadOnlyCwd } from "../../../src/workspace/file-mutation-transaction.js";
-import { workspaceMutationCoordinators } from "../../../src/workspace/mutation-coordinator.js";
 import { createTestConfigStore, mkSession } from "../../fixtures.js";
 import { captureWorktreeTurnEvidence, getOrCreateWorktree, removeAgentWorktree } from "../../../src/agents/worktree.js";
 
@@ -351,7 +350,6 @@ test("renders a status command with ordinary workspace-write isolation and a cap
     expect(admission.replayJournal?.().map((event) => event.event)).not.toContain("held_unknown");
   } finally {
     kernel.close();
-    workspaceMutationCoordinators.clearForTests();
     rmSync(home, { recursive: true, force: true });
   }
 });

@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -113,7 +114,7 @@ describe("daemon log sink installation", () => {
 
   it("resolves the daemon log path under the daemon home", () => {
     const logPath = resolveAgenCDaemonLogPath({ AGENC_HOME: "/tmp/agenc-home" });
-    expect(logPath).toBe("/tmp/agenc-home/daemon.log");
+    expect(logPath).toBe(join(realpathSync("/tmp"), "agenc-home", "daemon.log"));
   });
 });
 

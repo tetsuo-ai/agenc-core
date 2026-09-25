@@ -1,4 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,6 +15,14 @@ import { createWriteStdinTool as createUnboundWriteStdinTool } from "./write-std
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
 import type { ExecCommandToolOutput, UnifiedExecProcessManagerLike } from "../../unified-exec/types.js";
 import { attachToolRuntimeContext } from "../runtimes/context.js";
+import {
+  attachReadOnlyInspectionInvocation,
+  inspectReadOnlyCommand,
+  prepareReadOnlyInspectionInvocation,
+} from "../../permissions/readonly-inspection.js";
+import { restrictedFileSystemPolicy } from "../../sandbox/engine/index.js";
+import { createWorkspaceOperationLifetime, runWithWorkspaceOperationLifetime } from "../../workspace/tool-operation-lifetime.js";
+import type { UnifiedExecRuntimeSandbox } from "../../unified-exec/types.js";
 
 const createExecCommandTool = (
   config: Parameters<typeof createUnboundExecCommandTool>[0],
@@ -92,6 +101,30 @@ describe("exec_command tool", () => {
   afterEach(async () => {
     if (root) await rm(root, { recursive: true, force: true });
     root = "";
+  });
+
+  test("contained tty refusal is structured, corrective, and not retryable unchanged", async () => {
+    const manager = new UnifiedExecProcessManager({ cwd: root });
+    const tool = createExecCommandTool({ cwd: root, allowedPaths: [root], unifiedExecManager: manager });
+    expect(String((tool.inputSchema.properties?.tty as { description?: string }).description))
+      .toContain("Unavailable inside a contained tool operation");
+    const lifetime = createWorkspaceOperationLifetime(() => {});
+    try {
+      const refused = await runWithWorkspaceOperationLifetime(lifetime, () =>
+        tool.execute({ cmd: "node -v", tty: true }));
+      expect(refused.isError).toBe(true);
+      expect(JSON.parse(String(refused.content))).toMatchObject({
+        code: "tty_unavailable_in_contained_operation",
+        retryable: false,
+      });
+      expect(String(refused.content)).toMatch(/without tty|non-interactive|Run button/u);
+      expect(refused.metadata).toMatchObject({ retryable: false });
+      expect(refused.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    } finally {
+      await lifetime.release();
+      await lifetime.settled();
+      await manager.closeAll("test cleanup");
+    }
   });
 
   /**
@@ -1022,6 +1055,159 @@ describe("exec_command tool", () => {
     }
 
     const workdirTool = () => mockManagerTool();
+
+    test("refuses a workdir that does not exist yet as no effect, without starting anything", async () => {
+      // A DeepSeek subagent asked for workdir /tmp/vchk while its own command
+      // was about to create it. The spawn failed with ENOENT and the cleanup
+      // kill reached pid 0, which SIGKILLed the daemon's whole process group.
+      const missing = join(outsideDir, "not-yet", "vchk");
+      const { tool, execCommand } = workdirTool();
+
+      const result = await tool.execute(contextArgs({ cmd: `mkdir -p ${missing}`, workdir: missing }));
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("workdir does not exist");
+      expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+      expect(execCommand).not.toHaveBeenCalled();
+      expect(existsSync(missing)).toBe(false);
+    });
+
+    test.skipIf(process.platform === "win32")(
+      "refuses a deleted session root as no effect when no workdir was given",
+      async () => {
+        // No workdir, so the tool's own check does not apply: the process
+        // manager refuses the missing directory before spawning anything, and
+        // that refusal must not be filed as an unknown outcome.
+        const sessionRoot = join(root, "session");
+        await mkdir(sessionRoot);
+        const manager = new UnifiedExecProcessManager({ cwd: sessionRoot });
+        const tool = createExecCommandTool({
+          cwd: sessionRoot,
+          allowedPaths: [sessionRoot],
+          unifiedExecManager: manager,
+        });
+        await rm(sessionRoot, { recursive: true });
+
+        const result = await tool.execute(contextArgs({ cmd: "printf should-not-run" }));
+
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain(`working directory does not exist: ${sessionRoot}`);
+        expect(result.content).toContain("create_process");
+        expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+        await manager.closeAll("test_cleanup");
+      },
+    );
+
+    test("resolves a relative workdir against the workspace for the check and the launch", async () => {
+      // The process manager resolved the raw string against the daemon's cwd
+      // while validation used the workspace, so the two could disagree.
+      await mkdir(join(root, "scripts"));
+      const { tool, execCommand } = workdirTool();
+
+      const result = await tool.execute(contextArgs({ cmd: "ls", workdir: "scripts" }));
+
+      expect(result.isError).toBeUndefined();
+      expect(execCommand).toHaveBeenCalledTimes(1);
+      expect(execCommand.mock.calls[0]![0]).toMatchObject({ workdir: join(root, "scripts") });
+
+      // "src" exists beside the test process (the daemon's cwd) but not in the
+      // workspace, so it is refused rather than launched in the wrong place.
+      expect(existsSync(join(process.cwd(), "src"))).toBe(true);
+      const refused = await tool.execute(contextArgs({ cmd: "ls", workdir: "src" }));
+      expect(refused.isError).toBe(true);
+      expect(refused.content).toContain("workdir does not exist: src");
+      expect(execCommand).toHaveBeenCalledTimes(1);
+    });
+
+    test("launches a detached command in the same resolved workdir", async () => {
+      await mkdir(join(root, "svc"));
+      const startDetachedProcess = vi.fn<NonNullable<UnifiedExecProcessManagerLike["startDetachedProcess"]>>(
+        async () => ({ ...completedExecOutput("started"), detached: true, pid: 4242 }),
+      );
+      const { tool } = mockManagerTool({ startDetachedProcess });
+
+      await tool.execute(contextArgs({ cmd: "sleep 1", workdir: "svc", detach: true }));
+
+      expect(startDetachedProcess).toHaveBeenCalledTimes(1);
+      expect(startDetachedProcess.mock.calls[0]![0]).toMatchObject({ workdir: join(root, "svc") });
+    });
+
+    // A read-only descendant of a worktree session: the inherited tool keeps
+    // the registry cwd, while the trusted inspection resolves the relative
+    // workdir against the child session and launches there.
+    function readOnlyChildInvocation(childCwd: string, workdir: string) {
+      const sandbox: UnifiedExecRuntimeSandbox = {
+        preference: "require",
+        permissionProfile: {
+          fileSystem: restrictedFileSystemPolicy([{ path: { kind: "special", value: { kind: "root" } }, access: "read" }]),
+          network: "disabled",
+        },
+      };
+      const inspected = inspectReadOnlyCommand("exec_command", { cmd: "ls", workdir }, childCwd);
+      if (!inspected.allowed) throw new Error(inspected.reason);
+      return prepareReadOnlyInspectionInvocation(inspected.invocation, sandbox);
+    }
+
+    test.skipIf(process.platform === "win32")(
+      "checks and records the read-only child's inspection cwd, not the registry workspace",
+      async () => {
+        const childCwd = join(root, "implementation");
+        await mkdir(join(childCwd, "src"), { recursive: true });
+        const invocation = readOnlyChildInvocation(childCwd, "src");
+        const { tool, execCommand } = workdirTool();
+        const args = contextArgs({ cmd: "ls", workdir: "src" });
+        attachReadOnlyInspectionInvocation(args, invocation);
+
+        const result = await tool.execute(args);
+
+        expect(existsSync(join(root, "src"))).toBe(false);
+        expect(result.isError).toBeUndefined();
+        expect(execCommand).toHaveBeenCalledTimes(1);
+        expect(execCommand.mock.calls[0]![0]).toMatchObject({ workdir: join(childCwd, "src") });
+        expect(result.metadata).toMatchObject({ cwd: join(childCwd, "src") });
+      },
+    );
+
+    test.skipIf(process.platform === "win32")(
+      "refuses when the read-only child's inspection cwd is gone, even if the registry workspace has that folder",
+      async () => {
+        const childCwd = join(root, "implementation");
+        await mkdir(join(childCwd, "src"), { recursive: true });
+        await mkdir(join(root, "src"));
+        const invocation = readOnlyChildInvocation(childCwd, "src");
+        // The child's folder is removed after inspection and before the launch.
+        await rm(join(childCwd, "src"), { recursive: true });
+        const { tool, execCommand } = workdirTool();
+        const args = contextArgs({ cmd: "ls", workdir: "src" });
+        attachReadOnlyInspectionInvocation(args, invocation);
+
+        const result = await tool.execute(args);
+
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain("workdir does not exist");
+        expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+        expect(execCommand).not.toHaveBeenCalled();
+      },
+    );
+
+    test.skipIf(process.platform === "win32")(
+      "refuses as no effect, without starting anything, when a read-only invocation has no authority",
+      async () => {
+        await mkdir(join(root, "src"));
+        // A copy is not the invocation that inspection registered.
+        const forged = { ...readOnlyChildInvocation(root, "src") };
+        const { tool, execCommand } = workdirTool();
+        const args = contextArgs({ cmd: "ls", workdir: "src" });
+        attachReadOnlyInspectionInvocation(args, forged);
+
+        const result = await tool.execute(args);
+
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain("invocation authority is missing");
+        expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+        expect(execCommand).not.toHaveBeenCalled();
+      },
+    );
 
     test("refuses a working directory outside the workspace in a prompting session", async () => {
       const { tool, execCommand } = workdirTool();

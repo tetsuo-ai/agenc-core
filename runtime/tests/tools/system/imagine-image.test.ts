@@ -148,6 +148,13 @@ function minimaxImagineTool(root: string, fetchImpl?: typeof fetch) {
 }
 
 describe("ImagineImage tool", () => {
+  it("declares its fixed output directory so the runtime sandbox can verify the write", () => {
+    const tool = createQwenImagineTool("qwen", vi.fn(), "/work/space");
+    expect(tool.metadata?.mutating).toBe(true);
+    expect(tool.metadata?.virtualNoFsWrites).toBeUndefined();
+    expect(tool.metadata?.fixedWriteTargets?.()).toEqual([join("/work/space", ".agenc", "imagine")]);
+  });
+
   it("is catalog-registered for non-Grok sessions with an independent xAI credential", () => {
     expect(isModelFacingToolRegistered("ImagineImage", {
       workspaceRoot: process.cwd(),
@@ -556,6 +563,72 @@ describe("ImagineImage tool", () => {
       size: "1024x1536",
       n: 1,
     });
+  });
+
+  it("files a provider rejection as a confirmed no-effect outcome", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-meta-rejected-"));
+    const fetchImpl = vi.fn(async () => ({
+      ok: false,
+      status: 401,
+      json: async () => ({
+        error: "The OAuth2 access token could not be validated.",
+      }),
+    })) as unknown as typeof fetch;
+    const tool = createImagineImageTool({
+      workspaceRoot: root,
+      home: testHome(root),
+      getSession: () => null,
+      env: { MODEL_API_KEY: "canonical-meta-image-key" },
+      fetchImpl,
+    });
+
+    const result = await tool.execute({
+      prompt: "robot bookkeeper",
+      aspect_ratio: "16:9",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content)).toEqual({
+      error: "The OAuth2 access token could not be validated.",
+    });
+    expect(result.effectDisposition).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "provider_receipt",
+      evidenceRef: "tool:ImagineImage:meta:http-401",
+    });
+    expect(result.effectDisposition?.evidenceSha256).toMatch(/^[0-9a-f]{64}$/u);
+  });
+
+  it("keeps a provider server error and a network failure as unknown outcomes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-meta-unknown-"));
+    const answers = [
+      async () => ({
+        ok: false,
+        status: 502,
+        json: async () => ({ error: { message: "upstream unavailable" } }),
+      }),
+      async () => {
+        throw new Error("socket hang up");
+      },
+    ];
+    const fetchImpl = vi.fn(async () => answers.shift()!()) as unknown as typeof fetch;
+    const tool = createImagineImageTool({
+      workspaceRoot: root,
+      home: testHome(root),
+      getSession: () => null,
+      env: { MODEL_API_KEY: "canonical-meta-image-key" },
+      fetchImpl,
+    });
+
+    const serverError = await tool.execute({ prompt: "robot bookkeeper" });
+    expect(serverError.isError).toBe(true);
+    expect(JSON.parse(serverError.content)).toEqual({ error: "upstream unavailable" });
+    expect(serverError.effectDisposition).toBeUndefined();
+
+    const networkError = await tool.execute({ prompt: "robot bookkeeper" });
+    expect(networkError.isError).toBe(true);
+    expect(JSON.parse(networkError.content)).toEqual({ error: "socket hang up" });
+    expect(networkError.effectDisposition).toBeUndefined();
   });
 
   it("uses Z.ai GLM-Image synchronously with its own key and trusted URL", async () => {
@@ -1101,7 +1174,14 @@ describe("ImagineImage tool", () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(String(fetchImpl.mock.calls[0]?.[0]))
       .toBe("https://api.x.ai/v1/images/generations");
-    expect(result.effectDisposition).toBeUndefined();
+    // The provider refused the request, so nothing was generated: the
+    // refusal settles as a confirmed no-effect outcome instead of gating
+    // the session behind /resolve.
+    expect(result.effectDisposition).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "provider_receipt",
+      evidenceRef: "tool:ImagineImage:xai:http-403",
+    });
   });
 
   it("redacts credentials before bounding an image refusal", async () => {
@@ -1186,6 +1266,28 @@ describe("ImagineImage tool", () => {
         .calls[0]?.[1] as { headers: { authorization: string } }
     ).headers.authorization;
     expect(auth).toBe("Bearer oauth-subscription-bearer");
+  });
+
+  it("uses a Grok session API key for image requests on its custom URL", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-grok-gateway-"));
+    const provider = createProvider("grok", {
+      apiKey: "gateway-api-key",
+      model: "grok-4.6",
+      baseURL: "https://gateway.example.test/v1",
+      extra: { authMode: "api_key" },
+    });
+    const b64 = Buffer.from([0xff, 0xd8, 0xff, 0xd9]).toString("base64");
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      data: [{ b64_json: b64 }],
+    }))) as unknown as typeof fetch;
+    const tool = createSessionImagineImageTool({ workspaceRoot: root, provider, fetchImpl });
+
+    const result = await tool.execute({ prompt: "a cat" });
+
+    expect(result.isError).toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe("https://gateway.example.test/v1/images/generations");
+    expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({ authorization: "Bearer gateway-api-key" });
   });
 
   it("calls /images/generations and saves b64 image under workspace", async () => {
@@ -1324,6 +1426,53 @@ describe("ImagineImage tool", () => {
       n: 1,
       size: "1536x1024",
       quality: "low",
+    });
+  });
+
+  it("sends the OpenAI image key to the session's configured URL", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-openai-custom-"));
+    const fetchImpl = backendAwareImageFetch();
+    const tool = createSessionImagineImageTool({
+      workspaceRoot: root,
+      provider: createProvider("openai", {
+        apiKey: "session-key",
+        model: "gpt-6-astra",
+        baseURL: "https://custom.example/v1",
+      }),
+      env: { OPENAI_API_KEY: "custom-key" },
+      fetchImpl,
+    });
+
+    const result = await tool.execute({ prompt: "a grey square" });
+    expect(result.isError).toBeUndefined();
+    expect(firstRequest(fetchImpl)).toMatchObject({
+      url: "https://custom.example/v1/images/generations",
+      authorization: "Bearer custom-key",
+    });
+  });
+
+  it("uses OPENAI_BASE_URL before the OpenAI session's default factory URL", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-openai-env-"));
+    const fetchImpl = backendAwareImageFetch();
+    const tool = createSessionImagineImageTool({
+      workspaceRoot: root,
+      provider: createProvider("openai", {
+        apiKey: "session-key",
+        model: "gpt-6-astra",
+        baseURL: "https://api.openai.com/v1",
+      }),
+      env: {
+        OPENAI_API_KEY: "env-key",
+        OPENAI_BASE_URL: "https://env-openai.example/v1",
+      },
+      fetchImpl,
+    });
+
+    const result = await tool.execute({ prompt: "a grey square" });
+    expect(result.isError).toBeUndefined();
+    expect(firstRequest(fetchImpl)).toMatchObject({
+      url: "https://env-openai.example/v1/images/generations",
+      authorization: "Bearer env-key",
     });
   });
 
@@ -1467,6 +1616,59 @@ describe("ImagineImage tool", () => {
     ).toEqual(["quality"]);
   });
 
+  // developers.openai.com/api/docs/models/gpt-image-2.5-sunburst and
+  // /gpt-image-2.5-flare plus the image generation guide (2026-09-22): both
+  // take v1/images/generations and add the xhigh and max quality settings;
+  // earlier GPT Image models stop at high.
+  it.each(["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"])(
+    "generates with %s, including the xhigh and max qualities it adds",
+    async (model) => {
+      const root = await mkdtemp(join(tmpdir(), "imagine-openai-25-"));
+      const fetchImpl = backendAwareImageFetch();
+      const tool = openaiImagineTool(root, fetchImpl);
+      const calls = (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+
+      for (const quality of ["xhigh", "max", "low"]) {
+        const result = await tool.execute({ prompt: "a grey square", model, quality });
+        expect(result.isError, quality).toBeUndefined();
+        expect(JSON.parse(result.content)).toMatchObject({ backend: "openai", model });
+        const init = calls.at(-1)?.[1] as { body: string };
+        expect(String(calls.at(-1)?.[0])).toBe("https://api.openai.com/v1/images/generations");
+        expect(JSON.parse(init.body)).toEqual({
+          model,
+          prompt: "a grey square",
+          n: 1,
+          size: "1024x1024",
+          quality,
+        });
+      }
+    },
+  );
+
+  it("refuses xhigh and max for GPT Image models before 2.5 without calling OpenAI", async () => {
+    const root = await mkdtemp(join(tmpdir(), "imagine-openai-quality-"));
+    const fetchImpl = vi.fn();
+    const tool = openaiImagineTool(root, fetchImpl as unknown as typeof fetch);
+
+    for (const [model, quality] of [
+      [undefined, "xhigh"],
+      ["gpt-image-2", "max"],
+      ["gpt-image-1.5", "xhigh"],
+    ] as const) {
+      const result = await tool.execute({
+        prompt: "x",
+        quality,
+        ...(model === undefined ? {} : { model }),
+      });
+      expect(result.isError, `${model}/${quality}`).toBe(true);
+      expect(String(result.content)).toContain(
+        "xhigh and max need gpt-image-2.5-sunburst or gpt-image-2.5-flare",
+      );
+      expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("refuses controls the new backends do not have", async () => {
     const root = await mkdtemp(join(tmpdir(), "imagine-controls-"));
     const fetchImpl = backendAwareImageFetch();
@@ -1565,11 +1767,19 @@ describe("ImagineImage tool", () => {
       "prompt",
       "quality",
     ]);
-    expect(openaiSchema.properties.model?.enum).toContain("gpt-image-2");
+    expect(openaiSchema.properties.model?.enum).toEqual(
+      expect.arrayContaining([
+        "gpt-image-2",
+        "gpt-image-2.5-sunburst",
+        "gpt-image-2.5-flare",
+      ]),
+    );
     expect(openaiSchema.properties.quality?.enum).toEqual([
       "low",
       "medium",
       "high",
+      "xhigh",
+      "max",
       "auto",
     ]);
 

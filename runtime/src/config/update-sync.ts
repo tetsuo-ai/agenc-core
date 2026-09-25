@@ -206,10 +206,10 @@ export function mutateCanonicalUserConfigSync(
     const raw = target.exists
       ? readRaw(target.path)
       : { [CANONICAL_CONFIG_VERSION_KEY]: CANONICAL_CONFIG_VERSION };
-    const before = stableJson(raw);
+    const before = cloneRecord(raw);
     mutator(raw);
     assertUserConfigDocumentAuthority(raw, target.path);
-    if (stableJson(raw) === before) return;
+    if (stableJson(raw) === stableJson(before)) return;
     prepareAndWrite(target, raw);
   });
 }

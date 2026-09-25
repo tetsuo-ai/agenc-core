@@ -1,4 +1,10 @@
 export const MAX_TURN_FAILURE_MESSAGE_LENGTH = 2_000;
+/**
+ * `turn_aborted` reason for a turn the user ended by denying a permission
+ * request. A denial is a user decision, not a failure: the denied call never
+ * ran and the session waits for the next prompt, as after a user Stop.
+ */
+export const APPROVAL_DENIED_ABORT_REASON = "approval_denied";
 const TURN_TERMINAL_EVENT_TYPES = new Set(["turn_complete", "turn_aborted", "turn_failed"]);
 
 export interface TurnFailedEvent {

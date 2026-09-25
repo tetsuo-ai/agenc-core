@@ -666,6 +666,7 @@ async function runManualCompact(params: {
   readonly ctx: TurnContext;
   readonly customInstructions?: string;
 }): Promise<AgenCManualCompactResult> {
+  await params.session.settleInterruptedTurnHandoff();
   const sourceMessages = params.session.snapshotHistoryMessages();
   const messages = toAgenCRuntimeMessages(messagesAfterAgenCBoundary(sourceMessages));
   if (messages.length === 0) {
