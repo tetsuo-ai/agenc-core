@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
 import {
+  canonicalPluginInstallRoot,
   runPluginInstallTransaction,
   type PluginInstallTransactionHooks,
 } from "./plugin-install-transaction.js";
@@ -609,6 +610,7 @@ export async function installPluginOp(
     }
     const installRoot = pluginScopeRoot(scope, input);
     await mkdir(installRoot, { recursive: true, mode: 0o700 });
+    const canonicalRoot = await realpath(installRoot);
     const existingRoots = await resolvePluginRootsForRemoval(
       pluginId,
       scope,
@@ -619,7 +621,7 @@ export async function installPluginOp(
         `plugin resolves to multiple install roots in ${scope} scope: ${pluginId}`,
       );
     }
-    const destination = existingRoots[0] ?? join(installRoot, safeName);
+    const destination = existingRoots[0] ?? join(canonicalRoot, safeName);
     await assertInstallSourceOutsideDestination(source, destination);
     await runPluginInstallTransaction({
       pluginId,
@@ -824,8 +826,10 @@ export async function updatePluginOp(
   } else if (requireSignature === undefined && input.source === undefined) {
     requireSignature = false;
   }
+  const pluginStorageRoot = await canonicalPluginInstallRoot(input.pluginStorageRoot);
   const installed = await installPluginOp({
     ...input,
+    pluginStorageRoot,
     source,
     ...(input.source === undefined && recordedSource.marketplace !== undefined
       ? { marketplace: recordedSource.marketplace } : {}),
