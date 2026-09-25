@@ -1,4 +1,5 @@
 import { LLMProviderError } from "../../errors.js";
+import { externalAbortReasonToError } from "../../timeout.js";
 
 const DEFAULT_HEALTH_CHECK_INTERVAL_MS = 10_000;
 /**
@@ -28,13 +29,19 @@ function isConnectionRefusedError(error: unknown): boolean {
   return /ECONNREFUSED|connection refused/i.test(message);
 }
 
-function throwCallerCancellation(signal: AbortSignal): never {
-  if (signal.reason instanceof Error) throw signal.reason;
-  throw new DOMException(
-    typeof signal.reason === "string" && signal.reason.length > 0
-      ? signal.reason
-      : "This operation was aborted",
-    "AbortError",
+/**
+ * Caller cancellation before provider work starts. Normalize the abort
+ * reason the same way the in-flight path does: a bare `abort()` DOMException
+ * or a string reason such as `session_shutdown` must not reach `mapLLMError`
+ * AbortError-shaped, or it is relabeled as a retryable `LLMTimeoutError`.
+ */
+function throwCallerCancellation(
+  signal: AbortSignal,
+  providerLabel: string,
+): never {
+  throw externalAbortReasonToError(
+    signal,
+    `${providerLabel} request aborted by external signal`,
   );
 }
 
@@ -76,7 +83,7 @@ export async function runLocalProviderHealthSidecar<T>(params: {
 
   const throwIfCancelledBeforeOperation = (): void => {
     if (controller.signal.aborted) {
-      throwCallerCancellation(controller.signal);
+      throwCallerCancellation(controller.signal, params.providerLabel);
     }
   };
 

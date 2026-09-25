@@ -1,6 +1,7 @@
 import { getEventListeners } from "node:events";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
+import { LLMTimeoutError, mapLLMError } from "../../errors.js";
 import { runLocalProviderHealthSidecar } from "./local-health.js";
 
 type LocalHealthSidecarParams = Parameters<
@@ -395,4 +396,56 @@ describe("runLocalProviderHealthSidecar", () => {
   ] as const)("%s", async (_name, mode) => {
     await expectCallerSignalOutcome(mode);
   });
+
+  test.each([
+    ["a string reason", "already-aborted", "session_shutdown"],
+    ["a string reason", "while-attaching-listener", "session_shutdown"],
+    ["a bare abort()", "already-aborted", undefined],
+    ["a bare abort()", "while-attaching-listener", undefined],
+  ] as const)(
+    "normalizes %s before work (%s) so it is not AbortError-shaped",
+    async (_label, timing, reason) => {
+      const controller = new AbortController();
+      const healthCheck = idleHealthCheck();
+      const operation = unusedOperation();
+      const intervalSpy = vi.spyOn(globalThis, "setInterval");
+      // abort(undefined) is a bare abort(): the reason becomes the default
+      // AbortError DOMException.
+      let signal = controller.signal;
+      if (timing === "already-aborted") {
+        controller.abort(reason);
+      } else {
+        signal = signalThatAbortsBeforeListenerAttaches(controller, reason);
+      }
+
+      const error = await runSidecar({ healthCheck, signal, operation }).then(
+        () => {
+          throw new Error("expected the sidecar to reject");
+        },
+        (rejection: unknown) => rejection,
+      );
+
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(DOMException);
+      expect((error as Error).name).not.toBe("AbortError");
+      expect((error as Error & { code?: unknown }).code).not.toBe("ABORT_ERR");
+      if (reason === undefined) {
+        // The bare-abort DOMException stays reachable as the cause.
+        expect((error as Error & { cause?: unknown }).cause).toBe(
+          controller.signal.reason,
+        );
+      } else {
+        expect((error as Error).message).toBe(reason);
+      }
+      expect(mapLLMError("ollama", error, 30_000)).not.toBeInstanceOf(
+        LLMTimeoutError,
+      );
+
+      expect(operation).not.toHaveBeenCalled();
+      expect(healthCheck).not.toHaveBeenCalled();
+      expect(intervalSpy).not.toHaveBeenCalled();
+      expectSidecarReleased(controller);
+      intervalSpy.mockRestore();
+    },
+  );
 });
