@@ -326,7 +326,16 @@ exit status, keeps parsing until stdout `end` and child `close`, and only then
 decides whether a stream-json result arrived. The final unterminated line is
 parsed once after stdout ends. If stdio stays open after `exit` longer than
 `postExitDrainTimeoutMs` (default 5s), the run fails with a distinct drain
-error and the SDK SIGKILLs the child plus, on Unix, its process group.
+error and the SDK SIGKILLs the direct child.
+
+The default spawner leaves the child in the embedder's process group, so a
+terminal SIGINT or SIGHUP still reaches it. `detachProcessGroup: true` (Unix
+only) opts into `detached: true` and a new process group. That group is the
+only one a drain timeout will SIGKILL, and only when its pid is a safe integer
+greater than 1 and not this process. `cancel()` and an aborted `signal`
+forward SIGTERM to that same group. A custom `spawn` is never group-signalled:
+terminal signals are the spawner's responsibility, and pid 1 cannot become
+`kill(-1)`.
 
 ## Runnable example
 

@@ -9,10 +9,11 @@
 
 import { spawn as nodeSpawn } from "node:child_process";
 import { EventEmitter, getEventListeners } from "node:events";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MAX_BUFFERED_PROMPT_EVENTS,
   promptViaSubprocess,
+  signalOwnedDetachedProcessGroup,
   type AgencPromptEvent,
   type AgencSubprocessChild,
   type AgencSubprocessSpawnFn,
@@ -307,6 +308,45 @@ function spawnLateResultWrapper(): AgencSubprocessSpawnFn {
     }) as unknown as AgencSubprocessChild;
   };
 }
+
+describe("signalOwnedDetachedProcessGroup", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("signals only a detached group whose pid is a safe integer above 1 and not this process", () => {
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    expect(signalOwnedDetachedProcessGroup(1, "SIGKILL", true)).toBe(false);
+    expect(signalOwnedDetachedProcessGroup(0, "SIGKILL", true)).toBe(false);
+    expect(signalOwnedDetachedProcessGroup(-4242, "SIGKILL", true)).toBe(false);
+    expect(signalOwnedDetachedProcessGroup(1.5, "SIGKILL", true)).toBe(false);
+    expect(
+      signalOwnedDetachedProcessGroup(Number.MAX_SAFE_INTEGER + 1, "SIGKILL", true),
+    ).toBe(false);
+    expect(signalOwnedDetachedProcessGroup(process.pid, "SIGKILL", true)).toBe(
+      false,
+    );
+    expect(signalOwnedDetachedProcessGroup(4242, "SIGKILL", false)).toBe(false);
+    expect(signalOwnedDetachedProcessGroup(undefined, "SIGTERM", true)).toBe(
+      false,
+    );
+    if (process.platform === "win32") {
+      expect(signalOwnedDetachedProcessGroup(4242, "SIGKILL", true)).toBe(false);
+      expect(kill).not.toHaveBeenCalled();
+      return;
+    }
+    expect(signalOwnedDetachedProcessGroup(4242, "SIGKILL", true)).toBe(true);
+    expect(kill).toHaveBeenCalledTimes(1);
+    expect(kill).toHaveBeenCalledWith(-4242, "SIGKILL");
+  });
+
+  it("returns false when the group signal fails", () => {
+    vi.spyOn(process, "kill").mockImplementation(() => {
+      throw new Error("ESRCH");
+    });
+    expect(signalOwnedDetachedProcessGroup(4242, "SIGTERM", true)).toBe(false);
+  });
+});
 
 describe("agenc-sdk subprocess transport", () => {
   it("uses the combined dangerous flag only when explicitly requested", async () => {
@@ -786,23 +826,30 @@ describe("agenc-sdk subprocess transport", () => {
   });
 
   it("times out a post-exit drain with a distinct error and kills retained descendants", async () => {
-    const { spawn, child } = createControllableSpawn();
-    const run = promptViaSubprocess("hung stdout", {
-      spawn,
-      postExitDrainTimeoutMs: 30,
-    });
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    try {
+      const { spawn, child } = createControllableSpawn();
+      const run = promptViaSubprocess("hung stdout", {
+        spawn,
+        detachProcessGroup: true,
+        postExitDrainTimeoutMs: 30,
+      });
 
-    child().emitExit(0, null);
-    await expect(run.result()).rejects.toThrow(
-      /exited \(code 0\).*did not close within 30ms/s,
-    );
-    expect(child().kills).toContain("SIGKILL");
-    expect(child().listenerCounts()).toEqual({
-      child: { error: 0, exit: 0, close: 0 },
-      stdout: { data: 0, end: 0 },
-      stderr: { data: 0 },
-      stdin: { error: 0 },
-    });
+      child().emitExit(0, null);
+      await expect(run.result()).rejects.toThrow(
+        /exited \(code 0\).*did not close within 30ms/s,
+      );
+      expect(child().kills).toContain("SIGKILL");
+      expect(kill).not.toHaveBeenCalled();
+      expect(child().listenerCounts()).toEqual({
+        child: { error: 0, exit: 0, close: 0 },
+        stdout: { data: 0, end: 0 },
+        stderr: { data: 0 },
+        stdin: { error: 0 },
+      });
+    } finally {
+      kill.mockRestore();
+    }
   });
 
   it("accepts a real wrapper that exits before an inherited-stdout descendant writes the result", async () => {

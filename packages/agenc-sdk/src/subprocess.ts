@@ -38,6 +38,44 @@ import { createPromptEventQueue } from "./prompt-event-queue.js";
 /** Default bound on waiting for stdio to close after the child process exits. */
 export const DEFAULT_POST_EXIT_DRAIN_TIMEOUT_MS = 5_000;
 
+/**
+ * Signal a process group this transport's default spawner created with
+ * `detached: true`. Returns false without signalling when `ownsDetachedProcessGroup`
+ * is false, the platform has no POSIX process groups, or `pid` is not a safe
+ * integer greater than 1 and distinct from this process. Those checks keep
+ * `kill(-1)` and a self-signal from ever being issued.
+ */
+export function signalOwnedDetachedProcessGroup(
+  pid: number | undefined,
+  signal: NodeJS.Signals,
+  ownsDetachedProcessGroup: boolean,
+): boolean {
+  if (
+    !ownsDetachedProcessGroup ||
+    process.platform === "win32" ||
+    !isSignalableProcessGroupLeader(pid)
+  ) {
+    return false;
+  }
+  try {
+    process.kill(-pid, signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isSignalableProcessGroupLeader(
+  pid: number | undefined,
+): pid is number {
+  return (
+    typeof pid === "number" &&
+    Number.isSafeInteger(pid) &&
+    pid > 1 &&
+    pid !== process.pid
+  );
+}
+
 type ChildExitListener = (
   code: number | null,
   signal: string | null,
@@ -114,6 +152,16 @@ export interface AgencSubprocessOptions {
    * Defaults to {@link DEFAULT_POST_EXIT_DRAIN_TIMEOUT_MS}.
    */
   readonly postExitDrainTimeoutMs?: number;
+  /**
+   * Unix only, and only for the default spawner. When true, the child is
+   * started as its own process-group leader (`detached: true`) so a drain
+   * timeout can SIGKILL retained descendants. Terminal SIGINT and SIGHUP
+   * then do not reach the child; `cancel()` and an aborted `signal` forward
+   * SIGTERM to that group instead. Default false, so a foreground embedder
+   * keeps the child in the terminal's process group. Ignored when `spawn`
+   * is set: a custom spawner is never group-signalled.
+   */
+  readonly detachProcessGroup?: boolean;
   /** Injectable for tests. */
   readonly spawn?: AgencSubprocessSpawnFn;
 }
@@ -163,15 +211,17 @@ export function promptViaSubprocess(
     ...(options.extraArgs ?? []),
   ];
 
+  const ownsDetachedProcessGroup =
+    options.spawn === undefined &&
+    options.detachProcessGroup === true &&
+    process.platform !== "win32";
   const spawner: AgencSubprocessSpawnFn =
     options.spawn ??
     ((spawnCommand, spawnArgs, spawnOptions) =>
       nodeSpawn(spawnCommand, [...spawnArgs], {
         ...spawnOptions,
         stdio: [...spawnOptions.stdio],
-        // A new process group lets a post-exit drain timeout SIGKILL
-        // retained descendants that inherited the child's stdout.
-        ...(process.platform === "win32" ? {} : { detached: true }),
+        ...(ownsDetachedProcessGroup ? { detached: true } : {}),
       }) as unknown as AgencSubprocessChild);
 
   const child = spawner(executable, args, {
@@ -326,19 +376,20 @@ export function promptViaSubprocess(
       ),
     );
   };
-  const terminateRetainedDescendants = () => {
+  const signalChild = (signal: NodeJS.Signals) => {
     try {
-      child.kill("SIGKILL");
+      child.kill(signal);
     } catch {
       // The wrapper may already be gone.
     }
-    if (typeof child.pid === "number" && process.platform !== "win32") {
-      try {
-        process.kill(-child.pid, "SIGKILL");
-      } catch {
-        // ESRCH / EINVAL / EPERM: no group, or already reaped.
-      }
-    }
+    signalOwnedDetachedProcessGroup(
+      child.pid,
+      signal,
+      ownsDetachedProcessGroup,
+    );
+  };
+  const terminateRetainedDescendants = () => {
+    signalChild("SIGKILL");
     try {
       child.stdout?.destroy?.();
     } catch {
@@ -435,7 +486,7 @@ export function promptViaSubprocess(
 
   if (options.signal !== undefined) {
     const abortSignal = options.signal;
-    const onAbort = () => child.kill("SIGTERM");
+    const onAbort = () => signalChild("SIGTERM");
     if (abortSignal.aborted) {
       onAbort();
     } else {
@@ -467,7 +518,7 @@ export function promptViaSubprocess(
   return {
     result: () => resultPromise,
     cancel: () => {
-      child.kill("SIGTERM");
+      signalChild("SIGTERM");
     },
     async *[Symbol.asyncIterator]() {
       for (;;) {
