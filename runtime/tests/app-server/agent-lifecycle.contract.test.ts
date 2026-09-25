@@ -215,6 +215,10 @@ function createResumeFixture(
     readonly reopenedTerminal?: boolean;
     readonly terminalStatus?:
       "completed" | "failed" | "cancelled" | "unknown_outcome";
+    /** Created and never messaged: no user input in the rollout at all. */
+    readonly neverMessaged?: boolean;
+    /** Suspended by a clean daemon shutdown instead of ending terminal. */
+    readonly suspended?: boolean;
   } = {},
 ): {
   readonly cwd: string;
@@ -236,13 +240,15 @@ function createResumeFixture(
     options.originator ?? "agenc-cli",
     options.source === null ? null : (options.source ?? "interactive-root"),
   );
-  rollout.appendRollout({
-    type: "response_item",
-    payload: {
-      role: "user",
-      content: options.objective ?? "retained canonical objective",
-    },
-  });
+  if (options.neverMessaged !== true) {
+    rollout.appendRollout({
+      type: "response_item",
+      payload: {
+        role: "user",
+        content: options.objective ?? "retained canonical objective",
+      },
+    });
+  }
   let eventSequence = 0;
   if (options.legacyRejectedExitPlanMode === true) {
     const callId = `exit-plan:${sessionId}`;
@@ -309,7 +315,22 @@ function createResumeFixture(
   }
   eventSequence += 1;
   rollout.append(
-    options.cancelRequested === true
+    options.suspended === true
+      ? {
+          eventId: `run-suspended:${sessionId}:1`,
+          id: `run-suspended:${sessionId}:1`,
+          seq: eventSequence,
+          msg: {
+            type: "run_suspended",
+            payload: {
+              runId: sessionId,
+              epoch: 1,
+              reason: "daemon_shutdown_idle",
+              suspendedAt: "2026-05-01T12:31:00.000Z",
+            },
+          },
+        }
+      : options.cancelRequested === true
       ? {
           eventId: `run-cancel-request:${sessionId}:1`,
           id: `run-cancel-request:${sessionId}:1`,
@@ -409,6 +430,20 @@ function createResumeFixture(
     rmSync(dirs.cwd, { recursive: true, force: true });
   });
   return { cwd: dirs.cwd, rolloutPath, sourceProof };
+}
+
+/** The trusted source proof for a rollout file as it is on disk now. */
+function resumeSourceProofFor(rolloutPath: string, cwd: string) {
+  const sourceStats = lstatSync(rolloutPath, { bigint: true });
+  const cwdStats = lstatSync(cwd, { bigint: true });
+  return {
+    dev: sourceStats.dev.toString(10),
+    ino: sourceStats.ino.toString(10),
+    size: sourceStats.size.toString(10),
+    sha256: createHash("sha256").update(readFileSync(rolloutPath)).digest("hex"),
+    cwdDev: cwdStats.dev.toString(10),
+    cwdIno: cwdStats.ino.toString(10),
+  };
 }
 
 function canonicalRuntimeSettings(
@@ -3382,6 +3417,155 @@ describe("AgenC background agent lifecycle", () => {
       resumeSourceProof: fixture.sourceProof,
       cwd: fixture.cwd,
     })).rejects.toMatchObject({ code: "CANONICAL_SESSION_ALREADY_ACTIVE" });
+  });
+
+  describe("a session that was created and never messaged", () => {
+    // A Goal's chat and a new chat left empty are interactive sessions whose
+    // rollout holds no user message. After a daemon restart they could not be
+    // reopened: "agent.create resume rollout has no bounded canonical user
+    // objective" (2026-09-25 Goal E2E, chat conv-muhfawwh).
+    const restoringAgents = () => {
+      const sessions = new AgenCDaemonSessionManager({
+        createSessionId: sequence(["session_resumed"]),
+        now: sequence(["2026-08-19T12:00:01.000Z"]),
+      });
+      const startAgent = vi.fn(async () => ({
+        agentId: "unexpected_fresh_agent",
+        startedAt: "2026-08-19T12:00:00.500Z",
+        status: "running" as const,
+      }));
+      const restoreAgent = vi.fn(async () => true);
+      const agents = new AgenCDaemonAgentManager({
+        now: sequence(["2026-08-19T12:00:00.000Z"]),
+        runner: { startAgent, restoreAgent },
+        sessionManager: sessions,
+      });
+      return { sessions, startAgent, restoreAgent, agents };
+    };
+
+    it("reopens as the empty conversation it is, labelled like a new interactive session", async () => {
+      const sessionId = "conv-never-messaged1";
+      const fixture = createResumeFixture(sessionId, {
+        neverMessaged: true,
+        suspended: true,
+        runtimeSettings: (cwd) => canonicalRuntimeSettings("default", cwd),
+      });
+      const { sessions, startAgent, restoreAgent, agents } = restoringAgents();
+
+      await expect(
+        createTestAgent(agents, {
+          resumeSessionId: sessionId,
+          resumeRolloutPath: fixture.rolloutPath,
+          resumeSourceProof: fixture.sourceProof,
+          cwd: fixture.cwd,
+        }),
+      ).resolves.toMatchObject({
+        agentId: sessionId,
+        objective: "Interactive session",
+        status: "running",
+        activeSessionIds: ["session_resumed"],
+      });
+      // Nothing starts a turn: the runner restores the suspended run and the
+      // label never becomes input.
+      expect(startAgent).not.toHaveBeenCalled();
+      expect(restoreAgent).toHaveBeenCalledTimes(1);
+      expect(restoreAgent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: sessionId,
+          objective: "Interactive session",
+          resumeSuspendedRun: true,
+          suspendedResumeReason: "explicit_continue",
+        }),
+      );
+      await expect(sessions.getSession("session_resumed")).resolves.toMatchObject({
+        agentId: sessionId,
+        metadata: { source: "agent.resume", objective: "Interactive session" },
+      });
+    });
+
+    it("is still refused when the rollout is truncated", async () => {
+      const sessionId = "conv-never-messaged-truncated";
+      const fixture = createResumeFixture(sessionId, { neverMessaged: true, suspended: true });
+      const bytes = readFileSync(fixture.rolloutPath);
+      writeFileSync(fixture.rolloutPath, bytes.subarray(0, bytes.byteLength - 20));
+      const { restoreAgent, agents } = restoringAgents();
+
+      await expect(
+        createTestAgent(agents, {
+          resumeSessionId: sessionId,
+          resumeRolloutPath: fixture.rolloutPath,
+          resumeSourceProof: resumeSourceProofFor(fixture.rolloutPath, fixture.cwd),
+          cwd: fixture.cwd,
+        }),
+      ).rejects.toThrow(/malformed JSON|failed strict canonical validation/);
+      expect(restoreAgent).not.toHaveBeenCalled();
+    });
+
+    it("is still refused without a session_meta line, or empty", async () => {
+      const sessionId = "conv-never-messaged-no-meta";
+      const fixture = createResumeFixture(sessionId, { neverMessaged: true, suspended: true });
+      const lines = readFileSync(fixture.rolloutPath, "utf8").split("\n");
+      writeFileSync(fixture.rolloutPath, lines.slice(1).join("\n"));
+      const { restoreAgent, agents } = restoringAgents();
+
+      await expect(
+        createTestAgent(agents, {
+          resumeSessionId: sessionId,
+          resumeRolloutPath: fixture.rolloutPath,
+          resumeSourceProof: resumeSourceProofFor(fixture.rolloutPath, fixture.cwd),
+          cwd: fixture.cwd,
+        }),
+      ).rejects.toThrow("has no initial metadata");
+
+      writeFileSync(fixture.rolloutPath, "");
+      await expect(
+        createTestAgent(agents, {
+          resumeSessionId: sessionId,
+          resumeRolloutPath: fixture.rolloutPath,
+          resumeSourceProof: resumeSourceProofFor(fixture.rolloutPath, fixture.cwd),
+          cwd: fixture.cwd,
+        }),
+      ).rejects.toThrow("has no bounded canonical user objective");
+      expect(restoreAgent).not.toHaveBeenCalled();
+    });
+
+    it("is still refused when the rollout belongs to another session", async () => {
+      const sessionId = "conv-never-messaged-foreign";
+      const fixture = createResumeFixture(sessionId, { neverMessaged: true, suspended: true });
+      const [first, ...rest] = readFileSync(fixture.rolloutPath, "utf8").split("\n");
+      const meta = JSON.parse(first!) as { payload: { sessionId: string } };
+      meta.payload.sessionId = "conv-someone-else";
+      writeFileSync(fixture.rolloutPath, [JSON.stringify(meta), ...rest].join("\n"));
+      const { restoreAgent, agents } = restoringAgents();
+
+      await expect(
+        createTestAgent(agents, {
+          resumeSessionId: sessionId,
+          resumeRolloutPath: fixture.rolloutPath,
+          resumeSourceProof: resumeSourceProofFor(fixture.rolloutPath, fixture.cwd),
+          cwd: fixture.cwd,
+        }),
+      ).rejects.toThrow(/does not match session id and cwd|failed strict canonical validation/);
+      expect(restoreAgent).not.toHaveBeenCalled();
+    });
+
+    it("does not cover a session whose user message has no text", async () => {
+      // It did receive a user message (an image-only one): that is not a
+      // never-messaged session, and stays refused as before.
+      const sessionId = "conv-image-only";
+      const fixture = createResumeFixture(sessionId, { objective: "   ", suspended: true });
+      const { restoreAgent, agents } = restoringAgents();
+
+      await expect(
+        createTestAgent(agents, {
+          resumeSessionId: sessionId,
+          resumeRolloutPath: fixture.rolloutPath,
+          resumeSourceProof: fixture.sourceProof,
+          cwd: fixture.cwd,
+        }),
+      ).rejects.toThrow("has no bounded canonical user objective");
+      expect(restoreAgent).not.toHaveBeenCalled();
+    });
   });
 
   it("restores retained additional directories on a flagless cold resume", async () => {
