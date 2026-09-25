@@ -180,9 +180,9 @@ describe("SDK subprocess stdout frame limit", () => {
       await expect(first).rejects.toThrow(/stdout frame exceeded 16777216 bytes/i);
       expect(child.kills).toEqual(["SIGTERM"]);
       await new Promise((resolve) => setTimeout(resolve, STDOUT_OVERFLOW_KILL_GRACE_MS + 30));
-    expect(child.kills).toEqual(["SIGTERM", "SIGKILL"]);
-    expect(child.listenerCounts().exit).toBe(0);
-    expect(processKill).not.toHaveBeenCalled();
+      expect(child.kills).toEqual(["SIGTERM", "SIGKILL"]);
+      expect(child.listenerCounts().exit).toBe(0);
+      expect(processKill).not.toHaveBeenCalled();
 
       child.emitStdout(resultChunk("must-not-win"));
       child.exit(0);
@@ -195,6 +195,25 @@ describe("SDK subprocess stdout frame limit", () => {
       expect((drained as Error).message).toContain("child-warning");
       expect(child.listenerCounts().stdoutData).toBe(0);
       expect(child.listenerCounts().abort).toBe(0);
+    } finally {
+      processKill.mockRestore();
+    }
+  });
+
+  it("cancels an armed SIGKILL timer when a non-group child exits later", async () => {
+    const child = createProgrammableChild();
+    const processKill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    try {
+      const run = promptViaSubprocess("go", { spawn: child.spawn });
+      child.emitStdout(Buffer.alloc(AGENC_SDK_MAX_FRAME_BYTES + 1, 0x61));
+      await expect(run.result()).rejects.toThrow(/stdout frame exceeded/i);
+      expect(child.kills).toEqual(["SIGTERM"]);
+      expect(child.listenerCounts().exit).toBe(1);
+      child.exit(null, "SIGTERM");
+      await new Promise((resolve) => setTimeout(resolve, STDOUT_OVERFLOW_KILL_GRACE_MS + 30));
+      expect(child.kills).toEqual(["SIGTERM"]);
+      expect(child.listenerCounts().exit).toBe(0);
+      expect(processKill).not.toHaveBeenCalled();
     } finally {
       processKill.mockRestore();
     }

@@ -425,6 +425,16 @@ export function promptViaSubprocess(
   const escalateTermination = () => {
     clearKillEscalation();
     const onEscalationExit = () => {
+      if (ownsDetachedProcessGroup) {
+        if (killEscalation !== undefined) {
+          clearTimeout(killEscalation);
+          killEscalation = undefined;
+        }
+        removeKillEscalationListener?.();
+        removeKillEscalationListener = null;
+        signalChild("SIGKILL");
+        return;
+      }
       clearKillEscalation();
     };
     child.once("exit", onEscalationExit);

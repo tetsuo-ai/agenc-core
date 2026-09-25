@@ -131,8 +131,8 @@ function createManualChild(): {
     setEncoding: (encoding: string) => void;
   };
   stdout.setEncoding = () => {
-      throw new Error("stdout setEncoding must not be called");
-    };
+    throw new Error("stdout setEncoding must not be called");
+  };
   const stderr = new EventEmitter() as EventEmitter & {
     setEncoding: (encoding: string) => void;
   };
@@ -347,27 +347,59 @@ function reapProcess(pid: number): void {
   }
 }
 
+/** Busy-wait until a descendant has written `readyPath`. Caller must define `fs`. */
+function waitForDescendantReady(readyPath: string): string {
+  return [
+    `const ready=${JSON.stringify(readyPath)};const deadline=Date.now()+2000;`,
+    "while(!fs.existsSync(ready)){if(Date.now()>deadline)process.exit(1);",
+    "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);}",
+  ].join("");
+}
+
+function writeNodeScript(scriptPath: string, source: string): readonly [string, string] {
+  writeFileSync(scriptPath, source);
+  return [process.execPath, scriptPath];
+}
+
+/**
+ * Overflow writer plus a grandchild that installs SIGTERM before signalling ready.
+ * The wrapper waits for that ready file before writing past the frame limit.
+ * `leaderExitsOnTerm` makes the leader die on SIGTERM while the grandchild
+ * ignores it and keeps inherited stdout open.
+ */
+function overflowGroupCommand(
+  pidPath: string,
+  leaderExitsOnTerm: boolean,
+): readonly [string, string] {
+  const readyPath = `${pidPath}.ready`;
+  const grandchild = [
+    'process.on("SIGTERM",()=>{});',
+    `require("node:fs").writeFileSync(${JSON.stringify(readyPath)},"1");`,
+    "setInterval(()=>{},1000);",
+  ].join("");
+  const stdio = leaderExitsOnTerm ? '["ignore","inherit","inherit"]' : '"ignore"';
+  const onTerm = leaderExitsOnTerm
+    ? 'process.on("SIGTERM",()=>{process.exit(0);});'
+    : 'process.on("SIGTERM",()=>{});';
+  const wrapper = [
+    'const {spawn}=require("node:child_process");const fs=require("node:fs");',
+    'process.stdout.on("error",()=>{});',
+    onTerm,
+    `const child=spawn(process.execPath,["-e",${JSON.stringify(grandchild)}],{stdio:${stdio}});`,
+    "child.unref();",
+    waitForDescendantReady(readyPath),
+    `fs.writeFileSync(${JSON.stringify(pidPath)},process.pid+"\\n"+String(child.pid));`,
+    `process.stdout.write(Buffer.alloc(${AGENC_SDK_MAX_FRAME_BYTES + 1},0x61));`,
+    "setInterval(()=>{},1000);",
+  ].join("");
+  return writeNodeScript(`${pidPath}.overflow.cjs`, wrapper);
+}
+
 /**
  * Default-spawner argv: node runs a wrapper that leaves a descendant holding
  * inherited stdout, writes that pid, then exits with no stream-json result.
  * `signalPath` makes the descendant record SIGTERM before it exits.
  */
-function overflowIgnoreTermCommand(pidPath: string): readonly [string, string] {
-  const grandchild = 'process.on("SIGTERM",()=>{});setInterval(()=>{},1000);';
-  const wrapper = [
-    'const {spawn}=require("node:child_process");const fs=require("node:fs");',
-    'process.on("SIGTERM",()=>{});',
-    'process.stdout.on("error",()=>{});',
-    `const child=spawn(process.execPath,["-e",${JSON.stringify(grandchild)}],{stdio:"ignore"});`,
-    `fs.writeFileSync(${JSON.stringify(pidPath)},process.pid+"\\n"+String(child.pid));`,
-    `process.stdout.write(Buffer.alloc(${AGENC_SDK_MAX_FRAME_BYTES + 1},0x61));`,
-    "setInterval(()=>{},1000);",
-  ].join("");
-  const scriptPath = `${pidPath}.overflow.cjs`;
-  writeFileSync(scriptPath, wrapper);
-  return [process.execPath, scriptPath];
-}
-
 function detachedHolderCommand(
   pidPath: string,
   signalPath?: string,
@@ -382,14 +414,10 @@ function detachedHolderCommand(
     'const {spawn}=require("node:child_process");const fs=require("node:fs");',
     `const child=spawn(process.execPath,["-e",${JSON.stringify(descendant)}],{stdio:["ignore","inherit","inherit"]});`,
     "child.unref();",
-    `const ready=${JSON.stringify(readyPath)};const deadline=Date.now()+2000;`,
-    "while(!fs.existsSync(ready)){if(Date.now()>deadline)process.exit(1);",
-    "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,10);}",
+    waitForDescendantReady(readyPath),
     `fs.writeFileSync(${JSON.stringify(pidPath)},String(child.pid));process.exit(0);`,
   ].join("");
-  const scriptPath = `${pidPath}.wrapper.cjs`;
-  writeFileSync(scriptPath, wrapper);
-  return [process.execPath, scriptPath];
+  return writeNodeScript(`${pidPath}.wrapper.cjs`, wrapper);
 }
 
 function spawnLateResultWrapper(): AgencSubprocessSpawnFn {
@@ -662,8 +690,8 @@ describe("agenc-sdk subprocess transport", () => {
         setEncoding: (encoding: string) => void;
       };
       stdout.setEncoding = () => {
-      throw new Error("stdout setEncoding must not be called");
-    };
+        throw new Error("stdout setEncoding must not be called");
+      };
       const stderr = new EventEmitter() as EventEmitter & {
         setEncoding: (encoding: string) => void;
       };
@@ -964,6 +992,28 @@ describe("agenc-sdk subprocess transport", () => {
       for (const pid of descendants.splice(0)) reapProcess(pid);
     });
 
+    async function overflowGroupPids(
+      label: string,
+      leaderExitsOnTerm: boolean,
+    ): Promise<{ readonly root: string; readonly leader: number; readonly grandchild: number; readonly pending: Promise<unknown> }> {
+      const root = mkdtempSync(join(tmpdir(), `agenc-sdk-${label}-`));
+      const pidPath = join(root, "group.pid");
+      const run = promptViaSubprocess(label, {
+        agencCommand: overflowGroupCommand(pidPath, leaderExitsOnTerm),
+        detachProcessGroup: true,
+      });
+      const pending = run.result();
+      expect(await pollUntil(() => existsSync(pidPath), 2_000)).toBe(true);
+      const [leader, grandchild] = readFileSync(pidPath, "utf8")
+        .trim()
+        .split("\n")
+        .map((value) => Number(value));
+      expect(leader).toBeGreaterThan(1);
+      expect(grandchild).toBeGreaterThan(1);
+      descendants.push(leader, grandchild);
+      return { root, leader, grandchild, pending };
+    }
+
     async function readLiveDescendantPid(pidPath: string): Promise<number> {
       expect(await pollUntil(() => existsSync(pidPath), 2_000)).toBe(true);
       const pid = Number(readFileSync(pidPath, "utf8"));
@@ -977,33 +1027,34 @@ describe("agenc-sdk subprocess transport", () => {
     it.skipIf(process.platform === "win32")(
       "SIGKILLs a detached group that ignores SIGTERM after stdout overflow",
       async () => {
-        const root = mkdtempSync(join(tmpdir(), "agenc-sdk-overflow-group-"));
-        const pidPath = join(root, "group.pid");
+        const group = await overflowGroupPids("overflow-group", false);
         try {
-          const run = promptViaSubprocess("overflow group", {
-            agencCommand: overflowIgnoreTermCommand(pidPath),
-            detachProcessGroup: true,
-          });
-          const pending = run.result();
-          expect(await pollUntil(() => existsSync(pidPath), 2_000)).toBe(true);
-          const [leader, grandchild] = readFileSync(pidPath, "utf8")
-            .trim()
-            .split("\n")
-            .map((value) => Number(value));
-          expect(leader).toBeGreaterThan(1);
-          expect(grandchild).toBeGreaterThan(1);
-          descendants.push(leader, grandchild);
-          await expect(pending).rejects.toThrow(/stdout frame exceeded/i);
+          await expect(group.pending).rejects.toThrow(/stdout frame exceeded/i);
           expect(
             await pollUntil(
-              () => !isLiveProcess(leader) && !isLiveProcess(grandchild),
+              () => !isLiveProcess(group.leader) && !isLiveProcess(group.grandchild),
               2_000,
             ),
           ).toBe(true);
-          expect(() => process.kill(-leader, 0)).toThrow(/ESRCH/u);
+          expect(() => process.kill(-group.leader, 0)).toThrow(/ESRCH/u);
           expect(isLiveProcess(process.pid)).toBe(true);
         } finally {
-          rmSync(root, { recursive: true, force: true });
+          rmSync(group.root, { recursive: true, force: true });
+        }
+      },
+    );
+
+    it.skipIf(process.platform === "win32")(
+      "SIGKILLs a detached grandchild when the overflow leader exits on SIGTERM",
+      async () => {
+        const group = await overflowGroupPids("overflow-leader", true);
+        try {
+          await expect(group.pending).rejects.toThrow(/stdout frame exceeded/i);
+          expect(await pollUntil(() => !isLiveProcess(group.grandchild), 2_000)).toBe(true);
+          expect(() => process.kill(-group.leader, 0)).toThrow(/ESRCH/u);
+          expect(isLiveProcess(process.pid)).toBe(true);
+        } finally {
+          rmSync(group.root, { recursive: true, force: true });
         }
       },
     );
