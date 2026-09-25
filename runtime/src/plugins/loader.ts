@@ -1,5 +1,5 @@
-import { readFile, readdir, realpath, stat } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isValidPermissionDefaultMode, validateHooksConfig, validateMcpServersConfig } from "../config/schema.js";
 import type {
   AgenCConfig,
@@ -577,12 +577,14 @@ async function recoverRootIssues(
   installRoot: string,
   restorePluginConfig: ((pluginId: string, previous: unknown) => Promise<void>) | undefined,
   reportUnrestoredConfig: boolean,
+  userConfigPath: string | undefined,
 ): Promise<readonly PluginLoadIssue[]> {
   try {
     const result = await recoverPluginInstallTransactions({
       installRoots: [installRoot],
       ...(restorePluginConfig === undefined ? {} : { restorePluginConfig }),
       ...(reportUnrestoredConfig ? { reportUnrestoredConfig: true } : {}),
+      ...(userConfigPath === undefined ? {} : { userConfigPath }),
     });
     return result.issues.map((issue) => installRecoveryIssue(issue, installRoot));
   } catch (error) {
@@ -594,9 +596,42 @@ async function recoverRootIssues(
   }
 }
 
-function storageRootIsRepositoryPlugins(userRoot: string, repoRoot: string): boolean {
-  const rel = relative(repoRoot, userRoot);
+function pathIsInsideOrEqual(candidate: string, root: string): boolean {
+  const rel = relative(resolve(root), resolve(candidate));
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+async function nearestExistingRealpath(path: string): Promise<string | undefined> {
+  let cursor = resolve(path);
+  const pending: string[] = [];
+  for (;;) {
+    try {
+      await lstat(cursor);
+      const real = await realpath(cursor);
+      return pending.reduceRight((parent, name) => join(parent, name), real);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
+      const parent = dirname(cursor);
+      if (parent === cursor) return undefined;
+      pending.push(basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+async function samePluginRoot(userRoot: string, repoRoot: string): Promise<boolean> {
+  if (pathIsInsideOrEqual(userRoot, repoRoot) && pathIsInsideOrEqual(repoRoot, userRoot)) return true;
+  const userReal = await nearestExistingRealpath(userRoot);
+  const repoReal = await nearestExistingRealpath(repoRoot);
+  return userReal !== undefined && userReal === repoReal;
+}
+
+async function storageRootIsRepositoryPlugins(userRoot: string, repoRoot: string): Promise<boolean> {
+  if (pathIsInsideOrEqual(userRoot, repoRoot)) return true;
+  const userReal = await nearestExistingRealpath(userRoot);
+  const repoReal = await nearestExistingRealpath(repoRoot);
+  if (userReal === undefined || repoReal === undefined) return false;
+  return pathIsInsideOrEqual(userReal, repoReal);
 }
 
 async function loadPluginInstallRecoveryIssues(
@@ -605,8 +640,8 @@ async function loadPluginInstallRecoveryIssues(
   const userRoot = resolve(options.pluginStorageRoot);
   const repoRoot = resolve(join(options.workspaceRoot, ".agents", "plugins"));
   const userConfigPath = options.userConfigPath;
-  const restoreUserConfig = userConfigPath !== undefined &&
-    !storageRootIsRepositoryPlugins(userRoot, repoRoot);
+  const repositoryOwned = await storageRootIsRepositoryPlugins(userRoot, repoRoot);
+  const restoreUserConfig = userConfigPath !== undefined && !repositoryOwned;
   const userIssues = await recoverRootIssues(
     userRoot,
     restoreUserConfig
@@ -617,9 +652,10 @@ async function loadPluginInstallRecoveryIssues(
       ))
       : undefined,
     !restoreUserConfig,
+    restoreUserConfig ? userConfigPath : undefined,
   );
-  if (repoRoot === userRoot) return userIssues;
-  const repoIssues = await recoverRootIssues(repoRoot, undefined, true);
+  if (await samePluginRoot(userRoot, repoRoot)) return userIssues;
+  const repoIssues = await recoverRootIssues(repoRoot, undefined, true, undefined);
   return [...userIssues, ...repoIssues];
 }
 
