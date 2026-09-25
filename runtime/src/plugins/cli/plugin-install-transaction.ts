@@ -404,12 +404,16 @@ async function recoverNamedRecord(
   const recordPath = join(opsDir, name);
   const leasePath = pluginInstallLeasePath(recordPath);
   const seen = await readLeaseText(leasePath);
-  if (leaseTextIsLive(seen)) return { recovered: false };
+  if (leaseTextIsLive(seen)) {
+    return { recovered: false, issue: skippedLiveLeaseIssue(recordPath, leasePath) };
+  }
   await options.hooks?.beforeLeaseRename?.();
   let nonce: string | undefined;
   try {
     const claimed = await claimDeadInstallLease(leasePath, seen, options.hooks);
-    if (claimed === undefined) return { recovered: false };
+    if (claimed === undefined) {
+      return { recovered: false, issue: skippedLeaseClaimIssue(recordPath, leasePath) };
+    }
     if ("issue" in claimed) return { recovered: false, issue: claimed.issue };
     nonce = claimed.nonce;
     await options.hooks?.afterLeaseClaimed?.();
@@ -1205,6 +1209,7 @@ const LEASE_ARTIFACT_NAME =
   /^.+\.json\.lease\.(claim|tmp)-(\d+)-([0-9a-f-]{36})(?:\.partial-([0-9a-f-]{36}))?$/u;
 const LEASE_ARTIFACT_UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+const heldInstallLeaseNonces = new Set<string>();
 const RECLAIM_MARKER_NAME =
   /^(.+\.json\.lease)\.reclaim-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/u;
 const MAX_LEASE_BYTES = 4096;
@@ -1216,7 +1221,7 @@ async function claimDeadInstallLease(
   hooks: PluginInstallRecoveryHooks | undefined,
 ): Promise<{ readonly nonce: string } | { readonly issue: PluginInstallRecoveryIssue } | undefined> {
   const deadNonce = parseLease(seen)?.nonce;
-  if (deadNonce === undefined) {
+  if (deadNonce === undefined || !LEASE_ARTIFACT_UUID.test(deadNonce)) {
     if (seen === undefined && !(await leasePathExists(leasePath))) {
       const published = await publishExclusiveLease(leasePath);
       return published === undefined ? undefined : { nonce: published };
@@ -1224,54 +1229,68 @@ async function claimDeadInstallLease(
     return { issue: manualLeaseIssue(leasePath) };
   }
   const nonce = randomUUID();
+  heldInstallLeaseNonces.add(nonce);
+  let claimed = false;
   const newTemp = `${leasePath}.tmp-${process.pid}-${nonce}`;
   const marker = `${leasePath}.reclaim-${deadNonce}`;
-  await writeDurableAtomicFile(
-    newTemp,
-    `${newTemp}.partial-${randomUUID()}`,
-    `${JSON.stringify({ pid: process.pid, nonce })}\n`,
-    0o600,
-  );
   try {
-    await link(newTemp, marker);
-  } catch (error) {
-    await rm(newTemp, { force: true });
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return undefined;
-    throw error;
-  }
-  try {
-    await hooks?.beforeLeaseReplace?.();
-    const current = await readLeaseText(leasePath);
-    if (leaseNonce(current) !== deadNonce || current !== seen) return undefined;
-    await rename(newTemp, leasePath);
-    const confirmed = parseLease(await readLeaseText(leasePath));
-    if (confirmed?.nonce !== nonce || !pidIsLive(confirmed.pid) || confirmed.pid !== process.pid) {
-      return undefined;
+    await writeDurableAtomicFile(
+      newTemp,
+      `${newTemp}.partial-${randomUUID()}`,
+      `${JSON.stringify({ pid: process.pid, nonce })}\n`,
+      0o600,
+    );
+    try {
+      await link(newTemp, marker);
+    } catch (error) {
+      await rm(newTemp, { force: true });
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return undefined;
+      throw error;
     }
-    return { nonce };
+    try {
+      await hooks?.beforeLeaseReplace?.();
+      const current = await readLeaseText(leasePath);
+      if (leaseNonce(current) !== deadNonce || current !== seen) return undefined;
+      await rename(newTemp, leasePath);
+      const confirmed = parseLease(await readLeaseText(leasePath));
+      if (confirmed?.nonce !== nonce || !pidIsLive(confirmed.pid) || confirmed.pid !== process.pid) {
+        return undefined;
+      }
+      claimed = true;
+      return { nonce };
+    } finally {
+      await rm(marker, { force: true });
+      await rm(newTemp, { force: true });
+    }
   } finally {
-    await rm(marker, { force: true });
-    await rm(newTemp, { force: true });
+    if (!claimed) heldInstallLeaseNonces.delete(nonce);
   }
 }
 
 async function publishExclusiveLease(leasePath: string): Promise<string | undefined> {
   const nonce = randomUUID();
   const temp = `${leasePath}.tmp-${process.pid}-${nonce}`;
-  await writeDurableAtomicFile(
-    temp,
-    `${temp}.partial-${randomUUID()}`,
-    `${JSON.stringify({ pid: process.pid, nonce })}\n`,
-    0o600,
-  );
+  heldInstallLeaseNonces.add(nonce);
+  let published = false;
   try {
-    await link(temp, leasePath);
-    return nonce;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return undefined;
-    throw error;
+    await writeDurableAtomicFile(
+      temp,
+      `${temp}.partial-${randomUUID()}`,
+      `${JSON.stringify({ pid: process.pid, nonce })}\n`,
+      0o600,
+    );
+    try {
+      await link(temp, leasePath);
+      published = true;
+      return nonce;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return undefined;
+      throw error;
+    } finally {
+      await rm(temp, { force: true });
+    }
   } finally {
-    await rm(temp, { force: true });
+    if (!published) heldInstallLeaseNonces.delete(nonce);
   }
 }
 
@@ -1355,7 +1374,7 @@ async function sweepStaleLeaseArtifacts(opsDir: string): Promise<void> {
     }
     if (info.isSymbolicLink() || !info.isFile()) continue;
     const holder = parseLease(await readLeaseText(path));
-    if (holder !== undefined && pidIsLive(holder.pid)) continue;
+    if (leaseHolderIsLive(holder)) continue;
     const currentNonce = leaseNonce(await readLeaseText(join(opsDir, leaseName)));
     if (currentNonce === undefined) continue;
     await rm(path);
@@ -1370,6 +1389,22 @@ function manualLeaseIssue(leasePath: string): PluginInstallRecoveryIssue {
   return {
     operationId: basename(leasePath).replace(/\.json\.lease$/u, ""),
     message: `plugin install lease could not be read; inspect and remove it manually: ${leasePath}`,
+    preservedPaths: [leasePath],
+  };
+}
+
+function skippedLiveLeaseIssue(recordPath: string, leasePath: string): PluginInstallRecoveryIssue {
+  return {
+    operationId: basename(recordPath).replace(/\.json$/u, ""),
+    message: `plugin install recovery skipped a record whose lease is still live: ${leasePath}`,
+    preservedPaths: [leasePath],
+  };
+}
+
+function skippedLeaseClaimIssue(recordPath: string, leasePath: string): PluginInstallRecoveryIssue {
+  return {
+    operationId: basename(recordPath).replace(/\.json$/u, ""),
+    message: `plugin install recovery skipped a record whose lease could not be claimed: ${leasePath}`,
     preservedPaths: [leasePath],
   };
 }
@@ -1438,10 +1473,14 @@ async function writeInstallLease(leasePath: string): Promise<string> {
 }
 
 async function removeInstallLeaseIfNonce(leasePath: string, nonce: string): Promise<void> {
-  const text = await readLeaseText(leasePath);
-  const parsed = parseLease(text);
-  if (parsed?.nonce !== nonce) return;
-  await rm(leasePath, { force: true }).catch(() => {});
+  try {
+    const text = await readLeaseText(leasePath);
+    const parsed = parseLease(text);
+    if (parsed?.nonce !== nonce) return;
+    await rm(leasePath, { force: true }).catch(() => {});
+  } finally {
+    heldInstallLeaseNonces.delete(nonce);
+  }
 }
 
 async function readLeaseText(leasePath: string): Promise<string | undefined> {
@@ -1497,8 +1536,17 @@ function parseLease(text: string | undefined): { readonly pid: number; readonly 
 }
 
 function leaseTextIsLive(text: string | undefined): boolean {
-  const parsed = parseLease(text);
-  return parsed !== undefined && pidIsLive(parsed.pid);
+  return leaseHolderIsLive(parseLease(text));
+}
+
+function leaseHolderIsLive(
+  parsed: { readonly pid: number; readonly nonce?: string } | undefined,
+): boolean {
+  if (parsed === undefined) return false;
+  if (parsed.pid === process.pid) {
+    return parsed.nonce !== undefined && heldInstallLeaseNonces.has(parsed.nonce);
+  }
+  return pidIsLive(parsed.pid);
 }
 
 function pidIsLive(pid: number): boolean {
@@ -1511,9 +1559,11 @@ function pidIsLive(pid: number): boolean {
   }
 }
 
-// Liveness is pid-only. A lease is live while its recorded pid answers signal 0
-// or the check is denied (EPERM). heartbeatAtMs is not stored: a long copy or
-// validate must not look expired, and recovery does not guess a TTL.
+// A lease with this process id is live only while this process holds its
+// nonce. A restart can reuse the pid; an unheld nonce is the previous run.
+// Any other pid is live while it answers signal 0 or the check is denied
+// (EPERM). heartbeatAtMs is not stored: a long copy or validate must not
+// look expired, and recovery does not guess a TTL.
 async function confineRecordPaths(
   installRoot: string,
   record: PluginInstallOperationRecord,

@@ -508,7 +508,9 @@ describe("plugin install transaction", () => {
       },
     });
     expect(recovery?.recovered).toBe(0);
-    expect(recovery?.issues).toEqual([]);
+    expect(recovery?.issues.map((issue) => issue.message)).toEqual([
+      expect.stringContaining("lease is still live"),
+    ]);
     expect(updated.plugin.version).toBe("2.0.0");
     expect(await readPluginVersion(installed.destination)).toBe("2.0.0");
   });
@@ -584,7 +586,9 @@ describe("plugin install transaction", () => {
     await openedGate;
     const during = await recoverLocal(installed);
     expect(during.recovered).toBe(0);
-    expect(during.issues).toEqual([]);
+    expect(during.issues.map((issue) => issue.message)).toEqual([
+      expect.stringContaining("lease is still live"),
+    ]);
     expect(await readPluginVersion(installed.destination)).toBe("2.0.0");
     releaseRollback();
     await expect(pending).rejects.toThrow(/hold rollback/u);
@@ -837,7 +841,8 @@ describe("plugin install transaction", () => {
       workspaceRoot: world.workspaceRoot,
       config: { plugins: { enabled: true } },
     });
-    expect(loaded.errors.filter((issue) => issue.type === "install-recovery")).toEqual([]);
+    expect(loaded.errors.filter((issue) => issue.type === "install-recovery").map((issue) => issue.message))
+      .toEqual([expect.stringContaining(`inspect and remove it manually: ${liveRecord}.lease`)]);
     expect(await readFile(liveRecord, "utf8")).toContain(liveId);
     expect(await readFile(`${liveRecord}.lease`, "utf8")).toContain(String(process.pid));
     expect((await readdir(ops)).length).toBeGreaterThan(0);
@@ -1363,6 +1368,48 @@ describe("plugin install transaction", () => {
     expect(swept.issues.some((issue) => /not a real directory/u.test(issue.message))).toBe(true);
   });
 
+  it("does not build a reclaim path from a non-uuid lease nonce", async () => {
+    const world = await createWorld();
+    const operationId = "00000000-0000-4000-8000-badnonce0001";
+    const recordPath = await writeDeadRecord(world, operationId);
+    const leasePath = `${recordPath}.lease`;
+    const current = JSON.parse(await readFile(leasePath, "utf8")) as { readonly pid: number };
+    await writeFile(leasePath, `${JSON.stringify({ pid: current.pid, nonce: "../escaped" })}\n`);
+    const recovered = await recoverPluginInstallTransactions({
+      installRoots: [world.pluginStorageRoot],
+    });
+    expect(recovered.recovered).toBe(0);
+    expect(recovered.issues.map((issue) => issue.message)).toEqual([
+      expect.stringContaining(`inspect and remove it manually: ${leasePath}`),
+    ]);
+    expect(await pathExists(join(world.pluginStorageRoot, "escaped"))).toBe(false);
+    expect((await readdir(join(world.pluginStorageRoot, ".plugin-install-ops")))
+      .some((name) => name.includes("reclaim-"))).toBe(false);
+    expect(await readFile(recordPath, "utf8")).toContain(operationId);
+  });
+
+  it("restores a backed-up plugin when this pid is reused without the lease token", async () => {
+    const installed = await crashDemoUpdate(await installDemoV1(), "destination-backed-up");
+    expect(await pathExists(installed.destination)).toBe(false);
+    const ops = join(installed.pluginStorageRoot, ".plugin-install-ops");
+    const records = (await readdir(ops)).filter((name) => name.endsWith(".json"));
+    expect(records).toHaveLength(1);
+    const recordPath = join(ops, records[0] ?? "");
+    await writeFile(`${recordPath}.lease`, `${JSON.stringify({ pid: process.pid, nonce: randomUUID() })}\n`);
+    const load = () => loadPlugins({
+      pluginStorageRoot: installed.pluginStorageRoot,
+      workspaceRoot: installed.workspaceRoot,
+      config: { plugins: { enabled: true } },
+      userConfigPath: join(installed.agencHome, "config.toml"),
+    });
+    const loaded = await load();
+    expect(loaded.errors.filter((issue) => issue.type === "install-recovery")).toEqual([]);
+    expect(await readPluginVersion(installed.destination)).toBe("1.0.0");
+    expect(namesInclude(await storageNames(installed), ".bak-")).toBe(false);
+    await expect(access(recordPath)).rejects.toThrow();
+    expect((await load()).errors.filter((issue) => issue.type === "install-recovery")).toEqual([]);
+  });
+
   it("does not reclaim a lease owned by live pid 1", async () => {
     const world = await createWorld();
     const operationId = "00000000-0000-4000-8000-pidone000001";
@@ -1375,7 +1422,9 @@ describe("plugin install transaction", () => {
       installRoots: [world.pluginStorageRoot],
     });
     expect(recovered.recovered).toBe(0);
-    expect(recovered.issues).toEqual([]);
+    expect(recovered.issues.map((issue) => issue.message)).toEqual([
+      expect.stringContaining("lease is still live"),
+    ]);
     expect(await readFile(recordPath, "utf8")).toContain(operationId);
     expect(await readFile(`${recordPath}.lease`, "utf8")).toContain('"pid":1');
   });
