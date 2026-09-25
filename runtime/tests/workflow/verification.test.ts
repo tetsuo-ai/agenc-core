@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+  formatVerificationCommand,
+  formatVerificationResult,
   parseVerificationVerdict,
   runRequiredVerification,
   type WorkflowCommandResult,
@@ -204,5 +206,22 @@ describe("verification agent verdict parsing", () => {
     expect(parseVerificationVerdict("VERDICT: SHIP")).toBeUndefined();
     expect(parseVerificationVerdict("the VERDICT: PASS came earlier")).toBeUndefined();
     expect(parseVerificationVerdict("")).toBeUndefined();
+  });
+});
+
+describe("verification commands in model prompts", () => {
+  it("names a command by its exact script as a code span", () => {
+    expect(formatVerificationCommand("npm test")).toBe("`npm test`");
+    // A fence longer than any backtick run inside, padded at a backtick edge.
+    expect(formatVerificationCommand("echo `date`")).toBe("`` echo `date` ``");
+    expect(formatVerificationCommand("a ``b`` c")).toBe("```a ``b`` c```");
+  });
+
+  it("renders a recorded result by script, never by label", () => {
+    const record = { label: "verify", script: "npm test", exitCode: 0, timedOut: false };
+    expect(formatVerificationResult(record)).toBe("`npm test`: exit 0");
+    expect(formatVerificationResult({ ...record, exitCode: 124, timedOut: true })).toBe(
+      "`npm test`: exit 124 (timed out)",
+    );
   });
 });

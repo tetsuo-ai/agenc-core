@@ -152,6 +152,35 @@ export async function runRequiredVerification(opts: {
   return { records, excerpts, testResult, allPassed };
 }
 
+/**
+ * A required command as a model prompt names it: its exact script as a
+ * Markdown code span. The label never appears. `label` is a display name
+ * for people (run evidence, failure messages) and `script` is the command.
+ * A verifier that was shown only `- verify: exit 0` ran `verify` as a
+ * command, got 127, and failed a change whose `npm test` had passed.
+ */
+export function formatVerificationCommand(script: string): string {
+  // A code span needs a fence longer than any backtick run inside it, and a
+  // space of padding when the script starts or ends with a backtick.
+  let longestRun = 0;
+  for (const run of script.match(/`+/g) ?? []) {
+    longestRun = Math.max(longestRun, run.length);
+  }
+  const fence = "`".repeat(longestRun + 1);
+  const pad = script.startsWith("`") || script.endsWith("`") ? " " : "";
+  return `${fence}${pad}${script}${pad}${fence}`;
+}
+
+/** One recorded command result for a model prompt: "`npm test`: exit 0". */
+export function formatVerificationResult(
+  record: Pick<VerifiedChangeCommandRecord, "script" | "exitCode" | "timedOut">,
+): string {
+  return (
+    `${formatVerificationCommand(record.script)}: exit ${record.exitCode}` +
+    (record.timedOut ? " (timed out)" : "")
+  );
+}
+
 export type VerificationVerdict = "PASS" | "FAIL" | "PARTIAL";
 
 /**

@@ -211,6 +211,21 @@ describe("M5 independent review", () => {
     expect(String(captured[0].userMessage)).toContain("+42");
   });
 
+  it("names each verification command by its script, not its label", () => {
+    // The label is a name for people; the reviewer is told what actually ran.
+    const { userMessage } = buildReviewerMessages({
+      goal: SPEC.goal,
+      patchText: "diff",
+      changedFilesText: "M\tsrc/index.ts",
+      verification: [{ ...COMMANDS[0]!, label: "verify" }],
+      verificationVerdict: "PASS",
+    });
+    expect(userMessage).toContain(
+      "## Verification evidence\n- `npm test`: exit 0 in 900ms\n",
+    );
+    expect(userMessage).not.toMatch(/^- verify\b/mu);
+  });
+
   it("forwards a reviewer deadline only when the caller explicitly supplies one", async () => {
     let capturedTimeoutMs: number | undefined;
     const invoker: ReviewerInvoker = {

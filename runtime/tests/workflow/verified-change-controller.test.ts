@@ -391,6 +391,11 @@ class FakeSpawner implements WorkflowAgentSpawner {
   /** Mirrors production: inspect falls back to the durable child terminal. */
   durableRepo?: StateRunDurabilityRepository;
   beforeReturn?: (input: { kind: WorkflowSpawnKind }) => void;
+  /** Answers from the prompt when nothing is queued; undefined = default. */
+  respond?: (input: {
+    kind: WorkflowSpawnKind;
+    prompt: string;
+  }) => WorkflowChildOutcome | undefined;
 
   queue(kind: WorkflowSpawnKind, outcome: WorkflowChildOutcome): void {
     const queue = this.queues.get(kind) ?? [];
@@ -422,7 +427,7 @@ class FakeSpawner implements WorkflowAgentSpawner {
     const outcome =
       queue !== undefined && queue.length > 0
         ? queue.shift()!
-        : this.#default(input.kind);
+        : (this.respond?.(input) ?? this.#default(input.kind));
     this.beforeReturn?.(input);
     return outcome;
   }
@@ -683,6 +688,34 @@ describe("workflow admission ownership", () => {
   });
 });
 
+/**
+ * A verifier that takes its brief literally, as the Grok verifier of Goal run
+ * wf-8b719195 did: it re-runs every command the brief lists with an exit
+ * code, in a project whose only command is `npm test`, and fails the change
+ * when one of them does not exit 0. A brief that lists no command fails too.
+ */
+function literalVerifier(ran: string[]): NonNullable<FakeSpawner["respond"]> {
+  return ({ kind, prompt }) => {
+    if (kind !== "verify_agent") return undefined;
+    const listed = [...prompt.matchAll(/^- (.+): exit -?\d+/gmu)].map(
+      (match) => /^(`+) ?(.*?) ?\1$/u.exec(match[1]!)?.[2] ?? match[1]!,
+    );
+    const failures: string[] = [];
+    for (const command of listed) {
+      ran.push(command);
+      if (command !== "npm test") {
+        failures.push(`required command \`${command}\`: exit 127, command not found`);
+      }
+    }
+    const pass = listed.length > 0 && failures.length === 0;
+    return {
+      status: "completed",
+      finalMessage: [...failures, `VERDICT: ${pass ? "PASS" : "FAIL"}`].join("\n"),
+      usage: DEFAULT_USAGE,
+    };
+  };
+}
+
 describe("verifier prompt", () => {
   it("tells the verifier where scratch files may go", async () => {
     // Soak F65: a verifier wrote fixtures to /tmp and the sandbox refused them.
@@ -690,6 +723,79 @@ describe("verifier prompt", () => {
     const verify = harness.spawner.spawns.find((spawn) => spawn.kind === "verify_agent");
     expect(verify?.prompt).toContain("under `tmp/` inside the worktree");
     expect(verify?.prompt).toContain("refuses writes outside the workspace");
+  });
+
+  it("names each required command by its script and says the workflow already ran it", async () => {
+    // AgenC Desktop starts every Goal with `{ label: "verify", script: <check> }`.
+    // Shown only `- verify: exit 0`, the verifier ran `verify` as a command,
+    // got 127, and failed a change whose `npm test` had passed (soak F77).
+    await runToTerminal(harness, {
+      requiredVerification: [{ label: "verify", script: "npm test" }],
+    });
+    const verify = harness.spawner.spawns.find((spawn) => spawn.kind === "verify_agent");
+    expect(verify?.prompt).toContain(
+      "## Required commands, already run\n" +
+        "The workflow ran each required command below in this worktree before you\n" +
+        "started. Each line is the complete command, exactly as the workflow ran it,\n" +
+        "then the exit code the workflow recorded.\n" +
+        "- `npm test`: exit 0\n",
+    );
+    expect(verify?.prompt).not.toMatch(/^- verify\b/mu);
+    expect(verify?.prompt).not.toContain("`verify`");
+  });
+
+  it("keeps the label out of every model prompt", async () => {
+    // The label names the command for people (evidence, status). No model
+    // may read it as a command, so no prompt carries it: not the plan, the
+    // re-implement brief, either verifier, or the reviewer.
+    const label = "label-sentinel-7d3f";
+    harness.spawner.queue("verify_agent", {
+      status: "completed",
+      finalMessage: "found a defect\nVERDICT: FAIL",
+      usage: DEFAULT_USAGE,
+    });
+    await runToTerminal(harness, {
+      requiredVerification: [{ label, script: "npm test" }],
+    });
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("completed");
+    const spawns = harness.spawner.spawns;
+    expect(spawns.map((spawn) => spawn.kind)).toEqual([
+      "plan", "implement", "verify_agent", "implement", "verify_agent",
+    ]);
+    expect(harness.reviewer.invocations).toHaveLength(1);
+    const prompts = [
+      ...spawns.map((spawn) => spawn.prompt),
+      harness.reviewer.invocations[0]!.userMessage,
+    ];
+    for (const prompt of prompts) expect(prompt).not.toContain(label);
+    expect(spawns[0]!.prompt).toMatch(/^- `npm test`$/mu);
+    expect(spawns[3]!.prompt).toContain("- `npm test`: exit 0\n");
+    expect(spawns[2]!.prompt).toContain("- `npm test`: exit 0\n");
+    expect(spawns[4]!.prompt).toContain("- `npm test`: exit 0\n");
+    expect(harness.reviewer.invocations[0]!.userMessage).toContain(
+      "- `npm test`: exit 0 in 3ms\n",
+    );
+  });
+});
+
+describe("a Goal whose check is npm test", () => {
+  it("passes verify under a verifier that runs exactly the commands its brief names", async () => {
+    // Replays Goal run wf-8b719195 without a model. AgenC Desktop sent
+    // `{ label: "verify", script: "npm test" }`; the project defines `npm test`
+    // and nothing called `verify`. On a brief that listed only
+    // `- verify: exit 0`, this verifier ran `verify`, got 127, and both
+    // attempts ended `verification_failed` although `npm test` passed.
+    const ran: string[] = [];
+    harness.spawner.respond = literalVerifier(ran);
+    await runToTerminal(harness, {
+      requiredVerification: [{ label: "verify", script: "npm test" }],
+    });
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "completed",
+      stopReason: null,
+    });
+    expect(ran).toEqual(["npm test"]);
+    expect(harness.commands.executed).toEqual(["npm test"]);
   });
 });
 
