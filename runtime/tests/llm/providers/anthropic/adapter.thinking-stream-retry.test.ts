@@ -1,8 +1,10 @@
 import { describe, expect, test, vi } from "vitest";
+import { LLMInvalidResponseError } from "../../errors.js";
 import type { LLMStreamChunk } from "../../types.js";
+import { isResampleableStreamInterruption } from "../../../recovery/api-errors.js";
 import { AnthropicProvider } from "./adapter.js";
 import {
-  createAnthropicFallbackProvider,
+  settleFallbackChatStream,
   sseResponse,
   sseResponseThenError,
   withDeterministicFallbackTimers,
@@ -206,15 +208,9 @@ async function streamWithFallbackRetry(
   response: Awaited<ReturnType<AnthropicProvider["chatStream"]>>;
 }> {
   const fetchImpl = fetchThatRetriesOnSuccess(firstResponse);
-  const chunks: LLMStreamChunk[] = [];
-  const pending = createAnthropicFallbackProvider(fetchImpl).chatStream(
-    [{ role: "user", content: "think" }],
-    (chunk) => {
-      chunks.push(chunk);
-    },
-  );
-  await vi.advanceTimersByTimeAsync(2000);
-  return { fetchImpl, chunks, response: await pending };
+  const settled = await settleFallbackChatStream(fetchImpl);
+  if (!settled.ok) throw settled.error;
+  return { fetchImpl, chunks: settled.chunks, response: settled.response };
 }
 
 describe("AnthropicProvider thinking-stream fallback retry (#2107)", () => {
@@ -281,4 +277,132 @@ describe("AnthropicProvider thinking-stream fallback retry (#2107)", () => {
       });
     });
   });
+});
+
+type PostThinkingFault =
+  | "transient"
+  | "transient-after-tool"
+  | "abort"
+  | "invalid-tool-json";
+
+const POST_THINKING_FAULTS = [
+  "transient",
+  "transient-after-tool",
+  "abort",
+  "invalid-tool-json",
+] as const;
+
+function transientSocketError(): Error {
+  return Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+}
+
+function toolUseFrames(partialJson: string): string[] {
+  return [
+    ...framesThrough("stop"),
+    sseFrame("content_block_start", {
+      index: 1,
+      content_block: { type: "tool_use", id: "toolu_1", name: "Read", input: {} },
+    }),
+    sseFrame("content_block_delta", {
+      index: 1,
+      delta: { type: "input_json_delta", partial_json: partialJson },
+    }),
+    sseFrame("content_block_stop", { index: 1 }),
+  ];
+}
+
+function postThinkingFaultResponse(fault: PostThinkingFault): Response {
+  switch (fault) {
+    case "transient":
+      return sseResponseThenError(framesThrough("delta"), transientSocketError());
+    case "transient-after-tool":
+      return sseResponseThenError(
+        toolUseFrames("{\"path\":\"a\"}"),
+        transientSocketError(),
+      );
+    case "abort":
+      // client-session rewrites the watchdog's "provider stream timed out"
+      // into "<provider> stream idle for Nms". The adapter must rethrow that
+      // so stream-model can convert an aborted watchdog into stream_idle.
+      return sseResponseThenError(
+        framesThrough("delta"),
+        new Error("provider stream timed out"),
+      );
+    case "invalid-tool-json":
+      return sseResponse(toolUseFrames("{\"path\":"));
+    default: {
+      const _exhaustive: never = fault;
+      return _exhaustive;
+    }
+  }
+}
+
+describe("AnthropicProvider thinking faults the reconnect ladder can still see", () => {
+  test.each(POST_THINKING_FAULTS)(
+    "%s after thinking does not duplicate the in-adapter fallback",
+    async (fault) => {
+      await withDeterministicFallbackTimers(async () => {
+        const fetchImpl = fetchThatRetriesOnSuccess(
+          postThinkingFaultResponse(fault),
+        );
+        const outcome = await settleFallbackChatStream(fetchImpl);
+        const chunks = outcome.chunks;
+
+        expect(streamedThinkingText(chunks)).toBe("Let me ");
+        expect(streamedThinkingText(chunks)).not.toContain("RETRY-THINK");
+        expect(thinkingIndexes(chunks, "start")).toEqual(
+          thinkingIndexes(chunks, "stop"),
+        );
+        expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+        switch (fault) {
+          case "transient": {
+            expect(outcome.ok).toBe(false);
+            if (outcome.ok) break;
+            expect(isResampleableStreamInterruption(outcome.error, 0)).toBe(true);
+            break;
+          }
+          case "transient-after-tool": {
+            expect(outcome.ok).toBe(true);
+            if (!outcome.ok) break;
+            expect(outcome.response.partial).toBe(true);
+            expect(outcome.response.finishReason).toBe("error");
+            expect(outcome.response.toolCalls).toEqual([
+              expect.objectContaining({ id: "toolu_1", name: "Read" }),
+            ]);
+            expect(
+              isResampleableStreamInterruption(
+                outcome.response.error,
+                outcome.response.toolCalls.length,
+              ),
+            ).toBe(false);
+            break;
+          }
+          case "abort": {
+            expect(outcome.ok).toBe(false);
+            if (outcome.ok) break;
+            expect(outcome.error).toBeInstanceOf(Error);
+            if (outcome.error instanceof Error) {
+              expect(outcome.error.message).toMatch(/stream idle for \d+ms/);
+            }
+            break;
+          }
+          case "invalid-tool-json": {
+            expect(outcome.ok).toBe(false);
+            if (outcome.ok) break;
+            expect(outcome.error).toBeInstanceOf(LLMInvalidResponseError);
+            expect(outcome.error).toBeInstanceOf(Error);
+            if (outcome.error instanceof Error) {
+              expect(outcome.error.message).toMatch(/invalid tool_use JSON/);
+            }
+            break;
+          }
+          default: {
+            const _exhaustive: never = fault;
+            return _exhaustive;
+          }
+        }
+      });
+    },
+  );
 });

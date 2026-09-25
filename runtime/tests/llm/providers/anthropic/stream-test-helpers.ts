@@ -1,4 +1,5 @@
 import { vi } from "vitest";
+import type { LLMStreamChunk } from "../../types.js";
 import { AnthropicProvider } from "./adapter.js";
 
 export { sseResponse } from "../openai-compatible-test-helpers.js";
@@ -55,6 +56,31 @@ export function sseResponseThenError(
       headers: { "content-type": "text/event-stream" },
     },
   );
+}
+
+export async function settleFallbackChatStream(
+  fetchImpl: typeof fetch,
+): Promise<
+  {
+    chunks: LLMStreamChunk[];
+  } & (
+    | { ok: true; response: Awaited<ReturnType<AnthropicProvider["chatStream"]>> }
+    | { ok: false; error: unknown }
+  )
+> {
+  const chunks: LLMStreamChunk[] = [];
+  const pending = createAnthropicFallbackProvider(fetchImpl).chatStream(
+    [{ role: "user", content: "think" }],
+    (chunk) => {
+      chunks.push(chunk);
+    },
+  );
+  const settled = pending.then(
+    (response) => ({ ok: true as const, response, chunks }),
+    (error: unknown) => ({ ok: false as const, error, chunks }),
+  );
+  await vi.advanceTimersByTimeAsync(2000);
+  return settled;
 }
 
 export async function withDeterministicFallbackTimers(

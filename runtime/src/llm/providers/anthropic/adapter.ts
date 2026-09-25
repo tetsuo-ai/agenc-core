@@ -14,6 +14,7 @@ import type {
 } from "../../types.js";
 import {
   LLMAuthenticationError,
+  LLMInvalidResponseError,
   LLMProviderError,
   mapLLMError,
 } from "../../errors.js";
@@ -235,6 +236,24 @@ function finalizeOpenThinkingBlocks(
     completeThinkingBlock(index, block, completedThinkingBlocks, onChunk);
   }
   thinkingBlocks.clear();
+}
+
+function isAnthropicStreamAbort(
+  error: unknown,
+  signal: AbortSignal | undefined,
+): boolean {
+  if (signal?.aborted === true) return true;
+  if (!(error instanceof Error)) return false;
+  const code = (error as { code?: unknown }).code;
+  if (error.name === "AbortError" || code === "ABORT_ERR") return true;
+  // readWithAbort turns the watchdog reason "stream_idle" into
+  // "provider stream timed out", and client-session then rewrites that to
+  // "<provider> stream idle for Nms" before this catch runs. Rethrowing
+  // either form lets stream-model convert a watchdog abort into stream_idle.
+  return (
+    error.message === "provider stream timed out" ||
+    /stream idle for \d+ms$/.test(error.message)
+  );
 }
 
 function thinkingFromCompletedBlocks(
@@ -816,7 +835,10 @@ export class AnthropicProvider implements LLMProvider {
               completedToolCall.arguments,
             );
             if (!parsedInput) {
-              throw new LLMProviderError(
+              // Malformed tool_use JSON is a protocol error, not a transport
+              // fault. It must rethrow even after thinking was forwarded so
+              // the turn does not persist a partial that hides the bad block.
+              throw new LLMInvalidResponseError(
                 this.name,
                 `Provider stream emitted invalid tool_use JSON for ${completedToolCall.name || completedToolCall.id}`,
               );
@@ -1008,15 +1030,26 @@ export class AnthropicProvider implements LLMProvider {
       const mappedError = mapLLMError(this.name, error, timeoutMs ?? 0);
       const streamedToolCount = toolBlocks.size + completedToolCalls.length;
       const thinking = thinkingFromCompletedBlocks(completedThinkingBlocks);
-      // A transport fault before any tool block streamed is re-sampled by the
-      // turn's reconnect ladder; a partial response is surfaced when the
-      // fault is not transient, a tool call may already have dispatched, or
-      // thinking events were already forwarded (#2107). Protocol errors such
-      // as invalid tool_use JSON still rethrow.
+      // What the #2463 reconnect ladder can re-sample: a transient transport
+      // fault that has not streamed a tool call (`isResampleableStreamInterruption`).
+      // Nothing executed, and stream-model closes thinking displays before the
+      // next attempt, so thinking already forwarded to the consumer does not
+      // by itself make the fault unreproducible. #2107 is the in-adapter
+      // fallback above: `streamHasEmittedOutput()` refuses that restart once
+      // thinking was delivered, because a second `onChunk` pass would duplicate
+      // it. A partial is only for a fault the ladder cannot re-sample when
+      // user-visible text or thinking was already delivered — rethrowing a
+      // non-transient fault would drop that content, and a streamed tool call
+      // may already have been dispatched. Aborts rethrow so stream-model can
+      // turn a watchdog abort into `stream_idle`. Protocol errors (invalid
+      // tool_use JSON) rethrow even after thinking.
+      const deliveredVisibleContent =
+        content.length > 0 || thinking !== undefined;
       const shouldSurfacePartial =
-        thinking !== undefined ||
-        (content.length > 0 &&
-          !isResampleableStreamInterruption(mappedError, streamedToolCount));
+        deliveredVisibleContent &&
+        !isAnthropicStreamAbort(error, options?.signal) &&
+        !(error instanceof LLMInvalidResponseError) &&
+        !isResampleableStreamInterruption(mappedError, streamedToolCount);
       if (shouldSurfacePartial) {
         const partialToolCalls: LLMToolCall[] = completedToolCalls.flatMap(
           (toolCall) => {
