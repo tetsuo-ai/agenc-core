@@ -891,7 +891,9 @@ async function readOperationRecord(
 
 async function readJsonRecord(recordPath: string): Promise<Record<string, unknown> | undefined> {
   try {
-    const raw: unknown = JSON.parse(await readFile(recordPath, "utf8"));
+    const text = await readBoundedRegularFile(recordPath, MAX_RECORD_BYTES);
+    if (text === undefined) return undefined;
+    const raw: unknown = JSON.parse(text);
     return isRecord(raw) ? raw : undefined;
   } catch {
     return undefined;
@@ -1176,8 +1178,11 @@ async function removeEmptyOpsDirectory(
 }
 
 const LEASE_ARTIFACT_NAME =
-  /^.+\.json\.lease\.(?:claim|tmp)-(\d+)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\.partial-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/u;
+  /^.+\.json\.lease\.(claim|tmp)-(\d+)-([0-9a-f-]{36})(?:\.partial-([0-9a-f-]{36}))?$/u;
+const LEASE_ARTIFACT_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const MAX_LEASE_BYTES = 4096;
+const MAX_RECORD_BYTES = 1024 * 1024;
 
 async function claimDeadInstallLease(
   leasePath: string,
@@ -1256,8 +1261,14 @@ async function sweepStaleLeaseArtifacts(opsDir: string): Promise<void> {
 
 function leaseArtifactPid(name: string): number | undefined {
   const match = LEASE_ARTIFACT_NAME.exec(name);
-  if (match?.[1] === undefined) return undefined;
-  const pid = Number(match[1]);
+  const kind = match?.[1];
+  const pidText = match?.[2];
+  const id = match?.[3];
+  const partial = match?.[4];
+  if (kind === undefined || pidText === undefined || id === undefined) return undefined;
+  if (!LEASE_ARTIFACT_UUID.test(id)) return undefined;
+  if (partial !== undefined && (kind !== "tmp" || !LEASE_ARTIFACT_UUID.test(partial))) return undefined;
+  const pid = Number(pidText);
   return Number.isInteger(pid) ? pid : undefined;
 }
 
@@ -1309,11 +1320,16 @@ async function removeInstallLeaseIfNonce(leasePath: string, nonce: string): Prom
 }
 
 async function readLeaseText(leasePath: string): Promise<string | undefined> {
+  return readBoundedRegularFile(leasePath, MAX_LEASE_BYTES);
+}
+
+async function readBoundedRegularFile(path: string, maxBytes: number): Promise<string | undefined> {
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    handle = await open(leasePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    // win32 has no O_NOFOLLOW; the fstat regular-file and size checks are the bound there.
+    handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     const info = await handle.stat();
-    if (!info.isFile() || info.size > MAX_LEASE_BYTES) return undefined;
+    if (!info.isFile() || info.size > maxBytes) return undefined;
     const buffer = Buffer.alloc(info.size);
     await handle.read(buffer, 0, info.size, 0);
     return buffer.toString("utf8");
