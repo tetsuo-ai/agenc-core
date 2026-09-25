@@ -3294,14 +3294,16 @@ export class MCPManager {
     });
     if (!isCurrent()) return false;
     if (!(published instanceof ResilientMCPBridge)) {
-      throw new Error(
+      throw new TypeError(
         `MCP server "${config.name}" cannot replace a non-resilient tool surface`,
       );
     }
     published.replacePublishedCatalog(replacement);
     this.wrapPluginToolSurface(config, published);
     if (!this.isLazyPlugin(config) || catalogTools === undefined) return true;
-    return this.publishLazyCatalog(config, { tools: catalogTools }, isCurrent);
+    // Lazy catalogs notify inside publishCachedCatalog only when bytes change.
+    await this.publishLazyCatalog(config, { tools: catalogTools }, isCurrent);
+    return false;
   }
 
   private async refreshPromptCatalog(
@@ -3313,7 +3315,9 @@ export class MCPManager {
     const prompts = await bridge.refreshPrompts();
     const config = this.getServerConfig(serverName);
     if (config === undefined || !this.isLazyPlugin(config)) return true;
-    return this.publishLazyCatalog(config, { prompts }, isCurrent);
+    // Lazy catalogs notify inside publishCachedCatalog only when bytes change.
+    await this.publishLazyCatalog(config, { prompts }, isCurrent);
+    return false;
   }
 
   private async refreshResourceCatalog(
@@ -3325,10 +3329,11 @@ export class MCPManager {
     const resources = await bridge.refreshResources();
     const config = this.getServerConfig(serverName);
     if (config === undefined || !this.isLazyPlugin(config)) return true;
-    return this.publishLazyCatalog(config, { resources }, isCurrent);
+    // Lazy catalogs notify inside publishCachedCatalog only when bytes change.
+    await this.publishLazyCatalog(config, { resources }, isCurrent);
+    return false;
   }
 
-  /** Lazy catalogs notify inside `publishCachedCatalog` only when bytes change. */
   private async publishLazyCatalog(
     config: MCPServerConfig,
     patch: {
@@ -3337,13 +3342,12 @@ export class MCPManager {
       readonly resources?: readonly unknown[];
     },
     isCurrent: () => boolean,
-  ): Promise<boolean> {
-    if (!isCurrent()) return false;
+  ): Promise<void> {
+    if (!isCurrent()) return;
     const previous = this.cachedCatalogs.get(config.name);
     const next = lazyCatalog(previous, patch);
-    if (JSON.stringify(next) === JSON.stringify(previous)) return false;
+    if (JSON.stringify(next) === JSON.stringify(previous)) return;
     await this.publishCachedCatalog(config, next, true, isCurrent);
-    return false;
   }
 
   private assertNoNameShadowing(
