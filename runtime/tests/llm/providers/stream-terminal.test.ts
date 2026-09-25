@@ -174,6 +174,28 @@ const OPENAI_EXTRAS = [
     },
     expectedChunks: HELLO_SUCCESS_CHUNKS,
   },
+  {
+    name: "unterminated [DONE] without finish_reason completes the reply",
+    fetchImpl: sseFetch([`${OPENAI_HELLO}data: [DONE]`]),
+    content: "Hello",
+    finishReason: "stop" as const,
+    expectedChunks: HELLO_SUCCESS_CHUNKS,
+  },
+  {
+    name: "an unterminated final finish_reason tool_calls frame returns the tool call",
+    createProvider: (fetchImpl: typeof fetch) =>
+      new OpenAICompatibleProvider({
+        model: BUILT_IN_PROVIDER_DEFAULT_MODELS["openai-compatible"],
+        fetchImpl,
+        tools: [ECHO_TOOL],
+      }),
+    fetchImpl: sseFetch([
+      'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"system.echo","arguments":"{\\"text\\":\\"hi\\"}"}}]}}]}\n\n',
+      'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
+    ]),
+    content: "",
+    finishReason: "tool_calls" as const,
+  },
 ];
 const OPENAI_TOOL_ERRORS = [
   {

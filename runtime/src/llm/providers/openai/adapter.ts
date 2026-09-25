@@ -141,6 +141,44 @@ function decodeOpenAISseEventBatch(
   return { events, done: false };
 }
 
+type CompatibleSseRemainder =
+  | { readonly kind: "comment" }
+  | { readonly kind: "done" }
+  | { readonly kind: "event"; readonly event: OpenAISseEvent }
+  | { readonly kind: "unparsed" };
+
+function remainderIsCommentOnly(remainder: string): boolean {
+  const lines = remainder.replace(/\r/g, "").split("\n");
+  const nonempty = lines
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  return nonempty.length > 0 && nonempty.every((line) => line.startsWith(":"));
+}
+
+function flushCompatibleSseRemainder(
+  remainder: string,
+  providerName: string,
+): CompatibleSseRemainder {
+  if (remainderIsCommentOnly(remainder)) return { kind: "comment" };
+  const flushed = parseSSEFrames(`${remainder}\n\n`, providerName);
+  for (const frame of flushed.frames) {
+    if (!frame.data) continue;
+    if (frame.data === "[DONE]") return { kind: "done" };
+    try {
+      const data = JSON.parse(frame.data) as unknown;
+      if (typeof data === "object" && data !== null && !Array.isArray(data)) {
+        return {
+          kind: "event",
+          event: { event: frame.event, data: data as Record<string, unknown> },
+        };
+      }
+    } catch {
+      return { kind: "unparsed" };
+    }
+  }
+  return { kind: "unparsed" };
+}
+
 function resolveTimeoutMs(
   providerTimeoutMs: number | undefined,
   callTimeoutMs: number | undefined,
@@ -2128,14 +2166,32 @@ export class OpenAIProvider implements LLMProvider {
       onDone?.();
       return;
     }
+    if (parsed.remaining.trim().length === 0) return;
+    if (!requiresStrictChatCompletionsSse(this.name)) {
+      const flushed = flushCompatibleSseRemainder(parsed.remaining, this.name);
+      switch (flushed.kind) {
+        case "comment":
+          return;
+        case "done":
+          onDone?.();
+          return;
+        case "event":
+          yield flushed.event;
+          return;
+        case "unparsed":
+          break;
+        default: {
+          const exhaustive: never = flushed;
+          throw new Error(`Unhandled SSE remainder: ${JSON.stringify(exhaustive)}`);
+        }
+      }
+    }
     if (
-      parsed.remaining.trim().length > 0 &&
-      (requiresStrictChatCompletionsSse(this.name) ||
-        parsed.remaining.includes('"tool_calls"'))
+      requiresStrictChatCompletionsSse(this.name) ||
+      parsed.remaining.includes('"tool_calls"')
     ) {
-      // Non-strict providers ignore a trailing `[DONE]` or keep-alive line
-      // that never received its blank-line terminator. A cut `tool_calls`
-      // fragment is still a malformed stream.
+      // A cut tool_calls fragment is still a malformed stream. Strict
+      // providers keep main's unterminated-event check unchanged.
       if (onUnterminatedEnd !== undefined) {
         onUnterminatedEnd(parsed.remaining);
         return;
