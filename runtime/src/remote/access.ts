@@ -15,7 +15,7 @@ export interface RemoteGrant {
 export interface RemoteSessionLookup {
   (sessionId: string): Promise<{ readonly sessionId: string; readonly cwd?: string; readonly [key: string]: unknown } | null>;
 }
-export const BROWSER_METHODS = ["initialize", "session.list", "session.create", "session.transcript.v2", "message.send", "session.cancelTurn", "tool.approve", "tool.deny", "remote.pendingApprovals", "files.list", "files.read"] as const;
+export const BROWSER_METHODS = ["initialize", "session.list", "session.create", "session.transcript.v2", "session.artifact.read", "message.send", "session.cancelTurn", "tool.approve", "tool.deny", "remote.pendingApprovals", "files.list", "files.read"] as const;
 
 /** Compare canonical paths with the host's path semantics (Windows drive/case included). */
 export function pathWithin(root: string, target: string, platform: NodeJS.Platform = process.platform): boolean {
@@ -50,7 +50,7 @@ export class RemoteAccessBoundary {
   projection(): JsonObject { return { workspaceId: this.grant.workspaceId, role: this.grant.role, allowFiles: this.grant.allowFiles, allowApprovals: this.grant.role === "control" && this.grant.allowApprovals, supportsSessionCreate: this.grant.role === "control" && this.extensions?.createSession !== undefined }; }
   allowsMethod(method: string): boolean {
     if (!(BROWSER_METHODS as readonly string[]).includes(method)) return false;
-    if (["initialize", "session.list", "session.transcript.v2"].includes(method)) return true;
+    if (["initialize", "session.list", "session.transcript.v2", "session.artifact.read"].includes(method)) return true;
     if (method.startsWith("files.")) return this.grant.allowFiles;
     if (this.grant.role !== "control") return false;
     if (method === "session.create") return this.extensions?.createSession !== undefined;
@@ -84,7 +84,7 @@ export class RemoteAccessBoundary {
       if (!this.grant.allowApprovals || this.grant.role !== "control") throw new RemoteError("REMOTE_APPROVAL_DENIED");
       return;
     }
-    if (method === "session.transcript.v2") return;
+    if (method === "session.transcript.v2" || method === "session.artifact.read") return;
     if (this.grant.role !== "control") throw new RemoteError("REMOTE_CONTROL_DENIED");
     if (method === "message.send" || method === "tool.approve") {
       await this.extensions?.assertControlSession?.(params.sessionId as string);

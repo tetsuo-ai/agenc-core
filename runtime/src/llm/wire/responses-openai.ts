@@ -23,6 +23,7 @@ import {
   messageTextContent,
   normalizeFinishReason,
   normalizeToolCallsStrict,
+  openAiServedSpeed,
   parseOpenAIToolChoice,
   prepareMessagesForWire,
   readAudioPayload,
@@ -37,6 +38,7 @@ import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
 } from "./mcp-tool-naming.js";
+import { openAiAcceptsSamplingTemperature } from "../registry/openai-reasoning-models.js";
 
 export interface OpenAIResponsesRequestOptions {
   readonly model: string;
@@ -351,7 +353,10 @@ export function buildOpenAIResponsesRequest(
   if (input.options?.serviceTier !== undefined) {
     body.service_tier = input.options.serviceTier;
   }
-  if (input.options?.temperature !== undefined) {
+  if (
+    input.options?.temperature !== undefined &&
+    openAiAcceptsSamplingTemperature(input.model, input.options.reasoningEffort)
+  ) {
     body.temperature = input.options.temperature;
   }
   const maxOutputTokens =
@@ -484,8 +489,12 @@ export function parseOpenAIResponsesResponse(
       completionTokens: usageRecord.output_tokens,
       totalTokens: usageRecord.total_tokens,
       cachedInputTokens: inputDetails.cached_tokens,
+      // GPT-5.6 and later bill cache writes at 1.25x input; like cached
+      // tokens they are a subset of input_tokens (prompt-caching guide).
+      cacheCreationInputTokens: inputDetails.cache_write_tokens,
       reasoningOutputTokens: outputDetails.reasoning_tokens,
       webSearchRequests: webSearchRequests > 0 ? webSearchRequests : undefined,
+      speed: openAiServedSpeed(response.service_tier),
     }),
     model:
       typeof response.model === "string" ? response.model : model,

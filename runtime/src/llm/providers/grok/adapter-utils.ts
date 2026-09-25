@@ -433,15 +433,33 @@ export function isContinuationRetrievalFailure(error: unknown): boolean {
 
 function sanitizeSchema(value: unknown): unknown {
   if (Array.isArray(value)) {
-    return value.slice(0, 64).map((item) => sanitizeSchema(item));
+    return value.map((item) => sanitizeSchema(item));
   }
   if (value && typeof value === "object") {
     const input = value as Record<string, unknown>;
     const output: Record<string, unknown> = {};
     for (const [key, field] of Object.entries(input)) {
       if (TOOL_METADATA_KEYS.has(key)) continue;
+      // These keys contain maps of user-defined property names, not schema
+      // keywords. A tool may have an argument named `description` or `title`;
+      // dropping it here removes that argument from the model's contract.
+      if ((key === "properties" || key === "patternProperties" ||
+        key === "$defs" || key === "definitions" || key === "dependentSchemas") &&
+        field !== null && typeof field === "object" && !Array.isArray(field)) {
+        output[key] = Object.fromEntries(
+          Object.entries(field as Record<string, unknown>).map(([name, schema]) =>
+            [name, sanitizeSchema(schema)]),
+        );
+        continue;
+      }
       if (key === "enum" && Array.isArray(field)) {
-        output[key] = field.slice(0, 64);
+        // Enum members are literal values, not schema nodes.
+        output[key] = field;
+        continue;
+      }
+      if (key === "const") {
+        // A const payload is a literal JSON value, not another schema node.
+        output[key] = field;
         continue;
       }
       output[key] = sanitizeSchema(field);

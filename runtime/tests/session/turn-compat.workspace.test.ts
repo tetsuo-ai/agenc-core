@@ -150,6 +150,60 @@ describe('turn compatibility catalog boundary', () => {
     expect(parentBroker.cwd).toBe(authority)
   })
 
+  it('copies model tool input as own data, never through an inherited setter', async () => {
+    // Assigning a key onto `{}` runs any setter the prototype chain defines
+    // for it; Object.prototype's own `__proto__` accessor is the built-in
+    // case. This copier drops `__` keys, so a setter planted on the chain
+    // pins the property every model-argument copier relies on.
+    const cwd = tempRoot('compat-own-input')
+    const parent = foregroundParent(cwd)
+    const toolUseContext = foregroundToolContext(cwd, [], undefined)
+    const compatProbe = {
+      name: 'CompatProbe',
+      inputJSONSchema: { type: 'object', properties: {} },
+      prompt: async () => 'records the input it is handed',
+      recoveryCategory: 'idempotent',
+    }
+    ;(toolUseContext.options as unknown as { tools: unknown[] }).tools = [compatProbe]
+    const seen: unknown[] = []
+    const turn = await createTurnCompatSession(parent, {
+      messages: [],
+      systemPrompt: asSystemPrompt(['system']),
+      userContext: {},
+      systemContext: {},
+      canUseTool: (async (_tool: unknown, input: unknown) => {
+        seen.push(input)
+        return { behavior: 'deny', message: 'recorded' }
+      }) as never,
+      toolUseContext,
+      querySource: 'repl_main_thread',
+    })
+    const tool = turn.session.services.registry.tools.find(
+      (candidate) => candidate.name === 'CompatProbe',
+    )
+    expect(tool).toBeDefined()
+    let intercepted: unknown
+    Object.defineProperty(Object.prototype, 'planted_key', {
+      configurable: true,
+      set(value: unknown) {
+        intercepted = value
+      },
+    })
+    try {
+      await tool!.execute({ planted_key: 'model value', __callId: 'c1' })
+    } finally {
+      delete (Object.prototype as Record<string, unknown>)['planted_key']
+    }
+    expect(intercepted).toBeUndefined()
+    expect(seen).toHaveLength(1)
+    expect(Object.getOwnPropertyDescriptor(seen[0] as object, 'planted_key')?.value).toBe(
+      'model value',
+    )
+
+    await turn.session.shutdown()
+    await parent.shutdown()
+  })
+
   it('inherits the live permission context instead of inventing bypass authority', async () => {
     const cwd = tempRoot('permission-inheritance')
     const parent = foregroundParent(cwd)

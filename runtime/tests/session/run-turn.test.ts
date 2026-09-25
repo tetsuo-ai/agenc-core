@@ -1,4 +1,5 @@
 import "../helpers/cron-os-home.js";
+import { setTimeout as realSleep } from "node:timers/promises";
 /**
  * T6 gap #119 — turn-lifecycle emit callsites.
  *
@@ -63,6 +64,12 @@ import {
 import type { QueuedCommand } from "../types/textInputTypes.js";
 import { createToolResultIntegrity } from "./tool-result-integrity.js";
 import { buildInitialTurnState } from "./turn-state.js";
+import { RolloutStore } from "./rollout-store.js";
+import { reconstructFromRollout } from "./rollout-reconstruction.js";
+import { resumeTurnFromCheckpoint } from "../conversation/thread-manager.js";
+import { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
+import { bindExecutionAdmissionJournal } from "./execution-admission-journal.js";
+import { shutdownSessionLifecycle } from "./lifecycle.js";
 
 function enqueue(command: QueuedCommand): void {
   enqueueCommand({
@@ -71,9 +78,6 @@ function enqueue(command: QueuedCommand): void {
   });
 }
 import {
-  EDITOR_INTERACTION_MAX_SAMPLING_ITERATIONS,
-  EDITOR_INTERACTION_MAX_QUERY_TOKENS,
-  EDITOR_INTERACTION_MAX_TOOL_CALLS,
   insertContextMessagesAfterLeadingSystem,
   insertContextMessagesBeforeCurrentUser,
   isRetryableStreamError,
@@ -137,7 +141,6 @@ import { StreamModelError } from "../phases/stream-model.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import type { PostToolUseHook } from "../tools/hooks.js";
 import type { Tool } from "../tools/types.js";
-import { createEditorProposalTool } from "../tools/system/editor-proposal.js";
 import { BudgetTracker } from "../conversation/token-budget.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import {
@@ -837,10 +840,13 @@ describe("daemon-owned scheduled turns", () => {
         ),
         advance: async () => {
           await vi.advanceTimersByTimeAsync(60_000);
-          for (let round = 0; round < 25; round += 1) {
-            await new Promise<void>((resolveRound) => setImmediate(resolveRound));
+          // Durable cron storage does real file I/O. A reschedule can arm its
+          // next timer only after that I/O, so pause for real (node:timers/
+          // promises is not faked) and run due timers until things settle.
+          for (let round = 0; round < 10; round += 1) {
+            await realSleep(5);
+            await vi.advanceTimersByTimeAsync(0);
           }
-          await vi.advanceTimersByTimeAsync(0);
         },
       });
     } finally {
@@ -862,7 +868,13 @@ describe("daemon-owned scheduled turns", () => {
       registry.tools[0]!.execute = tool;
       const { session, events } = create("cron-owner", provider, registry);
       __installDaemonTurnDriverHooksForTest(session, session.services.configStore!);
-      const submit = vi.spyOn(session, "submit");
+      const submitted = Promise.withResolvers<void>();
+      const submitTurn = session.submit.bind(session);
+      const submit = vi.spyOn(session, "submit").mockImplementation((...args) => {
+        const completion = submitTurn(...args);
+        submitted.resolve();
+        return completion;
+      });
       const cronCreate = createModelFacingTools({ workspaceRoot, getSession: () => session })
         .find((candidate) => candidate.name === "CronCreate")!;
       const created = await cronCreate.execute({
@@ -874,6 +886,9 @@ describe("daemon-owned scheduled turns", () => {
       else await expect(readCronTasks(workspaceRoot)).rejects.toMatchObject({ code: "DESCRIPTOR_UNSUPPORTED" });
       expect(calls()).toBe(0);
       await advance();
+      // Timer advancement does not await the wake's real filesystem reads.
+      // Observe dispatch itself before asserting how many turns it submitted.
+      await submitted.promise;
       expect(submit).toHaveBeenCalledTimes(1);
       await submit.mock.results[0]!.value;
       const scheduler = await start(session);
@@ -2073,183 +2088,6 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     ]);
   });
 
-  test("Agent post-tool follow-ups preserve explicit Editor-owned queued prompts", async () => {
-    const queuedUuid = crypto.randomUUID();
-    const sentinel = "EDITOR_QUEUE_SENTINEL";
-    enqueue({
-      uuid: queuedUuid,
-      value: sentinel,
-      mode: "prompt",
-      priority: "next",
-      workspaceView: "editor",
-    });
-    const seenMessages: LLMMessage[][] = [];
-    const { provider, calls } = mkSingleToolFollowUpProvider({ seenMessages });
-    const append = vi.fn();
-    const appendRollout = vi.fn();
-    const { session, getState } = mkSession({
-      provider,
-      registry: mkStaticToolRegistry(),
-    });
-    session.rolloutStore = {
-      assertCompactionProjectionReady: () => {},
-      append,
-      appendRollout,
-      assertToolAdmissionAllowed: () => {},
-    } as unknown as Session["rolloutStore"];
-
-    const yielded = await drain(session.runTurn("start", { ctx: mkCtx() }));
-
-    expect(calls()).toBe(2);
-    expect(seenMessages.flat().map(testMessageText).join("\n")).not.toContain(
-      sentinel,
-    );
-    expect(getCommandQueueSnapshot()).toContainEqual(
-      expect.objectContaining({ uuid: queuedUuid, value: sentinel }),
-    );
-    expect(yielded.some((event) => event.type === "queued_command")).toBe(
-      false,
-    );
-    expect(JSON.stringify(append.mock.calls)).not.toContain(sentinel);
-    expect(JSON.stringify(appendRollout.mock.calls)).not.toContain(sentinel);
-    expect(
-      (getState().history as LLMMessage[]).map(testMessageText).join("\n"),
-    ).not.toContain(sentinel);
-  });
-
-  test("Editor tool follow-ups never consume, sample, emit, or persist the global Agent command queue", async () => {
-    const queuedUuid = crypto.randomUUID();
-    const sentinel = "AGENT_QUEUE_SENTINEL";
-    enqueue({
-      uuid: queuedUuid,
-      value: sentinel,
-      mode: "prompt",
-      priority: "next",
-      workspaceView: "agent",
-    });
-    const seenMessages: LLMMessage[][] = [];
-    let samples = 0;
-    const provider = mkProvider({});
-    provider.chatStream = async (messages) => {
-      samples += 1;
-      seenMessages.push(messages.map((message) => ({ ...message })));
-      return samples === 1
-        ? {
-            content: "",
-            toolCalls: [
-              {
-                id: "editor-queued-agent-read",
-                name: "FileRead",
-                arguments: JSON.stringify({
-                  file_path: "src/value.ts",
-                }),
-              },
-            ],
-            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-            model: "test-model",
-            finishReason: "tool_calls",
-          }
-        : {
-            content: "Editor answer",
-            toolCalls: [],
-            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-            model: "test-model",
-            finishReason: "stop",
-          };
-    };
-    const { registry, dispatch } = mkTrustedEditorReadRegistry();
-    const append = vi.fn();
-    const appendRollout = vi.fn();
-    const { session, getState } = mkSession({ provider, registry });
-    session.rolloutStore = {
-      assertCompactionProjectionReady: () => {},
-      append,
-      appendRollout,
-      assertToolAdmissionAllowed: () => {},
-    } as unknown as Session["rolloutStore"];
-
-    const yielded = await drain(
-      session.runTurn("Explain this selection.", {
-        ctx: mkReadOnlyEditorCtx("editor-global-command-queue"),
-      }),
-    );
-
-    expect(samples).toBe(2);
-    expect(dispatch).toHaveBeenCalledOnce();
-    expect(seenMessages.flat().map(testMessageText).join("\n")).not.toContain(
-      sentinel,
-    );
-    expect(getCommandQueueSnapshot()).toContainEqual(
-      expect.objectContaining({ uuid: queuedUuid, value: sentinel }),
-    );
-    expect(yielded.some((event) => event.type === "queued_command")).toBe(
-      false,
-    );
-    expect(JSON.stringify(append.mock.calls)).not.toContain(sentinel);
-    expect(JSON.stringify(appendRollout.mock.calls)).not.toContain(sentinel);
-    expect(
-      (getState().history as LLMMessage[]).map(testMessageText).join("\n"),
-    ).not.toContain(sentinel);
-  });
-
-  test("Editor turns admit only exact interaction-owned pending input and leave unowned or peer Editor input queued", async () => {
-    const interactionId = "editor-mailbox-exact";
-    const seenMessages: LLMMessage[][] = [];
-    const provider = mkProvider({});
-    provider.chatStream = async (messages) => {
-      seenMessages.push(messages.map((message) => ({ ...message })));
-      return {
-        content: "Editor mailbox answer",
-        toolCalls: [],
-        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-        model: "test-model",
-        finishReason: "stop",
-      };
-    };
-    const { session } = mkSession({
-      provider,
-      registry: mkRegistry(),
-    });
-    session.enqueueIdleInput({
-      role: "user",
-      content: "UNOWNED_AGENT_PENDING",
-    });
-    session.enqueueIdleInput(
-      { role: "user", content: "MATCHING_EDITOR_ATTACHMENT" },
-      {
-        workspaceView: "editor",
-        editorInteractionId: interactionId,
-      },
-    );
-    session.enqueueIdleInput(
-      { role: "user", content: "PEER_EDITOR_ATTACHMENT" },
-      {
-        workspaceView: "editor",
-        editorInteractionId: "different-editor-interaction",
-      },
-    );
-
-    await drain(
-      session.runTurn("Explain this.", {
-        ctx: mkReadOnlyEditorCtx(interactionId),
-      }),
-    );
-
-    const sampledText = (seenMessages[0] ?? []).map(testMessageText).join("\n");
-    expect(sampledText).toContain("MATCHING_EDITOR_ATTACHMENT");
-    expect(sampledText).not.toContain("UNOWNED_AGENT_PENDING");
-    expect(sampledText).not.toContain("PEER_EDITOR_ATTACHMENT");
-    expect(session.drainIdleInput({ workspaceView: "agent" })).toEqual([
-      { role: "user", content: "UNOWNED_AGENT_PENDING" },
-    ]);
-    expect(
-      session.drainIdleInput({
-        workspaceView: "editor",
-        editorInteractionId: "different-editor-interaction",
-      }),
-    ).toEqual([{ role: "user", content: "PEER_EDITOR_ATTACHMENT" }]);
-  });
-
   test("post-tool preventContinuation stops before follow-up sampling", async () => {
     const seenMessages: LLMMessage[][] = [];
     const { provider, calls } = mkSingleToolFollowUpProvider({
@@ -2798,702 +2636,6 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     }
   });
 
-  test("fails closed after the fixed Editor sampling cap when trusted reads never terminate", async () => {
-    const ctx = mkReadOnlyEditorCtx("editor-sampling-cap", {
-      contextWindow: 128_000,
-    });
-    const { registry, dispatch } = mkTrustedEditorReadRegistry(
-      "unchanged trusted read",
-    );
-    let samples = 0;
-    const provider = mkProvider({});
-    provider.chatStream = async () => {
-      samples += 1;
-      return {
-        content: "",
-        toolCalls: [
-          {
-            id: `editor-cap-read-${samples}`,
-            name: "FileRead",
-            arguments: JSON.stringify({ file_path: "src/value.ts" }),
-          },
-        ],
-        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-        model: "test-model",
-        finishReason: "tool_calls",
-      };
-    };
-    const { session, events } = mkSession({ provider, registry });
-
-    const yielded = await drain(
-      session.runTurn("Keep reading forever.", { ctx }),
-    );
-
-    expect(samples).toBe(EDITOR_INTERACTION_MAX_SAMPLING_ITERATIONS);
-    expect(dispatch).toHaveBeenCalledTimes(
-      EDITOR_INTERACTION_MAX_SAMPLING_ITERATIONS,
-    );
-    expect(yielded).toContainEqual(
-      expect.objectContaining({
-        type: "turn_complete",
-        stopReason: "editor_request_failed",
-        error: expect.objectContaining({
-          message: expect.stringContaining("editor_interaction_limit"),
-        }),
-      }),
-    );
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        msg: {
-          type: "warning",
-          payload: expect.objectContaining({
-            cause: "editor_interaction_limit",
-            message: expect.stringContaining("sampling_iterations"),
-          }),
-        },
-      }),
-    );
-  });
-
-  test("executes at most the fixed Editor tool quota and pairs an over-cap fanout", async () => {
-    const ctx = mkReadOnlyEditorCtx("editor-tool-cap");
-    const { registry, dispatch } = mkTrustedEditorReadRegistry();
-    const provider = mkProvider({
-      content: "",
-      toolCalls: Array.from(
-        { length: EDITOR_INTERACTION_MAX_TOOL_CALLS + 1 },
-        (_, index) => ({
-          id: `editor-fanout-${index}`,
-          name: "FileRead",
-          arguments: JSON.stringify({ file_path: `src/${index}.ts` }),
-        }),
-      ),
-      finishReason: "tool_calls",
-    });
-    const { session } = mkSession({ provider, registry });
-
-    const yielded = await drain(session.runTurn("Read every file.", { ctx }));
-
-    expect(dispatch).toHaveBeenCalledTimes(EDITOR_INTERACTION_MAX_TOOL_CALLS);
-    expect(yielded).toContainEqual(
-      expect.objectContaining({
-        type: "turn_complete",
-        stopReason: "editor_request_failed",
-        error: expect.objectContaining({
-          message: expect.stringContaining("editor_interaction_limit"),
-        }),
-      }),
-    );
-    expect(
-      yielded.filter((event) => event.type === "tool_result"),
-    ).toHaveLength(EDITOR_INTERACTION_MAX_TOOL_CALLS + 1);
-    expect(
-      yielded.filter(
-        (event) =>
-          event.type === "tool_result" &&
-          event.result.isError === true &&
-          event.result.content.includes("editor_interaction_limit"),
-      ),
-    ).toHaveLength(1);
-  });
-
-  test("enforces the cumulative Editor tool quota before streamed dispatch", async () => {
-    const ctx = mkReadOnlyEditorCtx("editor-streamed-tool-cap");
-    const { registry, dispatch } = mkTrustedEditorReadRegistry();
-    const calls: LLMToolCall[] = Array.from(
-      { length: EDITOR_INTERACTION_MAX_TOOL_CALLS + 1 },
-      (_, index) => ({
-        id: `editor-streamed-fanout-${index}`,
-        name: "FileRead",
-        arguments: JSON.stringify({ file_path: `src/${index}.ts` }),
-      }),
-    );
-    const provider = mkProvider({});
-    provider.chatStream = async (_messages, onChunk) => {
-      for (const call of calls) {
-        onChunk({
-          content: "",
-          done: false,
-          toolCalls: [call],
-        });
-      }
-      return {
-        content: "",
-        toolCalls: calls,
-        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-        model: "test-model",
-        finishReason: "tool_calls",
-      };
-    };
-    const { session } = mkSession({ provider, registry });
-
-    const yielded = await drain(session.runTurn("Stream every read.", { ctx }));
-
-    expect(dispatch).toHaveBeenCalledTimes(EDITOR_INTERACTION_MAX_TOOL_CALLS);
-    expect(
-      yielded.filter((event) => event.type === "tool_result"),
-    ).toHaveLength(EDITOR_INTERACTION_MAX_TOOL_CALLS + 1);
-    expect(yielded).toContainEqual(
-      expect.objectContaining({
-        type: "turn_complete",
-        stopReason: "editor_request_failed",
-        error: expect.objectContaining({
-          message: expect.stringContaining("editor_interaction_limit"),
-        }),
-      }),
-    );
-  });
-
-  test("projects oversized plain and tool history locally without persistence, microcompaction, or shared-history rewrites", async () => {
-    const storage = await import("../utils/toolResultStorage.js");
-    const microCompact = await import("../services/compact/microCompact.js");
-    const persistSpy = vi.spyOn(storage, "persistToolResult");
-    const microCompactSpy = vi.spyOn(microCompact, "microcompactMessages");
-    const hugePlainHistory = `PLAIN_HISTORY_${"p".repeat(600_000)}`;
-    const hugeToolResult = `TOOL_HISTORY_${"t".repeat(300_000)}`;
-    const history: LLMMessage[] = [
-      { role: "user", content: hugePlainHistory },
-      {
-        role: "assistant",
-        content: "",
-        toolCalls: [
-          {
-            id: "historical-read",
-            name: "FileRead",
-            arguments: JSON.stringify({ file_path: "src/old.ts" }),
-          },
-        ],
-      },
-      {
-        role: "tool",
-        toolCallId: "historical-read",
-        toolName: "FileRead",
-        content: hugeToolResult,
-      },
-    ];
-    const seenMessages: LLMMessage[][] = [];
-    const provider = mkProvider({});
-    provider.chatStream = async (messages) => {
-      seenMessages.push(messages.map((message) => ({ ...message })));
-      return {
-        content: "bounded Editor answer",
-        toolCalls: [],
-        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-        model: "test-model",
-        finishReason: "stop",
-      };
-    };
-    const ctx = mkReadOnlyEditorCtx("editor-query-purity", {
-      contextWindow: 32_000,
-    });
-    const { session, getState } = mkSession({
-      provider,
-      registry: mkRegistry(),
-    });
-
-    await drain(
-      session.runTurn("Explain only the current selection.", {
-        ctx,
-        history,
-      }),
-    );
-
-    expect(persistSpy).not.toHaveBeenCalled();
-    expect(microCompactSpy).not.toHaveBeenCalled();
-    expect(seenMessages).toHaveLength(1);
-    const { roughTokenCountEstimationForMessages } =
-      await import("../llm/token-estimation.js");
-    const providerTokens = roughTokenCountEstimationForMessages(
-      seenMessages[0] ?? [],
-    );
-    expect(providerTokens).toBeLessThanOrEqual(
-      EDITOR_INTERACTION_MAX_QUERY_TOKENS,
-    );
-    expect(providerTokens).toBeLessThan(24_000);
-    const providerText = (seenMessages[0] ?? [])
-      .map(testMessageText)
-      .join("\n");
-    expect(providerText).not.toContain("PLAIN_HISTORY_");
-    expect(providerText).not.toContain("TOOL_HISTORY_");
-    expect(history[0]?.content).toBe(hugePlainHistory);
-    expect(history[2]?.content).toBe(hugeToolResult);
-    const sharedHistory = getState().history as LLMMessage[];
-    expect(sharedHistory[0]?.content).toBe(hugePlainHistory);
-    expect(sharedHistory[2]?.content).toBe(hugeToolResult);
-  });
-
-  test("repeated trusted Editor reads bypass the Agent behavioral backstop and can still complete a valid proposal", async () => {
-    const interactionId = "editor-repeated-read-proposal";
-    const contentSha256 = "b".repeat(64);
-    const ctx = {
-      ...mkReadOnlyEditorCtx(interactionId, {
-        contextWindow: 128_000,
-      }),
-      config: {
-        maxTurns: 100,
-        behavioralBackstop: true,
-        progressRepeatSoft: 2,
-        progressRepeatHard: 3,
-        progressLowGainStreak: 2,
-      },
-      editorInteraction: {
-        interactionId,
-        kind: "edit",
-        policy: "proposal_only",
-        editorInstanceId: "editor-repeated-read",
-        bufferHandle: 7,
-        path: "src/value.ts",
-        changedtick: 17,
-        contentSha256,
-        range: {
-          start: { line: 1, column: 0 },
-          end: { line: 1, column: 5 },
-        },
-      },
-    } as TurnContext;
-    const readTool: Tool = {
-      name: "FileRead",
-      description: "Read a workspace file",
-      inputSchema: { type: "object", properties: {} },
-      metadata: {
-        family: "filesystem",
-        source: "builtin",
-        mutating: false,
-      },
-      isReadOnly: true,
-      recoveryCategory: "idempotent",
-      execute: async () => ({ content: "same value every time" }),
-    };
-    const proposalTool = createEditorProposalTool();
-    const dispatch = vi.fn(async (call: LLMToolCall) =>
-      call.name === proposalTool.name
-        ? proposalTool.execute(
-            JSON.parse(call.arguments) as Record<string, unknown>,
-          )
-        : { content: "same value every time", isError: false },
-    );
-    const registry = {
-      tools: [readTool, proposalTool],
-      toLLMTools: () =>
-        [readTool, proposalTool].map((tool) => ({
-          type: "function" as const,
-          function: {
-            name: tool.name,
-            description: tool.description,
-            parameters: tool.inputSchema,
-          },
-        })),
-      getTrustedEditorInteractionTool: (name: string) =>
-        name === readTool.name
-          ? readTool
-          : name === proposalTool.name
-            ? proposalTool
-            : undefined,
-      dispatch,
-    } as ToolRegistry;
-    const seenMessages: LLMMessage[][] = [];
-    let samples = 0;
-    const provider = mkProvider({});
-    provider.chatStream = async (messages) => {
-      samples += 1;
-      seenMessages.push(messages.map((message) => ({ ...message })));
-      if (samples <= 4) {
-        return {
-          content: "",
-          toolCalls: [
-            {
-              id: `repeated-read-${samples}`,
-              name: "FileRead",
-              arguments: JSON.stringify({
-                file_path: "src/value.ts",
-              }),
-            },
-          ],
-          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-          model: "test-model",
-          finishReason: "tool_calls",
-        };
-      }
-      if (samples === 5) {
-        return {
-          content: "",
-          toolCalls: [
-            {
-              id: "repeated-read-proposal",
-              name: "EditorProposal",
-              arguments: JSON.stringify({
-                version: 1,
-                interaction_id: interactionId,
-                path: "src/value.ts",
-                buffer_handle: 7,
-                base_changedtick: 17,
-                base_content_sha256: contentSha256,
-                summary: "Replace selected value",
-                edits: [
-                  {
-                    id: "edit-1",
-                    start_line: 1,
-                    start_column: 0,
-                    end_line: 1,
-                    end_column: 5,
-                    old_text: "value",
-                    new_text: "answer",
-                  },
-                ],
-              }),
-            },
-          ],
-          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-          model: "test-model",
-          finishReason: "tool_calls",
-        };
-      }
-      return {
-        content: "Proposal ready.",
-        toolCalls: [],
-        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-        model: "test-model",
-        finishReason: "stop",
-      };
-    };
-    const { session, events } = mkSession({ provider, registry });
-
-    const yielded = await drain(
-      session.runTurn("Replace the selected value.", { ctx }),
-    );
-
-    expect(samples).toBe(6);
-    expect(
-      yielded.filter((event) => event.type === "tool_result"),
-    ).toHaveLength(5);
-    expect(
-      events.some(
-        (event) =>
-          event.msg.type === "warning" &&
-          (event.msg.payload.cause === "no_progress_warning" ||
-            event.msg.payload.cause === "no_progress_detected"),
-      ),
-    ).toBe(false);
-    expect(seenMessages.flat().map(testMessageText).join("\n")).not.toContain(
-      "You have repeated the same action",
-    );
-    expect(yielded).toContainEqual(
-      expect.objectContaining({
-        type: "turn_complete",
-        stopReason: "completed",
-        content: "Proposal ready.",
-      }),
-    );
-  });
-
-  test("fails a proposal-only editor turn that ends without a validated proposal", async () => {
-    const provider = mkProvider({
-      content: "I changed the selected code.",
-    });
-    const chatStream = vi.fn(provider.chatStream);
-    const proposal = createEditorProposalTool();
-    const registry = {
-      ...mkRegistry(),
-      tools: [proposal],
-    } as ToolRegistry;
-    const ctx = {
-      ...mkCtx(),
-      permissionMode: "plan",
-      editorInteraction: {
-        interactionId: "interaction-no-proposal",
-        kind: "edit",
-        policy: "proposal_only",
-        editorInstanceId: "editor-1",
-        bufferHandle: 7,
-        path: "src/value.ts",
-        changedtick: 17,
-        contentSha256: "a".repeat(64),
-        range: {
-          start: { line: 1, column: 0 },
-          end: { line: 1, column: 5 },
-        },
-      },
-    } as TurnContext;
-    const { session, events } = mkSession({
-      provider: { ...provider, chatStream },
-      registry,
-    });
-
-    const yielded: PhaseEvent[] = [];
-    for await (const event of session.runTurn("replace value", { ctx })) {
-      yielded.push(event);
-    }
-
-    expect(chatStream).toHaveBeenCalledOnce();
-    expect(yielded).toContainEqual(
-      expect.objectContaining({
-        type: "turn_complete",
-        content: expect.stringContaining("Editor edit request incomplete"),
-        stopReason: "editor_request_failed",
-        error: expect.objectContaining({
-          message: expect.stringContaining("editor_proposal_missing"),
-        }),
-      }),
-    );
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        msg: {
-          type: "warning",
-          payload: expect.objectContaining({
-            cause: "editor_proposal_missing",
-            message: expect.stringContaining("No buffer changes were made"),
-          }),
-        },
-      }),
-    );
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        msg: {
-          type: "turn_failed",
-          payload: expect.objectContaining({
-            code: "editor_request_failed",
-            message: expect.stringContaining("Editor edit request incomplete"),
-          }),
-        },
-      }),
-    );
-  });
-
-  test("read-only Editor turns bypass shared Plan parsing and capability attachments without changing Plan mode", async () => {
-    const permissionModeRegistry = new PermissionModeRegistry(
-      createEmptyToolPermissionContext({ mode: "plan" }),
-    );
-    const ctx = {
-      ...mkCtx(),
-      permissionMode: "plan",
-      editorInteraction: {
-        interactionId: "interaction-plan-read",
-        kind: "explain",
-        policy: "read_only",
-        editorInstanceId: "editor-plan-read",
-        bufferHandle: 11,
-        path: "src/value.ts",
-        changedtick: 19,
-        contentSha256: "b".repeat(64),
-        range: {
-          start: { line: 1, column: 0 },
-          end: { line: 1, column: 5 },
-        },
-      },
-    } as TurnContext;
-
-    const readTool: Tool = {
-      name: "FileRead",
-      description: "Read a workspace file",
-      inputSchema: { type: "object", properties: {} },
-      metadata: {
-        family: "filesystem",
-        source: "builtin",
-        mutating: false,
-      },
-      isReadOnly: true,
-      recoveryCategory: "idempotent",
-      execute: async () => ({ content: "not used" }),
-    };
-    const registry = {
-      ...mkRegistry(),
-      tools: [readTool],
-      toLLMTools: () => [
-        {
-          type: "function",
-          function: {
-            name: readTool.name,
-            description: readTool.description,
-            parameters: readTool.inputSchema,
-          },
-        },
-      ],
-      getTrustedEditorInteractionTool: (name: string) =>
-        name === readTool.name ? readTool : undefined,
-    } as ToolRegistry;
-    const skillsForConfig = vi.fn(async () => ({
-      availableSkills: [
-        {
-          name: "editor-plan-leak",
-          description: "MUST_NOT_APPEAR_SKILL_GUIDANCE",
-        },
-      ],
-    }));
-    const toolChoices: Array<LLMToolChoice | undefined> = [];
-    let providerPrompt = "";
-    const provider = mkProvider({});
-    provider.chatStream = async (messages, _onChunk, options) => {
-      toolChoices.push(options?.toolChoice);
-      providerPrompt = [
-        options?.systemPrompt ?? "",
-        ...messages.map(testMessageText),
-      ].join("\n");
-      return {
-        content:
-          "Literal editor answer\n<proposed_plan>\nSELECTED_LITERAL\n</proposed_plan>",
-        toolCalls: [],
-        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-        model: "test-model",
-        finishReason: "stop",
-      };
-    };
-    const { session, events } = mkSession({
-      provider,
-      registry,
-      permissionModeRegistry,
-      skillsManager: {
-        skillsForConfig,
-      } as unknown as SessionServices["skillsManager"],
-    });
-
-    const yielded: PhaseEvent[] = [];
-    for await (const event of session.runTurn("Explain this selection.", {
-      ctx,
-      systemPrompt: "EDITOR_POLICY_SENTINEL",
-      systemPromptReplacesBase: true,
-    })) {
-      yielded.push(event);
-    }
-
-    expect(toolChoices).toEqual([undefined]);
-    expect(providerPrompt).toContain("EDITOR_POLICY_SENTINEL");
-    expect(providerPrompt).toContain("Explain this selection.");
-    expect(providerPrompt).not.toContain("Plan mode is active");
-    expect(providerPrompt).not.toContain("MUST_NOT_APPEAR_SKILL_GUIDANCE");
-    expect(skillsForConfig).not.toHaveBeenCalled();
-    expect(yielded.find((event) => event.type === "assistant_text")).toEqual(
-      expect.objectContaining({
-        content: expect.stringContaining("SELECTED_LITERAL"),
-      }),
-    );
-    expect(
-      events.some((event) => event.msg.type === "plan_item_completed"),
-    ).toBe(false);
-    expect(permissionModeRegistry.current().mode).toBe("plan");
-    expect(ctx.permissionMode).toBe("plan");
-  });
-
-  test("proposal-only Editor turns bypass Plan tool requirements while preserving the trusted proposal loop", async () => {
-    const permissionModeRegistry = new PermissionModeRegistry(
-      createEmptyToolPermissionContext({ mode: "plan" }),
-    );
-    const interactionId = "interaction-plan-proposal";
-    const contentSha256 = "c".repeat(64);
-    const ctx = {
-      ...mkCtx(),
-      permissionMode: "plan",
-      editorInteraction: {
-        interactionId,
-        kind: "edit",
-        policy: "proposal_only",
-        editorInstanceId: "editor-plan-proposal",
-        bufferHandle: 12,
-        path: "src/value.ts",
-        changedtick: 23,
-        contentSha256,
-        range: {
-          start: { line: 1, column: 0 },
-          end: { line: 1, column: 5 },
-        },
-      },
-    } as TurnContext;
-
-    const proposalTool = createEditorProposalTool();
-    const registry = {
-      ...mkRegistry(),
-      tools: [proposalTool],
-      getTrustedEditorInteractionTool: (name: string) =>
-        name === proposalTool.name ? proposalTool : undefined,
-      dispatch: async (toolCall: LLMToolCall) =>
-        proposalTool.execute(
-          JSON.parse(toolCall.arguments) as Record<string, unknown>,
-        ),
-    } as ToolRegistry;
-    const toolChoices: Array<LLMToolChoice | undefined> = [];
-    const advertisedTools: string[][] = [];
-    let calls = 0;
-    const provider = mkProvider({});
-    provider.chatStream = async (_messages, _onChunk, options) => {
-      calls += 1;
-      toolChoices.push(options?.toolChoice);
-      advertisedTools.push(
-        options?.tools?.map((tool) => tool.function.name) ?? [],
-      );
-      if (calls === 1) {
-        return {
-          content: "",
-          toolCalls: [
-            {
-              id: "editor-proposal-plan-call",
-              name: "EditorProposal",
-              arguments: JSON.stringify({
-                version: 1,
-                interaction_id: interactionId,
-                path: "src/value.ts",
-                buffer_handle: 12,
-                base_changedtick: 23,
-                base_content_sha256: contentSha256,
-                summary: "Replace selected value",
-                edits: [
-                  {
-                    id: "edit-1",
-                    start_line: 1,
-                    start_column: 0,
-                    end_line: 1,
-                    end_column: 5,
-                    old_text: "value",
-                    new_text: "answer",
-                  },
-                ],
-              }),
-            },
-          ],
-          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-          model: "test-model",
-          finishReason: "tool_calls",
-        };
-      }
-      return {
-        content: "Proposal ready for review.",
-        toolCalls: [],
-        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-        model: "test-model",
-        finishReason: "stop",
-      };
-    };
-    const { session, events } = mkSession({
-      provider,
-      registry,
-      permissionModeRegistry,
-    });
-
-    const yielded: PhaseEvent[] = [];
-    for await (const event of session.runTurn("Replace the selected value.", {
-      ctx,
-      systemPrompt: "EDITOR_PROPOSAL_POLICY_SENTINEL",
-      systemPromptReplacesBase: true,
-    })) {
-      yielded.push(event);
-    }
-
-    expect(calls).toBe(2);
-    expect(toolChoices).toEqual([undefined, undefined]);
-    expect(advertisedTools).toEqual([["EditorProposal"], ["EditorProposal"]]);
-    expect(
-      yielded.some(
-        (event) =>
-          event.type === "turn_complete" &&
-          event.stopReason === "completed" &&
-          event.content === "Proposal ready for review.",
-      ),
-    ).toBe(true);
-    expect(
-      events.some((event) => event.msg.type === "plan_item_completed"),
-    ).toBe(false);
-    expect(permissionModeRegistry.current().mode).toBe("plan");
-    expect(ctx.permissionMode).toBe("plan");
-  });
-
   test("launches MagicDocs from main-thread idle completed turns", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "agenc-magic-docs-run-turn-"));
     const docPath = join(tempDir, "doc.md");
@@ -3518,54 +2660,6 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       });
 
       expect(seen).toEqual([docPath]);
-    } finally {
-      resetMagicDocsForTests();
-      rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  test("Editor turns do not launch MagicDocs or session-memory post-sampling", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "agenc-editor-post-sampling-"));
-    const docPath = join(tempDir, "doc.md");
-    resetMagicDocsForTests();
-    try {
-      writeFileSync(docPath, "# MAGIC DOC: Editor Boundary\n\nBody\n", "utf8");
-      registerMagicDoc(docPath, "conv-test");
-      const seen: string[] = [];
-      setMagicDocsAgentRunnerForTests(async (request) => {
-        seen.push(request.docPath);
-      });
-      const { session } = mkSession({
-        provider: mkProvider({ content: "selection explanation" }),
-        registry: mkRegistry(),
-      });
-      const ctx = {
-        ...mkCtx(),
-        editorInteraction: {
-          interactionId: "interaction-post-sampling-ask",
-          kind: "ask",
-          policy: "read_only",
-          editorInstanceId: "editor-post-sampling",
-          bufferHandle: 10,
-          changedtick: 3,
-          contentSha256: "c".repeat(64),
-          path: docPath,
-          range: {
-            start: { line: 1, column: 0 },
-            end: { line: 1, column: 1 },
-          },
-        },
-      } as TurnContext;
-
-      await drain(session.runTurn("explain this selection", { ctx }));
-      await runMagicDocsPostSamplingHook({
-        messages: [],
-        querySource: "agent:flush",
-        sessionId: "conv-test",
-      });
-
-      expect(seen).toEqual([]);
-      expect(sessionMemoryPostSamplingMockState.calls).toHaveLength(0);
     } finally {
       resetMagicDocsForTests();
       rmSync(tempDir, { recursive: true, force: true });
@@ -4166,6 +3260,36 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       ),
     ).toBe(false);
     expect(getState().previousTurnSettings?.personality).toBe("friendly");
+  });
+
+  test.each([
+    ["session_shutdown", "interrupted"],
+    ["daemon_shutdown", "daemon_shutdown"],
+  ] as const)("emits %s shutdown as turn_aborted reason %s", async (shutdownReason, expectedReason) => {
+    const entered = Promise.withResolvers<void>();
+    const provider = mkProvider({});
+    provider.chatStream = async (_messages, _onChunk, options) => {
+      entered.resolve();
+      await new Promise<void>((_resolve, reject) => {
+        const signal = options?.signal;
+        if (signal?.aborted) {
+          reject(new Error("sample aborted"));
+        } else {
+          signal?.addEventListener("abort", () => reject(new Error("sample aborted")), { once: true });
+        }
+      });
+      throw new Error("unreachable");
+    };
+    const { session, events } = mkSession({ provider, registry: mkRegistry() });
+    const running = drain(session.runTurn("keep working", { ctx: mkCtx() }));
+    await entered.promise;
+    await shutdownSessionLifecycle({ session, shutdownReason });
+    await running;
+    expect(events.filter((event) => event.msg.type === "turn_aborted")).toEqual([
+      expect.objectContaining({
+        msg: { type: "turn_aborted", payload: expect.objectContaining({ reason: expectedReason }) },
+      }),
+    ]);
   });
 
   test("emits token_count after streamModel completes", async () => {
@@ -7382,102 +6506,6 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
     }
   });
 
-  test("Editor turns fail closed on cross-model fallback without mutating the shared route", async () => {
-    const ctx = {
-      ...mkCtx(),
-      editorInteraction: {
-        interactionId: "editor-no-model-fallback",
-        kind: "explain",
-        policy: "read_only",
-        editorInstanceId: "editor-route",
-        bufferHandle: 7,
-        path: "src/value.ts",
-        changedtick: 5,
-        contentSha256: "d".repeat(64),
-        range: {
-          start: { line: 1, column: 0 },
-          end: { line: 1, column: 5 },
-        },
-      },
-    } as TurnContext;
-    let primaryCalls = 0;
-    let fallbackCalls = 0;
-    const primaryProvider: LLMProvider = {
-      ...mkProvider({}),
-      name: "primary-provider",
-      chatStream: async () => {
-        primaryCalls += 1;
-        throw new FallbackTriggeredError("test-model", "fallback-model");
-      },
-    };
-    const fallbackProvider = mkProvider({
-      content: "must not be sampled",
-      model: "fallback-model",
-    });
-    fallbackProvider.chatStream = async (...args) => {
-      fallbackCalls += 1;
-      return mkProvider({
-        content: "must not be sampled",
-        model: "fallback-model",
-      }).chatStream(...args);
-    };
-    const { session, getState } = mkSession({
-      provider: primaryProvider,
-      registry: mkRegistry(),
-      sessionConfiguration: {
-        provider: { slug: "openai-compatible" },
-        collaborationMode: { model: "test-model" },
-      },
-    });
-    let appliedSwitches = 0;
-    const consumeSpy = vi
-      .spyOn(session, "consumePendingProviderSwitch")
-      .mockImplementation(async () => {
-        if (session.pendingProviderSwitch === null) {
-          return {
-            applied: false,
-            reason: "no pending provider switch",
-          };
-        }
-        appliedSwitches += 1;
-        session.setPendingProviderSwitch(null);
-        (session.services as { provider: LLMProvider }).provider =
-          fallbackProvider;
-        return {
-          applied: true,
-          provider: "stub-provider",
-          model: "fallback-model",
-        };
-      });
-
-    const yielded: PhaseEvent[] = [];
-    for await (const event of session.runTurn("Explain this.", { ctx })) {
-      yielded.push(event);
-    }
-
-    expect(primaryCalls).toBe(1);
-    expect(fallbackCalls).toBe(0);
-    expect(appliedSwitches).toBe(0);
-    expect(consumeSpy).not.toHaveBeenCalled();
-    expect(session.pendingProviderSwitch).toBeNull();
-    expect(session.services.provider).toBe(primaryProvider);
-    expect(getState().sessionConfiguration.provider?.slug).toBe(
-      "openai-compatible",
-    );
-    expect(getState().sessionConfiguration.collaborationMode?.model).toBe(
-      "test-model",
-    );
-    expect(yielded).toContainEqual(
-      expect.objectContaining({
-        type: "turn_complete",
-        stopReason: "error",
-        error: expect.objectContaining({
-          message: expect.stringContaining("fallback"),
-        }),
-      }),
-    );
-  });
-
   test("profile switch via pendingProviderSwitch routes through configStore.resolveProfile when available", async () => {
     // When a configStore is wired on session.services, the profile
     // slot drives model resolution through resolveProfile. The staged
@@ -7576,212 +6604,6 @@ describe("runTurn — runAutoCompact dispatcher", () => {
   const compactPressureHistory = (chars = 600): LLMMessage[] => [
     { role: "user", content: `old ${"x".repeat(chars)}` },
   ];
-
-  test.each(["read_only", "proposal_only"] as const)(
-    "never auto-compacts a %s Editor interaction",
-    async (policy) => {
-      const ctx = {
-        ...mkCtx(),
-        modelInfo: {
-          ...mkCtx().modelInfo,
-          autoCompactTokenLimit: 1,
-        },
-        editorInteraction: {
-          interactionId: `interaction-no-compact-${policy}`,
-          kind: policy === "read_only" ? "explain" : "edit",
-          policy,
-          editorInstanceId: "editor-no-compact",
-          bufferHandle: 7,
-          path: "src/value.ts",
-          changedtick: 17,
-          contentSha256: "a".repeat(64),
-          range: {
-            start: { line: 1, column: 0 },
-            end: { line: 1, column: 5 },
-          },
-        },
-      } as TurnContext;
-      const { session } = mkSession({
-        provider: mkProvider({ content: "editor response" }),
-        registry: mkRegistry(),
-      });
-      const history = compactPressureHistory(5_000);
-      (session as unknown as { state: unknown }).state = {
-        unsafePeek: () => ({ history, totalTokenUsage: 50_000 }),
-        with: async (fn: (s: unknown) => unknown) =>
-          fn({ history, totalTokenUsage: 50_000 }),
-      };
-      const compact = vi.fn<AutoCompactImpl>(async () => ({
-        wasCompacted: false,
-      }));
-      setAutoCompactImplForTests(compact);
-
-      await drain(session.runTurn("work on this selection", { ctx }));
-
-      expect(compact).not.toHaveBeenCalled();
-    },
-  );
-
-  test("completes an Editor read follow-up under compaction pressure without admitting unrelated Agent input", async () => {
-    const ctx = mkReadOnlyEditorCtx("editor-post-tool-no-compact", {
-      autoCompactTokenLimit: 1,
-    });
-    const seenMessages: LLMMessage[][] = [];
-    let samples = 0;
-    const provider = mkProvider({});
-    provider.chatStream = async (messages) => {
-      samples += 1;
-      seenMessages.push(messages.map((message) => ({ ...message })));
-      return samples === 1
-        ? {
-            content: "",
-            toolCalls: [
-              {
-                id: "editor-pressure-read",
-                name: "FileRead",
-                arguments: JSON.stringify({
-                  file_path: "src/value.ts",
-                }),
-              },
-            ],
-            usage: {
-              promptTokens: 100,
-              completionTokens: 1,
-              totalTokens: 101,
-            },
-            model: "test-model",
-            finishReason: "tool_calls",
-          }
-        : {
-            content: "Editor pressure answer",
-            toolCalls: [],
-            usage: {
-              promptTokens: 100,
-              completionTokens: 1,
-              totalTokens: 101,
-            },
-            model: "test-model",
-            finishReason: "stop",
-          };
-    };
-    const { registry, dispatch } = mkTrustedEditorReadRegistry();
-    const { session } = mkSession({ provider, registry });
-    session.enqueueIdleInput({
-      role: "user",
-      content: "UNRELATED_AGENT_COMPACTION_INPUT",
-    });
-    const compact = vi.fn<AutoCompactImpl>(async () => ({
-      wasCompacted: false,
-    }));
-    setAutoCompactImplForTests(compact);
-
-    const yielded = await drain(
-      session.runTurn("Explain under pressure.", { ctx }),
-    );
-
-    expect(samples).toBe(2);
-    expect(dispatch).toHaveBeenCalledOnce();
-    expect(compact).not.toHaveBeenCalled();
-    expect(
-      yielded.some(
-        (event) =>
-          event.type === "turn_complete" && event.stopReason === "error",
-      ),
-    ).toBe(false);
-    expect(seenMessages.flat().map(testMessageText).join("\n")).not.toContain(
-      "UNRELATED_AGENT_COMPACTION_INPUT",
-    );
-    expect(session.drainIdleInput()).toEqual([
-      { role: "user", content: "UNRELATED_AGENT_COMPACTION_INPUT" },
-    ]);
-  });
-
-  test("fails a withheld 413 Editor response without compacting or resampling", async () => {
-    const ctx = {
-      ...mkCtx(),
-      editorInteraction: {
-        interactionId: "interaction-editor-413",
-        kind: "explain",
-        policy: "read_only",
-        editorInstanceId: "editor-413",
-        bufferHandle: 7,
-        path: "src/value.ts",
-        changedtick: 17,
-        contentSha256: "e".repeat(64),
-        range: {
-          start: { line: 1, column: 0 },
-          end: { line: 1, column: 5 },
-        },
-      },
-    } as TurnContext;
-    let calls = 0;
-    const provider = mkProvider({});
-    provider.chatStream = async () => {
-      calls += 1;
-      return {
-        content: "Prompt is too long: 200000 tokens > 128000",
-        toolCalls: [],
-        usage: {
-          promptTokens: 200_000,
-          completionTokens: 0,
-          totalTokens: 200_000,
-        },
-        model: "test-model",
-        finishReason: "error",
-      };
-    };
-    const { session, events } = mkSession({
-      provider,
-      registry: mkRegistry(),
-    });
-    const compact = vi.fn<AutoCompactImpl>(async () => ({
-      wasCompacted: true,
-    }));
-    setAutoCompactImplForTests(compact);
-    const history: LLMMessage[] = [
-      { role: "user", content: "old one" },
-      { role: "assistant", content: "old answer one" },
-      { role: "user", content: "old two" },
-      { role: "assistant", content: "old answer two" },
-      { role: "user", content: "old three" },
-    ];
-
-    const yielded: PhaseEvent[] = [];
-    for await (const event of session.runTurn("Explain the selection.", {
-      ctx,
-      history,
-    })) {
-      yielded.push(event);
-    }
-
-    expect(calls).toBe(1);
-    expect(compact).not.toHaveBeenCalled();
-    expect(events.some((event) => event.msg.type === "context_compacted")).toBe(
-      false,
-    );
-    expect(yielded).toContainEqual(
-      expect.objectContaining({
-        type: "turn_complete",
-        stopReason: "editor_request_failed",
-        error: expect.objectContaining({
-          message: expect.stringContaining(
-            "editor_interaction_recovery_blocked: context_window",
-          ),
-        }),
-      }),
-    );
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        msg: {
-          type: "warning",
-          payload: expect.objectContaining({
-            cause: "editor_interaction_recovery_blocked",
-            message: expect.stringContaining("context_window"),
-          }),
-        },
-      }),
-    );
-  });
 
   test("persists auto-compact failures and skips the fourth automatic attempt", async () => {
     const ctx = mkCtx();
@@ -8557,6 +7379,185 @@ describe("runTurn — runAutoCompact dispatcher", () => {
 });
 
 describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
+  test("real kernel and admission restart continue after a completed effect exactly once", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-kernel-restart-cwd-"));
+    const home = mkdtempSync(join(tmpdir(), "agenc-kernel-restart-home-"));
+    const conversationId = "kernel-restart-effect-once";
+    const kernel = new ExecutionAdmissionKernel({ agencHome: home,
+      ownerId: "kernel-restart-test", ownerPid: process.pid });
+    const enteredSecondSample = Promise.withResolvers<void>();
+    let providerCalls = 0;
+    let completedEffects = 0;
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      getExecutionProfile: async () => ({ provider: "stub-provider", model: "test-model",
+        usageReporting: "authoritative", supportsMaxOutputTokens: true }),
+      chatStream: vi.fn(async (_messages, _onChunk, options) => {
+        providerCalls += 1;
+        if (providerCalls === 1) return {
+          content: "", toolCalls: [{ id: "write-once", name: "WriteOnce", arguments: "{}" }],
+          usage: { promptTokens: 8, completionTokens: 4, totalTokens: 12,
+            availability: "reported" as const, provenance: "provider" as const },
+          model: "test-model", finishReason: "tool_calls" as const,
+        };
+        if (providerCalls === 2) {
+          enteredSecondSample.resolve();
+          return await new Promise<LLMResponse>((_resolve, reject) => {
+            options?.signal?.addEventListener("abort", () => reject(new Error("daemon stopped")), { once: true });
+          });
+        }
+        return { content: "finished remaining work", toolCalls: [],
+          usage: { promptTokens: 8, completionTokens: 4, totalTokens: 12,
+            availability: "reported" as const, provenance: "provider" as const },
+          model: "test-model", finishReason: "stop" as const };
+      }),
+    };
+    const tool = { name: "WriteOnce", description: "record one effect",
+      inputSchema: { type: "object", additionalProperties: false },
+      requiresApproval: false, recoveryCategory: "side-effecting",
+      execute: vi.fn(async () => { completedEffects += 1;
+        return { content: "effect completed", isError: false }; }),
+    } as unknown as Tool;
+    const registry = { tools: [tool], toLLMTools: () => [],
+      dispatch: async () => tool.execute({} as never, {} as never),
+    } as unknown as ToolRegistry;
+    const config = { ...mkConfig(), durableTurns: { resume: { requireLease: false } } } as Config;
+    const open = (resume: boolean) => {
+      const store = new RolloutStore({ cwd, agencHome: home, sessionId: conversationId,
+        agencVersion: "0.2.0", sessionTempRoot: tmpdir(), ...(resume ? { resume: true } : {}) });
+      store.open({ sessionId: conversationId, timestamp: new Date().toISOString(), cwd,
+        originator: "kernel-restart-test", agencVersion: "0.2.0",
+        model: "test-model", modelProvider: provider.name });
+      return store;
+    };
+    let first: Session | undefined;
+    let second: Session | undefined;
+    try {
+      const firstStore = open(false);
+      const firstHarness = mkSession({ conversationId, provider, registry, config,
+        sessionConfiguration: { cwd, sandboxPolicy: { value: "danger_full_access" } } });
+      first = firstHarness.session;
+      Object.assign(first.modelInfo, { maxOutputTokens: 32 });
+      Object.assign(first.services, { executionAdmission: kernel.bindClient({ cwd,
+        scope: { runId: conversationId, sessionId: conversationId, autonomous: false } }),
+        admissionRequired: true });
+      first.mountRolloutStore(firstStore);
+      first.onBeforeDurableClose(bindExecutionAdmissionJournal(first, first.services.executionAdmission!));
+      const interrupted = drain(first.runTurn("write then finish", { subId: "restart-turn" }));
+      const firstPhase = await Promise.race([
+        enteredSecondSample.promise.then(() => "entered"),
+        interrupted.then(() => "ended"),
+        new Promise<string>(resolve => setTimeout(() => resolve("timed-out"), 3_000)),
+      ]);
+      expect({ firstPhase, providerCalls, completedEffects,
+        eventTypes: firstHarness.events.map(event => event.msg.type) })
+        .toMatchObject({ firstPhase: "entered", providerCalls: 2, completedEffects: 1 });
+      first.abortController.abort("daemon_shutdown");
+      await interrupted;
+      await first.shutdown();
+      expect(completedEffects).toBe(1);
+
+      const secondAdmission = kernel.bindClient({ cwd,
+        scope: { runId: conversationId, sessionId: conversationId, autonomous: false } });
+      const secondStore = open(true);
+      second = mkSession({ conversationId, provider, registry, config,
+        sessionConfiguration: { cwd, sandboxPolicy: { value: "danger_full_access" } } }).session;
+      Object.assign(second.modelInfo, { maxOutputTokens: 32 });
+      Object.assign(second.services, { executionAdmission: secondAdmission,
+        admissionRequired: true });
+      second.mountRolloutStore(secondStore);
+      second.eventLog.seedCanonicalHistory(secondStore.readAll()
+        .filter(item => item.type === "event_msg").map(item => item.payload));
+      second.onBeforeDurableClose(bindExecutionAdmissionJournal(second, second.services.executionAdmission!));
+      const reconstruction = reconstructFromRollout(secondStore.readAll(), {
+        checkpointProjection: secondStore.checkpointProjectionContext("kernel-restart-test"),
+      });
+      expect(reconstruction.resumableTurns).toHaveLength(1);
+      await expect(resumeTurnFromCheckpoint(second, reconstruction)).resolves.toMatchObject({ resumed: true });
+      expect(completedEffects).toBe(1);
+      expect(providerCalls).toBe(3);
+      expect(secondStore.readAll().filter(item => item.type === "response_item" &&
+        item.payload.role === "tool" && item.payload.toolCallId === "write-once")).toHaveLength(1);
+    } finally {
+      await second?.shutdown().catch(() => undefined);
+      await first?.shutdown().catch(() => undefined);
+      kernel.close();
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a restarted physical model sample checkpoints a fresh admission identity", async () => {
+    const { session, events } = mkSession({
+      provider: mkProvider({ content: "finished", toolCalls: [] }),
+      registry: { tools: [], toLLMTools: () => [], dispatch: vi.fn() } as unknown as ToolRegistry,
+    });
+    session.rolloutStore = {
+      assertCompactionProjectionReady: () => {}, append: vi.fn(), appendRollout: vi.fn(),
+      rolloutPath: "/tmp/does-not-matter.jsonl",
+    } as unknown as Session["rolloutStore"];
+    await drain(session.runTurn("", {
+      subId: "physical-sample-restart",
+      history: [{ role: "user", content: "Continue" }],
+      displayUserMessage: null,
+      resume: {
+        turnId: "physical-sample-restart", fromIteration: 1,
+        fromCheckpointSeq: 1, persistedMessageCount: 1,
+        restoreSlice: { turnCount: 2, recoveryReentryCount: 0,
+          maxOutputTokensRecoveryCount: 0, continuationNudgeCount: 0,
+          stopHookBlockingCount: 0, modelSampleOrdinal: 0 },
+      },
+    }));
+    const firstContinuationCheckpoint = events.find(event => event.msg.type === "turn_checkpoint");
+    expect(firstContinuationCheckpoint?.msg).toMatchObject({
+      type: "turn_checkpoint",
+      payload: { resumableState: { modelSampleOrdinal: 1 } },
+    });
+  });
+
+  test("continuation tells the model about completed tool results without persisting the nudge", async () => {
+    const seen: LLMMessage[][] = [];
+    const provider: LLMProvider = {
+      ...mkProvider({ content: "finished", toolCalls: [] }),
+      chatStream: async (messages) => {
+        seen.push(messages);
+        return { content: "finished", toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "test-model", finishReason: "stop" };
+      },
+    };
+    const registry = { tools: [], toLLMTools: () => [],
+      dispatch: vi.fn() } as unknown as ToolRegistry;
+    const { session } = mkSession({ provider, registry });
+    const appendRollout = vi.fn();
+    session.rolloutStore = {
+      assertCompactionProjectionReady: () => {}, append: vi.fn(), appendRollout,
+      rolloutPath: "/tmp/does-not-matter.jsonl",
+    } as unknown as Session["rolloutStore"];
+    const history: LLMMessage[] = [
+      { role: "user", content: "Write twelve files" },
+      { role: "assistant", content: "", toolCalls: [{ id: "write-1", name: "Write", arguments: "{}" }] },
+      { role: "tool", content: "Wrote file one", toolCallId: "write-1", toolName: "Write",
+        runtimeOnly: { toolResultIntegrity: createToolResultIntegrity({ runId: "conv-test", toolCallId: "write-1", content: "Wrote file one" }) } },
+    ];
+    await drain(session.runTurn("", { subId: "turn-restart-context", history,
+      displayUserMessage: null,
+      resume: { turnId: "turn-restart-context", fromIteration: 1,
+        fromCheckpointSeq: 1, persistedMessageCount: history.length,
+        restoreSlice: { turnCount: 2, recoveryReentryCount: 0,
+          maxOutputTokensRecoveryCount: 0, continuationNudgeCount: 0,
+          stopHookBlockingCount: 0 } },
+    }));
+    const modelMessages = seen[0] ?? [];
+    expect(modelMessages.filter(message => message.role === "tool" && message.toolCallId === "write-1")).toHaveLength(1);
+    expect(modelMessages.some(message => message.role === "developer" &&
+      testMessageText(message).includes("1 completed tool result(s)") &&
+      testMessageText(message).includes("Do not repeat completed work"))).toBe(true);
+    expect(appendRollout.mock.calls.some(([item]) => item.type === "response_item" &&
+      item.payload?.role === "developer" &&
+      String(item.payload.content).includes("previous turn was interrupted"))).toBe(false);
+  });
+
   /**
    * A resumed turn whose checkpoint prefix ends in one dangling side-effecting
    * `settle` call. The provider answers without new tool calls, so the resume

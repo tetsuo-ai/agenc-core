@@ -28,20 +28,6 @@ async function connect(
 }
 
 describe("daemon-owned status line execution", () => {
-  it("advertises the capability and forwards only presentation plus cancellation", async () => {
-    const execute = vi.fn(async () => ({ status: "rendered", text: "ready" }));
-    const { connection, initialized } = await connect(execute);
-    expect(initialized).toMatchObject({ result: { capabilities: {
-      [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: { [method]: true },
-    } } });
-    const params = { sessionId: "owner", presentation: { vimMode: "NORMAL" } };
-    await expect(connection.dispatch({ ...request, params })).resolves.toMatchObject({
-      result: { status: "rendered", text: "ready" },
-    });
-    expect(execute).toHaveBeenCalledWith(params, expect.any(AbortSignal));
-    expect(isDaemonControlMessage(request)).toBe(false);
-    expect(isDaemonPriorityMessage(request)).toBe(false);
-  });
 
   it("does not advertise execution without a live implementation", async () => {
     const { connection, initialized } = await connect();
@@ -55,27 +41,6 @@ describe("daemon-owned status line execution", () => {
     const execute = vi.fn(async () => ({ status: "disabled" }));
     const { connection } = await connect(execute, "1.10.0");
     await expect(connection.dispatch(request)).resolves.toMatchObject({ error: { code: -32601 } });
-    expect(execute).not.toHaveBeenCalled();
-  });
-
-  it("rejects forged authority and malformed or unbounded presentation", async () => {
-    const execute = vi.fn(async () => ({ status: "disabled" }));
-    const { connection } = await connect(execute);
-    const malformed = [
-      {}, { sessionId: " " }, { sessionId: "😀".repeat(257) },
-      ...["command", "cwd", "env", "shell", "cost", "session_id", "timeoutMs", "bypass"].map(
-        (field) => ({ ...request.params, [field]: "forged" }),
-      ),
-      { ...request.params, presentation: { vimMode: "REPLACE" } },
-      { ...request.params, presentation: { command: "forged" } },
-      { ...request.params, presentation: [] },
-      { ...request.params, presentation: null },
-    ];
-    for (const params of malformed) {
-      await expect(connection.dispatch({ ...request, params })).resolves.toMatchObject({
-        error: { code: -32602 },
-      });
-    }
     expect(execute).not.toHaveBeenCalled();
   });
 

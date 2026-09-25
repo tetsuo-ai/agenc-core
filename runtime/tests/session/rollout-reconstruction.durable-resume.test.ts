@@ -9,10 +9,15 @@
  * fallback, and dangling-tool surfacing.
  */
 
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { reconstructFromRollout } from "./rollout-reconstruction.js";
+import { ConversationThreadManager, interruptedToolCallResultContent, resumeTurnFromCheckpoint } from "../conversation/thread-manager.js";
+import type { Session, SessionState } from "./session.js";
+import { AsyncLock } from "../utils/async-lock.js";
 import type { RolloutItem, ResponseItem } from "./rollout-item.js";
+import { createToolResultIntegrity } from "./tool-result-integrity.js";
 import { resetBuildIdForTestingOnly } from "./durable-turns.js";
+import { createOperatorEffectReviewResolution } from "../state/effect-review.js";
 import {
   computeCheckpointPrefixHashV2,
   computeCheckpointPrefixHashV3,
@@ -166,7 +171,511 @@ function orphanWithCheckpoint(args: CheckpointArgs): RolloutItem[] {
   return items;
 }
 
+function checkpointWithEffectEvents(args: {
+  readonly turnId: string;
+  readonly buildId: string;
+  readonly userContent: string;
+  readonly callId: string;
+  readonly toolName: string;
+  readonly stepId: string;
+  readonly intentId: string;
+  readonly outcomeId: string;
+  readonly outcome: "succeeded" | "unknown_outcome";
+}): RolloutItem[] {
+  const prefix: ResponseItem[] = [
+    { role: "user", content: args.userContent },
+    { role: "assistant", content: "", toolCalls: [
+      { id: args.callId, name: args.toolName, arguments: "{}" },
+    ] },
+  ];
+  const items = orphanWithCheckpoint({ turnId: args.turnId, buildId: args.buildId, prefix,
+    checkpointVersion: 4, boundary: "postAssistant" });
+  items.push({ type: "event_msg", payload: { id: args.intentId, seq: 3, msg: {
+    type: "effect_intent", payload: { formatVersion: 2, minimumReaderRuntime: "0.14.0",
+      runId: "test-run", stepId: args.stepId, callId: args.callId,
+      toolName: args.toolName, recoveryCategory: "side-effecting", intentDigest: "intent",
+      attempt: 1, recordedAt: "2026-09-01T00:00:00.000Z" },
+  } } });
+  if (args.outcome === "succeeded") {
+    items.push({ type: "event_msg", payload: { id: args.outcomeId, seq: 4, msg: {
+      type: "effect_result", payload: { formatVersion: 2, minimumReaderRuntime: "0.14.0",
+        runId: "test-run", stepId: args.stepId, callId: args.callId,
+        toolName: args.toolName, recoveryCategory: "side-effecting", intentEventSeq: 3,
+        outcome: "succeeded", effectBoundary: "crossed", recordedAt: "2026-09-01T00:00:01.000Z" },
+    } } });
+  } else {
+    items.push({ type: "event_msg", payload: { id: args.outcomeId, seq: 4, msg: {
+      type: "effect_unknown_outcome", payload: { formatVersion: 2, minimumReaderRuntime: "0.14.0",
+        runId: "test-run", stepId: args.stepId, callId: args.callId,
+        toolName: args.toolName, recoveryCategory: "side-effecting", intentEventSeq: 3,
+        outcome: "unknown_outcome", reason: "acknowledgement_lost", requiresReview: true,
+        recordedAt: "2026-09-01T00:00:01.000Z" },
+    } } });
+  }
+  return items;
+}
+
 describe("reconstruction durable resume descriptors", () => {
+  test("a placeholder persisted by an older bootstrap never settles a checkpointed effect", async () => {
+    const runId = "legacy-placeholder-run";
+    const buildId = pinBuild("legacy-placeholder-build");
+    const prefix: ResponseItem[] = [
+      { role: "user", content: "Write" },
+      { role: "assistant", content: "", toolCalls: [
+        { id: "legacy-write", name: "Write", arguments: "{}" },
+      ] },
+    ];
+    const items = orphanWithCheckpoint({ turnId: "legacy-placeholder", buildId,
+      prefix, checkpointVersion: 4, boundary: "postAssistant" });
+    const content = interruptedToolCallResultContent({ id: "legacy-write", name: "Write" });
+    items.push({ type: "response_item", payload: { role: "tool", content,
+      toolCallId: "legacy-write", toolName: "Write",
+      toolResultIntegrity: createToolResultIntegrity({ runId,
+        toolCallId: "legacy-write", content }) } });
+    items.push({ type: "event_msg", payload: { id: "process-killed", seq: 3,
+      msg: { type: "turn_aborted", payload: {
+        turnId: "legacy-placeholder", reason: "process_killed",
+      } } } });
+    const runTurn = vi.fn(async function* () {});
+    const session = { conversationId: runId,
+      config: { durableTurns: { resume: { requireLease: false } } },
+      services: { registry: { tools: [{ name: "Write", recoveryCategory: "side-effecting" }] } },
+      rolloutStore: { rootHasOnlyTerminalDescendants: () => true, readAll: () => items, checkpointProjectionContext: (purpose: string) => ({
+        projection: new TestToolPairProjection(), projectionId: purpose,
+        sourceKey: "legacy-placeholder-rollout", expectedRunId: runId,
+      }) },
+      runTurn, emit: vi.fn(), nextInternalSubId: () => "legacy-placeholder-warning",
+    } as unknown as Session;
+    await expect(resumeTurnFromCheckpoint(session, reconstruct(items)))
+      .resolves.toMatchObject({ resumed: false, reason: "integrity-deferred" });
+    expect(runTurn).not.toHaveBeenCalled();
+  });
+
+  test("bootstrap reconciles acknowledged effects before pairing and preserves unknown calls", async () => {
+    const runId = "bootstrap-effect-run";
+    const buildId = pinBuild("bootstrap-effect-build");
+    const prefix: ResponseItem[] = [
+      { role: "user", content: "Write two files" },
+      { role: "assistant", content: "", toolCalls: [
+        { id: "ack-write", name: "Write", arguments: "{}" },
+        { id: "unknown-write", name: "Write", arguments: "{}" },
+      ] },
+    ];
+    const items = orphanWithCheckpoint({ turnId: "bootstrap-effect", buildId, prefix,
+      checkpointVersion: 4, boundary: "postAssistant" });
+    items.push({ type: "event_msg", payload: { id: "intent", seq: 3, msg: {
+      type: "effect_intent", payload: { formatVersion: 2, minimumReaderRuntime: "0.14.0",
+        runId, stepId: "tool:bootstrap-effect:ack", callId: "ack-write", toolName: "Write",
+        recoveryCategory: "side-effecting", intentDigest: "intent", attempt: 1,
+        recordedAt: "2026-09-01T00:00:00.000Z" },
+    } } });
+    items.push({ type: "event_msg", payload: { id: "ack", seq: 4, msg: {
+      type: "effect_result", payload: { formatVersion: 2, minimumReaderRuntime: "0.14.0",
+        runId, stepId: "tool:bootstrap-effect:ack", callId: "ack-write", toolName: "Write",
+        recoveryCategory: "side-effecting", intentEventSeq: 3, outcome: "succeeded",
+        effectBoundary: "crossed", recordedAt: "2026-09-01T00:00:01.000Z" },
+    } } });
+    const state = new AsyncLock<SessionState>({
+      sessionConfiguration: { cwd: "/tmp" } as SessionState["sessionConfiguration"], history: [],
+    });
+    const store = { rootHasOnlyTerminalDescendants: () => true, appendRollout: (item: RolloutItem) => { items.push(item); },
+      checkpointProjectionContext: (purpose: string) => ({
+        projection: new TestToolPairProjection(), projectionId: purpose,
+        sourceKey: "bootstrap-effect-rollout", expectedRunId: runId,
+      }),
+      recordProjectionFailure: vi.fn(), acknowledgeCompactionReconstruction: vi.fn() };
+    const session = { conversationId: runId, state, rolloutStore: store,
+      restoreUserStopFromRollout: vi.fn(), seedInternalSubId: vi.fn(),
+      nextInternalSubId: () => "bootstrap-warning", emit: vi.fn(),
+      agentStatus: { value: { status: "pending_init" }, subscribe: () => vi.fn() },
+    } as unknown as Session;
+    // This is the same replay entry point used by bootstrapLocalRuntimeSession.
+    const replay = await new ConversationThreadManager().replayRolloutIntoSession(session, items);
+    const toolResults = replay.appliedState.history.filter((item) => item.role === "tool");
+    expect(toolResults).toEqual([expect.objectContaining({
+      toolCallId: "ack-write", content: expect.stringContaining("finished before restart"),
+    })]);
+    expect(JSON.stringify(items)).not.toContain("call it again");
+    const current = reconstructFromRollout(items, { checkpointProjection: store.checkpointProjectionContext("after-bootstrap") });
+    expect(current.resumableTurns[0]?.danglingToolUses).toEqual([
+      expect.objectContaining({ callId: "unknown-write" }),
+    ]);
+  });
+  test("two bootstrap replays keep a reviewed checkpoint's pairing free of retry placeholders", async () => {
+    const runId = "two-bootstrap-review";
+    const turnId = "two-bootstrap-turn";
+    const buildId = pinBuild("two-bootstrap-build");
+    const prefix: ResponseItem[] = [
+      { role: "user", content: "Write file" },
+      { role: "assistant", content: "", toolCalls: [
+        { id: "pending-write", name: "Write", arguments: "{}" },
+      ] },
+    ];
+    const items = orphanWithCheckpoint({ turnId, buildId, prefix,
+      checkpointVersion: 4, boundary: "postAssistant" });
+    items.push({ type: "event_msg", payload: { id: "pending-intent", seq: 3,
+      msg: { type: "effect_intent", payload: { formatVersion: 2,
+        minimumReaderRuntime: "0.14.0", runId, stepId: "tool:two-bootstrap:write",
+        callId: "pending-write", toolName: "Write", recoveryCategory: "side-effecting",
+        intentDigest: "intent", attempt: 1, recordedAt: "2026-09-01T00:00:00.000Z" } } } });
+    items.push({ type: "event_msg", payload: { id: "pending-unknown", seq: 4,
+      msg: { type: "effect_unknown_outcome", payload: { formatVersion: 2,
+        minimumReaderRuntime: "0.14.0", runId, stepId: "tool:two-bootstrap:write",
+        callId: "pending-write", toolName: "Write", recoveryCategory: "side-effecting",
+        intentEventSeq: 3, outcome: "unknown_outcome", reason: "acknowledgement_lost",
+        requiresReview: true, recordedAt: "2026-09-01T00:00:01.000Z" } } } });
+    const state = new AsyncLock<SessionState>({
+      sessionConfiguration: { cwd: "/tmp" } as SessionState["sessionConfiguration"], history: [],
+    });
+    const store = { rootHasOnlyTerminalDescendants: () => true, readAll: () => items,
+      appendRollout: (item: RolloutItem) => { items.push(item); },
+      checkpointProjectionContext: (purpose: string) => ({
+        projection: new TestToolPairProjection(), projectionId: purpose,
+        sourceKey: "two-bootstrap-rollout", expectedRunId: runId,
+      }),
+      recordProjectionFailure: vi.fn(), acknowledgeCompactionReconstruction: vi.fn() };
+    const runTurn = vi.fn(async function* () {});
+    const session = { conversationId: runId, state, rolloutStore: store,
+      config: { durableTurns: { resume: { requireLease: false } } },
+      services: { registry: { tools: [{ name: "Write", recoveryCategory: "side-effecting" }] } },
+      runTurn, restoreUserStopFromRollout: vi.fn(), seedInternalSubId: vi.fn(),
+      nextInternalSubId: () => "two-bootstrap-warning", emit: vi.fn(),
+      agentStatus: { value: { status: "pending_init" }, subscribe: () => vi.fn() },
+    } as unknown as Session;
+    const manager = new ConversationThreadManager();
+    await manager.replayRolloutIntoSession(session, items);
+    items.push({ type: "event_msg", payload: { id: "synthetic-kill", seq: 5,
+      msg: { type: "turn_aborted", payload: { turnId, reason: "process_killed" } } } });
+    await manager.replayRolloutIntoSession(session, items);
+    expect(JSON.stringify(items)).not.toContain("call it again");
+    const resolution = createOperatorEffectReviewResolution({
+      disposition: "confirmed_no_effect", actorId: "operator",
+      evidenceRef: "test:checked", evidenceSha256: "a".repeat(64),
+      reviewedAt: "2026-09-01T00:00:02.000Z",
+    });
+    items.push({ type: "event_msg", payload: { id: "reviewed", seq: 6,
+      msg: { type: "effect_review_resolved", payload: { runId,
+        stepId: "tool:two-bootstrap:write", callId: "pending-write", resolution,
+        reviewedAt: "2026-09-01T00:00:02.000Z" } } } });
+    const reconstruction = reconstructFromRollout(items.filter((item) =>
+      !(item.type === "event_msg" && item.payload.msg.type === "turn_aborted" &&
+        item.payload.msg.payload.reason === "process_killed")), {
+      checkpointProjection: store.checkpointProjectionContext("after-review"),
+    });
+    expect(reconstruction.resumableTurns[0]?.reconciledToolResults).toEqual([
+      expect.objectContaining({ toolCallId: "pending-write",
+        content: expect.stringContaining("Operator review resolved") }),
+    ]);
+    expect(await resumeTurnFromCheckpoint(session, reconstruction)).toMatchObject({ resumed: true });
+    expect(runTurn).toHaveBeenCalledOnce();
+  });
+  test("the same turn remains eligible after a second restart", () => {
+    const buildId = pinBuild("two-restart-build");
+    const items = orphanWithCheckpoint({ turnId: "same-turn", buildId,
+      prefix: [{ role: "user", content: "Finish this" }], checkpointVersion: 4 });
+    items.push({ type: "event_msg", payload: { id: "first-shutdown", msg: {
+      type: "turn_aborted", payload: { turnId: "same-turn", reason: "daemon_shutdown" },
+    } } });
+    expect(reconstruct(items).resumableTurns.map((turn) => turn.turnId)).toEqual(["same-turn"]);
+    items.push({ type: "event_msg", payload: { id: "continuation-start", msg: {
+      type: "turn_started", payload: { turnId: "same-turn", buildId },
+    } } });
+    items.push({ type: "event_msg", payload: { id: "continuation-checkpoint", msg: {
+      type: "turn_checkpoint", payload: {
+        turnId: "same-turn", iterationIndex: 2, boundary: "iteration",
+        checkpointSeq: 2, persistedMessageCount: 1,
+        prefixHash: computeCheckpointPrefixHashV3([{ role: "user", content: "Finish this" }], 1),
+        checkpointVersion: 4, toolResultIntegrityVersion: 1, prefixHashVersion: 3,
+        resumableState: { turnCount: 2, recoveryReentryCount: 0,
+          maxOutputTokensRecoveryCount: 0, continuationNudgeCount: 0,
+          stopHookBlockingCount: 0, modelSampleOrdinal: 2 },
+      },
+    } } });
+    items.push({ type: "event_msg", payload: { id: "second-shutdown", msg: {
+      type: "turn_aborted", payload: { turnId: "same-turn", reason: "daemon_shutdown" },
+    } } });
+    expect(reconstruct(items).resumableTurns).toEqual([expect.objectContaining({
+      turnId: "same-turn", lastCheckpoint: expect.objectContaining({ checkpointSeq: 2 }),
+    })]);
+  });
+
+  test("durable effect completion pairs a checkpointed call without a response item", async () => {
+    const buildId = pinBuild("effect-only-build");
+    const items = checkpointWithEffectEvents({ turnId: "effect-only", buildId,
+      userContent: "Write the file", callId: "write-effect", toolName: "Write",
+      stepId: "tool:effect-only:write", intentId: "intent", outcomeId: "effect",
+      outcome: "succeeded" });
+    const reconstructed = reconstruct(items);
+    expect(reconstructed.resumableTurns[0]?.danglingToolUses).toEqual([]);
+    expect(reconstructed.resumableTurns[0]?.reconciledToolResults).toContainEqual(expect.objectContaining({
+      role: "tool", toolCallId: "write-effect", toolName: "Write",
+    }));
+    const runTurn = vi.fn(async function* () {});
+    const appendRollout = vi.fn();
+    const session = { config: { durableTurns: { resume: { requireLease: false } } },
+      services: { registry: { tools: [{ name: "Write", recoveryCategory: "side-effecting" }] } },
+      rolloutStore: { rootHasOnlyTerminalDescendants: () => true, appendRollout }, runTurn, emit: vi.fn(),
+      nextInternalSubId: () => "warning-effect-only" } as unknown as Session;
+    await expect(resumeTurnFromCheckpoint(session, reconstructed)).resolves.toMatchObject({ resumed: true });
+    expect(appendRollout).toHaveBeenCalledWith(expect.objectContaining({
+      type: "response_item", payload: expect.objectContaining({ toolCallId: "write-effect" }),
+    }), { durable: true });
+    expect(runTurn).toHaveBeenCalledWith("", expect.objectContaining({
+      history: expect.arrayContaining([expect.objectContaining({ toolCallId: "write-effect" })]),
+    }));
+  });
+
+  test("a persisted recovery pairing survives a crash before the next checkpoint", async () => {
+    const buildId = pinBuild("pairing-crash-build");
+    const items = checkpointWithEffectEvents({ turnId: "pairing-crash", buildId,
+      userContent: "Write the file", callId: "crash-write", toolName: "Write",
+      stepId: "tool:pairing-crash:write", intentId: "intent", outcomeId: "effect",
+      outcome: "succeeded" });
+    items.push({ type: "event_msg", payload: { id: "shutdown", seq: 5, msg: {
+      type: "turn_aborted", payload: { turnId: "pairing-crash", reason: "daemon_shutdown" },
+    } } });
+    const staleBeforePairing = reconstruct(items);
+    const first = staleBeforePairing.resumableTurns[0]!;
+    expect(first.reconciledToolResults).toHaveLength(1);
+    const firstSession = { config: { durableTurns: { resume: { requireLease: false } } },
+      services: { registry: { tools: [{ name: "Write", recoveryCategory: "side-effecting" }] } },
+      rolloutStore: { rootHasOnlyTerminalDescendants: () => true, readAll: () => items,
+        checkpointProjectionContext: () => ({ projection: new TestToolPairProjection(),
+          projectionId: "pairing-crash-first", sourceKey: "pairing-crash-source",
+          expectedRunId: "test-run" }),
+        liveToolCallResolved: () => false,
+        appendRollout: (item: RolloutItem) => { items.push(item); } },
+      runTurn: vi.fn(async function* () { throw new Error("crash after pairing fsync"); }),
+      emit: vi.fn(), nextInternalSubId: () => "pairing-crash-warning" } as unknown as Session;
+    await expect(resumeTurnFromCheckpoint(firstSession, reconstruct(items)))
+      .rejects.toThrow("crash after pairing fsync");
+    expect(items.filter((item) => item.type === "response_item" &&
+      item.payload.role === "tool" && item.payload.toolCallId === "crash-write"))
+      .toHaveLength(1);
+    const second = reconstruct(items);
+    expect(second.resumableTurns[0]?.reconciledToolResults ?? []).toEqual([]);
+    expect(second.resumableTurns[0]?.danglingToolUses).toEqual([]);
+    const appendRollout = vi.fn();
+    const session = { config: { durableTurns: { resume: { requireLease: false } } },
+      services: { registry: { tools: [{ name: "Write", recoveryCategory: "side-effecting" }] } },
+      rolloutStore: { rootHasOnlyTerminalDescendants: () => true, readAll: () => items,
+        checkpointProjectionContext: () => ({ projection: new TestToolPairProjection(),
+          projectionId: "pairing-crash-current", sourceKey: "pairing-crash-source",
+          expectedRunId: "test-run" }), appendRollout,
+        liveToolCallResolved: (callId: string) => callId === "crash-write" },
+      runTurn: vi.fn(async function* () {}), emit: vi.fn(),
+      nextInternalSubId: () => "pairing-crash-warning" } as unknown as Session;
+    await expect(resumeTurnFromCheckpoint(session, second)).resolves.toMatchObject({ resumed: true });
+    expect(appendRollout).not.toHaveBeenCalled();
+    // Even a caller holding the pre-crash descriptor must consult the live
+    // pairing projection before it writes the synthesized result again.
+    const guardedAppend = vi.fn();
+    const guardedRun = vi.fn(async function* () {});
+    const guarded = { config: { durableTurns: { resume: { requireLease: false } } },
+      services: { registry: { tools: [{ name: "Write", recoveryCategory: "side-effecting" }] } },
+      rolloutStore: { rootHasOnlyTerminalDescendants: () => true, appendRollout: guardedAppend,
+        liveToolCallResolved: (callId: string) => callId === "crash-write" },
+      runTurn: guardedRun, emit: vi.fn(), nextInternalSubId: () => "guarded-warning" } as unknown as Session;
+    await expect(resumeTurnFromCheckpoint(guarded, staleBeforePairing))
+      .resolves.toMatchObject({ resumed: true });
+    expect(guardedAppend).not.toHaveBeenCalled();
+    expect(guardedRun).toHaveBeenCalledWith("", expect.objectContaining({
+      history: expect.arrayContaining([expect.objectContaining({ toolCallId: "crash-write" })]),
+    }));
+  });
+
+  test("operator resolution pairs an unknown checkpointed call without redispatch", () => {
+    const buildId = pinBuild("reviewed-effect-build");
+    const items = checkpointWithEffectEvents({ turnId: "reviewed-effect", buildId,
+      userContent: "Publish", callId: "publish-reviewed", toolName: "Publish",
+      stepId: "tool:reviewed-effect:publish", intentId: "review-intent",
+      outcomeId: "review-unknown", outcome: "unknown_outcome" });
+    items.push({ type: "event_msg", payload: { id: "review-resolved", seq: 5, msg: {
+      type: "effect_review_resolved", payload: { runId: "test-run",
+        stepId: "tool:reviewed-effect:publish", callId: "publish-reviewed",
+        resolution: createOperatorEffectReviewResolution({ disposition: "confirmed_committed",
+          actorId: "operator", evidenceRef: "test:published", evidenceSha256: "a".repeat(64),
+          reviewedAt: "2026-09-01T00:00:02.000Z" }) },
+    } } });
+    const turn = reconstruct(items).resumableTurns[0];
+    expect(turn?.danglingToolUses).toEqual([]);
+    expect(turn?.reconciledToolResults).toContainEqual(expect.objectContaining({
+      role: "tool", toolCallId: "publish-reviewed", toolName: "Publish",
+    }));
+  });
+
+  test("a review recorded after reconstruction settles the call before continuation", async () => {
+    const buildId = pinBuild("late-review-build");
+    const items = checkpointWithEffectEvents({ turnId: "late-review", buildId,
+      userContent: "Publish", callId: "late-call", toolName: "Publish",
+      stepId: "tool:late-review:publish", intentId: "late-intent",
+      outcomeId: "late-unknown", outcome: "unknown_outcome" });
+    const beforeReview = reconstruct(items);
+    expect(beforeReview.resumableTurns[0]?.danglingToolUses).toEqual([
+      { callId: "late-call", toolName: "Publish" },
+    ]);
+    items.push({ type: "event_msg", payload: { id: "late-resolved", seq: 5, msg: {
+      type: "effect_review_resolved", payload: { runId: "test-run",
+        stepId: "tool:late-review:publish", callId: "late-call",
+        resolution: createOperatorEffectReviewResolution({ disposition: "confirmed_committed",
+          actorId: "operator", evidenceRef: "test:late-review", evidenceSha256: "b".repeat(64),
+          reviewedAt: "2026-09-01T00:00:02.000Z" }) },
+    } } });
+    const runTurn = vi.fn(async function* () {});
+    const session = { config: { durableTurns: { resume: { requireLease: false } } },
+      services: { registry: { tools: [{ name: "Publish", recoveryCategory: "side-effecting" }] } },
+      rolloutStore: { rootHasOnlyTerminalDescendants: () => true, readAll: () => items,
+        checkpointProjectionContext: () => ({ projection: new TestToolPairProjection(),
+          projectionId: "late-review-projection", sourceKey: "late-review-source",
+          expectedRunId: "test-run" }), appendRollout: vi.fn() },
+      runTurn, emit: vi.fn(), nextInternalSubId: () => "late-review-warning" } as unknown as Session;
+    await expect(resumeTurnFromCheckpoint(session, beforeReview)).resolves.toMatchObject({ resumed: true });
+    expect(runTurn).toHaveBeenCalledWith("", expect.objectContaining({
+      history: expect.arrayContaining([expect.objectContaining({ toolCallId: "late-call" })]),
+    }));
+  });
+  test("graceful daemon shutdown preserves a checkpoint and completed tool result for one resume", () => {
+    const buildId = pinBuild("shutdown-resume-build");
+    const prefix: ResponseItem[] = [
+      { role: "user", content: "Write the files" },
+      { role: "assistant", content: "", toolCalls: [{ id: "write-1", name: "Write", arguments: "{}" }] },
+      { role: "tool", content: "File written", toolCallId: "write-1", toolName: "Write",
+        toolResultIntegrity: createToolResultIntegrity({ runId: "test-run", toolCallId: "write-1", content: "File written" }) },
+    ];
+    const items = orphanWithCheckpoint({ turnId: "turn-shutdown", buildId, prefix, checkpointVersion: 4 });
+    items.push({ type: "event_msg", payload: { id: "shutdown", msg: {
+      type: "turn_aborted", payload: { turnId: "turn-shutdown", reason: "daemon_shutdown" },
+    } } });
+    const result = reconstruct(items);
+    expect(result.history).toEqual(prefix);
+    expect(result.resumableTurns).toEqual([expect.objectContaining({
+      turnId: "turn-shutdown", historyPrefixValid: true, danglingToolUses: [],
+    })]);
+    expect(result.synthesizedEvents.some(item => item.type === "event_msg" &&
+      item.payload.msg.type === "turn_aborted" && item.payload.msg.payload.reason === "process_killed")).toBe(false);
+  });
+
+  test("completed and user-stopped turns never resume after shutdown", () => {
+    const buildId = pinBuild("shutdown-terminal-build");
+    for (const terminal of [
+      { type: "turn_complete", payload: { turnId: "turn-1", lastAgentMessage: "done", completedAt: 1, durationMs: 1 } },
+      { type: "turn_aborted", payload: { turnId: "turn-1", reason: "interrupted" } },
+    ] as const) {
+      const items = orphanWithCheckpoint({ turnId: "turn-1", buildId, prefix: [{ role: "user", content: "Work" }] });
+      items.push({ type: "event_msg", payload: { id: "terminal", msg: terminal } });
+      expect(reconstruct(items).resumableTurns).toEqual([]);
+    }
+  });
+
+  test("shutdown keeps an unsettled side-effecting call dangling for the effect gate", () => {
+    const buildId = pinBuild("shutdown-effect-build");
+    const prefix: ResponseItem[] = [
+      { role: "user", content: "Publish the release" },
+      { role: "assistant", content: "", toolCalls: [{ id: "publish-1", name: "Publish", arguments: "{}" }] },
+    ];
+    const items = orphanWithCheckpoint({ turnId: "turn-effect", buildId, prefix, boundary: "postAssistant" });
+    items.push({ type: "event_msg", payload: { id: "shutdown", msg: {
+      type: "turn_aborted", payload: { turnId: "turn-effect", reason: "daemon_shutdown" },
+    } } });
+    expect(reconstruct(items).resumableTurns[0]).toMatchObject({
+      historyPrefixValid: true,
+      danglingToolUses: [{ callId: "publish-1", toolName: "Publish" }],
+    });
+  });
+
+  test("a dangling side effect waits for the user's continuation", async () => {
+    const buildId = pinBuild("shutdown-manual-build");
+    const prefix: ResponseItem[] = [
+      { role: "user", content: "Publish the release" },
+      { role: "assistant", content: "", toolCalls: [{ id: "publish-1", name: "Publish", arguments: "{}" }] },
+    ];
+    const items = orphanWithCheckpoint({ turnId: "turn-manual", buildId, prefix, boundary: "postAssistant" });
+    items.push({ type: "event_msg", payload: { id: "shutdown", msg: {
+      type: "turn_aborted", payload: { turnId: "turn-manual", reason: "daemon_shutdown" },
+    } } });
+    const runTurn = vi.fn();
+    const session = {
+      config: { durableTurns: { resume: { requireLease: false } } },
+      services: { registry: { tools: [{ name: "Publish", recoveryCategory: "side-effecting" }] } },
+      runTurn, emit: vi.fn(), nextInternalSubId: () => "warning-g3",
+    } as unknown as Session;
+    await expect(resumeTurnFromCheckpoint(session, reconstruct(items))).resolves.toEqual({
+      resumed: false, reason: "side-effect-review-required", halted: ["Publish"],
+    });
+    expect(runTurn).not.toHaveBeenCalled();
+  });
+
+  test("a result persisted after the post-assistant checkpoint settles only its own call", async () => {
+    const buildId = pinBuild("post-checkpoint-result-build");
+    const prefix: ResponseItem[] = [
+      { role: "user", content: "Write and inspect" },
+      { role: "assistant", content: "", toolCalls: [
+        { id: "write-done", name: "Write", arguments: "{}" },
+        { id: "read-cancelled", name: "Read", arguments: "{}" },
+      ] },
+    ];
+    const items = orphanWithCheckpoint({ turnId: "post-checkpoint", buildId, prefix,
+      checkpointVersion: 4, boundary: "postAssistant" });
+    const result: ResponseItem = { role: "tool", content: "File written",
+      toolCallId: "write-done", toolName: "Write",
+      toolResultIntegrity: createToolResultIntegrity({ runId: "test-run", toolCallId: "write-done", content: "File written" }) };
+    items.push({ type: "response_item", payload: result });
+    items.push({ type: "event_msg", payload: { id: "shutdown-post-result", msg: {
+      type: "turn_aborted", payload: { turnId: "post-checkpoint", reason: "daemon_shutdown" },
+    } } });
+    const reconstructed = reconstruct(items);
+    expect(reconstructed.resumableTurns[0]?.danglingToolUses).toEqual([
+      { callId: "read-cancelled", toolName: "Read" },
+    ]);
+    const runTurn = vi.fn(async function* () {});
+    const session = {
+      config: { durableTurns: { resume: { requireLease: false } } },
+      services: { registry: { tools: [
+        { name: "Write", recoveryCategory: "side-effecting" },
+        { name: "Read", recoveryCategory: "idempotent", isReadOnly: true },
+      ] } },
+      runTurn, emit: vi.fn(), nextInternalSubId: () => "warning-post-result",
+    } as unknown as Session;
+    await expect(resumeTurnFromCheckpoint(session, reconstructed)).resolves.toMatchObject({ resumed: true });
+    expect(runTurn).toHaveBeenCalledWith("", expect.objectContaining({
+      history: expect.arrayContaining([expect.objectContaining({ toolCallId: "write-done", content: "File written" })]),
+      resume: expect.objectContaining({ danglingPairings: [
+        { callId: "read-cancelled", toolName: "Read", halt: false },
+      ] }),
+    }));
+  });
+
+  test("a finished replacement turn retires an older shutdown checkpoint", () => {
+    const buildId = pinBuild("superseded-shutdown-build");
+    const items = orphanWithCheckpoint({ turnId: "old-shutdown", buildId,
+      prefix: [{ role: "user", content: "old request" }], checkpointVersion: 4 });
+    items.push({ type: "event_msg", payload: { id: "old-shutdown-event", msg: {
+      type: "turn_aborted", payload: { turnId: "old-shutdown", reason: "daemon_shutdown" },
+    } } });
+    items.push({ type: "event_msg", payload: { id: "replacement-start", msg: {
+      type: "turn_started", payload: { turnId: "replacement", buildId },
+    } } });
+    items.push({ type: "response_item", payload: { role: "user", content: "new request" } });
+    items.push({ type: "response_item", payload: { role: "assistant", content: "new answer" } });
+    items.push({ type: "event_msg", payload: { id: "replacement-complete", msg: {
+      type: "turn_complete", payload: { turnId: "replacement", lastAgentMessage: "new answer", completedAt: 2, durationMs: 1 },
+    } } });
+    expect(reconstruct(items).resumableTurns).toEqual([]);
+  });
+
+  test("durable acceptance of a replacement prompt retires the shutdown turn before it starts", () => {
+    const buildId = pinBuild("accepted-replacement-build");
+    const items = orphanWithCheckpoint({ turnId: "old-shutdown", buildId,
+      prefix: [{ role: "user", content: "old request" }], checkpointVersion: 4 });
+    items.push({ type: "event_msg", payload: { id: "shutdown-old", msg: {
+      type: "turn_aborted", payload: { turnId: "old-shutdown", reason: "daemon_shutdown" },
+    } } });
+    items.push({ type: "event_msg", payload: { id: "replacement-accepted", msg: {
+      type: "user_message", payload: { message: "new request", displayText: "new request" },
+    } } });
+    expect(reconstruct(items).resumableTurns).toEqual([]);
+  });
+
   test.each([false, true])("clear prevents old history and checkpoints from resuming (new turn=%s)", (newTurn) => {
     const buildId = pinBuild("clear-history-build");
     const oldHistory: ResponseItem[] = [{ role: "user", content: "old request" }];

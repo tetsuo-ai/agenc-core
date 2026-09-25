@@ -8,6 +8,7 @@ import type { LocalRuntimeBootstrap } from "../../bin/bootstrap.js";
 import type { Event } from "../../session/event-log.js";
 import { classifyTurnTerminal, type TurnTerminal } from "../../contracts/turn-terminal.js";
 import type { RolloutItem } from "../../session/rollout-item.js";
+import { persistDisplayArtifactBytes } from "../../session/display-artifact-store.js";
 import { isAdmissionUsageSummary } from "../../session/usage-summary.js";
 import {
   reconstructFromRollout,
@@ -128,13 +129,32 @@ function findPersistedMessageSubmission(
     ) {
       return match;
     }
-    if (event.msg.type === "turn_started" && match.turnId === undefined) {
-      match = { ...match, turnId: event.msg.payload.turnId };
+    if (event.msg.type === "turn_started") {
+      if (match.turnId === undefined) {
+        match = { ...match, turnId: event.msg.payload.turnId };
+      } else if (
+        event.msg.payload.turnId === match.turnId &&
+        match.terminal?.code === 130 &&
+        match.terminal.message === "daemon_shutdown"
+      ) {
+        // The daemon resumed the same logical turn. Its shutdown abort is no
+        // longer the submission's outcome; wait for the continuation's end.
+        match = { ...match, terminal: undefined };
+      }
       continue;
     }
     if (match.turnId === undefined) continue;
     const terminal = messageTerminalFromEvent(event.msg, match.turnId);
     if (terminal !== undefined) {
+      if (
+        event.msg.type === "turn_aborted" &&
+        event.msg.payload.reason === "daemon_shutdown"
+      ) {
+        // A shutdown abort remains the outcome only if no continuation of
+        // this turn appears before the next submission boundary.
+        match = { ...match, terminal };
+        continue;
+      }
       return { ...match, terminal };
     }
   }
@@ -216,6 +236,9 @@ function transcriptNoticesFromRollout(
   const seenEventIds = new Set<string>();
   const closedTurnIds = new Set<string>();
   let currentTurnId: string | undefined;
+  // The arguments of calls in this epoch, so a denied call can be named on
+  // reopen. Only the bounded identifying fields ever leave this map.
+  const callInputs = new Map<string, { readonly toolName: string; readonly input?: DeniedCallInput }>();
   for (const [index, item] of items.entries()) {
     if (item.type !== "event_msg") continue;
     const event = item.payload;
@@ -250,6 +273,48 @@ function transcriptNoticesFromRollout(
     if (index <= boundaryIndex) continue;
     if (event.msg.type === "turn_started") {
       currentTurnId = event.msg.payload.turnId;
+      // Checkpoint continuation reopens the same turn id after the shutdown
+      // interruption. Its later terminal is a distinct durable notice.
+      closedTurnIds.delete(currentTurnId);
+      continue;
+    }
+    if (event.msg.type === "tool_call_started") {
+      const input = deniedCallInput(parseJsonObject(event.msg.payload.args));
+      callInputs.set(event.msg.payload.callId, {
+        toolName: event.msg.payload.toolName,
+        ...(input !== undefined ? { input } : {}),
+      });
+      continue;
+    }
+    if (event.msg.type === "request_permissions") {
+      const known = callInputs.get(event.msg.payload.callId);
+      const input = deniedCallInput(event.msg.payload.input);
+      if (known?.input === undefined) {
+        callInputs.set(event.msg.payload.callId, {
+          toolName: event.msg.payload.toolName,
+          ...(input !== undefined ? { input } : {}),
+        });
+      }
+      continue;
+    }
+    if (event.msg.type === "tool_call_completed") {
+      const metadata = event.msg.payload.metadata;
+      if (metadata?.approvalDenied !== true) continue;
+      const call = callInputs.get(event.msg.payload.callId);
+      const toolName = event.msg.payload.toolName ?? call?.toolName;
+      if (toolName === undefined) continue;
+      notices.push({
+        eventId, committedSequence, type: "approval_denied",
+        payload: {
+          ...(currentTurnId !== undefined ? { turnId: currentTurnId } : {}),
+          callId: event.msg.payload.callId,
+          toolName,
+          ...(call?.input !== undefined ? { input: call.input } : {}),
+          stage: metadata.approvalDeniedStage === "sandbox_escalation"
+            ? "sandbox_escalation"
+            : "before_execution",
+        },
+      });
       continue;
     }
     const terminal = classifyTurnTerminal(event.msg, {
@@ -277,16 +342,30 @@ function transcriptNoticesFromRollout(
   return notices;
 }
 
+/**
+ * `activeTurn` names the turn the runtime is executing now. Its client
+ * message id may be unknown to the caller (a turn continued after a daemon
+ * restart); the rollout's own open turn supplies it when the ids match.
+ */
 export function sessionTranscriptV2FromRollout(
   items: readonly RolloutItem[],
   sessionId: string,
   runId: string,
-  activeTurn?: { readonly turnId: string; readonly clientMessageId: string },
+  activeTurn?: { readonly turnId: string; readonly clientMessageId?: string },
+  artifactSessionDir?: string,
+  options: { readonly includeCompleteMessages?: boolean; readonly publishTextArtifact?: (bytes: Buffer) => string } = {},
 ): SessionTranscriptV2Result {
   const boundary = latestTranscriptBoundary(items);
   const boundaryIndex = boundary?.index ?? -1;
   const boundaryId = boundary?.id ?? "initial";
   let asOfSequence = 0;
+  // The latest runtime-settings event decides plan mode. Reporting it from
+  // this pass spares clients a second walk over the same history: the desktop
+  // used to page the whole run journal through run.replay on every transcript
+  // open just to recover this one boolean, ~45 s on a 22k-event session.
+  let planMode:
+    | { readonly active: boolean; readonly sequence: number }
+    | undefined;
   for (const item of items) {
     if (item.type !== "event_msg") continue;
     const event = item.payload;
@@ -296,6 +375,18 @@ export function sessionTranscriptV2FromRollout(
       event.seq > asOfSequence
     ) {
       asOfSequence = event.seq;
+    }
+    if (
+      event.msg.type === "run_runtime_settings_changed" &&
+      event.seq !== undefined &&
+      Number.isSafeInteger(event.seq) &&
+      typeof event.msg.payload.permissionMode === "string" &&
+      (planMode === undefined || event.seq > planMode.sequence)
+    ) {
+      planMode = {
+        active: event.msg.payload.permissionMode === "plan",
+        sequence: event.seq,
+      };
     }
   }
 
@@ -307,6 +398,7 @@ export function sessionTranscriptV2FromRollout(
   let pendingUserIndex: number | undefined;
   let pendingClientMessageId: string | undefined;
   const assistantOrdinals = new Map<string, number>();
+  const attachmentEvents: SessionTranscriptV2Event[] = [];
 
   if (boundary?.kind === "replaced") {
     const replacement = reconstructFromRollout(
@@ -374,6 +466,26 @@ export function sessionTranscriptV2FromRollout(
     const event = item.payload;
     const sequence = positiveSequence(event.seq);
     if (sequence === undefined) continue;
+    if (event.msg.type === "tool_call_completed" && event.msg.payload.displayAttachments?.length) {
+      const captions = typeof event.msg.payload.result === "string"
+        ? event.msg.payload.result.match(/\[Shown to the user: [^\]\r\n]{0,500}\]/gu)?.slice(0, 8).join("\n")
+        : undefined;
+      attachmentEvents.push({
+        eventId: canonicalEventId(event),
+        committedSequence: sequence,
+        type: "tool_call_completed",
+        payload: {
+          callId: event.msg.payload.callId,
+          ...(event.msg.payload.toolName ? { toolName: event.msg.payload.toolName } : {}),
+          result: captions ?? event.msg.payload.displayAttachments.map(item => `[Shown to the user: ${item.kind} "${item.title}"]`).join("\n"),
+          isError: event.msg.payload.isError,
+          displayAttachments: event.msg.payload.displayAttachments.map(item =>
+            item.data !== undefined && Buffer.byteLength(JSON.stringify(item.data), "utf8") > 8 * 1024
+              ? { id: item.id, kind: item.kind, title: item.title, mimeType: item.mimeType, size: item.size, digest: item.digest }
+              : item),
+        },
+      });
+    }
     if (event.msg.type === "message_submission") {
       pendingUserIndex = undefined;
       pendingClientMessageId = event.msg.payload.messageId;
@@ -483,17 +595,98 @@ export function sessionTranscriptV2FromRollout(
     }
   }
 
-  return {
+  const liveTurn =
+    activeTurn === undefined ||
+    activeTurn.clientMessageId !== undefined ||
+    currentTurnId !== activeTurn.turnId ||
+    currentClientMessageId === undefined
+      ? activeTurn
+      : { turnId: activeTurn.turnId, clientMessageId: currentClientMessageId };
+  const snapshot: SessionTranscriptV2Result = {
     schemaVersion: 2,
     sessionId,
     runId,
     historyEpoch: historyEpochForBoundary(runId, boundaryId),
     asOfSequence,
     messages,
-    events: transcriptNoticesFromRollout(items, boundaryIndex, runId),
-    ...(activeTurn !== undefined ? { activeTurn } : {}),
+    events: [...transcriptNoticesFromRollout(items, boundaryIndex, runId), ...attachmentEvents].sort((a, b) => a.committedSequence - b.committedSequence),
+    ...(liveTurn !== undefined ? { activeTurn: liveTurn } : {}),
     ...(turnResults.length > 0 ? { turnResults } : {}),
+    ...(planMode !== undefined
+      ? {
+          planModeActive: planMode.active,
+          planModeSequence: planMode.sequence,
+        }
+      : {}),
   };
+  // Older clients cannot fetch text artifacts. Keep their complete projection
+  // until the dispatcher measures the serialized reply for this connection.
+  if (options.includeCompleteMessages) return snapshot;
+  // The remote transport has a 1 MiB envelope ceiling. Leave room for JSON
+  // escaping in that envelope and keep the newest transcript entries when an
+  // unusually long session cannot fit in one snapshot response.
+  const maxSnapshotBytes = 384 * 1024;
+  if (Buffer.byteLength(JSON.stringify(snapshot), "utf8") <= maxSnapshotBytes) return snapshot;
+  const referenceMessage = (message: typeof snapshot.messages[number]) => {
+    if (artifactSessionDir === undefined && options.publishTextArtifact === undefined) throw new Error("oversized transcript message requires a session artifact store");
+    const bytes = Buffer.from(message.text, "utf8");
+    const id = options.publishTextArtifact !== undefined
+      ? options.publishTextArtifact(bytes)
+      : persistDisplayArtifactBytes(artifactSessionDir!, bytes);
+    const preview = bytes.subarray(0, 8 * 1024).toString("utf8");
+    return { ...message, text: `${preview}\n\n[Answer truncated; update to a protocol 1.18 client to read the full message.]`, textArtifact: { id, digest: id, size: bytes.length, mimeType: "text/plain" as const } };
+  };
+  const boundedMessages = [...snapshot.messages];
+  const newestMessage = boundedMessages.at(-1);
+  if (newestMessage !== undefined && Buffer.byteLength(JSON.stringify(newestMessage), "utf8") > maxSnapshotBytes) {
+    boundedMessages[boundedMessages.length - 1] = referenceMessage(newestMessage);
+  }
+  const boundedEvents = [...(snapshot.events ?? [])];
+  const boundedTurnResults = [...(snapshot.turnResults ?? [])];
+  let bounded: SessionTranscriptV2Result = { ...snapshot, messages: boundedMessages, truncated: true };
+  while (Buffer.byteLength(JSON.stringify(bounded), "utf8") > maxSnapshotBytes) {
+    const collections = [boundedMessages, boundedEvents, boundedTurnResults] as const;
+    const largest = collections
+      .map((items, index) => ({ index, bytes: items.length === 0 || (index === 0 && items.length <= 1) ? 0 : Buffer.byteLength(JSON.stringify(items), "utf8") }))
+      .sort((left, right) => right.bytes - left.bytes)[0]!;
+    const entries = collections[largest.index]!;
+    if (largest.bytes === 0) {
+      const latest = boundedMessages.at(-1);
+      if (latest === undefined || latest.textArtifact !== undefined) throw new Error("transcript snapshot cannot fit transport limit");
+      boundedMessages[boundedMessages.length - 1] = referenceMessage(latest);
+      bounded = { ...snapshot, messages: boundedMessages, events: boundedEvents, turnResults: boundedTurnResults, truncated: true };
+      continue;
+    }
+    entries.splice(0, Math.min(entries.length - (largest.index === 0 ? 1 : 0), Math.max(1, Math.ceil(entries.length / 4))));
+    bounded = { ...snapshot, messages: boundedMessages, events: boundedEvents, turnResults: boundedTurnResults, truncated: true };
+  }
+  return bounded;
+}
+
+/** The fields that say what a call would act on, for "You denied: ...". */
+const DENIED_CALL_INPUT_KEYS = ["command", "cmd", "file_path", "path", "url", "pattern", "query"] as const;
+const DENIED_CALL_INPUT_MAX_CHARS = 1_000;
+
+type DeniedCallInput = { readonly [key: string]: string };
+
+function deniedCallInput(input: unknown): DeniedCallInput | undefined {
+  if (!isJsonObject(input)) return undefined;
+  const bounded: Record<string, string> = {};
+  for (const key of DENIED_CALL_INPUT_KEYS) {
+    const value = input[key];
+    if (typeof value === "string" && value.length > 0) {
+      bounded[key] = value.slice(0, DENIED_CALL_INPUT_MAX_CHARS);
+    }
+  }
+  return Object.keys(bounded).length > 0 ? bounded : undefined;
+}
+
+function parseJsonObject(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
 }
 
 function maxEventSequence(items: readonly RolloutItem[]): number {

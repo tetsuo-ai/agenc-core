@@ -14,11 +14,11 @@
 
 import type { Event, EventMsg, SessionMetaLine } from "./event-log.js";
 import type { ProviderReasoningReplay } from "../llm/types.js";
+import { redactDurableSecrets } from "./provider-replay-redaction.js";
 import type { SessionAgentTask } from "./agent-task-lifecycle.js";
 import type { ToolResultIntegrity } from "./tool-result-integrity.js";
 import type { AgentInvocationChannelMetadata } from "../contracts/agent-invocation-envelope.js";
 import type { CompactionHistoryMarkerV1 } from "./compaction-history-marker.js";
-import { redactSecretsInValue } from "../secrets/index.js";
 import type {
   CompactionCleanupPendingV1,
   CompactionCommittedV1,
@@ -323,7 +323,7 @@ export function serializeRolloutItem(item: RolloutItem): string {
   const redacted =
     item.type === "compaction_payload_chunk"
       ? stamped
-      : (redactSecretsInValue(stamped) as typeof stamped);
+      : (redactDurableSecrets(stamped, "rollout") as typeof stamped);
   assertProviderReasoningUnchanged(stamped, redacted);
   return `${JSON.stringify(redacted)}\n`;
 }

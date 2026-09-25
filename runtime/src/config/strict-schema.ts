@@ -290,6 +290,24 @@ function validateCompletionGate(value: unknown): void {
   }
 }
 
+function validateGoal(value: unknown): void {
+  if (value === undefined) return;
+  const field = "goal";
+  const record = requirePlainObject(value, field);
+  rejectUnknownFields(
+    record,
+    new Set(["max_rounds", "stall_rounds", "judge_model", "verify_timeout_ms"]),
+    field,
+  );
+  optionalPositiveInteger(record.max_rounds, `${field}.max_rounds`);
+  if (typeof record.max_rounds === "number" && record.max_rounds > 100) {
+    throw new InvalidStrictConfigError(`${field}.max_rounds`, "exceeds the maximum of 100 rounds");
+  }
+  optionalPositiveInteger(record.stall_rounds, `${field}.stall_rounds`);
+  optionalString(record.judge_model, `${field}.judge_model`);
+  optionalPositiveInteger(record.verify_timeout_ms, `${field}.verify_timeout_ms`);
+}
+
 function validateCompaction(value: unknown): void {
   if (value === undefined) return;
   const field = "compaction";
@@ -604,7 +622,6 @@ const ROOT_FIELD_VALIDATORS = {
   statusLine: delegatedObjectValidator("statusLine"),
   outputStyle: fieldValidator("outputStyle", optionalString),
   attachments: validateAttachments,
-  buffer: delegatedObjectValidator("buffer"),
   tui: delegatedObjectValidator("tui"),
   autoFix: delegatedObjectValidator("autoFix"),
   fileSuggestion: delegatedObjectValidator("fileSuggestion"),
@@ -657,8 +674,10 @@ const ROOT_FIELD_VALIDATORS = {
   agencMdExcludes: fieldValidator("agencMdExcludes", optionalStringArray),
   pluginTrustMessage: fieldValidator("pluginTrustMessage", optionalString),
   agent: delegatedObjectValidator("agent"),
+  agents: delegatedObjectValidator("agents"),
   durableTurns: validateDurableTurns,
   completion_gate: validateCompletionGate,
+  goal: validateGoal,
   compaction: validateCompaction,
   stream_watchdog_timeout_ms: fieldValidator("stream_watchdog_timeout_ms", optionalNonNegativeInteger),
   provider_outage_wait_ms: fieldValidator("provider_outage_wait_ms", optionalNonNegativeInteger),

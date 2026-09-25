@@ -10,6 +10,7 @@ import {
 import { logError } from '../log.js'
 import { getAWSClientProxyConfig } from '../proxy.js'
 import { getSelectedProviderEnvironment } from './providers.js'
+import { parseClaudeModelId } from './claudeModelId.js'
 
 const AMAZON_BEDROCK_PROVIDER = 'amazon-bedrock'
 
@@ -112,6 +113,31 @@ export function findFirstMatch(
   substring: string,
 ): string | null {
   return profiles.find(p => p.includes(substring)) ?? null
+}
+
+/**
+ * The first inference profile serving exactly `firstPartyId`. Claude 4+ ids
+ * compare by parsed identity, so searching for claude-opus-5 can never
+ * return a claude-opus-5-5 profile (or the reverse), whatever order the
+ * profiles are listed in; a dated id also requires the same snapshot.
+ * Claude 3 ids, which the parser does not read, keep the substring search.
+ */
+export function findProfileForModel(
+  profiles: string[],
+  firstPartyId: string,
+): string | null {
+  const wanted = parseClaudeModelId(firstPartyId)
+  if (wanted === undefined) return findFirstMatch(profiles, firstPartyId)
+  return (
+    profiles.find(profile => {
+      const id = parseClaudeModelId(profile)
+      return (
+        id !== undefined &&
+        id.canonical === wanted.canonical &&
+        (wanted.snapshot === undefined || id.snapshot === wanted.snapshot)
+      )
+    }) ?? null
+  )
 }
 
 async function createBedrockClient() {

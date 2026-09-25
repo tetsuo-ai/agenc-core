@@ -180,7 +180,7 @@ function SpinnerWithVerbInner({
   const [randomVerb] = useState(() => sample(spinnerVerbs));
 
   // Honest phase label derived from the real streaming mode. Agrees with the
-  // workbench title-bar indicator (both call verbForMode), so the title bar and
+  // header indicator (both call verbForMode), so the header and
   // the status line never disagree about what the model is doing.
   const phaseVerb = titleVerbForMode(mode);
 

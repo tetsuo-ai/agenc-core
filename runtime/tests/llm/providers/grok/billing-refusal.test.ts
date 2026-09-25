@@ -8,7 +8,7 @@ import { LLMAuthenticationError, LLMProviderError } from "../../errors.js";
 import type { LLMMessage } from "../../types.js";
 import { GrokProvider } from "./adapter.js";
 import { isUnauthorizedError } from "./auth-refresh.js";
-import { readXaiBillingRefusal } from "./billing-refusal.js";
+import { readXaiBillingRefusal, xaiBillingRefusalError } from "./billing-refusal.js";
 
 // The body xAI returned to every request of a Terminal-Bench run on 2026-09-14 once the account reached its
 // spending limit. Each turn failed as "grok authentication failed (HTTP 403)" with no reason.
@@ -38,6 +38,15 @@ function grokRejecting(error: unknown) {
 const rejection = (pending: Promise<unknown>) => pending.then(() => undefined, (thrown: unknown) => thrown);
 
 describe("xAI billing refusal", () => {
+  test("a sign-in spending limit preserves retry-after for the child terminal", async () => {
+    const error = APIError.generate(403, SPENDING_LIMIT, undefined,
+      new Headers({ "retry-after": "19" }));
+    const funds = xaiBillingRefusalError("grok", error);
+    const { classifyChildFailure } = await import("../../../agents/child-terminal.js");
+    expect(classifyChildFailure("grok", funds)).toMatchObject({
+      reason: "insufficient_funds", retryable: false, retryAfterMs: 19_000,
+    });
+  });
   test("the SDK keeps the status and text of xAI's flat body but drops its code", () => {
     const error = sdkError(403, SPENDING_LIMIT);
     expect(error.code).toBeUndefined();

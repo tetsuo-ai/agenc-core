@@ -638,22 +638,26 @@ export class VerifiedChangeWorkflowController {
     try {
       await this.#stageIntake(ctx);
     } catch (error) {
-      if (error instanceof M5WorkflowFailpointError) throw error;
-      const terminal =
-        error instanceof WorkflowHaltError
-          ? error.terminal
-          : ({
-              status: "failed",
-              stopReason: null,
-              finalMessage: `workflow intake error: ${errorMessage(error)}`,
-            } satisfies WorkflowTerminalIntent);
-      await this.#terminalize(ctx, terminal);
-      await this.#closeJournal(ctx);
-      throw new WorkflowIntakeError(
-        runId,
-        terminal.stopReason,
-        terminal.finalMessage ?? terminal.status,
-      );
+      try {
+        if (error instanceof M5WorkflowFailpointError) throw error;
+        const terminal =
+          error instanceof WorkflowHaltError
+            ? error.terminal
+            : ({
+                status: "failed",
+                stopReason: null,
+                finalMessage: `workflow intake error: ${errorMessage(error)}`,
+              } satisfies WorkflowTerminalIntent);
+        await this.#terminalize(ctx, terminal);
+        await this.#closeJournal(ctx);
+        throw new WorkflowIntakeError(
+          runId,
+          terminal.stopReason,
+          terminal.finalMessage ?? terminal.status,
+        );
+      } finally {
+        admission.release?.();
+      }
     }
     const effectivePermissionMode = journal.effectivePermissionMode;
     const pipeline = this.#continue(ctx);
@@ -870,20 +874,29 @@ export class VerifiedChangeWorkflowController {
       usage: { input: 0, output: 0, cost: 0, any: false },
       terminalized: false,
     };
-    ctx.ledger = await this.#deps.evidenceLedger(spec);
-    // Rebuild derived in-memory context from committed evidence.
-    const effects = repo.listEffects(runId);
-    const plan = deriveStageProjection("workflow.plan", effects);
-    if (plan.status === "committed") {
-      const planEffect = repo.getEffect(runId, plan.latestStepId);
-      ctx.planText =
-        planEffect === undefined
-          ? undefined
-          : readWorkflowStepEvidence(planEffect).child?.finalMessage;
+    try {
+      ctx.ledger = await this.#deps.evidenceLedger(spec);
+      // Rebuild derived in-memory context from committed evidence.
+      const effects = repo.listEffects(runId);
+      const plan = deriveStageProjection("workflow.plan", effects);
+      if (plan.status === "committed") {
+        const planEffect = repo.getEffect(runId, plan.latestStepId);
+        ctx.planText =
+          planEffect === undefined
+            ? undefined
+            : readWorkflowStepEvidence(planEffect).child?.finalMessage;
+      }
+      const pipeline = this.#continue(ctx);
+      this.#active.set(runId, pipeline);
+      return true;
+    } catch (error) {
+      try {
+        await this.#closeJournal(ctx);
+      } finally {
+        admission.release?.();
+      }
+      throw error;
     }
-    const pipeline = this.#continue(ctx);
-    this.#active.set(runId, pipeline);
-    return true;
   }
 
   #bareContext(
@@ -933,7 +946,11 @@ export class VerifiedChangeWorkflowController {
       await this.#terminalize(ctx, terminal);
     } finally {
       this.#active.delete(ctx.runId);
-      await this.#closeJournal(ctx);
+      try {
+        await this.#closeJournal(ctx);
+      } finally {
+        ctx.admission.release?.();
+      }
     }
   }
 

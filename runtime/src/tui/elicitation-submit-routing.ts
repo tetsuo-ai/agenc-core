@@ -10,7 +10,6 @@ export interface ElicitationSubmitTarget {
 
 export interface ComposerSubmitOptions {
   readonly pastedContentsOverride?: Record<number, unknown>;
-  readonly onWorkbenchAttachmentsAdmitted?: () => void;
 }
 
 function clearComposer(helpers: ComposerSubmitHelpers): void {

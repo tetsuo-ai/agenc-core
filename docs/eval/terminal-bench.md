@@ -127,9 +127,10 @@ harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal
   permission layer allowed the path but never handed the tool the widened
   root it hands out after an approval. Fixed 2026-09-12 in
   `checkToolPathPermission`. The first rerun also showed `detach: true`
-  refused by the Editor workspace fence, which the dispatcher keeps around
-  every tool call; a detached service is now outside that fence. `tty: true`
-  is still refused by the same fence in one-shot runs (pre-existing, open).
+  refused by the per-tool-call workspace operation fence; a detached service is
+  now outside that fence. `tty: true` is still refused by the same fence in
+  one-shot runs (pre-existing, open). The Editor lease that originally raised
+  that fence was removed in 0.18.0; the containment fence itself remains.
   The full run then showed the file-tool refusal again on FileRead of
   `/build/gcc-13.2.0/...` (custom-memory-heap-crash): under the full bypass
   the permission evaluator does not run, so the permission-layer fix never

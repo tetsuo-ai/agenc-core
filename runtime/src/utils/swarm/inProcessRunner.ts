@@ -36,6 +36,7 @@ import {
 import { createToolResultIntegrity } from '../../session/tool-result-integrity.js'
 import { peekAmbientRuntimeSession } from '../../session/current-session.js'
 import type { Session } from '../../session/session.js'
+import type { ExecutionAdmissionClient } from '../../budget/admission-client.js'
 import { VERSION } from '../../version.js'
 import type { AppState } from '../../tui/state/AppState.js'
 import type { Tool, ToolUseContext } from '../../tools/Tool.js'
@@ -942,6 +943,7 @@ function createTeammateRolloutOwner(params: {
     model: params.model,
     modelProvider: TEAMMATE_ROLLOUT_PROVIDER,
   })
+  let admission: ExecutionAdmissionClient | undefined
   try {
     const parentAdmission = params.parentSession.services.executionAdmission
     if (parentAdmission === undefined) {
@@ -949,7 +951,7 @@ function createTeammateRolloutOwner(params: {
         'in-process teammate compaction requires an execution-admission client',
       )
     }
-    const admission = parentAdmission.forSession({
+    admission = parentAdmission.forSession({
       runId: sessionId,
       sessionId,
       parentRunId: parentAdmission.scope.runId,
@@ -993,12 +995,23 @@ function createTeammateRolloutOwner(params: {
       close: () => {
         if (closed) return
         closed = true
-        unbindAdmission()
-        store.close()
+        try {
+          unbindAdmission()
+        } finally {
+          try {
+            admission?.release?.()
+          } finally {
+            store.close()
+          }
+        }
       },
     }
   } catch (error) {
-    store.close()
+    try {
+      admission?.release?.()
+    } finally {
+      store.close()
+    }
     throw error
   }
 }

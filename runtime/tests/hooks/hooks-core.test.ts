@@ -1783,3 +1783,52 @@ test("simple-mode ownership hard-suppresses callback and command hook surfaces",
     ).resolves.toEqual(["/tmp/first.ts", "/tmp/second.ts"]);
   });
 });
+
+test.skipIf(process.platform === "win32")(
+  "an async command hook that exits without reading a large input raises no uncaught EPIPE",
+  async () => {
+    // The async branch wrote the hook input to stdin with no stdin error
+    // listener. A hook that exits without reading more than a pipe buffer
+    // makes that write fail with EPIPE, which was uncaught in the daemon.
+    await configureHookSession();
+    acceptInteractiveWorkspaceTrust();
+    bindHookSessionSimpleMode(false);
+    clearAllAsyncHooks();
+    registerHookCallbacks({
+      Notification: [
+        {
+          matcher: "*",
+          hooks: [{ type: "command", command: "sleep 0.05; exit 0", async: true }],
+        },
+      ],
+    } as never);
+    const owner = { kind: "session" as const, conversationId: sessionId };
+    const uncaught: unknown[] = [];
+    const recordUncaught = (error: unknown): void => {
+      uncaught.push(error);
+    };
+    process.prependListener("uncaughtException", recordUncaught);
+    try {
+      await executeNotificationHooks(
+        // Far larger than a pipe buffer, so the write is still pending when
+        // the hook exits.
+        { message: "x".repeat(4 * 1024 * 1024), notificationType: "info" },
+        hookCommandTimeoutMs,
+      );
+      await vi.waitFor(
+        () => {
+          const [pending] = getPendingAsyncHooks(owner);
+          expect(pending?.shellCommand?.status).toBe("completed");
+        },
+        { timeout: 15_000, interval: 50 },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    } finally {
+      process.off("uncaughtException", recordUncaught);
+      clearAllAsyncHooks();
+    }
+
+    expect(uncaught).toEqual([]);
+  },
+  30_000,
+);

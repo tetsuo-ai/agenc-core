@@ -79,6 +79,49 @@ describe("DeepSeekProvider", () => {
     expect(messages[3]).toMatchObject({ role: "user", content: expect.arrayContaining([image]) });
   });
 
+  test("drops a tool call cut off by the output limit and reports length", async () => {
+    // Live DeepSeek, 2026-09-22: at max_tokens 900 a write_file call streamed 3,668
+    // argument characters, then finish_reason "length" and [DONE]. A subagent whose
+    // Write hit the 64k cap failed its turn on this instead of taking output recovery.
+    const model = DEEPSEEK_MODELS[0]!.model;
+    const frame = (delta: object, finish_reason: string | null = null) => `data: ${JSON.stringify({ id: "deepseek-cut", model, choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(sseResponse([
+      frame({ reasoning_content: "write the file" }),
+      frame({ tool_calls: [{ index: 0, id: "call_echo", type: "function", function: { name: "system.echo", arguments: '{"text":"par' } }] }),
+      frame({}, "length"), "data: [DONE]\n\n",
+    ]));
+    const provider = new DeepSeekProvider({ apiKey: "deepseek-test", model, fetchImpl, tools: [ECHO_TOOL] });
+    const onChunk = vi.fn();
+    await expect(provider.chatStream([{ role: "user", content: "write" }], onChunk))
+      .resolves.toMatchObject({ finishReason: "length", toolCalls: [] });
+    expect(onChunk).not.toHaveBeenCalledWith(expect.objectContaining({ toolCalls: expect.anything() }));
+
+    const json = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
+      id: "deepseek-cut", model,
+      choices: [{ index: 0, finish_reason: "length", message: { role: "assistant", content: "", tool_calls: [{
+        id: "call_echo", type: "function", function: { name: "system.echo", arguments: '{"text":"par' },
+      }] } }],
+    }), { headers: { "content-type": "application/json" } }));
+    await expect(new DeepSeekProvider({ apiKey: "deepseek-test", model, fetchImpl: json, tools: [ECHO_TOOL] })
+      .chat([{ role: "user", content: "write" }]))
+      .resolves.toMatchObject({ finishReason: "length", toolCalls: [] });
+  });
+
+  test.each([["stop", 'received "stop"'], [null, "no finish_reason"]] as const)(
+    "still rejects streamed tool calls ended by %s and says what arrived",
+    async (finishReason, detail) => {
+      const model = DEEPSEEK_MODELS[0]!.model;
+      const frame = (delta: object, finish_reason: string | null = null) => `data: ${JSON.stringify({ id: "deepseek-bad", model, choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(sseResponse([
+        frame({ tool_calls: [{ index: 0, id: "call_echo", type: "function", function: { name: "system.echo", arguments: '{"text":"ok"}' } }] }),
+        frame({}, finishReason), "data: [DONE]\n\n",
+      ]));
+      const provider = new DeepSeekProvider({ apiKey: "deepseek-test", model, fetchImpl, tools: [ECHO_TOOL] });
+      await expect(provider.chatStream([{ role: "user", content: "echo" }], () => undefined))
+        .rejects.toThrow(`Streamed tool calls arrived without finish_reason=tool_calls (${detail})`);
+    },
+  );
+
   test("does not claim V4.1 vision support for V4 Pro", async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const provider = new DeepSeekProvider({ apiKey: "deepseek-test", model: "deepseek-v4-pro", fetchImpl });

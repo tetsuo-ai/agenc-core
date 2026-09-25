@@ -158,7 +158,7 @@ describe("providers CLI", () => {
     });
     expect(entries.get("openai-compatible")).toMatchObject({
       usable: true,
-      credentialStatus: "present",
+      credentialStatus: "optional",
       localStatus: "up",
     });
   });

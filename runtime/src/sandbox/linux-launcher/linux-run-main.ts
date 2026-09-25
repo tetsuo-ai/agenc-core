@@ -75,6 +75,13 @@ async function runLinuxSandboxOptions(
   deps: LinuxSandboxRunDeps = {},
 ): Promise<number> {
   const hostCommandCwd = options.inheritedCwd ? "." : options.commandCwd;
+  if (
+    options.browserCdpOverStdio &&
+    (options.allowNetworkForProxy ||
+      permissionProfileToRuntimePermissions(options.permissionProfile).network !== "enabled")
+  ) {
+    throw new Error("Browser CDP pipe transport requires the browser's enabled-network profile");
+  }
   if (options.applySeccompThenExec) {
     const env = deps.env ?? process.env;
     if (env[ACTIVE_INNER_ENV] !== "1") {
@@ -97,6 +104,7 @@ async function runLinuxSandboxOptions(
         cwd: options.commandCwd,
         env,
         argv0: options.command[0] ?? LINUX_SANDBOX_ARG0,
+        browserCdpOverStdio: options.browserCdpOverStdio,
       });
     } finally {
       activatedProxy?.cleanup();
@@ -186,6 +194,7 @@ async function runLinuxSandboxOptions(
         cwd: hostCommandCwd,
         env,
         argv0: options.command[0] ?? LINUX_SANDBOX_ARG0,
+        browserCdpOverStdio: options.browserCdpOverStdio,
       });
     }
     const launcher = (deps.preferredLauncher ?? preferredBubblewrapLauncher)({
@@ -335,8 +344,9 @@ async function runUnderLandlockFallback(input: {
     const child = spawn(launcherPath, args, {
       cwd: input.hostCommandCwd,
       env: input.env,
-      stdio:
-        program === null
+      stdio: input.options.browserCdpOverStdio
+        ? ["ignore", "ignore", "inherit", 0, 1]
+        : program === null
           ? "inherit"
           : ["inherit", "inherit", "inherit", program.fd],
     });
@@ -367,6 +377,7 @@ function createInnerLauncherCommand(
   return [
     ...selfCommand,
     "--apply-seccomp-then-exec",
+    ...(options.browserCdpOverStdio ? ["--browser-cdp-over-stdio"] : []),
     "--sandbox-policy-cwd",
     options.sandboxPolicyCwd,
     "--command-cwd",
@@ -434,6 +445,7 @@ export async function runCommandWithSupervision(
     readonly cwd: string;
     readonly env: NodeJS.ProcessEnv;
     readonly argv0: string;
+    readonly browserCdpOverStdio?: boolean;
   },
 ): Promise<number> {
   const [program, ...args] = command;
@@ -443,7 +455,9 @@ export async function runCommandWithSupervision(
   const child = spawn(program, args, {
     cwd: options.cwd,
     env: options.env,
-    stdio: "inherit",
+    stdio: options.browserCdpOverStdio
+      ? ["ignore", "ignore", "inherit", 0, 1]
+      : "inherit",
     argv0: options.argv0,
   });
   return await waitForChildWithSignalRelay(child);
@@ -455,8 +469,14 @@ function execCommand(
     readonly cwd: string;
     readonly env: NodeJS.ProcessEnv;
     readonly argv0: string;
+    readonly browserCdpOverStdio?: boolean;
   },
-): never {
+): Promise<number> {
+  // Node closes inherited extra descriptors on exec. Remap only the two CDP
+  // channels after confinement, while retaining supervision of the child.
+  if (options.browserCdpOverStdio) {
+    return runCommandWithSupervision(command, options);
+  }
   const [rawProgram, ...args] = command;
   if (rawProgram === undefined) {
     throw new Error("Linux sandbox command is missing");

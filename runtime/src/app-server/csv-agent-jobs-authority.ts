@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { CsvAgentJobsRepository } from "../state/csv-agent-jobs.js";
@@ -13,6 +14,8 @@ export interface CsvAgentJobsRepositoryAccessOptions {
 }
 
 export interface CsvAgentJobsRepositoryProvider {
+  /** Hold a workspace cache while a session can issue CSV operations. */
+  retainWorkspace?(cwd: string): () => Promise<void>;
   withRepository<Result>(
     cwd: string,
     operation: (
@@ -77,6 +80,7 @@ export class CsvAgentJobsRepositoryAuthority implements CsvAgentJobsRepositoryPr
     CsvAgentJobsRepositoryAuthorityOptions["openRepository"]
   >;
   readonly #entries = new Map<string, RepositoryEntry>();
+  readonly #workspaceRefs = new Map<string, number>();
   #closed = false;
   #closeTask: Promise<void> | undefined;
 
@@ -95,6 +99,27 @@ export class CsvAgentJobsRepositoryAuthority implements CsvAgentJobsRepositoryPr
         }));
     this.#openDriver = options.openDriver ?? openStateDatabasePaths;
     this.#openRepository = options.openRepository ?? openCsvAgentJobsRepository;
+  }
+
+  retainWorkspace(cwd: string): () => Promise<void> {
+    this.#assertAcceptingWork();
+    const key = resolve(this.#resolvePaths(realpathSync(resolve(cwd))).stateDbPath);
+    this.#workspaceRefs.set(key, (this.#workspaceRefs.get(key) ?? 0) + 1);
+    let released = false;
+    return async () => {
+      if (released) return;
+      released = true;
+      const remaining = (this.#workspaceRefs.get(key) ?? 1) - 1;
+      if (remaining > 0) {
+        this.#workspaceRefs.set(key, remaining);
+        return;
+      }
+      this.#workspaceRefs.delete(key);
+      const entry = this.#entries.get(key);
+      if (entry === undefined) return;
+      await Promise.allSettled([entry.opening, ...entry.activeLeases]);
+      this.#closeIdleEntry(entry);
+    };
   }
 
   async withRepository<Result>(
@@ -367,19 +392,48 @@ export class CsvAgentJobsRepositoryAuthority implements CsvAgentJobsRepositoryPr
       waiter.signal === undefined
         ? entry.controller.signal
         : AbortSignal.any([entry.controller.signal, waiter.signal]);
-    const task = Promise.resolve()
+    let task!: Promise<void>;
+    task = Promise.resolve()
       .then(() => {
         operationSignal.throwIfAborted();
         return waiter.operation(entry.repository!, operationSignal);
       })
       .then(
-        (result) => this.#settleWaiter(waiter, "resolve", result),
-        (error) => this.#settleWaiter(waiter, "reject", error),
-      )
-      .finally(() => {
-        entry.activeLeases.delete(task);
-      });
+        (result) => this.#finishLease(entry, task, waiter, "resolve", result),
+        (error) => this.#finishLease(entry, task, waiter, "reject", error),
+      );
     entry.activeLeases.add(task);
+  }
+
+  #finishLease(
+    entry: RepositoryEntry,
+    task: Promise<void>,
+    waiter: RepositoryWaiter,
+    outcome: "resolve" | "reject",
+    value: unknown,
+  ): void {
+    entry.activeLeases.delete(task);
+    try {
+      this.#closeIdleEntry(entry);
+    } catch (closeError) {
+      this.#settleWaiter(waiter, "reject", outcome === "reject"
+        ? new AggregateError([value, closeError], "CSV lease and driver close failed")
+        : closeError);
+      return;
+    }
+    this.#settleWaiter(waiter, outcome, value);
+  }
+
+  #closeIdleEntry(entry: RepositoryEntry): void {
+    if (
+      entry.state !== "ready" ||
+      (this.#workspaceRefs.get(entry.key) ?? 0) > 0 ||
+      entry.openingWaiters.length > 0 ||
+      entry.activeLeases.size > 0 ||
+      this.#entries.get(entry.key) !== entry
+    ) return;
+    this.#closeDriver(entry);
+    this.#entries.delete(entry.key);
   }
 
   #settleWaiter(

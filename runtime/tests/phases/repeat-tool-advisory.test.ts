@@ -280,6 +280,22 @@ describe("blockRepeatedFailingCall", () => {
 
   const write = call("Write", { file_path: "/root/memory/style.md", content: "x" });
 
+  test("blocks a repeated non-retryable tty refusal after one result and allows correction", () => {
+    const { session } = mkSessionStub();
+    const tty = call("exec_command", { cmd: "node -v", tty: true });
+    const refused = completed(tty, JSON.stringify({
+      error: "tty unavailable in a contained tool operation; rerun without tty",
+      code: "tty_unavailable_in_contained_operation", retryable: false,
+    }), true, { retryable: false });
+    const state = mkState([refused]);
+    const blocked = blockRepeatedFailingCall(state, session, tty);
+    expect(blocked?.isError).toBe(true);
+    expect(blocked?.preventContinuation).toBeUndefined();
+    expect(blocked?.content).toMatch(/without tty/u);
+    expect(blocked?.metadata?.retryable).toBe(false);
+    expect(blockRepeatedFailingCall(state, session, call("exec_command", { cmd: "node -v" }))).toBeNull();
+  });
+
   test("three identical failures block the fourth attempt with a plain message", () => {
     const { session, warnings } = mkSessionStub();
     const failures = Array.from({ length: REPEATED_FAILURE_BLOCK_THRESHOLD }, (_, i) =>

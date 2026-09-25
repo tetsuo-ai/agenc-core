@@ -255,6 +255,14 @@ export class XaiAcpClient {
       )
       void this.terminateProcessTree().catch(() => {})
     })
+    const { stdin, stdout, stderr } = this.child
+    if (!stdin || !stdout || !stderr) {
+      // EMFILE or ENFILE: the spawn failed before any pipe existed. Its error
+      // event (handled above) arrives on the next tick.
+      this.closed = true
+      this.closeReason = `Failed to spawn ${command}: its stdio pipes were not created`
+      throw new XaiAcpError('spawn_failed', this.closeReason)
+    }
     this.child.stderr.on('data', (chunk: Buffer) => {
       this.stderrTail = (this.stderrTail + chunk.toString('utf8')).slice(
         -STDERR_TAIL_LIMIT,
@@ -411,11 +419,12 @@ export class XaiAcpClient {
   private terminateProcessTree(): Promise<void> {
     if (this.closePromise !== null) return this.closePromise
     try {
-      this.reader.close()
+      // Absent when the constructor refused a spawn that created no pipes.
+      this.reader?.close()
     } catch {
       // The output stream may already have closed after an early spawn error.
     }
-    this.child.stdin.destroy()
+    this.child.stdin?.destroy()
     const closing = terminateProcessTreeAndWait(this.child, {
       terminateGraceMs: positiveLifecycleBound(
         this.options.terminateGraceMs,
@@ -438,12 +447,12 @@ export class XaiAcpClient {
     let tracked: Promise<void>
     tracked = closing.then(
       () => {
-        this.child.stdout.destroy()
-        this.child.stderr.destroy()
+        this.child.stdout?.destroy()
+        this.child.stderr?.destroy()
       },
       error => {
-        this.child.stdout.destroy()
-        this.child.stderr.destroy()
+        this.child.stdout?.destroy()
+        this.child.stderr?.destroy()
         // Retain the exact ChildProcess, but clear the rejected in-flight
         // operation so a later dispose can retry terminating that owner.
         if (this.closePromise === tracked) this.closePromise = null

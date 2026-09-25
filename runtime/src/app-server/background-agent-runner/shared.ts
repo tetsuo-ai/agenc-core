@@ -3,6 +3,7 @@
  * Split out of background-agent-runner.ts as a pure move.
  */
 
+import type { AgenCSessionEventDelivery } from "../approval-delivery.js";
 import { createHash } from "node:crypto";
 import type {
   BootstrapLocalRuntimeSessionOptions,
@@ -26,13 +27,7 @@ import type {
   McpSurfaceSnapshot,
 } from "../../session/session.js";
 import type { Event } from "../../session/event-log.js";
-import type {
-  SessionEditorInteraction,
-  SessionSubmitOptions,
-} from "../../session/autonomous-mode.js";
-import type {
-  CodePredictionSource,
-} from "../../services/code-prediction/types.js";
+import type { SessionSubmitOptions } from "../../session/autonomous-mode.js";
 import type {
   SessionElicitationResponseParams,
 } from "../../elicitation/respond.js";
@@ -51,6 +46,8 @@ import type {
   SessionPreviewFileRewindResult,
   SessionRewindFilesToMessageResult,
   SessionSnapshotResult,
+  SessionGoalParams,
+  SessionGoalResult,
   SessionProcessesListResult,
   SessionProcessesStopResult,
   SessionTranscriptResult,
@@ -100,7 +97,6 @@ export interface AgenCBackgroundAgentStartParams {
   readonly initialContent?: MessageContent;
   readonly deferInitialTurn?: boolean;
   readonly initialDisplayUserMessage?: string | null;
-  readonly initialEditorInteraction?: SessionEditorInteraction;
   readonly metadata?: JsonObject;
   readonly unattendedAllow: readonly string[];
   readonly unattendedDeny: readonly string[];
@@ -279,7 +275,13 @@ export interface AgenCBackgroundAgentTurnCancellationResult {
 
 export interface AgenCBackgroundAgentSessionEventBinding {
   readonly sessionId: string;
-  readonly emit: (event: JsonObject) => void | Promise<void>;
+  /** Resolves to the daemon's delivery result when it has one. */
+  readonly emit: (
+    event: JsonObject,
+  ) =>
+    | void
+    | AgenCSessionEventDelivery
+    | Promise<void | AgenCSessionEventDelivery>;
 }
 
 export interface AgenCBackgroundAgentMessageParams {
@@ -287,7 +289,6 @@ export interface AgenCBackgroundAgentMessageParams {
   readonly content: MessageContent;
   readonly originalContent: MessageContent;
   readonly displayUserMessage?: string | null;
-  readonly editorInteraction?: SessionEditorInteraction;
   readonly messageId: string;
   readonly streamId: string;
   readonly acceptedAt: string;
@@ -501,7 +502,7 @@ export interface AgenCBackgroundAgentRunner {
   ): Promise<AgenCBackgroundAgentCancellationPreparation>;
   stopAgent?(agentId: string, reason?: string): Promise<void>;
   /** Daemon-owned one-shot invocation: derive its final outcome from a settled message. */
-  finishAgentRun?(agentId: string, messageId: string): Promise<"completed" | "failed" | "cancelled" | undefined>;
+  finishAgentRun?(agentId: string, messageId: string): Promise<"completed" | "failed" | "cancelled" | "permission_denied" | undefined>;
   /** Daemon-only shutdown disposition; caller prose cannot select suspension. */
   suspendIdleAgentForDaemonShutdown?(
     agentId: string,
@@ -519,15 +520,15 @@ export interface AgenCBackgroundAgentRunner {
     params: SessionShellExecuteParams,
     signal?: AbortSignal,
   ): Promise<SessionShellExecuteResult>;
+  updateAgentSessionGoal?(
+    agentId: string,
+    params: SessionGoalParams,
+  ): Promise<SessionGoalResult>;
   executeAgentStatusLine?(
     agentId: string,
     params: SessionStatusLineExecuteParams,
     signal?: AbortSignal,
   ): Promise<SessionStatusLineExecuteResult>;
-  /** Resolve the live route without exposing the primary provider to callers. */
-  resolveCodePredictionSource?(
-    agentId: string,
-  ): Promise<CodePredictionSource> | CodePredictionSource;
   clearAgentSession?(
     agentId: string,
     params: AgenCBackgroundAgentClearSessionParams,
@@ -547,7 +548,7 @@ export interface AgenCBackgroundAgentRunner {
   ): Promise<SessionTranscriptResult>;
   getAgentSessionTranscriptV2?(
     agentId: string,
-    params: { readonly sessionId: string },
+    params: { readonly sessionId: string; readonly includeCompleteMessages?: boolean },
   ): Promise<SessionTranscriptV2Result>;
   resolveLiveEffectReview?(
     agentId: string,
@@ -659,6 +660,15 @@ export interface AgenCBackgroundAgentRunner {
     params: AgenCBackgroundAgentElicitationResponseParams,
   ): Promise<boolean>;
   listPermissions?(agentId: string): Promise<PermissionListResult | null>;
+  /**
+   * The CURRENT permission mode in a runnable agent's own permission
+   * registry, or null when the agent has no live runtime. The routine
+   * service reads a session's mode through this so a routine the session
+   * creates can never carry a wider one.
+   */
+  getAgentPermissionMode?(agentId: string): Promise<string | null>;
+  /** True only while this call is executing in the agent's active turn. */
+  isAgentToolCallExecuting?(agentId: string, toolCallId: string): boolean | Promise<boolean>;
   resolveRealtimeThread?(
     threadId: string,
   ):
@@ -683,6 +693,12 @@ interface ActiveBackgroundAgent {
   readonly bootstrap: LocalRuntimeBootstrap;
   readonly control: AgentControl;
   readonly thread: ManagedThread;
+  /** Recovered conversation to republish after review releases a deferred turn. */
+  reapplyRecoveredHistoryAfterReview?: () => Promise<void>;
+  deferredDurableResumePendingReview?: boolean;
+  deferredDurableResumeStarting?: boolean;
+  deferredDurableResumeReviewBarrier?: Promise<void>;
+  releaseDeferredDurableResumeReviewBarrier?: () => void;
   status: DaemonAgentStatus;
   readonly startedAt: string;
   readonly runtimeGenerationId: string;
@@ -701,6 +717,7 @@ interface ActiveBackgroundAgent {
     readonly eventId: string;
     readonly reason: "daemon_shutdown_idle";
     readonly suspendedAt: string;
+    readonly interruptedTurnId?: string;
   };
   /** Closes every runner ingress route before idle state is observed. */
   ingressClosed?: boolean;

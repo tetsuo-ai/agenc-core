@@ -4,6 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LocalWhisperService, MAX_WHISPER_WAV_BYTES, runWhisperProcess, validateWhisperAudio, WHISPER_MODELS, WHISPER_LANGUAGES, whisperOptionsArgs } from "../../src/audio/whisper.js";
 
+// Captured before any test installs fake timers, so these yields still reach
+// the real event loop. The download fixtures drive fake time but depend on
+// real filesystem work (open/write/close) landing in between, and a fake-timer
+// advance is not a substitute for waiting on it.
+const realSetTimeout = globalThis.setTimeout;
+const realTick = (): Promise<void> =>
+  new Promise<void>((resolve) => { realSetTimeout(resolve, 0); });
+
 const homes: string[] = [];
 async function home(): Promise<string> { const value = await mkdtemp(join(tmpdir(), "agenc-whisper-unit-")); homes.push(value); return value; }
 function wav(samples = 1600): Buffer {
@@ -93,6 +101,72 @@ describe("Whisper installation boundary", () => {
     controller.abort(); await rejected;
     expect(await readdir(join(root, "whisper"))).toEqual([]);
     await expect(service.transcribe(params(), new AbortController().signal)).rejects.toMatchObject({ code: "WHISPER_MODEL_UNAVAILABLE" });
+  });
+  /** A body that opens, aborts like fetch does, and delivers only when asked. */
+  const controllableDownload = () => {
+    let deliver: (() => void) | undefined;
+    let reads = 0;
+    const stub = vi.fn((_url: unknown, init: RequestInit) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init.signal?.addEventListener("abort", () => controller.error(new Error("aborted")), { once: true });
+          deliver = () => controller.enqueue(new Uint8Array([0]));
+        },
+        // With a high-water mark of 0, pull runs only when the consumer asks
+        // for another chunk, which it does after handling the previous one.
+        pull() { reads += 1; },
+      }, { highWaterMark: 0 });
+      return Promise.resolve(new Response(body));
+    });
+    vi.stubGlobal("fetch", stub);
+    return { stub, deliver: () => deliver?.(), reads: () => reads };
+  };
+
+  /** Start an install and assert it ends as a stall, not a cancellation. */
+  const expectStall = async (root: string, stub: ReturnType<typeof vi.fn>) => {
+    const service = new LocalWhisperService({ home: root, env: { AGENC_WHISPER_CLI: process.execPath } });
+    const rejected = expect(service.install({ model: "base" }, new AbortController().signal)).rejects.toMatchObject({
+      code: "WHISPER_DOWNLOAD_FAILED",
+      message: expect.stringContaining("stopped receiving data"),
+    });
+    // The idle clock is armed only once the request is in flight, and getting
+    // there costs real filesystem round trips, not fake time.
+    for (let tick = 0; tick < 5_000 && stub.mock.calls.length === 0; tick += 1) await realTick();
+    expect(stub).toHaveBeenCalledOnce();
+    return { rejected };
+  };
+
+  it("ends a download that stops delivering, and calls it a failure rather than a cancellation", async () => {
+    vi.useFakeTimers();
+    try {
+      const root = await home();
+      const { stub } = controllableDownload();
+      const { rejected } = await expectStall(root, stub);
+      await vi.advanceTimersByTimeAsync(61_000);
+      await rejected;
+      expect(await readdir(join(root, "whisper"))).toEqual([]);
+    } finally { vi.useRealTimers(); }
+  });
+  it("restarts its patience on every chunk, so a slow but live download survives", async () => {
+    vi.useFakeTimers();
+    try {
+      const root = await home();
+      const { stub, deliver, reads } = controllableDownload();
+      const { rejected } = await expectStall(root, stub);
+      // A byte just before each window closes, for far longer than the ten
+      // minute deadline this replaced.
+      for (let minute = 0; minute < 15; minute += 1) {
+        await vi.advanceTimersByTimeAsync(50_000);
+        const before = reads();
+        deliver();
+        // Advance again only once the download asks for the next chunk: by then
+        // it has restarted its idle clock and written this one.
+        for (let tick = 0; tick < 5_000 && reads() === before; tick += 1) await realTick();
+        expect(reads()).toBeGreaterThan(before);
+      }
+      await vi.advanceTimersByTimeAsync(61_000);
+      await rejected;
+    } finally { vi.useRealTimers(); }
   });
   it("status never downloads, creates directories, or trusts arbitrary PATH", async () => {
     const root = await home(); const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);

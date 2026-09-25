@@ -90,6 +90,7 @@ function stateColor(
     case "pending":
       return "agenc";
     case "disabled":
+    case "stopped":
       return "inactive";
     case "disconnected":
       return "worker";
@@ -108,9 +109,15 @@ function stateGlyph(state: McpServerStatus["state"]): string {
       return "◐";
     case "disabled":
       return "·";
+    case "stopped":
+      return "◇";
     case "disconnected":
       return "◇";
   }
+}
+
+function stateLabel(state: McpServerStatus["state"]): string {
+  return state === "stopped" ? "stopped (on demand)" : state;
 }
 
 function sameServer(
@@ -651,7 +658,7 @@ function McpMenuView({
     const row = selectedServer ?? EMPTY_ROW;
     const details = [
       ["name", row.name],
-      ["state", row.state],
+      ["state", stateLabel(row.state)],
       ["enabled", row.enabled ? "yes" : "no"],
       ["required", row.required ? "yes" : "no"],
       ["target", row.target],
@@ -662,7 +669,7 @@ function McpMenuView({
       <MenuModal
         title="mcp server"
         count={row.name}
-        summary={row.state}
+        summary={stateLabel(row.state)}
         headerRight="t tools · x toggle · r reconnect"
         columns={[14, 88]}
         headers={["field", "value"]}
@@ -676,7 +683,7 @@ function McpMenuView({
         ]}
         preview={
           <Box flexDirection="column" gap={1}>
-            <ThemedText color={stateColor(row.state)}>{stateGlyph(row.state)} {row.state}</ThemedText>
+            <ThemedText color={stateColor(row.state)}>{stateGlyph(row.state)} {stateLabel(row.state)}</ThemedText>
             <ThemedText color="subtle" wrap="wrap">
               {row.target}
             </ThemedText>
@@ -744,7 +751,7 @@ function McpMenuView({
           </ThemedText>
           {selected && !selected.empty ? (
             <ThemedText color={stateColor(selected.state)} wrap="wrap">
-              {selected.state}{selected.error ? ` · ${selected.error}` : ""}
+              {stateLabel(selected.state)}{selected.error ? ` · ${selected.error}` : ""}
             </ThemedText>
           ) : (
             <ThemedText color="inactive" wrap="wrap">

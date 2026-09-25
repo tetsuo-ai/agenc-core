@@ -8,7 +8,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { basename, isAbsolute, normalize, resolve } from "node:path";
 import type { Writable } from "node:stream";
-import treeKill from "tree-kill";
 
 import { AgenCDaemonAgentLifecycleError } from "./agent-lifecycle.js";
 import {
@@ -45,6 +44,8 @@ import {
   type JsonObject,
 } from "./protocol/index.js";
 import { loadPty, type IPty } from "../pty/loadPty.js";
+import { signalPtyProcessTree } from "../pty/process-tree.js";
+import { isSignalablePid } from "../utils/child-signal.js";
 import {
   buildScrubbedSpawnEnv,
   isSecretEnvKey,
@@ -1156,19 +1157,27 @@ function closeStdin(session: CommandExecSession): void {
 function terminateSession(session: CommandExecSession): void {
   if (session.pty !== null) {
     const pty = session.pty;
-    terminatePtySession(pty, "SIGTERM");
+    // A PTY session is finalized only by node-pty's exit report, which comes
+    // after the child was reaped; its pid may then belong to another process.
+    terminatePtySession(pty, "SIGTERM", session.finalized);
     setTimeout(() => {
       if (!session.finalized) {
-        terminatePtySession(pty, "SIGKILL");
+        terminatePtySession(pty, "SIGKILL", false);
       }
     }, FORCE_KILL_DELAY_MS).unref?.();
     return;
   }
   const child = session.child;
-  if (child === null) return;
-  if (child.pid !== undefined && process.platform !== "win32") {
+  // A child without a pid never started. Until Node reports that on the next
+  // tick, its open handle sends kill() to pid 0: the daemon's own process
+  // group. Its error event finalizes the session instead. A handle reporting
+  // 0 or -1 would turn -pid into this process's group or pid 1, so only a
+  // pid above 1 is signalled.
+  if (child === null || !isSignalablePid(child.pid)) return;
+  const pid = child.pid;
+  if (process.platform !== "win32") {
     try {
-      process.kill(-child.pid, "SIGTERM");
+      process.kill(-pid, "SIGTERM");
     } catch {
       child.kill("SIGTERM");
     }
@@ -1177,9 +1186,9 @@ function terminateSession(session: CommandExecSession): void {
   }
   setTimeout(() => {
     if (session.finalized) return;
-    if (child.pid !== undefined && process.platform !== "win32") {
+    if (process.platform !== "win32") {
       try {
-        process.kill(-child.pid, "SIGKILL");
+        process.kill(-pid, "SIGKILL");
       } catch {
         child.kill("SIGKILL");
       }
@@ -1189,26 +1198,17 @@ function terminateSession(session: CommandExecSession): void {
   }, FORCE_KILL_DELAY_MS).unref?.();
 }
 
-function terminatePtySession(pty: IPty, signal: NodeJS.Signals): void {
-  const killPty = (): void => {
-    try {
-      pty.kill(signal);
-    } catch {
-      // Best-effort shutdown.
-    }
-  };
-  const pid = pty.pid;
-  if (Number.isInteger(pid) && pid > 0) {
-    try {
-      treeKill(pid, signal, () => {
-        killPty();
-      });
-      return;
-    } catch {
-      // Fall back to the PTY handle below.
-    }
-  }
-  killPty();
+function terminatePtySession(
+  pty: IPty,
+  signal: NodeJS.Signals,
+  exited: boolean,
+): void {
+  // Refuses a PTY without a pid above 1. node-pty's own kill() is
+  // process.kill(pid), which for 0, -1 or 1 would reach this process's
+  // group, every process of the user, or init, so there is no fallback.
+  signalPtyProcessTree(pty, signal === "SIGKILL" ? "SIGKILL" : "SIGTERM", {
+    exited,
+  });
 }
 
 function delay(ms: number): Promise<void> {

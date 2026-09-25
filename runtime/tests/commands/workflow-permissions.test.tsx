@@ -126,7 +126,7 @@ describe("explicit workflow permissions command", () => {
       panel.stdin.write("3");
       await delay();
       expect(panel.controls.respond).toHaveBeenCalledOnce();
-      expect(panel.controls.respond.mock.calls[0]?.[1]).toEqual({ kind: "denied" });
+      expect(panel.controls.respond.mock.calls[0]?.[1]).toEqual({ kind: "denied", decidedBy: "user" });
     } finally { panel.root.unmount(); }
   });
 });

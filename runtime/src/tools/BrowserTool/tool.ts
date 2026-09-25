@@ -24,12 +24,18 @@ import type { PermissionResult, PermissionUpdate } from "../../permissions/types
 import type { ToolEvaluatorContext } from "../../permissions/evaluator.js";
 import { getRuleByContentsForTool } from "../../permissions/rules.js";
 import { BrowserManager } from "../../browser/manager.js";
-import { readBrowserNavigationFailureReceipt } from "../../browser/page.js";
+import { resolveBrowserProjectRootSync } from "../../browser/profile-root.js";
+import {
+  BROWSER_NAMED_KEYS,
+  readBrowserNavigationFailureReceipt,
+  readBrowserNavigationPolicyRefusal,
+} from "../../browser/page.js";
 import {
   isSandboxExecutionBrokerDisposed,
   registerSandboxExecutionLifecycleParticipant,
 } from "../../sandbox/execution-lifecycle.js";
 import { resolveBrowserPolicy } from "../../browser/config.js";
+import { validateNavigableUrl } from "../../browser/ssrf.js";
 import type { BrowserConfig } from "../../config/schema.js";
 import { getCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
 import {
@@ -80,6 +86,10 @@ export interface CreateBrowserToolOptions {
   readonly agencHome?: string;
   /** Already-layered canonical `[browser]` snapshot for this session. */
   readonly config?: BrowserConfig;
+  /** Session root markers, from the same layered config used for trust. */
+  readonly projectRootMarkers?: readonly string[];
+  readonly projectRootMarkersProvider?: () => readonly string[] | undefined;
+  readonly subscribeProjectRootMarkers?: (listener: () => void) => () => void;
   /** Inject a lifecycle-owned manager (tests). When absent one is created lazily. */
   readonly manager?: BrowserManager;
 }
@@ -178,6 +188,17 @@ export function createBrowserTool(
         const agencHome = safeAgencHome(options.agencHome);
         created = new BrowserManager({
           ...(agencHome !== undefined ? { agencHome } : {}),
+          projectRoot: resolveBrowserProjectRootSync(
+            sandboxExecutionBroker.cwd,
+            options.projectRootMarkersProvider?.() ?? options.projectRootMarkers,
+          ),
+          projectRootMarkers: options.projectRootMarkers,
+          ...(options.projectRootMarkersProvider !== undefined
+            ? { projectRootMarkersProvider: options.projectRootMarkersProvider }
+            : {}),
+          ...(options.subscribeProjectRootMarkers !== undefined
+            ? { subscribeProjectRootMarkers: options.subscribeProjectRootMarkers }
+            : {}),
           policy,
           sandboxExecutionBroker,
         });
@@ -191,7 +212,9 @@ export function createBrowserTool(
           resume: async () => {},
           dispose: async () => {
             try {
-              await created.closeAll();
+              // Injected test managers implement only the original lifecycle API.
+              if (created === injectedManager) await created.closeAll();
+              else await created.dispose();
             } finally {
               if (managers.get(sandboxExecutionBroker) === created) {
                 managers.delete(sandboxExecutionBroker);
@@ -221,20 +244,46 @@ export function createBrowserTool(
     }
   }
 
+  /**
+   * The check page.navigate runs first, applied before any browser work. A
+   * scheme, credential or host refusal there touched nothing, but it surfaced
+   * from inside the manager as a plain error, so the settlement supervisor saw
+   * an unknown outcome and blocked every later side-effecting call. Refusing
+   * here settles it as no effect, like a missing url (#2190).
+   */
+  function navigableUrlError(url: string): string | undefined {
+    // The manager opens about:blank without navigating (#createTab), so a new
+    // or first tab at about:blank keeps working exactly as before.
+    if (url === "about:blank") return undefined;
+    try {
+      validateNavigableUrl(url);
+      return undefined;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
   /** Validate required args before any config/manager work. */
   function validateRequired(
     action: string,
     input: BrowserToolInput,
   ): string | undefined {
     switch (action) {
-      case "navigate":
-        return str(input.url) === undefined ? "navigate requires a url" : undefined;
+      case "navigate": {
+        const url = str(input.url);
+        return url === undefined ? "navigate requires a url" : navigableUrlError(url);
+      }
+      case "new_tab": {
+        const url = str(input.url);
+        return url === undefined ? undefined : navigableUrlError(url);
+      }
       case "click":
         return str(input.ref) === undefined ? "click requires a ref" : undefined;
       case "type":
         return str(input.ref) === undefined ? "type requires a ref" : undefined;
       case "press_key":
-        return str(input.key) === undefined ? "press_key requires a key" : undefined;
+        return BROWSER_NAMED_KEYS.includes(str(input.key) ?? "")
+          ? undefined : `press_key requires one of: ${BROWSER_NAMED_KEYS.join(", ")}`;
       case "select_tab":
         return tabIdOf(input) === undefined ? "select_tab requires tab_id" : undefined;
       case "close_tab":
@@ -429,6 +478,7 @@ export function createBrowserTool(
         },
         key: {
           type: "string",
+          enum: BROWSER_NAMED_KEYS,
           description: "Named key to press (press_key), e.g. Enter, Tab.",
         },
         direction: {
@@ -447,7 +497,8 @@ export function createBrowserTool(
         },
         tab_id: {
           type: "number",
-          description: "Target tab id (defaults to the active tab).",
+          description:
+            "Target tab id from the tabs action (ids start at 1). Omit for the active tab.",
         },
         max_chars: {
           type: "number",
@@ -538,6 +589,25 @@ export function createBrowserTool(
             },
           };
         }
+        const refusal = readBrowserNavigationPolicyRefusal(err);
+        if (
+          refusal !== undefined &&
+          (input.action === "navigate" || input.action === "new_tab") &&
+          refusal.url === str(input.url)
+        ) {
+          return {
+            ...result,
+            effectDisposition: createToolEffectDispositionEvidence({
+              // Chromium completed the navigation to the proxy's refusal page.
+              // The target host was refused; a completed command never claims
+              // no effect, so this settles as committed, like errorText below.
+              disposition: "confirmed_committed",
+              evidenceKind: "provider_receipt",
+              evidenceRef: "tool:Browser:proxy-policy-refusal",
+              evidenceMaterial: JSON.stringify(refusal),
+            }),
+          };
+        }
         const receipt = readBrowserNavigationFailureReceipt(err);
         if (
           receipt === undefined ||
@@ -560,8 +630,18 @@ export function createBrowserTool(
   };
 }
 
+/**
+ * The tab an action names. Tab ids start at 1, and models that fill every
+ * optional field send tab_id 0 for "not given" (luna-mac F2: navigate with
+ * tab_id 0 was answered "no open tabs"). 0 therefore means the default, the
+ * active tab or the first one navigate opens, exactly like an omitted tab_id;
+ * it can never name a tab, so no other page is chosen for it. An id that names
+ * no open tab is refused by the manager before any page action.
+ */
 function tabIdOf(input: BrowserToolInput): number | undefined {
-  return typeof input.tab_id === "number" && Number.isInteger(input.tab_id)
+  return typeof input.tab_id === "number" &&
+    Number.isInteger(input.tab_id) &&
+    input.tab_id !== 0
     ? input.tab_id
     : undefined;
 }
