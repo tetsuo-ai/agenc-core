@@ -2694,6 +2694,7 @@ describe("GeminiProvider", () => {
       completionTokens: 3,
       totalTokens: 7,
       reasoningOutputTokens: 1,
+      reasoningIncludedInCompletion: true,
       availability: "reported",
       provenance: "provider",
     });
@@ -2727,6 +2728,7 @@ describe("GeminiProvider", () => {
       completionTokens: 3,
       totalTokens: 10,
       reasoningOutputTokens: 1,
+      reasoningIncludedInCompletion: true,
       availability: "reported",
       provenance: "provider",
     });

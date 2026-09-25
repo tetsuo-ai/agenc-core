@@ -5,6 +5,8 @@
  * and prices the response as candidate + thinking tokens. AgenC's cost and
  * budget contracts treat `reasoningOutputTokens` as a subset of completion
  * output, so `completionTokens` is the inclusive generated total.
+ * `reasoningIncludedInCompletion` marks that subset so the session budget
+ * adds the completion total once.
  *
  * `toolUsePromptTokenCount` is prompt-side. Google sometimes folds it into
  * `totalTokenCount` without adding it to `promptTokenCount`. This mapper
@@ -86,7 +88,7 @@ export function requestUsageFromGemini(
     });
   }
 
-  return coerceUsage({
+  const mapped = coerceUsage({
     promptTokens,
     ...(hasOutputParts ? { completionTokens } : {}),
     totalTokens: totalTokenCount,
@@ -95,4 +97,6 @@ export function requestUsageFromGemini(
       ? { reasoningOutputTokens: thoughtsTokenCount }
       : {}),
   });
+  if (thoughtsTokenCount === undefined) return mapped;
+  return { ...mapped, reasoningIncludedInCompletion: true };
 }

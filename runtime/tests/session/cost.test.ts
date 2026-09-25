@@ -14,6 +14,7 @@ import {
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
   BUILT_IN_PROVIDER_MODEL_CATALOG,
 } from "../config/resolve-provider.js";
+import { BudgetTracker } from "../conversation/token-budget.js";
 
 const ZERO_COST_DEFAULT_PROVIDERS = new Set([
   "lmstudio",
@@ -748,6 +749,29 @@ describe("CostSidecar", () => {
     expect(sidecar.getTotalCostUsd()).toBeGreaterThan(0.02);
     expect(sidecar.formatTotalCost()).toContain("300 cache write");
     expect(sidecar.formatTotalCost()).toContain("2 web search");
+  });
+
+  test("adds Anthropic reasoning on top of completion in the budget", () => {
+    const tracker = new BudgetTracker();
+    const sidecar = new CostSidecar({
+      defaultProvider: "anthropic",
+      defaultModel: "claude-sonnet-4-5",
+      budgetTracker: tracker,
+    });
+    sidecar.onEvent({
+      id: "1",
+      seq: 1,
+      msg: {
+        type: "token_count",
+        payload: {
+          promptTokens: 1000,
+          completionTokens: 500,
+          reasoningOutputTokens: 25,
+          totalTokens: 1525,
+        },
+      },
+    });
+    expect(tracker.emitted).toBe(525);
   });
 
   test("tracks current-session API-without-retry and tool durations", async () => {
