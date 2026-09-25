@@ -82,7 +82,7 @@ type ChildExitListener = (
 ) => void;
 
 export interface AgencSubprocessChild {
-  readonly pid?: number | undefined;
+  readonly pid?: number;
   readonly stdin: {
     write(chunk: string): unknown;
     end(): unknown;
@@ -307,12 +307,10 @@ export function promptViaSubprocess(
     }
     if (!isJsonObject(parsed)) return;
     if (parsed.type === "event" && isJsonObject(parsed.event)) {
-      if (observedSessionId === undefined) {
-        observedSessionId =
-          typeof parsed.sessionId === "string"
-            ? parsed.sessionId
-            : sessionIdFromNotification(parsed.event) ?? undefined;
-      }
+      observedSessionId ??=
+        typeof parsed.sessionId === "string"
+          ? parsed.sessionId
+          : sessionIdFromNotification(parsed.event) ?? undefined;
       const event = promptEventFromNotification(parsed.event);
       if (event !== null && !done) {
         buffered.push(event);
