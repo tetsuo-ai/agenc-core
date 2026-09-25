@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -577,7 +578,7 @@ describe("plugin install transaction", () => {
     }
   });
 
-  it("restores an absent or false global enabled flag after a failed first install", async () => {
+  it("restores a false global enabled flag after a failed first install", async () => {
     const world = await createWorld();
     await writeFile(join(world.agencHome, "config.toml"), "config_version = 2\n\n[plugins]\nenabled = false\n");
     await expect(installFresh(world, "fresh", {
@@ -589,6 +590,136 @@ describe("plugin install transaction", () => {
     expect(raw).not.toContain("fresh");
     expect(raw).toContain("\"enabled\" = false");
     expect(raw).not.toContain("\"enabled\" = true");
+    expect(raw).not.toContain("[\"plugins\".\"plugins\"]");
+  });
+
+  it("restores an absent global enabled flag without leaving empty plugin tables", async () => {
+    const world = await createWorld();
+    await writeFile(join(world.agencHome, "config.toml"), "config_version = 2\n");
+    await expect(installFresh(world, "fresh", {
+      afterPublishConfig: async () => {
+        throw new Error("publish failed");
+      },
+    })).rejects.toThrow(/publish failed/u);
+    const raw = await readFile(join(world.agencHome, "config.toml"), "utf8");
+    expect(raw).not.toContain("fresh");
+    expect(raw).not.toContain("enabled");
+    expect(raw).not.toContain("[\"plugins\"]");
+  });
+
+  it("does not invent a config path when the storage root is outside the AgenC home", async () => {
+    const world = await createWorld();
+    const pluginStorageRoot = join(world.root, "separate-storage");
+    await mkdir(pluginStorageRoot, { recursive: true });
+    const separated = {
+      ...world,
+      pluginStorageRoot,
+      authority: { ...world.authority, pluginStorageRoot },
+    };
+    const userConfig = join(world.agencHome, "config.toml");
+    await writeFile(userConfig, "config_version = 2\n");
+    await expect(installFresh(separated, "fresh", {
+      afterPublishConfig: async () => {
+        throw new PluginInstallTransactionSimulatedCrash("destination-replaced");
+      },
+    })).rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
+    const stray = join(world.root, "config.toml");
+    await expect(access(stray)).rejects.toThrow();
+    const untouched = await loadPlugins({
+      pluginStorageRoot,
+      workspaceRoot: world.workspaceRoot,
+      config: { plugins: { enabled: true } },
+    });
+    expect(untouched.errors.some((issue) =>
+      issue.type === "install-recovery" && /plugin config not restored/u.test(issue.message),
+    )).toBe(true);
+    expect(await readFile(userConfig, "utf8")).toContain("fresh");
+    const restoredWorld = await createWorld();
+    const restoredStorage = join(restoredWorld.root, "separate-storage");
+    await mkdir(restoredStorage, { recursive: true });
+    const restoredHomeConfig = join(restoredWorld.agencHome, "config.toml");
+    await writeFile(restoredHomeConfig, "config_version = 2\n");
+    await expect(installFresh({
+      ...restoredWorld,
+      pluginStorageRoot: restoredStorage,
+      authority: { ...restoredWorld.authority, pluginStorageRoot: restoredStorage },
+    }, "fresh", {
+      afterPublishConfig: async () => {
+        throw new PluginInstallTransactionSimulatedCrash("destination-replaced");
+      },
+    })).rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
+    const restored = await loadPlugins({
+      pluginStorageRoot: restoredStorage,
+      workspaceRoot: restoredWorld.workspaceRoot,
+      config: { plugins: { enabled: true } },
+      userConfigPath: restoredHomeConfig,
+    });
+    expect(restored.errors.filter((issue) => issue.type === "install-recovery")).toEqual([]);
+    expect(await readFile(restoredHomeConfig, "utf8")).not.toContain("fresh");
+    await expect(access(join(restoredWorld.root, "config.toml"))).rejects.toThrow();
+  });
+
+  it("does not restore user config when the storage root is the workspace plugin directory", async () => {
+    const world = await createWorld();
+    const pluginStorageRoot = join(world.workspaceRoot, ".agents", "plugins");
+    await mkdir(pluginStorageRoot, { recursive: true });
+    const projectRooted = {
+      ...world,
+      pluginStorageRoot,
+      authority: { ...world.authority, pluginStorageRoot },
+    };
+    const userConfig = join(world.agencHome, "config.toml");
+    await writeFile(userConfig, "config_version = 2\n");
+    await expect(installFresh(projectRooted, "fresh", {
+      afterPublishConfig: async () => {
+        throw new PluginInstallTransactionSimulatedCrash("destination-replaced");
+      },
+    })).rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
+    const afterCrash = await readFile(userConfig, "utf8");
+    const loaded = await loadPlugins({
+      pluginStorageRoot,
+      workspaceRoot: world.workspaceRoot,
+      config: { plugins: { enabled: true } },
+      userConfigPath: userConfig,
+    });
+    expect(loaded.errors.some((issue) =>
+      issue.type === "install-recovery" && /plugin config not restored/u.test(issue.message),
+    )).toBe(true);
+    expect(await readFile(userConfig, "utf8")).toBe(afterCrash);
+    await expect(access(join(world.workspaceRoot, ".agents", "config.toml"))).rejects.toThrow();
+  });
+
+  it("deletes a dead-pid lease and the emptied ops directory after recovery", async () => {
+    const world = await createWorld();
+    const child = spawn(process.execPath, ["-e", "process.exit(0)"]);
+    await new Promise<void>((resolve, reject) => {
+      child.once("exit", () => resolve());
+      child.once("error", reject);
+    });
+    const ops = join(world.pluginStorageRoot, ".plugin-install-ops");
+    await mkdir(ops, { recursive: true });
+    const operationId = "00000000-0000-4000-8000-deadpid00001";
+    const recordPath = join(ops, `${operationId}.json`);
+    await writeFile(recordPath, `${JSON.stringify({
+      version: 1,
+      operationId,
+      kind: "install",
+      pluginId: "fresh",
+      destination: join(world.pluginStorageRoot, "fresh"),
+      stagePath: join(world.pluginStorageRoot, `fresh.stage-${operationId}`),
+      phase: "record-created",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    })}\n`);
+    await writeFile(`${recordPath}.lease`, `${JSON.stringify({ pid: child.pid })}\n`);
+    const loaded = await loadPlugins({
+      pluginStorageRoot: world.pluginStorageRoot,
+      workspaceRoot: world.workspaceRoot,
+      config: { plugins: { enabled: true } },
+    });
+    expect(loaded.errors.filter((issue) => issue.type === "install-recovery")).toEqual([]);
+    await expect(access(recordPath)).rejects.toThrow();
+    await expect(access(`${recordPath}.lease`)).rejects.toThrow();
+    await expect(access(ops)).rejects.toThrow();
   });
 
   it("restores the previous plugin entry exactly, including extra fields", async () => {
@@ -650,6 +781,7 @@ describe("plugin install transaction", () => {
       pluginStorageRoot: installed.pluginStorageRoot,
       workspaceRoot: installed.workspaceRoot,
       config: { plugins: { enabled: true } },
+      userConfigPath: configPath,
     });
     expect(loaded.errors.filter((issue) => issue.type === "install-recovery")).toEqual([]);
     expect(await readFile(configPath, "utf8")).toContain("\"path\" = \"/plugin/crash-keep\"");
