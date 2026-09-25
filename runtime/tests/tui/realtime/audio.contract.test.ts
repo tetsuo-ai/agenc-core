@@ -32,6 +32,8 @@ function createChild(): ChildProcess & { stdin: PassThrough } {
   const child = new EventEmitter() as ChildProcess & { stdin: PassThrough };
   child.stdin = new PassThrough();
   child.kill = vi.fn(() => true) as never;
+  // close() only signals a child whose pid passes isSignalablePid (#2657).
+  Object.assign(child, { pid: 424_242 });
   return child;
 }
 
