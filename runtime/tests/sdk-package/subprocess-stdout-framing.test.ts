@@ -63,12 +63,24 @@ function createProgrammableChild(signal?: AbortSignal): ProgrammableChild {
       stdin: {
         write: () => true,
         on: () => {},
+        removeListener: () => {},
         end: () => {},
       },
       stdout: stdoutStream as unknown as AgencSubprocessChild["stdout"],
       stderr: stderrStream as unknown as AgencSubprocessChild["stderr"],
+      on: (event: string, listener: (...args: never[]) => void) => {
+        processEmitter.on(event, listener as (...args: unknown[]) => void);
+        return child;
+      },
       once: (event: string, listener: (...args: never[]) => void) => {
         processEmitter.once(event, listener as (...args: unknown[]) => void);
+        return child;
+      },
+      removeListener: (event: string, listener: (...args: never[]) => void) => {
+        processEmitter.removeListener(
+          event,
+          listener as (...args: unknown[]) => void,
+        );
         return child;
       },
       kill: (sig?: string) => {
@@ -94,7 +106,9 @@ function createProgrammableChild(signal?: AbortSignal): ProgrammableChild {
       stderr.emit("data", chunk);
     },
     exit: (code = 0, sig = null) => {
+      stdout.emit("end");
       processEmitter.emit("exit", code, sig);
+      processEmitter.emit("close", code, sig);
     },
   };
 }
