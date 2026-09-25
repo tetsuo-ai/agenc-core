@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, open, readFile, readdir, realpath, rename, rm, stat } from "node:fs/promises";
+import { lstat, open, readFile, readdir, realpath, rename, rm, rmdir, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import {
@@ -56,6 +56,8 @@ export interface PluginInstallOperationRecord {
   readonly backupIdentity?: PluginInstallDirectoryIdentity;
   readonly createdAt: string;
   readonly previousPluginConfig?: unknown;
+  /** Canonical user config file the snapshot was read from. */
+  readonly configTargetPath?: string;
 }
 
 export interface PluginInstallTransactionContext {
@@ -98,6 +100,10 @@ export interface PluginInstallTransactionHooks {
 export interface PluginInstallRecoveryHooks {
   /** Test seam: crash after the new destination is removed and before the backup is renamed back. */
   readonly afterRollbackDestinationRemoved?: () => Promise<void>;
+  /** Test seam: runs after this process has claimed a dead lease. */
+  readonly afterLeaseClaimed?: () => Promise<void>;
+  /** Test seam: runs after an empty ops listing and before rmdir. */
+  readonly beforeRemoveEmptyOpsDirectory?: (opsDir: string) => Promise<void>;
 }
 
 export interface PluginInstallRecoveryIssue {
@@ -142,6 +148,8 @@ export async function recoverPluginInstallTransactions(
   options: {
     readonly installRoots: readonly string[];
     readonly restorePluginConfig?: (pluginId: string, previous: unknown) => Promise<void>;
+    /** Caller-supplied user config path. Recovery writes only when it matches the record. */
+    readonly userConfigPath?: string;
     /** Repo-controlled roots must not apply previousPluginConfig. Report that instead. */
     readonly reportUnrestoredConfig?: boolean;
     readonly hooks?: PluginInstallRecoveryHooks;
@@ -300,10 +308,15 @@ async function publishTransactionConfig(
   state: TransactionState,
   recordPath: string,
 ): Promise<void> {
-  const previousPluginConfig = await input.readPluginConfig?.();
+  const captured = splitPluginConfigSnapshot(await input.readPluginConfig?.());
   state.record = await persistPhase(recordPath, state.record, {
     phase: "destination-replaced",
-    ...(previousPluginConfig === undefined ? {} : { previousPluginConfig }),
+    ...(captured.previousPluginConfig === undefined
+      ? {}
+      : { previousPluginConfig: captured.previousPluginConfig }),
+    ...(captured.configTargetPath === undefined
+      ? {}
+      : { configTargetPath: captured.configTargetPath }),
   });
   await input.hooks?.beforePublishConfig?.(transactionContext(state.record, recordPath));
   await input.publishConfig();
@@ -405,17 +418,27 @@ async function recoverParsedRecord(
   recordPath: string,
   options: Parameters<typeof recoverPluginInstallTransactions>[0],
 ): Promise<{ readonly recovered: boolean; readonly issue?: PluginInstallRecoveryIssue }> {
-  if (await installLeaseIsLive(pluginInstallLeasePath(recordPath))) {
+  const leasePath = pluginInstallLeasePath(recordPath);
+  if (await installLeaseIsLive(leasePath)) {
     return { recovered: false };
   }
+  if (!(await claimDeadInstallLease(leasePath))) {
+    return { recovered: false };
+  }
+  await options.hooks?.afterLeaseClaimed?.();
   try {
     const confined = await confineRecordPaths(installRoot, parsed);
     if (confined !== undefined) return { recovered: false, issue: confined };
-    const unrestored = unrestoredConfigIssue(parsed, options.reportUnrestoredConfig === true);
+    const decision = await configRestoreDecision(parsed, options);
+    if (decision === "defer") {
+      return { recovered: false, issue: unrestoredConfigIssue(parsed, true) };
+    }
+    const reportUnrestored = decision === "skip";
+    const unrestored = unrestoredConfigIssue(parsed, reportUnrestored);
     const result = await recoverRecord(
       parsed,
       recordPath,
-      options.reportUnrestoredConfig === true ? undefined : options.restorePluginConfig,
+      reportUnrestored ? undefined : options.restorePluginConfig,
       options.hooks,
     );
     if (result.issue !== undefined) return { recovered: false, issue: result.issue };
@@ -423,8 +446,11 @@ async function recoverParsedRecord(
       ? { recovered: true }
       : { recovered: true, issue: unrestored };
   } finally {
-    await removeInstallLease(pluginInstallLeasePath(recordPath));
-    await removeEmptyOpsDirectory(dirname(recordPath));
+    await removeInstallLease(leasePath);
+    await removeEmptyOpsDirectory(
+      dirname(recordPath),
+      options.hooks?.beforeRemoveEmptyOpsDirectory,
+    );
   }
 }
 
@@ -925,6 +951,7 @@ function assembleOperationRecord(
     ...(Object.hasOwn(raw, "previousPluginConfig")
       ? { previousPluginConfig: raw.previousPluginConfig }
       : {}),
+    ...(typeof raw.configTargetPath === "string" ? { configTargetPath: raw.configTargetPath } : {}),
   };
 }
 
@@ -1120,14 +1147,85 @@ async function removeOperationRecord(recordPath: string): Promise<void> {
   await removeEmptyOpsDirectory(dirname(recordPath));
 }
 
-async function removeEmptyOpsDirectory(opsDir: string): Promise<void> {
+async function removeEmptyOpsDirectory(
+  opsDir: string,
+  beforeRemove?: (opsDir: string) => Promise<void>,
+): Promise<void> {
+  if (basename(opsDir) !== PLUGIN_INSTALL_OPS_DIR) return;
+  let remaining: string[];
   try {
-    const remaining = await readdir(opsDir);
-    if (remaining.length === 0 && basename(opsDir) === PLUGIN_INSTALL_OPS_DIR) {
-      await rm(opsDir, { recursive: true, force: true });
-    }
+    remaining = await readdir(opsDir);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (remaining.length !== 0) return;
+  await beforeRemove?.(opsDir);
+  try {
+    await rmdir(opsDir);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTEMPTY" || code === "EEXIST") return;
+    throw error;
+  }
+}
+
+async function claimDeadInstallLease(leasePath: string): Promise<boolean> {
+  const displaced = `${leasePath}.claim-${process.pid}-${randomUUID()}`;
+  try {
+    await rename(leasePath, displaced);
+    await rm(displaced, { force: true });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return createExclusiveLease(leasePath);
+}
+
+async function createExclusiveLease(leasePath: string): Promise<boolean> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(leasePath, "wx", 0o600);
+    await handle.writeFile(`${JSON.stringify({ pid: process.pid })}\n`);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
+function splitPluginConfigSnapshot(
+  value: unknown,
+): { readonly previousPluginConfig?: unknown; readonly configTargetPath?: string } {
+  if (!isRecord(value) || !isRecord(value.snapshot) || typeof value.configTargetPath !== "string") {
+    return value === undefined ? {} : { previousPluginConfig: value };
+  }
+  return {
+    previousPluginConfig: value.snapshot,
+    configTargetPath: value.configTargetPath,
+  };
+}
+
+async function configRestoreDecision(
+  record: PluginInstallOperationRecord,
+  options: Parameters<typeof recoverPluginInstallTransactions>[0],
+): Promise<"apply" | "skip" | "defer"> {
+  if (record.previousPluginConfig === undefined) return "apply";
+  if (options.reportUnrestoredConfig === true) return "skip";
+  if (record.configTargetPath === undefined) return "defer";
+  if (options.userConfigPath === undefined) return "skip";
+  const supplied = await canonicalConfigPath(options.userConfigPath);
+  const recorded = await canonicalConfigPath(record.configTargetPath);
+  return supplied === recorded ? "apply" : "defer";
+}
+
+async function canonicalConfigPath(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return resolve(path);
+    throw error;
   }
 }
 

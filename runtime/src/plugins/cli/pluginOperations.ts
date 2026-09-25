@@ -673,7 +673,7 @@ export async function installPluginOp(
       publishConfig: async () => {
         await writePluginConfigEntry(pluginId, { enabled: true }, input);
       },
-      readPluginConfig: () => Promise.resolve(readPluginConfigSnapshot(pluginId, input)),
+      readPluginConfig: () => Promise.resolve(readPluginConfigCapture(pluginId, input)),
       restorePluginConfig: (_pluginId, previous) => restorePluginConfigSnapshot(pluginId, previous, input),
     });
     const result = {
@@ -1294,20 +1294,23 @@ export function __isPathInsideForTesting(
   return isPathInsideWithApi(path, root, platform === "win32" ? win32 : posix);
 }
 
-function readPluginConfigSnapshot(
+function readPluginConfigCapture(
   pluginId: string,
   options: PluginOperationOptions,
-): PluginConfigRollbackSnapshot {
+): { readonly snapshot: PluginConfigRollbackSnapshot; readonly configTargetPath: string } {
   const snap = readCanonicalUserConfigSnapshotSync(pluginConfigPath(options));
   const plugins = isRecord(snap.raw.plugins) ? snap.raw.plugins : undefined;
   const entries = plugins !== undefined && isRecord(plugins.plugins) ? plugins.plugins : undefined;
   const entryPresent = entries !== undefined && Object.hasOwn(entries, pluginId);
   const pluginsEnabledPresent = plugins !== undefined && Object.hasOwn(plugins, "enabled");
   return {
-    entryPresent,
-    ...(entryPresent ? { entry: entries?.[pluginId] } : {}),
-    pluginsEnabledPresent,
-    ...(pluginsEnabledPresent ? { pluginsEnabled: plugins?.enabled } : {}),
+    configTargetPath: snap.targetPath,
+    snapshot: {
+      entryPresent,
+      ...(entryPresent ? { entry: entries?.[pluginId] } : {}),
+      pluginsEnabledPresent,
+      ...(pluginsEnabledPresent ? { pluginsEnabled: plugins?.enabled } : {}),
+    },
   };
 }
 
