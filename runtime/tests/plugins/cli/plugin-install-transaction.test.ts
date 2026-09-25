@@ -920,6 +920,22 @@ describe("plugin install transaction", () => {
     await expect(access(ops)).rejects.toThrow();
   });
 
+  it("does not follow a symlinked lease when recovering a dead record", async () => {
+    const world = await createWorld();
+    const operationId = "00000000-0000-4000-8000-symlink00001";
+    const recordPath = await writeDeadRecord(world, operationId);
+    await rm(`${recordPath}.lease`);
+    await symlink("/dev/zero", `${recordPath}.lease`);
+    const loaded = await loadPlugins({
+      pluginStorageRoot: world.pluginStorageRoot,
+      workspaceRoot: world.workspaceRoot,
+      config: { plugins: { enabled: true } },
+    });
+    expect(loaded.errors.filter((issue) => issue.type === "install-recovery")).toEqual([]);
+    await expect(access(recordPath)).rejects.toThrow();
+    await expect(access(join(world.pluginStorageRoot, ".plugin-install-ops"))).rejects.toThrow();
+  });
+
   it("treats two spellings of a missing config file as the same target", async () => {
     const world = await createWorld();
     const realHome = join(world.root, "real-home");

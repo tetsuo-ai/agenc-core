@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { constants } from "node:fs";
 import { link, lstat, open, readFile, readdir, realpath, rename, rm, rmdir, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
@@ -1176,6 +1177,7 @@ async function removeEmptyOpsDirectory(
 
 const LEASE_ARTIFACT_NAME =
   /^.+\.json\.lease\.(?:claim|tmp)-(\d+)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\.partial-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/u;
+const MAX_LEASE_BYTES = 4096;
 
 async function claimDeadInstallLease(
   leasePath: string,
@@ -1188,7 +1190,7 @@ async function claimDeadInstallLease(
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     return publishExclusiveLease(leasePath);
   }
-  const displacedText = await readFile(displaced, "utf8").catch(() => undefined);
+  const displacedText = await readLeaseText(displaced);
   const displacedLive = leaseTextIsLive(displacedText);
   if (displacedLive || displacedText !== seen) {
     await restoreDisplacedLease(displaced, leasePath);
@@ -1307,11 +1309,20 @@ async function removeInstallLeaseIfNonce(leasePath: string, nonce: string): Prom
 }
 
 async function readLeaseText(leasePath: string): Promise<string | undefined> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    return await readFile(leasePath, "utf8");
+    handle = await open(leasePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const info = await handle.stat();
+    if (!info.isFile() || info.size > MAX_LEASE_BYTES) return undefined;
+    const buffer = Buffer.alloc(info.size);
+    await handle.read(buffer, 0, info.size, 0);
+    return buffer.toString("utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ELOOP") return undefined;
     throw error;
+  } finally {
+    await handle?.close();
   }
 }
 
