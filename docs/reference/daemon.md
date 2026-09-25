@@ -115,8 +115,8 @@ agenc daemon stop
 `agenc daemon status` distinguishes three states. `running (pid N)` with uptime,
 memory and the project state databases on disk (count, total, largest): the daemon is bound and answering. `alive but not yet bound (pid N)`
 with its last heartbeat: the process is beating but has not published its
-identity record, because it is still starting (recovering its agent runs, which
-takes a while under memory pressure) or the record was removed; lifecycle
+identity record, because it is still starting (recovering its state databases,
+which takes a while under memory pressure) or the record was removed; lifecycle
 commands wait for the record, and the exit code stays 1 until it appears.
 `stopped`, with the previous daemon's last heartbeat when one was left behind:
 a daemon that vanished without any handler running (an OS SIGKILL, for
@@ -875,6 +875,45 @@ disable bypass entirely. See
 current Ledger action is documented in
 [`../security/mobile-ledger-transfer.md`](../security/mobile-ledger-transfer.md).
 
+## Startup and restored sessions
+
+The daemon recovers its state databases and its execution admission state
+before it listens. It then listens, publishes its identity record, and
+restores the sessions that were open at its last shutdown in the background,
+four at a time. A client can connect as soon as the identity record appears.
+
+A request that names a session still restoring waits until that restore
+settles, then runs as it would have once startup had finished. The daemon
+knows each such session by its run id, which is also its agent id and its
+durable session id, and by its daemon session id, wherever the id appears in
+the params. A request that waits moves a restore that has not started to the
+front of the queue, so it waits for about one restore plus the ones already
+running. `agent.create` with the `resumeSessionId` of a session still
+restoring waits the same way and never rebuilds it a second time.
+
+These answer at once: `health.*`, `daemon.*`, `request.cancel`,
+`session.list`, `agent.list`, and every request that names no session still
+restoring. `session.list` reads the thread store on disk, so a session still
+restoring shows only its durable thread row. `agent.list` returns only
+published agents.
+
+`health.ready` reports `restoringSessions`, the number of sessions still
+restoring. When they are all settled the daemon logs
+`daemon restored N session(s) open at its last shutdown` with how many came
+back with a live runtime, and, with `TUI_E2E_DEBUG=1`, the startup phase
+`startup session restore complete`.
+
+A session whose runtime cannot be rebuilt is still published without one, as
+before. A session whose publication fails is rolled back and stays
+unpublished, and a client can resume it; the other sessions are not affected.
+If the rollback fails too, the daemon stops with exit code 1 and logs the run.
+
+On shutdown the daemon starts no further restores and answers the requests
+waiting for them with the shutdown error. A restore already running may
+finish, and its session is then suspended like any other idle session. One
+still running after 30 s is aborted and not published. A session not restored
+is restored at the next start.
+
 ## Interactive session survival
 
 A keep-alive (interactive / desktop) session must stay promptable after
@@ -1342,6 +1381,7 @@ agenc budget status    # configured policy only; usage is agenc run status <run-
 | Local socket / Windows named pipe | `runtime/src/app-server/transport/unix-socket.ts`   |
 | Cookie auth                       | `runtime/src/app-server/transport/auth.ts`          |
 | Health                            | `runtime/src/app-server/health.ts`                  |
+| Startup session restores          | `runtime/src/app-server/startup-session-restores.ts`; `restoreAndPublishRecoveredRun` in `daemon-cli.ts` |
 | Model admission step id           | `runtime/src/phases/stream-model.ts`                |
 | Continuation nudge                | `runtime/src/phases/continuation-nudge.ts`          |
 | Mid-turn compact continue         | `runtime/src/session/run-turn.ts`                   |
