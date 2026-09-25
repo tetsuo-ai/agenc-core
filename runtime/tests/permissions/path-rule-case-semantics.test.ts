@@ -308,17 +308,27 @@ describe("allow, ask, and deny rules agree with filesystem identity", () => {
 });
 
 describe("parseComparisonRoot keeps a UNC share root", () => {
-  test("\\\\server\\share\\Secret.txt", () => {
-    expect(parseComparisonRoot("\\\\server\\share\\Secret.txt")).toEqual({
+  test("\\\\server\\share\\Secret.txt on win32", () => {
+    expect(parseComparisonRoot("\\\\server\\share\\Secret.txt", "win32")).toEqual({
       kind: "unc",
       root: "//server/share",
       segments: ["Secret.txt"],
     });
-    expect(parseComparisonRoot("//server/share")).toEqual({
+    expect(parseComparisonRoot("//server/share", "win32")).toEqual({
       kind: "unc",
       root: "//server/share",
       segments: [],
     });
+  });
+
+  test("posix collapses a leading double slash", () => {
+    expect(parseComparisonRoot("//etc/passwd", "linux")).toEqual({
+      kind: "absolute",
+      root: "/",
+      segments: ["etc", "passwd"],
+    });
+    if (process.platform === "win32") return;
+    expect(matchPathRuleContent("//etc/passwd", "/etc/passwd")).toBe(true);
   });
 });
 

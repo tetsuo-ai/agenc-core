@@ -8,7 +8,7 @@
  * through `pathForComparison`.
  */
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -98,8 +98,11 @@ describe("pathForComparison inherits only the probed volume", () => {
       () => {
         expect(matchPathRuleContent("/mnt/**/Secret.txt", "/mnt/smb/Secret.txt")).toBe(true);
         expect(matchPathRuleContent("/mnt/**/Secret.txt", "/mnt/smb/secret.txt")).toBe(true);
-        expect(matchPathRuleContent("**/Secret.txt", "/mnt/smb/secret.txt")).toBe(true);
-        expect(matchPathRuleContent("**/*.TS", "/mnt/smb/app.ts")).toBe(true);
+        expect(matchPathRuleContent("**/Secret.txt", "/mnt/smb/secret.txt")).toBe(false);
+        expect(matchPathRuleContent("**/*.TS", "/mnt/smb/app.ts")).toBe(false);
+        expect(
+          matchPathRuleContent("**/Secret.txt", "/mnt/smb/secret.txt", undefined, "wide"),
+        ).toBe(true);
       },
     );
   });
@@ -136,6 +139,81 @@ describe("pathForComparison inherits only the probed volume", () => {
       });
     },
   );
+
+  test("an allow wildcard does not widen across a case-sensitive directory", () => {
+    const mixed = new Map<string, PathCaseSemantics>([
+      ["/home", "insensitive"],
+      ["/home/u", "insensitive"],
+      ["/home/u/proj", "sensitive"],
+      ["/home/u/proj/private", "insensitive"],
+    ]);
+    withVolumes(mixed, () => {
+      expect(
+        matchPathRuleContent("/home/u/*/Private/*.txt", "/home/u/proj/private/a.txt"),
+      ).toBe(false);
+      expect(
+        matchPathRuleContent(
+          "/home/u/*/Private/*.txt",
+          "/home/u/proj/private/a.txt",
+          undefined,
+          "wide",
+        ),
+      ).toBe(true);
+    });
+    withVolumes(
+      new Map<string, PathCaseSemantics>([
+        ["/home", "insensitive"],
+        ["/home/u", "insensitive"],
+        ["/home/u/proj", "insensitive"],
+        ["/home/u/proj/private", "insensitive"],
+      ]),
+      () => {
+        expect(
+          matchPathRuleContent("/home/u/*/Private/*.txt", "/home/u/proj/private/a.txt"),
+        ).toBe(true);
+      },
+    );
+  });
+
+  test("deny still matches when a sensitive directory sits above an insensitive mount", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-case-mixed-"));
+    const proj = join(root, "proj");
+    const mount = join(proj, "private");
+    await mkdir(mount, { recursive: true });
+    try {
+      forceDirectories(
+        new Map<string, PathCaseSemantics>([
+          [directoryKey(root), "insensitive"],
+          [directoryKey(proj), "sensitive"],
+          [directoryKey(mount), "insensitive"],
+        ]),
+      );
+      const seeded = applyPermissionUpdate(createEmptyToolPermissionContext(), {
+        type: "addRules",
+        destination: "session",
+        behavior: "deny",
+        rules: [
+          {
+            toolName: "Write",
+            ruleContent: join(root, "*", "Private", "*.txt"),
+          },
+        ],
+      });
+      const target = join(mount, "a.txt");
+      const result = checkToolPathPermission({
+        toolName: "Write",
+        input: { file_path: target },
+        path: target,
+        cwd: root,
+        context: seeded,
+        operationType: "write",
+      });
+      expect(result.behavior).toBe("deny");
+    } finally {
+      __setPathCaseDirectorySemanticsForTesting(null);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 
   test("deny still matches a recased path under a not-yet-existing directory", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-case-inherit-"));

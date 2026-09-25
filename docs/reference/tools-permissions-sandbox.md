@@ -594,10 +594,15 @@ so a symlink or hard link is not a second spelling of the same name, and the
 comparison fold lowercases with Unicode `toLowerCase` only after that probe.
 A case-sensitive mount does not inherit its parent volume's folding. A name
 that does not exist yet inherits the nearest existing directory. An exact
-spelling still matches a wildcard. The wildcard tail and an unanchored
-pattern (`**/Secret.txt`, `*.ts`) fold with the candidate's volume, not the
-directory before the wildcard and not `process.cwd()`. On Windows a UNC path
-keeps its `//server/share` root and probes that share. The platform default
+spelling still matches a wildcard. An allow rule folds a wildcard tail or
+unanchored pattern only when every candidate directory below the literal
+prefix is case-insensitive, so one insensitive mount cannot widen the rule
+across a case-sensitive directory. A deny or ask rule still folds that tail
+with the candidate's last directory, so a block is not missed. Neither mode
+uses the directory before the wildcard or `process.cwd()`. On Windows a UNC
+path keeps its `//server/share` root and probes that share. On other
+platforms a leading `//` collapses the way any other repeated slash does.
+The platform default
 applies only when no existing directory on the path can be probed. Rule text
 and the decision recorded for audit keep their original spelling.
 
