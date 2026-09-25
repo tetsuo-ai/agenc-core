@@ -10,7 +10,7 @@ import { strict as assert } from "node:assert";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { waitForFrameText } from "../helpers/workbench-buffer-neovim.mjs";
+import { waitForFrameText } from "../helpers/frame.mjs";
 
 export const meta = {
   description:

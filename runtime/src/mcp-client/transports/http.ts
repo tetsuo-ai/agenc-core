@@ -26,7 +26,7 @@ import type { ProviderEnvironment } from "../../llm/provider-options.js";
 import { EMPTY_MCP_REQUEST_ENVIRONMENT } from "../environment.js";
 import type { McpOAuthConfig } from "../../config/mcp-oauth.js";
 import { attestDesktopEndpoint, assertDesktopSocketBinding, type DesktopAuthorityGrant } from "../desktop-authority.js";
-import { assertDesktopMcpDispatchGuard } from "../local-control.js";
+import { assertMcpFetchToolDispatch } from "../local-control.js";
 
 export interface MCPServerHttpConfig {
   readonly desktopAuthorityGrant?: DesktopAuthorityGrant;
@@ -67,16 +67,11 @@ export async function createHttpMCPConnection(
   const url = new URL(config.endpoint);
   const privateFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     if (config.desktopAuthorityGrant) await assertDesktopSocketBinding(config.desktopAuthorityGrant);
-    if (config.desktopAuthorityGrant) {
-      // SDK tool-call bodies are JSON strings. Protocol initialization/listing
-      // may run outside a user turn; actual execution requires its live guard.
-      let toolCall = false;
-      if (typeof init?.body === "string") {
-        try { toolCall = JSON.parse(init.body)?.method === "tools/call"; } catch { /* SDK validates protocol bodies */ }
-      }
-      if (toolCall) assertDesktopMcpDispatchGuard(true);
-    }
-    return fetch(input, { ...init, ...proxyOptions, redirect: "error" });
+    // Binding and OAuth work may yield after the bridge's initial guard.
+    assertMcpFetchToolDispatch(init?.body, config.desktopAuthorityGrant !== undefined);
+    return fetch(input, { ...init, ...proxyOptions,
+      ...(config.localOnly === true || config.desktopAuthorityGrant !== undefined ? { redirect: "error" as const } : {}),
+    });
   };
   try {
   await attestDesktopEndpoint(config, privateFetch);
@@ -90,10 +85,10 @@ export async function createHttpMCPConnection(
         if (target.href !== url.href) return Promise.reject(new Error("Local MCP endpoint changed"));
         return privateFetch(input, init);
       },
-    } : {}),
+    } : { fetch: privateFetch }),
     ...(oauth === undefined || config.oauth === undefined ? {} : {
       authProvider: oauth.runtimeMcpOAuthProvider(config.name, config.endpoint, "http", config.oauth, environment, config.headers),
-      fetch: oauth.mcpOAuthTransportFetch(environment, fetch, config),
+      fetch: oauth.mcpOAuthTransportFetch(environment, privateFetch, config),
     }),
     requestInit: {
       ...proxyOptions,

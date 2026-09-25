@@ -59,13 +59,18 @@
  * @module
  */
 
+import { invocationForArgs, stringifyToolArgsWithBigInt } from "./execution-invocation.js";
+import { beginExecutingToolCall } from "../session/executing-tool-calls.js";
+import { normalizeModelToolArgs, validateToolArgs, stripAgenCInternalArgsForValidation } from "./argument-validation.js";
+export { validateToolArgs, stripAgenCInternalArgsForValidation } from "./argument-validation.js";
+export type { SchemaValidationError, SchemaValidationResult } from "./argument-validation.js";
+
 import {
   type EventLog,
   emitError as emitErrorEvent,
   emitWarning as emitWarningEvent,
 } from "../session/event-log.js";
 import type { ToolDispatchResult } from "../tool-registry.js";
-import { isRecord } from "../utils/record.js";
 import {
   isPersistError,
   persistToolResult,
@@ -89,6 +94,10 @@ import { SESSION_ADVERTISED_TOOL_NAMES_ARG } from "./system/coding-common.js";
 import { SYSTEM_SEARCH_TOOLS_NAME } from "./system/tool-search-name.js";
 import { signedSessionPlanFileArgs } from "../agents/_deps/filesystem-args.js";
 import { sessionFilesystemContext, sessionPlanFileAuthority } from "../planning/session-plan-authority.js";
+import {
+  EXIT_PLAN_APPROVED_PLAN_ARG,
+  type ExitPlanApprovedPlan,
+} from "../planning/exit-plan-approval.js";
 import {
   SESSION_ID_SIG_ARG,
   signSessionId,
@@ -154,6 +163,8 @@ import {
 } from "../permissions/permission-audit-log.js";
 import {
   attachToolRuntimeContext,
+  readToolRuntimeContext,
+  buildToolRuntimeCallContext,
   type ToolRuntimeAttemptContext,
 } from "./runtimes/context.js";
 import { attachSandboxExecutionBroker } from "../sandbox/execution-broker.js";
@@ -940,85 +951,41 @@ function getErrorParts(error: Error): string[] {
 // AgenC's Zod-backed parity is observable).
 // ─────────────────────────────────────────────────────────────────────
 
-export interface SchemaValidationError {
-  readonly path: string;
-  readonly message: string;
-  /**
-   * Category driving the AgenC-style prose: missing required,
-   * unexpected key, type mismatch, or `other` for everything else.
-   */
-  readonly category: "missing" | "unexpected_key" | "type" | "other";
-  readonly expected?: string;
-  readonly received?: string;
-}
-
-export interface SchemaValidationResult {
-  readonly valid: boolean;
-  readonly errors: ReadonlyArray<SchemaValidationError>;
-}
-
-function schemaTypeOf(value: unknown): string {
-  if (value === null) return "null";
-  if (Array.isArray(value)) return "array";
-  switch (typeof value) {
-    case "string":
-      return "string";
-    case "boolean":
-      return "boolean";
-    case "number":
-      return Number.isInteger(value) ? "integer" : "number";
-    case "bigint":
-      return "integer";
-    case "object":
-      return "object";
-    default:
-      return typeof value;
-  }
-}
-
-function typeMatches(expected: string, actualType: string): boolean {
-  if (expected === actualType) return true;
-  if (expected === "number" && actualType === "integer") return true;
-  return false;
-}
-
-type SchemaObj = Record<string, unknown>;
-
-function resolveRef(schema: SchemaObj, rootSchema: SchemaObj): SchemaObj {
-  const ref = schema["$ref"];
-  if (typeof ref !== "string" || !ref.startsWith("#/")) return schema;
-  const segments = ref.slice(2).split("/");
-  let node: unknown = rootSchema;
-  for (const seg of segments) {
-    if (!isRecord(node)) return schema;
-    node = node[seg];
-  }
-  return isRecord(node) ? node : schema;
-}
-
-function joinPath(prefix: string, key: string | number): string {
-  if (prefix === "") return String(key);
-  return `${prefix}.${key}`;
-}
-
-/**
- * Richer JSON Schema validator that covers the keywords AgenC's
- * Zod schemas emit: `type`, `required`, `properties`,
- * `additionalProperties`, `items`, `enum`, `const`, `anyOf`, `oneOf`,
- * `allOf`, `$ref`, `format`, plus coarse string length / number
- * range bounds. Unknown keywords are ignored (consistent with the
- * "catch glaring contract violations" intent).
- */
-export function validateToolArgs(
-  schema: Record<string, unknown> | undefined,
+/** Repair an owned model-input copy once, before any execution gate. */
+export function prepareModelToolArgs(
+  tool: Tool,
   args: Record<string, unknown>,
-): SchemaValidationResult {
-  const errors: SchemaValidationError[] = [];
-  if (!schema || typeof schema !== "object") {
-    return { valid: true, errors: [] };
+  eventLog?: EventLog,
+  subId = tool.name,
+): void {
+  const modelArgs = stripAgenCInternalArgsForValidation(args);
+  const validation = normalizeModelToolArgs(
+    tool.inputSchema as Record<string, unknown> | undefined,
+    modelArgs,
+    tool.reshapeModelArgs,
+  );
+  if (!validation.valid || !validation.args) return;
+  if (validation.reshaped) {
+    // The fold replaces the model's own keys. Runtime `__agenc*` keys and
+    // non-enumerable context already on the copy stay as they are.
+    const from = Object.keys(modelArgs);
+    for (const key of from) {
+      if (!Object.hasOwn(validation.args, key)) delete args[key];
+    }
+    Object.defineProperties(args, Object.getOwnPropertyDescriptors(validation.args));
+    if (eventLog) {
+      emitWarningEvent(eventLog, subId, "tool_input_reshaped",
+        JSON.stringify({ tool: tool.name, from, to: Object.keys(validation.args) }));
+    }
+    return;
   }
-  validateNode(schema, args, "", errors, schema);
-  return { valid: errors.length === 0, errors };
+  if (validation.coercedPaths?.length) {
+    Object.defineProperties(args, Object.getOwnPropertyDescriptors(validation.args));
+    if (eventLog) {
+      emitWarningEvent(eventLog, subId, "tool_input_json_coercion",
+        JSON.stringify({ tool: tool.name, paths: validation.coercedPaths }));
+    }
+  }
 }
 
 export function validateToolPreflight(
@@ -1026,6 +993,9 @@ export function validateToolPreflight(
   args: Record<string, unknown>,
   options: {
     readonly skipArgValidation?: boolean;
+    readonly onValidatedArgs?: () => void;
+    readonly eventLog?: EventLog;
+    readonly subId?: string;
     readonly discoveredToolNames?: ReadonlySet<string>;
   } = {},
 ): ToolDispatchResult | null {
@@ -1044,6 +1014,24 @@ export function validateToolPreflight(
   }
   if (message === undefined) {
     try {
+      const runtime = readToolRuntimeContext(args);
+      if (runtime !== undefined) {
+        const invocation = invocationForArgs(runtime.invocation, args);
+        const call = buildToolRuntimeCallContext({
+          toolCall: { id: invocation.callId, name: tool.name },
+          payload: invocation.payload,
+          tool,
+          args,
+          source: invocation.source,
+        });
+        attachToolRuntimeContext(args, {
+          ...runtime,
+          classification: call.classification,
+          rawArgs: stringifyToolArgsWithBigInt(args),
+          invocation,
+        });
+      }
+      options.onValidatedArgs?.();
       const failure = tool.preflight?.(args);
       if (failure !== undefined && failure !== null) {
         message = failure.message;
@@ -1063,291 +1051,6 @@ export function validateToolPreflight(
   };
 }
 
-function validateNode(
-  schema: SchemaObj,
-  value: unknown,
-  path: string,
-  errors: SchemaValidationError[],
-  rootSchema: SchemaObj,
-): void {
-  const resolved = resolveRef(schema, rootSchema);
-
-  const anyOf = resolved["anyOf"];
-  if (Array.isArray(anyOf) && anyOf.length > 0) {
-    let anyValid = false;
-    for (const sub of anyOf) {
-      if (!isRecord(sub)) continue;
-      const subErrors: SchemaValidationError[] = [];
-      validateNode(sub, value, path, subErrors, rootSchema);
-      if (subErrors.length === 0) {
-        anyValid = true;
-        break;
-      }
-    }
-    if (!anyValid) {
-      errors.push({
-        path: path || "(root)",
-        message: "value does not match any of the expected schemas",
-        category: "other",
-      });
-      return;
-    }
-  }
-
-  const oneOf = resolved["oneOf"];
-  if (Array.isArray(oneOf) && oneOf.length > 0) {
-    let matched = 0;
-    for (const sub of oneOf) {
-      if (!isRecord(sub)) continue;
-      const subErrors: SchemaValidationError[] = [];
-      validateNode(sub, value, path, subErrors, rootSchema);
-      if (subErrors.length === 0) matched += 1;
-    }
-    if (matched !== 1) {
-      errors.push({
-        path: path || "(root)",
-        message:
-          matched === 0
-            ? "value does not match any oneOf branch"
-            : "value matches more than one oneOf branch",
-        category: "other",
-      });
-      return;
-    }
-  }
-
-  const allOf = resolved["allOf"];
-  if (Array.isArray(allOf) && allOf.length > 0) {
-    for (const sub of allOf) {
-      if (!isRecord(sub)) continue;
-      validateNode(sub, value, path, errors, rootSchema);
-    }
-  }
-
-  if ("const" in resolved) {
-    const constVal = resolved["const"];
-    if (!deepEq(value, constVal)) {
-      errors.push({
-        path: path || "(root)",
-        message: `value must equal ${JSON.stringify(constVal)}`,
-        category: "other",
-      });
-      return;
-    }
-  }
-
-  const declaredType = resolved["type"];
-  if (declaredType !== undefined) {
-    const actual = schemaTypeOf(value);
-    if (typeof declaredType === "string") {
-      if (!typeMatches(declaredType, actual)) {
-        errors.push({
-          path: path || "(root)",
-          message: `expected ${declaredType}, got ${actual}`,
-          category: "type",
-          expected: declaredType,
-          received: actual,
-        });
-        return;
-      }
-    } else if (Array.isArray(declaredType)) {
-      if (
-        !declaredType.some(
-          (t) => typeof t === "string" && typeMatches(t, actual),
-        )
-      ) {
-        const expected = declaredType
-          .filter((t) => typeof t === "string")
-          .join(" | ");
-        errors.push({
-          path: path || "(root)",
-          message: `expected one of ${expected}, got ${actual}`,
-          category: "type",
-          expected,
-          received: actual,
-        });
-        return;
-      }
-    }
-  }
-
-  const enumVals = resolved["enum"];
-  if (Array.isArray(enumVals) && enumVals.length > 0) {
-    if (!enumVals.some((v) => deepEq(v, value))) {
-      errors.push({
-        path: path || "(root)",
-        message: "value not in enum",
-        category: "other",
-      });
-      return;
-    }
-  }
-
-  const format = resolved["format"];
-  if (typeof format === "string") {
-    if (typeof value !== "string") {
-      errors.push({
-        path: path || "(root)",
-        message: `expected ${format}-formatted string, got ${schemaTypeOf(value)}`,
-        category: "type",
-        expected: "string",
-        received: schemaTypeOf(value),
-      });
-      return;
-    }
-  }
-
-  if (Array.isArray(value)) {
-    validateArray(resolved, value, path, errors, rootSchema);
-    return;
-  }
-  if (isRecord(value)) {
-    validateObject(resolved, value, path, errors, rootSchema);
-    return;
-  }
-  if (typeof value === "string") {
-    const minLen = resolved["minLength"];
-    const maxLen = resolved["maxLength"];
-    if (typeof minLen === "number" && value.length < minLen) {
-      errors.push({
-        path: path || "(root)",
-        message: `string too short (min ${minLen})`,
-        category: "other",
-      });
-    }
-    if (typeof maxLen === "number" && value.length > maxLen) {
-      errors.push({
-        path: path || "(root)",
-        message: `string too long (max ${maxLen})`,
-        category: "other",
-      });
-    }
-    return;
-  }
-  if (typeof value === "number" || typeof value === "bigint") {
-    const min = resolved["minimum"];
-    const max = resolved["maximum"];
-    const num = typeof value === "bigint" ? Number(value) : value;
-    if (typeof min === "number" && num < min) {
-      errors.push({
-        path: path || "(root)",
-        message: `value below minimum (${min})`,
-        category: "other",
-      });
-    }
-    if (typeof max === "number" && num > max) {
-      errors.push({
-        path: path || "(root)",
-        message: `value above maximum (${max})`,
-        category: "other",
-      });
-    }
-  }
-}
-
-function validateArray(
-  schema: SchemaObj,
-  value: ReadonlyArray<unknown>,
-  path: string,
-  errors: SchemaValidationError[],
-  rootSchema: SchemaObj,
-): void {
-  const items = schema["items"];
-  if (isRecord(items)) {
-    for (let i = 0; i < value.length; i += 1) {
-      validateNode(items, value[i], joinPath(path, i), errors, rootSchema);
-    }
-  }
-  const minItems = schema["minItems"];
-  if (typeof minItems === "number" && value.length < minItems) {
-    errors.push({
-      path: path || "(root)",
-      message: `array has fewer than ${minItems} items`,
-      category: "other",
-    });
-  }
-  const maxItems = schema["maxItems"];
-  if (typeof maxItems === "number" && value.length > maxItems) {
-    errors.push({
-      path: path || "(root)",
-      message: `array has more than ${maxItems} items`,
-      category: "other",
-    });
-  }
-}
-
-function validateObject(
-  schema: SchemaObj,
-  obj: SchemaObj,
-  path: string,
-  errors: SchemaValidationError[],
-  rootSchema: SchemaObj,
-): void {
-  const declaredType = schema["type"];
-  if (typeof declaredType === "string" && declaredType !== "object") return;
-
-  const required = schema["required"];
-  if (Array.isArray(required)) {
-    for (const key of required) {
-      if (typeof key !== "string") continue;
-      if (!(key in obj)) {
-        errors.push({
-          path: joinPath(path, key),
-          message: "missing required field",
-          category: "missing",
-        });
-      }
-    }
-  }
-  const properties = schema["properties"];
-  const declaredProps = new Set<string>();
-  if (properties && typeof properties === "object") {
-    const propMap = properties as Record<string, unknown>;
-    for (const [key, sub] of Object.entries(propMap)) {
-      declaredProps.add(key);
-      if (!(key in obj)) continue;
-      if (!isRecord(sub)) continue;
-      validateNode(sub, obj[key], joinPath(path, key), errors, rootSchema);
-    }
-  }
-  const additional = schema["additionalProperties"];
-  if (additional === false) {
-    for (const key of Object.keys(obj)) {
-      if (!declaredProps.has(key)) {
-        errors.push({
-          path: joinPath(path, key),
-          message: "unexpected field",
-          category: "unexpected_key",
-        });
-      }
-    }
-  } else if (isRecord(additional)) {
-    for (const [key, val] of Object.entries(obj)) {
-      if (declaredProps.has(key)) continue;
-      validateNode(additional, val, joinPath(path, key), errors, rootSchema);
-    }
-  }
-}
-
-function deepEq(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (typeof a !== typeof b) return false;
-  if (a === null || b === null) return false;
-  if (Array.isArray(a) && Array.isArray(b)) {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i += 1) if (!deepEq(a[i], b[i])) return false;
-    return true;
-  }
-  if (isRecord(a) && isRecord(b)) {
-    const ka = Object.keys(a);
-    const kb = Object.keys(b);
-    if (ka.length !== kb.length) return false;
-    for (const k of ka) if (!deepEq(a[k], b[k])) return false;
-    return true;
-  }
-  return false;
-}
-
 // ─────────────────────────────────────────────────────────────────────
 // Progress events (A-side channel for long-running tools)
 // ─────────────────────────────────────────────────────────────────────
@@ -1365,6 +1068,7 @@ export type ToolProgressCallback = (event: ToolProgressEvent) => void;
 // ─────────────────────────────────────────────────────────────────────
 
 export interface RunToolUseOptions {
+  /** Already processed dispatch input; always validated strictly, never repaired. */
   readonly parsedArgs?: Readonly<Record<string, unknown>>;
   readonly signal?: AbortSignal;
   readonly currentTurnId: string;
@@ -1411,6 +1115,11 @@ export interface RunToolUseOptions {
   readonly discoveredToolNames?: ReadonlySet<string>;
   /** Immutable names from the prepared request; only affects discovery copy. */
   readonly advertisedToolNames?: readonly string[];
+  /**
+   * ExitPlanMode: the plan its approval request showed. Injected hidden so
+   * the tool executes exactly that text.
+   */
+  readonly approvedPlan?: ExitPlanApprovedPlan;
   /**
    * Optional MCP side-effect hook. Called when the tool throws an
    * `McpAuthError` — allows the caller (session services) to flip the
@@ -1636,6 +1345,9 @@ export async function runToolUse(
       elapsedMs: performance.now() - startedAt,
     });
   }
+  if (opts.parsedArgs === undefined) {
+    prepareModelToolArgs(tool, parsedArgs, opts.eventLog, subId);
+  }
   if (opts.runtimeAttemptContext !== undefined) {
     attachToolRuntimeContext(parsedArgs, opts.runtimeAttemptContext);
   }
@@ -1646,7 +1358,7 @@ export async function runToolUse(
   // view. They ride alongside model args via the ChildToolPolicy /
   // agent run-loop transport but are not part of the public schema.
   // See services/tools/toolExecution.ts for the parallel implementation.
-  const initialPreflight = validateToolPreflight(tool, parsedArgs, opts);
+  const initialPreflight = validateToolPreflight(tool, parsedArgs, { ...opts, subId });
   if (initialPreflight !== null) {
     if (opts.eventLog) {
       emitErrorEvent(opts.eventLog, subId, {
@@ -1773,7 +1485,7 @@ export async function runToolUse(
     }
   }
 
-  const rewrittenPreflight = validateToolPreflight(tool, args, opts);
+  const rewrittenPreflight = validateToolPreflight(tool, args, { ...opts, subId });
   if (rewrittenPreflight !== null) {
     return errorOutput({
       invocation,
@@ -1928,7 +1640,7 @@ export async function runToolUse(
     }
   }
 
-  const approvalPreflight = validateToolPreflight(tool, inputForTool, opts);
+  const approvalPreflight = validateToolPreflight(tool, inputForTool, { ...opts, subId });
   if (approvalPreflight !== null) {
     return errorOutput({
       invocation,
@@ -1954,7 +1666,7 @@ export async function runToolUse(
   if (shouldUseGuardianApprovalFallback) {
     const approval = await requestGuardianApproval({
       ctx: {
-        invocation,
+        invocation: invocationForArgs(invocation, inputForTool),
         callId: invocation.callId,
         toolName: toolNameDisplay(invocation.toolName),
         turnId: currentTurnId,
@@ -2014,7 +1726,7 @@ export async function runToolUse(
       request: opts.requestApproval,
       tool,
       args: inputForTool,
-      invocation,
+      invocation: invocationForArgs(invocation, inputForTool),
       currentTurnId,
       getActiveTurnId: opts.getActiveTurnId,
       signal: effectiveSignal ?? new AbortController().signal,
@@ -2047,7 +1759,7 @@ export async function runToolUse(
     }
   }
 
-  const executionPreflight = validateToolPreflight(tool, inputForTool, opts);
+  const executionPreflight = validateToolPreflight(tool, inputForTool, { ...opts, subId });
   if (executionPreflight !== null) {
     return errorOutput({
       invocation,
@@ -2067,7 +1779,7 @@ export async function runToolUse(
   const transactionGuardOutcome = await evaluateToolInvocationTransactionGuard({
     context: transactionGuardContext,
     tool,
-    invocation,
+    invocation: invocationForArgs(invocation, inputForTool),
     args: inputForTool,
   });
   if (transactionGuardOutcome.kind === "evaluated") {
@@ -2212,6 +1924,17 @@ export async function runToolUse(
     // argument must never decide which capabilities were actually sent.
     Object.defineProperty(argsForTool, SESSION_ADVERTISED_TOOL_NAMES_ARG, {
       value: Object.freeze([...opts.advertisedToolNames]),
+      enumerable: false,
+      writable: false,
+      configurable: true,
+    });
+  }
+  if (opts.approvedPlan !== undefined) {
+    // Also after validation: a model-supplied argument of the same name is
+    // replaced here and never decides which plan the user approved.
+    if (argsForTool === inputForTool) argsForTool = { ...inputForTool };
+    Object.defineProperty(argsForTool, EXIT_PLAN_APPROVED_PLAN_ARG, {
+      value: opts.approvedPlan,
       enumerable: false,
       writable: false,
       configurable: true,
@@ -2536,7 +2259,13 @@ export async function runToolUse(
   const executePhysical = async (): Promise<ToolDispatchResult> => {
     physicalStarted = true;
     opts.onEffectBoundaryCrossed?.();
-    const result = await tool.execute(argsForTool);
+    const finishExecuting = beginExecutingToolCall(invocation.session, invocation.callId, effectiveSignal);
+    let result: Awaited<ReturnType<typeof tool.execute>>;
+    try {
+      result = await tool.execute(argsForTool);
+    } finally {
+      finishExecuting();
+    }
     return {
       content: result.content,
       isError: result.isError,
@@ -2796,32 +2525,6 @@ function readAuditSessionId(
       | undefined
   )?.conversationId;
   return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-const AGENC_INTERNAL_ARG_PREFIX = "__agenc";
-
-/**
- * Mirror of services/tools/toolExecution.ts's stripAgenCInternalArgs:
- * strip AgenC-only `__agenc*` context fields before public-schema
- * validation. Tool body still receives them on the original parsedArgs.
- */
-function stripAgenCInternalArgsForValidation(
-  input: Record<string, unknown>,
-): Record<string, unknown> {
-  let needed = false;
-  for (const key of Object.keys(input)) {
-    if (key.startsWith(AGENC_INTERNAL_ARG_PREFIX)) {
-      needed = true;
-      break;
-    }
-  }
-  if (!needed) return input;
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(input)) {
-    if (key.startsWith(AGENC_INTERNAL_ARG_PREFIX)) continue;
-    out[key] = value;
-  }
-  return out;
 }
 
 export { toolNameDisplay };

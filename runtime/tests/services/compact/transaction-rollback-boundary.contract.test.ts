@@ -1,5 +1,25 @@
 import { describe, expect, it, vi } from "vitest";
 
+// This contract covers the compaction commit boundary only. The terminal
+// background hooks that commit launches need a full session surface, so they
+// are stubbed out here the same way tests/phases/commit.test.ts does.
+vi.mock("../../../src/session/agenc-tool-use-context.js", () => ({
+  buildAgenCToolUseContext: vi.fn(() => ({
+    agentId: undefined,
+    appendSystemMessage: vi.fn(),
+  })),
+}));
+vi.mock("../../../src/services/extractMemories/extractMemories.js", () => ({
+  ensureExtractMemoriesInitialized: vi.fn(),
+  executeExtractMemories: vi.fn(async () => {}),
+}));
+vi.mock("../../../src/services/PromptSuggestion/promptSuggestion.js", () => ({
+  executePromptSuggestion: vi.fn(async () => {}),
+}));
+vi.mock("../../../src/services/autoDream/autoDream.js", () => ({
+  executeAutoDream: vi.fn(async () => {}),
+}));
+
 import { commit } from "../../../src/phases/commit.js";
 import { compactConversation } from "../../../src/services/compact/compact.js";
 import { finalizeCompactionTransaction } from "../../../src/services/compact/finalize-transaction.js";
@@ -186,20 +206,7 @@ function commitContext(cwd: string): TurnContext {
   return {
     cwd,
     subId: "automatic-contract-turn",
-    editorInteraction: {
-      interactionId: "automatic-contract-editor",
-      kind: "ask",
-      policy: "read_only",
-      editorInstanceId: "automatic-contract-editor",
-      bufferHandle: 1,
-      changedtick: 1,
-      contentSha256: "a".repeat(64),
-      path: `${cwd}/automatic-contract.ts`,
-      range: {
-        start: { line: 1, column: 0 },
-        end: { line: 1, column: 1 },
-      },
-    },
+    modelInfo: { slug: "automatic-contract-model" },
   } as TurnContext;
 }
 

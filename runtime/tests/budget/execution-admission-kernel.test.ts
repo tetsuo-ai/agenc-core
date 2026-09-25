@@ -14,7 +14,13 @@ import { ThreadSpawnEdgeRepository } from "../../src/state/spawn-edges.js";
 import {
   STATE_DATABASE_FILENAME,
   openStateDatabases,
+  openStateDatabasePaths,
 } from "../../src/state/sqlite-driver.js";
+
+vi.mock("../../src/state/sqlite-driver.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/state/sqlite-driver.js")>();
+  return { ...actual, openStateDatabasePaths: vi.fn(actual.openStateDatabasePaths) };
+});
 
 const LIMITS = {
   global: 1,
@@ -155,6 +161,72 @@ function waitForAbort(signal: AbortSignal): Promise<unknown> {
     );
   });
 }
+
+describe("idle admission bindings", () => {
+  it("opens only the child's bound project when 20 idle projects are known", () => {
+    const value = new ExecutionAdmissionKernel({ agencHome: home });
+    kernels.add(value);
+    for (let index = 0; index < 20; index += 1) {
+      const project = join(home, `idle-project-${index}`);
+      mkdirSync(join(project, ".git"), { recursive: true });
+      value.bindClient({
+        cwd: project,
+        scope: { runId: `idle-${index}`, sessionId: `idle-${index}`, autonomous: false },
+      }).release?.();
+    }
+    const parent = value.bindClient({
+      cwd,
+      scope: { runId: "bound-parent", sessionId: "bound-parent", autonomous: false },
+    });
+    const child = parent.forSession({
+      runId: "bound-child", sessionId: "bound-child", parentRunId: "bound-parent",
+    });
+    child.release?.();
+    parent.release?.();
+    const opens = vi.mocked(openStateDatabasePaths);
+    opens.mockClear();
+    expect(value.sumReconciledUsageByRunId("bound-child").totalTokens).toBe(0);
+    expect(opens).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the journal cursor when cancellation reopens an idle project", async () => {
+    const value = kernel("cursor-after-idle-close");
+    const client = bind(value, "cursor-run");
+    const lease = await acquire(client);
+    client.reconcile(lease.reservation.reservationId, {
+      inputTokens: 1, outputTokens: 1, costUsd: 0,
+    });
+    client.release?.();
+    const reads = vi.spyOn(ExecutionAdmissionRepository.prototype, "listJournal");
+    try {
+      value.cancelAdmissions("cursor-run", "test_cancel");
+      expect(reads.mock.calls.some(([options]) => (options?.afterSequence ?? 0) > 0)).toBe(true);
+    } finally {
+      reads.mockRestore();
+    }
+  });
+
+  it("keeps recovered journal position after restart recovery closes the project", async () => {
+    const before = kernel("cursor-before-restart");
+    const client = bind(before, "recovered-cursor-run");
+    const lease = await acquire(client);
+    client.reconcile(lease.reservation.reservationId, {
+      inputTokens: 1, outputTokens: 1, costUsd: 0,
+    });
+    client.release?.();
+    before.close();
+
+    const after = kernel("cursor-after-restart");
+    expect(after.initializeExistingState().failures).toEqual([]);
+    const reads = vi.spyOn(ExecutionAdmissionRepository.prototype, "listJournal");
+    try {
+      after.cancelAdmissions("recovered-cursor-run", "recovery_cancel");
+      expect(reads.mock.calls.some(([options]) => (options?.afterSequence ?? 0) > 0)).toBe(true);
+    } finally {
+      reads.mockRestore();
+    }
+  });
+});
 
 describe("ExecutionAdmissionKernel recovery", () => {
   it("stops admission work when canonical journal projection fails and retries the same evidence", async () => {

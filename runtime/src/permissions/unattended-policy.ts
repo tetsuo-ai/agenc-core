@@ -19,6 +19,18 @@ export interface UnattendedPermissionPolicy {
    * `read-only-grant.ts`, and into deny for everything else.
    */
   readonly readOnly: boolean;
+  /**
+   * A routine run in acceptEdits or bypassPermissions: nobody is attached,
+   * and the run keeps its mode. What the mode allows proceeds; what would ask
+   * a person is refused instead of parking the run (see evaluator.ts,
+   * decideWithoutApprover). Present only when set.
+   */
+  readonly noApprover?: true;
+  /**
+   * With `noApprover`: the only roots file writes may land in, even under
+   * bypassPermissions. The routine's own workspace, never the daemon's.
+   */
+  readonly workspaceRoots?: readonly string[];
 }
 
 export type UnattendedPermissionDecision =
@@ -71,13 +83,25 @@ export function normalizeUnattendedToolList(
   return Object.freeze(normalized);
 }
 
+export interface UnattendedPermissionPolicyOptions {
+  readonly allowlist?: readonly string[];
+  readonly denylist?: readonly string[];
+  readonly readOnly?: boolean;
+  readonly noApprover?: boolean;
+  readonly workspaceRoots?: readonly string[];
+}
+
 export function createUnattendedPermissionPolicy(
-  opts: {
-    readonly allowlist?: readonly string[];
-    readonly denylist?: readonly string[];
-    readonly readOnly?: boolean;
-  } = {},
+  opts: UnattendedPermissionPolicyOptions = {},
 ): UnattendedPermissionPolicy {
+  const workspaceRoots = (opts.workspaceRoots ?? []).filter(
+    (root) => typeof root === "string" && root.trim().length > 0,
+  );
+  if (opts.noApprover === true && workspaceRoots.length === 0) {
+    // Refuse a policy that would confine writes to nowhere by accident and
+    // quietly read as "no confinement" somewhere else.
+    throw new Error("an unattended no-approver policy needs the run's workspace root");
+  }
   return Object.freeze({
     allowlist: normalizeUnattendedToolList(
       opts.allowlist,
@@ -85,7 +109,25 @@ export function createUnattendedPermissionPolicy(
     ),
     denylist: normalizeUnattendedToolList(opts.denylist),
     readOnly: opts.readOnly === true,
+    // Present only when set, so every other caller stays byte-identical.
+    ...(opts.noApprover === true
+      ? {
+          noApprover: true as const,
+          workspaceRoots: Object.freeze([...workspaceRoots]),
+        }
+      : {}),
   });
+}
+
+/**
+ * The roots a no-approver routine run may write files in, or undefined when
+ * this context carries no such confinement.
+ */
+export function unattendedWriteRoots(
+  context: Pick<ToolPermissionContext, "unattendedPolicy">,
+): readonly string[] | undefined {
+  const policy = context.unattendedPolicy;
+  return policy?.noApprover === true ? (policy.workspaceRoots ?? []) : undefined;
 }
 
 export function unattendedPolicyForContext(
@@ -96,11 +138,7 @@ export function unattendedPolicyForContext(
 
 export function applyUnattendedPermissionPolicyToContext(
   context: ToolPermissionContext,
-  opts: {
-    readonly allowlist?: readonly string[];
-    readonly denylist?: readonly string[];
-    readonly readOnly?: boolean;
-  } = {},
+  opts: UnattendedPermissionPolicyOptions = {},
 ): ToolPermissionContext {
   // Preserve modes the user explicitly opted into. The user chose
   // bypassPermissions (--dangerously-bypass-approvals-and-sandbox), plan (--permission-mode plan / EnterPlanMode),

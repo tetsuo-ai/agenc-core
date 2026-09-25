@@ -27,7 +27,10 @@ the gateway as a delivery-state diagnostic including the concrete cause.
 Only missing or malformed task records retain the empty-list behavior. Failed
 durable loads admit only the owning conversation's in-memory jobs; they do not
 dispatch durable jobs. Later rescheduling can retry after storage is repaired.
-Warnings from superseded scheduler scans are discarded.
+Warnings from superseded scheduler scans are discarded. Session startup stays
+silent on a platform without descriptor-confined I/O when the workspace has no
+`.agenc/scheduled_tasks.json`: there is nothing to restore. A record that exists
+there is still reported.
 
 Stop **all older AgenC scheduler and gateway processes using a workspace before
 upgrading its writers**, and do the same before rolling back. Old versions use

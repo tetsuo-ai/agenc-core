@@ -148,9 +148,6 @@ describe("planCompletionGateForTurn", () => {
     expect(planCompletionGateForTurn({ ...base(), taskText: "  " })).toBeUndefined();
     expect(planCompletionGateForTurn({ ...base(), ctx: mkCtx({ depth: 1 }) })).toBeUndefined();
     expect(
-      planCompletionGateForTurn({ ...base(), ctx: mkCtx({ editorInteraction: { policy: "proposal_only" } }) }),
-    ).toBeUndefined();
-    expect(
       planCompletionGateForTurn({ ...base(), ctx: mkCtx({ config: { autonomousMode: true } }) }),
     ).toBeUndefined();
     expect(planCompletionGateForTurn({ ...base(), ctx: mkCtx({ permissionMode: "plan" }) })).toBeUndefined();

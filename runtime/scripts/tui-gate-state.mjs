@@ -29,13 +29,7 @@ const PROJECT_FIXTURE_FILES = Object.freeze({
   "README.md": "# AgenC TUI gate fixture\n",
   "package.json": '{"private":true}\n',
 });
-const DEFAULT_CONFIG = [
-  "config_version = 2",
-  "",
-  "[buffer.prediction]",
-  'enabled = "off"',
-  "",
-].join("\n");
+const DEFAULT_CONFIG = ["config_version = 2", ""].join("\n");
 
 const PASSTHROUGH_ENV_KEYS = Object.freeze([
   "CI",
@@ -394,11 +388,9 @@ export async function writeTuiGateTrust(env, projectPaths) {
 }
 
 /**
- * Seed ordinary TUI gates with deterministic, disclosure-safe editor state.
- *
- * The dedicated first-use consent scenario deliberately skips this helper.
- * Exclusive creation catches lifecycle regressions where another setup step
- * writes config before the runner has established its baseline.
+ * Seed TUI gates with a deterministic baseline config. Exclusive creation
+ * catches lifecycle regressions where another setup step writes config before
+ * the runner has established its baseline.
  */
 export async function writeTuiGateDefaultConfig(state) {
   await assertOwnedState(state);

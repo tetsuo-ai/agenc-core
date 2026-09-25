@@ -7,6 +7,7 @@
  * response is returned.
  */
 
+import type { AgenCSessionEventDelivery } from "./approval-delivery.js";
 import { LiveApprovalBroker } from "./live-approval-broker.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
@@ -28,6 +29,7 @@ import { ensureAgentControl } from "../bin/delegate-tool.js";
 import { AgentControl } from "../agents/control.js";
 import { clearSession } from "../commands/clear.js";
 import { runTurn } from "../session/run-turn.js";
+import { isToolCallPhysicallyExecuting } from "../session/executing-tool-calls.js";
 import { classifyTurnTerminal } from "../contracts/turn-terminal.js";
 import {
   prepareUserPromptForTurn,
@@ -35,12 +37,21 @@ import {
 } from "../hooks/user-prompt-ingress.js";
 import type { AgentPath } from "../agents/registry.js";
 import type { ManagedThread } from "../agents/thread-manager.js";
-import { ConversationThreadManager } from "../conversation/thread-manager.js";
+import { ConversationThreadManager, withoutSyntheticProcessKilledAborts } from "../conversation/thread-manager.js";
 import type { RunAgentProgressEvent } from "../agents/run-agent.js";
 import type { AuthBackend } from "../auth/backend.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import { routerFromRegistry } from "../tools/router.js";
 import { buildLiveToolDispatchOptions } from "../phases/execute-tools.js";
+import { isGoalRestorable, type SessionGoal } from "../goal/goal.js";
+import { buildSessionGoal } from "../goal/intake.js";
+import { defaultGoalGateDeps, resolveGoalBaseCommit } from "../goal/runtime-deps.js";
+import {
+  commitSessionGoal,
+  getSessionGoal,
+  goalFromRolloutItems,
+  restoreSessionGoal,
+} from "../goal/session-goal.js";
 import type { ToolDispatchResult, ToolRegistry } from "../tool-registry.js";
 import { logForDebugging } from "../utils/debug.js";
 import {
@@ -80,7 +91,7 @@ import {
   PermissionRuleMutationPrecommitError,
 } from "../permissions/permission-updates.js";
 import { applyModelSwitch } from "../commands/model.js";
-import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
+import { resolveReasoningEffort } from "../llm/reasoning-effort.js";
 import type {
   ProviderModelSelectionOutcome,
 } from "../contracts/provider-model-selection.js";
@@ -113,13 +124,6 @@ import type {
   Session,
 } from "../session/session.js";
 import type { Event } from "../session/event-log.js";
-import type { TurnContext } from "../session/turn-context.js";
-import {
-  editorInteractionSystemPrompt,
-} from "../session/editor-interaction.js";
-import type {
-  CodePredictionSource,
-} from "../services/code-prediction/types.js";
 import { respondToSessionElicitation } from "../elicitation/respond.js";
 import type {
   AgentStatus as DaemonAgentStatus,
@@ -139,6 +143,8 @@ import type {
   SessionPermissionRuleMutationParams,
   SessionShellExecuteParams,
   SessionShellExecuteResult,
+  SessionGoalParams,
+  SessionGoalResult,
   SessionStatusLineExecuteParams,
   SessionStatusLineExecuteResult,
 } from "./protocol/index.js";
@@ -268,6 +274,7 @@ import {
   sessionTranscriptV2FromRollout,
   currentRunEpochFromRollout,
 } from "./background-agent-runner/journal-reconstruction.js";
+import { reconstructFromRollout } from "../session/rollout-reconstruction.js";
 import {
   isRunnableActiveAgent,
   isInterruptibleActiveAgent,
@@ -320,6 +327,7 @@ import {
   runtimeSettingsWithRestoreOverrides,
   buildBootstrapArgv,
   installUnattendedPermissionPolicy,
+  assertRoutineRunAuthority,
 } from "./background-agent-runner/runtime-settings.js";
 import type {
   PreparedRuntimeSettingsChange,
@@ -510,13 +518,20 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       this.#env,
       params.envOverrides,
     );
+    const routineRun = isRoutineRun(params.metadata);
+    // A routine run is marked in its immutable runtime options, so the shell
+    // sandbox, the dispatch path and MCP questions can tell it apart without
+    // reading permission state that changes or is fenced mid-run.
+    const runtimeOptions = routineRun
+      ? Object.freeze({ ...params.runtimeOptions, routineRun: true })
+      : params.runtimeOptions;
     // Bootstrap runs helper code that resolves the runtime-options
     // authority ambiently. With a second live session in this process the
     // module-level session fallback is ambiguous by design, so the
     // options must ride the async context — the same scope the daemon-only
     // TUI client establishes before ITS bound context is created.
     const bootstrap = await runWithAgentRuntimeOptions(
-      params.runtimeOptions,
+      runtimeOptions,
       () =>
         runWithBootstrapSessionScope(() =>
           this.#bootstrap({
@@ -526,12 +541,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         ? { authBackend: this.#authBackend }
         : {}),
       argv: buildBootstrapArgv(params, this.#argv),
-      runtimeOptions: params.runtimeOptions,
+      runtimeOptions,
       // Daemon agents are unattended execution for budget policy, but this
       // hint deliberately does not enable autonomous keepalive ticks.
       executionAdmissionAutonomous: true,
-      ...(params.initialEditorInteraction !== undefined ||
-      params.deferInitialTurn === true
+      // One process hosts every session: no exit hook per session and no cost
+      // summary on the daemon's stdout.
+      costSummaryOnExit: false,
+      ...(params.deferInitialTurn === true
         ? {
             deferSessionStartHooks: true,
             deferAgentStartupSideEffects: true,
@@ -572,6 +589,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       // canonically resumable as `default` after a daemon restart.
       let initialInteractivePermissionContext =
         bootstrap.session.permissionModeRegistry.current();
+      if (routineRun) {
+        assertRoutineRunAuthority(
+          params.permissionMode,
+          initialInteractivePermissionContext,
+          bootstrap.session.services.sandboxExecutionBroker?.mode,
+        );
+      }
       const initialBypassTransition =
         initialInteractivePermissionContext.mode === "bypassPermissions" ||
         (initialInteractivePermissionContext.mode === "plan" &&
@@ -609,7 +633,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         bootstrap.session.permissionModeRegistry,
         params.unattendedAllow,
         params.unattendedDeny,
-        isRoutineRun(params.metadata),
+        routineRun ? { workspaceRoot: runtimeWorkspaceRoot(bootstrap) } : undefined,
       );
 
       // Upstream-parity top-level executor: bootstrap already registered
@@ -691,7 +715,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         this.#installSessionEventLogBridge(active);
 
       let preparedFirstInput = firstInput;
-      if (hasFirstInput && params.initialEditorInteraction === undefined) {
+      if (hasFirstInput) {
         const prepared = await prepareDaemonUserPrompt({
           session: bootstrap.session,
           configStore: bootstrap.configStore,
@@ -789,18 +813,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           }
         }
         const firstSubmitOptions: DaemonSessionSubmitOptions = {
-          ...(params.initialEditorInteraction === undefined
-            ? { [DAEMON_USER_PROMPT_PREPARED]: true as const }
-            : {}),
+          [DAEMON_USER_PROMPT_PREPARED]: true as const,
           displayUserMessage:
             params.initialDisplayUserMessage === undefined
               ? messageContentDisplayText(transcriptContent)
               : params.initialDisplayUserMessage,
-          ...(params.initialEditorInteraction !== undefined
-            ? {
-                editorInteraction: params.initialEditorInteraction,
-              }
-            : {}),
         };
         params.signal?.throwIfAborted();
         active.pendingMessageSubmissionCount += 1;
@@ -856,7 +873,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           authorityOwner.thread.threadId, authorityOwner,
         ).catch(() => {});
       } else {
-        await withTimeout(bootstrap.shutdown(), this.#agentStopTimeoutMs,
+        await withTimeout(bootstrap.shutdown("daemon_shutdown"), this.#agentStopTimeoutMs,
           "failed agent bootstrap cleanup timed out").catch(() => {});
       }
       throw error;
@@ -872,6 +889,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       const control = bootstrap.session.services.agentControl;
       void withTimeout(shutdownSessionLifecycle({
         session: bootstrap.session,
+        shutdownReason: "daemon_shutdown",
         ...(control instanceof AgentControl ? { agentControl: control } : {}),
         mcpManager: bootstrap.mcpManager,
         skipMemoryExtractionDrain: true,
@@ -918,6 +936,28 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           : {}),
       };
     });
+  }
+
+  async getAgentPermissionMode(agentId: string): Promise<string | null> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) return null;
+    try {
+      return active.bootstrap.session.permissionModeRegistry.current().mode;
+    } catch {
+      // Fenced while an external authority publishes a new context: there is
+      // no settled mode to lend a routine right now.
+      return null;
+    }
+  }
+
+  isAgentToolCallExecuting(agentId: string, toolCallId: string): boolean {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) return false;
+    const session = active.bootstrap.session;
+    const turn = session.activeTurn?.unsafePeek();
+    return turn !== null && turn !== undefined &&
+      !session.abortController?.signal.aborted &&
+      isToolCallPhysicallyExecuting(session, toolCallId, turn.abortController);
   }
 
   async listPermissions(agentId: string): Promise<PermissionListResult | null> {
@@ -1008,10 +1048,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           this.#env,
           params.envOverrides,
         );
+        // A restored routine run stays marked as one (see startAgent).
+        const restoreRuntimeOptions = isRoutineRun(params.metadata)
+          ? Object.freeze({ ...params.runtimeOptions, routineRun: true })
+          : params.runtimeOptions;
         // Same ambient-authority scope as first start: restores also run
         // bootstrap helpers outside any session context.
         bootstrap = await runWithAgentRuntimeOptions(
-          params.runtimeOptions,
+          restoreRuntimeOptions,
           () =>
             runWithBootstrapSessionScope(() =>
               this.#bootstrap({
@@ -1021,7 +1065,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             ? { authBackend: this.#authBackend }
             : {}),
           conversationId: params.agentId,
-          runtimeOptions: params.runtimeOptions,
+          runtimeOptions: restoreRuntimeOptions,
           resumeConversation: true,
           ...(params.resumeRolloutPath !== undefined
             ? { resumeRolloutPath: params.resumeRolloutPath }
@@ -1046,29 +1090,15 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
               }
             : {}),
           deferSessionStartHooks: true,
-          // The two deferrals are mutually exclusive (#2239).
-          //
-          // Without `deferAgentStartupSideEffects`, bootstrap runs the startup
-          // prewarm inline and would resume-continue the orphaned turn before
-          // either prerequisite exists, so that ONE step is withheld here for
-          // `#driveDeferredDurableResume` below.
-          //
-          // With it, `bin/bootstrap.ts` gates the whole prewarm block on the
-          // same flag from INSIDE the function it defers, so
-          // `runStartupPrewarm` runs for those restores neither at bootstrap
-          // nor on the first ordinary submit — the orphan is not resumed at
-          // all today, before or after this change. That gap is pre-existing
-          // and out of scope here. Not setting `deferDurableTurnResume` on top
-          // of it is therefore a no-op right now, and deliberately so: if the
-          // prewarm is ever moved onto the deferred submit hook, the flag
-          // would mark the resume pending long after `#driveDeferredDurableResume`
-          // has already run and returned, and the orphan is single-shot
-          // (bootstrap's replay persists its `turn_aborted{process_killed}`),
-          // so it would be lost rather than merely late.
+          // Both deferred paths still need the checkpoint continuation after
+          // the approval bridge and active generation have been installed.
+          // The manager arms that one-shot continuation when it registers the
+          // restored root, even when ordinary startup prewarm is deferred.
           ...(params.resumeSuspendedRun === true ||
           params.resumeStartupActivationPending === true
             ? {
                 deferAgentStartupSideEffects: true,
+                deferDurableTurnResume: true,
               }
             : { deferDurableTurnResume: true }),
           argv: buildBootstrapArgv(
@@ -1105,8 +1135,17 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           bootstrap.session.permissionModeRegistry,
           metadataStringList(params.metadata, "unattendedAllow"),
           metadataStringList(params.metadata, "unattendedDeny"),
-          isRoutineRun(params.metadata),
+          isRoutineRun(params.metadata)
+            ? { workspaceRoot: runtimeWorkspaceRoot(bootstrap) }
+            : undefined,
         );
+        // `/goal` is session state journaled outside the conversation. A
+        // reopened session gets its open goal back, paused: continuing is the
+        // user's decision (`/goal resume`), not a side effect of reattaching.
+        const restoredGoal = goalFromRolloutItems(bootstrap.rolloutStore.readAll());
+        if (restoredGoal !== undefined) {
+          restoreSessionGoal(bootstrap.session, restoredGoal);
+        }
         const canonicalRuntimeState = currentCanonicalRuntimeStateFromRollout(
           bootstrap,
           params.agentId,
@@ -1395,8 +1434,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         // Last: this generation now owns `#active`, the approval bridge, and
         // the canonical event bridge, so a resumed turn that needs approval
         // reaches a client instead of the arbiter default deny.
-        await this.#driveDeferredDurableResume(
-          active,
+        const reapplyRecoveredHistory =
           // The resumed turn republishes `session.state.history` from the
           // checkpoint prefix it continues (`syncSessionState`), which erases
           // the recovered conversation hydrated just above. Re-apply it once
@@ -1408,12 +1446,43 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
                   initialMessages: recoveredInitialMessages,
                   replayedMessages: recoveredReplayedMessages,
                 })
-            : undefined,
+            : undefined;
+        // A worker turn is not restored after restart. The root may continue
+        // only when every descendant edge is closed with a terminal outcome;
+        // worker continuation remains follow-up work. Ineligible roots used
+        // the ordinary bootstrap dangling-call pairing during replay.
+        const rootCanContinue = bootstrap.rolloutStore.rootHasOnlyTerminalDescendants(
+          bootstrap.session.conversationId,
+        );
+        if (!rootCanContinue) {
+          active.reapplyRecoveredHistoryAfterReview = undefined;
+          active.deferredDurableResumePendingReview = false;
+        } else if (bootstrap.rolloutStore.hasPendingEffectReviews?.()) {
+          active.reapplyRecoveredHistoryAfterReview = reapplyRecoveredHistory;
+          active.deferredDurableResumePendingReview = true;
+          active.deferredDurableResumeReviewBarrier = new Promise<void>((resolve) => {
+            active.releaseDeferredDurableResumeReviewBarrier = resolve;
+          });
+        } else {
+          active.deferredDurableResumeStarting = true;
+          active.deferredDurableResumeReviewBarrier = new Promise<void>((resolve) => {
+            active.releaseDeferredDurableResumeReviewBarrier = resolve;
+          });
+          try {
+            await this.#driveDeferredDurableResume(
+              active,
+              reapplyRecoveredHistory,
           // Callers that own a restore deadline (the on-demand lifecycle path)
           // release the wait immediately on abort; the daemon-startup path
           // passes none, which is why that wait is also bounded by a timeout.
-          params.signal,
-        );
+              params.signal,
+            );
+          } finally {
+            active.deferredDurableResumeStarting = false;
+            active.releaseDeferredDurableResumeReviewBarrier?.();
+            active.releaseDeferredDurableResumeReviewBarrier = undefined;
+          }
+        }
         // Waiting for the recovered turn to start is a new suspension point,
         // so an abort raised during it must still fail the restore rather
         // than publish this generation.
@@ -1439,7 +1508,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           try {
             bootstrap?.session.beginShutdown?.();
             bootstrap?.session.abortController?.abort(error);
-            await withTimeout(Promise.resolve(bootstrap?.shutdown()),
+            await withTimeout(Promise.resolve(bootstrap?.shutdown("daemon_shutdown")),
               this.#agentStopTimeoutMs, "failed restore cleanup timed out");
           } catch (cleanupError) {
             cleanupErrors.push(cleanupError);
@@ -1507,7 +1576,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
 
     const errors: unknown[] = [];
     try {
-      await this.#quiesceAgent(agentId, active);
+      await this.#quiesceAgent(agentId, active, "daemon_shutdown");
     } catch (error) {
       errors.push(error);
     }
@@ -1581,7 +1650,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     };
   }
 
-  async finishAgentRun(agentId: string, messageId: string): Promise<"completed" | "failed" | "cancelled" | undefined> {
+  async finishAgentRun(agentId: string, messageId: string): Promise<"completed" | "failed" | "cancelled" | "permission_denied" | undefined> {
     const active = this.#active.get(agentId);
     if (active === undefined) return;
     const submission = active.messageSubmissionsById.get(messageId);
@@ -1608,7 +1677,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       usage: terminalUsageForActiveAgent(active), lastSequence: null, finishedAt: this.#now(),
     };
     await this.stopAgent(agentId, "Routine invocation finished");
-    return code === 0 ? "completed" : code === 130 ? "cancelled" : "failed";
+    return code === 0 ? "completed" : code === 130 ? "cancelled"
+      : submission.permissionDenied === true ? "permission_denied" : "failed";
   }
 
   async stopAgent(
@@ -1644,7 +1714,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       // Bootstrap lifecycle quiesces the root turn, descendants, execs, hooks,
       // and tracked durable continuations before Session's close-boundary
       // callback appends the terminal as the canonical tail.
-      await this.#quiesceAgent(agentId, active);
+      await this.#quiesceAgent(agentId, active, "session_shutdown");
     } catch (error) {
       stopError ??= error;
     }
@@ -1684,22 +1754,44 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
   }
 
-  #quiesceAgent(agentId: string, active: ActiveBackgroundAgent, initialError?: unknown): Promise<void> {
+  #quiesceAgent(agentId: string, active: ActiveBackgroundAgent,
+    disposition: "session_shutdown" | "daemon_shutdown",
+    initialError?: unknown): Promise<void> {
     const pending = this.#quiescing.get(active);
     if (pending !== undefined) return pending;
-    const task = this.#performQuiescence(agentId, active, initialError);
+    const task = this.#performQuiescence(agentId, active, disposition, initialError);
     this.#quiescing.set(active, task);
     return task;
   }
 
-  async #performQuiescence(agentId: string, active: ActiveBackgroundAgent, initialError?: unknown): Promise<void> {
+  async #performQuiescence(agentId: string, active: ActiveBackgroundAgent,
+    disposition: "session_shutdown" | "daemon_shutdown", initialError?: unknown): Promise<void> {
+    active.releaseDeferredDurableResumeReviewBarrier?.();
+    active.releaseDeferredDurableResumeReviewBarrier = undefined;
     const graceful = new DaemonOperationScope(
       `stopAgent ${agentId} quiescence`, this.#agentStopTimeoutMs,
     );
     try {
+      if (disposition === "session_shutdown" &&
+        active.bootstrap.rolloutStore.rootHasOnlyTerminalDescendants(agentId)) {
+        const pendingTurnIds = new Set<string>();
+        const activeTurnId = runtimeActiveTurnId(active.bootstrap.session);
+        if (activeTurnId !== undefined) pendingTurnIds.add(activeTurnId);
+        // A recovered turn waiting for effect review has no active runtime
+        // slot. Retire its checkpoint before the terminal run is committed.
+        for (const candidate of reconstructFromRollout(
+          withoutSyntheticProcessKilledAborts(active.bootstrap.rolloutStore.readAll()),
+        ).resumableTurns) {
+          pendingTurnIds.add(candidate.turnId);
+        }
+        for (const turnId of pendingTurnIds) active.bootstrap.session.emit({
+          id: active.bootstrap.session.nextInternalSubId(),
+          msg: { type: "turn_aborted", payload: { turnId, reason: "interrupted" } },
+        }, { durable: true });
+      }
       if (initialError !== undefined) throw initialError;
       await graceful.wait(() => this.#drainDispatchChain(active));
-      await graceful.wait(() => active.bootstrap.shutdown());
+      await graceful.wait(() => active.bootstrap.shutdown(disposition));
       await graceful.wait(() => this.#drainDispatchChain(active));
     } catch (error) {
       active.ingressClosed = true;
@@ -1716,6 +1808,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         // own session-shutdown step (for example in sidecar cleanup).
         await hard.wait(() => shutdownSessionLifecycle({
           session,
+          shutdownReason: disposition,
           agentControl: active.control,
           mcpManager: active.bootstrap.mcpManager,
           skipMemoryExtractionDrain: true,
@@ -1750,14 +1843,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     try {
       await drain.wait(() => this.#drainDispatchChain(active));
     } catch (error) {
-      await this.#quiesceAgent(agentId, active, error).catch(() => undefined);
+      await this.#quiesceAgent(agentId, active, "daemon_shutdown", error).catch(() => undefined);
       await this.stopAgent(agentId, "daemon_shutdown_dispatch_timeout");
       throw error;
     } finally {
       drain.dispose();
     }
 
-    if (!this.#canSuspendIdleAgent(agentId, active)) {
+    const runningTurn = hasRuntimeActiveTurn(active.bootstrap.session);
+    if (!active.bootstrap.rolloutStore.rootHasOnlyTerminalDescendants(agentId) ||
+        (!runningTurn && !this.#canSuspendIdleAgent(agentId, active))) {
       await this.stopAgent(agentId, "daemon_shutdown_not_idle");
       return {
         disposition: "cancelled",
@@ -1769,10 +1864,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       eventId: `run-suspended:${agentId}:${active.runEpoch}:${randomUUID()}`,
       reason: "daemon_shutdown_idle",
       suspendedAt: this.#now(),
+      ...(runningTurn ? { interruptedTurnId: runtimeActiveTurnId(active.bootstrap.session) } : {}),
     };
     const shutdownErrors: unknown[] = [];
     try {
-      await this.#quiesceAgent(agentId, active);
+      await this.#quiesceAgent(agentId, active, "daemon_shutdown");
     } catch (error) {
       shutdownErrors.push(error);
     }
@@ -1850,13 +1946,34 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       ) ||
       hasRuntimeActiveTurn(active.bootstrap.session) ||
       hasOpenAgentDescendants(active.control, active.thread.threadId) ||
-      active.activeToolCallIds.size !== 0 ||
+      !active.bootstrap.rolloutStore.rootHasOnlyTerminalDescendants(agentId) ||
       this.#approvalBroker.hasPending(agentId)
     ) {
       return false;
     }
     try {
-      active.bootstrap.rolloutStore.assertRunSuspendable();
+      // Shutdown retains the whole conversation tree. Every effect must have
+      // an outcome record; unknown mutations remain fenced for review.
+      active.bootstrap.rolloutStore.assertRunSuspendable({ allowUnsettledEffects: true });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  #canSuspendInterruptedAgent(active: ActiveBackgroundAgent): boolean {
+    if (
+      active.pendingSuspension?.interruptedTurnId === undefined ||
+      !active.bootstrap.rolloutStore.rootHasOnlyTerminalDescendants(active.thread.threadId) ||
+      active.terminal !== undefined ||
+      active.pendingTerminal !== undefined ||
+      active.cancellationRequest !== undefined ||
+      this.#approvalBroker.hasPending(active.thread.threadId)
+    ) return false;
+    try {
+      // The turn was quiesced by bootstrap.shutdown. Unknown outcomes retain
+      // review evidence, while outcome-less intents refuse suspension.
+      active.bootstrap.rolloutStore.assertRunSuspendable({ allowUnsettledEffects: true });
       return true;
     } catch {
       return false;
@@ -2047,6 +2164,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       params.ifBusy === "reject" &&
       (active.pendingMessageSubmissionCount > 0 ||
         active.pendingShellExecutionCount > 0 ||
+        active.deferredDurableResumePendingReview === true ||
+        active.deferredDurableResumeStarting === true ||
         hasRuntimeActiveTurn(active.bootstrap.session))
     ) {
       // A stop the user asked for is still unwinding: a swarm's children each
@@ -2067,6 +2186,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             `stop lands`
           : `session ${params.sessionId} already has an active or queued turn`,
       );
+    }
+    if (!active.deferredDurableResumePendingReview &&
+        !active.deferredDurableResumeStarting) {
+      active.bootstrap.rolloutStore.assertModelExecutionAllowed?.();
     }
     // A history the live tool-pair validator has closed cannot take the user
     // message this turn would start with. Refusing here gives the client the
@@ -2104,9 +2227,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
 
     const execute = active.messageSubmissionQueue.then(() =>
       runWithCurrentRuntimeSession(active.bootstrap.session, async () => {
+        await active.deferredDurableResumeReviewBarrier;
         if (!isRunnableActiveAgent(active)) {
           throw new Error(`AgenC daemon agent not running: ${agentId}`);
         }
+        active.bootstrap.rolloutStore.assertModelExecutionAllowed?.();
         active.messageSubmission = submission;
         try {
           return await this.#executeAgentMessageSubmission(
@@ -2136,6 +2261,105 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       pruneMessageSubmissionCache(active.messageSubmissionsById);
     });
     return promise;
+  }
+
+  /**
+   * `session.goal`: the one place a goal is set, paused, resumed or cleared.
+   * The goal is session state journaled outside the conversation; this only
+   * changes that state. Work starts when the client submits the next turn.
+   */
+  async updateAgentSessionGoal(
+    agentId: string,
+    params: SessionGoalParams,
+  ): Promise<SessionGoalResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const session = active.bootstrap.session;
+    return runWithCurrentRuntimeSession(session, async () => {
+      const sessionCostUsd = defaultGoalGateDeps.sessionCostUsd(session);
+      const current = getSessionGoal(session);
+      const reply = (
+        goal: SessionGoal | undefined,
+        extra: Partial<SessionGoalResult> = {},
+      ): SessionGoalResult => ({
+        ok: true,
+        ...(goal !== undefined && goal.status !== "cleared"
+          ? { goal: structuredClone(goal) as unknown as SessionGoalResult["goal"] }
+          : {}),
+        sessionCostUsd,
+        ...extra,
+      });
+      const refuse = (message: string): SessionGoalResult => ({
+        ok: false,
+        message,
+        ...(current !== undefined
+          ? { goal: structuredClone(current) as unknown as SessionGoalResult["goal"] }
+          : {}),
+        sessionCostUsd,
+      });
+      switch (params.action) {
+        case "get":
+          return reply(current);
+        case "set": {
+          const cwd = runtimeWorkspaceRoot(active.bootstrap);
+          const built = buildSessionGoal({
+            request: params.request!,
+            cwd,
+            id: `goal-${randomUUID()}`,
+            now: defaultGoalGateDeps.now(),
+            sessionCostUsd,
+            baseCommit: await resolveGoalBaseCommit(cwd),
+            defaultMaxRounds: active.bootstrap.configStore.current().goal?.max_rounds,
+          });
+          if (!built.ok) return refuse(built.message);
+          return reply(commitSessionGoal(session, built.goal, "set"), {
+            detectedVerification: built.detected,
+          });
+        }
+        case "clear":
+          if (current === undefined) return refuse("No goal is set.");
+          commitSessionGoal(session, { ...current, status: "cleared" }, "cleared");
+          return reply(undefined, { message: `Goal cleared: ${current.objective}` });
+        case "pause":
+          if (current === undefined) return refuse("No goal is set.");
+          if (current.status !== "active") {
+            return refuse(`The goal is ${current.status}, not active.`);
+          }
+          return reply(
+            commitSessionGoal(
+              session,
+              { ...current, status: "paused", pauseReason: "paused by the user" },
+              "paused",
+            ),
+          );
+        case "resume": {
+          if (current === undefined) return refuse("No goal is set.");
+          if (current.status === "active") return refuse("The goal is already active.");
+          if (!isGoalRestorable(current.status)) {
+            return refuse(`The goal is ${current.status}; set a new one with /goal <objective>.`);
+          }
+          const { pauseReason: _pauseReason, ...rest } = current;
+          void _pauseReason;
+          // A goal that ran out of budget resumes with a fresh one: otherwise
+          // resume would stop again at the first evaluation.
+          const renewed = current.status === "budget_exhausted";
+          return reply(
+            commitSessionGoal(
+              session,
+              {
+                ...rest,
+                status: "active",
+                stalledRounds: 0,
+                ...(renewed ? { rounds: 0, startCostUsd: sessionCostUsd } : {}),
+              },
+              "resumed",
+            ),
+          );
+        }
+      }
+    });
   }
 
   async executeAgentStatusLine(
@@ -2249,6 +2473,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     ) {
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
     }
+    active.bootstrap.rolloutStore.assertModelExecutionAllowed?.();
     throwIfShellRequestAborted(signal);
 
     const session = active.bootstrap.session;
@@ -2471,23 +2696,21 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     userStopGenerationToRelease: number,
   ): Promise<AgenCBackgroundAgentMessageResult> {
     let input = messageContentToAgentInput(params.content);
-    if (params.editorInteraction === undefined) {
-      const prepared = await prepareDaemonUserPrompt({
-        session: active.bootstrap.session,
-        configStore: active.bootstrap.configStore,
-        input,
-        hookPrompt: userPromptDisplayText(
-          messageContentToAgentInput(params.originalContent),
-        ),
-      });
-      if (prepared.blocked) {
-        throw new AgenCBackgroundAgentMessageError(
-          "PROMPT_BLOCKED",
-          prepared.blockMessage ?? "UserPromptSubmit hook blocked the prompt",
-        );
-      }
-      input = prepared.input;
+    const prepared = await prepareDaemonUserPrompt({
+      session: active.bootstrap.session,
+      configStore: active.bootstrap.configStore,
+      input,
+      hookPrompt: userPromptDisplayText(
+        messageContentToAgentInput(params.originalContent),
+      ),
+    });
+    if (prepared.blocked) {
+      throw new AgenCBackgroundAgentMessageError(
+        "PROMPT_BLOCKED",
+        prepared.blockMessage ?? "UserPromptSubmit hook blocked the prompt",
+      );
     }
+    input = prepared.input;
     commitDurableRunStartupActivation(active, agentId, this.#now());
     active.lastActiveAt = this.#now();
     if (params.displayUserMessage === null) {
@@ -2531,16 +2754,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const submitOptions: DaemonHumanSessionSubmitOptions = {
       [DAEMON_USER_STOP_GENERATION]: userStopGenerationToRelease,
       [DAEMON_LOCAL_MCP_ACCESS]: params.localMcpAccess === true,
-      ...(params.editorInteraction === undefined
-        ? { [DAEMON_USER_PROMPT_PREPARED]: true as const }
-        : {}),
+      [DAEMON_USER_PROMPT_PREPARED]: true as const,
       displayUserMessage:
         params.displayUserMessage === undefined
           ? messageContentDisplayText(params.originalContent)
           : params.displayUserMessage,
-      ...(params.editorInteraction !== undefined
-        ? { editorInteraction: params.editorInteraction }
-        : {}),
     };
     if (typeof input === "string") {
       await active.control.sendInput(agentId, input, submitOptions);
@@ -2561,19 +2779,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     };
   }
 
-  resolveCodePredictionSource(agentId: string): CodePredictionSource {
-    const active = this.#active.get(agentId);
-    if (active === undefined || !isRunnableActiveAgent(active)) {
-      throw new Error(`AgenC daemon agent not running: ${agentId}`);
-    }
-    return {
-      // Model/provider switches replace this session service in place. Reading
-      // it at request time prevents predictions from following a stale route.
-      provider: active.bootstrap.session.services.provider,
-      workspaceRoot: active.bootstrap.workspaceRoot,
-    };
-  }
-
   async clearAgentSession(
     agentId: string,
     params: AgenCBackgroundAgentClearSessionParams,
@@ -2589,6 +2794,15 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
     await clearSession(active.bootstrap.session);
     await active.control.clearConversationHistory(agentId);
+    // A new conversation does not inherit the old one's goal.
+    const clearedGoal = getSessionGoal(active.bootstrap.session);
+    if (clearedGoal !== undefined) {
+      commitSessionGoal(
+        active.bootstrap.session,
+        { ...clearedGoal, status: "cleared" },
+        "cleared",
+      );
+    }
     active.activeToolCallIds.clear();
     this.#assistantTextByAgent.delete(agentId);
     active.lastActiveAt = params.clearedAt;
@@ -3009,22 +3223,34 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
 
   async getAgentSessionTranscriptV2(
     agentId: string,
-    params: { readonly sessionId: string },
+    params: { readonly sessionId: string; readonly includeCompleteMessages?: boolean },
   ): Promise<SessionTranscriptV2Result> {
     const active = this.#active.get(agentId);
     if (active === undefined || !isRunnableActiveAgent(active)) {
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
     }
+    // The live turn is whatever the runtime is executing now, not only a
+    // submission this daemon lifetime accepted: a turn continued after a
+    // daemon restart has no messageSubmission here, and a client attaching
+    // then saw an idle transcript while every prompt was refused as busy.
+    const submission = active.messageSubmission;
+    const liveTurnId =
+      submission?.turnId ?? runtimeActiveTurnId(active.bootstrap.session);
     return sessionTranscriptV2FromRollout(
       active.bootstrap.rolloutStore.readAll(),
       params.sessionId,
       active.thread.threadId,
-      active.messageSubmission?.turnId === undefined
+      liveTurnId === undefined
         ? undefined
         : {
-            turnId: active.messageSubmission.turnId,
-            clientMessageId: active.messageSubmission.clientMessageId,
+            turnId: liveTurnId,
+            ...(submission?.turnId === liveTurnId &&
+            submission.clientMessageId !== undefined
+              ? { clientMessageId: submission.clientMessageId }
+              : {}),
           },
+      active.bootstrap.rolloutStore.store?.sessionDir,
+      { includeCompleteMessages: params.includeCompleteMessages },
     );
   }
 
@@ -3073,6 +3299,22 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             ...(outcome.runId !== undefined ? { runId: outcome.runId } : {}),
             ...(outcome.stepId !== undefined ? { stepId: outcome.stepId } : {}),
           });
+        }
+        if (active.deferredDurableResumePendingReview &&
+          outcome.kind !== "not_found" &&
+          !active.bootstrap.rolloutStore.hasPendingEffectReviews?.()) {
+          const reapply = active.reapplyRecoveredHistoryAfterReview;
+          active.reapplyRecoveredHistoryAfterReview = undefined;
+          active.deferredDurableResumePendingReview = false;
+          // Put the resume-start barrier ahead of any new message submission.
+          // The turn itself owns result pairing and ifBusy sees its live slot.
+          active.deferredDurableResumeStarting = true;
+          const resumeStart = this.#driveDeferredDurableResume(active, reapply, undefined)
+            .finally(() => { active.deferredDurableResumeStarting = false; });
+          void resumeStart.finally(() => {
+            active.releaseDeferredDurableResumeReviewBarrier?.();
+            active.releaseDeferredDurableResumeReviewBarrier = undefined;
+          }).catch(() => undefined);
         }
         return outcome;
       } finally {
@@ -3960,8 +4202,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         }
         const previousSettings = ensureInitialRuntimeSettings(active, agentId);
         const level = normalizeRuntimeSetting(params.reasoningEffort, RUN_RUNTIME_REASONING_EFFORTS, "reasoning effort");
-        const entry = resolveRegisteredModelCatalogEntry({ provider: previousSettings.provider, model: previousSettings.model });
-        if (level === null || !entry?.supportedReasoningLevels.includes(level)) {
+        const effort = resolveReasoningEffort({ provider: previousSettings.provider, model: previousSettings.model });
+        if (level === null || !effort.levels.includes(level)) {
           throw new Error("The selected model does not support this reasoning effort");
         }
         const identity = { provider: previousSettings.provider, model: previousSettings.model };
@@ -4392,6 +4634,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const active = this.#active.get(agentId);
     if (active === undefined || !isInterruptibleActiveAgent(active))
       return false;
+    const earlyDescendants = new Set(
+      active.control.liveThreadSpawnDescendants(active.thread.threadId),
+    );
     // A client asked for the stop; hold child receipts until the next prompt.
     try {
       active.bootstrap.session.markStoppedByUser?.();
@@ -4404,11 +4649,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       void active.thread.submit({ type: "interrupt", reason }).catch(() => {
         /* interrupt delivery surfaces via session events */
       });
-      for (const [childThreadId] of active.control.openThreadSpawnChildren(
-        active.thread.threadId,
-      )) {
-        active.control.interrupt(childThreadId, reason);
-      }
+      active.control.stopOpenSpawnChildren(active.thread.threadId, reason, earlyDescendants);
       active.lastActiveAt = this.#now();
     }
     return true;
@@ -4433,6 +4674,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         stale: true,
       };
     }
+    const earlyDescendants = new Set(
+      active.control.liveThreadSpawnDescendants(active.thread.threadId),
+    );
     let cancelled = false;
     try {
       cancelled = await active.bootstrap.session.abortTurnIfActive(
@@ -4455,11 +4699,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     try {
       active.bootstrap.session.markStoppedByUser?.();
     } finally {
-      for (const [childThreadId] of active.control.openThreadSpawnChildren(
-        active.thread.threadId,
-      )) {
-        active.control.interrupt(childThreadId, reason);
-      }
+      active.control.stopOpenSpawnChildren(active.thread.threadId, reason, earlyDescendants);
       active.lastActiveAt = this.#now();
     }
     return { cancelled: true, activeTurnId: expectedTurnId };
@@ -4533,6 +4773,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     reapplyRecoveredHistory: (() => Promise<void>) | undefined,
     signal: AbortSignal | undefined,
   ): Promise<void> {
+    if (!active.bootstrap.rolloutStore.rootHasOnlyTerminalDescendants(
+      active.bootstrap.session.conversationId,
+    )) return;
     const runDeferredDurableTurnResume =
       active.bootstrap.runDeferredDurableTurnResume;
     if (typeof runDeferredDurableTurnResume !== "function") return;
@@ -4664,10 +4907,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         return active?.bootstrap.session === session && isRunnableActiveAgent(active);
       },
       timeoutMs: resolvePermissionDecisionTimeoutMs(),
+      // A child's request the clients never receive would block the child,
+      // and every wait_agent on it, until someone pressed Stop. Report the
+      // failure so the broker denies it visibly instead.
       onEvent: (event) => {
         const active = this.#active.get(session.conversationId);
-        if (active?.bootstrap.session !== session || !isRunnableActiveAgent(active)) return;
-        void this.#emitOrBufferEvent(active, event).catch(() => {});
+        if (active?.bootstrap.session !== session || !isRunnableActiveAgent(active)) return false;
+        return this.#emitOrBufferEvent(active, event);
       },
     });
   }
@@ -4690,7 +4936,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           return;
         }
         if (active.pendingSuspension !== undefined) {
-          if (this.#canSuspendIdleAgent(agentId, active)) {
+          if (this.#canSuspendInterruptedAgent(active) || this.#canSuspendIdleAgent(agentId, active)) {
             try {
               commitDurableRunSuspension(active, agentId);
               return;
@@ -4893,7 +5139,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         // journaled, while daemon delivery is intentionally serialized on an
         // async chain. Drain that already-committed turn tail before shutdown
         // can close the writer or lifecycle teardown can retire its route.
-        await this.#quiesceAgent(agentId, active).catch(() => {});
+        await this.#quiesceAgent(agentId, active, "session_shutdown").catch(() => {});
         // The durable close finalizer appends run_terminal during shutdown.
         // Keep the session route live until that new canonical tail has also
         // crossed the same ordered delivery chain.
@@ -5134,7 +5380,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   async #emitOrBufferEvent(
     active: ActiveBackgroundAgent,
     event: BackgroundAgentDaemonEvent | null,
-  ): Promise<void> {
+  ): Promise<void | AgenCSessionEventDelivery> {
     if (event === null) return;
     // Serialize emission per agent on the agent's dispatch chain. Several
     // call sites are fire-and-forget (`void this.#emitOrBufferEvent(...)`)
@@ -5146,15 +5392,22 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // later events. Mirrors AgenCStdioTransport.#dispatchChain.
     let emitError: unknown;
     let raised = false;
+    let delivery: void | AgenCSessionEventDelivery = undefined;
     const tail = active.dispatchChain.then(() =>
-      this.#emitDaemonEvent(active, event).catch((error: unknown) => {
-        emitError = error;
-        raised = true;
-      }),
+      this.#emitDaemonEvent(active, event).then(
+        (result) => {
+          delivery = result;
+        },
+        (error: unknown) => {
+          emitError = error;
+          raised = true;
+        },
+      ),
     );
     active.dispatchChain = tail;
     await tail;
     if (raised) throw emitError;
+    return delivery;
   }
 
   async #drainDispatchChain(active: ActiveBackgroundAgent): Promise<void> {
@@ -5194,14 +5447,15 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   async #emitDaemonEvent(
     active: ActiveBackgroundAgent,
     event: BackgroundAgentDaemonEvent,
-  ): Promise<void> {
+  ): Promise<void | AgenCSessionEventDelivery> {
     const binding = active.sessionBinding;
     if (binding === undefined) {
       active.bufferedEvents.push(event);
       boundBufferedAgentEvents(active.bufferedEvents, active.thread.threadId);
-      return;
+      // Kept for a client that attaches later; nobody holds it now.
+      return { deliveredClientIds: [] };
     }
-    await binding.emit(
+    return await binding.emit(
       notificationFromDaemonEvent(
         binding.sessionId,
         active.thread.threadId,
@@ -5537,10 +5791,7 @@ function installDaemonTurnDriverHooks(
       let turnInput = message;
       let promptDisplayText =
         typeof message === "string" ? message : userPromptDisplayText(message);
-      if (
-        opts?.editorInteraction === undefined &&
-        opts?.[DAEMON_USER_PROMPT_PREPARED] !== true
-      ) {
+      if (opts?.[DAEMON_USER_PROMPT_PREPARED] !== true) {
         const prepared = await prepareDaemonUserPrompt({
           session,
           configStore,
@@ -5564,13 +5815,7 @@ function installDaemonTurnDriverHooks(
       const baseCtx = (
         session as unknown as { newDefaultTurn: () => unknown }
       ).newDefaultTurn();
-      const ctx =
-        opts?.editorInteraction === undefined
-          ? baseCtx
-          : {
-              ...(baseCtx as TurnContext),
-              editorInteraction: opts.editorInteraction,
-            };
+      const ctx = baseCtx;
       const rootHumanTurnText =
         opts?.source !== "autonomous_tick" && opts?.displayUserMessage !== null
           ? (opts?.displayUserMessage ?? promptDisplayText)
@@ -5598,14 +5843,6 @@ function installDaemonTurnDriverHooks(
             ? { userStopGenerationToRelease: opts[DAEMON_USER_STOP_GENERATION] }
             : {}),
           ...(rootHumanTurnText !== undefined ? { rootHumanTurnText } : {}),
-          ...(opts?.editorInteraction !== undefined
-            ? {
-                systemPrompt: editorInteractionSystemPrompt(
-                  opts.editorInteraction,
-                ),
-                systemPromptTrust: "trusted_internal" as const,
-              }
-            : {}),
         },
       )) {
         (

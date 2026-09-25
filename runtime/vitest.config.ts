@@ -95,9 +95,6 @@ const bunOnlyTestFiles = bunTestFiles.filter(
 export const DEFAULT_TEST_INCLUDE = Object.freeze([
   "tests/**/*.test.ts",
   "tests/**/*.test.tsx",
-  // This hosted-lane contract is static and hermetic. Keep it in the ordinary
-  // local suite so workflow/scenario drift fails before a platform dispatch.
-  "platform-tests/neovim-platform-gate.contract.test.ts",
 ]);
 
 export const DESIGN_TEST_INCLUDE = Object.freeze([
@@ -152,12 +149,6 @@ export const POWERSHELL_TEST_INCLUDE = Object.freeze([
   "tests/tools/PowerShellTool.execution.powershell.test.ts",
 ]);
 
-/** Real-Neovim integration tests executed by the pinned hosted capability lane. */
-export const NEOVIM_TEST_INCLUDE = Object.freeze([
-  "tests/tui/workbench/buffer-neovim-host-save.real-neovim.test.ts",
-  "tests/tui/workbench/buffer-neovim-lifecycle.real-neovim.test.ts",
-]);
-
 /**
  * Tests that may contact a provider, browser, or chain are never discovered by
  * the default suite. `HookProgressMessage.live.parity.test.ts` deliberately
@@ -183,7 +174,6 @@ export const DEFAULT_TEST_EXCLUDE = Object.freeze([
   ...NATIVE_TEST_INCLUDE,
   ...KERNEL_TEST_INCLUDE,
   ...POWERSHELL_TEST_INCLUDE,
-  ...NEOVIM_TEST_INCLUDE,
 ]);
 
 /** Explicit allowlist for credential-preserving, operator-invoked live runs. */
@@ -204,8 +194,7 @@ export type AgenCVitestMode =
   | "cross-repo"
   | "native"
   | "kernel"
-  | "powershell"
-  | "neovim";
+  | "powershell";
 
 function splitModuleId(id: string): {
   readonly path: string;
@@ -544,19 +533,11 @@ export function createAgenCVitestConfig(mode: AgenCVitestMode = "default") {
                       POWERSHELL_UPDATECHECK: "Off",
                     },
                   }
-                : mode === "neovim"
-                  ? {
-                      // The hosted capability lane provisions a digest-pinned
-                      // Neovim before entering the ordinary hermetic boundary.
-                      setupFiles: ["./vitest.setup.ts"],
-                      include: [...NEOVIM_TEST_INCLUDE],
-                      exclude: [...configDefaults.exclude],
-                    }
-                  : {
-                      setupFiles: ["./vitest.setup.ts"],
-                      include: [...DEFAULT_TEST_INCLUDE],
-                      exclude: [...DEFAULT_TEST_EXCLUDE],
-                    };
+                : {
+                    setupFiles: ["./vitest.setup.ts"],
+                    include: [...DEFAULT_TEST_INCLUDE],
+                    exclude: [...DEFAULT_TEST_EXCLUDE],
+                  };
 
   return defineConfig({
     plugins: [
@@ -627,21 +608,11 @@ export function createAgenCVitestConfig(mode: AgenCVitestMode = "default") {
       // Default mode strips ambient credentials/state and installs the public
       // network tripwire before test modules load. Live mode has no setup.
       ...discovery,
-      // The real-Neovim lane boots an actual editor per test on hosted runners
-      // whose speed varies by more than an order of magnitude. At the shared
-      // 30s the per-test timeout fires BEFORE the suite's own startup bound,
-      // replacing "Embedded Neovim startup timed out" with an opaque "Test
-      // timed out" and hiding which stage was slow. The startup bound has to
-      // stay the tighter of the two to remain the diagnostic.
-      // The PowerShell lane has the same disease in milder form: its bounded
-      // HTTPS trust case does real I/O and has been observed finishing at
-      // 30,159ms against the 30,000ms bound -- 159ms over, on a run whose only
-      // diff was a comment in this file. Neither lane is asserting speed.
-      // neovim retries a stalled startup once, so its budget has to clear two
-      // 60s bounds plus the test body; at 120_000 the retry could not finish
-      // and vitest would kill it with the opaque message again.
-      testTimeout:
-        mode === "neovim" ? 240_000 : mode === "powershell" ? 90_000 : 30_000,
+      // The PowerShell lane's bounded HTTPS trust case does real I/O and has
+      // been observed finishing at 30,159ms against the 30,000ms bound -- 159ms
+      // over, on a run whose only diff was a comment in this file. The lane is
+      // not asserting speed.
+      testTimeout: mode === "powershell" ? 90_000 : 30_000,
       deps: {
         interopDefault: true,
       },

@@ -66,6 +66,16 @@ function makeLive(
 }
 
 describe("ThreadManager", () => {
+  it("interrupts a child whose status projection is a string", async () => {
+    const manager = new ThreadManager(makeSession());
+    const live = makeLive();
+    manager.registerLiveAgent(live);
+    const status = vi.spyOn(live.status, "value", "get").mockReturnValue("running" as never);
+    try {
+      await manager.sendOp(live.agentId, { type: "interrupt", reason: "user_cancel" });
+      expect(live.status.subject.value).toMatchObject({ status: "interrupted", turnId: live.agentId });
+    } finally { status.mockRestore(); }
+  });
   it("keeps the actual executing turn's interval when a child is interrupted through sendOp", async () => {
     const manager = new ThreadManager(makeSession());
     const live = makeLive();

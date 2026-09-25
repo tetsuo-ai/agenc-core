@@ -18,6 +18,7 @@ export class LinuxSandboxCliError extends Error {
 }
 
 export interface LinuxSandboxLauncherOptions {
+  readonly browserCdpOverStdio?: boolean;
   readonly sandboxPolicyCwd: string;
   readonly commandCwd: string;
   readonly inheritedCwd: boolean;
@@ -78,6 +79,7 @@ export function parseLinuxSandboxLauncherArgs(
   let allowNetworkForProxy = false;
   let proxyRouteSpec: string | null = null;
   let mountProc = true;
+  let browserCdpOverStdio = false;
   const command: string[] = [];
   const seenValueFlags = new Set<string>();
 
@@ -99,6 +101,9 @@ export function parseLinuxSandboxLauncherArgs(
       break;
     }
     switch (arg) {
+      case "--browser-cdp-over-stdio":
+        browserCdpOverStdio = true;
+        break;
       case "--sandbox-policy-cwd":
         sandboxPolicyCwd = normalizeCwd(takeValue(arg, index), arg);
         index += 1;
@@ -176,6 +181,7 @@ export function parseLinuxSandboxLauncherArgs(
     ? INHERITED_CWD_SANDBOX_PATH
     : commandCwd ?? resolvedSandboxCwd;
   return {
+    ...(browserCdpOverStdio ? { browserCdpOverStdio: true } : {}),
     sandboxPolicyCwd: resolvedSandboxCwd,
     commandCwd: resolvedCommandCwd,
     inheritedCwd,

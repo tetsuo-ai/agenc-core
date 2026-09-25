@@ -20,10 +20,18 @@ export interface GrokProviderConfig
 {
   /** xAI API key */
   apiKey: string;
+  /**
+   * "oauth" when `apiKey` is the xAI sign-in (Sign in with X) bearer rather
+   * than an API key. That route never sends priority processing: xAI's
+   * documentation of it covers API-key requests and says nothing about the
+   * sign-in grant. Absent means an API key.
+   */
+  readonly authMode?: "api_key" | "oauth";
   /** Home-bound native OAuth authority for preflight refresh checks. */
   credentialHome?: HomeContext;
   /** API base URL; defaults to the canonical provider-registry endpoint. */
   baseURL?: string;
+  readonly fetchImpl?: typeof fetch;
   /** Optional operator override for effective context window budgeting. */
   contextWindowTokens?: number;
   /**

@@ -88,10 +88,12 @@ function liveEffectBlockedMessage(
   const named = blocking
     .map((effect) => `${effect.callId} (${effect.toolName})`)
     .join(", ");
+  // The call id and the user's disposition are enough: Core records the
+  // user's attestation as the evidence. An evidence reference and its
+  // SHA-256 remain optional for operators who hold a receipt.
   const resolveCommand =
     `\`/resolve ${blocking[0]?.callId ?? "<call-id>"} ` +
-    `<confirmed_committed|confirmed_no_effect|remains_unknown> ` +
-    `<evidence-ref> <evidence-sha256>\``;
+    `<confirmed_committed|confirmed_no_effect|remains_unknown>\``;
   const base = `live effect settlement is unresolved for ${named}; side-effecting and interactive dispatch remain blocked. `;
   if (context.unattended) {
     // Nobody is attached to this run, so asking is pointless: the turn ends

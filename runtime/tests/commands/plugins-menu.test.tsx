@@ -30,8 +30,11 @@ import {
   formatPluginList,
   installPluginOp,
   listInstalledPlugins,
+  updatePluginOp,
 } from "../plugins/cli/pluginOperations.js";
+import { pluginListWithCatalog } from "../plugins/cli/pluginCliCommands.js";
 import { addMarketplaceOp } from "../plugins/marketplace/marketplace.js";
+import { buildMarketplaceCatalog } from "../plugins/marketplace/catalog-cli.js";
 import { createRoot } from "../tui/ink.js";
 import { AppStateProvider, getDefaultAppState } from "../tui/state/AppState.js";
 
@@ -180,6 +183,19 @@ function pluginAuthority(agencHome: string, workspaceRoot: string) {
     workspaceRoot,
     env: Object.freeze({}) as NodeJS.ProcessEnv,
   };
+}
+
+async function localTeamMarketplace() {
+  const { root, agencHome, workspaceRoot } = await tempRuntime();
+  const authority = pluginAuthority(agencHome, workspaceRoot);
+  const marketplaceRoot = join(root, "marketplace-team");
+  await mkdir(join(marketplaceRoot, ".agenc-plugin"), { recursive: true });
+  await writePlugin(marketplaceRoot, "gamma");
+  await writeFile(join(marketplaceRoot, ".agenc-plugin", "marketplace.json"), JSON.stringify({
+    metadata: { name: "team" }, plugins: [{ name: "gamma", source: "./gamma" }],
+  }));
+  await addMarketplaceOp({ ...authority, source: marketplaceRoot, name: "team" });
+  return { root, authority, marketplaceRoot };
 }
 
 async function readPluginConfigEntry(
@@ -605,6 +621,71 @@ describe("interactive /plugins menu", () => {
         await readPluginConfigEntry(agencHome, `gamma@${marketplaceName}`),
       ).toEqual({ enabled: true });
     }
+  });
+
+  it("compares a menu install after its marketplace moves the plugin to another repository", async () => {
+    const { authority, marketplaceRoot } = await localTeamMarketplace();
+    const actions = createPluginMenuActions(authority);
+    const marketplace = (await actions.listMarketplaces()).marketplaces.find((row) => row.name === "team");
+    expect(marketplace).toBeDefined();
+    const installed = await actions.installFromMarketplace(marketplace!, "gamma");
+    const metadataPath = join(installed.root, ".agenc-plugin", "agenc-install.json");
+    const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
+    expect(metadata.marketplace).toBe("team");
+    await writeFile(join(marketplaceRoot, ".agenc-plugin", "marketplace.json"), JSON.stringify({
+      metadata: { name: "team" }, plugins: [{ name: "gamma",
+        source: { source: "git", url: "https://github.com/team/new-plugins.git", sha: "a".repeat(40) } }],
+    }));
+    await addMarketplaceOp({ ...authority, source: marketplaceRoot, name: "team", force: true });
+    const advertisedManifest = Buffer.from(JSON.stringify({ name: "gamma", version: "2.0.0" }));
+    const fetcher = async (url: string) => {
+      const manifest = url.endsWith("/plugin.json");
+      return { ok: manifest, status: manifest ? 200 : 404, statusText: manifest ? "OK" : "Not Found",
+        text: async () => manifest ? advertisedManifest.toString() : "",
+        arrayBuffer: async () => manifest
+          ? advertisedManifest.buffer.slice(advertisedManifest.byteOffset,
+            advertisedManifest.byteOffset + advertisedManifest.byteLength) as ArrayBuffer
+          : new ArrayBuffer(0) };
+    };
+    const catalog = await buildMarketplaceCatalog({ ...authority, fetcher }, undefined, true);
+    expect(catalog.marketplaces[0]?.plugins[0]?.version).toBe("2.0.0");
+    expect(catalog.marketplaces[0]?.plugins[0]?.source).toMatchObject({
+      type: "git", url: "https://github.com/team/new-plugins.git",
+    });
+    const listed = await listInstalledPlugins(authority);
+    expect(listed.plugins[0]?.marketplace).toBe("team");
+    expect(pluginListWithCatalog(listed, catalog).plugins[0]?.updateAvailable).toBe(true);
+    const { marketplace: _marketplace, provenanceVersion: _version, ...legacyMetadata } = metadata;
+    await writeFile(metadataPath, JSON.stringify(legacyMetadata));
+    const legacy = await listInstalledPlugins(authority);
+    expect(legacy.plugins[0]?.marketplace).toBe("team");
+    expect(pluginListWithCatalog(legacy, catalog).plugins[0]?.updateAvailable).toBe(true);
+  });
+
+  it("keeps a menu install detached after an explicit source update", async () => {
+    const { root, authority, marketplaceRoot } = await localTeamMarketplace();
+    const actions = createPluginMenuActions(authority);
+    const marketplace = (await actions.listMarketplaces()).marketplaces.find((row) => row.name === "team")!;
+    await actions.installFromMarketplace(marketplace, "gamma");
+    const fork = join(root, "fork-source");
+    await mkdir(fork, { recursive: true });
+    await writePlugin(fork, "gamma");
+    await updatePluginOp({ ...authority, pluginId: "gamma@team", source: join(fork, "gamma") });
+    const listed = await listInstalledPlugins(authority);
+    expect(listed.plugins[0]?.marketplace).toBeUndefined();
+    expect(listed.plugins[0]?.sourceKind).toBe("local");
+    const compared = pluginListWithCatalog(listed, { schemaVersion: 1,
+      kind: "agenc.plugin.marketplace.catalog", errors: [], marketplaces: [{
+        name: "team", sourceType: "local", source: marketplaceRoot, plugins: [{
+          id: "gamma@team", name: "gamma", marketplace: "team",
+          source: { type: "local", path: join(marketplaceRoot, "gamma") },
+          root: marketplaceRoot,
+          policy: { installation: "AVAILABLE", authentication: "ON_USE" },
+          version: "9.0.0",
+        }],
+      }],
+    });
+    expect(compared.plugins[0]?.updateAvailable).toBe(false);
   });
 
   it("isolates interleaved plugin operations by the exact ConfigStore snapshot and project", async () => {

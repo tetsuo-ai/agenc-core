@@ -2015,6 +2015,48 @@ autostart = true
     }
   });
 
+  it("starts a replacement after a hard-killed daemon left its socket and cookie behind", async () => {
+    const agencHome = await tempAgencHome();
+    const base = createHost(agencHome);
+    const socketPath = resolveAgenCDaemonSocketPath(base.env, base.userHome);
+    // What SIGKILL, the OOM killer or a power cut leaves: a socket inode with
+    // no listener and a valid cookie. Judged by presence, the replacement
+    // looked ready the instant it was spawned, had published no identity yet,
+    // and was terminated as a legacy daemon on every cycle.
+    await createStaleSocketInode(socketPath);
+    await writeFile(resolveAgenCDaemonCookiePath(base.env, base.userHome), "cookie\n");
+    let polls = 0;
+    let socketServer: Server | null = null;
+    const host = {
+      ...base,
+      // The real daemon publishes its identity only after it is listening.
+      spawnDetachedDaemon: () => {
+        const pid = 5201 + base.spawnedPids.length;
+        base.runningPids.add(pid);
+        base.spawnedPids.push(pid);
+        return pid;
+      },
+      sleep: async () => {
+        polls += 1;
+        if (polls !== 3 || socketServer !== null) return;
+        await rm(socketPath, { force: true });
+        socketServer = await listenUnixSocket(socketPath);
+        base.recordDaemon(base.spawnedPids.at(-1)!);
+      },
+    };
+
+    try {
+      await expect(
+        ensureAgenCDaemonAutostart({ host, waitTimeoutMs: 5_000 }),
+      ).resolves.toMatchObject({ pid: 5201, status: "started" });
+      expect(base.spawnedPids).toEqual([5201]);
+      expect(polls).toBeGreaterThanOrEqual(3);
+    } finally {
+      await closeServer(socketServer);
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("does not adopt a pidless daemon whose socket inode is stale (no listener)", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);

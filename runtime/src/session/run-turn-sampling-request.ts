@@ -22,11 +22,6 @@ import * as planModeHelpers from "./plan-mode.js";
 import type { Session } from "./session.js";
 import { modelContextWindow, type TurnContext } from "./turn-context.js";
 import type { TurnState } from "./turn-state.js";
-import {
-  editorInteractionAllowsTool,
-  modelToolFromRuntimeTool,
-} from "./editor-interaction.js";
-import { EDITOR_PROPOSAL_TOOL_NAME } from "../tools/system/editor-proposal.js";
 import { messageText } from "./run-turn-messages.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import { getSessionPermissionInstructions } from "./permission-instructions.js";
@@ -162,37 +157,7 @@ export function builtTools(
       (discovered?.has(tool.function.name) === true &&
         (!tool.function.name.startsWith("mcp.") || liveMcp.has(tool.function.name))));
   }
-  const interaction = ctx.editorInteraction;
-  if (interaction === undefined) return advertised;
-
-  const runtimeTools = new Map(
-    session.services.registry.tools.map((tool) => [tool.name, tool] as const),
-  );
-  const allowed = advertised.flatMap((advertisedTool) => {
-    const name = advertisedTool.function.name;
-    const runtimeTool = runtimeTools.get(name);
-    const trustedTool =
-      session.services.registry.getTrustedEditorInteractionTool?.(name);
-    return trustedTool !== undefined &&
-      editorInteractionAllowsTool(interaction, runtimeTool, trustedTool)
-      ? [modelToolFromRuntimeTool(trustedTool)]
-      : [];
-  });
-  if (interaction.policy !== "proposal_only") return allowed;
-  if (
-    allowed.some((tool) => tool.function.name === EDITOR_PROPOSAL_TOOL_NAME)
-  ) {
-    return allowed;
-  }
-  const proposalTool =
-    session.services.registry.getTrustedEditorInteractionTool?.(
-      EDITOR_PROPOSAL_TOOL_NAME,
-    );
-  const registeredProposal = runtimeTools.get(EDITOR_PROPOSAL_TOOL_NAME);
-  return proposalTool !== undefined &&
-    editorInteractionAllowsTool(interaction, registeredProposal, proposalTool)
-    ? [...allowed, modelToolFromRuntimeTool(proposalTool)]
-    : allowed;
+  return advertised;
 }
 
 function buildSamplingRequestContract(

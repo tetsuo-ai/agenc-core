@@ -650,6 +650,38 @@ export function createRipgrepWireValidator(
   return new RipgrepCountParser(validatorLimits, false);
 }
 
+class RipgrepFilesRecordStream extends RipgrepFilesParser {
+  constructor(
+    private readonly onRecord: (path: Buffer) => void,
+    limits: Partial<RipgrepParserLimits>,
+  ) {
+    super(limits, false);
+  }
+
+  protected override consumeRecord(path: Buffer): void {
+    super.consumeRecord(path);
+    this.onRecord(path);
+  }
+}
+
+/**
+ * Validate NUL-delimited file records exactly like the files parser, but hand
+ * each one to `onRecord` instead of retaining it, so a caller can scan a
+ * listing larger than the retained-result limits.
+ */
+export function createRipgrepFilesRecordStream(
+  onRecord: (path: Buffer) => void,
+  limits?: Pick<RipgrepParserLimits, "maxRecordBytes">,
+): RipgrepWireParser {
+  return new RipgrepFilesRecordStream(onRecord, {
+    maxRecordBytes: limits?.maxRecordBytes ?? MAX_GREP_RECORD_BYTES,
+    maxDecodedBytes: Number.MAX_SAFE_INTEGER,
+    maxResults: Number.MAX_SAFE_INTEGER,
+    maxContextRecords: Number.MAX_SAFE_INTEGER,
+    maxAggregateMatchCount: Number.MAX_SAFE_INTEGER,
+  });
+}
+
 export function renderRipgrepPathBytes(path: Buffer): string {
   try {
     return escapePathText(decodeUtf8Strict(path, "ripgrep path"));

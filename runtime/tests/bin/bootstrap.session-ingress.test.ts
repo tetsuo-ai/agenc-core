@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -307,84 +307,6 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
     }
   });
 
-  it("defers MCP and prewarm startup across Editor turns until ordinary Agent submit", async () => {
-    const providerMod = await import("../llm/provider.js");
-    vi.spyOn(providerMod, "createProvider").mockImplementation(
-      () =>
-        ({
-          name: "stub",
-          chat: async () => ({
-            content: "ok",
-            toolCalls: [],
-            usage: {
-              promptTokens: 1,
-              completionTokens: 1,
-              totalTokens: 2,
-            },
-          }),
-        }) as never,
-    );
-    const sequence: string[] = [];
-    const mcpStart = vi
-      .spyOn(Session.prototype, "startMcpManager")
-      .mockImplementation(async () => {
-        sequence.push("mcp");
-      });
-    const prewarm = vi
-      .spyOn(ConversationThreadManager.prototype, "runStartupPrewarm")
-      .mockImplementation(async () => {
-        sequence.push("prewarm");
-        return "ready";
-      });
-
-    let shutdown: (() => Promise<void>) | null = null;
-    try {
-      const boot = await bootstrapLocalRuntimeSession({
-        apiKey: "test-key",
-        conversationId: "editor_deferred_startup",
-        deferAgentStartupSideEffects: true,
-        env: {
-          ...process.env,
-          AGENC_HOME: home,
-          AGENC_WORKSPACE: workspace,
-          HOME: home,
-        },
-      });
-      shutdown = boot.shutdown;
-      const submit = vi.fn(async (message: string) => {
-        sequence.push(`turn:${message}`);
-      });
-      boot.session.installTurnDriverHooks({ submit: submit as never });
-      const editorInteraction = {
-        interactionId: "interaction-bootstrap-effects-ask",
-        kind: "ask" as const,
-        policy: "read_only" as const,
-        editorInstanceId: "editor-bootstrap-effects",
-        bufferHandle: 13,
-        changedtick: 6,
-        contentSha256: "f".repeat(64),
-        path: join(workspace, "example.ts"),
-        range: {
-          start: { line: 1, column: 0 },
-          end: { line: 1, column: 1 },
-        },
-      };
-
-      expect(mcpStart).not.toHaveBeenCalled();
-      expect(prewarm).not.toHaveBeenCalled();
-      await boot.session.submit("editor", { editorInteraction });
-      expect(sequence).toEqual(["turn:editor"]);
-
-      await boot.session.submit("agent");
-      expect(sequence).toEqual(["turn:editor", "mcp", "turn:agent"]);
-      expect(prewarm).not.toHaveBeenCalled();
-    } finally {
-      await shutdown?.().catch(() => {
-        /* best effort */
-      });
-    }
-  });
-
   it("activates restored-session startup effects once, in order, before the first ordinary submit", async () => {
     const providerMod = await import("../llm/provider.js");
     vi.spyOn(providerMod, "createProvider").mockImplementation(
@@ -492,6 +414,15 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
     vi.spyOn(providerMod, "createProvider").mockReturnValue({ name: "stub", chat } as never);
     vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
     const cronTasks = await import("../utils/cronTasks.js");
+    // A DESCRIPTOR_UNSUPPORTED read is only worth a warning when a durable
+    // record actually exists; a workspace that never scheduled anything has
+    // nothing to restore and stays quiet. Give this one a record to lose.
+    await mkdir(join(workspace, ".agenc"), { recursive: true });
+    await writeFile(
+      cronTasks.getCronFilePath(workspace),
+      JSON.stringify({ tasks: [] }),
+      "utf8",
+    );
     vi.spyOn(cronTasks, "readCronTasks").mockRejectedValue(
       Object.assign(new Error("descriptor-confined I/O is unsupported on darwin"), { code: "DESCRIPTOR_UNSUPPORTED" }),
     );

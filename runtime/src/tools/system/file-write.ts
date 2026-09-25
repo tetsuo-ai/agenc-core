@@ -66,12 +66,7 @@ import {
   settledNoEffectToolResult,
 } from "../effect-boundary.js";
 import { collectEditFeedback } from "../../services/lsp/fileNotifications.js";
-import {
-  prepareWorkspaceMutation,
-  WorkspaceMutationCoordinatorError,
-  workspaceAuthoritativeRead,
-  workspaceMutationAdmissionToolResult,
-} from "../../workspace/mutation-coordinator.js";
+import { WorkspaceMutationError } from "../../workspace/mutation-error.js";
 import {
   describeWorkspaceMutationNoEffect,
   executeWorkspaceFileMutation,
@@ -199,7 +194,7 @@ function preMutationErrorResult(message: string): ToolResult {
  * transaction proved the file unchanged, otherwise an unknown outcome.
  */
 function formatWriteFailure(err: unknown, filePath: string): string {
-  if (err instanceof WorkspaceMutationCoordinatorError) return err.message;
+  if (err instanceof WorkspaceMutationError) return err.message;
   const code = (err as NodeJS.ErrnoException)?.code;
   return code
     ? `${code}: failed to write ${filePath}`
@@ -214,19 +209,6 @@ function mutationErrorResult(err: unknown, message: string): ToolResult {
     message: `${message} ${describeWorkspaceMutationNoEffect(evidence)}`,
     evidence,
   });
-}
-
-/** Attach pre-mutation no-effect evidence to an already-built refusal. */
-function asPreMutationRefusal(result: ToolResult): ToolResult {
-  return {
-    ...result,
-    effectDisposition: createToolEffectDispositionEvidence({
-      disposition: "confirmed_no_effect",
-      evidenceKind: "boundary_not_crossed",
-      evidenceRef: `tool:${FILE_WRITE_TOOL_NAME}:admission-rejected`,
-      evidenceMaterial: String(result.content ?? ""),
-    }),
-  };
 }
 
 /**
@@ -426,17 +408,11 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
         (args[SESSION_ID_ARG] as string).trim().length > 0
           ? (args[SESSION_ID_ARG] as string)
           : undefined;
-      const editorRead = workspaceAuthoritativeRead(absolutePath);
-
       // Stat the target. ENOENT means we are creating a brand-new
       // file; any other failure is surfaced as a write error.
       let existed = false;
       let existingStat: { mtimeMs: number } | null = null;
       let existingContentForUi = "";
-      if (editorRead !== null) {
-        existed = true;
-        existingContentForUi = normalizeNewlines(editorRead.content);
-      }
       try {
         const result = await stat(absolutePath);
         if (result.isDirectory()) {
@@ -487,12 +463,9 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
         if (isFullSnapshot) {
           let onDisk: string;
           try {
-            onDisk =
-              editorRead !== null
-                ? normalizeNewlines(editorRead.content)
-                : normalizeNewlines(
-                    (await readFile(absolutePath)).toString("utf-8"),
-                  );
+            onDisk = normalizeNewlines(
+              (await readFile(absolutePath)).toString("utf-8"),
+            );
             existingContentForUi = onDisk;
           } catch (err) {
             const code = (err as NodeJS.ErrnoException)?.code;
@@ -520,12 +493,9 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
           }
           // Populate the UI snapshot from disk best-effort.
           try {
-            existingContentForUi =
-              editorRead !== null
-                ? normalizeNewlines(editorRead.content)
-                : normalizeNewlines(
-                    (await readFile(absolutePath)).toString("utf-8"),
-                  );
+            existingContentForUi = normalizeNewlines(
+              (await readFile(absolutePath)).toString("utf-8"),
+            );
           } catch {
             existingContentForUi = "";
           }
@@ -558,20 +528,7 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
       }
 
       try {
-        const toolCallId =
-          typeof rawArgs.__callId === "string" ? rawArgs.__callId : undefined;
-        const admission = await prepareWorkspaceMutation({
-          path: absolutePath,
-          source: "file_write",
-          beforeText: existed ? existingContentForUi : "",
-          afterText: content,
-          ...(sessionId !== undefined ? { sessionId } : {}),
-          ...(toolCallId !== undefined ? { toolCallId } : {}),
-        });
-        const rejection = workspaceMutationAdmissionToolResult(admission);
-        if (rejection !== null) return asPreMutationRefusal(rejection);
         await executeWorkspaceFileMutation({
-          admission,
           path: absolutePath,
           afterText: content,
           write: async (
@@ -592,10 +549,6 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
             await boundMutation.writeContent(data);
           },
           writeUsesBoundMutation: true,
-          metadata: {
-            ...(sessionId !== undefined ? { sessionId } : {}),
-            ...(toolCallId !== undefined ? { toolCallId } : {}),
-          },
           testHooks: config,
         });
       } catch (err) {

@@ -9,6 +9,7 @@ import {
   OPENAI_COMPATIBLE_FALLBACK_CONTEXT_WINDOW,
 } from '../llm/openai-compatible-token-limits.js'
 import { resolveModelCatalogMetadata } from '../llm/registry/model-catalog.js'
+import { isVerifiedOpenAiReasoningModel } from '../llm/registry/openai-reasoning-models.js'
 import type { ProviderEnvironment } from '../llm/provider-options.js'
 import {
   apiProviderForProvider,
@@ -232,6 +233,11 @@ function resolveCatalogContextWindow(
   provider: string,
 ): number | undefined {
   const normalizedProvider = provider.trim().toLowerCase()
+  const openAiCatalogModel = openAiRegisteredCatalogModel(model, normalizedProvider)
+  if (openAiCatalogModel !== undefined) {
+    return resolveModelCatalogMetadata({ provider: 'openai', model: openAiCatalogModel })
+      ?.contextWindow
+  }
   if (
     normalizedProvider !== 'grok' &&
     normalizedProvider !== 'zai' &&
@@ -243,6 +249,21 @@ function resolveCatalogContextWindow(
   }
   return resolveModelCatalogMetadata({ provider: normalizedProvider, model })
     ?.contextWindow
+}
+
+/**
+ * OpenAI's registered reasoning rows (GPT-5.6, GPT-6 Astra, Sol and Luna)
+ * have no entry in the legacy OpenAI-compatible limit table, so their limits
+ * come from REGISTERED_MODEL_CATALOG, the source the daemon and Desktop read.
+ * Exact ids only: an unverified variant keeps the conservative fallback.
+ */
+function openAiRegisteredCatalogModel(
+  model: string,
+  normalizedProvider: string,
+): string | undefined {
+  if (normalizedProvider !== 'openai') return undefined
+  const normalized = model.trim().toLowerCase().replace(/^openai[/:]/, '')
+  return isVerifiedOpenAiReasoningModel(normalized) ? normalized : undefined
 }
 
 /**
@@ -299,6 +320,16 @@ export function getModelMaxOutputTokensForContext(
   let upperLimit: number
 
   const normalizedProvider = provider.trim().toLowerCase()
+  const openAiCatalogModel = openAiRegisteredCatalogModel(model, normalizedProvider)
+  if (openAiCatalogModel !== undefined) {
+    const catalog = resolveModelCatalogMetadata({ provider: 'openai', model: openAiCatalogModel })
+    if (catalog?.maxOutputTokens !== undefined) {
+      return {
+        default: catalog.maxOutputTokens,
+        upperLimit: catalog.maxOutputTokensUpperLimit ?? catalog.maxOutputTokens,
+      }
+    }
+  }
   if (
     normalizedProvider === 'zai' ||
     normalizedProvider === 'zai-coding-plan' ||

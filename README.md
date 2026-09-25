@@ -4,7 +4,7 @@
 > agents, multi-channel gateway, budget-bounded autonomy, and a typed embedding SDK.
 
 ![status](https://img.shields.io/badge/status-stable-brightgreen)
-![version](https://img.shields.io/badge/version-0.17.0-blue)
+![version](https://img.shields.io/badge/version-0.18.0-blue)
 ![node](https://img.shields.io/badge/node-26.x-339933?logo=node.js&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict%20%E2%80%A2%200%20%40ts--nocheck-3178C6?logo=typescript&logoColor=white)
 
@@ -15,8 +15,8 @@ agents, channel gateway, and remote phone bridge are all clients of that daemon.
 
 | Package | Path | Role |
 | --- | --- | --- |
-| `@tetsuo-ai/agenc` `0.17.0` | `packages/agenc/` | Public launcher binary |
-| `@tetsuo-ai/runtime` `0.17.0` | `runtime/` | Daemon, TUI, tools, providers, tests |
+| `@tetsuo-ai/agenc` `0.18.0` | `packages/agenc/` | Public launcher binary |
+| `@tetsuo-ai/runtime` `0.18.0` | `runtime/` | Daemon, TUI, tools, providers, tests |
 | `@tetsuo-ai/agenc-sdk` `0.3.0` | `packages/agenc-sdk/` | Typed embedding SDK (daemon protocol) |
 
 Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
@@ -81,9 +81,6 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
   enterprise XAA (SEP-990).
 - **Layered safety** — permission modes, opt-in OS sandbox (bubblewrap/Landlock
   on Linux, Seatbelt on macOS), `agenc security audit [--fix]`.
-- **In-terminal workbench** — project explorer, code preview, and editable
-  `BUFFER` (embedded `nvim --embed` preferred). See
-  [`docs/embedded-neovim-buffer.md`](docs/embedded-neovim-buffer.md).
 - **17 built-in providers** — default provider **grok**; fresh-config session
   model **grok-4.6** (fresh config and direct-provider map). **Grok 4.6** has a
   500k context window, low/medium/high/xhigh reasoning (catalog
@@ -106,16 +103,15 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
 
 ## Project status
 
-**Current version in tree: 0.17.0.** Runtime and launcher are versioned
-`0.17.0`; the embedding SDK package is `0.3.0`. The public launcher is
+**Current version in tree: 0.18.0.** Runtime and launcher are versioned
+`0.18.0`; the embedding SDK package is `0.3.0`. The public launcher is
 [`@tetsuo-ai/agenc`](https://www.npmjs.com/package/@tetsuo-ai/agenc). The root
 workspace is non-publishable (`"private": true`); the GitHub source repository
 is public so npm can issue verifiable provenance. Type-clean: **0**
 `@ts-nocheck`. MIT licensed
 ([`LICENSE`](LICENSE)).
 
-Shipped in this line: unified Agent/Editor workspace with AI-assisted embedded
-Neovim, durable recovery and transactional compaction, scalable workflow and
+Shipped in this line: durable recovery and transactional compaction, scalable workflow and
 CSV scheduling, bounded project and memory indexes, provider-aware token
 accounting, multi-channel gateway, Browser tool, budget-bounded autonomy,
 Ledger verification, and the independently versioned SDK.
@@ -405,7 +401,7 @@ native / policy-inventory surfaces are in
 [`docs/ci-required-gates.md`](docs/ci-required-gates.md#fast-testfast-checks).
 
 The full platform matrix is manual. Run it for release candidates or when a
-change depends on Linux kernel sandboxing, PowerShell, Neovim, macOS, or Windows
+change depends on Linux kernel sandboxing, PowerShell, macOS, or Windows
 behavior. Releases still run the full local and hosted verification at exact
 current `main`.
 

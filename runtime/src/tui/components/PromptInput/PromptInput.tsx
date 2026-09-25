@@ -110,7 +110,6 @@ import type {
   BaseTextInputProps,
   PromptInputMode,
   QueuedCommandOwner,
-  VimMode,
 } from "../../../types/textInputTypes.js";
 import { isAgentSwarmsEnabled } from "../../../utils/agentSwarmsEnabled.js";
 import { count } from "../../../utils/array.js";
@@ -131,7 +130,6 @@ import {
 } from "../../../utils/directMemberMessage.js";
 import { env } from "../../../utils/env.js";
 import { errorMessage } from "../../../utils/errors.js";
-import type { VimRoutingState } from "../../input/processTextPrompt.js";
 import { extractDraggedFilePaths } from "../../../utils/dragDropPaths.js";
 import {
   getImageFromClipboard,
@@ -151,7 +149,6 @@ import {
 } from "../../../permissions/permission-mode.js";
 import { getPlatform } from "../../../utils/platform.js";
 import type { PromptInputContext } from "../../input/inputContext.js";
-import { editPromptInEditor } from "../../../utils/promptEditor.js";
 import { hasAutoModeOptIn } from "../../../utils/settings/settings.js";
 import { findSlashCommandPositions } from "../../../utils/suggestions/commandSuggestions.js";
 import {
@@ -189,18 +186,6 @@ import { calculateFullscreenLayoutBudget } from "../FullscreenLayout.js";
 import { GlobalSearchDialog } from "../GlobalSearchDialog.js";
 import { HistorySearchDialog } from "../../history/HistorySearchDialog.js";
 import { QuickOpenDialog } from "../QuickOpenDialog.js";
-import { materializeAttachmentMentions } from "../../workbench/commands.js";
-import {
-  capturedAttachmentsToPastedContents,
-  isCapturedWorkbenchAttachment,
-} from "../../workbench/capturedAttachments.js";
-import { useWorkbenchComposerFocus } from "../../workbench/composerFocusContext.js";
-import { composerAttachmentsForState } from "../../workbench/reducer.js";
-import {
-  applyWorkbenchCommand,
-  isWorkbenchEnabled,
-} from "../../workbench/state.js";
-import type { WorkbenchAttachment } from "../../workbench/types.js";
 import { ThinkingToggle } from "../ThinkingToggle.js";
 import { BackgroundTasksPanel } from "../tasks/BackgroundTasksPanel.js";
 import { shouldHideTasksFooter } from "../tasks/taskStatusUtils.js";
@@ -226,9 +211,7 @@ import { usePromptInputPlaceholder } from "./usePromptInputPlaceholder.js";
 import { useSwarmBanner } from "./useSwarmBanner.js";
 import {
   clampPromptTextInputColumns,
-  clampWorkbenchPromptTextInputColumns,
   isNonSpacePrintable,
-  isVimModeEnabled,
   pasteReferenceLineThreshold,
 } from "./utils.js";
 
@@ -421,8 +404,6 @@ type Props = {
   setPastedContents: React.Dispatch<
     React.SetStateAction<Record<number, PastedContent>>
   >;
-  vimMode: VimMode;
-  setVimMode: (mode: VimMode) => void;
   showBashesDialog: string | boolean;
   setShowBashesDialog: (show: string | boolean) => void;
   onExit: () => void;
@@ -441,17 +422,11 @@ type Props = {
   queueOwner?: QueuedCommandOwner;
   /** Frozen workspace root for Bash commands admitted while busy. */
   queueExecutionCwd?: string;
-  /**
-   * Restores a failed async submission to its originating workspace tab
-   * without replacing a newer sibling/returning-tab draft.
-   */
-  restoreComposerDraftForView?: (
-    view: "agent" | "editor",
-    draft: {
-      readonly input: string;
-      readonly pastedContents?: Record<number, PastedContent>;
-    },
-  ) => void;
+  /** Restores a failed async submission without replacing a newer draft. */
+  restoreComposerDraft?: (draft: {
+    readonly input: string;
+    readonly pastedContents?: Record<number, PastedContent>;
+  }) => void;
   onSubmit: (
     input: string,
     helpers: PromptInputHelpers,
@@ -462,20 +437,13 @@ type Props = {
     },
     options?: {
       fromKeybinding?: boolean;
-      vimRoutingState?: VimRoutingState;
       // round-2 MD-NEW4: composer input mode (prompt / bash). Bash is
       // intercepted inside PromptInput before this fires; the field is
       // still threaded through for future modes (e.g. memory) that
       // downstream callers may need to branch on.
       mode?: PromptInputMode;
-      /** Exact live-editor captures admitted through the normal paste channel. */
+      /** Exact render-owned pasted contents for this submission. */
       pastedContentsOverride?: Record<number, PastedContent>;
-      /**
-       * Called only after the owning app positively admits this submission.
-       * Promise fulfillment alone is not sufficient because local commands and
-       * handled transport failures also resolve without consuming attachments.
-       */
-      onWorkbenchAttachmentsAdmitted?: () => void;
     },
   ) => Promise<void>;
   onAgentSubmit?: (
@@ -635,8 +603,6 @@ function PromptInput({
   mcpClients,
   pastedContents,
   setPastedContents,
-  vimMode,
-  setVimMode,
   showBashesDialog,
   setShowBashesDialog,
   onExit,
@@ -644,7 +610,7 @@ function PromptInput({
   onBashSubmit,
   queueOwner,
   queueExecutionCwd,
-  restoreComposerDraftForView,
+  restoreComposerDraft,
   onSubmit: onSubmitProp,
   onAgentSubmit,
   isSearchingHistory,
@@ -670,10 +636,6 @@ function PromptInput({
   // leaking into TextInput/footer handlers and stacking a second dialog.
   const upstreamModalOverlayActive =
     useIsModalOverlayActive() || isLocalJSXCommandActive;
-  const workbenchComposerFocused = useWorkbenchComposerFocus();
-  const isWorkbenchComposer =
-    workbenchComposerFocused !== null || isWorkbenchEnabled();
-  const composerInputEnabled = workbenchComposerFocused ?? true;
   const [isAutoUpdating, setIsAutoUpdating] = useState(false);
   const [exitMessage, setExitMessage] = useState<{
     show: boolean;
@@ -768,43 +730,6 @@ function PromptInput({
   );
   const store = useAppStateStore();
   const setAppState = useSetAppState();
-  const composerWorkbenchState = useAppState((s) => s.workbench);
-  const renderedWorkspaceView =
-    composerWorkbenchState?.activeWorkspaceView ?? "agent";
-  const renderedWorkbenchAttachments = useMemo(
-    () =>
-      composerWorkbenchState
-        ? composerAttachmentsForState(composerWorkbenchState)
-        : [],
-    [composerWorkbenchState],
-  );
-  const composerDraftRequest =
-    composerWorkbenchState?.composerDraftRequest ?? null;
-  useEffect(() => {
-    if (
-      composerDraftRequest === null ||
-      composerWorkbenchState?.activeWorkspaceView !== composerDraftRequest.view
-    ) {
-      return;
-    }
-    const current = lastInternalInputRef.current;
-    const separator = current.trim().length > 0 ? "\n\n" : "";
-    const next = `${current}${separator}${composerDraftRequest.text}`;
-    trackAndSetInput(next);
-    setCurrentCursorOffset(next.length);
-    setAppState((prev) =>
-      applyWorkbenchCommand(prev, {
-        type: "acknowledgeComposerDraft",
-        id: composerDraftRequest.id,
-      }),
-    );
-  }, [
-    composerDraftRequest,
-    composerWorkbenchState?.activeWorkspaceView,
-    setAppState,
-    setCurrentCursorOffset,
-    trackAndSetInput,
-  ]);
   const tasks = useAppState((s) => s.tasks);
   const teamContext = useAppState((s) => s.teamContext);
   const swarmMode = useAppState((s) => s.swarmMode === true);
@@ -971,8 +896,7 @@ function PromptInput({
     showAutoModeOptIn ||
     autoModeOptInPreview ||
     Boolean(showBashesDialog);
-  const promptKeyboardActive =
-    composerInputEnabled && !promptModalOverlayActive;
+  const promptKeyboardActive = !promptModalOverlayActive;
   const displayedToolPermissionContext = useMemo(
     (): ToolPermissionContext =>
       autoModeOptInPreview
@@ -984,7 +908,6 @@ function PromptInput({
   const autoModeOptInTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const modeSwitcherTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const modeCycleKeybindingActive =
-    composerInputEnabled &&
     !upstreamModalOverlayActive &&
     !Boolean(showBashesDialog) &&
     (promptKeyboardActive ||
@@ -1673,26 +1596,6 @@ function PromptInput({
       // same "still visible?" derivation as footerItemSelected so a stale
       // selection (pill disappeared) doesn't swallow Enter.
       const state = store.getState();
-      const liveWorkspaceView = state.workbench?.activeWorkspaceView ?? "agent";
-      // AppStateStore switches tabs synchronously, while this component's
-      // render-owned input and pasted-content refs update on the following
-      // React commit. Ignore Enter in that narrow handoff window: submitting
-      // the old render against the new tab would splice one tab's draft or
-      // attachments into the other. The next render/Enter owns one coherent
-      // composer snapshot.
-      if (liveWorkspaceView !== renderedWorkspaceView) {
-        return;
-      }
-      const workbenchAttachments =
-        isWorkbenchEnabled() && state.workbench
-          ? composerAttachmentsForState(state.workbench)
-          : [];
-      const hasWorkbenchAttachments = workbenchAttachments.length > 0;
-      const submissionWorkspaceView =
-        state.workbench?.activeWorkspaceView ?? "agent";
-      const submissionAttachmentIds = workbenchAttachments.map(
-        (attachment) => attachment.id,
-      );
       if (
         state.footerSelection &&
         footerItems.includes(state.footerSelection)
@@ -1725,22 +1628,6 @@ function PromptInput({
         onSubmissionBlocked?.(submissionBlockedReason);
         return;
       }
-      if (
-        isLoading &&
-        state.workbench?.activeWorkspaceView === "editor" &&
-        workbenchAttachments.some(
-          (attachment) => attachment.editorInteraction !== undefined,
-        )
-      ) {
-        addNotification({
-          key: "busy-editor-interaction-preserved",
-          text: "Finish or cancel the active turn before starting another editor interaction.",
-          priority: "immediate",
-          timeoutMs: 3000,
-        });
-        return;
-      }
-
       // Check for images early - we need this for suggestion logic below
       const hasImages = Object.values(pastedContentsRef.current).some(
         (c) => c.type === "image",
@@ -1759,7 +1646,6 @@ function PromptInput({
         inputMatchesSuggestion &&
         suggestionText &&
         !hasImages &&
-        !hasWorkbenchAttachments &&
         !state.viewingAgentTaskId
       ) {
         // If speculation is active, inject messages immediately as they stream
@@ -1782,11 +1668,6 @@ function PromptInput({
               setAppState,
             },
             {
-              vimRoutingState: {
-                enabled: isVimModeEnabled(),
-                mode: vimMode,
-                keys: [],
-              },
               pastedContentsOverride: { ...pastedContentsRef.current },
             },
           );
@@ -1803,7 +1684,6 @@ function PromptInput({
       // Handle @name direct message
       if (
         submissionMode === "prompt" &&
-        state.workbench?.activeWorkspaceView !== "editor" &&
         isAgentSwarmsEnabled()
       ) {
         const directMessage = parseDirectMemberMessage(inputParam);
@@ -1811,7 +1691,6 @@ function PromptInput({
           ? parseReferences(inputParam)
           : [];
         const directMessageHasUnsupportedAttachments =
-          hasWorkbenchAttachments ||
           directMessageRefs.some((ref) => {
             const content = pastedContentsRef.current[ref.id];
             return content?.type === "image" || ref.match.startsWith("[Image");
@@ -1832,9 +1711,8 @@ function PromptInput({
             directMessage.message,
             directMessagePastedContents,
           );
-          // Consume the Agent composer before mailbox I/O. Completion may happen
-          // after the user has switched to Editor, where shared setters would
-          // otherwise erase an unrelated draft.
+          // Consume the composer before mailbox I/O so a slow send cannot
+          // erase a newer draft on completion.
           trackAndSetInput("");
           setCurrentCursorOffset(0);
           setPastedContentsAndRef({});
@@ -1849,15 +1727,12 @@ function PromptInput({
               writeToMailbox,
             );
           } catch (error) {
-            if (restoreComposerDraftForView !== undefined) {
-              restoreComposerDraftForView(submissionWorkspaceView, {
+            if (restoreComposerDraft !== undefined) {
+              restoreComposerDraft({
                 input: inputParam,
                 pastedContents: directMessagePastedContents,
               });
-            } else if (
-              (store.getState().workbench?.activeWorkspaceView ?? "agent") ===
-              submissionWorkspaceView
-            ) {
+            } else {
               trackAndSetInput(inputParam);
               setPastedContentsAndRef(directMessagePastedContents);
             }
@@ -1886,7 +1761,6 @@ function PromptInput({
       if (
         inputParam.trim() === "" &&
         !hasImages &&
-        !hasWorkbenchAttachments &&
         onboardingInput?.allowEmptySubmit !== true
       ) {
         return;
@@ -1922,48 +1796,21 @@ function PromptInput({
 
       // Clear stash hint notification on submit
       removeNotification("stash-hint");
-      const submitInput = hasWorkbenchAttachments
-        ? materializeAttachmentMentions(inputParam, workbenchAttachments)
-        : inputParam;
-      const capturedPastedContents = capturedAttachmentsToPastedContents(
-        workbenchAttachments,
-        allocatePasteId,
-      );
-      const hasCapturedAttachments =
-        Object.keys(capturedPastedContents).length > 0;
-      const submissionPastedContents = {
-        ...pastedContentsRef.current,
-        ...capturedPastedContents,
-      };
+      const submitInput = inputParam;
+      const submissionPastedContents = { ...pastedContentsRef.current };
 
       // Route input to viewed agent (in-process teammate or named local_agent).
       const activeAgent = getActiveAgentForInput(store.getState());
       if (
         submissionMode === "prompt" &&
-        state.workbench?.activeWorkspaceView !== "editor" &&
         activeAgent.type !== "leader" &&
         onAgentSubmit
       ) {
-        const agentSubmitInput = hasCapturedAttachments
-          ? `${submitInput}\n\n${Object.values(capturedPastedContents)
-              .sort((a, b) => a.id - b.id)
-              .map((item) => item.content)
-              .join("\n\n")}`
-          : submitInput;
-        await onAgentSubmit(agentSubmitInput, activeAgent.task, {
+        await onAgentSubmit(submitInput, activeAgent.task, {
           setCursorOffset: setCurrentCursorOffset,
           clearBuffer,
           resetHistory,
         });
-        if (hasWorkbenchAttachments) {
-          setAppState((prev) =>
-            applyWorkbenchCommand(prev, {
-              type: "clearAttachments",
-              workspaceView: submissionWorkspaceView,
-              ids: submissionAttachmentIds,
-            }),
-          );
-        }
         return;
       }
 
@@ -2108,28 +1955,9 @@ function PromptInput({
         undefined,
         {
           mode: submissionMode,
-          vimRoutingState: {
-            enabled: isVimModeEnabled(),
-            mode: vimMode,
-            keys: [],
-          },
           // Always forward the exact render-owned snapshot, including an
-          // empty object. Falling back to App's render-captured value lets an
-          // old tab's pasted content bleed across a same-tick tab switch.
+          // empty object, so a stale render-captured value never bleeds in.
           pastedContentsOverride: submissionPastedContents,
-          ...(hasWorkbenchAttachments
-            ? {
-                onWorkbenchAttachmentsAdmitted: () => {
-                  setAppState((prev) =>
-                    applyWorkbenchCommand(prev, {
-                      type: "clearAttachments",
-                      workspaceView: submissionWorkspaceView,
-                      ids: submissionAttachmentIds,
-                    }),
-                  );
-                },
-              }
-            : {}),
         },
       );
     },
@@ -2149,7 +1977,6 @@ function PromptInput({
       setAppState,
       markAccepted,
       removeNotification,
-      vimMode,
       mode,
       getToolUseContext,
       getMessages,
@@ -2163,7 +1990,6 @@ function PromptInput({
       onboardingInput,
       submissionBlockedReason,
       onSubmissionBlocked,
-      renderedWorkspaceView,
     ],
   );
   const {
@@ -2467,46 +2293,6 @@ function PromptInput({
     insertTextAtCursor("\n");
   }, [insertTextAtCursor]);
 
-  // Handler for chat:externalEditor - edit in $EDITOR
-  const handleExternalEditor = useCallback(async () => {
-    setIsExternalEditorActive(true);
-    const currentInput = lastInternalInputRef.current;
-    const currentCursorOffset = cursorOffsetRef.current;
-    const currentPastedContents = pastedContentsRef.current;
-    try {
-      // Pass pastedContents to expand collapsed text references
-      const result = await editPromptInEditor(
-        currentInput,
-        currentPastedContents,
-      );
-      if (result.error) {
-        addNotification({
-          key: "external-editor-error",
-          text: result.error,
-          color: "warning",
-          priority: "high",
-        });
-      }
-      if (result.content !== null && result.content !== currentInput) {
-        // Push current state to buffer before making changes
-        pushToBuffer(currentInput, currentCursorOffset, currentPastedContents);
-        trackAndSetInput(result.content);
-        setCurrentCursorOffset(result.content.length);
-      }
-    } catch (err) {
-      if (err instanceof Error) {
-        logError(err);
-      }
-      addNotification({
-        key: "external-editor-error",
-        text: `External editor failed: ${errorMessage(err)}`,
-        color: "warning",
-        priority: "high",
-      });
-    } finally {
-      setIsExternalEditorActive(false);
-    }
-  }, [pushToBuffer, trackAndSetInput, addNotification, setCurrentCursorOffset]);
 
   // Handler for chat:stash - stash/unstash prompt
   const handleStash = useCallback(() => {
@@ -2937,7 +2723,6 @@ function PromptInput({
     () => ({
       "chat:undo": handleUndo,
       "chat:newline": handleNewline,
-      "chat:externalEditor": handleExternalEditor,
       "chat:stash": handleStash,
       "chat:dropQueuedInput": handleDropQueuedInput,
       ...(onOpenModelMenu === undefined
@@ -2949,7 +2734,6 @@ function PromptInput({
     [
       handleUndo,
       handleNewline,
-      handleExternalEditor,
       handleStash,
       handleDropQueuedInput,
       handleModelPicker,
@@ -2987,7 +2771,7 @@ function PromptInput({
     },
     {
       context: "Help",
-      isActive: composerInputEnabled && helpOpen,
+      isActive: helpOpen,
     },
   );
 
@@ -3014,16 +2798,6 @@ function PromptInput({
     "app:globalSearch",
     () => {
       if (feature("QUICK_SEARCH")) {
-        if (isWorkbenchEnabled()) {
-          setAppState((prev) =>
-            applyWorkbenchCommand(prev, {
-              type: "openSearch",
-              query: lastInternalInputRef.current.trim(),
-            }),
-          );
-          setHelpOpen(false);
-          return;
-        }
         setShowGlobalSearch(true);
         setHelpOpen(false);
       }
@@ -3170,9 +2944,6 @@ function PromptInput({
     },
   );
   useInput((char, key, event) => {
-    if (!composerInputEnabled) {
-      return;
-    }
     // Skip all input handling when a full-screen dialog is open. These dialogs
     // render via early return, but hooks run unconditionally — so without this
     // guard, Escape inside a dialog leaks to the double-press message-selector.
@@ -3215,29 +2986,6 @@ function PromptInput({
 
     const currentInput = lastInternalInputRef.current;
     const currentOffset = cursorOffsetRef.current;
-
-    // When the text composer is empty, Backspace removes the most recently
-    // attached workbench context chip. Keep this in the keyboard handler:
-    // insertTextAtCursor is also used by paste, quick-open, IDE, and editor
-    // callbacks, none of which have a key event.
-    if (
-      currentInput.length === 0 &&
-      key.backspace &&
-      renderedWorkbenchAttachments.length > 0
-    ) {
-      const lastAttachment =
-        renderedWorkbenchAttachments[renderedWorkbenchAttachments.length - 1];
-      if (lastAttachment) {
-        setAppState((prev) =>
-          applyWorkbenchCommand(prev, {
-            type: "removeAttachment",
-            id: lastAttachment.id,
-          }),
-        );
-        event.stopImmediatePropagation();
-        return;
-      }
-    }
 
     // Type-to-exit footer: printable chars while a pill is selected refocus
     // the input and type the char. Nav keys are captured by useKeybindings
@@ -3350,29 +3098,8 @@ function PromptInput({
     });
   }, [effortNotificationText, addNotification, removeNotification]);
   const { columns, rows } = useTerminalSize();
-  const workbenchFrameColumns = useContentWidth();
   const promptGlyphs = selectAgenCTuiGlyphs();
-  const workbenchPermissionLabel =
-    displayedToolPermissionContext.mode === "bypassPermissions"
-      ? "YOLO"
-      : permissionModeShortTitle(
-          displayedToolPermissionContext.mode,
-        ).toUpperCase();
-  const workbenchPromptGlyph =
-    viewingAgentName || mode !== "bash"
-      ? displayedToolPermissionContext.mode === "bypassPermissions"
-        ? promptGlyphs.promptBypass
-        : promptGlyphs.pointer
-      : "!";
-  const textInputColumns =
-    isWorkbenchComposer && workbenchFrameColumns !== null
-      ? clampWorkbenchPromptTextInputColumns(
-          workbenchFrameColumns,
-          workbenchPermissionLabel,
-          workbenchPromptGlyph,
-          swarmMode,
-        )
-      : clampPromptTextInputColumns(columns);
+  const textInputColumns = clampPromptTextInputColumns(columns);
 
   // POC: click-to-position-cursor. Mouse tracking is only enabled inside
   // <AlternateScreen>, so this is dormant in the normal main-screen TUI.
@@ -3637,12 +3364,10 @@ function PromptInput({
     onPaste: onTextPaste,
     onIsPastingChange: setIsPasting,
     focus:
-      composerInputEnabled &&
       !isSearchingHistory &&
       !promptModalOverlayActive &&
       !footerItemSelected,
     showCursor:
-      composerInputEnabled &&
       !footerItemSelected &&
       !isSearchingHistory &&
       !cursorAtImageChip,
@@ -3707,17 +3432,12 @@ function PromptInput({
     );
   }
   const textInputElement = (
-    <ConfiguredPromptTextInput
-      baseProps={baseProps}
-      vimMode={vimMode}
-      onVimModeChange={setVimMode}
-    />
+    <ConfiguredPromptTextInput baseProps={baseProps} />
   );
   return (
     <Box
       flexDirection="column"
-      marginTop={isWorkbenchComposer || briefOwnsGap ? 0 : 1}
-      paddingBottom={isWorkbenchComposer ? 1 : 0}
+      marginTop={briefOwnsGap ? 0 : 1}
       backgroundColor="surfaceBackground"
       opaque
     >
@@ -3730,19 +3450,6 @@ function PromptInput({
         </Box>
       )}
       <PromptInputStashNotice hasStash={stashedPrompt !== undefined} />
-      {renderedWorkbenchAttachments.length > 0 ? (
-        <WorkbenchAttachmentChips
-          attachments={renderedWorkbenchAttachments}
-          onRemove={(id) => {
-            setAppState((prev) =>
-              applyWorkbenchCommand(prev, {
-                type: "removeAttachment",
-                id,
-              }),
-            );
-          }}
-        />
-      ) : null}
       {swarmBanner ? (
         <>
           <Text color={swarmBanner.bgColor}>
@@ -3782,29 +3489,13 @@ function PromptInput({
           flexDirection="row"
           alignItems="flex-start"
           justifyContent="flex-start"
-          borderColor={isWorkbenchComposer ? undefined : "text"}
-          borderStyle={isWorkbenchComposer ? undefined : "single"}
+          borderColor="text"
+          borderStyle="single"
           width="100%"
-          paddingX={isWorkbenchComposer ? 2 : 1}
+          paddingX={1}
           backgroundColor="surfaceBackground"
           opaque
         >
-          {isWorkbenchComposer ? (
-            <>
-              <Text color="inverseText" backgroundColor="text" bold>
-                {` ${workbenchPermissionLabel} `}
-              </Text>
-              {swarmMode ? (
-                <>
-                  <Box width={2} flexShrink={0} />
-                  <Text color="text" bold>
-                    ◆ SWARM
-                  </Text>
-                </>
-              ) : null}
-              <Box width={2} flexShrink={0} />
-            </>
-          ) : null}
           <PromptInputModeIndicator
             mode={mode}
             permissionMode={displayedToolPermissionContext.mode}
@@ -3834,16 +3525,12 @@ function PromptInput({
         <Box paddingX={2}>
           <Text dimColor>{onboardingInput.footerHint}</Text>
         </Box>
-      ) : isWorkbenchComposer &&
-        suggestions.length === 0 &&
-        !helpOpen &&
-        !exitMessage.show ? null : (
+      ) : (
         <PromptInputFooter
           apiKeyStatus={apiKeyStatus}
           remoteAuthSessionContext={remoteAuthSessionContext}
           debug={debug}
           exitMessage={exitMessage}
-          vimMode={isVimModeEnabled() ? vimMode : undefined}
           mode={mode}
           autoUpdaterResult={autoUpdaterResult}
           isAutoUpdating={isAutoUpdating}
@@ -3995,49 +3682,4 @@ function extractUserMessageBashOutputTexts(m: unknown): string[] {
   }
   return outputs;
 }
-function WorkbenchAttachmentChips({
-  attachments,
-  onRemove,
-}: {
-  readonly attachments: readonly WorkbenchAttachment[];
-  readonly onRemove: (id: string) => void;
-}): React.ReactElement {
-  return (
-    <Box
-      flexDirection="row"
-      flexWrap="wrap"
-      paddingX={2}
-      columnGap={1}
-      backgroundColor="surfaceBackground"
-    >
-      {attachments.map((attachment) => {
-        const captured = isCapturedWorkbenchAttachment(attachment);
-        const suffix =
-          captured && attachment.dirty
-            ? " · unsaved snapshot"
-            : captured
-              ? " · editor snapshot"
-              : "";
-        return (
-          <Box
-            key={attachment.id}
-            flexShrink={1}
-            onClick={(event) => {
-              event.stopImmediatePropagation();
-              onRemove(attachment.id);
-            }}
-          >
-            <Text
-              color={captured ? "suggestion" : "inactive"}
-              wrap="truncate-end"
-            >
-              {`[${attachment.label}${suffix} ×]`}
-            </Text>
-          </Box>
-        );
-      })}
-    </Box>
-  );
-}
-
 export default React.memo(PromptInput);

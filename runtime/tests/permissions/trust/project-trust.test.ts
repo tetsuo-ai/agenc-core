@@ -25,6 +25,7 @@ import {
   rejectProjectMcpServerSync,
   resetProjectMcpServerChoicesSync,
   resolveProjectTrustRootSync,
+  resolveProjectTrustStatusSync,
   trustProject,
   trustProjectSync,
   trustedProjectsPath,
@@ -236,6 +237,33 @@ describe("project trust store", () => {
     } finally {
       rmSync(parent, { recursive: true, force: true });
     }
+  });
+
+  test("status for a nested folder names the project root a session would use", () => {
+    const nested = join(repo, "packages", "web");
+    mkdirSync(nested, { recursive: true });
+
+    const before = resolveProjectTrustStatusSync({ agencHome: home, cwd: nested });
+    expect(before.projectRoot).toBe(resolveProjectTrustRootSync({ cwd: repo }));
+    expect(before.cwd).toContain(join("packages", "web"));
+    expect(before.cwd).not.toBe(before.projectRoot);
+    expect(before.trusted).toBe(false);
+
+    trustProjectSync({ agencHome: home, cwd: repo });
+    const after = resolveProjectTrustStatusSync({ agencHome: home, cwd: nested });
+    expect(after.projectRoot).toBe(before.projectRoot);
+    expect(after.trusted).toBe(true);
+  });
+
+  test("status looks up the project root, not the folder the client opened", () => {
+    const nested = join(repo, "packages", "web");
+    mkdirSync(nested, { recursive: true });
+    trustProjectSync({ agencHome: home, projectRoot: nested });
+
+    expect(
+      resolveProjectTrustStatusSync({ agencHome: home, cwd: nested }).trusted,
+    ).toBe(false);
+    expect(isProjectTrustedSync({ agencHome: home, projectRoot: nested })).toBe(true);
   });
 
   test("trusting a parent does not trust a nested project root", async () => {

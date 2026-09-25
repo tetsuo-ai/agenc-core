@@ -23,13 +23,20 @@ import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AsyncQueue } from "../utils/async-queue.js";
 import { AgentControl } from "./control.js";
+import { toListedAgentJson } from "./v2/common.js";
 import { delegate } from "./delegate.js";
+import { authorizeChildExecutionPlan, createChildExecutionPlan } from "./cross-provider.js";
 import type { AgentThread } from "./thread.js";
 import { buildToolRegistry as buildProductionToolRegistry } from "../../src/tool-registry.js";
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
-import { childApprovalRevocationSignal, isApprovalSessionOwnedBy, observeChildApprovalSessions } from "../../src/agents/child-approval-context.js";
+import { childApprovalRevocationSignal, isApprovalSessionOwnedBy, observeChildApprovalSessions, registerChildApprovalSession } from "../../src/agents/child-approval-context.js";
+import { childTerminalOutcome } from "../../src/agents/child-terminal.js";
+import { validateCanonicalJournalText } from "../../src/state/recovery-journal-contract.js";
 import { AgentRegistry } from "./registry.js";
 import { createMultiAgentV2Tools } from "./v2/index.js";
+import { createSpawnAgentTool } from "./v2/spawn.js";
+import { AgentRoleCatalog } from "./role-catalog.js";
+import type { MultiAgentV2Options } from "./v2/common.js";
 import { bindLiveAgentSession, liveAgentSession } from "./live-session.js";
 import {
   buildFilteredRegistry,
@@ -51,6 +58,10 @@ import {
   readProviderIdentity,
 } from "../llm/provider.js";
 import { createGeminiEndpointPlan } from "../llm/providers/gemini/endpoint-plan.js";
+import { GrokProvider } from "../llm/providers/grok/adapter.js";
+import { AgenCProvider } from "../llm/providers/agenc/index.js";
+import { ZaiProvider } from "../llm/providers/zai/index.js";
+import { OpenAIProvider } from "../llm/providers/openai/adapter.js";
 import {
   _resetAgentRolesForTesting,
   _resetNicknamePoolForTesting,
@@ -149,11 +160,15 @@ import {
   shutdownLspServerManager,
   waitForInitialization,
 } from "../services/lsp/manager.js";
-import { ConfigStore } from "../config/store.js";
+import { ConfigStore, nextConfigReadMark } from "../config/store.js";
+import { SessionProviderService } from "../session/provider-service.js";
+import { LLMFundsError } from "../llm/errors.js";
+import { LiveApprovalBroker } from "../app-server/live-approval-broker.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 import { createAutoMemoryToolPolicy } from "../../src/services/extractMemories/extractMemories.js";
 import { applyPermissionUpdate } from "../../src/permissions/permission-updates.js";
 import { enterCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
+import { MultiProjectFileThreadStore } from "../thread-store/multi-project-store.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Helpers
@@ -387,6 +402,33 @@ async function stopKeepAliveRun(
 ): Promise<RunAgentResult> {
   if (!signal.signal.aborted) signal.abort("test cleanup");
   return (await collectRun(iter)).result;
+}
+
+async function sendQueuedMessageDuringRun(
+  session: Session,
+  waitForKind: RunAgentProgressEvent["kind"],
+  content: string,
+): Promise<{
+  result: RunAgentResult;
+  live: Awaited<ReturnType<typeof spawnLive>>["live"];
+}> {
+  const { control, live } = await spawnLive(session);
+  const iter = runAgent({
+    live,
+    parent: session,
+    initialMessages: [{ role: "user", content: "go" }],
+    taskPrompt: "go",
+  });
+  await nextProgressEvent(iter, waitForKind);
+  await control.sendInterAgentCommunication(live.agentId, {
+    author: "/root",
+    recipient: live.agentPath,
+    content,
+    triggerTurn: false,
+    metadata: createMailboxMetadataRecord("inter_agent_communication", [["deliveryMode", "queue_only"]]),
+  });
+  const { result } = await collectRun(iter);
+  return { result, live };
 }
 
 async function spawnLive(session: Session, roleName?: string) {
@@ -687,6 +729,510 @@ describe("wrapProviderForAgentSummary", () => {
 });
 
 describe("runAgent", () => {
+  function crossProviderRuntime(target: LLMProvider, configStore: ConfigStore,
+    selection = { provider: "deepseek", model: "deepseek-v4-pro" },
+    authProfile?: "sign_in") {
+    const rootProvider = makeProvider([]);
+    const prepare = vi.fn(async () => ({
+      binding: { ...selection, instance: target },
+      ...(authProfile !== undefined ? { authProfile, billingSource: authProfile } : {}),
+    }));
+    const providerService = {
+      current: () => ({ provider: "grok", model: "grok-4.6", instance: rootProvider }),
+      environment: () => Object.freeze({ DEEPSEEK_API_KEY: "captured-target-key" }),
+      ...(authProfile !== undefined ? { previewChildDestination: async () => ({
+        endpoint: "https://api.openai.com/v1", authProfile, billingSource: authProfile,
+      }) } : {}),
+      prepare,
+      prepareChild: prepare,
+      forkForChild: (provider: LLMProvider, selection: { provider: string; model: string }) =>
+        new SessionProviderService({
+          initialProvider: provider,
+          initialProviderName: selection.provider,
+          initialModel: selection.model,
+          environment: { DEEPSEEK_API_KEY: "captured-target-key" },
+        }),
+    } as unknown as SessionServices["providerService"];
+    const parent = makeStubSession({ services: {
+      provider: rootProvider,
+      providerService,
+      configStore,
+      sandboxExecutionBroker: new SandboxExecutionBroker({ mode: "read_only", cwd: "/tmp" }),
+    } });
+    const modelInfo: ModelInfo = {
+      ...mkModelInfo(), slug: selection.model, contextWindow: 1_048_576,
+      supportedReasoningLevels: ["low", "high", "max"],
+    };
+    return { parent, rootProvider, prepare, modelInfo };
+  }
+
+  async function authorizedCrossProviderPlan(parent: Session, modelInfo: ModelInfo,
+    selection = { provider: "deepseek", model: "deepseek-v4-pro" }) {
+    Object.assign(parent.services, { crossProviderConsent: {
+      ownerSessionId: parent.conversationId, sessionEpoch: "run-agent-test-human",
+      request: async (_session: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+        kind: "granted" as const,
+        grant: { kind: "once" as const, ownerSessionId: parent.conversationId,
+          sessionEpoch: "run-agent-test-human", taskId: disclosure.taskId,
+          scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey },
+      }),
+    } });
+    const proposed = await createChildExecutionPlan({ session: parent,
+      selection, modelInfo,
+      parentPath: "/root", taskId: "run-agent-test-task", taskName: "worker", taskText: "go",
+      toolFree: false, forkedHistory: false });
+    const authorized = await authorizeChildExecutionPlan(parent, proposed);
+    if (authorized.kind !== "granted") throw new Error("fixture consent failed");
+    return authorized.plan;
+  }
+
+  it.each([
+    { provider: "deepseek", model: "deepseek-v4-pro", authProfile: undefined },
+    { provider: "openai", model: "gpt-6-luna", authProfile: "sign_in" as const },
+  ])("sends a $provider child's own identity and prompt to its provider", async ({ provider, model, authProfile }) => {
+    const selection = { provider, model };
+    const configStore = new ConfigStore({ cwd: "/tmp", base: {
+      agents: { cross_provider_enabled: true, allowed_providers: ["deepseek", "openai"] },
+    } });
+    let requestPrompt = "";
+    let requestSpawnModel: { description: string; enum?: string[] } | undefined;
+    const target = { ...makeProvider([]), name: provider,
+      chatStream: vi.fn(async (_messages: LLMMessage[], _onChunk: StreamProgressCallback,
+        options?: LLMChatOptions): Promise<LLMResponse> => {
+        requestPrompt = options?.systemPrompt ?? "";
+        requestSpawnModel = (options?.tools?.find((tool) => tool.function.name === "spawn_agent")?.function.parameters as
+          { properties?: { model?: { description: string; enum?: string[] } } } | undefined)?.properties?.model;
+        return { content: "done", toolCalls: [], usage: {
+          promptTokens: 0, completionTokens: 0, totalTokens: 0,
+        }, model, finishReason: "stop" };
+      }),
+    } satisfies LLMProvider;
+    const { parent, modelInfo } = crossProviderRuntime(target, configStore, selection, authProfile);
+    const spawnTool = createSpawnAgentTool({
+      getSession: () => parent,
+      workspace: ROLE_WORKSPACE,
+      roleCatalog: new AgentRoleCatalog(ROLE_WORKSPACE),
+      ensureAgentControl: () => { throw new Error("not used"); },
+    } as unknown as MultiAgentV2Options);
+    Object.assign(parent.services, { registry: {
+      ...mkRegistry(), tools: [spawnTool],
+      toLLMTools: () => [{ type: "function", function: {
+        name: spawnTool.name, description: spawnTool.description, parameters: spawnTool.inputSchema,
+      } }],
+    } satisfies ToolRegistry });
+    await parent.state.with((state) => { state.sessionConfiguration = {
+      ...state.sessionConfiguration,
+      collaborationMode: { model: "grok-4.7" },
+      baseInstructions: "# Grok-specific notes\nModel: grok-4.7 (provider: grok)",
+    }; });
+    const plan = await authorizedCrossProviderPlan(parent, {
+      ...modelInfo,
+      modelMessages: { instructionsTemplate:
+        `${provider.toUpperCase()} provider notes\n{{ base_instructions }}` },
+    }, selection);
+    expect(plan.destination.authProfile).toBe(authProfile ?? "api_key");
+    const { live } = await spawnLive(parent);
+    const { result } = await collectRun(runAgent({ live, parent,
+      initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", plan,
+    }));
+    expect(result.outcome).toBe("completed");
+    expect(target.chatStream).toHaveBeenCalled();
+    expect(requestPrompt).toContain(`Model: ${model} (provider: ${provider})`);
+    expect(requestSpawnModel?.description).toContain(`current model (\`${model}\`)`);
+    expect(requestSpawnModel?.description).not.toContain("current model (`grok-4.7`)");
+    expect(requestPrompt).toContain(`${provider.toUpperCase()} provider notes`);
+    expect(requestPrompt).not.toMatch(/grok|xai/iu);
+  });
+
+  it.each([
+    { model: "grok-4.6", expected: "Model: grok-4.6 (provider: grok)" },
+    { model: "grok-4.7", expected: "SAME_MODEL_BASE" },
+  ])("sends a same-provider $model child's correct base instructions", async ({ model, expected }) => {
+    let requestPrompt = "";
+    const provider = { ...makeProvider([]), name: "grok",
+      chatStream: vi.fn(async (_messages: LLMMessage[], _onChunk: StreamProgressCallback,
+        options?: LLMChatOptions): Promise<LLMResponse> => {
+        requestPrompt = options?.systemPrompt ?? "";
+        return { content: "done", toolCalls: [], usage: {
+          promptTokens: 0, completionTokens: 0, totalTokens: 0,
+        }, model, finishReason: "stop" };
+      }),
+    } satisfies LLMProvider;
+    const parent = makeStubSession({ services: { provider },
+      sessionConfiguration: mkSessionConfiguration({
+        collaborationMode: { model: "grok-4.7" },
+        baseInstructions: "SAME_MODEL_BASE\nModel: grok-4.7 (provider: grok)",
+      }),
+      config: { ...mkConfig(), model: "grok-4.7" },
+      modelInfo: { ...mkModelInfo(), slug: "grok-4.7",
+        modelMessages: { instructionsTemplate: "Grok 4.7-only note\n{{ base_instructions }}" } },
+    });
+    const { live } = await spawnLive(parent);
+    const { result } = await collectRun(runAgent({ live, parent,
+      initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", model,
+    }));
+    expect(result.outcome).toBe("completed");
+    expect(requestPrompt).toContain(expected);
+    if (model !== "grok-4.7") {
+      expect(requestPrompt).not.toContain("Model: grok-4.7");
+      expect(requestPrompt).not.toContain("Grok 4.7-only note");
+    } else {
+      expect(requestPrompt).toContain("Model: grok-4.7 (provider: grok)");
+      expect(requestPrompt).toContain("Grok 4.7-only note");
+    }
+  });
+
+  it("dispatches another Grok model when the parent provider has factory model metadata", async () => {
+    const provider = createProvider("grok", { apiKey: "xai-test", model: "grok-4.7" });
+    const providerService = new SessionProviderService({
+      initialProvider: provider,
+      resolvePreparationRequest: ({ model }) => ({ requested: {
+        ...readProviderFactoryOptions(provider), model,
+      } }),
+    });
+    const chat = vi.spyOn(GrokProvider.prototype, "chatStream").mockResolvedValue({
+      content: "child completed", toolCalls: [],
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      model: "grok-4.6", finishReason: "stop",
+    });
+    const parent = makeStubSession({
+      services: { provider, providerService,
+        sandboxExecutionBroker: new SandboxExecutionBroker({ mode: "danger_full_access", cwd: "/tmp" }) },
+      sessionConfiguration: mkSessionConfiguration({ collaborationMode: { model: "grok-4.7" } }),
+      config: { ...mkConfig(), model: "grok-4.7" },
+      modelInfo: { ...mkModelInfo(), slug: "grok-4.7" },
+    });
+    try {
+      const { live } = await spawnLive(parent);
+      const { result } = await collectRun(runAgent({ live, parent,
+        initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", model: "grok-4.6",
+      }));
+      expect(result.outcome, result.error).toBe("completed");
+      expect(chat).toHaveBeenCalled();
+    } finally {
+      await parent.shutdown();
+      await provider.dispose?.();
+      chat.mockRestore();
+    }
+  });
+
+  it("dispatches another hosted AgenC model using the parent session authority", async () => {
+    const parentModel = "deepseek/deepseek-v4-flash-0731";
+    const authBackend = {
+      kind: "remote" as const,
+      login: vi.fn(), logout: vi.fn(), whoami: vi.fn(),
+      vendKey: vi.fn(), inferAgencModel: vi.fn(),
+      getLlmUsage: vi.fn(), getSubscriptionTier: vi.fn(),
+    } as never;
+    const provider = createProvider("agenc", {
+      model: parentModel, extra: { authBackend, sessionId: "hosted-parent" },
+    });
+    const factoryExtra = readProviderFactoryOptions(provider).extra ?? {};
+    expect(factoryExtra).not.toHaveProperty("authBackend");
+    expect(factoryExtra).not.toHaveProperty("sessionId");
+    const providerService = new SessionProviderService({
+      initialProvider: provider,
+      authBackend,
+      sessionId: "hosted-parent",
+      subscriptionTier: "pro",
+      resolvePreparationRequest: ({ model }) => ({ requested: { model } }),
+    });
+    const prepare = vi.spyOn(providerService, "prepareChild");
+    let live!: Awaited<ReturnType<typeof spawnLive>>["live"];
+    const profile = vi.spyOn(AgenCProvider.prototype, "getExecutionProfile").mockResolvedValue({
+      provider: "agenc", model: "agenc", usageReporting: "unavailable",
+      supportsMaxOutputTokens: false,
+    });
+    const accounting = vi.spyOn(AgenCProvider.prototype, "projectRequestForAccounting")
+      .mockImplementation((messages, options) => ({ messages, options }));
+    const chat = vi.spyOn(AgenCProvider.prototype, "chatStream").mockImplementation(async () => {
+      const child = liveAgentSession(live)!;
+      expect(child.providerService.current()).toMatchObject({ provider: "agenc", model: "agenc" });
+      expect(child.services.provider).not.toBe(provider);
+      return { content: "child completed", toolCalls: [],
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        model: "agenc", finishReason: "stop" };
+    });
+    const parent = makeStubSession({
+      services: { provider, providerService,
+        sandboxExecutionBroker: new SandboxExecutionBroker({ mode: "danger_full_access", cwd: "/tmp" }) },
+      sessionConfiguration: mkSessionConfiguration({ collaborationMode: { model: parentModel } }),
+      config: { ...mkConfig(), model: parentModel },
+      modelInfo: { ...mkModelInfo(), slug: parentModel },
+    });
+    try {
+      ({ live } = await spawnLive(parent));
+      const { result } = await collectRun(runAgent({ live, parent,
+        initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", model: "agenc",
+      }));
+      if (result.error) throw result.error;
+      expect(result.outcome, result.error).toBe("completed");
+      expect(prepare).toHaveBeenCalledWith({ provider: "agenc", model: "agenc" },
+        undefined, { signal: expect.any(AbortSignal) });
+      expect(chat).toHaveBeenCalledOnce();
+      expect(parent.providerService.current().model).toBe(parentModel);
+    } finally {
+      await parent.shutdown();
+      await provider.dispose?.();
+      accounting.mockRestore();
+      profile.mockRestore();
+      chat.mockRestore();
+    }
+  });
+
+  it("sends a restored cross-provider child's own identity after restart", async () => {
+    const configStore = new ConfigStore({ cwd: "/tmp", base: {
+      agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] },
+    } });
+    let requestPrompt = "";
+    const target = { ...makeProvider([]), name: "deepseek",
+      chatStream: vi.fn(async (_messages: LLMMessage[], _onChunk: StreamProgressCallback,
+        options?: LLMChatOptions): Promise<LLMResponse> => {
+        requestPrompt = options?.systemPrompt ?? "";
+        return { content: "done", toolCalls: [], usage: {
+          promptTokens: 0, completionTokens: 0, totalTokens: 0,
+        }, model: "deepseek-v4-pro", finishReason: "stop" };
+      }),
+    } satisfies LLMProvider;
+    const { parent, modelInfo } = crossProviderRuntime(target, configStore);
+    const plan = await authorizedCrossProviderPlan(parent, modelInfo);
+    const originalControl = new AgentControl({ session: parent, registry: new AgentRegistry() });
+    const original = await originalControl.spawn({ parentPath: "/root", agentName: "worker",
+      providerSelection: plan.route, executionPlan: plan });
+
+    const { parent: restoredParent } = crossProviderRuntime(target, configStore);
+    Object.assign(restoredParent.services, {
+      crossProviderConsent: parent.services.crossProviderConsent,
+    });
+    await restoredParent.state.with((state) => { state.sessionConfiguration = {
+      ...state.sessionConfiguration,
+      collaborationMode: { model: "grok-4.7" },
+      baseInstructions: "# Grok-specific notes\nModel: grok-4.7 (provider: grok)",
+    }; });
+    const restoredControl = new AgentControl({ session: restoredParent,
+      registry: new AgentRegistry() });
+    const restored = await restoredControl.resume({ parentPath: "/root",
+      metadata: structuredClone(original.metadata) });
+    expect(restored).not.toBeNull();
+    const { result } = await collectRun(runAgent({ live: restored!, parent: restoredParent,
+      initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go",
+      taskId: plan.task.id,
+    }));
+    expect(result.outcome).toBe("completed");
+    expect(requestPrompt).toContain("Model: deepseek-v4-pro (provider: deepseek)");
+    expect(requestPrompt).not.toMatch(/grok|xai/iu);
+  });
+
+  it("binds a cross-provider child to its own provider, model data, and parent authority", async () => {
+    const configStore = new ConfigStore({
+      cwd: "/tmp",
+      base: { agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] } },
+    });
+    let live!: Awaited<ReturnType<typeof spawnLive>>["live"];
+    const target = {
+      ...makeProvider([]),
+      name: "deepseek",
+      chatStream: vi.fn(async (): Promise<LLMResponse> => {
+        const child = liveAgentSession(live)!;
+        expect(child.providerService.current()).toMatchObject({ provider: "deepseek", model: "deepseek-v4-pro" });
+        expect(child.services.provider).toBe(target);
+        expect(child.sessionConfiguration.provider).toBe(target);
+        expect(child.config.model).toBe("deepseek-v4-pro");
+        expect(child.modelInfo).toMatchObject({ slug: "deepseek-v4-pro", contextWindow: 1_048_576 });
+        expect(child.permissionModeRegistry).toBe(parent.permissionModeRegistry);
+        expect(child.fileReadScope).toBe(parent.fileReadScope);
+        expect(child.sessionConfiguration.sandboxPolicy).toEqual(parent.sessionConfiguration.sandboxPolicy);
+        expect(child.services.sandboxExecutionBroker).not.toBe(parent.services.sandboxExecutionBroker);
+        expect(child.services.registry).not.toBe(parent.services.registry);
+        return { content: "target", toolCalls: [], usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 }, model: "deepseek-v4-pro", finishReason: "stop" };
+      }),
+    } satisfies LLMProvider;
+    const { parent, rootProvider, prepare, modelInfo } = crossProviderRuntime(target, configStore);
+    ({ live } = await spawnLive(parent));
+    const plan = await authorizedCrossProviderPlan(parent, modelInfo);
+    const { result } = await collectRun(runAgent({ live, parent, initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", plan }));
+    expect(result.outcome).toBe("completed");
+    expect(prepare).toHaveBeenCalledWith(
+      { provider: "deepseek", model: "deepseek-v4-pro" }, undefined,
+      { signal: expect.any(AbortSignal) }, true,
+      undefined, plan.destination,
+    );
+    expect(target.chatStream).toHaveBeenCalledOnce();
+    expect(rootProvider.chatStream).not.toHaveBeenCalled();
+    expect(live.configSnapshot?.crossProvider).toEqual({ provider: "deepseek", model: "deepseek-v4-pro", policy: "user-or-managed-agents-v1" });
+  });
+
+  it("disposes a prepared child when policy is revoked during preparation", async () => {
+    let enabled = true;
+    const configStore = new ConfigStore({
+      cwd: "/tmp",
+      base: { agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] } },
+      loader: async () => ({ agents: { cross_provider_enabled: enabled, allowed_providers: ["deepseek"] } }),
+    });
+    const dispose = vi.fn(async () => {});
+    const target = { ...makeProvider([]), name: "deepseek", dispose,
+      chatStream: vi.fn() } as LLMProvider;
+    const { parent, prepare, modelInfo } = crossProviderRuntime(target, configStore);
+    const plan = await authorizedCrossProviderPlan(parent, modelInfo);
+    Object.assign(parent.providerService, {
+      prepareChild: async () => {
+        const prepared = await prepare();
+        enabled = false;
+        await configStore.reload();
+        return prepared;
+      },
+    });
+    const { live } = await spawnLive(parent);
+    const { result } = await collectRun(runAgent({ live, parent,
+      initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go",
+      plan,
+    }));
+    expect(result.outcome).toBe("errored");
+    expect(dispose).toHaveBeenCalledOnce(); // only the post-consent run preparation
+    expect(target.chatStream).not.toHaveBeenCalled();
+  });
+
+  it("never reaches the provider of a managed child whose settings change while its last check resolves the destination", async () => {
+    let enabled = true;
+    const agents = () => ({ cross_provider_enabled: enabled, allowed_providers: ["agenc", "deepseek"] });
+    const configStore = new ConfigStore({
+      cwd: "/tmp",
+      base: { model_provider: "grok", model: "grok-4.6", agents: agents() },
+      loader: async () => ({ model_provider: "grok", model: "grok-4.6", agents: agents() }),
+    });
+    const target = { ...makeProvider([{ content: "done" }]), name: "agenc", chatStream: vi.fn() } as LLMProvider;
+    const selection = { provider: "agenc", model: "agenc" };
+    const { parent, prepare, modelInfo } = crossProviderRuntime(target, configStore, selection);
+    // After preparation, the last plan check awaits the managed destination.
+    let armed = false;
+    let arrived!: () => void;
+    const atDestination = new Promise<void>((resolve) => { arrived = resolve; });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    Object.assign(parent.providerService, {
+      resolveManagedChildDestination: async () => {
+        if (armed) {
+          armed = false;
+          arrived();
+          await released;
+        }
+        return { provider: "deepseek", model: "deepseek-v4-pro" };
+      },
+      previewChildDestination: async (_selection: unknown, concrete: { provider: string } | undefined) => ({
+        endpoint: concrete?.provider === "agenc" ? "https://id.agenc.ag/v1" : "https://api.deepseek.com/v1",
+        authProfile: "managed", billingSource: "managed",
+      }),
+    });
+    const plan = await authorizedCrossProviderPlan(parent, { ...modelInfo, slug: "agenc" }, selection);
+    Object.assign(parent.providerService, {
+      prepareChild: async () => {
+        const prepared = await prepare();
+        armed = true;
+        return prepared;
+      },
+    });
+    const { live } = await spawnLive(parent);
+    const run = collectRun(runAgent({ live, parent,
+      initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", plan }));
+    await atDestination;
+    // A daemon reload turns the feature off before the child subscribes.
+    enabled = false;
+    await expect(configStore.reloadAgentsSection()).resolves.toBe(true);
+    release();
+    const { result } = await run;
+    expect(result.outcome).not.toBe("completed");
+    expect(target.chatStream).not.toHaveBeenCalled();
+  });
+
+  it("stops and cleans up a child while its model-list preparation is stalled", async () => {
+    const configStore = new ConfigStore({ cwd: "/tmp",
+      base: { agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] } } });
+    const target = { ...makeProvider([]), name: "deepseek", chatStream: vi.fn() } as LLMProvider;
+    const { parent, modelInfo } = crossProviderRuntime(target, configStore);
+    const plan = await authorizedCrossProviderPlan(parent, modelInfo);
+    Object.assign(parent.services, { unifiedExecManager: {
+      terminateOwnedProcesses: vi.fn(() => ({ results: [] })) } });
+    let entered!: () => void;
+    const preparing = new Promise<void>((resolve) => { entered = resolve; });
+    let preparationSignal: AbortSignal | undefined;
+    Object.assign(parent.providerService, { prepareChild: async (
+      _selection: unknown, _requested: unknown, runtime: { signal?: AbortSignal },
+    ) => {
+      preparationSignal = runtime.signal;
+      entered();
+      if (runtime.signal === undefined) throw new Error("model-list preparation has no child signal");
+      await new Promise<never>((_resolve, reject) => runtime.signal!.addEventListener("abort",
+        () => reject(new Error("model-list request aborted")), { once: true }));
+      throw new Error("unreachable");
+    } });
+    const control = new AgentControl({ session: parent, registry: new AgentRegistry() });
+    control.registerSessionRoot(parent.conversationId);
+    const live = await control.spawn({ parentPath: "/root" });
+    const run = collectRun(runAgent({ live, parent,
+      initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", plan }));
+    await preparing;
+    control.stopOpenSpawnChildren(parent.conversationId, "user_stop");
+    const result = await Promise.race([run.then(({ result }) => result),
+      new Promise<"timed out">((resolve) => setTimeout(() => resolve("timed out"), 250))]);
+    expect(result).not.toBe("timed out");
+    expect(preparationSignal?.aborted).toBe(true);
+    expect(live.abortController.signal.aborted).toBe(true);
+    expect(target.chatStream).not.toHaveBeenCalled();
+    expect(liveAgentSession(live)).toBeUndefined();
+  });
+
+  it.each(["Stop", "switch off", "daemon reload", "failed daemon reload"])("cancels an active cross-provider stream on %s", async (cause) => {
+    let enabled = true;
+    const configStore = new ConfigStore({
+      cwd: "/tmp",
+      base: { agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] } },
+      loader: async () => ({ agents: { cross_provider_enabled: enabled, allowed_providers: ["deepseek"] } }),
+    });
+    let started!: () => void;
+    const active = new Promise<void>((resolve) => { started = resolve; });
+    let streamSignal: AbortSignal | undefined;
+    const target = {
+      ...makeProvider([]),
+      name: "deepseek",
+      chatStream: vi.fn(async (_messages: LLMMessage[], _chunk: StreamProgressCallback, options?: LLMChatOptions): Promise<LLMResponse> => {
+        streamSignal = options?.signal;
+        started();
+        await new Promise<void>((resolve) => {
+          if (options?.signal?.aborted) resolve();
+          else options?.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        throw new Error("stream aborted");
+      }),
+    } satisfies LLMProvider;
+    const { parent, modelInfo } = crossProviderRuntime(target, configStore);
+    const plan = await authorizedCrossProviderPlan(parent, modelInfo);
+    const terminateOwnedProcesses = vi.fn(() => ({ results: [] as [] }));
+    Object.assign(parent.services, { unifiedExecManager: { terminateOwnedProcesses } });
+    const control = new AgentControl({ session: parent, registry: new AgentRegistry() });
+    control.registerSessionRoot(parent.conversationId);
+    const live = await control.spawn({ parentPath: "/root" });
+    expect(control.openThreadSpawnChildren(parent.conversationId).map(([id]) => id)).toContain(live.agentId);
+    const run = collectRun(runAgent({ live, parent, initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", plan }));
+    await active;
+    if (cause === "Stop") control.stopOpenSpawnChildren(parent.conversationId, "user_stop");
+    else if (cause === "failed daemon reload") {
+      // The session cannot read its settings again, so it is narrowed to the
+      // daemon's view, which turned the feature off.
+      expect(configStore.limitAgentsSection({ cross_provider_enabled: false }, nextConfigReadMark())).toBe(true);
+    } else {
+      enabled = false;
+      // A daemon reload refreshes only the [agents] section of an open session.
+      if (cause === "daemon reload") await expect(configStore.reloadAgentsSection()).resolves.toBe(true);
+      else await configStore.reload();
+    }
+    const { result } = await run;
+    expect(streamSignal?.aborted).toBe(true);
+    expect(result.outcome).not.toBe("completed");
+    if (cause === "Stop") {
+      expect(live.abortController.signal.aborted).toBe(true);
+      expect(terminateOwnedProcesses).toHaveBeenCalledWith({ ownerId: live.agentId });
+    }
+  });
   it("forks and disposes a factory Grok provider for the child session", async () => {
     const provider = createProvider("grok", {
       apiKey: "xai-test",
@@ -1094,9 +1640,9 @@ describe("runAgent", () => {
     const childDispose = vi.fn(async () => {});
     const childProvider: LLMProvider = {
       ...makeProvider([{ content: "summary seed" }]),
-      forkForSession: nestedFork,
       dispose: childDispose,
     };
+    Object.setPrototypeOf(childProvider, { forkForSession: nestedFork });
     const parentBroker = new SandboxExecutionBroker({
       mode: "danger_full_access",
       cwd: "/tmp",
@@ -1545,6 +2091,58 @@ describe("runAgent", () => {
     );
   });
 
+  it("keeps a passive child message out of the current turn's model calls", async () => {
+    const provider = makeProvider([
+      {
+        content: "",
+        toolCalls: [{ id: "call-1", name: "system.echo", arguments: "{}" }],
+        finishReason: "tool_calls",
+      },
+      { content: "done", finishReason: "stop" },
+    ]);
+    const session = makeStubSession({
+      services: {
+        provider,
+        registry: {
+          tools: [{
+            name: "system.echo",
+            description: "echo",
+            inputSchema: { type: "object" },
+            execute: async () => ({ content: "ok" }),
+          }],
+          toLLMTools: () => [{
+            type: "function",
+            function: { name: "system.echo", description: "echo", parameters: { type: "object" } },
+          }],
+          dispatch: async () => ({ content: "ok" }),
+        } satisfies ToolRegistry,
+      },
+    });
+    const { result, live } = await sendQueuedMessageDuringRun(
+      session,
+      "tool_call",
+      "check the edge case",
+    );
+    expect(result.outcome).toBe("completed");
+    expect(provider.chatStream).toHaveBeenCalledTimes(2);
+    const secondMessages = (provider.chatStream as ReturnType<typeof vi.fn>).mock.calls[1]![0] as LLMMessage[];
+    expect(JSON.stringify(secondMessages)).not.toContain("check the edge case");
+    expect(live.downInbox.hasPending()).toBe(true);
+  });
+
+  it("does not read a message sent after the child's last model call", async () => {
+    const provider = makeProvider([{ content: "finished" }]);
+    const session = makeStubSession({ services: { provider } });
+    const { result, live } = await sendQueuedMessageDuringRun(
+      session,
+      "message",
+      "too late for this turn",
+    );
+    expect(result.outcome).toBe("completed");
+    expect(provider.chatStream).toHaveBeenCalledTimes(1);
+    expect(live.downInbox.hasPending()).toBe(true);
+  });
+
   it("ignores array-shaped parent services when resolving the provider", async () => {
     const provider = makeProvider([{ content: "should not run" }]);
     const session = makeStubSession();
@@ -1745,20 +2343,34 @@ describe("runAgent", () => {
       expect(nullDefault.content).toContain("child-cwd-hit.txt");
       expect(nullDefault.content).not.toContain("parent-cwd-hit.txt");
 
-      // Explicit relative paths keep their existing registry-root resolution.
-      // Caller-relative explicit paths are a separate issue from omitted cwd.
+      // The signed child cwd is the base for explicit relative searches.
       for (const relativePath of [".", "src"]) {
         const relative = await invoke({ path: relativePath });
-        if (role === "read-only") {
+        if (role === "read-only" && toolName !== "Grep") {
           expect(relative).toMatchObject({
             isError: true, content: expect.stringContaining("outside delegated read authority"),
           });
         } else {
           expect(relative.isError, relative.content).not.toBe(true);
-          expect(relative.content).toContain("parent-src-hit.txt");
+          if (toolName === "Grep") {
+            expect(relative.content).toContain("child-src-hit.txt");
+            expect(relative.content).not.toContain("parent-src-hit.txt");
+          } else {
+            expect(relative.content).toContain("parent-src-hit.txt");
+          }
         }
       }
+      if (toolName === "Grep" && role === "writer") {
+        const worktreeOnly = await invoke({ path: "src/child-src-hit.txt" });
+        expect(worktreeOnly.isError, worktreeOnly.content).not.toBe(true);
+        expect(worktreeOnly.content).toContain("child-src-hit.txt");
+      }
       if (role === "read-only") {
+        if (toolName === "Grep") {
+          expect(await invoke({ path: ".", cwd: workspace })).toMatchObject({
+            isError: true, content: expect.stringContaining("outside delegated read authority"),
+          });
+        }
         expect(await invoke({ path: workspace })).toMatchObject({
           isError: true, content: expect.stringContaining("Read-only delegation cannot read"),
         });
@@ -1988,7 +2600,16 @@ describe("runAgent", () => {
         } as never,
       },
     });
-    const { live } = await spawnLive(session);
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    control.registerSessionRoot(session.conversationId);
+    const live = await control.spawn({ parentPath: "/root" });
+    let nativeAtInterruption: ReturnType<typeof control.snapshotNativeWorkers> = [];
+    let listedAtInterruption: ReturnType<typeof control.listAgents> = [];
+    live.status.subscribe((status) => {
+      if (status.status !== "interrupted") return;
+      nativeAtInterruption = control.snapshotNativeWorkers(session.conversationId);
+      listedAtInterruption = control.listAgents();
+    });
 
     const { events, result } = await collectRun(
       runAgent({
@@ -2003,6 +2624,24 @@ describe("runAgent", () => {
     expect(provider.chatStream).not.toHaveBeenCalled();
     expect(result.outcome).toBe("interrupted");
     expect(live.status.value.status).toBe("interrupted");
+    expect(live.status.value).toMatchObject({ terminal: {
+      reason: "parent_cancelled", retryable: false, dispatch: "unknown",
+    } });
+    const terminal = live.status.value.status === "interrupted" ? live.status.value.terminal : undefined;
+    expect(terminal).toBeDefined();
+    expect(toListedAgentJson({ agentName: live.agentPath, agentStatus: live.status.value }).terminal)
+      .toEqual(terminal);
+    expect(nativeAtInterruption).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agentId: live.agentId, terminal }),
+    ]));
+    expect(listedAtInterruption.find((agent) => agent.agentName === live.agentPath)?.agentStatus)
+      .toMatchObject({ terminal });
+    if (terminal !== undefined) {
+      control.recordTerminalOutcome(live.agentId, terminal);
+      expect(control.getAgentConfigSnapshot(live.agentId)).toMatchObject({
+        terminalOutcome: { reason: "parent_cancelled" },
+      });
+    }
     expect(events.some((event) => event.kind === "run_interrupted")).toBe(true);
     expect(events.some((event) => event.kind === "run_complete")).toBe(false);
     const receipt = session.mailbox
@@ -2226,6 +2865,112 @@ describe("runAgent", () => {
       reasoningEffort: "high",
       serviceTier: "priority",
     });
+  });
+
+  /**
+   * Spawns a child of a parent on openai/gpt-5.4 at high effort through the
+   * spawn_agent tool, the real delegate and the real runAgent, and returns
+   * the options of the child's first model call.
+   */
+  async function childCallThroughSpawn(opts: {
+    readonly parentServiceTier?: string;
+    readonly limits?: Record<string, unknown>;
+    readonly args?: Record<string, unknown>;
+  }): Promise<LLMChatOptions> {
+    const childCalls: LLMChatOptions[] = [];
+    const provider = {
+      ...makeProvider([]),
+      chatStream: vi.fn(async (messages: LLMMessage[], _onChunk: StreamProgressCallback,
+        options?: LLMChatOptions): Promise<LLMResponse> => {
+        if (options !== undefined && JSON.stringify(messages).includes("limited child task")) childCalls.push(options);
+        return { content: "done", toolCalls: [], usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          model: "gpt-5.4", finishReason: "stop" };
+      }),
+    } satisfies LLMProvider;
+    const parent = makeStubSession({
+      roleWorkspace: ROLE_WORKSPACE,
+      services: { provider, configStore: new ConfigStore({ cwd: "/tmp", base: {
+        agents: { subagent_limits: opts.limits ?? {} } } }) },
+      sessionConfiguration: mkSessionConfiguration({
+        provider: { slug: "openai" } as unknown as SessionConfiguration["provider"],
+        collaborationMode: { model: "gpt-5.4", reasoningEffort: "high" },
+        ...(opts.parentServiceTier !== undefined ? { serviceTier: opts.parentServiceTier } : {}),
+      }),
+      config: { ...mkConfig(), model: "gpt-5.4" },
+      modelInfo: { ...mkModelInfo(), slug: "gpt-5.4", supportedReasoningLevels: ["low", "medium", "high", "xhigh"],
+        serviceTiers: [{ id: "priority", name: "Fast", description: "1.5x speed, increased usage" }] },
+    });
+    const registry = new AgentRegistry();
+    const control = new AgentControl({
+      session: parent as unknown as ConstructorParameters<typeof AgentControl>[0]["session"],
+      registry,
+    });
+    const spawn = createSpawnAgentTool({
+      getSession: () => parent,
+      workspace: ROLE_WORKSPACE,
+      roleCatalog: new AgentRoleCatalog(ROLE_WORKSPACE),
+      ensureAgentControl: () => ({ control, registry }),
+    } as unknown as MultiAgentV2Options);
+    try {
+      const result = await spawn.execute({ message: "limited child task", task_name: "worker", ...opts.args });
+      expect(result.isError, result.content).not.toBe(true);
+      await vi.waitFor(() => expect(childCalls).toHaveLength(1));
+      return childCalls[0]!;
+    } finally {
+      await control.shutdownAll("test cleanup");
+    }
+  }
+
+  it("sends no tier for a child at standard speed, even under a parent on priority", async () => {
+    const call = await childCallThroughSpawn({ parentServiceTier: "priority" });
+    expect(call.serviceTier).toBeUndefined();
+    expect(call.reasoningEffort).toBe("low");
+  });
+
+  it("sends priority for a child whose limit is fast, under a parent at standard speed", async () => {
+    const call = await childCallThroughSpawn({ limits: { openai: { effort: "medium", speed: "fast" } } });
+    expect(call.serviceTier).toBe("priority");
+    expect(call.reasoningEffort).toBe("medium");
+  });
+
+  it("does not let a role's tier or effort take a child above its limits", async () => {
+    registerAgentRole(ROLE_WORKSPACE, {
+      name: "priority-reviewer",
+      config: {
+        description: "Review quickly.",
+        configToml: ['reasoning_effort = "high"', 'service_tier = "priority"'].join("\n"),
+      },
+    });
+    const call = await childCallThroughSpawn({ args: { agent_type: "priority-reviewer" } });
+    expect(call.serviceTier).toBeUndefined();
+    expect(call.reasoningEffort).toBe("low");
+  });
+
+  it("does not let a role's tier override a cross-provider plan's standard speed", async () => {
+    registerAgentRole(ROLE_WORKSPACE, {
+      name: "priority-reviewer",
+      config: { description: "Review quickly.", configToml: 'service_tier = "priority"' },
+    });
+    const seen: LLMChatOptions[] = [];
+    const target = { ...makeProvider([]), name: "deepseek",
+      chatStream: vi.fn(async (_messages: LLMMessage[], _onChunk: StreamProgressCallback,
+        options?: LLMChatOptions): Promise<LLMResponse> => {
+        if (options !== undefined) seen.push(options);
+        return { content: "done", toolCalls: [], usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          model: "deepseek-v4-pro", finishReason: "stop" };
+      }),
+    } satisfies LLMProvider;
+    const configStore = new ConfigStore({ cwd: "/tmp", base: {
+      agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] },
+    } });
+    const { parent, modelInfo } = crossProviderRuntime(target, configStore);
+    const plan = await authorizedCrossProviderPlan(parent, modelInfo);
+    expect(plan.serviceTier).toBeUndefined();
+    const { live } = await spawnLive(parent, "priority-reviewer");
+    const { result } = await collectRun(runAgent({ live, parent,
+      initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go", plan }));
+    expect(result.outcome).toBe("completed");
+    expect(seen[0]?.serviceTier).toBeUndefined();
   });
 
   it("captures matching session and child tool metadata from the same registry", async () => {
@@ -2548,12 +3293,12 @@ describe("runAgent", () => {
   });
 
   it.each([
-    ["max_turns", "subagent exceeded maxTurns"],
-    ["max_budget_usd", "subagent reached the canonical session cost cap"],
-    ["no_progress", "Turn stopped because progress stalled."],
-    ["compact_failed", "compact request does not fit"],
-    ["empty_response", "subagent returned no assistant output after a retry"],
-  ] as const)("publishes an errored %s receipt and accepts the next assignment", async (stopReason, reason) => {
+    ["max_turns", "subagent exceeded maxTurns", "timeout"],
+    ["max_budget_usd", "subagent reached the canonical session cost cap", "cost_cap_reached"],
+    ["no_progress", "Turn stopped because progress stalled.", "timeout"],
+    ["compact_failed", "compact request does not fit", "context_insufficient"],
+    ["empty_response", "subagent returned no assistant output after a retry", "model_refused"],
+  ] as const)("publishes an errored %s receipt and accepts the next assignment", async (stopReason, reason, terminalReason) => {
     let turns = 0;
     const turnSpy = vi.spyOn(Session.prototype, "runTurn").mockImplementation(async function* () {
       turns += 1;
@@ -2597,6 +3342,8 @@ describe("runAgent", () => {
         reason,
       });
       expect(failedReceipt?.content).toContain('"outcome":"errored"');
+      expect(failedReceipt?.content).toContain(`"reason":"${terminalReason}"`);
+      expect(failedReceipt?.content).toContain('"retryable":false');
 
       const next = nextProgressEvent(iter, "turn_complete");
       control.assignTask(live.agentId, {
@@ -2676,17 +3423,21 @@ describe("runAgent", () => {
   it("closes an idle keep-alive worker as completed instead of failing its finished turn", async () => {
     const provider = makeProvider([{ content: "verified" }]);
     const session = makeStubSession({ services: { provider } });
-    const { live } = await spawnLive(session);
+    const { control, live } = await spawnLive(session);
     const iter = runAgent({
       live,
       parent: session,
       initialMessages: [{ role: "user", content: "verify" }],
       taskPrompt: "verify",
+      taskId: "verify-task",
       keepAlive: true,
     });
 
     const completed = await nextProgressEvent(iter, "turn_complete");
     expect(completed.finalMessage).toBe("verified");
+    expect(live.status.value).toMatchObject({ status: "idle", terminal: {
+      reason: "completed", dispatch: "sent",
+    } });
     live.abortController.abort("agent shutdown");
 
     const { result } = await collectRun(iter);
@@ -2694,7 +3445,52 @@ describe("runAgent", () => {
       outcome: "completed",
       finalMessage: "verified",
     });
-    expect(live.status.value.status).toBe("completed");
+    expect(live.status.value).toMatchObject({ status: "completed", terminal: {
+      reason: "completed", dispatch: "sent",
+    } });
+    const terminal = live.status.value.status === "completed" ? live.status.value.terminal : undefined;
+    expect(terminal).toBeDefined();
+    control.recordTerminalOutcome(live.agentId, terminal!);
+    expect(control.getAgentConfigSnapshot(live.agentId)).toMatchObject({
+      terminalOutcome: { reason: "completed" },
+    });
+  });
+
+  it("keeps a max_turns terminal when an idle worker is torn down", async () => {
+    const turnSpy = vi.spyOn(Session.prototype, "runTurn").mockImplementation(async function* () {
+      yield { type: "turn_complete", content: "unfinished",
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        stopReason: "max_turns" };
+      return { reason: "completed" };
+    });
+    const session = makeStubSession({ services: { provider: makeProvider([]) } });
+    const { control, live } = await spawnLive(session);
+    const iter = runAgent({
+      live, parent: session,
+      initialMessages: [{ role: "user", content: "finish" }],
+      taskPrompt: "finish", taskId: "bounded-task", keepAlive: true,
+    });
+    try {
+      const completed = await nextProgressEvent(iter, "turn_complete");
+      expect(completed.finalMessage).toBe("subagent exceeded maxTurns");
+      expect(live.status.value).toMatchObject({ status: "idle", terminal: {
+        reason: "timeout", retryable: false,
+      } });
+      live.abortController.abort("worker closed");
+      const { result } = await collectRun(iter);
+      expect(result.outcome).toBe("errored");
+      expect(live.status.value).toMatchObject({ status: "errored", terminal: {
+        reason: "timeout", retryable: false,
+      } });
+      const terminal = live.status.value.status === "errored" ? live.status.value.terminal : undefined;
+      expect(terminal).toBeDefined();
+      control.recordTerminalOutcome(live.agentId, terminal!);
+      expect(control.getAgentConfigSnapshot(live.agentId)).toMatchObject({
+        terminalOutcome: { reason: "timeout", retryable: false },
+      });
+    } finally {
+      turnSpy.mockRestore();
+    }
   });
 
   it("fsyncs one correlated child outcome before projecting its one parent receipt", async () => {
@@ -2753,6 +3549,352 @@ describe("runAgent", () => {
         .drain()
         .filter((message) => message.metadata?.lifecycle === "turn"),
     ).toHaveLength(1);
+  });
+
+  it("stops a funds-exhausted child once and projects one typed outcome to journal, mailbox, status, and user notice", async () => {
+    const billing = Object.assign(new Error("Insufficient Balance"), { status: 402 });
+    const provider: LLMProvider = {
+      name: "deepseek",
+      chat: vi.fn(),
+      chatStream: vi.fn().mockRejectedValue(billing),
+      healthCheck: vi.fn().mockResolvedValue(true),
+    };
+    const session = makeStubSession({ services: { provider } });
+    const { control, live } = await spawnLive(session);
+    const outcomes: unknown[] = [];
+    const notices: unknown[] = [];
+    const order: string[] = [];
+    const closeSpawnEdge = vi.fn(async () => { order.push("closed_edge"); });
+    session.eventLog.subscribe((event) => {
+      if (event.msg.type === "subagent_funds_notice") {
+        order.push("user_notice");
+        notices.push(event.msg.payload);
+      }
+    });
+    const { result } = await collectRun(runAgent({
+      live, parent: session,
+      initialMessages: [{ role: "user", content: "build the parser" }],
+      taskPrompt: "build the parser", taskId: "funds-task",
+      onTerminalFundsStop: closeSpawnEdge,
+      onCacheSafeParams: (captured) => {
+        const child = (captured as unknown as { toolUseContext: { admissionSession: Session } })
+          .toolUseContext.admissionSession;
+        child.eventLog.subscribe((event) => {
+          if (event.msg.type === "subagent_turn_outcome") {
+            order.push("durable_outcome");
+            outcomes.push(event.msg.payload);
+          }
+        });
+      },
+    }));
+    expect(result.outcome).toBe("errored");
+    expect(provider.chatStream).toHaveBeenCalledTimes(1);
+    expect(closeSpawnEdge).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(["closed_edge", "durable_outcome", "user_notice"]);
+    expect(outcomes).toEqual([expect.objectContaining({
+      terminal: expect.objectContaining({ provider: "deepseek", reason: "insufficient_funds",
+        retryable: false, unfinishedWork: "build the parser" }),
+    })]);
+    expect(notices).toEqual([expect.objectContaining({
+      agentPath: live.agentPath,
+      terminal: expect.objectContaining({ reason: "insufficient_funds" }),
+    })]);
+    expect(live.status.value).toMatchObject({
+      status: "errored", terminal: { reason: "insufficient_funds" },
+    });
+    const terminal = live.status.value;
+    if (terminal.status !== "errored" || terminal.terminal === undefined) throw new Error("missing funds terminal");
+    control.recordTerminalOutcome(live.agentId, terminal.terminal);
+    expect(control.getAgentConfigSnapshot(live.agentId)).toMatchObject({
+      terminalOutcome: { reason: "insufficient_funds" },
+    });
+    const recovered = new AgentControl({ session, registry: new AgentRegistry() });
+    await expect(recovered.resume({ parentPath: "/root", metadata: live.metadata }))
+      .rejects.toThrow(/funds-stopped child/u);
+    expect(provider.chatStream).toHaveBeenCalledTimes(1);
+    expect(session.mailbox.drain().some((message) =>
+      typeof message.content === "string" && message.content.includes('"reason":"insufficient_funds"'))).toBe(true);
+  });
+
+  /**
+   * Runs one cross-provider child whose provider stops on funds, after two
+   * session grants (the child's and an unrelated OpenRouter task's). Checks
+   * that the funds stop invalidated the other grant: a reworded retry asks
+   * again and is denied.
+   */
+  async function runCrossProviderFundsStop(options: {
+    readonly label: string;
+    readonly provider: string;
+    readonly model: string;
+    readonly stubPrepare: (session: ReturnType<typeof makeStubSession>) => void;
+  }) {
+    const cwd = mkdtempSync(join(tmpdir(), `agenc-${options.label}-`));
+    const configStore = new ConfigStore({ cwd, base: { model_provider: "grok", model: "grok-4.6",
+      // These cases approve through the prompt, so they opt into per-spawn consent.
+      agents: { cross_provider_enabled: true, allowed_providers: [options.provider, "openrouter"],
+        cross_provider_ask_each_spawn: true } } });
+    const session = makeStubSession({ conversationId: `${options.label}-root`, services: { configStore },
+      sessionConfiguration: mkSessionConfiguration({ cwd }), config: { ...mkConfig(), cwd } });
+    const parentRollout = new RolloutStore({ cwd, sessionId: session.conversationId,
+      agencVersion: "0.2.0", sessionTempRoot: tmpdir() });
+    parentRollout.open({ sessionId: session.conversationId, timestamp: new Date().toISOString(),
+      cwd, originator: `${options.label}-test`, agencVersion: "0.2.0",
+      model: session.modelInfo.slug, modelProvider: "grok" });
+    session.mountRolloutStore(parentRollout);
+    Object.assign(session, { activeTurn: { unsafePeek: () => ({ turnId: "human-turn",
+      rootHumanTurn: { turnId: "human-turn" } }) },
+      currentRootHumanTurn: () => ({ turnId: "human-turn" }) });
+    const broker = new LiveApprovalBroker({ canAnswerCrossProviderConsent: () => true });
+    const close = broker.register(session, { isActive: () => true });
+    const approveSession = async (proposed: Awaited<ReturnType<typeof createChildExecutionPlan>>) => {
+      const pending = authorizeChildExecutionPlan(session, proposed);
+      await vi.waitFor(() => expect(broker.list(session.conversationId)).toHaveLength(1));
+      const card = broker.list(session.conversationId)[0]!;
+      broker.resolve(session.conversationId, card.requestId, { kind: "approved_for_session" },
+        { approvalKind: "cross_provider_spawn" });
+      const decision = await pending;
+      if (decision.kind !== "granted") throw new Error(decision.reason);
+      return decision.plan;
+    };
+    try {
+      const { live } = await spawnLive(session);
+      const proposed = await createChildExecutionPlan({
+        session: { conversationId: session.conversationId, sessionConfiguration: session.sessionConfiguration,
+          services: session.services, config: session.config, modelInfo: session.modelInfo,
+          providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }) } } as Session,
+        selection: { provider: options.provider, model: options.model },
+        modelInfo: { ...mkModelInfo(), slug: options.model, provider: options.provider },
+        parentPath: "/root", taskId: options.label, taskName: "worker", taskText: "build parser",
+        toolFree: false, forkedHistory: false,
+      });
+      const other = { ...proposed,
+        route: { provider: "openrouter", model: "openai/gpt-5" },
+        destination: { ...proposed.destination, provider: "openrouter", model: "openai/gpt-5",
+          endpoint: "https://openrouter.ai/api/v1" },
+        task: { ...proposed.task, id: "earlier-other", text: "other work" },
+      };
+      await approveSession(other);
+      const plan = await approveSession(proposed);
+      options.stubPrepare(session);
+      const notices: unknown[] = [];
+      const closeSpawnEdge = vi.fn(async () => {});
+      session.eventLog.subscribe(event => { if (event.msg.type === "subagent_funds_notice") notices.push(event.msg.payload); });
+      const { result } = await collectRun(runAgent({ live, parent: session, plan,
+        taskPrompt: "build parser", taskId: options.label,
+        onTerminalFundsStop: closeSpawnEdge,
+        initialMessages: [{ role: "user", content: "build parser" }] }));
+      const retry = authorizeChildExecutionPlan(session, { ...other, task: { ...other.task,
+        id: "retry-other", text: "different wording" }, consentGrant: null });
+      await vi.waitFor(() => expect(broker.list(session.conversationId)).toHaveLength(1));
+      broker.resolve(session.conversationId, broker.list(session.conversationId)[0]!.requestId,
+        { kind: "denied" }, { approvalKind: "cross_provider_spawn" });
+      expect((await retry).kind).toBe("consent_denied");
+      return { result, live, notices, closeSpawnEdge };
+    } finally {
+      close(); await session.shutdown(); rmSync(cwd, { recursive: true, force: true });
+    }
+  }
+
+  it.each(["deepseek", "zai"] as const)("publishes a %s setup-time funds stop and invalidates reusable cross-provider grants", async (destinationProvider) => {
+    const model = destinationProvider === "zai" ? "glm-5.3" : "deepseek-v4-pro";
+    const billingError = destinationProvider === "zai"
+      ? await new ZaiProvider({ apiKey: "test", model: "glm-5.3",
+          fetchImpl: async () => new Response(JSON.stringify({ error: {
+            code: "1113", message: "Insufficient balance" } }), { status: 429 }) })
+          .chat([{ role: "user", content: "go" }]).then(() => undefined, (error: unknown) => error)
+      : new LLMFundsError("deepseek", 402);
+    const { result, live, notices, closeSpawnEdge } = await runCrossProviderFundsStop({
+      label: "setup-funds", provider: destinationProvider, model,
+      stubPrepare: (session) => { vi.spyOn(session.providerService, "prepareChild").mockRejectedValue(billingError); },
+    });
+    expect(result.outcome).toBe("errored");
+    expect(closeSpawnEdge).toHaveBeenCalledOnce();
+    expect(notices).toHaveLength(1);
+    expect(live.status.value).toMatchObject({ status: "errored", terminal: { reason: "insufficient_funds" } });
+  });
+
+  it("stops an OpenAI SSE billing failure and invalidates session consent grants", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(
+      `event: response.failed\ndata: ${JSON.stringify({ type: "response.failed", response: {
+        error: { code: "insufficient_quota", message: "Billing is unavailable" },
+      } })}\n\n`, { status: 200, headers: { "content-type": "text/event-stream" } }));
+    const provider = new OpenAIProvider({ apiKey: "sk-test", model: "gpt-5",
+      useResponsesApi: true, fetchImpl });
+    const { result, live, notices, closeSpawnEdge } = await runCrossProviderFundsStop({
+      label: "stream-funds", provider: "openai", model: "gpt-5",
+      stubPrepare: (session) => {
+        vi.spyOn(session.providerService, "prepareChild").mockResolvedValue({
+          binding: { provider: "openai", model: "gpt-5", instance: provider },
+        });
+      },
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(result.outcome).toBe("errored");
+    expect(closeSpawnEdge).toHaveBeenCalledOnce();
+    expect(notices).toHaveLength(1);
+    expect(live.status.value).toMatchObject({ status: "errored",
+      terminal: { reason: "insufficient_funds", retryable: false } });
+  });
+
+  /**
+   * A root conversation with a real rollout whose settings are the
+   * cross-provider consent (no per-spawn opt-in). `restart` shuts it down and
+   * restores it from its rollout under a new broker, as a daemon restart does.
+   */
+  function settingsConsentConversation(label: string) {
+    const cwd = mkdtempSync(join(tmpdir(), `agenc-${label}-`));
+    const configStore = new ConfigStore({ cwd, base: { model_provider: "grok", model: "grok-4.6",
+      agents: { cross_provider_enabled: true, allowed_providers: ["deepseek", "openrouter"] } } });
+    const sessionId = `${label}-root`;
+    const open = (resume: boolean) => {
+      const session = makeStubSession({ conversationId: sessionId, services: { configStore },
+        sessionConfiguration: mkSessionConfiguration({ cwd }), config: { ...mkConfig(), cwd } });
+      const rollout = new RolloutStore({ cwd, sessionId, agencVersion: "0.2.0",
+        sessionTempRoot: tmpdir(), ...(resume ? { resume: true } : {}) });
+      rollout.open({ sessionId, timestamp: new Date().toISOString(), cwd, originator: `${label}-test`,
+        agencVersion: "0.2.0", model: session.modelInfo.slug, modelProvider: "grok" });
+      session.mountRolloutStore(rollout);
+      // Bootstrap seeds a resumed session's event log from its rollout.
+      session.eventLog.seedCanonicalHistory(rollout.readAll().flatMap((item) =>
+        item.type === "event_msg" ? [item.payload] : []));
+      Object.assign(session, { activeTurn: { unsafePeek: () => ({ turnId: "human-turn",
+        rootHumanTurn: { turnId: "human-turn" } }) },
+        currentRootHumanTurn: () => ({ turnId: "human-turn" }) });
+      const broker = new LiveApprovalBroker({ canAnswerCrossProviderConsent: () => true });
+      return { session, broker, unregister: broker.register(session, { isActive: () => true }) };
+    };
+    let current = open(false);
+    const childPlan = (session: Session, taskId: string) => createChildExecutionPlan({
+      session: { conversationId: session.conversationId, sessionConfiguration: session.sessionConfiguration,
+        services: session.services, config: session.config, modelInfo: session.modelInfo,
+        providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }) } } as Session,
+      selection: { provider: "deepseek", model: "deepseek-v4-pro" },
+      modelInfo: { ...mkModelInfo(), slug: "deepseek-v4-pro", provider: "deepseek" },
+      parentPath: "/root", taskId, taskName: "worker", taskText: "build parser",
+      toolFree: false, forkedHistory: false,
+    });
+    return {
+      configStore, cwd, childPlan,
+      get session() { return current.session; },
+      get broker() { return current.broker; },
+      restart: async () => {
+        current.unregister();
+        await current.session.shutdown();
+        current = open(true);
+      },
+      /** Requests consent, expects a question, and denies it. */
+      denyNextQuestion: async (proposed: Awaited<ReturnType<typeof createChildExecutionPlan>>) => {
+        const { session, broker } = current;
+        const pending = authorizeChildExecutionPlan(session, proposed);
+        await vi.waitFor(() => expect(broker.list(session.conversationId)).toHaveLength(1));
+        broker.resolve(session.conversationId, broker.list(session.conversationId)[0]!.requestId,
+          { kind: "denied" }, { approvalKind: "cross_provider_spawn" });
+        return (await pending).kind;
+      },
+      dispose: async () => {
+        current.unregister();
+        await current.session.shutdown();
+        rmSync(cwd, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it("ends settings consent at a funds stop without the per-spawn opt-in, also after a daemon restart", async () => {
+    const conversation = settingsConsentConversation("settings-funds");
+    try {
+      const session = conversation.session;
+      const { live } = await spawnLive(session);
+      const proposed = await conversation.childPlan(session, "settings-funds");
+      // Settings are the consent: the spawn runs without a question.
+      const granted = await authorizeChildExecutionPlan(session, proposed);
+      if (granted.kind !== "granted") throw new Error(granted.reason);
+      expect(conversation.broker.list(session.conversationId)).toHaveLength(0);
+      vi.spyOn(session.providerService, "prepareChild").mockRejectedValue(new LLMFundsError("deepseek", 402));
+      const notices: unknown[] = [];
+      session.eventLog.subscribe((event) => {
+        if (event.msg.type === "subagent_funds_notice") notices.push(event.msg.payload);
+      });
+      const { result } = await collectRun(runAgent({ live, parent: session, plan: granted.plan,
+        taskPrompt: "build parser", taskId: "settings-funds", onTerminalFundsStop: vi.fn(async () => {}),
+        initialMessages: [{ role: "user", content: "build parser" }] }));
+      expect(result.outcome).toBe("errored");
+      expect(notices).toHaveLength(1);
+      const other = { ...proposed,
+        route: { provider: "openrouter", model: "openai/gpt-5" },
+        destination: { ...proposed.destination, provider: "openrouter", model: "openai/gpt-5",
+          endpoint: "https://openrouter.ai/api/v1" },
+        task: { ...proposed.task, id: "after-stop", text: "other work" },
+      };
+      expect(await conversation.denyNextQuestion(other)).toBe("consent_denied");
+      await conversation.restart();
+      expect(await conversation.denyNextQuestion({ ...other,
+        task: { ...other.task, id: "after-restart" } })).toBe("consent_denied");
+    } finally {
+      await conversation.dispose();
+    }
+  });
+
+  it("journals a nested child's funds stop with the root owner, in a valid journal read back after a restart", async () => {
+    const conversation = settingsConsentConversation("nested-funds");
+    const root = conversation.session;
+    const child = makeStubSession({ conversationId: "nested-funds-child",
+      services: { configStore: conversation.configStore },
+      sessionConfiguration: mkSessionConfiguration({ cwd: conversation.cwd }),
+      config: { ...mkConfig(), cwd: conversation.cwd } });
+    try {
+      registerChildApprovalSession(child, root);
+      const notice = {
+        agentPath: "/root/worker/researcher", taskId: "grandchild-task", taskText: "research the parser",
+        terminal: childTerminalOutcome({ provider: "deepseek", model: "deepseek-v4-pro",
+          reason: "insufficient_funds", dispatch: "sent", unfinishedWork: "research the parser" }),
+        message: "deepseek/deepseek-v4-pro ran out of credits. The child stopped; ask before switching providers.",
+      };
+      // run-agent emits a grandchild's notice on its parent, this child.
+      child.emit({ id: child.nextInternalSubId(), msg: { type: "subagent_funds_notice", payload: notice } },
+        { durable: true });
+      const rolloutPath = root.rolloutStore!.rolloutPath;
+      expect(root.rolloutStore!.readAll().flatMap((item) =>
+        item.type === "event_msg" && item.payload.msg.type === "subagent_funds_notice"
+          ? [item.payload.msg.payload] : [])).toEqual([notice]);
+      await conversation.restart();
+      expect(() => validateCanonicalJournalText(readFileSync(rolloutPath, "utf8"))).not.toThrow();
+      const proposed = await conversation.childPlan(conversation.session, "after-nested-stop");
+      expect(await conversation.denyNextQuestion(proposed)).toBe("consent_denied");
+    } finally {
+      await child.shutdown();
+      await conversation.dispose();
+    }
+  });
+
+  it("keeps parallel funds and completed child receipts distinct", async () => {
+    const provider: LLMProvider = {
+      name: "deepseek", chat: vi.fn(),
+      chatStream: vi.fn(async (messages: LLMMessage[]): Promise<LLMResponse> => {
+        if (JSON.stringify(messages).includes("funds-task"))
+          throw Object.assign(new Error("Insufficient Balance"), { status: 402 });
+        return { content: "finished the other task", toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "fake-model", finishReason: "stop" };
+      }),
+      healthCheck: vi.fn().mockResolvedValue(true),
+    };
+    const session = makeStubSession({ services: { provider } });
+    const { control, live: fundsChild } = await spawnLive(session);
+    const completedChild = await control.spawn({ parentPath: "/root" });
+    const [funds, completed] = await Promise.all([
+      collectRun(runAgent({ live: fundsChild, parent: session,
+        initialMessages: [{ role: "user", content: "funds-task" }], taskPrompt: "funds-task", taskId: "funds" })),
+      collectRun(runAgent({ live: completedChild, parent: session,
+        initialMessages: [{ role: "user", content: "other-task" }], taskPrompt: "other-task", taskId: "other" })),
+    ]);
+    expect([funds.result.outcome, completed.result.outcome]).toEqual(["errored", "completed"]);
+    const notifications = session.mailbox.drain().filter((item) => item.metadata?.lifecycle === "turn")
+      .map((item) => JSON.parse(String(item.content).split("\n")[1]!));
+    expect(notifications).toHaveLength(2);
+    expect(notifications.find((item) => item.receipt.task_id === "funds")?.receipt.terminal.reason)
+      .toBe("insufficient_funds");
+    expect(notifications.find((item) => item.receipt.task_id === "other")?.receipt.terminal.reason)
+      .toBe("completed");
   });
 
   it("bounds parent receipt reason metadata while retaining the durable full outcome", async () => {
@@ -3191,6 +4333,7 @@ describe("runAgent", () => {
         integrationRef: firstHead,
       });
       expect(firstReceiptContent).toContain(`"integration_ref":"${firstHead}"`);
+      expect(firstReceiptContent).toContain('"terminal":{"provider":');
 
       const secondPromise = nextProgressEvent(iter, "turn_complete");
       await vi.waitFor(() => expect(live.status.value.status).toBe("idle"));
@@ -4379,6 +5522,38 @@ describe("runAgent", () => {
     },
   );
 
+  it.each(["execute", "dispatch"] as const)("passes MCP image content items through child %s", async (boundary) => {
+    const imageUrl = "data:image/png;base64,YWJj";
+    const registry = buildFilteredRegistry({
+      tools: [{
+        name: "system.image",
+        description: "image",
+        inputSchema: { type: "object" },
+        execute: async () => ({
+          content: "saved image",
+          contentItems: [
+            { type: "input_text" as const, text: "saved image" },
+            { type: "input_image" as const, image_url: imageUrl },
+          ],
+        }),
+      }],
+      toLLMTools: () => [],
+      dispatch: async () => ({ content: "unexpected" }),
+    }, {
+      childConversationId: "image-child",
+      unadmittedDispatchOverride: TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH,
+      worktree: { path: "/tmp/subagent-wt", branch: "image", gitRoot: "/repo", created: false },
+    });
+    const result = boundary === "execute"
+      ? await registry.tools[0]!.execute({})
+      : await registry.dispatch({ name: "system.image", id: "call-image", arguments: "{}" });
+    expect(result.content).toBe("saved image");
+    expect(result.contentItems).toEqual([
+      { type: "input_text", text: "saved image" },
+      { type: "input_image", image_url: imageUrl },
+    ]);
+  });
+
   it("strips model-supplied __agenc* keys before they reach a wrapped child tool", async () => {
     // SECURITY (audit #1/#2/#4): a child model that emits
     // `__agencSessionAllowedRoots:["/"]` must NOT have it folded into the
@@ -5003,6 +6178,60 @@ describe("runAgent", () => {
     expect(result.content).toBe("{}");
   });
 
+  it("scopes a child's tool search to the tools the child can call", async () => {
+    // A subagent searched for a browser, was told the Desktop's MCP browser
+    // tools were "now available", and every call failed with "No such tool".
+    const mcpTool = {
+      name: "mcp.agenc-desktop-control.browser_tabs",
+      description: "List the app browser tabs",
+      inputSchema: { type: "object" as const },
+      execute: async () => ({ content: "{}" }),
+    };
+    const parent = buildProductionToolRegistry({
+      workspaceRoot: process.cwd(),
+      requireAdmission: false,
+      mcpToolsProvider: { getTools: () => [mcpTool] },
+    });
+    expect(parent.tools.map((tool) => tool.name)).toContain(mcpTool.name);
+    const child = buildFilteredRegistry(parent, {
+      childConversationId: "child-search",
+      unadmittedDispatchOverride:
+        TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH,
+    });
+    type SearchResult = {
+      loaded: string[];
+      missingSelections: string[];
+      results: { name: string; advertised: boolean }[];
+    };
+    const search = async (args: Record<string, unknown>): Promise<SearchResult> =>
+      JSON.parse(String((await child.dispatch({
+        id: `call-${Object.keys(args).join("-")}`,
+        name: "system.searchTools",
+        arguments: JSON.stringify(args),
+      })).content)) as SearchResult;
+
+    const selected = await search({ select: mcpTool.name });
+    expect(selected.loaded).toEqual([]);
+    expect(selected.missingSelections).toEqual([mcpTool.name]);
+    expect(parent.getDiscoveredToolNames?.().has(mcpTool.name)).toBe(false);
+    const browsed = await search({ query: "browser tabs" });
+    expect(browsed.results.map((entry) => entry.name)).not.toContain(mcpTool.name);
+
+    // Registry dispatch and the executor's direct call both report what the
+    // child was actually sent.
+    const viaDispatch = await search({ select: "exec_command" });
+    expect(viaDispatch.results[0]).toMatchObject({ name: "exec_command", advertised: true });
+    const wrapped = child.tools.find((tool) => tool.name === "system.searchTools");
+    const args: Record<string, unknown> = { select: "exec_command" };
+    Object.defineProperty(args, "__agencAdvertisedToolNames", {
+      value: ["exec_command"],
+      enumerable: false,
+      configurable: true,
+    });
+    const direct = JSON.parse(String((await wrapped!.execute(args)).content)) as SearchResult;
+    expect(direct.results[0]).toMatchObject({ name: "exec_command", advertised: true });
+  });
+
   it("mounts one child rollout and refuses the same identity after terminal", async () => {
     const provider = makeProvider([{ content: "child wrote rollout" }]);
     const cwd = mkdtempSync(join(tmpdir(), "agenc-run-agent-"));
@@ -5141,6 +6370,70 @@ describe("runAgent", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32")("releases daemon project descriptors after spawned children end", async () => {
+    const home = mkdtempSync(join(tmpdir(), "agenc-child-fd-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-child-fd-parent-"));
+    const provider = makeProvider(Array.from({ length: 20 }, () => ({ content: "done" })));
+    const configStore = new ConfigStore({ home, cwd });
+    const session = makeStubSession({
+      services: { provider, configStore },
+      sessionConfiguration: mkSessionConfiguration({
+        cwd,
+        provider: provider as unknown as SessionConfiguration["provider"],
+      }),
+      config: { ...mkConfig(), cwd },
+    });
+    const parentRollout = new RolloutStore({
+      cwd,
+      sessionId: session.conversationId,
+      agencVersion: "0.2.0",
+      agencHome: home,
+      sessionTempRoot: tmpdir(),
+    });
+    parentRollout.open({
+      sessionId: session.conversationId,
+      timestamp: new Date().toISOString(),
+      cwd,
+      originator: "child-fd-test",
+      agencVersion: "0.2.0",
+      model: session.modelInfo.slug,
+      modelProvider: provider.name,
+    });
+    session.mountRolloutStore(parentRollout);
+    const daemonThreads = new MultiProjectFileThreadStore({
+      primaryCwd: cwd,
+      agencHome: home,
+    });
+    const baseline = readdirSync("/dev/fd").length;
+    const projects: string[] = [];
+    const counts: number[] = [];
+    try {
+      for (let index = 0; index < 20; index++) {
+        const path = mkdtempSync(join(tmpdir(), "agenc-child-fd-worktree-"));
+        projects.push(path);
+        const { live } = await spawnLive(session);
+        const { result } = await collectRun(runAgent({
+          live,
+          parent: session,
+          initialMessages: [{ role: "user", content: "go" }],
+          taskPrompt: "go",
+          worktree: { path, branch: `fd-${index}`, gitRoot: cwd, created: false },
+        }));
+        expect(result.outcome).toBe("completed");
+        daemonThreads.listThreads({ pageSize: 50, archived: false, useStateDbOnly: true });
+        counts.push(readdirSync("/dev/fd").length);
+      }
+      console.info(`child fd counts: baseline=${baseline} closed=${counts.join(",")}`);
+      expect(counts.at(-1)).toBeLessThanOrEqual(baseline + 3);
+    } finally {
+      daemonThreads.close();
+      await session.shutdown();
+      for (const path of projects) rmSync(path, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it("records a failed child terminal when setup stops before Session construction", async () => {
     const previousAgencHome = process.env.AGENC_HOME;
     const home = mkdtempSync(
@@ -5154,9 +6447,13 @@ describe("runAgent", () => {
     const invalidProvider = {
       name: "missing-chat-provider",
     } as unknown as LLMProvider;
+    const planConfigStore = new ConfigStore({ cwd,
+      base: { model_provider: "grok", model: "grok-4.6",
+        agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"] } },
+    });
     const session = makeStubSession({
       conversationId: "root-preconstruction-failure",
-      services: { provider: invalidProvider },
+      services: { provider: invalidProvider, configStore: planConfigStore },
       sessionConfiguration: mkSessionConfiguration({ cwd }),
       config: { ...mkConfig(), cwd },
     });
@@ -5179,12 +6476,38 @@ describe("runAgent", () => {
 
     try {
       const { live } = await spawnLive(session);
+      Object.assign(session.services, { crossProviderConsent: {
+        ownerSessionId: session.conversationId, sessionEpoch: "test-interactive-session",
+        request: async (_requester: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+          kind: "granted" as const,
+          grant: { kind: "once" as const, ownerSessionId: session.conversationId,
+            sessionEpoch: "test-interactive-session", taskId: disclosure.taskId,
+            scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey },
+        }),
+      } });
+      const proposedPlan = await createChildExecutionPlan({
+        session: { conversationId: session.conversationId,
+          sessionConfiguration: session.sessionConfiguration,
+          services: session.services, config: session.config,
+          modelInfo: session.modelInfo, providerService: {
+          current: () => ({ provider: "grok", model: "grok-4.6" }),
+        } } as Session,
+        selection: { provider: "deepseek", model: "deepseek-v4-pro" },
+        modelInfo: { ...mkModelInfo(), slug: "deepseek-v4-pro", provider: "deepseek" },
+        parentPath: "/root", taskId: "journal-destination", taskName: "worker", taskText: "go",
+        toolFree: false, forkedHistory: false,
+      });
+      const authorized = await authorizeChildExecutionPlan(session, proposedPlan);
+      expect(authorized.kind).toBe("granted");
+      if (authorized.kind !== "granted") throw new Error("fixture consent was not granted");
+      const plan = authorized.plan;
       const { result } = await collectRun(
         runAgent({
           live,
           parent: session,
           initialMessages: [{ role: "user", content: "go" }],
           taskPrompt: "go",
+          plan,
         }),
       );
       expect(result).toMatchObject({
@@ -5192,6 +6515,7 @@ describe("runAgent", () => {
         outcome: "errored",
       });
       expect(live.rolloutPath).toBeDefined();
+      expect(readFileSync(live.rolloutPath!, "utf8")).toContain('"modelProvider":"deepseek"');
 
       const inspection = new AgenCDaemonRunInspectionService({
         stateDatabasePaths: () => [
@@ -5209,7 +6533,7 @@ describe("runAgent", () => {
         terminal: true,
         output: {
           available: true,
-          stopReason: "subagent has no provider on parent.services.provider",
+          stopReason: "deepseek provider switch has no canonical preparation request",
           finalMessage: null,
         },
       });

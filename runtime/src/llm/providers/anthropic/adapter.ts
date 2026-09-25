@@ -58,6 +58,7 @@ import {
   type ProviderFallbackDecision,
 } from "../../api/fallback-ladder.js";
 import { getRetryDelay, sleepMs } from "../../api/retry.js";
+import { isProviderFundsFailure } from "../../funds.js";
 import {
   BUILT_IN_PROVIDER_BASE_URLS,
   providerApiKeyEnvironmentLabel,
@@ -376,6 +377,7 @@ export class AnthropicProvider implements LLMProvider {
     consecutiveFailures: number,
     model: string = this.config.model,
   ): ProviderFallbackDecision | null {
+    if (isProviderFundsFailure(this.name, error)) return null;
     if (!this.config.providerFallback) return null;
     const decision = evaluateProviderFallback({
       ...this.config.providerFallback,

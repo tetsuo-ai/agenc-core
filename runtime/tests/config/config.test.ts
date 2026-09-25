@@ -3,13 +3,14 @@ import {
   existsSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
   mkdirSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 import {
   defaultConfig,
@@ -65,7 +66,18 @@ import {
   resolveProviderSettings,
 } from "../../src/config/resolve-provider.js";
 import { configuredModelForProvider } from "../../src/config/resolve-model.js";
-import { ConfigStore } from "../../src/config/store.js";
+import {
+  agentsChangeRevokes,
+  ConfigStore,
+  narrowAgentsConfig,
+  nextConfigReadMark,
+  revokeAgentsConfig,
+  type ConfigStoreOptions,
+} from "../../src/config/store.js";
+import {
+  getCanonicalSettingsAuthority,
+  runWithCanonicalSettingsAuthority,
+} from "../../src/utils/settings/canonicalAuthority.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // schema
@@ -240,12 +252,12 @@ describe("schema: normalizeRawConfig", () => {
 
   test("preserves runtime/TUI feature config on the typed path", () => {
     const out = normalizeRawConfig({
-      tui: { vimMode: true },
+      tui: { showTurnDuration: false },
       agent_max_threads: 12,
       agent_max_depth: 2,
       ideConnector: { autoInstallExtension: false },
     });
-    expect(out.tui).toEqual({ vimMode: true });
+    expect(out.tui).toEqual({ showTurnDuration: false });
     expect(out.agent_max_threads).toBe(12);
     expect(out.agent_max_depth).toBe(2);
     expect(out.ideConnector).toEqual({ autoInstallExtension: false });
@@ -253,8 +265,8 @@ describe("schema: normalizeRawConfig", () => {
   });
 
   test("validates tui config shape", () => {
-    expect(validateTuiConfig({ vimMode: true })).toEqual({ vimMode: true });
-    expect(() => validateTuiConfig({ vimMode: "yes" })).toThrow(
+    expect(validateTuiConfig({ showTurnDuration: true })).toEqual({ showTurnDuration: true });
+    expect(() => validateTuiConfig({ showTurnDuration: "yes" })).toThrow(
       InvalidTuiConfigError,
     );
   });
@@ -2251,5 +2263,531 @@ snapshot_max_count = 0
     expect(store.current().model).toBe("second");
     expect(seen).toEqual(["first", "second"]);
     expect(maxActive).toBe(1);
+  });
+
+  describe("reloadAgentsSection", () => {
+    const toml = (lines: readonly string[]): string =>
+      ["config_version = 2", ...lines, ""].join("\n");
+    const sessionStore = (options: Partial<ConfigStoreOptions> = {}) =>
+      new ConfigStore({
+        home: dir,
+        env: { AGENC_HOME: dir, HOME: dir },
+        cwd: dir,
+        managedConfigPath: join(dir, "missing-managed.toml"),
+        managedDropInDir: join(dir, "missing-managed.d"),
+        ...options,
+      });
+
+    test("takes only the agents section from disk and runs only the listeners subscribed to it", async () => {
+      const path = join(dir, "config.toml");
+      writeFileSync(path, toml([
+        'model = "grok-3"',
+        "max_turns = 5",
+        "[agents]",
+        "cross_provider_enabled = true",
+        'allowed_providers = ["deepseek"]',
+      ]));
+      const store = sessionStore();
+      await store.reload();
+      const before = store.current();
+      const everyReload = vi.fn();
+      const agentsSection = vi.fn();
+      store.subscribe(everyReload);
+      store.subscribe(agentsSection, { sections: ["agents"] });
+
+      // One save turned the feature off and also changed the model.
+      writeFileSync(path, toml([
+        'model = "grok-4"',
+        "max_turns = 9",
+        "[agents]",
+        "cross_provider_enabled = false",
+        'allowed_providers = ["deepseek", "openai"]',
+      ]));
+      await expect(store.reloadAgentsSection()).resolves.toBe(true);
+
+      const after = store.current();
+      expect(after.agents).toEqual({
+        cross_provider_enabled: false,
+        allowed_providers: ["deepseek", "openai"],
+        cross_provider_ask_each_spawn: false,
+        cross_provider_auto: false,
+      });
+      for (const key of Object.keys(before) as (keyof AgenCConfig)[]) {
+        if (key !== "agents") expect(after[key]).toBe(before[key]);
+      }
+      expect(after.model).toBe("grok-3");
+      expect(after.max_turns).toBe(5);
+      expect(everyReload).not.toHaveBeenCalled();
+      expect(agentsSection).toHaveBeenCalledTimes(1);
+      expect(agentsSection).toHaveBeenCalledWith(
+        after,
+        expect.objectContaining({ sections: ["agents"] }),
+      );
+
+      // An unchanged section publishes nothing.
+      await expect(store.reloadAgentsSection()).resolves.toBe(false);
+      expect(store.current()).toBe(after);
+      expect(agentsSection).toHaveBeenCalledTimes(1);
+
+      // A full reload still takes every change and runs every listener.
+      await store.reload();
+      expect(store.current().model).toBe("grok-4");
+      expect(everyReload).toHaveBeenCalledTimes(1);
+      expect(agentsSection).toHaveBeenCalledTimes(2);
+    });
+
+    test("keeps the agents section of the session's explicit --config file", async () => {
+      const user = join(dir, "config.toml");
+      const explicit = join(dir, "explicit.toml");
+      writeFileSync(user, toml([
+        "[agents]",
+        "cross_provider_enabled = true",
+        'allowed_providers = ["deepseek"]',
+      ]));
+      writeFileSync(explicit, toml([
+        "[agents]",
+        "cross_provider_enabled = true",
+        'allowed_providers = ["openai"]',
+        "cross_provider_ask_each_spawn = true",
+      ]));
+      const store = sessionStore({ flagConfigPath: explicit });
+      await store.reload();
+      const operatorAgents = {
+        cross_provider_enabled: true,
+        allowed_providers: ["openai"],
+        cross_provider_ask_each_spawn: true,
+        cross_provider_auto: false,
+      };
+      expect(store.current().agents).toEqual(operatorAgents);
+
+      // Desktop writes user config; the explicit file still decides.
+      writeFileSync(user, toml([
+        "[agents]",
+        "cross_provider_enabled = false",
+        "allowed_providers = []",
+      ]));
+      await expect(store.reloadAgentsSection()).resolves.toBe(false);
+      expect(store.current().agents).toEqual(operatorAgents);
+
+      // A change to that file itself reaches the session.
+      writeFileSync(explicit, toml([
+        "[agents]",
+        "cross_provider_enabled = false",
+        'allowed_providers = ["openai"]',
+        "cross_provider_ask_each_spawn = true",
+      ]));
+      await expect(store.reloadAgentsSection()).resolves.toBe(true);
+      expect(store.current().agents).toEqual({
+        ...operatorAgents,
+        cross_provider_enabled: false,
+      });
+    });
+
+    test("leaves the store as it was when its sources cannot be read", async () => {
+      const path = join(dir, "config.toml");
+      writeFileSync(path, toml([
+        "[agents]",
+        "cross_provider_enabled = true",
+        'allowed_providers = ["deepseek"]',
+      ]));
+      const store = sessionStore();
+      await store.reload();
+      const before = store.current();
+      const agentsSection = vi.fn();
+      store.subscribe(agentsSection, { sections: ["agents"] });
+
+      writeFileSync(path, toml(["[agents]", 'cross_provider_enabled = "no"']));
+      await expect(store.reloadAgentsSection()).rejects.toThrow(/cross_provider_enabled/u);
+      expect(store.current()).toBe(before);
+      expect(agentsSection).not.toHaveBeenCalled();
+
+      // The failed read released the store for the next one.
+      writeFileSync(path, toml(["[agents]", "cross_provider_enabled = false"]));
+      await expect(store.reloadAgentsSection()).resolves.toBe(true);
+      expect(store.current().agents?.cross_provider_enabled).toBe(false);
+    });
+
+    test("keeps the caller's settings authority", async () => {
+      writeFileSync(join(dir, "config.toml"), toml([
+        "[agents]",
+        "cross_provider_enabled = true",
+      ]));
+      const store = sessionStore();
+      const caller = sessionStore();
+      // The daemon refreshes many sessions' stores from one async context.
+      await runWithCanonicalSettingsAuthority(caller, async () => {
+        await expect(store.reloadAgentsSection()).resolves.toBe(true);
+        expect(getCanonicalSettingsAuthority()).toBe(caller);
+      });
+    });
+
+    test("narrowAgentsConfig keeps only what both allow and never widens", () => {
+      const current = {
+        cross_provider_enabled: true,
+        allowed_providers: ["deepseek", "openai"],
+      };
+      expect(narrowAgentsConfig(current, {
+        cross_provider_enabled: true,
+        allowed_providers: ["grok", "deepseek"],
+        cross_provider_ask_each_spawn: true,
+      })).toEqual({
+        cross_provider_enabled: true,
+        allowed_providers: ["deepseek"],
+        cross_provider_ask_each_spawn: true,
+        cross_provider_auto: false,
+      });
+      // A wider limit adds nothing, and either side turns the feature off.
+      expect(narrowAgentsConfig(current, {
+        cross_provider_enabled: true,
+        allowed_providers: ["deepseek", "openai", "grok"],
+      })).toEqual({ ...current, cross_provider_ask_each_spawn: false, cross_provider_auto: false });
+      expect(narrowAgentsConfig(
+        { ...current, cross_provider_enabled: false },
+        { cross_provider_enabled: true, allowed_providers: ["deepseek"] },
+      ).cross_provider_enabled).toBe(false);
+      expect(narrowAgentsConfig(current, {
+        cross_provider_enabled: false,
+        allowed_providers: ["deepseek"],
+      }).cross_provider_enabled).toBe(false);
+      expect(narrowAgentsConfig(
+        { ...current, cross_provider_ask_each_spawn: true },
+        { cross_provider_enabled: true, allowed_providers: ["deepseek"] },
+      ).cross_provider_ask_each_spawn).toBe(true);
+      // No limit allows nothing.
+      expect(narrowAgentsConfig(current, undefined)).toEqual({
+        cross_provider_enabled: false,
+        allowed_providers: [],
+        cross_provider_ask_each_spawn: false,
+        cross_provider_auto: false,
+      });
+    });
+
+    test("narrowing and revoking cover automatic choice and sub-agent limits", () => {
+      const own = { cross_provider_enabled: true, allowed_providers: ["deepseek"], cross_provider_auto: true,
+        subagent_limits: { deepseek: { effort: "high" as const, speed: "fast" as const }, openai: { effort: "medium" as const } } };
+      // Each limit ends no higher than both, and automatic choice needs both.
+      expect(narrowAgentsConfig(own, { ...own, cross_provider_auto: false, subagent_limits: { deepseek: { effort: "low" } } }))
+        .toEqual({ cross_provider_enabled: true, allowed_providers: ["deepseek"], cross_provider_ask_each_spawn: false,
+          cross_provider_auto: false, subagent_limits: { deepseek: { effort: "low" } } });
+      expect(narrowAgentsConfig(own, { ...own, subagent_limits: { deepseek: { effort: "max", speed: "fast" }, openai: { effort: "max" } } }))
+        .toEqual({ ...own, cross_provider_ask_each_spawn: false });
+      // A save that lowered DeepSeek's effort takes only that away.
+      const lowered = { previous: own, next: { ...own,
+        subagent_limits: { ...own.subagent_limits, deepseek: { effort: "low" as const, speed: "fast" as const } } } };
+      expect(agentsChangeRevokes(lowered)).toBe(true);
+      expect(revokeAgentsConfig(own, lowered).subagent_limits)
+        .toEqual({ deepseek: { effort: "low", speed: "fast" }, openai: { effort: "medium" } });
+      // Raising a limit takes nothing away, and grants nothing to a session that cannot read it.
+      const raised = { previous: own, next: { ...own, subagent_limits: { ...own.subagent_limits, openai: { effort: "max" as const } } } };
+      expect(agentsChangeRevokes(raised)).toBe(false);
+      expect(revokeAgentsConfig(own, raised).subagent_limits).toEqual(own.subagent_limits);
+      // Removing a limit returns that provider to the lowest.
+      const removed = { previous: own, next: { ...own, subagent_limits: { deepseek: own.subagent_limits.deepseek } } };
+      expect(revokeAgentsConfig(own, removed).subagent_limits).toEqual({ deepseek: { effort: "high", speed: "fast" } });
+      // Turning automatic choice off takes it away.
+      const manual = { previous: own, next: { ...own, cross_provider_auto: false } };
+      expect(agentsChangeRevokes(manual)).toBe(true);
+      expect(revokeAgentsConfig(own, manual).cross_provider_auto).toBe(false);
+    });
+
+    test("a save between an unset limit and \"minimal\" or \"standard\" takes nothing away", () => {
+      // Both run sub-agents at each model's lowest level and at standard speed.
+      const own = { cross_provider_enabled: true, allowed_providers: ["deepseek"],
+        subagent_limits: { openai: { speed: "fast" as const }, deepseek: { effort: "high" as const } } };
+      for (const [previous, next] of [
+        [{ openai: { speed: "standard" as const } }, {}],
+        [{ deepseek: { effort: "minimal" as const } }, {}],
+        [{}, { openai: { speed: "standard" as const }, deepseek: { effort: "minimal" as const } }],
+      ] as const) {
+        const change = { previous: { ...own, subagent_limits: previous }, next: { ...own, subagent_limits: next } };
+        expect(agentsChangeRevokes(change)).toBe(false);
+        // The session keeps its own limits, which the save did not lower.
+        expect(revokeAgentsConfig(own, change).subagent_limits).toEqual(own.subagent_limits);
+      }
+      // Lowering a raised limit to "standard" still takes it away.
+      const lowered = { previous: own, next: { ...own, subagent_limits: { ...own.subagent_limits, openai: { speed: "standard" as const } } } };
+      expect(agentsChangeRevokes(lowered)).toBe(true);
+      expect(revokeAgentsConfig(own, lowered).subagent_limits).toEqual({ deepseek: { effort: "high" } });
+    });
+
+    test("revokeAgentsConfig takes away only what the daemon's view lost and never widens", () => {
+      // The session's own --config file also allows grok.
+      const own = {
+        cross_provider_enabled: true,
+        allowed_providers: ["deepseek", "openai", "grok"],
+      };
+      const before = {
+        cross_provider_enabled: true,
+        allowed_providers: ["deepseek", "openai"],
+      };
+      const off = { cross_provider_enabled: false, allowed_providers: [] };
+      // A save that took nothing away, one that added a provider, and one
+      // that kept the feature off leave the session as it is.
+      for (const change of [
+        { previous: before, next: before },
+        { previous: before, next: { ...before, allowed_providers: ["deepseek", "openai", "agenc"] } },
+        { previous: off, next: off },
+      ]) {
+        expect(agentsChangeRevokes(change)).toBe(false);
+        expect(revokeAgentsConfig(own, change)).toEqual({
+          ...own,
+          cross_provider_ask_each_spawn: false,
+          cross_provider_auto: false,
+        });
+      }
+      // The user removed openai: only openai goes.
+      const removed = { previous: before, next: { ...before, allowed_providers: ["deepseek"] } };
+      expect(agentsChangeRevokes(removed)).toBe(true);
+      expect(revokeAgentsConfig(own, removed)).toEqual({
+        cross_provider_enabled: true,
+        allowed_providers: ["deepseek", "grok"],
+        cross_provider_ask_each_spawn: false,
+        cross_provider_auto: false,
+      });
+      // Turning the feature off, or asking at each spawn, reaches it too.
+      const disabled = { previous: before, next: { ...before, cross_provider_enabled: false } };
+      const asking = { previous: before, next: { ...before, cross_provider_ask_each_spawn: true } };
+      expect(agentsChangeRevokes(disabled) && agentsChangeRevokes(asking)).toBe(true);
+      expect(revokeAgentsConfig(own, disabled).cross_provider_enabled).toBe(false);
+      expect(revokeAgentsConfig(own, asking).cross_provider_ask_each_spawn).toBe(true);
+      // A session that is off stays off, and gains nothing the save added.
+      expect(revokeAgentsConfig(
+        { cross_provider_enabled: false, allowed_providers: ["deepseek"] },
+        { previous: off, next: { ...before, allowed_providers: ["deepseek", "grok"] } },
+      )).toEqual({
+        cross_provider_enabled: false,
+        allowed_providers: ["deepseek"],
+        cross_provider_ask_each_spawn: false,
+        cross_provider_auto: false,
+      });
+      // Without the view before the save, it keeps only what both allow.
+      expect(agentsChangeRevokes({ next: before })).toBe(true);
+      expect(revokeAgentsConfig(own, { next: before })).toEqual(narrowAgentsConfig(own, before));
+      expect(revokeAgentsConfig(own, {})).toEqual(narrowAgentsConfig(own, undefined));
+    });
+
+    test("limitAgentsSection narrows the section at once, tells only the agents listeners, and never widens it", async () => {
+      writeFileSync(join(dir, "config.toml"), toml([
+        'model = "grok-3"',
+        "[agents]",
+        "cross_provider_enabled = true",
+        'allowed_providers = ["deepseek", "openai"]',
+      ]));
+      const store = sessionStore();
+      await store.reload();
+      const before = store.current();
+      const everyReload = vi.fn();
+      const agentsSection = vi.fn();
+      store.subscribe(everyReload);
+      store.subscribe(agentsSection, { sections: ["agents"] });
+
+      // The daemon's own view dropped openai; this session cannot read its
+      // sources, so it keeps only what both allow.
+      expect(store.limitAgentsSection({
+        cross_provider_enabled: true,
+        allowed_providers: ["deepseek", "grok"],
+      }, nextConfigReadMark())).toBe(true);
+      expect(store.current().agents).toEqual({
+        cross_provider_enabled: true,
+        allowed_providers: ["deepseek"],
+        cross_provider_ask_each_spawn: false,
+        cross_provider_auto: false,
+      });
+      expect(store.current().model).toBe(before.model);
+      expect(store.authoritySnapshot().config).toBe(store.current());
+      expect(everyReload).not.toHaveBeenCalled();
+      expect(agentsSection).toHaveBeenCalledOnce();
+      expect(agentsSection).toHaveBeenCalledWith(
+        store.current(),
+        expect.objectContaining({ sections: ["agents"] }),
+      );
+
+      // A wider view gives nothing back.
+      expect(store.limitAgentsSection({
+        cross_provider_enabled: true,
+        allowed_providers: ["deepseek", "openai", "grok"],
+      }, nextConfigReadMark())).toBe(false);
+      expect(store.current().agents?.allowed_providers).toEqual(["deepseek"]);
+      expect(agentsSection).toHaveBeenCalledOnce();
+    });
+
+    test("a read from before the limit stays within it when a held reload publishes it or rolls back", async () => {
+      const path = join(dir, "config.toml");
+      const enabled = toml([
+        "[agents]",
+        "cross_provider_enabled = true",
+        'allowed_providers = ["deepseek"]',
+      ]);
+      const disabled = toml(["[agents]", "cross_provider_enabled = false"]);
+      const published = vi.fn();
+      for (const ending of ["settle", "rollback"] as const) {
+        writeFileSync(path, enabled);
+        const store = sessionStore();
+        await store.reload();
+        store.subscribe((config) => published(config.agents?.cross_provider_enabled));
+        // A coordinated reload read the sources before the user's save and
+        // still holds the store when a refresh gives up on it.
+        const held = await store.prepareReload();
+        writeFileSync(path, disabled);
+        expect(store.limitAgentsSection(
+          { cross_provider_enabled: false },
+          nextConfigReadMark(),
+        )).toBe(true);
+        held.commit();
+        held.publish();
+        expect(store.current().agents?.cross_provider_enabled).toBe(false);
+        // The older snapshot a rollback restores was read before it too.
+        if (ending === "rollback") held.rollback();
+        held.settle();
+        expect(store.current().agents?.cross_provider_enabled, ending).toBe(false);
+
+        // The next read of the sources began after the limit and replaces it.
+        await expect(store.reloadAgentsSection()).resolves.toBe(false);
+        writeFileSync(path, enabled);
+        await expect(store.reloadAgentsSection()).resolves.toBe(true);
+        expect(store.current().agents?.cross_provider_enabled).toBe(true);
+      }
+      expect(published).not.toHaveBeenCalledWith(true);
+    });
+
+    test("the agents listeners hear a limit on a committed read that rolls back unpublished", async () => {
+      const path = join(dir, "config.toml");
+      writeFileSync(path, toml([
+        "[agents]",
+        "cross_provider_enabled = true",
+        'allowed_providers = ["deepseek"]',
+      ]));
+      const store = sessionStore();
+      await store.reload();
+      const everyReload = vi.fn();
+      const agentsSection = vi.fn();
+      store.subscribe(everyReload);
+      store.subscribe(
+        (config) => agentsSection(config.agents?.cross_provider_enabled),
+        { sections: ["agents"] },
+      );
+      // A coordinated reload queues behind another holder of the lock.
+      const first = await store.prepareReload();
+      const queued = store.prepareReload();
+      // The user turns the feature off, and a refresh begins.
+      writeFileSync(path, toml(["[agents]", "cross_provider_enabled = false"]));
+      const since = nextConfigReadMark();
+      first.rollback();
+      first.settle();
+      // The coordinated reload reads the save, after the refresh began, and
+      // commits it. The refresh then gives up on this store.
+      const coordinated = await queued;
+      coordinated.commit();
+      store.limitAgentsSection({ cross_provider_enabled: false }, since);
+      // Its permission publication fails, so it never publishes the commit.
+      coordinated.rollback();
+      coordinated.settle();
+      expect(store.current().agents?.cross_provider_enabled).toBe(false);
+      expect(agentsSection).toHaveBeenCalledWith(false);
+      expect(agentsSection).not.toHaveBeenCalledWith(true);
+      expect(everyReload).not.toHaveBeenCalled();
+      // The refresh's own read, queued behind it, has nothing left to tell.
+      await expect(store.reloadAgentsSection()).resolves.toBe(false);
+      expect(agentsSection).toHaveBeenCalledOnce();
+    });
+
+    test("a rollback of a committed reload tells the agents listeners what it takes back", async () => {
+      const path = join(dir, "config.toml");
+      writeFileSync(path, toml(["[agents]", "cross_provider_enabled = false"]));
+      const store = sessionStore();
+      await store.reload();
+      const everyReload = vi.fn();
+      store.subscribe(everyReload);
+      writeFileSync(path, toml([
+        "[agents]",
+        "cross_provider_enabled = true",
+        'allowed_providers = ["deepseek"]',
+      ]));
+      const coordinated = await store.prepareReload();
+      coordinated.commit();
+      // A child starts on deepseek while the commit is live but unpublished,
+      // and subscribes after reading current().
+      expect(store.current().agents?.cross_provider_enabled).toBe(true);
+      const agentsSection = vi.fn();
+      store.subscribe(
+        (config) => agentsSection(config.agents?.cross_provider_enabled),
+        { sections: ["agents"] },
+      );
+      coordinated.rollback();
+      coordinated.settle();
+      expect(store.current().agents?.cross_provider_enabled).toBe(false);
+      expect(agentsSection).toHaveBeenCalledExactlyOnceWith(false);
+
+      // A rolled back reload that did not change the section tells no one.
+      writeFileSync(path, toml(["[agents]", "cross_provider_enabled = false"]));
+      const unrelated = await store.prepareReload();
+      unrelated.commit();
+      unrelated.rollback();
+      unrelated.settle();
+      expect(agentsSection).toHaveBeenCalledOnce();
+      expect(everyReload).not.toHaveBeenCalled();
+    });
+
+    test("a published full reload from after the limit replaces it", async () => {
+      const path = join(dir, "config.toml");
+      writeFileSync(path, toml([
+        "[agents]",
+        "cross_provider_enabled = true",
+        'allowed_providers = ["deepseek"]',
+      ]));
+      const store = sessionStore();
+      await store.reload();
+      const readBefore = store.agentsReadStartedAt();
+      store.limitAgentsSection({ cross_provider_enabled: false }, nextConfigReadMark());
+      expect(store.current().agents?.cross_provider_enabled).toBe(false);
+      await store.reload();
+      expect(store.agentsReadStartedAt()).toBeGreaterThan(readBefore);
+      expect(store.current().agents?.cross_provider_enabled).toBe(true);
+    });
+
+    test("no source reads the agents section from layers, provenance, ignored values or a prepared read", () => {
+      // A section refresh or limit changes current().agents only. The layers,
+      // provenance and ignored values still describe the last full reload.
+      // The repository loader builds those layers and strips agents from the
+      // project and local ones.
+      const sourceRoot = join(import.meta.dirname, "../../src");
+      const layerRead = /\.(?:sources|provenance|ignored)\(|\.layers\b|\bgetSettingsForSource\(|\bgetCanonicalConfigLayers\(|\bmergeConfigLayerSnapshots\(/u;
+      // A prepared reload, and a read of a store's sources, hold what they
+      // read. While a limit applies, their agents can be wider than
+      // current().agents. The store itself commits and publishes a prepared
+      // read within the limit.
+      const preparedRead = /\.prepareReload\(|\.readSourceAuthority\(|\bPreparedConfigStoreReload\b/u;
+      const agentsRead = /\b(?:cross_provider_enabled|allowed_providers|cross_provider_ask_each_spawn|cross_provider_auto|subagent_limits)\b|["'`]agents[."'`]|\.agents\b/u;
+      // Comment lines read nothing.
+      const code = (source: string): string =>
+        source.split("\n").filter((line) => !/^\s*(?:\/\/|\/\*|\*)/u.test(line)).join("\n");
+      const files = (directory: string): string[] =>
+        readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+          const path = join(directory, entry.name);
+          if (entry.isDirectory()) return files(path);
+          return /\.tsx?$/u.test(entry.name) ? [path] : [];
+        });
+      const readsAgentsFrom = (path: string, source: string): boolean =>
+        agentsRead.test(source) &&
+        (layerRead.test(source) || (path !== "config/store.ts" && preparedRead.test(source)));
+      const violations = files(sourceRoot)
+        .map((path) => relative(sourceRoot, path))
+        .filter((path) => path !== "config/repository.ts")
+        .filter((path) => readsAgentsFrom(path, code(readFileSync(join(sourceRoot, path), "utf8"))));
+      expect(violations).toEqual([]);
+      // The guard sees a read through the layers, a prepared reload or its
+      // authority, and a read of the sources, but not a comment.
+      for (const probe of [
+        'store.sources("user")[0]?.config.agents?.cross_provider_enabled',
+        "const prepared = await store.prepareReload();\nconst agents = prepared.config.agents;",
+        "(prepared: PreparedConfigStoreReload) => prepared.authority.current().agents",
+        "const authority = await store.readSourceAuthority();\nauthority.current().agents",
+      ]) {
+        expect(readsAgentsFrom("probe.ts", code(probe)), probe).toBe(true);
+      }
+      expect(readsAgentsFrom("probe.ts", code(
+        "const prepared = await store.prepareReload();\n// It reads `state.agents` later.",
+      ))).toBe(false);
+    });
   });
 });
