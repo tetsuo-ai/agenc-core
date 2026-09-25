@@ -127,7 +127,7 @@ describe("StartupSessionRestores", () => {
       abandoned: 0,
     });
     expect(gated.maxInFlight()).toBe(2);
-    expect(gated.restores.pending).toBe(0);
+    expect(gated.restores.unsettled).toBe(0);
     // Each settles when its own restore finishes, not in recovery order.
     expect(gated.settled.map((entry) => entry.target.runId)).toEqual([
       "run-b",
@@ -292,7 +292,7 @@ describe("StartupSessionRestores", () => {
       concurrency: 4,
       task: async () => "published",
     });
-    expect(restores.pending).toBe(0);
+    expect(restores.unsettled).toBe(0);
     restores.start();
     await expect(restores.settled).resolves.toMatchObject({ total: 0 });
   });

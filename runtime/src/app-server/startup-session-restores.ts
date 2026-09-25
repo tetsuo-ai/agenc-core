@@ -222,7 +222,7 @@ export class StartupSessionRestores<Target extends StartupSessionRestoreTarget>
   }
 
   /** Restores that have not settled yet, including the ones not started. */
-  get pending(): number {
+  get unsettled(): number {
     return this.#unsettled;
   }
 

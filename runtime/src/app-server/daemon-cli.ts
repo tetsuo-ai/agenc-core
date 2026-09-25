@@ -3927,7 +3927,7 @@ async function runAgenCDaemonForegroundLocked(
         ),
       ),
       ready: () => !shuttingDown,
-      restoringSessions: () => startupRestores.pending,
+      restoringSessions: () => startupRestores.unsettled,
     });
     const realtime = new AgenCRealtimeRpcService({
       resolveThread: (threadId) =>
@@ -6044,6 +6044,7 @@ export async function restoreRecoveredAgentRuntime(
   const initialMessages = recoveredInitialMessages(run.latestSnapshot);
   const replayToolCalls = recoveredReplayToolCalls(run.latestSnapshot);
   const restoreAttemptId = randomUUID();
+  let outcome: { readonly available: boolean; readonly restoreAttemptId?: string };
   try {
     const restored = await runner.restoreAgent({
       ...(options.signal !== undefined ? { signal: options.signal } : {}),
@@ -6110,19 +6111,22 @@ export async function restoreRecoveredAgentRuntime(
           : {}),
       },
     });
-    return restored
+    outcome = restored
       ? { available: true, restoreAttemptId }
       : { available: false };
   } catch {
-    return { available: false };
-  } finally {
-    try {
-      resumeSource.close();
-    } catch (error) {
-      if (options.onResumeSourceCloseError === undefined) throw error;
-      options.onResumeSourceCloseError(error);
-    }
+    outcome = { available: false };
   }
+  // The catch above takes every failure, so the source is always closed here.
+  // A caller that handles close errors keeps the restore's outcome; without a
+  // handler the close error propagates, as it did from the old finally.
+  try {
+    resumeSource.close();
+  } catch (error) {
+    if (options.onResumeSourceCloseError === undefined) throw error;
+    options.onResumeSourceCloseError(error);
+  }
+  return outcome;
 }
 
 /**
