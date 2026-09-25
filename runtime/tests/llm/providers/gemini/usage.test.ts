@@ -1,14 +1,17 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
-import { requestUsageFromGemini } from "./usage.js";
+import { runAdmittedModelCall } from "../../../budget/admitted-model-call.js";
+import { createAllowAdmissionHarness } from "../../../budget/admission-test-harness.js";
 import { BudgetTracker } from "../../../conversation/token-budget.js";
+import type { LLMProvider, LLMResponse } from "../../../llm/types.js";
 import {
   computeUsdCost,
   computeUsdCostWithResolution,
   CostSidecar,
   DEFAULT_MODEL_COSTS,
 } from "../../../session/cost.js";
-import type { LLMUsage } from "../../../llm/types.js";
+import type { Session } from "../../../session/session.js";
+import { requestUsageFromGemini } from "./usage.js";
 
 const ACCEPTANCE_USAGE = {
   promptTokenCount: 4,
@@ -16,25 +19,6 @@ const ACCEPTANCE_USAGE = {
   thoughtsTokenCount: 1,
   totalTokenCount: 7,
 } as const;
-
-function admissionUsageFromLlm(
-  usage: LLMUsage,
-  model = "gemini-2.5-pro",
-  provider = "gemini",
-) {
-  return {
-    model,
-    provider,
-    inputTokens: usage.promptTokens,
-    outputTokens: usage.completionTokens,
-    cachedInputTokens: usage.cachedInputTokens ?? 0,
-    cacheCreationInputTokens: usage.cacheCreationInputTokens ?? 0,
-    reasoningOutputTokens: usage.reasoningOutputTokens ?? 0,
-    webSearchRequests: usage.webSearchRequests ?? 0,
-    totalTokens: usage.totalTokens,
-    turns: 1,
-  };
-}
 
 describe("requestUsageFromGemini", () => {
   test("maps prompt 4, candidate 2, thinking 1 to completion 3, reasoning 1, total 7", () => {
@@ -200,15 +184,64 @@ describe("requestUsageFromGemini", () => {
 });
 
 describe("Gemini thinking usage consumers", () => {
-  test("cost, admission, turn-boundary, and session usage consume inclusive output 3", () => {
+  test("cost, admission, turn-boundary, and session usage consume inclusive output 3", async () => {
     const usage = requestUsageFromGemini(ACCEPTANCE_USAGE);
-    const admitted = admissionUsageFromLlm(usage);
+    const { admission, reconcile } = createAllowAdmissionHarness();
+    const session = {
+      conversationId: "session-1",
+      services: {
+        executionAdmission: admission,
+        admissionRequired: true,
+        agentControl: { shutdownAgentTree: vi.fn() },
+      },
+      abortTerminal: vi.fn(),
+    } as unknown as Session;
+    const provider = {
+      name: "gemini",
+      getExecutionProfile: async () => ({
+        usageReporting: "authoritative" as const,
+        supportsMaxOutputTokens: true,
+      }),
+    } as unknown as LLMProvider;
+    const response: LLMResponse = {
+      content: "ok",
+      toolCalls: [],
+      usage,
+      model: "gemini-2.5-pro",
+      finishReason: "stop",
+    };
+    await runAdmittedModelCall({
+      session,
+      provider,
+      messages: [{ role: "user", content: "hello" }],
+      options: { maxOutputTokens: 64 },
+      stepId: "model:gemini:1",
+      model: "gemini-2.5-pro",
+      providerName: "gemini",
+      invoke: async () => response,
+    });
+    expect(reconcile).toHaveBeenCalledWith(
+      "reservation-1",
+      expect.objectContaining({ outputTokens: 3 }),
+    );
+    const settled = reconcile.mock.calls[0]?.[1] as { outputTokens: number };
+    const admitted = {
+      model: "gemini-2.5-pro",
+      provider: "gemini",
+      inputTokens: usage.promptTokens,
+      outputTokens: settled.outputTokens,
+      cachedInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      reasoningOutputTokens: usage.reasoningOutputTokens ?? 0,
+      webSearchRequests: 0,
+      totalTokens: usage.totalTokens,
+      turns: 1,
+    };
     const exclusiveOutput = {
       ...admitted,
       outputTokens: 2,
     };
 
-    expect(admitted.outputTokens).toBe(3);
     expect(admitted.reasoningOutputTokens).toBe(1);
 
     const inclusiveCost = computeUsdCost(admitted, DEFAULT_MODEL_COSTS);

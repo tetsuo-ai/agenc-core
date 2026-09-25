@@ -4,12 +4,8 @@ import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type {
-  AdmissionAcquireInput,
-  ExecutionAdmissionClient,
-} from "../../src/budget/admission-client.js";
 import { AdmissionDeniedError } from "../../src/budget/admission-client.js";
-import type { AdmissionLease } from "../../src/budget/admission-types.js";
+import { createAllowAdmissionHarness } from "./admission-test-harness.js";
 import { runAdmittedToolCall } from "../../src/budget/admitted-tool-call.js";
 import { createModelFacingTools } from "../../src/bin/model-facing-tools.js";
 import { WEB_FETCH_TOOL_NAME } from "../../src/tools/WebFetchTool/prompt.js";
@@ -35,56 +31,18 @@ const zeroAdmissionEstimate = () => ({
 });
 
 function toolHarness() {
-  const leaseController = new AbortController();
-  const acquire = vi.fn(
-    async (input: AdmissionAcquireInput): Promise<AdmissionLease> => ({
-      decision: "allow",
-      reservation: {
-        reservationId: "tool-reservation",
-        step: { runId: "run-1", stepId: input.stepId },
-        reservedCostUsd: input.maxCostUsd ?? 0,
-        reservedTokens: input.maxInputTokens + input.maxOutputTokens,
-        reservedAt: "2026-07-18T00:00:00.000Z",
-      },
-      request: {
-        step: { runId: "run-1", stepId: input.stepId },
-        kind: input.kind,
-        estimate: {
-          maxInputTokens: input.maxInputTokens,
-          maxOutputTokens: input.maxOutputTokens,
-          maxCostUsd: input.maxCostUsd,
-        },
-        workspaceId: "workspace-1",
-        sessionId: "session-1",
-        parentScopeId: "turn-1",
-        autonomous: false,
-      },
-      signal: leaseController.signal,
-    }),
-  );
-  const reconcile = vi.fn(() => ({
-    applied: true as const,
-    outcome: "reconciled" as const,
-  }));
-  const holdUnknown = vi.fn();
-  const acknowledgeCompletion = vi.fn();
-  const admission = {
-    scope: {
-      runId: "run-1",
-      workspaceId: "workspace-1",
-      sessionId: "session-1",
-      autonomous: false,
-    },
-    acquire,
-    markDispatched: vi.fn(),
-    reconcile,
-    holdUnknown,
-    void: vi.fn(),
+  const {
     acknowledgeCompletion,
-    recordFallback: vi.fn(),
-    forSession: vi.fn(),
-    subscribe: vi.fn(() => () => {}),
-  } as unknown as ExecutionAdmissionClient;
+    acquire,
+    admission,
+    holdUnknown,
+    leaseController,
+    reconcile,
+  } = createAllowAdmissionHarness({
+    reservationId: "tool-reservation",
+    parentScopeId: "turn-1",
+    rejectDenialReason: false,
+  });
   const effectEvents: Event[] = [];
   const eventLog = new EventLog();
   eventLog.subscribe((event) => effectEvents.push(event));
@@ -213,52 +171,17 @@ describe("runAdmittedToolCall", () => {
   });
 
   it("forwards live lease cancellation into the running tool", async () => {
-    const leaseController = new AbortController();
-    const holdUnknown = vi.fn();
-    const acknowledgeCompletion = vi.fn();
-    const acquire = vi.fn(
-      async (input: AdmissionAcquireInput): Promise<AdmissionLease> => ({
-        decision: "allow",
-        reservation: {
-          reservationId: "tool-reservation",
-          step: { runId: "run-1", stepId: input.stepId },
-          reservedCostUsd: 0,
-          reservedTokens: 0,
-          reservedAt: "2026-07-18T00:00:00.000Z",
-        },
-        request: {
-          step: { runId: "run-1", stepId: input.stepId },
-          kind: input.kind,
-          estimate: {
-            maxInputTokens: input.maxInputTokens,
-            maxOutputTokens: input.maxOutputTokens,
-            maxCostUsd: input.maxCostUsd,
-          },
-          workspaceId: "workspace-1",
-          sessionId: "session-1",
-          parentScopeId: "turn-1",
-          autonomous: false,
-        },
-        signal: leaseController.signal,
-      }),
-    );
-    const admission = {
-      scope: {
-        runId: "run-1",
-        workspaceId: "workspace-1",
-        sessionId: "session-1",
-        autonomous: false,
-      },
-      acquire,
-      markDispatched: vi.fn(),
-      reconcile: vi.fn(),
-      holdUnknown,
-      void: vi.fn(),
+    const {
       acknowledgeCompletion,
-      recordFallback: vi.fn(),
-      forSession: vi.fn(),
-      subscribe: vi.fn(() => () => {}),
-    } as unknown as ExecutionAdmissionClient;
+      acquire,
+      admission,
+      holdUnknown,
+      leaseController,
+    } = createAllowAdmissionHarness({
+      reservationId: "tool-reservation",
+      parentScopeId: "turn-1",
+      rejectDenialReason: false,
+    });
     const effectEvents: Event[] = [];
     const eventLog = new EventLog();
     eventLog.subscribe((event) => effectEvents.push(event));
