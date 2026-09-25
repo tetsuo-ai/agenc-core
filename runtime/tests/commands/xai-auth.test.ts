@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ReactNode } from "react";
 import { PassThrough } from "node:stream";
 import { createRoot } from "../../src/tui/ink.js";
@@ -101,6 +101,38 @@ afterEach(() => {
 });
 
 describe("xAI auth command authority", () => {
+  beforeEach(() => {
+    // The flow choice depends on whether the TUI runs in an SSH session; pin
+    // "local" so these cases do not inherit the developer's own shell.
+    for (const name of ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"]) vi.stubEnv(name, "");
+  });
+
+  test("uses the device flow over SSH and never opens a browser on the remote host", async () => {
+    // The loopback callback and the launched browser both live on the remote
+    // machine, so the browser flow could only time out with input paused.
+    vi.stubEnv("SSH_CONNECTION", "203.0.113.7 50000 198.51.100.2 22");
+    const setToolJSX = vi.fn();
+    mocks.runXaiDeviceLogin.mockImplementationOnce(async (options: {
+      onUserCode: (info: { userCode: string; verificationUri: string }) => void;
+    }) => {
+      await options.onUserCode({ userCode: "TEST-CODE", verificationUri: "https://auth.x.ai/activate" });
+      const notices = JSON.stringify(setToolJSX.mock.calls);
+      expect(notices).toContain("Open this URL in a browser on your own device to sign in:");
+      expect(notices).toContain("https://auth.x.ai/activate");
+      expect(notices).toContain("TEST-CODE");
+      return {
+        identity: { sub: "xai-user" }, tokenEndpoint: "https://auth.x.ai/oauth2/token",
+        tokens: { accessToken: "oauth-token" },
+      };
+    });
+    await expect(grokLoginCommand.execute({
+      ...commandContext(Object.freeze({})), argsRaw: "", appState: { setToolJSX },
+    })).resolves.toMatchObject({ kind: "text" });
+    expect(mocks.runXaiDeviceLogin).toHaveBeenCalledOnce();
+    expect(mocks.runXaiBrowserLogin).not.toHaveBeenCalled();
+    expect(mocks.openUrlInBrowser).not.toHaveBeenCalled();
+  });
+
   test.each([
     { flow: "device", key: "\x1b" }, { flow: "device", key: "\x03" },
     { flow: "browser", key: "\x1b" }, { flow: "browser", key: "\x03" },

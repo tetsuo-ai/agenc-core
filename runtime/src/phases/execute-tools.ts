@@ -54,7 +54,6 @@ import {
 } from "../tools/orchestrator.js";
 import { resolveMaxToolUseConcurrency } from "../tools/orchestration.js";
 import type { ToolDispatchResult } from "../tool-registry.js";
-import type { Tool } from "../tools/types.js";
 import { emitError as emitErrorEvent } from "../session/event-log.js";
 import { emitWarning as emitWarningEvent } from "../session/event-log.js";
 import {
@@ -95,12 +94,6 @@ import {
   type UntrustedToolResultKind,
 } from "../tools/untrusted-tool-result-framing.js";
 import { renderHookAdditionalContextSection } from "../prompts/hook-context-framing.js";
-import {
-  EDITOR_INTERACTION_MAX_TOOL_CALLS,
-  editorInteractionToolCallDenial,
-  validateEditorProposalResultForInteraction,
-} from "../session/editor-interaction.js";
-import { EDITOR_PROPOSAL_TOOL_NAME } from "../tools/system/editor-proposal.js";
 import { createToolResultIntegrity } from "../session/tool-result-integrity.js";
 import { stampToolResultRemaining } from "../session/run-deadline.js";
 
@@ -454,15 +447,7 @@ export function buildLiveToolDispatchOptions(
   session: Session,
   signal?: AbortSignal,
 ): LiveToolDispatchOptions {
-  // Editor interactions promise a daemon-enforced read-only/proposal-only
-  // boundary. Ordinary tool hooks are operator-extensible command surfaces:
-  // even an allowed FileRead could otherwise run a side-effecting pre/post,
-  // failure, or permission-decision hook. Keep those hooks completely outside
-  // the request-scoped editor executor.
-  const editorInteractionActive = ctx.editorInteraction !== undefined;
-  const hookRegistry = editorInteractionActive
-    ? new ToolHookRegistry()
-    : resolveHookRegistry(session);
+  const hookRegistry = resolveHookRegistry(session);
   const preHooks = hookRegistry.getPre();
   const postHooks = hookRegistry.getPost();
   const failureHooks = hookRegistry.getFailure();
@@ -499,19 +484,16 @@ export function buildLiveToolDispatchOptions(
     ...(signal !== undefined ? { signal } : {}),
     approvalPolicy: orchestratorPolicy.approvalPolicy,
     sandboxMode: orchestratorPolicy.sandboxMode,
-    ...(!editorInteractionActive &&
-    orchestratorPolicy.permissionHooks !== undefined
+    ...(orchestratorPolicy.permissionHooks !== undefined
       ? { permissionHooks: orchestratorPolicy.permissionHooks }
       : {}),
-    ...(!editorInteractionActive &&
-    orchestratorPolicy.guardianApprovalReviewer !== undefined
+    ...(orchestratorPolicy.guardianApprovalReviewer !== undefined
       ? {
           guardianApprovalReviewer:
             orchestratorPolicy.guardianApprovalReviewer,
         }
       : {}),
-    ...(!editorInteractionActive &&
-    orchestratorPolicy.approvalResolver !== undefined
+    ...(orchestratorPolicy.approvalResolver !== undefined
       ? { approvalResolver: orchestratorPolicy.approvalResolver }
       : {}),
     ...(session.services.permissionAuditLogger !== undefined
@@ -575,30 +557,12 @@ export function buildLiveToolDispatchOptions(
   };
 }
 
-const editorProposalQueuedExecutors = new WeakSet<StreamingToolExecutor>();
-
-function ensureEditorToolLimitState(state: TurnState): void {
-  if (
-    typeof state.editorToolCallsAdmitted !== "number" ||
-    !Number.isFinite(state.editorToolCallsAdmitted) ||
-    state.editorToolCallsAdmitted < 0
-  ) {
-    state.editorToolCallsAdmitted = 0;
-  }
-  if (!(state.editorToolCallLimitDeniedIds instanceof Set)) {
-    state.editorToolCallLimitDeniedIds = new Set();
-  }
-  if (state.editorToolCallLimitExceeded !== true) {
-    state.editorToolCallLimitExceeded = false;
-  }
-}
-
 export function queueStreamingToolCall(
   executor: StreamingToolExecutor,
   block: ToolUseBlock,
   call: LLMToolCall,
   session: Session,
-  ctx?: TurnContext,
+  _ctx?: TurnContext,
   state?: TurnState,
 ): boolean {
   const alreadyQueued = executor
@@ -610,40 +574,6 @@ export function queueStreamingToolCall(
   // dispatching it here raced that refusal with the real result under one
   // call id, and the rollout's tool-pair validator rejected the second.
   if (state !== undefined && isRepeatedFailingCall(state, call)) return false;
-  if (
-    call.name === EDITOR_PROPOSAL_TOOL_NAME &&
-    ctx?.editorInteraction === undefined
-  ) {
-    return false;
-  }
-  if (ctx?.editorInteraction !== undefined) {
-    if (state !== undefined) ensureEditorToolLimitState(state);
-    const registryTool = session.services.registry.tools.find(
-      (tool) => tool.name === call.name,
-    );
-    if (
-      editorInteractionToolCallDenial(
-        ctx.editorInteraction,
-        registryTool,
-        call,
-        session.services.registry.getTrustedEditorInteractionTool?.(call.name),
-      ) !== null
-    ) {
-      return false;
-    }
-    if (call.name === EDITOR_PROPOSAL_TOOL_NAME) {
-      if (editorProposalQueuedExecutors.has(executor)) return false;
-      editorProposalQueuedExecutors.add(executor);
-    }
-    if (state !== undefined) {
-      if (state.editorToolCallsAdmitted >= EDITOR_INTERACTION_MAX_TOOL_CALLS) {
-        state.editorToolCallLimitDeniedIds.add(call.id);
-        state.editorToolCallLimitExceeded = true;
-        return false;
-      }
-      state.editorToolCallsAdmitted += 1;
-    }
-  }
   session.emit({
     id: session.nextInternalSubId(),
     msg: toolCallStartedEvent(call),
@@ -675,13 +605,7 @@ function recordCompletedToolCall(
     result,
     session.services.registry.getDiscoveredToolNames?.(),
   );
-  const metadata = completionMetadata(
-    ctx,
-    session,
-    toolCall,
-    result,
-    registryTool,
-  );
+  const metadata = result.metadata;
   const toolResultBytes = Buffer.byteLength(result.content, "utf8");
   session.emit(
     {
@@ -691,11 +615,6 @@ function recordCompletedToolCall(
         payload: {
           callId: toolCall.id,
           toolName: toolCall.name,
-          ...(ctx.editorInteraction !== undefined
-            ? {
-                editorInteractionId: ctx.editorInteraction.interactionId,
-              }
-            : {}),
           result: result.content,
           isError: result.isError === true,
           ...(metadata !== undefined ? { metadata } : {}),
@@ -732,44 +651,6 @@ function recordCompletedToolCall(
   return completed;
 }
 
-/**
- * `editorProposal` is a reserved runtime-to-TUI capability payload, not
- * ordinary tool metadata. Tool results are extensible and plugin-authored, so
- * remove that key unless the result came from the exact runtime-owned
- * EditorProposal tool and survived request-scoped validation.
- */
-function completionMetadata(
-  ctx: TurnContext,
-  session: Session,
-  toolCall: LLMToolCall,
-  result: ToolDispatchResult,
-  registryTool: Tool | undefined,
-): Record<string, unknown> | undefined {
-  const metadata = result.metadata;
-  if (metadata === undefined || !("editorProposal" in metadata)) {
-    return metadata;
-  }
-  const trustedEditorProposal =
-    toolCall.name === EDITOR_PROPOSAL_TOOL_NAME &&
-    ctx.editorInteraction !== undefined &&
-    result.isError !== true &&
-    registryTool !== undefined &&
-    registryTool ===
-      session.services.registry.getTrustedEditorInteractionTool?.(
-        EDITOR_PROPOSAL_TOOL_NAME,
-      ) &&
-    validateEditorProposalResultForInteraction(
-      ctx.editorInteraction,
-      result,
-    ) === result;
-  if (trustedEditorProposal) return metadata;
-
-  const sanitized = Object.fromEntries(
-    Object.entries(metadata).filter(([key]) => key !== "editorProposal"),
-  );
-  return Object.keys(sanitized).length > 0 ? sanitized : undefined;
-}
-
 function isSubagentSummaryTurn(ctx: TurnContext, session: Session): boolean {
   if (ctx.depth > 0) return true;
   if (ctx.sessionSource === "cli_subagent") return true;
@@ -790,9 +671,6 @@ function startToolUseSummaryGeneration(
   completedThisPass: ReadonlyMap<string, CompletedToolResultRecord>,
   signal?: AbortSignal,
 ): void {
-  // The summary is a second, nonessential provider request. Editor turns keep
-  // their model activity to the single authority-scoped interaction.
-  if (ctx.editorInteraction !== undefined) return;
   if (!isEnvTruthy(process.env.AGENC_EMIT_TOOL_USE_SUMMARIES)) return;
   if (state.toolUseBlocks.length === 0) return;
   if (signal?.aborted) return;
@@ -847,9 +725,6 @@ export async function executeTools(
   signal?: AbortSignal,
 ): Promise<TurnState> {
   const assistant = state.assistantMessages.at(-1);
-  if (ctx.editorInteraction !== undefined) {
-    ensureEditorToolLimitState(state);
-  }
   if (
     (!assistant || assistant.toolCalls.length === 0) &&
     state.streamingToolExecutor === null
@@ -879,33 +754,9 @@ export async function executeTools(
   const additionalContexts: string[] = [];
   const completedThisPass = new Map<string, CompletedToolResultRecord>();
   let preventContinuation = false;
-  const recordEditorToolLimitDenial = (
-    call: LLMToolCall,
-  ): CompletedToolResultRecord => {
-    session.emit({
-      id: session.nextInternalSubId(),
-      msg: toolCallStartedEvent(call),
-    });
-    const completed = recordCompletedToolCall(state, ctx, session, call, {
-      content: JSON.stringify({
-        error:
-          "editor_interaction_limit: request-scoped tool-call quota exceeded",
-      }),
-      isError: true,
-      metadata: {
-        editorInteractionDenied: true,
-        editorInteractionLimit: true,
-      },
-    });
-    completedThisPass.set(completed.callId, completed);
-    return completed;
-  };
 
   const toolBlocksById = new Map(
     state.toolUseBlocks.map((block) => [block.id, block] as const),
-  );
-  let editorProposalSeen = state.completedToolResults.some(
-    (record) => record.toolName === EDITOR_PROPOSAL_TOOL_NAME,
   );
 
   for (const call of normalizedToolCalls) {
@@ -927,62 +778,6 @@ export async function executeTools(
       const synthetic = parseToolUseBlocksForSyntheticRecovery(call);
       if (synthetic === null) continue;
       block = synthetic;
-    }
-
-    if (
-      call.name === EDITOR_PROPOSAL_TOOL_NAME &&
-      ctx.editorInteraction === undefined
-    ) {
-      session.emit({
-        id: session.nextInternalSubId(),
-        msg: toolCallStartedEvent(call),
-      });
-      const completed = recordCompletedToolCall(state, ctx, session, call, {
-        content: JSON.stringify({
-          error:
-            "EditorProposal is available only during a trusted editor interaction",
-        }),
-        isError: true,
-        metadata: { editorInteractionDenied: true },
-      });
-      completedThisPass.set(completed.callId, completed);
-      continue;
-    }
-
-    if (ctx.editorInteraction !== undefined) {
-      if (state.editorToolCallLimitDeniedIds.has(call.id)) {
-        recordEditorToolLimitDenial(call);
-        continue;
-      }
-      const registryTool = session.services.registry.tools.find(
-        (tool) => tool.name === call.name,
-      );
-      let denial = editorInteractionToolCallDenial(
-        ctx.editorInteraction,
-        registryTool,
-        call,
-        session.services.registry.getTrustedEditorInteractionTool?.(call.name),
-      );
-      if (denial === null && call.name === EDITOR_PROPOSAL_TOOL_NAME) {
-        if (editorProposalSeen) {
-          denial =
-            "EditorProposal may be called only once per editor interaction";
-        }
-        editorProposalSeen = true;
-      }
-      if (denial !== null) {
-        session.emit({
-          id: session.nextInternalSubId(),
-          msg: toolCallStartedEvent(call),
-        });
-        const completed = recordCompletedToolCall(state, ctx, session, call, {
-          content: JSON.stringify({ error: denial }),
-          isError: true,
-          metadata: { editorInteractionDenied: true },
-        });
-        completedThisPass.set(completed.callId, completed);
-        continue;
-      }
     }
 
     // Hard stop for a byte-identical call that already failed the same way
@@ -1021,14 +816,6 @@ export async function executeTools(
       ctx,
       state,
     );
-    if (
-      !queued &&
-      ctx.editorInteraction !== undefined &&
-      state.editorToolCallLimitDeniedIds.has(call.id)
-    ) {
-      recordEditorToolLimitDenial(call);
-      continue;
-    }
     // Kick off any newly-queued workers so they can run in parallel
     // with subsequent queueing iterations. The executor owns the env
     // concurrency cap and wakes queued work as running calls complete.
@@ -1044,25 +831,17 @@ export async function executeTools(
     additionalContexts: contexts,
     durationMs,
   } of executor.getRemainingResults()) {
-    const checkedResult =
-      ctx.editorInteraction !== undefined &&
-      toolCall.name === EDITOR_PROPOSAL_TOOL_NAME
-        ? validateEditorProposalResultForInteraction(
-            ctx.editorInteraction,
-            result,
-          )
-        : result;
     const completed = recordCompletedToolCall(
       state,
       ctx,
       session,
       toolCall,
-      checkedResult,
+      result,
       durationMs,
     );
     completedThisPass.set(completed.callId, completed);
     additionalContexts.push(...(contexts ?? []));
-    if (checkedResult.preventContinuation === true) {
+    if (result.preventContinuation === true) {
       preventContinuation = true;
     }
     const reviewStop = effectReviewStopExplanation(completed.metadata);

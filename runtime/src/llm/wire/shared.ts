@@ -265,8 +265,10 @@ export function coerceUsage(usage: {
   readonly cacheCreationInputTokens?: unknown;
   readonly reasoningOutputTokens?: unknown;
   readonly webSearchRequests?: unknown;
+  readonly speed?: LLMUsage["speed"];
   readonly availability?: LLMUsage["availability"];
   readonly provenance?: LLMUsage["provenance"];
+  readonly cacheWritesUnreported?: LLMUsage["cacheWritesUnreported"];
 }): LLMUsage {
   const reportedPromptTokens = toOptionalNumber(usage.promptTokens);
   const reportedCompletionTokens = toOptionalNumber(usage.completionTokens);
@@ -301,7 +303,24 @@ export function coerceUsage(usage: {
       : {}),
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
     ...(webSearchRequests !== undefined ? { webSearchRequests } : {}),
+    ...(usage.speed !== undefined ? { speed: usage.speed } : {}),
+    ...(usage.cacheWritesUnreported !== undefined
+      ? { cacheWritesUnreported: usage.cacheWritesUnreported }
+      : {}),
   };
+}
+
+/**
+ * The speed OpenAI reports it served a request at. `service_tier` in the
+ * Responses and Chat Completions response names the tier used: "priority"
+ * for Fast mode on GPT-5.6 and earlier, "fast" on GPT-6, and "default" when
+ * a Fast request was downgraded and billed at Standard rates
+ * (developers.openai.com/api/docs/guides/fast-mode, read 2026-09-23).
+ */
+export function openAiServedSpeed(serviceTier: unknown): "fast" | undefined {
+  return serviceTier === "priority" || serviceTier === "fast"
+    ? "fast"
+    : undefined;
 }
 
 type LLMFinishReason = LLMResponse["finishReason"];
@@ -719,15 +738,26 @@ export function applyToolResultImagePolicyForWire(
       .map((part) => messageTextContent([part]))
       .filter((text) => text.length > 0)
       .join("\n");
+    // A text-only model keeps the tool's text, and is told the image itself
+    // was left out: "Read image shot.png (...)" alone reads as if it had
+    // seen the picture.
+    const strippedNote =
+      policy !== "strip" || imageParts.length === 0
+        ? undefined
+        : imageParts.length === 1
+          ? "[Image not shown: this model does not accept image input, so the image in this tool result was left out.]"
+          : `[Images not shown: this model does not accept image input, so the ${imageParts.length} images in this tool result were left out.]`;
     projected.push({
       ...message,
-      content:
-        textContent ||
-        (imageParts.length > 0
+      content: textContent
+        ? strippedNote === undefined
+          ? textContent
+          : `${textContent}\n${strippedNote}`
+        : imageParts.length > 0
           ? policy === "relay_as_user"
             ? "[Tool returned image content; image follows in the next message.]"
             : "[Tool returned image content; this model does not accept image input.]"
-          : "[Tool returned no textual content.]"),
+          : "[Tool returned no textual content.]",
     });
     if (policy === "relay_as_user" && imageParts.length > 0) {
       pendingRelays.push({

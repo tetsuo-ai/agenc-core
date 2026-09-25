@@ -5,8 +5,16 @@ import {
   classifyLLMFailure,
   mapLLMError,
 } from "./errors.js";
+import { ProviderHttpError } from "./client-session.js";
 
 describe("LLM error network classification", () => {
+  test("maps a Gemini daily quota response body to a funds stop", () => {
+    const wireError = new ProviderHttpError({ providerName: "gemini", status: 429,
+      headers: new Headers(), url: "https://generativelanguage.googleapis.com/v1beta/models/test",
+      message: "Resource exhausted", body: { error: { status: "RESOURCE_EXHAUSTED",
+        details: [{ violations: [{ quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier" }] }] } } });
+    expect(mapLLMError("gemini", wireError, 0).name).toBe("LLMFundsError");
+  });
   test("mapLLMError keeps the transport error as the cause of a generic provider error", () => {
     const socket = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
     const sdkError = Object.assign(new Error("Connection error."), {

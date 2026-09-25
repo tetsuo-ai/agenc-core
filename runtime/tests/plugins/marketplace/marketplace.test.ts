@@ -461,6 +461,11 @@ describe("plugin marketplace runtime", () => {
     const repositorySeparator = cloneCalls[0]!.indexOf("--");
     expect(repositorySeparator).toBeGreaterThan(-1);
     expect(cloneCalls[0]![repositorySeparator + 1]).toBe("https://github.com/agenc-org/plugins.git");
+    // The clone must hand the signature check the repository's own bytes:
+    // Git for Windows rewrites LF to CRLF unless told otherwise.
+    expect(cloneCalls[0]).toEqual(
+      expect.arrayContaining(["core.hooksPath=/dev/null", "core.autocrlf=false", "core.eol=lf"]),
+    );
   });
 
   it("requires safe URL marketplace transport and bounded manifest downloads", async () => {

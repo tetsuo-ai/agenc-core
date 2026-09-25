@@ -64,7 +64,11 @@ import { quote as quoteShellArgs } from '../../utils/bash/shellQuote.js'
 import { getMCPUserAgent } from '../../utils/http.js'
 import { maybeNotifyIDEConnected } from '../../utils/ide.js'
 import { maybeResizeAndDownsampleImageBuffer } from '../../utils/imageResizer.js'
-import { logMCPDebug, logMCPError } from '../../utils/log.js'
+import { logMCPDebug as emitMCPDebug, logMCPError as emitMCPError } from '../../utils/log.js'
+import {
+  redactLiteralSecrets,
+  redactLiteralSecretsHoldingPrefix,
+} from '../../utils/redact-literal-secrets.js'
 import {
   getBinaryBlobSavedMessage,
   getFormatDescription,
@@ -131,6 +135,10 @@ import type {
   ServerResource,
 } from './types.js'
 
+// Wrappers, not aliases: reading the imports at call time keeps modules that
+// mock utils/log.js without these exports loadable.
+const logMCPDebug = (...args: Parameters<typeof emitMCPDebug>): ReturnType<typeof emitMCPDebug> => emitMCPDebug(...args)
+const logMCPError = (...args: Parameters<typeof emitMCPError>): ReturnType<typeof emitMCPError> => emitMCPError(...args)
 
 /**
  * Custom error class to indicate that an MCP tool call failed due to
@@ -243,6 +251,7 @@ const agencInChromeToolRendering =
 
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { jsonStringify } from '../../utils/slowOperations.js'
+import { StringDecoder } from 'node:string_decoder'
 
 /** Return the canonical needs-auth connection result for remote transports. */
 function handleRemoteAuthFailure(
@@ -609,6 +618,19 @@ export const connectToServer = memoize(
   ): Promise<MCPServerConnection> => {
     const connectStartTime = Date.now()
     let inProcessServer: InProcessMcpServer | undefined
+    const pluginSecrets = (serverRef.pluginSecretValues ?? []).filter(secret => secret.length >= 4)
+    const redactConnectionText = (value: string): string => redactLiteralSecrets(value, pluginSecrets)
+    const logMCPDebug = (serverName: string, message: string): void =>
+      emitMCPDebug(serverName, redactConnectionText(message))
+    const logMCPError = (serverName: string, error: unknown): void => {
+      if (pluginSecrets.length === 0) {
+        emitMCPError(serverName, error)
+        return
+      }
+      emitMCPError(serverName, redactConnectionText(
+        error instanceof Error ? error.stack ?? error.message : String(error),
+      ))
+    }
     try {
       let transport
       const credentialHome =
@@ -993,7 +1015,28 @@ export const connectToServer = memoize(
       // outputs emitted during the connection start (this can be useful for debugging failed connections).
       // Store handler reference for cleanup to prevent memory leaks
       let stderrHandler: ((data: Buffer) => void) | undefined
+      let stderrEndHandler: (() => void) | undefined
       let stderrOutput = ''
+      // Pipe chunks can split a multibyte character; decode incrementally so
+      // a saved secret stays intact for redaction when the text is logged.
+      const stderrDecoder = new StringDecoder('utf8')
+      let stderrFinished = false
+      const logAccumulatedStderr = (final: boolean): void => {
+        if (stderrFinished) return
+        const { redacted, pending } = redactLiteralSecretsHoldingPrefix(stderrOutput, pluginSecrets)
+        if (final) {
+          stderrFinished = true
+          // A pending UTF-8 byte can follow a secret prefix. End the decoder
+          // only after deciding whether that decoded prefix must be hidden.
+          const decoderTail = stderrDecoder.end()
+          const finalText = redacted + (pending ? '[REDACTED]' : '') + redactConnectionText(decoderTail)
+          if (finalText) logMCPError(name, `Server stderr: ${finalText}`)
+          stderrOutput = ''
+        } else {
+          stderrOutput = pending
+          if (redacted) logMCPError(name, `Server stderr: ${redacted}`)
+        }
+      }
       if (serverRef.type === 'stdio' || !serverRef.type) {
         const stdioTransport = transport as StdioClientTransport
         if (stdioTransport.stderr) {
@@ -1001,13 +1044,15 @@ export const connectToServer = memoize(
             // Cap stderr accumulation to prevent unbounded memory growth
             if (stderrOutput.length < 64 * 1024 * 1024) {
               try {
-                stderrOutput += data.toString()
+                stderrOutput += stderrDecoder.write(data)
               } catch {
                 // Ignore errors from exceeding max string length
               }
             }
           }
           stdioTransport.stderr.on('data', stderrHandler)
+          stderrEndHandler = () => logAccumulatedStderr(true)
+          stdioTransport.stderr.on('end', stderrEndHandler)
         }
       }
 
@@ -1103,10 +1148,7 @@ export const connectToServer = memoize(
 
       try {
         await Promise.race([connectPromise, timeoutPromise])
-        if (stderrOutput) {
-          logMCPError(name, `Server stderr: ${stderrOutput}`)
-          stderrOutput = '' // Release accumulated string to prevent memory growth
-        }
+        logAccumulatedStderr(false)
         const elapsed = Date.now() - connectStartTime
         logMCPDebug(
           name,
@@ -1172,9 +1214,7 @@ export const connectToServer = memoize(
         } else {
           await cleanupFailedConnection(transport)
         }
-        if (stderrOutput) {
-          logMCPError(name, `Server stderr: ${stderrOutput}`)
-        }
+        logAccumulatedStderr(true)
         throw error
       }
 
@@ -1434,7 +1474,9 @@ export const connectToServer = memoize(
         if (stderrHandler && (serverRef.type === 'stdio' || !serverRef.type)) {
           const stdioTransport = transport as StdioClientTransport
           stdioTransport.stderr?.off('data', stderrHandler)
+          if (stderrEndHandler) stdioTransport.stderr?.off('end', stderrEndHandler)
         }
+        logAccumulatedStderr(true)
 
         // For stdio transports, explicitly terminate the child process with proper signals
         // NOTE: StdioClientTransport.close() only sends an abort signal, but many MCP servers
@@ -1618,7 +1660,7 @@ export const connectToServer = memoize(
         name,
         type: 'failed' as const,
         config: serverRef,
-        error: errorMessage(error),
+        error: redactConnectionText(errorMessage(error)),
       }
     }
   },

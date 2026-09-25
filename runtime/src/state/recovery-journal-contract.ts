@@ -1428,7 +1428,7 @@ export class StrictCanonicalJournalValidator {
         facts,
       );
     }
-    this.#assertNoUnsettledEffects(
+    this.#assertNoDanglingEffectIntents(
       payload.runId as string,
       "run suspend follows an unsettled effect",
       facts,
@@ -1809,21 +1809,9 @@ export class StrictCanonicalJournalValidator {
     if (unknown?.size === 0) this.#unknownOutcomeEffectSteps.delete(runId);
   }
 
-  #assertNoUnsettledEffects(
-    runId: string,
-    message: string,
-    facts: RecoveryIntegrityFacts,
-  ): void {
-    if ((this.#unsettledEffectSteps.get(runId)?.size ?? 0) === 0) return;
-    this.#fail("terminal_binding_mismatch", message, facts);
-  }
-
   /**
-   * Reopen-time variant of {@link #assertNoUnsettledEffects} (#1750/#1751):
-   * a step whose settlement is durably recorded as `unknown_outcome` is
-   * review-pending, not evidence-dangling — the review happens inside the
-   * reopened session while the mutation gate stays armed. Only an intent
-   * with no settlement record at all still refuses the reopen.
+   * A durably unknown outcome remains review-pending inside the reopened
+   * session. Only an intent with no settlement record refuses the reopen.
    */
   #assertNoDanglingEffectIntents(
     runId: string,

@@ -10,6 +10,7 @@
 import { EventEmitter, getEventListeners } from "node:events";
 import { describe, expect, it } from "vitest";
 import {
+  MAX_BUFFERED_PROMPT_EVENTS,
   promptViaSubprocess,
   type AgencPromptEvent,
   type AgencSubprocessChild,
@@ -90,6 +91,48 @@ function createFakeSpawn(script: FakeChildScript): {
     return child;
   };
   return { spawn, capture };
+}
+
+/**
+ * A fake child whose stdout the test drives line by line, so a consumer can be
+ * made to stall between deliveries.
+ */
+function createManualChild(): {
+  readonly spawn: AgencSubprocessSpawnFn;
+  emitLine(line: unknown): void;
+  exit(code: number): void;
+} {
+  const emitter = new EventEmitter();
+  const stdout = new EventEmitter() as EventEmitter & {
+    setEncoding: (encoding: string) => void;
+  };
+  stdout.setEncoding = () => {};
+  const stderr = new EventEmitter() as EventEmitter & {
+    setEncoding: (encoding: string) => void;
+  };
+  stderr.setEncoding = () => {};
+  const child: AgencSubprocessChild = {
+    stdin: { write: () => true, on: () => {}, end: () => {} },
+    stdout: stdout as unknown as AgencSubprocessChild["stdout"],
+    stderr: stderr as unknown as AgencSubprocessChild["stderr"],
+    once: (event: string, listener: (...args: never[]) => void) => {
+      emitter.once(event, listener as (...args: unknown[]) => void);
+      return child;
+    },
+    kill: () => {
+      emitter.emit("exit", null, "SIGTERM");
+      return true;
+    },
+  };
+  return {
+    spawn: () => child,
+    emitLine: (line) => {
+      stdout.emit("data", `${JSON.stringify(line)}\n`);
+    },
+    exit: (code) => {
+      emitter.emit("exit", code, null);
+    },
+  };
 }
 
 const sessionId = "session_sub_1";
@@ -364,37 +407,126 @@ describe("agenc-sdk subprocess transport", () => {
     expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
   });
 
-  it("caps the internal event buffer at 1000 when events are not consumed", async () => {
-    const lines: unknown[] = [];
-    for (let i = 0; i < 1500; i += 1) {
-      lines.push(
-        eventLine({
-          jsonrpc: "2.0",
-          method: "event.message_chunk",
-          params: { sessionId, eventId: `e${i}`, delta: `d${i} ` },
-        }),
-      );
-    }
-    lines.push({
+  describe("bounded event buffer (#2090)", () => {
+    const chunk = (sequence: number): unknown =>
+      eventLine({
+        jsonrpc: "2.0",
+        method: "event.message_chunk",
+        params: { sessionId, eventId: `e${sequence}`, sequence, delta: `d${sequence} ` },
+      });
+    const resultLine = {
       type: "result",
       sessionId,
       agentId,
       exitCode: 0,
       finalMessage: "done",
       deniedPermissionRequestIds: [],
+    };
+    const gaps = (events: readonly AgencPromptEvent[]) =>
+      events.filter((event) => event.type === "gap");
+
+    it("delivers every event in order with no marker at exactly the cap", async () => {
+      const lines: unknown[] = [];
+      for (let i = 1; i <= MAX_BUFFERED_PROMPT_EVENTS; i += 1) lines.push(chunk(i));
+      lines.push(resultLine);
+      const { spawn } = createFakeSpawn({ stdoutLines: lines, exitCode: 0 });
+
+      const run = promptViaSubprocess("go", { spawn });
+      await run.result();
+      const drained: AgencPromptEvent[] = [];
+      for await (const event of run) drained.push(event);
+
+      expect(gaps(drained)).toEqual([]);
+      expect(drained.map((event) => event.eventId)).toEqual(
+        Array.from({ length: MAX_BUFFERED_PROMPT_EVENTS }, (_, i) => `e${i + 1}`),
+      );
     });
-    const { spawn } = createFakeSpawn({ stdoutLines: lines, exitCode: 0 });
 
-    // Await result() first so all 1500 events accumulate before any consumption.
-    const run = promptViaSubprocess("go", { spawn });
-    await run.result();
+    it("surfaces a non-evictable local-overflow gap to a result-first consumer", async () => {
+      const total = 1_500;
+      const lines: unknown[] = [];
+      for (let i = 1; i <= total; i += 1) lines.push(chunk(i));
+      lines.push(resultLine);
+      const { spawn } = createFakeSpawn({ stdoutLines: lines, exitCode: 0 });
 
-    const drained: AgencPromptEvent[] = [];
-    for await (const event of run) {
-      drained.push(event);
-    }
-    // Uncapped this would be 1500; the cap holds only the most recent 1000.
-    expect(drained.length).toBeGreaterThan(0);
-    expect(drained.length).toBeLessThanOrEqual(1000);
+      // Await result() first so all 1,500 events accumulate before any consumption.
+      const run = promptViaSubprocess("go", { spawn });
+      await expect(run.result()).resolves.toMatchObject({ exitCode: 0 });
+
+      const drained: AgencPromptEvent[] = [];
+      for await (const event of run) drained.push(event);
+
+      // A 1,500-event run must never look like a complete 1,000-event stream.
+      expect(drained).toHaveLength(MAX_BUFFERED_PROMPT_EVENTS + 1);
+      expect(drained[0]).toEqual({
+        type: "gap",
+        kind: "event_gap",
+        reason: "local_overflow",
+        sessionId,
+        firstAvailableSequence: total - MAX_BUFFERED_PROMPT_EVENTS + 1,
+        retiredCount: total - MAX_BUFFERED_PROMPT_EVENTS,
+      });
+      expect(drained[1]).toMatchObject({ type: "text", eventId: "e501" });
+      expect(drained.at(-1)).toMatchObject({ type: "text", eventId: `e${total}` });
+      expect(gaps(drained)).toHaveLength(1);
+    });
+
+    it("keeps memory bounded and the loss exact when the consumer never drains during the run", async () => {
+      const total = 20_000;
+      const lines: unknown[] = [];
+      for (let i = 1; i <= total; i += 1) lines.push(chunk(i));
+      lines.push(resultLine);
+      const { spawn } = createFakeSpawn({ stdoutLines: lines, exitCode: 0 });
+
+      const run = promptViaSubprocess("go", { spawn });
+      await run.result();
+
+      // Draining after the fact proves the run retained at most the cap plus
+      // one marker, and that the marker survived 19,000 further evictions.
+      const drained: AgencPromptEvent[] = [];
+      for await (const event of run) drained.push(event);
+      expect(drained).toHaveLength(MAX_BUFFERED_PROMPT_EVENTS + 1);
+      expect(drained[0]).toMatchObject({
+        type: "gap",
+        reason: "local_overflow",
+        retiredCount: total - MAX_BUFFERED_PROMPT_EVENTS,
+      });
+    });
+
+    it("places the gap where a slow consumer actually lost events", async () => {
+      const child = createManualChild();
+      const run = promptViaSubprocess("go", { spawn: child.spawn });
+      const iterator = run[Symbol.asyncIterator]();
+
+      for (let i = 1; i <= 10; i += 1) child.emitLine(chunk(i));
+      const consumedFirst: AgencPromptEvent[] = [];
+      for (let i = 0; i < 3; i += 1) consumedFirst.push((await iterator.next()).value as AgencPromptEvent);
+      expect(consumedFirst.map((event) => event.eventId)).toEqual(["e1", "e2", "e3"]);
+
+      // 7 buffered; 1,200 more overflow the cap by 207 while the consumer stalls.
+      for (let i = 11; i <= 1_210; i += 1) child.emitLine(chunk(i));
+      child.emitLine(resultLine);
+      child.exit(0);
+      await run.result();
+
+      const rest: AgencPromptEvent[] = [];
+      for (;;) {
+        const next = await iterator.next();
+        if (next.done) break;
+        rest.push(next.value);
+      }
+      expect(rest[0]).toEqual({
+        type: "gap",
+        kind: "event_gap",
+        reason: "local_overflow",
+        sessionId,
+        afterSequence: 3,
+        firstAvailableSequence: 211,
+        retiredCount: 207,
+      });
+      expect(rest[1]).toMatchObject({ eventId: "e211" });
+      expect(rest.at(-1)).toMatchObject({ eventId: "e1210" });
+      expect(rest).toHaveLength(MAX_BUFFERED_PROMPT_EVENTS + 1);
+    });
   });
 });

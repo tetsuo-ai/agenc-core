@@ -83,12 +83,63 @@ export type SqliteStatement<
   Row = unknown,
 > = BetterSqlite3.Statement<Params, Row>;
 
+/** Distinct SQL texts kept compiled per connection (least recently used first out). */
+export const PREPARED_STATEMENT_CACHE_LIMIT = 512;
+
+/**
+ * Compiled statements keyed by their exact SQL text, for one connection.
+ *
+ * Repositories prepare their SQL on every call. The admission journal, the
+ * rollout projection, and the effect ledger run about 280 of those per agent
+ * step with only about 70 distinct texts, so compiling each one again was
+ * pure overhead on the event loop. A cached statement is handed out again
+ * only when it is idle: a statement still being iterated is `busy`, and the
+ * caller then gets a fresh one, exactly as before.
+ *
+ * Statements are shared between callers, so a caller must not change a
+ * statement's modes (`pluck`, `raw`, `expand`, `safeIntegers`) or bind
+ * parameters to it permanently (`bind`). No caller does today.
+ */
+class PreparedStatementCache {
+  readonly #database: SqliteDatabase;
+  readonly #statements = new Map<string, SqliteStatement>();
+
+  constructor(database: SqliteDatabase) {
+    this.#database = database;
+  }
+
+  prepare<Params extends unknown[], Row>(
+    sql: string,
+  ): SqliteStatement<Params, Row> {
+    const cached = this.#statements.get(sql);
+    if (cached !== undefined) {
+      if (cached.busy) return this.#database.prepare<Params, Row>(sql);
+      this.#statements.delete(sql);
+      this.#statements.set(sql, cached);
+      return cached as unknown as SqliteStatement<Params, Row>;
+    }
+    const statement = this.#database.prepare<Params, Row>(sql);
+    this.#statements.set(sql, statement as unknown as SqliteStatement);
+    if (this.#statements.size > PREPARED_STATEMENT_CACHE_LIMIT) {
+      const leastRecent = this.#statements.keys().next().value;
+      if (leastRecent !== undefined) this.#statements.delete(leastRecent);
+    }
+    return statement;
+  }
+
+  clear(): void {
+    this.#statements.clear();
+  }
+}
+
 export class StateSqliteDriver {
   readonly projectDir: string;
   readonly stateDbPath: string;
   readonly logsDbPath: string;
   readonly state: SqliteDatabase;
   readonly logs: SqliteDatabase;
+  readonly #stateStatements: PreparedStatementCache;
+  readonly #logsStatements: PreparedStatementCache;
 
   constructor(paths: StateDatabasePaths) {
     this.projectDir = paths.projectDir;
@@ -113,18 +164,22 @@ export class StateSqliteDriver {
     }
     this.state = state;
     this.logs = logs;
+    this.#stateStatements = new PreparedStatementCache(state);
+    this.#logsStatements = new PreparedStatementCache(logs);
   }
 
+  /** Compiled statement for `sql`, reused across calls; see {@link PreparedStatementCache}. */
   prepareState<Params extends unknown[] = unknown[], Row = unknown>(
     sql: string,
   ): SqliteStatement<Params, Row> {
-    return this.state.prepare<Params, Row>(sql);
+    return this.#stateStatements.prepare<Params, Row>(sql);
   }
 
+  /** Compiled statement for `sql`, reused across calls; see {@link PreparedStatementCache}. */
   prepareLogs<Params extends unknown[] = unknown[], Row = unknown>(
     sql: string,
   ): SqliteStatement<Params, Row> {
-    return this.logs.prepare<Params, Row>(sql);
+    return this.#logsStatements.prepare<Params, Row>(sql);
   }
 
   transaction<T>(fn: () => T): T {
@@ -152,6 +207,8 @@ export class StateSqliteDriver {
   }
 
   close(): void {
+    this.#stateStatements.clear();
+    this.#logsStatements.clear();
     if (this.state.open) this.state.close();
     if (this.logs.open) this.logs.close();
   }

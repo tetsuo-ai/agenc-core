@@ -185,6 +185,7 @@ describe("LMStudioProvider", () => {
       totalTokens: 7,
       availability: "reported",
       provenance: "provider",
+      cacheWritesUnreported: true,
     });
     expect(chunks).toEqual([
       { content: "hel", done: false },

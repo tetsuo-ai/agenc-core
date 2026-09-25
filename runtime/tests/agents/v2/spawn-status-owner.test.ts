@@ -9,7 +9,7 @@ import type { MultiAgentV2Options } from "../../../src/agents/v2/common.js";
 import type { AgentStatus } from "../../../src/agents/status.js";
 import { AgentRoleCatalog } from "../../../src/agents/role-catalog.js";
 import { BehaviorSubject } from "../../../src/utils/behavior-subject.js";
-import { backgroundTaskLifecycle, registerAgentThreadTask } from "../../../src/tasks/index.js";
+import { backgroundTaskLifecycleForSession, registerAgentThreadTask } from "../../../src/tasks/index.js";
 import { mkSession } from "../../fixtures.js";
 
 const mockDelegate = vi.mocked(delegate);
@@ -17,6 +17,8 @@ afterEach(() => vi.restoreAllMocks());
 
 function fixture(preRegistered: boolean) {
   const { session, events } = mkSession();
+  // Spawned agents belong to the lifecycle of the session that spawned them.
+  const backgroundTaskLifecycle = backgroundTaskLifecycleForSession(session);
   const id = randomUUID();
   const status = new BehaviorSubject<AgentStatus>({ status: "running", turnId: "initial", startedAtMs: 1 });
   const thread = {
@@ -53,7 +55,7 @@ function fixture(preRegistered: boolean) {
     status.next({ status: "running", turnId: `turn-${n}`, startedAtMs: n });
   };
   const statuses = () => events.filter(event => event.msg.type === "collab_agent_status");
-  return { session, events, id, status, thread, invoke, progress, statuses, ownerDispose, taskDispose };
+  return { session, events, id, status, thread, invoke, progress, statuses, ownerDispose, taskDispose, backgroundTaskLifecycle };
 }
 
 describe("spawn task status ownership", () => {
@@ -76,7 +78,7 @@ describe("spawn task status ownership", () => {
       expect(() => f.progress(2)).not.toThrow();
       expect(() => f.status.next({ status: "shutdown" })).not.toThrow();
       expect(f.statuses()).toHaveLength(closedCount);
-      expect(backgroundTaskLifecycle.get(f.id)?.status).toBe("killed");
+      expect(f.backgroundTaskLifecycle.get(f.id)?.status).toBe("killed");
       expect(() => f.session.emit({ id: "late", msg: { type: "warning", payload: { cause: "test", message: "late" } } })).toThrow("canonical run journal is sealed");
     } finally {
       f.status.next({ status: "shutdown" });
@@ -152,7 +154,7 @@ describe("spawn task status ownership", () => {
         if (event.msg.type === "collab_agent_status" && event.msg.payload.status === "failed") throw failure;
         return emit(event);
       });
-      expect(() => backgroundTaskLifecycle.fail(f.id, "worker failed")).toThrow(failure);
+      expect(() => f.backgroundTaskLifecycle.fail(f.id, "worker failed")).toThrow(failure);
       expect(f.ownerDispose).toHaveBeenCalledOnce();
       expect(f.taskDispose).toHaveBeenCalled();
       expect(() => f.progress(4)).not.toThrow();

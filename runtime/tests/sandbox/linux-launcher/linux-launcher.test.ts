@@ -50,6 +50,20 @@ import {
 const TEST_SESSION_TEMP_ROOT = "/tmp/agenc-test-session-root";
 
 describe("Linux sandbox launcher", () => {
+  it("parses browser CDP stdio transport before the command separator", () => {
+    const parsed = parseLinuxSandboxLauncherArgs([
+      "--browser-cdp-over-stdio",
+      "--sandbox-policy-cwd", "/workspace",
+      "--command-cwd", "/workspace",
+      "--permission-profile", JSON.stringify(workspaceWriteProfile("/workspace", "enabled")),
+      "--session-temp-root", os.tmpdir(),
+      "--", "/bin/echo", "--browser-cdp-over-stdio",
+    ]);
+
+    expect(parsed.browserCdpOverStdio).toBe(true);
+    expect(parsed.command).toEqual(["/bin/echo", "--browser-cdp-over-stdio"]);
+  });
+
   it("parses the manager handoff arguments and preserves command argv", () => {
     const profile = workspaceWriteProfile("/workspace", "restricted");
     const parsed = parseLinuxSandboxLauncherArgs([
@@ -1370,6 +1384,26 @@ describe("Linux sandbox launcher", () => {
 
     expect(packageJson.bin?.["agenc-linux-sandbox"]).toBe("bin/agenc-linux-sandbox");
     expect(fs.statSync(binPath).mode & 0o111).not.toBe(0);
+  });
+
+  it.each([
+    { network: "disabled" as const, proxy: false },
+    { network: "restricted" as const, proxy: false },
+    { network: "enabled" as const, proxy: true },
+  ])("refuses browser CDP stdio with $network network and proxy=$proxy", async ({ network, proxy }) => {
+    const errors: string[] = [];
+    const code = await runLinuxSandboxMain([
+      "--browser-cdp-over-stdio",
+      "--sandbox-policy-cwd", process.cwd(),
+      "--command-cwd", process.cwd(),
+      "--session-temp-root", os.tmpdir(),
+      "--permission-profile", JSON.stringify(workspaceWriteProfile(process.cwd(), network)),
+      ...(proxy ? ["--allow-network-for-proxy", "--proxy-route-spec", "{}"] : []),
+      "--", "/bin/true",
+    ], { onStderr: line => errors.push(line) });
+
+    expect(code).not.toBe(0);
+    expect(errors.join("\n")).toContain("enabled-network profile");
   });
 
   it("supervises a direct child process exit", async () => {

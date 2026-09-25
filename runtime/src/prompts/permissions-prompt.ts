@@ -323,7 +323,26 @@ export function getPermissionsSection(
   const approvalText = binding.approvalText.replace(/\n+$/, "");
 
   const heading = `# Permission Mode: ${binding.label}`;
+  // A routine that keeps acceptEdits or bypassPermissions runs on a schedule
+  // with nobody attached. It keeps its mode's text, but the bypass autonomy
+  // note (which offers AskUserQuestion) gives way to what is true here.
+  const routineNote = unattendedPolicyForContext(ctx).noApprover === true
+    ? ROUTINE_NO_APPROVER_NOTE
+    : undefined;
   return [heading, sandboxText, approvalText]
-    .concat(binding.autonomyNote !== undefined ? [binding.autonomyNote] : [])
+    .concat(
+      routineNote !== undefined
+        ? [routineNote]
+        : binding.autonomyNote !== undefined
+          ? [binding.autonomyNote]
+          : [],
+    )
     .join("\n\n");
 }
+
+/**
+ * Appended for a routine run that keeps acceptEdits or bypassPermissions
+ * (unattended policy `noApprover`). Nothing can be approved while it runs.
+ */
+export const ROUTINE_NO_APPROVER_NOTE =
+  "This routine runs on a schedule with nobody attached. What this permission mode allows proceeds without asking. Anything that would need approval is refused, not paused: that includes asking the user a question, handing over a plan, and requesting escalated sandbox permissions. Files may be written only inside the routine's workspace. Do not retry a refused call; finish what the mode allows and report what you could not do.";

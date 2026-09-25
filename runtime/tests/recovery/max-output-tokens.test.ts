@@ -445,3 +445,72 @@ describe("runMaxOutputTokensRecovery — T8 hardening", () => {
     expect(state.streamingToolExecutor).toBeNull();
   });
 });
+
+describe("runMaxOutputTokensRecovery — the retry keeps the durable history", () => {
+  const prompt = { role: "user" as const, content: "rewrite parser" };
+  const skillReminder = {
+    role: "user" as const,
+    content: "<system-reminder>\nThe following skills are available for use with the Skill tool.\n</system-reminder>",
+    runtimeOnly: { mergeBoundary: "user_context" as const },
+  };
+  const truncatedBatch = [
+    {
+      role: "assistant" as const,
+      content: "partial Write call",
+      toolCalls: [{ id: "tc-1", name: "system.bash", arguments: "{}" }],
+    },
+    { role: "tool" as const, toolCallId: "tc-1", toolName: "system.bash", content: "aborted" },
+  ];
+
+  test("escalate truncates to where the sample started, never copying the query projection", () => {
+    const log = new EventLog();
+    const session = mkSession(log);
+    const state = mkState({
+      messages: [prompt, ...truncatedBatch],
+      // The model saw the per-request skill reminder in front of the prompt;
+      // the rollout never stored it.
+      messagesForQuery: [skillReminder, prompt],
+      messagesAtSampleStart: 1,
+      streamingToolExecutor: mkExecutor(),
+      assistantMessages: [
+        {
+          uuid: "a1",
+          role: "assistant",
+          text: "partial",
+          toolCalls: [{ id: "tc-1", name: "system.bash", arguments: "{}" }],
+        },
+      ],
+      toolUseBlocks: [{ type: "tool_use", id: "tc-1", name: "system.bash", input: {} }],
+    });
+
+    const outcome = runMaxOutputTokensRecovery({ session, state });
+
+    expect(outcome.kind).toBe("escalate");
+    expect(state.messages).toEqual([prompt]);
+    expect(state.messagesForQuery).toEqual([skillReminder, prompt]);
+  });
+
+  test("without a sample mark the projection is used minus its context messages", () => {
+    const log = new EventLog();
+    const session = mkSession(log);
+    const invocationChannel = {
+      role: "user" as const,
+      content: "plugin instructions",
+      runtimeOnly: {
+        mergeBoundary: "user_context" as const,
+        agentInvocation: { kind: "channel" } as never,
+      },
+    };
+    const state = mkState({
+      messages: [prompt, ...truncatedBatch],
+      messagesForQuery: [skillReminder, invocationChannel, prompt],
+      streamingToolExecutor: mkExecutor(),
+    });
+
+    const outcome = runMaxOutputTokensRecovery({ session, state });
+
+    expect(outcome.kind).toBe("escalate");
+    // The skill reminder is context; the invocation channel is durable history.
+    expect(state.messages).toEqual([invocationChannel, prompt]);
+  });
+});

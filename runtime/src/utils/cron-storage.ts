@@ -17,12 +17,11 @@ import { writeDurableAtomicFile } from "./durable-atomic-file.js";
 import { acquireLocalSqliteLock, assertLocalPrivateDirectory, type LocalSqliteLockOptions } from "./sqlite-lock.js";
 
 export const CRON_STORAGE_NAME = "scheduled_tasks.json";
-const POLICY: ConfinedIoPolicy = {
+const WRITE_POLICY: ConfinedIoPolicy = {
   hardLinks: "reject", privateDirectory: false, privateFile: false,
-  // A pathname postcheck cannot undo a redirected overwrite. Fail closed on
-  // platforms without traversable directory descriptors.
   unavailableAlias: "reject",
 };
+const READ_POLICY: ConfinedIoPolicy = WRITE_POLICY;
 
 function assertOwned(info: BigIntStats): void {
   if (typeof process.getuid !== "function" || info.uid !== BigInt(process.getuid()) ||
@@ -60,7 +59,8 @@ export async function withCronStorage<Result>(
       isWithinAuthorityPath(workspacePathResolved, lockRoot)) {
     throw new Error("Cron lock authority must be outside the workspace");
   }
-  return withConfinedDirectory(workspacePathResolved, POLICY, async (workspace) => {
+  const policy = create ? WRITE_POLICY : READ_POLICY;
+  return withConfinedDirectory(workspacePathResolved, policy, async (workspace) => {
     const identity = await workspace.handle!.stat({ bigint: true });
     assertOwned(identity);
     // Device/inode identity keeps aliases and renames on one cross-home lock.
@@ -75,8 +75,9 @@ export async function withCronStorage<Result>(
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
     }
+    await workspace.verify();
     try {
-      return await withConfinedDirectory(directory, POLICY, async (bound) => {
+      return await withConfinedDirectory(directory, policy, async (bound) => {
         assertOwned(await bound.handle!.stat({ bigint: true }));
         const verify = async () => {
           await workspace.verify();
@@ -94,6 +95,7 @@ export async function withCronStorage<Result>(
             });
           },
           async write(data) {
+            if (!create) throw new Error("Cron storage was opened for reading");
             const path = join(bound.operationPath, CRON_STORAGE_NAME);
             let written: BigIntStats | undefined;
             const verifyWrittenFile = async (candidate: string) => {

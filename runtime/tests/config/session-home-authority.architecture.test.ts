@@ -173,8 +173,13 @@ describe("session home authority architecture", () => {
     const attribution = source("utils/attribution.ts");
 
     expect(environment).not.toMatch(/["']AGENC_REMOTE["']/u);
-    expect(environment).toContain('"AGENC_REMOTE_SESSION_ID"');
-    expect(environment).toContain('"SESSION_INGRESS_URL"');
+    // The canonical client env allowlist now lives on the protocol surface so
+    // the SDK's generated wire types carry the same list; session/environment
+    // re-exports it rather than repeating the literals.
+    expect(environment).toContain("AGENC_DAEMON_CLIENT_ENV_KEYS");
+    const protocolSurface = source("app-server/protocol/index.ts");
+    expect(protocolSurface).toContain('"AGENC_REMOTE_SESSION_ID"');
+    expect(protocolSurface).toContain('"SESSION_INGRESS_URL"');
     expect(runtimeOptions).toContain('parseBoolean(env, "AGENC_REMOTE", false)');
     expect(attribution).toContain("isSessionRemoteMode()")
     expect(attribution).toContain("environment.AGENC_REMOTE_SESSION_ID")

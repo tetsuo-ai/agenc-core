@@ -39,6 +39,13 @@ describe("decideResume", () => {
     });
     expect(d.kind).toBe("restart");
   });
+
+  it("never resumes or restarts a funds stop", () => {
+    expect(decideResume({ consecutiveFailures: 1,
+      error: Object.assign(new Error("Insufficient Balance"), { providerName: "deepseek", status: 402 }),
+      parentAborted: false,
+    })).toEqual({ kind: "abort", reason: "insufficient_funds" });
+  });
 });
 
 describe("ResumeManager", () => {

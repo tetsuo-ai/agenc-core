@@ -46,6 +46,8 @@ export interface ForkContextInput {
   readonly parent: Session;
   readonly parentMessages: ReadonlyArray<LLMMessage>;
   readonly mode?: ForkMode;
+  /** Keep parent instruction messages only for the same provider and model. */
+  readonly inheritParentInstructions?: boolean;
   readonly useProvidedParentMessages?: boolean;
   readonly taskPrompt: string;
   readonly taskContent?: readonly LLMContentPart[];
@@ -320,7 +322,9 @@ export async function forkSubagent(
 
   const parentMessages = trimUnansweredToolBatch(
     rolloutBackedParentMessages(input),
-  );
+  ).filter((message) => input.inheritParentInstructions !== false ||
+    message.runtimeOnly?.agentInvocation !== undefined ||
+    (message.role !== "system" && message.role !== "developer"));
   validateAgentInvocationMessageSequence(parentMessages);
 
   switch (input.mode.kind) {

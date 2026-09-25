@@ -112,7 +112,7 @@ describe("strict schema-v2 validation coverage", () => {
       /lsp_servers\.ts\.extensionToLanguage.*required/u,
     ],
     ["attachments unknown field", { attachments: { roots: ["/tmp"] } }, /attachments\.roots/u],
-    ["TUI unknown field", { tui: { vimMode: true, mystery: "dark" } }, /tui\.mystery/u],
+    ["TUI unknown field", { tui: { showTurnDuration: true, mystery: "dark" } }, /tui\.mystery/u],
     ["browser unknown field", { browser: { executable: "/bin/chrome" } }, /browser\.executable/u],
     [
       "durable turn unknown field",

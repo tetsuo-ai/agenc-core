@@ -60,6 +60,34 @@ describe("guardian approval request", () => {
     expect(request.sandboxPolicy).toBe("workspace_write");
   });
 
+  test("system.bash direct mode shows command and args with the call cwd", () => {
+    const request = buildGuardianApprovalRequest(
+      ctx({ kind: "function", arguments: "{}" }, "system.bash"),
+      { command: "cat", args: ["x y.txt"], cwd: "/repo/sub" },
+    );
+
+    expect(request.kind).toBe("shell");
+    expect(request.kind === "shell" ? request.command : undefined).toEqual(["cat", "x y.txt"]);
+    expect(guardianApprovalRequestActionText(request)).toBe('["cat","x y.txt"]');
+    expect(request.cwd).toBe("/repo/sub");
+  });
+
+  test("exec_command shows its workdir, resolved against the turn cwd, else the turn cwd", () => {
+    const request = buildGuardianApprovalRequest(
+      ctx({ kind: "function", arguments: "{}" }),
+      { cmd: "npm test", workdir: "packages/app" },
+    );
+
+    expect(guardianApprovalRequestActionText(request)).toBe("npm test");
+    expect(request.cwd).toBe("/repo/packages/app");
+
+    const withoutWorkdir = buildGuardianApprovalRequest(
+      ctx({ kind: "function", arguments: "{}" }),
+      { cmd: "npm test" },
+    );
+    expect(withoutWorkdir.cwd).toBe("/repo");
+  });
+
   test("serializes object keys stably and truncates recursive strings", () => {
     const request = buildGuardianApprovalRequest(
       ctx({ kind: "function", arguments: "{\"b\":2,\"a\":1}" }, "Write"),

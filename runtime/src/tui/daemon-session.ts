@@ -12,6 +12,7 @@ import { DaemonEventReplay } from "./daemon-event-replay.js";
 import {
   daemonTranscriptSnapshotCoversEvent,
   daemonTranscriptSnapshotEvents,
+  resolveDaemonTranscriptTextArtifacts,
 } from "./daemon-transcript-snapshot.js";
 import { classifyTurnTerminal, createTurnFailedEvent } from "../contracts/turn-terminal.js";
 import type {
@@ -60,46 +61,11 @@ import type {
   SessionTranscriptV2Result,
   SessionShellExecuteParams,
   SessionShellExecuteResult,
+  SessionGoalParams,
+  SessionGoalResult,
   SessionProcessesListResult,
   SessionProcessesStopResult,
   SessionResolveToolCallResult,
-  WorkspaceEditorAcquireParams,
-  WorkspaceEditorCancelPredictionParams,
-  WorkspaceEditorCancelPredictionSessionParams,
-  WorkspaceEditorCancelPredictionResult,
-  WorkspaceEditorChangesListParams,
-  WorkspaceEditorChangesListResult,
-  WorkspaceEditorPredictParams,
-  WorkspaceEditorPredictSessionParams,
-  WorkspaceEditorPredictionFeedbackParams,
-  WorkspaceEditorPredictionFeedbackSessionParams,
-  WorkspaceEditorPredictionFeedbackResult,
-  WorkspaceEditorPredictionResult,
-  WorkspaceEditorHeartbeatParams,
-  WorkspaceEditorLeaseResult,
-  WorkspaceEditorProposalApplyParams,
-  WorkspaceEditorProposalApplyResult,
-  WorkspaceEditorProposalDiscardResult,
-  WorkspaceEditorProposalParams,
-  WorkspaceEditorProposalResult,
-  WorkspaceEditorProposalStatusParams,
-  WorkspaceEditorProposalStatusResult,
-  WorkspaceEditorReleaseParams,
-  WorkspaceEditorReleaseResult,
-  WorkspaceEditorRecoveredTopologyListParams,
-  WorkspaceEditorRecoveredTopologyListResult,
-  WorkspaceEditorRecoveredTopologyResolveParams,
-  WorkspaceEditorRecoveredTopologyResolveResult,
-  WorkspaceEditorStaleAuthorityRefreshParams,
-  WorkspaceEditorStaleAuthorityRefreshResult,
-  WorkspaceEditorSyncParams,
-  WorkspaceEditorSyncResult,
-  WorkspaceEditorTopologyCompleteParams,
-  WorkspaceEditorTopologyCompleteResult,
-  WorkspaceEditorTopologyFinalizeParams,
-  WorkspaceEditorTopologyReleaseResult,
-  WorkspaceEditorTopologyReserveParams,
-  WorkspaceEditorTopologyReserveResult,
 } from "../app-server/protocol/index.js";
 import type { ApprovalResolver } from "../tools/orchestrator.js";
 import {
@@ -158,6 +124,7 @@ import type {
   AgenCShellExecuteParams,
 } from "./session-types.js";
 import { mcpServerNameValidationIssue } from "../mcp-client/server-name.js";
+import type { ResolveDaemonToolCallParams } from "../commands/resolve.js";
 import { isRecord } from "../utils/record.js";
 import { logForDebugging } from "../utils/debug.js";
 import type { AgentRoleWorkspace } from "../agents/role-workspace.js";
@@ -170,6 +137,15 @@ import {
 
 export const AGENC_DAEMON_RECONNECTING_MESSAGE =
   "daemon disconnected, reconnecting";
+export const AGENC_DAEMON_LOST_TURN_REASON =
+  "the daemon stopped responding; the turn cannot continue here";
+/**
+ * How long a daemon may stay silent mid-turn before the TUI ends the turn.
+ * The client's own reconnect window is the 30 s RPC timeout, which is too
+ * long to sit in front of a frozen composer; a daemon that has not answered
+ * in 10 s is treated as gone, and a later reconnect resumes its events.
+ */
+export const AGENC_DAEMON_LOST_TURN_PROBE_MS = 10_000;
 
 const MAX_DAEMON_QUEUED_INPUTS = 512;
 const MAX_DAEMON_QUEUED_INPUT_BYTES = 16 * 1_024 * 1_024;
@@ -290,6 +266,10 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   }): Promise<SessionResolveToolCallResult>;
   getDaemonSessionSnapshot?(): Promise<SessionSnapshotResult>;
   listDaemonSessionProcesses?(): Promise<SessionProcessesListResult | undefined>;
+  /** `/goal`: set, inspect, pause, resume or clear the daemon session's goal. */
+  updateDaemonSessionGoal?(
+    params: Omit<SessionGoalParams, "sessionId">,
+  ): Promise<SessionGoalResult>;
   stopDaemonSessionProcess?(taskId: string): Promise<SessionProcessesStopResult>;
   partialCompactFromMessage?(params: {
     readonly messageOrdinal: number;
@@ -341,60 +321,6 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
     profile?: string;
     reload?: boolean;
   }): Promise<SessionApplyConfigResult>;
-  acquireWorkspaceEditor?(
-    params: WorkspaceEditorAcquireParams,
-  ): Promise<WorkspaceEditorLeaseResult>;
-  syncWorkspaceEditor?(
-    params: WorkspaceEditorSyncParams,
-  ): Promise<WorkspaceEditorSyncResult>;
-  refreshWorkspaceEditorStaleAuthority?(
-    params: WorkspaceEditorStaleAuthorityRefreshParams,
-  ): Promise<WorkspaceEditorStaleAuthorityRefreshResult>;
-  heartbeatWorkspaceEditor?(
-    params: WorkspaceEditorHeartbeatParams,
-  ): Promise<WorkspaceEditorLeaseResult>;
-  releaseWorkspaceEditor?(
-    params: WorkspaceEditorReleaseParams,
-  ): Promise<WorkspaceEditorReleaseResult>;
-  reserveWorkspaceEditorTopology?(
-    params: WorkspaceEditorTopologyReserveParams,
-  ): Promise<WorkspaceEditorTopologyReserveResult>;
-  completeWorkspaceEditorTopology?(
-    params: WorkspaceEditorTopologyCompleteParams,
-  ): Promise<WorkspaceEditorTopologyCompleteResult>;
-  releaseWorkspaceEditorTopology?(
-    params: WorkspaceEditorTopologyFinalizeParams,
-  ): Promise<WorkspaceEditorTopologyReleaseResult>;
-  listRecoveredWorkspaceEditorTopologies?(
-    params: WorkspaceEditorRecoveredTopologyListParams,
-  ): Promise<WorkspaceEditorRecoveredTopologyListResult>;
-  resolveRecoveredWorkspaceEditorTopology?(
-    params: WorkspaceEditorRecoveredTopologyResolveParams,
-  ): Promise<WorkspaceEditorRecoveredTopologyResolveResult>;
-  getWorkspaceEditorProposal?(
-    params: WorkspaceEditorProposalParams,
-  ): Promise<WorkspaceEditorProposalResult>;
-  getWorkspaceEditorProposalStatus?(
-    params: WorkspaceEditorProposalStatusParams,
-  ): Promise<WorkspaceEditorProposalStatusResult>;
-  applyWorkspaceEditorProposal?(
-    params: WorkspaceEditorProposalApplyParams,
-  ): Promise<WorkspaceEditorProposalApplyResult>;
-  discardWorkspaceEditorProposal?(
-    params: WorkspaceEditorProposalParams,
-  ): Promise<WorkspaceEditorProposalDiscardResult>;
-  listWorkspaceEditorChanges?(
-    params: WorkspaceEditorChangesListParams,
-  ): Promise<WorkspaceEditorChangesListResult>;
-  predictEditorCode?(
-    params: WorkspaceEditorPredictSessionParams,
-  ): Promise<WorkspaceEditorPredictionResult>;
-  cancelEditorPrediction?(
-    params: WorkspaceEditorCancelPredictionSessionParams,
-  ): Promise<WorkspaceEditorCancelPredictionResult>;
-  reportEditorPredictionFeedback?(
-    params: WorkspaceEditorPredictionFeedbackSessionParams,
-  ): Promise<WorkspaceEditorPredictionFeedbackResult>;
   readonly realtime?: AgenCRealtimeTuiControls;
   executeShellCommand?(
     params: AgenCShellExecuteParams,
@@ -599,84 +525,6 @@ export interface AgenCDaemonTuiClient {
   ): () => void;
 }
 
-interface AgenCDaemonEditorPredictionClient {
-  request(
-    method: "workspace.editor.predict",
-    params: WorkspaceEditorPredictParams,
-  ): Promise<WorkspaceEditorPredictionResult>;
-  request(
-    method: "workspace.editor.cancelPrediction",
-    params: WorkspaceEditorCancelPredictionParams,
-  ): Promise<WorkspaceEditorCancelPredictionResult>;
-  request(
-    method: "workspace.editor.predictionFeedback",
-    params: WorkspaceEditorPredictionFeedbackParams,
-  ): Promise<WorkspaceEditorPredictionFeedbackResult>;
-}
-
-interface AgenCDaemonEditorCoherenceClient {
-  request(
-    method: "workspace.editor.acquire",
-    params: WorkspaceEditorAcquireParams,
-  ): Promise<WorkspaceEditorLeaseResult>;
-  request(
-    method: "workspace.editor.sync",
-    params: WorkspaceEditorSyncParams,
-  ): Promise<WorkspaceEditorSyncResult>;
-  request(
-    method: "workspace.editor.staleAuthority.refresh",
-    params: WorkspaceEditorStaleAuthorityRefreshParams,
-  ): Promise<WorkspaceEditorStaleAuthorityRefreshResult>;
-  request(
-    method: "workspace.editor.heartbeat",
-    params: WorkspaceEditorHeartbeatParams,
-  ): Promise<WorkspaceEditorLeaseResult>;
-  request(
-    method: "workspace.editor.release",
-    params: WorkspaceEditorReleaseParams,
-  ): Promise<WorkspaceEditorReleaseResult>;
-  request(
-    method: "workspace.editor.topology.reserve",
-    params: WorkspaceEditorTopologyReserveParams,
-  ): Promise<WorkspaceEditorTopologyReserveResult>;
-  request(
-    method: "workspace.editor.topology.complete",
-    params: WorkspaceEditorTopologyCompleteParams,
-  ): Promise<WorkspaceEditorTopologyCompleteResult>;
-  request(
-    method: "workspace.editor.topology.release",
-    params: WorkspaceEditorTopologyFinalizeParams,
-  ): Promise<WorkspaceEditorTopologyReleaseResult>;
-  request(
-    method: "workspace.editor.topology.recovered.list",
-    params: WorkspaceEditorRecoveredTopologyListParams,
-  ): Promise<WorkspaceEditorRecoveredTopologyListResult>;
-  request(
-    method: "workspace.editor.topology.recovered.resolve",
-    params: WorkspaceEditorRecoveredTopologyResolveParams,
-  ): Promise<WorkspaceEditorRecoveredTopologyResolveResult>;
-  request(
-    method: "workspace.editor.proposal.get",
-    params: WorkspaceEditorProposalParams,
-  ): Promise<WorkspaceEditorProposalResult>;
-  request(
-    method: "workspace.editor.proposal.status",
-    params: WorkspaceEditorProposalStatusParams,
-  ): Promise<WorkspaceEditorProposalStatusResult>;
-  request(
-    method: "workspace.editor.proposal.apply",
-    params: WorkspaceEditorProposalApplyParams,
-  ): Promise<WorkspaceEditorProposalApplyResult>;
-  request(
-    method: "workspace.editor.proposal.discard",
-    params: WorkspaceEditorProposalParams,
-  ): Promise<WorkspaceEditorProposalDiscardResult>;
-  request(
-    method: "workspace.editor.changes.list",
-    params: WorkspaceEditorChangesListParams,
-  ): Promise<WorkspaceEditorChangesListResult>;
-}
-
 export interface AgenCDaemonTuiSessionOptions<
   Session extends AgenCTuiBridgeSession = AgenCTuiBridgeSession,
 > {
@@ -690,6 +538,8 @@ export interface AgenCDaemonTuiSessionOptions<
   readonly realtimeAudioCaptureFactory?: StartRealtimeAudioCapture;
   readonly realtimeAudioPlayer?: RealtimeAudioPlayer;
   readonly transcriptSnapshot?: SessionTranscriptV2Result;
+  /** Test seam: how long a silent daemon keeps a turn alive mid-turn. */
+  readonly lostTurnProbeMs?: number;
   /** Snapshot cursor captured only after this socket's session route exists. */
   readonly runtimeSettingsCursor: {
     readonly eventId: string;
@@ -752,9 +602,13 @@ export async function attachDaemonAgentTuiSession<
     authorityCwd,
     attachment.runtimeSettings,
   );
-  const transcriptSnapshot = await options.client.request("session.transcript.v2", {
+  const rawTranscriptSnapshot = await options.client.request("session.transcript.v2", {
     sessionId,
   });
+  const transcriptSnapshot = await resolveDaemonTranscriptTextArtifacts(
+    rawTranscriptSnapshot,
+    params => options.client.request("session.artifact.read", params),
+  );
   daemonTranscriptSnapshotEvents(transcriptSnapshot, sessionId);
   return createDaemonTuiSession({
     ...options,
@@ -778,13 +632,6 @@ export function createDaemonTuiSession<
   const restoredTranscriptEvents = options.transcriptSnapshot === undefined
     ? undefined
     : daemonTranscriptSnapshotEvents(options.transcriptSnapshot, sessionId);
-  // These authenticated TUI-only methods are intentionally absent from the
-  // public daemon method union. The transport accepts known internal methods;
-  // keep the widening narrow so ordinary TUI calls remain contract-checked.
-  const editorPredictionClient =
-    client as unknown as AgenCDaemonEditorPredictionClient;
-  const editorCoherenceClient =
-    client as unknown as AgenCDaemonEditorCoherenceClient;
   const conversationId = options.conversationId ?? sessionId;
   // Share the task board with the daemon turn: TodoWrite persists the board
   // under the conversation id (getTaskListId prefers the ambient session's
@@ -1152,6 +999,8 @@ export function createDaemonTuiSession<
         ? lastObservedTurnId
         : activeTurnSnapshot?.turnId ?? lastObservedTurnId,
       options.transcriptSnapshot,
+      () => activeTurnSnapshot !== null || pendingSubmissions.size > 0,
+      options.lostTurnProbeMs,
     );
     const currentConnectionState = client.getConnectionState?.();
     if (
@@ -1193,14 +1042,7 @@ export function createDaemonTuiSession<
         bytes: queuedInputBlocksBytes(blocks),
         ...(ownership !== undefined
           ? {
-              ownership: {
-                workspaceView: ownership.workspaceView,
-                ...(ownership.editorInteractionId !== undefined
-                  ? {
-                      editorInteractionId: ownership.editorInteractionId,
-                    }
-                  : {}),
-              },
+              ownership: { workspaceView: ownership.workspaceView },
             }
           : {}),
       }));
@@ -1311,17 +1153,7 @@ export function createDaemonTuiSession<
       const queuedEntries: DaemonQueuedInput[] = [];
       const retained: DaemonQueuedInput[] = [];
       for (const entry of queuedInputs) {
-        const selected =
-          opts?.editorInteraction !== undefined
-            ? entry.ownership?.workspaceView === "editor" &&
-              entry.ownership.editorInteractionId ===
-                opts.editorInteraction.interactionId
-            : entry.ownership?.workspaceView !== "editor";
-        if (selected) {
-          queuedEntries.push(entry);
-        } else {
-          retained.push(entry);
-        }
+        queuedEntries.push(entry);
       }
       queuedInputs.splice(0, queuedInputs.length, ...retained);
       const queued = queuedEntries.flatMap((entry) => entry.blocks);
@@ -1360,37 +1192,6 @@ export function createDaemonTuiSession<
         const metadata: JsonObject = {
           ...(opts?.displayUserMessage !== undefined
             ? { displayUserMessage: opts.displayUserMessage }
-            : {}),
-          ...(opts?.editorInteraction !== undefined
-            ? {
-                editorInteraction: {
-                  interactionId: opts.editorInteraction.interactionId,
-                  kind: opts.editorInteraction.kind,
-                  policy: opts.editorInteraction.policy,
-                  editorInstanceId: opts.editorInteraction.editorInstanceId,
-                  bufferHandle: opts.editorInteraction.bufferHandle,
-                  changedtick: opts.editorInteraction.changedtick,
-                  contentSha256: opts.editorInteraction.contentSha256,
-                  ...(opts.editorInteraction.path !== undefined
-                    ? { path: opts.editorInteraction.path }
-                    : {}),
-                  range: {
-                    start: {
-                      line: opts.editorInteraction.range.start.line,
-                      column: opts.editorInteraction.range.start.column,
-                    },
-                    end: {
-                      line: opts.editorInteraction.range.end.line,
-                      column: opts.editorInteraction.range.end.column,
-                    },
-                  },
-                  ...(opts.editorInteraction.selectionMode !== undefined
-                    ? {
-                        selectionMode: opts.editorInteraction.selectionMode,
-                      }
-                    : {}),
-                },
-              }
             : {}),
         };
         submission.dispatched = true;
@@ -1558,22 +1359,17 @@ export function createDaemonTuiSession<
     clearDaemonSession: async () => {
       await client.request("session.clear", { sessionId });
     },
-    resolveDaemonToolCall: async (params: {
-      readonly toolCallId: string;
-      readonly disposition:
-        | "confirmed_committed"
-        | "confirmed_no_effect"
-        | "remains_unknown";
-      readonly evidenceRef: string;
-      readonly evidenceSha256: string;
-      readonly reviewer?: string;
-    }) =>
+    resolveDaemonToolCall: async (params: ResolveDaemonToolCallParams) =>
       client.request("session.resolveToolCall", {
         sessionId,
         toolCallId: params.toolCallId,
         disposition: params.disposition,
-        evidenceRef: params.evidenceRef,
-        evidenceSha256: params.evidenceSha256,
+        ...("attestation" in params
+          ? { attestation: params.attestation }
+          : {
+              evidenceRef: params.evidenceRef,
+              evidenceSha256: params.evidenceSha256,
+            }),
         ...(params.reviewer !== undefined ? { reviewer: params.reviewer } : {}),
       }),
     getDaemonSessionSnapshot: async () => {
@@ -1582,6 +1378,14 @@ export function createDaemonTuiSession<
         throw new Error("Daemon snapshot belongs to a different session");
       }
       return snapshot;
+    },
+    updateDaemonSessionGoal: async (goalParams) => {
+      if (client.supportsMethod?.("session.goal") !== true) {
+        throw new Error(
+          "This daemon does not support /goal. Restart it with `agenc daemon restart` to pick up the current runtime.",
+        );
+      }
+      return client.request("session.goal", { ...goalParams, sessionId });
     },
     listDaemonSessionProcesses: async () => {
       if (client.supportsMethod?.("session.processes.list") !== true) return undefined;
@@ -1826,16 +1630,12 @@ export function createDaemonTuiSession<
           );
         }
       }),
-    executeDaemonStatusLine: async (presentation, signal) => {
+    executeDaemonStatusLine: async (_presentation, signal) => {
       signal?.throwIfAborted();
       try {
         return await client.request("session.statusLine.execute", {
           sessionId,
-          presentation: {
-            ...(presentation.vimMode !== undefined
-              ? { vimMode: presentation.vimMode }
-              : {}),
-          },
+          presentation: {},
         } satisfies SessionStatusLineExecuteParams, { signal });
       } catch (error) {
         signal?.throwIfAborted();
@@ -1859,8 +1659,7 @@ export function createDaemonTuiSession<
         try {
           if (p.reload === true) {
             // session.applyConfig refreshes only this agent's live config
-            // store. Predictions are daemon-owned, so reload the daemon-global
-            // snapshot first.
+            // store; reload the daemon-global snapshot first.
             await client.request("daemon.reload", {});
           }
           const result = await client.request("session.applyConfig", {
@@ -1902,72 +1701,6 @@ export function createDaemonTuiSession<
           );
         }
       }),
-    acquireWorkspaceEditor: async (params) =>
-      editorCoherenceClient.request("workspace.editor.acquire", params),
-    syncWorkspaceEditor: async (params) =>
-      editorCoherenceClient.request("workspace.editor.sync", params),
-    refreshWorkspaceEditorStaleAuthority: async (params) =>
-      editorCoherenceClient.request(
-        "workspace.editor.staleAuthority.refresh",
-        params,
-      ),
-    heartbeatWorkspaceEditor: async (params) =>
-      editorCoherenceClient.request("workspace.editor.heartbeat", params),
-    releaseWorkspaceEditor: async (params) =>
-      editorCoherenceClient.request("workspace.editor.release", params),
-    reserveWorkspaceEditorTopology: async (params) =>
-      editorCoherenceClient.request(
-        "workspace.editor.topology.reserve",
-        params,
-      ),
-    completeWorkspaceEditorTopology: async (params) =>
-      editorCoherenceClient.request(
-        "workspace.editor.topology.complete",
-        params,
-      ),
-    releaseWorkspaceEditorTopology: async (params) =>
-      editorCoherenceClient.request(
-        "workspace.editor.topology.release",
-        params,
-      ),
-    listRecoveredWorkspaceEditorTopologies: async (params) =>
-      editorCoherenceClient.request(
-        "workspace.editor.topology.recovered.list",
-        params,
-      ),
-    resolveRecoveredWorkspaceEditorTopology: async (params) =>
-      editorCoherenceClient.request(
-        "workspace.editor.topology.recovered.resolve",
-        params,
-      ),
-    getWorkspaceEditorProposal: async (params) =>
-      editorCoherenceClient.request("workspace.editor.proposal.get", params),
-    getWorkspaceEditorProposalStatus: async (params) =>
-      editorCoherenceClient.request("workspace.editor.proposal.status", params),
-    applyWorkspaceEditorProposal: async (params) =>
-      editorCoherenceClient.request("workspace.editor.proposal.apply", params),
-    discardWorkspaceEditorProposal: async (params) =>
-      editorCoherenceClient.request(
-        "workspace.editor.proposal.discard",
-        params,
-      ),
-    listWorkspaceEditorChanges: async (params) =>
-      editorCoherenceClient.request("workspace.editor.changes.list", params),
-    predictEditorCode: async (params) =>
-      editorPredictionClient.request("workspace.editor.predict", {
-        ...params,
-        sessionId,
-      } satisfies WorkspaceEditorPredictParams),
-    cancelEditorPrediction: async (params) =>
-      editorPredictionClient.request("workspace.editor.cancelPrediction", {
-        ...params,
-        sessionId,
-      } satisfies WorkspaceEditorCancelPredictionParams),
-    reportEditorPredictionFeedback: async (params) =>
-      editorPredictionClient.request("workspace.editor.predictionFeedback", {
-        ...params,
-        sessionId,
-      } satisfies WorkspaceEditorPredictionFeedbackParams),
     subscribeToEvents: (cb) => {
       const unsubscribe = eventReplay.subscribe(cb);
       try {
@@ -2129,6 +1862,7 @@ function daemonMcpProjectionState(
     value === "failed" ||
     value === "disabled" ||
     value === "needs-auth" ||
+    value === "stopped" ||
     value === "disconnected"
   ) {
     return value;
@@ -2236,7 +1970,7 @@ function createDaemonMcpProjection(
         requestedRevision = -1;
         let result: SessionMcpStatusResult;
         try {
-          result = await client.request("session.mcp.status", { sessionId });
+          result = await client.request("session.mcp.status", { sessionId, includeStoppedState: true });
         } catch (error) {
           if (connectionEpoch !== taskEpoch) return snapshot;
           requestedRevision = Math.max(requestedRevision, targetRevision);
@@ -2760,9 +2494,12 @@ function subscribeToDaemonEvents(
   runtimeSettingsReconciler?: RuntimeSettingsReconciler,
   activeTurnId?: () => string | undefined,
   transcriptSnapshot?: SessionTranscriptV2Result,
+  turnInFlight?: () => boolean,
+  probeDeadlineMs: number = AGENC_DAEMON_LOST_TURN_PROBE_MS,
 ): () => void {
   let replayingInitialEvents = true;
   let closed = false;
+  let lostTurnProbe: Promise<void> | null = null;
   const pendingApprovals = new DaemonApprovalRequests(MAX_BUFFERED_SESSION_EVENTS_PER_SESSION);
   const emit = (event: unknown): void => {
     if (!closed) cb(event);
@@ -2826,6 +2563,46 @@ function subscribeToDaemonEvents(
     realtime.handleTranscriptEvent(transcriptEvent);
     emit(transcriptEvent);
   });
+  // A turn's terminal event comes from the daemon. When the daemon is gone
+  // (killed, crashed, replaced by one that does not host this session) that
+  // event never arrives: the TUI stays busy forever, Esc cancels nothing, and
+  // /exit and Ctrl-C are refused as "finish or cancel the turn first". A
+  // dropped socket alone proves nothing, the daemon owns the turn and may
+  // still be running it, so ask, and end the turn locally only when the
+  // daemon fails to answer or stays silent past the probe deadline.
+  const settleTurnIfDaemonLostIt = (): void => {
+    if (lostTurnProbe !== null || turnInFlight?.() !== true) return;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const silent = new Promise<never>((_, reject) => {
+      deadline = setTimeout(
+        () => reject(new Error("daemon silent past the probe deadline")),
+        probeDeadlineMs,
+      );
+    });
+    lostTurnProbe = Promise.race([
+      client.request("session.snapshot", { sessionId }),
+      silent,
+    ])
+      .then(
+        () => undefined,
+        () => {
+          if (closed || turnInFlight?.() !== true) return;
+          const turnId = activeTurnId?.();
+          emit({
+            id: `agenc-daemon-lost-turn-${turnId ?? "unknown"}`,
+            type: "turn_aborted",
+            payload: {
+              ...(turnId !== undefined ? { turnId } : {}),
+              reason: AGENC_DAEMON_LOST_TURN_REASON,
+            },
+          });
+        },
+      )
+      .finally(() => {
+        clearTimeout(deadline);
+        lostTurnProbe = null;
+      });
+  };
   const unsubscribeConnection = client.subscribeToConnectionState?.((state) => {
     if (closed) return;
     runtimeSettingsReconciler?.noteConnectionState(state);
@@ -2833,6 +2610,7 @@ function subscribeToDaemonEvents(
     for (const event of connectionNoticeEvents(state)) {
       emit(event);
     }
+    if (state.status === "disconnected") settleTurnIfDaemonLostIt();
   });
   return () => {
     closed = true;

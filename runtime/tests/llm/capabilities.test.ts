@@ -328,6 +328,29 @@ describe("resolveProviderModelCapabilities", () => {
     ).toBe(false);
   });
 
+  it("gives Bedrock Opus 5.5 effort without claiming what the Converse adapter cannot send", () => {
+    expect(
+      resolveProviderModelCapabilities({
+        provider: "amazon-bedrock",
+        model: "global.anthropic.claude-opus-5-5",
+      }),
+    ).toMatchObject({
+      supportsToolUse: true,
+      acceptsReasoningEffort: true,
+      supportsImageInput: false,
+      acceptsImageHistory: false,
+      supportsStructuredOutput: false,
+      supportsStructuredOutputWithTools: false,
+      supportsProviderNativeWebSearch: false,
+    });
+    expect(
+      resolveProviderModelCapabilities({
+        provider: "amazon-bedrock",
+        model: "anthropic.claude-opus-5",
+      }).acceptsReasoningEffort,
+    ).toBe(false);
+  });
+
   it("fails closed for unknown providers", () => {
     expect(
       resolveProviderModelCapabilities({

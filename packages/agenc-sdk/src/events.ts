@@ -67,6 +67,14 @@ export type AgencPromptEvent = AgencPromptEventIdentity &
         readonly permissions: readonly string[];
         readonly input?: JsonValue;
         readonly reason?: string;
+        /**
+         * Set when a spawned sub-agent (or a nested one) asks through this
+         * session: its own session id, and the name and path it was spawned
+         * with. The request is answered on this session like any other.
+         */
+        readonly sourceConversationId?: string;
+        readonly sourceAgentNickname?: string;
+        readonly sourceAgentPath?: string;
       }
     | {
         readonly type: "elicitation_request";
@@ -94,6 +102,27 @@ export type AgencPromptEvent = AgencPromptEventIdentity &
         readonly firstAvailableSequence?: number;
         readonly retiredCount: number;
         readonly retiredCountKnown?: boolean;
+      }
+    | {
+        /**
+         * SDK-local loss: this process discarded `retiredCount` events it had
+         * already received because the consumer did not drain the run's
+         * iterator within the bounded buffer. Delivered in place of the
+         * discarded events and never itself evicted. Unlike `retention`, the
+         * daemon still holds the events: a socket consumer can replay from
+         * `afterSequence`; the subprocess transport has no replay path.
+         * `sessionId` is omitted only when the stream never identified one.
+         */
+        readonly type: "gap";
+        readonly kind: "event_gap";
+        readonly reason: "local_overflow";
+        readonly sessionId?: string;
+        readonly runId?: string;
+        /** Last sequence the consumer received before the loss. */
+        readonly afterSequence?: number;
+        /** Sequence of the first surviving event after the loss. */
+        readonly firstAvailableSequence?: number;
+        readonly retiredCount: number;
       }
     | {
         readonly type: "session_event";
@@ -180,27 +209,27 @@ export function terminalStatusFromNotification(
   const notificationTurnId = typeof params?.turnId === "string" ? params.turnId : undefined;
   if (expectedTurnId !== undefined && notificationTurnId !== undefined && notificationTurnId !== expectedTurnId) return null;
   if (message.method === "event.agent_status" && params !== null) {
+    // The projected turn terminal is the authority: an idle agent says
+    // nothing about whether its turn completed or was stopped.
+    const embedded = embeddedTurnTerminal(params, notificationTurnId, expectedTurnId);
+    if (embedded !== undefined) return embedded;
     const runStatus =
       typeof params.runStatus === "string" ? params.runStatus : undefined;
     const status =
       typeof params.status === "string" ? params.status : undefined;
     const statusMessage =
       typeof params.message === "string" ? params.message : undefined;
-    if (runStatus === "completed" || status === "idle") {
+    const code =
+      runStatus === "stopped" ? 130
+        : runStatus === "errored" ? 1
+          : runStatus === "completed" ? 0
+            : status === "stopped" ? 130
+              : status === "error" ? 1
+                : status === "idle" ? 0
+                  : undefined;
+    if (code !== undefined) {
       return {
-        code: 0,
-        ...(statusMessage !== undefined ? { message: statusMessage } : {}),
-      };
-    }
-    if (runStatus === "stopped" || status === "stopped") {
-      return {
-        code: 130,
-        ...(statusMessage !== undefined ? { message: statusMessage } : {}),
-      };
-    }
-    if (runStatus === "errored" || status === "error") {
-      return {
-        code: 1,
+        code,
         ...(statusMessage !== undefined ? { message: statusMessage } : {}),
       };
     }
@@ -215,6 +244,33 @@ export function terminalStatusFromNotification(
     expectedTurnId: expectedTurnId ?? notificationTurnId,
   });
   return terminal === undefined ? null : {
+    code: terminal.code,
+    ...(terminal.message !== undefined ? { message: terminal.message } : {}),
+  };
+}
+
+function embeddedTurnTerminal(
+  params: JsonObject,
+  notificationTurnId: string | undefined,
+  expectedTurnId: string | undefined,
+): AgencTerminalStatus | undefined {
+  const turnEvent = params.turnEvent;
+  if (
+    turnEvent === null ||
+    typeof turnEvent !== "object" ||
+    Array.isArray(turnEvent) ||
+    typeof (turnEvent as JsonObject).type !== "string"
+  ) {
+    return undefined;
+  }
+  const terminal = classifyTurnTerminal({
+    type: (turnEvent as JsonObject).type as string,
+    payload: (turnEvent as JsonObject).payload,
+    turnId: notificationTurnId,
+  }, {
+    expectedTurnId: expectedTurnId ?? notificationTurnId,
+  });
+  return terminal === undefined ? undefined : {
     code: terminal.code,
     ...(terminal.message !== undefined ? { message: terminal.message } : {}),
   };
@@ -353,6 +409,18 @@ export function promptEventFromNotification(
         : {}),
       ...(params.input !== undefined ? { input: params.input } : {}),
       ...(typeof params.reason === "string" ? { reason: params.reason } : {}),
+      ...(typeof params.sourceConversationId === "string" &&
+      params.sourceConversationId.length > 0
+        ? { sourceConversationId: params.sourceConversationId }
+        : {}),
+      ...(typeof params.sourceAgentNickname === "string" &&
+      params.sourceAgentNickname.length > 0
+        ? { sourceAgentNickname: params.sourceAgentNickname }
+        : {}),
+      ...(typeof params.sourceAgentPath === "string" &&
+      params.sourceAgentPath.length > 0
+        ? { sourceAgentPath: params.sourceAgentPath }
+        : {}),
     };
   }
 

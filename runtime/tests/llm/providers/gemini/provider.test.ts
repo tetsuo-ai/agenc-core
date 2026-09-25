@@ -1,5 +1,9 @@
 import { describe, expect, test, vi } from "vitest";
 
+import {
+  LLMInvalidResponseError,
+  LLMProviderError,
+} from "../../../../src/llm/errors.js";
 import { createTokenAccountingRequest } from "../../token-accounting.js";
 import type { LLMChatOptions, LLMMessage, LLMTool } from "../../types.js";
 import { createGeminiEndpointPlan } from "./endpoint-plan.js";
@@ -107,6 +111,42 @@ function providerWithFetch(fetchImpl: typeof fetch): GeminiProvider {
     fetchImpl,
   });
 }
+
+test("a Gemini daily quota HTTP response stops after one wire attempt", async () => {
+  const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ error: {
+    status: "RESOURCE_EXHAUSTED", message: "Daily quota exhausted",
+    details: [{ violations: [
+      { quotaId: "GenerateRequestsPerMinutePerProjectPerModel-FreeTier" },
+      { quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier" },
+    ] }],
+  } }, { status: 429 }));
+  const provider = providerWithFetch(fetchImpl);
+  await expect(provider.chat([{ role: "user", content: "hello" }]))
+    .rejects.toMatchObject({ name: "LLMFundsError" });
+  expect(fetchImpl).toHaveBeenCalledOnce();
+});
+
+test("Gemini function responses omit tool images without serializing base64 as text", async () => {
+  const fetchImpl = successfulGeminiFetch();
+  const provider = providerWithFetch(fetchImpl);
+  await provider.chat([
+    { role: "user", content: "inspect" },
+    { role: "assistant", content: "", toolCalls: [{ id: "call-image", name: "system.echo", arguments: "{}" }] },
+    { role: "tool", toolCallId: "call-image", toolName: "system.echo", content: [
+      { type: "text", text: "saved image" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,YWJj" } },
+    ] },
+  ]);
+  const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+  expect(JSON.stringify(body)).not.toContain("YWJj");
+  expect(body).toMatchObject({ contents: [
+    { role: "user", parts: [{ text: "inspect" }] },
+    { role: "model", parts: [{ functionCall: { name: "system.echo", args: {} } }] },
+    { role: "user", parts: [{ functionResponse: { name: "system.echo", response: {
+      result: "saved image\n[image omitted: this provider cannot receive images in tool results]",
+    } } }] },
+  ] });
+});
 
 type GeminiToolOperation = "chat" | "stream" | "count";
 
@@ -2645,5 +2685,222 @@ describe("GeminiProvider", () => {
         tools: [echoTool],
       }),
     ).rejects.toThrow("Gemini response emitted invalid functionCall");
+  });
+
+  describe("prompt-level blocks", () => {
+    const sensitivePrompt = "SECRET_PROMPT_TEXT_MUST_NOT_LEAK";
+
+    function promptBlockUsage() {
+      return {
+        promptTokenCount: 3,
+        totalTokenCount: 3,
+      };
+    }
+
+    function promptBlockedResponse(
+      blockReason: string,
+      extraFeedback: Record<string, unknown> = {},
+    ) {
+      return {
+        promptFeedback: {
+          blockReason,
+          ...extraFeedback,
+        },
+        usageMetadata: promptBlockUsage(),
+      };
+    }
+
+    function blockedUsage() {
+      return {
+        promptTokens: 3,
+        completionTokens: 0,
+        totalTokens: 3,
+        availability: "reported" as const,
+        provenance: "provider" as const,
+      };
+    }
+
+    async function chatBlockedPrompt(
+      body: unknown,
+    ): Promise<Awaited<ReturnType<GeminiProvider["chat"]>>> {
+      const provider = providerWithFetch(
+        vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(body)),
+      );
+      return provider.chat([{ role: "user", content: sensitivePrompt }]);
+    }
+
+    async function streamBlockedPrompt(
+      body: unknown,
+    ): Promise<Awaited<ReturnType<GeminiProvider["chatStream"]>>> {
+      const provider = providerWithFetch(
+        vi.fn<typeof fetch>().mockResolvedValue(
+          sseResponse([`data: ${JSON.stringify(body)}\n\n`]),
+        ),
+      );
+      return provider.chatStream(
+        [{ role: "user", content: sensitivePrompt }],
+        () => {},
+      );
+    }
+
+    async function expectContentFilter(
+      operation: "chat" | "stream",
+      body: unknown,
+    ) {
+      const response =
+        operation === "chat"
+          ? await chatBlockedPrompt(body)
+          : await streamBlockedPrompt(body);
+      expect(response.finishReason).toBe("content_filter");
+      expect(response.content).toBe("");
+      expect(response.toolCalls).toEqual([]);
+      expect(response.error).toBeUndefined();
+      expect(response.usage).toEqual(blockedUsage());
+      expect(JSON.stringify(response)).not.toContain(sensitivePrompt);
+      return response;
+    }
+
+    test.each(["chat", "stream"] as const)(
+      "maps a SAFETY prompt block to content_filter in %s",
+      async (operation) => {
+        await expectContentFilter(
+          operation,
+          promptBlockedResponse("SAFETY", {
+            safetyRatings: [
+              {
+                category: "HARM_CATEGORY_HATE_SPEECH",
+                probability: "HIGH",
+                blocked: true,
+              },
+            ],
+          }),
+        );
+      },
+    );
+
+    test.each([
+      "BLOCKLIST",
+      "PROHIBITED_CONTENT",
+      "IMAGE_SAFETY",
+    ] as const)("maps prompt blockReason %s to content_filter", async (reason) => {
+      await expectContentFilter("chat", promptBlockedResponse(reason));
+      await expectContentFilter("stream", promptBlockedResponse(reason));
+    });
+
+    test.each(["chat", "stream"] as const)(
+      "keeps candidate-level SAFETY distinct from a prompt block in %s",
+      async (operation) => {
+        const body = {
+          candidates: [
+            {
+              content: { role: "model", parts: [] },
+              finishReason: "SAFETY",
+              safetyRatings: [
+                {
+                  category: "HARM_CATEGORY_HARASSMENT",
+                  probability: "MEDIUM",
+                },
+              ],
+            },
+          ],
+          usageMetadata: promptBlockUsage(),
+        };
+        await expectContentFilter(operation, body);
+      },
+    );
+
+    test("does not treat an empty candidate STOP as a prompt block", async () => {
+      const response = await chatBlockedPrompt({
+        candidates: [
+          {
+            content: { role: "model", parts: [] },
+            finishReason: "STOP",
+          },
+        ],
+        usageMetadata: promptBlockUsage(),
+      });
+      expect(response.finishReason).toBe("stop");
+      expect(response.content).toBe("");
+      expect(response.usage).toEqual(blockedUsage());
+    });
+
+    test("evaluates promptFeedback before a leftover candidate finish reason", async () => {
+      const response = await chatBlockedPrompt({
+        promptFeedback: { blockReason: "SAFETY" },
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "should not win" }] },
+            finishReason: "STOP",
+          },
+        ],
+        usageMetadata: promptBlockUsage(),
+      });
+      expect(response.finishReason).toBe("content_filter");
+      expect(response.content).toBe("");
+    });
+
+    test.each(["OTHER", "REGION_UNAVAILABLE"] as const)(
+      "treats prompt blockReason %s as a provider error",
+      async (reason) => {
+        const body = promptBlockedResponse(reason, {
+          blockReasonMessage: "operational hold",
+          safetyRatings: [
+            {
+              category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+              probability: "NEGLIGIBLE",
+            },
+          ],
+          prompt: sensitivePrompt,
+          text: sensitivePrompt,
+        });
+        await expect(chatBlockedPrompt(body)).rejects.toMatchObject({
+          name: "LLMProviderError",
+        });
+        await expect(streamBlockedPrompt(body)).rejects.toMatchObject({
+          name: "LLMProviderError",
+        });
+        const error = await chatBlockedPrompt(body).catch(
+          (caught: unknown) => caught,
+        );
+        expect(error).toBeInstanceOf(LLMProviderError);
+        expect(error).not.toBeInstanceOf(LLMInvalidResponseError);
+        expect(String(error)).toMatch(new RegExp(`blockReason=${reason}`));
+        expect(String(error)).toMatch(
+          /HARM_CATEGORY_DANGEROUS_CONTENT=NEGLIGIBLE/,
+        );
+        expect(String(error)).toMatch(/operational hold/);
+        expect(String(error)).not.toContain(sensitivePrompt);
+      },
+    );
+
+    test.each(["chat", "stream"] as const)(
+      "fails a no-candidate %s response without a valid block reason",
+      async (operation) => {
+        const bodies = [
+          { usageMetadata: promptBlockUsage() },
+          {
+            promptFeedback: { blockReason: "BLOCK_REASON_UNSPECIFIED" },
+            usageMetadata: promptBlockUsage(),
+          },
+          {
+            promptFeedback: {},
+            candidates: [],
+            usageMetadata: promptBlockUsage(),
+          },
+        ];
+        for (const body of bodies) {
+          const invocation =
+            operation === "chat"
+              ? chatBlockedPrompt(body)
+              : streamBlockedPrompt(body);
+          await expect(invocation).rejects.toMatchObject({
+            name: "LLMInvalidResponseError",
+          });
+          const error = await invocation.catch((caught: unknown) => caught);
+          expect(error).toBeInstanceOf(LLMInvalidResponseError);
+          expect(String(error)).not.toContain(sensitivePrompt);
+        }
+      },
+    );
   });
 });

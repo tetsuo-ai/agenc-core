@@ -201,10 +201,10 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
     return supported3P
   }
   const canonical = getCanonicalName(model)
-  // Claude Fable 5: thinking is ALWAYS ON server-side. Omitting the
-  // `thinking` param runs adaptive thinking and `{type: 'adaptive'}` is the
-  // only explicit config the API accepts (`disabled`/budget_tokens 400) —
-  // provider docs, verified 2026-07-08.
+  // Claude Fable 5 and Opus 5.5: thinking is ALWAYS ON server-side. Omitting
+  // the `thinking` param runs adaptive thinking and `{type: 'adaptive'}` is
+  // the only explicit config the API accepts (`disabled`/budget_tokens 400);
+  // provider docs, verified 2026-07-08 (Opus 5.5: 2026-09-22).
   if (isAlwaysOnThinkingAnthropicModel(canonical)) {
     return true
   }
