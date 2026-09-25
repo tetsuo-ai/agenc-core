@@ -157,6 +157,26 @@ interface RefreshedCompanionBridges {
   readonly promptBridge?: MCPPromptBridge;
 }
 
+function lazyCatalog(
+  previous: PluginCatalog | undefined,
+  patch: {
+    readonly tools?: readonly Record<string, unknown>[];
+    readonly prompts?: readonly unknown[];
+    readonly resources?: readonly unknown[];
+  },
+): PluginCatalog {
+  const kept = (key: "prompts" | "resources"): Partial<PluginCatalog> => {
+    const value = patch[key] ?? previous?.[key];
+    return value === undefined ? {} : { [key]: value };
+  };
+  return {
+    format: 1,
+    tools: patch.tools ?? previous?.tools ?? [],
+    ...kept("resources"),
+    ...kept("prompts"),
+  };
+}
+
 interface CatalogKindGenerations {
   tools: number;
   prompts: number;
@@ -2546,9 +2566,7 @@ export class MCPManager {
     startupGate?: StartupGate,
     isCurrent: () => boolean = () => true,
   ): Promise<RefreshedCompanionBridges> {
-    const logger = attachmentLogger(this.logger, config.origin?.scope === "session"
-      ? config.headers
-      : pluginSensitiveHeaders(config));
+    const logger = attachmentLogger(this.logger, this.connectionSensitiveHeaders(config));
     if (config.localOnly === true) {
       // Local app control is a tool-only surface: no server-initiated skill,
       // resource or prompt can escape the turn-scoped execution boundary.
@@ -2660,9 +2678,7 @@ export class MCPManager {
   ): Promise<MCPToolBridge> {
     // Retain the values in this immutable connection config. A settings rotation
     // must not make a still-running server's old credentials printable again.
-    const sensitiveHeaders = config.origin?.scope === "session"
-      ? config.headers
-      : pluginSensitiveHeaders(config);
+    const sensitiveHeaders = this.connectionSensitiveHeaders(config);
     const logger = attachmentLogger(this.logger, sensitiveHeaders);
     const listChangedHandlers = this.createListChangedHandlers(config.name);
     let client: Awaited<ReturnType<typeof createMCPConnection>>;
@@ -2694,28 +2710,11 @@ export class MCPManager {
       // The initialized snapshot is shared with automatic reconnect publication.
       const snapshot = readInitializedConnectionSnapshot(client, sensitiveHeaders);
       let catalogTools: readonly Record<string, unknown>[] = [];
-      const rawBridge = await createToolBridge(
-        client,
-        config.name,
-        logger,
-        {
-          listToolsTimeoutMs: config.timeout,
-          callToolTimeoutMs: config.timeout,
-          serverConfig: toToolCatalogPolicyConfig(config),
-          environment: this.environment,
-          ...(this.isLazyPlugin(config) ? { onCatalog: (tools: readonly Record<string, unknown>[]) => { catalogTools = tools; } } : {}),
-          ...(this.callObserver !== undefined
-            ? { callObserver: this.callObserver }
-            : {}),
-          ...(this.permissionOptions !== undefined
-            ? { permissions: this.permissionOptions }
-            : {}),
-          ...(config.origin?.scope === "plugin" ? {
-            revocationGuard: () => this.configIsCurrent(config),
-            revocationSignal: this.pluginRevocationSignal(config),
-          } : {}),
-        },
-      );
+      const rawBridge = await this.createManagedToolBridge(client, config, logger, {
+        ...(this.isLazyPlugin(config)
+          ? { onCatalog: (tools: readonly Record<string, unknown>[]) => { catalogTools = tools; } }
+          : {}),
+      });
       assertRefreshOpen(config.name, startupGate, isCurrent);
       // I-73: reject MCP tools whose namespaced names collide with
       // already-registered tools (from earlier servers). Bail the
@@ -2815,26 +2814,7 @@ export class MCPManager {
           }
         },
       });
-      if (config.origin?.scope === "plugin") {
-        const proxyGeneration = this.lifecycleGeneration;
-        bridge.tools.splice(0, bridge.tools.length, ...bridge.tools.map(tool => {
-          const execute = tool.execute;
-          return {
-            ...tool,
-            execute: async (args: Record<string, unknown>): Promise<ToolResult> => {
-              const current = () => this.lifecycleGeneration === proxyGeneration &&
-                this.getServerConfig(config.name) === config && this.configIsCurrent(config);
-              if (!current()) return { content: `MCP plugin ${config.name} proxy configuration changed`, isError: true };
-              this.pluginLifecycle(config.name).active++;
-              this.notifyPluginActivity(config.name);
-              try {
-                const result = await execute(args);
-                return result;
-              } finally { this.finishPluginActivity(config.name, config); }
-            },
-          };
-        }));
-      }
+      this.wrapPluginToolSurface(config, bridge);
       // Publish before the optional companion bridges are constructed so
       // concurrently-starting servers observe this namespace for I-73 shadow
       // checks. The startup gate is checked immediately beforehand and stop
@@ -3041,6 +3021,8 @@ export class MCPManager {
       (this.companionEpochs.get(serverName) ?? 0) + 1,
     );
     this.bumpCatalogRefreshEpoch(serverName);
+    this.catalogRefreshEpochs.delete(serverName);
+    this.catalogRefreshStates.delete(serverName);
   }
 
   private allKnownServerNames(): Set<string> {
@@ -3131,10 +3113,10 @@ export class MCPManager {
       try {
         await this.runCatalogRefresh(serverName, kinds, state, isServerCurrent);
       } catch (error) {
-        if (!isServerCurrent()) return;
+        if (!isServerCurrent()) continue;
         this.logger.warn?.(
           `MCP server "${serverName}" catalog refresh failed:`,
-          error,
+          this.redactRefreshError(this.getServerConfig(serverName), error),
         );
       }
     }
@@ -3152,43 +3134,144 @@ export class MCPManager {
     if (config === undefined || client === undefined || published === undefined) {
       return;
     }
-    const orderedKinds: MCPCatalogKind[] = ["tools", "prompts", "resources"];
-    let publishedSurface = false;
-    for (const kind of orderedKinds) {
+    let notify = false;
+    for (const kind of ["tools", "prompts", "resources"] as const) {
       if (!kinds.has(kind)) continue;
-      const generation = state.generations[kind];
-      const isKindCurrent = (): boolean =>
-        isServerCurrent() && state.generations[kind] === generation;
-      if (!isKindCurrent()) continue;
-      try {
-        switch (kind) {
-          case "tools":
-            await this.refreshToolCatalog(config, client, published, isKindCurrent);
-            if (isKindCurrent()) publishedSurface = true;
-            break;
-          case "prompts":
-            await this.refreshPromptCatalog(serverName);
-            if (isKindCurrent()) publishedSurface = true;
-            break;
-          case "resources":
-            await this.refreshResourceCatalog(serverName);
-            if (isKindCurrent()) publishedSurface = true;
-            break;
-          default: {
-            assertNeverCatalogKind(kind);
-          }
-        }
-      } catch (error) {
-        if (!isKindCurrent()) continue;
-        this.logger.warn?.(
-          `MCP server "${serverName}" ${kind} catalog refresh failed:`,
-          error,
-        );
+      if (await this.refreshOneCatalogKind(
+        kind, config, client, published, state, isServerCurrent,
+      )) {
+        notify = true;
       }
     }
-    if (publishedSurface && isServerCurrent()) {
-      this.notifySurfaceChanged();
+    if (notify && isServerCurrent()) this.notifySurfaceChanged();
+  }
+
+  private async refreshOneCatalogKind(
+    kind: MCPCatalogKind,
+    config: MCPServerConfig,
+    client: unknown,
+    published: MCPToolBridge,
+    state: CatalogRefreshState,
+    isServerCurrent: () => boolean,
+  ): Promise<boolean> {
+    const generation = state.generations[kind];
+    const isKindCurrent = (): boolean =>
+      isServerCurrent() && state.generations[kind] === generation;
+    if (!isKindCurrent()) return false;
+    try {
+      const changed = await this.refreshCatalogKind(
+        kind, config, client, published, isKindCurrent,
+      );
+      return changed && isKindCurrent();
+    } catch (error) {
+      if (!isServerCurrent()) throw error;
+      if (!isKindCurrent()) return false;
+      this.logger.warn?.(
+        `MCP server "${config.name}" ${kind} catalog refresh failed:`,
+        this.redactRefreshError(config, error),
+      );
+      return false;
     }
+  }
+
+  private async refreshCatalogKind(
+    kind: MCPCatalogKind,
+    config: MCPServerConfig,
+    client: unknown,
+    published: MCPToolBridge,
+    isCurrent: () => boolean,
+  ): Promise<boolean> {
+    switch (kind) {
+      case "tools":
+        return this.refreshToolCatalog(config, client, published, isCurrent);
+      case "prompts":
+        return this.refreshPromptCatalog(config.name, isCurrent);
+      case "resources":
+        return this.refreshResourceCatalog(config.name, isCurrent);
+      default:
+        return assertNeverCatalogKind(kind);
+    }
+  }
+
+  private connectionSensitiveHeaders(
+    config: MCPServerConfig,
+  ): Readonly<Record<string, string>> | undefined {
+    return config.origin?.scope === "session"
+      ? config.headers
+      : pluginSensitiveHeaders(config);
+  }
+
+  private redactRefreshError(
+    config: MCPServerConfig | undefined,
+    error: unknown,
+  ): unknown {
+    const headers = config === undefined
+      ? undefined
+      : this.connectionSensitiveHeaders(config);
+    return this.redactPluginDiagnostic(redactMcpAttachmentValue(error, headers));
+  }
+
+  private createManagedToolBridge(
+    client: unknown,
+    config: MCPServerConfig,
+    logger: Logger,
+    extra: {
+      readonly ownClient?: boolean;
+      readonly onCatalog?: (tools: readonly Record<string, unknown>[]) => void;
+    } = {},
+  ): Promise<MCPToolBridge> {
+    return createToolBridge(client, config.name, logger, {
+      listToolsTimeoutMs: config.timeout,
+      callToolTimeoutMs: config.timeout,
+      serverConfig: toToolCatalogPolicyConfig(config),
+      environment: this.environment,
+      ...extra,
+      ...(this.callObserver !== undefined
+        ? { callObserver: this.callObserver }
+        : {}),
+      ...(this.permissionOptions !== undefined
+        ? { permissions: this.permissionOptions }
+        : {}),
+      ...(config.origin?.scope === "plugin"
+        ? {
+            revocationGuard: () => this.configIsCurrent(config),
+            revocationSignal: this.pluginRevocationSignal(config),
+          }
+        : {}),
+    });
+  }
+
+  private wrapPluginToolSurface(
+    config: MCPServerConfig,
+    bridge: MCPToolBridge,
+  ): void {
+    if (config.origin?.scope !== "plugin") return;
+    const proxyGeneration = this.lifecycleGeneration;
+    bridge.tools.splice(0, bridge.tools.length, ...bridge.tools.map((tool) => {
+      const execute = tool.execute;
+      return {
+        ...tool,
+        execute: async (args: Record<string, unknown>): Promise<ToolResult> => {
+          const current = (): boolean =>
+            this.lifecycleGeneration === proxyGeneration &&
+            this.getServerConfig(config.name) === config &&
+            this.configIsCurrent(config);
+          if (!current()) {
+            return {
+              content: `MCP plugin ${config.name} proxy configuration changed`,
+              isError: true,
+            };
+          }
+          this.pluginLifecycle(config.name).active++;
+          this.notifyPluginActivity(config.name);
+          try {
+            return await execute(args);
+          } finally {
+            this.finishPluginActivity(config.name, config);
+          }
+        },
+      };
+    }));
   }
 
   private async refreshToolCatalog(
@@ -3196,52 +3279,71 @@ export class MCPManager {
     client: unknown,
     published: MCPToolBridge,
     isCurrent: () => boolean,
-  ): Promise<void> {
-    const sensitiveHeaders =
-      config.origin?.scope === "session" ? config.headers : undefined;
-    const logger = attachmentLogger(this.logger, sensitiveHeaders);
-    const replacement = await createToolBridge(
-      client,
-      config.name,
-      logger,
-      {
-        listToolsTimeoutMs: config.timeout,
-        callToolTimeoutMs: config.timeout,
-        serverConfig: toToolCatalogPolicyConfig(config),
-        environment: this.environment,
-        ownClient: false,
-        ...(this.callObserver !== undefined
-          ? { callObserver: this.callObserver }
-          : {}),
-        ...(this.permissionOptions !== undefined
-          ? { permissions: this.permissionOptions }
-          : {}),
-      },
-    );
-    if (!isCurrent()) return;
+  ): Promise<boolean> {
+    const logger = attachmentLogger(this.logger, this.connectionSensitiveHeaders(config));
+    let catalogTools: readonly Record<string, unknown>[] | undefined;
+    const replacement = await this.createManagedToolBridge(client, config, logger, {
+      ownClient: false,
+      ...(this.isLazyPlugin(config)
+        ? { onCatalog: (tools) => { catalogTools = tools; } }
+        : {}),
+    });
+    if (!isCurrent()) return false;
     this.assertNoNameShadowing(config.name, replacement, {
       excludeServerName: config.name,
     });
-    if (!isCurrent()) return;
-    if (published instanceof ResilientMCPBridge) {
-      published.replacePublishedCatalog(replacement);
-      return;
+    if (!isCurrent()) return false;
+    if (!(published instanceof ResilientMCPBridge)) {
+      throw new Error(
+        `MCP server "${config.name}" cannot replace a non-resilient tool surface`,
+      );
     }
-    throw new Error(
-      `MCP server "${config.name}" cannot replace a non-resilient tool surface`,
-    );
+    published.replacePublishedCatalog(replacement);
+    this.wrapPluginToolSurface(config, published);
+    if (!this.isLazyPlugin(config) || catalogTools === undefined) return true;
+    return this.publishLazyCatalog(config, { tools: catalogTools }, isCurrent);
   }
 
-  private async refreshPromptCatalog(serverName: string): Promise<void> {
+  private async refreshPromptCatalog(
+    serverName: string,
+    isCurrent: () => boolean,
+  ): Promise<boolean> {
     const bridge = this.promptBridges.get(serverName);
-    if (bridge === undefined) return;
-    await bridge.refreshPrompts();
+    if (bridge === undefined) return false;
+    const prompts = await bridge.refreshPrompts();
+    const config = this.getServerConfig(serverName);
+    if (config === undefined || !this.isLazyPlugin(config)) return true;
+    return this.publishLazyCatalog(config, { prompts }, isCurrent);
   }
 
-  private async refreshResourceCatalog(serverName: string): Promise<void> {
+  private async refreshResourceCatalog(
+    serverName: string,
+    isCurrent: () => boolean,
+  ): Promise<boolean> {
     const bridge = this.resourceBridges.get(serverName);
-    if (bridge === undefined) return;
-    await bridge.refreshResources();
+    if (bridge === undefined) return false;
+    const resources = await bridge.refreshResources();
+    const config = this.getServerConfig(serverName);
+    if (config === undefined || !this.isLazyPlugin(config)) return true;
+    return this.publishLazyCatalog(config, { resources }, isCurrent);
+  }
+
+  /** Lazy catalogs notify inside `publishCachedCatalog` only when bytes change. */
+  private async publishLazyCatalog(
+    config: MCPServerConfig,
+    patch: {
+      readonly tools?: readonly Record<string, unknown>[];
+      readonly prompts?: readonly unknown[];
+      readonly resources?: readonly unknown[];
+    },
+    isCurrent: () => boolean,
+  ): Promise<boolean> {
+    if (!isCurrent()) return false;
+    const previous = this.cachedCatalogs.get(config.name);
+    const next = lazyCatalog(previous, patch);
+    if (JSON.stringify(next) === JSON.stringify(previous)) return false;
+    await this.publishCachedCatalog(config, next, true, isCurrent);
+    return false;
   }
 
   private assertNoNameShadowing(

@@ -68,14 +68,27 @@ async function startManager(
 }
 
 function holdNextToolBridge(): (bridge: ReturnType<typeof makeMockBridge>) => void {
-  let release: ((bridge: ReturnType<typeof makeMockBridge>) => void) | undefined;
+  const held = holdNextToolBridgeResult();
+  return (bridge) => held.resolve(bridge);
+}
+
+function holdNextToolBridgeResult(): {
+  readonly resolve: (bridge: ReturnType<typeof makeMockBridge>) => void;
+  readonly reject: (error: unknown) => void;
+} {
+  let resolvePromise: ((bridge: ReturnType<typeof makeMockBridge>) => void) | undefined;
+  let rejectPromise: ((error: unknown) => void) | undefined;
   mockCreateToolBridge.mockImplementationOnce(
     () =>
-      new Promise((resolve) => {
-        release = resolve;
+      new Promise((resolve, reject) => {
+        resolvePromise = resolve;
+        rejectPromise = reject;
       }),
   );
-  return (bridge) => release?.(bridge);
+  return {
+    resolve: (bridge) => resolvePromise?.(bridge),
+    reject: (error) => rejectPromise?.(error),
+  };
 }
 
 describe("MCPManager list_changed catalog refresh", () => {
@@ -230,7 +243,7 @@ describe("MCPManager list_changed catalog refresh", () => {
       expect(manager.getTools().map((tool) => tool.name)).toEqual([
         "mcp.srv1.toolA",
       ]);
-      expect(observations.length).toBe(before);
+      expect(observations).toHaveLength(before);
     } finally {
       unsubscribe();
       await manager.stop();
@@ -310,7 +323,7 @@ describe("MCPManager list_changed catalog refresh", () => {
       expect((await manager.listPrompts()).map((item) => item.name)).toEqual([
         "promptA",
       ]);
-      expect(observations.length).toBe(before);
+      expect(observations).toHaveLength(before);
     } finally {
       unsubscribe();
       await manager.stop();
@@ -400,6 +413,77 @@ describe("MCPManager list_changed catalog refresh", () => {
     } finally {
       await manager.stop();
       vi.useRealTimers();
+    }
+  });
+
+  it("still refreshes a kind queued after a stale refresh throws", async () => {
+    vi.useFakeTimers();
+    const initial = makeMockBridge("srv1", ["toolA"]);
+    initial.tools[0]!.execute = vi.fn().mockResolvedValue({
+      content: "transport closed",
+      isError: true,
+    });
+    const reconnected = makeMockBridge("srv1", ["toolA"]);
+    const refreshed = makeMockBridge("srv1", ["toolB"]);
+    mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
+    mockCreateToolBridge.mockResolvedValueOnce(initial);
+    const held = holdNextToolBridgeResult();
+    mockCreateToolBridge.mockResolvedValueOnce(reconnected);
+    mockCreateToolBridge.mockResolvedValueOnce(refreshed);
+
+    const manager = await startManager([makeConfig("srv1")]);
+    try {
+      const handlers = listChangedHandlersFromConnect();
+      handlers.onToolsListChanged();
+      await vi.waitFor(() => {
+        expect(mockCreateToolBridge).toHaveBeenCalledTimes(2);
+      });
+      await manager.getTools()[0]!.execute({});
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.waitFor(() => {
+        expect(mockCreateToolBridge).toHaveBeenCalledTimes(3);
+      });
+      handlers.onToolsListChanged();
+      held.reject(new Error("stale catalog refresh"));
+      await waitForTools(manager, ["mcp.srv1.toolB"]);
+    } finally {
+      await manager.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    {
+      label: "session header",
+      config: makeConfig("srv1", {
+        origin: { scope: "session" },
+        headers: { Authorization: "super-secret-token" },
+      }),
+    },
+    {
+      label: "plugin secret",
+      config: makeConfig("srv1", {
+        origin: { scope: "plugin" },
+        pluginSecretValues: ["super-secret-token"],
+      }),
+    },
+  ])("redacts a $label from a failed tools refresh log", async ({ config }) => {
+    const logger = testLogger();
+    mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(makeMockBridge(config.name, ["toolA"]))
+      .mockRejectedValueOnce(new Error("list failed super-secret-token"));
+    const manager = await startManager([config], logger);
+    try {
+      listChangedHandlersFromConnect().onToolsListChanged();
+      await vi.waitFor(() => {
+        expect(logger.warn).toHaveBeenCalled();
+      });
+      const logged = JSON.stringify(logger.warn.mock.calls);
+      expect(logged).toContain("catalog refresh failed");
+      expect(logged).not.toContain("super-secret-token");
+    } finally {
+      await manager.stop();
     }
   });
 });
