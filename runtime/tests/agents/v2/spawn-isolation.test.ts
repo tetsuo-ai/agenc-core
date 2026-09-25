@@ -602,6 +602,40 @@ describe("spawn_agent isolation", () => {
     expect(mockDelegate).not.toHaveBeenCalled();
   });
 
+  it.each(["default", "standard", "none", "Default"])(
+    "treats service_tier %s as the standard tier on a model without tiers",
+    async (service_tier) => {
+      const { tool } = await crossProviderFixture(["deepseek"]);
+      mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+      const result = await tool.execute({
+        message: "inspect", task_name: "worker", provider: "deepseek", model: "deepseek-v4-pro", service_tier,
+      });
+      expect(result.isError).not.toBe(true);
+      expect(mockDelegate).toHaveBeenCalledOnce();
+      expect(mockDelegate.mock.calls[0]?.[0].plan?.serviceTier).toBeUndefined();
+    },
+  );
+
+  it("treats service_tier default as the standard tier on a model that offers priority", async () => {
+    const { session } = await crossProviderFixture([], false, "grok");
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(makeOptions(session)).execute({
+      message: "look", task_name: "helper", model: "grok-4.7", service_tier: "default",
+    });
+    expect(result.isError).not.toBe(true);
+    expect(mockDelegate.mock.calls[0]?.[0].serviceTier ?? null).toBeNull();
+  });
+
+  it("lets a full-history fork ask for the standard tier, which it ignores", async () => {
+    const { session } = await crossProviderFixture([], false, "grok");
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await createSpawnAgentTool(makeOptions(session)).execute({
+      message: "continue", task_name: "fork", fork_turns: "all", service_tier: "default",
+    });
+    expect(result.isError).not.toBe(true);
+    expect(mockDelegate).toHaveBeenCalledOnce();
+  });
+
   it("validates a role's effective service tier against the target model", async () => {
     const { session } = await crossProviderFixture(["deepseek"]);
     const options = makeOptions(session);

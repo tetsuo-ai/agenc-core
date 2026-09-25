@@ -301,6 +301,18 @@ export function shortAgentTaskTitle(
   return base.length > 60 ? `${base.slice(0, 59).trimEnd()}…` : base;
 }
 
+/**
+ * Names a model uses for the standard tier. Every model serves that tier with
+ * no service tier sent, so these mean the same as leaving service_tier out. A
+ * model without tiers used to refuse them and fail the whole spawn.
+ */
+const STANDARD_SERVICE_TIER_NAMES: ReadonlySet<string> = new Set(["default", "standard", "none"]);
+
+function explicitServiceTier(value: string | undefined): string | undefined {
+  return value !== undefined && STANDARD_SERVICE_TIER_NAMES.has(value.toLowerCase())
+    ? undefined : value;
+}
+
 function serviceTierIds(modelInfo: ModelInfo): readonly string[] {
   return (modelInfo.serviceTiers ?? []).map((tier) => tier.id);
 }
@@ -673,7 +685,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     const taskName = normalizeSpawnTaskName(rawTaskName);
     const forkMode = parseForkTurns(args.fork_turns);
     if (forkMode !== undefined && "content" in forkMode) return forkMode;
-    const requestedServiceTier = stringValue(args.service_tier);
+    const requestedServiceTier = explicitServiceTier(stringValue(args.service_tier));
     if (forkMode?.kind === "full_history" &&
         (role !== undefined || model !== undefined || reasoningEffort !== undefined ||
           requestedServiceTier !== undefined) &&
