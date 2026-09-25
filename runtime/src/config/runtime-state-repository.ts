@@ -22,7 +22,7 @@ import {
 } from "node:fs";
 import { basename, join } from "node:path";
 
-import { runWithConfigAuthorityLocks, runWithConfigAuthorityLockSync, withConfigAuthorityLockSync } from "./authority-lock.js";
+import { runWithConfigAuthorityLockSync, withConfigAuthorityLockSync } from "./authority-lock.js";
 import { cloneRecord, isPlainRecord, type JsonRecord } from "./json.js";
 import {
   createCanonicalStateDocument,
@@ -685,7 +685,6 @@ export interface RuntimeStateRepositoryOptions {
 interface StateCache {
   readonly loaded: boolean;
   readonly config: GlobalRuntimeState | null;
-  readonly error?: Error;
 }
 
 function globalStateFromDocument(
@@ -781,9 +780,9 @@ interface RuntimeStateSaveOutcome {
 /**
  * Mutable state authority for exactly one immutable AgenC home.
  *
- * Every cache, watcher generation, in-memory test fixture, backup path, and
- * lock target belongs to this instance. The repository never consults
- * process.env and therefore cannot switch homes after construction.
+ * Every cache, watcher, in-memory test fixture, backup path, and lock target
+ * belongs to this instance. The repository never consults process.env and
+ * therefore cannot switch homes after construction.
  */
 export class RuntimeStateRepository {
   readonly homeContext: HomeContext;
@@ -797,7 +796,6 @@ export class RuntimeStateRepository {
   #memoryState: GlobalRuntimeState = immutableGlobalState({});
   #watcherStarted = false;
   #closed = false;
-  #refreshGeneration = 0;
 
   constructor(
     homeContext: HomeContext,
@@ -818,7 +816,6 @@ export class RuntimeStateRepository {
 
   get(): GlobalRuntimeState {
     if (this.#storage === "memory") return this.#memoryState;
-    if (this.#cache.error) throw this.#cache.error;
     if (this.#cache.loaded && this.#cache.config !== null) {
       return this.#cache.config;
     }
@@ -866,7 +863,6 @@ export class RuntimeStateRepository {
         return written;
       });
       if (saveOutcome.writeOutcome !== null && written !== null) {
-        this.#refreshGeneration += 1;
         this.#cache = { loaded: true, config: written };
       }
     } catch (error) {
@@ -950,7 +946,6 @@ export class RuntimeStateRepository {
   /** Clear this authority's cache only; the next read is synchronous/fail-closed. */
   invalidate(): void {
     if (this.#storage === "memory") return;
-    this.#refreshGeneration += 1;
     this.#cache = { loaded: false, config: null };
   }
 
@@ -964,7 +959,6 @@ export class RuntimeStateRepository {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
-    this.#refreshGeneration += 1;
     if (this.#watcherStarted) {
       this.#unwatchFile(this.statePath, this.#watchListener);
       this.#watchListener = undefined;
@@ -1012,33 +1006,21 @@ export class RuntimeStateRepository {
     registerCleanup(async () => this.close());
   }
 
+  /**
+   * The file changed on disk: drop the cached view, and nothing more. The next
+   * `get()` reads it again, synchronously and under the authority lock, and
+   * fails closed on invalid state exactly as a first read does.
+   *
+   * Reading here instead took the lock asynchronously and held it across
+   * event-loop turns. One change reaches every repository on the path (the
+   * daemon keeps one per session bootstrap and per permission load), so a
+   * single write started dozens of those holds at once, and any synchronous
+   * read in the same process during them, such as a session restore reading
+   * bypass consent, failed with ELOCKED.
+   */
   #refreshAfterWatchEvent(): void {
-    const generation = ++this.#refreshGeneration;
-    void runWithConfigAuthorityLocks([this.statePath], () => {
-      recoverCanonicalStatePublicationSync(this.statePath);
-      return readCanonicalStateSync(this.statePath);
-    })
-      .then((outcome) => {
-        if (this.#closed || generation !== this.#refreshGeneration) return;
-        if (outcome.status === "failed") throw outcome.error;
-        reportAuthorityReleaseErrors(this.statePath, outcome.postOperationReleaseErrors);
-        this.#cache = {
-          loaded: true,
-          config: globalStateFromDocument(outcome.value, this.statePath),
-        };
-      })
-      .catch((error: unknown) => {
-        if (this.#closed || generation !== this.#refreshGeneration) return;
-        if (error instanceof Error && "code" in error && error.code === "ELOCKED") {
-          this.#cache = { loaded: false, config: null };
-          return;
-        }
-        this.#cache = {
-          loaded: true,
-          config: null,
-          error: error instanceof Error ? error : new Error(String(error)),
-        };
-      });
+    if (this.#closed) return;
+    this.#cache = { loaded: false, config: null };
   }
 
   #saveWithLock(
