@@ -1485,7 +1485,10 @@ describe("AgenC daemon CLI", () => {
     expect(windows).toContain("__AGENC_CMD_EXE__");
     expect(windows).toContain("__AGENC_LAUNCHER__");
     expect(windows).toContain("__AGENC_HOME__");
-    expect(windows).toContain("__AGENC_SERVICE_ACCOUNT__");
+    expect(windows).toContain("__AGENC_DOMAIN__");
+    expect(windows).toContain("__AGENC_USER__");
+    expect(windows).not.toContain("<username>");
+    expect(windows).not.toContain("<password>");
     expect(windows).not.toContain("<executable>agenc</executable>");
     expect(helpText).toContain("agenc daemon install-service");
   });

@@ -131,10 +131,6 @@ export function renderGeneratedWrapperContent({
   ].join("\n");
 }
 
-// Releases 0.6.2 through 0.10.0 emitted this immutable metadata-v1 shape
-// before standalone installs carried a private Node runtime. Keep the renderer
-// private: it exists only so ownership can be proven by exact full-file
-// reconstruction, never by trusting the historical marker or metadata alone.
 function renderCmdWrapper({
   nodeBin,
   runtimeBin,
@@ -172,6 +168,10 @@ function renderHistoricalPrivateNodeCmdWrapper(values) {
   });
 }
 
+// Releases 0.6.2 through 0.10.0 emitted this immutable metadata-v1 shape
+// before standalone installs carried a private Node runtime. Keep the renderer
+// private: it exists only so ownership can be proven by exact full-file
+// reconstruction, never by trusting the historical marker or metadata alone.
 function renderPrePrivateNodeWrapperContent({
   kind,
   nodeBin,

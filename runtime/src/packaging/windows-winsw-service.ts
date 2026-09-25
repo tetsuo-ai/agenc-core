@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, win32 } from "node:path";
 import { escapeXmlAttr, unescapeXml } from "../utils/xml.js";
 
@@ -9,12 +9,14 @@ const WINDOWS_SYSTEM32_CMD_EXE = "C:\\Windows\\System32\\cmd.exe";
 /** Packaging does not download WinSW. Service XML is pinned to this release. */
 export const AGENC_DAEMON_WINSW_VERSION = "2.12.0";
 
-const LOCAL_SYSTEM_ACCOUNTS = new Set([
+const BUILTIN_SERVICE_USERS = new Set([
   "localsystem",
   "system",
-  ".\\system",
-  "nt authority\\system",
+  "localservice",
+  "networkservice",
 ]);
+
+const WINSW_LOG_SIZE_THRESHOLD_KB = "10240";
 
 type AgencDaemonWinSWServiceInput = {
   readonly commandPrompt: string;
@@ -81,16 +83,23 @@ function normalizeAccountUsername(value: string): string {
   return value.trim().replaceAll("/", "\\");
 }
 
+function serviceAccountUser(account: string): string {
+  const separator = account.lastIndexOf("\\");
+  return separator === -1 ? account : account.slice(separator + 1);
+}
+
 function assertWindowsServiceAccount(username: string): void {
   const normalized = normalizeAccountUsername(username);
-  if (normalized === "") {
-    throw new Error("service account must be the installing user, not LocalSystem");
-  }
+  const user = serviceAccountUser(normalized).toLowerCase();
   if (
-    LOCAL_SYSTEM_ACCOUNTS.has(normalized.toLowerCase()) ||
-    normalized.toLowerCase() === "nt authority\\system"
+    normalized === "" ||
+    user === "" ||
+    user.endsWith("$") ||
+    BUILTIN_SERVICE_USERS.has(user)
   ) {
-    throw new Error("service account must be the installing user, not LocalSystem");
+    throw new Error(
+      "service account must be the installing user, not LocalSystem, LocalService, NetworkService, or a machine account",
+    );
   }
 }
 
@@ -107,9 +116,6 @@ function splitWinSW212ServiceAccount(username: string): {
     throw new Error(
       "WinSW 2.12 service account must be DOMAIN\\user so the service is not LocalSystem",
     );
-  }
-  if (LOCAL_SYSTEM_ACCOUNTS.has(user.toLowerCase())) {
-    throw new Error("service account must be the installing user, not LocalSystem");
   }
   return { domain, user };
 }
@@ -143,7 +149,9 @@ export function resolveWindowsServiceAccount(
 ): string {
   const user = env.USERNAME ?? env.USER;
   if (user === undefined || user.trim() === "") {
-    throw new Error("service account must be the installing user, not LocalSystem");
+    throw new Error(
+      "USERNAME is not set; refusing to generate a WinSW service without an installing user",
+    );
   }
   const domain = env.USERDOMAIN?.trim();
   const username = domain ? `${domain}\\${user.trim()}` : `.\\${user.trim()}`;
@@ -170,6 +178,11 @@ function resolveWindowsAgencLauncher(
   }
   const launcher = joinServicePath(prefix, "bin", "agenc.cmd");
   assertLauncher(launcher);
+  if (!existsSync(launcher)) {
+    throw new Error(
+      `agenc.cmd was not found at ${launcher}; AGENC_INSTALL_PREFIX must be the directory that contains bin\\agenc.cmd`,
+    );
+  }
   return launcher;
 }
 
@@ -202,6 +215,7 @@ export function installAgencDaemonWinSWService(options: {
     const launcher = resolveWindowsAgencLauncher(options.env);
     const accountUsername = resolveWindowsServiceAccount(options.env);
     const outputPath = resolveAgencDaemonWinSWOutputPath(options.env);
+    winsw212ExecutableForXml(outputPath);
     writeAgencDaemonWinSWServiceXml({
       commandPrompt: resolveWindowsCmdExe(options.env),
       launcher,
@@ -256,7 +270,7 @@ export function renderAgencDaemonWinSWService(
     "  <startmode>Automatic</startmode>",
     '  <onfailure action="restart" delay="5 sec"/>',
     '  <log mode="roll-by-size">',
-    "    <sizeThreshold>10485760</sizeThreshold>",
+    `    <sizeThreshold>${WINSW_LOG_SIZE_THRESHOLD_KB}</sizeThreshold>`,
     "    <keepFiles>5</keepFiles>",
     "  </log>",
     "</service>",
@@ -331,34 +345,56 @@ export function writeAgencDaemonWinSWServiceXml(
   return { ...definition, outputPath: input.outputPath };
 }
 
+function winsw212ExecutableForXml(outputPath: string): string {
+  const base = win32.basename(outputPath);
+  const stem = base.match(/^([A-Za-z0-9][A-Za-z0-9._-]*)\.xml$/u)?.[1];
+  if (stem === undefined) {
+    throw new Error(
+      "WinSW 2.12.0 loads <exe-basename>.xml beside the executable; AGENC_WINSW_XML must be named like agenc-daemon.xml",
+    );
+  }
+  return win32.join(win32.dirname(outputPath), `${stem}.exe`);
+}
+
 function formatWinSWServiceInstallInstructions(input: {
   readonly outputPath: string;
   readonly accountUsername: string;
   readonly agencHome: string;
   readonly launcher: string;
 }): string {
-  const executable = win32.join(win32.dirname(input.outputPath), "agenc-daemon.exe");
+  const executable = winsw212ExecutableForXml(input.outputPath);
   return [
     `Wrote ${input.outputPath}`,
     "This file is the service definition only. The one-line Windows installer",
     "does not install or start a Windows service.",
     "",
     `Pinned WinSW version: ${AGENC_DAEMON_WINSW_VERSION}`,
-    "Packaging does not download WinSW. Use the WinSW 2.12.0 binary",
-    "(WinSW-x64.exe from the v2.12.0 GitHub release). WinSW 3 reads <username>",
-    "and ignores <domain>/<user>, so it is not compatible with this file.",
+    "WinSW 2.12.0 loads <exe directory>\\<exe basename>.xml (Program.cs).",
+    "Place the v2.12.0 binary beside this file and name it:",
+    `  "${executable}"`,
     "",
-    "Service identity: the installing user (not LocalSystem)",
+    "Service identity recorded in <domain> and <user>:",
     `  account:    ${input.accountUsername}`,
     `  AGENC_HOME: ${input.agencHome}`,
     `  launcher:   ${input.launcher}`,
     "",
-    "The XML omits <password>. WinSW 2.12.0 prompts for the account password",
-    "when install is started with /p. Do not write the password into the XML.",
+    "The XML omits <password>. Do not run install /p.",
+    "install /p prompts Username: and Password: and passes the typed name to",
+    "CreateService. The XML account is not that name. Typing LocalSystem",
+    "installs as LocalSystem. Password: is skipped for LocalSystem,",
+    "LocalService, and NetworkService.",
     "",
-    "Place that binary beside the XML, rename it to agenc-daemon.exe, then run",
-    "these WinSW 2.12.0 commands (elevated):",
-    `  "${executable}" install /p`,
+    "install with no /p passes DOMAIN\\user and a null password to CreateService.",
+    "Program.cs does not show whether Windows accepts that null password.",
+    "Set the logon password outside the XML (Services Log On tab, or",
+    `sc.exe config ${AGENC_DAEMON_WINSW_SERVICE_ID} obj= "${input.accountUsername}" password= ...).`,
+    "Before start, confirm the account:",
+    `  sc.exe qc ${AGENC_DAEMON_WINSW_SERVICE_ID}`,
+    `SERVICE_START_NAME must be ${input.accountUsername}.`,
+    "Do not start the service when it is LocalSystem.",
+    "",
+    `  "${executable}" install`,
+    `  sc.exe qc ${AGENC_DAEMON_WINSW_SERVICE_ID}`,
     `  "${executable}" start`,
     `  "${executable}" stop`,
     `  "${executable}" restart`,
