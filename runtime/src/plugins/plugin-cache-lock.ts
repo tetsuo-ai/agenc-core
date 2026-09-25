@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  lstat,
   mkdir,
   readdir,
   readFile,
@@ -36,6 +37,8 @@ export interface PluginCacheLockHooks {
   readonly heartbeatIntervalMs?: number;
   readonly pollIntervalMs?: number;
   readonly incompleteGraceMs?: number;
+  /** Test seam: runs inside lease persistence, before the owner file is written. */
+  readonly beforeWriteLease?: () => Promise<void>;
 }
 
 export interface PluginCacheLockHandle {
@@ -67,6 +70,7 @@ interface ResolvedLockHooks {
   readonly heartbeatIntervalMs: number;
   readonly pollIntervalMs: number;
   readonly incompleteGraceMs: number;
+  readonly beforeWriteLease?: () => Promise<void>;
 }
 
 export function pluginCacheLockDirectory(cacheRoot: string): string {
@@ -81,7 +85,9 @@ export async function withPluginCacheLock<T>(
   const resolved = resolveHooks(hooks);
   const lock = await acquirePluginCacheLock(cacheRoot, hooks);
   const timer = setInterval(() => {
-    void lock.refresh();
+    void lock.refresh().catch((error: unknown) => {
+      noteHeartbeatFailure(error);
+    });
   }, resolved.heartbeatIntervalMs);
   timer.unref();
   try {
@@ -127,7 +133,15 @@ function resolveHooks(hooks: PluginCacheLockHooks): ResolvedLockHooks {
     heartbeatIntervalMs: hooks.heartbeatIntervalMs ?? PLUGIN_CACHE_LOCK_HEARTBEAT_INTERVAL_MS,
     pollIntervalMs: hooks.pollIntervalMs ?? PLUGIN_CACHE_LOCK_POLL_INTERVAL_MS,
     incompleteGraceMs: hooks.incompleteGraceMs ?? PLUGIN_CACHE_LOCK_INCOMPLETE_GRACE_MS,
+    beforeWriteLease: hooks.beforeWriteLease,
   };
+}
+
+function noteHeartbeatFailure(error: unknown): void {
+  // A failed heartbeat must not reject the daemon. The lease stays at its last
+  // successful write, and a later tick retries until the lease expires.
+  const detail = error instanceof Error ? error.message : "unknown heartbeat failure";
+  console.error(`plugin cache lock heartbeat failed: ${detail}`);
 }
 
 async function tryAcquire(
@@ -142,12 +156,16 @@ async function tryAcquire(
       ownerToken,
       pid: hooks.pid,
       heartbeatAtMs: hooks.nowMs(),
-    });
+    }, hooks);
   } catch (error) {
     await unlink(ownerFilePath(lockDir, ownerToken)).catch(() => {});
     await rmdir(lockDir).catch(() => {});
     if (isENOENT(error)) return undefined;
     throw error;
+  }
+  if (!await leaseIsExclusive(lockDir, ownerToken, identity)) {
+    await unlink(ownerFilePath(lockDir, ownerToken)).catch(() => {});
+    return undefined;
   }
   return createHandle(lockDir, ownerToken, identity, hooks);
 }
@@ -158,21 +176,37 @@ function createHandle(
   identity: LockIdentity,
   hooks: ResolvedLockHooks,
 ): PluginCacheLockHandle {
+  let refreshTail: Promise<void> = Promise.resolve();
+  let released = false;
+
+  const persistRefresh = async (): Promise<void> => {
+    if (released) return;
+    if (!await lockIdentityMatches(lockDir, identity)) return;
+    if (!await ownerFileExists(lockDir, ownerToken)) return;
+    if (released) return;
+    await writeOwnerLease(lockDir, {
+      ownerToken,
+      pid: hooks.pid,
+      heartbeatAtMs: hooks.nowMs(),
+    }, hooks);
+    if (released || !await lockIdentityMatches(lockDir, identity)) {
+      await unlink(ownerFilePath(lockDir, ownerToken)).catch(() => {});
+    }
+  };
+
   return {
     ownerToken,
-    refresh: async () => {
-      if (!await lockIdentityMatches(lockDir, identity)) return;
-      if (!await ownerFileExists(lockDir, ownerToken)) return;
-      await writeOwnerLease(lockDir, {
-        ownerToken,
-        pid: hooks.pid,
-        heartbeatAtMs: hooks.nowMs(),
-      });
-      if (!await lockIdentityMatches(lockDir, identity)) {
-        await unlink(ownerFilePath(lockDir, ownerToken)).catch(() => {});
-      }
+    refresh: () => {
+      const continueRefresh = (): Promise<void> | undefined => (
+        released ? undefined : persistRefresh()
+      );
+      const run = refreshTail.then(continueRefresh, continueRefresh);
+      refreshTail = run.then(() => undefined, () => undefined);
+      return run;
     },
     release: async () => {
+      released = true;
+      await refreshTail;
       if (!await lockIdentityMatches(lockDir, identity)) return;
       await unlink(ownerFilePath(lockDir, ownerToken)).catch(() => {});
       await rmdir(lockDir).catch(() => {});
@@ -190,10 +224,24 @@ async function tryCreateLockDir(lockDir: string): Promise<LockIdentity | undefin
   return readLockIdentity(lockDir);
 }
 
+async function leaseIsExclusive(
+  lockDir: string,
+  ownerToken: string,
+  identity: LockIdentity,
+): Promise<boolean> {
+  if (!await lockIdentityMatches(lockDir, identity)) return false;
+  const entries = await readLockEntries(lockDir);
+  if (entries === undefined) return false;
+  const ownFile = `${OWNER_FILE_PREFIX}${ownerToken}`;
+  const competing = entries.some((entry) => entry !== ownFile && !entry.endsWith(".tmp"));
+  return !competing && await lockIdentityMatches(lockDir, identity);
+}
+
 async function reclaimExpiredOwners(
   lockDir: string,
   hooks: ResolvedLockHooks,
 ): Promise<void> {
+  if (!await isRealLockDirectory(lockDir)) return;
   const entries = await readLockEntries(lockDir);
   if (entries === undefined) return;
   if (entries.length === 0) {
@@ -205,22 +253,38 @@ async function reclaimExpiredOwners(
   for (const entry of entries) {
     if (entry.endsWith(".tmp")) {
       if (await fileAgeMs(lockDir, entry, now) >= hooks.leaseTtlMs) {
-        await unlink(join(lockDir, entry)).catch(() => {});
+        await unlinkLockEntry(lockDir, entry);
       }
       continue;
     }
     const lease = await readOwnerLease(lockDir, entry);
     if (lease === undefined) {
       if (await fileAgeMs(lockDir, entry, now) >= hooks.incompleteGraceMs) {
-        await unlink(join(lockDir, entry)).catch(() => {});
+        await unlinkLockEntry(lockDir, entry);
       }
       continue;
     }
     if (shouldReclaimLease(lease, now, hooks)) {
-      await unlink(join(lockDir, lease.fileName)).catch(() => {});
+      await unlinkLockEntry(lockDir, lease.fileName);
     }
   }
+  if (!await isRealLockDirectory(lockDir)) return;
   await rmdir(lockDir).catch(() => {});
+}
+
+async function unlinkLockEntry(lockDir: string, name: string): Promise<void> {
+  if (!await isRealLockDirectory(lockDir)) return;
+  await unlink(join(lockDir, name)).catch(() => {});
+}
+
+async function isRealLockDirectory(lockDir: string): Promise<boolean> {
+  try {
+    const info = await lstat(lockDir);
+    return info.isDirectory();
+  } catch (error) {
+    if (isENOENT(error)) return false;
+    throw error;
+  }
 }
 
 async function reclaimIncompleteLockDir(
@@ -229,11 +293,12 @@ async function reclaimIncompleteLockDir(
 ): Promise<void> {
   let lockStat;
   try {
-    lockStat = await stat(lockDir);
+    lockStat = await lstat(lockDir);
   } catch (error) {
     if (isENOENT(error)) return;
     throw error;
   }
+  if (!lockStat.isDirectory()) return;
   if (hooks.nowMs() - lockStat.mtimeMs < hooks.incompleteGraceMs) return;
   await rmdir(lockDir).catch(() => {});
 }
@@ -250,7 +315,9 @@ function shouldReclaimLease(
 async function writeOwnerLease(
   lockDir: string,
   lease: Pick<OwnerLease, "ownerToken" | "pid" | "heartbeatAtMs">,
+  hooks: ResolvedLockHooks,
 ): Promise<void> {
+  await hooks.beforeWriteLease?.();
   const dest = ownerFilePath(lockDir, lease.ownerToken);
   const temp = `${dest}.${lease.pid}.tmp`;
   const body = `${JSON.stringify({
@@ -336,7 +403,8 @@ async function readLockEntries(lockDir: string): Promise<string[] | undefined> {
 
 async function readLockIdentity(lockDir: string): Promise<LockIdentity | undefined> {
   try {
-    const lockStat = await stat(lockDir);
+    const lockStat = await lstat(lockDir);
+    if (!lockStat.isDirectory()) return undefined;
     return { dev: lockStat.dev, ino: lockStat.ino };
   } catch (error) {
     if (isENOENT(error)) return undefined;

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { access, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -68,7 +68,7 @@ describe("plugin cache lock leases", () => {
       trackedOwner(clock, "owner-a", live, { leaseTtlMs: 1_000 }),
     );
 
-    clock.advance(1_000);
+    clock.advance(5_000);
     const ownerB = await acquirePluginCacheLock(
       cacheRoot,
       trackedOwner(clock, "owner-b", live, { leaseTtlMs: 1_000 }),
@@ -214,6 +214,196 @@ describe("plugin cache lock leases", () => {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     }
   });
+
+  test("a heartbeat write error stays inside the lock and does not reject the process", async () => {
+    const { cacheRoot, clock } = await setup();
+    const rejections: unknown[] = [];
+    const onRejection = (error: unknown): void => {
+      rejections.push(error);
+    };
+    process.on("unhandledRejection", onRejection);
+    try {
+      let writes = 0;
+      await withPluginCacheLock(cacheRoot, async () => {
+        const deadline = Date.now() + 1_000;
+        while (writes < 2 && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+        expect(writes).toBeGreaterThanOrEqual(2);
+      }, {
+        ...liveOwner(clock, "wrapper", { heartbeatIntervalMs: 10 }),
+        beforeWriteLease: async () => {
+          writes += 1;
+          if (writes === 1) return;
+          throw new Error("heartbeat write failed");
+        },
+      });
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+    expect(rejections).toEqual([]);
+    await expect(access(pluginCacheLockDirectory(cacheRoot))).rejects.toThrow();
+  });
+
+  test("release waits for an in-flight refresh and does not recreate the lease", async () => {
+    const { cacheRoot, clock } = await setup();
+    let writes = 0;
+    let releaseRefresh: (() => void) | undefined;
+    const refreshEntered = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    let enteredRefresh: () => void = () => {};
+    const refreshWaiting = new Promise<void>((resolve) => {
+      enteredRefresh = resolve;
+    });
+    const owner = await acquirePluginCacheLock(cacheRoot, liveOwner(clock, "owner-a", {
+      beforeWriteLease: async () => {
+        writes += 1;
+        if (writes < 2) return;
+        enteredRefresh();
+        await refreshEntered;
+      },
+    }));
+
+    const refresh = owner.refresh();
+    await refreshWaiting;
+    let released = false;
+    const release = owner.release().then(() => {
+      released = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(released).toBe(false);
+    await expect(readdir(pluginCacheLockDirectory(cacheRoot))).resolves.toContain("owner.owner-a");
+    releaseRefresh?.();
+    await Promise.all([refresh, release]);
+    await expect(access(pluginCacheLockDirectory(cacheRoot))).rejects.toThrow();
+  });
+
+  test("reclaim does not follow a symlinked lock directory", async () => {
+    const { cacheRoot, clock, root } = await setup();
+    const target = join(root, "outside-target");
+    await mkdir(target, { mode: 0o700 });
+    await writeFile(join(target, "owner.victim"), JSON.stringify({
+      ownerToken: "victim",
+      pid: 4242,
+      heartbeatAtMs: 1,
+    }));
+    await writeFile(join(target, "keep-me"), "stay");
+    await symlink(target, pluginCacheLockDirectory(cacheRoot));
+
+    await expect(acquirePluginCacheLock(
+      cacheRoot,
+      trackedOwner(clock, "owner-b", new Set(["owner-b"]), { acquireTimeoutMs: 0 }),
+    )).rejects.toThrow(/timed out waiting for plugin cache lock/u);
+    await expect(readFile(join(target, "keep-me"), "utf8")).resolves.toBe("stay");
+    await expect(readdir(target)).resolves.toContain("owner.victim");
+  });
+
+  test("a lease written into a replaced lock directory is not treated as exclusive", async () => {
+    const { cacheRoot, clock } = await setup();
+    let swapped = false;
+    await expect(acquirePluginCacheLock(cacheRoot, trackedOwner(clock, "owner-b", new Set(["owner-a", "owner-b"]), {
+      acquireTimeoutMs: 0,
+      beforeWriteLease: async () => {
+        if (swapped) return;
+        swapped = true;
+        const lockDir = pluginCacheLockDirectory(cacheRoot);
+        await rm(lockDir, { recursive: true, force: true });
+        await mkdir(lockDir, { mode: 0o700 });
+        await writeFile(join(lockDir, "owner.owner-a"), JSON.stringify({
+          ownerToken: "owner-a",
+          pid: tokenPid("owner-a"),
+          heartbeatAtMs: clock.nowMs(),
+        }));
+      },
+    }))).rejects.toThrow(/timed out waiting for plugin cache lock/u);
+    await expect(readdir(pluginCacheLockDirectory(cacheRoot))).resolves.toEqual(["owner.owner-a"]);
+  });
+
+  test("tryAcquire backs off when a competing lease is in the same lock directory", async () => {
+    const { cacheRoot, clock } = await setup();
+    let planted = false;
+    await expect(acquirePluginCacheLock(cacheRoot, trackedOwner(clock, "owner-b", new Set(["owner-a", "owner-b"]), {
+      acquireTimeoutMs: 0,
+      beforeWriteLease: async () => {
+        if (planted) return;
+        planted = true;
+        await writeFile(join(pluginCacheLockDirectory(cacheRoot), "owner.owner-a"), JSON.stringify({
+          ownerToken: "owner-a",
+          pid: tokenPid("owner-a"),
+          heartbeatAtMs: clock.nowMs(),
+        }));
+      },
+    }))).rejects.toThrow(/timed out waiting for plugin cache lock/u);
+    await expect(readdir(pluginCacheLockDirectory(cacheRoot))).resolves.toEqual(["owner.owner-a"]);
+  });
+
+  test("an empty lock directory past the grace period is reclaimed", async () => {
+    const { cacheRoot, clock } = await setup();
+    await mkdir(pluginCacheLockDirectory(cacheRoot), { mode: 0o700 });
+    clock.advance(5_000);
+    const owner = await acquirePluginCacheLock(cacheRoot, liveOwner(clock, "owner-a", {
+      incompleteGraceMs: 1_000,
+    }));
+    expect(owner.ownerToken).toBe("owner-a");
+    await owner.release();
+  });
+
+  test("a fresh empty lock directory is left in place", async () => {
+    const { cacheRoot, clock } = await setup();
+    await mkdir(pluginCacheLockDirectory(cacheRoot), { mode: 0o700 });
+    await expect(acquirePluginCacheLock(cacheRoot, liveOwner(clock, "owner-a", {
+      acquireTimeoutMs: 0,
+      incompleteGraceMs: 1_000,
+    }))).rejects.toThrow(/timed out waiting for plugin cache lock/u);
+    await expect(readdir(pluginCacheLockDirectory(cacheRoot))).resolves.toEqual([]);
+  });
+
+  test("a stale owner temp file is reclaimed and a fresh one is kept", async () => {
+    const { cacheRoot, clock } = await setup();
+    const lockDir = pluginCacheLockDirectory(cacheRoot);
+    await mkdir(lockDir, { mode: 0o700 });
+    await writeFile(join(lockDir, "owner.stale.1.tmp"), "{}\n");
+    clock.advance(5_000);
+    const owner = await acquirePluginCacheLock(cacheRoot, liveOwner(clock, "owner-a", {
+      leaseTtlMs: 1_000,
+    }));
+    await expect(readdir(lockDir)).resolves.toEqual(["owner.owner-a"]);
+    await owner.release();
+
+    const fresh = await setup();
+    const freshLock = pluginCacheLockDirectory(fresh.cacheRoot);
+    await mkdir(freshLock, { mode: 0o700 });
+    await writeFile(join(freshLock, "owner.fresh.1.tmp"), "{}\n");
+    await expect(acquirePluginCacheLock(fresh.cacheRoot, liveOwner(fresh.clock, "owner-b", {
+      acquireTimeoutMs: 0,
+      leaseTtlMs: 1_000,
+    }))).rejects.toThrow(/timed out waiting for plugin cache lock/u);
+    await expect(readdir(freshLock)).resolves.toEqual(["owner.fresh.1.tmp"]);
+  });
+
+  test("a corrupt owner file past the grace period is reclaimed and a fresh one is kept", async () => {
+    const { cacheRoot, clock } = await setup();
+    const lockDir = pluginCacheLockDirectory(cacheRoot);
+    await mkdir(lockDir, { mode: 0o700 });
+    await writeFile(join(lockDir, "owner.corrupt"), "not-json");
+    clock.advance(5_000);
+    const owner = await acquirePluginCacheLock(cacheRoot, liveOwner(clock, "owner-a", {
+      incompleteGraceMs: 1_000,
+    }));
+    await expect(readdir(lockDir)).resolves.toEqual(["owner.owner-a"]);
+    await owner.release();
+
+    const fresh = await setup();
+    const freshLock = pluginCacheLockDirectory(fresh.cacheRoot);
+    await mkdir(freshLock, { mode: 0o700 });
+    await writeFile(join(freshLock, "owner.corrupt"), "not-json");
+    await expect(acquirePluginCacheLock(fresh.cacheRoot, liveOwner(fresh.clock, "owner-b", {
+      acquireTimeoutMs: 0,
+      incompleteGraceMs: 1_000,
+    }))).rejects.toThrow(/timed out waiting for plugin cache lock/u);
+    await expect(readdir(freshLock)).resolves.toEqual(["owner.corrupt"]);
+  });
 });
 
 function liveOwner(
@@ -264,7 +454,7 @@ async function setup(): Promise<{ cacheRoot: string; clock: FakeClock; root: str
   roots.push(root);
   const cacheRoot = join(root, "cache", "source");
   await mkdir(join(root, "cache"), { recursive: true, mode: 0o700 });
-  let now = 1_000_000;
+  let now = Date.now();
   return {
     root,
     cacheRoot,
