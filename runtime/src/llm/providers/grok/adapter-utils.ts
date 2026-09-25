@@ -194,12 +194,30 @@ function isSensitiveTraceKey(key: string | undefined): boolean {
   return TRACE_SENSITIVE_KEY_PARTS.some((part) => normalized.includes(part));
 }
 
+/**
+ * Usage counters such as `input_tokens`, `cached_tokens` and
+ * `max_output_tokens` contain "token" but hold counts, not credentials. A
+ * number under a key that ends in "tokens", and the `*_tokens_details`
+ * object around such numbers, stay readable so a trace can be priced.
+ */
+function isTokenCountField(key: string | undefined, value: unknown): boolean {
+  if (!key) return false;
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (normalized.endsWith("tokens")) {
+    return typeof value === "number" && Number.isFinite(value);
+  }
+  return normalized.endsWith("tokensdetails") &&
+    value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function redactProviderTraceValue(
   value: unknown,
   key?: string,
   seen: WeakSet<object> = new WeakSet(),
 ): unknown {
-  if (isSensitiveTraceKey(key)) return TRACE_REDACTED_VALUE;
+  if (isSensitiveTraceKey(key) && !isTokenCountField(key, value)) {
+    return TRACE_REDACTED_VALUE;
+  }
   if (value === null || typeof value !== "object") return value;
   if (seen.has(value)) return "[Circular]";
   seen.add(value);
