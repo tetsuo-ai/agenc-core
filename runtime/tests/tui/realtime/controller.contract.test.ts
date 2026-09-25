@@ -26,7 +26,9 @@ import type {
 } from "./audio.js";
 import { createRealtimeTuiControls } from "./controller.js";
 
-function createClient(): {
+function createClient(
+  onRequest?: (method: AgenCDaemonMethod, params?: JsonObject) => void,
+): {
   readonly requests: Array<{
     readonly method: AgenCDaemonMethod;
     readonly params?: JsonObject;
@@ -44,6 +46,7 @@ function createClient(): {
     requests,
     async request(method, params) {
       requests.push({ method, params });
+      onRequest?.(method, params);
       return {} as AgenCDaemonResultByMethod[typeof method];
     },
   };
@@ -407,13 +410,29 @@ describe("AgenC realtime TUI controller", () => {
     expect(stop).toHaveBeenCalledTimes(1);
   });
 
-  test("logs discard failures for a capture that resolves after stop", async () => {
-    const discardError = new Error("stale capture stop failed");
+  test.each([
+    {
+      kind: "async",
+      makeStop: (error: Error) =>
+        vi.fn(async () => {
+          throw error;
+        }),
+    },
+    {
+      kind: "sync",
+      makeStop: (error: Error) =>
+        vi.fn(() => {
+          throw error;
+        }),
+    },
+  ])("logs $kind discard failures for a capture that resolves after stop", async ({
+    kind,
+    makeStop,
+  }) => {
+    const discardError = new Error(`stale capture ${kind} stop failed`);
     const client = createClient();
     let releaseCapture: (() => void) | null = null;
-    const stop = vi.fn(async () => {
-      throw discardError;
-    });
+    const stop = makeStop(discardError);
     const controls = createRealtimeTuiControls({
       threadId: "agent_1",
       client,
@@ -439,7 +458,8 @@ describe("AgenC realtime TUI controller", () => {
       payload: { reason: "remote closed" },
     });
     releaseCapture?.();
-    await start;
+    // A synchronous throw from stop() must be logged, not reject start().
+    await expect(start).resolves.toBeUndefined();
 
     expect(stop).toHaveBeenCalledTimes(1);
     expect(logMock.logError).toHaveBeenCalledWith(discardError);
@@ -449,6 +469,64 @@ describe("AgenC realtime TUI controller", () => {
       closedBanner: "Realtime closed: remote closed",
     });
   });
+
+  test.each([
+    {
+      type: "realtime_closed",
+      payload: { reason: "remote closed" },
+      expected: { closedBanner: "Realtime closed: remote closed" },
+    },
+    {
+      type: "realtime_error",
+      payload: { message: "provider failed" },
+      expected: { errorBanner: "provider failed" },
+    },
+  ])(
+    "does not open the mic when $type arrives during the start RPC",
+    async ({ type, payload, expected }) => {
+      let controls: ReturnType<typeof createRealtimeTuiControls> | null = null;
+      let closeDuringStart = true;
+      const client = createClient((method) => {
+        if (method === "thread/realtime/start" && closeDuringStart) {
+          // The session ends before the start RPC resolves.
+          closeDuringStart = false;
+          controls?.handleTranscriptEvent({ type, payload });
+        }
+      });
+      const stop = vi.fn();
+      const startAudioCapture = vi.fn<StartRealtimeAudioCapture>(
+        async () => ({ stop }),
+      );
+      controls = createRealtimeTuiControls({
+        threadId: "agent_1",
+        client,
+        emitEvent: () => {},
+        startAudioCapture,
+      });
+
+      await expect(
+        controls.start({ transport: "websocket" }),
+      ).resolves.toBeUndefined();
+
+      expect(startAudioCapture).not.toHaveBeenCalled();
+      expect(controls.getState()).toMatchObject({
+        phase: "inactive",
+        localAudioLevel: 0,
+        ...expected,
+      });
+      expect(
+        client.requests.some(
+          (request) => request.method === "thread/realtime/appendAudio",
+        ),
+      ).toBe(false);
+
+      // A fresh start still opens exactly one capture for the new session.
+      await controls.start({ transport: "websocket" });
+      expect(startAudioCapture).toHaveBeenCalledTimes(1);
+      await controls.stop();
+      expect(stop).toHaveBeenCalledTimes(1);
+    },
+  );
 
   test("ignores stale capture callbacks after a restart during start", async () => {
     const client = createClient();
