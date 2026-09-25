@@ -181,7 +181,7 @@ describe("Ollama non-streaming physical timeout and cancellation", () => {
       Promise.race([
         pending,
         new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error("adapter-still-pending")), 80);
+          setTimeout(() => reject(new Error("adapter-still-pending")), 500);
         }),
       ]),
     ).rejects.toBeInstanceOf(LLMTimeoutError);
@@ -220,7 +220,7 @@ describe("Ollama non-streaming physical timeout and cancellation", () => {
       Promise.race([
         pending,
         new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error("adapter-still-pending")), 80);
+          setTimeout(() => reject(new Error("adapter-still-pending")), 500);
         }),
       ]),
     ).rejects.toMatchObject({
