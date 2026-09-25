@@ -124,6 +124,25 @@ const FIRST_INSTALL_PRECOMMIT_FAILURES: readonly {
   { hookName: "config", hooks: throwBefore("beforePublishConfig", "plugin config write failed") },
 ];
 
+async function symlinkedStorageWorld(): Promise<TxnWorld> {
+  const world = await createWorld();
+  const realStorage = join(world.root, "real-plugins");
+  await mkdir(realStorage, { recursive: true });
+  await rm(world.pluginStorageRoot, { recursive: true });
+  await symlink(realStorage, world.pluginStorageRoot);
+  return world;
+}
+
+async function loadRecoveryIssues(world: TxnWorld) {
+  const loaded = await loadPlugins({
+    pluginStorageRoot: world.pluginStorageRoot,
+    workspaceRoot: world.workspaceRoot,
+    config: { plugins: { enabled: true } },
+    userConfigPath: join(world.agencHome, "config.toml"),
+  });
+  return loaded.errors.filter((issue) => issue.type === "install-recovery");
+}
+
 async function createWorld(): Promise<TxnWorld> {
   const root = await mkdtemp(join(tmpdir(), "agenc-plugin-install-txn-"));
   const agencHome = join(root, "home");
@@ -1652,6 +1671,25 @@ describe("plugin install transaction", () => {
     expect(result.plugin.logoPath).toBe(join(dest, "assets", "logo.png"));
     expect(result.plugin.interface?.composerIcon).toBe(join(dest, "assets", "icon.png"));
     await expect(stat(String(result.plugin.interface?.composerIcon))).resolves.toBeTruthy();
+  });
+
+  it.each([
+    "stage-ready",
+    "destination-replaced",
+    "committed",
+  ] as const)("recovers a first install that crashed at %s under a symlinked storage root", async (phase) => {
+    const world = await symlinkedStorageWorld();
+    await expect(installFresh(world, "fresh", crashAfter(phase)))
+      .rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
+    const issues = await loadRecoveryIssues(world);
+    expect(issues).toEqual([]);
+    const names = await readdir(world.pluginStorageRoot);
+    expect(names.some((name) => name.includes(".stage-"))).toBe(false);
+    const records = await readdir(join(world.pluginStorageRoot, ".plugin-install-ops")).catch(() => [] as string[]);
+    expect(records.some((name) => name.endsWith(".json"))).toBe(false);
+    const listed = await listInstalledPlugins(world.authority);
+    expect(listed.plugins).toHaveLength(phase === "committed" ? 1 : 0);
+    expect(await loadRecoveryIssues(world)).toEqual([]);
   });
 
   it("a successful install under a symlinked storage root leaves no load issue", async () => {

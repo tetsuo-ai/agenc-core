@@ -143,6 +143,16 @@ function pluginInstallOpsDir(installRoot: string): string {
   return join(resolve(installRoot), PLUGIN_INSTALL_OPS_DIR);
 }
 
+/** Recorded paths use this directory, not a symlink that points at it. */
+export async function canonicalPluginInstallRoot(root: string): Promise<string> {
+  try {
+    return await realpath(root);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return resolve(root);
+    throw error;
+  }
+}
+
 function pluginInstallTransactionRecordPath(
   installRoot: string,
   operationId: string,
@@ -163,7 +173,7 @@ export async function recoverPluginInstallTransactions(
 ): Promise<PluginInstallRecoveryResult> {
   const issues: PluginInstallRecoveryIssue[] = [];
   let recovered = 0;
-  const roots = [...new Set(options.installRoots.map((root) => resolve(root)))]
+  const roots = [...new Set(await Promise.all(options.installRoots.map((root) => canonicalPluginInstallRoot(root))))]
     .toSorted((a, b) => a.localeCompare(b));
   for (const installRoot of roots) {
     const result = await recoverInstallRoot(installRoot, options);
