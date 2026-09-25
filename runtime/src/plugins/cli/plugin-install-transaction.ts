@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { lstat, open, readFile, readdir, realpath, rename, rm, stat } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import {
   isUnsupportedDirectorySync,
@@ -27,7 +27,9 @@ export type PluginInstallTransactionKind = "install" | "update";
 export type PluginInstallTransactionPhase =
   | "record-created"
   | "stage-ready"
+  | "destination-backup-intended"
   | "destination-backed-up"
+  | "destination-replace-intended"
   | "destination-replaced"
   | "config-published"
   | "committed";
@@ -53,6 +55,7 @@ export interface PluginInstallOperationRecord {
   readonly stageIdentity?: PluginInstallDirectoryIdentity;
   readonly backupIdentity?: PluginInstallDirectoryIdentity;
   readonly createdAt: string;
+  readonly previousPluginConfig?: unknown;
 }
 
 export interface PluginInstallTransactionContext {
@@ -121,14 +124,17 @@ function pluginInstallTransactionRecordPath(
 }
 
 export async function recoverPluginInstallTransactions(
-  options: { readonly installRoots: readonly string[] },
+  options: {
+    readonly installRoots: readonly string[];
+    readonly restorePluginConfig?: (previous: unknown) => Promise<void>;
+  },
 ): Promise<PluginInstallRecoveryResult> {
   const issues: PluginInstallRecoveryIssue[] = [];
   let recovered = 0;
   const roots = [...new Set(options.installRoots.map((root) => resolve(root)))]
     .sort((a, b) => a.localeCompare(b));
   for (const installRoot of roots) {
-    const result = await recoverInstallRoot(installRoot);
+    const result = await recoverInstallRoot(installRoot, options.restorePluginConfig);
     recovered += result.recovered;
     issues.push(...result.issues);
   }
@@ -145,6 +151,8 @@ export async function runPluginInstallTransaction(input: {
   readonly writeStageMetadata: (stagePath: string) => Promise<void>;
   readonly validateStage: (stagePath: string) => Promise<void>;
   readonly publishConfig: () => Promise<void>;
+  readonly readPluginConfig?: () => Promise<unknown>;
+  readonly restorePluginConfig?: (previous: unknown) => Promise<void>;
   readonly hooks?: PluginInstallTransactionHooks;
 }): Promise<void> {
   const destination = resolve(input.destination);
@@ -173,8 +181,10 @@ export async function runPluginInstallTransaction(input: {
     createdAt: (input.now ?? (() => new Date()))().toISOString(),
   };
 
+  const leasePath = pluginInstallLeasePath(recordPath);
   try {
     await writeOperationRecord(recordPath, record);
+    await writeInstallLease(leasePath);
     await invokeAfterPhase(input.hooks, record, recordPath);
     await input.copyDirectory(input.source, stagePath);
     const context = transactionContext(record, recordPath);
@@ -192,6 +202,9 @@ export async function runPluginInstallTransaction(input: {
       if (backupPath === undefined) {
         throw new Error("plugin update transaction is missing a backup path");
       }
+      record = await persistPhase(recordPath, record, {
+        phase: "destination-backup-intended",
+      });
       await rename(destination, backupPath);
       await syncDirectory(parent);
       record = await persistPhase(recordPath, record, {
@@ -201,6 +214,9 @@ export async function runPluginInstallTransaction(input: {
       await invokeAfterPhase(input.hooks, record, recordPath);
     }
 
+    record = await persistPhase(recordPath, record, {
+      phase: "destination-replace-intended",
+    });
     await rename(stagePath, destination);
     await syncDirectory(parent);
     record = await persistPhase(recordPath, record, {
@@ -208,6 +224,11 @@ export async function runPluginInstallTransaction(input: {
     });
     await invokeAfterPhase(input.hooks, record, recordPath);
 
+    const previousPluginConfig = await input.readPluginConfig?.();
+    record = await persistPhase(recordPath, record, {
+      phase: "destination-replaced",
+      ...(previousPluginConfig === undefined ? {} : { previousPluginConfig }),
+    });
     await input.hooks?.beforePublishConfig?.(transactionContext(record, recordPath));
     await input.publishConfig();
     record = await persistPhase(recordPath, record, {
@@ -220,14 +241,18 @@ export async function runPluginInstallTransaction(input: {
     }
     record = await persistPhase(recordPath, record, { phase: "committed" });
     await invokeAfterPhase(input.hooks, record, recordPath);
+    await removeInstallLease(leasePath);
     await removeOperationRecord(recordPath);
   } catch (error) {
+    await removeInstallLease(leasePath);
     if (error instanceof PluginInstallTransactionSimulatedCrash) {
       throw error;
     }
-    const rollbackError = await rollbackInProcess(record, recordPath).catch(
-      (cause) => cause,
-    );
+    const rollbackError = await rollbackInProcess(
+      record,
+      recordPath,
+      input.restorePluginConfig,
+    ).catch((cause) => cause);
     if (rollbackError !== undefined) {
       throw new AggregateError(
         [error, rollbackError],
@@ -241,6 +266,7 @@ export async function runPluginInstallTransaction(input: {
 
 async function recoverInstallRoot(
   installRoot: string,
+  restorePluginConfig: ((previous: unknown) => Promise<void>) | undefined,
 ): Promise<PluginInstallRecoveryResult> {
   const opsDir = pluginInstallOpsDir(installRoot);
   let names: string[];
@@ -250,7 +276,16 @@ async function recoverInstallRoot(
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return { recovered: 0, issues: [] };
     }
-    throw error;
+    return {
+      recovered: 0,
+      issues: [{
+        operationId: PLUGIN_INSTALL_OPS_DIR,
+        message: `plugin install recovery could not read ${opsDir}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        preservedPaths: [opsDir],
+      }],
+    };
   }
   const issues: PluginInstallRecoveryIssue[] = [];
   let recovered = 0;
@@ -266,7 +301,15 @@ async function recoverInstallRoot(
       });
       continue;
     }
-    const result = await recoverRecord(parsed, recordPath);
+    if (await installLeaseIsLive(pluginInstallLeasePath(recordPath))) {
+      continue;
+    }
+    const confined = await confineRecordPaths(installRoot, parsed);
+    if (confined !== undefined) {
+      issues.push(confined);
+      continue;
+    }
+    const result = await recoverRecord(parsed, recordPath, restorePluginConfig);
     if (result.issue !== undefined) {
       issues.push(result.issue);
       continue;
@@ -279,16 +322,21 @@ async function recoverInstallRoot(
 async function recoverRecord(
   record: PluginInstallOperationRecord,
   recordPath: string,
+  restorePluginConfig: ((previous: unknown) => Promise<void>) | undefined,
 ): Promise<{ readonly issue?: PluginInstallRecoveryIssue }> {
   switch (record.phase) {
     case "record-created":
       return recoverBeforeStageReady(record, recordPath);
     case "stage-ready":
       return recoverStageReady(record, recordPath);
+    case "destination-backup-intended":
+      return recoverBackupIntended(record, recordPath, restorePluginConfig);
     case "destination-backed-up":
-      return recoverDestinationBackedUp(record, recordPath);
+      return recoverDestinationBackedUp(record, recordPath, restorePluginConfig);
+    case "destination-replace-intended":
+      return recoverReplaceIntended(record, recordPath, restorePluginConfig);
     case "destination-replaced":
-      return recoverDestinationReplaced(record, recordPath);
+      return recoverDestinationReplaced(record, recordPath, restorePluginConfig);
     case "config-published":
       return recoverConfigPublished(record, recordPath);
     case "committed":
@@ -356,10 +404,25 @@ async function recoverStageReady(
   return {};
 }
 
+async function recoverBackupIntended(
+  record: PluginInstallOperationRecord,
+  recordPath: string,
+  restorePluginConfig: ((previous: unknown) => Promise<void>) | undefined,
+): Promise<{ readonly issue?: PluginInstallRecoveryIssue }> {
+  if (record.backupPath !== undefined && await pathExists(record.backupPath)) {
+    return recoverDestinationBackedUp(record, recordPath, restorePluginConfig);
+  }
+  return recoverStageReady(record, recordPath);
+}
+
 async function recoverDestinationBackedUp(
   record: PluginInstallOperationRecord,
   recordPath: string,
+  restorePluginConfig: ((previous: unknown) => Promise<void>) | undefined,
 ): Promise<{ readonly issue?: PluginInstallRecoveryIssue }> {
+  if (record.backupPath !== undefined && !(await pathExists(record.backupPath))) {
+    return recoverStageReady(record, recordPath);
+  }
   if (record.backupPath === undefined || record.backupIdentity === undefined) {
     return ambiguousIssue(
       record,
@@ -395,13 +458,26 @@ async function recoverDestinationBackedUp(
       return identityIssue(record, recordPath, stageRemoved);
     }
   }
+  await restoreRecordedPluginConfig(record, restorePluginConfig);
   await removeOperationRecord(recordPath);
   return {};
+}
+
+async function recoverReplaceIntended(
+  record: PluginInstallOperationRecord,
+  recordPath: string,
+  restorePluginConfig: ((previous: unknown) => Promise<void>) | undefined,
+): Promise<{ readonly issue?: PluginInstallRecoveryIssue }> {
+  if (await pathExists(record.stagePath)) {
+    return recoverStageReady(record, recordPath);
+  }
+  return recoverDestinationReplaced(record, recordPath, restorePluginConfig);
 }
 
 async function recoverDestinationReplaced(
   record: PluginInstallOperationRecord,
   recordPath: string,
+  restorePluginConfig: ((previous: unknown) => Promise<void>) | undefined,
 ): Promise<{ readonly issue?: PluginInstallRecoveryIssue }> {
   const destinationMatches = await directoryMatchesIdentity(
     record.destination,
@@ -421,6 +497,7 @@ async function recoverDestinationReplaced(
       record.stageIdentity,
     );
     if (!stageRemoved.ok) return identityIssue(record, recordPath, stageRemoved);
+    await restoreRecordedPluginConfig(record, restorePluginConfig);
     await removeOperationRecord(recordPath);
     return {};
   }
@@ -447,6 +524,7 @@ async function recoverDestinationReplaced(
     record.backupIdentity,
   );
   if (!restored.ok) return identityIssue(record, recordPath, restored);
+  await restoreRecordedPluginConfig(record, restorePluginConfig);
   await removeOperationRecord(recordPath);
   return {};
 }
@@ -498,6 +576,7 @@ async function recoverCommitted(
 async function rollbackInProcess(
   record: PluginInstallOperationRecord,
   recordPath: string,
+  restorePluginConfig: ((previous: unknown) => Promise<void>) | undefined,
 ): Promise<void> {
   if (record.phase === "record-created") {
     if (await pathExists(record.stagePath)) {
@@ -507,7 +586,7 @@ async function rollbackInProcess(
     await removeOperationRecord(recordPath);
     return;
   }
-  const result = await recoverRecord(record, recordPath);
+  const result = await recoverRecord(record, recordPath, restorePluginConfig);
   if (result.issue !== undefined) {
     throw new Error(result.issue.message);
   }
@@ -608,6 +687,9 @@ async function readOperationRecord(
     ...(stageIdentity === undefined ? {} : { stageIdentity }),
     ...(backupIdentity === undefined ? {} : { backupIdentity }),
     createdAt: raw.createdAt,
+    ...(Object.hasOwn(raw, "previousPluginConfig")
+      ? { previousPluginConfig: raw.previousPluginConfig }
+      : {}),
   };
 }
 
@@ -616,7 +698,9 @@ function isPluginInstallTransactionPhase(
 ): value is PluginInstallTransactionPhase {
   return value === "record-created" ||
     value === "stage-ready" ||
+    value === "destination-backup-intended" ||
     value === "destination-backed-up" ||
+    value === "destination-replace-intended" ||
     value === "destination-replaced" ||
     value === "config-published" ||
     value === "committed";
@@ -806,6 +890,114 @@ async function removeOperationRecord(recordPath: string): Promise<void> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
+}
+
+function pluginInstallLeasePath(recordPath: string): string {
+  return `${recordPath}.lease`;
+}
+
+async function writeInstallLease(leasePath: string): Promise<void> {
+  await writeDurableAtomicFile(
+    leasePath,
+    `${leasePath}.tmp-${process.pid}-${randomUUID()}`,
+    `${JSON.stringify({ pid: process.pid, heartbeatAtMs: Date.now() })}\n`,
+    0o600,
+  );
+}
+
+async function removeInstallLease(leasePath: string): Promise<void> {
+  await rm(leasePath, { force: true }).catch(() => {});
+}
+
+async function installLeaseIsLive(leasePath: string): Promise<boolean> {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await readFile(leasePath, "utf8"));
+  } catch {
+    return false;
+  }
+  if (!isRecord(raw) || !Number.isInteger(raw.pid) || (raw.pid as number) <= 1) return false;
+  try {
+    process.kill(raw.pid as number, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+async function confineRecordPaths(
+  installRoot: string,
+  record: PluginInstallOperationRecord,
+): Promise<PluginInstallRecoveryIssue | undefined> {
+  const paths = [record.destination, record.stagePath];
+  if (record.backupPath !== undefined) paths.push(record.backupPath);
+  for (const candidate of paths) {
+    const confined = await pathIsUnderInstallRoot(installRoot, candidate);
+    if (confined) continue;
+    return {
+      operationId: record.operationId,
+      pluginId: record.pluginId,
+      destination: record.destination,
+      message: `plugin install recovery ignored a path outside the plugin storage root: ${candidate}`,
+      preservedPaths: [candidate],
+    };
+  }
+  return undefined;
+}
+
+async function pathIsUnderInstallRoot(installRoot: string, candidate: string): Promise<boolean> {
+  if (candidate.includes("\0")) return false;
+  const segments = candidate.split(/[/\\]/u);
+  if (segments.includes("..")) return false;
+  let rootReal: string;
+  try {
+    const rootInfo = await lstat(installRoot);
+    if (!rootInfo.isDirectory()) return false;
+    rootReal = await realpath(installRoot);
+  } catch {
+    return false;
+  }
+  const resolved = resolve(candidate);
+  let cursor = resolved;
+  const pending: string[] = [];
+  for (;;) {
+    let info: Awaited<ReturnType<typeof lstat>>;
+    try {
+      info = await lstat(cursor);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+      const parent = dirname(cursor);
+      if (parent === cursor) return false;
+      pending.push(basename(cursor));
+      cursor = parent;
+      continue;
+    }
+    if (info.isSymbolicLink()) return false;
+    let realCursor: string;
+    try {
+      realCursor = await realpath(cursor);
+    } catch {
+      return false;
+    }
+    const cursorRel = relative(rootReal, realCursor);
+    if (cursorRel.startsWith("..") || isAbsolute(cursorRel)) return false;
+    if (pending.length === 0) return cursorRel !== "";
+    const full = pending.reduceRight((parent, name) => join(parent, name), realCursor);
+    return isPathInsideRoot(rootReal, resolve(full));
+  }
+}
+
+function isPathInsideRoot(rootReal: string, candidate: string): boolean {
+  const rel = relative(rootReal, candidate);
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+async function restoreRecordedPluginConfig(
+  record: PluginInstallOperationRecord,
+  restorePluginConfig: ((previous: unknown) => Promise<void>) | undefined,
+): Promise<void> {
+  if (restorePluginConfig === undefined || record.previousPluginConfig === undefined) return;
+  await restorePluginConfig(record.previousPluginConfig);
 }
 
 async function inspectExistingPath(

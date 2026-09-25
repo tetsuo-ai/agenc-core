@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -413,4 +413,87 @@ describe("plugin install transaction", () => {
     expect(loaded.enabled.map((plugin) => plugin.version)).toEqual(["2.0.0"]);
     expect(loaded.enabled).toHaveLength(1);
   });
+
+  it("does not roll back an install that still holds its lease", async () => {
+    const installed = await installDemoV1();
+    let recovery: Awaited<ReturnType<typeof recoverLocal>> | undefined;
+    const updated = await updateDemo(installed, {
+      beforeValidate: async () => {
+        recovery = await recoverLocal(installed);
+      },
+    });
+    expect(recovery?.recovered).toBe(0);
+    expect(recovery?.issues).toEqual([]);
+    expect(updated.plugin.version).toBe("2.0.0");
+    expect(await readPluginVersion(installed.destination)).toBe("2.0.0");
+  });
+
+  it("restores plugin config when publication is rolled back", async () => {
+    const installed = await installDemoV1();
+    expect(await demoEnabledInConfig(installed)).toBe(true);
+    await expect(updateDemo(installed, {
+      beforePublishConfig: async () => {
+        const configPath = join(installed.agencHome, "config.toml");
+        const raw = await readFile(configPath, "utf8");
+        await writeFile(configPath, raw.replace("enabled = true", "enabled = false"));
+        throw new Error("plugin config write failed");
+      },
+    })).rejects.toThrow(/plugin config write failed/u);
+    expect(await readPluginVersion(installed.destination)).toBe("1.0.0");
+    expect(await demoEnabledInConfig(installed)).toBe(true);
+  });
+
+  it("reports an unreadable install operation directory as a load issue", async () => {
+    const world = await createWorld();
+    await writeFile(join(world.pluginStorageRoot, ".plugin-install-ops"), "not-a-directory");
+    const loaded = await loadPlugins({
+      pluginStorageRoot: world.pluginStorageRoot,
+      workspaceRoot: world.workspaceRoot,
+      config: { plugins: { enabled: true } },
+    });
+    expect(loaded.errors.some((issue) => issue.type === "install-recovery")).toBe(true);
+  });
+
+  it("ignores forged recovery records that escape the plugin storage root", async () => {
+    const world = await createWorld();
+    const outside = await mkdtemp(join(world.root, "outside-"));
+    await writeFile(join(outside, "keep"), "stay");
+    const traversal = join(world.pluginStorageRoot, "..", "outside-dotdot");
+    await mkdir(traversal, { recursive: true });
+    await writeFile(join(traversal, "keep"), "stay");
+    const linkOutside = await mkdtemp(join(world.root, "link-target-"));
+    await writeFile(join(linkOutside, "keep"), "stay");
+    const linkPath = join(world.pluginStorageRoot, "linked-plugin");
+    await symlink(linkOutside, linkPath);
+
+    await writeForgedRecord(world, "absolute", outside);
+    await writeForgedRecord(world, "traversal", traversal);
+    await writeForgedRecord(world, "symlink", linkPath);
+    const recovery = await recoverLocal(world);
+    expect(recovery.recovered).toBe(0);
+    expect(recovery.issues.map((issue) => issue.message).join("\n")).toMatch(/outside the plugin storage root/u);
+    await expect(readFile(join(outside, "keep"), "utf8")).resolves.toBe("stay");
+    await expect(readFile(join(traversal, "keep"), "utf8")).resolves.toBe("stay");
+    await expect(readFile(join(linkOutside, "keep"), "utf8")).resolves.toBe("stay");
+  });
 });
+
+async function writeForgedRecord(
+  world: TxnWorld,
+  label: string,
+  destination: string,
+): Promise<void> {
+  const ops = join(world.pluginStorageRoot, ".plugin-install-ops");
+  await mkdir(ops, { recursive: true });
+  const operationId = `00000000-0000-4000-8000-${label.padEnd(12, "0").slice(0, 12)}`;
+  await writeFile(join(ops, `${operationId}.json`), `${JSON.stringify({
+    version: 1,
+    operationId,
+    kind: "install",
+    pluginId: "forged",
+    destination,
+    stagePath: `${destination}.stage-${operationId}`,
+    phase: "stage-ready",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  })}\n`);
+}
