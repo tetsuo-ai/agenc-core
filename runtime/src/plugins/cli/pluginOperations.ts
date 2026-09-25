@@ -677,6 +677,8 @@ export async function installPluginOp(
       publishConfig: async () => {
         await writePluginConfigEntry(pluginId, { enabled: true }, input);
       },
+      readPluginConfig: () => readPluginConfigSnapshot(pluginId, input),
+      restorePluginConfig: (previous) => restorePluginConfigSnapshot(pluginId, previous, input),
     });
     const result = {
       plugin: summarizeLoadedPlugin({
@@ -1294,6 +1296,41 @@ export function __isPathInsideForTesting(
   platform: "posix" | "win32",
 ): boolean {
   return isPathInsideWithApi(path, root, platform === "win32" ? win32 : posix);
+}
+
+async function readPluginConfigSnapshot(
+  pluginId: string,
+  options: PluginOperationOptions,
+): Promise<unknown> {
+  const warnings: string[] = [];
+  const config = await loadPluginOperationConfig(options, warnings);
+  const plugins = config.plugins?.plugins;
+  if (plugins === undefined || !Object.hasOwn(plugins, pluginId)) return null;
+  return plugins[pluginId] ?? null;
+}
+
+async function restorePluginConfigSnapshot(
+  pluginId: string,
+  previous: unknown,
+  options: PluginOperationOptions,
+): Promise<void> {
+  if (previous === null || previous === undefined) {
+    await removePluginConfigEntry(pluginId, options);
+    return;
+  }
+  const path = pluginConfigPath(options);
+  mutateCanonicalUserConfigSync(path, (raw) => {
+    const plugins = isRecord(raw.plugins) ? raw.plugins : {};
+    if (!isRecord(raw.plugins)) raw.plugins = plugins;
+    const pluginEntries = isRecord(plugins.plugins) ? plugins.plugins : {};
+    if (!isRecord(plugins.plugins)) plugins.plugins = pluginEntries;
+    Object.defineProperty(pluginEntries, pluginId, {
+      value: previous,
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+  });
 }
 
 async function writePluginConfigEntry(
