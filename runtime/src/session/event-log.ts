@@ -385,6 +385,12 @@ export interface TokenCountEvent {
   readonly cachedInputTokens?: number;
   readonly cacheCreationInputTokens?: number;
   readonly reasoningOutputTokens?: number;
+  /**
+   * True when `reasoningOutputTokens` is already inside `completionTokens`
+   * (Gemini). The session budget then adds completion once. Absent for
+   * providers whose reasoning is still added on top of completion.
+   */
+  readonly reasoningIncludedInCompletion?: true;
   readonly webSearchRequests?: number;
   /** Optional model override for this usage payload. */
   readonly model?: string;

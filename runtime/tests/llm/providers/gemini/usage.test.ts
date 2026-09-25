@@ -27,6 +27,7 @@ describe("requestUsageFromGemini", () => {
       completionTokens: 3,
       totalTokens: 7,
       reasoningOutputTokens: 1,
+      reasoningIncludedInCompletion: true,
       availability: "reported",
       provenance: "provider",
     });
@@ -123,6 +124,7 @@ describe("requestUsageFromGemini", () => {
       completionTokens: 3,
       totalTokens: 10,
       reasoningOutputTokens: 1,
+      reasoningIncludedInCompletion: true,
       availability: "reported",
       provenance: "provider",
     });
@@ -255,9 +257,11 @@ describe("Gemini thinking usage consumers", () => {
     const boundary = new BudgetTracker();
     expect(boundary.resolveBoundaryTokens(usage.completionTokens)).toBe(3);
 
+    const tracker = new BudgetTracker();
     const sidecar = new CostSidecar({
       defaultProvider: "gemini",
       defaultModel: "gemini-2.5-pro",
+      budgetTracker: tracker,
     });
     sidecar.onEvent({
       id: "1",
@@ -271,9 +275,13 @@ describe("Gemini thinking usage consumers", () => {
           completionTokens: usage.completionTokens,
           totalTokens: usage.totalTokens,
           reasoningOutputTokens: usage.reasoningOutputTokens,
+          ...(usage.reasoningIncludedInCompletion === true
+            ? { reasoningIncludedInCompletion: true as const }
+            : {}),
         },
       },
     });
+    expect(tracker.emitted).toBe(3);
     expect(sidecar.getTotalOutputTokens()).toBe(3);
     expect(sidecar.getPerModelUsage()[0]?.reasoningOutputTokens).toBe(1);
     expect(sidecar.getTotalCostUsd()).toBeCloseTo(inclusiveCost, 8);

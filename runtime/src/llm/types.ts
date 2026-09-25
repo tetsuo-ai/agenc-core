@@ -285,6 +285,13 @@ export interface LLMUsage {
   cachedInputTokens?: number;
   cacheCreationInputTokens?: number;
   reasoningOutputTokens?: number;
+  /**
+   * True when `reasoningOutputTokens` is already inside `completionTokens`.
+   * Gemini sets this because candidates and thoughts are billed as one
+   * output total. Providers that leave it unset still have reasoning added
+   * on top of completion by the session budget.
+   */
+  readonly reasoningIncludedInCompletion?: true;
   webSearchRequests?: number;
   /**
    * The wire this usage came from cannot report prompt-cache writes: it has
