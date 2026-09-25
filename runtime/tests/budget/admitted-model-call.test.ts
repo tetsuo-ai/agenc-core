@@ -1,13 +1,10 @@
 import { describe, expect, test, vi } from "vitest";
 
 import { fitOutputReservationToContext, runAdmittedModelCall } from "../../src/budget/admitted-model-call.js";
-import type {
-  AdmissionAcquireInput,
-  ExecutionAdmissionClient,
-} from "../../src/budget/admission-client.js";
+import type { AdmissionAcquireInput } from "../../src/budget/admission-client.js";
 import { AdmissionDeniedError } from "../../src/budget/admission-client.js";
+import { createAllowAdmissionHarness } from "./admission-test-harness.js";
 import { LLMManagedAdmissionError, LLMManagedUsagePendingError } from "../../src/llm/errors.js";
-import type { AdmissionLease } from "../../src/budget/admission-types.js";
 import type { AuthBackend } from "../../src/auth/backend.js";
 import { AgenCProvider } from "../../src/llm/providers/agenc/index.js";
 import { OllamaProvider } from "../../src/llm/providers/ollama/adapter.js";
@@ -48,73 +45,17 @@ function harness(options: {
   readonly authoritative?: boolean;
   readonly supportsMaxOutputTokens?: boolean;
 }) {
-  const leaseController = new AbortController();
-  const reconcile = vi.fn(() => ({
-    applied: true as const,
-    outcome: "reconciled" as const,
-  }));
-  const holdUnknown = vi.fn();
-  const cancelRun = vi.fn();
-  const acknowledgeCompletion = vi.fn();
-  const voidReservation = vi.fn();
-  const recordFallback = vi.fn();
-  const acquire = vi.fn(
-    async (input: AdmissionAcquireInput): Promise<AdmissionLease> => {
-      if (input.denialReason !== undefined) {
-        throw new AdmissionDeniedError(input.denialReason);
-      }
-      return {
-        decision: "allow",
-        reservation: {
-          reservationId: "reservation-1",
-          step: { runId: "run-1", stepId: input.stepId },
-          reservedCostUsd: input.maxCostUsd ?? 0,
-          reservedTokens: input.maxInputTokens + input.maxOutputTokens,
-          reservedAt: "2026-07-18T00:00:00.000Z",
-        },
-        request: {
-          step: { runId: "run-1", stepId: input.stepId },
-          kind: input.kind,
-          estimate: {
-            maxInputTokens: input.maxInputTokens,
-            maxOutputTokens: input.maxOutputTokens,
-            maxCostUsd: input.maxCostUsd,
-          },
-          workspaceId: "workspace-1",
-          sessionId: "session-1",
-          parentScopeId: "session-1",
-          autonomous: false,
-        },
-        signal: leaseController.signal,
-      };
-    },
-  );
-  const admission = {
-    scope: {
-      runId: "run-1",
-      workspaceId: "workspace-1",
-      sessionId: "session-1",
-      autonomous: false,
-      ...(options.maxCostUsd !== undefined
-        ? { maxCostUsd: options.maxCostUsd }
-        : {}),
-      ...(options.maxTokens !== undefined
-        ? { maxTokens: options.maxTokens }
-        : {}),
-      ...(options.hasHardCostCap === true ? { hasHardCostCap: true } : {}),
-      ...(options.hasHardTokenCap === true ? { hasHardTokenCap: true } : {}),
-    },
-    acquire,
-    markDispatched: vi.fn(),
-    reconcile,
-    holdUnknown,
-    cancelRun,
-    void: voidReservation,
+  const {
     acknowledgeCompletion,
+    acquire,
+    admission,
+    cancelRun,
+    holdUnknown,
+    leaseController,
     recordFallback,
-    forSession: vi.fn(),
-    subscribe: vi.fn(() => () => {}),
-  } as unknown as ExecutionAdmissionClient;
+    reconcile,
+    voidReservation,
+  } = createAllowAdmissionHarness({ scope: options });
   const abortTerminal = vi.fn();
   const session = {
     conversationId: "session-1",
