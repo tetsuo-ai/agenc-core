@@ -791,6 +791,170 @@ describe("plugin install transaction", () => {
     await expect(access(recordPath)).rejects.toThrow();
   });
 
+  it("lets one child-process recovery win and keeps that lease through the loser", async () => {
+    const world = await createWorld();
+    const operationId = "00000000-0000-4000-8000-child0000001";
+    const recordPath = await writeDeadRecord(world, operationId);
+    const hold = join(world.root, "child-hold");
+    const done = join(world.root, "child-done");
+    const script = join(world.root, "recover-child.ts");
+    const modulePath = join(import.meta.dirname, "../../../src/plugins/cli/plugin-install-transaction.ts");
+    let child: ReturnType<typeof spawn> | undefined;
+    await writeFile(script, `
+      import { readFile, writeFile } from "node:fs/promises";
+      import { recoverPluginInstallTransactions } from ${JSON.stringify(modulePath)};
+      async function main() {
+        const result = await recoverPluginInstallTransactions({
+          installRoots: [${JSON.stringify(world.pluginStorageRoot)}],
+          hooks: {
+            afterLeaseClaimed: async () => {
+              await writeFile(${JSON.stringify(hold)}, String(process.pid));
+              for (;;) {
+                try {
+                  await readFile(${JSON.stringify(hold)});
+                } catch {
+                  break;
+                }
+                await new Promise((resolve) => setTimeout(resolve, 20));
+              }
+            },
+          },
+        });
+        await writeFile(${JSON.stringify(done)}, JSON.stringify(result));
+      }
+      main().catch((error: unknown) => {
+        console.error(error);
+        process.exit(1);
+      });
+    `);
+    let childLog = "";
+    let childPid = "";
+    const parent = recoverPluginInstallTransactions({
+      installRoots: [world.pluginStorageRoot],
+      hooks: {
+        beforeLeaseRename: async () => {
+          child = spawn(process.execPath, [
+            join(import.meta.dirname, "../../../../node_modules/tsx/dist/cli.mjs"),
+            script,
+          ], { cwd: join(import.meta.dirname, "../../.."), stdio: ["ignore", "pipe", "pipe"] });
+          child.stdout?.on("data", (chunk: Buffer) => {
+            childLog += chunk.toString();
+          });
+          child.stderr?.on("data", (chunk: Buffer) => {
+            childLog += chunk.toString();
+          });
+          const started = Date.now();
+          for (;;) {
+            try {
+              childPid = await readFile(hold, "utf8");
+              break;
+            } catch (error) {
+              if (Date.now() - started > 10_000) throw new Error(`child did not claim\n${childLog}`);
+              await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+          }
+        },
+      },
+    });
+    const parentResult = await parent;
+    expect(parentResult.recovered, childLog).toBe(0);
+    const held = await readFile(`${recordPath}.lease`, "utf8");
+    expect(held, childLog).toContain(childPid);
+    await rm(hold);
+    if (child === undefined) throw new Error("competing recovery did not start");
+    const exit = await new Promise<number>((resolve, reject) => {
+      child.once("exit", (code) => resolve(code ?? 1));
+      child.once("error", reject);
+    });
+    expect(exit, childLog).toBe(0);
+    expect(JSON.parse(await readFile(done, "utf8"))).toMatchObject({ recovered: 1 });
+    await expect(access(recordPath)).rejects.toThrow();
+  });
+
+  it("sweeps a dead claim file and removes the emptied ops directory", async () => {
+    const world = await createWorld();
+    const operationId = "00000000-0000-4000-8000-sweep0000001";
+    await writeDeadRecord(world, operationId);
+    const child = spawn(process.execPath, ["-e", "process.exit(0)"]);
+    await new Promise<void>((resolve, reject) => {
+      child.once("exit", () => resolve());
+      child.once("error", reject);
+    });
+    const ops = join(world.pluginStorageRoot, ".plugin-install-ops");
+    await writeFile(
+      join(ops, `${operationId}.json.lease.claim-${child.pid}-01234567-89ab-4cde-8fab-0123456789ab`),
+      "stale\n",
+    );
+    const loaded = await loadPlugins({
+      pluginStorageRoot: world.pluginStorageRoot,
+      workspaceRoot: world.workspaceRoot,
+      config: { plugins: { enabled: true } },
+    });
+    expect(loaded.errors.filter((issue) => issue.type === "install-recovery")).toEqual([]);
+    await expect(access(ops)).rejects.toThrow();
+  });
+
+  it("treats two spellings of a missing config file as the same target", async () => {
+    const world = await createWorld();
+    const realHome = join(world.root, "real-home");
+    await mkdir(realHome, { recursive: true });
+    const linkParent = join(world.root, "home-link");
+    await mkdir(linkParent, { recursive: true });
+    await symlink(realHome, join(linkParent, "home"));
+    const linkedHome = join(linkParent, "home");
+    const linked = {
+      ...world,
+      agencHome: linkedHome,
+      authority: { ...world.authority, agencHome: linkedHome },
+    };
+    await writeFile(join(linkedHome, "config.toml"), "config_version = 2\n\n[plugins]\nenabled = false\n");
+    await expect(installFresh(linked, "fresh", {
+      afterPublishConfig: async () => {
+        throw new PluginInstallTransactionSimulatedCrash("destination-replaced");
+      },
+    })).rejects.toBeInstanceOf(PluginInstallTransactionSimulatedCrash);
+    await rm(join(realHome, "config.toml"));
+    const loaded = await loadPlugins({
+      pluginStorageRoot: world.pluginStorageRoot,
+      workspaceRoot: world.workspaceRoot,
+      config: { plugins: { enabled: true } },
+      userConfigPath: join(linkedHome, "config.toml"),
+    });
+    expect(loaded.errors.filter((issue) => issue.type === "install-recovery")).toEqual([]);
+    const restored = await readFile(join(realHome, "config.toml"), "utf8");
+    expect(restored).toContain("\"enabled\" = false");
+    expect(restored).not.toContain("fresh");
+  });
+
+  it("does not restore user config when the workspace plugin root cannot be resolved", async () => {
+    const world = await createWorld();
+    const agents = join(world.workspaceRoot, ".agents");
+    await symlink(agents, agents);
+    const userConfig = join(world.agencHome, "config.toml");
+    const before = "config_version = 2\n\n[plugins]\nenabled = true\n";
+    await writeFile(userConfig, before);
+    await writeForgedRecord(world, "eloop", join(world.pluginStorageRoot, "demo"), {
+      phase: "record-created",
+      previousPluginConfig: {
+        entryPresent: false,
+        pluginsEnabledPresent: true,
+        pluginsEnabled: false,
+      },
+      configTargetPath: userConfig,
+    });
+    const loaded = await loadPlugins({
+      pluginStorageRoot: world.pluginStorageRoot,
+      workspaceRoot: world.workspaceRoot,
+      config: { plugins: { enabled: true } },
+      userConfigPath: userConfig,
+    });
+    expect(await readFile(userConfig, "utf8")).toBe(before);
+    expect(loaded.errors.some((issue) =>
+      issue.type === "install-recovery" && /plugin config not restored/u.test(issue.message),
+    )).toBe(true);
+    await expect(access(join(world.pluginStorageRoot, ".plugin-install-ops"))).rejects.toThrow();
+  });
+
   it.each([
     ["symlinked parent", async (world: TxnWorld) => {
       const repoPlugins = join(world.workspaceRoot, ".agents", "plugins");
