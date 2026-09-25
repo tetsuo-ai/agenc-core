@@ -1283,7 +1283,9 @@ async function validateTrustedRecoveryRoot(
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     return opsDirectoryIssue(installRoot, errorMessage(error));
   }
-  if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
+  // A symlinked storage root is the user's install root. Reject only a
+  // non-directory. A symlinked ops directory is still rejected below.
+  if (!rootInfo.isSymbolicLink() && !rootInfo.isDirectory()) {
     return opsDirectoryIssue(installRoot, "plugin install root is not a real directory");
   }
   if (opsInfo.isSymbolicLink() || !opsInfo.isDirectory()) {
@@ -1529,7 +1531,7 @@ async function pathIsUnderInstallRoot(installRoot: string, candidate: string): P
   let rootReal: string;
   try {
     const rootInfo = await lstat(installRoot);
-    if (!rootInfo.isDirectory()) return false;
+    if (!rootInfo.isSymbolicLink() && !rootInfo.isDirectory()) return false;
     rootReal = await realpath(installRoot);
   } catch {
     return false;

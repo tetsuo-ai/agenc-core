@@ -621,7 +621,6 @@ export async function installPluginOp(
     }
     const destination = existingRoots[0] ?? join(installRoot, safeName);
     await assertInstallSourceOutsideDestination(source, destination);
-    let stagedPlugin: LoadedPlugin | null = null;
     await runPluginInstallTransaction({
       pluginId,
       source,
@@ -668,7 +667,6 @@ export async function installPluginOp(
             `installed plugin identity changed during staging: ${plugin.plugin.name}`,
           );
         }
-        stagedPlugin = plugin.plugin;
       },
       publishConfig: async () => {
         await writePluginConfigEntry(pluginId, { enabled: true }, input);
@@ -676,11 +674,19 @@ export async function installPluginOp(
       readPluginConfig: () => Promise.resolve(readPluginConfigCapture(pluginId, input)),
       restorePluginConfig: (_pluginId, previous) => restorePluginConfigSnapshot(pluginId, previous, input),
     });
+    const installed = await createPluginFromPath(destination, {
+      source: scope,
+      enabled: true,
+    });
+    if (installed.plugin === null || installed.errors.length > 0) {
+      throw new Error(
+        `installed plugin failed validation: ${installed.errors.map((issue) => issue.message).join("; ")}`,
+      );
+    }
     const result = {
       plugin: summarizeLoadedPlugin({
-        ...requireStagedPlugin(stagedPlugin),
+        ...installed.plugin,
         id: pluginId,
-        root: destination,
       }),
       destination,
       scope,
@@ -904,13 +910,6 @@ function resolveInstallPluginId(
 
 function resolvePath(path: string, base: string): string {
   return isAbsolute(path) ? resolve(path) : resolve(base, path);
-}
-
-function requireStagedPlugin(plugin: LoadedPlugin | null): LoadedPlugin {
-  if (plugin === null) {
-    throw new Error("plugin install transaction completed without a staged plugin");
-  }
-  return plugin;
 }
 
 function summarizeLoadedPlugin(plugin: LoadedPlugin): InstalledPluginSummary {

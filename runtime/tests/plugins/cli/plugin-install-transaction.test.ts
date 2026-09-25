@@ -147,6 +147,28 @@ async function createWorld(): Promise<TxnWorld> {
   };
 }
 
+async function writeArtworkPlugin(root: string, version: string): Promise<string> {
+  const source = join(root, `alpha-${version}`);
+  await mkdir(join(source, ".agenc-plugin"), { recursive: true });
+  await mkdir(join(source, "assets"), { recursive: true });
+  await mkdir(join(source, "commands"), { recursive: true });
+  await writeFile(join(source, "commands", "hello.md"), "# Hello\n");
+  for (const name of ["logo.png", "screen.png", "icon.png"]) {
+    await writeFile(join(source, "assets", name), name);
+  }
+  await writeFile(join(source, ".agenc-plugin", "plugin.json"), `${JSON.stringify({
+    name: "alpha",
+    version,
+    commands: "./commands",
+    interface: {
+      logo: "./assets/logo.png",
+      screenshots: ["./assets/screen.png"],
+      composerIcon: "./assets/icon.png",
+    },
+  })}\n`);
+  return source;
+}
+
 async function writeManifest(
   pluginRoot: string,
   name: string,
@@ -1403,8 +1425,8 @@ describe("plugin install transaction", () => {
       operationId,
     ));
     const pending = await recoverPluginInstallTransactions({ installRoots: [linkedRoot] });
-    expect(pending.recovered).toBe(0);
-    expect(pending.issues.some((issue) => /not a real directory/u.test(issue.message))).toBe(true);
+    expect(pending.recovered).toBe(1);
+    expect(pending.issues.some((issue) => /not a real directory/u.test(issue.message))).toBe(false);
   });
 
   it("keeps the committed record when backup removal does not match its identity", async () => {
@@ -1604,6 +1626,48 @@ describe("plugin install transaction", () => {
     expect(issues[0]?.message).toContain(record);
     expect(await readFile(record, "utf8")).toBe(body);
     expect((await stat(record)).mtimeMs).toBe(before.mtimeMs);
+  });
+
+  it("reports install artwork under the installed root", async () => {
+    const world = await createWorld();
+    const source = await writeArtworkPlugin(world.root, "1.0.0");
+    const result = await installPluginOp({ ...world.authority, source });
+    const dest = result.destination;
+    expect(result.plugin.logoPath).toBe(join(dest, "assets", "logo.png"));
+    expect(result.plugin.interface?.screenshots).toEqual([join(dest, "assets", "screen.png")]);
+    expect(result.plugin.interface?.composerIcon).toBe(join(dest, "assets", "icon.png"));
+    await expect(stat(String(result.plugin.interface?.composerIcon))).resolves.toBeTruthy();
+  });
+
+  it("reports update artwork under the installed root", async () => {
+    const world = await createWorld();
+    await installPluginOp({ ...world.authority, source: await writeArtworkPlugin(world.root, "1.0.0") });
+    const result = await updatePluginOp({
+      ...world.authority,
+      pluginId: "alpha",
+      source: await writeArtworkPlugin(world.root, "2.0.0"),
+    });
+    const dest = result.destination;
+    expect(result.plugin.version).toBe("2.0.0");
+    expect(result.plugin.logoPath).toBe(join(dest, "assets", "logo.png"));
+    expect(result.plugin.interface?.composerIcon).toBe(join(dest, "assets", "icon.png"));
+    await expect(stat(String(result.plugin.interface?.composerIcon))).resolves.toBeTruthy();
+  });
+
+  it("a successful install under a symlinked storage root leaves no load issue", async () => {
+    const world = await createWorld();
+    const realStorage = join(world.root, "real-plugins");
+    await mkdir(realStorage, { recursive: true });
+    const pluginStorageRoot = join(world.root, "plugins-link");
+    await symlink(realStorage, pluginStorageRoot);
+    const source = await writeArtworkPlugin(world.root, "1.0.0");
+    await installPluginOp({ ...world.authority, pluginStorageRoot, source });
+    const loaded = await loadPlugins({
+      pluginStorageRoot,
+      workspaceRoot: world.workspaceRoot,
+      config: { plugins: { enabled: true } },
+    });
+    expect(loaded.errors.filter((issue) => issue.type === "install-recovery")).toEqual([]);
   });
 });
 
