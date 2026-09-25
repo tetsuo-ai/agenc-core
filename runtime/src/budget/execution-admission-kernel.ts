@@ -123,6 +123,13 @@ export interface ExecutionAdmissionKernelOptions {
   readonly ownerPid?: number;
   readonly now?: () => Date;
   readonly id?: () => string;
+  /**
+   * Identity of the running build. Lets canonical journal recovery keep the
+   * projection of a source it already validated, projected and fsynced under
+   * this same build when the source bytes have not changed. Omitted, every
+   * recovery validates and projects every bound source.
+   */
+  readonly canonicalProjectionEpoch?: string;
 }
 
 export interface BindExecutionAdmissionClientOptions {
@@ -180,6 +187,7 @@ export class ExecutionAdmissionKernel {
   readonly #now: () => Date;
   readonly #id: () => string;
   readonly #queueAgingMs: number;
+  readonly #canonicalProjectionEpoch: string | undefined;
   readonly #scheduler = new AsyncLock<void>(undefined);
   readonly #byStatePath = new Map<string, WorkspaceBinding>();
   readonly #knownPaths = new Map<string, StateDatabasePaths>();
@@ -222,6 +230,7 @@ export class ExecutionAdmissionKernel {
       options.queueAgingMs,
       DEFAULT_QUEUE_AGING_MS,
     );
+    this.#canonicalProjectionEpoch = options.canonicalProjectionEpoch;
     this.#limits = normalizeLimits(
       options.limits ?? DEFAULT_ADMISSION_CONCURRENCY_LIMITS,
     );
@@ -266,10 +275,7 @@ export class ExecutionAdmissionKernel {
           now: this.#timestamp(),
           activeOwnerIds: new Set(),
         });
-        recoverExecutionAdmissionCanonicalJournals(
-          binding.driver,
-          binding.repository,
-        );
+        this.#recoverCanonicalJournals(binding);
         this.#hydrateQueued(binding);
         this.#publishNewJournal(binding);
         totals.databases += 1;
@@ -1004,10 +1010,7 @@ export class ExecutionAdmissionKernel {
           now: this.#timestamp(),
           activeOwnerIds: new Set([this.#ownerId]),
         });
-        recoverExecutionAdmissionCanonicalJournals(
-          binding.driver,
-          binding.repository,
-        );
+        this.#recoverCanonicalJournals(binding);
         this.#hydrateQueued(binding);
         this.#publishNewJournal(binding);
       }
@@ -1017,6 +1020,16 @@ export class ExecutionAdmissionKernel {
       this.#unregisterBinding(binding);
       throw error;
     }
+  }
+
+  #recoverCanonicalJournals(binding: WorkspaceBinding): void {
+    recoverExecutionAdmissionCanonicalJournals(
+      binding.driver,
+      binding.repository,
+      this.#canonicalProjectionEpoch === undefined
+        ? {}
+        : { canonicalProjectionEpoch: this.#canonicalProjectionEpoch },
+    );
   }
 
   /** Reopen idle project databases only for a process-wide query or cancel. */

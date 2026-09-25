@@ -3458,6 +3458,13 @@ async function runAgenCDaemonForegroundLocked(
         limits: resolveAdmissionConcurrencyLimits(host.env, {
           sessionLimit: activeConfig.agent_max_threads,
         }),
+        // Journal projections are reused only by the exact build that
+        // validated them; the first start of any other build redoes them.
+        ...(distVersion !== null
+          ? {
+              canonicalProjectionEpoch: `${distVersion.runtimeVersion}+${distVersion.commit}+${distVersion.buildTime}`,
+            }
+          : {}),
       });
       const recovery = executionAdmissionKernel.initializeExistingState();
       if (
