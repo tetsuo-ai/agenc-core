@@ -1,5 +1,5 @@
-import { lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { readFile, readdir, realpath, stat } from "node:fs/promises";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { isValidPermissionDefaultMode, validateHooksConfig, validateMcpServersConfig } from "../config/schema.js";
 import type {
   AgenCConfig,
@@ -11,6 +11,7 @@ import type {
   PluginEntryConfig,
   PluginMcpServerConfig,
 } from "../config/schema.js";
+import { nearestExistingRealpath } from "./nearest-existing-realpath.js";
 import { pluginDependencyIdentityFromSource, verifyPluginDependencyState } from "./resolution.js";
 import { isExcludedPluginPayloadDirectory, isExcludedPluginPayloadPath } from "./payload-paths.js";
 import {
@@ -601,24 +602,6 @@ function pathIsInsideOrEqual(candidate: string, root: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-async function nearestExistingRealpath(path: string): Promise<string | undefined> {
-  let cursor = resolve(path);
-  const pending: string[] = [];
-  for (;;) {
-    try {
-      await lstat(cursor);
-      const real = await realpath(cursor);
-      return pending.reduceRight((parent, name) => join(parent, name), real);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
-      const parent = dirname(cursor);
-      if (parent === cursor) return undefined;
-      pending.push(basename(cursor));
-      cursor = parent;
-    }
-  }
-}
-
 async function samePluginRoot(userRoot: string, repoRoot: string): Promise<boolean> {
   if (pathIsInsideOrEqual(userRoot, repoRoot) && pathIsInsideOrEqual(repoRoot, userRoot)) return true;
   const userReal = await nearestExistingRealpath(userRoot);
@@ -630,7 +613,7 @@ async function storageRootIsRepositoryPlugins(userRoot: string, repoRoot: string
   if (pathIsInsideOrEqual(userRoot, repoRoot)) return true;
   const userReal = await nearestExistingRealpath(userRoot);
   const repoReal = await nearestExistingRealpath(repoRoot);
-  if (userReal === undefined || repoReal === undefined) return false;
+  if (userReal === undefined || repoReal === undefined) return true;
   return pathIsInsideOrEqual(userReal, repoReal);
 }
 
