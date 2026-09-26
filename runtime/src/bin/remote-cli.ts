@@ -803,7 +803,7 @@ export async function startRemoteOn(
         authToken,
         quiet: true,
       });
-      return { message: `${REMOTE_FULL_CONTROL_WARNING}\n● Remote access ON — already linked to “${existing.machineName}”. Drive this computer from your phone.` };
+      return { message: `${REMOTE_FULL_CONTROL_WARNING}\n● Remote access ON: already linked to “${existing.machineName}”. Drive this computer from your phone.` };
     }
     if (status === 410) rmSync(pairPath(context), { force: true }); // revoked — fall through to re-pair
   }
