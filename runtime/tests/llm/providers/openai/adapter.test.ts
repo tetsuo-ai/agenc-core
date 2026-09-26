@@ -54,6 +54,34 @@ function expectNoRequestMetadataWarning(emitWarning: ReturnType<typeof vi.fn>): 
 }
 
 describe("OpenAIProvider", () => {
+  test.each(["conv-123", "k".repeat(64), `review-${"a".repeat(64)}`])(
+    "bounds Chat Completions cache keys supplied through extraBody: %s",
+    async (promptCacheKey) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(
+        JSON.stringify({
+          id: "chatcmpl_cache_key",
+          choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ));
+      const provider = new OpenAIProvider({
+        apiKey: "sk-test",
+        model: "gpt-4.1",
+        useResponsesApi: false,
+        extraBody: { prompt_cache_key: promptCacheKey },
+        fetchImpl,
+      });
+
+      await provider.chat([{ role: "user", content: "hello" }]);
+
+      const body = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+      expect(body.prompt_cache_key).toHaveLength(Math.min(promptCacheKey.length, 64));
+      if (promptCacheKey.length <= 64) {
+        expect(body.prompt_cache_key).toBe(promptCacheKey);
+      }
+    },
+  );
+
   test.each([
     "rate_limit_exceeded",
     "rate_limit",

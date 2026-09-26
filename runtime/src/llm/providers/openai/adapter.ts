@@ -7,6 +7,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { normalizePromptCacheKey } from "../../prompt-cache-key.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -1319,6 +1320,9 @@ export class OpenAIProvider implements LLMProvider {
     });
     for (const [key, value] of Object.entries(this.config.extraBody ?? {})) {
       request[key] = value;
+    }
+    if (typeof request.prompt_cache_key === "string") {
+      request.prompt_cache_key = normalizePromptCacheKey(request.prompt_cache_key);
     }
     let metadata = collectChatCompletionsRequestMetadata(request);
     const accountedInputTokens = normalizePositiveInteger(

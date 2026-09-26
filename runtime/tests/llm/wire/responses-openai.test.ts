@@ -23,6 +23,27 @@ const TEST_TOOLS: LLMTool[] = [
 ];
 
 describe("buildOpenAIResponsesRequest", () => {
+  test.each(["conv-123", "k".repeat(64), `review-${"a".repeat(64)}`])(
+    "bounds prompt cache keys while preserving existing short keys: %s",
+    (promptCacheKey) => {
+      const build = (key: string) => buildOpenAIResponsesRequest({
+        model: "gpt-5",
+        messages: [{ role: "user", content: "hello" }],
+        tools: [],
+        options: { promptCacheKey: key },
+      }).prompt_cache_key;
+      const key = build(promptCacheKey);
+
+      expect(key).toHaveLength(Math.min(promptCacheKey.length, 64));
+      expect(build(promptCacheKey)).toBe(key);
+      if (promptCacheKey.length <= 64) {
+        expect(key).toBe(promptCacheKey);
+      } else {
+        expect(build(`${promptCacheKey.slice(0, -1)}b`)).not.toBe(key);
+      }
+    },
+  );
+
   test("keeps request instructions in the Responses instructions field", () => {
     const request = buildOpenAIResponsesRequest({
       model: "gpt-5",

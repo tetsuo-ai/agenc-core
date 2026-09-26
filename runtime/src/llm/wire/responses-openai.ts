@@ -4,6 +4,7 @@
  * @module
  */
 
+import { normalizePromptCacheKey } from "../prompt-cache-key.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -483,7 +484,7 @@ export function buildOpenAIResponsesRequest(
     body.parallel_tool_calls = input.options.parallelToolCalls;
   }
   if (input.options?.promptCacheKey) {
-    body.prompt_cache_key = input.options.promptCacheKey;
+    body.prompt_cache_key = normalizePromptCacheKey(input.options.promptCacheKey);
   }
   if (input.options?.serviceTier !== undefined) {
     body.service_tier = input.options.serviceTier;

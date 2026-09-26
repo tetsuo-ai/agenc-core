@@ -132,6 +132,42 @@ describe("validateHistoryCompatibility", () => {
 });
 
 describe("prepareResponsesContinuationRequest", () => {
+  it("bounds the 71-character Goal reviewer session cache key", () => {
+    const conversationId = "review-36890f9c5ed7d2ebcf12b0158fe131514af1bfad253f96f78fa514295e48182c";
+    const body = { model: "gpt-5", input: [], store: false };
+    const prepared = prepareResponsesContinuationRequest(body, { conversationId });
+
+    expect(conversationId).toHaveLength(71);
+    expect(prepared.request.prompt_cache_key).toHaveLength(64);
+    expect(prepared.snapshot.prompt_cache_key).toBe(prepared.request.prompt_cache_key);
+    expect(prepareResponsesContinuationRequest(body, { conversationId }).request)
+      .toEqual(prepared.request);
+    expect(prepareResponsesContinuationRequest(body, {
+      conversationId: `${conversationId.slice(0, -1)}d`,
+    }).request.prompt_cache_key).not.toBe(prepared.request.prompt_cache_key);
+  });
+
+  it.each([63, 64, 65, 71, 1_000])("bounds explicit cache keys of length %i", (length) => {
+    const promptCacheKey = "k".repeat(length);
+    const body = { input: [], prompt_cache_key: promptCacheKey };
+    const prepared = prepareResponsesContinuationRequest(body, {
+      conversationId: "fallback-session",
+    });
+
+    expect(prepared.request.prompt_cache_key).toHaveLength(Math.min(length, 64));
+    if (length <= 64) {
+      expect(prepared.request.prompt_cache_key).toBe(promptCacheKey);
+    } else {
+      expect(prepareResponsesContinuationRequest({
+        ...body,
+        prompt_cache_key: `${promptCacheKey.slice(0, -1)}z`,
+      }, {}).request.prompt_cache_key).not.toBe(prepared.request.prompt_cache_key);
+    }
+    expect(prepareResponsesContinuationRequest(prepared.request, {}).request)
+      .toEqual(prepared.request);
+    expect(body.prompt_cache_key).toBe(promptCacheKey);
+  });
+
   it("injects the session conversation id as prompt_cache_key", () => {
     const prepared = prepareResponsesContinuationRequest(
       {
