@@ -70,6 +70,7 @@ import {
   READ_ONLY_DELEGATION_PROMPT,
   type ReadOnlyDelegationConstraint,
 } from "./readonly-delegation.js";
+import { worktreeWriteRefusal } from "./worktree-write-confinement.js";
 import {
   attachReadOnlyInspectionInvocation,
   inspectReadOnlyCommand,
@@ -3013,6 +3014,14 @@ async function prepareChildToolCall(
     if (refusal !== undefined) {
       return { result: { content: safeStringify({ error: refusal }), isError: true, metadata: { childPolicyDenied: true } } };
     }
+  }
+  // A worktree child writes inside its worktree only. Refused here, as a tool
+  // error the model reads and recovers from: a deny at the permission check
+  // would end a whole Goal run (a workflow child's denied approval is
+  // WorkflowApprovalFailure, policy_denied).
+  const outsideWorktree = worktreeWriteRefusal(tool.name, policyResult.args, opts.worktree?.path);
+  if (outsideWorktree !== undefined) {
+    return { result: { content: safeStringify({ error: outsideWorktree }), isError: true, metadata: { childPolicyDenied: true } } };
   }
   const childArgs = widenChildFilesystemRoots(
     tool.name,
