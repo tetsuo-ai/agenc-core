@@ -858,6 +858,7 @@ function storedThreadToSessionSummary(
     modelProvider: thread.modelProvider,
     rolloutPath: thread.rolloutPath,
     recovered: true,
+    ...(thread.lightMode !== undefined ? { lightMode: thread.lightMode } : {}),
     ...(roleWorkspace !== undefined
       ? {
           agentRoleWorkspaceId: roleWorkspace.id,

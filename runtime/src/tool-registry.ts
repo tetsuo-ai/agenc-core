@@ -23,6 +23,7 @@
  */
 
 import type { LLMTool, LLMToolCall } from "./llm/types.js";
+import { LIGHT_INITIAL_TOOL_NAMES } from "./tools/light-profile.js";
 import type { FunctionCallOutputContentItem } from "./tools/context.js";
 import type {
   Tool,
@@ -568,6 +569,8 @@ export interface BuildToolRegistryOptions {
   readonly getSession?: () => Session | null;
   /** Fail closed when direct dispatch has no live admission session. */
   readonly requireAdmission?: boolean;
+  /** Session-owned presentation profile; does not filter executable capabilities. */
+  readonly lightMode?: boolean;
   readonly allowBashDelete?: boolean;
   /**
    * T6 gap #119: observer that receives `exec_command_begin` /
@@ -1157,10 +1160,18 @@ export function buildToolRegistry(
   }
 
   function visibleSpecs(): readonly ConfiguredToolSpec[] {
-    return allSpecs().filter(
+    const specs = allSpecs().filter((spec) => spec.unavailable !== true);
+    // A restrictive policy may remove discovery itself. Keep its remaining
+    // capabilities callable instead of stranding them behind an absent tool.
+    if (options.lightMode === true && !specs.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME)) {
+      return specs;
+    }
+    return specs.filter(
       (spec) =>
-        spec.unavailable !== true &&
-        (!isDeferredSpec(spec) || discoveredToolNames.has(spec.tool.name)),
+        (options.lightMode === true
+          ? LIGHT_INITIAL_TOOL_NAMES.has(spec.tool.name) ||
+            (spec.tool.name === "StructuredOutput" && options.outputSchema !== undefined)
+          : !isDeferredSpec(spec)) || discoveredToolNames.has(spec.tool.name),
     );
   }
 

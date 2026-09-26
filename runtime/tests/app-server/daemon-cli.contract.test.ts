@@ -5897,6 +5897,7 @@ snapshot_max_bytes = 64
       sessionId: "session-other",
       toolCallId: "tool-other",
       status: "blocked",
+      lightMode: true,
     });
     const restoredConversationIds: string[] = [];
     const restoreOptions = new Map<
@@ -6073,6 +6074,10 @@ snapshot_max_bytes = 64
       "run-other",
       "run-restart",
     ]);
+    const recoveredSessions = await client.request("session.list", {});
+    expect(recoveredSessions.sessions.find(session => session.sessionId === "session-other")?.metadata?.lightMode).toBe(true);
+    expect(recoveredSessions.sessions.find(session => session.sessionId === "session-restart")?.metadata?.lightMode).toBe(false);
+    expect(restoreOptions.get("run-other")?.runtimeOptions.lightMode).toBe(true);
     const stats = await client.request("health.stats", {});
     // Each retained canonical root plus its daemon attachment session is
     // visible after exact-source startup restoration.
@@ -8191,6 +8196,7 @@ function seedRecoverableDaemonState(
     /** Set false only when exercising the fail-closed pre-contract recovery path. */
     readonly includeRuntimeOptions?: boolean;
     readonly includeCommandEnvironment?: boolean;
+    readonly lightMode?: boolean;
   },
 ): string {
   const driver = openStateDatabases({
@@ -8225,7 +8231,7 @@ function seedRecoverableDaemonState(
           agentPath: `/root/${params.runId.replaceAll("-", "_")}`,
           ...(params.includeRuntimeOptions === false
             ? {}
-            : { runtimeOptions: TEST_RUNTIME_OPTIONS }),
+            : { runtimeOptions: { ...TEST_RUNTIME_OPTIONS, ...(params.lightMode !== undefined ? { lightMode: params.lightMode } : {}) } }),
           ...(params.includeCommandEnvironment === false
             ? {}
             : { commandEnvironment: { PATH: "/usr/bin:/bin" } }),

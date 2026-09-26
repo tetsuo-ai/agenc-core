@@ -839,7 +839,7 @@ export interface AssembledSystemPrompt {
   readonly dynamicSuffix: string;
 }
 
-export type SystemPromptProfile = "standard" | "compact" | "coordinator";
+export type SystemPromptProfile = "standard" | "compact" | "light" | "coordinator";
 
 export interface AssembleSystemPromptSnapshotOpts
   extends AssembleSystemPromptOpts {
@@ -926,6 +926,9 @@ export async function assembleSystemPromptSnapshot(
     };
   };
   switch (opts.profile ?? "standard") {
+    case "light":
+      // Light changes tool exposure only; keep the canonical work instructions.
+      return assembleSystemPrompt(opts);
     case "compact":
       return withClientRendering(
         compactSystemPromptSnapshot(

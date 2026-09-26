@@ -24,6 +24,7 @@ import { validateDisplayBlock } from "../mcp-client/display-attachments.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
 import { FileThreadStore } from "../thread-store/store.js";
+import { MultiProjectFileThreadStore } from "../thread-store/multi-project-store.js";
 import {
   openStateDatabases,
   type StateSqliteDriver,
@@ -2761,7 +2762,8 @@ describe("AgenC background agent lifecycle", () => {
     }
   });
 
-  it("agent.create launches a running background agent and seeds its session", async () => {
+  it.each([false, true])("agent.create persists actual Light mode (%s), ignoring caller metadata", async (lightMode) => {
+    const selectedRuntimeOptions = { ...TEST_AGENT_RUNTIME_OPTIONS, lightMode };
     const sessions = new AgenCDaemonSessionManager({
       createSessionId: sequence(["session_1"]),
       createAttachmentId: sequence(["attachment_1"]),
@@ -2797,8 +2799,9 @@ describe("AgenC background agent lifecycle", () => {
       createTestAgent(agents, {
         cwd: process.cwd(),
         objective: "  build the parser  ",
+        runtimeOptions: selectedRuntimeOptions,
         addDirs: ["../shared workspace", "/tmp/shared"],
-        metadata: { ticket: "F-06a" },
+        metadata: { ticket: "F-06a", lightMode: !lightMode },
       }),
     ).resolves.toEqual({
       agentId: "agent_1",
@@ -2812,11 +2815,12 @@ describe("AgenC background agent lifecycle", () => {
       activeSessionIds: ["session_1"],
       metadata: {
         ticket: "F-06a",
+        lightMode,
         addDirs: ["../shared workspace", "/tmp/shared"],
         unattendedAllow: [],
         unattendedDeny: [],
         commandEnvironment: { PATH: "" },
-        runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+        runtimeOptions: selectedRuntimeOptions,
       },
       sessionId: "session_1",
     });
@@ -2828,15 +2832,16 @@ describe("AgenC background agent lifecycle", () => {
         addDirs: ["../shared workspace", "/tmp/shared"],
         metadata: {
           ticket: "F-06a",
+          lightMode,
           addDirs: ["../shared workspace", "/tmp/shared"],
           unattendedAllow: [],
           unattendedDeny: [],
           commandEnvironment: { PATH: "" },
-          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+          runtimeOptions: selectedRuntimeOptions,
         },
         unattendedAllow: [],
         unattendedDeny: [],
-        runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+        runtimeOptions: selectedRuntimeOptions,
       },
     ]);
     expect(starts[0]?.runtimeOptions).toBe(
@@ -2850,13 +2855,14 @@ describe("AgenC background agent lifecycle", () => {
       cwd: process.cwd(),
       metadata: {
         ticket: "F-06a",
+        lightMode,
         addDirs: ["../shared workspace", "/tmp/shared"],
         objective: "build the parser",
         source: "agent.start",
         unattendedAllow: [],
         unattendedDeny: [],
         commandEnvironment: { PATH: "" },
-        runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+        runtimeOptions: selectedRuntimeOptions,
       },
     });
     await expect(agents.listAgents()).resolves.toEqual({
@@ -2873,11 +2879,12 @@ describe("AgenC background agent lifecycle", () => {
           activeSessionIds: ["session_1"],
           metadata: {
             ticket: "F-06a",
+            lightMode,
             addDirs: ["../shared workspace", "/tmp/shared"],
             unattendedAllow: [],
             unattendedDeny: [],
             commandEnvironment: { PATH: "" },
-            runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+            runtimeOptions: selectedRuntimeOptions,
           },
         },
       ],
@@ -2891,7 +2898,7 @@ describe("AgenC background agent lifecycle", () => {
       agentId: "agent_1",
       attachmentId: "attachment_1",
       sessionIds: ["session_1"],
-      runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+      runtimeOptions: selectedRuntimeOptions,
       runtimeSettings,
       runtimeSettingsEventId: "settings:agent_1:default",
       runtimeSessionId: "agent_1",
@@ -2904,13 +2911,14 @@ describe("AgenC background agent lifecycle", () => {
           cwd: process.cwd(),
           metadata: {
             ticket: "F-06a",
+            lightMode,
             addDirs: ["../shared workspace", "/tmp/shared"],
             objective: "build the parser",
             source: "agent.start",
             unattendedAllow: [],
             unattendedDeny: [],
             commandEnvironment: { PATH: "" },
-            runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+            runtimeOptions: selectedRuntimeOptions,
           },
           activeAttachmentIds: ["attachment_1"],
         },
@@ -3236,6 +3244,77 @@ describe("AgenC background agent lifecycle", () => {
       code: "CANONICAL_SESSION_ALREADY_ACTIVE",
     });
     expect(restoreAgent).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true, undefined])("recovers the durable Light profile (%s) after clean shutdown for listing and cold resume", async (lightMode) => {
+    const sessionId = `conv-cold-light-${String(lightMode)}`;
+    const fixture = createResumeFixture(sessionId);
+    const originalStore = new FileThreadStore({ cwd: fixture.cwd });
+    const agencHome = dirname(dirname(originalStore.getProjectDir()));
+    originalStore.readThreadByRolloutPath({
+      rolloutPath: fixture.rolloutPath, includeArchived: false, includeHistory: false,
+    });
+    expect(originalStore.listThreads({ pageSize: 50, archived: false, useStateDbOnly: true }).items)
+      .toEqual(expect.arrayContaining([expect.objectContaining({ threadId: sessionId })]));
+    originalStore.close();
+    const driver = openStateDatabases({ cwd: fixture.cwd });
+    upsertAgentRun(driver, {
+      id: sessionId, objective: "retained canonical objective", status: "stopped",
+      startedAt: "2026-05-01T12:30:00.000Z", lastActiveAt: "2026-05-01T12:31:00.000Z",
+      metadata: {
+        // Only runtimeOptions is authoritative. A legacy or caller-supplied
+        // display field must not enable Light mode.
+        lightMode: lightMode !== true,
+        runtimeOptions: { ...TEST_AGENT_RUNTIME_OPTIONS, ...(lightMode !== undefined ? { lightMode } : {}) },
+      },
+    });
+    driver.close();
+    const threadStore = new MultiProjectFileThreadStore({
+      primaryCwd: fixture.cwd, agencHome,
+    });
+    const otherCwd = mkdtempSync(join(tmpdir(), "agenc-light-decoy-"));
+    mkdirSync(join(otherCwd, ".git"));
+    const otherRollout = openRollout(otherCwd, sessionId);
+    const otherStore = new FileThreadStore({ cwd: otherCwd, agencHome });
+    otherStore.createThread({ threadId: sessionId, rolloutStore: otherRollout, source: "interactive-root", cwd: otherCwd });
+    otherStore.shutdownThread(sessionId);
+    otherStore.close();
+    otherRollout.close();
+    const otherDriver = openStateDatabases({ cwd: otherCwd, agencHome });
+    upsertAgentRun(otherDriver, {
+      id: sessionId, objective: "different project", status: "stopped",
+      startedAt: "2026-05-01T12:30:00.000Z", lastActiveAt: "2026-05-01T12:31:00.000Z",
+      metadata: { runtimeOptions: { ...TEST_AGENT_RUNTIME_OPTIONS, lightMode: lightMode !== true } },
+    });
+    otherDriver.close();
+    const resumeStore = new MultiProjectFileThreadStore({ primaryCwd: otherCwd, agencHome });
+    try {
+      const sessions = new AgenCDaemonSessionManager({ threadStore });
+      const listedPage = await sessions.listSessions();
+      expect(listedPage.sessions).toEqual(expect.arrayContaining([expect.objectContaining({ sessionId })]));
+      const listed = listedPage.sessions.find(s => s.sessionId === sessionId);
+      expect(listed?.metadata?.recovered).toBe(true);
+      expect(listed?.metadata?.lightMode).toBe(lightMode);
+      const restoreAgent = vi.fn(async () => true);
+      const agents = new AgenCDaemonAgentManager({
+        // The first project has the same ID but the opposite profile. Resume
+        // must use the project bound by its validated canonical rollout.
+        threadStore: resumeStore, sessionManager: sessions,
+        runner: { ...noLiveAgentRunner(sessionId), restoreAgent },
+      });
+      await expect(createTestAgent(agents, {
+        resumeSessionId: sessionId, resumeRolloutPath: fixture.rolloutPath,
+        resumeSourceProof: fixture.sourceProof, cwd: fixture.cwd,
+        runtimeOptions: { ...TEST_AGENT_RUNTIME_OPTIONS, lightMode: lightMode !== true },
+      })).resolves.toMatchObject({ metadata: { lightMode: lightMode === true } });
+      expect(restoreAgent).toHaveBeenCalledWith(expect.objectContaining({
+        runtimeOptions: { ...TEST_AGENT_RUNTIME_OPTIONS, lightMode: lightMode === true },
+      }));
+    } finally {
+      resumeStore.close();
+      threadStore.close();
+      rmSync(otherCwd, { recursive: true, force: true });
+    }
   });
 
   it("agent.create explicitly reopens a retained canonical session", async () => {
@@ -3647,6 +3726,7 @@ describe("AgenC background agent lifecycle", () => {
     const restoreRuntime = vi.fn(async () => true);
     const retainedRuntimeOptions = resolveAgentRuntimeOptions({}, {
       dangerouslyBypassApprovalsAndSandbox: true,
+      lightMode: true,
     });
     const agents = new AgenCDaemonAgentManager({
       runner: {
@@ -3689,6 +3769,7 @@ describe("AgenC background agent lifecycle", () => {
         provider: "grok",
         profile: "deep-work",
         permissionMode: "plan",
+        lightMode: true,
       },
     });
     expect(restoreRuntime).toHaveBeenCalledWith(
@@ -6823,7 +6904,7 @@ describe("AgenC background agent lifecycle", () => {
         capabilities: {},
       },
     });
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.18.0");
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.19.0");
     expect(connection.initializeState).toMatchObject({
       protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
       clientProtocol: { version: "1.0.0" },

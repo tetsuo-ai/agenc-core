@@ -839,6 +839,7 @@ async function prepareSamplingRequestBoundary(
   discoverDirectMcpToolMentions(session, userInput);
   const attachments = await getAttachments({
     sessionKey: session,
+    lightMode: session.services.runtimeOptions?.lightMode === true,
     admittedMemorySelector: createAdmittedMemorySelector(session),
     // Producers hold only an opaque session key, so what they decide is
     // invisible to an operator unless they can report it. Routed to the

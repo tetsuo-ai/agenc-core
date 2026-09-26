@@ -30,6 +30,8 @@ import { normalizeExactAbsolutePath } from "../utils/path-authority.js";
 export interface AgentRuntimeOptions {
   readonly [key: string]: boolean | string | number | readonly string[] | undefined;
   readonly simpleMode: boolean;
+  /** Deferred tool exposure; preserves canonical instructions, schemas and execution policy. */
+  readonly lightMode?: boolean;
   /**
    * Immutable startup authority selected only by
    * `--dangerously-bypass-approvals-and-sandbox`.
@@ -397,6 +399,7 @@ function resolveAgentRuntimeOptionsAtIngress(
       : undefined;
   const resolved: AgentRuntimeOptions = {
     simpleMode: overrides.simpleMode ?? false,
+    ...(overrides.lightMode !== undefined ? { lightMode: overrides.lightMode } : {}),
     dangerouslyBypassApprovalsAndSandbox:
       overrides.dangerouslyBypassApprovalsAndSandbox ?? false,
     nonInteractive: overrides.nonInteractive ?? false,
@@ -592,6 +595,7 @@ export function validateAgentRuntimeOptions(
   const input = value as Record<string, unknown>;
   const allowed = new Set([
     "simpleMode",
+    "lightMode",
     "dangerouslyBypassApprovalsAndSandbox",
     "nonInteractive",
     "stdinDataMode",
@@ -625,6 +629,9 @@ export function validateAgentRuntimeOptions(
     throw new AgentRuntimeOptionsError(
       "runtimeOptions.simpleMode is required and must be boolean",
     );
+  }
+  if (input.lightMode !== undefined && typeof input.lightMode !== "boolean") {
+    throw new AgentRuntimeOptionsError("runtimeOptions.lightMode must be boolean");
   }
   if (
     input.dangerouslyBypassApprovalsAndSandbox !== undefined &&

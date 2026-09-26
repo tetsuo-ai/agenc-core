@@ -828,6 +828,7 @@ export async function bootstrapLocalRuntimeSession(
     options.runtimeOptions ??
     resolveAgentRuntimeOptions(env, {
       simpleMode: cli.simpleMode === true,
+      ...(cli.lightMode === true ? { lightMode: true } : {}),
       dangerouslyBypassApprovalsAndSandbox: (() => {
         const sandboxBypass = resolveStartupSandboxBypass(cli, {
           cwd: process.cwd(),
@@ -1337,6 +1338,7 @@ async function bootstrapLocalRuntimeSessionScoped(
     toolRegistryOptions: {
       ...(options.toolRegistryOptions ?? {}),
       unifiedExecManager,
+      lightMode: runtimeOptions.lightMode === true,
       sandboxExecutionBroker,
       codeModeService,
       ...(startup.config.browser !== undefined
@@ -1588,7 +1590,9 @@ async function bootstrapLocalRuntimeSessionScoped(
     permissionContext: toolPermissionContext,
     profile: coordinatorModeEnabled
       ? "coordinator"
-      : usesLocalToolProfile(resolvedProvider)
+      : runtimeOptions.lightMode === true
+        ? "light"
+        : usesLocalToolProfile(resolvedProvider)
         ? "compact"
         : "standard",
   });
