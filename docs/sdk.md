@@ -24,6 +24,16 @@ npm run build --workspace=@tetsuo-ai/agenc-sdk   # plain tsc → dist/
 Both produce the same typed event iterable (`AgencPromptEvent`) and the same
 final `AgencPromptResult`, so downstream consumption code is shared.
 
+Both transports share `AGENC_SDK_MAX_FRAME_BYTES` (16 MiB), the same numeric
+ceiling as the daemon socket and MCP stdio servers, and the same delimiter
+rule: LF, CRLF, and a lone CR end a frame and do not count toward the limit.
+An exact-limit payload is accepted, including when it arrives across chunks.
+One extra payload byte fails whether or not a delimiter has arrived. The
+socket applies that limit to the frame, not to the unread chunk. Subprocess
+overflow stops further reads, sends SIGTERM, and SIGKILLs after a short grace
+through the same guarded process-group path as a drain timeout (a custom
+`spawn` is never group-signalled). Only the existing 8 KiB stderr tail is kept.
+
 Both transports also share one bounded event buffer. A run keeps at most
 `MAX_BUFFERED_PROMPT_EVENTS` (1,000) events that the consumer has not iterated
 yet; past that the oldest buffered event is discarded. Loss is never silent:
@@ -320,6 +330,22 @@ The subprocess transport invokes `agenc -p`, so
 environment when `options.env` is omitted, is captured as automation startup
 authority. The child sends the captured typed value to the daemon; it does not
 install the variable as mutable daemon environment state.
+
+Node can emit child `exit` before stdout closes. The transport records the
+exit status, keeps parsing until stdout `end` and child `close`, and only then
+decides whether a stream-json result arrived. The final unterminated line is
+parsed once after stdout ends. If stdio stays open after `exit` longer than
+`postExitDrainTimeoutMs` (default 5s), the run fails with a distinct drain
+error and the SDK SIGKILLs the direct child.
+
+The default spawner leaves the child in the embedder's process group, so a
+terminal SIGINT or SIGHUP still reaches it. `detachProcessGroup: true` (Unix
+only) opts into `detached: true` and a new process group. That group is the
+only one a drain timeout will SIGKILL, and only when its pid is a safe integer
+greater than 1 and not this process. `cancel()` and an aborted `signal`
+forward SIGTERM to that same group. A custom `spawn` is never group-signalled:
+terminal signals are the spawner's responsibility, and pid 1 cannot become
+`kill(-1)`.
 
 ## Runnable example
 
@@ -739,7 +765,13 @@ daemon projects it as diagnostic with `statusProjection: "session_only"`.
   and client multiplexer).
 - `subprocess-transport.test.ts` — stream-json adaptation with a fake child
   process (argv contract, event mapping, exit-code-2 mapping, error paths,
-  bounded buffer with a visible `local_overflow` gap).
+  post-exit stdout drain, a real inherited-stdout descendant, and a bounded
+  buffer with a visible `local_overflow` gap).
+- `newline-frame.test.ts` — subprocess payload ceiling rules (exact limit,
+  overflow, CRLF, split UTF-8, multi-frame chunks).
+- `subprocess-stdout-framing.test.ts` — overflow settlement, listener cleanup,
+  and child reaping at the production 16 MiB bound.
+- `frame-limits.contract.test.ts` — SDK / daemon / MCP 16 MiB ceiling pin.
 - `prompt-event-queue.test.ts` and `prompt-event-overflow.contract.test.ts` —
   the shared bounded event buffer and its socket-transport contract:
   result-first, slow, and never-draining consumers see exact loss counts and

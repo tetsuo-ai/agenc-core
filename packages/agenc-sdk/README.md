@@ -24,9 +24,14 @@ Errors: `AgencRpcError`, `AgencMalformedResponseError`,
 The socket transport rejects every pending request and closes the connection
 when a completed line contains malformed JSON or an invalid JSON-RPC response
 or notification envelope. `onClose` receives the protocol error once, and later
-requests fail immediately. Partial lines may span chunks within the 16 MiB
-buffer limit. Valid `message.send` and `message.stream` calls remain unbounded
-by the control-request timeout.
+requests fail immediately. Partial lines may span chunks within the shared
+`AGENC_SDK_MAX_FRAME_BYTES` (16 MiB) ceiling. Both transports count payload
+bytes excluding an LF, CRLF, or lone CR delimiter, and they apply the limit
+to the frame rather than the read chunk. `promptViaSubprocess()` decodes
+UTF-8 only after the payload is within the bound, and fails the run once on
+overflow — SIGTERM, then SIGKILL after a short grace, retaining only the
+bounded stderr tail. Valid `message.send` and
+`message.stream` calls remain unbounded by the control-request timeout.
 
 Prompt events on protocol 1.2 also include `message_committed`,
 `history_reset`, `elicitation_request`, `gap`, and `session_event`. The sample
@@ -117,6 +122,17 @@ without an adapter. No protocol or stored-state migration is needed.
 `promptViaSubprocess()` invokes `agenc -p`. The child captures
 `AGENC_ALLOW_UNTRUSTED_HOOKS` from `options.env`, or from its inherited
 environment when `options.env` is omitted, at automation startup.
+
+The subprocess transport does not settle on child `exit` alone. It waits for
+stdout `end` and child `close` so a result still in the pipe after the wrapper
+exits is not dropped. Custom `AgencSubprocessSpawnFn` adapters must expose
+`on`/`removeListener` for `error`, `exit`, and `close`, plus stdout `end`.
+`postExitDrainTimeoutMs` (default 5,000) bounds that wait; a timeout SIGKILLs
+the direct child. `detachProcessGroup: true` is a Unix opt-in that starts the
+default spawner's child in its own process group so that timeout can also
+SIGKILL the group, and so `cancel()` / abort can forward SIGTERM to it.
+Terminal SIGINT and SIGHUP do not reach a detached child. The default leaves
+the child in the embedder's group. Custom spawners are never group-signalled.
 
 ## Docs & example
 
