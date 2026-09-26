@@ -38,20 +38,24 @@ function providerMessage(value: unknown): string | undefined {
     /^[\p{L}\p{N} .,;:'"()!?$%/\-]+$/u.test(text) &&
     /\p{L}/u.test(text) && text.includes(" ") &&
     !/[^ ]{20}/u.test(text);
-  const fieldPair = /(?:["'][^"']+["']|[\p{L}\p{N}-]+) *: *\S/u.test(text);
+  const fieldPair = /["'][^"']+["'] *:|[\p{L}\p{N}_-]+ *(?:=|: *\S)/u.test(text);
   const url = /\/\/|\b[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.[\p{L}]{2,}\b/iu.test(text);
   const transportSummary = /^HTTP(?:\/[\d.]+)? +\d{3}\b/i.test(text);
   return plainProse && !fieldPair && !url && !transportSummary ? text : undefined;
 }
 
-export function providerFundsMessage(error: unknown): string | undefined {
+export function providerFundsMessage(providerName: string, error: unknown): string | undefined {
+  const provider = providerName.toLowerCase();
   let current: unknown = error;
   for (let depth = 0; depth < 5; depth += 1) {
     const item = record(current);
     if (item === undefined) break;
-    const message = providerMessage(item.body) ?? providerMessage(item.error) ??
-      providerMessage(item.message);
-    if (message !== undefined) return message;
+    // A wrapper's transport prose must not hide the actual billing refusal.
+    if (isFundsFailureNode(provider, item)) {
+      const message = providerMessage(item.body) ?? providerMessage(item.error) ??
+        providerMessage(item.message);
+      if (message !== undefined) return message;
+    }
     current = item.cause ?? item.originalError;
   }
   return undefined;
@@ -80,35 +84,40 @@ export function isProviderFundsFailure(providerName: string, error: unknown): bo
   for (let depth = 0; depth < 5; depth += 1) {
     const item = record(current);
     if (item === undefined) break;
-    if (item.name === "LLMFundsError") return true;
-    if (item.name === "LLMManagedAdmissionError" &&
-      (item.reason === "insufficient_credits" || item.reason === "credits_unavailable")) return true;
-    const status = item.status ?? item.statusCode;
-    const code = nestedCode(item) ?? nestedCode(item.body);
-    const message = `${nestedText(item)} ${nestedText(item.body)}`.toLowerCase();
-    if ((status === 402 || status === 403) &&
-      (EXHAUSTED_CREDITS_RE.test(message) ||
-        ["insufficient_quota", "insufficient_credits", "credit_balance_exhausted"].includes(code ?? ""))) return true;
-    if (status === 402 && (code === "insufficient_credits" || code === "credits_unavailable")) return true;
-    if ((provider === "deepseek" || provider === "openrouter" || provider === "agenc") && status === 402) return true;
-    if (provider === "openai" || provider === "codex" || provider === "chatgpt") {
-      if (["insufficient_quota", "credit_balance_exhausted", "organization_usage_limit_exceeded",
-        "organization_spend_limit_exceeded", "project_spend_limit_exceeded",
-        "usage_limit_reached", "usage_limit_exceeded", "usage_not_included", "usage_limit"].includes(code ?? "")) return true;
-      if (/chatgpt usage limit|subscription usage limit/.test(message)) return true;
-      if (status === 429 && /insufficient_quota|usage_limit_reached|usage_not_included|credit_balance_exhausted/.test(message)) return true;
-    }
-    if (provider === "anthropic" && /credit balance is too low/.test(message)) return true;
-    if ((provider === "grok" || provider === "xai") && status === 403 &&
-      (code === "personal-team-blocked:spending-limit" ||
-        /you have run out of credits or need a grok subscription/.test(message))) return true;
-    const bodyError = record(record(item.body)?.error);
-    if (provider === "gemini" &&
-      (code === "RESOURCE_EXHAUSTED" || record(item.error)?.status === "RESOURCE_EXHAUSTED" ||
-       bodyError?.status === "RESOURCE_EXHAUSTED") &&
-      (geminiLongQuota(item) || geminiLongQuota(item.body))) return true;
-    if (provider === "openrouter" && status === 429 && /requires more credits|insufficient credits|monthly limit/.test(message)) return true;
+    if (isFundsFailureNode(provider, item)) return true;
     current = item.cause ?? item.originalError;
   }
+  return false;
+}
+
+function isFundsFailureNode(provider: string, item: Record<string, unknown>): boolean {
+  if (item.name === "LLMFundsError") return true;
+  if (item.name === "LLMManagedAdmissionError" &&
+    (item.reason === "insufficient_credits" || item.reason === "credits_unavailable")) return true;
+  const status = item.status ?? item.statusCode;
+  const code = nestedCode(item) ?? nestedCode(item.body);
+  const message = `${nestedText(item)} ${nestedText(item.body)}`.toLowerCase();
+  if ((status === 402 || status === 403) &&
+    (EXHAUSTED_CREDITS_RE.test(message) ||
+      ["insufficient_quota", "insufficient_credits", "credit_balance_exhausted"].includes(code ?? ""))) return true;
+  if (status === 402 && (code === "insufficient_credits" || code === "credits_unavailable")) return true;
+  if ((provider === "deepseek" || provider === "openrouter" || provider === "agenc") && status === 402) return true;
+  if (provider === "openai" || provider === "codex" || provider === "chatgpt") {
+    if (["insufficient_quota", "credit_balance_exhausted", "organization_usage_limit_exceeded",
+      "organization_spend_limit_exceeded", "project_spend_limit_exceeded",
+      "usage_limit_reached", "usage_limit_exceeded", "usage_not_included", "usage_limit"].includes(code ?? "")) return true;
+    if (/chatgpt usage limit|subscription usage limit/.test(message)) return true;
+    if (status === 429 && /insufficient_quota|usage_limit_reached|usage_not_included|credit_balance_exhausted/.test(message)) return true;
+  }
+  if (provider === "anthropic" && /credit balance is too low/.test(message)) return true;
+  if ((provider === "grok" || provider === "xai") && status === 403 &&
+    (code === "personal-team-blocked:spending-limit" ||
+      /you have run out of credits or need a grok subscription/.test(message))) return true;
+  const bodyError = record(record(item.body)?.error);
+  if (provider === "gemini" &&
+    (code === "RESOURCE_EXHAUSTED" || record(item.error)?.status === "RESOURCE_EXHAUSTED" ||
+     bodyError?.status === "RESOURCE_EXHAUSTED") &&
+    (geminiLongQuota(item) || geminiLongQuota(item.body))) return true;
+  if (provider === "openrouter" && status === 429 && /requires more credits|insufficient credits|monthly limit/.test(message)) return true;
   return false;
 }

@@ -10,6 +10,36 @@ import {
 import { ProviderHttpClientSession, ProviderHttpError } from "./client-session.js";
 
 describe("LLM error network classification", () => {
+  test.each(["cause", "originalError"])("uses billing prose from the %s instead of outer transport prose", (causeKey) => {
+    const message = "Please check your plan and billing details.";
+    const error = {
+      status: 429,
+      message: "Request failed with status code 429",
+      [causeKey]: { status: 429, error: { code: "insufficient_quota", message } },
+    };
+    expect(mapLLMError("openai", error, 30_000)).toMatchObject({
+      name: "LLMFundsError", message: `openai error: ${message}`,
+    });
+  });
+
+  test.each([
+    undefined,
+    'Insufficient credits. "request_id": "f00d-1234"',
+    "Insufficient credits. 'request-id': 'f00d-1234'",
+    'Insufficient credits. "trace": "f00d-1234"',
+    'Insufficient credits. request_id=f00d-1234',
+    'Insufficient credits. trace=f00d-1234',
+  ])("defaults when the billing cause has no acceptable prose: %s", (message) => {
+    const error = {
+      status: 429,
+      message: "Request failed with status code 429",
+      cause: { status: 429, error: { code: "insufficient_quota", message } },
+    };
+    expect(mapLLMError("openai", error, 30_000)).toMatchObject({
+      name: "LLMFundsError", message: "openai error: provider credits or billing quota exhausted",
+    });
+  });
+
   test("maps the full captured xAI response to funds with the default message", () => {
     const message = "Your team 16da42f5-6f8f-41c0-b62f-a77ec198037e has either used all available credits or reached its monthly spending limit. To continue making API requests, please purchase more credits or raise your spending limit.";
     const wireError = new ProviderHttpError({

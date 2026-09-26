@@ -14,6 +14,12 @@ describe("providerFundsMessage", () => {
     '403 Forbidden: [{"code":"insufficient_quota"}]',
     '<html>Insufficient credits.</html>',
     'Insufficient credits. "request_id": "private-request"',
+    'Insufficient credits. "request_id": "f00d-1234"',
+    "Insufficient credits. 'request-id': 'f00d-1234'",
+    'Insufficient credits. "trace": "f00d-1234"',
+    'Insufficient credits. "trace":',
+    'Insufficient credits. request_id=f00d-1234',
+    'Insufficient credits. trace=f00d-1234',
     'Insufficient credits. "trace": "private"',
     'Insufficient credits. trace=private',
     'Insufficient credits. "Authorization": "Basic dXNlcjpwYXNz"',
@@ -39,7 +45,7 @@ describe("providerFundsMessage", () => {
     "Forbidden",
   ])("rejects messages outside the prose allow-list: %s", (message) => {
     for (const error of [{ message }, { body: message }, { body: { error: message } }]) {
-      expect(providerFundsMessage(error)).toBeUndefined();
+      expect(providerFundsMessage("deepseek", { status: 402, ...error })).toBeUndefined();
     }
   });
 
@@ -50,13 +56,28 @@ describe("providerFundsMessage", () => {
     `Please add credits ${"a".repeat(19)}`,
     "a ".repeat(99) + "ab",
   ])("preserves allowed prose after trimming: %s", (message) => {
-    expect(providerFundsMessage({ body: { error: `  ${message}  ` } })).toBe(message);
+    expect(providerFundsMessage("deepseek", { status: 402, body: { error: `  ${message}  ` } })).toBe(message);
   });
 
   it("continues to nested provider prose after a rejected transport summary", () => {
-    expect(providerFundsMessage({ message: "HTTP 403", cause: { message: "Please add credits." } }))
+    expect(providerFundsMessage("deepseek", { message: "HTTP 403", cause: { status: 402, message: "Please add credits." } }))
       .toBe("Please add credits.");
   });
+
+  it("continues to a deeper billing node when the first has no acceptable prose", () => {
+    expect(providerFundsMessage("openai", {
+      code: "insufficient_quota", message: "HTTP 429",
+      cause: { code: "insufficient_quota", message: "Please add credits." },
+    })).toBe("Please add credits.");
+  });
+
+  it("ignores prose from nodes that do not establish billing exhaustion", () => {
+    expect(providerFundsMessage("openai", {
+      code: "insufficient_quota",
+      cause: { message: "Request failed with status code 429" },
+    })).toBeUndefined();
+  });
+
 });
 
 function wrap(depth: number, inner: unknown): unknown {

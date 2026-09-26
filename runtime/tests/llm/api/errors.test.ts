@@ -17,6 +17,36 @@ import {
 import { AgenCApiError as CanonicalAgenCApiError } from "../../errors/api.js";
 
 describe("llm api errors", () => {
+  test.each(["cause", "originalError"])("uses billing prose from the %s instead of outer transport prose", (causeKey) => {
+    const message = "Please check your plan and billing details.";
+    const error = {
+      status: 429,
+      message: "Request failed with status code 429",
+      [causeKey]: { status: 429, error: { code: "insufficient_quota", message } },
+    };
+    expect(mapAgenCApiErrorToLLMError("openai", error, 30_000)).toMatchObject({
+      name: "LLMFundsError", message: `openai error: ${message}`,
+    });
+  });
+
+  test.each([
+    undefined,
+    'Insufficient credits. "request_id": "f00d-1234"',
+    "Insufficient credits. 'request-id': 'f00d-1234'",
+    'Insufficient credits. "trace": "f00d-1234"',
+    'Insufficient credits. request_id=f00d-1234',
+    'Insufficient credits. trace=f00d-1234',
+  ])("defaults when the billing cause has no acceptable prose: %s", (message) => {
+    const error = {
+      status: 429,
+      message: "Request failed with status code 429",
+      cause: { status: 429, error: { code: "insufficient_quota", message } },
+    };
+    expect(mapAgenCApiErrorToLLMError("openai", error, 30_000)).toMatchObject({
+      name: "LLMFundsError", message: "openai error: provider credits or billing quota exhausted",
+    });
+  });
+
   test.each([
     "HTTP 403",
     '{"error":{"code":"insufficient_quota"}}',
