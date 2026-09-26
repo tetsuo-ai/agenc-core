@@ -54,7 +54,7 @@ Credential values are not written into the canonical config snapshot.
 | LM Studio | `LMSTUDIO_API_KEY`, `LMSTUDIO_BASE_URL` |
 | OpenRouter | `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`, `AGENC_OPENROUTER_HTTP_REFERER`, `AGENC_OPENROUTER_TITLE` |
 | Groq | `GROQ_API_KEY`, `GROQ_BASE_URL` |
-| DeepSeek | `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL` |
+| DeepSeek | `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`; `AGENC_SHARED_PREFIX_TAIL` (shared cached prefix, below) |
 | Meta | `MODEL_API_KEY`, `META_BASE_URL` |
 | QwenCloud Pay-As-You-Go | `DASHSCOPE_API_KEY`, then `QWEN_API_KEY`; `DASHSCOPE_BASE_URL`, then `QWEN_BASE_URL` |
 | QwenCloud Token Plan | `QWEN_TOKEN_PLAN_API_KEY`, then `DASHSCOPE_TOKEN_PLAN_API_KEY`; `QWEN_TOKEN_PLAN_BASE_URL`, then `DASHSCOPE_TOKEN_PLAN_BASE_URL` |
@@ -159,6 +159,16 @@ must use `/v1beta`; Vertex roots must identify the matching
 root must directly accept native `models/*:generateContent` requests. Without
 an explicit base URL, access-token and ADC modes require both the resource
 project and Vertex location so AgenC can derive one unambiguous native root.
+
+`AGENC_SHARED_PREFIX_TAIL` (boolean-like, on by default) sets the request
+layout for native DeepSeek, whose prompt cache is shared by the sessions of an
+account. With it on, the static head of the system prompt is the leading system
+message and the per-session tail (memory directories, environment) follows the
+setup reminders as a `<system-reminder>` message, so every session sends the
+same head, tool definitions and setup reminders before anything that differs
+and reads them from the shared cache. `0` sends the whole system prompt as the
+leading system message again. It is captured with the session environment, so
+a client sets it per session. Other providers are unchanged.
 
 Proxy routing uses `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and their lowercase
 forms `http_proxy`, `https_proxy`, `no_proxy`. `PATH` is captured so provider
@@ -410,7 +420,7 @@ The sections above explain the common operator controls. The index below makes t
 
 ### AGENC_S*
 
-`AGENC_SANDBOX_DEVICE_BINDS`, `AGENC_SAVE_HOOK_ADDITIONAL_CONTEXT`, `AGENC_SESSIONEND_HOOKS_TIMEOUT_MS`, `AGENC_SESSION_ACCESS_TOKEN`, `AGENC_SESSION_KIND`, `AGENC_SESSION_LOG`, `AGENC_SESSION_NAME`, `AGENC_SKILL_CANDIDATES`, `AGENC_SKIP_PROMPT_HISTORY`, `AGENC_SLACK_GROUP_ADDRESSING`, `AGENC_SLOW_OPERATION_THRESHOLD_MS`, `AGENC_SSE_PORT`, `AGENC_STALL_TIMEOUT_MS_FOR_TESTING`, `AGENC_SUBPROCESS_ENV_NO_SCRUB`, `AGENC_SYNTAX_HIGHLIGHT`.
+`AGENC_SANDBOX_DEVICE_BINDS`, `AGENC_SAVE_HOOK_ADDITIONAL_CONTEXT`, `AGENC_SESSIONEND_HOOKS_TIMEOUT_MS`, `AGENC_SESSION_ACCESS_TOKEN`, `AGENC_SESSION_KIND`, `AGENC_SESSION_LOG`, `AGENC_SESSION_NAME`, `AGENC_SHARED_PREFIX_TAIL`, `AGENC_SKILL_CANDIDATES`, `AGENC_SKIP_PROMPT_HISTORY`, `AGENC_SLACK_GROUP_ADDRESSING`, `AGENC_SLOW_OPERATION_THRESHOLD_MS`, `AGENC_SSE_PORT`, `AGENC_STALL_TIMEOUT_MS_FOR_TESTING`, `AGENC_SUBPROCESS_ENV_NO_SCRUB`, `AGENC_SYNTAX_HIGHLIGHT`.
 
 ### AGENC_T*
 
