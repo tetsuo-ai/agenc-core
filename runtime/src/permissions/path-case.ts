@@ -439,7 +439,7 @@ function semanticsOfDirectory(dir: string): PathCaseSemantics {
 function foldTail(tail: WildcardTailFold, verdicts: readonly PathCaseSemantics[]): boolean {
   switch (tail) {
     case "wide":
-      return verdicts.length === 0 || verdicts.some((verdict) => verdict === "insensitive");
+      return verdicts.length === 0 || verdicts.includes("insensitive");
     case "narrow":
       return verdicts.length > 0 && verdicts.every((verdict) => verdict === "insensitive");
     default: {
