@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep, win32 } from "node:path";
+import { withPluginInstallDirectoryLock } from "./plugin-install-directory-lock.js";
 import {
   canonicalPluginInstallRoot,
   runPluginInstallTransaction,
@@ -738,7 +739,11 @@ export async function uninstallPluginOp(
   if (targetRoots.length === 0) {
     throw new Error(`plugin is not installed in ${scope} scope: ${input.pluginId}`);
   }
-  for (const root of targetRoots) await rm(root, { recursive: true, force: true });
+  for (const root of targetRoots) {
+    // Only this directory removal is locked. Config, plugin data, and catalog
+    // cleanup below run after the lock is released.
+    await withPluginInstallDirectoryLock(root, () => rm(root, { recursive: true, force: true }));
+  }
   const remainsInstalled = await pluginIdRemainsInstalled(pluginId, input);
   const removedConfig = remainsInstalled
     ? false
