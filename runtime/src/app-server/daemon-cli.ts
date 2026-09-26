@@ -6566,7 +6566,7 @@ interface AgenCDaemonAuthStartup {
   readonly authBackend: AuthBackend;
 }
 
-class AgenCDaemonReloadableAuthBackend implements AuthBackend {
+export class AgenCDaemonReloadableAuthBackend implements AuthBackend {
   #current: AuthBackend;
 
   constructor(initial: AuthBackend) {
@@ -6612,6 +6612,15 @@ class AgenCDaemonReloadableAuthBackend implements AuthBackend {
     params?: Parameters<AuthBackend["getSubscriptionTier"]>[0],
   ) {
     return this.#current.getSubscriptionTier(params);
+  }
+
+  /** Optional managed-image methods follow whichever backend is current. */
+  get getImageGenerationAccess(): AuthBackend["getImageGenerationAccess"] {
+    return this.#current.getImageGenerationAccess?.bind(this.#current);
+  }
+
+  get generateImage(): AuthBackend["generateImage"] {
+    return this.#current.generateImage?.bind(this.#current);
   }
 }
 
