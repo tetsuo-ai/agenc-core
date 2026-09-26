@@ -54,6 +54,8 @@ const GLOB_PATTERN_REGEX = /[*?[\]{}]/;
 const WINDOWS_DRIVE_ROOT_REGEX = /^[A-Za-z]:\/?$/;
 const WINDOWS_DRIVE_CHILD_REGEX = /^[A-Za-z]:\/[^/]+$/;
 const MAX_PATH_LENGTH = 4096;
+/** SYMLOOP_MAX on common systems. Past it the OS refuses the path as well. */
+const MAX_LINKS_FOLLOWED = 40;
 
 export type FileOperationType = "read" | "write" | "create";
 
@@ -208,19 +210,39 @@ function getPathsForPermissionCheck(filePath: string): readonly string[] {
     resolvedPath.normalize("NFC"),
   ]);
 
-  try {
-    const linkTarget = readlinkSync(filePath);
+  // A path that does not resolve can still be a link, or a chain of links,
+  // whose last target does not exist yet; a write through it creates that
+  // target. Follow every hop from where each link really sits, so a relative
+  // target is read against the real folder. Following one hop stopped at the
+  // second link, so a path through `a -> b -> outside` never showed `outside`.
+  let current = resolvedPath;
+  for (let followed = 0; followed < MAX_LINKS_FOLLOWED; followed++) {
+    let linkTarget: string;
+    try {
+      linkTarget = readlinkSync(current);
+    } catch {
+      // Not a link, or an unreadable one: the resolved path stands.
+      break;
+    }
     const absoluteTarget = isAbsolute(linkTarget)
       ? linkTarget
-      : resolve(dirname(filePath), linkTarget);
-    const { resolvedPath: resolvedTarget } = safeResolvePath(absoluteTarget);
-    const normalizedTarget = resolvedTarget.normalize("NFC");
-    if (!out.includes(normalizedTarget)) out.push(normalizedTarget);
-  } catch {
-    // Non-symlink and unreadable symlink cases fall back to the resolved path.
+      : resolve(dirname(current), linkTarget);
+    const next = safeResolvePath(absoluteTarget).resolvedPath;
+    const normalizedNext = next.normalize("NFC");
+    if (out.includes(normalizedNext)) break;
+    out.push(normalizedNext);
+    current = next;
   }
 
   return out;
+}
+
+/**
+ * The places an operation on `filePath` reaches once its links are followed,
+ * without the spelling it was given in.
+ */
+function resolvedPathsForPermissionCheck(filePath: string): readonly string[] {
+  return getPathsForPermissionCheck(safeResolvePath(filePath).resolvedPath);
 }
 
 function workingDirectories(
@@ -332,30 +354,36 @@ function baseForRuleSource(source: PermissionRuleSource, cwd: string): string {
   return resolve(cwd);
 }
 
+/**
+ * Whether a rule pattern names a subtree of its source root. Absolute, `~`
+ * and UNC patterns carry their own root. A pattern with no literal directory
+ * component, such as `**` or `*.ts`, names files anywhere rather than a
+ * subtree of one source root: anchoring it would silently narrow an all-path
+ * rule like FileRead(**) to the settings root. `./**` is excluded from that:
+ * it states its directory.
+ */
+function isRootRelativePattern(expanded: string): boolean {
+  if (
+    isAbsolute(expanded) ||
+    expanded.startsWith("~") ||
+    containsVulnerableUncPath(expanded)
+  ) {
+    return false;
+  }
+  return (
+    getGlobBaseDirectory(expanded) !== "." ||
+    expanded.startsWith("./") ||
+    expanded.startsWith("../")
+  );
+}
+
 function resolvePathRulePattern(
   ruleContent: string,
   source: PermissionRuleSource,
   cwd: string,
 ): string {
   const expanded = expandTilde(ruleContent);
-  if (
-    isAbsolute(expanded) ||
-    expanded.startsWith("~") ||
-    containsVulnerableUncPath(expanded)
-  ) {
-    return expanded;
-  }
-  // A pattern with no literal directory component, such as `**` or `*.ts`,
-  // names files anywhere rather than a subtree of one source root. Anchoring
-  // it would silently narrow an all-path rule like FileRead(**) to the
-  // settings root. `./**` is excluded from that: it states its directory.
-  if (
-    getGlobBaseDirectory(expanded) === "." &&
-    !expanded.startsWith("./") &&
-    !expanded.startsWith("../")
-  ) {
-    return expanded;
-  }
+  if (!isRootRelativePattern(expanded)) return expanded;
   // Anchor the rule the same way targets are resolved. matchingRuleForPath
   // canonicalizes what it checks through realpath, so a lexically resolved
   // base describes the same tree under a different prefix whenever the source
@@ -375,25 +403,81 @@ function resolvePathRulePattern(
   return prefix + resolved.slice(lexicalPrefix.length);
 }
 
+/**
+ * `pattern` with the links in its literal directory prefix resolved, the way
+ * candidates are. An unanchored pattern has no prefix to resolve, and a
+ * network path is never touched to find out where it leads.
+ */
+function canonicalizeRulePrefix(pattern: string): string {
+  if (!isAbsolute(pattern) || containsVulnerableUncPath(pattern)) {
+    return pattern;
+  }
+  const lexicalPrefix = getGlobBaseDirectory(pattern);
+  return (
+    canonicalizeExistingPath(lexicalPrefix) +
+    pattern.slice(lexicalPrefix.length)
+  );
+}
+
+/**
+ * Every spelling a deny or ask rule is matched in: the canonical anchoring
+ * every rule gets, the rule as written (a relative one anchored at its source
+ * root as that root is spelled, without following links), and that rule with
+ * the links in its prefix resolved, even when they lead out of the source
+ * root. The containment check in resolvePathRulePattern keeps an allow inside
+ * its root; a deny or an ask that reaches further only refuses or asks more.
+ * A pattern that leaves its root through `..` stays unanchored, as before.
+ */
+function restrictiveRulePatterns(
+  ruleContent: string,
+  source: PermissionRuleSource,
+  cwd: string,
+): readonly string[] {
+  const expanded = expandTilde(ruleContent);
+  let written = expanded;
+  if (isRootRelativePattern(expanded)) {
+    const base = resolve(baseForRuleSource(source, cwd));
+    const anchored = resolve(base, expanded);
+    if (isPathInside(getGlobBaseDirectory(anchored), base)) written = anchored;
+  }
+  return uniquePaths([
+    resolvePathRulePattern(ruleContent, source, cwd),
+    written,
+    canonicalizeRulePrefix(written),
+  ]);
+}
+
 function matchingRuleForPath(
   filePath: string,
   context: ToolPermissionContext,
   operationType: FileOperationType,
   behavior: "allow" | "ask" | "deny",
   cwd: string,
+  writtenPaths: readonly string[] = [],
 ): PermissionRule | null {
-  const pathsToCheck = getPathsForPermissionCheck(filePath);
+  // A deny or an ask names files, so it holds for any spelling that reaches
+  // them: the path as the caller wrote it or as it resolves, against the rule
+  // as written or as it resolves. An allow grants only what the path resolves
+  // to, and only when it covers every place the path resolves to, so a link
+  // inside an allowed directory cannot carry it anywhere else.
+  const restrictive = behavior !== "allow";
+  const pathsToCheck = restrictive
+    ? uniquePaths([...getPathsForPermissionCheck(filePath), ...writtenPaths])
+    : resolvedPathsForPermissionCheck(filePath);
+  const namesPath = (resolvedContent: string): boolean => {
+    const matches = (candidate: string): boolean =>
+      matchPathRuleContent(resolvedContent, candidate);
+    return restrictive
+      ? pathsToCheck.some(matches)
+      : pathsToCheck.length > 0 && pathsToCheck.every(matches);
+  };
   for (const toolName of toolNamesForOperation(operationType)) {
     const rules = getRuleByContentsForTool(context, toolName, behavior);
     for (const [content, rule] of rules) {
-      const resolvedContent = resolvePathRulePattern(content, rule.source, cwd);
-      if (
-        pathsToCheck.some((candidate) =>
-          matchPathRuleContent(resolvedContent, candidate),
-        )
-      ) {
-        return rule;
-      }
+      const patterns = restrictive
+        ? restrictiveRulePatterns(content, rule.source, cwd)
+        : [resolvePathRulePattern(content, rule.source, cwd)];
+      if (patterns.some(namesPath)) return rule;
     }
   }
   return null;
@@ -405,6 +489,7 @@ function matchingRuleResult(
   operationType: FileOperationType,
   behavior: "allow" | "ask" | "deny",
   cwd: string,
+  writtenPaths?: readonly string[],
 ): PathCheckResult | null {
   const rule = matchingRuleForPath(
     filePath,
@@ -412,6 +497,7 @@ function matchingRuleResult(
     operationType,
     behavior,
     cwd,
+    writtenPaths,
   );
   if (rule === null) return null;
   return {
@@ -500,13 +586,28 @@ function durableMemoryPathPermission(
     precomputedPathsToCheck ?? getPathsForPermissionCheck(resolvedPath);
   if (!underDurableMemoryRoots(paths)) return null;
   return (
-    matchingRuleResult(resolvedPath, context, operationType, "ask", cwd) ?? {
+    matchingRuleResult(
+      resolvedPath,
+      context,
+      operationType,
+      "ask",
+      cwd,
+      precomputedPathsToCheck,
+    ) ?? {
       allowed: true,
       decisionReason: { type: "other", reason: "durable memory files" },
     }
   );
 }
 
+/**
+ * `precomputedPathsToCheck` is getPathsForPermissionCheck of the path as the
+ * caller wrote it, before its links were resolved (validatePath passes it).
+ * The working-directory, memory and safety checks require every one of those
+ * spellings to pass. Deny and ask rules match them as well as `resolvedPath`'s;
+ * allow rules match only where the path resolves. A caller holding just the
+ * lexical path may pass it as `resolvedPath`: allow rules resolve it first.
+ */
 export function isPathAllowed(
   resolvedPath: string,
   context: ToolPermissionContext,
@@ -523,12 +624,20 @@ export function isPathAllowed(
     operationType,
     "deny",
     cwd,
+    precomputedPathsToCheck,
   );
   if (denyRule !== null) return denyRule;
 
   if (matchesSessionPlanFile(resolvedPath, options.planFileAuthority)) {
     return (
-      matchingRuleResult(resolvedPath, context, operationType, "ask", cwd) ?? {
+      matchingRuleResult(
+        resolvedPath,
+        context,
+        operationType,
+        "ask",
+        cwd,
+        precomputedPathsToCheck,
+      ) ?? {
         allowed: true,
         decisionReason: { type: "other", reason: "owning session plan file" },
       }
@@ -572,6 +681,7 @@ export function isPathAllowed(
     operationType,
     "ask",
     cwd,
+    precomputedPathsToCheck,
   );
   if (askRule !== null) return askRule;
 
@@ -814,8 +924,6 @@ function withTransientAllowedRoot(
 }
 
 const PATH_SEPARATORS = process.platform === "win32" ? /[\\/]+/u : /\/+/u;
-/** SYMLOOP_MAX on common systems. Past it the OS refuses the path as well. */
-const MAX_LINKS_FOLLOWED = 40;
 
 function pathParts(path: string): string[] {
   return path.split(PATH_SEPARATORS).filter((part) => part.length > 0);
