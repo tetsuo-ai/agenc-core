@@ -540,6 +540,141 @@ describe("MCPManager list_changed catalog refresh", () => {
     }
   });
 
+  it("does not publish a refresh into a bridge that is waiting to reconnect", async () => {
+    vi.useFakeTimers();
+    const logger = testLogger();
+    mockCreateMCPConnection
+      .mockResolvedValueOnce({ close: vi.fn() })
+      .mockResolvedValueOnce({ close: vi.fn() });
+    mockCreateToolBridge.mockResolvedValueOnce(
+      transportClosingBridge("srv1", ["toolA"]),
+    );
+    const releaseRefresh = holdNextToolBridge();
+    mockCreateToolBridge.mockResolvedValueOnce(makeMockBridge("srv1", ["toolA"]));
+
+    const manager = await startManager([makeConfig("srv1")], logger);
+    try {
+      listChangedHandlersFromConnect().onToolsListChanged();
+      await vi.waitFor(() => {
+        expect(mockCreateToolBridge).toHaveBeenCalledTimes(2);
+      });
+      // The transport drops while the refresh is listing; the reconnect is
+      // still in its backoff when the refresh returns.
+      await manager.getTools()[0]!.execute({});
+      releaseRefresh(makeMockBridge("srv1", ["toolB"]));
+      await flushMicrotasks();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.waitFor(() => {
+        expect(logger.info).toHaveBeenCalledWith(
+          expect.stringContaining("reconnected"),
+        );
+      });
+      await flushMicrotasks();
+
+      expect(await publishedAndCallable(manager)).toEqual({
+        names: ["mcp.srv1.toolA"],
+        callA: { content: "ok" },
+        callB: {
+          content: expect.stringContaining("not available"),
+          isError: true,
+        },
+      });
+      expect(mockCreateToolBridge).toHaveBeenCalledTimes(3);
+    } finally {
+      await manager.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a tools notification that arrives while reconnect is listing tools", async () => {
+    vi.useFakeTimers();
+    const logger = testLogger();
+    const secondClient = { close: vi.fn() };
+    mockCreateMCPConnection
+      .mockResolvedValueOnce({ close: vi.fn() })
+      .mockResolvedValueOnce(secondClient);
+    mockCreateToolBridge.mockResolvedValueOnce(
+      transportClosingBridge("srv1", ["toolA"]),
+    );
+    const releaseReconnectList = holdNextToolBridge();
+    mockCreateToolBridge.mockResolvedValueOnce(makeMockBridge("srv1", ["toolB"]));
+
+    const manager = await startManager([makeConfig("srv1")], logger);
+    try {
+      await manager.getTools()[0]!.execute({});
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.waitFor(() => {
+        expect(mockCreateToolBridge).toHaveBeenCalledTimes(2);
+      });
+      listChangedHandlersFromConnect().onToolsListChanged();
+      await flushMicrotasks();
+      releaseReconnectList(makeMockBridge("srv1", ["toolA"]));
+      await vi.waitFor(() => {
+        expect(logger.info).toHaveBeenCalledWith(
+          expect.stringContaining("reconnected"),
+        );
+      });
+      await vi.waitFor(() => {
+        expect(mockCreateToolBridge).toHaveBeenCalledTimes(3);
+      });
+      await flushMicrotasks();
+
+      expect(await publishedAndCallable(manager)).toEqual({
+        names: ["mcp.srv1.toolB"],
+        callA: {
+          content: expect.stringContaining("not available"),
+          isError: true,
+        },
+        callB: { content: "ok" },
+      });
+      expect(mockCreateToolBridge.mock.calls[2]?.[0]).toBe(secondClient);
+    } finally {
+      await manager.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("refreshes tools after a reconnect whose catalog differs from the published one", async () => {
+    vi.useFakeTimers();
+    const logger = testLogger();
+    const secondClient = { close: vi.fn() };
+    mockCreateMCPConnection
+      .mockResolvedValueOnce({ close: vi.fn() })
+      .mockResolvedValueOnce(secondClient);
+    mockCreateToolBridge
+      .mockResolvedValueOnce(transportClosingBridge("srv1", ["toolA"]))
+      .mockResolvedValueOnce(makeMockBridge("srv1", ["toolB"]))
+      .mockResolvedValueOnce(makeMockBridge("srv1", ["toolB"]));
+
+    const manager = await startManager([makeConfig("srv1")], logger);
+    try {
+      await manager.getTools()[0]!.execute({});
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.waitFor(() => {
+        expect(logger.info).toHaveBeenCalledWith(
+          expect.stringContaining("reconnected"),
+        );
+      });
+      await vi.waitFor(() => {
+        expect(mockCreateToolBridge).toHaveBeenCalledTimes(3);
+      });
+      await flushMicrotasks();
+
+      expect(await publishedAndCallable(manager)).toEqual({
+        names: ["mcp.srv1.toolB"],
+        callA: {
+          content: expect.stringContaining("not available"),
+          isError: true,
+        },
+        callB: { content: "ok" },
+      });
+      expect(mockCreateToolBridge.mock.calls[2]?.[0]).toBe(secondClient);
+    } finally {
+      await manager.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     {
       label: "session header",

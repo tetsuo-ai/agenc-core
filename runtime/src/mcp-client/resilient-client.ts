@@ -259,6 +259,8 @@ export class ResilientMCPBridge implements MCPToolBridge {
   private innerDisposal:
     | { readonly bridge: MCPToolBridge; readonly promise: Promise<void> }
     | undefined;
+  /** The latest scheduled reconnect; settles when its attempt ends. */
+  private reconnectCycle: ReconnectCycle | undefined;
 
   constructor(
     config: MCPServerConfig,
@@ -299,6 +301,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
       clearTimeout(this.stabilityTimer);
       this.stabilityTimer = null;
     }
+    this.reconnectCycle?.settle();
     const inner = this.clientOwner;
     const reconnectTask = this.reconnectTask;
     const task = Promise.allSettled([
@@ -330,15 +333,38 @@ export class ResilientMCPBridge implements MCPToolBridge {
   /**
    * Replace the published tool proxies from a refresh-built catalog
    * without closing the live client. The replacement bridge must not
-   * own client disposal.
+   * own client disposal. Refused (returns false) while a reconnect is
+   * pending: the reconnect installs its own bridge, which would strand
+   * proxies published from the old connection.
    */
-  replacePublishedCatalog(next: MCPToolBridge): void {
-    if (this.disposed) return;
+  replacePublishedCatalog(next: MCPToolBridge): boolean {
+    if (this.disposed || this.reconnecting) return false;
     this.inner = next;
     const replacements = next.tools.map((tool) =>
       this.createProxyTool(tool.name, tool),
     );
     this.tools.splice(0, this.tools.length, ...replacements);
+    return true;
+  }
+
+  /** True from a detected connection loss until the reconnect installs a bridge or ends. */
+  get isReconnecting(): boolean {
+    return this.reconnecting;
+  }
+
+  /** Resolves once no reconnect is scheduled or running, or the bridge is disposed. */
+  async whenReconnectSettled(): Promise<void> {
+    let cycle = this.reconnectCycle;
+    while (cycle !== undefined && this.reconnecting && !this.disposed) {
+      await cycle.settled;
+      if (this.reconnectCycle === cycle) return;
+      cycle = this.reconnectCycle;
+    }
+  }
+
+  /** Whether the published proxies list exactly the tools they execute against. */
+  publishedCatalogMatchesInner(): boolean {
+    return toolCatalogSignature(this.tools) === toolCatalogSignature(this.inner.tools);
   }
 
   /** A transport close can occur while no tool call is in flight. */
@@ -409,6 +435,8 @@ export class ResilientMCPBridge implements MCPToolBridge {
 
     this.reconnecting = true;
     const epoch = ++this.reconnectEpoch;
+    const cycle = createReconnectCycle();
+    this.reconnectCycle = cycle;
     this.backoffMs = this.backoffMs === 0
       ? INITIAL_BACKOFF_MS
       : Math.min(this.backoffMs * BACKOFF_MULTIPLIER, MAX_BACKOFF_MS);
@@ -421,12 +449,14 @@ export class ResilientMCPBridge implements MCPToolBridge {
       this.reconnectTimer = null;
       if (this.disposed || epoch !== this.reconnectEpoch) {
         this.reconnecting = false;
+        cycle.settle();
         return;
       }
       const task = this.reconnect(epoch);
       this.reconnectTask = task;
       const clear = (): void => {
         if (this.reconnectTask === task) this.reconnectTask = undefined;
+        cycle.settle();
       };
       void task.then(clear, clear);
     }, this.backoffMs);
@@ -695,6 +725,25 @@ export class ResilientMCPBridge implements MCPToolBridge {
     });
     return promise;
   }
+}
+
+interface ReconnectCycle {
+  readonly settled: Promise<void>;
+  readonly settle: () => void;
+}
+
+function createReconnectCycle(): ReconnectCycle {
+  let settle!: () => void;
+  const settled = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
+  return { settled, settle };
+}
+
+function toolCatalogSignature(tools: readonly Tool[]): string {
+  return JSON.stringify(
+    tools.map((tool) => [tool.name, tool.description, tool.inputSchema]),
+  );
 }
 
 /**

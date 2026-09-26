@@ -154,6 +154,64 @@ describe("plugin catalog refresh guards", () => {
     expect(client.callTool).not.toHaveBeenCalled();
   });
 
+  it("keeps a lazy plugin's listed and executable tools together when a newer refresh fails", async () => {
+    const cacheHome = await mkdtemp(join(tmpdir(), "agenc-lazy-refresh-"));
+    homes.push(cacheHome);
+    const config = pluginConfig("lazyplug", cacheHome, false);
+    const tools = [toolDescriptor("toolA")];
+    writePluginCatalog(catalogIdentity(config), { format: 1, tools: [...tools] });
+    const client = fakeClient(tools);
+    mockCreateMCPConnection.mockResolvedValue(client as never);
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const manager = new MCPManager([config], logger);
+    try {
+      await manager.start();
+      await manager.callTool("lazyplug", "toolA", {});
+      const actual = await vi.importActual<typeof import("./tools.js")>("./tools.js");
+      let releaseCachePublish!: () => void;
+      const cachePublishHeld = new Promise<void>((resolve) => {
+        releaseCachePublish = resolve;
+      });
+      let cachePublishStarted = false;
+      vi.mocked(createToolBridge)
+        .mockImplementationOnce(actual.createToolBridge)
+        .mockImplementationOnce(async (...args) => {
+          cachePublishStarted = true;
+          await cachePublishHeld;
+          return actual.createToolBridge(...args);
+        })
+        .mockRejectedValueOnce(new Error("tools/list failed"));
+      tools.splice(0, 1, toolDescriptor("toolB"));
+      handlersFromConnect().onToolsListChanged();
+      await vi.waitFor(() => {
+        expect(cachePublishStarted).toBe(true);
+      });
+      // A newer notification supersedes the first refresh while its cache
+      // publish is pending, and the newer refresh then fails.
+      handlersFromConnect().onToolsListChanged();
+      releaseCachePublish();
+      await vi.waitFor(() => {
+        expect(logger.warn).toHaveBeenCalledWith(
+          expect.stringContaining("catalog refresh failed"),
+          expect.anything(),
+        );
+      });
+      const callA = await manager.callTool("lazyplug", "toolA", {});
+      const callB = await manager.callTool("lazyplug", "toolB", {});
+      expect({
+        names: manager.getTools().map((tool) => tool.name),
+        callAFailed: callA.isError === true,
+        callBFailed: callB.isError === true,
+      }).toEqual({
+        names: ["mcp.lazyplug.toolA"],
+        callAFailed: false,
+        callBFailed: true,
+      });
+    } finally {
+      await manager.stop();
+    }
+  });
+
   it("updates a lazy plugin catalog and skips notification when it is unchanged", async () => {
     const cacheHome = await mkdtemp(join(tmpdir(), "agenc-lazy-refresh-"));
     homes.push(cacheHome);

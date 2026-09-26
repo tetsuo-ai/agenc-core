@@ -423,6 +423,23 @@ describe("ResilientMCPBridge", () => {
     await bridge.dispose();
   });
 
+  it("refuses a catalog replacement while a reconnect is pending and settles on disposal", async () => {
+    vi.useFakeTimers();
+    const inner = makeBridge(
+      "srv",
+      vi.fn().mockResolvedValue({ content: "transport closed", isError: true }),
+    );
+    const bridge = new ResilientMCPBridge({ name: "srv", command: "node" }, inner);
+    await bridge.tools[0]!.execute({});
+    expect(bridge.isReconnecting).toBe(true);
+    expect(bridge.replacePublishedCatalog(makeBridge("srv"))).toBe(false);
+    expect(bridge.tools[0]!.name).toBe("mcp.srv.tool");
+    const settled = bridge.whenReconnectSettled();
+    await bridge.dispose();
+    await expect(settled).resolves.toBeUndefined();
+    expect(mockCreateMCPConnection).not.toHaveBeenCalled();
+  });
+
   it("awaits and closes an in-flight automatic reconnect during disposal", async () => {
     vi.useFakeTimers();
     let resolveClient:

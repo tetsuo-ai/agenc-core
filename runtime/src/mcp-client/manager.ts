@@ -3047,7 +3047,8 @@ export class MCPManager {
       serverName,
       (this.companionEpochs.get(serverName) ?? 0) + 1,
     );
-    this.bumpCatalogRefreshEpoch(serverName);
+    this.advanceCatalogRefreshEpoch(serverName);
+    this.catalogRefreshStates.get(serverName)?.pending.clear();
     this.catalogRefreshEpochs.delete(serverName);
     this.catalogRefreshStates.delete(serverName);
   }
@@ -3080,13 +3081,50 @@ export class MCPManager {
     };
   }
 
-  private bumpCatalogRefreshEpoch(serverName: string): void {
+  private advanceCatalogRefreshEpoch(serverName: string): void {
     this.catalogRefreshEpochs.set(
       serverName,
       (this.catalogRefreshEpochs.get(serverName) ?? 0) + 1,
     );
+  }
+
+  /**
+   * Automatic reconnect is publishing a replacement connection. Refreshes
+   * against the old connection become stale; kinds still queued run
+   * against the replacement once the reconnect installs its bridge.
+   */
+  private bumpCatalogRefreshEpoch(serverName: string): void {
+    this.advanceCatalogRefreshEpoch(serverName);
+    const bridge = this.bridges.get(serverName);
+    if (!(bridge instanceof ResilientMCPBridge)) return;
+    void bridge.whenReconnectSettled().then(() => {
+      this.resumeCatalogRefreshAfterReconnect(serverName, bridge);
+    });
+  }
+
+  /**
+   * The reconnect installed a bridge listed from the new connection. When
+   * the published proxies describe a different catalog, refresh tools so
+   * the list and the executable bridge are one catalog again.
+   */
+  private resumeCatalogRefreshAfterReconnect(
+    serverName: string,
+    bridge: ResilientMCPBridge,
+  ): void {
+    if (this.bridges.get(serverName) !== bridge || bridge.isReconnecting) return;
+    if (!bridge.publishedCatalogMatchesInner()) {
+      this.enqueueCatalogRefresh(serverName, "tools");
+      return;
+    }
     const state = this.catalogRefreshStates.get(serverName);
-    if (state !== undefined) state.pending.clear();
+    if (state !== undefined && state.pending.size > 0) {
+      this.startCatalogDrain(serverName, state);
+    }
+  }
+
+  private toolSurfaceReconnecting(serverName: string): boolean {
+    const bridge = this.bridges.get(serverName);
+    return bridge instanceof ResilientMCPBridge && bridge.isReconnecting;
   }
 
   private enqueueCatalogRefresh(
@@ -3105,6 +3143,13 @@ export class MCPManager {
     }
     state.generations[kind] += 1;
     state.pending.add(kind);
+    this.startCatalogDrain(serverName, state);
+  }
+
+  private startCatalogDrain(
+    serverName: string,
+    state: CatalogRefreshState,
+  ): void {
     if (state.inflight !== undefined) return;
     const task = this.drainCatalogRefresh(serverName);
     state.inflight = task;
@@ -3126,6 +3171,9 @@ export class MCPManager {
         state.pending.clear();
         return;
       }
+      // A reconnecting bridge refuses new catalogs. Keep the queued kinds;
+      // the reconnect resumes them once it installs its bridge.
+      if (this.toolSurfaceReconnecting(serverName)) return;
       const kinds = new Set(state.pending);
       state.pending.clear();
       const refreshEpoch = this.catalogRefreshEpochs.get(serverName) ?? 0;
@@ -3325,12 +3373,24 @@ export class MCPManager {
         `MCP server "${config.name}" cannot replace a non-resilient tool surface`,
       );
     }
-    published.replacePublishedCatalog(replacement);
-    this.wrapPluginToolSurface(config, published);
-    if (!this.isLazyPlugin(config) || catalogTools === undefined) return true;
-    // Lazy catalogs notify inside publishCachedCatalog only when bytes change.
-    await this.publishLazyCatalog(config, { tools: catalogTools }, isCurrent);
+    const install = (): boolean =>
+      this.installRefreshedTools(config, published, replacement);
+    if (!this.isLazyPlugin(config) || catalogTools === undefined) return install();
+    // A lazy plugin lists its cached catalog, so the executable tools are
+    // installed only in the same step that publishes that catalog. Lazy
+    // catalogs notify inside publishCachedCatalog only when bytes change.
+    await this.publishLazyCatalog(config, { tools: catalogTools }, isCurrent, install);
     return false;
+  }
+
+  private installRefreshedTools(
+    config: MCPServerConfig,
+    published: ResilientMCPBridge,
+    replacement: MCPToolBridge,
+  ): boolean {
+    if (!published.replacePublishedCatalog(replacement)) return false;
+    this.wrapPluginToolSurface(config, published);
+    return true;
   }
 
   private async refreshPromptCatalog(
@@ -3369,12 +3429,18 @@ export class MCPManager {
       readonly resources?: readonly unknown[];
     },
     isCurrent: () => boolean,
+    install: () => boolean = () => true,
   ): Promise<void> {
     if (!isCurrent()) return;
     const previous = this.cachedCatalogs.get(config.name);
     const next = lazyCatalog(previous, patch);
-    if (JSON.stringify(next) === JSON.stringify(previous)) return;
-    await this.publishCachedCatalog(config, next, true, isCurrent);
+    if (JSON.stringify(next) === JSON.stringify(previous)) {
+      install();
+      return;
+    }
+    // canPublish is the last check before the cache commit, so the tools
+    // are installed exactly when the cached catalog is published.
+    await this.publishCachedCatalog(config, next, true, () => isCurrent() && install());
   }
 
   private assertNoNameShadowing(
