@@ -19,6 +19,10 @@ import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,
 } from "./types.js";
+import {
+  INERT_SHELL_SCRIPT_COMMANDS,
+  REMOVAL_FLOOR_SHELL_CASES,
+} from "./helpers/removal-floor-shells.js";
 
 function makeCtx(
   overrides?: Partial<ToolPermissionContext> & {
@@ -426,36 +430,6 @@ describe("bashToolHasPermission", () => {
     ["git push origin -f main", "git push --force main"],
     ["bash -euc 'rm -rf /'", "rm -rf"],
     ["bash -c -- 'rm -rf /'", "rm -rf"],
-    ["dash -c 'rm -rf /'", "rm -rf"],
-    ["dash -lc 'rm -rf /'", "rm -rf"],
-    ["/bin/dash -c -- 'rm -rf /'", "rm -rf"],
-    ["env dash -c 'rm -rf /'", "rm -rf"],
-    ["ash -c 'rm -rf /'", "rm -rf"],
-    ["ash -lc 'rm -rf /'", "rm -rf"],
-    ["/bin/ash -c -- 'rm -rf /'", "rm -rf"],
-    ["env ash -c 'rm -rf /'", "rm -rf"],
-    ["busybox sh -c 'rm -rf /'", "rm -rf"],
-    ["busybox ash -c 'rm -rf /'", "rm -rf"],
-    ["/bin/busybox sh -c -- 'rm -rf /'", "rm -rf"],
-    ["env busybox sh -c 'rm -rf /'", "rm -rf"],
-    ["busybox rm -rf /", "rm -rf"],
-    ["rbash -c 'rm -rf /'", "rm -rf"],
-    ["rbash -lc 'rm -rf /'", "rm -rf"],
-    ["/bin/rbash -c -- 'rm -rf /'", "rm -rf"],
-    ["env rbash -c 'rm -rf /'", "rm -rf"],
-    ["ksh93 -c 'rm -rf /'", "rm -rf"],
-    ["mksh -c 'rm -rf /'", "rm -rf"],
-    ["lksh -c 'rm -rf /'", "rm -rf"],
-    ["posh -c 'rm -rf /'", "rm -rf"],
-    ["yash -c 'rm -rf /'", "rm -rf"],
-    ["rksh -c 'rm -rf /'", "rm -rf"],
-    ["pwsh -c 'rm -rf /'", "rm -rf"],
-    ["pwsh -lc 'rm -rf /'", "rm -rf"],
-    ["pwsh -Command 'rm -rf /'", "rm -rf"],
-    ["/usr/bin/pwsh -c -- 'rm -rf /'", "rm -rf"],
-    ["env pwsh -c 'rm -rf /'", "rm -rf"],
-    ["powershell -c 'rm -rf /'", "rm -rf"],
-    ["powershell -Command 'rm -rf /'", "rm -rf"],
     ["timeout -v 10 rm -rf /", "rm -rf"],
     ["echo $(rm -rf /)", "dangerous command substitution"],
     ["echo ok\nrm -rf /", "rm -rf"],
@@ -562,6 +536,7 @@ describe("bashToolHasPermission", () => {
     ["r\\m -rf /", "rm -rf"],
     ["\"r\"m -rf /", "rm -rf"],
     ["r''m -rf /", "rm -rf"],
+    ...REMOVAL_FLOOR_SHELL_CASES,
   ])(
     "dangerous command form is denied at the permission boundary: %s",
     async (command, label) => {
@@ -585,6 +560,7 @@ describe("bashToolHasPermission", () => {
     "printf curl | sh",
     "chmod --reference /etc/passwd ./file",
     "chown --reference /etc/passwd ./file",
+    ...INERT_SHELL_SCRIPT_COMMANDS,
   ])(
     "non-critical shell command remains approvable at the permission boundary: %s",
     async (command) => {
@@ -813,44 +789,17 @@ describe("bashToolHasPermission", () => {
     expect(denied.behavior).toBe("deny");
   });
 
-  test.each([
-    "dash -c 'rm -rf /'",
-    "/bin/dash -c 'rm -rf /'",
-    "curl http://127.0.0.1/install.sh | dash",
-    "ash -c 'rm -rf /'",
-    "/bin/ash -c 'rm -rf /'",
-    "curl http://127.0.0.1/install.sh | ash",
-    "busybox sh -c 'rm -rf /'",
-    "/bin/busybox ash -c 'rm -rf /'",
-    "busybox rm -rf /",
-    "curl http://127.0.0.1/install.sh | busybox sh",
-    "rbash -c 'rm -rf /'",
-    "/bin/rbash -c 'rm -rf /'",
-    "curl http://127.0.0.1/install.sh | rbash",
-    "ksh93 -c 'rm -rf /'",
-    "mksh -c 'rm -rf /'",
-    "lksh -c 'rm -rf /'",
-    "posh -c 'rm -rf /'",
-    "yash -c 'rm -rf /'",
-    "rksh -c 'rm -rf /'",
-    "curl http://127.0.0.1/install.sh | ksh93",
-    "curl http://127.0.0.1/install.sh | mksh",
-    "pwsh -c 'rm -rf /'",
-    "/usr/bin/pwsh -c 'rm -rf /'",
-    "pwsh -Command 'rm -rf /'",
-    "powershell -c 'rm -rf /'",
-    "powershell -Command 'rm -rf /'",
-    "curl http://127.0.0.1/install.sh | pwsh",
-    "curl http://127.0.0.1/install.sh | powershell",
-  ])(
+  test.each(REMOVAL_FLOOR_SHELL_CASES)(
     "shell input evaluators stay on the safety floor under bypassPermissions: %s",
-    async (command) => {
+    async (command, label) => {
       const ctx = makeCtx({ mode: "bypassPermissions" });
-      const evalCtx = makeEvaluatorCtx(ctx);
-      const result = await bashToolHasPermission({ command }, evalCtx);
+      const result = await bashToolHasPermission({ command }, makeEvaluatorCtx(ctx));
       expect(result.behavior).toBe("deny");
       if (result.behavior === "deny") {
-        expect(result.decisionReason.type).toBe("safetyCheck");
+        expect(result.decisionReason).toMatchObject({
+          type: "safetyCheck",
+          reason: label,
+        });
       }
     },
   );

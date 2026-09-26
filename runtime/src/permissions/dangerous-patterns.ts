@@ -190,38 +190,66 @@ const RM_WRAPPER_COMMANDS: ReadonlySet<string> = new Set([
   "busybox",
 ]);
 
-const SHELL_SCRIPT_COMMANDS: ReadonlySet<string> = new Set([
+/**
+ * Wrappers whose output is the wrapped command's output. Substitution
+ * evaluation keeps this list apart from RM_WRAPPER_COMMANDS: trusting a
+ * substitution's output drops the shell-construct ask, so a new floor wrapper
+ * must not widen it (`$(busybox --install echo)` runs no applet).
+ */
+const SUBSTITUTION_OUTPUT_WRAPPERS: ReadonlySet<string> = new Set([
+  "env",
+  "exec",
+  "nice",
+  "nohup",
+  "stdbuf",
+  "time",
+  "timeout",
+  "command",
+]);
+
+/**
+ * Shells that run one command-string word (`sh -c 'rm -rf /'`). Keep this in
+ * step with SHELL_INPUT_EVALUATORS in src/tools/system/bash.ts: a shell the
+ * bash tool treats as an input evaluator must not stop the floor at the
+ * wrapper. `hush` is the second BusyBox shell applet.
+ */
+const POSIX_SCRIPT_SHELLS: readonly string[] = [
   "sh",
   "bash",
   "zsh",
   "dash",
   "ash",
+  "hush",
   "fish",
   "ksh",
-  "csh",
-  "tcsh",
-  // Already treated as system.bash input evaluators. Without these names the
-  // rm / curl|sh floor stops at the wrapper, same as dash/ash before them.
+  "ksh93",
   "mksh",
   "lksh",
+  "rksh",
   "posh",
   "yash",
   "rbash",
-  "rksh",
-  "ksh93",
-  // Windows shells already treated as input evaluators by the bash tool.
-  // Their -c / -Command / /c forms must hit the same removal floor.
+  "csh",
+  "tcsh",
+];
+
+/**
+ * Windows shells run the rest of their command line after the command
+ * switch: `pwsh -c rm -rf /` and `cmd /c rm -rf /` both run `rm -rf /`.
+ */
+const POWERSHELL_SCRIPT_SHELLS: ReadonlySet<string> = new Set([
   "powershell",
   "pwsh",
-  "cmd",
+]);
+const CMD_SCRIPT_SHELL = "cmd";
+
+const SHELL_SCRIPT_COMMANDS: ReadonlySet<string> = new Set([
+  ...POSIX_SCRIPT_SHELLS,
+  ...POWERSHELL_SCRIPT_SHELLS,
+  CMD_SCRIPT_SHELL,
 ]);
 
-const WINDOWS_COMMAND_SHELLS: ReadonlySet<string> = new Set([
-  "powershell",
-  "pwsh",
-  "cmd",
-]);
-
+/** Name a shell resolves to: case-insensitive, `.exe` / `.cmd` suffix dropped. */
 function normalizedCommandName(command: string): string {
   return basename(stripShellQuotes(command))
     .toLowerCase()
@@ -230,6 +258,11 @@ function normalizedCommandName(command: string): string {
 
 function isShellScriptCommand(command: string): boolean {
   return SHELL_SCRIPT_COMMANDS.has(normalizedCommandName(command));
+}
+
+function isRestOfLineShell(command: string): boolean {
+  const shell = normalizedCommandName(command);
+  return POWERSHELL_SCRIPT_SHELLS.has(shell) || shell === CMD_SCRIPT_SHELL;
 }
 
 function isRecursiveForceRemove(command: string): boolean {
@@ -359,27 +392,40 @@ function xargsContainsDangerousCommand(command: string): boolean {
   );
 
   const nested = words.slice(commandIndex);
-  const nestedCommand = basename(stripShellQuotes(nested[0] ?? ""));
-  if (nestedCommand === "rm" && rmArgsHaveRecursiveAndForce(nested.slice(1))) {
+  const target = xargsInputCommand(nested);
+  const targetCommand = basename(stripShellQuotes(target[0] ?? ""));
+  if (targetCommand === "rm" && rmArgsHaveRecursiveAndForce(target.slice(1))) {
     return true;
   }
   if (
-    nestedCommand === "rm" &&
-    rmArgsHaveRecursiveAndForceFlags(nested.slice(1)) &&
-    xargsStdinCanSupplyRmTarget(nested.slice(1), replacementTokens)
+    targetCommand === "rm" &&
+    rmArgsHaveRecursiveAndForceFlags(target.slice(1)) &&
+    xargsStdinCanSupplyRmTarget(target.slice(1), replacementTokens)
   ) {
     return true;
   }
   if (
     replacementTokens.length > 0 &&
-    commandAtIndexRemovesPlaceholder(nested, 0, replacementTokens)
+    commandAtIndexRemovesPlaceholder(target, 0, replacementTokens)
   ) {
     return true;
   }
-  if (xargsShellCommandRemovesSuppliedArgs(nested, replacementTokens)) {
+  if (xargsShellCommandRemovesSuppliedArgs(target, replacementTokens)) {
     return true;
   }
   return isDangerousShellCommand(nested.join(" "));
+}
+
+/**
+ * The command that receives what xargs reads. xargs appends its input to the
+ * command line and a Windows shell runs the rest of its line, so the input
+ * lands in the script's last command: `xargs cmd /c rm -rf` removes it.
+ */
+function xargsInputCommand(nested: readonly string[]): readonly string[] {
+  if (!isRestOfLineShell(nested[0] ?? "")) return nested;
+  const script = shellCommandString(nested, 0);
+  const last = script === null ? undefined : splitShellFragments(script).at(-1);
+  return last === undefined ? nested : splitSimpleShellWords(last);
 }
 
 function xargsStdinCanSupplyRmTarget(
@@ -670,7 +716,9 @@ function shellExecutesDownloadedContent(command: string): boolean {
       if (shellCommandStringContainsDownloadSubstitution(words, commandIndex)) {
         return true;
       }
-      if (rawShellCommandStringUsesDownloadSubstitution(command)) return true;
+      if (rawShellCommandStringUsesDownloadSubstitution(command, commandName)) {
+        return true;
+      }
       return shellInputContainsDownloadSubstitution(command);
     }
     if (!RM_WRAPPER_COMMANDS.has(commandName)) return false;
@@ -683,19 +731,8 @@ function shellCommandStringContainsDownloadSubstitution(
   words: readonly string[],
   shellIndex: number,
 ): boolean {
-  const shellName = normalizedCommandName(words[shellIndex] ?? "");
-  for (let i = shellIndex + 1; i < words.length - 1; i++) {
-    const flag = stripShellQuotes(words[i]!);
-    if (flag === "--") continue;
-    if (!isShellScriptIntroducer(shellName, flag)) continue;
-    let scriptIndex = i + 1;
-    if (stripShellQuotes(words[scriptIndex] ?? "") === "--") {
-      scriptIndex++;
-    }
-    if (scriptIndex >= words.length) return false;
-    return shellTextContainsDownloadSubstitution(stripShellQuotes(words[scriptIndex]!));
-  }
-  return false;
+  const script = shellCommandString(words, shellIndex);
+  return script !== null && shellTextContainsDownloadSubstitution(script);
 }
 
 function shellInputContainsDownloadSubstitution(command: string): boolean {
@@ -705,10 +742,20 @@ function shellInputContainsDownloadSubstitution(command: string): boolean {
   );
 }
 
-function rawShellCommandStringUsesDownloadSubstitution(command: string): boolean {
+const RAW_POSIX_SCRIPT_SUBSTITUTION_RE =
+  /(?:^|\s)-[A-Za-z]*c[A-Za-z]*\s+(?:--\s+)?(?:\$\(|`)/;
+const RAW_WINDOWS_SCRIPT_SUBSTITUTION_RE =
+  /(?:^|\s)(?:[-\u2013\u2014\u2015]{1,2}|\/{1,2})(?:[cC][A-Za-z]*|[kKrR])\s+(?:--\s+)?(?:\$\(|`)/u;
+
+function rawShellCommandStringUsesDownloadSubstitution(
+  command: string,
+  shell: string,
+): boolean {
+  const introducer = isRestOfLineShell(shell)
+    ? RAW_WINDOWS_SCRIPT_SUBSTITUTION_RE
+    : RAW_POSIX_SCRIPT_SUBSTITUTION_RE;
   return (
-    /(?:^|\s)-[A-Za-z]*c[A-Za-z]*\s+(?:--\s+)?(?:\$\(|`)/.test(command) &&
-    shellTextContainsDownloadSubstitution(command)
+    introducer.test(command) && shellTextContainsDownloadSubstitution(command)
   );
 }
 
@@ -1013,7 +1060,7 @@ function commandIndexAfterWrapper(
     case "nohup":
       return nohupCommandIndex(words, wrapperIndex + 1);
     case "busybox":
-      return busyboxCommandIndex(words, wrapperIndex + 1);
+      return busyboxAppletIndex(words, wrapperIndex + 1);
     default:
       return null;
   }
@@ -1293,28 +1340,17 @@ function nohupCommandIndex(words: readonly string[], startIndex: number): number
 }
 
 /**
- * BusyBox is a multi-call binary: `busybox <applet> …` runs the named
- * applet. Skip leading option flags so `busybox sh -c` and `busybox rm`
- * peel to the applet the safety floor already understands.
+ * BusyBox runs the applet named by its first argument (`busybox sh -c ...`,
+ * `busybox /bin/rm ...`). A leading dash is one of BusyBox's own options
+ * (`--list`, `--install DIR`, `--help APPLET`), and those run no applet.
  */
-function busyboxCommandIndex(
+function busyboxAppletIndex(
   words: readonly string[],
   startIndex: number,
 ): number | null {
-  let index = startIndex;
-  while (index < words.length) {
-    const word = stripShellQuotes(words[index]!);
-    if (word === "--") {
-      index++;
-      return index < words.length ? index : null;
-    }
-    if (word.startsWith("-")) {
-      index++;
-      continue;
-    }
-    return index;
-  }
-  return null;
+  const applet = words[startIndex];
+  if (applet === undefined) return null;
+  return stripShellQuotes(applet).startsWith("-") ? null : startIndex;
 }
 
 function shellScriptContainsDanger(
@@ -1322,34 +1358,38 @@ function shellScriptContainsDanger(
   shellIndex: number,
   matchesDanger: (script: string) => boolean,
 ): boolean {
+  const script = shellCommandString(words, shellIndex);
+  return script === null ? false : matchesDanger(script);
+}
+
+/**
+ * The script a shell runs from its command line, or null when it reads a file
+ * or stdin instead. A Windows shell runs every word after its command switch,
+ * and cmd drops its `^` escapes first (`cmd /c r^m -rf /`).
+ */
+function shellCommandString(
+  words: readonly string[],
+  shellIndex: number,
+): string | null {
   const scriptIndex = shellCommandStringIndex(words, shellIndex);
-  return scriptIndex === null
-    ? false
-    : matchesDanger(stripShellQuotes(words[scriptIndex]!));
-}
-
-function isWindowsCommandStringFlag(shellName: string, flag: string): boolean {
-  if (!WINDOWS_COMMAND_SHELLS.has(shellName)) return false;
-  const normalized = flag.toLowerCase();
-  return normalized === "/c" || normalized === "/k";
-}
-
-function isShellScriptIntroducer(shellName: string, flag: string): boolean {
-  return (
-    isShellCommandStringFlag(flag) ||
-    isWindowsCommandStringFlag(shellName, flag)
-  );
+  if (scriptIndex === null) return null;
+  const shell = words[shellIndex] ?? "";
+  if (!isRestOfLineShell(shell)) return stripShellQuotes(words[scriptIndex]!);
+  const script = words.slice(scriptIndex).map(stripShellQuotes).join(" ");
+  return normalizedCommandName(shell) === CMD_SCRIPT_SHELL
+    ? script.replace(/\^([\s\S])/gu, "$1")
+    : script;
 }
 
 function shellCommandStringIndex(
   words: readonly string[],
   shellIndex: number,
 ): number | null {
-  const shellName = normalizedCommandName(words[shellIndex] ?? "");
+  const shell = normalizedCommandName(words[shellIndex] ?? "");
   for (let i = shellIndex + 1; i < words.length - 1; i++) {
     const flag = stripShellQuotes(words[i]!);
     if (flag === "--") continue;
-    if (isShellScriptIntroducer(shellName, flag)) {
+    if (isShellScriptIntroducer(shell, flag)) {
       let scriptIndex = i + 1;
       if (stripShellQuotes(words[scriptIndex] ?? "") === "--") {
         scriptIndex++;
@@ -1361,11 +1401,31 @@ function shellCommandStringIndex(
   return null;
 }
 
+const WINDOWS_SWITCH_RE = /^(?:[-\u2013\u2014\u2015]{1,2}|\/{1,2})([a-z]+)$/iu;
+
+/**
+ * PowerShell and cmd take whole-word switches, so the POSIX `-c` cluster rule
+ * would misread `-NonInteractive` as a script flag. PowerShell reads its
+ * script after any prefix of `-Command` (`-c`, `-Com`, `--command`,
+ * `/command`, en or em dash forms) or `-CommandWithArgs`; cmd reads it after
+ * `/c`, `/k` or `/r`, and Git Bash users double the slash (`cmd //c`).
+ */
+function isShellScriptIntroducer(shell: string, flag: string): boolean {
+  if (!isRestOfLineShell(shell)) return isShellCommandStringFlag(flag);
+  const option = WINDOWS_SWITCH_RE.exec(flag)?.[1]?.toLowerCase();
+  if (option === undefined) return false;
+  if (shell === CMD_SCRIPT_SHELL) {
+    return option === "c" || option === "k" || option === "r";
+  }
+  return (
+    "command".startsWith(option) ||
+    option === "cwa" ||
+    option === "commandwithargs"
+  );
+}
+
 function isShellCommandStringFlag(flag: string): boolean {
   if (flag === "-c") return true;
-  // PowerShell's documented long form. `-Command` has no lowercase `c`, so the
-  // POSIX clustered-flag check below would miss `pwsh -Command 'rm -rf /'`.
-  if (flag.toLowerCase() === "-command") return true;
   return flag.startsWith("-") && !flag.startsWith("--") && flag.slice(1).includes("c");
 }
 
@@ -1654,13 +1714,11 @@ function shellCommandHasShellConstruct(command: string, depth: number): boolean 
       return true;
     }
     if (isShellScriptCommand(commandName)) {
-      const scriptIndex = shellCommandStringIndex(words, commandIndex);
-      return scriptIndex === null
+      const script = shellCommandString(words, commandIndex);
+      return script === null
         ? shellInputContainsShellConstruct(normalized)
-        : shellCommandHasShellConstruct(
-            stripShellQuotes(words[scriptIndex]!),
-            depth + 1,
-          ) || shellInputContainsShellConstruct(normalized);
+        : shellCommandHasShellConstruct(script, depth + 1) ||
+            shellInputContainsShellConstruct(normalized);
     }
     if (!RM_WRAPPER_COMMANDS.has(commandName)) return false;
     commandIndex = commandIndexAfterWrapper(words, commandIndex, commandName);
@@ -1938,7 +1996,7 @@ function evaluateKnownCommandSubstitutionOutput(
     if (commandName === "echo") {
       return words.slice(commandIndex + 1).map(stripShellQuotes).join(" ");
     }
-    if (!RM_WRAPPER_COMMANDS.has(commandName)) return null;
+    if (!SUBSTITUTION_OUTPUT_WRAPPERS.has(commandName)) return null;
     commandIndex = commandIndexAfterWrapper(words, commandIndex, commandName);
   }
   return null;

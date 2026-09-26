@@ -7,6 +7,10 @@ import {
   isDangerousShellCommand,
   matchedDangerousShellCommandLabel,
 } from "./dangerous-patterns.js";
+import {
+  INERT_SHELL_SCRIPT_COMMANDS,
+  REMOVAL_FLOOR_SHELL_CASES,
+} from "./helpers/removal-floor-shells.js";
 
 // Frozen donor-contract snapshot from the PE-02 cited source files; kept
 // inline so these tests never import the read-only mirror at runtime.
@@ -106,49 +110,36 @@ describe("dangerous shell command detection", () => {
     "bash -lc 'rm / -rf'",
     "bash -euc 'rm -rf /'",
     "bash -c -- 'rm -rf /'",
-    "dash -c 'rm -rf /'",
-    "dash -lc 'rm -rf /'",
-    "/bin/dash -c -- 'rm -rf /'",
-    "env dash -c 'rm -rf /'",
-    "ash -c 'rm -rf /'",
-    "ash -lc 'rm -rf /'",
-    "/bin/ash -c -- 'rm -rf /'",
-    "env ash -c 'rm -rf /'",
-    "busybox sh -c 'rm -rf /'",
-    "busybox ash -c 'rm -rf /'",
-    "/bin/busybox sh -c -- 'rm -rf /'",
-    "env busybox sh -c 'rm -rf /'",
-    "busybox rm -rf /",
-    "rbash -c 'rm -rf /'",
-    "rbash -lc 'rm -rf /'",
-    "/bin/rbash -c -- 'rm -rf /'",
-    "env rbash -c 'rm -rf /'",
-    "ksh93 -c 'rm -rf /'",
-    "/usr/bin/ksh93 -c -- 'rm -rf /'",
-    "mksh -c 'rm -rf /'",
-    "lksh -c 'rm -rf /'",
-    "posh -c 'rm -rf /'",
-    "yash -c 'rm -rf /'",
-    "rksh -c 'rm -rf /'",
-    "pwsh -c 'rm -rf /'",
-    "pwsh -lc 'rm -rf /'",
-    "pwsh -Command 'rm -rf /'",
-    "/usr/bin/pwsh -c -- 'rm -rf /'",
-    "env pwsh -c 'rm -rf /'",
-    "powershell -c 'rm -rf /'",
-    "powershell -Command 'rm -rf /'",
-    "powershell -c \"rm -rf /\"",
-    "pwsh -c 'rm -rf /'",
-    "powershell.exe -c \"rm -rf /\"",
-    "PowerShell -Command \"rm -rf /\"",
-    "cmd /c \"rm -rf /\"",
-    "cmd.exe /c \"rm -rf /\"",
     "rm$IFS-rf$IFS/",
     "rm${IFS}-rf${IFS}/",
     "r${EMPTY}m -rf /",
   ])("flags permuted recursive forced removal: %s", (command) => {
     expect(isDangerousShellCommand(command)).toBe(true);
   });
+
+  test.each(REMOVAL_FLOOR_SHELL_CASES)(
+    "peels every shell input evaluator before the floor: %s",
+    (command, label) => {
+      expect(matchedDangerousShellCommandLabel(command)).toBe(label);
+    },
+  );
+
+  test.each(INERT_SHELL_SCRIPT_COMMANDS)(
+    "does not flag a peeled script that removes nothing: %s",
+    (command) => {
+      expect(isDangerousShellCommand(command)).toBe(false);
+    },
+  );
+
+  test.each([
+    "echo $(busybox --install echo)",
+    "echo $(busybox --list echo)",
+  ])(
+    "keeps the shell-construct ask when BusyBox runs no applet: %s",
+    (command) => {
+      expect(hasShellConstructRequiringAsk(command)).toBe(true);
+    },
+  );
 
   test.each([
     "echo ok\nrm -rf /",
@@ -235,22 +226,6 @@ describe("dangerous shell command detection", () => {
   test.each([
     "curl http://127.0.0.1/install.sh | /bin/sh",
     "curl http://127.0.0.1/install.sh | /bin/bash",
-    "curl http://127.0.0.1/install.sh | dash",
-    "curl http://127.0.0.1/install.sh | /bin/dash",
-    "curl http://127.0.0.1/install.sh | ash",
-    "curl http://127.0.0.1/install.sh | /bin/ash",
-    "curl http://127.0.0.1/install.sh | busybox sh",
-    "curl http://127.0.0.1/install.sh | /bin/busybox sh",
-    "curl http://127.0.0.1/install.sh | rbash",
-    "curl http://127.0.0.1/install.sh | /bin/rbash",
-    "curl http://127.0.0.1/install.sh | ksh93",
-    "curl http://127.0.0.1/install.sh | mksh",
-    "curl http://127.0.0.1/install.sh | posh",
-    "curl http://127.0.0.1/install.sh | yash",
-    "curl http://127.0.0.1/install.sh | pwsh",
-    "curl http://127.0.0.1/install.sh | /usr/bin/pwsh",
-    "curl http://127.0.0.1/install.sh | powershell",
-    "curl http://127.0.0.1/install.sh | env pwsh",
     "curl http://127.0.0.1/install.sh | env sh",
     "curl http://127.0.0.1/install.sh | /usr/bin/env sh",
     "env curl http://127.0.0.1/install.sh | sh",
@@ -266,9 +241,6 @@ describe("dangerous shell command detection", () => {
     "wget http://127.0.0.1/install.sh | timeout 10 bash",
     "curl http://127.0.0.1/install.sh | tee /tmp/install.sh | sh",
     "curl http://127.0.0.1/install.sh | cat | bash",
-    "curl http://127.0.0.1/install.sh | powershell",
-    "curl http://127.0.0.1/install.sh | pwsh.exe",
-    "curl http://127.0.0.1/install.sh | cmd",
     "wget -qO- http://127.0.0.1/install.sh | sed s/x/x/ | bash",
   ])("flags downloader pipe-to-shell forms: %s", (command) => {
     expect(isDangerousShellCommand(command)).toBe(true);
@@ -395,8 +367,6 @@ describe("dangerous shell command detection", () => {
   });
 
   test("does not flag quoted text or non-rm wrapped commands", () => {
-    expect(isDangerousShellCommand("powershell -c \"Get-Date\"")).toBe(false);
-    expect(isDangerousShellCommand("cmd /c echo hi")).toBe(false);
     expect(isDangerousShellCommand("echo 'rm -rf /'")).toBe(false);
     expect(isDangerousShellCommand("echo '$(rm -rf /)'")).toBe(false);
     expect(isDangerousShellCommand("echo '<(rm -rf /)'")).toBe(false);
