@@ -39,16 +39,62 @@ const REMOTE_LOGIN_REQUIRED_MESSAGE =
 
 export interface RemoteCliCommand {
   readonly kind: "on" | "off" | "status" | "help";
+  /** `agenc remote on --full-control`: the operator accepted what a paired phone can do. */
+  readonly fullControl?: boolean;
 }
+
+/** The flag and the environment key that turn phone remote control on. */
+export const REMOTE_FULL_CONTROL_FLAG = "--full-control";
+export const REMOTE_FULL_CONTROL_ENV = "AGENC_REMOTE_FULL_CONTROL";
 
 export function parseAgenCRemoteCliArgs(argv: readonly string[]): RemoteCliCommand | null {
   if (argv[0] !== "remote") return null;
   const sub = argv[1];
+  const rest = argv.slice(2);
   // Require an explicit subcommand so a bare `agenc remote` or `--help` never starts pairing.
-  if (sub === "on") return { kind: "on" };
+  if (sub === "on") {
+    const fullControl = rest.includes(REMOTE_FULL_CONTROL_FLAG);
+    // Anything else after `on` is a mistake, not a request to pair.
+    if (rest.some((arg) => arg !== REMOTE_FULL_CONTROL_FLAG)) return { kind: "help" };
+    return { kind: "on", fullControl };
+  }
   if (sub === "off") return { kind: "off" };
   if (sub === "status") return { kind: "status" };
   return { kind: "help" };
+}
+
+/** `/remote [on|off|status] [--full-control]` as typed in the TUI. */
+export function parseRemoteSlashArgs(argsRaw: string): { readonly sub: string; readonly fullControl: boolean } {
+  const tokens = (argsRaw || "").trim().split(/\s+/u).filter(Boolean);
+  const fullControl = tokens.includes(REMOTE_FULL_CONTROL_FLAG);
+  const sub = tokens.find((token) => token !== REMOTE_FULL_CONTROL_FLAG) ?? "on";
+  return { sub, fullControl };
+}
+
+/**
+ * Phone remote control is off unless the operator turned it on for this run
+ * with the flag, or persistently with the environment key. Off means no code,
+ * no backend call and no relay socket. The check reads no credential.
+ */
+export function remoteFullControlEnabled(context: RemoteCliRuntimeContext, flag: boolean | undefined): boolean {
+  if (flag === true) return true;
+  const raw = context.environment[REMOTE_FULL_CONTROL_ENV]?.trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
+/** One line the operator reads before the code: what enabling this means. */
+export const REMOTE_FULL_CONTROL_WARNING =
+  "Warning: a paired phone gets full control of this computer's AgenC.";
+
+export function remoteFullControlRefusal(surface: "cli" | "tui"): string {
+  const how = surface === "cli"
+    ? `Turn it on for this run with \`agenc remote on ${REMOTE_FULL_CONTROL_FLAG}\`, or set ${REMOTE_FULL_CONTROL_ENV}=1 to keep it on.`
+    : `Turn it on with \`/remote on ${REMOTE_FULL_CONTROL_FLAG}\`, or set ${REMOTE_FULL_CONTROL_ENV}=1 before starting agenc to keep it on.`;
+  return [
+    "Phone remote control is off.",
+    "A paired phone gets full control of this computer's AgenC: it can start agents in any folder, run tools and change permission modes.",
+    how,
+  ].join("\n");
 }
 
 export function formatAgenCRemoteCliHelpText(): string {
@@ -56,11 +102,16 @@ export function formatAgenCRemoteCliHelpText(): string {
     "agenc remote — control this computer from the AgenC phone app, from anywhere.",
     "",
     "Usage:",
-    "  agenc remote on        Pair (first run shows a code) then keep this computer reachable.",
+    "  agenc remote on --full-control",
+    "                         Pair (first run shows a code) then keep this computer reachable.",
+    "                         A paired phone gets full control of this computer's AgenC,",
+    "                         so the flag or AGENC_REMOTE_FULL_CONTROL=1 is required.",
     "  agenc remote status    Show whether this computer is linked to a phone.",
     "  agenc remote off       Forget this computer's pairing locally.",
     "",
     "Environment:",
+    "  AGENC_REMOTE_FULL_CONTROL=1",
+    "                      Keep phone remote control on without the flag.",
     "  AGENC_BACKEND_URL   Identity backend (default https://id.agenc.ag).",
     "  AGENC_DAEMON_URL    Local daemon (default: the URL the running daemon",
     "                      recorded, else ws://127.0.0.1:7766).",
@@ -275,6 +326,11 @@ export async function runAgenCRemoteCli(
   }
 
   // command.kind === "on"
+  if (!remoteFullControlEnabled(context, command.fullControl)) {
+    process.stderr.write(`${remoteFullControlRefusal("cli")}\n`);
+    return 1;
+  }
+  process.stdout.write(`${REMOTE_FULL_CONTROL_WARNING}\n`);
   const activationMarker = stopMarker(context);
   const authToken = remoteAuthSessionTokenSync(context);
   if (authToken === undefined) {
@@ -679,7 +735,7 @@ export async function runRemoteSlash(
   argsRaw: string,
   context: RemoteCliRuntimeContext,
 ): Promise<string> {
-  const sub = (argsRaw || "").trim() || "on";
+  const { sub, fullControl } = parseRemoteSlashArgs(argsRaw);
 
   if (sub === "status") {
     const pair = readPairFile(context);
@@ -697,7 +753,7 @@ export async function runRemoteSlash(
   }
 
   // "on" — delegate to the shared starter.
-  const started = await startRemoteOn(context);
+  const started = await startRemoteOn(context, { fullControl });
   if ("message" in started) return started.message;
   return `${started.box}\n  This computer is now reachable for this session — pair, then talk to this agent from your phone.`;
 }
@@ -716,7 +772,11 @@ export interface RemoteOnStarted {
  */
 export async function startRemoteOn(
   context: RemoteCliRuntimeContext,
+  options: { readonly fullControl?: boolean } = {},
 ): Promise<RemoteOnStarted | { message: string }> {
+  if (!remoteFullControlEnabled(context, options.fullControl)) {
+    return { message: remoteFullControlRefusal("tui") };
+  }
   const activationMarker = stopMarker(context);
   const backend = backendUrl(context);
   const authToken = remoteAuthSessionTokenSync(context);
@@ -743,7 +803,7 @@ export async function startRemoteOn(
         authToken,
         quiet: true,
       });
-      return { message: `● Remote access ON — already linked to “${existing.machineName}”. Drive this computer from your phone.` };
+      return { message: `${REMOTE_FULL_CONTROL_WARNING}\n● Remote access ON — already linked to “${existing.machineName}”. Drive this computer from your phone.` };
     }
     if (status === 410) rmSync(pairPath(context), { force: true }); // revoked — fall through to re-pair
   }
@@ -769,10 +829,10 @@ export async function startRemoteOn(
   startBridge({ context, relayUrl, pairingId, hostSecret, backend, initialHostTicket: hostTicket, machineName: name, authToken, quiet: true });
 
   const code = String(json.code ?? "");
-  const box = await renderCodeBox(code, pairingDeepLink(code), json.expiresAt as string | undefined, {
+  const box = `  ${REMOTE_FULL_CONTROL_WARNING}\n${await renderCodeBox(code, pairingDeepLink(code), json.expiresAt as string | undefined, {
     color: false,
     qrType: "utf8",
-  });
+  })}`;
   const waitForConnect = async (): Promise<string> => {
     // Poll up to ~3 min (the code TTL). Resolves with the phone label on claim, "" on expiry/revoke.
     // A transient network error must NOT reject — that would leave the QR surface hanging.

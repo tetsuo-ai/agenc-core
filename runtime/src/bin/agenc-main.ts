@@ -400,7 +400,7 @@ export function formatCliHelpText(): string {
     "       agenc daemon start [--foreground]",
     "       agenc daemon <stop|status|reload|restart>",
     "       agenc doctor [--json | --apparmor-profile]",
-    "       agenc remote <on|status|off>",
+    "       agenc remote <on --full-control|status|off>",
     "       agenc agent start <objective>",
     "       agenc agent list",
     "       agenc agent attach <id>",

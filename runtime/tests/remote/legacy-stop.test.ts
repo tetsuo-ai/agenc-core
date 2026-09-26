@@ -23,7 +23,7 @@ afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) awai
 async function fixture() {
   vi.useFakeTimers();
   const home = mkdtempSync(join(tmpdir(), "legacy-stop-"));
-  const context = captureRemoteCliRuntimeContext(Object.freeze({ AGENC_HOME: home, AGENC_REMOTE_AUTH_TOKEN: "fixture-token" }));
+  const context = captureRemoteCliRuntimeContext(Object.freeze({ AGENC_HOME: home, AGENC_REMOTE_AUTH_TOKEN: "fixture-token", AGENC_REMOTE_FULL_CONTROL: "1" }));
   const response = () => new Response(JSON.stringify({ pairingId: "fixture-pair", hostSecret: "fixture-secret", relayUrl: "wss://relay.example", hostTicket: "fixture-ticket", code: "ABCDEFGH", expiresAt: new Date(Date.now() + 180_000).toISOString() }), { status: 200 });
   const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async () => response());
   cleanups.push(async () => { await runRemoteSlash("off", context); rmSync(home, { recursive: true, force: true }); });
