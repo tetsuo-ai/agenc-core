@@ -49,9 +49,10 @@ and [`quickstart.md`](quickstart.md). Reference docs for operators and embedders
 3. **Clients** — interactive **TUI**, one-shot **print / `--no-tui`**,
    **background agents**, the **channel gateway**, **remote control**, and
    the embedding **SDK**. Real work flows through the daemon; the TUI is a
-   view onto daemon-owned sessions. A TUI whose daemon stays silent
-   mid-turn ends that turn locally after 10 s; autostart after a
-   hard kill waits until the replacement socket accepts connections:
+   view onto daemon-owned sessions. A TUI that loses its daemon
+   connection mid-turn ends that turn locally when the daemon does not
+   answer within 10 s, and autostart after a hard kill waits until the
+   replacement socket accepts connections:
    [daemon.md](reference/daemon.md#recovery-after-a-disappeared-daemon).
 
 Everything past the launcher lives in the single runtime workspace

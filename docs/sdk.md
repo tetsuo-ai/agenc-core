@@ -261,8 +261,7 @@ recovery behavior, start the daemon with the CLI first and call
 `connect({ autostart: false })`. Hard-kill leftovers and a hydrating
 `daemon start` are documented on
 [daemon.md](reference/daemon.md#recovery-after-a-disappeared-daemon).
-The TUI's 10 s lost-turn probe is TUI-only; this client has no reconnect
-layer.
+The TUI's 10 s lost-turn probe is TUI-only.
 
 The transport is a single persistent connection with no reconnect layer;
 call `connect()` again (or use `onDisconnect`) if the daemon restarts.

@@ -27,12 +27,12 @@ describe("hard-killed daemon recovery docs", () => {
     expect(daemon).toContain("do not delete the socket by hand");
     expect(daemon).toContain("AGENC_DAEMON_START_MAX_WAIT_MS");
     expect(daemon).toContain("**600000**");
-    expect(daemon).toContain("still starting");
-    expect(daemon).toContain("do not");
-    expect(daemon).toContain("inherit the 600 s hydration ceiling");
+    expect(daemon).toContain("is still starting; its startup log");
+    expect(daemon).toContain("They do not inherit the 600 s");
     expect(daemon).toContain("AGENC_DAEMON_LOST_TURN_PROBE_MS");
     expect(daemon).toContain("**10 s**");
-    expect(daemon).toContain("session.snapshot");
+    expect(daemon).toContain("the TUI asks with `session.snapshot`");
+    expect(daemon).toContain("not an environment variable");
     expect(daemon).toContain("the daemon stopped responding; the turn cannot continue here");
     expect(daemon).toContain("Print mode and the SDK have no 10 s lost-turn");
   });

@@ -95,8 +95,9 @@ set (`ALL_PERMISSION_MODES`) is `default`, `acceptEdits`, `plan`,
 are internal-only and excluded from `USER_ADDRESSABLE_PERMISSION_MODES`; they
 render in the header if active but are not part of the user-facing mode cycle.
 
-A daemon-backed turn that loses its daemon mid-flight ends locally after
-10 s of silence (`AGENC_DAEMON_LOST_TURN_PROBE_MS` in `daemon-session.ts`).
+A daemon-backed turn whose connection drops mid-flight ends locally when a
+`session.snapshot` probe fails or gets no answer within 10 s
+(`AGENC_DAEMON_LOST_TURN_PROBE_MS` in `daemon-session.ts`).
 Operator contract: [daemon.md](../../../docs/reference/daemon.md#recovery-after-a-disappeared-daemon).
 
 The live daemon permission overlay classifies low, medium, and destructive
