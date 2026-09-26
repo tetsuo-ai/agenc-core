@@ -893,11 +893,14 @@ export class MCPManager {
     this.commitSurfaceMutation(() => {
       this.connectionStates.clear();
       for (const config of this.configs) {
-        this.connectionStates.set(config.name, {
-          type: config.enabled === false ? "disabled" : this.isLazyPlugin(config) ? "stopped" : "pending",
-        });
+        this.connectionStates.set(config.name, { type: this.initialConnectionStateType(config) });
       }
     });
+  }
+
+  private initialConnectionStateType(config: MCPServerConfig): "disabled" | "stopped" | "pending" {
+    if (config.enabled === false) return "disabled";
+    return this.isLazyPlugin(config) ? "stopped" : "pending";
   }
 
   private pluginIdentity(config: MCPServerConfig): PluginCatalogIdentity | undefined {
@@ -938,7 +941,7 @@ export class MCPManager {
       // Execution still fails closed while startup has no published bridge.
       return !this.running;
     }
-    const current = generation !== undefined && generation.state.isCurrent(generation.version);
+    const current = generation?.state.isCurrent(generation.version) === true;
     if (!current) {
       this.revokePluginController(config);
       const changed = this.cachedCatalogs.has(config.name) || this.cachedTools.has(config.name) ||
@@ -1264,8 +1267,7 @@ export class MCPManager {
     name: string, expectedOwner?: object, expectedConfig?: MCPServerConfig,
     expectedGeneration?: number,
   ): Promise<"busy" | void> {
-    if (expectedGeneration !== undefined && this.lifecycleGeneration !== expectedGeneration) return;
-    if (expectedConfig && !this.configs.includes(expectedConfig)) return;
+    if (!this.evictionTargetCurrent(expectedConfig, expectedGeneration)) return;
     const lifecycle = this.pluginLifecycle(name);
     if (expectedOwner && lifecycle.reservation !== expectedOwner) return;
     if (this.retainedCleanup.has(name)) {
@@ -1281,12 +1283,16 @@ export class MCPManager {
     if (timer) clearTimeout(timer);
     delete lifecycle.idleTimer;
     await this.disconnectServer(name, "after idle eviction", true);
-    if (this.running &&
-      (expectedGeneration === undefined || this.lifecycleGeneration === expectedGeneration) &&
-      (!expectedConfig || this.configs.includes(expectedConfig)) &&
+    if (this.running && this.evictionTargetCurrent(expectedConfig, expectedGeneration) &&
       this.getServerConfig(name)?.enabled !== false) {
       this.commitSurfaceMutation(() => this.connectionStates.set(name, { type: "stopped" }));
     }
+  }
+
+  /** The eviction's expected lifecycle generation and configuration, when given, are still current. */
+  private evictionTargetCurrent(expectedConfig?: MCPServerConfig, expectedGeneration?: number): boolean {
+    if (expectedGeneration !== undefined && this.lifecycleGeneration !== expectedGeneration) return false;
+    return !expectedConfig || this.configs.includes(expectedConfig);
   }
 
   private watchIdlePluginClient(config: MCPServerConfig, client: unknown, startupGate: StartupGate): void {
@@ -1835,9 +1841,7 @@ export class MCPManager {
     for (const config of this.configs) {
       if (config.enabled === false || !this.installedSnapshotCurrent(config)) continue;
       if (config.localOnly === true && !hasLocalMcpAccess()) continue;
-      const found = this.isLazyPlugin(config) ? this.cachedTools.get(config.name) :
-        config.origin?.scope !== "session" && !this.connectedConnections.has(config.name)
-          ? undefined : this.bridges.get(config.name)?.tools;
+      const found = this.publishedTools(config);
       if (found) tools.push(...found);
     }
     return tools;
@@ -1848,9 +1852,14 @@ export class MCPManager {
     if (this.isSandboxExecutionAuthorityClosed()) return [];
     const config = this.getServerConfig(name);
     if (!config || config.enabled === false || !this.installedSnapshotCurrent(config)) return [];
-    return this.isLazyPlugin(config) ? this.cachedTools.get(name) ?? [] :
-      config.origin?.scope !== "session" && !this.connectedConnections.has(name)
-        ? [] : this.bridges.get(name)?.tools ?? [];
+    return this.publishedTools(config) ?? [];
+  }
+
+  /** Cached tools for a lazy plugin; otherwise the bridge's tools once the server is published (session servers always). */
+  private publishedTools(config: MCPServerConfig): Tool[] | undefined {
+    if (this.isLazyPlugin(config)) return this.cachedTools.get(config.name);
+    if (config.origin?.scope !== "session" && !this.connectedConnections.has(config.name)) return undefined;
+    return this.bridges.get(config.name)?.tools;
   }
 
   private async ensurePluginConnected(config: MCPServerConfig): Promise<void> {
@@ -1921,18 +1930,25 @@ export class MCPManager {
         this.commitSurfaceMutation(() => this.connectionStates.set(config.name, { type: "connected" }));
       }
     } catch (error) {
-      if (this.running && this.lifecycleGeneration === generation) {
-        this.commitSurfaceMutation(() => this.connectionStates.set(config.name, {
-          type: "failed", error: errMessage(this.redactPluginDiagnostic(error)),
-        }));
-      }
-      if (attempt) await this.trackAbandonedAttempt(attempt, owner);
-      else if (owner) this.releaseOwner(config.name, owner);
+      await this.failPluginStart(config, generation, error, attempt, owner);
       throw error;
     } finally {
       clearTimeout(timeout);
       if (lifecycle.startController === controller) delete lifecycle.startController;
     }
+  }
+
+  private async failPluginStart(
+    config: MCPServerConfig, generation: number, error: unknown,
+    attempt: ManagedConnectionAttempt | undefined, owner: object | undefined,
+  ): Promise<void> {
+    if (this.running && this.lifecycleGeneration === generation) {
+      this.commitSurfaceMutation(() => this.connectionStates.set(config.name, {
+        type: "failed", error: errMessage(this.redactPluginDiagnostic(error)),
+      }));
+    }
+    if (attempt) await this.trackAbandonedAttempt(attempt, owner);
+    else if (owner) this.releaseOwner(config.name, owner);
   }
 
   private cachedResources(name: string): readonly MCPResourceDescriptor[] {
@@ -2544,6 +2560,30 @@ export class MCPManager {
     }, signal);
   }
 
+  /** Lazy plugin reconnect: rebuild the cached catalog from the new client and republish it if it changed. */
+  private async republishReconnectCatalog(
+    config: MCPServerConfig,
+    tools: readonly Record<string, unknown>[],
+    snapshot: InitializedConnectionSnapshot,
+    refreshed: RefreshedCompanionBridges,
+    canPublish: () => boolean,
+  ): Promise<void> {
+    const resources = snapshot.capabilities.resources && refreshed.resourceBridge
+      ? await refreshed.resourceBridge.listResources().catch(() => []) : undefined;
+    const prompts = snapshot.capabilities.prompts && refreshed.promptBridge
+      ? await refreshed.promptBridge.listPrompts().catch(() => this.cachedCatalogs.get(config.name)?.prompts)
+      : undefined;
+    const next: PluginCatalog = {
+      format: 1,
+      tools,
+      ...(resources !== undefined ? { resources } : {}),
+      ...(prompts !== undefined ? { prompts } : {}),
+    };
+    if (JSON.stringify(next) !== JSON.stringify(this.cachedCatalogs.get(config.name))) {
+      await this.publishCachedCatalog(config, next, true, canPublish);
+    }
+  }
+
   /**
    * (Re)build the resource + prompt bridges for `config` against `client`,
    * replacing any existing bridges for the server. Shared by the initial
@@ -2786,20 +2826,7 @@ export class MCPManager {
             );
             if (!companionIsCurrent() || !reconnectIsCurrent()) return;
             if (this.isLazyPlugin(config) && reconnectCatalogTools !== undefined) {
-              const resources = snapshot.capabilities.resources && refreshed.resourceBridge
-                ? await refreshed.resourceBridge.listResources().catch(() => []) : undefined;
-              const prompts = snapshot.capabilities.prompts && refreshed.promptBridge
-                ? await refreshed.promptBridge.listPrompts().catch(() => this.cachedCatalogs.get(config.name)?.prompts)
-                : undefined;
-              const next: PluginCatalog = {
-                format: 1,
-                tools: reconnectCatalogTools,
-                ...(resources !== undefined ? { resources } : {}),
-                ...(prompts !== undefined ? { prompts } : {}),
-              };
-              if (JSON.stringify(next) !== JSON.stringify(this.cachedCatalogs.get(config.name))) {
-                await this.publishCachedCatalog(config, next, true, reconnectIsCurrent);
-              }
+              await this.republishReconnectCatalog(config, reconnectCatalogTools, snapshot, refreshed, reconnectIsCurrent);
             }
             this.commitSurfaceMutation(() => {
               if (!companionIsCurrent() || !reconnectIsCurrent()) return;

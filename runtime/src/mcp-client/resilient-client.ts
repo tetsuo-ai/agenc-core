@@ -75,13 +75,10 @@ export function toToolCatalogPolicyConfig(
   // This flag bypasses filesystem target inference, so only authorities that
   // cannot be supplied by a checked-out project, a plugin, or a session may
   // grant it. Desktop persists its audited loopback bridge at user scope.
-  const virtualNoFsWriteTools =
-    config.origin?.scope === "default" ||
-      config.origin?.scope === "managed" ||
-      config.origin?.scope === "user"
-      ? config.virtual_no_fs_write_tools
-      : undefined;
-  const pluginSecrets = pluginSensitiveHeaders(config);
+  const virtualNoFsWriteTools = mayGrantVirtualNoFsWrite(config)
+    ? config.virtual_no_fs_write_tools
+    : undefined;
+  const sensitiveHeaders = catalogSensitiveHeaders(config);
   if (
     !displayDataRoot &&
     !config.supplyChain &&
@@ -92,8 +89,7 @@ export function toToolCatalogPolicyConfig(
     virtualNoFsWriteTools === undefined &&
     config.tools === undefined &&
     config.localOnly !== true &&
-    !(config.origin?.scope === "session" && config.headers !== undefined) &&
-    pluginSecrets === undefined
+    sensitiveHeaders === undefined
   ) {
     return undefined;
   }
@@ -101,11 +97,7 @@ export function toToolCatalogPolicyConfig(
     ...(displayDataRoot ? { displayDataRoot } : {}),
     ...(config.localOnly === true ? { localOnly: true } : {}),
     ...(config.desktopAuthorityGrant ? { desktopAuthorityGrant: config.desktopAuthorityGrant } : {}),
-    ...(config.origin?.scope === "session" && config.headers !== undefined
-      ? { sensitiveHeaders: config.headers } :
-      pluginSecrets !== undefined
-        ? { sensitiveHeaders: pluginSecrets }
-        : {}),
+    ...(sensitiveHeaders !== undefined ? { sensitiveHeaders } : {}),
     ...(allowedTools !== undefined ? { allowedTools } : {}),
     ...(deniedTools !== undefined ? { deniedTools } : {}),
     ...(config.pinnedCatalogSha256 !== undefined
@@ -120,6 +112,21 @@ export function toToolCatalogPolicyConfig(
     ...(config.tools !== undefined ? { tools: config.tools } : {}),
     supplyChain: config.supplyChain,
   };
+}
+
+function mayGrantVirtualNoFsWrite(config: MCPServerConfig): boolean {
+  const scope = config.origin?.scope;
+  return scope === "default" || scope === "managed" || scope === "user";
+}
+
+/** A session server's own headers; otherwise the plugin's secret headers, if any. */
+function catalogSensitiveHeaders(
+  config: MCPServerConfig,
+): Readonly<Record<string, string>> | undefined {
+  if (config.origin?.scope === "session" && config.headers !== undefined) {
+    return config.headers;
+  }
+  return pluginSensitiveHeaders(config);
 }
 
 const INITIAL_BACKOFF_MS = 1_000;
