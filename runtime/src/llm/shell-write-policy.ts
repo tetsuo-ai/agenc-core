@@ -914,7 +914,7 @@ function collectShellCommandWriteTargets(
  * The system temp directory (`os.tmpdir()` honours TMPDIR) plus `/tmp` and
  * its macOS target, where shell scratch files live (`cat > /tmp/x.js`).
  */
-function shellTempRoots(): readonly string[] {
+export function shellTempRoots(): readonly string[] {
   const roots = new Set<string>();
   for (const candidate of [tmpdir(), "/tmp", "/private/tmp"]) {
     if (candidate.trim().length > 0) {

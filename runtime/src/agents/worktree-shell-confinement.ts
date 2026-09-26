@@ -16,10 +16,12 @@
  * on the command line; only the sandbox stops that.
  */
 
-import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
-import { collectShellMutationTargets } from "../llm/shell-write-policy.js";
+import {
+  collectShellMutationTargets,
+  shellTempRoots,
+} from "../llm/shell-write-policy.js";
 import {
   canonicalAuthorityPath,
   isWithinAuthorityPath,
@@ -37,9 +39,6 @@ const SHELL_TOOL_ARGUMENTS: Readonly<Record<string, {
   // Input typed into a running shell: its directory is not known here.
   write_stdin: { command: "chars" },
 };
-
-/** Temp folders a command may use besides the one the session gives it as TMPDIR. */
-const SYSTEM_TEMP_ROOTS = ["/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp"];
 
 function canonical(target: string): string {
   try {
@@ -102,7 +101,8 @@ export function worktreeShellWriteRefusal(
     args: { command, cwd, ...(Array.isArray(argv) ? { args: argv } : {}) },
     workspaceRoot: confinement.worktree,
   });
-  const tempRoots = [...(tempRoot !== undefined ? [tempRoot] : []), tmpdir(), ...SYSTEM_TEMP_ROOTS];
+  // The session's TMPDIR, and the temp folders the shell write policy knows.
+  const tempRoots = [...(tempRoot !== undefined ? [tempRoot] : []), ...shellTempRoots()];
   const outside = targets.filter(
     (target) => !staysInsideConfinement(target, confinement, tempRoots),
   );
