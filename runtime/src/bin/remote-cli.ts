@@ -473,9 +473,18 @@ function startBridge(args: ConnectorArgs): void {
     checkRevocation();
     if (stopped) return;
     try {
-      const request = JSON.parse(payloadStr) as { method?: unknown };
-      // Remote-device management is exclusively host-local, including for legacy phones.
-      if (typeof request.method === "string" && (request.method.startsWith("remote.") || request.method.startsWith("telegram."))) return;
+      const request = JSON.parse(payloadStr) as { id?: unknown; method?: unknown };
+      if (typeof request.method === "string" && legacyBridgeDeniesMethod(request.method)) {
+        // Answer the phone instead of letting its request time out.
+        if (typeof request.id === "string" || typeof request.id === "number") {
+          try {
+            relay?.send(JSON.stringify({ t: "data", cid, payload: JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: -32000, message: "REMOTE_METHOD_DENIED", data: { code: "REMOTE_METHOD_DENIED" } } }) }));
+          } catch {
+            /* relay gone */
+          }
+        }
+        return;
+      }
     } catch { return; }
     const ws = openDaemon(cid);
     let out = payloadStr;
@@ -595,6 +604,40 @@ function startBridge(args: ConnectorArgs): void {
   }
 
   connect();
+}
+
+/**
+ * Requests the bridge never forwards for a legacy phone. The phone drives
+ * sessions through the daemon protocol; it does not administer the daemon,
+ * the account, project trust, standing configuration, MCP servers, routines,
+ * remote-device management or an interactive shell. A relay peer that holds
+ * a phone's ticket gets exactly what the phone gets, so these stay host-local.
+ */
+const LEGACY_BRIDGE_DENIED_METHODS: ReadonlySet<string> = new Set([
+  "daemon.shutdown",
+  "daemon.reload",
+  "auth.login",
+  "auth.logout",
+  "project.trust",
+  "plugin.settings.set",
+  "plugin.settings.reset",
+  "session.applyConfig",
+  "session.permissions.mutateRule",
+  "session.hooks.setDisabled",
+  "session.mcp.addServer",
+  "session.mcp.enableServer",
+  "routine.create",
+  "routine.update",
+  "routine.delete",
+  "routine.run",
+  "routine.cancel",
+  "routine.session.prepare.respond",
+]);
+const LEGACY_BRIDGE_DENIED_PREFIXES: readonly string[] = ["remote.", "telegram.", "commandExec."];
+
+/** True when a legacy phone request must be answered with REMOTE_METHOD_DENIED instead of forwarded. */
+export function legacyBridgeDeniesMethod(method: string): boolean {
+  return LEGACY_BRIDGE_DENIED_METHODS.has(method) || LEGACY_BRIDGE_DENIED_PREFIXES.some((prefix) => method.startsWith(prefix));
 }
 
 /** Subprotocol name under which a legacy host offers its relay ticket. */
