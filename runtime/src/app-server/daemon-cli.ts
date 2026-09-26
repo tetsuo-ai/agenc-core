@@ -4141,6 +4141,7 @@ async function runAgenCDaemonForegroundLocked(
       whisper: new LocalWhisperService({ home: authStartup.daemonHome, env: host.env }),
       runInspection: new AgenCDaemonRunInspectionService({
         effectivePermissionMode: (runId) => workflowWiring.controller.currentPermissionMode(runId),
+        providerWait: (runId, stepId) => workflowWiring.controller.currentProviderWait(runId, stepId),
         pendingApprovals: (runId) => approvalBroker.list(runId),
         stateDatabasePaths: () =>
           discoverAgenCDaemonStateDatabasePaths(

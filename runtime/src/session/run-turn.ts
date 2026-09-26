@@ -144,7 +144,8 @@ import {
   isTransientProviderError,
   isWithheldMaxOutputTokens,
 } from "../recovery/api-errors.js";
-import { abortableSleep, reconnectWithBackoff } from "../recovery/reconnection.js";
+import { waitForProviderRetry } from "../recovery/provider-wait.js";
+import { abortableSleep, rateLimitRetryNotice, reconnectWithBackoff } from "../recovery/reconnection.js";
 import {
   DEFAULT_PROVIDER_OUTAGE_RETRY_MS,
   DEFAULT_PROVIDER_OUTAGE_WAIT_MS,
@@ -1310,15 +1311,17 @@ async function runSamplingRequest(
     outageRetries += 1;
     waitedMs += delayMs;
     cleanupInterruptedStreamAttempt(state, session, lastError);
-    emitWarning(
-      session.eventLog,
-      session.nextInternalSubId(),
-      "provider_outage_wait",
-      `${session.services.provider.name} unavailable after ${outcome.attempts} attempt(s) ` +
-        `(${errorSummary(lastError)}); retry ${outageRetries} in ${Math.round(delayMs / 1000)} s, ` +
-        `${Math.max(0, Math.round((outage.waitMs - waitedMs) / 60_000))} min of waiting left`,
-    );
-    await abortableSleep(delayMs, signal);
+    const rateLimitNotice = rateLimitRetryNotice(lastError, delayMs);
+    await waitForProviderRetry({
+      session,
+      cause: rateLimitNotice !== undefined ? "provider_rate_limited" : "provider_outage_wait",
+      message: rateLimitNotice ??
+        (`${session.services.provider.name} is unavailable. ` +
+          `Retrying in ${Math.max(1, Math.ceil(delayMs / 1000))} s; ` +
+          `${Math.max(0, Math.round((outage.waitMs - waitedMs) / 60_000))} min of waiting left.`),
+      delayMs,
+      wait: () => abortableSleep(delayMs, signal),
+    });
     if (signal.aborted) throw samplingAbortError(signal, "aborted");
     // The fast recovery counter remains spent. This is a new physical sample,
     // so persist a distinct identity without reusing its unknown reservation.
@@ -1429,11 +1432,6 @@ function turnSignalAbortReason(reason: unknown): TurnAbortReason {
     default:
       return "interrupted";
   }
-}
-
-function errorSummary(err: unknown): string {
-  const text = err instanceof Error ? err.message : String(err);
-  return text.length > 160 ? `${text.slice(0, 157)}...` : text;
 }
 
 /**

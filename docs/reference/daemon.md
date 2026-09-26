@@ -834,6 +834,13 @@ Run inspection searches discovered project state databases by `runId`:
   v15 runs do not fabricate it. A `run_terminal_results` record is the
   strongest terminal-status source. An admission-only record stays nonterminal
   because admission state cannot prove that no future step will be created.
+  For workflow runs, the running entry in `workflow.steps` may include
+  `providerWait: { cause, message, retryAt? }`. The cause is
+  `provider_outage_wait` or `provider_rate_limited`; the message matches the
+  plain-language retry warning, and `retryAt` is an ISO timestamp when known.
+  This live field disappears when the retry proceeds or the step ends, and is
+  absent after restart. It is an optional response addition within protocol
+  1.20.0; older clients can ignore it and no new request capability is required.
 - `run.replay` pages the canonical append-only rollout journal through its
   rebuildable `thread_rollout_items` projection. `afterSequence` is exclusive,
   `limit` defaults to 100 and accepts 1 through 200, and every response includes
