@@ -547,6 +547,11 @@ export function isResumeReplaySafe(tool: ResumeReplaySafetyView): boolean {
 
 export interface BuildToolRegistryOptions {
   readonly workspaceRoot: string;
+  /**
+   * FileRead numbers only the first line of a read, every tenth line and the
+   * last line (the session's `AGENC_SPARSE_LINE_NUMBERS`). Default: off.
+   */
+  readonly sparseLineNumbers?: boolean;
   /** Canonical state home used by the browser lifecycle. */
   readonly agencHome?: string;
   /** Already-layered canonical `[browser]` snapshot for this session. */
@@ -748,9 +753,11 @@ export function buildToolRegistry(
   const firstClassFileTools = [
     createFileReadTool({
       allowedPaths: [options.workspaceRoot],
+      ...(options.sparseLineNumbers === true ? { sparseLineNumbers: true } : {}),
     }),
     createFileEditTool({
       allowedPaths: [options.workspaceRoot],
+      ...(options.sparseLineNumbers === true ? { sparseLineNumbers: true } : {}),
     }),
     // MultiEdit is the multi-edit batch editor for one-file rewrite sets.
     createFileMultiEditTool({
