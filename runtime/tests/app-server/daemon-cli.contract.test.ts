@@ -4653,6 +4653,10 @@ workspace = ${JSON.stringify(process.cwd())}
         `"instanceId":"${instanceId}"`,
       );
       await expect(running).resolves.toBe(0);
+      // The stop leaves a positive record, not only a removed heartbeat.
+      expect(io.stderrText()).toMatch(
+        /agenc: daemon stopping at a client's daemon\.shutdown request \(pid 4100\) at \d{4}-/u,
+      );
       await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();
       await expect(
         readFile(join(agencHome, "daemon-runtime.json"), "utf8"),

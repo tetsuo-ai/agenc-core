@@ -121,6 +121,16 @@ export class MultiProjectFileThreadStore implements ThreadStore {
     return store.readThreadLightMode(threadId, verifiedProjectDir);
   }
 
+  readThreadRuntimeOptions(
+    threadId: ThreadId,
+    verifiedProjectDir?: string,
+  ): Readonly<Record<string, unknown>> | undefined {
+    const store = verifiedProjectDir === undefined
+      ? this.#storeHolding(threadId)
+      : this.#openForProjectDir(verifiedProjectDir);
+    return store.readThreadRuntimeOptions(threadId, verifiedProjectDir);
+  }
+
   readThreadByRolloutPath(params: ReadThreadByRolloutPathParams): StoredThread {
     try {
       for (const store of this.#allStores()) {

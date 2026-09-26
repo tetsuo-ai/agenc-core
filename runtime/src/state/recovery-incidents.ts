@@ -635,6 +635,35 @@ export class StateRecoveryIncidentRepository {
       .run(resolvedAtMs, resolvedAtMs).changes;
   }
 
+  /**
+   * Resolve active deferrals whose retry window has passed and that only say
+   * the runtime which looked could not pin a descriptor-relative directory
+   * path (`recovery_lock_unavailable` with RECOVERY_DESCRIPTOR_PATH_UNAVAILABLE).
+   * That was a limit of the platform code, never evidence about the source:
+   * every Windows runtime recorded it for every open run at every daemon
+   * start, and macOS did before #1695. Kept active, it excluded those runs
+   * from startup recovery for good, and their chats could not be reopened.
+   * The rescan that follows runs the full strict validation, and records a
+   * new block if the source still cannot be pinned. Other classes of the
+   * same reason code stay on the operator retry path.
+   */
+  releaseExpiredDescriptorPathDeferrals(nowMs: number): number {
+    const resolvedAtMs = nonNegativeSafeInteger(nowMs, "nowMs");
+    return this.driver
+      .prepareState<[number, number]>(
+        `UPDATE run_recovery_deferred
+         SET state = 'resolved',
+             resolved_at_ms = ?,
+             resolution_actor = 'daemon_startup',
+             resolution_note = 'descriptor-relative recovery was unavailable to the runtime that looked; startup recovery rescans the source'
+         WHERE state = 'active'
+           AND reason_code = 'recovery_lock_unavailable'
+           AND error_class = 'RECOVERY_DESCRIPTOR_PATH_UNAVAILABLE'
+           AND next_retry_ms <= ?`,
+      )
+      .run(resolvedAtMs, resolvedAtMs).changes;
+  }
+
   retryDeferred(
     params: {
       readonly blockId: string;

@@ -3784,6 +3784,97 @@ describe("AgenC background agent lifecycle", () => {
     );
   });
 
+  it.each([true, false])("keeps the sandbox escape (%s) the run recorded in its own project when no agent in the daemon carries it", async (escape) => {
+    // After a crash an interactive chat's run reads "completed" (its value
+    // between turns), so startup does not restore it and only this explicit
+    // resume can. The session's recorded options still apply: Windows has no
+    // sandbox, and a resume that lost the escape was refused there. A run with
+    // the same id in another project must not lend it its escape.
+    const sessionId = `conv-recorded-escape-${String(escape)}`;
+    const fixture = createResumeFixture(sessionId, {
+      runtimeSettings: (cwd) => canonicalRuntimeSettings("bypassPermissions", cwd),
+    });
+    const originalStore = new FileThreadStore({ cwd: fixture.cwd });
+    const agencHome = dirname(dirname(originalStore.getProjectDir()));
+    originalStore.close();
+    const driver = openStateDatabases({ cwd: fixture.cwd });
+    try {
+      upsertAgentRun(driver, {
+        id: sessionId,
+        objective: "Interactive session",
+        status: "completed",
+        startedAt: "2026-05-01T12:30:00.000Z",
+        lastActiveAt: "2026-05-01T12:31:00.000Z",
+        metadata: {
+          agentPath: "/root",
+          runtimeOptions: resolveAgentRuntimeOptions({}, {
+            dangerouslyBypassApprovalsAndSandbox: escape,
+          }),
+        },
+      });
+    } finally {
+      driver.close();
+    }
+    const otherCwd = mkdtempSync(join(tmpdir(), "agenc-escape-decoy-"));
+    mkdirSync(join(otherCwd, ".git"));
+    const otherRollout = openRollout(otherCwd, sessionId);
+    const otherStore = new FileThreadStore({ cwd: otherCwd, agencHome });
+    otherStore.createThread({ threadId: sessionId, rolloutStore: otherRollout, source: "interactive-root", cwd: otherCwd });
+    otherStore.shutdownThread(sessionId);
+    otherStore.close();
+    otherRollout.close();
+    const otherDriver = openStateDatabases({ cwd: otherCwd, agencHome });
+    upsertAgentRun(otherDriver, {
+      id: sessionId,
+      objective: "different project",
+      status: "completed",
+      startedAt: "2026-05-01T12:30:00.000Z",
+      lastActiveAt: "2026-05-01T12:31:00.000Z",
+      metadata: {
+        runtimeOptions: resolveAgentRuntimeOptions({}, {
+          dangerouslyBypassApprovalsAndSandbox: !escape,
+        }),
+      },
+    });
+    otherDriver.close();
+    // The decoy project is the store's primary one: the read must follow the
+    // project the validated rollout is bound to.
+    const threadStore = new MultiProjectFileThreadStore({ primaryCwd: otherCwd, agencHome });
+    try {
+      const restoreRuntime = vi.fn(async () => true);
+      const agents = new AgenCDaemonAgentManager({
+        threadStore,
+        runner: {
+          startAgent: vi.fn(async () => ({
+            agentId: "unused",
+            startedAt: "2026-08-19T12:00:00.000Z",
+            status: "running" as const,
+          })),
+          restoreAgent: restoreRuntime,
+        },
+      });
+
+      await createTestAgent(agents, {
+        resumeSessionId: sessionId,
+        resumeRolloutPath: fixture.rolloutPath,
+        resumeSourceProof: fixture.sourceProof,
+        cwd: fixture.cwd,
+      });
+
+      expect(TEST_AGENT_RUNTIME_OPTIONS.dangerouslyBypassApprovalsAndSandbox).toBe(false);
+      expect(restoreRuntime).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runtimeOptions: expect.objectContaining({
+            dangerouslyBypassApprovalsAndSandbox: escape,
+          }),
+        }),
+      );
+    } finally {
+      threadStore.close();
+      rmSync(otherCwd, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     "default",
     "plan",

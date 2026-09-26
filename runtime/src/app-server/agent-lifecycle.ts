@@ -58,6 +58,10 @@ import {
 } from "../state/effect-review.js";
 import { StateRunDurabilityRepository } from "../state/run-durability.js";
 import {
+  RECOVERABLE_AGENT_RUN_STATUSES,
+  type AgentRunRecoveryStatus,
+} from "../state/recovery.js";
+import {
   listUnresolvedUnknownOutcomeEffects,
   resolveUnknownOutcomeEffect,
 } from "../state/unknown-outcome-gate.js";
@@ -1010,10 +1014,13 @@ export class AgenCDaemonAgentManager {
         params.runtimeOptions,
       );
       const retainedRuntimeOptions =
-        resumeSessionId !== undefined &&
-        retainedMetadata?.runtimeOptions !== undefined
-          ? validateAgentRuntimeOptions(retainedMetadata.runtimeOptions)
-          : undefined;
+        resumeSessionId === undefined
+          ? undefined
+          : this.#retainedRuntimeOptions(
+              resumeSessionId,
+              retainedMetadata,
+              resumeRolloutPath!,
+            );
       // Cleanly stopped interactive roots are not startup-recovered agents.
       // Their profile still lives in the exact durable run row for this thread.
       const retainedLightMode = resumeSessionId === undefined
@@ -1402,6 +1409,42 @@ export class AgenCDaemonAgentManager {
           "agent.create resume source cleanup failed",
         );
       }
+    }
+  }
+
+  /**
+   * The runtime options a resumed session keeps: those of the agent in this
+   * daemon that carries it, or else the ones its run recorded when it was
+   * created (`agent_runs.metadata_json`), read from the project its validated
+   * canonical rollout is bound to, as the Light profile is. Undefined when
+   * there is no record, or one this runtime cannot validate (an older
+   * build's): the resume then takes the request's options, as before.
+   */
+  #retainedRuntimeOptions(
+    sessionId: string,
+    retainedMetadata: JsonObject | undefined,
+    rolloutPath: string,
+  ): AgentRuntimeOptions | undefined {
+    if (retainedMetadata?.runtimeOptions !== undefined) {
+      return validateAgentRuntimeOptions(retainedMetadata.runtimeOptions);
+    }
+    // No agent in this daemon carries the session's options: a run startup
+    // did not restore (an interactive chat's run reads "completed" between
+    // turns, so after a crash it is not restored). Its durable record still
+    // does; startup restore reads the same record. Without it the resume lost
+    // the session's sandbox choice, and on Windows, which has no sandbox,
+    // Core refused to reopen the chat.
+    const recorded = this.#threadStore?.readThreadRuntimeOptions?.(
+      sessionId,
+      // assertAuthoritativeResumeSource already bound this canonical
+      // projects/<project>/sessions/<id>/rollout file to the caller.
+      dirname(dirname(dirname(rolloutPath))),
+    );
+    if (recorded === undefined) return undefined;
+    try {
+      return validateAgentRuntimeOptions(recorded);
+    } catch {
+      return undefined;
     }
   }
 
@@ -2460,6 +2503,9 @@ export class AgenCDaemonAgentManager {
         agentId: agent.agentId,
         sessionIds: [...agent.sessionIds],
         route: snapshotRouteForAgent(agent),
+        retainedRunStatus: isRecoveredRuntimeUnavailable(agent)
+          ? recoveredRunStatus(agent)
+          : undefined,
       }));
     });
     const failures: Array<{
@@ -2480,8 +2526,20 @@ export class AgenCDaemonAgentManager {
       const suspendRunner =
         this.#runner?.suspendIdleAgentForDaemonShutdown?.bind(this.#runner);
       let stopFailed = false;
-      let runStatus: "suspended" | undefined;
+      let runStatus: RecoverableRunStatus | undefined;
       if (
+        options.disposition === "suspend_idle" &&
+        target.retainedRunStatus !== undefined
+      ) {
+        // Restored at startup without a runtime and never resumed since:
+        // nothing ran in this daemon and the journal still holds what
+        // recovery found, so the run keeps that status. Recording it as
+        // stopped kept the next start from restoring it, and a later explicit
+        // resume then lacked the session's recorded runtime options. On
+        // Windows that dropped the sandbox choice, and the chat could not be
+        // reopened.
+        runStatus = target.retainedRunStatus;
+      } else if (
         options.disposition === "suspend_idle" &&
         suspendRunner !== undefined
       ) {
@@ -5797,6 +5855,26 @@ export function inactiveAgentMessageForTest(
 
 function isRecoveredRuntimeUnavailable(agent: MutableAgent): boolean {
   return agent.recovered === true && agent.runtimeAvailable !== true;
+}
+
+type RecoverableRunStatus = AgentRunRecoveryStatus;
+
+/**
+ * The durable run status startup recovery found for an agent it restored
+ * (`metadata.recovery.runStatus`), when it is one recovery restores again.
+ */
+function recoveredRunStatus(
+  agent: MutableAgent,
+): RecoverableRunStatus | undefined {
+  const recovery = agent.metadata?.recovery;
+  if (typeof recovery !== "object" || recovery === null || Array.isArray(recovery)) {
+    return undefined;
+  }
+  const status = (recovery as JsonObject).runStatus;
+  return typeof status === "string" &&
+    (RECOVERABLE_AGENT_RUN_STATUSES as readonly string[]).includes(status)
+    ? (status as RecoverableRunStatus)
+    : undefined;
 }
 
 /**
