@@ -34,7 +34,7 @@ import { diagnoseRejectedTextToolCall } from "./text-tool-call-recovery.js";
 import { projectOllamaTextTools } from "./text-tools.js";
 import { ollamaTemplateRequiresTextTools } from "./template-tool-support.js";
 import { createOllamaToolNameProjection, projectOllamaHistoryToolNames } from "./tool-naming.js";
-import { LLMProviderError, mapLLMError } from "../../errors.js";
+import { LLMProviderError, mapLLMError, markPreGenerationRejection } from "../../errors.js";
 import { ensureLazyImport } from "../../lazy-import.js";
 import { fetchProviderRequest } from "../../credential-redirect-fetch.js";
 import {
@@ -578,7 +578,13 @@ export class OllamaProvider implements LLMProvider {
         context: buildToolSelectionTraceContext(toolSelection, requestTimeoutMs),
       });
       const response = await withTimeout(
-        async () => (client as any).chat(params),
+        async () => {
+          try {
+            return await (client as any).chat(params);
+          } catch (error) {
+            throw this.mapHttpError(error, requestTimeoutMs);
+          }
+        },
         requestTimeoutMs,
         this.name,
         signal,
@@ -665,7 +671,13 @@ export class OllamaProvider implements LLMProvider {
           const cleanupClientAbort = onAbort(signal, () =>
             abortOllamaClient(client));
           const stream = await withTimeout(
-            async () => (client as any).chat(params),
+            async () => {
+              try {
+                return await (client as any).chat(params);
+              } catch (error) {
+                throw this.mapHttpError(error, requestTimeoutMs);
+              }
+            },
             requestTimeoutMs,
             this.name,
             signal,
@@ -1231,6 +1243,16 @@ export class OllamaProvider implements LLMProvider {
       ...(unknownDoneReasonError !== undefined ? { error: unknownDoneReasonError } : {}),
       ...this.buildUnsupportedDiagnostics(options),
     };
+  }
+
+  private mapHttpError(error: unknown, timeoutMs?: number): Error {
+    const mappedError = this.mapError(error, timeoutMs);
+    // The SDK's ResponseError carries the refused HTTP response's status_code.
+    // Call this only while opening the request, never while iterating a stream.
+    if (error instanceof Error && error.name === "ResponseError") {
+      markPreGenerationRejection(mappedError, (error as { status_code?: unknown }).status_code);
+    }
+    return mappedError;
   }
 
   private mapError(err: unknown, timeoutMs?: number): Error {

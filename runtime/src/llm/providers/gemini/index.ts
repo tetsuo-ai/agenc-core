@@ -11,7 +11,7 @@ import {
   type ProviderHttpStreamResponse,
 } from "../../client-session.js";
 import { parseSSEFrames } from "../../_deps/sse.js";
-import { LLMInvalidResponseError, LLMProviderError, mapLLMError } from "../../errors.js";
+import { LLMInvalidResponseError, LLMProviderError, mapLLMError, markPreGenerationRejection } from "../../errors.js";
 import { resolveGeminiReasoningEffort } from "../../registry/gemini-thinking-models.js";
 import type {
   LLMChatOptions,
@@ -2931,12 +2931,14 @@ function withMetrics(
   };
 }
 
-function mapProviderError(error: unknown): never {
+function mapProviderError(error: unknown, streamAccepted = false): never {
   if (isFallbackTriggeredError(error)) {
     throw error;
   }
   if (error instanceof ProviderHttpError) {
-    throw mapLLMError("gemini", error, 0);
+    throw markPreGenerationRejection(
+      mapLLMError("gemini", error, 0), streamAccepted ? undefined : error.status,
+    );
   }
   if (error instanceof LLMProviderError) {
     throw error;
@@ -3300,6 +3302,7 @@ export class GeminiProvider implements LLMProvider {
     });
     const metrics = requestMetrics({ messages, tools, body, stream: true });
 
+    let streamAccepted = false;
     try {
       const session = this.client.createTurnSession({ wireApi: "custom" });
       const response = await session.requestStream({
@@ -3319,6 +3322,7 @@ export class GeminiProvider implements LLMProvider {
         singleWireAttempt: options?.singleWireAttempt,
         retryBudget: { maxRetries: 0 },
       });
+      streamAccepted = true;
       const state = new GeminiStreamState(model, toolNames);
       for await (const event of readGeminiSseEvents(response)) {
         state.consumeResponse(event.data, onChunk);
@@ -3328,7 +3332,7 @@ export class GeminiProvider implements LLMProvider {
         requestMetrics: metrics,
       };
     } catch (error) {
-      mapProviderError(error);
+      mapProviderError(error, streamAccepted);
     }
   }
 

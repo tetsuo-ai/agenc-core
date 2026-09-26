@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { runAdmittedModelCall } from "../../src/budget/admitted-model-call.js";
-import { LLMRateLimitError } from "../../src/llm/errors.js";
+import { GrokProvider } from "../../src/llm/providers/grok/adapter.js";
 import type { LLMProvider } from "../../src/llm/types.js";
 import type { Session } from "../../src/session/session.js";
 import type { ExecutionAdmissionClient } from "../../src/budget/admission-client.js";
@@ -66,21 +66,26 @@ describe("canonical allocation usage observers", () => {
       ...input, maxInputTokens: 150_000, maxOutputTokens: 6_392, maxCostUsd: 1.02,
     }));
     const session = { services: { executionAdmission: child } } as unknown as Session;
-    const provider = {
-      name: "grok",
-      getExecutionProfile: async () => ({ usageReporting: "authoritative", supportsMaxOutputTokens: true }),
-    } as unknown as LLMProvider;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+      Response.json({ error: { message: "Too many requests" } }, {
+        status: 429, headers: { "retry-after": "30" },
+      }));
+    const provider = new GrokProvider({ apiKey: "xai-test", model: "grok-4.5", fetchImpl });
+    vi.spyOn(provider, "getExecutionProfile").mockResolvedValue({
+      usageReporting: "authoritative", supportsMaxOutputTokens: true,
+    });
+    const messages = [{ role: "user" as const, content: "hello" }];
     for (let attempt = 0; attempt < 25; attempt += 1) {
-      const error = new LLMRateLimitError("grok", 30_000);
       await expect(runAdmittedModelCall({
-        session, provider, messages: [], options: { maxOutputTokens: 6_392 },
+        session, provider, messages, options: { maxOutputTokens: 6_392 },
         stepId: `retry:${attempt}`, model: "grok-4.5", providerName: "grok",
-        invoke: async () => { throw error; },
-      })).rejects.toBe(error);
+        invoke: (options) => provider.chatStream(messages, () => {}, options),
+      })).rejects.toMatchObject({ name: "LLMRateLimitError", retryAfterMs: 30_000 });
       expect(parent.getUsageSummary?.()).toMatchObject({
         costUsd: 0, totalTokens: 0, heldCostUsd: 0, hasUnknownCost: false,
       });
     }
+    expect(fetchImpl).toHaveBeenCalledTimes(25);
     const journal = child.replayJournal?.() ?? [];
     expect(journal.filter((event) => event.event === "allowed")).toHaveLength(25);
     expect(journal.filter((event) => event.event === "reconciled")).toHaveLength(25);
