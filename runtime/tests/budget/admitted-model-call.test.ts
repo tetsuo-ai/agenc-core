@@ -16,10 +16,12 @@ import {
   LLMServerError,
   LLMStreamTruncatedError,
   LLMTimeoutError,
+  markPreGenerationRejection,
 } from "../../src/llm/errors.js";
 import type { AdmissionLease } from "../../src/budget/admission-types.js";
 import type { AuthBackend } from "../../src/auth/backend.js";
 import { AgenCProvider } from "../../src/llm/providers/agenc/index.js";
+import { OpenAIProvider } from "../../src/llm/providers/openai/adapter.js";
 import { OllamaProvider } from "../../src/llm/providers/ollama/adapter.js";
 import { FACTORY_PROVIDER_STATE } from "../../src/llm/provider.js";
 import type { ProviderTokenCountCapability, TokenAccountingRequest } from "../../src/llm/token-accounting.js";
@@ -878,12 +880,12 @@ describe("runAdmittedModelCall", () => {
   });
 
   test.each([
-    new LLMRateLimitError("grok", 30_000),
+    markPreGenerationRejection(new LLMRateLimitError("grok", 30_000), 429),
     ...[400, 401, 402, 403, 429].flatMap((status) => [
-      new LLMProviderError("grok", "request rejected", status),
-      Object.assign(new Error("request rejected"), { status }),
+      markPreGenerationRejection(new LLMProviderError("grok", "request rejected", status), status),
+      markPreGenerationRejection(Object.assign(new Error("request rejected"), { status }), status),
     ]),
-    new LLMAuthenticationError("grok", 401),
+    markPreGenerationRejection(new LLMAuthenticationError("grok", 401), 401),
   ])("releases a confirmed rejection before any provider progress: %s", async (error) => {
     const state = harness({ maxCostUsd: 20 });
     await expect(callOptions(state, { maxOutputTokens: 200 }, async () => {
@@ -907,6 +909,11 @@ describe("runAdmittedModelCall", () => {
     Object.assign(new SyntaxError("invalid response JSON"), { status: 200 }),
     new LLMProviderError("grok", "request timed out", 408),
     new Error("429 rate limited"),
+    new LLMRateLimitError("openai", 30_000),
+    ...[400, 401, 402, 403, 429].flatMap((status) => [
+      new LLMProviderError("openai", "in-stream failure", status),
+      Object.assign(new Error("in-stream failure"), { statusCode: status }),
+    ]),
   ])("holds unknown spend after dispatch even without provider progress: %s", async (error) => {
     const state = harness({ maxCostUsd: 20 });
     await expect(callOptions(state, { maxOutputTokens: 200 }, async () => {
@@ -916,6 +923,96 @@ describe("runAdmittedModelCall", () => {
     expect(state.reconcile).not.toHaveBeenCalled();
     expect(state.voidReservation).not.toHaveBeenCalled();
     expect(state.holdUnknown).toHaveBeenCalledWith("reservation-1", "provider_call_failed_after_dispatch");
+    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+  });
+
+  test.each(["chat", "chatStream"] as const)("releases an adapter HTTP 429 before generation through %s", async (method) => {
+    const state = harness({ maxCostUsd: 20 });
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => new Response(
+      JSON.stringify({ error: { code: "rate_limit_exceeded", message: "slow down" } }),
+      { status: 429, headers: { "content-type": "application/json" } },
+    ));
+    const provider = new OpenAIProvider({ apiKey: "sk-test", model: "gpt-6-sol", useResponsesApi: true, fetchImpl });
+    const onChunk = vi.fn();
+    await expect(runAdmittedModelCall({
+      session: state.session, provider, messages: [], model: "gpt-6-sol", providerName: "openai",
+      options: { maxOutputTokens: 200 }, stepId: "http-rejection",
+      hasProviderProgress: () => onChunk.mock.calls.length > 0,
+      invoke: (options) => method === "chat"
+        ? provider.chat([], options)
+        : provider.chatStream([], onChunk, options),
+    })).rejects.toBeInstanceOf(LLMRateLimitError);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(onChunk).not.toHaveBeenCalled();
+    expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+      inputTokens: 0, outputTokens: 0, costUsd: 0,
+    });
+    expect(state.holdUnknown).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["response.failed", "terminal"],
+    ["response.failed", "earlier"],
+    ["error", "earlier"],
+    ["disconnect", "earlier"],
+    ["response.failed", "none"],
+    ["error", "none"],
+    ["disconnect", "none"],
+  ] as const)("settles a reasoning-only Responses %s using %s usage", async (failure, usageLocation) => {
+    const state = harness({ maxCostUsd: 20 });
+    const usage = { input_tokens: 100, output_tokens: 50, total_tokens: 150,
+      output_tokens_details: { reasoning_tokens: 50 } };
+    const error = { code: "rate_limit_exceeded", status: 429, message: "slow down" };
+    const frames = [
+      { type: "response.created", response: { model: "gpt-6-sol" } },
+      { type: "response.reasoning_summary_text.delta", delta: "Thinking" },
+      { type: "response.output_item.done", item: { type: "reasoning", id: "rs_1", summary: [] } },
+      ...(usageLocation === "earlier" ? [{ type: "response.in_progress", response: { model: "gpt-6-sol", usage } }] : []),
+      ...(failure === "disconnect" ? [] : [{ type: failure, error, response: {
+        model: "gpt-6-sol", error, ...(usageLocation === "terminal" ? { usage } : {}),
+      } }]),
+    ];
+    const encoder = new TextEncoder();
+    let index = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const frame = frames[index++];
+        if (frame) controller.enqueue(encoder.encode(`event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`));
+        else if (failure === "disconnect") controller.error(new Error("Connection reset"));
+        else controller.close();
+      },
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(body, {
+      status: 200, headers: { "content-type": "text/event-stream" },
+    }));
+    const provider = new OpenAIProvider({ apiKey: "sk-test", model: "gpt-6-sol", useResponsesApi: true, fetchImpl });
+    const onChunk = vi.fn();
+    const result = runAdmittedModelCall({
+      session: state.session, provider, messages: [], model: "gpt-6-sol", providerName: "openai",
+      options: { maxOutputTokens: 200 }, stepId: "failed-responses-stream",
+      hasProviderProgress: () => onChunk.mock.calls.length > 0,
+      invoke: (options) => provider.chatStream([], onChunk, options),
+    });
+    if (usageLocation === "none") {
+      await expect(result).rejects.toBeInstanceOf(Error);
+      expect(onChunk).not.toHaveBeenCalled();
+      expect(state.reconcile).not.toHaveBeenCalled();
+      expect(state.holdUnknown).toHaveBeenCalledWith("reservation-1", "provider_call_failed_after_dispatch");
+    } else {
+      await expect(result).resolves.toMatchObject({
+        finishReason: "error", partial: true,
+        error: expect.any(failure === "disconnect" ? Error : LLMRateLimitError),
+        usage: { promptTokens: 100, completionTokens: 50, reasoningOutputTokens: 50 },
+      });
+      // Reasoning did not reach onChunk; only the terminal partial response did.
+      expect(onChunk).toHaveBeenCalledExactlyOnceWith({ content: "", done: true });
+      expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+        inputTokens: 100, outputTokens: 50, costUsd: expect.any(Number),
+      });
+      expect(state.reconcile).not.toHaveBeenCalledWith("reservation-1", expect.objectContaining({ costUsd: 0 }));
+      expect(state.holdUnknown).not.toHaveBeenCalled();
+    }
+    expect(fetchImpl).toHaveBeenCalledOnce();
     expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
   });
 

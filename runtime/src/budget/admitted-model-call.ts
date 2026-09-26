@@ -40,7 +40,7 @@ import { hitM4DurabilityFailpoint } from "../durability/failpoints.js";
 import {
   LLMManagedAdmissionError,
   LLMManagedUsagePendingError,
-  LLMRateLimitError,
+  isConfirmedProviderRejection,
 } from "../llm/errors.js";
 
 export interface AdmittedModelCallOptions {
@@ -65,23 +65,6 @@ export interface AdmittedModelCallOptions {
   /** Whether this attempt received streamed data or a response before failing. */
   readonly hasProviderProgress?: () => boolean;
   readonly invoke: (options: LLMChatOptions) => Promise<LLMResponse>;
-}
-
-/** Only explicit pre-generation refusals prove that a dispatched call is free. */
-function isConfirmedProviderRejection(error: unknown): boolean {
-  if (error instanceof LLMRateLimitError) return true;
-  if (error === null || typeof error !== "object") return false;
-  const { status, statusCode } = error as { status?: unknown; statusCode?: unknown };
-  const httpStatus = status ?? statusCode;
-  // Do not infer this from an error message or transport code: even a failure
-  // before the first chunk can follow billable work at the provider.
-  return (
-    httpStatus === 400 ||
-    httpStatus === 401 ||
-    httpStatus === 402 ||
-    httpStatus === 403 ||
-    httpStatus === 429
-  );
 }
 
 function positiveInteger(value: unknown): number | undefined {

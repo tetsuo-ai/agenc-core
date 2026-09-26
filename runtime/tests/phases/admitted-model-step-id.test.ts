@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, test, vi } from "vitest";
 
-import { LLMRateLimitError, LLMServerError } from "../../src/llm/errors.js";
+import { LLMRateLimitError, markPreGenerationRejection, LLMServerError } from "../../src/llm/errors.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import type {
   LLMMessage,
@@ -370,7 +370,7 @@ describe("admitted model sample identity", () => {
         timeline.push(`provider:${attempts}`);
         if (attempts <= 3) {
           throw failure === "rate limit"
-            ? new LLMRateLimitError("grok")
+            ? markPreGenerationRejection(new LLMRateLimitError("grok"), 429)
             : Object.assign(new Error("Connection error."), { code: "ECONNRESET" });
         }
       });

@@ -8,6 +8,29 @@ import { RuntimeError, RuntimeErrorCodes } from "./_deps/runtime-errors.js";
 import type { LLMFailureClass, LLMPipelineStopReason } from "./policy.js";
 import { isProviderFundsFailure } from "./funds.js";
 
+export interface ProviderRejectionEvidence {
+  /** Set by an adapter only for an HTTP rejection before a stream starts. */
+  readonly preGenerationRejectionStatus?: number;
+}
+
+/** Never call this with a status inferred from an in-stream error payload. */
+export function markPreGenerationRejection<T extends Error>(
+  error: T,
+  httpStatus: unknown,
+): T & ProviderRejectionEvidence {
+  if (typeof httpStatus === "number" && [400, 401, 402, 403, 429].includes(httpStatus)) {
+    Object.assign(error, { preGenerationRejectionStatus: httpStatus });
+  }
+  return error;
+}
+
+export function isConfirmedProviderRejection(error: unknown): boolean {
+  return error instanceof Error &&
+    [400, 401, 402, 403, 429].includes(
+      (error as ProviderRejectionEvidence).preGenerationRejectionStatus ?? 0,
+    );
+}
+
 export interface TlsValidationDetails {
   readonly code: string;
   readonly message: string;

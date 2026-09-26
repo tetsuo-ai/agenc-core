@@ -30,6 +30,8 @@ import {
   LLMManagedUsagePendingError,
   LLMRateLimitError,
   LLMServerError,
+  isConfirmedProviderRejection,
+  markPreGenerationRejection,
   mapLLMError,
 } from "../../errors.js";
 import { isProviderFundsFailure } from "../../funds.js";
@@ -64,6 +66,7 @@ import {
   buildOpenAIResponsesRequest,
   extractOpenAIReasoningReplay,
   parseOpenAIResponsesResponse,
+  parseOpenAIResponsesUsage,
 } from "../../wire/responses-openai.js";
 import { assertKimiRequestPayloadSize } from "../../wire/kimi-contract.js";
 import {
@@ -952,13 +955,13 @@ export class OpenAIProvider implements LLMProvider {
       if (error instanceof ProviderHttpError) {
         const admissionError = this.managedRequestError(error, headers);
         if (admissionError) throw admissionError;
-        throw mapOpenAIHttpFailureToError({
+        throw markPreGenerationRejection(mapOpenAIHttpFailureToError({
           providerName: this.name,
           message: error.message,
           status: error.status,
           body: error.body,
           retryAfterMs: error.retryAfterMs,
-        });
+        }), error.status);
       }
       const networkError = mapOpenAINetworkFailureToError({
         providerName: this.name,
@@ -1006,13 +1009,13 @@ export class OpenAIProvider implements LLMProvider {
       if (error instanceof ProviderHttpError) {
         const admissionError = this.managedRequestError(error, headers);
         if (admissionError) throw admissionError;
-        throw mapOpenAIHttpFailureToError({
+        throw markPreGenerationRejection(mapOpenAIHttpFailureToError({
           providerName: this.name,
           message: error.message,
           status: error.status,
           body: error.body,
           retryAfterMs: error.retryAfterMs,
-        });
+        }), isConfirmedProviderRejection(error) ? error.status : undefined);
       }
       const networkError = mapOpenAINetworkFailureToError({
         providerName: this.name,
@@ -1464,160 +1467,196 @@ export class OpenAIProvider implements LLMProvider {
       const streamedReasoningItems: Record<string, unknown>[] = [];
       let completedResponse: Record<string, unknown> | null = null;
 
-      for await (const event of this.readSseEvents(response)) {
-        const eventType = event.event ?? String(event.data.type ?? "");
-
-        if (eventType === "response.output_text.delta") {
-          const delta =
-            typeof event.data.delta === "string" ? event.data.delta : "";
-          if (delta.length > 0) {
-            streamedContent += delta;
-            onChunk({ content: delta, done: false });
-          }
-          continue;
-        }
-
-        if (eventType === "response.output_item.done") {
-          const item =
-            event.data.item && typeof event.data.item === "object"
-              ? (event.data.item as Record<string, unknown>)
-              : undefined;
-          if (
-            item?.type === "reasoning" &&
-            requestOptions.reasoningReplayProvider !== undefined
-          ) {
-            streamedReasoningItems.push(item);
-          }
-          if (item?.type === "function_call") {
-            let toolCall: LLMToolCall;
-            try {
-              toolCall = validateProviderToolCallOrThrow(
-                this.name,
-                {
-                  id: String(item.call_id ?? item.id ?? "").trim(),
-                  // Streaming-path decode (mirrors the non-streaming
-                  // path in `parseOpenAIResponsesResponse`). Without
-                  // this, mid-stream `onChunk(toolCalls)` carries the
-                  // wire-form `mcp__server__tool` straight into the
-                  // dispatcher, which keys on the dotted internal form
-                  // and reports a silent dispatch miss.
-                  name: decodeMcpToolNameFromWire(
-                    String(item.name ?? "").trim(),
-                    requestOptions.tools.map((tool) => tool.function.name),
-                  ),
-                  arguments: String(item.arguments ?? "{}"),
-                },
-                OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
-              );
-            } catch (validationError) {
-              // A single malformed function_call must not discard output
-              // already forwarded to the consumer. When nothing has been
-              // emitted yet, rethrow so the outer fallback/retry path can
-              // act; otherwise surface a partial response (mirrors the
-              // Anthropic adapter's partial-recovery and the in-stream
-              // `response.failed` branch below).
-              if (
-                streamedContent.length === 0 &&
-                streamedToolCalls.size === 0
-              ) {
-                throw validationError;
-              }
-              const partialError =
-                validationError instanceof Error
-                  ? validationError
-                  : new LLMProviderError(
-                    this.name,
-                    OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
-                  );
-              const recoveredToolCalls = Array.from(streamedToolCalls.values());
-              onChunk({
-                content: "",
-                done: true,
-                ...(recoveredToolCalls.length > 0
-                  ? { toolCalls: recoveredToolCalls }
-                  : {}),
-              });
-              return {
-                content: streamedContent,
-                toolCalls: recoveredToolCalls,
-                usage: coerceUsage({}),
-                model,
-                finishReason: "error",
-                error: partialError,
-                partial: true,
-              };
+      let reportedUsage: LLMResponse["usage"] | undefined;
+      let reportedModel = model;
+      try {
+        for await (const event of this.readSseEvents(response)) {
+          const eventType = event.event ?? String(event.data.type ?? "");
+          const responsePayload = event.data.response;
+          if (responsePayload && typeof responsePayload === "object") {
+            const payload = responsePayload as Record<string, unknown>;
+            const usage = parseOpenAIResponsesUsage(payload);
+            if (usage.availability === "reported") {
+              reportedUsage = usage;
+              if (typeof payload.model === "string") reportedModel = payload.model;
             }
-            streamedToolCalls.set(toolCall.id, toolCall);
-            onChunk({ content: "", done: false, toolCalls: [toolCall] });
           }
-          continue;
-        }
+          if (eventType === "error") {
+            throw mapOpenAIStreamError({
+              providerName: this.name,
+              errorBody: event.data.error ?? event.data,
+              fallbackMessage: OPENAI_STREAM_FAILED_MESSAGE,
+            });
+          }
 
-        if (
-          eventType === "response.completed" ||
-          eventType === "response.incomplete"
-        ) {
-          completedResponse =
-            event.data.response && typeof event.data.response === "object"
-              ? (event.data.response as Record<string, unknown>)
-              : null;
-          break;
-        }
+          if (eventType === "response.output_text.delta") {
+            const delta =
+              typeof event.data.delta === "string" ? event.data.delta : "";
+            if (delta.length > 0) {
+              streamedContent += delta;
+              onChunk({ content: delta, done: false });
+            }
+            continue;
+          }
 
-        if (eventType === "response.failed") {
-          const failedResponse =
-            event.data.response && typeof event.data.response === "object"
-              ? (event.data.response as Record<string, unknown>)
-              : {};
-          const failedError =
-            failedResponse.error && typeof failedResponse.error === "object"
-              ? (failedResponse.error as Record<string, unknown>)
-              : undefined;
-          const eventError =
-            event.data.error && typeof event.data.error === "object"
-              ? (event.data.error as Record<string, unknown>)
-              : undefined;
-          const message =
-            typeof failedError?.message === "string"
-              ? String(failedError.message)
-              : typeof eventError?.message === "string"
-                ? String(eventError.message)
-                : OPENAI_STREAM_FAILED_MESSAGE;
-          const errorBody = failedError ?? eventError ?? failedResponse;
-          const streamError = mapOpenAIStreamError({
-            providerName: this.name,
-            errorBody,
-            fallbackMessage: message,
-          });
-          if (!isProviderFundsFailure(this.name, streamError) &&
-            streamedContent.length === 0 && streamedToolCalls.size === 0) {
-            const fallbackDecision = this.evaluateConfiguredFallback(
-              openAIStreamFallbackCandidate(errorBody, message),
-              consecutiveFallbackFailures,
-              model,
-            );
+          if (eventType === "response.output_item.done") {
+            const item =
+              event.data.item && typeof event.data.item === "object"
+                ? (event.data.item as Record<string, unknown>)
+                : undefined;
             if (
-              options?.singleWireAttempt !== true &&
-              fallbackDecision?.kind === "wait" &&
-              await this.waitForConfiguredFallbackRetry(
-                fallbackDecision,
-                options?.signal,
-              )
+              item?.type === "reasoning" &&
+              requestOptions.reasoningReplayProvider !== undefined
             ) {
-              consecutiveFallbackFailures = fallbackDecision.consecutiveFailures;
-              continue responseStreamAttempts;
+              streamedReasoningItems.push(item);
             }
+            if (item?.type === "function_call") {
+              let toolCall: LLMToolCall;
+              try {
+                toolCall = validateProviderToolCallOrThrow(
+                  this.name,
+                  {
+                    id: String(item.call_id ?? item.id ?? "").trim(),
+                    // Streaming-path decode (mirrors the non-streaming
+                    // path in `parseOpenAIResponsesResponse`). Without
+                    // this, mid-stream `onChunk(toolCalls)` carries the
+                    // wire-form `mcp__server__tool` straight into the
+                    // dispatcher, which keys on the dotted internal form
+                    // and reports a silent dispatch miss.
+                    name: decodeMcpToolNameFromWire(
+                      String(item.name ?? "").trim(),
+                      requestOptions.tools.map((tool) => tool.function.name),
+                    ),
+                    arguments: String(item.arguments ?? "{}"),
+                  },
+                  OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
+                );
+              } catch (validationError) {
+                // A single malformed function_call must not discard output
+                // already forwarded to the consumer. When nothing has been
+                // emitted yet, rethrow so the outer fallback/retry path can
+                // act; otherwise surface a partial response (mirrors the
+                // Anthropic adapter's partial-recovery and the in-stream
+                // `response.failed` branch below).
+                if (
+                  streamedContent.length === 0 &&
+                  streamedToolCalls.size === 0
+                ) {
+                  throw validationError;
+                }
+                const partialError =
+                  validationError instanceof Error
+                    ? validationError
+                    : new LLMProviderError(
+                      this.name,
+                      OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
+                    );
+                const recoveredToolCalls = Array.from(streamedToolCalls.values());
+                onChunk({
+                  content: "",
+                  done: true,
+                  ...(recoveredToolCalls.length > 0
+                    ? { toolCalls: recoveredToolCalls }
+                    : {}),
+                });
+                return {
+                  content: streamedContent,
+                  toolCalls: recoveredToolCalls,
+                  usage: reportedUsage ?? coerceUsage({}),
+                  model: reportedModel,
+                  finishReason: "error",
+                  error: partialError,
+                  partial: true,
+                };
+              }
+              streamedToolCalls.set(toolCall.id, toolCall);
+              onChunk({ content: "", done: false, toolCalls: [toolCall] });
+            }
+            continue;
           }
-          consecutiveFallbackFailures = 0;
-          throw streamError;
-        }
-      }
 
-      if (!completedResponse) {
-        throw new LLMStreamTruncatedError(
-          this.name,
-          "Stream closed without a response.completed payload",
-        );
+          if (
+            eventType === "response.completed" ||
+            eventType === "response.incomplete"
+          ) {
+            completedResponse =
+              event.data.response && typeof event.data.response === "object"
+                ? (event.data.response as Record<string, unknown>)
+                : null;
+            break;
+          }
+
+          if (eventType === "response.failed") {
+            const failedResponse =
+              event.data.response && typeof event.data.response === "object"
+                ? (event.data.response as Record<string, unknown>)
+                : {};
+            const failedError =
+              failedResponse.error && typeof failedResponse.error === "object"
+                ? (failedResponse.error as Record<string, unknown>)
+                : undefined;
+            const eventError =
+              event.data.error && typeof event.data.error === "object"
+                ? (event.data.error as Record<string, unknown>)
+                : undefined;
+            const message =
+              typeof failedError?.message === "string"
+                ? String(failedError.message)
+                : typeof eventError?.message === "string"
+                  ? String(eventError.message)
+                  : OPENAI_STREAM_FAILED_MESSAGE;
+            const errorBody = failedError ?? eventError ?? failedResponse;
+            const streamError = mapOpenAIStreamError({
+              providerName: this.name,
+              errorBody,
+              fallbackMessage: message,
+            });
+            if (reportedUsage === undefined && !isProviderFundsFailure(this.name, streamError) &&
+              streamedContent.length === 0 && streamedToolCalls.size === 0) {
+              const fallbackDecision = this.evaluateConfiguredFallback(
+                openAIStreamFallbackCandidate(errorBody, message),
+                consecutiveFallbackFailures,
+                model,
+              );
+              if (
+                options?.singleWireAttempt !== true &&
+                fallbackDecision?.kind === "wait" &&
+                await this.waitForConfiguredFallbackRetry(
+                  fallbackDecision,
+                  options?.signal,
+                )
+              ) {
+                consecutiveFallbackFailures = fallbackDecision.consecutiveFailures;
+                continue responseStreamAttempts;
+              }
+            }
+            consecutiveFallbackFailures = 0;
+            throw streamError;
+          }
+        }
+
+        if (!completedResponse) {
+          throw new LLMStreamTruncatedError(
+            this.name,
+            "Stream closed without a response.completed payload",
+          );
+        }
+      } catch (error) {
+        if (reportedUsage === undefined) throw error;
+        // Reasoning can be billable without ever producing an onChunk callback.
+        // Preserve the provider's usage for admission before surfacing failure.
+        const toolCalls = Array.from(streamedToolCalls.values());
+        onChunk({ content: "", done: true, ...(toolCalls.length > 0 ? { toolCalls } : {}) });
+        return {
+          content: streamedContent,
+          toolCalls,
+          ...extractOpenAIReasoningReplay(streamedReasoningItems, requestOptions),
+          usage: reportedUsage,
+          model: reportedModel,
+          finishReason: "error",
+          partial: true,
+          error: error instanceof Error ? error : new LLMProviderError(this.name, String(error)),
+        };
       }
 
       const parsed = withStreamingMetrics(
@@ -2187,20 +2226,28 @@ export class OpenAIProvider implements LLMProvider {
     const session = this.client.createTurnSession({
       wireApi: args.api,
     });
-    return await session.requestStream({
-      api: args.api,
-      path: args.path,
-      method: "POST",
-      headers: { accept: "text/event-stream", ...args.headers },
-      body: args.body,
-      timeoutMs: normalizeTimeoutMs(args.timeoutMs),
-      signal: args.signal,
-      providerFallback: args.providerFallback,
-      singleWireAttempt: args.singleWireAttempt,
-      // Provider SSE streams do not expose resumable cursors; keep the
-      // shared session contract but preserve single-attempt stream semantics.
-      retryBudget: { maxRetries: 0 },
-    });
+    try {
+      return await session.requestStream({
+        api: args.api,
+        path: args.path,
+        method: "POST",
+        headers: { accept: "text/event-stream", ...args.headers },
+        body: args.body,
+        timeoutMs: normalizeTimeoutMs(args.timeoutMs),
+        signal: args.signal,
+        providerFallback: args.providerFallback,
+        singleWireAttempt: args.singleWireAttempt,
+        // Provider SSE streams do not expose resumable cursors; keep the
+        // shared session contract but preserve single-attempt stream semantics.
+        retryBudget: { maxRetries: 0 },
+      });
+    } catch (error) {
+      // This catch surrounds only the HTTP handshake, never stream iteration.
+      if (error instanceof ProviderHttpError) {
+        throw markPreGenerationRejection(error, error.status);
+      }
+      throw error;
+    }
   }
 
   private resolvePath(path: string): string {
