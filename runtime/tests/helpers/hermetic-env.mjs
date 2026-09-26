@@ -215,6 +215,8 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_DISABLE_COMMAND_INJECTION_CHECK',
   'AGENC_SUBPROCESS_ENV_NO_SCRUB',
   'USER_TYPE',
+  // advertised tool set (a test that needs it sets it explicitly)
+  'AGENC_DEFER_RARE_TOOLS',
   // endpoints and subprocess/service activation
   'AGENC_BACKEND_URL',
   'AGENC_DAEMON_URL',
