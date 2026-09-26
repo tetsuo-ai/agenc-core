@@ -3221,6 +3221,13 @@ describe("AgenC background agent lifecycle", () => {
       metadata: { runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS },
     });
     const bound: string[] = [];
+    const broadcast: { sessionId: string; type: unknown }[] = [];
+    // Like the runner: the resumed turn ran and finished before any session was
+    // attached, and the first attachment takes that buffered batch.
+    const buffered = [
+      { id: "resumed-turn", msg: { type: "turn_resumed", payload: { turnId: "turn-1" } } },
+      { id: "resumed-done", msg: { type: "turn_complete", payload: { turnId: "turn-1", lastAgentMessage: "done" } } },
+    ];
     const agents = new AgenCDaemonAgentManager({
       now: sequence(["2026-08-19T12:00:00.000Z"]),
       runner: {
@@ -3230,9 +3237,13 @@ describe("AgenC background agent lifecycle", () => {
         restoreAgent: vi.fn(async () => true),
         attachAgentSessionEvents: vi.fn(async (_agentId, binding) => {
           bound.push(binding.sessionId);
+          for (const event of buffered.splice(0)) await binding.emit(event as never);
         }),
       },
       sessionManager: sessions,
+      broadcastSessionEvent: (sessionId, event) => {
+        broadcast.push({ sessionId, type: (event as { msg?: { type?: unknown } }).msg?.type });
+      },
     });
     const rolloutCreatedAt = String(JSON.parse(readFileSync(fixture.rolloutPath, "utf8").split("\n")[0]!).payload.timestamp);
     await agents.restoreAgent({
@@ -3250,9 +3261,46 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     expect(created.activeSessionIds).toEqual(["session_restored", "session_resumed"]);
-    // The runner keeps one binding per agent: the session attached last.
-    expect(bound).toEqual(["session_restored", "session_resumed"]);
+    // The runner keeps one binding per agent, so only the named session is bound,
+    // and it receives what the resumed turn did before the attachment.
+    expect(bound).toEqual(["session_resumed"]);
     expect(created.sessionId).toBe("session_resumed");
+    expect(broadcast).toEqual([
+      { sessionId: "session_resumed", type: "turn_resumed" },
+      { sessionId: "session_resumed", type: "turn_complete" },
+    ]);
+  });
+
+  it("a startup restore with a live runtime binds only the agent's newest session, which gets the buffered turn", async () => {
+    // A chat resumed once has its restored session and the resume's session.
+    // A restart that rebuilds its runtime must bind the same session a resume
+    // would name, and hand it what the runtime did before the binding.
+    const bound: string[] = [];
+    const broadcast: { sessionId: string; type: unknown }[] = [];
+    const buffered = [
+      { id: "restored-done", msg: { type: "turn_complete", payload: { turnId: "turn-1", lastAgentMessage: "done" } } },
+    ];
+    const agents = new AgenCDaemonAgentManager({
+      runner: {
+        startAgent: vi.fn(async () => {
+          throw new Error("not used");
+        }),
+        attachAgentSessionEvents: vi.fn(async (_agentId, binding) => {
+          bound.push(binding.sessionId);
+          for (const event of buffered.splice(0)) await binding.emit(event as never);
+        }),
+      },
+      broadcastSessionEvent: (sessionId, event) => {
+        broadcast.push({ sessionId, type: (event as { msg?: { type?: unknown } }).msg?.type });
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "conv-restored-twice", objective: "Interactive session", status: "running",
+      sessionIds: ["session_restored", "session_resumed"], runtimeAvailable: true,
+      metadata: { runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS },
+    });
+    expect(bound).toEqual(["session_resumed"]);
+    expect(broadcast).toEqual([{ sessionId: "session_resumed", type: "turn_complete" }]);
   });
 
   it("agent.create refuses to resume a session its startup restore brought back live", async () => {
