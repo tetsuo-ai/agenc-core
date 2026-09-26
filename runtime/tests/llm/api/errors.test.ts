@@ -33,20 +33,40 @@ describe("llm api errors", () => {
     });
   });
 
-  test.each([403, 402])("preserves sanitized billing text from HTTP %s", (status) => {
+  test.each([403, 402])("preserves allowed billing prose from HTTP %s", (status) => {
     const error = new AgenCApiError("Forbidden", {
       status,
-      body: JSON.stringify({
+      body: {
         code: "permission-denied", request_id: "private-request",
-        error: "  Your team has used all available credits. Request ID: req_private  ",
-      }),
+        error: "  Your team has used all available credits.  ",
+      },
     });
     const mapped = mapAgenCApiErrorToLLMError("grok", error, 30_000);
     expect(mapped).toBeInstanceOf(LLMFundsError);
-    expect(mapped).toMatchObject({ statusCode: status });
-    expect(mapped.message).toContain("grok error: Your team has used all available credits.");
-    expect(mapped.message).not.toMatch(/permission-denied|private-request|req_private/);
-    expect(mapped.message).toBe(mapped.message.trim());
+    expect(mapped).toMatchObject({
+      statusCode: status, message: "grok error: Your team has used all available credits.",
+    });
+  });
+
+  test.each([
+    'Insufficient credits. "request_id": "private-request"',
+    'Insufficient credits. Authorization: Basic short-token',
+    'Insufficient credits. Cookie: private',
+    '<html>Insufficient credits.</html>',
+    '{"error":{"message":"Insufficient credits."}}',
+    '403 {"error":{"message":"Insufficient credits."}}',
+    'HTTP 403',
+  ])("uses the default billing message for unsafe body text: %s", (body) => {
+    for (const status of [402, 403]) {
+      const error = new AgenCApiError("HTTP 403", {
+        status, body, cause: { status, code: "insufficient_credits" },
+      });
+      const mapped = mapAgenCApiErrorToLLMError("grok", error, 30_000);
+      expect(mapped).toBeInstanceOf(LLMFundsError);
+      expect(mapped).toMatchObject({
+        statusCode: status, message: "grok error: provider credits or billing quota exhausted",
+      });
+    }
   });
 
   test("keeps genuine API permission failures as authentication", () => {

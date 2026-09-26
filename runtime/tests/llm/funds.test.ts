@@ -6,25 +6,51 @@ describe("providerFundsMessage", () => {
   it.each([
     "HTTP 403",
     "HTTP 403 Forbidden",
-    '{"error":{"code":"insufficient_quota"}}',
+    "HTTP/1.1 403 Forbidden",
+    '{"error":{"message":"Insufficient credits."}}',
     '[{"code":"insufficient_quota"}]',
     '403 {"error":{"code":"insufficient_quota"}}',
     'HTTP 403: {"error":{"code":"insufficient_quota"}}',
     '403 Forbidden: [{"code":"insufficient_quota"}]',
-  ])("rejects transport summaries and serialized errors: %s", (message) => {
-    expect(providerFundsMessage({ message })).toBeUndefined();
+    '<html>Insufficient credits.</html>',
+    'Insufficient credits. "request_id": "private-request"',
+    'Insufficient credits. "trace": "private"',
+    'Insufficient credits. trace=private',
+    'Insufficient credits. "Authorization": "Basic dXNlcjpwYXNz"',
+    "Insufficient credits. 'Authorization': 'Basic dXNlcjpwYXNz'",
+    "Insufficient credits. Authorization: Basic dXNlcjpwYXNz",
+    'Insufficient credits. "Cookie": "session=private-value"',
+    "Insufficient credits. Cookie: private",
+    'Insufficient credits. Set-Cookie: private',
+    'Insufficient credits. Visit https://x.ai',
+    'Insufficient credits. Visit www.x.ai',
+    'Insufficient credits. Visit x.ai/billing',
+    'Insufficient credits. Visit //x.ai',
+    `Insufficient credits. ${"a".repeat(20)}`,
+    "a ".repeat(100) + "a",
+    "Insufficient credits.\nPlease top up.",
+    "Insufficient credits.\tPlease top up.",
+    "Insufficient credits.\u001bPlease top up.",
+    "Insufficient credits. [private]",
+    "Insufficient credits. `private`",
+    "Insufficient credits. \u200bprivate",
+    "",
+    "   ",
+    "Forbidden",
+  ])("rejects messages outside the prose allow-list: %s", (message) => {
+    for (const error of [{ message }, { body: message }, { body: { error: message } }]) {
+      expect(providerFundsMessage(error)).toBeUndefined();
+    }
   });
 
   it.each([
-    '"Authorization": "Basic dXNlcjpwYXNz"',
-    "'Authorization': 'Basic dXNlcjpwYXNz'",
-    "Authorization: Basic dXNlcjpwYXNz",
-    '"Cookie": "session=private-value; other=another-private-value"',
-    "'Cookie': 'session=private-value'",
-    '"Set-Cookie": "session=private-value; HttpOnly"',
-  ])("redacts the whole credential value in billing prose: %s", (header) => {
-    expect(providerFundsMessage({ body: { error: `Insufficient credits. ${header}\nPlease top up.` } }))
-      .toBe("Insufficient credits. [REDACTED]\nPlease top up.");
+    "Your team has used all available credits.",
+    "Please add $5.00 (50%); then retry! 'Credits' / usage - isn't available?",
+    "Please add credits:",
+    `Please add credits ${"a".repeat(19)}`,
+    "a ".repeat(99) + "ab",
+  ])("preserves allowed prose after trimming: %s", (message) => {
+    expect(providerFundsMessage({ body: { error: `  ${message}  ` } })).toBe(message);
   });
 
   it("continues to nested provider prose after a rejected transport summary", () => {

@@ -10,7 +10,7 @@ import {
 import { ProviderHttpClientSession, ProviderHttpError } from "./client-session.js";
 
 describe("LLM error network classification", () => {
-  test("maps xAI's exhausted team credits 403 to funds and preserves its message", () => {
+  test("maps the full captured xAI response to funds with the default message", () => {
     const message = "Your team 16da42f5-6f8f-41c0-b62f-a77ec198037e has either used all available credits or reached its monthly spending limit. To continue making API requests, please purchase more credits or raise your spending limit.";
     const wireError = new ProviderHttpError({
       providerName: "grok", status: 403, headers: new Headers(),
@@ -20,7 +20,13 @@ describe("LLM error network classification", () => {
 
     const mapped = mapLLMError("grok", wireError, 30_000);
     expect(mapped).toBeInstanceOf(LLMFundsError);
-    expect(mapped).toMatchObject({ statusCode: 403, message: `grok error: ${message}` });
+    expect(mapped).toMatchObject({ statusCode: 403, message: "grok error: provider credits or billing quota exhausted" });
+  });
+
+  test("preserves the captured xAI wording without the token-like team ID", () => {
+    const message = "Your team has either used all available credits or reached its monthly spending limit. To continue making API requests, please purchase more credits or raise your spending limit.";
+    expect(mapLLMError("grok", { status: 403, body: { error: message } }, 30_000))
+      .toMatchObject({ name: "LLMFundsError", statusCode: 403, message: `grok error: ${message}` });
   });
 
   test("maps a Gemini daily quota response body to a funds stop", () => {
@@ -35,7 +41,7 @@ describe("LLM error network classification", () => {
     ["grok", 403, { error: "  Your team has used all available credits.  " }, "Your team has used all available credits."],
     ["xai", 403, { message: "Your team has reached its monthly spending limit." }, "Your team has reached its monthly spending limit."],
     ["openai", 403, { body: { error: { code: "insufficient_quota", message: "Please check your plan and billing details." } } }, "Please check your plan and billing details."],
-    ["deepseek", 402, { body: JSON.stringify({ error: { message: "  Insufficient credits.  " } }) }, "Insufficient credits."],
+    ["deepseek", 402, { body: { error: { message: "  Insufficient credits.  " } } }, "Insufficient credits."],
     ["custom", 402, { body: { message: "Your credit balance is too low." } }, "Your credit balance is too low."],
     ["custom", 403, { body: { error: { message: "Your credits are exhausted." } } }, "Your credits are exhausted."],
   ])("preserves billing details from %s HTTP %s", (provider, status, details, message) => {
@@ -44,7 +50,7 @@ describe("LLM error network classification", () => {
     expect(mapped).toMatchObject({ statusCode: status, message: `${provider} error: ${message}` });
   });
 
-  test("redacts secrets and request ids without exposing body metadata", () => {
+  test("falls back for billing text containing secrets and request ids", () => {
     const mapped = mapLLMError("grok", {
       status: 403,
       body: {
@@ -53,9 +59,29 @@ describe("LLM error network classification", () => {
       },
     }, 30_000);
     expect(mapped).toBeInstanceOf(LLMFundsError);
-    expect(mapped.message).toContain("No credits left.");
+    expect(mapped.message).toBe("grok error: provider credits or billing quota exhausted");
     expect(mapped.message).not.toMatch(/permission-denied|metadata-|xai-123|short-token|req_private|private-secret/);
     expect(mapped.message).toBe(mapped.message.trim());
+  });
+
+  test.each([
+    'Insufficient credits. "request_id": "private-request"',
+    'Insufficient credits. Authorization: Basic short-token',
+    'Insufficient credits. Cookie: private',
+    '<html>Insufficient credits.</html>',
+    '{"error":{"message":"Insufficient credits."}}',
+    '403 {"error":{"message":"Insufficient credits."}}',
+    'HTTP 403',
+  ])("uses the default billing message for unsafe provider text: %s", (body) => {
+    for (const status of [402, 403]) {
+      const mapped = mapLLMError("grok", {
+        status, code: "insufficient_credits", body, message: "HTTP 403",
+      }, 30_000);
+      expect(mapped).toBeInstanceOf(LLMFundsError);
+      expect(mapped).toMatchObject({
+        statusCode: status, message: "grok error: provider credits or billing quota exhausted",
+      });
+    }
   });
 
   test.each([

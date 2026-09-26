@@ -1,6 +1,4 @@
 /** Provider billing refusals. Keep this independent of retry and agent modules. */
-import { redactSecrets } from "../secrets/sanitizer.js";
-
 const EXHAUSTED_CREDITS_RE = /\b(?:used all (?:available |your )?credits|(?:no|insufficient) (?:available |remaining )?credits|(?:run |ran )?out of credits|credits? (?:balance )?(?:is |are |has been )?(?:exhausted|depleted|too low)|(?:reached|exceeded) (?:its |your |the )?(?:monthly )?spending limit|spending limit (?:has been |is )?(?:reached|exceeded|exhausted))\b/i;
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -27,17 +25,23 @@ function nestedText(value: unknown): string {
 }
 
 function providerMessage(value: unknown): string | undefined {
-  const item = record(value);
-  if (item !== undefined) {
-    return providerMessage(item.error) ?? providerMessage(item.message);
+  // Only inspect structured message fields. Serialized bodies are not prose.
+  if (typeof value !== "string") {
+    const item = record(value);
+    return item === undefined ? undefined :
+      providerMessage(item.error) ?? providerMessage(item.message);
   }
-  if (typeof value !== "string") return undefined;
   const text = value.trim();
-  // Transport summaries and serialized SDK errors are not provider prose.
-  // Leave the billing default intact when no useful message is available.
-  if (/^HTTP(?:\/[\d.]+)?\s+\d{3}\b/i.test(text) ||
-    /^(?:\d{3}\b[^\[{]*)?[\[{]/.test(text)) return undefined;
-  return text && !/^[\w:-]+$/.test(text) ? text : undefined;
+  // Accept short, plain prose as a whole; never salvage fragments by redacting
+  // transport data, credentials, or identifiers from an unsafe message.
+  const plainProse = text.length <= 200 &&
+    /^[\p{L}\p{N} .,;:'"()!?$%/\-]+$/u.test(text) &&
+    /\p{L}/u.test(text) && text.includes(" ") &&
+    !/[^ ]{20}/u.test(text);
+  const fieldPair = /(?:["'][^"']+["']|[\p{L}\p{N}-]+) *: *\S/u.test(text);
+  const url = /\/\/|\b[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.[\p{L}]{2,}\b/iu.test(text);
+  const transportSummary = /^HTTP(?:\/[\d.]+)? +\d{3}\b/i.test(text);
+  return plainProse && !fieldPair && !url && !transportSummary ? text : undefined;
 }
 
 export function providerFundsMessage(error: unknown): string | undefined {
@@ -47,14 +51,7 @@ export function providerFundsMessage(error: unknown): string | undefined {
     if (item === undefined) break;
     const message = providerMessage(item.body) ?? providerMessage(item.error) ??
       providerMessage(item.message);
-    if (message !== undefined) {
-      return redactSecrets(message)
-        .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-        .replace(/["']?\b(?:Authorization|Cookie|Set-Cookie)["']?\s*:\s*[^\r\n]+/gi, "[REDACTED]")
-        .replace(/\b(?:request[ _-]?id|x-request-id)\s*[:=]?\s*["']?[\w-]+["']?/gi, "[REDACTED]")
-        .replace(/\breq_[A-Za-z0-9_-]+\b/g, "[REDACTED]")
-        .trim();
-    }
+    if (message !== undefined) return message;
     current = item.cause ?? item.originalError;
   }
   return undefined;
