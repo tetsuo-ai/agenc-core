@@ -78,6 +78,7 @@ export function createProcessRealtimeAudioPlayer(
 
   const reset = (active: ChildProcess | null): void => {
     if (active !== child) return;
+    active?.stdin?.removeAllListeners("drain");
     child = null;
     format = null;
     queue.length = 0;
@@ -112,6 +113,7 @@ export function createProcessRealtimeAudioPlayer(
       waitingForDrain = false;
       return;
     }
+    if (waitingForDrain) return;
     while (queue.length > 0) {
       const chunk = queue[0]!;
       let accepted = false;
@@ -124,19 +126,20 @@ export function createProcessRealtimeAudioPlayer(
       queue.shift();
       queuedBytes -= chunk.length;
       if (!accepted) {
-        if (!waitingForDrain) {
-          waitingForDrain = true;
-          active.stdin.once("drain", () => {
-            waitingForDrain = false;
-            flush();
-          });
-        }
+        waitingForDrain = true;
+        active.stdin.once("drain", () => {
+          if (child !== active) return;
+          waitingForDrain = false;
+          flush();
+        });
         return;
       }
     }
   };
 
   const enqueueBuffer = (chunk: Buffer): void => {
+    // Drop oldest queued audio first so a slow player keeps the newest
+    // frames and the application-owned queue stays within the 512 KiB cap.
     while (
       queue.length > 0 &&
       queuedBytes + chunk.length > MAX_OUTPUT_QUEUE_BYTES
