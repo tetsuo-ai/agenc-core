@@ -127,6 +127,10 @@ import {
   type LiveInstructionPolicy,
 } from "../prompts/live-instructions.js";
 import { attachmentsToMessages } from "../prompts/attachments/messages.js";
+import {
+  appendVolatileInstructions,
+  sessionTailCacheEnabled,
+} from "./session-tail-cache.js";
 import { projectRetainedAttachments } from "./attachment-retention.js";
 import { extractMentionAllowedRoots } from "../prompts/file-mentions.js";
 import { seedFileMentionAttachmentSessionReads } from "./file-mention-session-reads.js";
@@ -835,6 +839,7 @@ async function prepareSamplingRequestBoundary(
   discoverDirectMcpToolMentions(session, userInput);
   const attachments = await getAttachments({
     sessionKey: session,
+    lightMode: session.services.runtimeOptions?.lightMode === true,
     admittedMemorySelector: createAdmittedMemorySelector(session),
     // Producers hold only an opaque session key, so what they decide is
     // invisible to an operator unless they can report it. Routed to the
@@ -2073,8 +2078,18 @@ async function* runTurnKernelInner(
     ...referenceContextItem,
     instructionEvidence: instructionEnvelope.evidence,
   };
+  // With session-tail caching on, per-turn guidance rides after the volatile
+  // marker so the session-fixed part of the prompt stays byte-identical
+  // across turns and remains in the provider's cached prefix.
+  const volatileTurnGuidance =
+    commons.ledgerRootTurnGuidance !== undefined &&
+    sessionTailCacheEnabled(
+      session.services.userShell?.childEnvironment ??
+        session.services.providerEnvironment,
+      ctx.modelProviderId,
+    );
   const systemPromptWithTrustedTurnGuidance =
-    commons.ledgerRootTurnGuidance === undefined
+    commons.ledgerRootTurnGuidance === undefined || volatileTurnGuidance
       ? instructionEnvelope.text
       : [instructionEnvelope.text, commons.ledgerRootTurnGuidance]
           .filter(
@@ -2082,13 +2097,16 @@ async function* runTurnKernelInner(
               typeof value === "string" && value.length > 0,
           )
           .join("\n\n");
-  const effectiveSystemPrompt =
+  const resolvedSystemPrompt =
     systemPromptWithTrustedTurnGuidance.length > 0
       ? resolveModelInstructionsForTurn(
           ctx,
           systemPromptWithTrustedTurnGuidance,
         )
       : "";
+  const effectiveSystemPrompt = volatileTurnGuidance
+    ? appendVolatileInstructions(resolvedSystemPrompt, [commons.ledgerRootTurnGuidance!])
+    : resolvedSystemPrompt;
   const { system, prior, user } = buildSeedMessages(
     effectiveSystemPrompt.length > 0
       ? { ...opts, systemPrompt: effectiveSystemPrompt }

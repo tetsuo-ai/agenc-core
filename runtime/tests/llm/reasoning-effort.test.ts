@@ -35,6 +35,33 @@ describe("provider-scoped effort contract", () => {
     expect(resolveReasoningEffort({provider: "openrouter", model: "openai/gpt-oss-120b"}).levels).toEqual([]);
     expect(resolveReasoningEffort({provider: "nvidia-nim", model: "unknown"}).levels).toEqual([]);
   });
+
+  it("accepts unregistered NIM family snapshots Desktop can offer", () => {
+    expect(resolveReasoningEffort({
+      provider: "nvidia-nim",
+      model: "openai/gpt-oss-20b",
+    })).toMatchObject({
+      registered: false,
+      levels: ["low", "medium", "high"],
+      acceptsChatEffort: true,
+    });
+    expect(resolveReasoningEffort({
+      provider: "nvidia-nim",
+      model: "moonshotai/kimi-k3-2026-09",
+    }).levels).toEqual(["low", "high", "max"]);
+    expect(resolveReasoningEffort({
+      provider: "nvidia-nim",
+      model: "deepseek-ai/deepseek-v4-pro",
+    }).levels).toEqual(["none", "high", "max"]);
+    expect(resolveReasoningEffort({
+      provider: "nvidia-nim",
+      model: "nvidia/nemotron-3-super",
+    }).levels).toEqual(["none", "low", "high"]);
+    expect(resolveReasoningEffort({
+      provider: "nvidia-nim",
+      model: "openai/gpt-oss-120",
+    }).levels).toEqual([]);
+  });
 });
 
 

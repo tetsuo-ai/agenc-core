@@ -46,6 +46,8 @@ export interface PinnedOfflineRollout {
   readonly sourcePath: string;
   /** Current metadata read from the retained source descriptor. */
   stat(): { readonly size: number; readonly mtimeMs: number };
+  /** Exact device and inode numbers of the retained source descriptor. */
+  identity(): { readonly dev: string; readonly ino: string };
   /** Read the complete repaired rollout through the retained source fd. */
   readUtf8(): string;
   /** Append one or more complete JSONL records and fsync before returning. */
@@ -255,6 +257,11 @@ export function withPinnedOfflineRolloutLease<T>(
         assertOpenSourceIdentity(scope, pinned, sourceFd);
         const current = fstatSync(sourceFd);
         return { size: current.size, mtimeMs: current.mtimeMs };
+      },
+      identity: () => {
+        assertOpenSourceIdentity(scope, pinned, sourceFd);
+        const current = fstatSync(sourceFd, { bigint: true });
+        return { dev: current.dev.toString(10), ino: current.ino.toString(10) };
       },
       readUtf8: () => {
         assertOpenSourceIdentity(scope, pinned, sourceFd);

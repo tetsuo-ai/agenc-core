@@ -18,6 +18,7 @@ import {
   resolveRoutinePermissionGrant,
   routineCeilingForSessionMode,
   sessionRoutineGrant,
+  takeRoutinePermissionAuthority,
 } from "../../src/routines/permission-authority.js";
 import { RoutineService, type RoutineExecutor } from "../../src/routines/service.js";
 
@@ -208,5 +209,62 @@ describe("request-only permission authority", () => {
       .rejects.toMatchObject({ code: "ROUTINE_PERMISSION_DENIED", message: expect.stringContaining("not attached to this connection") });
     await expect(resolveRoutinePermissionGrant({ kind: "operator" }, connection({ operator: false })))
       .rejects.toMatchObject({ code: "ROUTINE_PERMISSION_DENIED" });
+  });
+});
+
+describe("takeRoutinePermissionAuthority", () => {
+  it("leaves a request without the field as the same object and grants nothing", () => {
+    const params = { name: "Tick", permissionMode: "bypassPermissions" };
+    const taken = takeRoutinePermissionAuthority(params);
+    expect(taken.params).toBe(params);
+    expect(taken.authority).toBeUndefined();
+    expect(takeRoutinePermissionAuthority(undefined)).toEqual({
+      params: undefined,
+      authority: undefined,
+    });
+    expect(takeRoutinePermissionAuthority(["permissionAuthority"])).toEqual({
+      params: ["permissionAuthority"],
+      authority: undefined,
+    });
+  });
+
+  it("strips a valid authority so later validation never sees it as a routine field", () => {
+    const params = {
+      name: "Tick",
+      permissionMode: "default",
+      permissionAuthority: { kind: "session", sessionId: "session_1", toolCallId: "call_1" },
+    };
+    const taken = takeRoutinePermissionAuthority(params);
+    expect(taken.authority).toEqual({
+      kind: "session",
+      sessionId: "session_1",
+      toolCallId: "call_1",
+    });
+    expect(taken.params).toEqual({ name: "Tick", permissionMode: "default" });
+    expect(params.permissionAuthority).toEqual({
+      kind: "session",
+      sessionId: "session_1",
+      toolCallId: "call_1",
+    });
+    expect(takeRoutinePermissionAuthority({
+      permissionAuthority: { kind: "operator" },
+    })).toEqual({
+      params: {},
+      authority: { kind: "operator" },
+    });
+  });
+
+  it("refuses an authority that carries a mode or any other extra field", () => {
+    for (const permissionAuthority of [
+      { kind: "operator", permissionMode: "bypassPermissions" },
+      { kind: "session", sessionId: "session_1", permissionMode: "bypassPermissions" },
+      { kind: "model" },
+      null,
+    ]) {
+      expect(
+        () => takeRoutinePermissionAuthority({ name: "Tick", permissionAuthority }),
+        JSON.stringify(permissionAuthority),
+      ).toThrow(expect.objectContaining({ code: "ROUTINE_INVALID_ARGUMENT" }));
+    }
   });
 });

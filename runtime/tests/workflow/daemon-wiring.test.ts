@@ -229,6 +229,7 @@ const worktrees: WorkflowWorktreeBroker = {
   },
   checkBaseMovement: async () => ({ kind: "unmoved" }) as const,
   cleanup: async () => {},
+  discard: async () => {},
 };
 
 const commands: WorkflowCommandRunner = {
@@ -408,6 +409,7 @@ describe("createDaemonWorkflowController — per-run durability resolution", () 
     const baseSeams = makeSeams();
     let childSettled = false;
     let seamsClosed = false;
+    const discarded: string[] = [];
     let signalStarted!: () => void;
     const startedChild = new Promise<void>((resolve) => { signalStarted = resolve; });
     const runId = "wf-waiting-shutdown";
@@ -419,6 +421,12 @@ describe("createDaemonWorkflowController — per-run durability resolution", () 
       } as unknown as ExecutionAdmissionKernel,
       sessionSeams: {
         ...baseSeams,
+        worktrees: {
+          ...baseSeams.worktrees,
+          discard: async ({ handle }) => {
+            discarded.push(handle.path);
+          },
+        },
         spawner: {
           ...baseSeams.spawner,
           spawn: async ({ signal }) => {
@@ -431,6 +439,8 @@ describe("createDaemonWorkflowController — per-run durability resolution", () 
         close: async () => {
           expect(childSettled).toBe(true);
           expect(projectA.repo.getCurrentTerminalResult(runId)?.status).toBe("cancelled");
+          // The worktree went while the run's session could still run git.
+          expect(discarded).toEqual([`/wt/${runId}`]);
           seamsClosed = true;
         },
       },

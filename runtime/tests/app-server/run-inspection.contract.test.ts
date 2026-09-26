@@ -5,6 +5,13 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AgenCDaemonAgentManager } from "../../src/app-server/agent-lifecycle.js";
+import { LiveApprovalBroker } from "../../src/app-server/live-approval-broker.js";
+import { registerChildApprovalSession } from "../../src/agents/child-approval-context.js";
+import { requestApproval } from "../../src/permissions/guardian/arbiter.js";
+import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
+import { EventLog } from "../../src/session/event-log.js";
+import type { Session } from "../../src/session/session.js";
+import type { ApprovalCtx } from "../../src/tools/orchestrator.js";
 import { AgenCDaemonJsonRpcDispatcher } from "../../src/app-server/daemon-dispatcher.js";
 import { AgenCInProcessDaemonTransport } from "../../src/app-server/transport/in-process.js";
 import {
@@ -982,6 +989,143 @@ describe("M5 workflow run inspection (additive fields)", () => {
     expect(terminal.workflow).toMatchObject({ requestedPermissionMode: "bypassPermissions" });
     expect(terminal.workflow).not.toHaveProperty("effectivePermissionMode");
     expect(lookup).not.toHaveBeenCalled();
+  });
+
+  /** A session that can own or raise a live approval, as a workflow's do. */
+  function approvalSession(
+    conversationId: string,
+    spawnedAs?: { readonly agentNickname: string; readonly agentPath: string },
+  ): Session {
+    const eventLog = new EventLog();
+    let seq = 0;
+    const session = {
+      conversationId,
+      eventLog,
+      abortController: new AbortController(),
+      permissionModeRegistry: new PermissionModeRegistry({
+        mode: "default", additionalWorkingDirectories: new Map(),
+        alwaysAllowRules: {}, alwaysDenyRules: {}, alwaysAskRules: {},
+        isBypassPermissionsModeAvailable: true,
+      }),
+      services: { admissionRequired: false },
+      rolloutStore: {},
+      ...(spawnedAs !== undefined
+        ? {
+          sessionConfiguration: {
+            sessionSource: {
+              kind: "subagent",
+              source: { kind: "thread_spawn", parentThreadId: WORKFLOW_RUN_ID, depth: 1, ...spawnedAs },
+            },
+          },
+        }
+        : {}),
+      emit: (event: Parameters<EventLog["emit"]>[0]) => {
+        const canonical = { ...event, eventId: `${conversationId}:${++seq}`, seq };
+        eventLog.emit(canonical);
+        return canonical;
+      },
+      onBeforeDurableClose: () => () => true,
+    } as unknown as Session;
+    return session;
+  }
+
+  it("lists a live run's child approvals on run.status as the app reads them and takes the answer under the run id", async () => {
+    // A Goal run's children ask through the run: Core holds each request on
+    // the workflow's own session, and AgenC Desktop learns of it only from
+    // run.status.pendingRequests, then answers with tool.approve or tool.deny
+    // under the run id. Nothing else reaches the app, so a Goal in "Ask for
+    // every tool" stalled until its deadline while nothing read this listing
+    // (agenc-desktop #415, src/main/goalApprovals.ts).
+    seedDurableRuns();
+    seedWorkflowEffects();
+    const broker = new LiveApprovalBroker();
+    const owner = approvalSession(WORKFLOW_RUN_ID);
+    const unregister = broker.register(owner, { workflow: true, isActive: () => true });
+    const child = approvalSession("wf-run-inspection-implement-child", {
+      agentNickname: "Implementer",
+      agentPath: "/root/wf_run_inspection_implement_1",
+    });
+    registerChildApprovalSession(child, owner);
+    const ctx: ApprovalCtx = {
+      callId: "call_npm_test", toolName: "exec_command", turnId: "turn_child_1",
+      invocation: {
+        callId: "call_npm_test", session: child,
+        payload: { kind: "function", name: "exec_command", arguments: '{"cmd":"npm test"}' },
+        turn: { subId: "turn_child_1" },
+      } as unknown as ApprovalCtx["invocation"],
+    };
+    let ran = 0;
+    const action = requestApproval({
+      ctx, resolver: owner.services.approvalResolver, args: { command: "npm test" },
+    }).then((result) => {
+      if (result.decision.kind === "approved") ran += 1;
+      return result;
+    });
+    await Promise.resolve();
+
+    const live = new AgenCDaemonRunInspectionService({
+      stateDatabasePaths: () => [paths], agencHome: home,
+      pendingApprovals: (runId) => broker.list(runId),
+    });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: new AgenCDaemonAgentManager({ approvalBroker: broker }),
+      runInspection: live,
+    });
+    const transport = new AgenCInProcessDaemonTransport({ dispatcher });
+    const client = createAgencClient({ transport: transport as unknown as AgencTransport });
+    try {
+      await client.initialize();
+
+      const waiting = await client.runStatus(WORKFLOW_RUN_ID);
+      expect(waiting.terminal).toBe(false);
+      expect(waiting.pendingRequests).toHaveLength(1);
+      const pending = waiting.pendingRequests![0]!;
+      // Every field the app's card is built from.
+      expect(pending).toMatchObject({
+        ownerRunId: WORKFLOW_RUN_ID,
+        sessionId: child.conversationId,
+        toolName: "exec_command",
+        turnId: "turn_child_1",
+        input: { cmd: "npm test" },
+        sourceAgentNickname: "Implementer",
+        sourceAgentPath: "/root/wf_run_inspection_implement_1",
+      });
+      expect(pending.requestId).toEqual(expect.any(String));
+      expect(ran).toBe(0);
+
+      await client.request("tool.approve", { sessionId: WORKFLOW_RUN_ID, requestId: pending.requestId });
+      expect((await action).decision.kind).toBe("approved");
+      expect(ran).toBe(1);
+      expect((await client.runStatus(WORKFLOW_RUN_ID)).pendingRequests).toEqual([]);
+
+      // A request raised as the run ends is not offered once it is terminal.
+      const late = requestApproval({
+        ctx: { ...ctx, callId: "call_late" }, resolver: owner.services.approvalResolver,
+        args: { command: "npm test" },
+      });
+      await Promise.resolve();
+      expect(broker.list(WORKFLOW_RUN_ID)).toHaveLength(1);
+      const durability = new StateRunDurabilityRepository(driver);
+      durability.recordTerminalResult({
+        epoch: durability.currentEpoch(WORKFLOW_RUN_ID)!.epoch,
+        eventId: `evt-${++sequence}`,
+        result: {
+          runId: WORKFLOW_RUN_ID, status: "completed", exitCode: 0,
+          stopReason: null, finalMessage: "done", usage: null,
+          lastSequence: sequence, finishedAt: NOW,
+        },
+      });
+      const terminal = await client.runStatus(WORKFLOW_RUN_ID);
+      expect(terminal.terminal).toBe(true);
+      expect(terminal.pendingRequests).toEqual([]);
+
+      unregister();
+      expect((await late).decision.kind).toBe("abort");
+    } finally {
+      unregister();
+      await client.close();
+      await transport.close();
+    }
   });
 
   it("carries the frozen workflow stop reason through the projection", () => {

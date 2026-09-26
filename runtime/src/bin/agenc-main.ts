@@ -446,6 +446,7 @@ export function formatCliHelpText(): string {
     "  --deadline-reserve <seconds>             Print mode: time before the deadline to wrap up",
     "  --no-tui                                 Force one-shot CLI mode",
     "  --bare                                   Run reduced startup and suppress all session hook extensions",
+    "  --light                                  Experimental: start with core tools and discover more",
     "  -c, --continue                           Continue the latest project session",
     "  -r, --resume <session-id>                Resume a prior project session in the TUI",
     "  --profile <name>                         Use a named config profile",
@@ -2930,6 +2931,7 @@ export async function oneShotCLI(
     writeStartupSandboxBypassNotice(sandboxBypass);
     const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
       simpleMode: startupCliFlags.simpleMode === true,
+    ...(startupCliFlags.lightMode === true ? { lightMode: true } : {}),
       dangerouslyBypassApprovalsAndSandbox:
         sandboxBypass.dangerouslyBypassApprovalsAndSandbox,
       // Print mode has no human attached: every permission request is
@@ -5301,6 +5303,7 @@ async function resumeColdDaemonSession(params: {
   writeStartupSandboxBypassNotice(sandboxBypass);
   const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
     simpleMode: startupFlags.simpleMode === true,
+    ...(startupFlags.lightMode === true ? { lightMode: true } : {}),
     dangerouslyBypassApprovalsAndSandbox:
       sandboxBypass.dangerouslyBypassApprovalsAndSandbox,
   });
@@ -5369,6 +5372,7 @@ export async function bootTUIEntry(
   writeStartupSandboxBypassNotice(sandboxBypass);
   const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
     simpleMode: startupCliFlags.simpleMode === true,
+    ...(startupCliFlags.lightMode === true ? { lightMode: true } : {}),
     dangerouslyBypassApprovalsAndSandbox:
       sandboxBypass.dangerouslyBypassApprovalsAndSandbox,
   });

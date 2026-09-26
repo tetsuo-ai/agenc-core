@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { remoteCommand } from "src/commands/remote.js";
 import {
   captureRemoteCliRuntimeContext,
+  parseAgenCRemoteCliArgs,
+  parseRemoteSlashArgs,
   runAgenCRemoteCli,
   runRemoteSlash,
   startRemoteOn,
@@ -44,9 +46,11 @@ function remoteFixture(
 
 async function loginRemoteFixture(
   prefix: string,
+  environment: Readonly<Record<string, string>> = {},
 ): Promise<RemoteFixture & { readonly backend: RemoteAuthBackend }> {
   const fixture = remoteFixture(prefix, {
     AGENC_BACKEND_URL: "https://backend.test",
+    ...environment,
   });
   const backend = new RemoteAuthBackend({
     agencHome: fixture.context.home.path,
@@ -56,6 +60,29 @@ async function loginRemoteFixture(
   });
   await backend.login();
   return { ...fixture, backend };
+}
+
+/** The backend answers 503 once, after the request we want to observe. */
+function stopAfterObservation() {
+  return vi.spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(JSON.stringify({ error: "stop-after-observation" }), {
+      status: 503,
+      headers: { "content-type": "application/json" },
+    }),
+  );
+}
+
+function expectPairStartWithCoreBearer(fetchSpy: ReturnType<typeof stopAfterObservation>): void {
+  expect(fetchSpy).toHaveBeenCalledOnce();
+  const [url, request] = fetchSpy.mock.calls[0] as [string, RequestInit];
+  expect(url).toBe("https://backend.test/v1/pair/start");
+  expect(request.headers).toEqual({
+    "content-type": "application/json",
+    authorization: "Bearer core-login-token",
+  });
+  expect(JSON.parse(String(request.body))).toEqual({
+    machineName: expect.any(String),
+  });
 }
 
 function slashCommandContext(
@@ -110,7 +137,7 @@ describe("/remote slash command", () => {
   });
 
   it("does not create a mobile sign-in code without a remote login session", async () => {
-    const fixture = remoteFixture("agenc-remote-no-login-");
+    const fixture = remoteFixture("agenc-remote-no-login-", { AGENC_REMOTE_FULL_CONTROL: "1" });
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockRejectedValue(new Error("network should not be touched"));
@@ -129,27 +156,13 @@ describe("/remote slash command", () => {
 
   it("sends the Core login bearer when creating the mobile bootstrap code", async () => {
     const fixture = await loginRemoteFixture("agenc-remote-bearer-");
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ error: "stop-after-observation" }), {
-        status: 503,
-        headers: { "content-type": "application/json" },
-      }),
-    );
+    const fetchSpy = stopAfterObservation();
 
     try {
-      await expect(startRemoteOn(fixture.context)).resolves.toEqual({
+      await expect(startRemoteOn(fixture.context, { fullControl: true })).resolves.toEqual({
         message: "Could not start pairing (503). Check your connection.",
       });
-      expect(fetchSpy).toHaveBeenCalledOnce();
-      const [url, request] = fetchSpy.mock.calls[0] as [string, RequestInit];
-      expect(url).toBe("https://backend.test/v1/pair/start");
-      expect(request.headers).toEqual({
-        "content-type": "application/json",
-        authorization: "Bearer core-login-token",
-      });
-      expect(JSON.parse(String(request.body))).toEqual({
-        machineName: expect.any(String),
-      });
+      expectPairStartWithCoreBearer(fetchSpy);
     } finally {
       await fixture.backend.logout();
       fixture.cleanup();
@@ -158,28 +171,66 @@ describe("/remote slash command", () => {
 
   it("sends the Core login bearer from foreground `agenc remote on`", async () => {
     const fixture = await loginRemoteFixture("agenc-remote-cli-bearer-");
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ error: "stop-after-observation" }), {
-        status: 503,
-        headers: { "content-type": "application/json" },
-      }),
-    );
+    const fetchSpy = stopAfterObservation();
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
     try {
       await expect(
-        runAgenCRemoteCli({ kind: "on" }, fixture.context),
+        runAgenCRemoteCli({ kind: "on", fullControl: true }, fixture.context),
       ).resolves.toBe(1);
-      expect(fetchSpy).toHaveBeenCalledOnce();
-      const [url, request] = fetchSpy.mock.calls[0] as [string, RequestInit];
-      expect(url).toBe("https://backend.test/v1/pair/start");
-      expect(request.headers).toEqual({
-        "content-type": "application/json",
-        authorization: "Bearer core-login-token",
+      expect(stdout.mock.calls.map(([chunk]) => String(chunk)).join("")).toContain(
+        "Warning: a paired phone gets full control of this computer's AgenC.",
+      );
+      expectPairStartWithCoreBearer(fetchSpy);
+    } finally {
+      await fixture.backend.logout();
+      fixture.cleanup();
+    }
+  });
+
+  it("is off by default: every start surface refuses before reading a login or touching the network", async () => {
+    const fixture = await loginRemoteFixture("agenc-remote-off-by-default-");
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("network should not be touched"));
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      const started = await startRemoteOn(fixture.context);
+      expect("message" in started ? started.message : "").toMatch(/^Phone remote control is off\./u);
+      expect("message" in started ? started.message : "").toContain("/remote on --full-control");
+      expect("message" in started ? started.message : "").toContain("AGENC_REMOTE_FULL_CONTROL=1");
+      expect(await runRemoteSlash("on", fixture.context)).toMatch(/^Phone remote control is off\./u);
+      expect(await runRemoteSlash("", fixture.context)).toMatch(/^Phone remote control is off\./u);
+      expect(await runAgenCRemoteCli({ kind: "on" }, fixture.context)).toBe(1);
+      const refusal = stderr.mock.calls.map(([chunk]) => String(chunk)).join("");
+      expect(refusal).toContain("Phone remote control is off.");
+      expect(refusal).toContain("agenc remote on --full-control");
+      expect(stdout).not.toHaveBeenCalled();
+      expect(fetchSpy).not.toHaveBeenCalled();
+      // status and off never needed the opt-in.
+      expect((await runRemoteSlash("status", fixture.context)).toLowerCase()).toMatch(/link/);
+    } finally {
+      await fixture.backend.logout();
+      fixture.cleanup();
+    }
+  });
+
+  it("turns on with the flag for one run or with the environment key, and says what that means", async () => {
+    expect(parseAgenCRemoteCliArgs(["remote", "on"])).toEqual({ kind: "on", fullControl: false });
+    expect(parseAgenCRemoteCliArgs(["remote", "on", "--full-control"])).toEqual({ kind: "on", fullControl: true });
+    expect(parseAgenCRemoteCliArgs(["remote", "on", "--yes"])).toEqual({ kind: "help" });
+    expect(parseRemoteSlashArgs("on --full-control")).toEqual({ sub: "on", fullControl: true });
+    expect(parseRemoteSlashArgs("--full-control")).toEqual({ sub: "on", fullControl: true });
+    expect(parseRemoteSlashArgs("status")).toEqual({ sub: "status", fullControl: false });
+    const fixture = await loginRemoteFixture("agenc-remote-opt-in-", { AGENC_REMOTE_FULL_CONTROL: "1" });
+    const fetchSpy = stopAfterObservation();
+    try {
+      await expect(startRemoteOn(fixture.context)).resolves.toEqual({
+        message: "Could not start pairing (503). Check your connection.",
       });
-      expect(JSON.parse(String(request.body))).toEqual({
-        machineName: expect.any(String),
-      });
+      expectPairStartWithCoreBearer(fetchSpy);
     } finally {
       await fixture.backend.logout();
       fixture.cleanup();

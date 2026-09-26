@@ -54,6 +54,7 @@ import { AgenCCommandExecService } from "./command-exec.js";
 import { CsvAgentJobsRepositoryAuthority } from "./csv-agent-jobs-authority.js";
 import { AgenCCsvJobReviewStateService } from "./csv-job-review.js";
 import { resolveAgenCDaemonRequestTimeoutMs } from "./daemon-request-policy.js";
+import { DAEMON_AGENT_STOP_TIMEOUT_MS } from "./operation-deadline.js";
 import { resolveDefaultLinuxSandboxExecutable } from "../sandbox/execution-broker.js";
 import {
   daemonInstanceIdentityFromRuntimeInfo,
@@ -118,6 +119,13 @@ import {
 } from "./protocol/index.js";
 import { sessionEventDelivery } from "./approval-delivery.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
+import {
+  StartupSessionRestoreAbandonedError,
+  StartupSessionRestores,
+  type StartupSessionRestoreContext,
+  type StartupSessionRestoreSettlement,
+  type StartupSessionRestoreSummary,
+} from "./startup-session-restores.js";
 import {
   AgenCUnixSocketServer,
   agenCDaemonLocalEndpoint,
@@ -459,6 +467,11 @@ export interface RunAgenCDaemonCliOptions {
   readonly beforeDaemonAuthorityCleanup?: () => void | Promise<void>;
   /** Test seam: per-task bound for the cleanup of a cancelled startup. */
   readonly startupCancelCleanupTaskTimeoutMs?: number;
+  /**
+   * Test seam: how long shutdown lets a session restore that is still running
+   * finish, and then how long it waits once it aborted it.
+   */
+  readonly startupRestoreShutdownGraceMs?: number;
   readonly runner?: AgenCBackgroundAgentRunner;
   readonly nativePeerCredentialBinding?: AgenCNativePeerCredentialBinding;
   readonly nativePeerCredentialAddonPath?: string;
@@ -681,6 +694,12 @@ function parseAgenCDaemonWebSocketPort(value: string): number {
   return port;
 }
 
+/**
+ * A browser page may open the daemon WebSocket only from a loopback origin.
+ * Non-browser clients send no Origin and pass. Remote pages, including AgenC's
+ * own web origin, are refused at the handshake: browser access to a daemon goes
+ * through the pairing relay, never straight to the loopback listener.
+ */
 export function validateAgenCDaemonWebSocketOrigin(
   origin: string | undefined,
 ): boolean {
@@ -690,9 +709,6 @@ export function validateAgenCDaemonWebSocketOrigin(
     url = new URL(origin);
   } catch {
     return false;
-  }
-  if (url.protocol === "https:" && url.hostname === "agenc.tech") {
-    return true;
   }
   return url.protocol === "http:" && isLoopbackHostname(url.hostname);
 }
@@ -1180,6 +1196,7 @@ async function runAgenCDaemonAction(
         beforeDaemonReloadAdoption: options.beforeDaemonReloadAdoption,
         beforeDaemonAuthorityCleanup: options.beforeDaemonAuthorityCleanup,
         startupCancelCleanupTaskTimeoutMs: options.startupCancelCleanupTaskTimeoutMs,
+        startupRestoreShutdownGraceMs: options.startupRestoreShutdownGraceMs,
         runner: options.runner,
         nativePeerCredentialBinding: options.nativePeerCredentialBinding,
         nativePeerCredentialAddonPath: options.nativePeerCredentialAddonPath,
@@ -3050,6 +3067,7 @@ async function runAgenCDaemonForeground(
     readonly beforeDaemonReloadAdoption?: () => void | Promise<void>;
     readonly beforeDaemonAuthorityCleanup?: () => void | Promise<void>;
     readonly startupCancelCleanupTaskTimeoutMs?: number;
+    readonly startupRestoreShutdownGraceMs?: number;
     readonly runner?: AgenCBackgroundAgentRunner;
     readonly nativePeerCredentialBinding?: AgenCNativePeerCredentialBinding;
     readonly nativePeerCredentialAddonPath?: string;
@@ -3125,6 +3143,7 @@ async function runAgenCDaemonForegroundLocked(
     readonly beforeDaemonReloadAdoption?: () => void | Promise<void>;
     readonly beforeDaemonAuthorityCleanup?: () => void | Promise<void>;
     readonly startupCancelCleanupTaskTimeoutMs?: number;
+    readonly startupRestoreShutdownGraceMs?: number;
     readonly runner?: AgenCBackgroundAgentRunner;
     readonly nativePeerCredentialBinding?: AgenCNativePeerCredentialBinding;
     readonly nativePeerCredentialAddonPath?: string;
@@ -3458,6 +3477,13 @@ async function runAgenCDaemonForegroundLocked(
         limits: resolveAdmissionConcurrencyLimits(host.env, {
           sessionLimit: activeConfig.agent_max_threads,
         }),
+        // Journal projections are reused only by the exact build that
+        // validated them; the first start of any other build redoes them.
+        ...(distVersion !== null
+          ? {
+              canonicalProjectionEpoch: `${distVersion.runtimeVersion}+${distVersion.commit}+${distVersion.buildTime}`,
+            }
+          : {}),
       });
       const recovery = executionAdmissionKernel.initializeExistingState();
       if (
@@ -3566,6 +3592,13 @@ async function runAgenCDaemonForegroundLocked(
         resolveFatalPeerCredentialFailure = resolve;
       },
     );
+    // A session restored after the daemon started serving whose publication
+    // failed and could not be rolled back. The daemon stops rather than serve
+    // a session it may have published in part.
+    let resolveStartupRestoreFailure!: (error: unknown) => void;
+    const startupRestoreFailureCompleted = new Promise<unknown>((resolve) => {
+      resolveStartupRestoreFailure = resolve;
+    });
     let runner = options.runner;
     const approvalBroker: LiveApprovalBroker = new LiveApprovalBroker({
       canAnswerCrossProviderConsent: crossProviderConsentAvailability({
@@ -3625,14 +3658,79 @@ async function runAgenCDaemonForegroundLocked(
     cleanup.register("daemon-snapshot-policy", async () => {
       snapshotPolicies.close();
     });
+    // The sessions open at the last shutdown are restored after the daemon
+    // starts serving. Each is registered here, before the socket listens, so
+    // no request can name one before the daemon knows it is still restoring.
+    const startupRestores: StartupSessionRestores<StartupSessionRestoreRunTarget> =
+      new StartupSessionRestores<StartupSessionRestoreRunTarget>({
+      targets: startupRecovery.recoveredRuns.map((run) => ({
+        runId: run.id,
+        ...(run.currentSessionId !== undefined
+          ? { sessionId: run.currentSessionId }
+          : {}),
+        run,
+      })),
+      concurrency: STARTUP_RUNTIME_RESTORE_CONCURRENCY,
+      task: ({ run }, context): Promise<"published" | "unavailable"> =>
+        restoreAndPublishRecoveredRun(
+          sessionManager,
+          agentManager,
+          runner,
+          startupRecovery,
+          run,
+          context,
+          {
+            recordReplayToolResult: (result) =>
+              recordStartupReplayToolResult(snapshotPolicies, result),
+            onResumeSourceCloseError: (error) => {
+              io.stderr.write(
+                `agenc: startup restore of run ${run.id} could not close its resume source: ${formatCleanupError(error)}\n`,
+              );
+            },
+          },
+        ),
+      onSettled: (settled) => {
+        writeAgenCDaemonStartupDebug(
+          host,
+          io,
+          startupStartedAt,
+          describeStartupSessionRestoreSettlement(settled),
+        );
+        if (settled.outcome !== "failed") return;
+        const { run } = settled.target;
+        if (
+          settled.error instanceof StartupSessionPublicationError &&
+          !settled.error.rolledBack
+        ) {
+          io.stderr.write(
+            `agenc: startup restore of run ${run.id} failed to publish and could not be rolled back; stopping the daemon: ${formatCleanupError(settled.error)}\n`,
+          );
+          shuttingDown = true;
+          // Requests waiting for this session get the shutdown answer instead
+          // of running against what the failed rollback left.
+          startupRestores.stop();
+          resolveStartupRestoreFailure(settled.error);
+          return;
+        }
+        io.stderr.write(
+          `agenc: startup restore of run ${run.id}${
+            run.currentSessionId !== undefined
+              ? ` (session ${run.currentSessionId})`
+              : ""
+          } failed; it was not published and can be resumed again: ${formatCleanupError(settled.error)}\n`,
+        );
+      },
+    });
     let routines: RoutineService | undefined;
     let remote: RemoteService | undefined;
     let ownerTelegram: OwnerTelegramService | undefined;
-    const agentManager = new AgenCDaemonAgentManager({
+    const agentManager: AgenCDaemonAgentManager = new AgenCDaemonAgentManager({
       approvalBroker,
       agencHome: authStartup.daemonHome,
       runner,
       sessionManager,
+      waitForStartupRestore: (ids, signal): Promise<void> | undefined =>
+        startupRestores.waitFor(ids, signal),
       terminateSession: async (params) => {
         try {
           return await clientMultiplexer.terminateSession(params);
@@ -3779,44 +3877,6 @@ async function runAgenCDaemonForegroundLocked(
       );
       return 1;
     }
-    await hydrateAgenCDaemonStartupRecovery(
-      sessionManager,
-      agentManager,
-      runner,
-      startupRecovery,
-      {
-        recordReplayToolResult: (result) => {
-          snapshotPolicies.recordSessionEvent(result.sessionId, {
-            method: "event.session_event",
-            params: {
-              agentId: result.agentId,
-              event: {
-                type:
-                  result.terminalStatus === "poisoned"
-                    ? "tool_call_recovery_poisoned"
-                    : "tool_call_completed",
-                payload: {
-                  callId: result.callId,
-                  result: result.result,
-                  isError: result.isError,
-                  metadata: {
-                    toolName: result.toolName,
-                    ...(result.recoveryCategory !== undefined
-                      ? { recoveryCategory: result.recoveryCategory }
-                      : {}),
-                  },
-                },
-              },
-            },
-          });
-          // A recovery outcome is written at once. The replay or poison of a
-          // stale tool call is a startup event, not part of a live tool
-          // burst: the latest snapshot must show it the moment the call's
-          // in-flight row turns terminal, not after the coalesce window.
-          snapshotPolicies.flushSession(result.sessionId);
-        },
-      },
-    );
     if (host.startupGuardReceiver?.wasRequested() === true) return 1;
     // M5 verified-change workflow controller. Constructed over the shared
     // admission kernel + durable state, with the Phase 5 session-backed seams
@@ -3824,7 +3884,9 @@ async function runAgenCDaemonForegroundLocked(
     // verification commands, delegate spawner, one-shot reviewer). Open
     // workflow runs are resumed (D3 recovery) after admission recovery and
     // startup journal recovery so adopted/re-executed effects observe fully
-    // recovered budget state.
+    // recovered budget state. They are also resumed after the sessions open
+    // at the last shutdown are restored, the order they always ran in: those
+    // restores now finish after the daemon starts serving (see below).
     const workflowWiring = createDaemonWorkflowController({
       approvalBroker,
       agencHome: authStartup.daemonHome,
@@ -3842,11 +3904,15 @@ async function runAgenCDaemonForegroundLocked(
         ),
     });
     cleanup.register("daemon-workflow-controller", () => workflowWiring.close());
-    void workflowWiring.resumeOpenWorkflows().catch((error) => {
-      io.stderr.write(
-        `agenc: workflow startup recovery failed: ${formatCleanupError(error)}\n`,
-      );
-    });
+    const resumeOpenWorkflows = (): void => {
+      void workflowWiring.resumeOpenWorkflows().catch((error) => {
+        io.stderr.write(
+          `agenc: workflow startup recovery failed: ${formatCleanupError(error)}\n`,
+        );
+      });
+    };
+    // With no session to restore, nothing is left to order them after.
+    if (startupRestores.total === 0) resumeOpenWorkflows();
     const workflowStartService = new DaemonWorkflowStartService({
       controller: workflowWiring.controller,
       primaryCwd,
@@ -3864,6 +3930,7 @@ async function runAgenCDaemonForegroundLocked(
         ),
       ),
       ready: () => !shuttingDown,
+      restoringSessions: () => startupRestores.unsettled,
     });
     const realtime = new AgenCRealtimeRpcService({
       resolveThread: (threadId) =>
@@ -4056,6 +4123,7 @@ async function runAgenCDaemonForegroundLocked(
       clientMultiplexer,
       routinePreparation,
       sessionManager,
+      startupRestores,
       fuzzyAllowedRoots: [primaryCwd],
       commandExec,
       authBackend: reloadableAuthBackend,
@@ -4306,6 +4374,28 @@ async function runAgenCDaemonForegroundLocked(
     // startup failures still release partially constructed actors.
     unregisterAgentsCleanup();
     cleanup.register("daemon-agents", stopAgents);
+    // Runs before daemon-agents (cleanup runs in reverse order). Restores
+    // that never started are dropped and their waiters answered with the
+    // shutdown error. The ones already running finish and publish first, so
+    // stopAll then suspends them like every other idle session. One that
+    // does not finish in time is aborted, and one still running after that
+    // can no longer publish: no session is published after stopAll.
+    cleanup.register("daemon-startup-restores", async () => {
+      const graceMs =
+        options.startupRestoreShutdownGraceMs ??
+        STARTUP_RESTORE_SHUTDOWN_GRACE_MS;
+      const givenUp = await startupRestores.shutdown({
+        graceMs,
+        abortGraceMs: graceMs,
+      });
+      if (givenUp.length > 0) {
+        throw new Error(
+          `startup session restore did not stop for run(s) ${givenUp
+            .map(({ run }) => run.id)
+            .join(", ")}`,
+        );
+      }
+    });
     unregisterCommandExecCleanup();
     cleanup.register("daemon-command-exec", closeCommandExec);
     cleanup.register("daemon-connections", async () => {
@@ -4439,6 +4529,27 @@ async function runAgenCDaemonForegroundLocked(
       }
       if (!shuttingDown) {
         io.stdout.write(`AgenC daemon running (pid ${host.pid})\n`);
+        // The daemon serves from here on. The sessions open at its last
+        // shutdown are rebuilt in the background, four at a time; a request
+        // naming one waits for it (see StartupSessionRestores).
+        void startupRestores.settled.then((summary) => {
+          reportStartupSessionRestoreSummary(host, io, startupStartedAt, summary);
+          if (summary.total > 0 && summary.abandoned === 0 && !shuttingDown) {
+            resumeOpenWorkflows();
+          }
+        });
+        startupRecovery.recoveredRuns.forEach((run, index, runs) => {
+          writeAgenCDaemonStartupDebug(
+            host,
+            io,
+            startupStartedAt,
+            `startup session restore ${index + 1}/${runs.length} queued: run ${run.id}` +
+              (run.currentSessionId !== undefined
+                ? ` session ${run.currentSessionId}`
+                : ""),
+          );
+        });
+        startupRestores.start();
       }
 
       const termination = await Promise.race([
@@ -4448,6 +4559,10 @@ async function runAgenCDaemonForegroundLocked(
         })),
         fatalPeerCredentialFailureCompleted.then((error) => ({
           kind: "peer_credential_failure" as const,
+          error,
+        })),
+        startupRestoreFailureCompleted.then((error) => ({
+          kind: "startup_restore_failure" as const,
           error,
         })),
         rpcShutdownCompleted.then(() => ({
@@ -4464,7 +4579,10 @@ async function runAgenCDaemonForegroundLocked(
       if (termination.kind === "signal") {
         cleanupContext = termination.event;
         exitCode = termination.event.exitCode;
-      } else if (termination.kind === "peer_credential_failure") {
+      } else if (
+        termination.kind === "peer_credential_failure" ||
+        termination.kind === "startup_restore_failure"
+      ) {
         cleanupContext = { reason: "daemon_shutdown" };
         exitCode = 1;
       } else {
@@ -5535,110 +5653,296 @@ export class AgenCDaemonSnapshotPolicyRegistry {
   }
 }
 
-async function hydrateAgenCDaemonStartupRecovery(
+/**
+ * How many recovered sessions have their runtime rebuilt at the same time.
+ * A rebuild is a full session bootstrap, and most of it waits on the disk and
+ * the network, which a few rebuilds in flight overlap. On 32 sessions whose
+ * bootstraps waited on catalog downloads it took 14 to 21 s one at a time,
+ * 6.3 to 7.7 s four at a time and 6.0 to 6.3 s eight at a time. Without those
+ * waits every bound from one to eight took 5.1 to 5.7 s. Four keeps most of
+ * the gain with fewer bootstraps in flight. The rebuilds now run while the
+ * daemon serves, so the bound also caps how much they compete with the first
+ * requests of the clients that connect.
+ */
+const STARTUP_RUNTIME_RESTORE_CONCURRENCY = 4;
+
+/**
+ * How long shutdown lets a session restore that is already running finish,
+ * and then how long it waits for one it aborted. A restore is one session
+ * bootstrap; this is the bound an agent stop gets.
+ */
+const STARTUP_RESTORE_SHUTDOWN_GRACE_MS = DAEMON_AGENT_STOP_TIMEOUT_MS;
+
+type StartupRuntimeRestore = Awaited<
+  ReturnType<typeof restoreRecoveredAgentRuntime>
+>;
+
+/** One session the daemon restores after it starts serving. */
+interface StartupSessionRestoreRunTarget {
+  readonly runId: string;
+  readonly sessionId?: string;
+  readonly run: RecoveredAgentRun;
+}
+
+/**
+ * A recovered session whose publication failed. What it had published was
+ * rolled back when `rolledBack` is true. When it is false, undoing it failed
+ * too, the daemon may hold part of that session, and the daemon stops rather
+ * than serve it.
+ */
+class StartupSessionPublicationError extends AggregateError {
+  readonly rolledBack: boolean;
+
+  constructor(
+    runId: string,
+    primary: unknown,
+    cleanupErrors: readonly unknown[],
+  ) {
+    super(
+      [primary, ...cleanupErrors],
+      [
+        `startup restore publication failed for run ${runId}: ${formatCleanupError(primary)}`,
+        ...cleanupErrors.map(
+          (cleanupError) =>
+            `rollback also failed: ${formatCleanupError(cleanupError)}`,
+        ),
+      ].join("; "),
+      { cause: primary },
+    );
+    this.name = "StartupSessionPublicationError";
+    this.rolledBack = cleanupErrors.length === 0;
+  }
+}
+
+/**
+ * Rebuild one recovered session's runtime, then publish the session and its
+ * agent. A rebuild that fails still publishes them, without a runtime, as it
+ * always did. A publication that fails is rolled back and reported with
+ * {@link StartupSessionPublicationError}.
+ */
+async function restoreAndPublishRecoveredRun(
   sessionManager: AgenCDaemonSessionManager,
   agentManager: AgenCDaemonAgentManager,
   runner: AgenCBackgroundAgentRunner,
   report: DaemonStartupRecoveryReport,
+  run: RecoveredAgentRun,
+  context: StartupSessionRestoreContext,
   options: {
     readonly recordReplayToolResult?: (
       result: RecoveredReplayToolResult,
     ) => void | Promise<void>;
+    readonly onResumeSourceCloseError?: (error: unknown) => void;
   } = {},
-): Promise<void> {
-  for (const run of report.recoveredRuns) {
-    const runtimeRestore = await restoreRecoveredAgentRuntime(
-      runner,
-      run,
-      options,
-    );
-    const metadata = recoveryMetadataForRun(
-      report,
-      run,
-      runtimeRestore.available,
-    );
-    let restoredSessionId: string | undefined;
+): Promise<"published" | "unavailable"> {
+  let runtimeRestore: StartupRuntimeRestore;
+  try {
+    runtimeRestore = await restoreRecoveredAgentRuntime(runner, run, {
+      ...options,
+      signal: context.signal,
+    });
+  } catch (error) {
+    // Every path restoreRecoveredAgentRuntime reaches closes the run's resume
+    // source itself. This covers a failure before it could, so the pinned
+    // rollout does not stay held while a client resumes the session.
     try {
-      if (run.currentSessionId !== undefined) {
-        const restoredSession = await sessionManager.restoreSession({
-          sessionId: run.currentSessionId,
-          agentId: run.id,
-          status: sessionStatusForRecoveredRun(run),
-          createdAt: run.startedAt,
-          ...(run.resumeSource !== undefined
-            ? { cwd: run.resumeSource.cwd }
-            : {}),
-          initialPrompt: run.objective,
-          metadata,
-        });
-        if (restoredSession.agentId === run.id) {
-          restoredSessionId = restoredSession.sessionId;
-        }
-      }
-      await agentManager.restoreAgent({
+      run.resumeSource?.close();
+    } catch (closeError) {
+      options.onResumeSourceCloseError?.(closeError);
+    }
+    throw error;
+  }
+  if (context.signal.aborted || !context.beginPublication()) {
+    // Shutdown aborted this restore, or stopped waiting for it and has
+    // suspended the daemon's sessions, or is about to. Nothing is published
+    // then, so a runtime it still rebuilt is retired instead.
+    if (runtimeRestore.restoreAttemptId !== undefined) {
+      await runner.rollbackRestoredAgent?.(
+        run.id,
+        runtimeRestore.restoreAttemptId,
+      );
+    }
+    throw new StartupSessionRestoreAbandonedError();
+  }
+  await publishRecoveredAgentRun(
+    sessionManager,
+    agentManager,
+    runner,
+    report,
+    run,
+    runtimeRestore,
+  );
+  return runtimeRestore.available ? "published" : "unavailable";
+}
+
+function recordStartupReplayToolResult(
+  snapshotPolicies: AgenCDaemonSnapshotPolicyRegistry,
+  result: RecoveredReplayToolResult,
+): void {
+  snapshotPolicies.recordSessionEvent(result.sessionId, {
+    method: "event.session_event",
+    params: {
+      agentId: result.agentId,
+      event: {
+        type:
+          result.terminalStatus === "poisoned"
+            ? "tool_call_recovery_poisoned"
+            : "tool_call_completed",
+        payload: {
+          callId: result.callId,
+          result: result.result,
+          isError: result.isError,
+          metadata: {
+            toolName: result.toolName,
+            ...(result.recoveryCategory !== undefined
+              ? { recoveryCategory: result.recoveryCategory }
+              : {}),
+          },
+        },
+      },
+    },
+  });
+  // A recovery outcome is written at once. The replay or poison of a stale
+  // tool call is a startup event, not part of a live tool burst: the latest
+  // snapshot must show it the moment the call's in-flight row turns terminal,
+  // not after the coalesce window.
+  snapshotPolicies.flushSession(result.sessionId);
+}
+
+function describeStartupSessionRestoreSettlement(
+  settled: StartupSessionRestoreSettlement<StartupSessionRestoreRunTarget>,
+): string {
+  const { run } = settled.target;
+  return (
+    `startup session restore ${settled.order}/${settled.total} ` +
+    `${settled.outcome}: run ${run.id}` +
+    (run.currentSessionId !== undefined
+      ? ` session ${run.currentSessionId}`
+      : "") +
+    ` in ${settled.durationMs}ms` +
+    (settled.requested ? " (requested)" : "")
+  );
+}
+
+function reportStartupSessionRestoreSummary(
+  host: Pick<AgenCDaemonCliHost, "env">,
+  io: AgenCDaemonCliIo,
+  startupStartedAt: number,
+  summary: StartupSessionRestoreSummary,
+): void {
+  if (summary.abandoned > 0) {
+    writeAgenCDaemonStartupDebug(
+      host,
+      io,
+      startupStartedAt,
+      "startup session restore stopped",
+    );
+    io.stderr.write(
+      `agenc: daemon shutdown stopped restoring the sessions open at its last shutdown; ` +
+        `${summary.abandoned} of ${summary.total} were not restored and will be at the next start\n`,
+    );
+    return;
+  }
+  writeAgenCDaemonStartupDebug(
+    host,
+    io,
+    startupStartedAt,
+    "startup session restore complete",
+  );
+  if (summary.total === 0) return;
+  io.stderr.write(
+    `agenc: daemon restored ${summary.total} session(s) open at its last shutdown ` +
+      `in ${summary.elapsedMs}ms: ${summary.published} with a live runtime, ` +
+      `${summary.unavailable} without one, ${summary.failed} not published\n`,
+  );
+}
+
+async function publishRecoveredAgentRun(
+  sessionManager: AgenCDaemonSessionManager,
+  agentManager: AgenCDaemonAgentManager,
+  runner: AgenCBackgroundAgentRunner,
+  report: DaemonStartupRecoveryReport,
+  run: RecoveredAgentRun,
+  runtimeRestore: StartupRuntimeRestore,
+): Promise<void> {
+  const metadata = recoveryMetadataForRun(
+    report,
+    run,
+    runtimeRestore.available,
+  );
+  let restoredSessionId: string | undefined;
+  try {
+    if (run.currentSessionId !== undefined) {
+      const restoredSession = await sessionManager.restoreSession({
+        sessionId: run.currentSessionId,
         agentId: run.id,
-        objective: run.objective,
-        status: agentStatusForRecoveredRun(run),
+        status: sessionStatusForRecoveredRun(run),
         createdAt: run.startedAt,
-        startedAt: run.startedAt,
-        lastActiveAt: run.lastActiveAt,
         ...(run.resumeSource !== undefined
           ? { cwd: run.resumeSource.cwd }
           : {}),
-        stateProjectDir: run.projectDir,
+        initialPrompt: run.objective,
         metadata,
-        runtimeAvailable: runtimeRestore.available,
-        ...(runtimeRestore.restoreAttemptId !== undefined
-          ? { restoreAttemptId: runtimeRestore.restoreAttemptId }
-          : {}),
-        ...(run.currentSessionId !== undefined
-          ? { sessionIds: [run.currentSessionId] }
-          : {}),
       });
-    } catch (error) {
-      const cleanupErrors: unknown[] = [];
-      if (runtimeRestore.restoreAttemptId !== undefined) {
-        try {
-          await agentManager.rollbackRestoredAgentRecord(
-            run.id,
-            runtimeRestore.restoreAttemptId,
-          );
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
-        try {
-          if (runner.rollbackRestoredAgent === undefined) {
-            throw new Error(
-              "restored runtime has no pre-publication rollback support",
-            );
-          }
-          await runner.rollbackRestoredAgent(
-            run.id,
-            runtimeRestore.restoreAttemptId,
-          );
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
+      if (restoredSession.agentId === run.id) {
+        restoredSessionId = restoredSession.sessionId;
       }
-      if (restoredSessionId !== undefined) {
-        try {
-          await sessionManager.terminateSession({
-            sessionId: restoredSessionId,
-            reason: "startup_restore_publication_failed",
-          });
-        } catch (cleanupError) {
-          cleanupErrors.push(cleanupError);
-        }
-      }
-      if (cleanupErrors.length > 0) {
-        throw new AggregateError(
-          [error, ...cleanupErrors],
-          `startup restore publication failed for run ${run.id}`,
-          { cause: error },
-        );
-      }
-      throw error;
     }
+    await agentManager.restoreAgent({
+      agentId: run.id,
+      objective: run.objective,
+      status: agentStatusForRecoveredRun(run),
+      createdAt: run.startedAt,
+      startedAt: run.startedAt,
+      lastActiveAt: run.lastActiveAt,
+      ...(run.resumeSource !== undefined
+        ? { cwd: run.resumeSource.cwd }
+        : {}),
+      stateProjectDir: run.projectDir,
+      metadata,
+      runtimeAvailable: runtimeRestore.available,
+      ...(runtimeRestore.restoreAttemptId !== undefined
+        ? { restoreAttemptId: runtimeRestore.restoreAttemptId }
+        : {}),
+      ...(run.currentSessionId !== undefined
+        ? { sessionIds: [run.currentSessionId] }
+        : {}),
+    });
+  } catch (error) {
+    const cleanupErrors: unknown[] = [];
+    if (runtimeRestore.restoreAttemptId !== undefined) {
+      try {
+        await agentManager.rollbackRestoredAgentRecord(
+          run.id,
+          runtimeRestore.restoreAttemptId,
+        );
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+      try {
+        if (runner.rollbackRestoredAgent === undefined) {
+          throw new Error(
+            "restored runtime has no pre-publication rollback support",
+          );
+        }
+        await runner.rollbackRestoredAgent(
+          run.id,
+          runtimeRestore.restoreAttemptId,
+        );
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    if (restoredSessionId !== undefined) {
+      try {
+        await sessionManager.terminateSession({
+          sessionId: restoredSessionId,
+          reason: "startup_restore_publication_failed",
+        });
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    throw new StartupSessionPublicationError(run.id, error, cleanupErrors);
   }
 }
 
@@ -5679,7 +5983,7 @@ function recoveryMetadataForRun(
           canonicalRolloutIno: canonicalSource.rolloutIdentity.ino,
         }
       : {}),
-    ...(runtimeOptions !== null ? { runtimeOptions } : {}),
+    ...(runtimeOptions !== null ? { runtimeOptions, lightMode: runtimeOptions.lightMode === true } : {}),
     recovery: {
       recoveredAt: report.recoveredAt,
       projectDir: run.projectDir,
@@ -5705,6 +6009,13 @@ export async function restoreRecoveredAgentRuntime(
     readonly recordReplayToolResult?: (
       result: RecoveredReplayToolResult,
     ) => void | Promise<void>;
+    /** Aborts the rebuild; it then fails and the run is unavailable. */
+    readonly signal?: AbortSignal;
+    /**
+     * Reports a failure to close the run's resume source after its rebuild
+     * instead of throwing it, which would lose a runtime already rebuilt.
+     */
+    readonly onResumeSourceCloseError?: (error: unknown) => void;
   } = {},
 ): Promise<{
   readonly available: boolean;
@@ -5736,8 +6047,10 @@ export async function restoreRecoveredAgentRuntime(
   const initialMessages = recoveredInitialMessages(run.latestSnapshot);
   const replayToolCalls = recoveredReplayToolCalls(run.latestSnapshot);
   const restoreAttemptId = randomUUID();
+  let outcome: { readonly available: boolean; readonly restoreAttemptId?: string };
   try {
     const restored = await runner.restoreAgent({
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
       agentId: run.id,
       objective: run.objective,
       cwd: resumeSource.cwd,
@@ -5801,14 +6114,22 @@ export async function restoreRecoveredAgentRuntime(
           : {}),
       },
     });
-    return restored
+    outcome = restored
       ? { available: true, restoreAttemptId }
       : { available: false };
   } catch {
-    return { available: false };
-  } finally {
-    resumeSource.close();
+    outcome = { available: false };
   }
+  // The catch above takes every failure, so the source is always closed here.
+  // A caller that handles close errors keeps the restore's outcome; without a
+  // handler the close error propagates, as it did from the old finally.
+  try {
+    resumeSource.close();
+  } catch (error) {
+    if (options.onResumeSourceCloseError === undefined) throw error;
+    options.onResumeSourceCloseError(error);
+  }
+  return outcome;
 }
 
 /**

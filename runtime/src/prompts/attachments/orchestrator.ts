@@ -73,6 +73,8 @@ export interface GetAttachmentsOptions {
    * canonical choice).
    */
   readonly sessionKey: object;
+  /** Defer optional catalogs until their callable capability is visible. */
+  readonly lightMode?: boolean;
   /**
    * Exact turn identity plus the authoritative root-human turn currently
    * bound to the session. The root turn can be absent or belong to another

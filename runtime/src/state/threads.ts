@@ -52,7 +52,9 @@ export class StateThreadRepository {
    * Relocate every live SQLite reference when a rollout JSONL is archived or
    * restored. The filesystem rename is owned by FileThreadStore; keeping this
    * projection move in one immediate transaction prevents replay, retention,
-   * and terminal-epoch checks from retaining a stale source path.
+   * and terminal-epoch checks from retaining a stale source path. A canonical
+   * projection marker moves with its receipt: a rename keeps the file's bytes,
+   * mtime and inode, so the moved rows still project exactly those bytes.
    */
   relocateRolloutSource(sourcePath: string, targetPath: string): void {
     if (sourcePath === targetPath) return;
@@ -394,6 +396,12 @@ export class StateThreadRepository {
     readonly size: number;
     readonly sha256: string;
     readonly lineCount: number;
+    /**
+     * Set only by canonical admission recovery for bytes it strictly
+     * validated and fsyncs before this transaction commits. Omitted, the
+     * write clears any earlier marker for the source.
+     */
+    readonly canonicalMarker?: CanonicalProjectionMarker;
   }): void {
     this.driver.transaction(() => {
       this.driver
@@ -430,8 +438,85 @@ export class StateThreadRepository {
         sha256: params.sha256,
         lineCount: params.lineCount,
         itemCount: params.items.length,
+        ...(params.canonicalMarker !== undefined
+          ? { canonicalMarker: params.canonicalMarker }
+          : {}),
       });
     });
+  }
+
+  /**
+   * The marker canonical admission recovery left on its last projection of
+   * `sourcePath`, or `undefined` when the last projection came from any
+   * other path. Only an exact match against the current source proves the
+   * rows still project those exact, strictly validated bytes.
+   */
+  getCanonicalProjectionMarker(
+    sourcePath: string,
+  ): (CanonicalProjectionMarker & { readonly threadId: ThreadId }) | undefined {
+    const row = this.driver
+      .prepareState<[string], CanonicalProjectionMarkerRow>(
+        `SELECT thread_id, canonical_epoch, canonical_size, canonical_mtime_ms,
+                canonical_sha256, canonical_dev, canonical_ino
+         FROM backfill_files
+         WHERE source_path = ?`,
+      )
+      .get(sourcePath);
+    if (
+      row === undefined ||
+      row.canonical_epoch === null ||
+      row.canonical_size === null ||
+      row.canonical_mtime_ms === null ||
+      row.canonical_sha256 === null ||
+      row.canonical_dev === null ||
+      row.canonical_ino === null
+    ) {
+      return undefined;
+    }
+    return {
+      threadId: row.thread_id,
+      epoch: row.canonical_epoch,
+      size: row.canonical_size,
+      mtimeMs: row.canonical_mtime_ms,
+      sha256: row.canonical_sha256,
+      dev: row.canonical_dev,
+      ino: row.canonical_ino,
+    };
+  }
+
+  /**
+   * Move a marker to the file identity that now holds its exact bytes. The
+   * caller fsyncs that file before this transaction commits; the update
+   * applies only while every content field still matches.
+   */
+  updateCanonicalProjectionIdentity(
+    sourcePath: string,
+    marker: CanonicalProjectionMarker,
+  ): void {
+    const changes = this.driver
+      .prepareState<[string, string, string, string, number, number, string]>(
+        `UPDATE backfill_files
+         SET canonical_dev = ?, canonical_ino = ?
+         WHERE source_path = ?
+           AND canonical_epoch = ?
+           AND canonical_size = ?
+           AND canonical_mtime_ms = ?
+           AND canonical_sha256 = ?`,
+      )
+      .run(
+        marker.dev,
+        marker.ino,
+        sourcePath,
+        marker.epoch,
+        marker.size,
+        marker.mtimeMs,
+        marker.sha256,
+      ).changes;
+    if (changes !== 1) {
+      throw new Error(
+        `canonical projection marker for ${sourcePath} changed while it was being reused`,
+      );
+    }
   }
 
   /**
@@ -531,12 +616,19 @@ export class StateThreadRepository {
     readonly sha256: string;
     readonly lineCount: number;
     readonly itemCount: number;
+    readonly canonicalMarker?: CanonicalProjectionMarker;
   }): void {
+    // Every projection write replaces the canonical marker columns: the
+    // canonical admission path sets them, every other writer (tolerant
+    // backfill, incremental append, strict startup replay) clears them.
+    const marker = params.canonicalMarker;
     this.driver
       .prepareState(
         `INSERT INTO backfill_files (
-          source_path, thread_id, mtime_ms, size, sha256, line_count, item_count
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          source_path, thread_id, mtime_ms, size, sha256, line_count, item_count,
+          canonical_epoch, canonical_size, canonical_mtime_ms, canonical_sha256,
+          canonical_dev, canonical_ino
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_path) DO UPDATE SET
           thread_id = excluded.thread_id,
           mtime_ms = excluded.mtime_ms,
@@ -544,6 +636,12 @@ export class StateThreadRepository {
           sha256 = excluded.sha256,
           line_count = excluded.line_count,
           item_count = excluded.item_count,
+          canonical_epoch = excluded.canonical_epoch,
+          canonical_size = excluded.canonical_size,
+          canonical_mtime_ms = excluded.canonical_mtime_ms,
+          canonical_sha256 = excluded.canonical_sha256,
+          canonical_dev = excluded.canonical_dev,
+          canonical_ino = excluded.canonical_ino,
           imported_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`,
       )
       .run(
@@ -554,6 +652,12 @@ export class StateThreadRepository {
         params.sha256,
         params.lineCount,
         params.itemCount,
+        marker?.epoch ?? null,
+        marker?.size ?? null,
+        marker?.mtimeMs ?? null,
+        marker?.sha256 ?? null,
+        marker?.dev ?? null,
+        marker?.ino ?? null,
       );
     this.driver
       .prepareState(
@@ -596,6 +700,31 @@ interface BackfillFileRow {
   readonly sha256: string;
   readonly line_count: number;
   readonly item_count: number;
+}
+
+/**
+ * Proof that canonical admission recovery strictly validated these exact
+ * source bytes, projected them, and fsynced the file with this identity
+ * before the marker committed. `epoch` names the build that did it; a
+ * marker from any other build is never reused.
+ */
+export interface CanonicalProjectionMarker {
+  readonly epoch: string;
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly sha256: string;
+  readonly dev: string;
+  readonly ino: string;
+}
+
+interface CanonicalProjectionMarkerRow {
+  readonly thread_id: string;
+  readonly canonical_epoch: string | null;
+  readonly canonical_size: number | null;
+  readonly canonical_mtime_ms: number | null;
+  readonly canonical_sha256: string | null;
+  readonly canonical_dev: string | null;
+  readonly canonical_ino: string | null;
 }
 
 /** One indexed rollout line, ready to INSERT into `thread_rollout_items`. */

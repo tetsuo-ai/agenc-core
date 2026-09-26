@@ -58,7 +58,7 @@ describe("state migration registry", () => {
   it("loads state migrations from numbered migration files in order", () => {
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.version)).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-      22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36,
     ]);
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.name)).toEqual([
       "initial_state_schema",
@@ -96,6 +96,7 @@ describe("state migration registry", () => {
       "runtime_settings_max_effort",
       "thread_archive_cleanup_generation",
       "idempotent_unknown_effect_outcome",
+      "canonical_projection_marker",
     ]);
     expectMigrationVersionsAreUnique(STATE_DB_MIGRATIONS);
   });
@@ -149,6 +150,7 @@ describe("state migration registry", () => {
       "033_runtime_settings_max_effort.ts",
       "034_thread_archive_cleanup_generation.ts",
       "035_idempotent_unknown_effect_outcome.ts",
+      "036_canonical_projection_marker.ts",
     ]);
   });
 
@@ -293,6 +295,37 @@ describe("state migration registry", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("adds canonical projection markers without trusting existing receipts", () => {
+    const db = new Database(":memory:");
+    try {
+      db.pragma("foreign_keys = ON");
+      applyMigrations(db, STATE_DB_MIGRATIONS.filter(migration => migration.version <= 35));
+      db.exec(`
+        INSERT INTO threads (thread_id, created_at, updated_at)
+        VALUES ('receipt-thread', '2026-09-25T00:00:00.000Z', '2026-09-25T00:00:00.000Z');
+        INSERT INTO backfill_files (source_path, thread_id, mtime_ms, size, sha256, line_count, item_count)
+        VALUES ('/p/sessions/t/rollout-t.jsonl', 'receipt-thread', 1.5, 10, '${"a".repeat(64)}', 2, 1);
+      `);
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+      expect(db.prepare(
+        `SELECT mtime_ms, size, canonical_epoch, canonical_size, canonical_mtime_ms,
+                canonical_sha256, canonical_dev, canonical_ino
+         FROM backfill_files`,
+      ).all()).toEqual([{
+        mtime_ms: 1.5,
+        size: 10,
+        canonical_epoch: null,
+        canonical_size: null,
+        canonical_mtime_ms: null,
+        canonical_sha256: null,
+        canonical_dev: null,
+        canonical_ino: null,
+      }]);
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+      expect(db.pragma("foreign_key_check")).toEqual([]);
+    } finally { db.close(); }
   });
 
   it("preserves settings history while adding durable Max reasoning", () => {

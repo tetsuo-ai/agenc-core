@@ -959,7 +959,12 @@ agenc daemon restart
 
 Service templates under `packaging/` invoke `agenc daemon start --foreground`.
 Launcher autostart: `AGENC_DAEMON_AUTOSTART=0` disables; ready timeout
-`AGENC_DAEMON_READY_TIMEOUT_MS`.
+`AGENC_DAEMON_READY_TIMEOUT_MS`. After a hard kill, readiness is the
+socket accepting a connection, not the leftover inode. Direct
+`agenc daemon start` keeps waiting while the startup log advances, up to
+`AGENC_DAEMON_START_MAX_WAIT_MS`. A TUI that loses its daemon mid-turn
+ends the turn locally when the daemon does not answer within 10 s. See
+[recovery after a disappeared daemon](daemon.md#recovery-after-a-disappeared-daemon).
 
 ---
 

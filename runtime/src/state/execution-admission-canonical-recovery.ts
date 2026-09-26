@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { join, resolve, sep } from "node:path";
 
 import type { AdmissionJournalEvent } from "../budget/admission-types.js";
@@ -9,9 +10,17 @@ import type { Event } from "../session/event-log.js";
 import {
   parseRolloutLine,
   serializeRolloutItem,
+  type RolloutItem,
 } from "../session/rollout-item.js";
 import { stableStringify } from "../utils/stableStringify.js";
-import { backfillPinnedRolloutContent } from "./backfill.js";
+import {
+  backfillPinnedRolloutContent,
+  canonicalProjectionCoversFile,
+  reuseCanonicalRolloutProjection,
+  type CanonicalRolloutSessionMeta,
+  type CanonicalRolloutSource,
+} from "./backfill.js";
+import { normalizeCanonicalRolloutValue } from "./recovery-journal-contract.js";
 import type { ExecutionAdmissionRepository } from "./execution-admission.js";
 import {
   StateRunDurabilityRepository,
@@ -38,6 +47,15 @@ interface CanonicalEventRecord {
   readonly sourcePath: string;
 }
 
+/** One bound source as read and parsed at the start of convergence. */
+interface CanonicalSourceRead {
+  readonly raw: string;
+  readonly events: readonly CanonicalEventRecord[];
+  readonly sessionMeta: CanonicalRolloutSessionMeta;
+  /** sha256 of `raw`, computed once a marker matches every cheaper field. */
+  sha256?: string;
+}
+
 export interface ExecutionAdmissionCanonicalRecoveryResult {
   readonly runsScanned: number;
   readonly sourcesScanned: number;
@@ -62,6 +80,14 @@ export function recoverExecutionAdmissionCanonicalJournals(
     readonly maxRuns?: number;
     readonly maxEventsPerRun?: number;
     readonly maxSourcesPerRun?: number;
+    /**
+     * Identity of the running build. When set, every projection leaves a
+     * canonical projection marker under this epoch, and a source whose bytes
+     * exactly match a marker from the same epoch keeps its projection instead
+     * of being validated and projected again. Omitted, every source takes the
+     * full path and any earlier marker is cleared.
+     */
+    readonly canonicalProjectionEpoch?: string;
   } = {},
 ): ExecutionAdmissionCanonicalRecoveryResult {
   const maxRuns = positiveBound(options.maxRuns ?? DEFAULT_MAX_RUNS, "maxRuns");
@@ -73,6 +99,10 @@ export function recoverExecutionAdmissionCanonicalJournals(
     options.maxSourcesPerRun ?? DEFAULT_MAX_SOURCES_PER_RUN,
     "maxSourcesPerRun",
   );
+  const epoch = options.canonicalProjectionEpoch;
+  if (epoch !== undefined && (typeof epoch !== "string" || epoch.length === 0)) {
+    throw new TypeError("canonicalProjectionEpoch must be a non-empty string");
+  }
   const unboundCanonicalRun = driver
     .prepareState<[], AdmissionRunRow>(
       `SELECT DISTINCT admission.run_id
@@ -135,6 +165,7 @@ export function recoverExecutionAdmissionCanonicalJournals(
       journal,
       durability,
       threads,
+      epoch,
     });
     sourcesScanned += bindings.length;
     admissionEventsAppended += result.appended;
@@ -154,18 +185,27 @@ function convergeRun(params: {
   readonly journal: readonly AdmissionJournalEvent[];
   readonly durability: StateRunDurabilityRepository;
   readonly threads: StateThreadRepository;
+  readonly epoch: string | undefined;
 }): { readonly appended: number } {
   const bindings = uniqueSourceBindings(params.bindings);
+  const { epoch } = params;
   return withPinnedBindings(
     params.driver.projectDir,
     bindings,
     new Map(),
     (leases) => {
-      const canonical = bindings.flatMap((binding) =>
-        readCanonicalEvents(
-          leases.get(binding.sourcePath)!.readUtf8(),
+      const reads = new Map<string, CanonicalSourceRead>();
+      for (const binding of bindings) {
+        reads.set(
           binding.sourcePath,
-        ),
+          readCanonicalSource(
+            leases.get(binding.sourcePath)!.readUtf8(),
+            binding.sourcePath,
+          ),
+        );
+      }
+      const canonical = bindings.flatMap(
+        (binding) => reads.get(binding.sourcePath)!.events,
       );
       const index = validateCanonicalEvents(canonical, params.runId);
       const missing: AdmissionJournalEvent[] = [];
@@ -230,25 +270,43 @@ function convergeRun(params: {
           sourcePath: target.sourcePath,
         };
       });
+      const targetLease = leases.get(target.sourcePath)!;
+      const targetRead = reads.get(target.sourcePath)!;
       if (appended.length > 0) {
-        leases
-          .get(target.sourcePath)!
-          .appendAndSync(
-            appended
-              .map(({ event }) =>
-                serializeRolloutItem({ type: "event_msg", payload: event }),
-              )
-              .join(""),
-          );
-      } else {
+        targetLease.appendAndSync(
+          appended
+            .map(({ event }) =>
+              serializeRolloutItem({ type: "event_msg", payload: event }),
+            )
+            .join(""),
+        );
+      }
+      const targetRaw = targetLease.readUtf8();
+      // With nothing appended the target still holds the bytes parsed above.
+      const targetUnchanged =
+        appended.length === 0 && targetRaw === targetRead.raw;
+      if (
+        appended.length === 0 &&
+        !(
+          targetUnchanged &&
+          epoch !== undefined &&
+          canonicalProjectionCoversFile({
+            threads: params.threads,
+            rolloutPath: target.sourcePath,
+            epoch,
+            source: describeSource(targetLease, targetRead),
+          })
+        )
+      ) {
         // Existing identical evidence may have survived an ambiguous fsync.
-        leases.get(target.sourcePath)!.sync();
+        // Skipped only when a marker proves these exact bytes, in this exact
+        // file, were fsynced before that marker committed.
+        targetLease.sync();
       }
 
-      const targetEvents = readCanonicalEvents(
-        leases.get(target.sourcePath)!.readUtf8(),
-        target.sourcePath,
-      );
+      const targetEvents = targetUnchanged
+        ? targetRead.events
+        : readCanonicalSource(targetRaw, target.sourcePath).events;
       const targetSequences = targetEvents.flatMap((record) =>
         record.sequence === undefined ? [] : [record.sequence],
       );
@@ -262,13 +320,33 @@ function convergeRun(params: {
               `canonical admission source ${binding.sourcePath} changed while preparing its projection`,
             );
           }
+          const archived = binding.sourcePath.includes("/archived_sessions/");
+          const read = reads.get(binding.sourcePath)!;
+          if (
+            epoch !== undefined &&
+            raw === read.raw &&
+            reuseCanonicalRolloutProjection({
+              rolloutPath: binding.sourcePath,
+              archived,
+              threads: params.threads,
+              epoch,
+              source: describeSource(lease, read),
+              sessionMeta: read.sessionMeta,
+              syncSource: () => lease.sync(),
+            })
+          ) {
+            continue;
+          }
           backfillPinnedRolloutContent({
             rolloutPath: binding.sourcePath,
             raw,
-            archived: binding.sourcePath.includes("/archived_sessions/"),
+            archived,
             threads: params.threads,
             mtimeMs: source.mtimeMs,
             validateCanonical: () => lease.sync(),
+            ...(epoch !== undefined
+              ? { canonicalMarker: { epoch, ...lease.identity() } }
+              : {}),
           });
         }
         if (targetSequences.length > 0) {
@@ -423,19 +501,31 @@ function readAdmissionJournal(
   }
 }
 
-function readCanonicalEvents(
+function readCanonicalSource(
   raw: string,
   sourcePath: string,
-): CanonicalEventRecord[] {
-  const result: CanonicalEventRecord[] = [];
+): CanonicalSourceRead {
+  const events: CanonicalEventRecord[] = [];
+  let first: SessionMetaItem | undefined;
+  let latest: SessionMetaItem | undefined;
   for (const line of raw.split("\n")) {
     if (line.trim().length === 0) continue;
     const item = parseRolloutLine(line);
+    if (item?.type === "session_meta") {
+      // A reused projection merges thread metadata from these records, so
+      // derive them exactly as the strict validator records them.
+      const normalized = normalizeCanonicalRolloutValue(JSON.parse(line));
+      if (normalized?.type === "session_meta") {
+        first ??= normalized;
+        latest = normalized;
+      }
+      continue;
+    }
     if (item?.type !== "event_msg") continue;
     const event = item.payload;
     const sequence = canonicalSequence(event);
     const eventId = canonicalEventId(event, sequence);
-    result.push({
+    events.push({
       event,
       eventId,
       sequence,
@@ -443,7 +533,24 @@ function readCanonicalEvents(
       sourcePath,
     });
   }
-  return result;
+  return { raw, events, sessionMeta: { first, latest } };
+}
+
+type SessionMetaItem = Extract<RolloutItem, { type: "session_meta" }>;
+
+/** Current bytes and file of a leased source whose text equals `read.raw`. */
+function describeSource(
+  lease: PinnedOfflineRollout,
+  read: CanonicalSourceRead,
+): CanonicalRolloutSource {
+  return {
+    ...lease.stat(),
+    ...lease.identity(),
+    sha256: () =>
+      (read.sha256 ??= createHash("sha256")
+        .update(read.raw, "utf8")
+        .digest("hex")),
+  };
 }
 
 function validateCanonicalEvents(

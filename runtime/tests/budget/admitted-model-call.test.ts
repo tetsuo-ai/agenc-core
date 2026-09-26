@@ -636,8 +636,9 @@ describe("runAdmittedModelCall", () => {
     expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
       inputTokens: 100,
       outputTokens: 50,
-      // Grok 4.5: input + cached input + output.
-      costUsd: 0.00051,
+      // Grok 4.5: the 80 uncached and 20 cached prompt tokens at their own
+      // rates (xAI counts cached tokens inside the prompt tokens), plus output.
+      costUsd: expect.closeTo(0.00047, 12),
     });
     expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
     expect(state.acknowledgeCompletion).toHaveBeenCalledWith("reservation-1");
@@ -670,7 +671,7 @@ describe("runAdmittedModelCall", () => {
     expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
       inputTokens: 100,
       outputTokens: 50,
-      costUsd: 0.00051,
+      costUsd: expect.closeTo(0.00047, 12),
     });
     expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
   });
@@ -694,7 +695,7 @@ describe("runAdmittedModelCall", () => {
     expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
       inputTokens: 100,
       outputTokens: 50,
-      costUsd: 0.02051,
+      costUsd: expect.closeTo(0.02047, 12),
     });
   });
 
@@ -969,7 +970,7 @@ describe("runAdmittedModelCall", () => {
     expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
       inputTokens: 100,
       outputTokens: 50,
-      costUsd: 0.00051,
+      costUsd: expect.closeTo(0.00047, 12),
     });
   });
 

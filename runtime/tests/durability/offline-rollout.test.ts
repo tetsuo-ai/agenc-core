@@ -4,6 +4,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -56,6 +57,17 @@ describe.skipIf(process.platform === "win32")(
         );
       },
     );
+
+    it("reports the pinned file's exact device and inode numbers", () => {
+      const target = fixture();
+      const expected = statSync(target.sourcePath, { bigint: true });
+      withPinnedOfflineRolloutLease(target, (rollout) => {
+        expect(rollout.identity()).toEqual({
+          dev: expected.dev.toString(10),
+          ino: expected.ino.toString(10),
+        });
+      });
+    });
 
     it("rejects an external binding and a source symlink without touching the target", () => {
       const target = fixture();

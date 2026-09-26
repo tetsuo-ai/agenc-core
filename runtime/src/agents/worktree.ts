@@ -29,13 +29,18 @@
  */
 
 import {
+  closeSync,
+  constants as fsConstants,
   existsSync,
   lstatSync,
+  mkdirSync,
+  openSync,
   readdirSync,
   realpathSync,
   readFileSync,
   statSync,
   utimesSync,
+  writeSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { createToolEffectDispositionEvidence } from "../tools/effect-boundary.js";
@@ -394,6 +399,8 @@ export async function getOrCreateWorktree(
       const existingGitRoot = findGitRoot(path);
       if (sameExistingDirectory(existingGitRoot, opts.gitRoot)) {
         touchWorktreeMtime(path);
+        // Also covers worktrees made before the exclude existed.
+        excludeWorkspaceFromStatus(opts.gitRoot, workspaceRoot);
         return { path, branch, gitRoot: opts.gitRoot, created: false };
       }
       if (existingGitRoot !== null) {
@@ -439,6 +446,7 @@ export async function getOrCreateWorktree(
         `git worktree add failed: ${addResult.stderr.trim() || addResult.stdout.trim()}`,
       );
     }
+    excludeWorkspaceFromStatus(opts.gitRoot, workspaceRoot);
 
     const checkoutPermissions = worktreeCheckoutPermissions(opts.gitRoot, path);
     const tearDownIncompleteWorktree = async (message: string): Promise<never> => {
@@ -492,6 +500,81 @@ export async function getOrCreateWorktree(
 
     return { path, branch, gitRoot: opts.gitRoot, created: true };
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Status hygiene
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Desktop writes the same line when it turns a folder into a repository for
+ * a Goal, so a repository it set up already counts as covered.
+ */
+const WORKSPACE_EXCLUDE_LINE = ".agenc-worktrees/";
+const WORKSPACE_EXCLUDE_RE = /^\/?\.agenc-worktrees\/?$/u;
+const MAX_EXCLUDE_FILE_BYTES = 1024 * 1024;
+
+/**
+ * Keep the default workspace root out of `git status` through the
+ * repository's own `.git/info/exclude`, which is local and never one of the
+ * user's files. Without it every agent or Goal worktree showed up in the
+ * user's checkout as an untracked `.agenc-worktrees/`: the next Goal read
+ * that checkout as dirty, and `git add -A` there picked the worktree up as an
+ * embedded repository.
+ *
+ * Best effort and never fatal. Only a plain `.git` directory is written, the
+ * file is appended without following links, and anything else (a
+ * submodule's `.git` file, a linked `info`, an exclude that is not a regular
+ * file) leaves the repository as it was.
+ */
+function excludeWorkspaceFromStatus(
+  gitRoot: string,
+  workspaceRoot: string,
+): void {
+  if (resolvePath(workspaceRoot) !== resolvePath(gitRoot, ".agenc-worktrees")) {
+    return;
+  }
+  try {
+    const gitDir = join(gitRoot, ".git");
+    if (!lstatSync(gitDir).isDirectory()) return;
+    const infoDir = join(gitDir, "info");
+    if (!existsSync(infoDir)) mkdirSync(infoDir);
+    if (!lstatSync(infoDir).isDirectory()) return;
+    const excludePath = join(infoDir, "exclude");
+    const existing = readExcludeFile(excludePath);
+    if (existing === undefined) return;
+    if (existing.split("\n").some((line) => WORKSPACE_EXCLUDE_RE.test(line.trimEnd()))) {
+      return;
+    }
+    const separator = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
+    const fd = openSync(
+      excludePath,
+      fsConstants.O_WRONLY |
+        fsConstants.O_APPEND |
+        fsConstants.O_CREAT |
+        (fsConstants.O_NOFOLLOW ?? 0),
+      0o644,
+    );
+    try {
+      writeSync(
+        fd,
+        `${separator}# Worktrees AgenC creates for agents and Goal runs.\n${WORKSPACE_EXCLUDE_LINE}\n`,
+      );
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    // Cosmetic only: the worktree works the same without the exclude.
+  }
+}
+
+/** The exclude file's text, "" when it does not exist yet, undefined when it cannot be trusted. */
+function readExcludeFile(path: string): string | undefined {
+  try {
+    return readBoundedRegularFileSync(path, MAX_EXCLUDE_FILE_BYTES);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "" : undefined;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────

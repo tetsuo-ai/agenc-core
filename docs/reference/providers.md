@@ -601,6 +601,12 @@ as unresolved session state. `closeDanglingFunctionCalls`
 always pairs. The output text is an interrupted marker, not a fake
 success.
 
+OpenAI requests carry no reasoning items unless
+`AGENC_OPENAI_REASONING_REPLAY` is on (off by default; see
+[env.md](env.md)). With it on, the `openai` provider keeps each encrypted
+reasoning item of a Responses call and replays it on later stateless requests
+to the same provider and model, right before the function calls it led to.
+
 `previous_response_id` can only reference a **stored** response. When
 the request snapshot has `store: false` (ChatGPT subscription is always
 stateless), the continuation optimizer keeps `prompt_cache_key` and

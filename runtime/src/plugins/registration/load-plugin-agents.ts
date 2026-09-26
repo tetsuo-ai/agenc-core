@@ -232,7 +232,7 @@ async function loadAgentFile(
 ): Promise<PluginAgentDefinition | null> {
   if (loadedPaths.has(path)) return null;
   loadedPaths.add(path);
-  const file = await readMarkdownFile(path, baseDir);
+  const file = await readMarkdownFile(path, baseDir, plugin.root);
   return file
     ? createPluginAgent(plugin, file, roleCwd, pluginStorageRoot)
     : null;

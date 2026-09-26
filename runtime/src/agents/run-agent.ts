@@ -17,14 +17,16 @@
  * @module
  */
 
-import { normalize } from "node:path";
+import { isAbsolute, normalize, resolve as resolvePath } from "node:path";
 import { inheritBuiltinToolProvenance } from "../tools/builtin-provenance.js";
 import { SESSION_BOUND_TOOL_SURFACE, type SessionBoundToolSurface } from "../tools/session-bound-surface.js";
+import { createToolSearchTool } from "../tools/system/tool-search.js";
 import { SYSTEM_SEARCH_TOOLS_NAME } from "../tools/system/tool-search-name.js";
 import {
   SESSION_ADVERTISED_TOOL_NAMES_ARG,
   SESSION_TOOL_CATALOG_SCOPE_ARG,
 } from "../tools/system/coding-common.js";
+import type { ToolCatalogEntry } from "../tools/types.js";
 import { filesystemRootsForDispatch } from "../tools/filesystem-dispatch-roots.js";
 import { unavailableToolResult } from "../tools/router.js";
 import {
@@ -70,11 +72,15 @@ import {
   READ_ONLY_DELEGATION_PROMPT,
   type ReadOnlyDelegationConstraint,
 } from "./readonly-delegation.js";
+import { worktreeWriteRefusal } from "./worktree-write-confinement.js";
 import {
   attachReadOnlyInspectionInvocation,
   inspectReadOnlyCommand,
   prepareReadOnlyInspectionInvocation,
 } from "../permissions/readonly-inspection.js";
+import { worktreeShellWriteRefusal } from "./worktree-shell-confinement.js";
+import type { WorktreeWriteConfinement } from "../sandbox/worktree-confinement.js";
+import { routineRunOptions } from "../session/runtime-options.js";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
 import {
   toRuntimeTools,
@@ -2244,6 +2250,8 @@ export function buildFilteredRegistry(
   opts: {
     readonly allowlist?: ReadonlyArray<string>;
     readonly childConversationId: string;
+    /** Snapshot visibility and keep capability discovery owned by this child. */
+    readonly lightMode?: boolean;
     readonly executionConstraint?: ReadOnlyDelegationConstraint;
     readonly worktree?: WorktreeHandle;
     readonly disabledTools?: ReadonlySet<string>;
@@ -2276,9 +2284,59 @@ export function buildFilteredRegistry(
     (allowed === null || allowed.has(name));
   const eligibleTools = base.tools.filter((tool) => isEligible(tool.name));
   const toolCatalogScope: ReadonlySet<string> = new Set(eligibleTools.map((tool) => tool.name));
+  const discoveredToolNames = new Set<string>();
+  const initialTools = opts.lightMode === true
+    ? new Map(base.toLLMTools().filter(tool => isEligible(tool.function.name))
+        .map(tool => [tool.function.name as string, tool]))
+    : undefined;
+  if (initialTools !== undefined && !eligibleTools.some(tool => tool.name === SYSTEM_SEARCH_TOOLS_NAME)) {
+    // Explicit tool policies can remove discovery. Keep permitted tools usable
+    // without adding the forbidden search capability back into the session.
+    for (const tool of eligibleTools) initialTools.set(tool.name, {
+      type: "function",
+      function: { name: tool.name, description: tool.description, parameters: tool.inputSchema },
+    });
+  }
+  const discoverToolNames = (names: readonly string[]): void => {
+    for (const name of names) {
+      if (toolCatalogScope.has(name)) discoveredToolNames.add(name);
+    }
+  };
+  const localSearch = opts.lightMode === true ? createToolSearchTool({
+    allowedPaths: [],
+    persistenceRootDir: "",
+    getToolCatalog: () => eligibleTools.map((tool): ToolCatalogEntry => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+      metadata: {
+        family: tool.metadata?.family ?? tool.name.split(".")[0] ?? "tool",
+        source: tool.metadata?.source ?? "builtin",
+        hiddenByDefault: tool.metadata?.hiddenByDefault ?? false,
+        mutating: tool.metadata?.mutating ?? tool.requiresApproval === true,
+        deferred: !initialTools?.has(tool.name),
+        ...(tool.metadata?.keywords !== undefined ? { keywords: tool.metadata.keywords } : {}),
+        ...(tool.metadata?.preferredProfiles !== undefined ? { preferredProfiles: tool.metadata.preferredProfiles } : {}),
+      },
+    })),
+    onDiscoverTools: discoverToolNames,
+  }) : undefined;
+  const searchTools = localSearch === undefined ? undefined
+    : async (args: Record<string, unknown>) => {
+      Object.defineProperty(args, SESSION_ADVERTISED_TOOL_NAMES_ARG, {
+        value: Object.freeze([...advertisedNames()]),
+        enumerable: false,
+        configurable: true,
+      });
+      return localSearch.execute(args);
+    };
   const wrappedTools = eligibleTools
     .map((tool) => {
-      const wrapped = wrapToolForChild(tool, { ...opts, toolCatalogScope });
+      const wrapped = wrapToolForChild(tool, {
+        ...opts,
+        toolCatalogScope,
+        ...(searchTools !== undefined ? { searchTools } : {}),
+      });
       const sessionSurface = (wrapped as Tool & {
         readonly [SESSION_BOUND_TOOL_SURFACE]?: SessionBoundToolSurface;
       })[SESSION_BOUND_TOOL_SURFACE];
@@ -2314,10 +2372,23 @@ export function buildFilteredRegistry(
         parameters: tool.inputSchema,
       },
     }));
-  const advertisedLLMTools = () => {
+  // Light children keep the parent's visible set from spawn time plus what
+  // their own search discovered; other children follow the parent's registry.
+  const visibleLLMTools = () => {
+    if (initialTools !== undefined) {
+      return fallbackAdvertisedTools().flatMap(tool => {
+        const name = tool.function.name;
+        if (discoveredToolNames.has(name)) return [tool];
+        const initial = initialTools.get(name);
+        return initial === undefined ? [] : [initial];
+      });
+    }
     const advertised = base.toLLMTools();
-    const visible = (advertised.length === 0 ? fallbackAdvertisedTools() : advertised)
+    return (advertised.length === 0 ? fallbackAdvertisedTools() : advertised)
       .filter((tool) => isEligible(tool.function.name as string));
+  };
+  const advertisedLLMTools = () => {
+    const visible = visibleLLMTools();
     const session = opts.getSession?.();
     if (session === undefined || session === null) return visible;
     return visible.map((tool) => {
@@ -2336,6 +2407,9 @@ export function buildFilteredRegistry(
 
   return {
     get tools() {
+      // Retain eligible implementations for nested discovery and execution;
+      // schemas and dispatch remain gated by this child's advertised names.
+      if (opts.lightMode === true) return wrappedTools;
       const names = advertisedNames();
       return wrappedTools.filter((tool) => names.has(tool.name));
     },
@@ -2345,6 +2419,10 @@ export function buildFilteredRegistry(
     getUnavailableToolNames() {
       return unavailable;
     },
+    ...(opts.lightMode === true ? {
+      getDiscoveredToolNames: () => discoveredToolNames,
+      discoverToolNames,
+    } : {}),
     async dispatch(toolCall): Promise<ToolDispatchResult> {
       if (unavailable.has(toolCall.name)) {
         return unavailableToolResult(toolCall.name);
@@ -2726,7 +2804,32 @@ export function injectChildToolArgs(
   // Source tool closures may belong to the root registry, so fill defaults
   // from the current Session rather than retaining an ancestor wrapper.
   const executionCwd = opts.worktree?.path ?? childSession?.sessionConfiguration.cwd;
-  return withChildToolDefaultCwd(injectedArgs, toolName, executionCwd);
+  return withChildToolDefaultCwd(
+    withChildShellDirectory(injectedArgs, toolName, executionCwd),
+    toolName,
+    executionCwd,
+  );
+}
+
+/**
+ * A shell tool is the parent's and resolved a relative directory against the
+ * parent's workspace root: `workdir: "src"` ran a worktree child's command in
+ * the checkout's src. The directory is the child's.
+ */
+function withChildShellDirectory(
+  args: Record<string, unknown>,
+  toolName: string,
+  executionCwd: string | undefined,
+): Record<string, unknown> {
+  const field = CHILD_SHELL_TOOLS.has(toolName) ? WORKTREE_CWD_FIELD_BY_TOOL[toolName] : undefined;
+  const value = field === undefined ? undefined : args[field];
+  if (
+    field === undefined || executionCwd === undefined || typeof value !== "string" ||
+    value.trim().length === 0 || isAbsolute(value)
+  ) {
+    return args;
+  }
+  return { ...args, [field]: resolvePath(executionCwd, value) };
 }
 
 /** Path normalization only: permission review must not receive new authority. */
@@ -2764,6 +2867,9 @@ function withChildToolDefaultCwd(
 }
 
 const CHILD_FILE_CWD_TOOLS = new Set(["FileRead", "Write", "Edit", "MultiEdit"]);
+
+/** The shell tools: a worktree child's commands change files inside its worktree only. */
+const CHILD_SHELL_TOOLS = new Set(["exec_command", "write_stdin", "system.bash"]);
 
 /** Tools pinned to the child's worktree, and the argument that carries it. */
 export const WORKTREE_CWD_FIELD_BY_TOOL: Readonly<Record<string, string>> = {
@@ -2824,10 +2930,14 @@ function wrapToolForChild(
     readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
     readonly getSession?: () => Session | null | undefined;
     readonly toolCatalogScope?: ReadonlySet<string>;
+    readonly searchTools?: Tool["execute"];
   },
 ): Tool {
   const inherited = childToolBindings.get(tool);
-  const source = inherited?.source ?? tool;
+  const original = inherited?.source ?? tool;
+  const source = opts.searchTools !== undefined && original.name === SYSTEM_SEARCH_TOOLS_NAME
+    ? inheritBuiltinToolProvenance(original, { ...original, execute: opts.searchTools })
+    : original;
   const parentPolicy = inherited?.policy;
   const currentPolicy = opts.childToolPolicy;
   const policy: ChildToolPolicy | undefined = parentPolicy === undefined
@@ -2840,8 +2950,23 @@ function wrapToolForChild(
         : parentPolicy(candidate, currentDecision.updatedInput ?? input);
     };
   const executionOpts = { ...opts, ...(policy !== undefined ? { childToolPolicy: policy } : {}) };
+  const confinedShell = CHILD_SHELL_TOOLS.has(source.name) &&
+    childWorktreeConfinement(opts) !== undefined;
   const wrapped = inheritBuiltinToolProvenance(source, {
     ...source,
+    // Before any approval is asked for and before each attempt: a worktree
+    // child's command that would change files outside its worktree is a
+    // recoverable input error, never a permission denial (a workflow child's
+    // denied approval ends the whole Goal run as policy_denied).
+    ...(confinedShell ? {
+      preflight(args: Readonly<Record<string, unknown>>) {
+        const refusal = childWorktreeShellRefusal(source.name, args, opts);
+        if (refusal !== undefined) {
+          return { code: "worktree_write_confinement", message: refusal };
+        }
+        return source.preflight?.(args) ?? null;
+      },
+    } : {}),
     ...(policy !== undefined || (source.checkPermissions !== undefined && CHILD_FILE_CWD_TOOLS.has(source.name)) ? {
       async checkPermissions(input, context) {
         if (input === null || typeof input !== "object" || Array.isArray(input)) {
@@ -2976,6 +3101,42 @@ function attachChildToolSearchScope(
   }
 }
 
+/** The worktree a child's commands write in: its own, or the one its caller works in. */
+function childWorktreeConfinement(opts: {
+  readonly worktree?: WorktreeHandle;
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+}): WorktreeWriteConfinement | undefined {
+  if (opts.worktree !== undefined) {
+    return { worktree: opts.worktree.path, checkout: opts.worktree.gitRoot };
+  }
+  return opts.sandboxExecutionBroker?.worktreeConfinement;
+}
+
+/**
+ * Why a worktree child's shell call may not run: it would change files
+ * outside the worktree. The temp folder is the one its commands get as
+ * TMPDIR, picked the way runtimeSandboxForExec picks it.
+ */
+function childWorktreeShellRefusal(
+  toolName: string,
+  args: Readonly<Record<string, unknown>>,
+  opts: {
+    readonly worktree?: WorktreeHandle;
+    readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+    readonly getSession?: () => Session | null | undefined;
+  },
+): string | undefined {
+  if (!CHILD_SHELL_TOOLS.has(toolName)) return undefined;
+  const confinement = childWorktreeConfinement(opts);
+  if (confinement === undefined) return undefined;
+  const session = opts.getSession?.();
+  const routine = routineRunOptions(session);
+  const tempRoot = routine !== undefined
+    ? routine.scratchRoot ?? confinement.worktree
+    : session?.services.runtimeOptions?.sessionTempRoot;
+  return worktreeShellWriteRefusal(toolName, args, confinement, tempRoot);
+}
+
 async function prepareChildToolCall(
   tool: Tool,
   args: Record<string, unknown>,
@@ -3014,11 +3175,25 @@ async function prepareChildToolCall(
       return { result: { content: safeStringify({ error: refusal }), isError: true, metadata: { childPolicyDenied: true } } };
     }
   }
+  // A worktree child writes inside its worktree only. Refused here, as a tool
+  // error the model reads and recovers from: a deny at the permission check
+  // would end a whole Goal run (a workflow child's denied approval is
+  // WorkflowApprovalFailure, policy_denied).
+  const outsideWorktree = worktreeWriteRefusal(tool.name, policyResult.args, opts.worktree?.path);
+  if (outsideWorktree !== undefined) {
+    return { result: { content: safeStringify({ error: outsideWorktree }), isError: true, metadata: { childPolicyDenied: true } } };
+  }
   const childArgs = widenChildFilesystemRoots(
     tool.name,
     injectChildToolArgs(policyResult.args, tool.name, opts),
     childSession,
   );
+  // Checked again on the arguments that run, with the child's directory in
+  // place. The sandbox confines what a command line does not show.
+  const shellOutsideWorktree = childWorktreeShellRefusal(tool.name, childArgs, opts);
+  if (shellOutsideWorktree !== undefined) {
+    return { result: { content: safeStringify({ error: shellOutsideWorktree }), isError: true, metadata: { childPolicyDenied: true } } };
+  }
   // Policy replacement and signed child-argument copies omit non-enumerable
   // fields. Preserve the authenticated per-attempt grant, not model-provided
   // private keys, so the execution sink does not fall back to the base sandbox.
@@ -3323,9 +3498,19 @@ function prepareChildSessionAuthority(
       ...(params.providerSelection !== undefined ? { crossProvider: true } : {}),
     },
   );
+  // A worktree child's commands write inside its worktree only; its
+  // descendants inherit that through their own forks.
   const sandboxExecutionBroker =
     params.parent.services.sandboxExecutionBroker?.forkForCwd(
       sessionConfiguration.cwd,
+      params.worktree !== undefined
+        ? {
+            worktreeConfinement: {
+              worktree: params.worktree.path,
+              checkout: params.worktree.gitRoot,
+            },
+          }
+        : {},
     );
   return {
     sessionConfiguration,
@@ -3349,6 +3534,7 @@ function buildChildSession(
   }
   let childSession: ChildSession | undefined;
   const registry = buildFilteredRegistry(params.parent.services.registry, {
+    lightMode: params.parent.services.runtimeOptions.lightMode === true,
     ...(params.live.metadata.executionConstraint !== undefined ? { executionConstraint: params.live.metadata.executionConstraint } : {}),
     allowlist:
       params.toolAllowlist ?? params.live.role.config.allowlist ?? undefined,

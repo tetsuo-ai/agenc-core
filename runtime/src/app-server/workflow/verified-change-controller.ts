@@ -88,14 +88,18 @@ import {
 import type { ReviewOutput } from "../../session/review.js";
 import type { PermissionMode } from "../../permissions/types.js";
 import {
+  formatVerificationCommand,
+  formatVerificationResult,
   parseVerificationVerdict,
   type WorkflowCommandRunner,
 } from "../../workflow/verification.js";
 import {
+  mintCancelledRunProof,
   mintSealedEvidenceProof,
   workflowWorktreeSlug,
   type BaseMovementCheck,
   type BaseState,
+  type CancelledRunProof,
   type EvidenceArtifactSink,
   type ExportedPatchArtifacts,
   type SealedEvidenceProof,
@@ -297,6 +301,11 @@ export interface WorkflowWorktreeBroker {
     /** The delivered snapshot, pinned under a durable ref before the
      *  worktree branch — its only other name — is deleted. */
     readonly headCommit: string;
+  }): Promise<void>;
+  /** Remove a cancelled run's worktree and branch; nothing is pinned. */
+  discard(input: {
+    readonly proof: CancelledRunProof;
+    readonly handle: WorktreeHandle;
   }): Promise<void>;
 }
 
@@ -944,6 +953,7 @@ export class VerifiedChangeWorkflowController {
         );
       }
       await this.#terminalize(ctx, terminal);
+      await this.#discardCancelledWorktree(ctx);
     } finally {
       this.#active.delete(ctx.runId);
       try {
@@ -960,6 +970,31 @@ export class VerifiedChangeWorkflowController {
     } catch (error) {
       this.#deps.warn(
         `workflow ${ctx.runId} journal close failed: ${errorMessage(error)}`,
+      );
+    }
+  }
+
+  /**
+   * A cancelled run has no further use for its worktree: nothing resumes a
+   * terminal run and nothing was delivered. Remove the worktree and its
+   * branch as a completed run's are removed, but only once the cancelled
+   * terminal is durable; until then a restart resumes the run, and the run
+   * needs the worktree it left. Failed and unknown-outcome runs keep theirs
+   * for review.
+   */
+  async #discardCancelledWorktree(ctx: RunContext): Promise<void> {
+    const handle = ctx.handle;
+    if (handle === undefined) return;
+    try {
+      const terminal = ctx.repo.getCurrentTerminalResult(ctx.runId);
+      if (terminal?.status !== "cancelled") return;
+      await this.#deps.worktrees.discard({
+        proof: mintCancelledRunProof({ runId: ctx.runId }),
+        handle,
+      });
+    } catch (error) {
+      this.#deps.warn(
+        `workflow ${ctx.runId} worktree cleanup failed after cancellation: ${errorMessage(error)}`,
       );
     }
   }
@@ -2627,7 +2662,7 @@ function buildPlanPrompt(spec: WorkflowSpec): string {
     "",
     "## Required verification (every command must exit 0)",
     ...spec.requiredVerification.map(
-      (command) => `- ${command.label}: ${command.script}`,
+      (command) => `- ${formatVerificationCommand(command.script)}`,
     ),
   ].join("\n");
 }
@@ -2649,9 +2684,7 @@ function buildImplementPrompt(ctx: RunContext, attempt: number): string {
       `## Previous verification failure (attempt ${attempt - 1})`,
       `Agent verdict: ${ctx.verifyVerdict ?? "missing"}`,
       ...ctx.verification.records.map(
-        (record) =>
-          `- ${record.label}: exit ${record.exitCode}` +
-          (record.timedOut ? " (timed out)" : ""),
+        (record) => `- ${formatVerificationResult(record)}`,
       ),
     );
     // Soak F73: the verdict alone told the implementer nothing; the report
@@ -2686,12 +2719,15 @@ function buildVerifyAgentPrompt(
     "## Goal",
     spec.goal,
     "",
-    "## Required command results",
-    ...records.map(
-      (record) =>
-        `- ${record.label}: exit ${record.exitCode}` +
-        (record.timedOut ? " (timed out)" : ""),
-    ),
+    // Soak F77: shown only `- verify: exit 0`, the verifier ran `verify` as a
+    // command, got 127, and failed a change whose `npm test` had passed. The
+    // label is a name for people. Name each command by its script, and say
+    // the workflow already ran it.
+    "## Required commands, already run",
+    "The workflow ran each required command below in this worktree before you",
+    "started. Each line is the complete command, exactly as the workflow ran it,",
+    "then the exit code the workflow recorded.",
+    ...records.map((record) => `- ${formatVerificationResult(record)}`),
     // Soak F73: a second verifier that starts blind re-derives the previous
     // findings from scratch; hand it the report and have it re-check those
     // first, then keep verifying independently.

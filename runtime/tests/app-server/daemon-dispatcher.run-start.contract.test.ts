@@ -302,6 +302,8 @@ class FakeWorktrees implements WorkflowWorktreeBroker {
   }
 
   async cleanup(): Promise<void> {}
+
+  async discard(): Promise<void> {}
 }
 
 class FakeSpawner implements WorkflowAgentSpawner {

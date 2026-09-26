@@ -467,6 +467,9 @@ const COST_TIER_MINIMAX_M3: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.0003,
   outputUsdPer1K: 0.0012,
   cachedInputUsdPer1K: 0.00006,
+  // MiniMax is served over Chat Completions, whose prompt_tokens include the
+  // cached_tokens it also reports, as for the other Chat Completions tiers.
+  cachedInputIncludedInInputTokens: true,
   cacheCreationUsdPer1K: 0.000375,
   webSearchUsdPerRequest: 0,
 });
@@ -474,6 +477,7 @@ const COST_TIER_MINIMAX_M2_7_HIGHSPEED: Readonly<ModelCostEntry> = Object.freeze
   inputUsdPer1K: 0.0006,
   outputUsdPer1K: 0.0024,
   cachedInputUsdPer1K: 0.00006,
+  cachedInputIncludedInInputTokens: true,
   cacheCreationUsdPer1K: 0.000375,
   webSearchUsdPerRequest: 0,
 });
@@ -481,6 +485,7 @@ const COST_TIER_MINIMAX_M2: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.0003,
   outputUsdPer1K: 0.0012,
   cachedInputUsdPer1K: 0.00003,
+  cachedInputIncludedInInputTokens: true,
   cacheCreationUsdPer1K: 0.000375,
   webSearchUsdPerRequest: 0,
 });
@@ -488,6 +493,7 @@ const COST_TIER_MINIMAX_M2_HIGHSPEED: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.0006,
   outputUsdPer1K: 0.0024,
   cachedInputUsdPer1K: 0.00003,
+  cachedInputIncludedInInputTokens: true,
   cacheCreationUsdPer1K: 0.000375,
   webSearchUsdPerRequest: 0,
 });
@@ -572,11 +578,17 @@ const COST_TIER_GROK_4X_NON_REASONING: Readonly<ModelCostEntry> = Object.freeze(
   webSearchUsdPerRequest: 0.01,
 });
 
-/** Official Grok 4.5 token pricing, including prompt-cache reads. */
+/**
+ * Official Grok 4.5 token pricing, including prompt-cache reads. xAI counts
+ * cached tokens inside the prompt tokens it reports (its prompt caching docs:
+ * "prompt_tokens: 125 with cached_tokens: 98"), so the cached part is billed
+ * at the cached rate only, not also at the input rate.
+ */
 const COST_TIER_GROK_45: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.002,
   outputUsdPer1K: 0.006,
   cachedInputUsdPer1K: 0.0005,
+  cachedInputIncludedInInputTokens: true,
   webSearchUsdPerRequest: 0.01,
 });
 
@@ -593,6 +605,7 @@ const COST_TIER_GROK_4_6_AND_4_7: Readonly<ModelCostEntry> = Object.freeze({
     inputUsdPer1K: 0.004,
     outputUsdPer1K: 0.012,
     cachedInputUsdPer1K: 0.001,
+    cachedInputIncludedInInputTokens: true,
     webSearchUsdPerRequest: 0.01,
   }),
 });

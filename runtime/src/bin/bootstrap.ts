@@ -12,6 +12,7 @@ import {
 import { withoutXaiSignInFastTier } from "../llm/providers/grok/priority-processing.js";
 import { isFreeSubscriptionManagedModel } from "../commands/subscription-managed-models.js";
 import type { LLMProvider } from "../llm/types.js";
+import { SHARED_PUBLIC_MODEL_CATALOGS } from "../llm/model-metadata.js";
 import { StaticModelsManager } from "../llm/models-manager.js";
 import { createManagedFeatures } from "../llm/registry/features.js";
 import {
@@ -827,6 +828,7 @@ export async function bootstrapLocalRuntimeSession(
     options.runtimeOptions ??
     resolveAgentRuntimeOptions(env, {
       simpleMode: cli.simpleMode === true,
+      ...(cli.lightMode === true ? { lightMode: true } : {}),
       dangerouslyBypassApprovalsAndSandbox: (() => {
         const sandboxBypass = resolveStartupSandboxBypass(cli, {
           cwd: process.cwd(),
@@ -1336,6 +1338,7 @@ async function bootstrapLocalRuntimeSessionScoped(
     toolRegistryOptions: {
       ...(options.toolRegistryOptions ?? {}),
       unifiedExecManager,
+      lightMode: runtimeOptions.lightMode === true,
       sandboxExecutionBroker,
       codeModeService,
       ...(startup.config.browser !== undefined
@@ -1508,6 +1511,11 @@ async function bootstrapLocalRuntimeSessionScoped(
     metadata: {
       fetchImpl,
       env,
+      // Sessions on the real network share one download of each public model
+      // catalog. An injected fetch keeps its own, so it sees only its data.
+      ...(options.fetchImpl === undefined
+        ? { publicCatalogs: SHARED_PUBLIC_MODEL_CATALOGS }
+        : {}),
       onWarn: (message) =>
         emitProviderWarning({
           cause: "model_token_limit_config",
@@ -1582,7 +1590,9 @@ async function bootstrapLocalRuntimeSessionScoped(
     permissionContext: toolPermissionContext,
     profile: coordinatorModeEnabled
       ? "coordinator"
-      : usesLocalToolProfile(resolvedProvider)
+      : runtimeOptions.lightMode === true
+        ? "light"
+        : usesLocalToolProfile(resolvedProvider)
         ? "compact"
         : "standard",
   });

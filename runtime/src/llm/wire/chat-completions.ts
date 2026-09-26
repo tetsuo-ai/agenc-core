@@ -32,12 +32,18 @@ import {
   parseOpenAIToolChoice,
   prepareMessagesForWire,
   serializeProviderToolArguments,
+  splitSystemPromptOnDynamicBoundary,
   toOpenAIMessageContent,
   toOpenAIToolMessageContent,
   withEndpointMarkers,
   withSerializedMetrics,
+  withoutVolatileBoundary,
 } from "./shared.js";
 import { toChatCompletionsTools } from "./tools.js";
+import {
+  afterLeadingSetupReminders,
+  sessionTailReminder,
+} from "./shared-prefix-tail.js";
 import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
@@ -78,6 +84,13 @@ export interface ChatCompletionsRequestOptions {
    * sent).
    */
   readonly providerCapabilityHints?: ChatCompletionsCapabilityHints;
+  /**
+   * The session's shared-prefix switch (`AGENC_SHARED_PREFIX_TAIL`), read by
+   * the adapter from the session environment. Only a provider whose hints set
+   * `sharesPromptPrefixAcrossSessions` uses the layout; `false` turns it off
+   * and `undefined` leaves it on.
+   */
+  readonly sharedPrefixTail?: boolean;
 }
 
 export type ChatCompletionsMaxTokenField =
@@ -117,10 +130,11 @@ function assertToolDefinitionLimit(
 function systemPromptParts(
   messages: readonly LLMMessage[],
   options: LLMChatOptions | undefined,
+  optionPromptOverride?: string,
 ): readonly string[] {
   const parts: string[] = [];
-  const optionPrompt = options?.systemPrompt?.trim();
-  if (optionPrompt) parts.push(optionPrompt);
+  const optionPrompt = (optionPromptOverride ?? options?.systemPrompt)?.trim();
+  if (optionPrompt) parts.push(withoutVolatileBoundary(optionPrompt));
   for (const message of messages) {
     if (message.role !== "system" && message.role !== "developer") continue;
     const text = messageTextContent(message.content).trim();
@@ -279,6 +293,7 @@ function toChatCompletionsMessages(
   requiresStrictToolResultSequence = false,
   imageInputContract?: "cerebras_v2" | "zai_flash" | "kimi_global",
   acceptsDirectImageInput?: boolean,
+  sessionTailAfterSetup = false,
 ): Array<Record<string, unknown>> {
   // The caller passes the exact normalized sequence used to derive the
   // reasoning replay plan. Keeping a single projection prevents boundary or
@@ -308,7 +323,22 @@ function toChatCompletionsMessages(
     imageSafeMessages,
     toolResultImagePolicy ?? defaultToolResultImagePolicy,
   );
-  let systemPrompt = systemPromptParts(prepared, options).join("\n\n");
+  // Shared-prefix placement: the static head leads and the session tail
+  // follows the setup reminders (see shared-prefix-tail.ts).
+  const split = sessionTailAfterSetup
+    ? splitSystemPromptOnDynamicBoundary(options?.systemPrompt)
+    : undefined;
+  // With session-tail caching on, the split returns the session-fixed part
+  // and the per-request part separately; both follow the setup reminders.
+  const tailParts = [split?.sessionSuffix, split?.dynamicSuffix].filter(
+    (part): part is string => part !== undefined && part.length > 0,
+  );
+  const sessionTail = tailParts.length > 0 ? tailParts.join("\n\n") : undefined;
+  let systemPrompt = systemPromptParts(
+    prepared,
+    options,
+    sessionTail !== undefined ? split?.staticPrefix ?? "" : undefined,
+  ).join("\n\n");
   if (systemSuffix !== undefined && systemSuffix.length > 0) {
     systemPrompt =
       systemPrompt.length > 0 ? `${systemPrompt}\n${systemSuffix}` : systemSuffix;
@@ -392,6 +422,13 @@ function toChatCompletionsMessages(
         ? { [reasoningContentField]: providerReasoningContent }
         : {}),
     });
+  }
+  if (sessionTail !== undefined) {
+    wireMessages.splice(
+      afterLeadingSetupReminders(wireMessages),
+      0,
+      sessionTailReminder(sessionTail),
+    );
   }
   return wireMessages;
 }
@@ -589,6 +626,8 @@ export function buildChatCompletionsRequest(
       input.providerCapabilityHints?.requiresStrictToolResultSequence === true,
       input.providerCapabilityHints?.imageInputContract,
       input.providerCapabilityHints?.acceptsDirectImageInput,
+      input.providerCapabilityHints?.sharesPromptPrefixAcrossSessions === true &&
+        input.sharedPrefixTail !== false,
     ),
     [maxTokenField]: maxTokens,
   };
