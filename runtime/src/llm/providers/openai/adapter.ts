@@ -53,6 +53,7 @@ import {
 } from "../../wire/chat-completions.js";
 import { chatCompletionsCapabilityHintsForProvider } from "../../wire/capability-gating.js";
 import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
+import { parseProviderJson } from "../../wire/parse-json.js";
 import {
   coerceUsage,
   normalizeFinishReason,
@@ -117,20 +118,14 @@ function decodeOpenAISseEvent(
   providerName: string,
 ): OpenAISseEvent | undefined {
   if (!frame.data) return undefined;
-  try {
-    return {
-      event: frame.event,
-      data: JSON.parse(frame.data) as Record<string, unknown>,
-    };
-  } catch (error) {
-    if (requiresStrictChatCompletionsSse(providerName)) {
-      throw new LLMInvalidResponseError(
-        providerName,
-        `Malformed JSON in ${strictSseProviderLabel(providerName)} SSE event: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    return undefined;
-  }
+  return {
+    event: frame.event,
+    data: parseProviderJson(
+      providerName,
+      frame.data,
+      `${strictSseProviderLabel(providerName)} SSE event`,
+    ) as Record<string, unknown>,
+  };
 }
 
 function decodeOpenAISseEventBatch(
@@ -144,6 +139,44 @@ function decodeOpenAISseEventBatch(
     if (event !== undefined) events.push(event);
   }
   return { events, done: false };
+}
+
+type CompatibleSseRemainder =
+  | { readonly kind: "comment" }
+  | { readonly kind: "done" }
+  | { readonly kind: "event"; readonly event: OpenAISseEvent }
+  | { readonly kind: "unparsed" };
+
+function remainderIsCommentOnly(remainder: string): boolean {
+  const lines = remainder.replaceAll("\r", "").split("\n");
+  const nonempty = lines
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  return nonempty.length > 0 && nonempty.every((line) => line.startsWith(":"));
+}
+
+function flushCompatibleSseRemainder(
+  remainder: string,
+  providerName: string,
+): CompatibleSseRemainder {
+  if (remainderIsCommentOnly(remainder)) return { kind: "comment" };
+  const flushed = parseSSEFrames(`${remainder}\n\n`, providerName);
+  for (const frame of flushed.frames) {
+    if (!frame.data) continue;
+    if (frame.data === "[DONE]") return { kind: "done" };
+    try {
+      const data = JSON.parse(frame.data) as unknown;
+      if (typeof data === "object" && data !== null && !Array.isArray(data)) {
+        return {
+          kind: "event",
+          event: { event: frame.event, data: data as Record<string, unknown> },
+        };
+      }
+    } catch {
+      return { kind: "unparsed" };
+    }
+  }
+  return { kind: "unparsed" };
 }
 
 function resolveTimeoutMs(
@@ -261,7 +294,24 @@ function strictSseProviderLabel(providerName: string): string {
   if (providerName === "kimi") return "Kimi";
   if (providerName === "deepseek") return "DeepSeek";
   if (providerName === "meta") return "Meta";
-  return "Z.AI";
+  if (isZaiProviderName(providerName)) return "Z.AI";
+  if (providerName === "openai-compatible") return "OpenAI-compatible";
+  if (providerName === "openai") return "OpenAI";
+  return providerName;
+}
+
+function missingCompatibleTerminalMessage(
+  providerName: string,
+  endedWithUnterminatedEvent: boolean,
+  requireDoneMarker: boolean,
+): string {
+  const label = strictSseProviderLabel(providerName);
+  const terminal = requireDoneMarker
+    ? "a finish_reason or [DONE]"
+    : "any finish_reason";
+  return endedWithUnterminatedEvent
+    ? `${label} SSE stream ended with an unterminated event before ${terminal}`
+    : `${label} SSE stream closed before ${terminal}`;
 }
 
 /**
@@ -1893,25 +1943,36 @@ export class OpenAIProvider implements LLMProvider {
         }
       }
 
-      if (
+      const missingStrictTerminal =
         requiresStrictChatCompletionsSse(this.name) &&
         !sawFinishReason &&
         !sawDone &&
         toolCallAccumulator.size === 0 &&
-        !unterminatedFragmentNamesToolCalls
-      ) {
-        // The connection ended before either terminal signal and before any
-        // tool call fragment, parsed or cut off, reached us. Nothing can have
-        // been dispatched: this is a cut stream the turn may sample again, not
-        // a malformed response.
+        !unterminatedFragmentNamesToolCalls;
+      const missingCompatibleTerminal =
+        !requiresStrictChatCompletionsSse(this.name) &&
+        streamCapabilityHints.acceptsCleanEofAsTerminal !== true &&
+        !sawFinishReason &&
+        !sawDone &&
+        !unterminatedFragmentNamesToolCalls;
+      if (missingStrictTerminal || missingCompatibleTerminal) {
+        // Strict providers: the connection ended before either terminal
+        // signal and before any tool call fragment. Compatible providers:
+        // EOF without finish_reason or [DONE] is the same cut-stream case.
         throw new LLMStreamTruncatedError(
           this.name,
-          endedWithUnterminatedEvent
-            ? `${strictSseProviderLabel(this.name)} SSE stream ended with an unterminated event before any finish_reason`
-            : `${strictSseProviderLabel(this.name)} SSE stream closed before any finish_reason`,
+          missingCompatibleTerminalMessage(
+            this.name,
+            endedWithUnterminatedEvent,
+            missingCompatibleTerminal,
+          ),
         );
       }
-      if (endedWithUnterminatedEvent) {
+      if (
+        endedWithUnterminatedEvent &&
+        (requiresStrictChatCompletionsSse(this.name) ||
+          unterminatedFragmentNamesToolCalls)
+      ) {
         throw new LLMInvalidResponseError(
           this.name,
           `${strictSseProviderLabel(this.name)} SSE stream ended with an unterminated event`,
@@ -1923,6 +1984,17 @@ export class OpenAIProvider implements LLMProvider {
       // DeepSeek subagent whose Write call ran into its 64k output cap.
       const cutOffByOutputLimit =
         rawFinishReasons.size === 1 && rawFinishReasons.has("length");
+      if (
+        sawDone &&
+        !sawFinishReason &&
+        toolCallAccumulator.size > 0 &&
+        streamCapabilityHints.requiresExplicitFinishReason !== true
+      ) {
+        throw new LLMInvalidResponseError(
+          this.name,
+          "Streamed tool calls arrived without finish_reason=tool_calls",
+        );
+      }
       if (
         streamCapabilityHints.requiresExplicitFinishReason === true &&
         (!sawFinishReason ||
@@ -2094,17 +2166,37 @@ export class OpenAIProvider implements LLMProvider {
       onDone?.();
       return;
     }
+    if (parsed.remaining.trim().length === 0) return;
+    if (!requiresStrictChatCompletionsSse(this.name)) {
+      const flushed = flushCompatibleSseRemainder(parsed.remaining, this.name);
+      switch (flushed.kind) {
+        case "comment":
+          return;
+        case "done":
+          onDone?.();
+          return;
+        case "event":
+          yield flushed.event;
+          return;
+        case "unparsed":
+          break;
+        default: {
+          const exhaustive: never = flushed;
+          throw new Error(`Unhandled SSE remainder: ${JSON.stringify(exhaustive)}`);
+        }
+      }
+    }
     if (
-      requiresStrictChatCompletionsSse(this.name) &&
-      parsed.remaining.trim().length > 0
+      requiresStrictChatCompletionsSse(this.name) ||
+      parsed.remaining.includes('"tool_calls"')
     ) {
-      // A caller that tracks the stream's terminal signals decides whether
-      // this is a cut connection or a malformed stream.
+      // A cut tool_calls fragment is still a malformed stream. Strict
+      // providers keep main's unterminated-event check unchanged.
       if (onUnterminatedEnd !== undefined) {
         onUnterminatedEnd(parsed.remaining);
         return;
       }
-      throw new LLMInvalidResponseError(
+      throw new LLMStreamTruncatedError(
         this.name,
         `${strictSseProviderLabel(this.name)} SSE stream ended with an unterminated event`,
       );
