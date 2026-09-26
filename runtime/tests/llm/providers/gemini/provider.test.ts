@@ -88,6 +88,8 @@ function missingCredentialPlan(
 }
 
 const developerEndpointPlan = createGeminiEndpointPlan();
+// Gemini sends no functionCall id before Gemini 3; the adapter then makes one.
+const GENERATED_CALL_ID = /^gemini_call_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const vertexEndpointPlan = createGeminiEndpointPlan({
   vertex: { project: "project-1", location: "us-central1" },
 });
@@ -822,6 +824,56 @@ describe("GeminiProvider", () => {
     expect(headers.get("x-goog-api-key")).toBe("gemini-test");
   });
 
+  test("keeps the functionCall id Gemini sends", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        candidates: [{
+          content: { role: "model", parts: [{ functionCall: { id: "call_1081714", name: "system.echo", args: { text: "hi" } } }] },
+          finishReason: "STOP",
+        }],
+      }),
+    );
+    const provider = new GeminiProvider({
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
+      model: "gemini-3.8-flash",
+      fetchImpl,
+    });
+
+    const response = await provider.chat([{ role: "user", content: "call echo" }], { tools: [echoTool] });
+
+    expect(response.toolCalls).toEqual([
+      { id: "call_1081714", name: "system.echo", arguments: '{"text":"hi"}' },
+    ]);
+  });
+
+  test("gives id-less function calls ids that stay unique across responses", async () => {
+    // Every response numbers its parts from 0, so a position-based id made the
+    // second tool round of a turn repeat the first round's id.
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+      jsonResponse({
+        candidates: [{
+          content: { role: "model", parts: [{ functionCall: { name: "system.echo", args: { text: "hi" } } }] },
+          finishReason: "STOP",
+        }],
+      }),
+    );
+    const provider = new GeminiProvider({
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
+      model: "gemini-2.5-pro",
+      fetchImpl,
+    });
+    const messages = [{ role: "user" as const, content: "call echo" }];
+
+    const first = await provider.chat(messages, { tools: [echoTool] });
+    const second = await provider.chat(messages, { tools: [echoTool] });
+
+    expect(first.toolCalls[0]?.id).toMatch(GENERATED_CALL_ID);
+    expect(second.toolCalls[0]?.id).toMatch(GENERATED_CALL_ID);
+    expect(second.toolCalls[0]?.id).not.toBe(first.toolCalls[0]?.id);
+  });
+
   test("sends tools as Gemini function declarations and parses function calls", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({
@@ -863,7 +915,7 @@ describe("GeminiProvider", () => {
 
     expect(response.finishReason).toBe("tool_calls");
     expect(response.toolCalls).toEqual([
-      { id: "gemini_call_0", name: "system.echo", arguments: '{"text":"hi"}' },
+      { id: expect.stringMatching(GENERATED_CALL_ID), name: "system.echo", arguments: '{"text":"hi"}' },
     ]);
     expect(response.usage).toEqual({
       promptTokens: 4,
@@ -2455,6 +2507,8 @@ describe("GeminiProvider", () => {
       { tools: [echoTool] },
     );
 
+    const callId = response.toolCalls[0]?.id;
+    expect(callId).toMatch(GENERATED_CALL_ID);
     expect(chunks).toEqual([
       { content: "Hi ", done: false },
       { content: "there", done: false },
@@ -2462,11 +2516,11 @@ describe("GeminiProvider", () => {
         content: "",
         done: false,
         toolInputBlockStart: {
-          callId: "gemini_call_0",
+          callId,
           index: 0,
           contentBlock: {
             type: "tool_use",
-            id: "gemini_call_0",
+            id: callId,
             name: "system.echo",
             input: { text: "hi" },
           },
@@ -2476,7 +2530,7 @@ describe("GeminiProvider", () => {
         content: "",
         done: false,
         toolInputDelta: {
-          callId: "gemini_call_0",
+          callId,
           index: 0,
           partialJson: '{"text":"hi"}',
         },
@@ -2486,7 +2540,7 @@ describe("GeminiProvider", () => {
         done: true,
         toolCalls: [
           {
-            id: "gemini_call_0",
+            id: callId,
             name: "system.echo",
             arguments: '{"text":"hi"}',
           },
@@ -2496,7 +2550,7 @@ describe("GeminiProvider", () => {
     expect(response.content).toBe("Hi there");
     expect(response.finishReason).toBe("tool_calls");
     expect(response.toolCalls).toEqual([
-      { id: "gemini_call_0", name: "system.echo", arguments: '{"text":"hi"}' },
+      { id: callId, name: "system.echo", arguments: '{"text":"hi"}' },
     ]);
     expect(response.usage).toEqual({
       promptTokens: 7,

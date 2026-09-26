@@ -5,6 +5,7 @@
  */
 
 import { Buffer } from "node:buffer";
+import { randomUUID } from "node:crypto";
 import { ProviderHttpClient } from "../../client.js";
 import {
   ProviderHttpError,
@@ -2840,14 +2841,21 @@ function validateGeminiToolCall(raw: unknown): LLMToolCall {
   );
 }
 
+// Gemini 3 names each functionCall part with its own id ("call_1081714");
+// older models send none. A position-based id restarts at 0 in every
+// response, so the second tool round of a turn repeated the first round's id
+// and the session's tool-pair check rejected the turn.
+function geminiToolCallId(wireId: unknown): string {
+  return nonEmptyString(wireId) ?? `gemini_call_${randomUUID()}`;
+}
+
 function toolCallFromGeminiFunctionCall(
   functionCall: Record<string, unknown>,
-  index: number,
   names: ReadonlyMap<string, string>,
 ): LLMToolCall {
   const wireName = String(functionCall.name ?? "");
   return validateGeminiToolCall({
-    id: `gemini_call_${index}`,
+    id: geminiToolCallId(functionCall.id),
     name: names.get(wireName) ?? wireName,
     arguments: JSON.stringify(
       isRecord(functionCall.args) ? functionCall.args : {},
@@ -2899,7 +2907,7 @@ function parseGeminiResponse(
   const toolCalls: LLMToolCall[] = [];
   const thinking: GeminiThinkingBlock[] = [];
 
-  for (const [index, part] of parts.entries()) {
+  for (const part of parts) {
     if (part.thought === true) {
       const text = typeof part.text === "string" ? part.text : "";
       const signature =
@@ -2920,7 +2928,7 @@ function parseGeminiResponse(
       continue;
     }
     if (isRecord(part.functionCall)) {
-      toolCalls.push(toolCallFromGeminiFunctionCall(part.functionCall, index, names));
+      toolCalls.push(toolCallFromGeminiFunctionCall(part.functionCall, names));
     }
   }
 
@@ -3166,7 +3174,6 @@ class GeminiStreamState {
     if (isRecord(part.functionCall)) {
       const toolCall = toolCallFromGeminiFunctionCall(
         part.functionCall,
-        this.toolCalls.length,
         this.names,
       );
       this.toolCalls.push(toolCall);
