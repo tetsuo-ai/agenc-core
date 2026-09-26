@@ -16,13 +16,17 @@ export const fakeSockets: FakeSocket[] = [];
 /** Module factory for `vi.mock("ws", ...)`: records sockets instead of connecting anywhere. */
 export function fakeWsModule(): { default: unknown } {
   class Socket extends EventEmitter {
-    static OPEN = 1;
+    static readonly OPEN = 1;
     readyState = 0;
     sent: string[] = [];
     constructor(readonly url: string) { super(); fakeSockets.push(this as unknown as FakeSocket); }
     send(value: string) { this.sent.push(value); }
     close() { this.terminate(); }
-    terminate() { if (this.readyState === 3) return; this.readyState = 3; this.emit("close"); }
+    terminate() {
+      if (this.readyState === 3) return;
+      this.readyState = 3;
+      this.emit("close");
+    }
   }
   return { default: Socket };
 }
