@@ -39,6 +39,15 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
 
 ## Features
 
+- **Free account images** — signed-in accounts can discover Qwen Image 2.1
+  availability and daily quota through `agenc account-access --json`. Ask for a
+  free AgenC image, or use `ImagineImage` with `provider: "agenc"` and a prompt.
+  It saves one 1024×1024 PNG under the workspace's `.agenc/imagine` directory,
+  using the normal write approval and sandbox checks. Image access is independent
+  of chat credits and supports BYOK chat sessions. The service can be unavailable
+  or quota-limited; an explicit AgenC image request never falls back to paid media.
+  The image call is free; any chat turn requesting it follows the selected chat
+  provider's normal credentials and pricing.
 - **Daemon-backed process model** — launcher → daemon (`app-server`) → TUI /
   print / agents / gateway clients. One control plane per `AGENC_HOME`.
 - **Two front-ends** — interactive React TUI and headless one-shot mode

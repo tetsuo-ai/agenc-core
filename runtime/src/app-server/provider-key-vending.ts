@@ -70,6 +70,14 @@ export function createAgenCDaemonRuntimeAuthBackend(
     inferAgencModel: (params) => current.inferAgencModel(params),
     getLlmUsage: (params) => current.getLlmUsage(params),
     getSubscriptionTier: (params) => current.getSubscriptionTier(params),
+    // Managed images are optional backend methods. Follow whichever backend
+    // is current, so a session sees them only when that backend has them.
+    get getImageGenerationAccess() {
+      return current.getImageGenerationAccess?.bind(current);
+    },
+    get generateImage() {
+      return current.generateImage?.bind(current);
+    },
     replaceBackend: (next) => {
       current = next;
       vendedKeys.clear();

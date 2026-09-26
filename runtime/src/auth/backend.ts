@@ -1,4 +1,5 @@
 import type { ProviderSlug } from "../config/resolve-provider.js";
+import type { AuthGeneratedImage, AuthImageGenerationAccess, AuthImageGenerationRequest } from "./image-generation.js";
 
 export type AuthJsonPrimitive = string | number | boolean | null;
 export type AuthJsonArray = readonly AuthJsonValue[];
@@ -175,6 +176,9 @@ export interface AuthBackend {
     params?: AuthSessionRef,
   ): AuthLlmUsage | Promise<AuthLlmUsage>;
   listAgencModels?(): readonly AuthAgencModel[] | Promise<readonly AuthAgencModel[]>;
+  /** Free media access is independent of chat-credit and subscription admission. */
+  getImageGenerationAccess?(signal?: AbortSignal): Promise<AuthImageGenerationAccess | undefined>;
+  generateImage?(request: AuthImageGenerationRequest): Promise<AuthGeneratedImage>;
   getSubscriptionTier(
     params?: AuthSessionRef,
   ): AuthSubscriptionTier | Promise<AuthSubscriptionTier>;

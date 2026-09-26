@@ -1,5 +1,6 @@
 import type { AuthAgencModel, AuthBackend, AuthLlmUsageAllowance } from "./backend.js";
 import { hasActivePilotModelAccess } from "./pilot-access.js";
+import type { AuthImageGenerationAccess } from "./image-generation.js";
 
 export interface AccountModelAccess {
   readonly authenticated: boolean;
@@ -9,6 +10,7 @@ export interface AccountModelAccess {
   readonly allowance?: AuthLlmUsageAllowance;
   readonly models: readonly AuthAgencModel[];
   readonly expiresAt?: string;
+  readonly imageGeneration?: AuthImageGenerationAccess;
 }
 
 /**
@@ -21,11 +23,19 @@ export async function readAccountModelAccess(
   nowMs = Date.now(),
 ): Promise<AccountModelAccess> {
   let authenticated = false;
+  let imageDiscovery: Promise<AuthImageGenerationAccess | undefined> = Promise.resolve(undefined);
+  const withImages = async (access: AccountModelAccess): Promise<AccountModelAccess> => {
+    const imageGeneration = await imageDiscovery;
+    return imageGeneration === undefined ? access : { ...access, imageGeneration };
+  };
   try {
     const account = await backend.whoami({ sessionId: "cli" });
     authenticated = account.authenticated;
     if (!authenticated) return { authenticated: false, models: [] };
-    if (backend.kind !== "remote" || backend.managedKeysEnabled === false) return { authenticated: true, managedModelsEnabled: false, models: [] };
+    // Run media discovery beside chat lookup, with a short independent deadline.
+    // A slow optional GPU service must not hold account/login reads for 30 seconds.
+    imageDiscovery = readBoundedImageAccess(backend);
+    if (backend.kind !== "remote" || backend.managedKeysEnabled === false) return withImages({ authenticated: true, managedModelsEnabled: false, models: [] });
     const usage = await backend.getLlmUsage({ sessionId: "cli" });
     const result = {
       authenticated: true,
@@ -34,21 +44,35 @@ export async function readAccountModelAccess(
       allowance: usage.modelAllowance,
     };
     const allowed = usage.pilotAccess?.models.filter(model => hasActivePilotModelAccess(usage, model, nowMs)) ?? [];
-    if (allowed.length === 0 || usage.modelAllowance.remainingUsd === 0) return { ...result, models: [] };
+    if (allowed.length === 0 || usage.modelAllowance.remainingUsd === 0) return withImages({ ...result, models: [] });
     try {
       const catalog = backend.listAgencModels === undefined
         ? allowed.map(id => ({ id, name: id }))
         : await backend.listAgencModels();
       const models = catalog.filter(model => allowed.includes(model.id));
-      return { ...result, models, expiresAt: usage.pilotAccess!.expiresAt };
+      return withImages({ ...result, models, expiresAt: usage.pilotAccess!.expiresAt });
     } catch {
       // Balance remains real when discovery is unavailable. A stale catalog
       // must never make a removed or paused model selectable.
-      return { ...result, unavailable: true, models: [] };
+      return withImages({ ...result, unavailable: true, models: [] });
     }
   } catch {
-    return { authenticated, unavailable: true, models: [] };
+    return withImages({ authenticated, unavailable: true, models: [] });
   }
+}
+
+async function readBoundedImageAccess(backend: AuthBackend): Promise<AuthImageGenerationAccess | undefined> {
+  if (!backend.getImageGenerationAccess) return undefined;
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => backend.getImageGenerationAccess!(controller.signal)).catch(() => undefined),
+      new Promise<undefined>(resolve => {
+        timer = setTimeout(() => { controller.abort(); resolve(undefined); }, 1500);
+      }),
+    ]);
+  } finally { clearTimeout(timer); }
 }
 
 export function accountDefaultModel(access: AccountModelAccess, preferred?: string): string | undefined {
