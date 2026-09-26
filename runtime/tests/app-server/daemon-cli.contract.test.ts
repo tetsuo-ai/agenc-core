@@ -1884,6 +1884,11 @@ describe("AgenC daemon CLI", () => {
   it("status reaches the live daemon's health.stats over the real socket", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
+    // The status command asks the daemon for its identity and then for
+    // health.stats, each within the CLI's 2 s request default.
+    host.env[AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV] = String(
+      LOADED_DAEMON_REQUEST_TIMEOUT_MS,
+    );
     const runIo = createIo();
     const signalProcess = createSignalProcess();
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
@@ -1895,7 +1900,9 @@ describe("AgenC daemon CLI", () => {
     );
     let stopped = false;
     try {
-      await expect(waitForPid(pidPath)).resolves.toBe(host.pid);
+      await expect(
+        waitForLoadedDaemonPid(pidPath, running, runIo),
+      ).resolves.toBe(host.pid);
 
       const statusIo = createIo();
       await expect(
@@ -1921,7 +1928,9 @@ describe("AgenC daemon CLI", () => {
       }
       await rm(agencHome, { recursive: true, force: true });
     }
-  });
+    // Nothing here times the daemon. The bound clears the pid wait and the
+    // status command's two requests back to back.
+  }, loadedDaemonCaseTimeoutMs({ milestones: 1, requests: 2 }));
 
   it("starts with remote auth backend before remote key vending is configured", async () => {
     const agencHome = await tempAgencHome();
@@ -4968,13 +4977,22 @@ workspace = ${JSON.stringify(process.cwd())}
       );
       let socket: Socket | WebSocket | undefined;
       try {
-        await waitForPid(resolveAgenCDaemonPidPath(host.env, host.userHome));
+        await waitForLoadedDaemonPid(
+          resolveAgenCDaemonPidPath(host.env, host.userHome),
+          running,
+          io,
+        );
         const authCookie = (await readFile(
           resolveAgenCDaemonCookiePath(host.env, host.userHome), "utf8",
         )).trim();
         socket = transport === "unix"
           ? createConnection(resolveAgenCDaemonSocketPath(host.env, host.userHome))
-          : new WebSocket(await waitForDaemonWebSocketUrl(io));
+          : new WebSocket(
+            await waitForDaemonWebSocketUrl(io, LOADED_DAEMON_MILESTONE_BUDGET_MS, {
+              running,
+              stderrText: io.stderrText,
+            }),
+          );
         const peer = socket;
         const messages = new AsyncQueue<JsonObject>();
         if (peer instanceof WebSocket) {
@@ -5029,7 +5047,9 @@ workspace = ${JSON.stringify(process.cwd())}
           type: "session.delta",
           text: "x".repeat(8 * 1024 * 1024),
         });
-        await expect.poll(() => closed).toBe(true);
+        await expect
+          .poll(() => closed, { timeout: LOADED_DAEMON_MILESTONE_BUDGET_MS })
+          .toBe(true);
       } finally {
         if (socket instanceof WebSocket) socket.terminate();
         else socket?.destroy();
@@ -5039,6 +5059,10 @@ workspace = ${JSON.stringify(process.cwd())}
         await rm(agencHome, { recursive: true, force: true });
       }
     },
+    // Nothing here times the daemon. The bound clears the pid wait, the
+    // websocket URL wait and the wait for the evicted peer to close back to
+    // back.
+    loadedDaemonCaseTimeoutMs({ milestones: 3, requests: 0 }),
   );
 
   it("foreground daemon instantiates AuthBackend for auth requests", async () => {
@@ -8161,7 +8185,7 @@ snapshot_max_bytes = 64
       { kind: "command", action: "run" },
       { host, io, signalProcess },
     );
-    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+    await expect(waitForLoadedDaemonPid(pidPath, running, io)).resolves.toBe(4100);
 
     signalProcess.emit("SIGTERM");
 
@@ -8170,7 +8194,8 @@ snapshot_max_bytes = 64
     expect(io.stderrText()).toContain("cleanup[daemon-snapshots] failed");
 
     await rm(agencHome, { recursive: true, force: true });
-  });
+    // Nothing here times the daemon. The bound clears the pid wait.
+  }, loadedDaemonCaseTimeoutMs({ milestones: 1, requests: 0 }));
 
   it("retains a failed snapshot policy and its driver for a later close retry", async () => {
     const agencHome = await tempAgencHome();
