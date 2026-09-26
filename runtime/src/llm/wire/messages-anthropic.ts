@@ -15,6 +15,7 @@ import type {
   LLMResponse,
   LLMTool,
   LLMToolCall,
+  LLMUsage,
 } from "../types.js";
 import {
   ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME,
@@ -489,6 +490,80 @@ export function buildAnthropicMessagesRequest(
   return body;
 }
 
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/**
+ * Nested `usage.output_tokens_details.thinking_tokens` when the count is a
+ * finite, non-negative number. Malformed values are omitted so stream
+ * accumulation can keep a previously valid count.
+ */
+export function readAnthropicThinkingTokenDetails(
+  usageRecord: Record<string, unknown>,
+): { readonly thinking_tokens: number } | undefined {
+  const nested = asRecord(usageRecord.output_tokens_details)?.thinking_tokens;
+  return isFiniteNumber(nested) && nested >= 0
+    ? { thinking_tokens: nested }
+    : undefined;
+}
+
+/**
+ * Anthropic reports thinking as a subset of inclusive `output_tokens` at
+ * `usage.output_tokens_details.thinking_tokens`. Older payloads may still
+ * emit a flat `reasoning_output_tokens` field.
+ *
+ * A malformed nested count is dropped rather than replaced by the legacy
+ * field. A count above `output_tokens` is clamped to that inclusive total.
+ */
+export function readAnthropicReasoningOutputTokens(
+  usageRecord: Record<string, unknown>,
+): number | undefined {
+  const details = asRecord(usageRecord.output_tokens_details);
+  let raw: number | undefined;
+  if (details && Object.prototype.hasOwnProperty.call(details, "thinking_tokens")) {
+    raw = readAnthropicThinkingTokenDetails(usageRecord)?.thinking_tokens;
+    if (raw === undefined) {
+      return undefined;
+    }
+  } else if (
+    isFiniteNumber(usageRecord.reasoning_output_tokens) &&
+    usageRecord.reasoning_output_tokens >= 0
+  ) {
+    raw = usageRecord.reasoning_output_tokens;
+  } else {
+    return undefined;
+  }
+
+  const outputTokens = usageRecord.output_tokens;
+  if (isFiniteNumber(outputTokens) && outputTokens >= 0 && raw > outputTokens) {
+    return outputTokens;
+  }
+  return raw;
+}
+
+/**
+ * Anthropic thinking counts are a subset of inclusive `output_tokens`, which
+ * is stored as `completionTokens`. Mark that subset so the session budget
+ * adds completion once. A reasoning count above completion stays unmarked
+ * and is still added on top.
+ */
+export function markAnthropicReasoningIncludedInCompletion(
+  usage: LLMUsage,
+): LLMUsage {
+  const reasoning = usage.reasoningOutputTokens;
+  if (reasoning === undefined || reasoning > usage.completionTokens) {
+    return usage;
+  }
+  return { ...usage, reasoningIncludedInCompletion: true };
+}
+
 export function parseAnthropicMessagesResponse(
   model: string,
   response: Record<string, unknown>,
@@ -589,19 +664,23 @@ export function parseAnthropicMessagesResponse(
       ? usageRecord.speed
       : undefined;
 
+  const normalizedUsage = markAnthropicReasoningIncludedInCompletion(
+    coerceUsage({
+      promptTokens: usageRecord.input_tokens,
+      completionTokens: usageRecord.output_tokens,
+      totalTokens: undefined,
+      cachedInputTokens: usageRecord.cache_read_input_tokens,
+      cacheCreationInputTokens: usageRecord.cache_creation_input_tokens,
+      reasoningOutputTokens: readAnthropicReasoningOutputTokens(usageRecord),
+      webSearchRequests: serverToolUse.web_search_requests,
+    }),
+  );
+
   return {
     content,
     toolCalls,
     usage: {
-      ...coerceUsage({
-        promptTokens: usageRecord.input_tokens,
-        completionTokens: usageRecord.output_tokens,
-        totalTokens: undefined,
-        cachedInputTokens: usageRecord.cache_read_input_tokens,
-        cacheCreationInputTokens: usageRecord.cache_creation_input_tokens,
-        reasoningOutputTokens: usageRecord.reasoning_output_tokens,
-        webSearchRequests: serverToolUse.web_search_requests,
-      }),
+      ...normalizedUsage,
       ...(servedSpeed !== undefined ? { speed: servedSpeed } : {}),
     },
     model:

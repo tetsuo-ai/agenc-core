@@ -1766,6 +1766,49 @@ describe("streamModel — SessionState.totalTokenUsage accumulator", () => {
     expect(sidecar.getTotalCostUsd()).toBeGreaterThan(0.02);
   });
 
+  test("counts Anthropic thinking tokens once in the session token budget", async () => {
+    // output_tokens 348 already includes thinking_tokens 312. The session
+    // budget must add 348, not 348 + 312.
+    const ctx = mkCtx("chat");
+    const provider = mkProvider(async () =>
+      parseAnthropicMessagesResponse(
+        "claude-sonnet-4-5",
+        {
+          model: "claude-sonnet-4-5",
+          content: [{ type: "text", text: "ok" }],
+          stop_reason: "end_turn",
+          usage: {
+            input_tokens: 120,
+            output_tokens: 348,
+            output_tokens_details: { thinking_tokens: 312 },
+          },
+        },
+        {
+          model: "claude-sonnet-4-5",
+          messages: [{ role: "user", content: "think" }],
+          tools: [],
+        },
+      ),
+    );
+    const tracker = new BudgetTracker();
+    const { session } = mkSession(provider);
+    const sidecar = new CostSidecar({
+      defaultProvider: "anthropic",
+      defaultModel: "claude-sonnet-4-5",
+      budgetTracker: tracker,
+    });
+    session.eventLog.subscribe((event) => sidecar.onEvent(event));
+
+    await streamModel(
+      mkState(ctx),
+      ctx,
+      session,
+      mkRequest([{ role: "user", content: "think" }]),
+    );
+
+    expect(tracker.emitted).toBe(348);
+  });
+
   test("a fast-served Anthropic turn reaches CostSidecar at fast-mode rates", async () => {
     // 1M input tokens on Opus 5.5: $4 standard, $8 in fast mode. A turn that
     // asked for fast but was served standard carries speed "standard".
