@@ -28,7 +28,7 @@ import {
   materializeCancellationSet,
   materializedCancellationRunIds,
   withCancellationOperation,
-  type CancellationAncestorDenialReason,
+  type CancellationAncestorDenial,
   type CancellationOperation,
 } from "./run-cancellation.js";
 import { sqlPlaceholders } from "./sql.js";
@@ -599,7 +599,7 @@ export class ExecutionAdmissionRepository {
       let status: PersistedAdmissionStatus = "queued";
       let event: AdmissionJournalEvent["event"] = "queued";
       let reason: string | undefined;
-      const ancestorDenial = this.#ancestorDenialReason(request);
+      const ancestorDenial = this.#ancestorDenial(request)?.reason;
       if (ancestorDenial !== undefined) {
         status = "denied";
         event = "denied";
@@ -741,7 +741,7 @@ export class ExecutionAdmissionRepository {
       }
 
       const request = parseRequest(row.input_json);
-      const ancestorDenial = this.#ancestorDenialReason(request);
+      const ancestorDenial = this.#ancestorDenial(request)?.reason;
       if (ancestorDenial !== undefined) {
         const denied = this.#finishUnclaimedJobLocked(
           row,
@@ -924,7 +924,7 @@ export class ExecutionAdmissionRepository {
         const job = this.#requireJobByIdLocked(reservation.job_id);
         const request = parseRequest(job.input_json);
         if (reservation.status === "reserved") {
-          const ancestorDenial = this.#ancestorDenialReason(request);
+          const ancestorDenial = this.#ancestorDenial(request)?.reason;
           const stopReason =
             ancestorDenial ??
             (request.deadlineAt !== undefined &&
@@ -1772,6 +1772,18 @@ export class ExecutionAdmissionRepository {
         ? undefined
         : this.#reservationLocked(row.admission_reservation_id);
     const status = normalizePersistedStatus(row.status);
+    const ancestorDenial = row.admission_reason === "parent_cancel_locked"
+      ? this.#ancestorDenial(request)
+      : undefined;
+    const parentLockCause = ancestorDenial?.reason !== "parent_cancel_locked"
+      ? undefined
+      : ancestorDenial.parentStatus === "unknown_outcome" ||
+          ancestorDenial.lockReason === "unknown_outcome"
+        ? "unknown_outcome"
+        : ancestorDenial.parentStatus === "provider_overrun" ||
+            ancestorDenial.lockReason === "provider_overrun"
+          ? "provider_overrun"
+          : "cancellation";
     return {
       jobId: row.id,
       key: admissionRecordKey(request.step),
@@ -1796,6 +1808,7 @@ export class ExecutionAdmissionRepository {
       ...(row.admission_reason !== null
         ? { reason: row.admission_reason }
         : {}),
+      ...(parentLockCause !== undefined ? { parentLockCause } : {}),
       ...(reservation?.actual_tokens !== null &&
       reservation?.actual_tokens !== undefined
         ? { actualTokens: reservation.actual_tokens }
@@ -2757,9 +2770,9 @@ export class ExecutionAdmissionRepository {
     return true;
   }
 
-  #ancestorDenialReason(
+  #ancestorDenial(
     request: RuntimeAdmissionRequest,
-  ): CancellationAncestorDenialReason | undefined {
+  ): CancellationAncestorDenial | undefined {
     return inspectCancellationAncestors(this.#driver, {
       startRunId: request.step.runId,
       graphKind: ADMISSION_CANCELLATION_GRAPH,
@@ -2769,7 +2782,7 @@ export class ExecutionAdmissionRepository {
       // A request without a declared/durable parent is itself a root. A
       // declared parent must resolve to durable identity before admission.
       allowUnpersistedStartRoot: request.step.parentRunId === undefined,
-    })?.reason;
+    });
   }
 
   #rebuildAllocationsLocked(at: string): readonly string[] {

@@ -1908,7 +1908,8 @@ function admissionDenialDecision(
   // The durable AdmissionDecision vocabulary encodes cancellations as deny.
   // Restore their cause before consumers classify a denial as budget failure.
   return record.status === "cancelled" ||
-    record.reason === "parent_cancel_locked" ||
+    (record.reason === "parent_cancel_locked" &&
+      record.parentLockCause === "cancellation") ||
     record.reason?.startsWith("cancelled_before_dispatch:") === true ||
     record.reason?.startsWith("cancelled_after_dispatch:") === true
     ? "cancelled"
