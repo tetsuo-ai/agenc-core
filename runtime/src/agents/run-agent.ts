@@ -3112,9 +3112,9 @@ async function prepareChildToolCall(
   );
   // Checked again on the arguments that run, with the child's directory in
   // place. The sandbox confines what a command line does not show.
-  const outsideWorktree = childWorktreeShellRefusal(tool.name, childArgs, opts);
-  if (outsideWorktree !== undefined) {
-    return { result: { content: safeStringify({ error: outsideWorktree }), isError: true, metadata: { childPolicyDenied: true } } };
+  const shellOutsideWorktree = childWorktreeShellRefusal(tool.name, childArgs, opts);
+  if (shellOutsideWorktree !== undefined) {
+    return { result: { content: safeStringify({ error: shellOutsideWorktree }), isError: true, metadata: { childPolicyDenied: true } } };
   }
   // Policy replacement and signed child-argument copies omit non-enumerable
   // fields. Preserve the authenticated per-attempt grant, not model-provided
