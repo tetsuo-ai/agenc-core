@@ -321,6 +321,22 @@ environment when `options.env` is omitted, is captured as automation startup
 authority. The child sends the captured typed value to the daemon; it does not
 install the variable as mutable daemon environment state.
 
+Node can emit child `exit` before stdout closes. The transport records the
+exit status, keeps parsing until stdout `end` and child `close`, and only then
+decides whether a stream-json result arrived. The final unterminated line is
+parsed once after stdout ends. If stdio stays open after `exit` longer than
+`postExitDrainTimeoutMs` (default 5s), the run fails with a distinct drain
+error and the SDK SIGKILLs the direct child.
+
+The default spawner leaves the child in the embedder's process group, so a
+terminal SIGINT or SIGHUP still reaches it. `detachProcessGroup: true` (Unix
+only) opts into `detached: true` and a new process group. That group is the
+only one a drain timeout will SIGKILL, and only when its pid is a safe integer
+greater than 1 and not this process. `cancel()` and an aborted `signal`
+forward SIGTERM to that same group. A custom `spawn` is never group-signalled:
+terminal signals are the spawner's responsibility, and pid 1 cannot become
+`kill(-1)`.
+
 ## Runnable example
 
 `packages/agenc-sdk/examples/one-shot.mjs` exercises both transports:
@@ -739,7 +755,8 @@ daemon projects it as diagnostic with `statusProjection: "session_only"`.
   and client multiplexer).
 - `subprocess-transport.test.ts` — stream-json adaptation with a fake child
   process (argv contract, event mapping, exit-code-2 mapping, error paths,
-  bounded buffer with a visible `local_overflow` gap).
+  post-exit stdout drain, a real inherited-stdout descendant, and a bounded
+  buffer with a visible `local_overflow` gap).
 - `prompt-event-queue.test.ts` and `prompt-event-overflow.contract.test.ts` —
   the shared bounded event buffer and its socket-transport contract:
   result-first, slow, and never-draining consumers see exact loss counts and
