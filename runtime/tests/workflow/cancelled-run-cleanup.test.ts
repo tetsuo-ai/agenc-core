@@ -33,9 +33,17 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" });
 }
 
-async function waitForFile(path: string): Promise<void> {
+/** Wait for the check to start; a run that ends first fails with its own message. */
+async function waitForCheck(
+  path: string,
+  ended: () => string | undefined,
+): Promise<void> {
   const deadline = Date.now() + 60_000;
   while (!existsSync(path)) {
+    const terminal = ended();
+    if (terminal !== undefined) {
+      throw new Error(`the run ended before its check started: ${terminal}`);
+    }
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${path}`);
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
@@ -94,7 +102,12 @@ describe("a Goal run cancelled mid-stage", () => {
           CANCELLED_RUN,
           `touch '${checkStarted}'; while [ ! -e '${checkRelease}' ]; do sleep 0.05; done; ./test.sh`,
         );
-        await waitForFile(checkStarted);
+        await waitForCheck(checkStarted, () => {
+          const terminal = harness.repo.getCurrentTerminalResult(CANCELLED_RUN);
+          return terminal === undefined
+            ? undefined
+            : `${terminal.status}: ${terminal.finalMessage}`;
+        });
         const worktree = join(
           repoPath,
           ".agenc-worktrees",
