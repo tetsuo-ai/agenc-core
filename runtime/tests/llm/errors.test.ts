@@ -59,12 +59,21 @@ describe("LLM error network classification", () => {
       .toMatchObject({ name: "LLMFundsError", statusCode: 403, message: `grok error: xAI says the account has no credits left or has reached its spending limit.` });
   });
 
-  test("maps a Gemini daily quota response body to a funds stop", () => {
+  test.each([false, true])("keeps the original Gemini daily quota message (JSON body: %s)", (jsonBody) => {
+    const body = { error: { code: 429, status: "RESOURCE_EXHAUSTED",
+      message: "Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests",
+      details: [{ "@type": "type.googleapis.com/google.rpc.QuotaFailure", violations: [{
+        quotaMetric: "generativelanguage.googleapis.com/generate_content_free_tier_requests",
+        quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+        quotaDimensions: { location: "global", model: "gemini-2.0-flash" }, quotaValue: "200",
+      }] }] } };
     const wireError = new ProviderHttpError({ providerName: "gemini", status: 429,
       headers: new Headers(), url: "https://generativelanguage.googleapis.com/v1beta/models/test",
-      message: "Resource exhausted", body: { error: { status: "RESOURCE_EXHAUSTED",
-        details: [{ violations: [{ quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier" }] }] } } });
-    expect(mapLLMError("gemini", wireError, 0).name).toBe("LLMFundsError");
+      message: "Resource exhausted", body: jsonBody ? JSON.stringify(body) : body });
+    expect(mapLLMError("gemini", wireError, 0)).toMatchObject({
+      name: "LLMFundsError", statusCode: 429,
+      message: "gemini error: provider credits or billing quota exhausted",
+    });
   });
 
   test.each([

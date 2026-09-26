@@ -17,6 +17,18 @@ import {
 import { AgenCApiError as CanonicalAgenCApiError } from "../../errors/api.js";
 
 describe("llm api errors", () => {
+  test("keeps the original message for Gemini daily request quota exhaustion", () => {
+    const error = new AgenCApiError("Resource exhausted", {
+      status: 429,
+      body: { error: { code: 429, status: "RESOURCE_EXHAUSTED",
+        details: [{ violations: [{ quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier" }] }] } },
+    });
+    expect(mapAgenCApiErrorToLLMError("gemini", error, 0)).toMatchObject({
+      name: "LLMFundsError", statusCode: 429,
+      message: "gemini error: provider credits or billing quota exhausted",
+    });
+  });
+
   test.each(["cause", "originalError"])("uses a fixed billing message for a refusal in %s", (causeKey) => {
     const message = "Please check your plan and billing details.";
     const error = {

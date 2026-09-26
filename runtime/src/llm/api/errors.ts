@@ -59,7 +59,7 @@ export function mapAgenCApiErrorToLLMError(
 ): Error {
   if (isProviderFundsFailure(providerName, error)) {
     return new LLMFundsError(providerName,
-      error instanceof AgenCApiError ? error.status : undefined, providerFundsMessage(providerName));
+      error instanceof AgenCApiError ? error.status : undefined, providerFundsMessage(providerName, error));
   }
   const unwrapped = unwrapCannotRetryError(error);
   if (unwrapped !== error) {

@@ -27,7 +27,26 @@ function nestedText(value: unknown): string {
 }
 
 /** Billing messages never include provider response text. */
-export function providerFundsMessage(providerName: string): string {
+export function providerFundsMessage(providerName: string, error: unknown): string | undefined {
+  let current: unknown = error;
+  let hasCreditEvidence = false;
+  for (let depth = 0; depth < 5; depth += 1) {
+    const item = record(current);
+    if (item === undefined) break;
+    const status = item.status ?? item.statusCode;
+    const code = nestedCode(item) ?? nestedCode(item.body);
+    const message = `${nestedText(item)} ${nestedText(item.body)}`;
+    if (((status === 402 || status === 403) && EXHAUSTED_CREDITS_RE.test(message)) ||
+      ["insufficient_quota", "insufficient_credits", "credits_unavailable", "credit_balance_exhausted",
+        "personal-team-blocked:spending-limit", "organization_spend_limit_exceeded",
+        "project_spend_limit_exceeded"].includes(code ?? "")) {
+      hasCreditEvidence = true;
+      break;
+    }
+    current = item.cause ?? item.originalError;
+  }
+  // Preserve the original funds message for quota refusals without credit evidence.
+  if (!hasCreditEvidence) return undefined;
   const provider = providerName.toLowerCase();
   const displayName = provider === "grok" || provider === "xai" ? "xAI" :
     listBuiltInProviderInfo().find((info) => info.id === provider)?.name ?? providerName;

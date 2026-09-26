@@ -14,9 +14,17 @@ describe("providerFundsMessage", () => {
     ["agenc", "AgenC"],
     ["custom", "custom"],
   ])("uses a fixed billing sentence for %s", (provider, displayName) => {
-    expect(providerFundsMessage(provider)).toBe(
+    expect(providerFundsMessage(provider, { status: 403, body: { error: "Insufficient credits." } })).toBe(
       `${displayName} says the account has no credits left or has reached its spending limit.`,
     );
+  });
+
+  it.each([
+    { status: 402 },
+    { status: 429, error: { code: "usage_limit_reached" } },
+    { status: 429, body: { error: { message: "Insufficient credits." } } },
+  ])("keeps the original message without explicit credit evidence: %j", (error) => {
+    expect(providerFundsMessage("openai", error)).toBeUndefined();
   });
 
   it("keeps the existing default for directly constructed funds errors", () => {
