@@ -224,6 +224,8 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_AUTO_BACKGROUND_TASKS',
   // host-managed provider routing
   'AGENC_PROVIDER_MANAGED_BY_HOST',
+  // opt-in provider wire changes (tests that need one set it explicitly)
+  'AGENC_OPENAI_REASONING_REPLAY',
   // MCP process injection, mutation, OAuth, and sizing overrides
   'AGENC_MCP_SERVERS',
   'AGENC_MCP_ALLOW_MUTATIONS',

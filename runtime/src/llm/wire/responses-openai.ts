@@ -53,6 +53,124 @@ export interface OpenAIResponsesRequestOptions {
    * encrypted reasoning carried in the request to survive across turns.
    */
   readonly chatgptBackend?: boolean;
+  /**
+   * Provider that encrypted reasoning is kept for and replayed to (opt-in,
+   * `AGENC_OPENAI_REASONING_REPLAY`). Each reasoning output item of a
+   * response is kept with the assistant message it preceded, and a later
+   * request to the same provider and `model` sends it back. Stateless
+   * requests only: a stored response keeps its reasoning server side.
+   */
+  readonly reasoningReplayProvider?: string;
+}
+
+// A type alias rather than an interface so an item is a plain wire record.
+type ReplayableReasoningItem = {
+  readonly type: "reasoning";
+  readonly id: string;
+  readonly summary: ReadonlyArray<{
+    readonly type: "summary_text";
+    readonly text: string;
+  }>;
+  readonly encrypted_content: string;
+};
+
+function reasoningReplayProvider(
+  request: OpenAIResponsesRequestOptions,
+): string | undefined {
+  return request.store === true ? undefined : request.reasoningReplayProvider;
+}
+
+/**
+ * What a stateless request needs to hand a reasoning item back: its id, its
+ * summary and the encrypted reasoning. An item without encrypted content
+ * cannot be replayed without storage, and nothing else the item carried
+ * (status, plaintext content) is kept.
+ */
+function toReplayableReasoningItem(
+  item: unknown,
+): ReplayableReasoningItem | undefined {
+  if (item === null || typeof item !== "object" || Array.isArray(item)) {
+    return undefined;
+  }
+  const record = item as Record<string, unknown>;
+  if (
+    record.type !== "reasoning" ||
+    typeof record.id !== "string" ||
+    record.id.length === 0 ||
+    typeof record.encrypted_content !== "string" ||
+    record.encrypted_content.length === 0
+  ) {
+    return undefined;
+  }
+  const summary = Array.isArray(record.summary)
+    ? record.summary.flatMap((part: unknown) => {
+      const entry =
+        part !== null && typeof part === "object"
+          ? (part as Record<string, unknown>)
+          : undefined;
+      return entry?.type === "summary_text" && typeof entry.text === "string"
+        ? [{ type: "summary_text" as const, text: entry.text }]
+        : [];
+    })
+    : [];
+  return {
+    type: "reasoning",
+    id: record.id,
+    summary,
+    encrypted_content: record.encrypted_content,
+  };
+}
+
+/**
+ * Keep the encrypted reasoning items of one Responses call for replay,
+ * bound to the provider and request model that produced them.
+ */
+export function extractOpenAIReasoningReplay(
+  output: unknown,
+  request: OpenAIResponsesRequestOptions,
+): Pick<LLMResponse, "providerReasoningContent" | "providerReasoningProvenance"> {
+  const provider = reasoningReplayProvider(request);
+  if (provider === undefined || !Array.isArray(output)) return {};
+  const items = output.flatMap((item) => toReplayableReasoningItem(item) ?? []);
+  return items.length === 0
+    ? {}
+    : {
+      providerReasoningContent: JSON.stringify(items),
+      providerReasoningProvenance: { provider, model: request.model },
+    };
+}
+
+/**
+ * The reasoning items to replay for one assistant message. Only the provider
+ * and model that produced them get them back, compared the way durable
+ * history normalizes them; a replay without provenance, or one that no
+ * longer parses as reasoning items, is dropped whole.
+ */
+function replayedReasoningItems(
+  message: LLMMessage,
+  provider: string,
+  model: string,
+): ReplayableReasoningItem[] {
+  const source = message.providerReasoningProvenance;
+  if (
+    !message.providerReasoningContent ||
+    source === undefined ||
+    source.provider.trim().toLowerCase() !== provider.trim().toLowerCase() ||
+    source.model.trim().toLowerCase() !== model.trim().toLowerCase()
+  ) {
+    return [];
+  }
+  let stored: unknown;
+  try {
+    stored = JSON.parse(message.providerReasoningContent);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(stored) || stored.length === 0) return [];
+  const items = stored.map(toReplayableReasoningItem);
+  return items.every((item): item is ReplayableReasoningItem => item !== undefined)
+    ? items
+    : [];
 }
 
 function positiveInteger(value: number | undefined): number | undefined {
@@ -265,6 +383,7 @@ export function buildOpenAIResponsesRequest(
   ]
     .filter((text): text is string => typeof text === "string" && text.length > 0)
     .join("\n\n");
+  const replayProvider = reasoningReplayProvider(input);
   const responseInput: Array<Record<string, unknown>> = [];
 
   for (const message of messages) {
@@ -272,6 +391,16 @@ export function buildOpenAIResponsesRequest(
 
     if (message.role === "assistant") {
       const content = toResponsesMessageParts(message.content, "assistant");
+      const toolCalls = message.toolCalls ?? [];
+      // A reasoning item goes back right before the output it led to: the
+      // turn's function calls, or its text when it called none. A message
+      // with neither has nothing to follow it, so it replays none.
+      const reasoning =
+        replayProvider !== undefined &&
+          (toolCalls.length > 0 || content.length > 0)
+          ? replayedReasoningItems(message, replayProvider, input.model)
+          : [];
+      if (toolCalls.length === 0) responseInput.push(...reasoning);
       if (content.length > 0) {
         responseInput.push({
           type: "message",
@@ -279,7 +408,8 @@ export function buildOpenAIResponsesRequest(
           content,
         });
       }
-      for (const toolCall of message.toolCalls ?? []) {
+      if (toolCalls.length > 0) responseInput.push(...reasoning);
+      for (const toolCall of toolCalls) {
         const normalizedId = normalizeFunctionCallId(toolCall.id);
         responseInput.push({
           type: "function_call",
@@ -365,7 +495,11 @@ export function buildOpenAIResponsesRequest(
   if (maxOutputTokens !== undefined && input.chatgptBackend !== true) {
     body.max_output_tokens = maxOutputTokens;
   }
-  if (input.options?.includeEncryptedReasoning || input.chatgptBackend === true) {
+  if (
+    input.options?.includeEncryptedReasoning ||
+    input.chatgptBackend === true ||
+    replayProvider !== undefined
+  ) {
     body.include = ["reasoning.encrypted_content"];
   }
   if (input.options?.reasoningEffort !== undefined) {
@@ -484,6 +618,7 @@ export function parseOpenAIResponsesResponse(
   return {
     content,
     toolCalls,
+    ...extractOpenAIReasoningReplay(output, request),
     usage: coerceUsage({
       promptTokens: usageRecord.input_tokens,
       completionTokens: usageRecord.output_tokens,
