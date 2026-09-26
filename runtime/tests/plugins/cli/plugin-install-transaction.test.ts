@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 const durableControl = vi.hoisted(() => ({
@@ -11,6 +11,11 @@ const durableControl = vi.hoisted(() => ({
 
 const renameGate = vi.hoisted(() => ({
   before: undefined as undefined | ((from: string, to: string) => Promise<void>),
+}));
+
+const unlinkFault = vi.hoisted(() => ({
+  remaining: 0,
+  persistent: false,
 }));
 
 vi.mock("../../../src/utils/durable-atomic-file.js", async (importOriginal) => {
@@ -43,13 +48,30 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         await actual.rename(from, to);
       })();
     },
+    unlink: async (path: Parameters<typeof actual.unlink>[0]) => {
+      const target = String(path);
+      if (
+        /\/install-dir-[0-9a-f]+\.lock$/u.test(target)
+        && (unlinkFault.persistent || unlinkFault.remaining > 0)
+      ) {
+        if (!unlinkFault.persistent) unlinkFault.remaining -= 1;
+        throw Object.assign(new Error("injected EACCES"), { code: "EACCES" });
+      }
+      return actual.unlink(path);
+    },
   };
 });
 
 import { parseToml } from "../../../src/config/loader.js";
 import {
+  pluginInstallDirectoryLockDirectory,
+  setPluginInstallDirectoryLockWaitHook,
+  withPluginInstallDirectoryLock,
+} from "../../../src/plugins/cli/plugin-install-directory-lock.js";
+import {
   PluginInstallTransactionSimulatedCrash,
   recoverPluginInstallTransactions,
+  type PluginInstallRecoveryHooks,
   type PluginInstallTransactionHooks,
   type PluginInstallTransactionPhase,
 } from "../../../src/plugins/cli/plugin-install-transaction.js";
@@ -60,6 +82,7 @@ import {
   type PluginOperationOptions,
 } from "../../../src/plugins/cli/pluginOperations.js";
 import { loadPlugins } from "../../../src/plugins/loader.js";
+import { restoreTrustedUserPluginConfig } from "../../../src/plugins/plugin-config-rollback.js";
 
 interface ParsedPluginsConfig {
   readonly plugins?: {
@@ -345,6 +368,22 @@ async function recoverLocal(world: TxnWorld) {
   });
 }
 
+function recoverLikeDaemon(
+  world: TxnWorld,
+  hooks?: PluginInstallRecoveryHooks,
+) {
+  const userConfigPath = join(world.agencHome, "config.toml");
+  return recoverPluginInstallTransactions({
+    installRoots: [world.pluginStorageRoot],
+    userConfigPath,
+    restorePluginConfig: (pluginId, previous) => {
+      restoreTrustedUserPluginConfig(userConfigPath, pluginId, previous);
+      return Promise.resolve();
+    },
+    ...(hooks === undefined ? {} : { hooks }),
+  });
+}
+
 async function assertUpdateFailureExtra(
   installed: InstalledDemo,
   kind: UpdateFailureKind,
@@ -442,6 +481,190 @@ describe("plugin install transaction", () => {
     expect(await readPluginVersion(installed.destination)).toBe("1.0.0");
     expect(await demoEnabledInConfig(installed)).toBe(true);
     expect(namesInclude(await storageNames(installed), ".bak-")).toBe(false);
+  });
+
+  it("does not let recovery delete an update that commits after the directory identity matched", async () => {
+    const installed = await crashDemoUpdate(await installDemoV1(), "config-published");
+    expect(await readPluginVersion(installed.destination)).toBe("2.0.0");
+    const destination = resolve(installed.destination);
+    let releaseRecovery: () => void = () => {};
+    const releaseGate = new Promise<void>((resolveGate) => {
+      releaseRecovery = resolveGate;
+    });
+    let markMatched: () => void = () => {};
+    const matched = new Promise<void>((resolveMatched) => {
+      markMatched = resolveMatched;
+    });
+    let markWait: () => void = () => {};
+    const waited = new Promise<void>((resolveWait) => {
+      markWait = resolveWait;
+    });
+    let paused = false;
+    setPluginInstallDirectoryLockWaitHook(() => {
+      markWait();
+    });
+    const recoveryPromise = recoverLikeDaemon(installed, {
+      beforeRemoveMatchedDirectory: async (path) => {
+        if (paused || resolve(path) !== destination) return;
+        paused = true;
+        markMatched();
+        await releaseGate;
+      },
+    });
+    try {
+      await matched;
+      const source = await writePlugin(installed.root, "demo", "3.0.0");
+      let updateError: unknown;
+      const updatePromise = updatePluginOp({
+        ...installed.authority,
+        pluginId: "demo",
+        source,
+      }).then(
+        (result) => ({ ok: true as const, version: result.plugin.version }),
+        (error: unknown) => {
+          updateError = error;
+          return { ok: false as const };
+        },
+      );
+      const raced = await Promise.race([
+        waited.then(() => "blocked" as const),
+        updatePromise.then(() => "settled" as const),
+      ]);
+      releaseRecovery();
+      const recovery = await recoveryPromise;
+      const update = await updatePromise;
+      const version = await readPluginVersion(installed.destination);
+      const cleanRecovery = recovery.recovered > 0 && recovery.issues.length === 0;
+      const reportedSuccess = update.ok && update.version === "3.0.0";
+      expect(reportedSuccess && cleanRecovery && version === "1.0.0").toBe(false);
+      expect(raced).toBe("blocked");
+      expect(update.ok).toBe(true);
+      if (!update.ok) throw updateError;
+      expect(update.version).toBe("3.0.0");
+      expect(version).toBe("3.0.0");
+    } finally {
+      releaseRecovery();
+      setPluginInstallDirectoryLockWaitHook(undefined);
+      await recoveryPromise.catch(() => undefined);
+    }
+  });
+
+  it("does not wait when an install recovers its own directory", async () => {
+    const installed = await crashDemoUpdate(await installDemoV1(), "config-published");
+    const ops = join(installed.pluginStorageRoot, ".plugin-install-ops");
+    const oldRecord = (await readdir(ops)).find((name) => name.endsWith(".json"));
+    expect(oldRecord).toBeDefined();
+    const source = await writePlugin(installed.root, "demo", "3.0.0");
+    let waited = false;
+    setPluginInstallDirectoryLockWaitHook(() => {
+      waited = true;
+    });
+    try {
+      const outcome = await withPluginInstallDirectoryLock(installed.destination, async () => {
+        const listed = await listInstalledPlugins(installed.authority);
+        const updated = await updatePluginOp({
+          ...installed.authority,
+          pluginId: "demo",
+          source,
+        });
+        return { listed, updated };
+      });
+      expect(waited).toBe(false);
+      expect(outcome.listed.errors.some((error) => error.includes("busy install directory"))).toBe(true);
+      expect(outcome.updated.plugin.version).toBe("3.0.0");
+      expect(await readPluginVersion(installed.destination)).toBe("3.0.0");
+      expect(await readdir(ops)).toContain(oldRecord);
+      const later = await recoverLikeDaemon(installed);
+      expect(later.recovered).toBe(0);
+      expect(await readPluginVersion(installed.destination)).toBe("3.0.0");
+    } finally {
+      setPluginInstallDirectoryLockWaitHook(undefined);
+    }
+  });
+
+  it("skips recovery while another live process holds the install directory lock", async () => {
+    const installed = await crashDemoUpdate(await installDemoV1(), "config-published");
+    const lockPath = await pluginInstallDirectoryLockDirectory(installed.destination);
+    await mkdir(dirname(lockPath), { recursive: true, mode: 0o700 });
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    expect(child.pid).toEqual(expect.any(Number));
+    try {
+      await writeFile(
+        lockPath,
+        `${JSON.stringify({ pid: child.pid, nonce: randomUUID(), acquiredAtMs: Date.now() })}\n`,
+      );
+      const recovery = await recoverLikeDaemon(installed);
+      expect(recovery.recovered).toBe(0);
+      expect(recovery.issues.map((issue) => issue.message)).toEqual([
+        expect.stringContaining(`busy install directory: ${installed.destination}`),
+      ]);
+      expect(await readPluginVersion(installed.destination)).toBe("2.0.0");
+    } finally {
+      child.kill();
+    }
+  });
+
+  it("reports a corrupt install directory lock and leaves that entry in place", async () => {
+    const installed = await crashDemoUpdate(await installDemoV1(), "config-published");
+    const lockPath = await pluginInstallDirectoryLockDirectory(installed.destination);
+    await mkdir(dirname(lockPath), { recursive: true, mode: 0o700 });
+    await mkdir(lockPath);
+    await writeFile(join(lockPath, "keep.txt"), "stay\n");
+    const recovery = await recoverLikeDaemon(installed);
+    expect(recovery.recovered).toBe(0);
+    expect(recovery.issues.map((issue) => issue.message)).toEqual([
+      `plugin install directory lock requires manual recovery: ${lockPath}`,
+    ]);
+    expect(recovery.issues[0]?.preservedPaths).toEqual(expect.arrayContaining([
+      installed.destination,
+      lockPath,
+    ]));
+    expect(await readFile(join(lockPath, "keep.txt"), "utf8")).toBe("stay\n");
+    expect(await readPluginVersion(installed.destination)).toBe("2.0.0");
+  });
+
+  it("reports a committed install when directory lock cleanup fails", async () => {
+    const world = await createWorld();
+    unlinkFault.persistent = true;
+    try {
+      let caught: unknown;
+      try {
+        await installPluginOp({
+          ...world.authority,
+          source: await writePlugin(world.root, "demo", "1.0.0"),
+        });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toBe(
+        "plugin install committed but directory lock cleanup failed: injected EACCES",
+      );
+      const listed = await listInstalledPlugins(world.authority);
+      expect(listed.plugins.map((plugin) => plugin.version)).toEqual(["1.0.0"]);
+      expect(await readPluginVersion(listed.plugins[0]!.root)).toBe("1.0.0");
+    } finally {
+      unlinkFault.persistent = false;
+      unlinkFault.remaining = 0;
+      await rm(world.root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the install error when directory lock cleanup also fails", async () => {
+    const world = await createWorld();
+    unlinkFault.persistent = true;
+    try {
+      await expect(installPluginOp({
+        ...world.authority,
+        source: await writePlugin(world.root, "demo", "1.0.0"),
+        installTransactionHooks: throwBefore("beforeWriteMetadata", "metadata write failed"),
+      })).rejects.toThrow("metadata write failed");
+      expect((await listInstalledPlugins(world.authority)).plugins).toEqual([]);
+    } finally {
+      unlinkFault.persistent = false;
+      unlinkFault.remaining = 0;
+      await rm(world.root, { recursive: true, force: true });
+    }
   });
 
   for (
