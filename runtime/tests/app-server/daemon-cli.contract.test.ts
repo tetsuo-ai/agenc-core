@@ -946,10 +946,11 @@ async function waitForSnapshotAfter(
   cwd: string,
   sessionId: string,
   after: string,
+  budgetMs = 2_000,
 ): Promise<string> {
   const startedAt = Date.now();
   let newest: string | undefined;
-  while (Date.now() - startedAt < 2_000) {
+  while (Date.now() - startedAt < budgetMs) {
     const times = readSnapshotTimes(agencHome, cwd, sessionId);
     newest = times[times.length - 1];
     if (newest !== undefined && newest > after) return newest;
@@ -8246,8 +8247,10 @@ snapshot_max_bytes = 64
       { host, io, signalProcess, runner, snapshotPeriodicIntervalMs: 10 },
     );
     try {
-      await expect(waitForPid(resolveAgenCDaemonPidPath(host.env, host.userHome))).resolves.toBe(4100);
-      await waitForSnapshotAfter(agencHome, otherCwd, "session-periodic-good", SEEDED_RECOVERY_SNAPSHOT_AT);
+      await expect(waitForLoadedDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome), running, io)).resolves.toBe(4100);
+      // The snapshot comes from the 10 ms periodic flush, which may run only
+      // after the pid appears.
+      await waitForSnapshotAfter(agencHome, otherCwd, "session-periodic-good", SEEDED_RECOVERY_SNAPSHOT_AT, LOADED_DAEMON_MILESTONE_BUDGET_MS);
       expect(io.stderrText()).toContain("daemon snapshot policy failed");
     } finally {
       signalProcess.emit("SIGTERM");
@@ -8255,7 +8258,9 @@ snapshot_max_bytes = 64
       await rm(otherCwd, { recursive: true, force: true });
       await rm(agencHome, { recursive: true, force: true });
     }
-  });
+    // Nothing here times the daemon. The bound clears the pid wait and the
+    // wait for the other project's periodic snapshot back to back.
+  }, loadedDaemonCaseTimeoutMs({ milestones: 2, requests: 0 }));
 });
 
 /** snapshot_at of the recovered row seeded by seedRecoverableDaemonState. */
