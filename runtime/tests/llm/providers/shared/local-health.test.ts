@@ -1,6 +1,191 @@
+import { getEventListeners } from "node:events";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
+import { LLMTimeoutError, mapLLMError } from "../../errors.js";
 import { runLocalProviderHealthSidecar } from "./local-health.js";
+
+type LocalHealthSidecarParams = Parameters<
+  typeof runLocalProviderHealthSidecar
+>[0];
+type SidecarOperation = LocalHealthSidecarParams["operation"];
+type BeforeWorkAbortTiming =
+  | "already-aborted"
+  | "while-attaching-listener"
+  | "after-listen-before-operation";
+
+function signalThatAbortsBeforeListenerAttaches(
+  controller: AbortController,
+  reason: unknown,
+): AbortSignal {
+  return new Proxy(controller.signal, {
+    get(target, prop, receiver) {
+      if (prop === "addEventListener") {
+        return (
+          type: string,
+          listener: EventListenerOrEventListenerObject,
+          options?: boolean | AddEventListenerOptions,
+        ) => {
+          if (type === "abort" && !target.aborted) {
+            controller.abort(reason);
+          }
+          return target.addEventListener(type, listener, options);
+        };
+      }
+      if (prop === "removeEventListener") {
+        return target.removeEventListener.bind(target);
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+function idleHealthCheck() {
+  return vi.fn(async () => true);
+}
+
+function unusedOperation() {
+  return vi.fn(async () => "should-not-run");
+}
+
+function expectSidecarReleased(controller: AbortController): void {
+  expect(vi.getTimerCount()).toBe(0);
+  expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+}
+
+function runSidecar(params: {
+  readonly healthCheck: LocalHealthSidecarParams["healthCheck"];
+  readonly signal?: AbortSignal;
+  readonly intervalMs?: number;
+  readonly operation?: SidecarOperation;
+  readonly readOperation?: () => SidecarOperation;
+}) {
+  return runLocalProviderHealthSidecar({
+    providerLabel: "test",
+    healthCheck: params.healthCheck,
+    signal: params.signal,
+    intervalMs: params.intervalMs ?? 50,
+    get operation() {
+      if (params.readOperation) {
+        return params.readOperation();
+      }
+      if (!params.operation) {
+        throw new Error("runSidecar requires operation or readOperation");
+      }
+      return params.operation;
+    },
+  });
+}
+
+function startBeforeWorkSidecar(params: {
+  readonly timing: BeforeWorkAbortTiming;
+  readonly controller: AbortController;
+  readonly reason: Error;
+  readonly healthCheck: LocalHealthSidecarParams["healthCheck"];
+  readonly operation: SidecarOperation;
+}) {
+  const { timing, controller, reason, healthCheck, operation } = params;
+  let signal = controller.signal;
+  let readOperation: (() => SidecarOperation) | undefined;
+  switch (timing) {
+    case "already-aborted":
+      controller.abort(reason);
+      break;
+    case "while-attaching-listener":
+      signal = signalThatAbortsBeforeListenerAttaches(controller, reason);
+      break;
+    case "after-listen-before-operation":
+      readOperation = () => {
+        controller.abort(reason);
+        return operation;
+      };
+      break;
+    default: {
+      const _never: never = timing;
+      throw new Error(`unhandled abort timing: ${_never}`);
+    }
+  }
+  return runSidecar({ healthCheck, signal, operation, readOperation });
+}
+
+async function expectRejectedBeforeWork(params: {
+  readonly timing: BeforeWorkAbortTiming;
+  readonly message: string;
+  readonly forbidsTimerStart: boolean;
+}): Promise<void> {
+  const controller = new AbortController();
+  const reason = new Error(params.message);
+  const healthCheck = idleHealthCheck();
+  const operation = unusedOperation();
+  const intervalSpy = vi.spyOn(globalThis, "setInterval");
+
+  await expect(
+    startBeforeWorkSidecar({
+      timing: params.timing,
+      controller,
+      reason,
+      healthCheck,
+      operation,
+    }),
+  ).rejects.toBe(reason);
+
+  expect(operation).not.toHaveBeenCalled();
+  expect(healthCheck).not.toHaveBeenCalled();
+  if (params.forbidsTimerStart) {
+    expect(intervalSpy).not.toHaveBeenCalled();
+  }
+  expectSidecarReleased(controller);
+  intervalSpy.mockRestore();
+}
+
+type CallerSignalMode = "in-flight" | "stays-live";
+
+async function expectCallerSignalOutcome(mode: CallerSignalMode): Promise<void> {
+  const controller = new AbortController();
+  const reason = new Error("cancelled mid-operation");
+  const healthCheck = idleHealthCheck();
+  let receivedSignal: AbortSignal | undefined;
+  const operation = vi.fn(async (signal: AbortSignal) => {
+    receivedSignal = signal;
+    if (mode === "stays-live") {
+      expect(signal.aborted).toBe(false);
+      return "ok";
+    }
+    return await new Promise<string>((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), {
+        once: true,
+      });
+      controller.abort(reason);
+    });
+  });
+
+  const run = runSidecar({
+    operation,
+    healthCheck,
+    signal: controller.signal,
+    intervalMs: mode === "in-flight" ? 10_000 : 50,
+  });
+
+  switch (mode) {
+    case "in-flight":
+      await expect(run).rejects.toBe(reason);
+      expect(receivedSignal?.aborted).toBe(true);
+      expect(receivedSignal?.reason).toBe(reason);
+      break;
+    case "stays-live":
+      await expect(run).resolves.toBe("ok");
+      expect(healthCheck).not.toHaveBeenCalled();
+      expect(controller.signal.aborted).toBe(false);
+      break;
+    default: {
+      const _never: never = mode;
+      throw new Error(`unhandled caller-signal mode: ${_never}`);
+    }
+  }
+
+  expect(operation).toHaveBeenCalledOnce();
+  expectSidecarReleased(controller);
+}
 
 describe("runLocalProviderHealthSidecar", () => {
   beforeEach(() => {
@@ -175,4 +360,92 @@ describe("runLocalProviderHealthSidecar", () => {
     });
     expect(result).toBe("ok");
   });
+
+  test.each([
+    [
+      "rejects a pre-aborted signal without starting provider work or a health timer",
+      "already-aborted",
+      "cancelled before health sidecar",
+      true,
+    ],
+    [
+      "does not lose an abort that arrives between setup and operation start",
+      "while-attaching-listener",
+      "cancelled during sidecar setup",
+      true,
+    ],
+    [
+      "does not lose an abort that fires after the listener is attached and before the operation runs",
+      "after-listen-before-operation",
+      "cancelled after listen, before operation",
+      false,
+    ],
+  ] as const)("%s", async (_name, timing, message, forbidsTimerStart) => {
+    await expectRejectedBeforeWork({ timing, message, forbidsTimerStart });
+  });
+
+  test.each([
+    [
+      "propagates an in-flight caller abort through the derived signal and its reason",
+      "in-flight",
+    ],
+    [
+      "completes normally and removes the abort listener when the caller signal stays live",
+      "stays-live",
+    ],
+  ] as const)("%s", async (_name, mode) => {
+    await expectCallerSignalOutcome(mode);
+  });
+
+  test.each([
+    ["a string reason", "already-aborted", "session_shutdown"],
+    ["a string reason", "while-attaching-listener", "session_shutdown"],
+    ["a bare abort()", "already-aborted", undefined],
+    ["a bare abort()", "while-attaching-listener", undefined],
+  ] as const)(
+    "normalizes %s before work (%s) so it is not AbortError-shaped",
+    async (_label, timing, reason) => {
+      const controller = new AbortController();
+      const healthCheck = idleHealthCheck();
+      const operation = unusedOperation();
+      const intervalSpy = vi.spyOn(globalThis, "setInterval");
+      // abort(undefined) is a bare abort(): the reason becomes the default
+      // AbortError DOMException.
+      let signal = controller.signal;
+      if (timing === "already-aborted") {
+        controller.abort(reason);
+      } else {
+        signal = signalThatAbortsBeforeListenerAttaches(controller, reason);
+      }
+
+      const error = await runSidecar({ healthCheck, signal, operation }).then(
+        () => {
+          throw new Error("expected the sidecar to reject");
+        },
+        (rejection: unknown) => rejection,
+      );
+
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(DOMException);
+      expect((error as Error).name).not.toBe("AbortError");
+      expect((error as Error & { code?: unknown }).code).not.toBe("ABORT_ERR");
+      if (reason === undefined) {
+        // The bare-abort DOMException stays reachable as the cause.
+        expect((error as Error & { cause?: unknown }).cause).toBe(
+          controller.signal.reason,
+        );
+      } else {
+        expect((error as Error).message).toBe(reason);
+      }
+      expect(mapLLMError("ollama", error, 30_000)).not.toBeInstanceOf(
+        LLMTimeoutError,
+      );
+
+      expect(operation).not.toHaveBeenCalled();
+      expect(healthCheck).not.toHaveBeenCalled();
+      expect(intervalSpy).not.toHaveBeenCalled();
+      expectSidecarReleased(controller);
+      intervalSpy.mockRestore();
+    },
+  );
 });
