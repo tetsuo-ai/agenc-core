@@ -208,6 +208,8 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS',
   'AGENC_MAX_BUDGET_USD',
   'AGENC_AUTH_MANAGED_KEYS_ENABLED',
+  // system prompt head selection (a test that needs it sets it explicitly)
+  'AGENC_LEAN_SYSTEM_PROMPT',
   // ambient authorization/profile switches must not weaken a default worker
   'AGENC_ALLOW_UNTRUSTED_HOOKS',
   'AGENC_DISABLE_COMMAND_INJECTION_CHECK',

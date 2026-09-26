@@ -63,6 +63,7 @@ import {
   getUsingYourToolsSection,
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 } from "./system-prompt.js";
+import { LEAN_SYSTEM_PROMPT_ENV } from "./lean-system-prompt.js";
 
 // Minimal TurnContext + Session stubs — only the fields the assembler reads.
 function fakeCtx(overrides?: Partial<TurnContext>): TurnContext {
@@ -1013,9 +1014,11 @@ describe("assembleSystemPrompt", () => {
 
   test("the coherent contract switch applies only where the completion contract is emitted", async () => {
     const registry = { tools: [{ name: "FileRead" }, { name: "exec_command" }] };
+    // The switch edits the standard head; Grok sessions get the lean head by
+    // default, so the standard one is selected explicitly here.
     const assemble = (nonInteractive: boolean, env: NodeJS.ProcessEnv) =>
       assembleBaseInstructionsForModel({
-        session: { services: { runtimeOptions: { nonInteractive }, userShell: { childEnvironment: env } } },
+        session: { services: { runtimeOptions: { nonInteractive }, userShell: { childEnvironment: { [LEAN_SYSTEM_PROMPT_ENV]: "0", ...env } } } },
         ctx: fakeCtx(),
         registry,
         provider: "grok",
