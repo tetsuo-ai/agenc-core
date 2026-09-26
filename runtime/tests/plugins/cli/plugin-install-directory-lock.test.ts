@@ -16,10 +16,24 @@ const unlinkInterleave = vi.hoisted(() => ({
   maxInside: 0,
 }));
 
+const opsDirectoryInterleave = vi.hoisted(() => ({
+  removeBeforeLstat: undefined as string | undefined,
+}));
+
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
+    lstat: (async (...args: Parameters<typeof actual.lstat>) => {
+      const target = String(args[0]);
+      if (opsDirectoryInterleave.removeBeforeLstat === target) {
+        // A concurrent install or recovery removes the empty ops directory
+        // right after this operation created it.
+        opsDirectoryInterleave.removeBeforeLstat = undefined;
+        await actual.rmdir(target);
+      }
+      return actual.lstat(...args);
+    }) as typeof actual.lstat,
     unlink: async (path: Parameters<typeof actual.unlink>[0]) => {
       const target = String(path);
       if (
@@ -759,3 +773,21 @@ async function unknownRemains(target: string, kind: "empty" | "partial" | "symli
     }
   }
 }
+
+describe("plugin install directory lock setup", () => {
+  it("recreates the ops directory when a concurrent cleanup removes it before the lock is published", async () => {
+    const root = await mkdtemp(join(tmpdir(), "install-dir-lock-ops-"));
+    try {
+      const destination = join(root, "demo");
+      const opsDir = dirname(await pluginInstallDirectoryLockDirectory(destination));
+      opsDirectoryInterleave.removeBeforeLstat = opsDir;
+      await expect(
+        withPluginInstallDirectoryLock(destination, async () => "locked body ran"),
+      ).resolves.toBe("locked body ran");
+      expect(opsDirectoryInterleave.removeBeforeLstat).toBeUndefined();
+    } finally {
+      opsDirectoryInterleave.removeBeforeLstat = undefined;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

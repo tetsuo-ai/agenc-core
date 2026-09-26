@@ -8,6 +8,7 @@ import { isRecord } from "../../utils/record.js";
 
 const PLUGIN_INSTALL_OPS_DIR = ".plugin-install-ops";
 const DIRECTORY_LOCK_POLL_MS = 20;
+const OPS_DIRECTORY_CREATE_ATTEMPTS = 8;
 const MAX_LOCK_BYTES = 4096;
 const RECLAIM_GUARD_SUFFIX = ".reclaim";
 const DEFAULT_RECLAIM_GUARD_STALE_MS = 60_000;
@@ -643,12 +644,21 @@ function lockFilePath(key: string): string {
 
 async function prepareLockFile(key: string): Promise<string> {
   const opsDir = join(dirname(key), PLUGIN_INSTALL_OPS_DIR);
-  await mkdir(opsDir, { recursive: true, mode: 0o700 });
-  const info = await lstat(opsDir);
-  if (info.isSymbolicLink() || !info.isDirectory()) {
-    throw new Error(`plugin install directory lock cannot use ${opsDir}`);
+  // A finishing install or a recovery pass removes the ops directory once it
+  // is empty. That can land between this mkdir and the lstat below, so a
+  // vanished directory is created again instead of failing the operation.
+  for (let attempt = 1; ; attempt += 1) {
+    await mkdir(opsDir, { recursive: true, mode: 0o700 });
+    const info = await lstatIfPresent(opsDir);
+    if (info === undefined) {
+      if (attempt < OPS_DIRECTORY_CREATE_ATTEMPTS) continue;
+      throw new Error(`plugin install directory lock could not keep ${opsDir}`);
+    }
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      throw new Error(`plugin install directory lock cannot use ${opsDir}`);
+    }
+    return lockFilePath(key);
   }
-  return lockFilePath(key);
 }
 
 function errorMessage(error: unknown): string {
