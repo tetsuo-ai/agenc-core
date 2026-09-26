@@ -25,6 +25,35 @@ async function initialize(connection: {
   });
 }
 
+/**
+ * A dispatcher over one restored session whose tool-call review is a spy, and
+ * a connection attached to that session as `clientId`: only an attached
+ * client may review a session, and the reviewer is derived from it.
+ */
+async function attachedToolResolutionConnection(clientId: string, version?: string) {
+  const resolveSessionToolCall = vi.fn(async () => ({
+    sessionId: "session_1",
+    resolved: [],
+    remaining: 0,
+  }));
+  const sessions = new AgenCDaemonSessionManager();
+  await sessions.restoreSession({ sessionId: "session_1", agentId: "conv-1", cwd: process.cwd() });
+  const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+    sessionManager: sessions,
+    clientMultiplexer: new AgenCDaemonClientMultiplexer({ sessionManager: sessions }),
+    agentManager: { resolveSessionToolCall } as never,
+  });
+  const connection = dispatcher.createConnection({ sendNotification: () => {} });
+  await initialize(connection, version);
+  await connection.dispatch({
+    jsonrpc: JSON_RPC_VERSION,
+    id: "attach",
+    method: "session.attach",
+    params: { sessionId: "session_1", clientId },
+  });
+  return { connection, resolveSessionToolCall };
+}
+
 describe("daemon session-control internal method dispatch", () => {
   it("validates ephemeral authenticated MCP attachment fields without echoing credentials", async () => {
     const addMcpServerToSession = vi.fn(async () => ({ sessionId: "session_1", serverName: "agenc-desktop-control", success: true, toolCount: 1 }));
@@ -66,28 +95,8 @@ describe("daemon session-control internal method dispatch", () => {
   });
 
   it("routes the exact SDK 0.3.0 tool-resolution shape and rejects partial hybrids", async () => {
-    const resolveSessionToolCall = vi.fn(async () => ({
-      sessionId: "session_1",
-      resolved: [],
-      remaining: 0,
-    }));
-    const sessions = new AgenCDaemonSessionManager();
-    await sessions.restoreSession({ sessionId: "session_1", agentId: "conv-1", cwd: process.cwd() });
-    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
-      sessionManager: sessions,
-      clientMultiplexer: new AgenCDaemonClientMultiplexer({ sessionManager: sessions }),
-      agentManager: { resolveSessionToolCall } as never,
-    });
-    const connection = dispatcher.createConnection({ sendNotification: () => {} });
-    await initialize(connection);
-    // Only a client attached to the session may review it; the reviewer is
-    // derived from that attachment, whatever the request body says.
-    await connection.dispatch({
-      jsonrpc: JSON_RPC_VERSION,
-      id: "attach",
-      method: "session.attach",
-      params: { sessionId: "session_1", clientId: "operator-client" },
-    });
+    // The reviewer is derived from the attachment, whatever the request body says.
+    const { connection, resolveSessionToolCall } = await attachedToolResolutionConnection("operator-client");
 
     await expect(
       connection.dispatch({
@@ -201,26 +210,10 @@ describe("daemon session-control internal method dispatch", () => {
   });
 
   it("routes the protocol 1.20 exact attempt and rejects malformed attempts before dispatch", async () => {
-    const resolveSessionToolCall = vi.fn(async () => ({
-      sessionId: "session_1",
-      resolved: [],
-      remaining: 0,
-    }));
-    const sessions = new AgenCDaemonSessionManager();
-    await sessions.restoreSession({ sessionId: "session_1", agentId: "conv-1", cwd: process.cwd() });
-    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
-      sessionManager: sessions,
-      clientMultiplexer: new AgenCDaemonClientMultiplexer({ sessionManager: sessions }),
-      agentManager: { resolveSessionToolCall } as never,
-    });
-    const connection = dispatcher.createConnection({ sendNotification: () => {} });
-    await initialize(connection, AGENC_DAEMON_PROTOCOL_VERSION);
-    await connection.dispatch({
-      jsonrpc: JSON_RPC_VERSION,
-      id: "attach",
-      method: "session.attach",
-      params: { sessionId: "session_1", clientId: "desktop-client" },
-    });
+    const { connection, resolveSessionToolCall } = await attachedToolResolutionConnection(
+      "desktop-client",
+      AGENC_DAEMON_PROTOCOL_VERSION,
+    );
     const attempt = {
       runId: "conv-1",
       stepId: "tool:turn-2:call_retry",
