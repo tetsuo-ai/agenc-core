@@ -75,6 +75,16 @@ import {
   selectOutputStyleConfig,
 } from "../constants/outputStyles.js";
 import { getClientRenderingSection } from "./client-rendering.js";
+import {
+  getLeanActionsSection,
+  getLeanAgentToolSection,
+  getLeanDoingTasksSection,
+  getLeanIntroSection,
+  getLeanSystemSection,
+  getLeanToneSection,
+  getLeanUsingYourToolsSection,
+  leanSystemPromptEnabled,
+} from "./lean-system-prompt.js";
 export type { McpServerInstructionsInput } from "./mcp-instructions-framing.js";
 export { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./system-prompt-boundary.js";
 
@@ -1169,21 +1179,39 @@ export async function assembleSystemPrompt(
   const headlessContract =
     headlessCompletionSection !== null &&
     isEnvTruthy(promptEnvironment[COMPLETION_CONTRACT_COHERENT_ENV]);
-  const staticSections: Array<string | null> = [
-    getSimpleIntroSection(opts.outputStyle != null),
-    getSimpleSystemSection(),
-    opts.outputStyle === null || opts.outputStyle === undefined
-      ? getSimpleDoingTasksSection({ headlessContract })
-      : null,
-    getActionsSection(),
-    headlessCompletionSection,
-    getUsingYourToolsSection(enabledTools),
-    getAgentToolSection(enabledTools),
-    getSessionGuidanceSection(enabledTools, agentsEnabled),
-    getSimpleToneAndStyleSection(),
-    getOutputEfficiencySection({ headlessContract }),
-    getMemoryInstructionsSection(opts.memoryInstructions),
-  ];
+  // The lean head keeps the same product knowledge and safety rules as plain
+  // descriptions; its default depends on the provider
+  // (prompts/lean-system-prompt.ts).
+  const lean = leanSystemPromptEnabled(promptEnvironment, envInfoInputs.provider);
+  const staticSections: Array<string | null> = lean
+    ? [
+        getLeanIntroSection(opts.outputStyle != null),
+        getLeanSystemSection(),
+        opts.outputStyle === null || opts.outputStyle === undefined
+          ? getLeanDoingTasksSection({ headlessContract })
+          : null,
+        getLeanActionsSection(),
+        headlessCompletionSection,
+        getLeanUsingYourToolsSection(enabledTools),
+        getLeanAgentToolSection(enabledTools),
+        getLeanToneSection(),
+        getMemoryInstructionsSection(opts.memoryInstructions),
+      ]
+    : [
+        getSimpleIntroSection(opts.outputStyle != null),
+        getSimpleSystemSection(),
+        opts.outputStyle === null || opts.outputStyle === undefined
+          ? getSimpleDoingTasksSection({ headlessContract })
+          : null,
+        getActionsSection(),
+        headlessCompletionSection,
+        getUsingYourToolsSection(enabledTools),
+        getAgentToolSection(enabledTools),
+        getSessionGuidanceSection(enabledTools, agentsEnabled),
+        getSimpleToneAndStyleSection(),
+        getOutputEfficiencySection({ headlessContract }),
+        getMemoryInstructionsSection(opts.memoryInstructions),
+      ];
 
   // Dynamic (post-boundary) tail. Sections returning null are dropped.
   const dynamicDecls: SystemPromptSection[] = [
@@ -1251,7 +1279,9 @@ export async function assembleSystemPrompt(
       () => getScratchpadSection(opts.scratchpadDir),
       "scratchpad availability is session-specific",
     ),
-    ...(feature("TOKEN_BUDGET")
+    // The lean head leaves the token-target explanation to the continuation
+    // message the runtime sends when a target is set.
+    ...(feature("TOKEN_BUDGET") && !lean
       ? [
           systemPromptSection(
             "token_budget",
