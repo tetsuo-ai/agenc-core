@@ -525,35 +525,40 @@ function startBridge(args: ConnectorArgs): void {
     return ws;
   }
 
+  interface PhoneRequest { id?: unknown; method?: unknown; params?: unknown }
+
+  /** Answer a refused request on the relay so the phone does not wait for a timeout. */
+  function refuseForPhone(cid: string, request: PhoneRequest): void {
+    if (typeof request.id !== "string" && typeof request.id !== "number") return;
+    const error = { code: -32000, message: "REMOTE_METHOD_DENIED", data: { code: "REMOTE_METHOD_DENIED" } };
+    try {
+      relay?.send(JSON.stringify({ t: "data", cid, payload: JSON.stringify({ jsonrpc: "2.0", id: request.id, error }) }));
+    } catch {
+      /* relay gone */
+    }
+  }
+
+  /** The phone authenticated to the RELAY (ticket), never to the daemon: `initialize` carries the real cookie. */
+  function withLoopbackCookie(request: PhoneRequest, payloadStr: string): string {
+    if (request.method !== "initialize" || !request.params || typeof request.params !== "object") return payloadStr;
+    return JSON.stringify({ ...request, params: { ...(request.params as Record<string, unknown>), authCookie: cookie } });
+  }
+
   function toDaemon(cid: string, payloadStr: string): void {
     checkRevocation();
     if (stopped) return;
+    let request: PhoneRequest;
     try {
-      const request = JSON.parse(payloadStr) as { id?: unknown; method?: unknown };
-      if (typeof request.method === "string" && legacyBridgeDeniesMethod(request.method)) {
-        // Answer the phone instead of letting its request time out.
-        if (typeof request.id === "string" || typeof request.id === "number") {
-          try {
-            relay?.send(JSON.stringify({ t: "data", cid, payload: JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: -32000, message: "REMOTE_METHOD_DENIED", data: { code: "REMOTE_METHOD_DENIED" } } }) }));
-          } catch {
-            /* relay gone */
-          }
-        }
-        return;
-      }
-    } catch { return; }
-    const ws = openDaemon(cid);
-    let out = payloadStr;
-    try {
-      const msg = JSON.parse(payloadStr);
-      // The phone authenticated to the RELAY (ticket), never to the daemon — inject the real cookie.
-      if (msg && msg.method === "initialize" && msg.params && typeof msg.params === "object") {
-        msg.params.authCookie = cookie;
-        out = JSON.stringify(msg);
-      }
+      request = JSON.parse(payloadStr) as PhoneRequest;
     } catch {
-      /* not JSON — forward verbatim */
+      return;
     }
+    if (typeof request.method === "string" && legacyBridgeDeniesMethod(request.method)) {
+      refuseForPhone(cid, request);
+      return;
+    }
+    const ws = openDaemon(cid);
+    const out = request && typeof request === "object" ? withLoopbackCookie(request, payloadStr) : payloadStr;
     const queue = (ws as unknown as { _queue: string[] })._queue;
     dbg(`[dbg] ->daemon cid=${cid} rs=${ws.readyState} bytes=${out.length}\n`);
     if (ws.readyState === WebSocket.OPEN) ws.send(out);

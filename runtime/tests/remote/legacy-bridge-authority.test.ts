@@ -3,52 +3,42 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const fake = vi.hoisted(() => ({ sockets: [] as Array<{ url: string; readyState: number; sent: string[]; emit: (event: string, ...args: unknown[]) => void; terminate: () => void; _queue?: string[] }> }));
-vi.mock("ws", async () => {
-  const { EventEmitter } = await import("node:events");
-  class Socket extends EventEmitter {
-    static OPEN = 1;
-    readyState = 0;
-    sent: string[] = [];
-    constructor(readonly url: string) { super(); fake.sockets.push(this as never); }
-    send(value: string) { this.sent.push(value); }
-    close() { this.terminate(); }
-    terminate() { if (this.readyState === 3) return; this.readyState = 3; this.emit("close"); }
-  }
-  return { default: Socket };
-});
+vi.mock("ws", async () => (await import("./helpers/legacy-bridge.js")).fakeWsModule());
 import { captureRemoteCliRuntimeContext, legacyBridgeDeniesMethod, runRemoteSlash, startRemoteOn } from "../../src/bin/remote-cli.js";
+import { fakeSockets, pairStartResponse } from "./helpers/legacy-bridge.js";
 
 const cleanups: Array<() => Promise<void>> = [];
-afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); fake.sockets.length = 0; vi.restoreAllMocks(); vi.useRealTimers(); });
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); fakeSockets.length = 0; vi.restoreAllMocks(); vi.useRealTimers(); });
+
+function bridgeContext(prefix: string, environment: Readonly<Record<string, string>>) {
+  vi.useFakeTimers();
+  const home = mkdtempSync(join(tmpdir(), prefix));
+  writeFileSync(join(home, "daemon.cookie"), "c".repeat(64), { mode: 0o600 });
+  const context = captureRemoteCliRuntimeContext(Object.freeze({ AGENC_HOME: home, AGENC_REMOTE_AUTH_TOKEN: "fixture-token", ...environment }));
+  cleanups.push(async () => { await runRemoteSlash("off", context); rmSync(home, { recursive: true, force: true }); });
+  return context;
+}
 
 async function fixture() {
-  vi.useFakeTimers();
-  const home = mkdtempSync(join(tmpdir(), "legacy-authority-"));
-  writeFileSync(join(home, "daemon.cookie"), "c".repeat(64), { mode: 0o600 });
-  const context = captureRemoteCliRuntimeContext(Object.freeze({ AGENC_HOME: home, AGENC_REMOTE_AUTH_TOKEN: "fixture-token", AGENC_REMOTE_FULL_CONTROL: "1" }));
-  vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ pairingId: "fixture-pair", hostSecret: "fixture-secret", relayUrl: "wss://relay.example", hostTicket: "fixture-ticket", code: "ABCDEFGH", expiresAt: new Date(Date.now() + 180_000).toISOString() }), { status: 200 }));
-  cleanups.push(async () => { await runRemoteSlash("off", context); rmSync(home, { recursive: true, force: true }); });
+  const context = bridgeContext("legacy-authority-", { AGENC_REMOTE_FULL_CONTROL: "1" });
+  vi.spyOn(globalThis, "fetch").mockImplementation(async () => pairStartResponse());
   const started = await startRemoteOn(context);
   expect("box" in started ? started.box : "").toContain("Warning: a paired phone gets full control of this computer's AgenC.");
-  const relay = fake.sockets[0]!; relay.readyState = 1; relay.emit("open");
+  const relay = fakeSockets[0]!; relay.readyState = 1; relay.emit("open");
   const send = (id: string, method: string, params: Record<string, unknown> = {}) => relay.emit("message", JSON.stringify({ t: "data", cid: "phone", payload: JSON.stringify({ jsonrpc: "2.0", id, method, params }) }));
-  const forwarded = () => (fake.sockets[1]?._queue ?? []).map((raw) => (JSON.parse(raw) as { method: string }).method);
+  const forwarded = () => (fakeSockets[1]?._queue ?? []).map((raw) => (JSON.parse(raw) as { method: string }).method);
   const refused = () => relay.sent.flatMap((raw) => { const frame = JSON.parse(raw) as { t: string; cid?: string; payload?: string }; if (frame.t !== "data" || !frame.payload) return []; const message = JSON.parse(frame.payload) as { id: string; error?: { data?: { code?: string } } }; return message.error?.data?.code === "REMOTE_METHOD_DENIED" ? [`${frame.cid}:${message.id}`] : []; });
   return { send, forwarded, refused };
 }
 
 describe("legacy phone bridge authority", () => {
   it("does not start the bridge unless phone remote control was turned on", async () => {
-    vi.useFakeTimers();
-    const home = mkdtempSync(join(tmpdir(), "legacy-authority-off-"));
-    const context = captureRemoteCliRuntimeContext(Object.freeze({ AGENC_HOME: home, AGENC_REMOTE_AUTH_TOKEN: "fixture-token" }));
+    const context = bridgeContext("legacy-authority-off-", {});
     const fetcher = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network should not be touched"));
-    cleanups.push(async () => { await runRemoteSlash("off", context); rmSync(home, { recursive: true, force: true }); });
     const started = await startRemoteOn(context);
     expect("message" in started ? started.message : "").toMatch(/^Phone remote control is off\./u);
     expect(fetcher).not.toHaveBeenCalled();
-    expect(fake.sockets).toHaveLength(0);
+    expect(fakeSockets).toHaveLength(0);
   });
   it("keeps daemon, account, trust, configuration, MCP, routine and shell administration host-local", async () => {
     const f = await fixture();
@@ -65,7 +55,7 @@ describe("legacy phone bridge authority", () => {
     f.send("list", "agent.list", {});
     f.send("send", "message.send", { sessionId: "s", content: "hi" });
     expect(f.forwarded()).toEqual(["initialize", "agent.list", "message.send"]);
-    expect(fake.sockets[1]?._queue?.[0]).toContain(`"authCookie":"${"c".repeat(64)}"`);
+    expect(fakeSockets[1]?._queue?.[0]).toContain(`"authCookie":"${"c".repeat(64)}"`);
     expect(f.refused().sort()).toEqual(denied.map((_, index) => `phone:deny-${index}`).sort());
   });
   it("classifies methods by family, not only by the exact names it lists", () => {
