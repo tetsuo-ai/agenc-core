@@ -91,6 +91,40 @@ function holdNextToolBridgeResult(): {
   };
 }
 
+function holdNextResourceBridge(): () => void {
+  let release: (() => void) | undefined;
+  mockCreateResourceBridge.mockImplementationOnce(
+    (_client, serverName) =>
+      new Promise((resolve) => {
+        release = () => resolve(makeMockResourceBridge(serverName));
+      }),
+  );
+  return () => release?.();
+}
+
+async function flushMicrotasks(rounds = 20): Promise<void> {
+  for (let round = 0; round < rounds; round += 1) await Promise.resolve();
+}
+
+function transportClosingBridge(serverName: string, toolNames: string[]) {
+  const bridge = makeMockBridge(serverName, toolNames);
+  for (const tool of bridge.tools) {
+    tool.execute = vi.fn().mockResolvedValue({
+      content: "transport closed",
+      isError: true,
+    });
+  }
+  return bridge;
+}
+
+async function publishedAndCallable(manager: MCPManager) {
+  return {
+    names: manager.getTools().map((tool) => tool.name),
+    callA: await manager.callTool("srv1", "toolA", {}),
+    callB: await manager.callTool("srv1", "toolB", {}),
+  };
+}
+
 describe("MCPManager list_changed catalog refresh", () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -446,6 +480,60 @@ describe("MCPManager list_changed catalog refresh", () => {
       handlers.onToolsListChanged();
       held.reject(new Error("stale catalog refresh"));
       await waitForTools(manager, ["mcp.srv1.toolB"]);
+    } finally {
+      await manager.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("republishes a tools notification that arrives during reconnect publication from the installed connection", async () => {
+    vi.useFakeTimers();
+    const logger = testLogger();
+    const firstClient = { close: vi.fn() };
+    const secondClient = { close: vi.fn() };
+    mockCreateMCPConnection
+      .mockResolvedValueOnce(firstClient)
+      .mockResolvedValueOnce(secondClient);
+    mockCreateToolBridge
+      .mockResolvedValueOnce(transportClosingBridge("srv1", ["toolA"]))
+      .mockResolvedValueOnce(makeMockBridge("srv1", ["toolA"]))
+      .mockResolvedValueOnce(makeMockBridge("srv1", ["toolB"]));
+    mockCreateResourceBridge.mockImplementationOnce((_client, serverName) =>
+      Promise.resolve(makeMockResourceBridge(serverName)),
+    );
+    const releaseReconnectResources = holdNextResourceBridge();
+
+    const manager = await startManager([makeConfig("srv1")], logger);
+    try {
+      await manager.getTools()[0]!.execute({});
+      await vi.advanceTimersByTimeAsync(1_000);
+      // Reconnect listed toolA, bumped the refresh epoch, and now waits on
+      // its companion bridges before installing the replacement bridge.
+      await vi.waitFor(() => {
+        expect(mockCreateResourceBridge).toHaveBeenCalledTimes(2);
+      });
+      listChangedHandlersFromConnect().onToolsListChanged();
+      await flushMicrotasks();
+      releaseReconnectResources();
+      await vi.waitFor(() => {
+        expect(logger.info).toHaveBeenCalledWith(
+          expect.stringContaining("reconnected"),
+        );
+      });
+      await vi.waitFor(() => {
+        expect(mockCreateToolBridge).toHaveBeenCalledTimes(3);
+      });
+      await flushMicrotasks();
+
+      expect(await publishedAndCallable(manager)).toEqual({
+        names: ["mcp.srv1.toolB"],
+        callA: {
+          content: expect.stringContaining("not available"),
+          isError: true,
+        },
+        callB: { content: "ok" },
+      });
+      expect(mockCreateToolBridge.mock.calls[2]?.[0]).toBe(secondClient);
     } finally {
       await manager.stop();
       vi.useRealTimers();
