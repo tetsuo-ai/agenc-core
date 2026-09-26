@@ -224,6 +224,8 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_INTERNAL_ARTIFACTORY_BASE_URL',
   'AGENC_INTERNAL_ARTIFACTORY_REGISTRY_URL',
   'AGENC_AUTO_BACKGROUND_TASKS',
+  // FileRead line-number format (a test that needs it sets it explicitly)
+  'AGENC_SPARSE_LINE_NUMBERS',
   // host-managed provider routing
   'AGENC_PROVIDER_MANAGED_BY_HOST',
   // opt-in provider wire changes (tests that need one set it explicitly)

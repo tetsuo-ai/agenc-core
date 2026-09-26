@@ -290,7 +290,13 @@ export function clearFileReadListenersForTests(): void {
  * Image / PDF / notebook mentions are kept so the model knows the
  * tool's capability surface.
  */
-const FILE_READ_DESCRIPTION = `Reads a file from the local filesystem. You can access any file directly by using this tool.
+function resultFormatLine(sparse: boolean): string {
+  return sparse
+    ? "Results give the line number as N→ before the first line, every tenth line and the last line; other lines appear as they are, so count from the nearest number"
+    : "Results are returned using cat -n format, with line numbers starting at 1";
+}
+
+const fileReadDescription = (sparse: boolean): string => `Reads a file from the local filesystem. You can access any file directly by using this tool.
 Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
 
 Usage:
@@ -298,7 +304,7 @@ Usage:
 - By default, it reads up to ${DEFAULT_LINE_LIMIT} lines starting from the beginning of the file
 - Output is capped at ${DEFAULT_MAX_OUTPUT_TOKENS} tokens; a read that would exceed the cap returns an error instead of content, so for large files pass offset and limit.
 - When you already know which part of the file you need, only read that part. This can be important for larger files.
-- Results are returned using cat -n format, with line numbers starting at 1
+- ${resultFormatLine(sparse)}
 - This tool allows AgenC to read images (eg PNG, JPG, etc). When reading an image file the contents are presented visually because AgenC can inspect multimodal inputs.
 - This tool can read PDF files (.pdf). For large PDFs (more than 10 pages), you MUST provide the pages parameter to read specific page ranges (e.g., pages: "1-5"). Reading a large PDF without the pages parameter will fail. Maximum 20 pages per request.
 - This tool can read Jupyter notebook files (.ipynb) and returns cells with their source, text outputs, errors, and embedded visual outputs.
@@ -321,6 +327,11 @@ export interface FileReadToolConfig {
   readonly allowedPaths: readonly string[];
   /** Token cap for text reads (default: 25k). */
   readonly maxTokens?: number;
+  /**
+   * Number only the first line of a read, every tenth line and the last line
+   * (the session's `AGENC_SPARSE_LINE_NUMBERS`). Default: every line.
+   */
+  readonly sparseLineNumbers?: boolean;
   /** Raw byte cap for text reads (default: 256 KB). */
   readonly maxTextBytes?: number;
   /** Raw byte cap for image reads (default: 10 MB). */
@@ -399,8 +410,8 @@ function hasBinaryExtension(filePath: string): boolean {
 }
 
 /** Produce the runtime `cat -n` style numbered output. */
-function formatNumbered(content: string, startLine: number): string {
-  return addLineNumbers({ content, startLine });
+function formatNumbered(content: string, startLine: number, sparse: boolean): string {
+  return addLineNumbers({ content, startLine, sparse });
 }
 
 function notifyFileReadListeners(event: FileReadEvent): void {
@@ -625,6 +636,7 @@ interface TextReadOpts {
   readonly readGuard?: () => void;
   readonly maxTextBytes: number;
   readonly maxTokens: number;
+  readonly sparseLineNumbers: boolean;
   readonly offset: number;
   readonly limit: number | undefined;
   readonly displayPath: string;
@@ -803,7 +815,7 @@ async function readTextFile(
   }
 
   return {
-    content: formatNumbered(sliced.content, sliced.startLine),
+    content: formatNumbered(sliced.content, sliced.startLine, opts.sparseLineNumbers),
     metadata: {
       filePath: opts.displayPath,
       totalLines: sliced.totalLines,
@@ -1111,7 +1123,7 @@ async function readNotebookFile(
     };
   }
 
-  const numbered = formatNumbered(sliced.content, sliced.startLine);
+  const numbered = formatNumbered(sliced.content, sliced.startLine, opts.sparseLineNumbers);
   const selectedImages = rendered.ok.images.filter(
     (image) =>
       image.lineNumber >= sliced.startLine &&
@@ -1156,6 +1168,7 @@ interface PDFReadOpts {
   readonly maxPdfBytes: number;
   readonly pages: unknown;
   readonly maxTokens: number;
+  readonly sparseLineNumbers: boolean;
   readonly offset: number;
   readonly limit: number | undefined;
 }
@@ -1320,6 +1333,7 @@ async function readPDFFile(
     content: `Read PDF ${opts.displayPath} (${rangeLabel})\n\n${formatNumbered(
       sliced.content,
       sliced.startLine,
+      opts.sparseLineNumbers,
     )}`,
     metadata: {
       filePath: opts.displayPath,
@@ -1502,10 +1516,11 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
   const maxPdfBytes = config.maxPdfBytes ?? DEFAULT_MAX_PDF_BYTES;
   const maxNotebookBytes =
     config.maxNotebookBytes ?? DEFAULT_MAX_NOTEBOOK_BYTES;
+  const sparseLineNumbers = config.sparseLineNumbers === true;
 
   return {
     name: FILE_READ_TOOL_NAME,
-    description: FILE_READ_DESCRIPTION,
+    description: fileReadDescription(sparseLineNumbers),
     metadata: {
       family: "filesystem",
       source: "builtin",
@@ -1678,6 +1693,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
               maxPdfBytes,
               pages: args.pages,
               maxTokens,
+              sparseLineNumbers,
               offset,
               limit,
             },
@@ -1692,6 +1708,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
               {
                 maxTextBytes,
                 maxTokens,
+                sparseLineNumbers,
                 offset,
                 limit,
                 displayPath: filePath,
@@ -1710,6 +1727,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
             {
               maxTextBytes,
               maxTokens,
+              sparseLineNumbers,
               offset,
               limit,
               displayPath: filePath,

@@ -122,13 +122,19 @@ function shouldBypassSessionGuard(args: Record<string, unknown>): boolean {
   return args[TEST_BYPASS_SESSION_GUARD_ARG] === true;
 }
 
+function linePrefixUsage(sparse: boolean): string {
+  return sparse
+    ? "FileRead output puts a N→ line-number prefix on the first line, every tenth line and the last line; it is not part of the file. Match the file content exactly, with its indentation, and never include a prefix in old_string or new_string."
+    : "When editing text from FileRead tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: line number + tab. Everything after that is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.";
+}
+
 // Verbatim from AgenC FileEditTool/prompt.ts:20-27.
-const FILE_EDIT_DESCRIPTION = `Performs exact string replacements in files.
+const fileEditDescription = (sparse: boolean): string => `Performs exact string replacements in files.
 
 Usage:
 - You must use your \`FileRead\` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file.
 - ${FILE_TOOL_PATH_USAGE}
-- When editing text from FileRead tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: line number + tab. Everything after that is the actual file content to match. Never include any part of the line number prefix in the old_string or new_string.
+- ${linePrefixUsage(sparse)}
 - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
 - Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
 - The edit will FAIL if \`old_string\` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use \`replace_all\` to change every instance of \`old_string\`.
@@ -267,6 +273,8 @@ function preserveQuoteStyle(
 export interface FileEditToolConfig extends WorkspaceFileMutationTestHooks {
   /** Allowed path prefixes (required). */
   readonly allowedPaths: readonly string[];
+  /** FileRead numbers only some lines (the session's `AGENC_SPARSE_LINE_NUMBERS`). */
+  readonly sparseLineNumbers?: boolean;
 }
 
 function asString(value: unknown): string | undefined {
@@ -824,7 +832,7 @@ function multiEditSuccessText(
 export function createFileEditTool(config: FileEditToolConfig): Tool {
   return {
     name: FILE_EDIT_TOOL_NAME,
-    description: FILE_EDIT_DESCRIPTION,
+    description: fileEditDescription(config.sparseLineNumbers === true),
     metadata: {
       family: "filesystem",
       source: "builtin",
