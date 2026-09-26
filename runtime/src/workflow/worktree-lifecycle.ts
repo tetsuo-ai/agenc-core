@@ -15,6 +15,10 @@
  *   BEFORE any cleanup: `cleanupAfterEvidence` demands the branded proof
  *   token minted only by the finalize step's sealed evidence ledger, making
  *   cleanup-before-evidence a compile error, not a code-review catch.
+ * - A cancelled run's worktree goes only after its cancelled terminal is
+ *   durable: `discardCancelledWorktree` demands the branded proof the
+ *   controller mints from that terminal, so no run can resume into a
+ *   worktree that is gone.
  */
 
 import { createHash } from "node:crypto";
@@ -68,6 +72,24 @@ export function mintSealedEvidenceProof(input: {
     runId: input.runId,
     sealDigest: input.sealDigest,
   } as SealedEvidenceProof;
+}
+
+/**
+ * Proof that the run ended cancelled and that terminal is durable. Only the
+ * controller mints this, after reading the recorded terminal;
+ * `discardCancelledWorktree` requires it.
+ */
+declare const cancelledRunProofBrand: unique symbol;
+export interface CancelledRunProof {
+  readonly runId: string;
+  readonly [cancelledRunProofBrand]: true;
+}
+
+/** Minted exclusively by the controller once the cancelled terminal is recorded. */
+export function mintCancelledRunProof(input: {
+  readonly runId: string;
+}): CancelledRunProof {
+  return { runId: input.runId } as CancelledRunProof;
 }
 
 export interface BaseState {
@@ -345,13 +367,6 @@ export async function checkBaseMovement(opts: {
 }
 
 /**
- * Remove the workflow worktree. Only callable with the sealed-evidence
- * proof (minted by finalize) — patch and artifacts are provably exported
- * and sealed before any cleanup. Failures are surfaced to `warn`, never
- * thrown: a leftover worktree is a nuisance, a thrown cleanup after a
- * sealed run would mask success.
- */
-/**
  * Where a finished run's snapshot commit stays reachable: one ref per run,
  * outside refs/heads so it never clutters branch listings.
  */
@@ -359,6 +374,13 @@ export function workflowRunRef(runId: string): string {
   return `refs/agenc/runs/${runId}`;
 }
 
+/**
+ * Remove the workflow worktree. Only callable with the sealed-evidence
+ * proof (minted by finalize): patch and artifacts are provably exported
+ * and sealed before any cleanup. Failures are surfaced to `warn`, never
+ * thrown: a leftover worktree is a nuisance, a thrown cleanup after a
+ * sealed run would mask success.
+ */
 export async function cleanupAfterEvidence(opts: {
   readonly proof: SealedEvidenceProof;
   readonly handle: WorktreeHandle;
@@ -389,6 +411,36 @@ export async function cleanupAfterEvidence(opts: {
     );
     return;
   }
+  await removeRunWorktree(
+    opts,
+    `after sealed evidence (${opts.proof.sealDigest})`,
+  );
+}
+
+/**
+ * Remove the worktree and branch of a run that ended cancelled, as a
+ * completed run's are removed. Nothing was delivered, so nothing is pinned:
+ * what the run exported already sits in its evidence ledger, outside the
+ * repository, and stays there. The user's checkout is never touched.
+ * Failures are surfaced to `warn`, never thrown.
+ */
+export async function discardCancelledWorktree(opts: {
+  readonly proof: CancelledRunProof;
+  readonly handle: WorktreeHandle;
+  readonly broker: SandboxExecutionBrokerLike;
+  readonly warn: (message: string) => void;
+}): Promise<void> {
+  await removeRunWorktree(opts, `after cancellation of ${opts.proof.runId}`);
+}
+
+async function removeRunWorktree(
+  opts: {
+    readonly handle: WorktreeHandle;
+    readonly broker: SandboxExecutionBrokerLike;
+    readonly warn: (message: string) => void;
+  },
+  when: string,
+): Promise<void> {
   try {
     await removeAgentWorktree({
       gitRoot: opts.handle.gitRoot,
@@ -398,7 +450,7 @@ export async function cleanupAfterEvidence(opts: {
     });
   } catch (error) {
     opts.warn(
-      `workflow worktree cleanup failed after sealed evidence (${opts.proof.sealDigest}): ` +
+      `workflow worktree cleanup failed ${when}: ` +
         `${error instanceof Error ? error.message : String(error)}`,
     );
   }
