@@ -21,9 +21,10 @@ import { encodeMcpToolNameForWire } from "./mcp-tool-naming.js";
 import { validateAgentInvocationMessageSequence } from "../../contracts/agent-invocation-envelope.js";
 import {
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY as SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER,
+  SYSTEM_PROMPT_VOLATILE_BOUNDARY as SYSTEM_PROMPT_VOLATILE_BOUNDARY_MARKER,
 } from "../../prompts/system-prompt-boundary.js";
 
-export { SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER };
+export { SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER, SYSTEM_PROMPT_VOLATILE_BOUNDARY_MARKER };
 
 function readContentPartRecord(part: unknown): Record<string, unknown> | null {
   return part && typeof part === "object" && !Array.isArray(part)
@@ -100,19 +101,55 @@ function toAnthropicImageSource(
  */
 export function splitSystemPromptOnDynamicBoundary(
   systemPrompt: string | undefined,
-): { staticPrefix?: string; dynamicSuffix?: string } {
+): { staticPrefix?: string; sessionSuffix?: string; dynamicSuffix?: string } {
   const trimmed = systemPrompt?.trim();
   if (trimmed === undefined || trimmed.length === 0) return {};
-  const markerIndex = trimmed.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER);
-  if (markerIndex === -1) return { staticPrefix: trimmed };
-  const staticPrefix = trimmed.slice(0, markerIndex).trimEnd();
-  const dynamicSuffix = trimmed
-    .slice(markerIndex + SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER.length)
-    .trim();
+  // With session-tail caching on, the part of the tail that is fixed for the
+  // session comes back as `sessionSuffix` (callers place it right after the
+  // static head, inside the cached prefix) and only the text after the
+  // volatile marker stays `dynamicSuffix` (the end of the request).
+  const volatileIndex = trimmed.indexOf(SYSTEM_PROMPT_VOLATILE_BOUNDARY_MARKER);
+  const head = volatileIndex === -1
+    ? trimmed
+    : trimmed.slice(0, volatileIndex).trimEnd();
+  const volatileSuffix = volatileIndex === -1
+    ? undefined
+    : trimmed
+      .slice(volatileIndex + SYSTEM_PROMPT_VOLATILE_BOUNDARY_MARKER.length)
+      .trim();
+  const markerIndex = head.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER);
+  const staticPrefix = markerIndex === -1
+    ? head
+    : head.slice(0, markerIndex).trimEnd();
+  const tail = markerIndex === -1
+    ? ""
+    : head.slice(markerIndex + SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER.length).trim();
+  if (volatileIndex === -1) {
+    return {
+      ...(staticPrefix.length > 0 ? { staticPrefix } : {}),
+      ...(tail.length > 0 ? { dynamicSuffix: tail } : {}),
+    };
+  }
   return {
     ...(staticPrefix.length > 0 ? { staticPrefix } : {}),
-    ...(dynamicSuffix.length > 0 ? { dynamicSuffix } : {}),
+    ...(tail.length > 0 ? { sessionSuffix: tail } : {}),
+    ...(volatileSuffix !== undefined && volatileSuffix.length > 0
+      ? { dynamicSuffix: volatileSuffix }
+      : {}),
   };
+}
+
+/**
+ * The system prompt with the volatile marker removed, for wires that send the
+ * whole prompt as one leading block (Chat Completions and the rest). The
+ * marker only exists when session-tail caching is on, and those wires keep
+ * the prompt exactly as they received it before the marker existed.
+ */
+export function withoutVolatileBoundary(text: string): string {
+  if (!text.includes(SYSTEM_PROMPT_VOLATILE_BOUNDARY_MARKER)) return text;
+  return text
+    .split(`\n\n${SYSTEM_PROMPT_VOLATILE_BOUNDARY_MARKER}\n\n`).join("\n\n")
+    .split(SYSTEM_PROMPT_VOLATILE_BOUNDARY_MARKER).join("");
 }
 
 export function readDocumentPayload(part: unknown): {

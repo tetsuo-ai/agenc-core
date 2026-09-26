@@ -363,10 +363,15 @@ export function buildOpenAIResponsesRequest(
   // prompt goes into `instructions` (part of the cached prefix); the
   // volatile tail is appended as the LAST input item below so the
   // request prefix stays byte-identical across turns.
-  const { staticPrefix: staticSystemPrompt, dynamicSuffix: dynamicSystemPrompt } =
-    splitSystemPromptOnDynamicBoundary(input.options?.systemPrompt);
+  const {
+    staticPrefix: staticSystemPrompt,
+    sessionSuffix: sessionSystemPrompt,
+    dynamicSuffix: dynamicSystemPrompt,
+  } = splitSystemPromptOnDynamicBoundary(input.options?.systemPrompt);
   const instructions = [
     staticSystemPrompt,
+    // Fixed for the session, so it stays in the cached instructions.
+    sessionSystemPrompt,
     ...messages
       .filter((message) =>
         message.role === "system" || message.role === "developer"
