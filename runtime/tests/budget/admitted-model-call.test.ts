@@ -6,7 +6,17 @@ import type {
   ExecutionAdmissionClient,
 } from "../../src/budget/admission-client.js";
 import { AdmissionDeniedError } from "../../src/budget/admission-client.js";
-import { LLMManagedAdmissionError, LLMManagedUsagePendingError, LLMRateLimitError, LLMServerError, LLMTimeoutError } from "../../src/llm/errors.js";
+import {
+  LLMAuthenticationError,
+  LLMInvalidResponseError,
+  LLMManagedAdmissionError,
+  LLMManagedUsagePendingError,
+  LLMProviderError,
+  LLMRateLimitError,
+  LLMServerError,
+  LLMStreamTruncatedError,
+  LLMTimeoutError,
+} from "../../src/llm/errors.js";
 import type { AdmissionLease } from "../../src/budget/admission-types.js";
 import type { AuthBackend } from "../../src/auth/backend.js";
 import { AgenCProvider } from "../../src/llm/providers/agenc/index.js";
@@ -869,10 +879,12 @@ describe("runAdmittedModelCall", () => {
 
   test.each([
     new LLMRateLimitError("grok", 30_000),
-    new LLMServerError("grok", 503, "unavailable"),
-    new LLMTimeoutError("grok", 30_000),
-    Object.assign(new Error("Connection error."), { code: "ECONNRESET" }),
-  ])("releases a failed attempt before any provider progress: %s", async (error) => {
+    ...[400, 401, 402, 403, 429].flatMap((status) => [
+      new LLMProviderError("grok", "request rejected", status),
+      Object.assign(new Error("request rejected"), { status }),
+    ]),
+    new LLMAuthenticationError("grok", 401),
+  ])("releases a confirmed rejection before any provider progress: %s", async (error) => {
     const state = harness({ maxCostUsd: 20 });
     await expect(callOptions(state, { maxOutputTokens: 200 }, async () => {
       throw error;
@@ -884,9 +896,60 @@ describe("runAdmittedModelCall", () => {
     expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
   });
 
-  test("keeps a failed stream's reservation when it produced unreported usage", async () => {
+  test.each([
+    new LLMServerError("grok", 503, "unavailable"),
+    new LLMTimeoutError("grok", 30_000),
+    Object.assign(new Error("Connection error."), { code: "ECONNRESET" }),
+    new DOMException("request aborted", "AbortError"),
+    new LLMStreamTruncatedError("grok", "stream ended without usage"),
+    new LLMInvalidResponseError("grok", "invalid response envelope"),
+    new SyntaxError("failed parsing billable response JSON"),
+    Object.assign(new SyntaxError("invalid response JSON"), { status: 200 }),
+    new LLMProviderError("grok", "request timed out", 408),
+    new Error("429 rate limited"),
+  ])("holds unknown spend after dispatch even without provider progress: %s", async (error) => {
+    const state = harness({ maxCostUsd: 20 });
+    await expect(callOptions(state, { maxOutputTokens: 200 }, async () => {
+      expect(state.admission.markDispatched).toHaveBeenCalledOnce();
+      throw error;
+    })).rejects.toBe(error);
+    expect(state.reconcile).not.toHaveBeenCalled();
+    expect(state.voidReservation).not.toHaveBeenCalled();
+    expect(state.holdUnknown).toHaveBeenCalledWith("reservation-1", "provider_call_failed_after_dispatch");
+    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+  });
+
+  test("keeps the hold when a completed stream has no provider usage", async () => {
+    const state = harness({ maxCostUsd: 20 });
+    const result = response({ usage: {
+      promptTokens: 0, completionTokens: 0, totalTokens: 0,
+      availability: "unknown", provenance: "synthetic",
+    } });
+    await expect(callOptions(state, { maxOutputTokens: 200 }, async () => result)).resolves.toBe(result);
+    expect(state.reconcile).not.toHaveBeenCalled();
+    expect(state.holdUnknown).toHaveBeenCalledWith("reservation-1", "missing_provider_usage");
+  });
+
+  test("keeps the hold when provider.chat fails parsing an HTTP 200 response", async () => {
+    const state = harness({ maxCostUsd: 20 });
+    state.provider.chat = vi.fn(async () => {
+      const wireResponse = new Response("{malformed JSON", { status: 200 });
+      await wireResponse.json();
+      return response();
+    });
+    await expect(callOptions(state, { maxOutputTokens: 200 }, (options) =>
+      state.provider.chat([], options),
+    )).rejects.toBeInstanceOf(SyntaxError);
+    expect(state.reconcile).not.toHaveBeenCalled();
+    expect(state.holdUnknown).toHaveBeenCalledWith("reservation-1", "provider_call_failed_after_dispatch");
+    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+  });
+
+  test.each([
+    new LLMServerError("grok", 503, "stream interrupted"),
+    new LLMRateLimitError("grok", 30_000),
+  ])("keeps a failed stream's reservation when it produced unreported usage: %s", async (error) => {
     const state = harness({});
-    const error = new LLMServerError("grok", 503, "stream interrupted");
     await expect(runAdmittedModelCall({
       session: state.session, provider: state.provider, messages: [],
       options: { maxOutputTokens: 200 }, stepId: "partial-stream",

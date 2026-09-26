@@ -304,7 +304,7 @@ function reconciledStepIds(
 }
 
 describe("admitted model sample identity", () => {
-  test.each(["connection", "rate limit"])("admits each slow %s retry separately and releases unused budget", async (failure) => {
+  test.each(["connection", "rate limit"])("admits each slow %s retry separately and releases only confirmed rejections", async (failure) => {
     const timeline: string[] = [];
     let attempts = 0;
     const reserve = recovery.reserveRecoveryReentry;
@@ -337,13 +337,16 @@ describe("admitted model sample identity", () => {
           const unknown = journal.filter((event) => event.event === "held_unknown");
           expect(dispatched).toHaveLength(4);
           expect(new Set(dispatched.map((event) => event.stepId)).size).toBe(4);
-          expect(unknown).toHaveLength(0);
-          expect(reconciledStepIds(admission)).toEqual(dispatched.map((event) => event.stepId));
-          expect(journal.filter((event) => event.event === "reconciled").slice(0, 3))
-            .toEqual(Array.from({ length: 3 }, () => expect.objectContaining({ actualTokens: 0, actualCostUsd: 0 })));
           if (failure === "rate limit") {
+            expect(unknown).toHaveLength(0);
+            expect(reconciledStepIds(admission)).toEqual(dispatched.map((event) => event.stepId));
+            expect(journal.filter((event) => event.event === "reconciled").slice(0, 3))
+              .toEqual(Array.from({ length: 3 }, () => expect.objectContaining({ actualTokens: 0, actualCostUsd: 0 })));
             expect(warnings).toHaveLength(3);
             expect(warnings).toEqual(Array(3).fill("The provider is limiting requests. Retrying in 1 s."));
+          } else {
+            expect(unknown.map((event) => event.stepId)).toEqual(dispatched.slice(0, 3).map((event) => event.stepId));
+            expect(reconciledStepIds(admission)).toEqual([dispatched[3]!.stepId]);
           }
           expect(journal.filter((event) => event.event === "voided")).toHaveLength(0);
           for (let ordinal = 1; ordinal <= 3; ordinal += 1) {
@@ -415,10 +418,8 @@ describe("admitted model sample identity", () => {
             expect(attempts).toBe(1);
             const journal = admission.client.replayJournal?.() ?? [];
             expect(journal.filter((event) => event.event === "dispatched")).toHaveLength(1);
-            expect(journal.filter((event) => event.event === "held_unknown")).toHaveLength(0);
-            expect(journal.filter((event) => event.event === "reconciled")).toEqual([
-              expect.objectContaining({ actualTokens: 0, actualCostUsd: 0 }),
-            ]);
+            expect(journal.filter((event) => event.event === "held_unknown")).toHaveLength(1);
+            expect(journal.filter((event) => event.event === "reconciled")).toHaveLength(0);
           } finally {
             unsubscribe();
             config.mockRestore();

@@ -87,6 +87,44 @@ describe("canonical allocation usage observers", () => {
     expect(journal.filter((event) => event.event === "held_unknown")).toHaveLength(0);
   });
 
+  it("keeps reset-after-dispatch holds and denies retries beyond the $20 Goal cap", async () => {
+    const parent = kernel.bindClient({
+      cwd: workspace,
+      scope: { runId: "goal", sessionId: "goal", autonomous: true, maxCostUsd: 20 },
+    });
+    const child = parent.forSession({ runId: "worker", sessionId: "worker" });
+    const acquireModel = child.acquire.bind(child);
+    vi.spyOn(child, "acquire").mockImplementation((input) => acquireModel({
+      ...input, maxInputTokens: 150_000, maxOutputTokens: 6_392, maxCostUsd: 1.02,
+    }));
+    const session = { services: { executionAdmission: child } } as unknown as Session;
+    const provider = {
+      name: "grok",
+      getExecutionProfile: async () => ({ usageReporting: "authoritative", supportsMaxOutputTokens: true }),
+    } as unknown as LLMProvider;
+    const error = Object.assign(new Error("Connection error."), { code: "ECONNRESET" });
+    const invoke = vi.fn(async () => { throw error; });
+    const attempt = (index: number) => runAdmittedModelCall({
+      session, provider, messages: [], options: { maxOutputTokens: 6_392 },
+      stepId: `retry:${index}`, model: "grok-4.5", providerName: "grok", invoke,
+    });
+    for (let index = 0; index < 19; index += 1) {
+      await expect(attempt(index)).rejects.toBe(error);
+      expect(parent.getUsageSummary?.()).toMatchObject({
+        costUsd: 0, totalTokens: 0, hasUnknownCost: true,
+      });
+      expect(parent.getUsageSummary?.().heldCostUsd).toBeCloseTo((index + 1) * 1.02);
+    }
+    await expect(attempt(19)).rejects.toMatchObject({
+      code: "ADMISSION_DENIED", reason: "budget_exceeded",
+    });
+    expect(invoke).toHaveBeenCalledTimes(19);
+    const journal = child.replayJournal?.() ?? [];
+    expect(journal.filter((event) => event.event === "dispatched")).toHaveLength(19);
+    expect(journal.filter((event) => event.event === "held_unknown")).toHaveLength(19);
+    expect(journal.filter((event) => event.event === "reconciled")).toHaveLength(0);
+  });
+
   it("reports descendants once without rewriting their journal identity", async () => {
     const parent = bind("parent");
     const child = parent.forSession({ runId: "child", sessionId: "child" });
