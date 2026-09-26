@@ -366,7 +366,12 @@ describe("getOrCreateWorktree", () => {
       prepareSpawn(
         surface,
         command.args.includes("--verify")
-          ? { ...command, program: "/bin/sh", argv0: "sh", args: ["-c", "kill -9 $$"] }
+          ? {
+            ...command,
+            program: process.execPath,
+            argv0: process.execPath,
+            args: ["-e", "process.kill(process.pid, 'SIGKILL')"],
+          }
           : command,
         options,
       ));
