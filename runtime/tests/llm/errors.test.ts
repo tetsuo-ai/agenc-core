@@ -2,18 +2,79 @@ import { describe, expect, test } from "vitest";
 import {
   LLMCaptivePortalError,
   LLMCertificateError,
+  LLMFundsError,
+  LLMAuthenticationError,
   classifyLLMFailure,
   mapLLMError,
 } from "./errors.js";
 import { ProviderHttpError } from "./client-session.js";
 
 describe("LLM error network classification", () => {
+  test("maps xAI's exhausted team credits 403 to funds and preserves its message", () => {
+    const message = "Your team 16da42f5-6f8f-41c0-b62f-a77ec198037e has either used all available credits or reached its monthly spending limit. To continue making API requests, please purchase more credits or raise your spending limit.";
+    const wireError = new ProviderHttpError({
+      providerName: "grok", status: 403, headers: new Headers(),
+      url: "https://api.x.ai/v1/responses", message: "Forbidden",
+      body: { code: "permission-denied", error: message },
+    });
+
+    const mapped = mapLLMError("grok", wireError, 30_000);
+    expect(mapped).toBeInstanceOf(LLMFundsError);
+    expect(mapped).toMatchObject({ statusCode: 403, message: `grok error: ${message}` });
+  });
+
   test("maps a Gemini daily quota response body to a funds stop", () => {
     const wireError = new ProviderHttpError({ providerName: "gemini", status: 429,
       headers: new Headers(), url: "https://generativelanguage.googleapis.com/v1beta/models/test",
       message: "Resource exhausted", body: { error: { status: "RESOURCE_EXHAUSTED",
         details: [{ violations: [{ quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier" }] }] } } });
     expect(mapLLMError("gemini", wireError, 0).name).toBe("LLMFundsError");
+  });
+
+  test.each([
+    ["grok", 403, { error: "  Your team has used all available credits.  " }, "Your team has used all available credits."],
+    ["xai", 403, { message: "Your team has reached its monthly spending limit." }, "Your team has reached its monthly spending limit."],
+    ["openai", 403, { body: { error: { code: "insufficient_quota", message: "Please check your plan and billing details." } } }, "Please check your plan and billing details."],
+    ["deepseek", 402, { body: JSON.stringify({ error: { message: "  Insufficient credits.  " } }) }, "Insufficient credits."],
+    ["custom", 402, { body: { message: "Your credit balance is too low." } }, "Your credit balance is too low."],
+    ["custom", 403, { body: { error: { message: "Your credits are exhausted." } } }, "Your credits are exhausted."],
+  ])("preserves billing details from %s HTTP %s", (provider, status, details, message) => {
+    const mapped = mapLLMError(provider, { status, ...details }, 30_000);
+    expect(mapped).toBeInstanceOf(LLMFundsError);
+    expect(mapped).toMatchObject({ statusCode: status, message: `${provider} error: ${message}` });
+  });
+
+  test("redacts secrets and request ids without exposing body metadata", () => {
+    const mapped = mapLLMError("grok", {
+      status: 403,
+      body: {
+        code: "permission-denied", request_id: "metadata-request", api_key: "metadata-secret",
+        error: "  No credits left. Key xai-1234567890abcdefghijklmnop. Bearer short-token. Request ID: req_private. api_key=private-secret  ",
+      },
+    }, 30_000);
+    expect(mapped).toBeInstanceOf(LLMFundsError);
+    expect(mapped.message).toContain("No credits left.");
+    expect(mapped.message).not.toMatch(/permission-denied|metadata-|xai-123|short-token|req_private|private-secret/);
+    expect(mapped.message).toBe(mapped.message.trim());
+  });
+
+  test.each([
+    "Forbidden",
+    "Access denied. You cannot view credits or change the spending limit.",
+    "API key lacks permission to purchase credits.",
+  ])("keeps a genuine permission 403 as authentication: %s", (message) => {
+    const mapped = mapLLMError("grok", { status: 403, body: { error: message } }, 30_000);
+    expect(mapped).toBeInstanceOf(LLMAuthenticationError);
+    expect(mapped.message).toBe("grok authentication failed (HTTP 403)");
+  });
+
+  test("does not expose internal codes when a billing body has no message", () => {
+    const mapped = mapLLMError("openai", {
+      status: 403, body: { error: { code: "insufficient_quota" } },
+      message: "insufficient_quota",
+    }, 30_000);
+    expect(mapped).toBeInstanceOf(LLMFundsError);
+    expect(mapped.message).toBe("openai error: provider credits or billing quota exhausted");
   });
   test("mapLLMError keeps the transport error as the cause of a generic provider error", () => {
     const socket = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });

@@ -1,4 +1,8 @@
 /** Provider billing refusals. Keep this independent of retry and agent modules. */
+import { redactSecrets } from "../secrets/sanitizer.js";
+
+const EXHAUSTED_CREDITS_RE = /\b(?:used all (?:available |your )?credits|(?:no|insufficient) (?:available |remaining )?credits|(?:run |ran )?out of credits|credits? (?:balance )?(?:is |are |has been )?(?:exhausted|depleted|too low)|(?:reached|exceeded) (?:its |your |the )?(?:monthly )?spending limit|spending limit (?:has been |is )?(?:reached|exceeded|exhausted))\b/i;
+
 function record(value: unknown): Record<string, unknown> | undefined {
   if (typeof value === "string" && value.trimStart().startsWith("{")) {
     try { return record(JSON.parse(value)); } catch { return undefined; }
@@ -20,6 +24,36 @@ function nestedText(value: unknown): string {
   if (item === undefined) return typeof value === "string" ? value : "";
   return [item.message, item.error, record(item.error)?.message]
     .filter((part): part is string => typeof part === "string").join(" ");
+}
+
+function providerMessage(value: unknown): string | undefined {
+  const item = record(value);
+  if (item !== undefined) {
+    return providerMessage(item.error) ?? providerMessage(item.message);
+  }
+  if (typeof value !== "string") return undefined;
+  const text = value.trim();
+  return text && !text.startsWith("{") && !/^[\w:-]+$/.test(text) ? text : undefined;
+}
+
+export function providerFundsMessage(error: unknown): string | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5; depth += 1) {
+    const item = record(current);
+    if (item === undefined) break;
+    const message = providerMessage(item.body) ?? providerMessage(item.error) ??
+      providerMessage(item.message);
+    if (message !== undefined) {
+      return redactSecrets(message)
+        .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+        .replace(/\b(?:Authorization|Cookie|Set-Cookie)\s*:\s*[^\r\n]+/gi, "[REDACTED]")
+        .replace(/\b(?:request[ _-]?id|x-request-id)\s*[:=]?\s*["']?[\w-]+["']?/gi, "[REDACTED]")
+        .replace(/\breq_[A-Za-z0-9_-]+\b/g, "[REDACTED]")
+        .trim();
+    }
+    current = item.cause ?? item.originalError;
+  }
+  return undefined;
 }
 
 function geminiLongQuota(value: unknown): boolean {
@@ -51,6 +85,9 @@ export function isProviderFundsFailure(providerName: string, error: unknown): bo
     const status = item.status ?? item.statusCode;
     const code = nestedCode(item) ?? nestedCode(item.body);
     const message = `${nestedText(item)} ${nestedText(item.body)}`.toLowerCase();
+    if ((status === 402 || status === 403) &&
+      (EXHAUSTED_CREDITS_RE.test(message) ||
+        ["insufficient_quota", "insufficient_credits", "credit_balance_exhausted"].includes(code ?? ""))) return true;
     if (status === 402 && (code === "insufficient_credits" || code === "credits_unavailable")) return true;
     if ((provider === "deepseek" || provider === "openrouter" || provider === "agenc") && status === 402) return true;
     if (provider === "openai" || provider === "codex" || provider === "chatgpt") {
