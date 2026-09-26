@@ -41,6 +41,27 @@ function fixture(rootName: "sessions" | "archived_sessions" = "sessions") {
   return { root, projectDir, sessionId, sessionDirectory, sourcePath };
 }
 
+/**
+ * Report the platform as win32 to the descriptor probe. Windows has no
+ * descriptor filesystem (/proc/self/fd, /dev/fd), so no alias can name a
+ * pinned directory there; the identity-proven canonical path must, and the
+ * swap checks must still hold on it.
+ */
+function asWindows<T>(run: () => T): T {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+  try {
+    return run();
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+  }
+}
+
+const PIN_PATHS = [
+  ["as this host pins", <T>(run: () => T): T => run()],
+  ["as Windows pins, with no descriptor alias", asWindows],
+] as const;
+
 describe.skipIf(process.platform === "win32")(
   "descriptor-pinned offline rollout mutation",
   () => {
@@ -94,27 +115,27 @@ describe.skipIf(process.platform === "win32")(
       expect(readFileSync(external, "utf8")).toBe("external\n");
     });
 
-    it("rejects a source replacement after the lease without writing either inode", () => {
+    it.each(PIN_PATHS)("rejects a source replacement after the lease without writing either inode (%s)", (_label, pinnedThrough) => {
       const target = fixture();
       const original = join(target.sessionDirectory, "original.jsonl");
 
       expect(() =>
-        withPinnedOfflineRolloutLease(target, (rollout) => {
+        pinnedThrough(() => withPinnedOfflineRolloutLease(target, (rollout) => {
           renameSync(target.sourcePath, original);
           writeFileSync(target.sourcePath, "replacement\n", { mode: 0o600 });
           rollout.appendAndSync("must-not-append\n");
-        }),
+        })),
       ).toThrow(/source changed during offline mutation/);
       expect(readFileSync(original, "utf8")).toBe("committed\n");
       expect(readFileSync(target.sourcePath, "utf8")).toBe("replacement\n");
     });
 
-    it("rejects a parent replacement after the lease without following it", () => {
+    it.each(PIN_PATHS)("rejects a parent replacement after the lease without following it (%s)", (_label, pinnedThrough) => {
       const target = fixture();
       const originalDirectory = join(target.root, "original-session");
 
       expect(() =>
-        withPinnedOfflineRolloutLease(target, (rollout) => {
+        pinnedThrough(() => withPinnedOfflineRolloutLease(target, (rollout) => {
           renameSync(target.sessionDirectory, originalDirectory);
           mkdirSync(target.sessionDirectory);
           writeFileSync(
@@ -123,7 +144,7 @@ describe.skipIf(process.platform === "win32")(
             { mode: 0o600 },
           );
           rollout.appendAndSync("must-not-append\n");
-        }),
+        })),
       ).toThrow(/directory changed during offline mutation/);
       expect(
         readFileSync(
@@ -169,3 +190,36 @@ describe.skipIf(process.platform === "win32")(
     });
   },
 );
+
+// Before the identity-proven canonical path covered Windows, every offline read
+// refused there, and every daemon start on Windows excluded every open chat as
+// "pending operator recovery action". The swap refusals above run this path too.
+describe("descriptor-pinned offline rollout where no descriptor alias exists", () => {
+  it("scans a rollout through the identity-proven canonical path", () => {
+    const target = fixture();
+    const chunks: Buffer[] = [];
+
+    asWindows(() =>
+      withPinnedOfflineRolloutReadLease(target, (rollout) => {
+        const snapshot = rollout.stat();
+        rollout.scanChunks(4, (chunk) => chunks.push(Buffer.from(chunk)));
+        rollout.assertSnapshot(snapshot);
+      }),
+    );
+
+    expect(Buffer.concat(chunks).toString("utf8")).toBe("committed\n");
+  });
+
+  it("appends through the identity-proven canonical path", () => {
+    const target = fixture();
+
+    asWindows(() =>
+      withPinnedOfflineRolloutLease(target, (rollout) => {
+        expect(rollout.readUtf8()).toBe("committed\n");
+        rollout.appendAndSync("review\n");
+      }),
+    );
+
+    expect(readFileSync(target.sourcePath, "utf8")).toBe("committed\nreview\n");
+  });
+});

@@ -612,28 +612,35 @@ function descriptorOperationPath(
       if (realpathSync(candidate) === canonicalPath) return candidate;
     } catch {
       // Absence of a descriptor alias is not permission to fall back to a
-      // pathname that can be replaced during offline mutation.
+      // pathname that can be replaced during offline mutation; only the
+      // identity proof below is.
     }
   }
-  // darwin: realpathSync("/dev/fd/N") resolves back to "/dev/fd/N" rather than
-  // the target, so the alias comparison above can never match and the daemon
-  // refuses to recover any existing project state. Fall back to the canonical
-  // pathname only after proving through the retained descriptor that it is the
-  // same directory inode, which is the property the alias check was buying.
-  if (process.platform !== "win32") {
-    try {
-      const viaDescriptor = fstatSync(fd);
-      const viaPath = lstatSync(canonicalPath);
-      if (
-        viaPath.isDirectory() &&
-        viaDescriptor.dev === viaPath.dev &&
-        viaDescriptor.ino === viaPath.ino
-      ) {
-        return canonicalPath;
-      }
-    } catch {
-      // Fall through to the unavailable error below.
+  // No alias names the directory on darwin, where realpathSync("/dev/fd/N")
+  // resolves back to "/dev/fd/N", or on Windows, which has no descriptor
+  // filesystem at all. Refusing there meant no offline read could ever pin a
+  // journal, so every daemon start excluded every open run as "pending
+  // operator recovery action" (#1695 on macOS; every chat after any restart
+  // on Windows). Fall back to the canonical pathname only after proving
+  // through the retained descriptor that it is the same directory, which is
+  // the property the alias check was buying. The identities are compared as
+  // bigints: NTFS file ids pass 2^53, where plain numbers round, and two
+  // directories must never compare equal because their ids round alike.
+  try {
+    const viaDescriptor = fstatSync(fd, { bigint: true });
+    const viaPath = lstatSync(canonicalPath, { bigint: true });
+    if (
+      viaDescriptor.isDirectory() &&
+      viaPath.isDirectory() &&
+      !viaPath.isSymbolicLink() &&
+      hasSupportedFileIdentity(viaDescriptor) &&
+      viaDescriptor.dev === viaPath.dev &&
+      viaDescriptor.ino === viaPath.ino
+    ) {
+      return canonicalPath;
     }
+  } catch {
+    // Fall through to the unavailable error below.
   }
   return undefined;
 }

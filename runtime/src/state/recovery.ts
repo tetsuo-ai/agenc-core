@@ -24,7 +24,7 @@ import {
   type RecoveryRunExclusion,
 } from "./recovery-exclusions.js";
 
-const RECOVERABLE_AGENT_RUN_STATUSES = [
+export const RECOVERABLE_AGENT_RUN_STATUSES = [
   "pending",
   "running",
   "working",
@@ -176,13 +176,15 @@ export function recoverDaemonStateOnStartup(
     const recoveredAt = options.now?.() ?? new Date().toISOString();
     // A source_not_quiescent deferral whose retry window has passed is stale
     // evidence about a lease some process held at the time, not about the
-    // source now. Resolve those first so the run is scanned below instead of
+    // source now. So is a deferral that only says the runtime which looked
+    // could not pin a descriptor path (every open run on Windows before this
+    // runtime). Resolve those first so the run is scanned below instead of
     // being reported as excluded.
     const recoveredAtMs = Date.parse(recoveredAt);
     if (Number.isFinite(recoveredAtMs)) {
-      new StateRecoveryIncidentRepository(driver).releaseExpiredLiveSourceDeferrals(
-        recoveredAtMs,
-      );
+      const incidents = new StateRecoveryIncidentRepository(driver);
+      incidents.releaseExpiredLiveSourceDeferrals(recoveredAtMs);
+      incidents.releaseExpiredDescriptorPathDeferrals(recoveredAtMs);
     }
     const preexistingExclusions = loadStartupRecoveryExclusions(driver);
     const startupBudget = new StartupRecoveryBudget();

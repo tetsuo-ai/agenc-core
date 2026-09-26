@@ -280,6 +280,14 @@ export interface ThreadStore {
   publishTranscriptArtifact?(threadId: ThreadId, observedRolloutPath: string, bytes: Buffer): string;
   /** Read only the authoritative profile; caller-supplied metadata is ignored. */
   readThreadLightMode?(threadId: ThreadId, verifiedProjectDir?: string): boolean | undefined;
+  /**
+   * The runtime options the thread's run recorded when it was created
+   * (`agent_runs.metadata_json.runtimeOptions`), not yet validated.
+   */
+  readThreadRuntimeOptions?(
+    threadId: ThreadId,
+    verifiedProjectDir?: string,
+  ): Readonly<Record<string, unknown>> | undefined;
   readThreadByRolloutPath(params: ReadThreadByRolloutPathParams): StoredThread;
   listThreads(params: ListThreadsParams): ThreadPage;
   /** Indexed count for latency-sensitive health probes. */
@@ -646,7 +654,10 @@ export class FileThreadStore implements ThreadStore {
     return this.toStoredThread(entry, history);
   }
 
-  readThreadLightMode(threadId: ThreadId, verifiedProjectDir?: string): boolean | undefined {
+  readThreadRuntimeOptions(
+    threadId: ThreadId,
+    verifiedProjectDir?: string,
+  ): Readonly<Record<string, unknown>> | undefined {
     this.assertOpen();
     if (verifiedProjectDir !== undefined && resolve(verifiedProjectDir) !== resolve(this.projectDir)) {
       throw new ThreadStoreInvalidRequestError("runtime profile project does not match the verified resume source");
@@ -666,7 +677,12 @@ export class FileThreadStore implements ThreadStore {
     if (!isRecord(options)) {
       throw new ThreadStoreInvalidRequestError("invalid persisted runtime options");
     }
-    if (options.lightMode === undefined) return undefined;
+    return options;
+  }
+
+  readThreadLightMode(threadId: ThreadId, verifiedProjectDir?: string): boolean | undefined {
+    const options = this.readThreadRuntimeOptions(threadId, verifiedProjectDir);
+    if (options?.lightMode === undefined) return undefined;
     if (typeof options.lightMode !== "boolean") {
       throw new ThreadStoreInvalidRequestError("invalid persisted Light mode");
     }

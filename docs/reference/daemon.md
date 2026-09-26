@@ -187,6 +187,13 @@ a daemon that vanished without any handler running (an OS SIGKILL, for
 instance) leaves that heartbeat, so the last known pid, memory and event-loop
 lag survive the exit.
 
+A stop requested over `daemon.shutdown` writes
+`agenc: daemon stopping at a client's daemon.shutdown request (pid N) at <time>`
+to `daemon.log`. On Windows the detached daemon receives no console signals, so
+that request is its only clean stop. Ending the process there (Task Manager,
+`Stop-Process`, `process.kill`) is a kill: it leaves the heartbeat, and the next
+start logs `the previous daemon (pid N) exited without recording a reason`.
+
 Packaging units under `packaging/` (systemd, launchd, Windows service) run
 `agenc daemon start --foreground`.
 
@@ -971,6 +978,17 @@ A session whose runtime cannot be rebuilt is still published without one, as
 before. A session whose publication fails is rolled back and stays
 unpublished, and a client can resume it; the other sessions are not affected.
 If the rollback fails too, the daemon stops with exit code 1 and logs the run.
+
+A session published without a runtime keeps the run status startup found when
+the daemon shuts down, so the next start restores it again. Before, a shutdown
+recorded it as `stopped` when no client had opened it, and later starts
+skipped it.
+
+`agent.create` with a `resumeSessionId` that no agent in the daemon carries (a
+run startup did not restore, such as an interactive session whose last turn
+completed before a crash) keeps the sandbox escape
+(`dangerouslyBypassApprovalsAndSandbox`) the run recorded at creation, as the
+startup restore does. The other runtime options come from the request.
 
 On shutdown the daemon starts no further restores and answers the requests
 waiting for them with the shutdown error. A restore already running may

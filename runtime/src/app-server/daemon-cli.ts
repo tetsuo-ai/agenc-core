@@ -4589,6 +4589,15 @@ async function runAgenCDaemonForegroundLocked(
         cleanupContext = { reason: "daemon_shutdown" };
         startupCancelled = termination.kind === "startup_cancel";
         exitCode = startupCancelled ? 1 : 0;
+        if (termination.kind === "rpc_shutdown") {
+          // A clean stop used to leave nothing in daemon.log, only a removed
+          // heartbeat, so the log could not tell it from a kill. On Windows
+          // this request is the only graceful stop: SIGTERM does not exist
+          // there, and killing the process runs no handler at all.
+          writeErrorLog(
+            `agenc: daemon stopping at a client's daemon.shutdown request (pid ${host.pid}) at ${new Date().toISOString()}\n`,
+          );
+        }
       }
     } finally {
       shuttingDown = true;
@@ -6546,9 +6555,28 @@ function reportAgenCDaemonStartupRecovery(
   }
   if (report.recoveryExclusions.length > 0) {
     io.stderr.write(
-      `agenc: daemon recovery excluded ${report.recoveryExclusions.length} run(s) pending operator recovery action\n`,
+      `agenc: daemon recovery excluded ${report.recoveryExclusions.length} run(s) pending operator recovery action (${describeRecoveryExclusionReasons(report.recoveryExclusions)})\n`,
     );
   }
+}
+
+/**
+ * "deferred recovery_lock_unavailable x3": the count alone sent the Windows
+ * diagnosis through the state database, while the reason says at once
+ * whether the runs or the platform are at fault.
+ */
+function describeRecoveryExclusionReasons(
+  exclusions: DaemonStartupRecoveryReport["recoveryExclusions"],
+): string {
+  const counts = new Map<string, number>();
+  for (const exclusion of exclusions) {
+    const key = `${exclusion.kind} ${exclusion.reasonCode ?? "without a reason code"}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, count]) => `${key} x${count}`)
+    .join(", ");
 }
 
 function summarizeToolRecoveryActions(

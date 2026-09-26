@@ -892,6 +892,15 @@ project directory; they open SQLite even when the daemon cannot start.
 `createRecoveryMutationAdapter()`. Actor for mutations is `--actor`, else
 `AGENC_REVIEWER_ID`, else `USER`/`USERNAME`, else `local_operator`.
 
+Daemon startup releases two kinds of deferral itself once their retry time
+has passed, then rescans the run under the full strict validation:
+`source_not_quiescent` (a live writer still held the journal) and
+`recovery_lock_unavailable` with error class
+`RECOVERY_DESCRIPTOR_PATH_UNAVAILABLE` (the runtime that looked could not pin
+the journal's directories, as every Windows build did before it could). A
+source that still cannot be read records a new block. Every other deferral
+stays until `recovery deferred retry` or `abandon`.
+
 Windows does not publish large artifacts without descriptor-relative paths
 (`ARTIFACT_SAFE_OPERATION_UNSUPPORTED`). That is fail-closed, not a recovery
 CLI.
