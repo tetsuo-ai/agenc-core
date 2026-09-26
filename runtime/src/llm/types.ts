@@ -285,6 +285,13 @@ export interface LLMUsage {
   cachedInputTokens?: number;
   cacheCreationInputTokens?: number;
   reasoningOutputTokens?: number;
+  /**
+   * True when `reasoningOutputTokens` is already inside `completionTokens`.
+   * Anthropic sets this because `thinking_tokens` are a subset of inclusive
+   * `output_tokens`. The session budget then adds completion once. Providers
+   * that leave it unset still have reasoning added on top of completion.
+   */
+  readonly reasoningIncludedInCompletion?: true;
   webSearchRequests?: number;
   /**
    * The wire this usage came from cannot report prompt-cache writes: it has

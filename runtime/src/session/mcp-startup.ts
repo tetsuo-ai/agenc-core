@@ -624,6 +624,9 @@ function tokenCountEventForSampling(
     ...(usage.reasoningOutputTokens !== undefined
       ? { reasoningOutputTokens: usage.reasoningOutputTokens }
       : {}),
+    ...(usage.reasoningIncludedInCompletion === true
+      ? { reasoningIncludedInCompletion: true as const }
+      : {}),
     ...(usage.webSearchRequests !== undefined
       ? { webSearchRequests: usage.webSearchRequests }
       : {}),

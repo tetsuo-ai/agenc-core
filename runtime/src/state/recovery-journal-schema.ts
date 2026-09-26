@@ -156,6 +156,7 @@ const isRunRuntimeSettingsChangeReason: Validator<
   value === "compensating_rollback";
 const isBoolean: Validator<boolean> = (value): value is boolean =>
   typeof value === "boolean";
+const isTrue: Validator<true> = (value): value is true => value === true;
 const isNumber: Validator<number> = (value): value is number =>
   typeof value === "number" && Number.isFinite(value);
 const isInteger: Validator<number> = (value): value is number =>
@@ -805,6 +806,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       cachedInputTokens: isNumber,
       cacheCreationInputTokens: isNumber,
       reasoningOutputTokens: isNumber,
+      reasoningIncludedInCompletion: isTrue,
       webSearchRequests: isNumber,
       model: isString,
       provider: isString,

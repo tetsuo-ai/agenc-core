@@ -63,6 +63,8 @@ describe("strict canonical journal contract", () => {
     expect(isCanonicalEventPayload("token_count", usage)).toBe(true);
     expect(isCanonicalEventPayload("token_count", { ...usage, speed: "fast" })).toBe(true);
     expect(isCanonicalEventPayload("token_count", { ...usage, speed: "turbo" })).toBe(false);
+    expect(isCanonicalEventPayload("token_count", { ...usage, reasoningIncludedInCompletion: true })).toBe(true);
+    expect(isCanonicalEventPayload("token_count", { ...usage, reasoningIncludedInCompletion: "yes" })).toBe(false);
   });
 
   it("accepts sequenced and explicit legacy format lanes", async () => {
