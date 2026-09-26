@@ -573,6 +573,26 @@ subagent under the full bypass with `--add-dir /` was refused on every path
 outside its workspace. The safety
 gates (`.git`, `.agenc`, `.agents`, dangerous removals) are not widened.
 
+A file path is checked against the path rules in a fixed order: a matching
+`deny` rule first, then the protected-path safety gates on writes, then a
+matching `ask` rule, and only then the working-directory auto-allows (any read
+inside the workspace; a write inside it under `acceptEdits`) and a matching
+`allow` rule. A content-specific `ask` such as `FileRead(./.env)` or
+`Write(migrations/**)` therefore prompts even for a path the mode would
+otherwise approve on its own, and `bypassPermissions` does not turn that
+prompt into an allow; it lifts only the working-directory prompt. This holds
+for rules from every source, so a managed `permissions.ask` entry still
+prompts when user settings allow the same path.
+
+`auto` mode is the exception: path validation reports the `ask`, but the
+auto-mode pipeline, not the user, then decides it. A tool on the auto-mode
+safe allowlist (`FileRead`, `Grep`, `Glob`) is approved by that allowlist, so
+an allowlisted read such as `FileRead(./.env)` runs without a prompt even
+though an `ask` rule matches it. A write `ask` in `auto` goes to the auto-mode
+classifier, which can approve it. In `auto` mode a content-specific `ask` rule
+does not force a confirmation; use a `deny` rule for a path that must never be
+read or written without the user.
+
 Neither bypass setting removes a planning worker's permanent read-only
 constraint. See [read-only planning workers](agents.md#read-only-planning-workers).
 Normal coding and verification workers retain the configured bypass behavior.
