@@ -386,9 +386,9 @@ export interface TokenCountEvent {
   readonly cacheCreationInputTokens?: number;
   readonly reasoningOutputTokens?: number;
   /**
-   * True when `reasoningOutputTokens` is already inside `completionTokens`
-   * (Gemini). The session budget then adds completion once. Absent for
-   * providers whose reasoning is still added on top of completion.
+   * True when `reasoningOutputTokens` is already inside `completionTokens`.
+   * The session budget then adds completion once. Absent for providers whose
+   * reasoning is still added on top of completion.
    */
   readonly reasoningIncludedInCompletion?: true;
   readonly webSearchRequests?: number;
@@ -1984,6 +1984,9 @@ export function usageToTokenCountEvent(usage: LLMUsage): EventMsg {
         : {}),
       ...(usage.reasoningOutputTokens !== undefined
         ? { reasoningOutputTokens: usage.reasoningOutputTokens }
+        : {}),
+      ...(usage.reasoningIncludedInCompletion === true
+        ? { reasoningIncludedInCompletion: true as const }
         : {}),
       ...(usage.webSearchRequests !== undefined
         ? { webSearchRequests: usage.webSearchRequests }

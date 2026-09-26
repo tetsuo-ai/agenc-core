@@ -1767,6 +1767,53 @@ describe("streamModel — SessionState.totalTokenUsage accumulator", () => {
     expect(sidecar.getTotalCostUsd()).toBeGreaterThan(0.02);
   });
 
+  test("a fast-served Anthropic turn reaches CostSidecar at fast-mode rates", async () => {
+    // 1M input tokens on Opus 5.5: $4 standard, $8 in fast mode. A turn that
+    // asked for fast but was served standard carries speed "standard".
+    for (const [servedSpeed, expectedUsd] of [
+      ["fast", 8],
+      ["standard", 4],
+    ] as const) {
+      const ctx = mkCtx("chat");
+      const provider = mkProvider(async () =>
+        parseAnthropicMessagesResponse(
+          "claude-opus-5-5",
+          {
+            model: "claude-opus-5-5",
+            content: [{ type: "text", text: "ok" }],
+            stop_reason: "end_turn",
+            usage: { input_tokens: 1_000_000, output_tokens: 0, speed: servedSpeed },
+          },
+          {
+            model: "claude-opus-5-5",
+            messages: [{ role: "user", content: "fast" }],
+            tools: [],
+          },
+        )
+      );
+      const { session, events } = mkSession(provider);
+      const sidecar = new CostSidecar();
+      session.eventLog.subscribe((event) => sidecar.onEvent(event));
+
+      await streamModel(
+        mkState(ctx),
+        ctx,
+        session,
+        mkRequest([{ role: "user", content: "fast" }]),
+      );
+
+      const tokenCount = events.find((event) => event.msg.type === "token_count");
+      const payload = (tokenCount?.msg as { payload?: Record<string, unknown> } | undefined)
+        ?.payload;
+      if (servedSpeed === "fast") {
+        expect(payload?.speed, servedSpeed).toBe("fast");
+      } else {
+        expect(payload, servedSpeed).not.toHaveProperty("speed");
+      }
+      expect(sidecar.getTotalCostUsd(), servedSpeed).toBeCloseTo(expectedUsd, 6);
+    }
+  });
+
   test("Gemini thinking tokens reach the budget once through token_count", async () => {
     const usage = requestUsageFromGemini({
       promptTokenCount: 4,
@@ -1813,53 +1860,6 @@ describe("streamModel — SessionState.totalTokenUsage accumulator", () => {
       },
     });
     expect(tracker.emitted).toBe(3);
-  });
-
-  test("a fast-served Anthropic turn reaches CostSidecar at fast-mode rates", async () => {
-    // 1M input tokens on Opus 5.5: $4 standard, $8 in fast mode. A turn that
-    // asked for fast but was served standard carries speed "standard".
-    for (const [servedSpeed, expectedUsd] of [
-      ["fast", 8],
-      ["standard", 4],
-    ] as const) {
-      const ctx = mkCtx("chat");
-      const provider = mkProvider(async () =>
-        parseAnthropicMessagesResponse(
-          "claude-opus-5-5",
-          {
-            model: "claude-opus-5-5",
-            content: [{ type: "text", text: "ok" }],
-            stop_reason: "end_turn",
-            usage: { input_tokens: 1_000_000, output_tokens: 0, speed: servedSpeed },
-          },
-          {
-            model: "claude-opus-5-5",
-            messages: [{ role: "user", content: "fast" }],
-            tools: [],
-          },
-        )
-      );
-      const { session, events } = mkSession(provider);
-      const sidecar = new CostSidecar();
-      session.eventLog.subscribe((event) => sidecar.onEvent(event));
-
-      await streamModel(
-        mkState(ctx),
-        ctx,
-        session,
-        mkRequest([{ role: "user", content: "fast" }]),
-      );
-
-      const tokenCount = events.find((event) => event.msg.type === "token_count");
-      const payload = (tokenCount?.msg as { payload?: Record<string, unknown> } | undefined)
-        ?.payload;
-      if (servedSpeed === "fast") {
-        expect(payload?.speed, servedSpeed).toBe("fast");
-      } else {
-        expect(payload, servedSpeed).not.toHaveProperty("speed");
-      }
-      expect(sidecar.getTotalCostUsd(), servedSpeed).toBeCloseTo(expectedUsd, 6);
-    }
   });
 
   test("survives a non-compacting turn — a third call keeps adding onto the prior two", async () => {

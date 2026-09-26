@@ -287,9 +287,9 @@ export interface LLMUsage {
   reasoningOutputTokens?: number;
   /**
    * True when `reasoningOutputTokens` is already inside `completionTokens`.
-   * Gemini sets this because candidates and thoughts are billed as one
-   * output total. Providers that leave it unset still have reasoning added
-   * on top of completion by the session budget.
+   * Anthropic sets this because `thinking_tokens` are a subset of inclusive
+   * `output_tokens`. The session budget then adds completion once. Providers
+   * that leave it unset still have reasoning added on top of completion.
    */
   readonly reasoningIncludedInCompletion?: true;
   webSearchRequests?: number;

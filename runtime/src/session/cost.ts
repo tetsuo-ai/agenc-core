@@ -1801,8 +1801,8 @@ export class CostSidecar implements Sidecar {
           this.unknownCostModels.add(key);
         }
         if (this.budgetTracker) {
-          // Gemini completion already includes thoughts. Other providers
-          // still add reasoning on top of completion, matching main.
+          // Reasoning already inside completion is not added again. Providers
+          // that leave the flag unset still add reasoning on top, matching main.
           const reasoningOutsideCompletion =
             msg.payload.reasoningIncludedInCompletion === true
               ? 0

@@ -377,6 +377,52 @@ describe("mcp-startup.attachMcpManagerToSession", () => {
     });
   });
 
+  it("keeps the inclusive reasoning marker on an MCP sampling token_count", async () => {
+    const providerChat = vi.fn(async () => ({
+      content: "ok",
+      toolCalls: [],
+      usage: {
+        promptTokens: 4,
+        completionTokens: 3,
+        totalTokens: 7,
+        reasoningOutputTokens: 1,
+        reasoningIncludedInCompletion: true as const,
+      },
+      model: "gemini-2.5-pro",
+      finishReason: "stop" as const,
+    }));
+    const emit = vi.fn();
+    const session = {
+      provider: { chat: providerChat },
+      services: { provider: { chat: providerChat }, admissionRequired: false },
+      emit,
+      nextInternalSubId: vi.fn(() => "sub-0"),
+      sessionConfiguration: { approvalPolicy: { value: "never" } },
+    } as unknown as Session;
+
+    await createSessionMcpSamplingHandlers(session).createMessage({
+      serverName: "srv",
+      requestId: 8,
+      request: {
+        id: 8,
+        method: "sampling/createMessage",
+        params: {
+          messages: [{ role: "user", content: { type: "text", text: "Think" } }],
+          maxTokens: 32,
+        },
+      } as never,
+    });
+
+    const tokenCount = emit.mock.calls
+      .map((call) => call[0].msg)
+      .find((msg) => msg.type === "token_count");
+    expect(tokenCount?.payload).toMatchObject({
+      completionTokens: 3,
+      reasoningOutputTokens: 1,
+      reasoningIncludedInCompletion: true,
+    });
+  });
+
   it("keeps an MCP sampling temperature off the OpenAI reasoning model's Responses request", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(
