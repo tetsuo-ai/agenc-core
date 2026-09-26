@@ -37,6 +37,7 @@ import {
   toOpenAIToolMessageContent,
   withEndpointMarkers,
   withSerializedMetrics,
+  withoutVolatileBoundary,
 } from "./shared.js";
 import { toChatCompletionsTools } from "./tools.js";
 import {
@@ -133,7 +134,7 @@ function systemPromptParts(
 ): readonly string[] {
   const parts: string[] = [];
   const optionPrompt = (optionPromptOverride ?? options?.systemPrompt)?.trim();
-  if (optionPrompt) parts.push(optionPrompt);
+  if (optionPrompt) parts.push(withoutVolatileBoundary(optionPrompt));
   for (const message of messages) {
     if (message.role !== "system" && message.role !== "developer") continue;
     const text = messageTextContent(message.content).trim();
@@ -327,7 +328,12 @@ function toChatCompletionsMessages(
   const split = sessionTailAfterSetup
     ? splitSystemPromptOnDynamicBoundary(options?.systemPrompt)
     : undefined;
-  const sessionTail = split?.dynamicSuffix;
+  // With session-tail caching on, the split returns the session-fixed part
+  // and the per-request part separately; both follow the setup reminders.
+  const tailParts = [split?.sessionSuffix, split?.dynamicSuffix].filter(
+    (part): part is string => part !== undefined && part.length > 0,
+  );
+  const sessionTail = tailParts.length > 0 ? tailParts.join("\n\n") : undefined;
   let systemPrompt = systemPromptParts(
     prepared,
     options,

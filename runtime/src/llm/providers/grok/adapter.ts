@@ -2385,11 +2385,18 @@ export class GrokProvider implements LLMProvider {
     // where it diverges every turn and prevents the system + history
     // prefix from ever being served from cache. Static head leads,
     // dynamic tail becomes the FINAL message.
-    const { staticPrefix: staticSystemPrompt, dynamicSuffix: dynamicSystemPrompt } =
-      splitSystemPromptOnDynamicBoundary(options?.systemPrompt);
+    const {
+      staticPrefix: staticSystemPrompt,
+      sessionSuffix: sessionSystemPrompt,
+      dynamicSuffix: dynamicSystemPrompt,
+    } = splitSystemPromptOnDynamicBoundary(options?.systemPrompt);
     const requestMessages = [
       ...(staticSystemPrompt !== undefined
         ? [{ role: "system" as const, content: staticSystemPrompt }]
+        : []),
+      // Fixed for the session, so it sits inside the cached prefix.
+      ...(sessionSystemPrompt !== undefined
+        ? [{ role: "system" as const, content: sessionSystemPrompt }]
         : []),
       ...messages,
       ...(dynamicSystemPrompt !== undefined

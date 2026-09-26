@@ -128,11 +128,17 @@ function buildAnthropicStructuredOutputTool(
  * gaphunt3 regression test still asserts it never diverges from
  * `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` in `src/prompts/system-prompt.ts`.
  */
-export { SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER } from "./shared.js";
-import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER } from "./shared.js";
+import {
+  SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER,
+  SYSTEM_PROMPT_VOLATILE_BOUNDARY_MARKER,
+  splitSystemPromptOnDynamicBoundary,
+} from "./shared.js";
+export { SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER };
 
 interface SplitOptionSystemPrompt {
   readonly staticHead: string;
+  /** The session-fixed part of the tail (session-tail caching on). */
+  readonly sessionTail?: string;
   readonly dynamicTail?: string;
 }
 
@@ -146,6 +152,14 @@ interface SplitOptionSystemPrompt {
 function splitOptionSystemPrompt(
   optionSystemPrompt: string,
 ): SplitOptionSystemPrompt {
+  if (optionSystemPrompt.includes(SYSTEM_PROMPT_VOLATILE_BOUNDARY_MARKER)) {
+    const split = splitSystemPromptOnDynamicBoundary(optionSystemPrompt);
+    return {
+      staticHead: split.staticPrefix ?? "",
+      ...(split.sessionSuffix !== undefined ? { sessionTail: split.sessionSuffix } : {}),
+      ...(split.dynamicSuffix !== undefined ? { dynamicTail: split.dynamicSuffix } : {}),
+    };
+  }
   const markerIndex = optionSystemPrompt.indexOf(
     SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER,
   );
@@ -184,6 +198,12 @@ function buildOptionSystemBlocks(
   const blocks: Array<Record<string, unknown>> = [];
   if (split.staticHead.length > 0) {
     blocks.push({ type: "text", text: split.staticHead, ...cacheControl });
+  }
+  // Fixed for the session: no breakpoint of its own (the message-level
+  // breakpoints after it cover it), and the static head's breakpoint still
+  // serves other sessions.
+  if (split.sessionTail !== undefined) {
+    blocks.push({ type: "text", text: split.sessionTail });
   }
   if (tailInSystem && split.dynamicTail !== undefined) {
     blocks.push({ type: "text", text: split.dynamicTail });
