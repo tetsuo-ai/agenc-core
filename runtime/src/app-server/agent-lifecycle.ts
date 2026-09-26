@@ -1276,14 +1276,13 @@ export class AgenCDaemonAgentManager {
           undefined,
           snapshotRouteForAgent(agent),
         );
-        if (this.#sessionManager !== undefined) {
-          for (const sessionId of agent.sessionIds) {
-            signal.throwIfAborted();
-            await this.#runner.attachAgentSessionEvents?.(agent.agentId, {
-              sessionId,
-              emit: (event) => this.#broadcastSessionEvent?.(sessionId, event),
-            });
-          }
+        const eventSessionId = agentEventSessionId(agent);
+        if (this.#sessionManager !== undefined && eventSessionId !== undefined) {
+          signal.throwIfAborted();
+          await this.#runner.attachAgentSessionEvents?.(agent.agentId, {
+            sessionId: eventSessionId,
+            emit: (event) => this.#broadcastSessionEvent?.(eventSessionId, event),
+          });
         }
 
         const { result, pendingTermination } = await this.#state.with(
@@ -1607,10 +1606,11 @@ export class AgenCDaemonAgentManager {
     });
     if (inserted?.runtimeAvailable === true) {
       try {
-        for (const sessionId of inserted.sessionIds) {
+        const eventSessionId = agentEventSessionId(inserted);
+        if (eventSessionId !== undefined) {
           await this.#runner?.attachAgentSessionEvents?.(inserted.agentId, {
-            sessionId,
-            emit: (event) => this.#broadcastSessionEvent?.(sessionId, event),
+            sessionId: eventSessionId,
+            emit: (event) => this.#broadcastSessionEvent?.(eventSessionId, event),
           });
         }
       } catch (error) {
@@ -5976,9 +5976,22 @@ function threadSourceToJson(source: ThreadSource): JsonValue {
   return typeof source === "string" ? source : (source as JsonObject);
 }
 
+/**
+ * The one session that receives an agent's runtime events. The runner keeps a
+ * single event binding per agent, and the first attachment also takes every
+ * event the runtime buffered before it (a resumed turn can finish before its
+ * session is attached). A resume adds its new session after the ones a restart
+ * restored, so only the newest is bound: binding the others first handed them
+ * the buffered batch, and clients following the newest never saw it.
+ */
+function agentEventSessionId(agent: { readonly sessionIds: readonly string[] }): string | undefined {
+  return agent.sessionIds.at(-1);
+}
+
 function toAgentCreateResult(agent: MutableAgent): AgentCreateResult {
   const summary = toAgentSummary(agent);
-  const sessionId = agent.sessionIds[0];
+  // Clients follow the session agent.create names: the one bound to events.
+  const sessionId = agentEventSessionId(agent);
   return {
     ...summary,
     ...(sessionId !== undefined ? { sessionId } : {}),
