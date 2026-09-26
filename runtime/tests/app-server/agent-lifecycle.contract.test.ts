@@ -35,7 +35,7 @@ import {
   resolveUnknownOutcomeEffect,
 } from "../state/unknown-outcome-gate.js";
 import { recordInFlightToolCallUnknownOutcome } from "../state/tool-output-rotation.js";
-import type { ResolveDurableEffectReviewOptions } from "../state/effect-review.js";
+import { EffectReviewStaleError, type ResolveDurableEffectReviewOptions } from "../state/effect-review.js";
 import {
   __setAgentLifecycleResumeSourceTestHooksForTest,
   AgenCDaemonAgentLifecycleError,
@@ -6633,6 +6633,57 @@ describe("AgenC background agent lifecycle", () => {
     }
   });
 
+  it("passes the exact attempt to the live review and reports a stale attempt as EFFECT_REVIEW_STALE", async () => {
+    const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
+    const daemonSessionId = "session_desktop_exact";
+    const agentId = "conv-desktop-exact";
+    const sessions = new AgenCDaemonSessionManager({ createSessionId: () => daemonSessionId });
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      const effects = await seedUnknownEffectSession(driver, sessions, {
+        cwd, agentId, callId: "call_retry", toolName: "browser_evaluate",
+      });
+      const seen: (ResolveDurableEffectReviewOptions["expectedAttempt"])[] = [];
+      const runner = {
+        resolveLiveEffectReview: vi.fn(async (_owner: string, params: ResolveDurableEffectReviewOptions) => {
+          seen.push(params.expectedAttempt);
+          if (params.expectedAttempt?.unknownSequence !== 2) {
+            throw new EffectReviewStaleError("run conv-desktop-exact step tool:turn:call_retry no longer matches the reviewed unknown outcome");
+          }
+          return projectLiveReview(driver, params);
+        }),
+      } as unknown as AgenCBackgroundAgentRunner;
+      const agents = new AgenCDaemonAgentManager({ sessionManager: sessions, runner, agencHome: home });
+      const request = {
+        sessionId: daemonSessionId,
+        toolCallId: "call_retry",
+        disposition: "confirmed_no_effect",
+        evidenceRef: "desktop-effect-review:sha256:" + "a".repeat(64),
+        evidenceSha256: "a".repeat(64),
+        reviewer: "desktop_user",
+      } as const;
+      await expect(agents.resolveSessionToolCall({
+        ...request,
+        attempt: { runId: agentId, stepId: "tool:turn:call_retry", unknownEventId: "unknown", unknownSequence: 7 },
+      })).rejects.toMatchObject({ code: "EFFECT_REVIEW_STALE" });
+      expect(effects.getEffect(agentId, "tool:turn:call_retry")).toMatchObject({ reviewStatus: "pending" });
+      await expect(agents.resolveSessionToolCall({
+        ...request,
+        attempt: { runId: agentId, stepId: "tool:turn:call_retry", unknownEventId: "unknown", unknownSequence: 2 },
+      })).resolves.toMatchObject({ resolved: [{ toolCallId: "call_retry" }], remaining: 0 });
+      expect(seen).toEqual([
+        { runId: agentId, stepId: "tool:turn:call_retry", unknownEventId: "unknown", unknownSequence: 7 },
+        { runId: agentId, stepId: "tool:turn:call_retry", unknownEventId: "unknown", unknownSequence: 2 },
+      ]);
+      expect(effects.getEffect(agentId, "tool:turn:call_retry")).toMatchObject({ reviewStatus: "resolved" });
+    } finally {
+      driver.close();
+      restoreEnv();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("stops a launched agent when lifecycle session creation fails", async () => {
     const stopAgent = vi.fn(async () => {});
     const agents = new AgenCDaemonAgentManager({
@@ -6904,7 +6955,7 @@ describe("AgenC background agent lifecycle", () => {
         capabilities: {},
       },
     });
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.19.0");
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.20.0");
     expect(connection.initializeState).toMatchObject({
       protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
       clientProtocol: { version: "1.0.0" },

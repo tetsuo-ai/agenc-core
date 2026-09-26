@@ -200,6 +200,100 @@ describe("daemon session-control internal method dispatch", () => {
     expect(resolveSessionToolCall).toHaveBeenCalledTimes(3);
   });
 
+  it("routes the protocol 1.20 exact attempt and rejects malformed attempts before dispatch", async () => {
+    const resolveSessionToolCall = vi.fn(async () => ({
+      sessionId: "session_1",
+      resolved: [],
+      remaining: 0,
+    }));
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({ sessionId: "session_1", agentId: "conv-1", cwd: process.cwd() });
+    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+      sessionManager: sessions,
+      clientMultiplexer: new AgenCDaemonClientMultiplexer({ sessionManager: sessions }),
+      agentManager: { resolveSessionToolCall } as never,
+    });
+    const connection = dispatcher.createConnection({ sendNotification: () => {} });
+    await initialize(connection, AGENC_DAEMON_PROTOCOL_VERSION);
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "attach",
+      method: "session.attach",
+      params: { sessionId: "session_1", clientId: "desktop-client" },
+    });
+    const attempt = {
+      runId: "conv-1",
+      stepId: "tool:turn-2:call_retry",
+      unknownEventId: "event:41",
+      unknownSequence: 41,
+    };
+    const evidence = {
+      sessionId: "session_1",
+      toolCallId: "call_retry",
+      disposition: "confirmed_no_effect",
+      evidenceRef: "desktop-effect-review:sha256:" + "a".repeat(64),
+      evidenceSha256: "a".repeat(64),
+    };
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "exact",
+        method: "session.resolveToolCall",
+        params: { ...evidence, attempt },
+      }),
+    ).resolves.toMatchObject({ result: { sessionId: "session_1" } });
+    expect(resolveSessionToolCall).toHaveBeenLastCalledWith({
+      ...evidence,
+      attempt,
+      reviewer: "local-client:desktop-client",
+    });
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "exact-attestation",
+        method: "session.resolveToolCall",
+        params: {
+          sessionId: "session_1",
+          toolCallId: "call_retry",
+          disposition: "remains_unknown",
+          attestation: "operator",
+          attempt,
+        },
+      }),
+    ).resolves.toMatchObject({ result: { sessionId: "session_1" } });
+    expect(resolveSessionToolCall).toHaveBeenLastCalledWith({
+      sessionId: "session_1",
+      toolCallId: "call_retry",
+      disposition: "remains_unknown",
+      attestation: "operator",
+      attempt,
+      reviewer: "local-client:desktop-client",
+    });
+
+    for (const [id, params] of [
+      ["attempt-without-evidence", { sessionId: "session_1", toolCallId: "call_retry", attempt }],
+      ["attempt-not-object", { ...evidence, attempt: "event:41" }],
+      ["attempt-extra-field", { ...evidence, attempt: { ...attempt, callId: "call_retry" } }],
+      ["attempt-missing-step", { ...evidence, attempt: { runId: "conv-1", unknownEventId: "event:41", unknownSequence: 41 } }],
+      ["attempt-empty-event", { ...evidence, attempt: { ...attempt, unknownEventId: " " } }],
+      ["attempt-zero-sequence", { ...evidence, attempt: { ...attempt, unknownSequence: 0 } }],
+      ["attempt-fractional-sequence", { ...evidence, attempt: { ...attempt, unknownSequence: 41.5 } }],
+      ["attempt-string-sequence", { ...evidence, attempt: { ...attempt, unknownSequence: "41" } }],
+    ] as const) {
+      await expect(
+        connection.dispatch({
+          jsonrpc: JSON_RPC_VERSION,
+          id,
+          method: "session.resolveToolCall",
+          params,
+        }),
+      ).resolves.toMatchObject({ error: { code: -32602 } });
+    }
+    expect(resolveSessionToolCall).toHaveBeenCalledTimes(2);
+  });
+
   it("routes both compaction operator methods", async () => {
     const rollbackCompaction = vi.fn(async () => ({
       sessionId: "session_1",

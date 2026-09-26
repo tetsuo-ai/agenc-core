@@ -3577,6 +3577,7 @@ function validateSessionResolveToolCallParams(
       "attestation",
       "reviewer",
     ],
+    objectFields: ["attempt"],
   });
   validateRequiredString(validated, "session.resolveToolCall", "sessionId");
   const hasEvidenceFields = [
@@ -3586,6 +3587,11 @@ function validateSessionResolveToolCallParams(
     "attestation",
   ].some((field) => Object.prototype.hasOwnProperty.call(validated, field));
   if (!hasEvidenceFields) {
+    if (Object.prototype.hasOwnProperty.call(validated, "attempt")) {
+      throw invalidParams(
+        "session.resolveToolCall attempt requires a disposition with evidence or an operator attestation",
+      );
+    }
     if (validated.toolCallId !== undefined) {
       validateRequiredString(
         validated,
@@ -3599,6 +3605,7 @@ function validateSessionResolveToolCallParams(
     return validated as SessionResolveToolCallLegacyParams;
   }
   validateRequiredString(validated, "session.resolveToolCall", "toolCallId");
+  validateSessionResolveToolCallAttempt(validated);
   const attesting = Object.prototype.hasOwnProperty.call(
     validated,
     "attestation",
@@ -3646,6 +3653,32 @@ function validateSessionResolveToolCallParams(
     );
   }
   return validated as SessionResolveToolCallEvidenceParams;
+}
+
+function validateSessionResolveToolCallAttempt(validated: JsonObject): void {
+  if (!Object.prototype.hasOwnProperty.call(validated, "attempt")) return;
+  const attempt = validated.attempt;
+  if (!isPlainJsonObject(attempt)) {
+    throw invalidParams("session.resolveToolCall attempt must be an object");
+  }
+  validateObjectShape(attempt, {
+    methodName: "session.resolveToolCall.attempt",
+    stringFields: ["runId", "stepId", "unknownEventId"],
+    numberFields: ["unknownSequence"],
+  });
+  for (const field of ["runId", "stepId", "unknownEventId"] as const) {
+    validateRequiredString(attempt, "session.resolveToolCall.attempt", field);
+  }
+  const sequence = attempt.unknownSequence;
+  if (
+    typeof sequence !== "number" ||
+    !Number.isSafeInteger(sequence) ||
+    sequence <= 0
+  ) {
+    throw invalidParams(
+      "session.resolveToolCall attempt.unknownSequence must be a positive integer",
+    );
+  }
 }
 
 function validateSessionMcpAddServerParams(
