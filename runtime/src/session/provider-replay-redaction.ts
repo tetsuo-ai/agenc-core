@@ -30,15 +30,30 @@ export function isGrokEncryptedReplay(value: unknown): boolean {
   return encryptedItems(value) !== undefined;
 }
 
+function signedGeminiParts(value: unknown): RecordValue[] | undefined {
+  if (!record(value) || value.version !== 2 || value.provider !== "gemini" ||
+      typeof value.content !== "string") return undefined;
+  try {
+    const parts: unknown = JSON.parse(value.content);
+    if (Array.isArray(parts) && parts.length > 0 && parts.every((part) =>
+      record(part) && (part.thoughtSignature === undefined ||
+        (typeof part.thoughtSignature === "string" && isEncryptedBase64(part.thoughtSignature)))) &&
+      parts.some((part) => part.thoughtSignature !== undefined)) return parts;
+  } catch { /* Malformed replay is not eligible. */ }
+  return undefined;
+}
+
 /** Only validated ciphertext escapes ordinary redaction, never sibling fields. */
 function redactReplay(value: unknown): unknown {
-  const items = encryptedItems(value);
+  const geminiParts = signedGeminiParts(value);
+  const items = geminiParts ?? encryptedItems(value);
   if (!items) return undefined;
+  const signatureKey = geminiParts ? "thoughtSignature" : "encrypted_content";
   return {
     ...redactSecretsInValue(value as RecordValue),
     content: JSON.stringify(items.map((item) => ({
       ...redactSecretsInValue(item),
-      encrypted_content: item.encrypted_content,
+      ...(item[signatureKey] !== undefined ? { [signatureKey]: item[signatureKey] } : {}),
     }))),
   };
 }
@@ -50,8 +65,10 @@ export function redactDurableSecrets<T>(value: T, scope: DurableRedactionScope):
   const restoreResponse = (original: unknown, target: unknown, key: string): void => {
     if (!record(original) || !record(target) || original.role !== "assistant") return;
     const replay = original[key];
-    if (!record(replay) || replay.version !== 2 || replay.provider !== "grok") return;
+    if (!record(replay) || replay.version !== 2 ||
+        (replay.provider !== "grok" && replay.provider !== "gemini")) return;
     const safe = redactReplay(replay);
+    if (safe === undefined && replay.provider === "gemini") return;
     if (safe === undefined) delete target[key];
     else target[key] = safe;
   };

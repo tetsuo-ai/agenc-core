@@ -354,7 +354,7 @@ function currentIntegrity(
 }
 
 /**
- * Only canonical Grok ciphertext is exempt from text redaction.
+ * Only canonical provider ciphertext is exempt from text redaction.
  * True when durable persistence drops invalid Grok replay or other replay because secret
  * redaction would alter it.
  *
@@ -380,7 +380,10 @@ export function durableRedactionDropsProviderReplay(
     const metadata = redactSecretsInValue({ provider: providerReasoning.provider, model: providerReasoning.model });
     return metadata.provider !== providerReasoning.provider || metadata.model !== providerReasoning.model;
   }
-  const redacted = redactSecretsInValue(providerReasoning);
+  const redacted = redactDurableSecrets({
+    role: "assistant",
+    providerReasoning,
+  }, "response").providerReasoning;
   return (
     redacted?.content !== providerReasoning.content ||
     redacted.version !== providerReasoning.version ||

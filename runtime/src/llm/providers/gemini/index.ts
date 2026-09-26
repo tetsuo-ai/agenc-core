@@ -65,7 +65,12 @@ const GEMINI_INVALID_FUNCTION_CALL_MESSAGE =
 type GeminiPart = Record<string, unknown>;
 type GeminiThinkingBlock = NonNullable<LLMResponse["thinking"]>[number];
 
-interface GeminiParsedResponse {
+type GeminiReasoningReplay = Pick<
+  LLMResponse,
+  "providerReasoningContent" | "providerReasoningProvenance"
+>;
+
+interface GeminiParsedResponse extends GeminiReasoningReplay {
   readonly content: string;
   readonly toolCalls: readonly LLMToolCall[];
   readonly usage: LLMUsage;
@@ -476,7 +481,60 @@ function geminiFunctionCallPart(toolCall: LLMToolCall): GeminiPart {
   };
 }
 
-function buildGeminiContents(messages: readonly LLMMessage[]): {
+function geminiThoughtSignature(part: GeminiPart): string | undefined {
+  const signature = part.thoughtSignature ?? part.thought_signature;
+  return typeof signature === "string" && signature.length > 0
+    ? signature
+    : undefined;
+}
+
+function geminiReasoningReplay(
+  parts: readonly GeminiPart[],
+  model: string,
+): GeminiReasoningReplay {
+  if (!parts.some((part) => geminiThoughtSignature(part) !== undefined)) return {};
+  return {
+    providerReasoningContent: JSON.stringify(parts.map((part) => {
+      const { thought_signature: _signature, ...rest } = part;
+      const signature = geminiThoughtSignature(part);
+      return { ...rest, ...(signature !== undefined ? { thoughtSignature: signature } : {}) };
+    })),
+    providerReasoningProvenance: {
+      provider: "gemini",
+      model: canonicalGeminiModelName(model).toLowerCase(),
+    },
+  };
+}
+
+function geminiReplayParts(message: LLMMessage, model: string): GeminiPart[] | undefined {
+  if (
+    message.role !== "assistant" || !message.providerReasoningContent ||
+    message.providerReasoningProvenance?.provider !== "gemini" ||
+    canonicalGeminiModelName(message.providerReasoningProvenance.model).toLowerCase() !==
+      canonicalGeminiModelName(model).toLowerCase()
+  ) return undefined;
+  try {
+    const parts: unknown = JSON.parse(message.providerReasoningContent);
+    if (!Array.isArray(parts) || parts.length === 0 || !parts.every(isRecord)) return undefined;
+    const text = parts.filter((part) => part.thought !== true && typeof part.text === "string")
+      .map((part) => part.text).join("");
+    const calls = parts.filter((part) => isRecord(part.functionCall));
+    const toolCalls = message.toolCalls ?? [];
+    // History edits must not resurrect removed text or tool calls from replay state.
+    if (text !== messageTextContent(message.content) || calls.length !== toolCalls.length) return undefined;
+    if (!calls.every((part, index) => {
+      const call = part.functionCall as Record<string, unknown>;
+      const toolCall = toolCalls[index]!;
+      return call.name === toolCall.name &&
+        JSON.stringify(call.args ?? {}) === JSON.stringify(parseJsonObjectText(toolCall.arguments) ?? {});
+    })) return undefined;
+    return parts;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildGeminiContents(messages: readonly LLMMessage[], model: string): {
   readonly contents: readonly Record<string, unknown>[];
   readonly systemInstruction?: Record<string, unknown>;
 } {
@@ -516,11 +574,12 @@ function buildGeminiContents(messages: readonly LLMMessage[]): {
       continue;
     }
 
-    const parts = [...geminiPartsFromContent(message.content)];
+    const replayParts = geminiReplayParts(message, model);
+    const parts = replayParts ?? [...geminiPartsFromContent(message.content)];
     if (message.role === "assistant" && message.toolCalls) {
       for (const toolCall of message.toolCalls) {
         toolCallNames.set(toolCall.id, toolCall.name);
-        parts.push(geminiFunctionCallPart(toolCall));
+        if (!replayParts) parts.push(geminiFunctionCallPart(toolCall));
       }
     }
     if (parts.length === 0) continue;
@@ -2745,7 +2804,7 @@ function buildGeminiRequest(args: {
       ? [{ role: "system" as const, content: args.options.systemPrompt }]
       : []),
     ...projectGeminiHistoryToolNames(args.messages),
-  ]);
+  ], args.model);
   const schemaCapabilities = geminiResponseJsonSchemaCapabilities(
     args.config.endpointPlan,
     args.model,
@@ -2871,6 +2930,7 @@ function parseGeminiResponse(
     toolCalls,
     usage,
     model,
+    ...geminiReasoningReplay(parts, model),
     ...(thinking.length > 0 ? { thinking } : {}),
     finishReason: geminiFinishReason(candidate.finishReason, toolCalls),
   };
@@ -2926,6 +2986,10 @@ function withMetrics(
     usage: parsed.usage,
     model: parsed.model,
     requestMetrics: metrics,
+    ...(parsed.providerReasoningContent !== undefined ? {
+      providerReasoningContent: parsed.providerReasoningContent,
+      providerReasoningProvenance: parsed.providerReasoningProvenance,
+    } : {}),
     ...(parsed.thinking ? { thinking: parsed.thinking } : {}),
     finishReason: parsed.finishReason,
   };
@@ -2996,6 +3060,7 @@ class GeminiStreamState {
   finishReason: LLMResponse["finishReason"] = "stop";
   readonly toolCalls: LLMToolCall[] = [];
   readonly thinking: GeminiThinkingBlock[] = [];
+  private readonly parts: GeminiPart[] = [];
   private thinkingOpen = new Set<number>();
   private promptBlocked = false;
   private sawCandidate = false;
@@ -3024,6 +3089,7 @@ class GeminiStreamState {
     }
     const candidate = readFirstCandidate(response);
     const parts = readCandidateParts(response);
+    this.parts.push(...parts);
     for (const [index, part] of parts.entries()) {
       this.consumePart(part, index, onChunk);
     }
@@ -3051,6 +3117,7 @@ class GeminiStreamState {
       toolCalls: this.toolCalls,
       usage: this.usage,
       model: this.model,
+      ...geminiReasoningReplay(this.parts, this.model),
       ...(this.thinking.length > 0 ? { thinking: this.thinking } : {}),
       finishReason: this.finishReason,
     };

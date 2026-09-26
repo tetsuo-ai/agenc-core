@@ -9,6 +9,11 @@ import type { LLMChatOptions, LLMMessage, LLMTool } from "../../types.js";
 import { createGeminiEndpointPlan } from "./endpoint-plan.js";
 import { GeminiProvider } from "./index.js";
 import {
+  llmMessageToDurableResponseItem,
+  responseItemToLlmMessage,
+} from "../../../../src/session/message-history-conversion.js";
+import { serializeRolloutItem } from "../../../../src/session/rollout-item.js";
+import {
   createCsvAgentInvocationEnvelope,
   materializeAgentInvocationMessages,
 } from "../../../../src/contracts/agent-invocation-envelope.js";
@@ -2582,6 +2587,158 @@ describe("GeminiProvider", () => {
       unknown
     >;
     expect(requestBody.cachedContent).toBe("cachedContents/request-context");
+  });
+
+  test.each([false, true])("replays a signed Gemini 3 function call after rollout resume (stream=%s)", async (stream) => {
+    const parts = [{
+      functionCall: { name: "system.echo", args: { text: "hi" } },
+      thoughtSignature: "c2lnbmVkLWZ1bmN0aW9uLWNhbGw=",
+    }];
+    const payload = {
+      candidates: [{ content: { role: "model", parts }, finishReason: "STOP" }],
+    };
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(stream
+        ? sseResponse([`data: ${JSON.stringify(payload)}\n\n`])
+        : jsonResponse(payload))
+      .mockResolvedValueOnce(jsonResponse({
+        candidates: [{ content: { parts: [{ text: "done" }] }, finishReason: "STOP" }],
+      }));
+    const provider = new GeminiProvider({
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
+      model: "gemini-3.1-pro",
+      fetchImpl,
+    });
+    const messages: LLMMessage[] = [{ role: "user", content: "echo hi" }];
+    const response = stream
+      ? await provider.chatStream(messages, () => {}, { tools: [echoTool] })
+      : await provider.chat(messages, { tools: [echoTool] });
+    const durable = llmMessageToDurableResponseItem({
+      role: "assistant",
+      content: response.content,
+      toolCalls: response.toolCalls,
+      providerReasoningContent: response.providerReasoningContent,
+      providerReasoningProvenance: response.providerReasoningProvenance,
+    });
+    const restored = responseItemToLlmMessage(JSON.parse(serializeRolloutItem({
+      type: "response_item",
+      payload: durable,
+    })).payload);
+    await provider.chat([
+      ...messages,
+      restored,
+      { role: "tool", toolCallId: response.toolCalls[0]!.id, content: "hi" },
+    ], { tools: [echoTool] });
+    const request = JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body));
+    expect(request.contents[1]).toEqual({ role: "model", parts });
+  });
+
+  describe.each([false, true])("Gemini part replay (stream=%s)", (stream) => {
+    test.each([
+      {
+        name: "parallel function calls",
+        parts: [
+          { text: "Calling tools." },
+          { functionCall: { name: "system.echo", args: { text: "first" } }, thoughtSignature: "Zmlyc3Q=" },
+          { functionCall: { name: "system.echo", args: { text: "second" } } },
+        ],
+      },
+      {
+        name: "signed text boundaries and an empty signed text part",
+        parts: [
+          { text: "First", thoughtSignature: "Zmlyc3Q=" },
+          { text: " second" },
+          { text: "", thoughtSignature: "c2Vjb25k" },
+        ],
+      },
+      {
+        name: "text and function call signatures in their original order",
+        parts: [
+          { text: "Before", thoughtSignature: "YmVmb3Jl" },
+          { functionCall: { name: "system.echo", args: { text: "hi" } }, thoughtSignature: "Y2FsbA==" },
+          { text: "After", thoughtSignature: "YWZ0ZXI=" },
+        ],
+      },
+      {
+        name: "unsigned legacy calls",
+        parts: [{ functionCall: { name: "system.echo", args: { text: "hi" } } }],
+      },
+      {
+        name: "opaque signature bytes through rollout redaction",
+        parts: [{ functionCall: { name: "system.echo", args: { text: "hi" } }, thoughtSignature: "A".repeat(84) }],
+      },
+    ])("preserves $name across two tool steps and resume", async ({ parts }) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => {
+        const candidate = (responseParts: unknown[]) => ({
+          candidates: [{ content: { role: "model", parts: responseParts }, finishReason: "STOP" }],
+        });
+        return stream
+          ? sseResponse(parts.map((part) => `data: ${JSON.stringify(candidate([part]))}\n\n`))
+          : jsonResponse(candidate(parts));
+      });
+      const provider = new GeminiProvider({
+        credentialPlan: apiKeyCredentialPlan(),
+        endpointPlan: developerEndpointPlan,
+        model: "gemini-3.8-flash",
+        fetchImpl,
+      });
+      const messages: LLMMessage[] = [{ role: "user", content: "echo" }];
+      for (let step = 0; step < 3; step += 1) {
+        const response = stream
+          ? await provider.chatStream(messages, () => {}, { tools: [echoTool] })
+          : await provider.chat(messages, { tools: [echoTool] });
+        const durable = llmMessageToDurableResponseItem({
+          role: "assistant",
+          content: response.content,
+          toolCalls: response.toolCalls,
+          providerReasoningContent: response.providerReasoningContent,
+          providerReasoningProvenance: response.providerReasoningProvenance,
+        });
+        messages.push(responseItemToLlmMessage(JSON.parse(serializeRolloutItem({
+          type: "response_item", payload: durable,
+        })).payload));
+        messages.push(...response.toolCalls.map((call): LLMMessage => ({
+          role: "tool", toolCallId: call.id, content: "done",
+        })));
+        if (response.toolCalls.length === 0) messages.push({ role: "user", content: "continue" });
+      }
+      const request = JSON.parse(String(fetchImpl.mock.calls[2]?.[1]?.body));
+      expect(request.contents.filter((entry: { role: string }) => entry.role === "model"))
+        .toEqual([{ role: "model", parts }, { role: "model", parts }]);
+    });
+  });
+
+  test.each([
+    { name: "missing state", state: undefined, provenance: undefined },
+    { name: "malformed state", state: "invalid json", provenance: { provider: "gemini", model: "gemini-3.1-pro" } },
+    { name: "another provider", provenance: { provider: "openai", model: "gemini-3.1-pro" } },
+    { name: "another model", provenance: { provider: "gemini", model: "gemini-3.8-flash" } },
+    { name: "unbound state", provenance: undefined },
+  ])("keeps unsigned history behavior for $name", async ({ name, state, provenance }) => {
+    const part = { functionCall: { name: "system.echo", args: { text: "hi" } } };
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({
+      candidates: [{ content: { parts: [{ text: "done" }] }, finishReason: "STOP" }],
+    }));
+    const provider = new GeminiProvider({
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
+      model: "gemini-3.1-pro",
+      fetchImpl,
+    });
+    await provider.chat([
+      { role: "user", content: "echo hi" },
+      {
+        role: "assistant", content: "",
+        toolCalls: [{ id: "call-1", name: "system.echo", arguments: '{"text":"hi"}' }],
+        providerReasoningContent: name === "missing state" ? undefined
+          : state ?? JSON.stringify([{ ...part, thoughtSignature: "c2ln" }]),
+        providerReasoningProvenance: provenance,
+      },
+      { role: "tool", toolCallId: "call-1", content: "hi" },
+    ], { tools: [echoTool] });
+    const request = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(request.contents[1]).toEqual({ role: "model", parts: [part] });
   });
 
   test("preserves Gemini thought signatures through history and response thinking", async () => {
