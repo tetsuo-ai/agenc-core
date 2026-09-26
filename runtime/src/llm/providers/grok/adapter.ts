@@ -36,6 +36,8 @@ import {
 } from "../../wire/mcp-tool-naming.js";
 import { LLMProviderError, LLMServerError, LLMStreamTruncatedError, mapLLMError,
   LLMRequestRebuiltError,
+  markPreGenerationRejection,
+  type ProviderRejectionEvidence,
 } from "../../errors.js";
 import { ensureLazyImport } from "../../lazy-import.js";
 import {
@@ -779,35 +781,43 @@ async function createWithResponseMetadata<T>(
   response?: Response;
   requestId?: string | null;
 }> {
-  const request = (client as any).responses.create(params, {
-    signal,
-    ...(singleWireAttempt ? { maxRetries: 0 } : {}),
-  });
-  if (
-    request &&
-    typeof request === "object" &&
-    typeof (request as { withResponse?: unknown }).withResponse === "function"
-  ) {
-    const result = await (
-      request as {
-        withResponse(): Promise<{
-          data: T;
-          response: Response;
-          request_id: string | null;
-        }>;
-      }
-    ).withResponse();
+  try {
+    const request = (client as any).responses.create(params, {
+      signal,
+      ...(singleWireAttempt ? { maxRetries: 0 } : {}),
+    });
+    if (
+      request &&
+      typeof request === "object" &&
+      typeof (request as { withResponse?: unknown }).withResponse === "function"
+    ) {
+      const result = await (
+        request as {
+          withResponse(): Promise<{
+            data: T;
+            response: Response;
+            request_id: string | null;
+          }>;
+        }
+      ).withResponse();
+      return {
+        data: result.data,
+        response: result.response,
+        requestId: result.request_id,
+      };
+    }
+    const data = await request as T;
     return {
-      data: result.data,
-      response: result.response,
-      requestId: result.request_id,
+      data,
+      requestId: extractProviderRequestId(data),
     };
+  } catch (error) {
+    // Only the SDK HTTP handshake is awaited here, never stream iteration.
+    if (error instanceof Error) {
+      markPreGenerationRejection(error, (error as { status?: unknown }).status);
+    }
+    throw error;
   }
-  const data = await request as T;
-  return {
-    data,
-    requestId: extractProviderRequestId(data),
-  };
 }
 
 function emitProviderTraceEvent(
@@ -3361,9 +3371,13 @@ export class GrokProvider implements LLMProvider {
   }
 
   private mapError(err: unknown, timeoutMs?: number): Error {
-    return (
+    const mappedError = (
       xaiBillingRefusalError(this.name, err) ??
       mapLLMError(this.name, err, timeoutMs ?? this.config.timeoutMs ?? 0)
+    );
+    return markPreGenerationRejection(
+      mappedError,
+      (err as ProviderRejectionEvidence | null)?.preGenerationRejectionStatus,
     );
   }
 

@@ -1,8 +1,12 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { runAdmittedModelCall } from "../../src/budget/admitted-model-call.js";
+import { GrokProvider } from "../../src/llm/providers/grok/adapter.js";
+import type { LLMProvider } from "../../src/llm/types.js";
+import type { Session } from "../../src/session/session.js";
 import type { ExecutionAdmissionClient } from "../../src/budget/admission-client.js";
 import type { AdmissionUsageSummary } from "../../src/budget/admission-types.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
@@ -51,6 +55,81 @@ function observe(client: ExecutionAdmissionClient) {
 }
 
 describe("canonical allocation usage observers", () => {
+  it("releases every rejected model attempt under a $20 Goal cap", async () => {
+    const parent = kernel.bindClient({
+      cwd: workspace,
+      scope: { runId: "goal", sessionId: "goal", autonomous: true, maxCostUsd: 20, maxTokens: 156_392 },
+    });
+    const child = parent.forSession({ runId: "worker", sessionId: "worker" });
+    const acquireModel = child.acquire.bind(child);
+    vi.spyOn(child, "acquire").mockImplementation((input) => acquireModel({
+      ...input, maxInputTokens: 150_000, maxOutputTokens: 6_392, maxCostUsd: 1.02,
+    }));
+    const session = { services: { executionAdmission: child } } as unknown as Session;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+      Response.json({ error: { message: "Too many requests" } }, {
+        status: 429, headers: { "retry-after": "30" },
+      }));
+    const provider = new GrokProvider({ apiKey: "xai-test", model: "grok-4.5", fetchImpl });
+    vi.spyOn(provider, "getExecutionProfile").mockResolvedValue({
+      usageReporting: "authoritative", supportsMaxOutputTokens: true,
+    });
+    const messages = [{ role: "user" as const, content: "hello" }];
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      await expect(runAdmittedModelCall({
+        session, provider, messages, options: { maxOutputTokens: 6_392 },
+        stepId: `retry:${attempt}`, model: "grok-4.5", providerName: "grok",
+        invoke: (options) => provider.chatStream(messages, () => {}, options),
+      })).rejects.toMatchObject({ name: "LLMRateLimitError", retryAfterMs: 30_000 });
+      expect(parent.getUsageSummary?.()).toMatchObject({
+        costUsd: 0, totalTokens: 0, heldCostUsd: 0, hasUnknownCost: false,
+      });
+    }
+    expect(fetchImpl).toHaveBeenCalledTimes(25);
+    const journal = child.replayJournal?.() ?? [];
+    expect(journal.filter((event) => event.event === "allowed")).toHaveLength(25);
+    expect(journal.filter((event) => event.event === "reconciled")).toHaveLength(25);
+    expect(journal.filter((event) => event.event === "held_unknown")).toHaveLength(0);
+  });
+
+  it("keeps reset-after-dispatch holds and denies retries beyond the $20 Goal cap", async () => {
+    const parent = kernel.bindClient({
+      cwd: workspace,
+      scope: { runId: "goal", sessionId: "goal", autonomous: true, maxCostUsd: 20 },
+    });
+    const child = parent.forSession({ runId: "worker", sessionId: "worker" });
+    const acquireModel = child.acquire.bind(child);
+    vi.spyOn(child, "acquire").mockImplementation((input) => acquireModel({
+      ...input, maxInputTokens: 150_000, maxOutputTokens: 6_392, maxCostUsd: 1.02,
+    }));
+    const session = { services: { executionAdmission: child } } as unknown as Session;
+    const provider = {
+      name: "grok",
+      getExecutionProfile: async () => ({ usageReporting: "authoritative", supportsMaxOutputTokens: true }),
+    } as unknown as LLMProvider;
+    const error = Object.assign(new Error("Connection error."), { code: "ECONNRESET" });
+    const invoke = vi.fn(async () => { throw error; });
+    const attempt = (index: number) => runAdmittedModelCall({
+      session, provider, messages: [], options: { maxOutputTokens: 6_392 },
+      stepId: `retry:${index}`, model: "grok-4.5", providerName: "grok", invoke,
+    });
+    for (let index = 0; index < 19; index += 1) {
+      await expect(attempt(index)).rejects.toBe(error);
+      expect(parent.getUsageSummary?.()).toMatchObject({
+        costUsd: 0, totalTokens: 0, hasUnknownCost: true,
+      });
+      expect(parent.getUsageSummary?.().heldCostUsd).toBeCloseTo((index + 1) * 1.02);
+    }
+    await expect(attempt(19)).rejects.toMatchObject({
+      code: "ADMISSION_DENIED", reason: "budget_exceeded",
+    });
+    expect(invoke).toHaveBeenCalledTimes(19);
+    const journal = child.replayJournal?.() ?? [];
+    expect(journal.filter((event) => event.event === "dispatched")).toHaveLength(19);
+    expect(journal.filter((event) => event.event === "held_unknown")).toHaveLength(19);
+    expect(journal.filter((event) => event.event === "reconciled")).toHaveLength(0);
+  });
+
   it("reports descendants once without rewriting their journal identity", async () => {
     const parent = bind("parent");
     const child = parent.forSession({ runId: "child", sessionId: "child" });

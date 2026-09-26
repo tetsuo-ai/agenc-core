@@ -17,6 +17,7 @@ import {
   LLMInvalidResponseError,
   LLMProviderError,
   mapLLMError,
+  markPreGenerationRejection,
 } from "../../errors.js";
 import { ProviderHttpClient } from "../../client.js";
 import {
@@ -567,9 +568,13 @@ export class AnthropicProvider implements LLMProvider {
         throw error;
       }
       if (error instanceof ProviderHttpError && error.status === 401) {
-        throw new LLMAuthenticationError(this.name, error.status);
+        throw markPreGenerationRejection(new LLMAuthenticationError(this.name, error.status), error.status);
       }
-      throw mapLLMError(this.name, error, timeoutMs ?? 0);
+      const mappedError = mapLLMError(this.name, error, timeoutMs ?? 0);
+      if (error instanceof ProviderHttpError) {
+        markPreGenerationRejection(mappedError, error.status);
+      }
+      throw mappedError;
     }
   }
 
@@ -640,6 +645,7 @@ export class AnthropicProvider implements LLMProvider {
           thinkingBlocks,
           completedThinkingBlocks,
         );
+      let streamAccepted = false;
     try {
       const response = await session.requestStream({
         api: "messages",
@@ -660,6 +666,7 @@ export class AnthropicProvider implements LLMProvider {
         // stream semantics while using the shared session transport contract.
         retryBudget: { maxRetries: 0 },
       });
+      streamAccepted = true;
 
       for await (const event of this.readSseEvents(response)) {
         const eventType = event.event ?? String(event.data.type ?? "");
@@ -1023,9 +1030,15 @@ export class AnthropicProvider implements LLMProvider {
         onChunk,
       );
       if (error instanceof ProviderHttpError && error.status === 401) {
-        throw new LLMAuthenticationError(this.name, error.status);
+        throw markPreGenerationRejection(
+          new LLMAuthenticationError(this.name, error.status),
+          streamAccepted ? undefined : error.status,
+        );
       }
       const mappedError = mapLLMError(this.name, error, timeoutMs ?? 0);
+      if (!streamAccepted && error instanceof ProviderHttpError) {
+        markPreGenerationRejection(mappedError, error.status);
+      }
       const streamedToolCount = toolBlocks.size + completedToolCalls.length;
       const thinking = thinkingFromCompletedBlocks(completedThinkingBlocks);
       // What the #2463 reconnect ladder can re-sample: a transient transport

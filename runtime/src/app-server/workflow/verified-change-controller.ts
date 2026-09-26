@@ -34,6 +34,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { ProviderWaitScope, type ProviderWait } from "../../recovery/provider-wait.js";
 import { workflowApprovalFailureCause } from "../../permissions/approval-failure.js";
 
 import {
@@ -573,6 +574,7 @@ export class VerifiedChangeWorkflowController {
   readonly #now: () => Date;
   readonly #newRunId: () => string;
   readonly #active = new Map<string, Promise<void>>();
+  readonly #providerWaits = new Map<string, { stepId: string; scope: ProviderWaitScope }>();
 
   constructor(deps: VerifiedChangeWorkflowControllerDeps) {
     this.#deps = deps;
@@ -695,7 +697,13 @@ export class VerifiedChangeWorkflowController {
     return this.#deps.journal.currentPermissionMode?.(runId);
   }
 
-  /** Durable status projection — works after restart, no live state needed. */
+  /** Live retry state is scoped to one exact step attempt, never replayed. */
+  currentProviderWait(runId: string, stepId: string): ProviderWait | undefined {
+    const active = this.#providerWaits.get(runId);
+    return active?.stepId === stepId ? active.scope.current() : undefined;
+  }
+
+  /** Durable status projection with optional live session details. */
   status(runId: string): WorkflowRunStatus | undefined {
     const repo = this.#deps.durability({ runId });
     const effects = repo.listEffects(runId);
@@ -711,6 +719,12 @@ export class VerifiedChangeWorkflowController {
       : undefined;
     return {
       ...projected,
+      steps: projected.steps.map((step) => {
+        const providerWait = terminal === undefined && step.status === "running"
+          ? this.currentProviderWait(runId, step.stepId)
+          : undefined;
+        return { ...step, ...(providerWait !== undefined ? { providerWait } : {}) };
+      }),
       ...(effectivePermissionMode !== undefined ? { effectivePermissionMode } : {}),
     };
   }
@@ -2267,7 +2281,14 @@ export class VerifiedChangeWorkflowController {
         details: { toolName: plan.toolName, stepId: plan.stepId },
       });
       dispatched = true;
-      const execution = await plan.execute(lease.signal);
+      const scope = new ProviderWaitScope();
+      this.#providerWaits.set(ctx.runId, { stepId: plan.stepId, scope });
+      let execution: EffectExecution;
+      try {
+        execution = await scope.run(() => plan.execute(lease.signal));
+      } finally {
+        this.#providerWaits.delete(ctx.runId);
+      }
       for (const failpoint of plan.beforeCommitFailpoints ?? []) {
         hitM5WorkflowFailpoint(failpoint);
       }

@@ -52,7 +52,7 @@ import {
   resolveBuiltInProviderRegionalEndpoint,
 } from "../../registry/provider-info.js";
 import { fetchProviderRequest } from "../../credential-redirect-fetch.js";
-import { LLMProviderError } from "../../errors.js";
+import { LLMProviderError, markPreGenerationRejection } from "../../errors.js";
 
 const BEDROCK_PROVIDER_ID = "amazon-bedrock";
 const BEDROCK_SERVICE = "bedrock";
@@ -998,6 +998,7 @@ export class BedrockHttpError extends LLMProviderError {
     this.status = response.status;
     this.body = body;
     this.headers = new Headers(response.headers);
+    markPreGenerationRejection(this, response.status);
   }
 }
 

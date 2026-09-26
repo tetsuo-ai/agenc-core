@@ -37,7 +37,11 @@ import {
 import { xaiSendsPriorityProcessing } from "../llm/providers/grok/priority-processing.js";
 import { AdmissionDeniedError } from "./admission-client.js";
 import { hitM4DurabilityFailpoint } from "../durability/failpoints.js";
-import { LLMManagedAdmissionError } from "../llm/errors.js";
+import {
+  LLMManagedAdmissionError,
+  LLMManagedUsagePendingError,
+  isConfirmedProviderRejection,
+} from "../llm/errors.js";
 
 export interface AdmittedModelCallOptions {
   readonly session: Session;
@@ -58,6 +62,8 @@ export interface AdmittedModelCallOptions {
   };
   /** Called only after an acquired step has durable fallback evidence. */
   readonly onFallbackRecorded?: () => void;
+  /** Whether this attempt received streamed data or a response before failing. */
+  readonly hasProviderProgress?: () => boolean;
   readonly invoke: (options: LLMChatOptions) => Promise<LLMResponse>;
 }
 
@@ -835,6 +841,7 @@ export async function runAdmittedModelCall(
   const reservationId = lease.reservation.reservationId;
   let dispatched = false;
   let settled = false;
+  let responseReceived = false;
   let lateCancellation: Error | undefined;
   try {
     // Acquisition owns durable budget and concurrency capacity. Keep routing
@@ -899,6 +906,7 @@ export async function runAdmittedModelCall(
       // daemon shutdown, and restart recovery decisions.
       signal: lease.signal,
     });
+    responseReceived = true;
     // The provider has physically answered, but no durable accounting result
     // has committed. A process loss here must recover as unknown, never free.
     hitM4DurabilityFailpoint("before_model_response_commit");
@@ -1001,6 +1009,17 @@ export async function runAdmittedModelCall(
     } else if (dispatched && params.providerName === "agenc" && error instanceof LLMManagedAdmissionError) {
       // The trusted gateway rejected this exact attempt before provider work.
       // Keep unrelated unknown holds, but do not fabricate usage for this one.
+      client.reconcile(reservationId, { inputTokens: 0, outputTokens: 0, costUsd: 0 });
+    } else if (
+      dispatched &&
+      !responseReceived &&
+      params.hasProviderProgress?.() !== true &&
+      !lease.signal.aborted &&
+      !(error instanceof LLMManagedUsagePendingError) &&
+      isConfirmedProviderRejection(error)
+    ) {
+      // The provider explicitly refused work. Settle before retry admission
+      // so rejected attempts cannot accumulate reservations.
       client.reconcile(reservationId, { inputTokens: 0, outputTokens: 0, costUsd: 0 });
     } else if (dispatched) {
       client.holdUnknown(reservationId, "provider_call_failed_after_dispatch");

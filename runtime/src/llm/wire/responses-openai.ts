@@ -549,6 +549,47 @@ export function buildOpenAIResponsesRequest(
   return body;
 }
 
+/** Read billing independently of output validation, including failed streams. */
+export function parseOpenAIResponsesUsage(
+  response: Record<string, unknown>,
+): LLMResponse["usage"] {
+  const output = Array.isArray(response.output)
+    ? response.output.filter((item): item is Record<string, unknown> =>
+      item !== null && typeof item === "object")
+    : [];
+  const usageRecord =
+    response.usage && typeof response.usage === "object"
+      ? (response.usage as Record<string, unknown>)
+      : {};
+  const inputDetails =
+    usageRecord.input_tokens_details &&
+      typeof usageRecord.input_tokens_details === "object" &&
+      !Array.isArray(usageRecord.input_tokens_details)
+      ? (usageRecord.input_tokens_details as Record<string, unknown>)
+      : {};
+  const outputDetails =
+    usageRecord.output_tokens_details &&
+      typeof usageRecord.output_tokens_details === "object" &&
+      !Array.isArray(usageRecord.output_tokens_details)
+      ? (usageRecord.output_tokens_details as Record<string, unknown>)
+      : {};
+  const webSearchRequests = output.filter(
+    (item) => item.type === "web_search_call",
+  ).length;
+  return coerceUsage({
+    promptTokens: usageRecord.input_tokens,
+    completionTokens: usageRecord.output_tokens,
+    totalTokens: usageRecord.total_tokens,
+    cachedInputTokens: inputDetails.cached_tokens,
+    // GPT-5.6 and later bill cache writes at 1.25x input; like cached
+    // tokens they are a subset of input_tokens (prompt-caching guide).
+    cacheCreationInputTokens: inputDetails.cache_write_tokens,
+    reasoningOutputTokens: outputDetails.reasoning_tokens,
+    webSearchRequests: webSearchRequests > 0 ? webSearchRequests : undefined,
+    speed: openAiServedSpeed(response.service_tier),
+  });
+}
+
 export function parseOpenAIResponsesResponse(
   model: string,
   response: Record<string, unknown>,
@@ -585,25 +626,6 @@ export function parseOpenAIResponsesResponse(
     })
     .join("");
 
-  const usageRecord =
-    response.usage && typeof response.usage === "object"
-      ? (response.usage as Record<string, unknown>)
-      : {};
-  const inputDetails =
-    usageRecord.input_tokens_details &&
-      typeof usageRecord.input_tokens_details === "object" &&
-      !Array.isArray(usageRecord.input_tokens_details)
-      ? (usageRecord.input_tokens_details as Record<string, unknown>)
-      : {};
-  const outputDetails =
-    usageRecord.output_tokens_details &&
-      typeof usageRecord.output_tokens_details === "object" &&
-      !Array.isArray(usageRecord.output_tokens_details)
-      ? (usageRecord.output_tokens_details as Record<string, unknown>)
-      : {};
-  const webSearchRequests = output.filter(
-    (item) => item.type === "web_search_call",
-  ).length;
   const preparedMessages = prepareMessagesForWire(request.messages);
   const requestMetrics = withSerializedMetrics(
     collectRequestMetrics(preparedMessages, request.tools),
@@ -625,18 +647,7 @@ export function parseOpenAIResponsesResponse(
     content,
     toolCalls,
     ...extractOpenAIReasoningReplay(output, request),
-    usage: coerceUsage({
-      promptTokens: usageRecord.input_tokens,
-      completionTokens: usageRecord.output_tokens,
-      totalTokens: usageRecord.total_tokens,
-      cachedInputTokens: inputDetails.cached_tokens,
-      // GPT-5.6 and later bill cache writes at 1.25x input; like cached
-      // tokens they are a subset of input_tokens (prompt-caching guide).
-      cacheCreationInputTokens: inputDetails.cache_write_tokens,
-      reasoningOutputTokens: outputDetails.reasoning_tokens,
-      webSearchRequests: webSearchRequests > 0 ? webSearchRequests : undefined,
-      speed: openAiServedSpeed(response.service_tier),
-    }),
+    usage: parseOpenAIResponsesUsage(response),
     model:
       typeof response.model === "string" ? response.model : model,
     finishReason,

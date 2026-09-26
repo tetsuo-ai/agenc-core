@@ -991,6 +991,49 @@ describe("M5 workflow run inspection (additive fields)", () => {
     expect(lookup).not.toHaveBeenCalled();
   });
 
+  it("omits stale provider waits on ended steps, terminal runs, and offline inspection", () => {
+    seedWorkflowEffects();
+    const lookup = vi.fn(() => ({
+      cause: "provider_outage_wait" as const,
+      message: "The provider is unavailable. Retrying soon.",
+    }));
+    const live = new AgenCDaemonRunInspectionService({
+      stateDatabasePaths: () => [paths], providerWait: lookup,
+    });
+    expect(live.status({ runId: WORKFLOW_RUN_ID }).workflow!.steps.filter((step) => step.providerWait !== undefined))
+      .toHaveLength(1);
+    expect(lookup).toHaveBeenCalledExactlyOnceWith(WORKFLOW_RUN_ID, "workflow.plan");
+    expect(service.status({ runId: WORKFLOW_RUN_ID }).workflow!.steps.every((step) => step.providerWait === undefined)).toBe(true);
+    const durability = new StateRunDurabilityRepository(driver);
+    durability.completeEffect({
+      runId: WORKFLOW_RUN_ID, stepId: "workflow.plan", outcome: "committed",
+      effectBoundary: "crossed", eventId: `evt-${++sequence}`, eventSequence: sequence,
+      evidence: { stage: "workflow.plan", attempt: 1 }, completedAt: NOW,
+    });
+    lookup.mockClear();
+    expect(live.status({ runId: WORKFLOW_RUN_ID }).workflow!.steps.every((step) => step.providerWait === undefined)).toBe(true);
+    expect(lookup).not.toHaveBeenCalled();
+    // A terminal can precede cleanup of an in-flight child and its effect.
+    durability.beginEffect({
+      runId: WORKFLOW_RUN_ID, epoch: durability.currentEpoch(WORKFLOW_RUN_ID)!.epoch,
+      stepId: "workflow.implement", sessionId: `${WORKFLOW_RUN_ID}-session`,
+      toolName: "workflow.implement", recoveryCategory: "side-effecting",
+      intentDigest: `sha256:${"1".repeat(64)}`, eventId: `evt-${++sequence}`,
+      eventSequence: sequence, intentAt: NOW,
+    });
+    durability.recordTerminalResult({
+      epoch: durability.currentEpoch(WORKFLOW_RUN_ID)!.epoch,
+      eventId: `evt-${++sequence}`,
+      result: {
+        runId: WORKFLOW_RUN_ID, status: "cancelled", exitCode: 1,
+        stopReason: "user_cancelled", finalMessage: "cancelled", usage: null,
+        lastSequence: sequence, finishedAt: NOW,
+      },
+    });
+    expect(live.status({ runId: WORKFLOW_RUN_ID }).workflow!.steps.every((step) => step.providerWait === undefined)).toBe(true);
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
   /** A session that can own or raise a live approval, as a workflow's do. */
   function approvalSession(
     conversationId: string,

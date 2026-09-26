@@ -6,10 +6,22 @@ import type {
   ExecutionAdmissionClient,
 } from "../../src/budget/admission-client.js";
 import { AdmissionDeniedError } from "../../src/budget/admission-client.js";
-import { LLMManagedAdmissionError, LLMManagedUsagePendingError } from "../../src/llm/errors.js";
+import {
+  LLMAuthenticationError,
+  LLMInvalidResponseError,
+  LLMManagedAdmissionError,
+  LLMManagedUsagePendingError,
+  LLMProviderError,
+  LLMRateLimitError,
+  LLMServerError,
+  LLMStreamTruncatedError,
+  LLMTimeoutError,
+  markPreGenerationRejection,
+} from "../../src/llm/errors.js";
 import type { AdmissionLease } from "../../src/budget/admission-types.js";
 import type { AuthBackend } from "../../src/auth/backend.js";
 import { AgenCProvider } from "../../src/llm/providers/agenc/index.js";
+import { OpenAIProvider } from "../../src/llm/providers/openai/adapter.js";
 import { OllamaProvider } from "../../src/llm/providers/ollama/adapter.js";
 import { FACTORY_PROVIDER_STATE } from "../../src/llm/provider.js";
 import type { ProviderTokenCountCapability, TokenAccountingRequest } from "../../src/llm/token-accounting.js";
@@ -865,6 +877,199 @@ describe("runAdmittedModelCall", () => {
       }),
       undefined,
     );
+  });
+
+  test.each([
+    markPreGenerationRejection(new LLMRateLimitError("grok", 30_000), 429),
+    ...[400, 401, 402, 403, 429].flatMap((status) => [
+      markPreGenerationRejection(new LLMProviderError("grok", "request rejected", status), status),
+      markPreGenerationRejection(Object.assign(new Error("request rejected"), { status }), status),
+    ]),
+    markPreGenerationRejection(new LLMAuthenticationError("grok", 401), 401),
+  ])("releases a confirmed rejection before any provider progress: %s", async (error) => {
+    const state = harness({ maxCostUsd: 20 });
+    await expect(callOptions(state, { maxOutputTokens: 200 }, async () => {
+      throw error;
+    })).rejects.toBe(error);
+    expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+      inputTokens: 0, outputTokens: 0, costUsd: 0,
+    });
+    expect(state.holdUnknown).not.toHaveBeenCalled();
+    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+  });
+
+  test.each([
+    new LLMServerError("grok", 503, "unavailable"),
+    new LLMTimeoutError("grok", 30_000),
+    Object.assign(new Error("Connection error."), { code: "ECONNRESET" }),
+    new DOMException("request aborted", "AbortError"),
+    new LLMStreamTruncatedError("grok", "stream ended without usage"),
+    new LLMInvalidResponseError("grok", "invalid response envelope"),
+    new SyntaxError("failed parsing billable response JSON"),
+    Object.assign(new SyntaxError("invalid response JSON"), { status: 200 }),
+    new LLMProviderError("grok", "request timed out", 408),
+    new Error("429 rate limited"),
+    new LLMRateLimitError("openai", 30_000),
+    ...[400, 401, 402, 403, 429].flatMap((status) => [
+      new LLMProviderError("openai", "in-stream failure", status),
+      Object.assign(new Error("in-stream failure"), { statusCode: status }),
+    ]),
+  ])("holds unknown spend after dispatch even without provider progress: %s", async (error) => {
+    const state = harness({ maxCostUsd: 20 });
+    await expect(callOptions(state, { maxOutputTokens: 200 }, async () => {
+      expect(state.admission.markDispatched).toHaveBeenCalledOnce();
+      throw error;
+    })).rejects.toBe(error);
+    expect(state.reconcile).not.toHaveBeenCalled();
+    expect(state.voidReservation).not.toHaveBeenCalled();
+    expect(state.holdUnknown).toHaveBeenCalledWith("reservation-1", "provider_call_failed_after_dispatch");
+    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+  });
+
+  test.each(["chat", "chatStream"] as const)("releases an adapter HTTP 429 before generation through %s", async (method) => {
+    const state = harness({ maxCostUsd: 20 });
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => new Response(
+      JSON.stringify({ error: { code: "rate_limit_exceeded", message: "slow down" } }),
+      { status: 429, headers: { "content-type": "application/json" } },
+    ));
+    const provider = new OpenAIProvider({ apiKey: "sk-test", model: "gpt-6-sol", useResponsesApi: true, fetchImpl });
+    const onChunk = vi.fn();
+    await expect(runAdmittedModelCall({
+      session: state.session, provider, messages: [], model: "gpt-6-sol", providerName: "openai",
+      options: { maxOutputTokens: 200 }, stepId: "http-rejection",
+      hasProviderProgress: () => onChunk.mock.calls.length > 0,
+      invoke: (options) => method === "chat"
+        ? provider.chat([], options)
+        : provider.chatStream([], onChunk, options),
+    })).rejects.toBeInstanceOf(LLMRateLimitError);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(onChunk).not.toHaveBeenCalled();
+    expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+      inputTokens: 0, outputTokens: 0, costUsd: 0,
+    });
+    expect(state.holdUnknown).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["response.failed", "terminal"],
+    ["response.failed", "earlier"],
+    ["error", "earlier"],
+    ["disconnect", "earlier"],
+    ["response.failed", "none"],
+    ["error", "none"],
+    ["disconnect", "none"],
+  ] as const)("settles a reasoning-only Responses %s using %s usage", async (failure, usageLocation) => {
+    const state = harness({ maxCostUsd: 20 });
+    const usage = { input_tokens: 100, output_tokens: 50, total_tokens: 150,
+      output_tokens_details: { reasoning_tokens: 50 } };
+    const error = { code: "rate_limit_exceeded", status: 429, message: "slow down" };
+    const frames = [
+      { type: "response.created", response: { model: "gpt-6-sol" } },
+      { type: "response.reasoning_summary_text.delta", delta: "Thinking" },
+      { type: "response.output_item.done", item: { type: "reasoning", id: "rs_1", summary: [] } },
+      ...(usageLocation === "earlier" ? [{ type: "response.in_progress", response: { model: "gpt-6-sol", usage } }] : []),
+      ...(failure === "disconnect" ? [] : [{ type: failure, error, response: {
+        model: "gpt-6-sol", error, ...(usageLocation === "terminal" ? { usage } : {}),
+      } }]),
+    ];
+    const encoder = new TextEncoder();
+    let index = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const frame = frames[index++];
+        if (frame) controller.enqueue(encoder.encode(`event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`));
+        else if (failure === "disconnect") controller.error(new Error("Connection reset"));
+        else controller.close();
+      },
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(body, {
+      status: 200, headers: { "content-type": "text/event-stream" },
+    }));
+    const provider = new OpenAIProvider({ apiKey: "sk-test", model: "gpt-6-sol", useResponsesApi: true, fetchImpl });
+    const onChunk = vi.fn();
+    const result = runAdmittedModelCall({
+      session: state.session, provider, messages: [], model: "gpt-6-sol", providerName: "openai",
+      options: { maxOutputTokens: 200 }, stepId: "failed-responses-stream",
+      hasProviderProgress: () => onChunk.mock.calls.length > 0,
+      invoke: (options) => provider.chatStream([], onChunk, options),
+    });
+    if (usageLocation === "none") {
+      await expect(result).rejects.toBeInstanceOf(Error);
+      expect(onChunk).not.toHaveBeenCalled();
+      expect(state.reconcile).not.toHaveBeenCalled();
+      expect(state.holdUnknown).toHaveBeenCalledWith("reservation-1", "provider_call_failed_after_dispatch");
+    } else {
+      await expect(result).resolves.toMatchObject({
+        finishReason: "error", partial: true,
+        error: expect.any(failure === "disconnect" ? Error : LLMRateLimitError),
+        usage: { promptTokens: 100, completionTokens: 50, reasoningOutputTokens: 50 },
+      });
+      // Reasoning did not reach onChunk; only the terminal partial response did.
+      expect(onChunk).toHaveBeenCalledExactlyOnceWith({ content: "", done: true });
+      expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+        inputTokens: 100, outputTokens: 50, costUsd: expect.any(Number),
+      });
+      expect(state.reconcile).not.toHaveBeenCalledWith("reservation-1", expect.objectContaining({ costUsd: 0 }));
+      expect(state.holdUnknown).not.toHaveBeenCalled();
+    }
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+  });
+
+  test("keeps the hold when a completed stream has no provider usage", async () => {
+    const state = harness({ maxCostUsd: 20 });
+    const result = response({ usage: {
+      promptTokens: 0, completionTokens: 0, totalTokens: 0,
+      availability: "unknown", provenance: "synthetic",
+    } });
+    await expect(callOptions(state, { maxOutputTokens: 200 }, async () => result)).resolves.toBe(result);
+    expect(state.reconcile).not.toHaveBeenCalled();
+    expect(state.holdUnknown).toHaveBeenCalledWith("reservation-1", "missing_provider_usage");
+  });
+
+  test("keeps the hold when provider.chat fails parsing an HTTP 200 response", async () => {
+    const state = harness({ maxCostUsd: 20 });
+    state.provider.chat = vi.fn(async () => {
+      const wireResponse = new Response("{malformed JSON", { status: 200 });
+      await wireResponse.json();
+      return response();
+    });
+    await expect(callOptions(state, { maxOutputTokens: 200 }, (options) =>
+      state.provider.chat([], options),
+    )).rejects.toBeInstanceOf(SyntaxError);
+    expect(state.reconcile).not.toHaveBeenCalled();
+    expect(state.holdUnknown).toHaveBeenCalledWith("reservation-1", "provider_call_failed_after_dispatch");
+    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+  });
+
+  test.each([
+    new LLMServerError("grok", 503, "stream interrupted"),
+    new LLMRateLimitError("grok", 30_000),
+  ])("keeps a failed stream's reservation when it produced unreported usage: %s", async (error) => {
+    const state = harness({});
+    await expect(runAdmittedModelCall({
+      session: state.session, provider: state.provider, messages: [],
+      options: { maxOutputTokens: 200 }, stepId: "partial-stream",
+      model: "grok-4.5", providerName: "grok",
+      hasProviderProgress: () => true,
+      invoke: async () => { throw error; },
+    })).rejects.toBe(error);
+    expect(state.reconcile).not.toHaveBeenCalled();
+    expect(state.holdUnknown).toHaveBeenCalledWith("reservation-1", "provider_call_failed_after_dispatch");
+  });
+
+  test("charges reported usage on a partial response that ended in a provider error", async () => {
+    const state = harness({});
+    const partial = response({
+      finishReason: "error", partial: true,
+      error: new LLMServerError("grok", 503, "stream interrupted"),
+    });
+    await expect(callOptions(state, { maxOutputTokens: 200 }, async () => partial)).resolves.toBe(partial);
+    expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+      inputTokens: 100, outputTokens: 50, costUsd: expect.any(Number),
+    });
+    expect(state.reconcile).not.toHaveBeenCalledWith("reservation-1", expect.objectContaining({ costUsd: 0 }));
+    expect(state.holdUnknown).not.toHaveBeenCalled();
   });
 
   test.each(["capacity", "insufficient_credits", "credits_unavailable"] as const)("settles zero only for a managed gateway no-dispatch receipt: %s", async (reason) => {
