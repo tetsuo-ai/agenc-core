@@ -1287,7 +1287,12 @@ describe("AgenC daemon CLI", () => {
     expect(validateAgenCDaemonWebSocketOrigin("http://localhost:4173")).toBe(
       true,
     );
-    expect(validateAgenCDaemonWebSocketOrigin("https://agenc.tech")).toBe(true);
+    // Only loopback pages may open the daemon socket. AgenC's own web origin
+    // is refused like any other remote page; browsers reach a daemon through
+    // the pairing relay.
+    expect(validateAgenCDaemonWebSocketOrigin("https://agenc.tech")).toBe(false);
+    expect(validateAgenCDaemonWebSocketOrigin("https://remote.agenc.tech")).toBe(false);
+    expect(validateAgenCDaemonWebSocketOrigin("https://localhost:4173")).toBe(false);
     expect(validateAgenCDaemonWebSocketOrigin("http://192.0.2.1")).toBe(false);
   });
 
