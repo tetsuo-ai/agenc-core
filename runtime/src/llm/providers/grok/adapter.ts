@@ -7,6 +7,7 @@
  * @module
  */
 
+import { normalizePromptCacheKey } from "../../prompt-cache-key.js";
 import type {
   LLMChatOptions,
   LLMCompactionDiagnostics,
@@ -2427,7 +2428,7 @@ export class GrokProvider implements LLMProvider {
     // every turn in the same AgenC session lands on the same backend
     // and reuses the previously-cached system + history prefix.
     if (options?.promptCacheKey) {
-      params.prompt_cache_key = options.promptCacheKey;
+      params.prompt_cache_key = normalizePromptCacheKey(options.promptCacheKey);
     }
     if (this.config.temperature !== undefined)
       params.temperature = this.config.temperature;

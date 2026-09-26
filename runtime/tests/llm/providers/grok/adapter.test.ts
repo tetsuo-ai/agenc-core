@@ -111,6 +111,25 @@ function primeStoredContinuation(
 }
 
 describe("GrokProvider incremental continuation", () => {
+  test.each(["conv-123", "k".repeat(64), `review-${"a".repeat(64)}`])(
+    "bounds outgoing prompt cache keys: %s",
+    async (promptCacheKey) => {
+      const provider = new GrokProvider({ apiKey: "xai-test", model: "grok-4-fast" });
+      const create = vi.fn().mockImplementation(() =>
+        withResponse(buildXaiResponse("resp_cache_key", "hello"))
+      );
+      (provider as any).client = { responses: { create } };
+
+      await provider.chat([{ role: "user", content: "hello" }], { promptCacheKey });
+
+      const params = create.mock.calls[0]?.[0];
+      expect(params.prompt_cache_key).toHaveLength(Math.min(promptCacheKey.length, 64));
+      if (promptCacheKey.length <= 64) {
+        expect(params.prompt_cache_key).toBe(promptCacheKey);
+      }
+    },
+  );
+
   const previousMessages: LLMMessage[] = [
     { role: "user", content: "hello" },
   ];

@@ -9,6 +9,7 @@
  * @module
  */
 
+import { normalizePromptCacheKey } from "../prompt-cache-key.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -199,7 +200,7 @@ export function buildXaiResponsesRequest(input: {
     store: input.store ?? false,
   };
   if (input.options?.promptCacheKey) {
-    params.prompt_cache_key = input.options.promptCacheKey;
+    params.prompt_cache_key = normalizePromptCacheKey(input.options.promptCacheKey);
   }
   if (input.options?.temperature !== undefined) {
     params.temperature = input.options.temperature;
