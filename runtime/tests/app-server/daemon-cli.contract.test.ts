@@ -714,6 +714,7 @@ async function waitForPid(
 async function waitForStartupRestores(
   host: AgenCDaemonCliHost,
   budgetMs: number = DAEMON_MILESTONE_BUDGET_MS,
+  requestTimeoutMs = 1000,
 ): Promise<void> {
   const authCookie = (
     await readFile(resolveAgenCDaemonCookiePath(host.env, host.userHome), "utf8")
@@ -721,7 +722,7 @@ async function waitForStartupRestores(
   const client = createAgenCJsonLineDaemonRequestClient({
     socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
     authCookie,
-    timeoutMs: 1000,
+    timeoutMs: requestTimeoutMs,
   });
   const startedAt = Date.now();
   for (;;) {
@@ -743,6 +744,22 @@ async function waitForStartupRestores(
  * or it is asserting how fast the runner is rather than what the daemon does.
  */
 const CONCURRENT_DAEMON_MILESTONE_BUDGET_MS = DEFAULT_DAEMON_READY_TIMEOUT_MS;
+
+/**
+ * Poll budget for a case that asserts what a single foreground daemon does,
+ * not how fast it does it. DAEMON_MILESTONE_BUDGET_MS is sized for an idle
+ * machine, and on a loaded one a healthy daemon has taken longer than that to
+ * write its pid. This is the daemon's own cold-start allowance, so such a case
+ * gives up only where the product itself would, and its own bound clears it.
+ */
+const LOADED_DAEMON_MILESTONE_BUDGET_MS = DEFAULT_DAEMON_READY_TIMEOUT_MS;
+
+/**
+ * Response bound for one request in such a case. The 1 s used elsewhere in
+ * this file has been missed on a loaded machine; ten times that still names a
+ * daemon that stopped answering well before the case's own bound runs out.
+ */
+const LOADED_DAEMON_REQUEST_TIMEOUT_MS = 10_000;
 
 /**
  * How long {@link stopRunningDaemons} waits for the runs to settle once its
@@ -6201,11 +6218,20 @@ snapshot_max_bytes = 64
     );
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
     await expect(
-      waitForPid(pidPath, DAEMON_MILESTONE_BUDGET_MS, {
+      waitForPid(pidPath, LOADED_DAEMON_MILESTONE_BUDGET_MS, {
         running,
         stderrText: io.stderrText,
       }),
     ).resolves.toBe(4100);
+    // The daemon serves before it restores the sessions open at its last
+    // shutdown, and agent.list answers at once with only the runs published
+    // so far. Wait until no restore is left, so the checks below see what the
+    // restore decided instead of racing it.
+    await waitForStartupRestores(
+      host,
+      LOADED_DAEMON_MILESTONE_BUDGET_MS,
+      LOADED_DAEMON_REQUEST_TIMEOUT_MS,
+    );
     expect(restoreAgent).not.toHaveBeenCalled();
 
     const authCookie = (
@@ -6217,7 +6243,7 @@ snapshot_max_bytes = 64
     const client = createAgenCJsonLineDaemonRequestClient({
       socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
       authCookie,
-      timeoutMs: 1000,
+      timeoutMs: LOADED_DAEMON_REQUEST_TIMEOUT_MS,
     });
     await expect(client.request("agent.list", {})).resolves.toMatchObject({
       agents: [
@@ -6236,7 +6262,10 @@ snapshot_max_bytes = 64
     signalProcess.emit("SIGTERM");
     await expect(running).resolves.toBe(0);
     await rm(agencHome, { recursive: true, force: true });
-  });
+    // Nothing here times the daemon, so its waits use the loaded-machine
+    // budgets above, and this bound clears the pid wait, the restore wait and
+    // the last request back to back.
+  }, 120_000);
 
   it("stops the daemon when a restored session fails to publish and its rollback fails too", async () => {
     const agencHome = await tempAgencHome();
