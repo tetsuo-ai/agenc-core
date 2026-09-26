@@ -1987,7 +1987,7 @@ function runSupervisedProcessCommand(
       const launchFailure = containedLaunchFailures.get(child);
       if (launchFailure !== undefined && stopReason === undefined) {
         processError ??= launchFailure;
-        stopReason = "spawn_error";
+        requestStop("spawn_error");
       }
       if (stopReason !== undefined) {
         maybeFinish();

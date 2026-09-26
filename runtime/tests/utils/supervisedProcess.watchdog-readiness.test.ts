@@ -91,7 +91,11 @@ describe("contained process watchdog readiness", () => {
   it.runIf(process.platform === "darwin")(
     "reports a launch abandoned before its watchdog was ready as a command that did not start",
     async () => {
-      // No watchdog becomes ready within 1 ms; the launch is abandoned.
+      // Keep the watchdog silent so readiness cannot race the deadline.
+      const watchdog = startedChild();
+      spawnMock
+        .mockImplementationOnce(actualSpawn)
+        .mockImplementationOnce(() => watchdog as never);
       restoreDeadline = setContainedWatchdogReadyTimeoutForTesting(1);
       const marker = join(scratchDir(), "ran");
       const result = await runSupervisedProcess(
