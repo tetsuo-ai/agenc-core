@@ -6,7 +6,9 @@ agents) attach over a local socket and speak JSON-RPC.
 
 Architecture map: [`../ARCHITECTURE.md`](../ARCHITECTURE.md). Embedding API:
 [`../sdk.md`](../sdk.md). Session disk retention:
-[`#session-rollout-retention`](#session-rollout-retention).
+[`#session-rollout-retention`](#session-rollout-retention). Hard-kill
+autostart and the TUI 10 s lost-turn probe:
+[`#recovery-after-a-disappeared-daemon`](#recovery-after-a-disappeared-daemon).
 
 ## Connection and session ownership
 
@@ -88,6 +90,68 @@ The launcher still continues to the requested command after autostart failure.
 ```bash
 AGENC_DAEMON_READY_TIMEOUT_MS=45000
 ```
+
+### Recovery after a disappeared daemon
+
+A daemon that dies without cleanup (SIGKILL, the OOM killer, a power cut)
+leaves `daemon.sock` and `daemon.cookie` on disk. Autostart used to treat
+that leftover inode as proof the replacement was ready: it spawned, looked
+ready before it had taken the lifecycle lock or published an instance
+identity, failed the identity proof, and was terminated as a legacy
+daemon. Every cycle repeated it:
+
+```text
+agenc: daemon autostart failed: AgenC daemon autostart gave up after 3
+restart cycles: the recorded daemon lacked a portable instance identity…
+```
+
+The home stayed unusable until someone deleted `daemon.sock` by hand.
+
+Readiness now requires the control socket to **accept a connection**, not
+merely exist (`isAgenCDaemonPidAndCookieReady` →
+`canConnectToUnixSocket` in `daemon-autostart.ts`). That is the contract
+`agenc daemon start` already used. Recovery of a dead or missing pid makes
+the same check: when no other daemon process is found, a leftover socket
+that accepts no connection is treated as stale and a replacement starts.
+A socket that accepts connections without a proven instance identity still
+stops autostart. A replacement after a hard kill starts on the first try;
+do not delete the socket by hand.
+
+A direct `agenc daemon start` keeps waiting past the readiness budget
+(45 s by default) when the pid is still alive and the startup log is still
+advancing. A home with hundreds of sessions can take longer than that to
+open its state databases and recover its runs before the socket listens
+(observed: 60 s for 877 sessions). Sessions that were open at the last
+shutdown are restored after the socket listens; see
+[startup and restored sessions](#startup-and-restored-sessions). Cancelling
+at the first deadline and spawning another daemon produced a loop in which
+none finished. The wait continues in readiness-budget steps while
+`daemon-spawn-stderr.log` or `daemon.log` was written within the last budget
+window, up to `AGENC_DAEMON_START_MAX_WAIT_MS` (default **600000** ms). A
+quiet log or a dead pid fails the start. stderr prints:
+
+```text
+agenc: daemon process (pid N) is still starting; its startup log
+advanced X s ago, waiting another Y s (i/n)
+```
+
+Launcher and SDK autostart keep their single readiness budget from the
+initial probe through readiness and pass the remaining time to the nested
+start as `AGENC_DAEMON_READY_TIMEOUT_MS`. They do not inherit the 600 s
+hydration ceiling.
+
+A TUI whose daemon disappeared mid-turn used to stay busy forever. A dropped
+socket alone does not prove the turn is over: the daemon owns the turn and
+may still be running it. When the connection drops with a turn in flight,
+the TUI asks with `session.snapshot` and ends the turn locally only when that
+call fails or gets no answer within **10 s**. That bound is the
+`AGENC_DAEMON_LOST_TURN_PROBE_MS` constant in
+`runtime/src/tui/daemon-session.ts`, not an environment variable, and it is
+separate from the client's 30 s RPC timeout. The local abort is
+`turn_aborted` with reason
+`the daemon stopped responding; the turn cannot continue here`. Esc,
+`/exit`, and Ctrl-C then work. A later reconnect resumes the daemon's
+events. Print mode and the SDK have no 10 s lost-turn probe.
 
 Per-request RPC timeout (SDK / connect options; also used by some client paths):
 
@@ -1187,6 +1251,9 @@ See [execution-admission-kernel.md](../design/execution-admission-kernel.md#mode
 | Open reports `resumableState contains unversioned fields` | The checkpoint carries a key outside the versioned slice. New fields need a new checkpoint version and rollout schema. A recovery-journal accept does not prove the resume reader will. See [recovery journal vs checkpoint reader](../design/durable-runs-effects-events.md#recovery-journal-vs-checkpoint-reader). |
 | Post-compact checkpoint reports `compactionHistory requires prefix hash version 3` | The rollout pairs marker-bearing replacement history with checkpoint v2/v3. Preserve the rollout and let the atomic upgrader validate it; do not change checkpoint or hash versions by hand. See [checkpoint prefix items](../design/durable-runs-effects-events.md#checkpoint-prefix-items). |
 | Older binary refuses `rollout schema v5` | Expected. Schema 5 is newer than a schema-4 runtime. Upgrade the runtime; do not rewrite the header by hand. |
+| Autostart loops `gave up after 3 restart cycles` / `lacked a portable instance identity` after SIGKILL or OOM | Unexpected after connectability readiness. Confirm `agenc daemon status` reports `stopped`, or a daemon that is still starting (`control socket not ready`, or `alive but not yet bound` off Linux), then retry. Do not delete `daemon.sock` by hand. See [recovery after a disappeared daemon](#recovery-after-a-disappeared-daemon). |
+| `agenc daemon start` prints `still starting` and waits past 45 s | Expected while the startup log is advancing (large-home hydration). A quiet log or a dead pid should fail instead. Raise `AGENC_DAEMON_START_MAX_WAIT_MS` only for a home that keeps writing past 600 s. Launcher autostart stays on the 45 s budget. |
+| TUI stays busy after the daemon dies; Esc / `/exit` / Ctrl-C refuse | Unexpected after 10 s. The live TUI should emit `turn_aborted` with `the daemon stopped responding; the turn cannot continue here`. A dropped socket alone does not end the turn. Print mode and the SDK do not have this probe. See [recovery after a disappeared daemon](#recovery-after-a-disappeared-daemon). |
 | `daemon rollout retention deleted N session(s)` in `daemon.log` | Expected when `agent.retention.rollout_days` is a positive window (default 30) and a session's newest rollout mtime is past it. The named ids are already gone from `<projectDir>/sessions/`. Set `rollout_days = 0` to keep every session. See [session rollout retention](#session-rollout-retention). |
 | Startup dies on `pending effect review without retained canonical journal evidence` | Unexpected after the quarantine remap. The run should appear in `agenc state recovery quarantine list --state active`. Confirm `reasonCode` is `source_changed` and the source digest is 64 zero hex digits, then abandon with that sha if the journal is gone for good. See [session rollout retention](#session-rollout-retention). |
 | A session you still needed disappeared after ~30 idle days | Expected under the default window. "Idle" is newest rollout **file mtime**, not last prompt metadata. Export or reopen the session before the cutoff, or set `rollout_days = 0`. A pending effect review or unreleased compaction pin keeps the directory. |
@@ -1393,4 +1460,7 @@ agenc budget status    # configured policy only; usage is agenc run status <run-
 | In-turn resume gates              | `runtime/src/conversation/thread-manager.ts` (`resumeTurnFromCheckpoint`) |
 | Step uniqueness / conflict        | `runtime/src/state/execution-admission.ts`          |
 | Launcher autostart                | `packages/agenc/src/launcher.mjs`                   |
+| Hard-kill connectability readiness | `isAgenCDaemonPidAndCookieReady` / `canConnectToUnixSocket` in `runtime/src/app-server/daemon-autostart.ts` |
+| Hydrating `daemon start` wait     | `daemonStartupLogAgeMs` / `AGENC_DAEMON_START_MAX_WAIT_MS` in `runtime/src/app-server/daemon-cli.ts` |
+| TUI lost-turn probe               | `AGENC_DAEMON_LOST_TURN_PROBE_MS` / `settleTurnIfDaemonLostIt` in `runtime/src/tui/daemon-session.ts` |
 | SDK connect                       | `packages/agenc-sdk/src/socket.ts`                  |
