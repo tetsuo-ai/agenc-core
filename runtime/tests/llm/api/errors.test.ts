@@ -17,6 +17,22 @@ import {
 import { AgenCApiError as CanonicalAgenCApiError } from "../../errors/api.js";
 
 describe("llm api errors", () => {
+  test.each([
+    "HTTP 403",
+    '{"error":{"code":"insufficient_quota"}}',
+    '403 {"error":{"code":"insufficient_quota"}}',
+    'HTTP 403: {"error":{"code":"insufficient_quota"}}',
+  ])("uses the default billing message instead of transport details: %s", (message) => {
+    const error = new AgenCApiError(message, {
+      status: 403, body: { error: { code: "insufficient_quota" } },
+    });
+    const mapped = mapAgenCApiErrorToLLMError("openai", error, 30_000);
+    expect(mapped).toBeInstanceOf(LLMFundsError);
+    expect(mapped).toMatchObject({
+      statusCode: 403, message: "openai error: provider credits or billing quota exhausted",
+    });
+  });
+
   test.each([403, 402])("preserves sanitized billing text from HTTP %s", (status) => {
     const error = new AgenCApiError("Forbidden", {
       status,

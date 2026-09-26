@@ -1,6 +1,37 @@
 import { describe, expect, it } from "vitest";
 import { LLMFundsError, LLMManagedAdmissionError } from "../../src/llm/errors.js";
-import { isProviderFundsFailure } from "../../src/llm/funds.js";
+import { isProviderFundsFailure, providerFundsMessage } from "../../src/llm/funds.js";
+
+describe("providerFundsMessage", () => {
+  it.each([
+    "HTTP 403",
+    "HTTP 403 Forbidden",
+    '{"error":{"code":"insufficient_quota"}}',
+    '[{"code":"insufficient_quota"}]',
+    '403 {"error":{"code":"insufficient_quota"}}',
+    'HTTP 403: {"error":{"code":"insufficient_quota"}}',
+    '403 Forbidden: [{"code":"insufficient_quota"}]',
+  ])("rejects transport summaries and serialized errors: %s", (message) => {
+    expect(providerFundsMessage({ message })).toBeUndefined();
+  });
+
+  it.each([
+    '"Authorization": "Basic dXNlcjpwYXNz"',
+    "'Authorization': 'Basic dXNlcjpwYXNz'",
+    "Authorization: Basic dXNlcjpwYXNz",
+    '"Cookie": "session=private-value; other=another-private-value"',
+    "'Cookie': 'session=private-value'",
+    '"Set-Cookie": "session=private-value; HttpOnly"',
+  ])("redacts the whole credential value in billing prose: %s", (header) => {
+    expect(providerFundsMessage({ body: { error: `Insufficient credits. ${header}\nPlease top up.` } }))
+      .toBe("Insufficient credits. [REDACTED]\nPlease top up.");
+  });
+
+  it("continues to nested provider prose after a rejected transport summary", () => {
+    expect(providerFundsMessage({ message: "HTTP 403", cause: { message: "Please add credits." } }))
+      .toBe("Please add credits.");
+  });
+});
 
 function wrap(depth: number, inner: unknown): unknown {
   let current: unknown = inner;

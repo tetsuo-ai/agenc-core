@@ -33,7 +33,11 @@ function providerMessage(value: unknown): string | undefined {
   }
   if (typeof value !== "string") return undefined;
   const text = value.trim();
-  return text && !text.startsWith("{") && !/^[\w:-]+$/.test(text) ? text : undefined;
+  // Transport summaries and serialized SDK errors are not provider prose.
+  // Leave the billing default intact when no useful message is available.
+  if (/^HTTP(?:\/[\d.]+)?\s+\d{3}\b/i.test(text) ||
+    /^(?:\d{3}\b[^\[{]*)?[\[{]/.test(text)) return undefined;
+  return text && !/^[\w:-]+$/.test(text) ? text : undefined;
 }
 
 export function providerFundsMessage(error: unknown): string | undefined {
@@ -46,7 +50,7 @@ export function providerFundsMessage(error: unknown): string | undefined {
     if (message !== undefined) {
       return redactSecrets(message)
         .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
-        .replace(/\b(?:Authorization|Cookie|Set-Cookie)\s*:\s*[^\r\n]+/gi, "[REDACTED]")
+        .replace(/["']?\b(?:Authorization|Cookie|Set-Cookie)["']?\s*:\s*[^\r\n]+/gi, "[REDACTED]")
         .replace(/\b(?:request[ _-]?id|x-request-id)\s*[:=]?\s*["']?[\w-]+["']?/gi, "[REDACTED]")
         .replace(/\breq_[A-Za-z0-9_-]+\b/g, "[REDACTED]")
         .trim();

@@ -7,7 +7,7 @@ import {
   classifyLLMFailure,
   mapLLMError,
 } from "./errors.js";
-import { ProviderHttpError } from "./client-session.js";
+import { ProviderHttpClientSession, ProviderHttpError } from "./client-session.js";
 
 describe("LLM error network classification", () => {
   test("maps xAI's exhausted team credits 403 to funds and preserves its message", () => {
@@ -75,6 +75,23 @@ describe("LLM error network classification", () => {
     }, 30_000);
     expect(mapped).toBeInstanceOf(LLMFundsError);
     expect(mapped.message).toBe("openai error: provider credits or billing quota exhausted");
+  });
+
+  test("uses the default billing message for an actual transport-generated HTTP 403 message", async () => {
+    const session = new ProviderHttpClientSession({
+      providerName: "openai", baseURL: "https://example.test/v1", wireApi: "responses",
+      fetchImpl: async () => new Response(JSON.stringify({ error: { code: "insufficient_quota" } }), {
+        status: 403, headers: { "content-type": "application/json" },
+      }),
+    });
+    const wireError = await session.requestJson({ body: {} }).catch((error: unknown) => error);
+    expect(wireError).toBeInstanceOf(ProviderHttpError);
+    expect(wireError).toMatchObject({ message: "HTTP 403", status: 403 });
+    const mapped = mapLLMError("openai", wireError, 30_000);
+    expect(mapped).toBeInstanceOf(LLMFundsError);
+    expect(mapped).toMatchObject({
+      statusCode: 403, message: "openai error: provider credits or billing quota exhausted",
+    });
   });
   test("mapLLMError keeps the transport error as the cause of a generic provider error", () => {
     const socket = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
