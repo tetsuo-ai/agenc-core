@@ -102,6 +102,20 @@ describe("anthropicThinkingControl", () => {
     }
   });
 
+  test("lists the verified per-generation effort contract, including Bedrock and dated names", () => {
+    const five = ["low", "medium", "high", "xhigh", "max"];
+    const four = ["low", "medium", "high", "max"];
+    const three = ["low", "medium", "high"];
+    expect(anthropicEffortLevels("claude-fable-5-1")).toEqual(five);
+    expect(anthropicEffortLevels("us.anthropic.agenc-mythos-5-v1")).toEqual(five);
+    expect(anthropicEffortLevels("claude-opus-5-20260901")).toEqual(five);
+    expect(anthropicEffortLevels("claude-sonnet-4-6")).toEqual(four);
+    expect(anthropicEffortLevels("us.anthropic.agenc-opus-4.6-v1")).toEqual(four);
+    expect(anthropicEffortLevels("claude-opus-4-5-20251101")).toEqual(three);
+    expect(anthropicEffortLevels("claude-sonnet-4-5-20250929")).toEqual([]);
+    expect(anthropicEffortLevels("claude-haiku-4-5")).toEqual([]);
+  });
+
   test("effort is accepted on the always-on and adaptive families and on Opus 4.5 only", () => {
     expect(anthropicAcceptsEffort("claude-fable-5-1")).toBe(true);
     expect(anthropicAcceptsEffort("claude-sonnet-5")).toBe(true);
