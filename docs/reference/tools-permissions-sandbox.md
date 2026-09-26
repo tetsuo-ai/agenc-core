@@ -693,6 +693,17 @@ Physical approval and receipt validation are described in
 - Network approval: `network-approval.ts`
 - Guardian / arbiter (reviewer circuit): `permissions/guardian/`
 
+Path rules (`FileRead(...)`, `Edit(...)`, `Write(...)`) name files, not
+spellings. A `deny` or `ask` rule is matched against the path as the tool call
+wrote it and against every place that path resolves to. The rule itself is
+tried as written and with the symlinks in its literal directory prefix
+resolved. A rule written through a symlinked directory therefore holds
+whichever way the path is spelled, and so does a relative rule whose folder
+links out of its source root. An `allow` rule matches only where the path
+resolves, and every place it resolves to must fall under the rule, so a link
+inside an allowed directory, or a dangling link or chain of links, does not
+carry the allow anywhere else (`runtime/src/permissions/path-validation.ts`).
+
 CLI: `agenc permissions …` and TUI `/permissions`.
 
 ## Sandbox
