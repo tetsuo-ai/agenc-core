@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -87,6 +88,7 @@ import {
   SandboxExecutionBroker,
   readSandboxExecutionBroker,
 } from "../sandbox/execution-broker.js";
+import { canReadPathWithCwd, canWritePathWithCwd } from "../sandbox/engine/index.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
@@ -7280,6 +7282,206 @@ describe("runAgent", () => {
     expect(result?.outcome).toBe("interrupted");
     expect(live.status.value.status).toBe("interrupted");
     expect(collected.some((e) => e.kind === "run_interrupted")).toBe(true);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Worktree children: shell commands write inside the worktree only
+// ─────────────────────────────────────────────────────────────────────
+
+// A Goal step runs in <checkout>/.agenc-worktrees/m5-<run>, and the
+// verified-change workflow promises that the user's checkout is never
+// mutated. The step's exec_command is the parent's tool: its write guard
+// measures paths against the parent's checkout, and its sandbox keeps the
+// parent's writable root, so a shell command could still change the user's
+// files.
+describe("a worktree child's shell command writes inside its worktree only", () => {
+  type ChildMode = "bypassPermissions" | "acceptEdits";
+  const CHILD_MODES: readonly ChildMode[] = ["bypassPermissions", "acceptEdits"];
+  let checkout: string;
+  let worktree: string;
+  let sessionTempRoot: string;
+
+  beforeEach(() => {
+    checkout = realpathSync(mkdtempSync(join(tmpdir(), "agenc-worktree-shell-")));
+    sessionTempRoot = realpathSync(mkdtempSync(join(tmpdir(), "agenc-worktree-shell-temp-")));
+    worktree = join(checkout, ".agenc-worktrees", "m5-wfshell");
+    mkdirSync(join(worktree, "src"), { recursive: true });
+    mkdirSync(join(checkout, "src"), { recursive: true });
+    mkdirSync(join(checkout, "dist"), { recursive: true });
+    writeFileSync(join(checkout, "src", "a.js"), "the user's code\n");
+    writeFileSync(join(worktree, "src", "a.js"), "the step's copy\n");
+  });
+
+  afterEach(() => {
+    rmSync(checkout, { recursive: true, force: true });
+    rmSync(sessionTempRoot, { recursive: true, force: true });
+  });
+
+  /** Records what each command would run under; `stderr` makes every command fail with it. */
+  function recordingManager(stderr?: string) {
+    const manager = new UnifiedExecProcessManager({ cwd: checkout, sessionTempRoot });
+    const requests: Parameters<UnifiedExecProcessManager["execCommand"]>[0][] = [];
+    const exitCode = stderr === undefined ? 0 : 1;
+    vi.spyOn(manager, "execCommand").mockImplementation(async (request) => {
+      requests.push(request);
+      return { output: stderr ?? "ran", stdout: stderr === undefined ? "ran" : "", stderr: stderr ?? "", exitCode, exit_code: exitCode, durationMs: 1, wall_time_seconds: 0.001, timedOut: false, truncated: false, original_token_count: 1 };
+    });
+    return { manager, requests };
+  }
+
+  async function runWorktreeChild(options: {
+    readonly mode: ChildMode;
+    readonly sandbox: "workspace_write" | "danger_full_access";
+    readonly calls: readonly Record<string, unknown>[];
+    readonly manager: UnifiedExecProcessManager;
+  }) {
+    const provider = makeProvider([
+      ...options.calls.map((args, index) => ({
+        toolCalls: [{ id: `shell-${index}`, name: "exec_command", arguments: JSON.stringify(args) }],
+        finishReason: "tool_calls" as const,
+      })),
+      { content: "done", finishReason: "stop" as const },
+    ]);
+    const approvals = vi.fn(async () => ({ kind: "approved" as const }));
+    const broker = new SandboxExecutionBroker({
+      mode: options.sandbox,
+      cwd: checkout,
+      sessionTempRoot,
+      agencLinuxSandboxExe: process.execPath,
+      probe: (probe) => ({ kind: "ready", mode: probe.mode, platform: process.platform, helperPath: process.execPath }),
+    });
+    const session = makeStubSession({
+      config: { ...mkConfig(), cwd: checkout, agencLinuxSandboxExe: process.execPath },
+      sessionConfiguration: mkSessionConfiguration({
+        cwd: checkout,
+        // bypassPermissions answers approvals itself; acceptEdits asks for commands.
+        approvalPolicy: { value: options.mode === "bypassPermissions" ? "never" : "on_request" },
+        sandboxPolicy: { value: options.sandbox },
+        // A workspace-write session's own workspace root is writable.
+        fileSystemSandboxPolicy: {
+          allowWrite: options.sandbox === "workspace_write" ? [checkout] : [],
+          denyWrite: [],
+          allowRead: [],
+          denyRead: [],
+        },
+      }),
+      services: {
+        provider,
+        permissionModeRegistry: new PermissionModeRegistry(createEmptyToolPermissionContext({
+          mode: options.mode,
+          isBypassPermissionsModeAvailable: options.mode === "bypassPermissions",
+          ...(options.mode === "bypassPermissions" ? { bypassPermissionsAcceptedIn: [checkout] } : {}),
+        })),
+        sandboxExecutionBroker: broker,
+        // The user approves every command the step asks about.
+        approvalResolver: { request: approvals },
+        runtimeOptions: resolveAgentRuntimeOptions({}, { sessionTempRoot }),
+        registry: buildProductionToolRegistry({ workspaceRoot: checkout, unifiedExecManager: options.manager, requireAdmission: false }),
+      },
+    });
+    const { live } = await spawnLive(session);
+    try {
+      const run = await collectRun(runAgent({
+        live,
+        parent: session,
+        initialMessages: [{ role: "user", content: "Implement the change" }],
+        taskPrompt: "Implement the change",
+        worktree: { path: worktree, branch: "worktree-m5-wfshell", gitRoot: checkout, created: false },
+      }));
+      return { ...run, approvals };
+    } finally {
+      await options.manager.closeAll();
+      await disposeSandboxExecutionBroker(broker);
+    }
+  }
+
+  describe.each(CHILD_MODES)("in %s without an OS sandbox", (mode) => {
+    it("refuses every write it can see outside the worktree and keeps the user's files", async () => {
+      const { result, events, approvals } = await runWorktreeChild({
+        mode,
+        sandbox: "danger_full_access",
+        manager: new UnifiedExecProcessManager({ cwd: checkout, sessionTempRoot }),
+        calls: [
+          { cmd: "rm ../../src/a.js" },
+          { cmd: "mv src/a.js ../../src/moved.js" },
+          { cmd: "echo built > ../../dist/out.js" },
+          { cmd: "cd ../.. && rm src/a.js" },
+          { cmd: "rm src/a.js" },
+        ],
+      });
+      // A refusal is a tool error the step recovers from, never a policy stop.
+      expect(result.outcome, String(result.error)).toBe("completed");
+      expect(readFileSync(join(checkout, "src", "a.js"), "utf8")).toBe("the user's code\n");
+      expect(existsSync(join(checkout, "src", "moved.js"))).toBe(false);
+      expect(existsSync(join(checkout, "dist", "out.js"))).toBe(false);
+      const results = events.filter((event) => event.kind === "tool_result");
+      expect(results.map((event) => event.isError)).toEqual([true, true, true, true, false]);
+      for (const refused of results.slice(0, 4)) {
+        expect(refused.result).toContain(`works in its own git worktree (${worktree})`);
+        expect(refused.metadata?.approvalFailure).toBeUndefined();
+      }
+      // Inside its worktree the step still removes its own file.
+      expect(existsSync(join(worktree, "src", "a.js"))).toBe(false);
+      // Refused before approval: nobody is asked about a command that cannot run.
+      expect(approvals).toHaveBeenCalledTimes(mode === "acceptEdits" ? 1 : 0);
+    });
+  });
+
+  describe.each(CHILD_MODES)("in %s under the OS sandbox", (mode) => {
+    it("runs every attempt, escalated or not, in a sandbox that writes only in the worktree and the temp root", async () => {
+      const { manager, requests } = recordingManager();
+      // The guard cannot see where a program writes; only the sandbox can.
+      const cmd = "node -e \"require('fs').writeFileSync('../../src/a.js', 'x')\"";
+      const { result } = await runWorktreeChild({
+        mode,
+        sandbox: "workspace_write",
+        manager,
+        calls: [
+          { cmd },
+          { cmd, sandbox_permissions: "require_escalated", justification: "write the file" },
+          {
+            cmd,
+            sandbox_permissions: "with_additional_permissions",
+            additional_permissions: { file_system: { write: [checkout] }, network: { enabled: true } },
+          },
+        ],
+      });
+      expect(result.outcome, String(result.error)).toBe("completed");
+      expect(requests).toHaveLength(3);
+      for (const request of requests) {
+        const sandbox = request.runtimeSandbox;
+        expect(sandbox).toBeDefined();
+        expect(sandbox?.additionalPermissions).toBeUndefined();
+        const fileSystem = sandbox!.permissionProfile.fileSystem;
+        const writable = (target: string) =>
+          canWritePathWithCwd(fileSystem, target, sandbox!.sandboxPolicyCwd, sandbox!.sessionTempRoot);
+        expect(writable(join(checkout, "src", "a.js"))).toBe(false);
+        expect(writable(join(checkout, "dist", "out.js"))).toBe(false);
+        expect(writable(join(worktree, "src", "a.js"))).toBe(true);
+        expect(writable(join(sessionTempRoot, "scratch.txt"))).toBe(true);
+        // Reads stay allowed.
+        expect(canReadPathWithCwd(fileSystem, join(checkout, "src", "a.js"), sandbox!.sandboxPolicyCwd, sandbox!.sessionTempRoot)).toBe(true);
+      }
+      // Escalation and an approved grant keep what they give besides writes.
+      expect(requests[0]!.runtimeSandbox!.permissionProfile.network).toBe("disabled");
+      expect(requests[1]!.runtimeSandbox!.permissionProfile.network).toBe("enabled");
+      expect(requests[2]!.runtimeSandbox!.permissionProfile.network).toBe("enabled");
+    });
+
+    it("tells the step that a refused write fails the same way escalated", async () => {
+      const { manager } = recordingManager("sh: ../../src/a.js: Operation not permitted");
+      const { result, events } = await runWorktreeChild({
+        mode,
+        sandbox: "workspace_write",
+        manager,
+        calls: [{ cmd: "node -e \"require('fs').writeFileSync('../../src/a.js', 'x')\"" }],
+      });
+      expect(result.outcome, String(result.error)).toBe("completed");
+      const [refused] = events.filter((event) => event.kind === "tool_result");
+      expect(refused).toMatchObject({ isError: true });
+      expect(refused!.result).toContain(`[sandbox] This agent works in its own git worktree (${worktree})`);
+    });
   });
 });
 

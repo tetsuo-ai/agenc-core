@@ -1,6 +1,8 @@
 import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { buildFilteredRegistry } from "../../src/agents/run-agent.js";
+import { canWritePathWithCwd } from "../../src/sandbox/engine/index.js";
 import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
 import { EventLog } from "../../src/session/event-log.js";
 import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
@@ -8,7 +10,7 @@ import { ToolRouter } from "../../src/tools/router.js";
 import { createExecCommandTool } from "../../src/tools/system/exec-command.js";
 import type { ExecCommandRequest, UnifiedExecProcessManagerLike } from "../../src/unified-exec/types.js";
 
-function childExecution(allow = true) {
+function childExecution(allow = true, confined = false) {
   const cwd = process.cwd();
   const requests: ExecCommandRequest[] = [];
   const manager = {
@@ -21,11 +23,15 @@ function childExecution(allow = true) {
       };
     },
   } as UnifiedExecProcessManagerLike;
-  const broker = new SandboxExecutionBroker({
+  const sessionBroker = new SandboxExecutionBroker({
     mode: "workspace_write", cwd, sessionTempRoot: tmpdir(),
     agencLinuxSandboxExe: process.execPath,
     probe: () => ({ kind: "ready", mode: "workspace_write", platform: process.platform, helperPath: process.execPath }),
   });
+  // Forked the way run-agent forks a worktree child's authority.
+  const broker = confined
+    ? sessionBroker.forkForCwd(cwd, { worktreeConfinement: { worktree: cwd, checkout: dirname(cwd) } })
+    : sessionBroker;
   const session = {
     conversationId: "child-sandbox-grants",
     sessionConfiguration: { cwd },
@@ -83,6 +89,20 @@ describe("child tool execution preserves router-approved sandbox authority", () 
     expect(child.approvalResolver.request).toHaveBeenCalledOnce();
     expect(child.requests).toHaveLength(1);
     expect(child.requests[0]?.runtimeSandbox).toBeUndefined();
+  });
+
+  it("keeps a worktree child's approved escalation inside its worktree, with the network", async () => {
+    const child = childExecution(true, true);
+    const result = await child.dispatch({ sandbox_permissions: "require_escalated" });
+    expect(result.isError).not.toBe(true);
+    expect(child.approvalResolver.request).toHaveBeenCalledOnce();
+    const sandbox = child.requests[0]?.runtimeSandbox;
+    expect(sandbox?.permissionProfile.network).toBe("enabled");
+    const writable = (target: string) => canWritePathWithCwd(
+      sandbox!.permissionProfile.fileSystem, target, sandbox!.sandboxPolicyCwd, sandbox!.sessionTempRoot,
+    );
+    expect(writable(join(dirname(process.cwd()), "package.json"))).toBe(false);
+    expect(writable(join(process.cwd(), "package.json"))).toBe(true);
   });
 
   it("retains the restricted network policy without an additional grant", async () => {

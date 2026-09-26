@@ -30,6 +30,14 @@ describe("injectChildToolArgs pins the worktree through each tool's own field", 
     expect(Object.hasOwn(args, "cwd")).toBe(false);
   });
 
+  it("resolves a shell's relative directory in the worktree, not in the parent's workspace", () => {
+    // The shell tools are the parent's: `workdir: "src"` ran in /repo/src.
+    expect(injectChildToolArgs({ cmd: "npm test", workdir: "pkg" }, "exec_command", opts).workdir)
+      .toBe("/repo/.agenc-worktrees/m5-abc/pkg");
+    expect(injectChildToolArgs({ command: "ls", cwd: "../.." }, "system.bash", opts).cwd)
+      .toBe("/repo");
+  });
+
   it("uses cwd for the shell, patch, search and file tools", () => {
     expect(injectChildToolArgs({ command: "ls" }, "system.bash", opts).cwd).toBe(
       worktree.path,
