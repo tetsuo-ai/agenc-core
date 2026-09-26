@@ -168,6 +168,8 @@ export interface ListThreadsParams {
  *  policy, git info, full preview, and cli version are not populated. */
 export interface StoredThread {
   readonly threadId: ThreadId;
+  /** Presentation profile from the matching durable agent run, when recorded. */
+  readonly lightMode?: boolean;
   readonly parentThreadId?: ThreadId;
   readonly rolloutPath?: string;
   readonly forkedFromId?: ThreadId;
@@ -276,6 +278,8 @@ export interface ThreadStore {
   readThread(params: ReadThreadParams): StoredThread;
   /** Publish snapshot text against the thread's current canonical rollout. */
   publishTranscriptArtifact?(threadId: ThreadId, observedRolloutPath: string, bytes: Buffer): string;
+  /** Read only the authoritative profile; caller-supplied metadata is ignored. */
+  readThreadLightMode?(threadId: ThreadId, verifiedProjectDir?: string): boolean | undefined;
   readThreadByRolloutPath(params: ReadThreadByRolloutPathParams): StoredThread;
   listThreads(params: ListThreadsParams): ThreadPage;
   /** Indexed count for latency-sensitive health probes. */
@@ -639,7 +643,42 @@ export class FileThreadStore implements ThreadStore {
           includeArchived: params.includeArchived,
         })
       : undefined;
-    return toStoredThread(entry, this.defaultModelProviderId, history);
+    return this.toStoredThread(entry, history);
+  }
+
+  readThreadLightMode(threadId: ThreadId, verifiedProjectDir?: string): boolean | undefined {
+    this.assertOpen();
+    if (verifiedProjectDir !== undefined && resolve(verifiedProjectDir) !== resolve(this.projectDir)) {
+      throw new ThreadStoreInvalidRequestError("runtime profile project does not match the verified resume source");
+    }
+    const row = this.stateDriver.prepareState<[string], { metadata_json: string | null }>(
+      "SELECT metadata_json FROM agent_runs WHERE id = ?",
+    ).get(threadId);
+    if (row?.metadata_json == null) return undefined;
+    let metadata: unknown;
+    try {
+      metadata = JSON.parse(row.metadata_json);
+    } catch {
+      throw new ThreadStoreInvalidRequestError("invalid persisted run metadata");
+    }
+    if (!isRecord(metadata) || metadata.runtimeOptions === undefined) return undefined;
+    const options = metadata.runtimeOptions;
+    if (!isRecord(options)) {
+      throw new ThreadStoreInvalidRequestError("invalid persisted runtime options");
+    }
+    if (options.lightMode === undefined) return undefined;
+    if (typeof options.lightMode !== "boolean") {
+      throw new ThreadStoreInvalidRequestError("invalid persisted Light mode");
+    }
+    return options.lightMode;
+  }
+
+  private toStoredThread(entry: RegistryEntry, history?: StoredThreadHistory): StoredThread {
+    const lightMode = this.readThreadLightMode(entry.threadId);
+    return {
+      ...toStoredThread(entry, this.defaultModelProviderId, history),
+      ...(lightMode !== undefined ? { lightMode } : {}),
+    };
   }
 
   publishTranscriptArtifact(threadId: ThreadId, observedRolloutPath: string, bytes: Buffer): string {
@@ -785,7 +824,7 @@ export class FileThreadStore implements ThreadStore {
       const last = page.items.at(-1);
       return {
         items: page.items.map((entry) =>
-          toStoredThread(entry, this.defaultModelProviderId),
+          this.toStoredThread(entry),
         ),
         ...(page.hasMore && last !== undefined
           ? {
@@ -831,7 +870,7 @@ export class FileThreadStore implements ThreadStore {
           })
         : undefined;
     return {
-      items: sliced.map((e) => toStoredThread(e, this.defaultModelProviderId)),
+      items: sliced.map((e) => this.toStoredThread(e)),
       ...(nextCursor !== undefined ? { nextCursor } : {}),
     };
   }
@@ -894,7 +933,7 @@ export class FileThreadStore implements ThreadStore {
         this.indexReadableRollout(updated);
       }
       registry.set(params.threadId, updated);
-      result = toStoredThread(updated, this.defaultModelProviderId);
+      result = this.toStoredThread(updated);
     });
     return result!;
   }
@@ -963,7 +1002,7 @@ export class FileThreadStore implements ThreadStore {
       }
       if (existing.archivedAt === undefined) {
         if (existing.archivedRolloutPath !== undefined) archiveArtifactDir = dirname(existing.archivedRolloutPath);
-        result = toStoredThread(existing, this.defaultModelProviderId);
+        result = this.toStoredThread(existing);
         return;
       }
       const now = new Date().toISOString();
@@ -992,7 +1031,7 @@ export class FileThreadStore implements ThreadStore {
           : {}),
       };
       registry.set(params.threadId, updated);
-      result = toStoredThread(updated, this.defaultModelProviderId);
+      result = this.toStoredThread(updated);
     });
     if (archiveArtifactDir !== undefined) this.finishPendingUnarchiveCleanup(params.threadId);
     return result!;

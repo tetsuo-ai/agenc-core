@@ -123,6 +123,9 @@ export function buildInheritedCliFlags(options?: {
   if (runtimeOptions.simpleMode) {
     flags.push('--bare')
   }
+  if (runtimeOptions.lightMode) {
+    flags.push('--light')
+  }
 
   // Propagate --plugin-dir for each inline plugin
   const inlinePlugins = getInlinePlugins()

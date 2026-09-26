@@ -1011,8 +1011,25 @@ export class AgenCDaemonAgentManager {
         retainedMetadata?.runtimeOptions !== undefined
           ? validateAgentRuntimeOptions(retainedMetadata.runtimeOptions)
           : undefined;
+      // Cleanly stopped interactive roots are not startup-recovered agents.
+      // Their profile still lives in the exact durable run row for this thread.
+      const retainedLightMode = resumeSessionId === undefined
+        ? undefined
+        : retainedRuntimeOptions?.lightMode ??
+          this.#threadStore?.readThreadLightMode?.(
+            resumeSessionId,
+            // assertAuthoritativeResumeSource already bound this canonical
+            // projects/<project>/sessions/<id>/rollout file to the caller.
+            dirname(dirname(dirname(resumeRolloutPath!))),
+          ) ??
+          (requestedRuntimeOptions.lightMode !== undefined ? false : undefined);
       const runtimeOptions = Object.freeze({
         ...requestedRuntimeOptions,
+        // A cold resume restores its presentation profile. A new caller's
+        // default must not silently turn a Light conversation into Normal.
+        ...(retainedLightMode !== undefined
+          ? { lightMode: retainedLightMode }
+          : {}),
         // A cold attach may supply fresh shell/temp/plugin inputs, but it must
         // not silently drop the original session's explicit sandbox escape.
         // Omitting the new field in historical metadata normalizes to false.
@@ -1046,6 +1063,10 @@ export class AgenCDaemonAgentManager {
         // daemon restart must restore the exact values captured at create
         // time, never reinterpret the daemon's current process environment.
         runtimeOptions,
+        ...(runtimeOptions.lightMode !== undefined ||
+            Object.hasOwn(retainedMetadata ?? params.metadata ?? {}, "lightMode")
+          ? { lightMode: runtimeOptions.lightMode === true }
+          : {}),
       };
       const resumeRestoreAttemptId =
         resumeSessionId === undefined ? undefined : randomUUID();

@@ -5983,7 +5983,7 @@ function recoveryMetadataForRun(
           canonicalRolloutIno: canonicalSource.rolloutIdentity.ino,
         }
       : {}),
-    ...(runtimeOptions !== null ? { runtimeOptions } : {}),
+    ...(runtimeOptions !== null ? { runtimeOptions, lightMode: runtimeOptions.lightMode === true } : {}),
     recovery: {
       recoveredAt: report.recoveredAt,
       projectDir: run.projectDir,

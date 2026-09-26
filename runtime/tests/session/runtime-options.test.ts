@@ -19,6 +19,7 @@ import {
   getSessionRemoteMemoryRoot,
   isSessionRemoteMode,
   projectAgentRuntimeOptionsEnvironment,
+  peekAgentRuntimeOptions,
   resolveAgentRuntimeOptions,
   resolveCommandExecutionAuthority,
   resolveSessionTempRoot,
@@ -513,5 +514,29 @@ describe("agent runtime options", () => {
       "/remote/client-b/memory",
       "client B guidance",
     ]);
+  });
+});
+
+
+describe("Light session runtime authority", () => {
+  test("round trips a persisted Light profile without changing execution authority", () => {
+    const normal = resolveAgentRuntimeOptions({});
+    expect(normal.lightMode ?? false).toBe(false);
+    const light = resolveAgentRuntimeOptions({}, { lightMode: true });
+    expect(light).toEqual({ ...normal, lightMode: true });
+    expect(light.simpleMode).toBe(false);
+    expect(validateAgentRuntimeOptions(JSON.parse(JSON.stringify(light)))).toEqual(light);
+    expect(validateAgentRuntimeOptions(JSON.parse(JSON.stringify(normal))).lightMode ?? false).toBe(false);
+    expect(() => validateAgentRuntimeOptions({ ...normal, lightMode: "true" })).toThrow("runtimeOptions.lightMode must be boolean");
+  });
+
+  test("parallel session scopes do not leak Light presentation", async () => {
+    const values = await Promise.all([true, false].map(lightMode =>
+      runWithAgentRuntimeOptions(resolveAgentRuntimeOptions({}, { lightMode }), async () => {
+        await Promise.resolve();
+        return peekAgentRuntimeOptions()?.lightMode;
+      }),
+    ));
+    expect(values).toEqual([true, false]);
   });
 });
