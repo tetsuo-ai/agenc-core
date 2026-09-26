@@ -18,12 +18,24 @@ const unlinkInterleave = vi.hoisted(() => ({
 
 const opsDirectoryInterleave = vi.hoisted(() => ({
   removeBeforeLstat: undefined as string | undefined,
+  failMkdirOnce: undefined as string | undefined,
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
+    mkdir: (async (...args: Parameters<typeof actual.mkdir>) => {
+      if (opsDirectoryInterleave.failMkdirOnce === String(args[0])) {
+        // Node's recursive mkdir fails ENOENT when the directory it found is
+        // removed before its own existence check.
+        opsDirectoryInterleave.failMkdirOnce = undefined;
+        throw Object.assign(new Error(`ENOENT: no such file or directory, mkdir '${String(args[0])}'`), {
+          code: "ENOENT",
+        });
+      }
+      return actual.mkdir(...args);
+    }) as typeof actual.mkdir,
     lstat: (async (...args: Parameters<typeof actual.lstat>) => {
       const target = String(args[0]);
       if (opsDirectoryInterleave.removeBeforeLstat === target) {
@@ -787,6 +799,22 @@ describe("plugin install directory lock setup", () => {
       expect(opsDirectoryInterleave.removeBeforeLstat).toBeUndefined();
     } finally {
       opsDirectoryInterleave.removeBeforeLstat = undefined;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("retries when the recursive mkdir of the ops directory fails ENOENT during a concurrent cleanup", async () => {
+    const root = await mkdtemp(join(tmpdir(), "install-dir-lock-ops-"));
+    try {
+      const destination = join(root, "demo");
+      const opsDir = dirname(await pluginInstallDirectoryLockDirectory(destination));
+      opsDirectoryInterleave.failMkdirOnce = opsDir;
+      await expect(
+        withPluginInstallDirectoryLock(destination, async () => "locked body ran"),
+      ).resolves.toBe("locked body ran");
+      expect(opsDirectoryInterleave.failMkdirOnce).toBeUndefined();
+    } finally {
+      opsDirectoryInterleave.failMkdirOnce = undefined;
       await rm(root, { recursive: true, force: true });
     }
   });

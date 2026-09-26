@@ -645,10 +645,17 @@ function lockFilePath(key: string): string {
 async function prepareLockFile(key: string): Promise<string> {
   const opsDir = join(dirname(key), PLUGIN_INSTALL_OPS_DIR);
   // A finishing install or a recovery pass removes the ops directory once it
-  // is empty. That can land between this mkdir and the lstat below, so a
-  // vanished directory is created again instead of failing the operation.
+  // is empty. That can land inside the recursive mkdir (it sees the directory,
+  // then fails ENOENT on its own check) or between the mkdir and the lstat
+  // below, so a vanished directory is created again instead of failing the
+  // operation.
   for (let attempt = 1; ; attempt += 1) {
-    await mkdir(opsDir, { recursive: true, mode: 0o700 });
+    try {
+      await mkdir(opsDir, { recursive: true, mode: 0o700 });
+    } catch (error) {
+      if (codeOf(error) !== "ENOENT" || attempt >= OPS_DIRECTORY_CREATE_ATTEMPTS) throw error;
+      continue;
+    }
     const info = await lstatIfPresent(opsDir);
     if (info === undefined) {
       if (attempt < OPS_DIRECTORY_CREATE_ATTEMPTS) continue;
