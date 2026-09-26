@@ -52,6 +52,7 @@ import {
   type ChatCompletionsRequestMetadata,
 } from "../../wire/chat-completions.js";
 import { chatCompletionsCapabilityHintsForProvider } from "../../wire/capability-gating.js";
+import { sharedPrefixTailEnabled } from "../../wire/shared-prefix-tail.js";
 import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import {
   coerceUsage,
@@ -427,6 +428,21 @@ function errorName(error: unknown): string | undefined {
 
 function isAbortLikeError(error: unknown): boolean {
   return errorCode(error) === "ABORT_ERR" || errorName(error) === "AbortError";
+}
+
+/**
+ * The shared-prefix layout for providers that share cached prefixes across
+ * sessions (native DeepSeek) follows the session's `AGENC_SHARED_PREFIX_TAIL`,
+ * read from the environment the session captured at ingress, so a client can
+ * turn it off per session. Without a session or startup scope there is no such
+ * environment, and the layout stays on.
+ */
+function sessionSharedPrefixTail(): boolean {
+  try {
+    return sharedPrefixTailEnabled(getSelectedProviderEnvironment());
+  } catch {
+    return true;
+  }
 }
 
 function isTransportFailure(error: unknown): boolean {
@@ -1299,6 +1315,7 @@ export class OpenAIProvider implements LLMProvider {
       maxTokens: this.resolveRequestMaxTokens(args.options),
       maxTokenField: this.resolveChatCompletionsMaxTokenField(),
       providerCapabilityHints,
+      sharedPrefixTail: sessionSharedPrefixTail(),
     });
     for (const [key, value] of Object.entries(this.config.extraBody ?? {})) {
       request[key] = value;

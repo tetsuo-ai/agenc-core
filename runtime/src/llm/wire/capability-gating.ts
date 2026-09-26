@@ -82,6 +82,13 @@ export interface ChatCompletionsCapabilityHints {
   readonly toolResultImagePolicy?: "relay_as_user" | "strip";
   /** Keep runtime context after a tool result inside that tool continuation. */
   readonly runtimeContextInToolResults?: boolean;
+  /**
+   * The provider caches prompt prefixes per account, across sessions, with no
+   * cache key. The wire moves the per-session tail of the system prompt after
+   * the setup reminders so the head, tools and stable reminders are one prefix
+   * sessions share (`AGENC_SHARED_PREFIX_TAIL=0` turns this off).
+   */
+  readonly sharesPromptPrefixAcrossSessions?: boolean;
   /** Explain encoded function aliases when instructions use canonical names. */
   readonly includeToolNameAliases?: boolean;
   /**
@@ -418,6 +425,7 @@ export function chatCompletionsCapabilityHintsForProvider(
       thinkingConfig: { type: "enabled" as const },
       replaysReasoningContent: true,
       reasoningContentField: "reasoning_content" as const,
+      sharesPromptPrefixAcrossSessions: true,
     } : {}),
     ...(isManagedDeepSeek ? {
       // The reviewed V4.1 route supports automatic tool selection, not forced
