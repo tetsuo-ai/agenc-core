@@ -492,7 +492,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
   }),
   gemini: providerDefinition({
     name: "Gemini",
-    defaultModel: "gemini-3.1-pro-preview",
+    defaultModel: "gemini-3.8-flash",
     baseURL: GEMINI_DEVELOPER_NATIVE_BASE_URL,
     credentials: apiKeyCredentials(["GEMINI_API_KEY", "GOOGLE_API_KEY"]),
     baseURLEnvVars: ["GEMINI_BASE_URL"],

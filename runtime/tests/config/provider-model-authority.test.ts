@@ -61,6 +61,22 @@ describe("provider/model configuration authority", () => {
     });
   });
 
+  test("defaults Gemini to 3.8 Flash while keeping 3.1 Pro Preview selectable", () => {
+    const base = defaultConfig();
+    expect(
+      resolveProviderModelLayer(base, { model_provider: "gemini" }),
+    ).toMatchObject({ model_provider: "gemini", model: "gemini-3.8-flash" });
+    expect(buildProviderModelCatalog(base).gemini).toEqual(
+      expect.arrayContaining(["gemini-3.8-flash", "gemini-3.1-pro-preview"]),
+    );
+    expect(
+      resolveProviderModelLayer(base, {
+        model_provider: "gemini",
+        model: "gemini-3.1-pro-preview",
+      }),
+    ).toMatchObject({ model_provider: "gemini", model: "gemini-3.1-pro-preview" });
+  });
+
   test("provider-only selection restores an explicit top-level pair", () => {
     const base = mergeConfigs(defaultConfig(), {
       model_provider: "openai",
