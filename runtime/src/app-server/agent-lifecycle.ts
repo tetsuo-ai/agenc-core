@@ -52,7 +52,9 @@ import { openStateDatabases } from "../state/sqlite-driver.js";
 import {
   createOperatorAttestationEvidence,
   createOperatorEffectReviewResolution,
+  EffectReviewStaleError,
   resolveDurableEffectReview,
+  type ResolveDurableEffectReviewResult,
 } from "../state/effect-review.js";
 import { StateRunDurabilityRepository } from "../state/run-durability.js";
 import {
@@ -242,7 +244,8 @@ export type AgenCDaemonAgentLifecycleErrorCode =
   | "TURN_IN_PROGRESS"
   | "CLIENT_MESSAGE_ID_CONFLICT"
   | "PROMPT_BLOCKED"
-  | "SESSION_HISTORY_BLOCKED";
+  | "SESSION_HISTORY_BLOCKED"
+  | "EFFECT_REVIEW_STALE";
 
 export class AgenCDaemonAgentLifecycleError extends Error {
   readonly code: AgenCDaemonAgentLifecycleErrorCode;
@@ -3041,14 +3044,41 @@ export class AgenCDaemonAgentManager {
           sessionId: reviewSessionId,
           toolCallId: effect.toolCallId,
           resolution,
+          ...(params.attempt !== undefined
+            ? {
+                expectedAttempt: {
+                  runId: params.attempt.runId,
+                  stepId: params.attempt.stepId,
+                  unknownEventId: params.attempt.unknownEventId,
+                  unknownSequence: params.attempt.unknownSequence,
+                },
+              }
+            : {}),
         } as const;
-        const outcome =
-          this.#runner?.resolveLiveEffectReview !== undefined
-            ? await this.#runner.resolveLiveEffectReview(
-                session.agentId,
-                reviewOptions,
-              )
-            : resolveDurableEffectReview(driver, reviewOptions);
+        let outcome: ResolveDurableEffectReviewResult;
+        try {
+          outcome =
+            this.#runner?.resolveLiveEffectReview !== undefined
+              ? await this.#runner.resolveLiveEffectReview(
+                  session.agentId,
+                  reviewOptions,
+                )
+              : resolveDurableEffectReview(driver, reviewOptions);
+        } catch (error) {
+          // The request was made for a record that no longer matches:
+          // a newer attempt shares the call id, or the attempt already
+          // carries a different review. Nothing was appended.
+          if (
+            error instanceof EffectReviewStaleError ||
+            (error instanceof Error && error.name === "EffectReviewStaleError")
+          ) {
+            throw new AgenCDaemonAgentLifecycleError(
+              "EFFECT_REVIEW_STALE",
+              error.message,
+            );
+          }
+          throw error;
+        }
         if (outcome.kind === "resolved") {
           resolved.push({
             toolCallId: effect.toolCallId,

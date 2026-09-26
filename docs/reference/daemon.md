@@ -773,6 +773,18 @@ require `toolCallId`, `disposition`, `evidenceRef`, and `evidenceSha256`; an
 earlier-shape request leaves them unchanged in `remaining`. Partial mixtures of
 the two shapes are invalid.
 
+Protocol 1.20 adds an optional `attempt` object to the evidence and attestation
+shapes: `{ runId, stepId, unknownEventId, unknownSequence }`, taken from the
+canonical `effect_unknown_outcome` event the reviewer saw. Several attempts can
+share one tool call id after a confirmed no-effect retry, so the call id alone
+does not name the record. With `attempt`, the daemon settles only that exact
+unknown-outcome record and checks it under the same lock that appends the
+review. A missing or different record, or an attempt that already carries a
+different review, is refused with `EFFECT_REVIEW_STALE` and nothing is
+appended. Requests without `attempt` keep the earlier rule and settle the
+pending attempt for the call id. A daemon older than 1.20 refuses `attempt` as
+an unknown param.
+
 `session.list` is page-bounded: `limit` defaults to 50 and is capped at 100.
 Pass the returned opaque `nextCursor` back with the same `agentId` filter; a
 cursor is scoped to that filter and should not be persisted across daemon

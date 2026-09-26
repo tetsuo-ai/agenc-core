@@ -3,7 +3,7 @@
   "$id": "urn:agenc:app-server:protocol",
   "title": "AgenC Daemon JSON-RPC Protocol",
   "description": "Initial AgenC daemon JSON-RPC method surface.",
-  "x-agenc-protocol-version": "1.19.0",
+  "x-agenc-protocol-version": "1.20.0",
   "x-agenc-package": {
     "name": "@tetsuo-ai/protocol",
     "export": "./daemon-json-rpc.schema.json"
@@ -2400,6 +2400,9 @@
         "reviewer": {
           "type": "string",
           "minLength": 1
+        },
+        "attempt": {
+          "$ref": "#/definitions/SessionResolveToolCallAttempt"
         }
       },
       "required": [
@@ -2437,6 +2440,9 @@
         "reviewer": {
           "type": "string",
           "minLength": 1
+        },
+        "attempt": {
+          "$ref": "#/definitions/SessionResolveToolCallAttempt"
         }
       },
       "required": [
@@ -2444,6 +2450,34 @@
         "toolCallId",
         "disposition",
         "attestation"
+      ]
+    },
+    "SessionResolveToolCallAttempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stepId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "unknownEventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "unknownSequence": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "runId",
+        "stepId",
+        "unknownEventId",
+        "unknownSequence"
       ]
     },
     "SessionResolveToolCallParams": {

@@ -38,10 +38,13 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.17 adds a bounded routine session preparation handshake.
  * 1.18 adds display attachment events and chunked artifact reads by digest.
  * 1.19 adds optional session-owned Light mode (deferred tool exposure).
+ * 1.20 adds the optional exact-attempt precondition (`attempt`) to
+ * `session.resolveToolCall`: the review settles only that recorded attempt,
+ * and a mismatch is refused with `EFFECT_REVIEW_STALE`.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.19.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.20.0" as const;
 
 export const AGENC_DAEMON_METHODS = [
     "remote.capabilities",
@@ -905,6 +908,23 @@ export interface SessionResolveToolCallLegacyParams extends JsonObject {
     readonly evidenceRef?: never;
     readonly evidenceSha256?: never;
     readonly attestation?: never;
+    readonly attempt?: never;
+}
+
+/**
+ * The exact recorded attempt a reviewer saw (protocol 1.20). Several attempts
+ * can share one tool call id, so a client that shows a recorded call sends
+ * the effect's `runId` and `stepId` and the canonical `effect_unknown_outcome`
+ * event id and journal sequence. The daemon settles that record only, and
+ * refuses a mismatch with `EFFECT_REVIEW_STALE` before appending a review.
+ * Without it, the daemon keeps the earlier rule: the pending attempt for the
+ * call id.
+ */
+export interface SessionResolveToolCallAttempt extends JsonObject {
+    readonly runId: string;
+    readonly stepId: string;
+    readonly unknownEventId: string;
+    readonly unknownSequence: number;
 }
 
 /** Evidence-bearing resolution required for every durable effect record. */
@@ -916,6 +936,7 @@ export interface SessionResolveToolCallEvidenceParams extends JsonObject {
     readonly evidenceSha256: string;
     readonly reviewer?: string;
     readonly attestation?: never;
+    readonly attempt?: SessionResolveToolCallAttempt;
 }
 
 /**
@@ -932,6 +953,7 @@ export interface SessionResolveToolCallAttestationParams extends JsonObject {
     readonly reviewer?: string;
     readonly evidenceRef?: never;
     readonly evidenceSha256?: never;
+    readonly attempt?: SessionResolveToolCallAttempt;
 }
 
 /**

@@ -25,6 +25,35 @@ async function initialize(connection: {
   });
 }
 
+/**
+ * A dispatcher over one restored session whose tool-call review is a spy, and
+ * a connection attached to that session as `clientId`: only an attached
+ * client may review a session, and the reviewer is derived from it.
+ */
+async function attachedToolResolutionConnection(clientId: string, version?: string) {
+  const resolveSessionToolCall = vi.fn(async () => ({
+    sessionId: "session_1",
+    resolved: [],
+    remaining: 0,
+  }));
+  const sessions = new AgenCDaemonSessionManager();
+  await sessions.restoreSession({ sessionId: "session_1", agentId: "conv-1", cwd: process.cwd() });
+  const dispatcher = new AgenCDaemonJsonRpcDispatcher({
+    sessionManager: sessions,
+    clientMultiplexer: new AgenCDaemonClientMultiplexer({ sessionManager: sessions }),
+    agentManager: { resolveSessionToolCall } as never,
+  });
+  const connection = dispatcher.createConnection({ sendNotification: () => {} });
+  await initialize(connection, version);
+  await connection.dispatch({
+    jsonrpc: JSON_RPC_VERSION,
+    id: "attach",
+    method: "session.attach",
+    params: { sessionId: "session_1", clientId },
+  });
+  return { connection, resolveSessionToolCall };
+}
+
 describe("daemon session-control internal method dispatch", () => {
   it("validates ephemeral authenticated MCP attachment fields without echoing credentials", async () => {
     const addMcpServerToSession = vi.fn(async () => ({ sessionId: "session_1", serverName: "agenc-desktop-control", success: true, toolCount: 1 }));
@@ -66,28 +95,8 @@ describe("daemon session-control internal method dispatch", () => {
   });
 
   it("routes the exact SDK 0.3.0 tool-resolution shape and rejects partial hybrids", async () => {
-    const resolveSessionToolCall = vi.fn(async () => ({
-      sessionId: "session_1",
-      resolved: [],
-      remaining: 0,
-    }));
-    const sessions = new AgenCDaemonSessionManager();
-    await sessions.restoreSession({ sessionId: "session_1", agentId: "conv-1", cwd: process.cwd() });
-    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
-      sessionManager: sessions,
-      clientMultiplexer: new AgenCDaemonClientMultiplexer({ sessionManager: sessions }),
-      agentManager: { resolveSessionToolCall } as never,
-    });
-    const connection = dispatcher.createConnection({ sendNotification: () => {} });
-    await initialize(connection);
-    // Only a client attached to the session may review it; the reviewer is
-    // derived from that attachment, whatever the request body says.
-    await connection.dispatch({
-      jsonrpc: JSON_RPC_VERSION,
-      id: "attach",
-      method: "session.attach",
-      params: { sessionId: "session_1", clientId: "operator-client" },
-    });
+    // The reviewer is derived from the attachment, whatever the request body says.
+    const { connection, resolveSessionToolCall } = await attachedToolResolutionConnection("operator-client");
 
     await expect(
       connection.dispatch({
@@ -198,6 +207,84 @@ describe("daemon session-control internal method dispatch", () => {
       ).resolves.toMatchObject({ error: { code: -32602 } });
     }
     expect(resolveSessionToolCall).toHaveBeenCalledTimes(3);
+  });
+
+  it("routes the protocol 1.20 exact attempt and rejects malformed attempts before dispatch", async () => {
+    const { connection, resolveSessionToolCall } = await attachedToolResolutionConnection(
+      "desktop-client",
+      AGENC_DAEMON_PROTOCOL_VERSION,
+    );
+    const attempt = {
+      runId: "conv-1",
+      stepId: "tool:turn-2:call_retry",
+      unknownEventId: "event:41",
+      unknownSequence: 41,
+    };
+    const evidence = {
+      sessionId: "session_1",
+      toolCallId: "call_retry",
+      disposition: "confirmed_no_effect",
+      evidenceRef: "desktop-effect-review:sha256:" + "a".repeat(64),
+      evidenceSha256: "a".repeat(64),
+    };
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "exact",
+        method: "session.resolveToolCall",
+        params: { ...evidence, attempt },
+      }),
+    ).resolves.toMatchObject({ result: { sessionId: "session_1" } });
+    expect(resolveSessionToolCall).toHaveBeenLastCalledWith({
+      ...evidence,
+      attempt,
+      reviewer: "local-client:desktop-client",
+    });
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "exact-attestation",
+        method: "session.resolveToolCall",
+        params: {
+          sessionId: "session_1",
+          toolCallId: "call_retry",
+          disposition: "remains_unknown",
+          attestation: "operator",
+          attempt,
+        },
+      }),
+    ).resolves.toMatchObject({ result: { sessionId: "session_1" } });
+    expect(resolveSessionToolCall).toHaveBeenLastCalledWith({
+      sessionId: "session_1",
+      toolCallId: "call_retry",
+      disposition: "remains_unknown",
+      attestation: "operator",
+      attempt,
+      reviewer: "local-client:desktop-client",
+    });
+
+    for (const [id, params] of [
+      ["attempt-without-evidence", { sessionId: "session_1", toolCallId: "call_retry", attempt }],
+      ["attempt-not-object", { ...evidence, attempt: "event:41" }],
+      ["attempt-extra-field", { ...evidence, attempt: { ...attempt, callId: "call_retry" } }],
+      ["attempt-missing-step", { ...evidence, attempt: { runId: "conv-1", unknownEventId: "event:41", unknownSequence: 41 } }],
+      ["attempt-empty-event", { ...evidence, attempt: { ...attempt, unknownEventId: " " } }],
+      ["attempt-zero-sequence", { ...evidence, attempt: { ...attempt, unknownSequence: 0 } }],
+      ["attempt-fractional-sequence", { ...evidence, attempt: { ...attempt, unknownSequence: 41.5 } }],
+      ["attempt-string-sequence", { ...evidence, attempt: { ...attempt, unknownSequence: "41" } }],
+    ] as const) {
+      await expect(
+        connection.dispatch({
+          jsonrpc: JSON_RPC_VERSION,
+          id,
+          method: "session.resolveToolCall",
+          params,
+        }),
+      ).resolves.toMatchObject({ error: { code: -32602 } });
+    }
+    expect(resolveSessionToolCall).toHaveBeenCalledTimes(2);
   });
 
   it("routes both compaction operator methods", async () => {

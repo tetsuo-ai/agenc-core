@@ -23,7 +23,7 @@ export type {
 /** JSON-RPC 2.0 envelope version sent on every request. */
 export const AGENC_SDK_JSON_RPC_VERSION = "2.0" as const;
 /** Protocol the SDK advertises on `initialize`. Handshake rules are in docs/sdk.md. */
-export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.19.0" as const;
+export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.20.0" as const;
 
 /** Preserve named wire fields while allowing helpers to supply cwd. */
 export type AgencDefaultCwdParams<Params extends { readonly cwd: string }> =
@@ -278,6 +278,9 @@ export type SessionResolveToolCallEvidenceParams =
 /** Operator attestation of an outcome, recorded by Core as the evidence. */
 export type SessionResolveToolCallAttestationParams =
   Wire.SessionResolveToolCallAttestationParams;
+
+/** Protocol 1.20: the exact recorded attempt a review settles. */
+export type SessionResolveToolCallAttempt = Wire.SessionResolveToolCallAttempt;
 
 export type SessionResolveToolCallParams = Wire.SessionResolveToolCallParams;
 

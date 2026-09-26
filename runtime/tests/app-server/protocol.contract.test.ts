@@ -244,7 +244,7 @@ function compileDefinitionValidator(
 
 describe("AgenC daemon protocol surface", () => {
   it("defines the current live attach-settings contract", () => {
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.19.0");
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.20.0");
 
     const status: AgenCDaemonInternalResultByMethod["session.hooks.status"] = {
       sessionId: "session-bare",
@@ -566,6 +566,25 @@ describe("AgenC daemon protocol surface", () => {
       expect(
         validate(request("attestation-invalid", { sessionId: "session_1", toolCallId: "call_v2", ...params })),
       ).toBe(false);
+    }
+
+    // Protocol 1.20: the exact recorded attempt rides on the evidence and
+    // attestation shapes only, and carries exactly its four fields.
+    const attempt = { runId: "conv-1", stepId: "tool:turn-2:call_v2", unknownEventId: "event:41", unknownSequence: 41 };
+    const evidence = { sessionId: "session_1", toolCallId: "call_v2", disposition: "confirmed_no_effect", evidenceRef: "ticket:INC-14", evidenceSha256: "a".repeat(64) };
+    expect(validate(request("attempt-evidence", { ...evidence, attempt })), JSON.stringify(validate.errors)).toBe(true);
+    expect(
+      validate(request("attempt-attestation", { sessionId: "session_1", toolCallId: "call_v2", disposition: "remains_unknown", attestation: "operator", attempt })),
+      JSON.stringify(validate.errors),
+    ).toBe(true);
+    for (const params of [
+      { sessionId: "session_1", toolCallId: "call_v2", attempt },
+      { ...evidence, attempt: { ...attempt, callId: "call_v2" } },
+      { ...evidence, attempt: { runId: "conv-1", stepId: "tool:turn-2:call_v2", unknownEventId: "event:41" } },
+      { ...evidence, attempt: { ...attempt, unknownSequence: 0 } },
+      { ...evidence, attempt: { ...attempt, unknownSequence: 1.5 } },
+    ]) {
+      expect(validate(request("attempt-invalid", params))).toBe(false);
     }
   });
 
