@@ -19,6 +19,10 @@ import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,
 } from "./types.js";
+import {
+  INERT_SHELL_SCRIPT_COMMANDS,
+  REMOVAL_FLOOR_SHELL_CASES,
+} from "./helpers/removal-floor-shells.js";
 
 function makeCtx(
   overrides?: Partial<ToolPermissionContext> & {
@@ -532,6 +536,7 @@ describe("bashToolHasPermission", () => {
     ["r\\m -rf /", "rm -rf"],
     ["\"r\"m -rf /", "rm -rf"],
     ["r''m -rf /", "rm -rf"],
+    ...REMOVAL_FLOOR_SHELL_CASES,
   ])(
     "dangerous command form is denied at the permission boundary: %s",
     async (command, label) => {
@@ -555,6 +560,7 @@ describe("bashToolHasPermission", () => {
     "printf curl | sh",
     "chmod --reference /etc/passwd ./file",
     "chown --reference /etc/passwd ./file",
+    ...INERT_SHELL_SCRIPT_COMMANDS,
   ])(
     "non-critical shell command remains approvable at the permission boundary: %s",
     async (command) => {
@@ -782,6 +788,21 @@ describe("bashToolHasPermission", () => {
     );
     expect(denied.behavior).toBe("deny");
   });
+
+  test.each(REMOVAL_FLOOR_SHELL_CASES)(
+    "shell input evaluators stay on the safety floor under bypassPermissions: %s",
+    async (command, label) => {
+      const ctx = makeCtx({ mode: "bypassPermissions" });
+      const result = await bashToolHasPermission({ command }, makeEvaluatorCtx(ctx));
+      expect(result.behavior).toBe("deny");
+      if (result.behavior === "deny") {
+        expect(result.decisionReason).toMatchObject({
+          type: "safetyCheck",
+          reason: label,
+        });
+      }
+    },
+  );
 
   test("BASH_TOOL_NAME is the canonical string", () => {
     expect(BASH_TOOL_NAME).toBe("system.bash");
