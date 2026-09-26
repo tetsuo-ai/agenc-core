@@ -15,6 +15,8 @@ describe("validated binary carriers", () => {
     expect(isCanonicalBase64Body("")).toBe(false);
     expect(isCanonicalBase64Body("abc")).toBe(false);
     expect(isCanonicalBase64Body(CANONICAL_BODY)).toBe(true);
+    // Well formed, but the pad bits are not zero: only the round trip rejects it.
+    expect(isCanonicalBase64Body("YR==")).toBe(false);
     expect(isCanonicalBase64Body(`${CANONICAL_BODY.slice(0, 4)}[REDACTED]`)).toBe(
       false,
     );

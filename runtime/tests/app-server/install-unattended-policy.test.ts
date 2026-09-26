@@ -11,7 +11,7 @@ function registry(
 }
 
 describe("installUnattendedPermissionPolicy", () => {
-  test("leaves a run without lists or the read-only grant on its created mode", async () => {
+  test("leaves a run that declares no allowlist or denylist on its created mode", async () => {
     const empty = registry();
     await installUnattendedPermissionPolicy(empty, undefined, undefined);
     expect(empty.current().mode).toBe("default");
@@ -26,7 +26,9 @@ describe("installUnattendedPermissionPolicy", () => {
     expect(empty.current().unattendedPolicy).toBeUndefined();
   });
 
-  test("installs only when an allowlist, denylist, or read-only grant is present", async () => {
+  // The routine read-only grant is covered with the current `routine` argument
+  // in routine-run-policy.test.ts.
+  test("installs a declared allowlist or denylist", async () => {
     const allow = registry();
     await installUnattendedPermissionPolicy(allow, ["FileRead"], undefined);
     expect(allow.current().mode).toBe("unattended");
@@ -40,11 +42,6 @@ describe("installUnattendedPermissionPolicy", () => {
     await installUnattendedPermissionPolicy(deny, undefined, ["system.bash"]);
     expect(deny.current().mode).toBe("unattended");
     expect(deny.current().unattendedPolicy?.denylist).toEqual(["system.bash"]);
-
-    const readOnly = registry();
-    await installUnattendedPermissionPolicy(readOnly, undefined, undefined, true);
-    expect(readOnly.current().mode).toBe("unattended");
-    expect(readOnly.current().unattendedPolicy?.readOnly).toBe(true);
   });
 
   test("still records policy without rewriting an explicit user mode", async () => {
