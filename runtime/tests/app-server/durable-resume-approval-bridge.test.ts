@@ -38,6 +38,10 @@ import { RolloutStore } from "../../src/session/rollout-store.js";
 import { Session } from "../../src/session/session.js";
 import type { Event } from "../../src/session/event-log.js";
 import { createOperatorEffectReviewResolution } from "../../src/state/effect-review.js";
+import { openStateDatabases } from "../../src/state/sqlite-driver.js";
+import { recoverDaemonStateOnStartup } from "../../src/state/recovery.js";
+import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
+import type { LLMChatOptions } from "../../src/llm/types.js";
 import { VERSION } from "../../src/version.js";
 
 /**
@@ -1630,6 +1634,154 @@ describe("durable resume reaches the daemon approval bridge (#2239)", () => {
     await runner.stopAgent(CONVERSATION_ID).catch(() => undefined);
   }, 60_000);
 
+
+  it("restores and accepts input after two daemon stops around a checkpoint continuation", async () => {
+    stubProviderAndMcp();
+    const providerMod = await import("../../src/llm/provider.js");
+    let requests = 0;
+    const request = async (_messages: unknown, options?: LLMChatOptions) => {
+      requests += 1;
+      if (requests === 1) {
+        return { content: "", toolCalls: [
+          { id: "checkpoint-glob", name: "Glob", arguments: '{"pattern":"*"}' },
+        ], usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+      }
+      if (requests === 2) {
+        const signal = options?.signal;
+        if (signal === undefined) throw new Error("model request needs an abort signal");
+        await new Promise<void>((_resolve, reject) => {
+          const abort = () => reject(signal.reason);
+          if (signal.aborted) abort();
+          else signal.addEventListener("abort", abort, { once: true });
+        });
+      }
+      return { content: "resumed successfully", toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+    };
+    vi.spyOn(providerMod, "createProvider").mockImplementation(() => ({
+      name: "stub",
+      chat: request,
+      chatStream: (messages: unknown, _onChunk: unknown, options?: LLMChatOptions) =>
+        request(messages, options),
+    }) as never);
+    let booted: LocalRuntimeBootstrap | undefined;
+    let runner = makeRunner((bootstrap) => { booted = bootstrap; });
+    const runtimeOptions = resolveAgentRuntimeOptions({});
+    const started = await runner.startAgent({
+      objective: "continue through two restarts", cwd: workspace,
+      provider: "grok", runtimeOptions,
+      unattendedAllow: [], unattendedDeny: [],
+      envOverrides: { XAI_API_KEY: "test-key" },
+    });
+    const runId = started.agentId;
+    const path = booted!.rolloutStore.rolloutPath;
+    const initialDriver = openStateDatabases({ cwd: workspace, agencHome: home });
+    try {
+      initialDriver.prepareState(`INSERT INTO agent_runs
+        (id, objective, status, started_at, last_active_at, current_session_id)
+        VALUES (?, ?, 'running', ?, ?, ?)`).run(
+        runId, "continue through two restarts", started.startedAt, started.startedAt, runId,
+      );
+    } finally { initialDriver.close(); }
+    const events = () => readRollout(path).flatMap((item) =>
+      item.type === "event_msg" ? [item.payload] : []);
+    const recover = () => {
+      const driver = openStateDatabases({ cwd: workspace, agencHome: home });
+      try {
+        const report = recoverDaemonStateOnStartup(driver);
+        expect(report.recoveryExclusions).toEqual([]);
+        expect(report.recoveredRuns.map((run) => run.id)).toContain(runId);
+      } finally { driver.close(); }
+    };
+    const restore = async () => {
+      runner = makeRunner((bootstrap) => { booted = bootstrap; });
+      await expect(runner.restoreAgent({
+        agentId: runId, objective: "continue through two restarts", cwd: workspace,
+        resumeRolloutPath: path, explicitColdResume: true,
+        resumeSuspendedRun: true, suspendedResumeReason: "daemon_startup_restore",
+        runtimeOptions, envOverrides: { XAI_API_KEY: "test-key" },
+      })).resolves.toBe(true);
+    };
+    try {
+      await waitUntil(() => requests === 2 &&
+        events().some((event) => event.msg.type === "turn_checkpoint"),
+      "first turn checkpoint and in-flight model request");
+      await expect(runner.suspendIdleAgentForDaemonShutdown(runId))
+        .resolves.toMatchObject({ disposition: "suspended" });
+      recover();
+      await restore();
+      await waitUntil(() => events().some((event) => event.msg.type === "turn_resumed") &&
+        events().some((event) => event.msg.type === "turn_complete") &&
+        booted!.session.activeTurn.unsafePeek() === null,
+      "checkpoint continuation to finish without a new user message");
+      await expect(runner.suspendIdleAgentForDaemonShutdown(runId))
+        .resolves.toMatchObject({ disposition: "suspended" });
+
+      // This is the startup that used to quarantine the resumed conversation.
+      recover();
+      const durableEvents = events();
+      const resumeIndex = durableEvents.findIndex((event) => event.msg.type === "run_resumed");
+      const activationIndex = durableEvents.findIndex((event) => event.msg.type === "run_startup_activated");
+      const turnIndex = durableEvents.findIndex((event, index) =>
+        index > resumeIndex && event.msg.type === "turn_started");
+      expect(activationIndex).toBeGreaterThan(resumeIndex);
+      expect(activationIndex).toBeLessThan(turnIndex);
+      expect(durableEvents.filter((event) => event.msg.type === "run_startup_activated"))
+        .toHaveLength(1);
+
+      await restore();
+      expect(events().filter((event) => event.msg.type === "run_startup_activated"))
+        .toHaveLength(1);
+      await expect(runner.submitAgentMessage(runId, {
+        sessionId: runId, content: "new message", originalContent: "new message",
+        messageId: "after-second-restart", streamId: "after-second-restart",
+        acceptedAt: new Date().toISOString(),
+      })).resolves.toMatchObject({ disposition: "started" });
+      await waitUntil(() => booted!.session.activeTurn.unsafePeek() === null &&
+        events().filter((event) => event.msg.type === "turn_complete").length === 2,
+      "new message to finish");
+    } finally {
+      await runner.stopAgent(runId).catch(() => undefined);
+    }
+  }, 60_000);
+
+  it("does not start a resumed turn when durable startup activation fails", async () => {
+    await stubProvider();
+    stubProviderAndMcp();
+    seedPendingStartupActivation();
+    const activationError = new Error("activation fsync failed");
+    const emitted: string[] = [];
+    let failActivation = true;
+    spyOnEmittedEvents((event) => {
+      if (event.msg.type === "run_startup_activated" && failActivation) {
+        throw activationError;
+      }
+      emitted.push(event.msg.type);
+    });
+    const runner = makeRunner();
+    try {
+      await expect(runner.restoreAgent(restoreParams({
+        resumeStartupActivationPending: true,
+      }))).resolves.toBe(true);
+      expect(emitted).not.toContain("turn_started");
+      expect(emitted).not.toContain("turn_resumed");
+      expect(readRollout(rolloutPath).some((item) => item.type === "event_msg" &&
+        item.payload.msg.type === "run_startup_activated")).toBe(false);
+
+      // Failed activation stays pending so a later admission retries it.
+      failActivation = false;
+      await expect(runner.submitAgentMessage(CONVERSATION_ID, {
+        sessionId: CONVERSATION_ID, content: "retry", originalContent: "retry",
+        messageId: "retry-activation", streamId: "retry-activation",
+        acceptedAt: new Date().toISOString(),
+      })).resolves.toMatchObject({ disposition: "started" });
+      expect(emitted.filter((type) => type === "run_startup_activated")).toHaveLength(1);
+      expect(emitted.indexOf("run_startup_activated")).toBeLessThan(emitted.indexOf("user_message"));
+      expect(emitted.indexOf("run_startup_activated")).toBeLessThan(emitted.indexOf("turn_started"));
+    } finally {
+      await runner.stopAgent(CONVERSATION_ID).catch(() => undefined);
+    }
+  }, 60_000);
 
   it("restores an interrupted suspended turn once before the next user prompt", async () => {
     await stubProvider();

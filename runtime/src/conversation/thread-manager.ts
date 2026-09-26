@@ -602,9 +602,12 @@ export class ConversationThreadManager extends ThreadManager {
    *
    * Runs at most once per session. Returns the neutral no-op outcome when
    * nothing was deferred (fresh start, non-deferring embedder, second call).
+   * `beforeResume` runs only after the continuation passes its safety gates,
+   * before any resumed turn activity is persisted.
    */
   async runDeferredDurableTurnResume(
     session: Session,
+    beforeResume?: () => void,
   ): Promise<DurableResumeAttempt> {
     if (!rootCanContinueAfterRestart(session)) {
       this.pendingDurableTurnResumes.delete(session);
@@ -622,7 +625,7 @@ export class ConversationThreadManager extends ThreadManager {
       : this.registerRootSession(session);
     const record = this.upsertRecord(thread);
     try {
-      const resume = attemptDurableTurnResume(session);
+      const resume = attemptDurableTurnResume(session, beforeResume);
       this.inFlightDurableTurnResumes.set(session, resume);
       let attempt: DurableResumeAttempt;
       try {
@@ -1364,6 +1367,7 @@ export async function resumeTurnFromCheckpoint(
   reconstruction: RolloutReconstruction,
   signal?: AbortSignal,
   turnOptions?: Pick<SessionRunTurnOptions, "ctx" | "systemPrompt" | "systemPromptTrust">,
+  beforeResume?: () => void,
 ): Promise<DurableResumeAttempt> {
   if (!rootCanContinueAfterRestart(session)) {
     return { resumed: false };
@@ -1451,6 +1455,10 @@ export async function resumeTurnFromCheckpoint(
           : {}),
       };
     }
+    // A daemon continuation is ordinary turn activity even without new user
+    // input. Commit its startup authority before pairing results or starting
+    // the turn, while leaving rejected or absent continuations unactivated.
+    beforeResume?.();
     await driveResumedTurn(session, currentReconstruction, turn, plan, signal, turnOptions);
     return {
       resumed: true,
@@ -1474,10 +1482,17 @@ export async function resumeTurnFromCheckpoint(
  */
 async function attemptDurableTurnResume(
   session: Session,
+  beforeResume?: () => void,
 ): Promise<DurableResumeAttempt> {
   const reconstruction = lastReconstructionBySession.get(session);
   if (reconstruction === undefined) return { resumed: false };
-  return resumeTurnFromCheckpoint(session, reconstruction);
+  return resumeTurnFromCheckpoint(
+    session,
+    reconstruction,
+    undefined,
+    undefined,
+    beforeResume,
+  );
 }
 
 async function defaultStartupPrewarm({
