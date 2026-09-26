@@ -1,6 +1,37 @@
 import { describe, expect, it } from "vitest";
 import { LLMFundsError, LLMManagedAdmissionError } from "../../src/llm/errors.js";
-import { isProviderFundsFailure } from "../../src/llm/funds.js";
+import { isProviderFundsFailure, providerFundsMessage } from "../../src/llm/funds.js";
+
+describe("providerFundsMessage", () => {
+  it.each([
+    ["grok", "xAI"],
+    ["xai", "xAI"],
+    ["openai", "OpenAI"],
+    ["anthropic", "Anthropic"],
+    ["deepseek", "DeepSeek"],
+    ["openrouter", "OpenRouter"],
+    ["gemini", "Gemini"],
+    ["agenc", "AgenC"],
+    ["custom", "custom"],
+  ])("uses a fixed billing sentence for %s", (provider, displayName) => {
+    expect(providerFundsMessage(provider, { status: 403, body: { error: "Insufficient credits." } })).toBe(
+      `${displayName} says the account has no credits left or has reached its spending limit.`,
+    );
+  });
+
+  it.each([
+    { status: 402 },
+    { status: 429, error: { code: "usage_limit_reached" } },
+    { status: 429, body: { error: { message: "Insufficient credits." } } },
+  ])("keeps the original message without explicit credit evidence: %j", (error) => {
+    expect(providerFundsMessage("openai", error)).toBeUndefined();
+  });
+
+  it("keeps the existing default for directly constructed funds errors", () => {
+    expect(new LLMFundsError("openai", 429).message)
+      .toBe("openai error: provider credits or billing quota exhausted");
+  });
+});
 
 function wrap(depth: number, inner: unknown): unknown {
   let current: unknown = inner;
