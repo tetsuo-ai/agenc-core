@@ -26,7 +26,9 @@ import type {
 } from "./audio.js";
 import { createRealtimeTuiControls } from "./controller.js";
 
-function createClient(): {
+function createClient(
+  onRequest?: (method: AgenCDaemonMethod, params?: JsonObject) => void,
+): {
   readonly requests: Array<{
     readonly method: AgenCDaemonMethod;
     readonly params?: JsonObject;
@@ -44,6 +46,7 @@ function createClient(): {
     requests,
     async request(method, params) {
       requests.push({ method, params });
+      onRequest?.(method, params);
       return {} as AgenCDaemonResultByMethod[typeof method];
     },
   };
@@ -345,6 +348,372 @@ describe("AgenC realtime TUI controller", () => {
       "thread/realtime/stop",
     ]);
     expect(controls.getState().phase).toBe("inactive");
+  });
+
+  test("stops and discards a websocket capture that resolves after stop", async () => {
+    const client = createClient();
+    let releaseCapture: (() => void) | null = null;
+    let callbacks: RealtimeAudioCaptureCallbacks | null = null;
+    const stop = vi.fn();
+    const controls = createRealtimeTuiControls({
+      threadId: "agent_1",
+      client,
+      emitEvent: () => {},
+      startAudioCapture: async (nextCallbacks) => {
+        callbacks = nextCallbacks;
+        await new Promise<void>((resolve) => {
+          releaseCapture = resolve;
+        });
+        return { stop };
+      },
+    });
+
+    const start = controls.start({ transport: "websocket" });
+    await waitFor(
+      () =>
+        client.requests.some(
+          (request) => request.method === "thread/realtime/start",
+        ),
+      "daemon start before capture resolves",
+    );
+    controls.handleTranscriptEvent({
+      type: "realtime_closed",
+      payload: { reason: "remote closed" },
+    });
+    expect(controls.getState().phase).toBe("inactive");
+    releaseCapture?.();
+    await start;
+
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(controls.getState()).toMatchObject({
+      phase: "inactive",
+      localAudioLevel: 0,
+      closedBanner: "Realtime closed: remote closed",
+    });
+
+    callbacks?.onLevel(32000);
+    callbacks?.onAudio({
+      data: "BBBB",
+      sampleRate: 16000,
+      numChannels: 1,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(controls.getState().localAudioLevel).toBe(0);
+    expect(
+      client.requests.some(
+        (request) => request.method === "thread/realtime/appendAudio",
+      ),
+    ).toBe(false);
+
+    // Public stop is a no-op while inactive; a leaked capture would stay current.
+    await controls.stop();
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    {
+      kind: "async",
+      makeStop: (error: Error) =>
+        vi.fn(async () => {
+          throw error;
+        }),
+    },
+    {
+      kind: "sync",
+      makeStop: (error: Error) =>
+        vi.fn(() => {
+          throw error;
+        }),
+    },
+  ])("logs $kind discard failures for a capture that resolves after stop", async ({
+    kind,
+    makeStop,
+  }) => {
+    const discardError = new Error(`stale capture ${kind} stop failed`);
+    const client = createClient();
+    let releaseCapture: (() => void) | null = null;
+    const stop = makeStop(discardError);
+    const controls = createRealtimeTuiControls({
+      threadId: "agent_1",
+      client,
+      emitEvent: () => {},
+      startAudioCapture: async () => {
+        await new Promise<void>((resolve) => {
+          releaseCapture = resolve;
+        });
+        return { stop };
+      },
+    });
+
+    const start = controls.start({ transport: "websocket" });
+    await waitFor(
+      () =>
+        client.requests.some(
+          (request) => request.method === "thread/realtime/start",
+        ),
+      "daemon start before capture resolves",
+    );
+    controls.handleTranscriptEvent({
+      type: "realtime_closed",
+      payload: { reason: "remote closed" },
+    });
+    releaseCapture?.();
+    // A synchronous throw from stop() must be logged, not reject start().
+    await expect(start).resolves.toBeUndefined();
+
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(logMock.logError).toHaveBeenCalledWith(discardError);
+    expect(controls.getState()).toMatchObject({
+      phase: "inactive",
+      errorBanner: null,
+      closedBanner: "Realtime closed: remote closed",
+    });
+  });
+
+  test.each([
+    {
+      type: "realtime_closed",
+      payload: { reason: "remote closed" },
+      expected: { closedBanner: "Realtime closed: remote closed" },
+    },
+    {
+      type: "realtime_error",
+      payload: { message: "provider failed" },
+      expected: { errorBanner: "provider failed" },
+    },
+  ])(
+    "does not open the mic when $type arrives during the start RPC",
+    async ({ type, payload, expected }) => {
+      let controls: ReturnType<typeof createRealtimeTuiControls> | null = null;
+      let closeDuringStart = true;
+      const client = createClient((method) => {
+        if (method === "thread/realtime/start" && closeDuringStart) {
+          // The session ends before the start RPC resolves.
+          closeDuringStart = false;
+          controls?.handleTranscriptEvent({ type, payload });
+        }
+      });
+      const stop = vi.fn();
+      const startAudioCapture = vi.fn<StartRealtimeAudioCapture>(
+        async () => ({ stop }),
+      );
+      controls = createRealtimeTuiControls({
+        threadId: "agent_1",
+        client,
+        emitEvent: () => {},
+        startAudioCapture,
+      });
+
+      await expect(
+        controls.start({ transport: "websocket" }),
+      ).resolves.toBeUndefined();
+
+      expect(startAudioCapture).not.toHaveBeenCalled();
+      expect(controls.getState()).toMatchObject({
+        phase: "inactive",
+        localAudioLevel: 0,
+        ...expected,
+      });
+      expect(
+        client.requests.some(
+          (request) => request.method === "thread/realtime/appendAudio",
+        ),
+      ).toBe(false);
+
+      // A fresh start still opens exactly one capture for the new session.
+      await controls.start({ transport: "websocket" });
+      expect(startAudioCapture).toHaveBeenCalledTimes(1);
+      await controls.stop();
+      expect(stop).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  test("ignores stale capture callbacks after a restart during start", async () => {
+    const client = createClient();
+    const emitted: JsonObject[] = [];
+    let releaseFirstCapture: (() => void) | null = null;
+    let firstCallbacks: RealtimeAudioCaptureCallbacks | null = null;
+    let secondCallbacks: RealtimeAudioCaptureCallbacks | null = null;
+    const firstStop = vi.fn();
+    const secondStop = vi.fn();
+    let startCount = 0;
+    const controls = createRealtimeTuiControls({
+      threadId: "agent_1",
+      client,
+      emitEvent: (event) => emitted.push(event),
+      startAudioCapture: async (nextCallbacks) => {
+        startCount += 1;
+        if (startCount === 1) {
+          firstCallbacks = nextCallbacks;
+          await new Promise<void>((resolve) => {
+            releaseFirstCapture = resolve;
+          });
+          return { stop: firstStop };
+        }
+        secondCallbacks = nextCallbacks;
+        return { stop: secondStop };
+      },
+    });
+
+    const firstStart = controls.start({ transport: "websocket" });
+    await waitFor(
+      () =>
+        client.requests.some(
+          (request) => request.method === "thread/realtime/start",
+        ),
+      "first daemon start",
+    );
+    controls.handleTranscriptEvent({
+      type: "realtime_closed",
+      payload: { reason: "remote closed" },
+    });
+    releaseFirstCapture?.();
+    await firstStart;
+    expect(firstStop).toHaveBeenCalledTimes(1);
+
+    await controls.start({ transport: "websocket" });
+    expect(secondCallbacks).not.toBeNull();
+    client.requests.length = 0;
+
+    firstCallbacks?.onLevel(11111);
+    firstCallbacks?.onAudio({
+      data: "OLD1",
+      sampleRate: 16000,
+      numChannels: 1,
+    });
+    firstCallbacks?.onError("stale capture failure");
+    firstCallbacks?.onClosed();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(controls.getState()).toMatchObject({
+      phase: "starting",
+      localAudioLevel: 0,
+      errorBanner: null,
+    });
+    expect(client.requests).toEqual([]);
+    expect(emitted.some((event) => event.type === "realtime_error")).toBe(
+      false,
+    );
+
+    const liveAudio = {
+      data: "NEW1",
+      sampleRate: 16000,
+      numChannels: 1,
+    };
+    secondCallbacks?.onLevel(22222);
+    secondCallbacks?.onAudio(liveAudio);
+    await waitFor(
+      () =>
+        client.requests.some(
+          (request) => request.method === "thread/realtime/appendAudio",
+        ),
+      "current generation audio append",
+    );
+    expect(controls.getState().localAudioLevel).toBe(22222);
+    expect(client.requests.at(-1)).toEqual({
+      method: "thread/realtime/appendAudio",
+      params: { threadId: "agent_1", audio: liveAudio },
+    });
+    expect(secondStop).not.toHaveBeenCalled();
+  });
+
+  test("does not tear down a newer session when a stale append fails", async () => {
+    const requests: Array<{
+      readonly method: AgenCDaemonMethod;
+      readonly params?: JsonObject;
+    }> = [];
+    let releaseAppend: (() => void) | null = null;
+    const client = {
+      requests,
+      async request<Method extends AgenCDaemonMethod>(
+        method: Method,
+        params?: JsonObject,
+      ): Promise<AgenCDaemonResultByMethod[Method]> {
+        requests.push({ method, params });
+        if (method === "thread/realtime/appendAudio") {
+          await new Promise<void>((resolve) => {
+            releaseAppend = resolve;
+          });
+          throw new Error("stale append failed");
+        }
+        return {} as AgenCDaemonResultByMethod[Method];
+      },
+    };
+    const emitted: JsonObject[] = [];
+    let firstCallbacks: RealtimeAudioCaptureCallbacks | null = null;
+    let startCount = 0;
+    const controls = createRealtimeTuiControls({
+      threadId: "agent_1",
+      client,
+      emitEvent: (event) => emitted.push(event),
+      startAudioCapture: async (nextCallbacks) => {
+        startCount += 1;
+        if (startCount === 1) firstCallbacks = nextCallbacks;
+        return { stop: vi.fn() };
+      },
+    });
+
+    await controls.start({ transport: "websocket" });
+    firstCallbacks?.onAudio({
+      data: "OLD1",
+      sampleRate: 16000,
+      numChannels: 1,
+    });
+    await waitFor(() => releaseAppend !== null, "stale append started");
+
+    await controls.stop();
+    await controls.start({ transport: "websocket" });
+    requests.length = 0;
+    releaseAppend?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(controls.getState()).toMatchObject({
+      phase: "starting",
+      errorBanner: null,
+    });
+    expect(
+      requests.some((request) => request.method === "thread/realtime/stop"),
+    ).toBe(false);
+    expect(emitted.some((event) => event.type === "realtime_error")).toBe(
+      false,
+    );
+  });
+
+  test("ignores capture terminal callbacks once stop has been requested", async () => {
+    const client = createClient();
+    const emitted: JsonObject[] = [];
+    let callbacks: RealtimeAudioCaptureCallbacks | null = null;
+    const controls = createRealtimeTuiControls({
+      threadId: "agent_1",
+      client,
+      emitEvent: (event) => emitted.push(event),
+      startAudioCapture: async (nextCallbacks) => {
+        callbacks = nextCallbacks;
+        return { stop: vi.fn() };
+      },
+    });
+    controls.subscribe((state) => {
+      if (!state.requestedClose) return;
+      callbacks?.onError("late during stop");
+      callbacks?.onClosed();
+    });
+
+    await controls.start({ transport: "websocket" });
+    await controls.stop();
+
+    expect(
+      client.requests.filter(
+        (request) => request.method === "thread/realtime/stop",
+      ),
+    ).toHaveLength(1);
+    expect(controls.getState()).toMatchObject({
+      phase: "inactive",
+      errorBanner: null,
+      closedBanner: "Realtime closed: requested",
+    });
+    expect(emitted.some((event) => event.type === "realtime_error")).toBe(
+      false,
+    );
   });
 
   test("closes WebRTC and surfaces an error when provider SDP is rejected", async () => {
