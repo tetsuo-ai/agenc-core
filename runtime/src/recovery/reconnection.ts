@@ -6,6 +6,7 @@
  * abort-aware sleeping.
  */
 
+import { waitForProviderRetry } from "./provider-wait.js";
 import { classifyLLMFailure } from "../llm/errors.js";
 import { monotonicMs } from "./_deps/monotonic.js";
 import {
@@ -261,17 +262,21 @@ export async function reconnectWithBackoff<T>(
 
     emitScheduledRetry(opts.session, maxAttempts, delayDecision);
     const notice = rateLimitRetryNotice(transientError, delayDecision.delayMs);
-    if (notice !== undefined) {
-      emitWarning(
-        opts.session.eventLog,
-        opts.session.nextInternalSubId(),
-        "provider_outage_wait",
-        notice,
-      );
-    }
     if (isReconnectAborted(opts.signal)) return aborted(attempts);
     try {
-      await sleeper(delayDecision.delayMs, opts.signal);
+      const wait = () => sleeper(delayDecision.delayMs, opts.signal);
+      if (notice !== undefined) {
+        await waitForProviderRetry({
+          session: opts.session,
+          cause: "provider_rate_limited",
+          message: notice,
+          delayMs: delayDecision.delayMs,
+          now: opts.wallNow,
+          wait,
+        });
+      } else {
+        await wait();
+      }
     } catch (error) {
       if (isReconnectAborted(opts.signal)) return aborted(attempts);
       throw error;

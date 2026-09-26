@@ -521,7 +521,7 @@ describe("reconnectWithBackoff orchestration", () => {
           msg: {
             type: "warning",
             payload: {
-              cause: "provider_outage_wait",
+              cause: "provider_rate_limited",
               message: "The provider is limiting requests. Retrying in 30 s.",
             },
           },
@@ -546,7 +546,7 @@ describe("reconnectWithBackoff orchestration", () => {
     }));
     expect(outcome).toMatchObject({ kind: "exhausted" });
     expect(sleeper).not.toHaveBeenCalled();
-    expect(causes).not.toContain("provider_outage_wait");
+    expect(causes).not.toContain("provider_rate_limited");
   });
 
   test("safe warning telemetry omits raw provider error text", async () => {

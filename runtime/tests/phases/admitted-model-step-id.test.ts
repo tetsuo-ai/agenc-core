@@ -317,7 +317,7 @@ describe("admitted model sample identity", () => {
       await withAdmittedHarness(["recovered"], async ({ session, admission, ctx }) => {
         const warnings: string[] = [];
         session.eventLog.subscribe((event) => {
-          if (event.msg.type === "warning" && event.msg.payload.cause === "provider_outage_wait") {
+          if (event.msg.type === "warning" && (event.msg.payload.cause === "provider_outage_wait" || event.msg.payload.cause === "provider_rate_limited")) {
             warnings.push(event.msg.payload.message);
           }
         });

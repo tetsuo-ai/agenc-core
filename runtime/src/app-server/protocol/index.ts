@@ -2946,10 +2946,18 @@ export type RunWorkflowStepStatus =
   | "unknown_outcome"
   | "blocked";
 
+export interface RunWorkflowProviderWait extends JsonObject {
+  readonly cause: "provider_outage_wait" | "provider_rate_limited";
+  readonly message: string;
+  readonly retryAt?: string;
+}
+
 export interface RunWorkflowStatusStep extends JsonObject {
   readonly stepId: string;
   readonly stage: string;
   readonly status: RunWorkflowStepStatus;
+  /** Live provider retry wait; omitted when the call proceeds or the step ends. */
+  readonly providerWait?: RunWorkflowProviderWait;
   readonly attempts: number;
   readonly verdict?: string;
   readonly artifacts?: readonly RunWorkflowArtifactPointer[];

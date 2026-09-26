@@ -24,6 +24,7 @@ import type {
   DurableRunTerminalRecord,
 } from "../../state/run-durability.js";
 import { deriveAllStageProjections, readWorkflowStepEvidence } from "./steps.js";
+import type { ProviderWait } from "../../recovery/provider-wait.js";
 import type { PermissionMode } from "../../permissions/types.js";
 
 export interface WorkflowStatusStep {
@@ -31,6 +32,7 @@ export interface WorkflowStatusStep {
   readonly stage: WorkflowStepId;
   readonly status: WorkflowStepStatus;
   readonly attempts: number;
+  readonly providerWait?: ProviderWait;
   readonly verdict?: string;
   readonly artifacts?: readonly RunArtifactPointer[];
 }
