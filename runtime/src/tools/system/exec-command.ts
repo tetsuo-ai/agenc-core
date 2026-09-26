@@ -166,16 +166,8 @@ export function runtimeSandboxForExec(
     return broker.runtimeSandbox(executionSurface);
   }
   const worktreeConfinement = broker?.worktreeConfinement;
-  const confinedEscalation = escalationKeepsWorktreeSandbox(context, worktreeConfinement);
-  if (
-    !sandboxModeRequiresPlatformIsolation(context.sandboxMode) &&
-    !confinedEscalation
-  ) {
-    return undefined;
-  }
-  const profileContext = confinedEscalation
-    ? { ...context, sandboxMode: "workspace_write" as const }
-    : context;
+  const attempt = sandboxedAttempt(context, worktreeConfinement);
+  if (attempt === undefined) return undefined;
   const platformSandbox = runtimePlatformSandboxStatus(context);
   if (!platformSandbox.available) {
     throw new SandboxExecutionError({
@@ -183,7 +175,7 @@ export function runtimeSandboxForExec(
       surface: executionSurface,
       status: {
         kind: "unavailable",
-        mode: profileContext.sandboxMode,
+        mode: attempt.context.sandboxMode,
         platform: process.platform,
         reason: platformSandbox.reason ?? "platform sandbox is unavailable",
         remediation:
@@ -234,18 +226,16 @@ export function runtimeSandboxForExec(
   const networkInterfaces = networkPolicyInterfaces(turn.network);
   const routineRun = routineRunOptions(context.invocation.session) !== undefined;
   const childTempRoot = runtimeChildTempRoot(context, sessionTempRoot, sandboxPolicyCwd);
-  const profile = permissionProfileForRuntimeContext(profileContext, {
+  const profile = permissionProfileForRuntimeContext(attempt.context, {
     cwd: sandboxPolicyCwd,
     ...(network !== undefined ? { network } : {}),
   });
   return {
-    permissionProfile: worktreeConfinement === undefined
-      ? profile
-      : worktreeChildProfile(profile, worktreeConfinement, {
-          escalated: confinedEscalation,
-          cwd: sandboxPolicyCwd,
-          tempRoot: childTempRoot,
-        }),
+    permissionProfile: worktreeChildProfile(profile, worktreeConfinement, {
+      escalated: attempt.escalated,
+      cwd: sandboxPolicyCwd,
+      tempRoot: childTempRoot,
+    }),
     // A routine run and a worktree child never widen their sandbox: the
     // profile above already folded in (and confined) anything granted.
     ...(context.additionalPermissions !== undefined && !routineRun &&
@@ -274,28 +264,43 @@ export function runtimeSandboxForExec(
   };
 }
 
+type RuntimeAttemptContext = NonNullable<ReturnType<typeof readToolRuntimeContext>>;
+
 /**
- * A worktree child's commands write inside its worktree only. In a session
- * that runs under the OS sandbox, an attempt the orchestrator runs without it
- * (require_escalated, an exec-policy rule) keeps that confinement. Otherwise
- * a bypassPermissions session, which grants escalation without asking, would
+ * The context an attempt's sandbox is built from, or undefined when the
+ * attempt runs without one. A worktree child's commands write inside its
+ * worktree only: in a session that runs under the OS sandbox, an attempt the
+ * orchestrator runs without it (require_escalated, an exec-policy rule) keeps
+ * that confinement, over the workspace-write profile. Otherwise a
+ * bypassPermissions session, which grants escalation without asking, would
  * undo it on the model's first request.
  */
-function escalationKeepsWorktreeSandbox(
-  context: NonNullable<ReturnType<typeof readToolRuntimeContext>>,
+function sandboxedAttempt(
+  context: RuntimeAttemptContext,
   confinement: WorktreeWriteConfinement | undefined,
-): boolean {
-  return confinement !== undefined &&
-    !sandboxModeRequiresPlatformIsolation(context.sandboxMode) &&
-    sandboxModeRequiresPlatformIsolation(context.requestedSandboxMode);
+): { readonly context: RuntimeAttemptContext; readonly escalated: boolean } | undefined {
+  if (sandboxModeRequiresPlatformIsolation(context.sandboxMode)) {
+    return { context, escalated: false };
+  }
+  if (
+    confinement === undefined ||
+    !sandboxModeRequiresPlatformIsolation(context.requestedSandboxMode)
+  ) {
+    return undefined;
+  }
+  return { context: { ...context, sandboxMode: "workspace_write" }, escalated: true };
 }
 
-/** The escalation still gives the network; it never gives the rest of the disk. */
+/**
+ * A worktree child's profile writes inside its worktree only. An escalation
+ * still gives it the network; it never gives the rest of the disk.
+ */
 function worktreeChildProfile(
   profile: UnifiedExecRuntimeSandbox["permissionProfile"],
-  confinement: WorktreeWriteConfinement,
+  confinement: WorktreeWriteConfinement | undefined,
   attempt: { readonly escalated: boolean; readonly cwd: string; readonly tempRoot: string },
 ): UnifiedExecRuntimeSandbox["permissionProfile"] {
+  if (confinement === undefined) return profile;
   const confined = confineProfileToWorktree(profile, confinement, attempt.cwd, attempt.tempRoot);
   return attempt.escalated ? { ...confined, network: "enabled" } : confined;
 }

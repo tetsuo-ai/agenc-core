@@ -22,6 +22,7 @@ import {
   resolvePermissionPath,
   restrictedFileSystemPolicy,
   type FileSystemSandboxEntry,
+  type FileSystemSandboxPolicy,
   type PermissionProfile,
 } from "./engine/index.js";
 
@@ -49,12 +50,77 @@ const WORKSPACE_WRITE_ENTRIES: readonly FileSystemSandboxEntry[] = [
   { path: { kind: "special", value: { kind: "tmpdir" } }, access: "write" },
 ];
 
+interface ConfinementRoots {
+  readonly worktree: string;
+  readonly checkout: string;
+  readonly temp: string;
+  /**
+   * A temp folder inside the checkout (a routine run's scratch folder) is
+   * still where commands are told to write; a checkout inside the temp root
+   * (a project under /tmp) is not scratch space.
+   */
+  readonly tempInsideCheckout: boolean;
+}
+
+interface KeptWrite {
+  readonly entry: FileSystemSandboxEntry;
+  readonly resolved: string;
+}
+
 function canonical(target: string): string {
   try {
     return canonicalAuthorityPath(target);
   } catch {
     return target;
   }
+}
+
+function confinementRoots(
+  confinement: WorktreeWriteConfinement,
+  tempRoot: string,
+): ConfinementRoots {
+  const checkout = canonical(confinement.checkout);
+  const temp = canonical(tempRoot);
+  return {
+    worktree: canonical(confinement.worktree),
+    checkout,
+    temp,
+    tempInsideCheckout: isWithinAuthorityPath(temp, checkout),
+  };
+}
+
+/** A write grant stays when it is inside the worktree, or inside the temp root and not the checkout. */
+function keepsWriteGrant(resolved: string, roots: ConfinementRoots): boolean {
+  if (isWithinAuthorityPath(resolved, roots.worktree)) return true;
+  if (!isWithinAuthorityPath(resolved, roots.temp)) return false;
+  return roots.tempInsideCheckout || !isWithinAuthorityPath(resolved, roots.checkout);
+}
+
+/** A kept write grant above the checkout: the temp root of a project under /tmp. */
+function holdsCheckout(resolved: string, checkout: string): boolean {
+  return resolved !== checkout && isWithinAuthorityPath(checkout, resolved);
+}
+
+function depth(target: string): number {
+  return target.split(path.sep).length;
+}
+
+/** The policy options a confined profile keeps from the profile it narrows. */
+function confinedPolicyOptions(
+  fileSystem: FileSystemSandboxPolicy,
+): Parameters<typeof restrictedFileSystemPolicy>[1] {
+  const includePlatformDefaults = fileSystem.kind === "restricted"
+    ? fileSystem.includePlatformDefaults
+    : true;
+  return {
+    ...(fileSystem.globScanMaxDepth !== undefined
+      ? { globScanMaxDepth: fileSystem.globScanMaxDepth }
+      : {}),
+    ...(includePlatformDefaults !== undefined ? { includePlatformDefaults } : {}),
+    ...(fileSystem.reservedReadOnlyPaths !== undefined
+      ? { reservedReadOnlyPaths: fileSystem.reservedReadOnlyPaths }
+      : {}),
+  };
 }
 
 /**
@@ -69,57 +135,36 @@ export function confineProfileToWorktree(
   tempRoot: string,
 ): PermissionProfile {
   const fileSystem = profile.fileSystem;
-  const restricted = fileSystem.kind === "restricted";
-  const worktree = canonical(confinement.worktree);
-  const checkout = canonical(confinement.checkout);
-  const temp = canonical(tempRoot);
-  // A temp folder inside the checkout (a routine run's scratch folder) is
-  // still where commands are told to write; a checkout inside the temp root
-  // (a project under /tmp) is not scratch space.
-  const tempInsideCheckout = isWithinAuthorityPath(temp, checkout);
-  let checkoutUnderKeptRoot = false;
+  const roots = confinementRoots(confinement, tempRoot);
   const others: FileSystemSandboxEntry[] = [];
-  const writes: { readonly entry: FileSystemSandboxEntry; readonly depth: number }[] = [];
-  for (const entry of restricted ? fileSystem.entries : WORKSPACE_WRITE_ENTRIES) {
+  const writes: KeptWrite[] = [];
+  const entries = fileSystem.kind === "restricted" ? fileSystem.entries : WORKSPACE_WRITE_ENTRIES;
+  for (const entry of entries) {
     if (entry.access !== "write") {
       others.push(entry);
       continue;
     }
     const target = resolvePermissionPath(entry.path, sandboxPolicyCwd, tempRoot);
-    if (target === null) continue;
-    const resolved = canonical(target);
-    if (!isWithinAuthorityPath(resolved, worktree)) {
-      if (!isWithinAuthorityPath(resolved, temp)) continue;
-      if (!tempInsideCheckout && isWithinAuthorityPath(resolved, checkout)) continue;
-      if (resolved !== checkout && isWithinAuthorityPath(checkout, resolved)) {
-        checkoutUnderKeptRoot = true;
-      }
+    const resolved = target === null ? undefined : canonical(target);
+    if (resolved !== undefined && keepsWriteGrant(resolved, roots)) {
+      writes.push({ entry, resolved });
     }
-    writes.push({ entry, depth: resolved.split(path.sep).length });
   }
+  // bwrap mounts writable roots in entry order: a root comes before the
+  // roots nested in it, or its bind would cover them.
+  const ordered = writes.toSorted((left, right) => depth(left.resolved) - depth(right.resolved));
   // The temp root holds the checkout: the checkout gets its own read-only
   // entry, and the worktree inside it stays writable because the more
-  // specific entry decides. bwrap mounts writable roots in entry order, so
-  // a root comes before the roots nested in it.
-  const carveout: readonly FileSystemSandboxEntry[] = checkoutUnderKeptRoot
-    ? [{ path: { kind: "path", path: checkout }, access: "read" }]
-    : [];
-  const kept = [
-    ...others,
-    ...writes.sort((left, right) => left.depth - right.depth).map(({ entry }) => entry),
-    ...carveout,
-  ];
-  const includePlatformDefaults = restricted ? fileSystem.includePlatformDefaults : true;
+  // specific entry decides.
+  const carveout: readonly FileSystemSandboxEntry[] =
+    ordered.some(({ resolved }) => holdsCheckout(resolved, roots.checkout))
+      ? [{ path: { kind: "path", path: roots.checkout }, access: "read" }]
+      : [];
   return {
     ...profile,
-    fileSystem: restrictedFileSystemPolicy(kept, {
-      ...(fileSystem.globScanMaxDepth !== undefined
-        ? { globScanMaxDepth: fileSystem.globScanMaxDepth }
-        : {}),
-      ...(includePlatformDefaults !== undefined ? { includePlatformDefaults } : {}),
-      ...(fileSystem.reservedReadOnlyPaths !== undefined
-        ? { reservedReadOnlyPaths: fileSystem.reservedReadOnlyPaths }
-        : {}),
-    }),
+    fileSystem: restrictedFileSystemPolicy(
+      [...others, ...ordered.map(({ entry }) => entry), ...carveout],
+      confinedPolicyOptions(fileSystem),
+    ),
   };
 }
