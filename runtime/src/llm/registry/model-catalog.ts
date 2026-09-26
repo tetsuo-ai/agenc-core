@@ -595,12 +595,25 @@ const OPENAI_PERSONALITY_MESSAGES: ModelMessages = Object.freeze({
   }),
 });
 
+// Every Gemini chat model GET /v1beta/models lists (2026-09-26) reports
+// inputTokenLimit 1,048,576 and outputTokenLimit 65,536, as each model page on
+// ai.google.dev/gemini-api/docs/models does. Without these a Flash model took
+// its window from a public catalog download when one answered in time and the
+// 128K / 32K fallback otherwise; 3.1 Pro only matched through the
+// OpenAI-compatible table's gemini-3.1-pro prefix.
+const GEMINI_CONTEXT_WINDOW = 1_048_576;
+const GEMINI_MAX_OUTPUT_TOKENS = 65_536;
+
 const GEMINI_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
   Object.freeze(
     GEMINI_THINKING_MODELS.map((entry, index): RegisteredModelCatalogEntry => ({
       provider: "gemini",
       model: entry.model,
       displayName: entry.model,
+      contextWindow: GEMINI_CONTEXT_WINDOW,
+      maxContextWindow: GEMINI_CONTEXT_WINDOW,
+      maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS,
+      maxOutputTokensUpperLimit: GEMINI_MAX_OUTPUT_TOKENS,
       inputModalities: TEXT_IMAGE_MODALITIES,
       supportsToolUse: true,
       supportsParallelToolCalls: false,
