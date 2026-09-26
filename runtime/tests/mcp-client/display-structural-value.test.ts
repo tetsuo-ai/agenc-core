@@ -49,6 +49,9 @@ describe("isDisplayStructuralValue", () => {
       isDisplayStructuralValue(["series", "*", "type"], "scatter", "timeseries"),
     ).toBe(false);
     expect(
+      isDisplayStructuralValue(["series", "*", "scale"], "logarithmic", "timeseries"),
+    ).toBe(false);
+    expect(
       isDisplayStructuralValue(["series", "0", "type"], "line", "timeseries"),
     ).toBe(false);
   });

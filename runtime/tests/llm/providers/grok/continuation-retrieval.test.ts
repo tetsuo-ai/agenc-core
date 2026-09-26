@@ -28,6 +28,8 @@ describe("isContinuationRetrievalFailure", () => {
   });
 
   it("matches previous_response_id, previous-response, expired, and retrieve wording", () => {
+    // Each message carries exactly one of the wordings, so each rule is
+    // proven on its own.
     expect(
       isContinuationRetrievalFailure({
         message: "previous_response_id is no longer valid",
@@ -35,12 +37,17 @@ describe("isContinuationRetrievalFailure", () => {
     ).toBe(true);
     expect(
       isContinuationRetrievalFailure({
-        message: "The previous response has expired",
+        message: "The previous response is gone",
       }),
     ).toBe(true);
     expect(
       isContinuationRetrievalFailure({
-        message: "Could not retrieve the previous response",
+        message: "The stored response expired",
+      }),
+    ).toBe(true);
+    expect(
+      isContinuationRetrievalFailure({
+        message: "Could not retrieve stored response",
       }),
     ).toBe(true);
     expect(

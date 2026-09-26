@@ -52,6 +52,20 @@ describe("boundedRecoveryDetail", () => {
     expect(detail.endsWith("...[truncated]")).toBe(true);
     expect(detail).not.toContain("x".repeat(5000));
   });
+
+  it("redacts before truncating, so a cut through a secret leaves no prefix of it", () => {
+    // The secret starts 12 bytes before the cut: truncating first would keep
+    // "xai-" plus 8 characters, too short for the redactor to recognise.
+    const beforeCut =
+      MAX_RECOVERY_SAFE_DETAIL_UTF8_BYTES - "...[truncated]".length - 12;
+    const detail = boundedRecoveryDetail(
+      `${"x".repeat(beforeCut - 1)} ${XAI_SECRET} ${"y".repeat(100)}`,
+    );
+    expect(Buffer.byteLength(detail, "utf8")).toBe(
+      MAX_RECOVERY_SAFE_DETAIL_UTF8_BYTES,
+    );
+    expect(detail).not.toContain("xai-");
+  });
 });
 
 describe("boundedRecoveryNote", () => {
@@ -106,18 +120,40 @@ describe("recovery fingerprints", () => {
     expect(second).not.toBe(first);
   });
 
-  it("separates quarantine fingerprints from deferred keys", () => {
-    const deferred = recoveryDeferredKey({
-      runId: incident.runId,
-      sourceKind: incident.sourceKind,
-      sourcePath: incident.sourcePath,
-      reasonCode: "database_busy",
-      errorClass: "RECOVERY_OPERATIONAL",
-    });
-    expect(deferred).toMatch(/^[0-9a-f]{64}$/);
-    expect(deferred).not.toBe(recoveryIncidentFingerprint(incident));
-    expect(createHash("sha256").update("run-1").digest("hex")).not.toBe(
-      deferred,
+  // Both identities are stored, so their exact format is pinned: each is a
+  // SHA-256 over its own domain string and length-prefixed parts. Outputs of
+  // the two functions always differ anyway (different parts), so only this
+  // pins the domain separation itself.
+  function lengthPrefixedDigest(...values: readonly string[]): string {
+    const hash = createHash("sha256");
+    for (const value of values) {
+      const bytes = Buffer.from(value, "utf8");
+      const length = Buffer.alloc(8);
+      length.writeBigUInt64BE(BigInt(bytes.byteLength));
+      hash.update(length).update(bytes);
+    }
+    return hash.digest("hex");
+  }
+
+  it("hashes quarantine fingerprints and deferred keys under separate domains", () => {
+    const { runId, sourceKind, sourcePath, reasonCode, sourceSha256 } = incident;
+    expect(recoveryIncidentFingerprint(incident)).toBe(
+      lengthPrefixedDigest(
+        "agenc.run-recovery-quarantine.v1",
+        runId, sourceKind, sourcePath, reasonCode, sourceSha256, "", "", "", "",
+      ),
+    );
+    expect(
+      recoveryDeferredKey({
+        runId, sourceKind, sourcePath,
+        reasonCode: "database_busy",
+        errorClass: "RECOVERY_OPERATIONAL",
+      }),
+    ).toBe(
+      lengthPrefixedDigest(
+        "agenc.run-recovery-deferred.v1",
+        runId, sourceKind, sourcePath, "database_busy", "RECOVERY_OPERATIONAL",
+      ),
     );
   });
 });
