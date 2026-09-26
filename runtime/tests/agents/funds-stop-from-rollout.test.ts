@@ -20,7 +20,7 @@ describe("fundsStopFromRolloutItems", () => {
     ])).toBe(false);
   });
 
-  it("stops at the first funds notice and does not require later items", () => {
+  it("finds a funds notice that is not the last item", () => {
     expect(fundsStopFromRolloutItems([
       { type: "event_msg", payload: { msg: { type: "subagent_funds_notice" } } },
       { type: "event_msg", payload: { msg: { type: "user_message" } } },

@@ -14,9 +14,13 @@ describe("isProviderFundsFailure", () => {
   });
 
   it("treats managed credit refusals as funds and capacity as not", () => {
-    expect(isProviderFundsFailure("agenc", new LLMManagedAdmissionError("insufficient_credits"))).toBe(true);
-    expect(isProviderFundsFailure("agenc", new LLMManagedAdmissionError("credits_unavailable"))).toBe(true);
-    expect(isProviderFundsFailure("agenc", new LLMManagedAdmissionError("capacity"))).toBe(false);
+    // The refusal carries HTTP 402, which the "agenc" provider rule already
+    // accepts, so the typed-reason rule is only reached under another provider.
+    for (const provider of ["agenc", "grok"]) {
+      expect(isProviderFundsFailure(provider, new LLMManagedAdmissionError("insufficient_credits")), provider).toBe(true);
+      expect(isProviderFundsFailure(provider, new LLMManagedAdmissionError("credits_unavailable")), provider).toBe(true);
+      expect(isProviderFundsFailure(provider, new LLMManagedAdmissionError("capacity")), provider).toBe(false);
+    }
   });
 
   it("reads a JSON string body and a cause chain, but not past five wrappers", () => {
