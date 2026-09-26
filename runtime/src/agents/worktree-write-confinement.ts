@@ -22,7 +22,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
-import { getDurableMemoryRoots } from "../memory/paths.js";
+import { getDurableMemoryRoots } from "../memory/index.js";
 import { parsePatch } from "../tools/apply-patch/parser.js";
 import {
   SESSION_ALLOWED_ROOTS_ARG,
