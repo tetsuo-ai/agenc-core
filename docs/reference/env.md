@@ -313,6 +313,7 @@ Defaults are "feature on unless the disable var is set" unless noted.
 | Var | Typical use |
 | --- | --- |
 | `AGENC_DISABLE_AUTO_COMPACT` | Skip automatic compaction and its pre-sampling, mid-turn, and notice gates. `/compact` still runs |
+| `AGENC_CACHE_SESSION_TAIL` | Moves the part of the system prompt that stays fixed for the whole session (client rendering, memory directories, environment) from after the conversation to right after the static head, inside the provider's cached prefix, and leaves the permission section and per-turn guidance after it. Grok sessions get it by default; `1` also turns it on for OpenAI and Anthropic and `0` turns it off everywhere. Other providers send the prompt as one block and are not affected. Captured with the session environment, so a client sets it per session |
 | `AGENC_COMPLETION_CONTRACT` | Set to `0` to leave the completion contract (`# Completing work without a human`) out of non-interactive sessions such as `agenc -p`. Interactive sessions never receive it |
 | `AGENC_COMPLETION_CONTRACT_COHERENT` | Set to `1` so a session that receives the completion contract leaves out three default lines that contradict it: "Try the simplest approach first without going in circles. Do not overdo it.", "or re-verify things you already checked", and the advice to escalate with the ask-user-question tool. A measurement switch; sessions without the contract are unchanged |
 | `AGENC_LEAN_SYSTEM_PROMPT` | Selects the lean static head of the system prompt: the same product knowledge and safety rules as plain descriptions, about half as long. OpenAI and Grok sessions get it by default; `1` selects it for every provider and `0` keeps the standard head everywhere. The headless completion contract and the auto memory section are the same in both heads |
@@ -371,7 +372,7 @@ The sections above explain the common operator controls. The index below makes t
 
 ### AGENC_C*
 
-`AGENC_CHROME_PERMISSION_MODE`, `AGENC_CLIENT_CERT`, `AGENC_CLIENT_KEY`, `AGENC_CLIENT_KEY_PASSPHRASE`, `AGENC_CLI_ENTRY_DISABLE`, `AGENC_COMMIT_LOG`, `AGENC_COMPACT_BLOCKING_LIMIT_OVERRIDE`, `AGENC_COMPLETION_CONTRACT`, `AGENC_COMPLETION_CONTRACT_COHERENT`, `AGENC_CONTEXT_IMAGE_BUDGET_BYTES`, `AGENC_COWORK_MEMORY_EXTRA_GUIDELINES`, `AGENC_COWORK_MEMORY_PATH_OVERRIDE`, `AGENC_CUSTOM_OAUTH_URL`, `AGENC_CWD`.
+`AGENC_CACHE_SESSION_TAIL`, `AGENC_CHROME_PERMISSION_MODE`, `AGENC_CLIENT_CERT`, `AGENC_CLIENT_KEY`, `AGENC_CLIENT_KEY_PASSPHRASE`, `AGENC_CLI_ENTRY_DISABLE`, `AGENC_COMMIT_LOG`, `AGENC_COMPACT_BLOCKING_LIMIT_OVERRIDE`, `AGENC_COMPLETION_CONTRACT`, `AGENC_COMPLETION_CONTRACT_COHERENT`, `AGENC_CONTEXT_IMAGE_BUDGET_BYTES`, `AGENC_COWORK_MEMORY_EXTRA_GUIDELINES`, `AGENC_COWORK_MEMORY_PATH_OVERRIDE`, `AGENC_CUSTOM_OAUTH_URL`, `AGENC_CWD`.
 
 ### AGENC_D*
 

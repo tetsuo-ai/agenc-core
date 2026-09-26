@@ -196,6 +196,8 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_WALLET_VAULT_PASSPHRASE',
   // arbitrary env-file injection
   'AGENC_ENV_FILE',
+  // system prompt layout (a test that needs it sets it explicitly)
+  'AGENC_CACHE_SESSION_TAIL',
   // config-behavior overrides (src/config/env.ts applyEnvOverrides et al.)
   'AGENC_PROFILE',
   'AGENC_PROVIDER',
