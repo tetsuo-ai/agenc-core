@@ -694,6 +694,12 @@ function parseAgenCDaemonWebSocketPort(value: string): number {
   return port;
 }
 
+/**
+ * A browser page may open the daemon WebSocket only from a loopback origin.
+ * Non-browser clients send no Origin and pass. Remote pages, including AgenC's
+ * own web origin, are refused at the handshake: browser access to a daemon goes
+ * through the pairing relay, never straight to the loopback listener.
+ */
 export function validateAgenCDaemonWebSocketOrigin(
   origin: string | undefined,
 ): boolean {
@@ -703,9 +709,6 @@ export function validateAgenCDaemonWebSocketOrigin(
     url = new URL(origin);
   } catch {
     return false;
-  }
-  if (url.protocol === "https:" && url.hostname === "agenc.tech") {
-    return true;
   }
   return url.protocol === "http:" && isLoopbackHostname(url.hostname);
 }
