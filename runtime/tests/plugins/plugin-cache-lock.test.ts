@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { renameSync, writeFileSync } from "node:fs";
-import { access, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -509,6 +509,31 @@ describe("plugin cache lock leases", () => {
     }))).rejects.toThrow(manualRemoval(cacheRoot));
     await expect(readFile(target, "utf8")).resolves.toBe("not-a-lease");
     await expect(readdir(lockDir)).resolves.toEqual(["owner.linked"]);
+  });
+
+  test("an unreadable expired owner file is kept and acquire asks for manual removal", async () => {
+    const { cacheRoot, clock } = await setup();
+    const lockDir = pluginCacheLockDirectory(cacheRoot);
+    const ownerA = await acquirePluginCacheLock(cacheRoot, clockedOwner(clock, "owner-a", {
+      pid: 4242,
+      leaseTtlMs: 1_000,
+      isProcessAlive: () => true,
+    }));
+    await chmod(join(lockDir, "owner.owner-a"), 0o000);
+    clock.advance(5_000);
+
+    try {
+      await expect(acquirePluginCacheLock(cacheRoot, clockedOwner(clock, "owner-b", {
+        pid: 4243,
+        acquireTimeoutMs: 0,
+        leaseTtlMs: 1_000,
+        isProcessAlive: (pid) => pid !== 4242,
+      }))).rejects.toThrow(manualRemoval(cacheRoot));
+      await expect(readdir(lockDir)).resolves.toEqual(["owner.owner-a"]);
+    } finally {
+      await chmod(join(lockDir, "owner.owner-a"), 0o600);
+    }
+    await ownerA.release();
   });
 
   test("a false ESRCH after a fresh rewrite still keeps the current heartbeat", async () => {
