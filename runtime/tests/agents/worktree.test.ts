@@ -340,6 +340,54 @@ describe("getOrCreateWorktree", () => {
     await getOrCreateWorktree({ gitRoot: linked, slug: "agent-linked" });
     expect(readFileSync(outside, "utf8")).toBe("not the repository's\n");
   });
+
+  it("says a missing base commit is missing, with git's own answer", async () => {
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+    const missing = "0123456789abcdef0123456789abcdef01234567";
+
+    await expect(getOrCreateWorktree({ gitRoot: repo, slug: "agent-missing", base: missing })).rejects.toThrow(
+      new RegExp(
+        `^worktree base ${missing} does not resolve to a commit; create a commit before requesting worktree isolation \\(git rev-parse exited 128: fatal: .+\\)$`,
+      ),
+    );
+  });
+
+  it("does not blame the base commit when the check never ran to an answer", async () => {
+    // A Goal's worktree step reported its existing base commit as missing:
+    // the rev-parse process was killed before it ran, and the error said
+    // nothing else. Here the check process is killed the same way.
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+    const base = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+    const broker = explicitDangerBroker.forkForCwd(repo);
+    const prepareSpawn = broker.prepareSpawn.bind(broker);
+    vi.spyOn(broker, "prepareSpawn").mockImplementation((surface, command, options) =>
+      prepareSpawn(
+        surface,
+        command.args.includes("--verify")
+          ? {
+            ...command,
+            program: process.execPath,
+            argv0: process.execPath,
+            args: ["-e", "process.kill(process.pid, 'SIGKILL')"],
+          }
+          : command,
+        options,
+      ));
+
+    const attempt = getOrCreateWorktreeUnbound({
+      gitRoot: repo,
+      slug: "agent-killed",
+      base,
+      sandboxExecutionBroker: broker,
+    });
+
+    await expect(attempt).rejects.toThrow(
+      new RegExp(`^could not check worktree base ${base} \\(git rev-parse exited \\d+: no output\\)$`),
+    );
+    expect(existsSync(join(repo, ".agenc-worktrees", "agent-killed"))).toBe(false);
+  });
 });
 
 describe("removeAgentWorktree", () => {

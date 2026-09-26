@@ -159,6 +159,18 @@ export function runGit(
 }
 
 /**
+ * One line for an error message: how a git command ended and what it said.
+ * A precondition error that dropped this hid the real cause (a sandbox
+ * denial, a killed process) behind "does not resolve to a commit".
+ */
+export function describeGitResult(label: string, result: GitResult): string {
+  const said = (result.stderr.trim() || result.stdout.trim())
+    .replace(/\s+/gu, " ")
+    .slice(0, 400);
+  return `git ${label} exited ${result.code}: ${said.length > 0 ? said : "no output"}`;
+}
+
+/**
  * git's own stderr when it has any; otherwise what the supervised runner did
  * to the process. A stop reason with no output (timeout, aborted, residual
  * process) used to surface as an empty string, and the workflow reported
@@ -426,8 +438,14 @@ export async function getOrCreateWorktree(
     );
     const baseCommit = baseResult.stdout.trim();
     if (baseResult.code !== 0 || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(baseCommit)) {
+      const said = describeGitResult("rev-parse", baseResult);
+      // git answers a revision it cannot resolve with its fatal exit (128).
+      // Anything else means the check itself did not run to an answer: a
+      // process that never started or was killed says nothing about the base.
       throw new WorktreePreconditionError(
-        `worktree base ${base} does not resolve to a commit; create a commit before requesting worktree isolation`,
+        baseResult.code === 0 || baseResult.code === 128
+          ? `worktree base ${base} does not resolve to a commit; create a commit before requesting worktree isolation (${said})`
+          : `could not check worktree base ${base} (${said})`,
       );
     }
 
