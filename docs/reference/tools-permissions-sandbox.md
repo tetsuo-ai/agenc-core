@@ -582,6 +582,32 @@ approval and recheck the command before execution. Approval cannot override
 protected-path or shell-write-policy refusals. Operations that need ordinary
 workspace deletion approval still use the configured permission mode.
 
+Path rules (`FileRead(...)`, `Edit(...)`, `Write(...)`, exact paths, `/**`
+prefixes and globs) and the working-directory containment check follow the
+case semantics of the volume that holds the target. Where the filesystem
+treats `C:/Work/Secret.txt` and `c:\work\SECRET.txt` as one file (default
+Windows and macOS volumes, or a case-insensitive mount elsewhere), a rule
+written either way governs both spellings, drive letter and separators
+included. Where they are two files (Linux, case-sensitive APFS) they stay
+distinct. The probe flips ASCII letters only and reads the directory entry,
+so a symlink or hard link is not a second spelling of the same name, and the
+comparison fold lowercases with Unicode `toLowerCase` only after that probe.
+A case-sensitive mount does not inherit its parent volume's folding. A name
+that does not exist yet inherits the nearest existing directory. An exact
+spelling still matches a wildcard. An allow rule folds a wildcard segment
+only when the directory that segment is matched inside is case-insensitive,
+and every directory after it is too, so one insensitive mount cannot widen
+the rule. A deny or ask rule folds that tail when any of those directories
+is case-insensitive, so a block is not missed when the insensitive volume
+sits above or below a case-sensitive one. The matcher defaults to that
+wider fold; allow passes the narrower one. Neither mode uses `process.cwd()`.
+On Windows a UNC
+path keeps its `//server/share` root and probes that share. On other
+platforms a leading `//` collapses the way any other repeated slash does.
+The platform default
+applies only when no existing directory on the path can be probed. Rule text
+and the decision recorded for audit keep their original spelling.
+
 **Internal-only** (valid runtime state, not CLI defaults):
 
 | Mode | Intent |

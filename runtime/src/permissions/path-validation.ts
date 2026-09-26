@@ -27,6 +27,14 @@ import {
 import { getRuleByContentsForTool } from "./rules.js";
 import { unattendedWriteRoots } from "./unattended-policy.js";
 import { checkProtectedPathSafety } from "./protected-paths.js";
+import {
+  comparablePath,
+  foldRuleForCandidate,
+  parseComparisonRoot,
+  pathForComparison,
+  type PathCaseSemantics,
+  type WildcardTailFold,
+} from "./path-case.js";
 import { withSignedAllowedRoots } from "../agents/_deps/filesystem-args.js";
 import { getSettingsRootPathForSource } from "../utils/settings/settings.js";
 import {
@@ -136,9 +144,20 @@ function normalizeSlashes(path: string): string {
   return path.replace(/[\\/]+/g, "/");
 }
 
+/**
+ * Whether `candidate` is `root` or lies under it. Case folds the way the
+ * volume holding the candidate does, so a working root spelled `/Users/me`
+ * still contains `/users/me/file` where those are one directory.
+ */
+export function __isPathInsideForTesting(candidate: string, root: string): boolean {
+  return isPathInside(candidate, root);
+}
+
 function isPathInside(candidate: string, root: string): boolean {
-  const normalizedCandidate = normalize(candidate).normalize("NFC");
-  const normalizedRoot = normalize(root).normalize("NFC");
+  const normalizedCandidate = pathForComparison(
+    normalize(candidate).normalize("NFC"),
+  );
+  const normalizedRoot = pathForComparison(normalize(root).normalize("NFC"));
   if (normalizedCandidate === normalizedRoot) return true;
   const rel = relative(normalizedRoot, normalizedCandidate);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
@@ -287,21 +306,54 @@ function wildcardPatternToRegExp(pattern: string): RegExp {
   return new RegExp(`^${body}$`);
 }
 
+/**
+ * Whether a path rule names `filePath`, as an exact path, a recursive `/**`
+ * prefix, or a glob. Separators fold to `/` and, when the volume holding the
+ * file ignores case, so does letter case, including a Windows drive letter.
+ * Callers keep the original spellings for display and audit; only the
+ * comparison folds.
+ */
+function normalizeComparisonSlashes(path: string): string {
+  const parsed = parseComparisonRoot(path);
+  if (parsed.kind === "unc") {
+    return parsed.segments.length === 0
+      ? parsed.root
+      : `${parsed.root}/${parsed.segments.join("/")}`;
+  }
+  return path.replaceAll(/[\\/]+/g, "/");
+}
+
+function contentMatches(rule: string, filePath: string): boolean {
+  if (rule === filePath) return true;
+  if (rule.endsWith("/**")) {
+    const root = rule.slice(0, -3).replaceAll(/\/$/g, "");
+    return filePath === root || filePath.startsWith(`${root}/`);
+  }
+  if (GLOB_PATTERN_REGEX.test(rule)) {
+    return wildcardPatternToRegExp(rule).test(filePath);
+  }
+  return false;
+}
+
 export function matchPathRuleContent(
   ruleContent: string,
   filePath: string,
+  caseSemantics?: PathCaseSemantics,
+  tail: WildcardTailFold = "wide",
 ): boolean {
-  const expandedRule = normalizeSlashes(expandTilde(ruleContent));
-  const expandedPath = normalizeSlashes(filePath);
-  if (expandedRule === expandedPath) return true;
-  if (expandedRule.endsWith("/**")) {
-    const root = expandedRule.slice(0, -3).replace(/\/$/, "");
-    return expandedPath === root || expandedPath.startsWith(`${root}/`);
+  const ruleSlash = normalizeComparisonSlashes(expandTilde(ruleContent));
+  const pathSlash = normalizeComparisonSlashes(filePath);
+  if (caseSemantics !== undefined) {
+    return contentMatches(
+      comparablePath(ruleSlash, caseSemantics),
+      comparablePath(pathSlash, caseSemantics),
+    );
   }
-  if (GLOB_PATTERN_REGEX.test(expandedRule)) {
-    return wildcardPatternToRegExp(expandedRule).test(expandedPath);
-  }
-  return false;
+  if (contentMatches(ruleSlash, pathSlash)) return true;
+  return contentMatches(
+    foldRuleForCandidate(ruleSlash, pathSlash, tail),
+    pathForComparison(pathSlash),
+  );
 }
 
 /**
@@ -389,7 +441,12 @@ function matchingRuleForPath(
       const resolvedContent = resolvePathRulePattern(content, rule.source, cwd);
       if (
         pathsToCheck.some((candidate) =>
-          matchPathRuleContent(resolvedContent, candidate),
+          matchPathRuleContent(
+            resolvedContent,
+            candidate,
+            undefined,
+            behavior === "allow" ? "narrow" : "wide",
+          ),
         )
       ) {
         return rule;
