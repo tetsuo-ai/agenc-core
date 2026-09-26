@@ -62,6 +62,14 @@ export interface MCPPromptRendered {
 export interface MCPPromptBridge {
   readonly serverName: string;
   listPrompts(signal?: AbortSignal): Promise<ReadonlyArray<MCPPromptDescriptor>>;
+  /**
+   * Re-list prompts with the same bounded pagination and redaction as
+   * `listPrompts`. Rejects on RPC or pagination failure. `listPrompts`
+   * still queries the server live and swallows ordinary list failures.
+   */
+  refreshPrompts(
+    signal?: AbortSignal,
+  ): Promise<ReadonlyArray<MCPPromptDescriptor>>;
   renderPrompt(
     name: string,
     args?: Record<string, unknown>,
@@ -101,6 +109,78 @@ export async function createPromptBridge(
   const issuedAliases = new Set<string>();
   const redact = <T>(value: T): T => redactMcpAttachmentValue(value, opts.sensitiveHeaders, undefined, "prompt");
 
+  function publishPrompt(prompt: MCPPromptDescriptor): MCPPromptDescriptor {
+    const safe = redact(prompt);
+    let publicName = publicNameByRawName.get(prompt.name);
+    if (publicName === undefined) {
+      publicName = safe.name === prompt.name ? safe.name
+        : `agenc-redacted-prompt-${createHash("sha256").update(prompt.name).digest("hex")}`;
+      if (rawNameByPublicName.has(publicName) && rawNameByPublicName.get(publicName) !== prompt.name) {
+        publicName = `agenc-redacted-prompt-${createHash("sha256").update(prompt.name).digest("hex")}`;
+      }
+      if (rawNameByPublicName.size >= 2_000) {
+        const oldest = rawNameByPublicName.keys().next().value;
+        if (oldest !== undefined) {
+          const oldRaw = rawNameByPublicName.get(oldest)!;
+          rawNameByPublicName.delete(oldest);
+          publicNameByRawName.delete(oldRaw);
+          rawArgumentNamesByPublicPrompt.delete(oldest);
+          issuedAliases.delete(oldest);
+        }
+      }
+      rawNameByPublicName.set(publicName, prompt.name);
+      publicNameByRawName.set(prompt.name, publicName);
+      if (publicName !== prompt.name) issuedAliases.add(publicName);
+    }
+    const argumentNames = new Map<string, string>();
+    const safeArguments = safe.arguments?.map((argument, index) => {
+      const rawName = prompt.arguments?.[index]?.name ?? argument.name;
+      let publicArgumentName = argument.name;
+      let suffix = 0;
+      while (argumentNames.has(publicArgumentName) && argumentNames.get(publicArgumentName) !== rawName) {
+        publicArgumentName = `agenc-redacted-argument-${++suffix}`;
+      }
+      argumentNames.set(publicArgumentName, rawName);
+      return { ...argument, name: publicArgumentName };
+    });
+    rawArgumentNamesByPublicPrompt.set(publicName, argumentNames);
+    return {
+      ...safe,
+      name: publicName,
+      namespacedName: `mcp.${serverName}.${publicName}`,
+      ...(safeArguments !== undefined ? { arguments: safeArguments } : {}),
+    };
+  }
+
+  async function refreshPrompts(
+    signal?: AbortSignal,
+  ): Promise<ReadonlyArray<MCPPromptDescriptor>> {
+    if (disposed) {
+      throw new Error(
+        `MCP prompt bridge for "${serverName}" has been disposed`,
+      );
+    }
+    const rawPrompts = await collectMcpListPages({
+      serverName,
+      method: "prompts/list",
+      itemsKey: "prompts",
+      deadlineMs: rpcTimeoutMs,
+      ...(signal !== undefined ? { signal } : {}),
+      maxPages: opts.maxListPages ?? MAX_MCP_LIST_PAGES,
+      maxItems: opts.maxListItems ?? MAX_MCP_LIST_ITEMS,
+      maxAggregateBytes:
+        opts.maxListAggregateBytes ?? MAX_MCP_LIST_AGGREGATE_BYTES,
+      fetchPage: (cursor, callOptions) =>
+        client.listPrompts(cursor === undefined ? {} : { cursor }, {
+          signal: callOptions.signal,
+          timeout: callOptions.timeout,
+        }),
+    });
+    return normalizePromptCatalog(rawPrompts, serverName).map((prompt) =>
+      publishPrompt(prompt),
+    );
+  }
+
   return {
     serverName,
     async listPrompts(
@@ -108,64 +188,7 @@ export async function createPromptBridge(
     ): Promise<ReadonlyArray<MCPPromptDescriptor>> {
       if (disposed) return [];
       try {
-        const rawPrompts = await collectMcpListPages({
-          serverName,
-          method: "prompts/list",
-          itemsKey: "prompts",
-          deadlineMs: rpcTimeoutMs,
-          ...(signal !== undefined ? { signal } : {}),
-          maxPages: opts.maxListPages ?? MAX_MCP_LIST_PAGES,
-          maxItems: opts.maxListItems ?? MAX_MCP_LIST_ITEMS,
-          maxAggregateBytes:
-            opts.maxListAggregateBytes ?? MAX_MCP_LIST_AGGREGATE_BYTES,
-          fetchPage: (cursor, callOptions) =>
-            client.listPrompts(cursor === undefined ? {} : { cursor }, {
-              signal: callOptions.signal,
-              timeout: callOptions.timeout,
-            }),
-        });
-        return normalizePromptCatalog(rawPrompts, serverName).map(prompt => {
-          const safe = redact(prompt);
-          let publicName = publicNameByRawName.get(prompt.name);
-          if (publicName === undefined) {
-            publicName = safe.name === prompt.name ? safe.name
-              : `agenc-redacted-prompt-${createHash("sha256").update(prompt.name).digest("hex")}`;
-            if (rawNameByPublicName.has(publicName) && rawNameByPublicName.get(publicName) !== prompt.name) {
-              publicName = `agenc-redacted-prompt-${createHash("sha256").update(prompt.name).digest("hex")}`;
-            }
-            if (rawNameByPublicName.size >= 2_000) {
-              const oldest = rawNameByPublicName.keys().next().value;
-              if (oldest !== undefined) {
-                const oldRaw = rawNameByPublicName.get(oldest)!;
-                rawNameByPublicName.delete(oldest);
-                publicNameByRawName.delete(oldRaw);
-                rawArgumentNamesByPublicPrompt.delete(oldest);
-                issuedAliases.delete(oldest);
-              }
-            }
-            rawNameByPublicName.set(publicName, prompt.name);
-            publicNameByRawName.set(prompt.name, publicName);
-            if (publicName !== prompt.name) issuedAliases.add(publicName);
-          }
-          const argumentNames = new Map<string, string>();
-          const safeArguments = safe.arguments?.map((argument, index) => {
-            const rawName = prompt.arguments?.[index]?.name ?? argument.name;
-            let publicArgumentName = argument.name;
-            let suffix = 0;
-            while (argumentNames.has(publicArgumentName) && argumentNames.get(publicArgumentName) !== rawName) {
-              publicArgumentName = `agenc-redacted-argument-${++suffix}`;
-            }
-            argumentNames.set(publicArgumentName, rawName);
-            return { ...argument, name: publicArgumentName };
-          });
-          rawArgumentNamesByPublicPrompt.set(publicName, argumentNames);
-          return {
-            ...safe,
-            name: publicName,
-            namespacedName: `mcp.${serverName}.${publicName}`,
-            ...(safeArguments !== undefined ? { arguments: safeArguments } : {}),
-          };
-        });
+        return await refreshPrompts(signal);
       } catch (err) {
         signal?.throwIfAborted();
         if (err instanceof McpListPaginationError || isAbortError(err)) {
@@ -178,6 +201,7 @@ export async function createPromptBridge(
         return [];
       }
     },
+    refreshPrompts,
     async renderPrompt(
       name: string,
       args?: Record<string, unknown>,

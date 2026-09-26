@@ -197,6 +197,7 @@ describe("ResilientMCPBridge", () => {
       undefined,
       undefined,
       EMPTY_MCP_REQUEST_ENVIRONMENT,
+      undefined,
     );
     expect(mockCreateToolBridge).toHaveBeenCalledWith(
       "client2",
@@ -253,6 +254,7 @@ describe("ResilientMCPBridge", () => {
       samplingHandlers,
       undefined,
       EMPTY_MCP_REQUEST_ENVIRONMENT,
+      undefined,
     );
 
     await bridge.dispose();

@@ -9,17 +9,15 @@
  * @module
  */
 
-import { VERSION } from "../../version.js";
 import { Agent as UndiciAgent } from "undici";
 import type { Logger } from "../_deps/logger.js";
 import { silentLogger } from "../_deps/logger.js";
 import type { MCPElicitationHandlers } from "../types.js";
-import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
+import type { McpSamplingHandlers } from "../../services/mcp/hostCapabilities.js";
 import {
-  buildMcpHostClientCapabilities,
-  configureMcpHostRequestHandlers,
-  type McpSamplingHandlers,
-} from "../../services/mcp/hostCapabilities.js";
+  createConfiguredMcpRuntimeClient,
+  type MCPListChangedHandlers,
+} from "../list-changed.js";
 import { connectMCPClientWithCleanup } from "./connect-with-cleanup.js";
 import { getProxyFetchOptions } from "../../utils/proxy.js";
 import type { ProviderEnvironment } from "../../llm/provider-options.js";
@@ -48,6 +46,7 @@ export async function createHttpMCPConnection(
   elicitationHandlers?: MCPElicitationHandlers,
   samplingHandlers?: McpSamplingHandlers,
   environment: ProviderEnvironment = EMPTY_MCP_REQUEST_ENVIRONMENT,
+  listChangedHandlers?: MCPListChangedHandlers,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -98,13 +97,12 @@ export async function createHttpMCPConnection(
     },
   });
 
-  const client = new Client(
-    { name: "agenc-runtime", version: VERSION },
-    {
-      capabilities: buildMcpHostClientCapabilities(
-        elicitationHandlers === undefined ? "none" : "form-url",
-      ),
-    },
+  const client = await createConfiguredMcpRuntimeClient(
+    Client,
+    config.name,
+    elicitationHandlers,
+    samplingHandlers,
+    listChangedHandlers,
   );
   if (socketAgent) {
     const closeClient = client.close.bind(client);
@@ -113,16 +111,6 @@ export async function createHttpMCPConnection(
       try { await closeClient(); } finally { await socketAgent.close(); }
     })();
   }
-  configureMcpHostRequestHandlers(
-    client,
-    config.name,
-    samplingHandlers === undefined ? undefined : { samplingHandlers },
-  );
-  await configureMcpElicitationClient(
-    client,
-    config.name,
-    elicitationHandlers,
-  );
 
   logger.info(`Connecting to MCP HTTP server "${config.name}"...`, {
     endpoint: config.endpoint,

@@ -11,7 +11,6 @@
  *     surface in this subsystem yet.
  */
 
-import { VERSION } from "../../version.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   chmodSync,
@@ -38,12 +37,11 @@ import { silentLogger } from "../_deps/logger.js";
 import type { MCPElicitationHandlers } from "../types.js";
 import type { PluginMcpSandboxMetadata } from "../types.js";
 import { pluginMcpPermissionProfile } from "../../tools/runtimes/sandboxing.js";
-import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
+import type { McpSamplingHandlers } from "../../services/mcp/hostCapabilities.js";
 import {
-  buildMcpHostClientCapabilities,
-  configureMcpHostRequestHandlers,
-  type McpSamplingHandlers,
-} from "../../services/mcp/hostCapabilities.js";
+  createConfiguredMcpRuntimeClient,
+  type MCPListChangedHandlers,
+} from "../list-changed.js";
 import {
   missingSandboxExecutionBoundary,
   type SandboxExecutionBrokerLike,
@@ -590,6 +588,7 @@ export async function createStdioMCPConnection(
   samplingHandlers?: McpSamplingHandlers,
   sandboxExecutionBroker?: SandboxExecutionBrokerLike,
   parentEnvironment: NodeProcessEnv = EMPTY_MCP_REQUEST_ENVIRONMENT,
+  listChangedHandlers?: MCPListChangedHandlers,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -600,20 +599,13 @@ export async function createStdioMCPConnection(
     sandboxExecutionBroker,
     parentEnvironment,
   );
-  const client = new Client(
-    { name: "agenc-runtime", version: VERSION },
-    {
-      capabilities: buildMcpHostClientCapabilities(
-        elicitationHandlers === undefined ? "none" : "form-url",
-      ),
-    },
-  );
-  configureMcpHostRequestHandlers(
-    client,
+  const client = await createConfiguredMcpRuntimeClient(
+    Client,
     config.name,
-    samplingHandlers === undefined ? undefined : { samplingHandlers },
+    elicitationHandlers,
+    samplingHandlers,
+    listChangedHandlers,
   );
-  await configureMcpElicitationClient(client, config.name, elicitationHandlers);
 
   logger.info(`Connecting to MCP stdio server "${config.name}"...`, {
     command: config.command,
