@@ -266,37 +266,53 @@ async function reclaimExpiredOwners(
 
   const now = hooks.nowMs();
   for (const entry of entries) {
-    if (entry.endsWith(".tmp")) {
-      if (await deadOwnerTempIsStale(lockDir, entry, now, hooks)) {
-        await unlinkLockEntry(lockDir, entry);
-      }
-      continue;
-    }
-    let info;
-    try {
-      info = await lstat(join(lockDir, entry));
-    } catch {
-      continue;
-    }
-    if (!info.isFile()) continue;
-    let lease: OwnerLease | undefined;
-    try {
-      lease = await readOwnerLease(lockDir, entry);
-    } catch {
-      continue;
-    }
-    if (lease === undefined || !ownerLeaseIsReclaimable(lease, now, hooks)) continue;
-    let current: OwnerLease | undefined;
-    try {
-      current = await readOwnerLease(lockDir, lease.fileName);
-    } catch {
-      continue;
-    }
-    if (current === undefined || !ownerLeaseIsReclaimable(current, hooks.nowMs(), hooks)) continue;
-    await unlinkLockEntry(lockDir, current.fileName);
+    await reclaimLockEntry(lockDir, entry, now, hooks);
   }
   if (!await isRealLockDirectory(lockDir)) return;
   await rmdir(lockDir).catch(() => {});
+}
+
+async function reclaimLockEntry(
+  lockDir: string,
+  entry: string,
+  now: number,
+  hooks: ResolvedLockHooks,
+): Promise<void> {
+  if (entry.endsWith(".tmp")) {
+    if (await deadOwnerTempIsStale(lockDir, entry, now, hooks)) {
+      await unlinkLockEntry(lockDir, entry);
+    }
+    return;
+  }
+  const lease = await readRegularOwnerLease(lockDir, entry);
+  if (lease === undefined || !ownerLeaseIsReclaimable(lease, now, hooks)) return;
+  const current = await readOwnerLeaseOrUndefined(lockDir, lease.fileName);
+  if (current === undefined || !ownerLeaseIsReclaimable(current, hooks.nowMs(), hooks)) return;
+  await unlinkLockEntry(lockDir, current.fileName);
+}
+
+async function readRegularOwnerLease(
+  lockDir: string,
+  entry: string,
+): Promise<OwnerLease | undefined> {
+  try {
+    const info = await lstat(join(lockDir, entry));
+    if (!info.isFile()) return undefined;
+  } catch {
+    return undefined;
+  }
+  return readOwnerLeaseOrUndefined(lockDir, entry);
+}
+
+async function readOwnerLeaseOrUndefined(
+  lockDir: string,
+  fileName: string,
+): Promise<OwnerLease | undefined> {
+  try {
+    return await readOwnerLease(lockDir, fileName);
+  } catch {
+    return undefined;
+  }
 }
 
 async function unlinkLockEntry(lockDir: string, name: string): Promise<void> {
@@ -475,7 +491,7 @@ async function lockIdentityMatches(
   identity: LockIdentity,
 ): Promise<boolean> {
   const current = await readLockIdentity(lockDir);
-  return current !== undefined && current.dev === identity.dev && current.ino === identity.ino;
+  return current?.dev === identity.dev && current.ino === identity.ino;
 }
 
 async function fileAgeMs(lockDir: string, fileName: string, nowMs: number): Promise<number> {
