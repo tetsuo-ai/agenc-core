@@ -10,6 +10,7 @@ import { setTimeout as realSleep } from "node:timers/promises";
  * `process_killed` abort for every clean turn.
  */
 
+import { ProviderWaitScope, type ProviderWait } from "../../src/recovery/provider-wait.js";
 import { INSTRUCTION_UPDATE_WORKSPACE_HEADER } from "../../src/prompts/attachments/messages.js";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
@@ -7964,7 +7965,15 @@ describe("provider outage wait (#2212)", () => {
           provider_outage_retry_ms: 1,
         },
       });
-      await drain(session.runTurn("hello", { ctx: mkCtx() }));
+      const scope = new ProviderWaitScope();
+      const projectedWaits: Array<ProviderWait | undefined> = [];
+      session.eventLog.subscribe((event) => {
+        if (event.msg.type === "warning" && event.msg.payload.cause === "provider_outage_wait") {
+          projectedWaits.push(scope.current());
+        }
+      });
+      await scope.run(() => drain(session.runTurn("hello", { ctx: mkCtx() })));
+      expect(scope.current()).toBeUndefined();
       expect(attempts()).toBe(3);
       const waits = events.filter(
         (event) =>
@@ -7972,7 +7981,15 @@ describe("provider outage wait (#2212)", () => {
           (event.msg.payload as { cause?: string }).cause === "provider_outage_wait",
       );
       expect(waits).toHaveLength(2);
-      expect(String((waits[0]!.msg.payload as { message: string }).message)).toContain("retry 1 in 0 s");
+      expect(projectedWaits).toHaveLength(2);
+      for (const [index, wait] of projectedWaits.entries()) {
+        expect(wait).toMatchObject({
+          cause: "provider_outage_wait",
+          message: (waits[index]!.msg.payload as { message: string }).message,
+        });
+        expect(new Date(wait!.retryAt!).toISOString()).toBe(wait!.retryAt);
+      }
+      expect(String((waits[0]!.msg.payload as { message: string }).message)).toContain("Retrying in 1 s");
       expect(events).toContainEqual(
         expect.objectContaining({
           msg: expect.objectContaining({ type: "agent_message", payload: expect.objectContaining({ message: "resumed" }) }),

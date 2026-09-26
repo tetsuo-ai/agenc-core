@@ -2,6 +2,11 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AgenCDaemonRunInspectionService } from "../../src/app-server/run-inspection.js";
+import { LLMRateLimitError } from "../../src/llm/errors.js";
+import { reconnectWithBackoff } from "../../src/recovery/reconnection.js";
+import { EventLog } from "../../src/session/event-log.js";
+import type { Session } from "../../src/session/session.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import { WorkflowApprovalFailure } from "../../src/permissions/approval-failure.js";
 import type { PermissionMode } from "../../src/permissions/types.js";
@@ -662,6 +667,86 @@ function cancelAt(stepPrefix: string): void {
 
 beforeEach(() => {
   harness = makeHarness();
+});
+
+describe("workflow provider waits", () => {
+  it.each(["plan", "implement", "verify_agent", "review"] as const)(
+    "projects a %s child's 429 through run.status and clears before retrying",
+    async (kind) => {
+      const controller = harness.controller;
+      const inspection = new AgenCDaemonRunInspectionService({
+        stateDatabasePaths: () => [harness.driver],
+        providerWait: (runId, stepId) => controller.currentProviderWait(runId, stepId),
+      });
+      const log = new EventLog();
+      const warnings: string[] = [];
+      log.subscribe((event) => {
+        if (event.msg.type === "warning" && event.msg.payload.cause === "provider_rate_limited") {
+          warnings.push(event.msg.payload.message);
+        }
+      });
+      const session = { eventLog: log, nextInternalSubId: () => "retry" } as unknown as Session;
+      let calls = 0;
+      let waits = 0;
+      const stage = `workflow.${kind === "verify_agent" ? "verify" : kind}`;
+      const providerCall = async () => {
+        const outcome = await reconnectWithBackoff({
+          session,
+          maxAttempts: 2,
+          rng: () => 0,
+          wallNow: () => Date.parse("2026-09-26T12:00:00.000Z"),
+          isTransient: () => true,
+          attempt: async () => {
+            calls += 1;
+            const running = inspection.status({ runId: RUN_ID }).workflow!.steps.find((step) => step.stage === stage)!;
+            expect(running.status).toBe("running");
+            expect(running).not.toHaveProperty("providerWait");
+            if (calls === 1) throw new LLMRateLimitError("test", 30_000);
+            return "recovered";
+          },
+          sleeper: async (delayMs) => {
+            waits += 1;
+            expect(delayMs).toBe(30_000);
+            // Read through the same service as the daemon's run.status RPC.
+            const status = inspection.status({ runId: RUN_ID });
+            const waiting = status.workflow!.steps.filter((step) => step.providerWait !== undefined);
+            expect(waiting).toHaveLength(1);
+            expect(waiting[0]).toMatchObject({
+              stage,
+              status: "running",
+              providerWait: {
+                cause: "provider_rate_limited",
+                message: warnings.at(-1),
+                retryAt: "2026-09-26T12:00:30.000Z",
+              },
+            });
+            expect(warnings.at(-1)).toBe("The provider is limiting requests. Retrying in 30 s.");
+            expect(controller.status(RUN_ID)!.steps.find((step) => step.stage === stage)?.providerWait)
+              .toEqual(waiting[0]!.providerWait);
+            expect(controller.currentProviderWait("another-run", waiting[0]!.stepId)).toBeUndefined();
+            expect(controller.currentProviderWait(RUN_ID, "another-step")).toBeUndefined();
+          },
+        });
+        expect(outcome).toMatchObject({ kind: "ok", attempts: 2 });
+        expect(inspection.status({ runId: RUN_ID }).workflow!.steps.every((step) => step.providerWait === undefined)).toBe(true);
+      };
+      const spawn = harness.spawner.spawn.bind(harness.spawner);
+      vi.spyOn(harness.spawner, "spawn").mockImplementation(async (input) => {
+        if (input.kind === kind) await providerCall();
+        return spawn(input);
+      });
+      const review = harness.reviewer.invoke.bind(harness.reviewer);
+      vi.spyOn(harness.reviewer, "invoke").mockImplementation(async (input) => {
+        if (kind === "review") await providerCall();
+        return review(input);
+      });
+      await runToTerminal(harness);
+      expect(controller.status(RUN_ID)?.terminal?.status).toBe("completed");
+      expect(calls).toBe(2);
+      expect(waits).toBe(1);
+      expect(inspection.status({ runId: RUN_ID }).workflow!.steps.every((step) => step.providerWait === undefined)).toBe(true);
+    },
+  );
 });
 
 describe("workflow admission ownership", () => {

@@ -62,6 +62,7 @@ export class AgenCDaemonRunInspectionError extends Error {
 
 export interface AgenCDaemonRunInspectionOptions {
   /** Read only from an already-owned live workflow session; never open or resume it. */
+  readonly providerWait?: (runId: string, stepId: string) => import("../recovery/provider-wait.js").ProviderWait | undefined;
   readonly effectivePermissionMode?: (runId: string) => InternalPermissionMode | undefined;
   readonly pendingApprovals?: (runId: string) => readonly import("./protocol/index.js").PendingToolApproval[];
   /**
@@ -178,12 +179,14 @@ const MAX_RUN_TREE_IDS = 1_000;
  * a terminal assistant payload that was never persisted.
  */
 export class AgenCDaemonRunInspectionService {
+  readonly #providerWait: AgenCDaemonRunInspectionOptions["providerWait"];
   readonly #effectivePermissionMode: AgenCDaemonRunInspectionOptions["effectivePermissionMode"];
   readonly #pendingApprovals: AgenCDaemonRunInspectionOptions["pendingApprovals"];
   readonly #stateDatabasePaths: () => readonly StateDatabasePaths[];
   readonly #agencHome: string | undefined;
 
   constructor(options: AgenCDaemonRunInspectionOptions) {
+    this.#providerWait = options.providerWait;
     this.#effectivePermissionMode = options.effectivePermissionMode;
     this.#pendingApprovals = options.pendingApprovals;
     this.#stateDatabasePaths = options.stateDatabasePaths;
@@ -202,9 +205,19 @@ export class AgenCDaemonRunInspectionService {
       : undefined;
     return {
       ...result,
-      ...(mode !== undefined && (ALL_PERMISSION_MODES as readonly string[]).includes(mode)
-        ? { workflow: { ...result.workflow!, effectivePermissionMode: mode } }
-        : {}),
+      ...(result.workflow !== undefined ? {
+        workflow: {
+          ...result.workflow,
+          ...(mode !== undefined && (ALL_PERMISSION_MODES as readonly string[]).includes(mode)
+            ? { effectivePermissionMode: mode } : {}),
+          steps: result.workflow.steps.map((step) => {
+            const providerWait = !result.terminal && step.status === "running"
+              ? this.#providerWait?.(runId, step.stepId)
+              : undefined;
+            return { ...step, ...(providerWait !== undefined ? { providerWait: { ...providerWait } } : {}) };
+          }),
+        },
+      } : {}),
       ...(this.#pendingApprovals !== undefined
         ? { pendingRequests: result.terminal ? [] : this.#pendingApprovals(runId) }
         : {}),
