@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -301,6 +302,43 @@ describe("getOrCreateWorktree", () => {
       .map((entry) => entry.path.kind === "path" ? entry.path.path : "");
     expect(checkoutPaths).toContain(handle.path);
     expect(checkoutPaths).not.toContain(join(repo, ".git"));
+  });
+
+  it("keeps .agenc-worktrees out of git status through the repository's own exclude", async () => {
+    const repo = join(tmpRoot, "repo");
+    initRepo(repo);
+    const exclude = join(repo, ".git", "info", "exclude");
+    writeFileSync(exclude, "*.log");
+
+    await getOrCreateWorktree({ gitRoot: repo, slug: "agent-one" });
+    await getOrCreateWorktree({ gitRoot: repo, slug: "agent-two" });
+    await getOrCreateWorktree({ gitRoot: repo, slug: "agent-one" });
+
+    expect(readFileSync(exclude, "utf8")).toBe(
+      "*.log\n# Worktrees AgenC creates for agents and Goal runs.\n.agenc-worktrees/\n",
+    );
+    expect(execFileSync("git", ["status", "--porcelain"], { cwd: repo, encoding: "utf8" })).toBe("");
+    expect(existsSync(join(repo, ".gitignore"))).toBe(false);
+  });
+
+  it("leaves an exclude that already names the folder, or is a link, as it was", async () => {
+    const covered = join(tmpRoot, "covered");
+    initRepo(covered);
+    // What Desktop writes when it makes a repository for a Goal.
+    const desktopExclude = "# Left out of the first commit AgenC made for a Goal run.\nnode_modules/\n.agenc-worktrees/\n";
+    writeFileSync(join(covered, ".git", "info", "exclude"), desktopExclude);
+    await getOrCreateWorktree({ gitRoot: covered, slug: "agent-covered" });
+    expect(readFileSync(join(covered, ".git", "info", "exclude"), "utf8")).toBe(desktopExclude);
+
+    const linked = join(tmpRoot, "linked");
+    initRepo(linked);
+    const outside = join(tmpRoot, "outside.txt");
+    writeFileSync(outside, "not the repository's\n");
+    const linkedExclude = join(linked, ".git", "info", "exclude");
+    rmSync(linkedExclude, { force: true });
+    symlinkSync(outside, linkedExclude);
+    await getOrCreateWorktree({ gitRoot: linked, slug: "agent-linked" });
+    expect(readFileSync(outside, "utf8")).toBe("not the repository's\n");
   });
 });
 

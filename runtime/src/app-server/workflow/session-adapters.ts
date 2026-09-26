@@ -80,6 +80,7 @@ import {
   captureBaseState as captureBaseStateInRepo,
   checkBaseMovement as checkBaseMovementInRepo,
   cleanupAfterEvidence,
+  discardCancelledWorktree,
   exportPatchArtifacts,
   provisionWorkflowWorktree,
   workflowWorktreeSlug,
@@ -775,6 +776,17 @@ export function createWorkflowSessionSeams(
     },
   };
 
+  /** The run session's broker for removing a worktree; no command runs there after this. */
+  const teardownBroker = async (
+    runId: string,
+    handle: { readonly path: string; readonly gitRoot: string },
+    seam: string,
+  ): Promise<SandboxExecutionBrokerLike> => {
+    const entry = await requireEntry(runId, seam);
+    worktreeRunIds.delete(handle.path);
+    return sessionBroker(entry, handle.gitRoot);
+  };
+
   const worktrees: WorkflowWorktreeBroker = {
     captureBaseState: async (repoPath, context) => {
       const entry = await requireEntry(
@@ -816,17 +828,18 @@ export function createWorkflowSessionSeams(
         broker: sessionBroker(entry, input.spec.repoPath),
       });
     },
-    cleanup: async (input) => {
-      const entry = await requireEntry(input.proof.runId, "worktrees.cleanup");
-      worktreeRunIds.delete(input.handle.path);
-      return cleanupAfterEvidence({
-        proof: input.proof,
-        handle: input.handle,
-        headCommit: input.headCommit,
-        broker: sessionBroker(entry, input.handle.gitRoot),
+    cleanup: async (input) =>
+      cleanupAfterEvidence({
+        ...input,
+        broker: await teardownBroker(input.proof.runId, input.handle, "worktrees.cleanup"),
         warn: options.warn,
-      });
-    },
+      }),
+    discard: async (input) =>
+      discardCancelledWorktree({
+        ...input,
+        broker: await teardownBroker(input.proof.runId, input.handle, "worktrees.discard"),
+        warn: options.warn,
+      }),
   };
 
   const commands: WorkflowCommandRunner = {

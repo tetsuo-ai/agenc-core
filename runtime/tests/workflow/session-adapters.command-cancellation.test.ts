@@ -12,6 +12,8 @@ import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
 import { EventLog } from "../../src/session/event-log.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
 import { openStateDatabases, type StateSqliteDriver } from "../../src/state/sqlite-driver.js";
+import type { WorktreeHandle } from "../../src/agents/worktree.js";
+import { mintCancelledRunProof } from "../../src/workflow/worktree-lifecycle.js";
 
 const RUN_ID = "wf-command-cancellation";
 const quote = (value: string): string => "'" + value.replace(/'/g, "'\\''") + "'";
@@ -19,6 +21,7 @@ let scratch: string;
 let cwd: string;
 let seams: WorkflowSessionSeams;
 let driver: StateSqliteDriver;
+let handle: WorktreeHandle;
 
 function alive(pid: number): boolean {
   try {
@@ -59,7 +62,7 @@ beforeEach(async () => {
       emit: events.emit.bind(events), services: { sandboxExecutionBroker: broker } },
       rolloutStore: { runEpoch: 1 }, shutdown: async () => {} }) as never });
   await seams.journal.open(RUN_ID, { repoPath: cwd });
-  const handle = await seams.worktrees.provision({ runId: RUN_ID, repoPath: cwd, baseCommit } as WorkflowSpec);
+  handle = await seams.worktrees.provision({ runId: RUN_ID, repoPath: cwd, baseCommit } as WorkflowSpec);
   cwd = handle.path;
 });
 
@@ -104,5 +107,18 @@ describe("workflow command cancellation through the real process supervisor", ()
       cwd, signal: controller.signal } as Parameters<WorkflowSessionSeams["commands"]["run"]>[0]);
     await expect(outcome).rejects.toBe(cancellation);
     expect(existsSync(marker)).toBe(false);
+  });
+});
+
+describe("a cancelled run's worktree through the daemon adapter", () => {
+  it("goes with its branch through the run's session, and no command runs there afterwards", async () => {
+    const project = join(scratch, "project");
+    const git = (...args: string[]): string => execFileSync("git", args, { cwd: project, encoding: "utf8" });
+    await seams.worktrees.discard({ proof: mintCancelledRunProof({ runId: RUN_ID }), handle });
+    expect(existsSync(handle.path)).toBe(false);
+    expect(git("branch", "--list", handle.branch)).toBe("");
+    expect(git("status", "--porcelain")).toBe("");
+    await expect(seams.commands.run({ script: "true", cwd: handle.path } as Parameters<WorkflowSessionSeams["commands"]["run"]>[0]))
+      .rejects.toThrow(/without a run id/);
   });
 });

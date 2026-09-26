@@ -94,10 +94,12 @@ import {
   type WorkflowCommandRunner,
 } from "../../workflow/verification.js";
 import {
+  mintCancelledRunProof,
   mintSealedEvidenceProof,
   workflowWorktreeSlug,
   type BaseMovementCheck,
   type BaseState,
+  type CancelledRunProof,
   type EvidenceArtifactSink,
   type ExportedPatchArtifacts,
   type SealedEvidenceProof,
@@ -299,6 +301,11 @@ export interface WorkflowWorktreeBroker {
     /** The delivered snapshot, pinned under a durable ref before the
      *  worktree branch — its only other name — is deleted. */
     readonly headCommit: string;
+  }): Promise<void>;
+  /** Remove a cancelled run's worktree and branch; nothing is pinned. */
+  discard(input: {
+    readonly proof: CancelledRunProof;
+    readonly handle: WorktreeHandle;
   }): Promise<void>;
 }
 
@@ -946,6 +953,7 @@ export class VerifiedChangeWorkflowController {
         );
       }
       await this.#terminalize(ctx, terminal);
+      await this.#discardCancelledWorktree(ctx);
     } finally {
       this.#active.delete(ctx.runId);
       try {
@@ -962,6 +970,31 @@ export class VerifiedChangeWorkflowController {
     } catch (error) {
       this.#deps.warn(
         `workflow ${ctx.runId} journal close failed: ${errorMessage(error)}`,
+      );
+    }
+  }
+
+  /**
+   * A cancelled run has no further use for its worktree: nothing resumes a
+   * terminal run and nothing was delivered. Remove the worktree and its
+   * branch as a completed run's are removed, but only once the cancelled
+   * terminal is durable; until then a restart resumes the run, and the run
+   * needs the worktree it left. Failed and unknown-outcome runs keep theirs
+   * for review.
+   */
+  async #discardCancelledWorktree(ctx: RunContext): Promise<void> {
+    const handle = ctx.handle;
+    if (handle === undefined) return;
+    try {
+      const terminal = ctx.repo.getCurrentTerminalResult(ctx.runId);
+      if (terminal?.status !== "cancelled") return;
+      await this.#deps.worktrees.discard({
+        proof: mintCancelledRunProof({ runId: ctx.runId }),
+        handle,
+      });
+    } catch (error) {
+      this.#deps.warn(
+        `workflow ${ctx.runId} worktree cleanup failed after cancellation: ${errorMessage(error)}`,
       );
     }
   }

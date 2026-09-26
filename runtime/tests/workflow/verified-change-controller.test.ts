@@ -47,6 +47,7 @@ import type {
 } from "../../src/workflow/verification.js";
 import type {
   BaseMovementCheck,
+  CancelledRunProof,
   EvidenceArtifactSink,
   SealedEvidenceProof,
 } from "../../src/workflow/worktree-lifecycle.js";
@@ -371,6 +372,27 @@ class FakeWorktrees implements WorkflowWorktreeBroker {
   }): Promise<void> {
     this.cleanups.push(input);
   }
+
+  /** What the run had durably recorded when its worktree was discarded. */
+  readonly discards: {
+    path: string;
+    terminal: string | undefined;
+    effects: number;
+  }[] = [];
+  durableRepo?: StateRunDurabilityRepository;
+  discardError?: Error;
+
+  async discard(input: {
+    proof: CancelledRunProof;
+    handle: WorktreeHandle;
+  }): Promise<void> {
+    this.discards.push({
+      path: input.handle.path,
+      terminal: this.durableRepo?.getCurrentTerminalResult(input.proof.runId)?.status,
+      effects: this.durableRepo?.listEffects(input.proof.runId).length ?? 0,
+    });
+    if (this.discardError !== undefined) throw this.discardError;
+  }
 }
 
 const DEFAULT_USAGE = {
@@ -511,6 +533,7 @@ interface Harness {
   /** Test seams: `failJournalOpenWith` makes the next journal open throw. */
   hooks: {
     failJournalOpenWith?: Error;
+    failTerminalWith?: Error;
     failEvidenceLedgerWith?: Error;
     effectivePermissionMode?: PermissionMode;
     currentPermissionMode?: PermissionMode;
@@ -537,6 +560,7 @@ function makeHarness(
   const reviewer = new FakeReviewer();
   const commands = new FakeCommands();
   spawner.durableRepo = repo;
+  worktrees.durableRepo = repo;
   const ledgers = new Map<string, MemoryLedger>();
   const warnings: string[] = [];
   const hooks: Harness["hooks"] = {};
@@ -547,7 +571,13 @@ function makeHarness(
         if (hooks.failJournalOpenWith !== undefined) {
           throw hooks.failJournalOpenWith;
         }
-        return new TestJournal(repo, runId, () => hooks.effectivePermissionMode);
+        const journal = new TestJournal(repo, runId, () => hooks.effectivePermissionMode);
+        const appendTerminal = journal.appendTerminal.bind(journal);
+        journal.appendTerminal = () => {
+          if (hooks.failTerminalWith !== undefined) throw hooks.failTerminalWith;
+          return appendTerminal();
+        };
+        return journal;
       },
       currentPermissionMode: () => hooks.currentPermissionMode,
     },
@@ -621,6 +651,14 @@ async function runToTerminal(
 }
 
 let harness: Harness;
+
+/** The admission cascade of run.cancel, seen at the first step with this prefix. */
+function cancelAt(stepPrefix: string): void {
+  harness.admission.denials.push({
+    match: (stepId) => stepId.startsWith(stepPrefix),
+    error: new AdmissionDeniedError("run.cancel cascade", "cancelled"),
+  });
+}
 
 beforeEach(() => {
   harness = makeHarness();
@@ -1010,6 +1048,7 @@ describe("VerifiedChangeWorkflowController — happy path", () => {
     expect(harness.worktrees.cleanups[0].proof.sealDigest).toBe(
       ledger.sealDigest,
     );
+    expect(harness.worktrees.discards).toEqual([]);
 
     // Status projection: every stage committed, verify verdict PASS.
     const status = harness.controller.status(RUN_ID)!;
@@ -1058,6 +1097,8 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
     // The verifier's own report travels too, whatever its verdict was.
     expect(implementSpawns[1].prompt).toContain("### Verifier's report");
     expect(implementSpawns[1].prompt).toContain("checked everything");
+    // A failed run keeps its worktree for review.
+    expect(harness.worktrees.discards).toEqual([]);
   });
 
   it("review_rejected on blocking findings, with the review durably committed", async () => {
@@ -1189,15 +1230,52 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
     expect(stepIds).toContain("workflow.plan#2");
   });
 
-  it("cancellation observed mid-pipeline terminalizes cancelled", async () => {
-    harness.admission.denials.push({
-      match: (stepId) => stepId.startsWith("workflow.implement"),
-      error: new AdmissionDeniedError("run.cancel cascade", "cancelled"),
-    });
+  it("cancellation observed mid-pipeline terminalizes cancelled, then discards the worktree", async () => {
+    cancelAt("workflow.implement");
     await runToTerminal(harness);
     const terminal = harness.repo.getCurrentTerminalResult(RUN_ID)!;
     expect(terminal.status).toBe("cancelled");
     expect(terminal.exitCode).toBe(1);
+    // Discarded only once the cancelled terminal was durable, and nothing
+    // was journaled after it: the run's evidence stays as it was.
+    expect(harness.worktrees.discards).toEqual([
+      {
+        path: `/wt/${RUN_ID}`,
+        terminal: "cancelled",
+        effects: harness.repo.listEffects(RUN_ID).length,
+      },
+    ]);
+    expect(harness.worktrees.cleanups).toHaveLength(0);
+  });
+
+  it("a run cancelled before its worktree exists has nothing to discard", async () => {
+    cancelAt("workflow.worktree");
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("cancelled");
+    expect(harness.worktrees.provisions).toBe(0);
+    expect(harness.worktrees.discards).toEqual([]);
+  });
+
+  it("keeps the worktree while the cancelled terminal is not durable, so a resume still has it", async () => {
+    cancelAt("workflow.implement");
+    harness.hooks.failTerminalWith = new Error("rollout append refused");
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
+    expect(harness.worktrees.discards).toEqual([]);
+    expect(harness.warnings).toContainEqual(
+      expect.stringContaining("failed to record its terminal result: rollout append refused"),
+    );
+  });
+
+  it("a discard that fails is a warning and the run stays cancelled", async () => {
+    cancelAt("workflow.implement");
+    harness.worktrees.discardError = new Error("git worktree remove failed: busy");
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("cancelled");
+    expect(harness.worktrees.discards).toHaveLength(1);
+    expect(harness.warnings).toContainEqual(
+      `workflow ${RUN_ID} worktree cleanup failed after cancellation: git worktree remove failed: busy`,
+    );
   });
 
   it.each(["reject", "resolve"] as const)(
@@ -1247,6 +1325,7 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
         });
         expect(harness.spawner.spawns.map((spawn) => spawn.kind)).toEqual(["plan", "implement"]);
         expect(harness.worktrees.cleanups).toHaveLength(0);
+        expect(harness.worktrees.discards).toMatchObject([{ terminal: "cancelled" }]);
       } finally {
         kernel.close();
       }
@@ -1450,6 +1529,8 @@ describe("VerifiedChangeWorkflowController — crash recovery (D3)", () => {
     expect(
       harness.spawner.spawns.filter((s) => s.kind === "implement"),
     ).toHaveLength(1);
+    // Work whose outcome is unknown stays in its worktree for review.
+    expect(harness.worktrees.discards).toEqual([]);
   });
 
   it("an intake interrupted before its commit fails closed on resume", async () => {
