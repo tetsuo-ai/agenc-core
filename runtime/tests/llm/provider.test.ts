@@ -1648,10 +1648,13 @@ describe("createProvider", () => {
       singleWireAttempt: true,
     });
 
+    expect(chat.mock.calls).toHaveLength(1);
+    expect(chat.mock.calls[0]).toHaveLength(2);
     expect(chat).toHaveBeenCalledWith(
       expect.objectContaining({
         options: expect.objectContaining({ num_ctx: 131_072 }),
       }),
+      { signal: expect.any(AbortSignal) },
     );
   });
 

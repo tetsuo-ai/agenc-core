@@ -7,6 +7,7 @@
  * @module
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type {
   LLMChatOptions,
@@ -421,6 +422,45 @@ function abortOllamaClient(client: unknown): void {
   }
 }
 
+const ollamaChatAbort = new AsyncLocalStorage<AbortSignal>();
+
+function mergeAbortSignals(
+  ...signals: Array<AbortSignal | undefined>
+): AbortSignal | undefined {
+  const present = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+  if (present.length === 0) return undefined;
+  if (present.length === 1) return present[0];
+  return AbortSignal.any(present);
+}
+
+type OllamaChatResponse = {
+  readonly model?: unknown;
+  readonly done_reason?: unknown;
+};
+
+function isOllamaChatClient(client: unknown): client is {
+  chat: (
+    request: Record<string, unknown>,
+    options?: { readonly signal?: AbortSignal },
+  ) => Promise<OllamaChatResponse>;
+} {
+  return isRecord(client) && typeof client.chat === "function";
+}
+
+function invokeOllamaChat(
+  client: unknown,
+  params: Record<string, unknown>,
+  signal: AbortSignal,
+): Promise<OllamaChatResponse> {
+  if (!isOllamaChatClient(client)) {
+    throw new TypeError("Ollama client is missing chat");
+  }
+  // Official ollama-js ignores this second argument and omits AbortSignal on
+  // non-streaming POSTs. Injected clients observe it; the fetch wrapper below
+  // observes the same signal from ollamaChatAbort.
+  return ollamaChatAbort.run(signal, () => client.chat(params, { signal }));
+}
+
 function parseToolCallArguments(argumentsJson: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(argumentsJson) as unknown;
@@ -578,7 +618,7 @@ export class OllamaProvider implements LLMProvider {
         context: buildToolSelectionTraceContext(toolSelection, requestTimeoutMs),
       });
       const response = await withTimeout(
-        async () => (client as any).chat(params),
+        async (timeoutSignal) => invokeOllamaChat(client, params, timeoutSignal),
         requestTimeoutMs,
         this.name,
         signal,
@@ -588,7 +628,7 @@ export class OllamaProvider implements LLMProvider {
         kind: "response",
         transport: "chat",
         provider: this.name,
-        model: String(response?.model ?? params.model ?? this.config.model),
+        model: readString(response?.model) || readString(params.model) || this.config.model,
         payload: {
           ...(cloneProviderTracePayload(response) ??
             { error: "provider_response_trace_unavailable" }),
@@ -972,14 +1012,25 @@ export class OllamaProvider implements LLMProvider {
       return new OllamaClass({
         host: this.config.host,
         // Metadata probing must be bounded physically, not merely stop awaiting
-        // a still-running fetch. Inference requests retain their existing policy.
+        // a still-running fetch. Non-streaming /api/chat inherits the
+        // withTimeout signal via ollamaChatAbort so official ollama-js POSTs
+        // become abortable even though the SDK ignores chat()'s second argument.
         fetch: ((input: RequestInfo | URL, init?: RequestInit) => {
           const url = input instanceof Request ? input.url : String(input);
+          const incoming = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+          const fetchImpl = this.config.fetchImpl ?? fetch;
           if (new URL(url).pathname.endsWith("/api/show")) {
-            const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
-            return fetchProviderRequest(input, { ...init, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(3_000)]) : AbortSignal.timeout(3_000) }, this.config.fetchImpl ?? fetch);
+            const showSignal = incoming
+              ? AbortSignal.any([incoming, AbortSignal.timeout(3_000)])
+              : AbortSignal.timeout(3_000);
+            return fetchProviderRequest(input, { ...init, signal: showSignal }, fetchImpl);
           }
-          return fetchProviderRequest(input, init ?? {}, this.config.fetchImpl ?? fetch);
+          const signal = mergeAbortSignals(incoming, ollamaChatAbort.getStore());
+          return fetchProviderRequest(
+            input,
+            signal ? { ...init, signal } : (init ?? {}),
+            fetchImpl,
+          );
         }) as typeof fetch,
       });
     });

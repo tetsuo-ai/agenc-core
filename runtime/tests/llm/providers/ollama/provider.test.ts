@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { OllamaProvider } from "./adapter.js";
 import { withOllamaHealthSidecar } from "./health.js";
+import { hangingStreamAfterFirstChunk } from "./ollama-test-helpers.js";
 import { isTransientProviderError } from "../../../../src/recovery/api-errors.js";
 import type { LLMChatOptions, LLMMessage } from "../../../../src/llm/types.js";
 import {
@@ -43,54 +44,6 @@ async function* streamChunks(chunks: readonly unknown[]): AsyncGenerator<unknown
   for (const chunk of chunks) {
     yield chunk;
   }
-}
-
-function hangingStreamAfterFirstChunk(options: {
-  readonly settleOnAbort?: boolean;
-  readonly settleOnReturn?: boolean;
-} = {}): {
-  readonly stream: AsyncIterable<unknown> & { abort: () => void };
-  readonly abortSpy: ReturnType<typeof vi.fn>;
-  readonly returnSpy: ReturnType<typeof vi.fn>;
-  readonly settlePendingNext: () => void;
-} {
-  let settlePendingNext: (() => void) | undefined;
-  const settle = (): void => settlePendingNext?.();
-  const abortSpy = vi.fn(() => {
-    if (options.settleOnAbort !== false) settle();
-  });
-  const returnSpy = vi.fn(async () => {
-    if (options.settleOnReturn !== false) settle();
-    return { done: true, value: undefined };
-  });
-  const stream: AsyncIterable<unknown> & { abort: () => void } = {
-    abort: abortSpy,
-    [Symbol.asyncIterator]() {
-      let calls = 0;
-      return {
-        next: async () => {
-          calls += 1;
-          if (calls === 1) {
-            return {
-              done: false,
-              value: {
-                model: "llama3.3",
-                message: { role: "assistant", content: "hel" },
-                prompt_eval_count: 5,
-                eval_count: 1,
-              },
-            };
-          }
-          return await new Promise<IteratorResult<unknown>>((resolve) => {
-            settlePendingNext = () =>
-              resolve({ done: true, value: undefined });
-          });
-        },
-        return: returnSpy,
-      };
-    },
-  };
-  return { stream, abortSpy, returnSpy, settlePendingNext: settle };
 }
 
 afterEach(() => {
@@ -219,7 +172,8 @@ describe("providers/ollama entrypoint", () => {
         { role: "user", content: "review" },
       ],
     });
-    expect(chat.mock.calls[0]).toHaveLength(1);
+    expect(chat.mock.calls[0]).toHaveLength(2);
+    expect(chat.mock.calls[0]?.[1]).toEqual({ signal: expect.any(AbortSignal) });
   });
 
   test("preserves assistant tool-call history before tool results", async () => {
