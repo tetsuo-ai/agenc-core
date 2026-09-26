@@ -5978,7 +5978,12 @@ function threadSourceToJson(source: ThreadSource): JsonValue {
 
 function toAgentCreateResult(agent: MutableAgent): AgentCreateResult {
   const summary = toAgentSummary(agent);
-  const sessionId = agent.sessionIds[0];
+  // Every session of the agent is attached in order and the runner keeps one
+  // event binding per agent, so the last one attached receives the runtime's
+  // events. A resume adds its new session after the ones a restart restored:
+  // naming the first sent clients to a session that never hears the resumed
+  // turn.
+  const sessionId = agent.sessionIds.at(-1);
   return {
     ...summary,
     ...(sessionId !== undefined ? { sessionId } : {}),

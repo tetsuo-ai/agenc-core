@@ -3203,6 +3203,58 @@ describe("AgenC background agent lifecycle", () => {
     expect(restoreAgent).toHaveBeenCalledTimes(1);
   });
 
+  it("agent.create names the session a resumed runtime reports to, after a restart restored the chat without one", async () => {
+    // A daemon restart restores the run's session and agent records, but not a
+    // runtime whose provider key only the client holds. The client's explicit
+    // resume then rebuilds the runtime under a new session. Clients follow the
+    // resumed turn on the session agent.create names, so it must be the one
+    // the runner sends the runtime's events to.
+    const agentId = "conv-restored-live-id";
+    const fixture = createResumeFixture(agentId, { suspended: true });
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_resumed"]),
+      now: sequence(["2026-08-19T12:00:01.000Z"]),
+    });
+    await sessions.restoreSession({
+      sessionId: "session_restored", agentId, status: "waiting", cwd: fixture.cwd,
+      createdAt: "2026-08-19T11:00:00.000Z", initialPrompt: "Interactive session",
+      metadata: { runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS },
+    });
+    const bound: string[] = [];
+    const agents = new AgenCDaemonAgentManager({
+      now: sequence(["2026-08-19T12:00:00.000Z"]),
+      runner: {
+        startAgent: vi.fn(async () => {
+          throw new Error("not used");
+        }),
+        restoreAgent: vi.fn(async () => true),
+        attachAgentSessionEvents: vi.fn(async (_agentId, binding) => {
+          bound.push(binding.sessionId);
+        }),
+      },
+      sessionManager: sessions,
+    });
+    const rolloutCreatedAt = String(JSON.parse(readFileSync(fixture.rolloutPath, "utf8").split("\n")[0]!).payload.timestamp);
+    await agents.restoreAgent({
+      agentId, objective: "Interactive session", status: "idle", cwd: fixture.cwd,
+      createdAt: rolloutCreatedAt, startedAt: rolloutCreatedAt, lastActiveAt: rolloutCreatedAt,
+      sessionIds: ["session_restored"], runtimeAvailable: false,
+      metadata: { runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS, recovery: { runStatus: "suspended", runtimeRestore: "unavailable" } },
+    });
+
+    const created = await createTestAgent(agents, {
+      resumeSessionId: agentId,
+      resumeRolloutPath: fixture.rolloutPath,
+      resumeSourceProof: fixture.sourceProof,
+      cwd: fixture.cwd,
+    });
+
+    expect(created.activeSessionIds).toEqual(["session_restored", "session_resumed"]);
+    // The runner keeps one binding per agent: the session attached last.
+    expect(bound).toEqual(["session_restored", "session_resumed"]);
+    expect(created.sessionId).toBe("session_resumed");
+  });
+
   it("agent.create refuses to resume a session its startup restore brought back live", async () => {
     const fixture = createResumeFixture("conv-restoring2");
     const sessions = new AgenCDaemonSessionManager();
