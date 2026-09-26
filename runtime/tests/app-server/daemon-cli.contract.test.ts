@@ -84,6 +84,7 @@ import {
   writeAgenCDaemonPid,
   resolveAgenCDaemonSpawnStderrPath,
 } from "./daemon-cli.js";
+import { AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV } from "./daemon-request-policy.js";
 import {
   AgenCDelegateBackgroundAgentRunner,
   type AgenCBackgroundAgentRunner,
@@ -762,6 +763,50 @@ const LOADED_DAEMON_MILESTONE_BUDGET_MS = DEFAULT_DAEMON_READY_TIMEOUT_MS;
 const LOADED_DAEMON_REQUEST_TIMEOUT_MS = 10_000;
 
 /**
+ * What a case on the loaded budgets keeps beyond its bounded waits: the steps
+ * that have no budget of their own (the shutdown after SIGTERM, removing temp
+ * directories) and the few short fixed waits it keeps, such as a snapshot the
+ * daemon writes before its pid or the grace in stopRunningDaemons.
+ */
+const LOADED_DAEMON_CASE_SLACK_MS = 30_000;
+
+/**
+ * Vitest bound for a case whose daemon waits use the loaded budgets above. It
+ * clears the case's milestone waits and request timeouts back to back, so a
+ * daemon that stops answering fails on the wait that names it, not on "Test
+ * timed out". stopRunningDaemons counts as a milestone, since its SIGTERM
+ * loop runs for DEFAULT_DAEMON_READY_TIMEOUT_MS. waitForStartupRestores counts
+ * as a milestone and a request, since its last poll can start just before its
+ * budget runs out.
+ */
+function loadedDaemonCaseTimeoutMs(waits: {
+  readonly milestones: number;
+  readonly requests: number;
+}): number {
+  return (
+    waits.milestones * LOADED_DAEMON_MILESTONE_BUDGET_MS +
+    waits.requests * LOADED_DAEMON_REQUEST_TIMEOUT_MS +
+    LOADED_DAEMON_CASE_SLACK_MS
+  );
+}
+
+/**
+ * waitForPid on the loaded budget. It watches the foreground run, so a daemon
+ * that exits before writing its pid still fails at once, with its exit code
+ * and stderr, instead of after the whole budget.
+ */
+function waitForLoadedDaemonPid(
+  pidPath: string,
+  running: Promise<number>,
+  io: { readonly stderrText: () => string },
+): Promise<number> {
+  return waitForPid(pidPath, LOADED_DAEMON_MILESTONE_BUDGET_MS, {
+    running,
+    stderrText: io.stderrText,
+  });
+}
+
+/**
  * How long {@link stopRunningDaemons} waits for the runs to settle once its
  * SIGTERM loop has given up. Bounded so a daemon that never stops fails with a
  * named error instead of the case dying on the vitest deadline.
@@ -879,9 +924,10 @@ async function callMcpListDir(
 async function waitForCondition(
   condition: () => boolean,
   description: string,
+  budgetMs = 2_000,
 ): Promise<void> {
   const startedAt = Date.now();
-  while (Date.now() - startedAt < 2_000) {
+  while (Date.now() - startedAt < budgetMs) {
     if (condition()) return;
     await delay(10);
   }
@@ -900,10 +946,11 @@ async function waitForSnapshotAfter(
   cwd: string,
   sessionId: string,
   after: string,
+  budgetMs = 2_000,
 ): Promise<string> {
   const startedAt = Date.now();
   let newest: string | undefined;
-  while (Date.now() - startedAt < 2_000) {
+  while (Date.now() - startedAt < budgetMs) {
     const times = readSnapshotTimes(agencHome, cwd, sessionId);
     newest = times[times.length - 1];
     if (newest !== undefined && newest > after) return newest;
@@ -1837,6 +1884,11 @@ describe("AgenC daemon CLI", () => {
   it("status reaches the live daemon's health.stats over the real socket", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
+    // The status command asks the daemon for its identity and then for
+    // health.stats, each within the CLI's 2 s request default.
+    host.env[AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV] = String(
+      LOADED_DAEMON_REQUEST_TIMEOUT_MS,
+    );
     const runIo = createIo();
     const signalProcess = createSignalProcess();
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
@@ -1848,7 +1900,9 @@ describe("AgenC daemon CLI", () => {
     );
     let stopped = false;
     try {
-      await expect(waitForPid(pidPath)).resolves.toBe(host.pid);
+      await expect(
+        waitForLoadedDaemonPid(pidPath, running, runIo),
+      ).resolves.toBe(host.pid);
 
       const statusIo = createIo();
       await expect(
@@ -1874,7 +1928,9 @@ describe("AgenC daemon CLI", () => {
       }
       await rm(agencHome, { recursive: true, force: true });
     }
-  });
+    // Nothing here times the daemon. The bound clears the pid wait and the
+    // status command's two requests back to back.
+  }, loadedDaemonCaseTimeoutMs({ milestones: 1, requests: 2 }));
 
   it("starts with remote auth backend before remote key vending is configured", async () => {
     const agencHome = await tempAgencHome();
@@ -3921,7 +3977,7 @@ describe("AgenC daemon CLI", () => {
       { host, io, signalProcess },
     );
     try {
-      await waitForPid(pidPath);
+      await waitForLoadedDaemonPid(pidPath, running, io);
       logMCPError("server", "live diagnostic");
       expect(io.stderrText()).toContain("queued startup diagnostic");
       expect(io.stderrText()).toContain("live diagnostic");
@@ -3940,7 +3996,9 @@ describe("AgenC daemon CLI", () => {
     } finally {
       _resetErrorLogForTesting();
     }
-  });
+    // Nothing here times the daemon. The bound clears the pid wait and the
+    // bounded stop back to back.
+  }, loadedDaemonCaseTimeoutMs({ milestones: 2, requests: 0 }));
 
   it("reload command re-reads config and starts configured mcp.server without shutdown", async () => {
     const agencHome = await tempAgencHome();
@@ -4195,6 +4253,11 @@ token_cap = 123
     const port = await availableLoopbackPort();
     const url = `http://127.0.0.1:${port}/mcp`;
     const host = createHost(agencHome);
+    // The reload command asks the daemon for its identity and then for the
+    // reload, each within the CLI's 2 s request default.
+    host.env[AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV] = String(
+      LOADED_DAEMON_REQUEST_TIMEOUT_MS,
+    );
     const io = createIo();
     const signalProcess = createSignalProcess();
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
@@ -4219,7 +4282,7 @@ workspace = ${JSON.stringify(workspaceA)}
     );
     let stopped = false;
     try {
-      await expect(waitForPid(pidPath)).resolves.toBe(4100);
+      await expect(waitForLoadedDaemonPid(pidPath, running, io)).resolves.toBe(4100);
       const oldSession = await initializeMcpHttpSession(url);
       const initialRead = await callMcpListDir(url, oldSession, workspaceA);
       expect(initialRead.status).toBe(200);
@@ -4284,11 +4347,18 @@ workspace = ${JSON.stringify(workspaceB)}
         rm(workspaceRoot, { recursive: true, force: true }),
       ]);
     }
-  });
+    // Nothing here times the daemon. The bound clears the pid wait and the
+    // reload's two requests back to back.
+  }, loadedDaemonCaseTimeoutMs({ milestones: 1, requests: 2 }));
 
   it("reload failure preserves active auth and mcp.server state", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
+    // As above: a reload that runs out of the CLI's 2 s request default fails
+    // too, for a reason this case does not mean to test.
+    host.env[AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV] = String(
+      LOADED_DAEMON_REQUEST_TIMEOUT_MS,
+    );
     const io = createIo();
     const signalProcess = createSignalProcess();
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
@@ -4321,12 +4391,12 @@ workspace = ${JSON.stringify(process.cwd())}
     );
     let stopped = false;
     try {
-      await expect(waitForPid(pidPath)).resolves.toBe(4100);
+      await expect(waitForLoadedDaemonPid(pidPath, running, io)).resolves.toBe(4100);
       const authCookie = (await readFile(cookiePath, "utf8")).trim();
       const client = createAgenCJsonLineDaemonRequestClient({
         socketPath,
         authCookie,
-        timeoutMs: 1000,
+        timeoutMs: LOADED_DAEMON_REQUEST_TIMEOUT_MS,
       });
       const beforeFailedReloadWhoami = await client.request("auth.whoami");
       expect(beforeFailedReloadWhoami).toMatchObject({
@@ -4393,7 +4463,9 @@ workspace = ${JSON.stringify(process.cwd())}
       }
       await rm(agencHome, { recursive: true, force: true });
     }
-  });
+    // Nothing here times the daemon. The bound clears the pid wait, the two
+    // whoami requests and the reload's two requests back to back.
+  }, loadedDaemonCaseTimeoutMs({ milestones: 1, requests: 4 }));
 
   it("reload fails when the control socket is not ready and leaves the daemon running", async () => {
     const agencHome = await tempAgencHome();
@@ -4905,13 +4977,22 @@ workspace = ${JSON.stringify(process.cwd())}
       );
       let socket: Socket | WebSocket | undefined;
       try {
-        await waitForPid(resolveAgenCDaemonPidPath(host.env, host.userHome));
+        await waitForLoadedDaemonPid(
+          resolveAgenCDaemonPidPath(host.env, host.userHome),
+          running,
+          io,
+        );
         const authCookie = (await readFile(
           resolveAgenCDaemonCookiePath(host.env, host.userHome), "utf8",
         )).trim();
         socket = transport === "unix"
           ? createConnection(resolveAgenCDaemonSocketPath(host.env, host.userHome))
-          : new WebSocket(await waitForDaemonWebSocketUrl(io));
+          : new WebSocket(
+            await waitForDaemonWebSocketUrl(io, LOADED_DAEMON_MILESTONE_BUDGET_MS, {
+              running,
+              stderrText: io.stderrText,
+            }),
+          );
         const peer = socket;
         const messages = new AsyncQueue<JsonObject>();
         if (peer instanceof WebSocket) {
@@ -4966,7 +5047,9 @@ workspace = ${JSON.stringify(process.cwd())}
           type: "session.delta",
           text: "x".repeat(8 * 1024 * 1024),
         });
-        await expect.poll(() => closed).toBe(true);
+        await expect
+          .poll(() => closed, { timeout: LOADED_DAEMON_MILESTONE_BUDGET_MS })
+          .toBe(true);
       } finally {
         if (socket instanceof WebSocket) socket.terminate();
         else socket?.destroy();
@@ -4976,6 +5059,10 @@ workspace = ${JSON.stringify(process.cwd())}
         await rm(agencHome, { recursive: true, force: true });
       }
     },
+    // Nothing here times the daemon. The bound clears the pid wait, the
+    // websocket URL wait and the wait for the evicted peer to close back to
+    // back.
+    loadedDaemonCaseTimeoutMs({ milestones: 3, requests: 0 }),
   );
 
   it("foreground daemon instantiates AuthBackend for auth requests", async () => {
@@ -5165,6 +5252,9 @@ backend = "local"
     const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
     const currentUid = process.getuid();
 
+    // No short accept deadline here: the reply under test is the one to a
+    // message the client sends at once, and a deadline of a few milliseconds
+    // would only race it on a loaded machine.
     const running = runAgenCDaemonCli(
       { kind: "command", action: "run" },
       {
@@ -5174,10 +5264,9 @@ backend = "local"
         nativePeerCredentialBinding: {
           getPeerUid: () => currentUid + 1,
         },
-        socketAcceptAuthenticationTimeoutMs: 20,
       },
     );
-    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+    await expect(waitForLoadedDaemonPid(pidPath, running, io)).resolves.toBe(4100);
 
     const socket = createConnection(socketPath);
     await once(socket, "connect");
@@ -5203,7 +5292,8 @@ backend = "local"
     await expect(running).resolves.toBe(0);
 
     await rm(agencHome, { recursive: true, force: true });
-  });
+    // Nothing here times the daemon. The bound clears the pid wait.
+  }, loadedDaemonCaseTimeoutMs({ milestones: 1, requests: 0 }));
 
   linuxNativePeerTest("required native peer lookup failure shuts the daemon down nonzero (Linux SO_PEERCRED only)", async () => {
     const agencHome = await tempAgencHome();
@@ -5357,8 +5447,12 @@ backend = "local"
       { kind: "command", action: "run" },
       { host, io, signalProcess },
     );
-    await expect(waitForPid(pidPath)).resolves.toBe(4100);
-    const webSocketUrl = await waitForDaemonWebSocketUrl(io);
+    await expect(waitForLoadedDaemonPid(pidPath, running, io)).resolves.toBe(4100);
+    const webSocketUrl = await waitForDaemonWebSocketUrl(
+      io,
+      LOADED_DAEMON_MILESTONE_BUDGET_MS,
+      { running, stderrText: io.stderrText },
+    );
     const authCookie = (await readFile(cookiePath, "utf8")).trim();
 
     await expect(
@@ -5435,7 +5529,9 @@ backend = "local"
     await expect(running).resolves.toBe(0);
 
     await rm(agencHome, { recursive: true, force: true });
-  });
+    // Nothing here times the daemon. The bound clears the pid and websocket
+    // URL waits back to back.
+  }, loadedDaemonCaseTimeoutMs({ milestones: 2, requests: 0 }));
 
   it("foreground daemon serves read-only state stats to daemon clients", async () => {
     const agencHome = await tempAgencHome();
@@ -5743,7 +5839,7 @@ workspace = ${JSON.stringify(process.cwd())}
       { kind: "command", action: "run" },
       { host, io, signalProcess },
     );
-    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+    await expect(waitForLoadedDaemonPid(pidPath, running, io)).resolves.toBe(4100);
 
     expect(io.stderrText()).toMatch(
       /AgenC MCP server listening on http:\/\/127\.0\.0\.1:\d+\/mcp/,
@@ -5753,7 +5849,8 @@ workspace = ${JSON.stringify(process.cwd())}
     await expect(readAgenCDaemonPid(pidPath)).resolves.toBeNull();
 
     await rm(agencHome, { recursive: true, force: true });
-  });
+    // Nothing here times the daemon. The bound clears the pid wait.
+  }, loadedDaemonCaseTimeoutMs({ milestones: 1, requests: 0 }));
 
   it("foreground daemon applies agent.retention config to terminal and snapshot startup pruning", async () => {
     const agencHome = await tempAgencHome();
@@ -5946,7 +6043,7 @@ snapshot_max_bytes = 64
       { kind: "command", action: "run" },
       { host, io, signalProcess, runner, snapshotPeriodicIntervalMs: 10 },
     );
-    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+    await expect(waitForLoadedDaemonPid(pidPath, running, io)).resolves.toBe(4100);
     expect(io.stderrText()).toContain(
       "daemon recovery loaded 2 agent run(s) from state",
     );
@@ -5956,13 +6053,15 @@ snapshot_max_bytes = 64
     const earlyClient = createAgenCJsonLineDaemonRequestClient({
       socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
       authCookie: earlyCookie,
-      timeoutMs: 1000,
+      timeoutMs: LOADED_DAEMON_REQUEST_TIMEOUT_MS,
     });
     await expect(earlyClient.request("health.ready", {})).resolves.toMatchObject({
       ready: true,
       restoringSessions: 2,
     });
-    await vi.waitFor(() => expect(restoreAgentSpy).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(restoreAgentSpy).toHaveBeenCalledTimes(2), {
+      timeout: LOADED_DAEMON_MILESTONE_BUDGET_MS,
+    });
     expect(restoredConversationIds).toEqual([]);
     const earlyAgents = await earlyClient.request("agent.list", {});
     expect(
@@ -6002,7 +6101,11 @@ snapshot_max_bytes = 64
     });
     expect(restoredConversationIds).toEqual([]);
     releaseRestores();
-    await waitForStartupRestores(host);
+    await waitForStartupRestores(
+      host,
+      LOADED_DAEMON_MILESTONE_BUDGET_MS,
+      LOADED_DAEMON_REQUEST_TIMEOUT_MS,
+    );
     expect(io.stderrText()).toContain(
       "agenc: daemon restored 2 session(s) open at its last shutdown",
     );
@@ -6067,7 +6170,7 @@ snapshot_max_bytes = 64
     const client = createAgenCJsonLineDaemonRequestClient({
       socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
       authCookie,
-      timeoutMs: 1000,
+      timeoutMs: LOADED_DAEMON_REQUEST_TIMEOUT_MS,
     });
     const agentList = await client.request("agent.list", {});
     expect(agentList.agents.map((agent) => agent.agentId)).toEqual([
@@ -6193,7 +6296,12 @@ snapshot_max_bytes = 64
 
     await rm(otherCwd, { recursive: true, force: true });
     await rm(agencHome, { recursive: true, force: true });
-  });
+    // Nothing here times the daemon. The bound clears, back to back, the pid
+    // wait, the wait for both restores to start and the wait for them to
+    // settle, and eight requests: health.ready, the two early lists, the last
+    // restore poll, and agent.list, health.stats, agent.attach and
+    // message.stream. The two snapshot waits are met before the pid appears.
+  }, loadedDaemonCaseTimeoutMs({ milestones: 3, requests: 8 }));
 
   it.each(["runtime options", "command environment"] as const)("refuses to reinterpret daemon environment for a run without durable %s", async (missingAuthority) => {
     const agencHome = await tempAgencHome();
@@ -6222,12 +6330,7 @@ snapshot_max_bytes = 64
       { host, io, signalProcess, runner },
     );
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
-    await expect(
-      waitForPid(pidPath, LOADED_DAEMON_MILESTONE_BUDGET_MS, {
-        running,
-        stderrText: io.stderrText,
-      }),
-    ).resolves.toBe(4100);
+    await expect(waitForLoadedDaemonPid(pidPath, running, io)).resolves.toBe(4100);
     // The daemon serves before it restores the sessions open at its last
     // shutdown, and agent.list answers at once with only the runs published
     // so far. Wait until no restore is left, so the checks below see what the
@@ -6270,7 +6373,7 @@ snapshot_max_bytes = 64
     // Nothing here times the daemon, so its waits use the loaded-machine
     // budgets above, and this bound clears the pid wait, the restore wait and
     // the last request back to back.
-  }, 120_000);
+  }, loadedDaemonCaseTimeoutMs({ milestones: 2, requests: 2 }));
 
   it("stops the daemon when a restored session fails to publish and its rollback fails too", async () => {
     const agencHome = await tempAgencHome();
@@ -8016,13 +8119,13 @@ snapshot_max_bytes = 64
       { kind: "command", action: "run" },
       { host, io, signalProcess, runner },
     );
-    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+    await expect(waitForLoadedDaemonPid(pidPath, running, io)).resolves.toBe(4100);
 
     const authCookie = (await readFile(cookiePath, "utf8")).trim();
     const client = createAgenCJsonLineDaemonRequestClient({
       socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
       authCookie,
-      timeoutMs: 1000,
+      timeoutMs: LOADED_DAEMON_REQUEST_TIMEOUT_MS,
     });
     const created = await client.request("agent.create", {
       objective: "route attach event",
@@ -8036,18 +8139,22 @@ snapshot_max_bytes = 64
     // agent.create writes the running status first; the attach-time tool
     // event lands inside the one-second coalescing window and is written by
     // the trailing timer, so wait for it before reading the routed row.
-    await waitForCondition(() => {
-      try {
-        const toolState = latestSnapshotToolState(
-          agencHome,
-          otherCwd,
-          sessionId,
-        ) as { readonly inFlight?: Record<string, unknown> };
-        return toolState.inFlight?.["tool-early-route"] !== undefined;
-      } catch {
-        return false;
-      }
-    }, "the attach-time tool event in the non-default project snapshot");
+    await waitForCondition(
+      () => {
+        try {
+          const toolState = latestSnapshotToolState(
+            agencHome,
+            otherCwd,
+            sessionId,
+          ) as { readonly inFlight?: Record<string, unknown> };
+          return toolState.inFlight?.["tool-early-route"] !== undefined;
+        } catch {
+          return false;
+        }
+      },
+      "the attach-time tool event in the non-default project snapshot",
+      LOADED_DAEMON_MILESTONE_BUDGET_MS,
+    );
     expect(snapshotCount(agencHome, process.cwd(), sessionId)).toBe(0);
     expect(
       latestSnapshotToolState(agencHome, otherCwd, sessionId),
@@ -8065,7 +8172,9 @@ snapshot_max_bytes = 64
 
     await rm(otherCwd, { recursive: true, force: true });
     await rm(agencHome, { recursive: true, force: true });
-  });
+    // Nothing here times the daemon. The bound clears the pid wait,
+    // agent.create and the wait for the trailing snapshot write back to back.
+  }, loadedDaemonCaseTimeoutMs({ milestones: 2, requests: 1 }));
 
   it("foreground daemon reports cleanup failures and keeps cleaning up", async () => {
     const agencHome = await tempAgencHome();
@@ -8081,7 +8190,7 @@ snapshot_max_bytes = 64
       { kind: "command", action: "run" },
       { host, io, signalProcess },
     );
-    await expect(waitForPid(pidPath)).resolves.toBe(4100);
+    await expect(waitForLoadedDaemonPid(pidPath, running, io)).resolves.toBe(4100);
 
     signalProcess.emit("SIGTERM");
 
@@ -8090,7 +8199,8 @@ snapshot_max_bytes = 64
     expect(io.stderrText()).toContain("cleanup[daemon-snapshots] failed");
 
     await rm(agencHome, { recursive: true, force: true });
-  });
+    // Nothing here times the daemon. The bound clears the pid wait.
+  }, loadedDaemonCaseTimeoutMs({ milestones: 1, requests: 0 }));
 
   it("retains a failed snapshot policy and its driver for a later close retry", async () => {
     const agencHome = await tempAgencHome();
@@ -8167,8 +8277,10 @@ snapshot_max_bytes = 64
       { host, io, signalProcess, runner, snapshotPeriodicIntervalMs: 10 },
     );
     try {
-      await expect(waitForPid(resolveAgenCDaemonPidPath(host.env, host.userHome))).resolves.toBe(4100);
-      await waitForSnapshotAfter(agencHome, otherCwd, "session-periodic-good", SEEDED_RECOVERY_SNAPSHOT_AT);
+      await expect(waitForLoadedDaemonPid(resolveAgenCDaemonPidPath(host.env, host.userHome), running, io)).resolves.toBe(4100);
+      // The snapshot comes from the 10 ms periodic flush, which may run only
+      // after the pid appears.
+      await waitForSnapshotAfter(agencHome, otherCwd, "session-periodic-good", SEEDED_RECOVERY_SNAPSHOT_AT, LOADED_DAEMON_MILESTONE_BUDGET_MS);
       expect(io.stderrText()).toContain("daemon snapshot policy failed");
     } finally {
       signalProcess.emit("SIGTERM");
@@ -8176,7 +8288,9 @@ snapshot_max_bytes = 64
       await rm(otherCwd, { recursive: true, force: true });
       await rm(agencHome, { recursive: true, force: true });
     }
-  });
+    // Nothing here times the daemon. The bound clears the pid wait and the
+    // wait for the other project's periodic snapshot back to back.
+  }, loadedDaemonCaseTimeoutMs({ milestones: 2, requests: 0 }));
 });
 
 /** snapshot_at of the recovered row seeded by seedRecoverableDaemonState. */
