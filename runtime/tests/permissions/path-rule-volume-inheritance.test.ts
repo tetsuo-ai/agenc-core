@@ -54,25 +54,25 @@ function withVolumes(
 }
 
 const SENSITIVE_HOME: readonly (readonly [string, PathCaseSemantics])[] = [
-  ["/home/u", "sensitive"],
-  ["/home/u/proj", "insensitive"],
+  ["/agenc-case-root/u", "sensitive"],
+  ["/agenc-case-root/u/proj", "insensitive"],
 ];
 const INSENSITIVE_HOME: readonly (readonly [string, PathCaseSemantics])[] = [
-  ["/home/u", "insensitive"],
-  ["/home/u/proj", "insensitive"],
+  ["/agenc-case-root/u", "insensitive"],
+  ["/agenc-case-root/u/proj", "insensitive"],
 ];
 const SENSITIVE_LEAF: readonly (readonly [string, PathCaseSemantics])[] = [
-  ["/home/u", "insensitive"],
-  ["/home/u/proj", "insensitive"],
-  ["/home/u/proj/private", "sensitive"],
+  ["/agenc-case-root/u", "insensitive"],
+  ["/agenc-case-root/u/proj", "insensitive"],
+  ["/agenc-case-root/u/proj/private", "sensitive"],
 ];
 const PRO_STAR = {
-  rule: "/home/u/Pro*/a.txt",
-  candidate: "/home/u/proj/a.txt",
+  rule: "/agenc-case-root/u/Pro*/a.txt",
+  candidate: "/agenc-case-root/u/proj/a.txt",
 } as const;
 const PRIVATE_GLOB = {
-  rule: "/home/u/*/Private/*.txt",
-  candidate: "/home/u/proj/PRIVATE/a.txt",
+  rule: "/agenc-case-root/u/*/Private/*.txt",
+  candidate: "/agenc-case-root/u/proj/PRIVATE/a.txt",
 } as const;
 
 function foldCase(
@@ -107,7 +107,7 @@ function writePermission(
     toolName: "Write",
     input: { file_path: candidate },
     path: candidate,
-    cwd: "/home/u",
+    cwd: "/agenc-case-root/u",
     context,
     operationType: "write",
   });
@@ -203,19 +203,19 @@ describe("pathForComparison inherits only the probed volume", () => {
 
   test("an allow wildcard does not widen across a case-sensitive directory", () => {
     const mixed = new Map<string, PathCaseSemantics>([
-      ["/home", "insensitive"],
-      ["/home/u", "insensitive"],
-      ["/home/u/proj", "sensitive"],
-      ["/home/u/proj/private", "insensitive"],
+      ["/agenc-case-root", "insensitive"],
+      ["/agenc-case-root/u", "insensitive"],
+      ["/agenc-case-root/u/proj", "sensitive"],
+      ["/agenc-case-root/u/proj/private", "insensitive"],
     ]);
     withVolumes(mixed, () => {
       expect(
-        matchPathRuleContent("/home/u/*/Private/*.txt", "/home/u/proj/private/a.txt", undefined, "narrow"),
+        matchPathRuleContent("/agenc-case-root/u/*/Private/*.txt", "/agenc-case-root/u/proj/private/a.txt", undefined, "narrow"),
       ).toBe(false);
       expect(
         matchPathRuleContent(
-          "/home/u/*/Private/*.txt",
-          "/home/u/proj/private/a.txt",
+          "/agenc-case-root/u/*/Private/*.txt",
+          "/agenc-case-root/u/proj/private/a.txt",
           undefined,
           "wide",
         ),
@@ -223,14 +223,14 @@ describe("pathForComparison inherits only the probed volume", () => {
     });
     withVolumes(
       new Map<string, PathCaseSemantics>([
-        ["/home", "insensitive"],
-        ["/home/u", "insensitive"],
-        ["/home/u/proj", "insensitive"],
-        ["/home/u/proj/private", "insensitive"],
+        ["/agenc-case-root", "insensitive"],
+        ["/agenc-case-root/u", "insensitive"],
+        ["/agenc-case-root/u/proj", "insensitive"],
+        ["/agenc-case-root/u/proj/private", "insensitive"],
       ]),
       () => {
         expect(
-          matchPathRuleContent("/home/u/*/Private/*.txt", "/home/u/proj/private/a.txt", undefined, "narrow"),
+          matchPathRuleContent("/agenc-case-root/u/*/Private/*.txt", "/agenc-case-root/u/proj/private/a.txt", undefined, "narrow"),
         ).toBe(true);
       },
     );
@@ -323,18 +323,18 @@ describe("pathForComparison inherits only the probed volume", () => {
   test("a read-only none glob uses the wide fold", () => {
     withVolumes(new Map<string, PathCaseSemantics>(SENSITIVE_LEAF), () => {
       const session = {
-        sessionConfiguration: { cwd: "/home/u" },
+        sessionConfiguration: { cwd: "/agenc-case-root/u" },
         permissionModeRegistry: { current: () => createEmptyToolPermissionContext() },
         services: {
           sandboxExecutionBroker: {
-            cwd: "/home/u",
+            cwd: "/agenc-case-root/u",
             sessionTempRoot: "/tmp/agenc-readonly",
             executionAuthority: () => ({
               permissionProfile: {
                 fileSystem: {
                   kind: "restricted",
                   entries: [
-                    { path: { kind: "path", path: "/home/u" }, access: "read" },
+                    { path: { kind: "path", path: "/agenc-case-root/u" }, access: "read" },
                     { path: { kind: "glob", pattern: PRIVATE_GLOB.rule }, access: "none" },
                   ],
                 },
@@ -344,7 +344,7 @@ describe("pathForComparison inherits only the probed volume", () => {
         },
       } as Session;
       expect(readOnlyDelegationPathAllowed(session, PRIVATE_GLOB.candidate)).toBe(false);
-      expect(readOnlyDelegationPathAllowed(session, "/home/u/proj/notes.txt")).toBe(true);
+      expect(readOnlyDelegationPathAllowed(session, "/agenc-case-root/u/proj/notes.txt")).toBe(true);
     });
   });
 
