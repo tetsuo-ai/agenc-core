@@ -236,10 +236,16 @@ export class RemoteService {
     if (!message || Array.isArray(message) || message.jsonrpc !== "2.0" || typeof message.id !== "string" || message.id.length < 1 || message.id.length > 128 || typeof message.method !== "string") return;
     const fail = (code: string) => this.#send(record, cid, { jsonrpc: "2.0", id: message.id, error: { code: -32000, message: code, data: { code } } });
     const mutation = ["session.create", "message.send", "session.cancelTurn", "tool.approve", "tool.deny"].includes(message.method);
-    // Read polling cannot exhaust mutation replay protection. Mutation IDs are never
-    // evicted while their grant is live; a new explicit pairing resets that ledger.
-    if (mutation && (record.seen.has(message.id) || record.seen.size >= 4096)) { fail("REMOTE_REPLAY_DENIED"); return; }
-    if (mutation) record.seen.add(message.id);
+    // Read polling cannot exhaust mutation replay protection. The ledger keeps
+    // the most recent 4096 mutation ids for the life of the grant, across
+    // reconnects; a full ledger forgets its oldest id. It used to refuse every
+    // new id instead, which locked a busy device out of sending, approving and
+    // cancelling until it paired again. A new explicit pairing resets it.
+    if (mutation) {
+      if (record.seen.has(message.id)) { fail("REMOTE_REPLAY_DENIED"); return; }
+      if (record.seen.size >= 4096) record.seen.delete(record.seen.values().next().value!);
+      record.seen.add(message.id);
+    }
     let peer = record.peers.get(cid);
     if (!peer) {
       if (record.peers.size >= 4) { fail("REMOTE_PEER_LIMIT"); return; }

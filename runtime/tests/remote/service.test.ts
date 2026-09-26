@@ -208,6 +208,22 @@ describe("daemon browser remote lifecycle", () => {
     pending.resolve({ jsonrpc: "2.0", id: "send", result: { done: true } });
     await vi.advanceTimersByTimeAsync(0); expect(f.sockets[0]!.sent).toHaveLength(3);
   });
+  it("a full mutation ledger forgets its oldest id instead of refusing every new request", async () => {
+    const f = fixture(); await f.approve();
+    for (let i = 0; i < 4096; i++) { f.sockets[0]!.emit("message", f.frame(`mutation-${i}`, "session.cancelTurn", { sessionId: "allowed" })); await vi.advanceTimersByTimeAsync(0); }
+    expect(f.dispatch).toHaveBeenCalledTimes(4096);
+    f.sockets[0]!.emit("message", f.frame("mutation-4096", "session.cancelTurn", { sessionId: "allowed" })); await vi.advanceTimersByTimeAsync(0);
+    expect(f.dispatch).toHaveBeenCalledTimes(4097);
+    expect(f.sockets[0]!.sent.at(-1)).not.toContain("REMOTE_REPLAY_DENIED");
+    // Recent ids are still replay-protected, on this socket and after a reconnect.
+    f.sockets[0]!.emit("message", f.frame("mutation-4096", "session.cancelTurn", { sessionId: "allowed" })); await vi.advanceTimersByTimeAsync(0);
+    f.sockets[0]!.emit("message", f.frame("mutation-1", "session.cancelTurn", { sessionId: "allowed" })); await vi.advanceTimersByTimeAsync(0);
+    expect(f.dispatch).toHaveBeenCalledTimes(4097);
+    expect(f.sockets[0]!.sent.slice(-2).every((frame) => frame.includes("REMOTE_REPLAY_DENIED"))).toBe(true);
+    vi.mocked(f.backend.poll).mockImplementation(async () => f.poll(true)); f.sockets[0]!.terminate(); await vi.advanceTimersByTimeAsync(2_000); f.sockets[1]!.open();
+    f.sockets[1]!.emit("message", f.frame("mutation-4096", "session.cancelTurn", { sessionId: "allowed" })); await vi.advanceTimersByTimeAsync(0);
+    expect(f.dispatch).toHaveBeenCalledTimes(4097); expect(f.sockets[1]!.sent.join("")).toContain("REMOTE_REPLAY_DENIED");
+  });
   it("read-only polling does not consume the mutation replay ledger", async () => {
     const f = fixture(); await f.approve();
     for (let i = 0; i < 4100; i++) { f.sockets[0]!.emit("message", f.frame(`poll-${i}`)); await vi.advanceTimersByTimeAsync(0); }
