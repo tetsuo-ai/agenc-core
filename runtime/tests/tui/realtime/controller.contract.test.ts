@@ -33,6 +33,32 @@ vi.mock("../../utils/log.js", () => ({
   logError: logMock.logError,
 }));
 
+// Default a playback backend for every controller in this file, including
+// direct createRealtimeTuiControls calls that skip createControls. Host
+// probing stays opt-in through hostProbe.allow.
+vi.mock("./controller.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./controller.js")>();
+  return {
+    ...actual,
+    createRealtimeTuiControls(
+      options: Parameters<typeof actual.createRealtimeTuiControls>[0],
+    ) {
+      if (
+        !hostProbe.allow &&
+        options.audioPlayer === undefined &&
+        options.playbackBackend === undefined &&
+        options.resolvePlaybackBackend === undefined
+      ) {
+        return actual.createRealtimeTuiControls({
+          ...options,
+          playbackBackend: "play",
+        });
+      }
+      return actual.createRealtimeTuiControls(options);
+    },
+  };
+});
+
 import {
   createRealtimeWebrtcEventChannel,
   RealtimeWebrtcSessionHandle,
@@ -148,12 +174,15 @@ async function waitFor(
 
 describe("AgenC realtime TUI controller", () => {
   afterEach(() => {
-    if (!hostProbe.allow) {
-      expect(hostProbe.calls).toEqual([]);
+    try {
+      if (!hostProbe.allow) {
+        expect(hostProbe.calls).toEqual([]);
+      }
+    } finally {
+      hostProbe.calls = [];
+      hostProbe.allow = false;
+      hostProbe.playAvailable = false;
     }
-    hostProbe.calls = [];
-    hostProbe.allow = false;
-    hostProbe.playAvailable = false;
   });
 
   beforeEach(() => {
