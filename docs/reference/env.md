@@ -22,6 +22,8 @@ Boolean-like values that go through `applyEnvOverrides` treat
 | Var | Effect |
 | --- | --- |
 | `AGENC_HOME` | Config and daemon home. Must be an absolute path; relative input is rejected. Default `$HOME/.agenc` |
+| `AGENC_INSTALL_PREFIX` | Absolute directory that contains `bin/agenc.cmd`. The Windows shim sets it from its own location when it is unset. `agenc daemon install-service` resolves the launcher only from this prefix |
+| `AGENC_WINSW_XML` | Absolute path for the generated WinSW 2.12.0 service definition. When unset, the definition is `<AGENC_INSTALL_PREFIX>\agenc-daemon.xml` |
 | `AGENC_WORKSPACE` | Workspace root override |
 | `AGENC_MODEL` | Session model (`grok-4.6` when unset and config is fresh) |
 | `AGENC_PROVIDER` | Canonical provider slug. Retired selector spellings are rejected; use `grok` and `openai-compatible` directly |
@@ -396,7 +398,7 @@ The sections above explain the common operator controls. The index below makes t
 
 ### AGENC_I*
 
-`AGENC_IDE_HOST_OVERRIDE`, `AGENC_IDE_SKIP_AUTO_INSTALL`, `AGENC_IDE_SKIP_VALID_CHECK`, `AGENC_INSTALL_MANIFEST_URL`, `AGENC_INSTALL_REPO`.
+`AGENC_IDE_HOST_OVERRIDE`, `AGENC_IDE_SKIP_AUTO_INSTALL`, `AGENC_IDE_SKIP_VALID_CHECK`, `AGENC_INSTALL_MANIFEST_URL`, `AGENC_INSTALL_PREFIX`, `AGENC_INSTALL_REPO`.
 
 ### AGENC_J*
 
@@ -440,7 +442,7 @@ The sections above explain the common operator controls. The index below makes t
 
 ### AGENC_W*
 
-`AGENC_WEBSOCKET_AUTH_FILE_DESCRIPTOR`, `AGENC_WORKER_EPOCH`.
+`AGENC_WEBSOCKET_AUTH_FILE_DESCRIPTOR`, `AGENC_WINSW_XML`, `AGENC_WORKER_EPOCH`.
 
 ## External, platform, and runtime-managed inputs
 

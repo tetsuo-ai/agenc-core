@@ -1,13 +1,39 @@
+<!--
+  Example only. Do not install this file unchanged.
+
+  WinSW 2.12.0 reads domain and user. It does not read a v3 username element.
+  Program.cs loads <exe directory>\<exe basename>.xml, so this file pairs
+  with agenc-daemon.exe in the same directory.
+
+  install /p prompts Username: and Password: and passes the typed name to
+  CreateService. It does not install the XML account. Typing LocalSystem
+  installs as LocalSystem.
+
+  Generate the real file with agenc daemon install-service. Then, elevated:
+    agenc-daemon.exe install
+    sc.exe qc agenc-daemon
+    agenc-daemon.exe start
+  SERVICE_START_NAME must be the installing user. Set the password in the
+  Services Log On tab or with sc.exe config, not in this XML.
+-->
 <service>
   <id>agenc-daemon</id>
   <name>AgenC Daemon</name>
-  <description>Runs the local AgenC daemon control plane.</description>
-  <executable>agenc</executable>
-  <arguments>daemon start --foreground</arguments>
+  <description>Example WinSW 2.12.0 service. Replace every __PLACEHOLDER__ before use.</description>
+  <executable>__AGENC_CMD_EXE__</executable>
+  <arguments>/d /v:off /s /c ""__AGENC_LAUNCHER__" daemon start --foreground"</arguments>
+  <workingdirectory>__AGENC_HOME__</workingdirectory>
+  <env name="AGENC_HOME" value="__AGENC_HOME__"/>
+  <env name="NODE_ENV" value="production"/>
+  <serviceaccount>
+    <domain>__AGENC_DOMAIN__</domain>
+    <user>__AGENC_USER__</user>
+    <allowservicelogon>true</allowservicelogon>
+  </serviceaccount>
   <startmode>Automatic</startmode>
   <onfailure action="restart" delay="5 sec"/>
   <log mode="roll-by-size">
-    <sizeThreshold>10485760</sizeThreshold>
+    <sizeThreshold>10240</sizeThreshold>
     <keepFiles>5</keepFiles>
   </log>
 </service>

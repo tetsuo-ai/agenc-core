@@ -946,6 +946,7 @@ agenc daemon stop
 agenc daemon status
 agenc daemon reload
 agenc daemon restart
+agenc daemon install-service
 ```
 
 | Command | Meaning |
@@ -956,9 +957,14 @@ agenc daemon restart
 | `status` | Show local daemon status |
 | `reload` | Reload daemon configuration in place. Open sessions take the new `[agents]` cross-provider settings. The command prints each session that could not read them again, and says when its read only ran out of time. Such a session keeps its earlier settings without what the save took away from the daemon's settings. Other session settings apply to new sessions |
 | `restart` | Stop and start the local AgenC daemon |
+| `install-service` | Write a WinSW XML definition from this install's absolute launcher, `AGENC_HOME`, and installing-user account. Does not install or start the Windows service. |
 
 Service templates under `packaging/` invoke `agenc daemon start --foreground`.
-Launcher autostart: `AGENC_DAEMON_AUTOSTART=0` disables; ready timeout
+The Windows one-line installer writes a generated WinSW 2.12.0 file. Installing
+that service is a separate elevated step: `agenc-daemon.exe install` (no `/p`),
+then `sc.exe qc agenc-daemon`. `SERVICE_START_NAME` must be the installing
+user. The password is set outside the XML. Launcher autostart:
+`AGENC_DAEMON_AUTOSTART=0` disables; ready timeout
 `AGENC_DAEMON_READY_TIMEOUT_MS`.
 
 ---
