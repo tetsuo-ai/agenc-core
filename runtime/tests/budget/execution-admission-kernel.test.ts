@@ -859,6 +859,46 @@ describe("ExecutionAdmissionKernel active cancellation", () => {
     });
   });
 
+  it.each([false, true])("preserves cancellation when a cancelled step is acquired again (dispatched=%s)", async (dispatched) => {
+    const value = kernel("cancelled-retry");
+    const client = bind(value, "cancelled-run");
+    const lease = await acquire(client);
+    if (dispatched) {
+      client.markDispatched(lease.reservation.reservationId, { boundary: "provider_wire" });
+    }
+    client.cancelRun("operator_cancel");
+    client.acknowledgeCompletion(lease.reservation.reservationId);
+
+    await expect(acquire(client)).rejects.toMatchObject({
+      reason: `cancelled_${dispatched ? "after" : "before"}_dispatch:operator_cancel`,
+      decision: "cancelled",
+    });
+    await expect(acquire(client, "next-stage")).rejects.toMatchObject({
+      reason: "parent_cancel_locked",
+      decision: "cancelled",
+    });
+  });
+
+  it("preserves cancellation when it wins between enqueue and claim", async () => {
+    const value = kernel("cancel-before-claim");
+    const client = bind(value, "cancelled-run");
+    const claim = ExecutionAdmissionRepository.prototype.claim;
+    const spy = vi.spyOn(ExecutionAdmissionRepository.prototype, "claim")
+      .mockImplementationOnce(function (options) {
+        this.cancel("cancelled-run", { reason: "operator_cancel" });
+        return claim.call(this, options);
+      });
+    try {
+      await expect(acquire(client)).rejects.toMatchObject({
+        decision: "cancelled",
+      });
+      expect(spy).toHaveBeenCalledOnce();
+      expect(value.activeCount).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("cancels a dispatched child when its parent is cancelled", async () => {
     const value = kernel("parent-cancel");
     const parent = bind(value, "parent-run");
