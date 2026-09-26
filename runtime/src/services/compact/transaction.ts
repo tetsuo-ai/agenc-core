@@ -1301,6 +1301,7 @@ async function invokeCompactionProvider(params: {
     );
   }
   let outputTokenUpperBound: number | undefined;
+  let providerProgress = false;
   const response = await runAdmittedModelCall({
     session,
     provider,
@@ -1311,8 +1312,10 @@ async function invokeCompactionProvider(params: {
     model: params.model,
     providerName: params.providerName,
     ...(signal !== undefined ? { signal } : {}),
+    hasProviderProgress: () => providerProgress,
     invoke: async (admittedOptions) => {
       const candidate = await provider.chat([...params.messages], admittedOptions);
+      providerProgress = true;
       const outputAccounting = await countCompactionProviderOutput({
         context: params.context,
         providerName: params.providerName,

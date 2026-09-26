@@ -6,7 +6,7 @@ import type {
   ExecutionAdmissionClient,
 } from "../../src/budget/admission-client.js";
 import { AdmissionDeniedError } from "../../src/budget/admission-client.js";
-import { LLMManagedAdmissionError, LLMManagedUsagePendingError } from "../../src/llm/errors.js";
+import { LLMManagedAdmissionError, LLMManagedUsagePendingError, LLMRateLimitError, LLMServerError, LLMTimeoutError } from "../../src/llm/errors.js";
 import type { AdmissionLease } from "../../src/budget/admission-types.js";
 import type { AuthBackend } from "../../src/auth/backend.js";
 import { AgenCProvider } from "../../src/llm/providers/agenc/index.js";
@@ -865,6 +865,51 @@ describe("runAdmittedModelCall", () => {
       }),
       undefined,
     );
+  });
+
+  test.each([
+    new LLMRateLimitError("grok", 30_000),
+    new LLMServerError("grok", 503, "unavailable"),
+    new LLMTimeoutError("grok", 30_000),
+    Object.assign(new Error("Connection error."), { code: "ECONNRESET" }),
+  ])("releases a failed attempt before any provider progress: %s", async (error) => {
+    const state = harness({ maxCostUsd: 20 });
+    await expect(callOptions(state, { maxOutputTokens: 200 }, async () => {
+      throw error;
+    })).rejects.toBe(error);
+    expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+      inputTokens: 0, outputTokens: 0, costUsd: 0,
+    });
+    expect(state.holdUnknown).not.toHaveBeenCalled();
+    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+  });
+
+  test("keeps a failed stream's reservation when it produced unreported usage", async () => {
+    const state = harness({});
+    const error = new LLMServerError("grok", 503, "stream interrupted");
+    await expect(runAdmittedModelCall({
+      session: state.session, provider: state.provider, messages: [],
+      options: { maxOutputTokens: 200 }, stepId: "partial-stream",
+      model: "grok-4.5", providerName: "grok",
+      hasProviderProgress: () => true,
+      invoke: async () => { throw error; },
+    })).rejects.toBe(error);
+    expect(state.reconcile).not.toHaveBeenCalled();
+    expect(state.holdUnknown).toHaveBeenCalledWith("reservation-1", "provider_call_failed_after_dispatch");
+  });
+
+  test("charges reported usage on a partial response that ended in a provider error", async () => {
+    const state = harness({});
+    const partial = response({
+      finishReason: "error", partial: true,
+      error: new LLMServerError("grok", 503, "stream interrupted"),
+    });
+    await expect(callOptions(state, { maxOutputTokens: 200 }, async () => partial)).resolves.toBe(partial);
+    expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+      inputTokens: 100, outputTokens: 50, costUsd: expect.any(Number),
+    });
+    expect(state.reconcile).not.toHaveBeenCalledWith("reservation-1", expect.objectContaining({ costUsd: 0 }));
+    expect(state.holdUnknown).not.toHaveBeenCalled();
   });
 
   test.each(["capacity", "insufficient_credits", "credits_unavailable"] as const)("settles zero only for a managed gateway no-dispatch receipt: %s", async (reason) => {

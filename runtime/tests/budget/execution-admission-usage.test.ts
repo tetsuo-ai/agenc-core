@@ -1,8 +1,12 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { runAdmittedModelCall } from "../../src/budget/admitted-model-call.js";
+import { LLMRateLimitError } from "../../src/llm/errors.js";
+import type { LLMProvider } from "../../src/llm/types.js";
+import type { Session } from "../../src/session/session.js";
 import type { ExecutionAdmissionClient } from "../../src/budget/admission-client.js";
 import type { AdmissionUsageSummary } from "../../src/budget/admission-types.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
@@ -51,6 +55,38 @@ function observe(client: ExecutionAdmissionClient) {
 }
 
 describe("canonical allocation usage observers", () => {
+  it("releases every rejected model attempt under a $20 Goal cap", async () => {
+    const parent = kernel.bindClient({
+      cwd: workspace,
+      scope: { runId: "goal", sessionId: "goal", autonomous: true, maxCostUsd: 20, maxTokens: 156_392 },
+    });
+    const child = parent.forSession({ runId: "worker", sessionId: "worker" });
+    const acquireModel = child.acquire.bind(child);
+    vi.spyOn(child, "acquire").mockImplementation((input) => acquireModel({
+      ...input, maxInputTokens: 150_000, maxOutputTokens: 6_392, maxCostUsd: 1.02,
+    }));
+    const session = { services: { executionAdmission: child } } as unknown as Session;
+    const provider = {
+      name: "grok",
+      getExecutionProfile: async () => ({ usageReporting: "authoritative", supportsMaxOutputTokens: true }),
+    } as unknown as LLMProvider;
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      const error = new LLMRateLimitError("grok", 30_000);
+      await expect(runAdmittedModelCall({
+        session, provider, messages: [], options: { maxOutputTokens: 6_392 },
+        stepId: `retry:${attempt}`, model: "grok-4.5", providerName: "grok",
+        invoke: async () => { throw error; },
+      })).rejects.toBe(error);
+      expect(parent.getUsageSummary?.()).toMatchObject({
+        costUsd: 0, totalTokens: 0, heldCostUsd: 0, hasUnknownCost: false,
+      });
+    }
+    const journal = child.replayJournal?.() ?? [];
+    expect(journal.filter((event) => event.event === "allowed")).toHaveLength(25);
+    expect(journal.filter((event) => event.event === "reconciled")).toHaveLength(25);
+    expect(journal.filter((event) => event.event === "held_unknown")).toHaveLength(0);
+  });
+
   it("reports descendants once without rewriting their journal identity", async () => {
     const parent = bind("parent");
     const child = parent.forSession({ runId: "child", sessionId: "child" });

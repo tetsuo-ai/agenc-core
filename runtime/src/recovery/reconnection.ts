@@ -6,6 +6,7 @@
  * abort-aware sleeping.
  */
 
+import { classifyLLMFailure } from "../llm/errors.js";
 import { monotonicMs } from "./_deps/monotonic.js";
 import {
   RECONNECT_INITIAL_MS,
@@ -259,6 +260,15 @@ export async function reconnectWithBackoff<T>(
     }
 
     emitScheduledRetry(opts.session, maxAttempts, delayDecision);
+    const notice = rateLimitRetryNotice(transientError, delayDecision.delayMs);
+    if (notice !== undefined) {
+      emitWarning(
+        opts.session.eventLog,
+        opts.session.nextInternalSubId(),
+        "provider_outage_wait",
+        notice,
+      );
+    }
     if (isReconnectAborted(opts.signal)) return aborted(attempts);
     try {
       await sleeper(delayDecision.delayMs, opts.signal);
@@ -279,6 +289,24 @@ export async function reconnectWithBackoff<T>(
       });
     }
   }
+}
+
+export function rateLimitRetryNotice(
+  error: unknown,
+  delayMs: number,
+): string | undefined {
+  const cause = error instanceof Error && error.cause !== undefined
+    ? error.cause
+    : error;
+  const status = cause as { status?: unknown; statusCode?: unknown } | null | undefined;
+  if (
+    classifyLLMFailure(cause) !== "rate_limited" &&
+    status?.status !== 429 &&
+    status?.statusCode !== 429
+  ) {
+    return undefined;
+  }
+  return `The provider is limiting requests. Retrying in ${Math.max(1, Math.ceil(delayMs / 1000))} s.`;
 }
 
 function retryAfterOnError(err: unknown): RetryAfterDirective | undefined {

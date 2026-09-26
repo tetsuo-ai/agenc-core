@@ -144,7 +144,7 @@ import {
   isTransientProviderError,
   isWithheldMaxOutputTokens,
 } from "../recovery/api-errors.js";
-import { abortableSleep, reconnectWithBackoff } from "../recovery/reconnection.js";
+import { abortableSleep, rateLimitRetryNotice, reconnectWithBackoff } from "../recovery/reconnection.js";
 import {
   DEFAULT_PROVIDER_OUTAGE_RETRY_MS,
   DEFAULT_PROVIDER_OUTAGE_WAIT_MS,
@@ -1314,14 +1314,15 @@ async function runSamplingRequest(
       session.eventLog,
       session.nextInternalSubId(),
       "provider_outage_wait",
-      `${session.services.provider.name} unavailable after ${outcome.attempts} attempt(s) ` +
-        `(${errorSummary(lastError)}); retry ${outageRetries} in ${Math.round(delayMs / 1000)} s, ` +
-        `${Math.max(0, Math.round((outage.waitMs - waitedMs) / 60_000))} min of waiting left`,
+      rateLimitRetryNotice(lastError, delayMs) ??
+        (`${session.services.provider.name} unavailable after ${outcome.attempts} attempt(s) ` +
+          `(${errorSummary(lastError)}); retry ${outageRetries} in ${Math.round(delayMs / 1000)} s, ` +
+          `${Math.max(0, Math.round((outage.waitMs - waitedMs) / 60_000))} min of waiting left`),
     );
     await abortableSleep(delayMs, signal);
     if (signal.aborted) throw samplingAbortError(signal, "aborted");
     // The fast recovery counter remains spent. This is a new physical sample,
-    // so persist a distinct identity without reusing its unknown reservation.
+    // so persist a distinct identity without reusing its previous reservation.
     beforeOutageRetry?.();
   }
 }

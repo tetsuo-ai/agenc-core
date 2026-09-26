@@ -1310,6 +1310,7 @@ export async function streamModel(
     };
     const model =
       recoveryFallback?.toModel ?? session.config?.model ?? ctx.config.model;
+    let providerProgress = false;
     const response = await runAdmittedModelCall({
       session,
       provider: session.services.provider,
@@ -1340,8 +1341,12 @@ export async function streamModel(
               },
             }
           : {}),
+      hasProviderProgress: () => providerProgress,
       invoke: (admittedOptions) =>
-        provider.chatStream(messages, onChunk, admittedOptions),
+        provider.chatStream(messages, (chunk) => {
+          providerProgress = true;
+          onChunk(chunk);
+        }, admittedOptions),
     });
     // Admission can be explicitly disabled for legacy callers. In that case
     // there is no durable evidence callback, but a completed wire call still

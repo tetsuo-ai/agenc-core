@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { describe, expect, test, vi } from "vitest";
 
+import { LLMRateLimitError, LLMServerError } from "../../src/llm/errors.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import type {
   LLMMessage,
@@ -303,7 +304,7 @@ function reconciledStepIds(
 }
 
 describe("admitted model sample identity", () => {
-  test("admits each slow outage retry separately and preserves unknown charges", async () => {
+  test.each(["connection", "rate limit"])("admits each slow %s retry separately and releases unused budget", async (failure) => {
     const timeline: string[] = [];
     let attempts = 0;
     const reserve = recovery.reserveRecoveryReentry;
@@ -314,6 +315,12 @@ describe("admitted model sample identity", () => {
       });
     try {
       await withAdmittedHarness(["recovered"], async ({ session, admission, ctx }) => {
+        const warnings: string[] = [];
+        session.eventLog.subscribe((event) => {
+          if (event.msg.type === "warning" && event.msg.payload.cause === "provider_outage_wait") {
+            warnings.push(event.msg.payload.message);
+          }
+        });
         const store = session.services.configStore!;
         const config = vi.spyOn(store, "current").mockReturnValue({
           ...store.current(), provider_outage_wait_ms: 100, provider_outage_retry_ms: 1,
@@ -330,8 +337,14 @@ describe("admitted model sample identity", () => {
           const unknown = journal.filter((event) => event.event === "held_unknown");
           expect(dispatched).toHaveLength(4);
           expect(new Set(dispatched.map((event) => event.stepId)).size).toBe(4);
-          expect(unknown).toHaveLength(3);
-          expect(reconciledStepIds(admission)).toEqual([dispatched[3]!.stepId]);
+          expect(unknown).toHaveLength(0);
+          expect(reconciledStepIds(admission)).toEqual(dispatched.map((event) => event.stepId));
+          expect(journal.filter((event) => event.event === "reconciled").slice(0, 3))
+            .toEqual(Array.from({ length: 3 }, () => expect.objectContaining({ actualTokens: 0, actualCostUsd: 0 })));
+          if (failure === "rate limit") {
+            expect(warnings).toHaveLength(3);
+            expect(warnings).toEqual(Array(3).fill("The provider is limiting requests. Retrying in 1 s."));
+          }
           expect(journal.filter((event) => event.event === "voided")).toHaveLength(0);
           for (let ordinal = 1; ordinal <= 3; ordinal += 1) {
             expect(timeline.indexOf(`checkpoint:${ordinal}`)).toBeGreaterThan(
@@ -352,7 +365,11 @@ describe("admitted model sample identity", () => {
       }, () => {
         attempts += 1;
         timeline.push(`provider:${attempts}`);
-        if (attempts <= 3) throw Object.assign(new Error("Connection error."), { code: "ECONNRESET" });
+        if (attempts <= 3) {
+          throw failure === "rate limit"
+            ? new LLMRateLimitError("grok")
+            : Object.assign(new Error("Connection error."), { code: "ECONNRESET" });
+        }
       });
     } finally {
       spent.mockRestore();
@@ -398,8 +415,10 @@ describe("admitted model sample identity", () => {
             expect(attempts).toBe(1);
             const journal = admission.client.replayJournal?.() ?? [];
             expect(journal.filter((event) => event.event === "dispatched")).toHaveLength(1);
-            expect(journal.filter((event) => event.event === "held_unknown")).toHaveLength(1);
-            expect(reconciledStepIds(admission)).toEqual([]);
+            expect(journal.filter((event) => event.event === "held_unknown")).toHaveLength(0);
+            expect(journal.filter((event) => event.event === "reconciled")).toEqual([
+              expect.objectContaining({ actualTokens: 0, actualCostUsd: 0 }),
+            ]);
           } finally {
             unsubscribe();
             config.mockRestore();
@@ -413,6 +432,22 @@ describe("admitted model sample identity", () => {
       }
     },
   );
+
+  test("retains the reservation when a stream fails after provider progress", async () => {
+    await withAdmittedHarness(["unused"], async ({ session, admission, ctx }) => {
+      session.services.provider.chatStream = async (_messages, onChunk) => {
+        onChunk({ content: "partial answer", done: false });
+        throw new LLMServerError("grok", 503, "stream interrupted");
+      };
+      const state = buildInitialTurnState(ctx, { role: "user", content: "hello" });
+      await expect(streamModel(state, ctx, session, admittedRequest([
+        { role: "user", content: "hello" },
+      ]))).rejects.toThrow();
+      const journal = admission.client.replayJournal?.() ?? [];
+      expect(journal.filter((event) => event.event === "held_unknown")).toHaveLength(1);
+      expect(reconciledStepIds(admission)).toEqual([]);
+    });
+  });
 
   test("keeps the upgrade-compatible first id and bounds later ordinals", () => {
     const ctx = { subId: "turn-stream" };
