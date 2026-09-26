@@ -39,6 +39,10 @@ import {
   SESSION_ADVERTISED_TOOL_NAMES_ARG,
 } from "./tools/system/coding.js";
 import { SYSTEM_SEARCH_TOOLS_NAME } from "./tools/system/tool-search-name.js";
+import {
+  isRareDeferredTool,
+  rareToolPointer,
+} from "./tools/rare-tool-deferral.js";
 import { createBashTool } from "./tools/system/bash.js";
 import { registerBuiltinTool } from "./tools/builtin-provenance.js";
 import { createExecCommandTool } from "./tools/system/exec-command.js";
@@ -638,6 +642,12 @@ export interface BuildToolRegistryOptions {
    */
   readonly extraTools?: ReadonlyArray<Tool>;
   /**
+   * Load rarely used built-in tools through system.searchTools instead of
+   * advertising them on every request. Off unless set; the bootstrap sets it
+   * from the session's `AGENC_DEFER_RARE_TOOLS`.
+   */
+  readonly deferRareTools?: boolean;
+  /**
    * Session-configured structured-output JSON schema. Consumed by the
    * bootstrap model-facing tool assembly (`bin/bootstrap-tool-registry.ts`):
    * when present, the StructuredOutput tool is registered schema-bound and
@@ -697,7 +707,10 @@ export function buildToolRegistry(
       buildRouter()
         .getSpecs()
         .filter((spec) => spec.unavailable !== true)
-        .map((spec) => catalogEntryForTool(spec.tool, spec)),
+        .map((spec) => catalogEntryForTool(
+          spec.tool,
+          isDeferredSpec(spec) ? { ...spec, deferred: true } : spec,
+        )),
     onDiscoverTools: markDiscovered,
     ...(options.mcpToolsProvider?.primeCatalogs !== undefined
       ? { onBeforeSearch: () => options.mcpToolsProvider!.primeCatalogs!() }
@@ -1137,11 +1150,17 @@ export function buildToolRegistry(
     return buildRouter().getSpecs();
   }
 
+  const deferRareTools = options.deferRareTools === true;
+  function isDeferredSpec(spec: ConfiguredToolSpec): boolean {
+    return spec.deferred === true ||
+      (deferRareTools && isRareDeferredTool(spec.tool.name));
+  }
+
   function visibleSpecs(): readonly ConfiguredToolSpec[] {
     return allSpecs().filter(
       (spec) =>
         spec.unavailable !== true &&
-        (spec.deferred !== true || discoveredToolNames.has(spec.tool.name)),
+        (!isDeferredSpec(spec) || discoveredToolNames.has(spec.tool.name)),
     );
   }
 
@@ -1226,7 +1245,17 @@ export function buildToolRegistry(
       return allSpecs().map((spec) => spec.tool);
     },
     toLLMTools(): LLMTool[] {
-      return visibleSpecs().map((spec) => toolToLLMTool(spec.tool));
+      const tools = visibleSpecs().map((spec) => toolToLLMTool(spec.tool));
+      if (!deferRareTools) return tools;
+      const pointer = rareToolPointer(new Set(
+        allSpecs()
+          .filter((spec) => spec.unavailable !== true && isRareDeferredTool(spec.tool.name))
+          .map((spec) => spec.tool.name),
+      ));
+      if (pointer === undefined) return tools;
+      return tools.map((tool) => tool.function.name === SYSTEM_SEARCH_TOOLS_NAME
+        ? { ...tool, function: { ...tool.function, description: `${tool.function.description ?? ""}\n\n${pointer}`.trim() } }
+        : tool);
     },
     getDiscoveredToolNames(): ReadonlySet<string> {
       return discoveredToolNames;
