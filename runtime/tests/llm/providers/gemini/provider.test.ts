@@ -2606,7 +2606,7 @@ describe("GeminiProvider", () => {
         usageMetadata: {
           promptTokenCount: 4,
           candidatesTokenCount: 2,
-          totalTokenCount: 6,
+          totalTokenCount: 7,
           thoughtsTokenCount: 1,
         },
       }),
@@ -2642,6 +2642,8 @@ describe("GeminiProvider", () => {
       },
     ]);
     expect(response.usage.reasoningOutputTokens).toBe(1);
+    expect(response.usage.completionTokens).toBe(3);
+    expect(response.usage.totalTokens).toBe(7);
     const [, init] = fetchImpl.mock.calls[0] ?? [];
     const requestBody = JSON.parse(String(init?.body)) as {
       contents: Array<{ role: string; parts: unknown[] }>;
@@ -2657,6 +2659,116 @@ describe("GeminiProvider", () => {
         { text: "previous answer" },
       ],
     });
+  });
+
+  test("normalizes thinking tokens into inclusive completion on generateContent", async () => {
+    const diagnostics: Array<{ cause: string; message: string }> = [];
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "ok" }] },
+            finishReason: "STOP",
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 4,
+          candidatesTokenCount: 2,
+          thoughtsTokenCount: 1,
+          totalTokenCount: 7,
+        },
+      }),
+    );
+    const provider = new GeminiProvider({
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
+      model: "gemini-2.5-pro",
+      fetchImpl,
+      emitDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+
+    const response = await provider.chat([{ role: "user", content: "hello" }]);
+
+    expect(response.usage).toEqual({
+      promptTokens: 4,
+      completionTokens: 3,
+      totalTokens: 7,
+      reasoningOutputTokens: 1,
+      reasoningIncludedInCompletion: true,
+      availability: "reported",
+      provenance: "provider",
+    });
+    expect(diagnostics).toEqual([]);
+  });
+
+  test("normalizes thinking and tool-use token fields on streamGenerateContent", async () => {
+    const diagnostics: Array<{ cause: string; message: string }> = [];
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      sseResponse([
+        'data: {"candidates":[{"content":{"parts":[{"thought":true,"text":"plan"}]},"finishReason":"STOP"}]}\n\n',
+        'data: {"candidates":[{"content":{"parts":[{"text":"done"},{"functionCall":{"name":"system.echo","args":{"text":"hi"}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":2,"thoughtsTokenCount":1,"toolUsePromptTokenCount":3,"totalTokenCount":10}}\n\n',
+      ]),
+    );
+    const provider = new GeminiProvider({
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
+      model: "gemini-2.5-pro",
+      fetchImpl,
+      emitDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+
+    const response = await provider.chatStream(
+      [{ role: "user", content: "call echo" }],
+      () => {},
+      { tools: [echoTool] },
+    );
+
+    expect(response.usage).toEqual({
+      promptTokens: 4,
+      completionTokens: 3,
+      totalTokens: 10,
+      reasoningOutputTokens: 1,
+      reasoningIncludedInCompletion: true,
+      availability: "reported",
+      provenance: "provider",
+    });
+    expect(diagnostics).toEqual([]);
+  });
+
+  test("emits a diagnostic when Gemini reports an inconsistent usage total", async () => {
+    const diagnostics: Array<{ cause: string; message: string }> = [];
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "ok" }] },
+            finishReason: "STOP",
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 4,
+          candidatesTokenCount: 2,
+          thoughtsTokenCount: 1,
+          totalTokenCount: 99,
+        },
+      }),
+    );
+    const provider = new GeminiProvider({
+      credentialPlan: apiKeyCredentialPlan(),
+      endpointPlan: developerEndpointPlan,
+      model: "gemini-2.5-pro",
+      fetchImpl,
+      emitDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+
+    const response = await provider.chat([{ role: "user", content: "hello" }]);
+
+    expect(response.usage.completionTokens).toBe(3);
+    expect(response.usage.reasoningOutputTokens).toBe(1);
+    expect(response.usage.totalTokens).toBe(99);
+    expect(diagnostics).toEqual([
+      expect.objectContaining({ cause: "gemini_usage_total_mismatch" }),
+    ]);
   });
 
   test("rejects malformed Gemini function calls", async () => {

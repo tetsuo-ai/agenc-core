@@ -48,6 +48,10 @@ import {
   geminiEndpointFor,
   type GeminiEndpointPlan,
 } from "./endpoint-plan.js";
+import {
+  requestUsageFromGemini,
+  type GeminiUsageDiagnosticSink,
+} from "./usage.js";
 
 export interface GeminiProviderConfig extends Omit<LLMProviderConfig, "baseURL"> {
   readonly credentialPlan: GeminiCredentialPlan;
@@ -148,17 +152,6 @@ function finiteInteger(value: unknown): number | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function requestUsageFromGemini(usage: unknown): LLMUsage {
-  const record = isRecord(usage) ? usage : {};
-  return coerceUsage({
-    promptTokens: record.promptTokenCount,
-    completionTokens: record.candidatesTokenCount,
-    totalTokens: record.totalTokenCount,
-    cachedInputTokens: record.cachedContentTokenCount,
-    reasoningOutputTokens: record.thoughtsTokenCount,
-  });
 }
 
 function geminiFinishReason(
@@ -2818,8 +2811,9 @@ function parseGeminiResponse(
   model: string,
   response: Record<string, unknown>,
   names: ReadonlyMap<string, string>,
+  emitDiagnostic?: GeminiUsageDiagnosticSink,
 ): GeminiParsedResponse {
-  const usage = requestUsageFromGemini(response.usageMetadata);
+  const usage = requestUsageFromGemini(response.usageMetadata, emitDiagnostic);
   const promptBlock = readGeminiPromptBlock(response);
   if (promptBlock) {
     assertGeminiPromptBlockAllowed(promptBlock);
@@ -2997,11 +2991,17 @@ class GeminiStreamState {
   readonly toolCalls: LLMToolCall[] = [];
   readonly thinking: GeminiThinkingBlock[] = [];
   private thinkingOpen = new Set<number>();
+  private readonly emitDiagnostic?: GeminiUsageDiagnosticSink;
   private promptBlocked = false;
   private sawCandidate = false;
 
-  constructor(model: string, private readonly names: ReadonlyMap<string, string>) {
+  constructor(
+    model: string,
+    private readonly names: ReadonlyMap<string, string>,
+    emitDiagnostic?: GeminiUsageDiagnosticSink,
+  ) {
     this.model = model;
+    this.emitDiagnostic = emitDiagnostic;
   }
 
   consumeResponse(
@@ -3009,7 +3009,10 @@ class GeminiStreamState {
     onChunk: StreamProgressCallback,
   ): void {
     if (response.usageMetadata) {
-      this.usage = requestUsageFromGemini(response.usageMetadata);
+      this.usage = requestUsageFromGemini(
+        response.usageMetadata,
+        this.emitDiagnostic,
+      );
     }
     const promptBlock = readGeminiPromptBlock(response);
     if (promptBlock) {
@@ -3275,7 +3278,15 @@ export class GeminiProvider implements LLMProvider {
           : undefined,
         singleWireAttempt: options?.singleWireAttempt,
       });
-      return withMetrics(parseGeminiResponse(model, response.data, toolNames), metrics);
+      return withMetrics(
+        parseGeminiResponse(
+          model,
+          response.data,
+          toolNames,
+          this.config.emitDiagnostic,
+        ),
+        metrics,
+      );
     } catch (error) {
       mapProviderError(error);
     }
@@ -3319,7 +3330,11 @@ export class GeminiProvider implements LLMProvider {
         singleWireAttempt: options?.singleWireAttempt,
         retryBudget: { maxRetries: 0 },
       });
-      const state = new GeminiStreamState(model, toolNames);
+      const state = new GeminiStreamState(
+        model,
+        toolNames,
+        this.config.emitDiagnostic,
+      );
       for await (const event of readGeminiSseEvents(response)) {
         state.consumeResponse(event.data, onChunk);
       }
