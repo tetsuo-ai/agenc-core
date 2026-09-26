@@ -46,6 +46,7 @@ import { readToolRuntimeContext } from "../runtimes/context.js";
 import {
   execSandboxDenialNotice,
   sandboxEscalationAvailable,
+  worktreeWriteDenialNotice,
 } from "./exec-sandbox-denial.js";
 import { parseSandboxPermissionsArgs } from "../../sandbox/escalation/sandboxing.js";
 import { readReadOnlyInspectionInvocation } from "../../permissions/readonly-inspection.js";
@@ -56,6 +57,10 @@ import {
   sandboxModeRequiresPlatformIsolation,
 } from "../runtimes/sandboxing.js";
 import { routineRunOptions } from "../../session/runtime-options.js";
+import {
+  confineProfileToWorktree,
+  type WorktreeWriteConfinement,
+} from "../../sandbox/worktree-confinement.js";
 
 export interface ExecCommandToolConfig extends BashToolConfig {
   readonly allowedPaths?: readonly string[];
@@ -153,18 +158,24 @@ export function runtimeSandboxForExec(
     readSandboxExecutionSurface(args) ??
     "tool";
   const context = readToolRuntimeContext(args);
+  const broker = readSandboxExecutionBroker(args);
   if (context === undefined) {
-    const broker = readSandboxExecutionBroker(args);
     if (broker === undefined) {
       throw missingSandboxExecutionBoundary(executionSurface);
     }
     return broker.runtimeSandbox(executionSurface);
   }
+  const worktreeConfinement = broker?.worktreeConfinement;
+  const confinedEscalation = escalationKeepsWorktreeSandbox(context, worktreeConfinement);
   if (
-    !sandboxModeRequiresPlatformIsolation(context.sandboxMode)
+    !sandboxModeRequiresPlatformIsolation(context.sandboxMode) &&
+    !confinedEscalation
   ) {
     return undefined;
   }
+  const profileContext = confinedEscalation
+    ? { ...context, sandboxMode: "workspace_write" as const }
+    : context;
   const platformSandbox = runtimePlatformSandboxStatus(context);
   if (!platformSandbox.available) {
     throw new SandboxExecutionError({
@@ -172,7 +183,7 @@ export function runtimeSandboxForExec(
       surface: executionSurface,
       status: {
         kind: "unavailable",
-        mode: context.sandboxMode,
+        mode: profileContext.sandboxMode,
         platform: process.platform,
         reason: platformSandbox.reason ?? "platform sandbox is unavailable",
         remediation:
@@ -222,18 +233,27 @@ export function runtimeSandboxForExec(
   const network = networkPolicy(turn.networkSandboxPolicy);
   const networkInterfaces = networkPolicyInterfaces(turn.network);
   const routineRun = routineRunOptions(context.invocation.session) !== undefined;
+  const childTempRoot = runtimeChildTempRoot(context, sessionTempRoot, sandboxPolicyCwd);
+  const profile = permissionProfileForRuntimeContext(profileContext, {
+    cwd: sandboxPolicyCwd,
+    ...(network !== undefined ? { network } : {}),
+  });
   return {
-    permissionProfile: permissionProfileForRuntimeContext(context, {
-      cwd: sandboxPolicyCwd,
-      ...(network !== undefined ? { network } : {}),
-    }),
-    // A routine run never widens its sandbox: the profile above already
-    // folded in (and confined) anything granted.
-    ...(context.additionalPermissions !== undefined && !routineRun
+    permissionProfile: worktreeConfinement === undefined
+      ? profile
+      : worktreeChildProfile(profile, worktreeConfinement, {
+          escalated: confinedEscalation,
+          cwd: sandboxPolicyCwd,
+          tempRoot: childTempRoot,
+        }),
+    // A routine run and a worktree child never widen their sandbox: the
+    // profile above already folded in (and confined) anything granted.
+    ...(context.additionalPermissions !== undefined && !routineRun &&
+        worktreeConfinement === undefined
       ? { additionalPermissions: context.additionalPermissions }
       : {}),
     sandboxPolicyCwd,
-    sessionTempRoot: runtimeChildTempRoot(context, sessionTempRoot, sandboxPolicyCwd),
+    sessionTempRoot: childTempRoot,
     preference: "require",
     ...(booleanValue(turn.config?.sandboxAllowGpu) === true
       ? { allowGpu: true }
@@ -252,6 +272,32 @@ export function runtimeSandboxForExec(
       ? { blockedRequestObserver: networkInterfaces.blockedRequestObserver }
       : {}),
   };
+}
+
+/**
+ * A worktree child's commands write inside its worktree only. In a session
+ * that runs under the OS sandbox, an attempt the orchestrator runs without it
+ * (require_escalated, an exec-policy rule) keeps that confinement. Otherwise
+ * a bypassPermissions session, which grants escalation without asking, would
+ * undo it on the model's first request.
+ */
+function escalationKeepsWorktreeSandbox(
+  context: NonNullable<ReturnType<typeof readToolRuntimeContext>>,
+  confinement: WorktreeWriteConfinement | undefined,
+): boolean {
+  return confinement !== undefined &&
+    !sandboxModeRequiresPlatformIsolation(context.sandboxMode) &&
+    sandboxModeRequiresPlatformIsolation(context.requestedSandboxMode);
+}
+
+/** The escalation still gives the network; it never gives the rest of the disk. */
+function worktreeChildProfile(
+  profile: UnifiedExecRuntimeSandbox["permissionProfile"],
+  confinement: WorktreeWriteConfinement,
+  attempt: { readonly escalated: boolean; readonly cwd: string; readonly tempRoot: string },
+): UnifiedExecRuntimeSandbox["permissionProfile"] {
+  const confined = confineProfileToWorktree(profile, confinement, attempt.cwd, attempt.tempRoot);
+  return attempt.escalated ? { ...confined, network: "enabled" } : confined;
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -784,9 +830,19 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
             runtimeContext === undefined ||
             sandboxEscalationAvailable(runtimeContext.approvalPolicy),
         });
+        const confinedWorktree = runtimeSandbox === undefined
+          ? undefined
+          : readSandboxExecutionBroker(args)?.worktreeConfinement?.worktree;
+        const notice = denial?.notice ?? (confinedWorktree === undefined
+          ? null
+          : worktreeWriteDenialNotice({
+              output: execContent,
+              exitCode: output.exitCode,
+              worktree: confinedWorktree,
+            }));
         return {
           content:
-            denial === null ? execContent : `${execContent}\n\n${denial.notice}`,
+            notice === null ? execContent : `${execContent}\n\n${notice}`,
           isError: isError || undefined,
           codeModeResult: unifiedExecCodeModeResult(output),
           effectDisposition: processObservationDisposition(

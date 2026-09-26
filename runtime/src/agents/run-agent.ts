@@ -17,7 +17,7 @@
  * @module
  */
 
-import { normalize } from "node:path";
+import { isAbsolute, normalize, resolve as resolvePath } from "node:path";
 import { inheritBuiltinToolProvenance } from "../tools/builtin-provenance.js";
 import { SESSION_BOUND_TOOL_SURFACE, type SessionBoundToolSurface } from "../tools/session-bound-surface.js";
 import { SYSTEM_SEARCH_TOOLS_NAME } from "../tools/system/tool-search-name.js";
@@ -75,6 +75,9 @@ import {
   inspectReadOnlyCommand,
   prepareReadOnlyInspectionInvocation,
 } from "../permissions/readonly-inspection.js";
+import { worktreeShellWriteRefusal } from "./worktree-shell-confinement.js";
+import type { WorktreeWriteConfinement } from "../sandbox/worktree-confinement.js";
+import { routineRunOptions } from "../session/runtime-options.js";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
 import {
   toRuntimeTools,
@@ -2726,7 +2729,32 @@ export function injectChildToolArgs(
   // Source tool closures may belong to the root registry, so fill defaults
   // from the current Session rather than retaining an ancestor wrapper.
   const executionCwd = opts.worktree?.path ?? childSession?.sessionConfiguration.cwd;
-  return withChildToolDefaultCwd(injectedArgs, toolName, executionCwd);
+  return withChildToolDefaultCwd(
+    withChildShellDirectory(injectedArgs, toolName, executionCwd),
+    toolName,
+    executionCwd,
+  );
+}
+
+/**
+ * A shell tool is the parent's and resolved a relative directory against the
+ * parent's workspace root: `workdir: "src"` ran a worktree child's command in
+ * the checkout's src. The directory is the child's.
+ */
+function withChildShellDirectory(
+  args: Record<string, unknown>,
+  toolName: string,
+  executionCwd: string | undefined,
+): Record<string, unknown> {
+  const field = CHILD_SHELL_TOOLS.has(toolName) ? WORKTREE_CWD_FIELD_BY_TOOL[toolName] : undefined;
+  const value = field === undefined ? undefined : args[field];
+  if (
+    field === undefined || executionCwd === undefined || typeof value !== "string" ||
+    value.trim().length === 0 || isAbsolute(value)
+  ) {
+    return args;
+  }
+  return { ...args, [field]: resolvePath(executionCwd, value) };
 }
 
 /** Path normalization only: permission review must not receive new authority. */
@@ -2764,6 +2792,9 @@ function withChildToolDefaultCwd(
 }
 
 const CHILD_FILE_CWD_TOOLS = new Set(["FileRead", "Write", "Edit", "MultiEdit"]);
+
+/** The shell tools: a worktree child's commands change files inside its worktree only. */
+const CHILD_SHELL_TOOLS = new Set(["exec_command", "write_stdin", "system.bash"]);
 
 /** Tools pinned to the child's worktree, and the argument that carries it. */
 export const WORKTREE_CWD_FIELD_BY_TOOL: Readonly<Record<string, string>> = {
@@ -2840,8 +2871,23 @@ function wrapToolForChild(
         : parentPolicy(candidate, currentDecision.updatedInput ?? input);
     };
   const executionOpts = { ...opts, ...(policy !== undefined ? { childToolPolicy: policy } : {}) };
+  const confinedShell = CHILD_SHELL_TOOLS.has(source.name) &&
+    childWorktreeConfinement(opts) !== undefined;
   const wrapped = inheritBuiltinToolProvenance(source, {
     ...source,
+    // Before any approval is asked for and before each attempt: a worktree
+    // child's command that would change files outside its worktree is a
+    // recoverable input error, never a permission denial (a workflow child's
+    // denied approval ends the whole Goal run as policy_denied).
+    ...(confinedShell ? {
+      preflight(args: Readonly<Record<string, unknown>>) {
+        const refusal = childWorktreeShellRefusal(source.name, args, opts);
+        if (refusal !== undefined) {
+          return { code: "worktree_write_confinement", message: refusal };
+        }
+        return source.preflight?.(args) ?? null;
+      },
+    } : {}),
     ...(policy !== undefined || (source.checkPermissions !== undefined && CHILD_FILE_CWD_TOOLS.has(source.name)) ? {
       async checkPermissions(input, context) {
         if (input === null || typeof input !== "object" || Array.isArray(input)) {
@@ -2976,6 +3022,42 @@ function attachChildToolSearchScope(
   }
 }
 
+/** The worktree a child's commands write in: its own, or the one its caller works in. */
+function childWorktreeConfinement(opts: {
+  readonly worktree?: WorktreeHandle;
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+}): WorktreeWriteConfinement | undefined {
+  if (opts.worktree !== undefined) {
+    return { worktree: opts.worktree.path, checkout: opts.worktree.gitRoot };
+  }
+  return opts.sandboxExecutionBroker?.worktreeConfinement;
+}
+
+/**
+ * Why a worktree child's shell call may not run: it would change files
+ * outside the worktree. The temp folder is the one its commands get as
+ * TMPDIR, picked the way runtimeSandboxForExec picks it.
+ */
+function childWorktreeShellRefusal(
+  toolName: string,
+  args: Readonly<Record<string, unknown>>,
+  opts: {
+    readonly worktree?: WorktreeHandle;
+    readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+    readonly getSession?: () => Session | null | undefined;
+  },
+): string | undefined {
+  if (!CHILD_SHELL_TOOLS.has(toolName)) return undefined;
+  const confinement = childWorktreeConfinement(opts);
+  if (confinement === undefined) return undefined;
+  const session = opts.getSession?.();
+  const routine = routineRunOptions(session);
+  const tempRoot = routine !== undefined
+    ? routine.scratchRoot ?? confinement.worktree
+    : session?.services.runtimeOptions?.sessionTempRoot;
+  return worktreeShellWriteRefusal(toolName, args, confinement, tempRoot);
+}
+
 async function prepareChildToolCall(
   tool: Tool,
   args: Record<string, unknown>,
@@ -3019,6 +3101,12 @@ async function prepareChildToolCall(
     injectChildToolArgs(policyResult.args, tool.name, opts),
     childSession,
   );
+  // Checked again on the arguments that run, with the child's directory in
+  // place. The sandbox confines what a command line does not show.
+  const outsideWorktree = childWorktreeShellRefusal(tool.name, childArgs, opts);
+  if (outsideWorktree !== undefined) {
+    return { result: { content: safeStringify({ error: outsideWorktree }), isError: true, metadata: { childPolicyDenied: true } } };
+  }
   // Policy replacement and signed child-argument copies omit non-enumerable
   // fields. Preserve the authenticated per-attempt grant, not model-provided
   // private keys, so the execution sink does not fall back to the base sandbox.
@@ -3323,9 +3411,19 @@ function prepareChildSessionAuthority(
       ...(params.providerSelection !== undefined ? { crossProvider: true } : {}),
     },
   );
+  // A worktree child's commands write inside its worktree only; its
+  // descendants inherit that through their own forks.
   const sandboxExecutionBroker =
     params.parent.services.sandboxExecutionBroker?.forkForCwd(
       sessionConfiguration.cwd,
+      params.worktree !== undefined
+        ? {
+            worktreeConfinement: {
+              worktree: params.worktree.path,
+              checkout: params.worktree.gitRoot,
+            },
+          }
+        : {},
     );
   return {
     sessionConfiguration,

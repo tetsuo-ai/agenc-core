@@ -67,6 +67,11 @@ import {
 import { resolveSessionTempRoot } from "../session/runtime-options.js";
 import { cronLockAuthorityRoots, protectCronAuthority } from "./cron-authority-protection.js";
 import { desktopAuthorityRoot, protectDesktopAuthority } from "./desktop-authority-protection.js";
+import {
+  confineProfileToWorktree,
+  type SandboxForkOptions,
+  type WorktreeWriteConfinement,
+} from "./worktree-confinement.js";
 
 export {
   SandboxExecutionLeaseCleanupError,
@@ -178,12 +183,14 @@ export interface SandboxExecutionBrokerLike {
   readonly sessionTempRoot: string;
   /** Zero for a root session; increments for each isolated child authority. */
   readonly forkDepth?: number;
+  /** Set for a worktree child: its commands write inside the worktree only. */
+  readonly worktreeConfinement?: WorktreeWriteConfinement;
   /** Captured operator-owned policy; reading it grants no spawn admission. */
   executionAuthority?(): SandboxExecutionBrokerAuthority;
   /** Permanent authority poison set after a lifecycle rollback cannot recover. */
   isClosedAfterLifecycleAuthorityFailure?(): boolean;
   /** Fork an independent boundary for a child session or worktree. */
-  forkForCwd(cwd: string): SandboxExecutionBrokerLike;
+  forkForCwd(cwd: string, options?: SandboxForkOptions): SandboxExecutionBrokerLike;
   forkForReadOnlyInspection?(cwd: string, deniedReadPatterns?: readonly string[]): SandboxExecutionBrokerLike;
   status(): SandboxExecutionStatus;
   assertReady(surface: SandboxExecutionSurface): SandboxExecutionStatus;
@@ -288,9 +295,15 @@ export interface SandboxExecutionBrokerOptions {
    * browser, providers) keep the session profile.
    */
   readonly routineChildTempRoot?: string;
+  /**
+   * Set for a worktree child: its command surfaces write only inside the
+   * worktree and the temp root (see confineProfileToWorktree). Service
+   * surfaces keep the session profile, as they do for a routine run.
+   */
+  readonly worktreeConfinement?: WorktreeWriteConfinement;
 }
 
-/** Surfaces that run services, not a model's commands; a routine run leaves them as configured. */
+/** Surfaces that run services, not a model's commands; a routine run and a worktree child leave them as configured. */
 const ROUTINE_SERVICE_SURFACES: ReadonlySet<SandboxExecutionSurface> = new Set([
   "startup", "hook", "mcp_stdio", "lsp", "browser", "provider", "powershell_parser",
 ]);
@@ -550,6 +563,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
   #allowGpu: boolean;
   #permissionProfile: PermissionProfile | undefined;
   readonly #routineChildTempRoot: string | undefined;
+  readonly #worktreeConfinement: WorktreeWriteConfinement | undefined;
   readonly #probe: NonNullable<SandboxExecutionBrokerOptions["probe"]>;
   readonly #planLandlockPolicy: typeof planLandlockConfinement;
   #status: SandboxExecutionStatus | undefined;
@@ -596,6 +610,12 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     this.#routineChildTempRoot = options.routineChildTempRoot === undefined
       ? undefined
       : path.normalize(options.routineChildTempRoot);
+    this.#worktreeConfinement = options.worktreeConfinement === undefined
+      ? undefined
+      : Object.freeze({
+          worktree: path.resolve(options.worktreeConfinement.worktree),
+          checkout: path.resolve(options.worktreeConfinement.checkout),
+        });
     this.#probe = options.probe ?? probeSandboxExecutionStatus;
     this.#planLandlockPolicy =
       options.planLandlockPolicy ?? planLandlockConfinement;
@@ -623,6 +643,11 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
   /** Whether this broker belongs to a scheduled routine run. */
   get routineRun(): boolean {
     return this.#routineChildTempRoot !== undefined;
+  }
+
+  /** The worktree a child's commands write in, when this broker belongs to a worktree child. */
+  get worktreeConfinement(): WorktreeWriteConfinement | undefined {
+    return this.#worktreeConfinement;
   }
 
   get mode(): SandboxMode {
@@ -947,9 +972,14 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     this.#status = undefined;
   }
 
-  forkForCwd(cwd: string): SandboxExecutionBroker {
+  forkForCwd(cwd: string, options: SandboxForkOptions = {}): SandboxExecutionBroker {
     this.#assertLifecycleAuthorityOpen("child_agent");
     const resolvedCwd = path.resolve(cwd);
+    // A descendant of a worktree child stays in that worktree unless it is
+    // given one of its own.
+    const worktreeConfinement = options.worktreeConfinement === undefined
+      ? this.#worktreeConfinement
+      : options.worktreeConfinement ?? undefined;
     return new SandboxExecutionBroker({
       mode: this.mode,
       cwd: resolvedCwd,
@@ -979,6 +1009,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       ...(this.#routineChildTempRoot !== undefined
         ? { routineChildTempRoot: this.#routineChildTempRoot }
         : {}),
+      ...(worktreeConfinement !== undefined ? { worktreeConfinement } : {}),
     });
   }
 
@@ -1073,6 +1104,18 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       !ROUTINE_SERVICE_SURFACES.has(surface);
   }
 
+  /** A worktree child's command surface: its profile writes inside the worktree only. */
+  #confineToWorktree(
+    surface: SandboxExecutionSurface,
+    profile: PermissionProfile,
+    tempRoot: string,
+  ): PermissionProfile {
+    if (this.#worktreeConfinement === undefined || ROUTINE_SERVICE_SURFACES.has(surface)) {
+      return profile;
+    }
+    return confineProfileToWorktree(profile, this.#worktreeConfinement, this.#cwd, tempRoot);
+  }
+
   #runtimeSandboxAfterLifecycleAdmission(
     surface: SandboxExecutionSurface,
   ): UnifiedExecRuntimeSandbox | undefined {
@@ -1086,10 +1129,15 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       this.#desktopAuthorityRoot,
     ), this.#cronAuthorityRoots);
     const confined = this.#routineConfines(surface);
+    const tempRoot = confined ? this.#routineChildTempRoot! : this.#sessionTempRoot;
     return {
-      permissionProfile: confined ? confineRoutineProfile(profile) : profile,
+      permissionProfile: this.#confineToWorktree(
+        surface,
+        confined ? confineRoutineProfile(profile) : profile,
+        tempRoot,
+      ),
       sandboxPolicyCwd: this.#cwd,
-      sessionTempRoot: confined ? this.#routineChildTempRoot! : this.#sessionTempRoot,
+      sessionTempRoot: tempRoot,
       preference: "require",
       ...(status.helperPath !== undefined
         ? { agencLinuxSandboxExe: status.helperPath }
@@ -1141,7 +1189,11 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
         this.mode === "workspace_write"
           ? {
               ...modeSandbox,
-              permissionProfile: protectCronAuthority(protectDesktopAuthority(command.permissionProfileOverride, this.#desktopAuthorityRoot), this.#cronAuthorityRoots),
+              permissionProfile: this.#confineToWorktree(
+                surface,
+                protectCronAuthority(protectDesktopAuthority(command.permissionProfileOverride, this.#desktopAuthorityRoot), this.#cronAuthorityRoots),
+                modeSandbox.sessionTempRoot,
+              ),
             }
           : modeSandbox;
       const resolvedProgram = resolveSpawnExecutable({
