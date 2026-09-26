@@ -34,6 +34,32 @@ describe('provider runtime request', () => {
     expect(openai.requested.extra?.zeroDataRetention).toBeUndefined()
   })
 
+  test('turns Grok response continuation on unless the config turns it off', () => {
+    const request = (config: Record<string, unknown>) =>
+      resolveProviderRuntimeRequest({
+        provider: 'grok',
+        model: 'grok-4.6',
+        config,
+        environment: {},
+      })
+    expect(request({}).requested.extra).toMatchObject({ incrementalContinuation: true })
+    expect(
+      request({ providers: { grok: { incremental_continuation: true } } }).requested.extra,
+    ).toMatchObject({ incrementalContinuation: true })
+    expect(
+      request({ providers: { grok: { incremental_continuation: false } } }).requested.extra
+        ?.incrementalContinuation,
+    ).toBeUndefined()
+
+    const deepseek = resolveProviderRuntimeRequest({
+      provider: 'deepseek',
+      model: 'deepseek-flash',
+      config: {},
+      environment: {},
+    })
+    expect(deepseek.requested.extra?.incrementalContinuation).toBeUndefined()
+  })
+
   test('prepares compatibility transport inputs at provider ingress', () => {
     const result = resolveProviderRuntimeRequest({
       provider: 'openai-compatible',
