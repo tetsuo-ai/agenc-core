@@ -10,7 +10,7 @@ import {
 import { ProviderHttpClientSession, ProviderHttpError } from "./client-session.js";
 
 describe("LLM error network classification", () => {
-  test.each(["cause", "originalError"])("uses billing prose from the %s instead of outer transport prose", (causeKey) => {
+  test.each(["cause", "originalError"])("uses a fixed billing message for a refusal in %s", (causeKey) => {
     const message = "Please check your plan and billing details.";
     const error = {
       status: 429,
@@ -18,7 +18,7 @@ describe("LLM error network classification", () => {
       [causeKey]: { status: 429, error: { code: "insufficient_quota", message } },
     };
     expect(mapLLMError("openai", error, 30_000)).toMatchObject({
-      name: "LLMFundsError", message: `openai error: ${message}`,
+      name: "LLMFundsError", message: `openai error: OpenAI says the account has no credits left or has reached its spending limit.`,
     });
   });
 
@@ -29,14 +29,14 @@ describe("LLM error network classification", () => {
     'Insufficient credits. "trace": "f00d-1234"',
     'Insufficient credits. request_id=f00d-1234',
     'Insufficient credits. trace=f00d-1234',
-  ])("defaults when the billing cause has no acceptable prose: %s", (message) => {
+  ])("ignores billing cause prose: %s", (message) => {
     const error = {
       status: 429,
       message: "Request failed with status code 429",
       cause: { status: 429, error: { code: "insufficient_quota", message } },
     };
     expect(mapLLMError("openai", error, 30_000)).toMatchObject({
-      name: "LLMFundsError", message: "openai error: provider credits or billing quota exhausted",
+      name: "LLMFundsError", message: "openai error: OpenAI says the account has no credits left or has reached its spending limit.",
     });
   });
 
@@ -50,13 +50,13 @@ describe("LLM error network classification", () => {
 
     const mapped = mapLLMError("grok", wireError, 30_000);
     expect(mapped).toBeInstanceOf(LLMFundsError);
-    expect(mapped).toMatchObject({ statusCode: 403, message: "grok error: provider credits or billing quota exhausted" });
+    expect(mapped).toMatchObject({ statusCode: 403, message: "grok error: xAI says the account has no credits left or has reached its spending limit." });
   });
 
-  test("preserves the captured xAI wording without the token-like team ID", () => {
+  test("ignores the captured xAI wording even without the team ID", () => {
     const message = "Your team has either used all available credits or reached its monthly spending limit. To continue making API requests, please purchase more credits or raise your spending limit.";
     expect(mapLLMError("grok", { status: 403, body: { error: message } }, 30_000))
-      .toMatchObject({ name: "LLMFundsError", statusCode: 403, message: `grok error: ${message}` });
+      .toMatchObject({ name: "LLMFundsError", statusCode: 403, message: `grok error: xAI says the account has no credits left or has reached its spending limit.` });
   });
 
   test("maps a Gemini daily quota response body to a funds stop", () => {
@@ -68,19 +68,22 @@ describe("LLM error network classification", () => {
   });
 
   test.each([
-    ["grok", 403, { error: "  Your team has used all available credits.  " }, "Your team has used all available credits."],
-    ["xai", 403, { message: "Your team has reached its monthly spending limit." }, "Your team has reached its monthly spending limit."],
-    ["openai", 403, { body: { error: { code: "insufficient_quota", message: "Please check your plan and billing details." } } }, "Please check your plan and billing details."],
-    ["deepseek", 402, { body: { error: { message: "  Insufficient credits.  " } } }, "Insufficient credits."],
-    ["custom", 402, { body: { message: "Your credit balance is too low." } }, "Your credit balance is too low."],
-    ["custom", 403, { body: { error: { message: "Your credits are exhausted." } } }, "Your credits are exhausted."],
-  ])("preserves billing details from %s HTTP %s", (provider, status, details, message) => {
+    ["grok", 403, { error: "  Your team has used all available credits.  " }, "xAI"],
+    ["xai", 403, { message: "Your team has reached its monthly spending limit." }, "xAI"],
+    ["openai", 403, { body: { error: { code: "insufficient_quota", message: "Please check your plan and billing details." } } }, "OpenAI"],
+    ["deepseek", 402, { body: { error: { message: "  Insufficient credits.  " } } }, "DeepSeek"],
+    ["custom", 402, { body: { message: "Your credit balance is too low." } }, "custom"],
+    ["custom", 403, { body: { error: { message: "Your credits are exhausted." } } }, "custom"],
+  ])("uses fixed billing wording for %s HTTP %s", (provider, status, details, displayName) => {
     const mapped = mapLLMError(provider, { status, ...details }, 30_000);
     expect(mapped).toBeInstanceOf(LLMFundsError);
-    expect(mapped).toMatchObject({ statusCode: status, message: `${provider} error: ${message}` });
+    expect(mapped).toMatchObject({
+      statusCode: status,
+      message: `${provider} error: ${displayName} says the account has no credits left or has reached its spending limit.`,
+    });
   });
 
-  test("falls back for billing text containing secrets and request ids", () => {
+  test("ignores billing text containing secrets and request ids", () => {
     const mapped = mapLLMError("grok", {
       status: 403,
       body: {
@@ -89,31 +92,35 @@ describe("LLM error network classification", () => {
       },
     }, 30_000);
     expect(mapped).toBeInstanceOf(LLMFundsError);
-    expect(mapped.message).toBe("grok error: provider credits or billing quota exhausted");
+    expect(mapped.message).toBe("grok error: xAI says the account has no credits left or has reached its spending limit.");
     expect(mapped.message).not.toMatch(/permission-denied|metadata-|xai-123|short-token|req_private|private-secret/);
     expect(mapped.message).toBe(mapped.message.trim());
   });
 
   test.each([
+    'Insufficient credits. Bearer abc',
+    'Your team has reached its monthly spending limit. Request ID f00d-1234',
+    'Insufficient credits. Bearer short-token',
+    'Insufficient credits. Request ID f00d-1234',
     'Insufficient credits. "request_id": "private-request"',
     'Insufficient credits. Authorization: Basic short-token',
     'Insufficient credits. Cookie: private',
     '<html>Insufficient credits.</html>',
     '{"error":{"message":"Insufficient credits."}}',
     '403 {"error":{"message":"Insufficient credits."}}',
-    'HTTP 403',
-  ])("uses the default billing message for unsafe provider text: %s", (body) => {
+  ])("uses the fixed billing message for provider text: %s", (text) => {
     for (const status of [402, 403]) {
-      const mapped = mapLLMError("grok", {
-        status, code: "insufficient_credits", body, message: "HTTP 403",
-      }, 30_000);
-      expect(mapped).toBeInstanceOf(LLMFundsError);
-      expect(mapped).toMatchObject({
-        statusCode: status, message: "grok error: provider credits or billing quota exhausted",
-      });
+      for (const body of [text, { error: text }, { error: { message: text } }]) {
+        const mapped = mapLLMError("grok", {
+          status, body, message: "HTTP 403",
+        }, 30_000);
+        expect(mapped).toBeInstanceOf(LLMFundsError);
+        expect(mapped).toMatchObject({
+          statusCode: status, message: "grok error: xAI says the account has no credits left or has reached its spending limit.",
+        });
+      }
     }
   });
-
   test.each([
     "Forbidden",
     "Access denied. You cannot view credits or change the spending limit.",
@@ -130,7 +137,7 @@ describe("LLM error network classification", () => {
       message: "insufficient_quota",
     }, 30_000);
     expect(mapped).toBeInstanceOf(LLMFundsError);
-    expect(mapped.message).toBe("openai error: provider credits or billing quota exhausted");
+    expect(mapped.message).toBe("openai error: OpenAI says the account has no credits left or has reached its spending limit.");
   });
 
   test("uses the default billing message for an actual transport-generated HTTP 403 message", async () => {
@@ -146,7 +153,7 @@ describe("LLM error network classification", () => {
     const mapped = mapLLMError("openai", wireError, 30_000);
     expect(mapped).toBeInstanceOf(LLMFundsError);
     expect(mapped).toMatchObject({
-      statusCode: 403, message: "openai error: provider credits or billing quota exhausted",
+      statusCode: 403, message: "openai error: OpenAI says the account has no credits left or has reached its spending limit.",
     });
   });
   test("mapLLMError keeps the transport error as the cause of a generic provider error", () => {

@@ -1,4 +1,6 @@
 /** Provider billing refusals. Keep this independent of retry and agent modules. */
+import { listBuiltInProviderInfo } from "./registry/provider-info.js";
+
 const EXHAUSTED_CREDITS_RE = /\b(?:used all (?:available |your )?credits|(?:no|insufficient) (?:available |remaining )?credits|(?:run |ran )?out of credits|credits? (?:balance )?(?:is |are |has been )?(?:exhausted|depleted|too low)|(?:reached|exceeded) (?:its |your |the )?(?:monthly )?spending limit|spending limit (?:has been |is )?(?:reached|exceeded|exhausted))\b/i;
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -24,41 +26,12 @@ function nestedText(value: unknown): string {
     .filter((part): part is string => typeof part === "string").join(" ");
 }
 
-function providerMessage(value: unknown): string | undefined {
-  // Only inspect structured message fields. Serialized bodies are not prose.
-  if (typeof value !== "string") {
-    const item = record(value);
-    return item === undefined ? undefined :
-      providerMessage(item.error) ?? providerMessage(item.message);
-  }
-  const text = value.trim();
-  // Accept short, plain prose as a whole; never salvage fragments by redacting
-  // transport data, credentials, or identifiers from an unsafe message.
-  const plainProse = text.length <= 200 &&
-    /^[\p{L}\p{N} .,;:'"()!?$%/\-]+$/u.test(text) &&
-    /\p{L}/u.test(text) && text.includes(" ") &&
-    !/[^ ]{20}/u.test(text);
-  const fieldPair = /["'][^"']+["'] *:|[\p{L}\p{N}_-]+ *(?:=|: *\S)/u.test(text);
-  const url = /\/\/|\b[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.[\p{L}]{2,}\b/iu.test(text);
-  const transportSummary = /^HTTP(?:\/[\d.]+)? +\d{3}\b/i.test(text);
-  return plainProse && !fieldPair && !url && !transportSummary ? text : undefined;
-}
-
-export function providerFundsMessage(providerName: string, error: unknown): string | undefined {
+/** Billing messages never include provider response text. */
+export function providerFundsMessage(providerName: string): string {
   const provider = providerName.toLowerCase();
-  let current: unknown = error;
-  for (let depth = 0; depth < 5; depth += 1) {
-    const item = record(current);
-    if (item === undefined) break;
-    // A wrapper's transport prose must not hide the actual billing refusal.
-    if (isFundsFailureNode(provider, item)) {
-      const message = providerMessage(item.body) ?? providerMessage(item.error) ??
-        providerMessage(item.message);
-      if (message !== undefined) return message;
-    }
-    current = item.cause ?? item.originalError;
-  }
-  return undefined;
+  const displayName = provider === "grok" || provider === "xai" ? "xAI" :
+    listBuiltInProviderInfo().find((info) => info.id === provider)?.name ?? providerName;
+  return `${displayName} says the account has no credits left or has reached its spending limit.`;
 }
 
 function geminiLongQuota(value: unknown): boolean {

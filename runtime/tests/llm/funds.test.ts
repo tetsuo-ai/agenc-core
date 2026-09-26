@@ -4,80 +4,25 @@ import { isProviderFundsFailure, providerFundsMessage } from "../../src/llm/fund
 
 describe("providerFundsMessage", () => {
   it.each([
-    "HTTP 403",
-    "HTTP 403 Forbidden",
-    "HTTP/1.1 403 Forbidden",
-    '{"error":{"message":"Insufficient credits."}}',
-    '[{"code":"insufficient_quota"}]',
-    '403 {"error":{"code":"insufficient_quota"}}',
-    'HTTP 403: {"error":{"code":"insufficient_quota"}}',
-    '403 Forbidden: [{"code":"insufficient_quota"}]',
-    '<html>Insufficient credits.</html>',
-    'Insufficient credits. "request_id": "private-request"',
-    'Insufficient credits. "request_id": "f00d-1234"',
-    "Insufficient credits. 'request-id': 'f00d-1234'",
-    'Insufficient credits. "trace": "f00d-1234"',
-    'Insufficient credits. "trace":',
-    'Insufficient credits. request_id=f00d-1234',
-    'Insufficient credits. trace=f00d-1234',
-    'Insufficient credits. "trace": "private"',
-    'Insufficient credits. trace=private',
-    'Insufficient credits. "Authorization": "Basic dXNlcjpwYXNz"',
-    "Insufficient credits. 'Authorization': 'Basic dXNlcjpwYXNz'",
-    "Insufficient credits. Authorization: Basic dXNlcjpwYXNz",
-    'Insufficient credits. "Cookie": "session=private-value"',
-    "Insufficient credits. Cookie: private",
-    'Insufficient credits. Set-Cookie: private',
-    'Insufficient credits. Visit https://x.ai',
-    'Insufficient credits. Visit www.x.ai',
-    'Insufficient credits. Visit x.ai/billing',
-    'Insufficient credits. Visit //x.ai',
-    `Insufficient credits. ${"a".repeat(20)}`,
-    "a ".repeat(100) + "a",
-    "Insufficient credits.\nPlease top up.",
-    "Insufficient credits.\tPlease top up.",
-    "Insufficient credits.\u001bPlease top up.",
-    "Insufficient credits. [private]",
-    "Insufficient credits. `private`",
-    "Insufficient credits. \u200bprivate",
-    "",
-    "   ",
-    "Forbidden",
-  ])("rejects messages outside the prose allow-list: %s", (message) => {
-    for (const error of [{ message }, { body: message }, { body: { error: message } }]) {
-      expect(providerFundsMessage("deepseek", { status: 402, ...error })).toBeUndefined();
-    }
+    ["grok", "xAI"],
+    ["xai", "xAI"],
+    ["openai", "OpenAI"],
+    ["anthropic", "Anthropic"],
+    ["deepseek", "DeepSeek"],
+    ["openrouter", "OpenRouter"],
+    ["gemini", "Gemini"],
+    ["agenc", "AgenC"],
+    ["custom", "custom"],
+  ])("uses a fixed billing sentence for %s", (provider, displayName) => {
+    expect(providerFundsMessage(provider)).toBe(
+      `${displayName} says the account has no credits left or has reached its spending limit.`,
+    );
   });
 
-  it.each([
-    "Your team has used all available credits.",
-    "Please add $5.00 (50%); then retry! 'Credits' / usage - isn't available?",
-    "Please add credits:",
-    `Please add credits ${"a".repeat(19)}`,
-    "a ".repeat(99) + "ab",
-  ])("preserves allowed prose after trimming: %s", (message) => {
-    expect(providerFundsMessage("deepseek", { status: 402, body: { error: `  ${message}  ` } })).toBe(message);
+  it("keeps the existing default for directly constructed funds errors", () => {
+    expect(new LLMFundsError("openai", 429).message)
+      .toBe("openai error: provider credits or billing quota exhausted");
   });
-
-  it("continues to nested provider prose after a rejected transport summary", () => {
-    expect(providerFundsMessage("deepseek", { message: "HTTP 403", cause: { status: 402, message: "Please add credits." } }))
-      .toBe("Please add credits.");
-  });
-
-  it("continues to a deeper billing node when the first has no acceptable prose", () => {
-    expect(providerFundsMessage("openai", {
-      code: "insufficient_quota", message: "HTTP 429",
-      cause: { code: "insufficient_quota", message: "Please add credits." },
-    })).toBe("Please add credits.");
-  });
-
-  it("ignores prose from nodes that do not establish billing exhaustion", () => {
-    expect(providerFundsMessage("openai", {
-      code: "insufficient_quota",
-      cause: { message: "Request failed with status code 429" },
-    })).toBeUndefined();
-  });
-
 });
 
 function wrap(depth: number, inner: unknown): unknown {

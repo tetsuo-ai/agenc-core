@@ -500,7 +500,7 @@ export function mapLLMError(
     const rawStatus = (err as { status?: unknown; statusCode?: unknown } | null)?.status ??
       (err as { statusCode?: unknown } | null)?.statusCode;
     return new LLMFundsError(providerName, typeof rawStatus === "number" ? rawStatus : undefined,
-      providerFundsMessage(providerName, err));
+      providerFundsMessage(providerName));
   }
   if (
     err instanceof LLMMessageValidationError ||
