@@ -198,6 +198,8 @@ export interface WorkflowStepEvidence {
   readonly attempt?: number;
   readonly spec?: unknown;
   readonly specDigest?: string;
+  /** Frozen at the successful plan commit when intake supplied no commands. */
+  readonly requiredVerification?: readonly { readonly label: string; readonly script: string }[];
   readonly worktree?: {
     readonly slug: string;
     readonly branch: string;

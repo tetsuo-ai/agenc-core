@@ -91,6 +91,8 @@ import type { PermissionMode } from "../../permissions/types.js";
 import {
   formatVerificationCommand,
   formatVerificationResult,
+  isTrivialVerificationCommand,
+  plannedVerification,
   parseVerificationVerdict,
   type WorkflowCommandRunner,
 } from "../../workflow/verification.js";
@@ -533,6 +535,7 @@ interface RunContext {
   ledger?: WorkflowEvidenceLedger;
   handle?: WorktreeHandle;
   planText?: string;
+  plannedChecks?: WorkflowSpec["requiredVerification"];
   verification?: {
     readonly records: readonly VerifiedChangeCommandRecord[];
     readonly allPassed: boolean;
@@ -593,10 +596,13 @@ export class VerifiedChangeWorkflowController {
    * asynchronously (track it with {@link awaitRun}).
    */
   async start(params: WorkflowStartParams): Promise<WorkflowStartResult> {
-    if (params.requiredVerification.length === 0) {
-      throw new TypeError(
-        "verified-change workflow requires at least one verification command",
-      );
+    for (const command of params.requiredVerification) {
+      if (isTrivialVerificationCommand(command.script)) {
+        throw new TypeError(
+          "required verification must test the goal, not a no-op or constant-output command; " +
+          "for a new project, specify the tests, build, or smoke check the implementation will create",
+        );
+      }
     }
     const runId = params.runId ?? this.#newRunId();
     const repo = this.#deps.durability({ runId, repoPath: params.repoPath });
@@ -1125,9 +1131,25 @@ export class VerifiedChangeWorkflowController {
           spawnKind: "plan",
           childRunId: `${ctx.runId}:plan#${attempt}`,
           prompt: buildPlanPrompt(ctx.spec),
+          decorate: (outcome) => {
+            if (ctx.spec.requiredVerification.length > 0 || outcome.status !== "completed") return {};
+            try {
+              // Validate the exact message retained for replay, including its size bound.
+              return { requiredVerification: plannedVerification(truncate(outcome.finalMessage) ?? "") };
+            } catch (error) {
+              return { failure: { reason: "invalid_planned_verification", message: errorMessage(error) } };
+            }
+          },
         }),
     });
     ctx.planText = result.evidence.child?.finalMessage;
+    if (ctx.spec.requiredVerification.length === 0) {
+      ctx.plannedChecks = result.evidence.requiredVerification;
+      if (ctx.plannedChecks === undefined || ctx.plannedChecks.length === 0) {
+        throw new WorkflowHaltError({ status: "failed", stopReason: "evidence_invalid",
+          finalMessage: "The committed plan has no frozen verification commands." });
+      }
+    }
   }
 
   async #implementVerifyLoop(ctx: RunContext): Promise<void> {
@@ -1184,9 +1206,14 @@ export class VerifiedChangeWorkflowController {
           status: "failed",
           stopReason: "verification_failed",
           finalMessage:
-            `verification did not pass after ${attempt} implement attempt(s): ` +
-            `commands ${ctx.verification?.allPassed === true ? "passed" : "failed"}, ` +
-            `agent verdict ${ctx.verifyVerdict ?? "missing"}`,
+            (ctx.verification?.allPassed === true
+              ? ctx.verifyVerdict === "PARTIAL"
+                ? "The verification commands passed, but the verifier judged the result partial or incomplete"
+                : parseVerificationVerdict(ctx.verifyReport ?? "") === undefined
+                  ? "The verification commands passed, but the verifier did not return a verdict"
+                  : "The verification commands passed, but the verifier judged the result incorrect"
+              : "A required verification command failed or timed out") +
+            ` after ${attempt} implement attempt(s) (agent verdict ${ctx.verifyVerdict ?? "missing"}).`,
         });
       }
       attempt += 1;
@@ -1209,7 +1236,7 @@ export class VerifiedChangeWorkflowController {
     ctx.export = exported;
 
     const records: VerifiedChangeCommandRecord[] = [];
-    for (const [index, command] of spec.requiredVerification.entries()) {
+    for (const [index, command] of (ctx.plannedChecks ?? spec.requiredVerification).entries()) {
       const stepId = verifyCommandStepId(index + 1, attempt);
       const result = await this.#driveEffect(ctx, {
         stepId,
@@ -1270,6 +1297,7 @@ export class VerifiedChangeWorkflowController {
         prompt: buildVerifyAgentPrompt(
           ctx.spec,
           records,
+          ctx.planText,
           attempt > 1 && ctx.verifyReport !== undefined
             ? {
                 attempt: attempt - 1,
@@ -1846,7 +1874,7 @@ export class VerifiedChangeWorkflowController {
       };
       const mapped: "committed" | "failed" | "cancelled" =
         outcome.status === "completed"
-          ? "committed"
+          ? decorated.failure === undefined ? "committed" : "failed"
           : outcome.status === "cancelled"
             ? "cancelled"
             : "failed";
@@ -2672,16 +2700,34 @@ function freezeWorkflowSpec(
   };
 }
 
+const AUTONOMOUS_GOAL_INSTRUCTIONS = [
+  "Goal mode is autonomous. For an open-ended goal or an obvious typo, choose a reasonable interpretation, state it as an assumption, and proceed.",
+  "Ask the user for clarification only when no reasonable interpretation exists; a missing product name, architecture, or existing project is not by itself a blocker.",
+  "When the workspace has no project, create a small, complete, runnable project that fits the goal, with real tests, a build, or a smoke run that checks its behavior.",
+  "Keep existing-project changes focused. Do not weaken, skip, or replace required verification to get a pass.",
+].join("\n");
+
 function buildPlanPrompt(spec: WorkflowSpec): string {
   return [
     "You are the planning stage of a verified-change workflow.",
-    "Produce a concrete, minimal implementation plan for the goal below.",
+    "Produce a concrete implementation plan sufficient to fulfill the goal below.",
+    AUTONOMOUS_GOAL_INSTRUCTIONS,
+    "Include your interpretation, deliverables, and how each required command will verify them. In a greenfield workspace, plan the files and real checks the implementer must create; do not substitute true, :, exit 0, or echo.",
     "Do NOT modify any files — respond with the plan only.",
     "",
     "## Goal",
     spec.goal,
     "",
     "## Required verification (every command must exit 0)",
+    ...(spec.requiredVerification.length === 0 ? [
+      "No client checks were supplied. Inspect the repository and select its real test, build or lint commands.",
+      "For a new project, choose the commands the implementation will create, including tests and a CLI smoke run when applicable.",
+      "These commands will be frozen when this plan commits and must pass unchanged. Run from the repository root; include any needed cd. Commands run in listed order.",
+      'End your plan with exactly one fenced agenc-verification block containing a JSON array of command strings, for example:',
+      '```agenc-verification',
+      '["npm test", "npm run build && node dist/cli.js --help"]',
+      '```',
+    ] : []),
     ...spec.requiredVerification.map(
       (command) => `- ${formatVerificationCommand(command.script)}`,
     ),
@@ -2692,12 +2738,17 @@ function buildImplementPrompt(ctx: RunContext, attempt: number): string {
   const lines = [
     "You are the implementation stage of a verified-change workflow.",
     "Implement the goal below inside the current worktree.",
+    AUTONOMOUS_GOAL_INSTRUCTIONS,
+    "If the plan only asks for clarification despite a reasonable interpretation, correct that plan and implement the goal. Create any missing project and verification files, then run the required checks.",
     "",
     "## Goal",
     ctx.spec.goal,
     "",
     "## Plan",
     ctx.planText ?? "(no plan text recorded)",
+    "",
+    "## Required verification (every command must exit 0)",
+    ...(ctx.plannedChecks ?? ctx.spec.requiredVerification).map((command) => `- ${formatVerificationCommand(command.script)}`),
   ];
   if (attempt > 1 && ctx.verification !== undefined) {
     lines.push(
@@ -2721,6 +2772,7 @@ function buildImplementPrompt(ctx: RunContext, attempt: number): string {
 function buildVerifyAgentPrompt(
   spec: WorkflowSpec,
   records: readonly VerifiedChangeCommandRecord[],
+  planText: string | undefined,
   previous?: {
     readonly attempt: number;
     readonly verdict: string;
@@ -2731,6 +2783,8 @@ function buildVerifyAgentPrompt(
     "You are an ADVERSARIAL verification agent for a proposed code change.",
     "Independently verify the change in the current worktree against the goal.",
     "Re-run spot checks; do not trust the implementer's claims.",
+    "Evaluate whether the stated interpretation reasonably fulfills an open-ended goal, including obvious typo corrections. Do not require clarification merely because several reasonable implementations exist.",
+    "For a greenfield build goal, an empty workspace or a missing implementation is FAIL, not an environmental PARTIAL. Require a runnable deliverable and meaningful checks; a no-op command passing is not evidence of completion.",
     // Soak F65: the verifier wrote its fixtures to /tmp and by redirection into
     // tracked paths, and the sandbox refused both; say where scratch may go.
     "Write any scratch files or fixtures you need under `tmp/` inside the worktree:",
@@ -2739,6 +2793,9 @@ function buildVerifyAgentPrompt(
     "",
     "## Goal",
     spec.goal,
+    "",
+    "## Plan and stated assumptions (assess independently against the goal)",
+    planText ?? "(no plan text recorded)",
     "",
     // Soak F77: shown only `- verify: exit 0`, the verifier ran `verify` as a
     // command, got 127, and failed a change whose `npm test` had passed. The

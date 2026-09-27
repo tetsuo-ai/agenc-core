@@ -42,6 +42,7 @@ import {
 import { buildStructuredSessionBootstrapArgv } from "../session-bootstrap-argv.js";
 import { ensureAgentControl } from "../../bin/delegate-tool.js";
 import { delegate } from "../../agents/delegate.js";
+import { childProviderPolicy } from "../../agents/cross-provider.js";
 import type { AgentPath } from "../../agents/registry.js";
 import type { ExecutionAdmissionKernel } from "../../budget/execution-admission-kernel.js";
 import type { AuthBackend } from "../../auth/backend.js";
@@ -109,6 +110,15 @@ import { parseWorkflowStepId } from "./steps.js";
 
 const COMMAND_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const SETTLED_CHILDREN_LIMIT = 64;
+
+export function workflowProviderInstructions(crossProviderEnabled: boolean): string {
+  if (crossProviderEnabled) return "";
+  return [
+    "Cross-provider sub-agents are off for this Goal run.",
+    "If the goal asks for another provider's agents (for example DeepSeek), say in one line: 'Cross-provider agents are off; continuing on the selected model.' Then continue the goal on the selected model.",
+    "Do not enable providers, change settings, or claim those agents were used. This provider limitation alone does not make an otherwise complete implementation partial or failed; still verify every functional requirement.",
+  ].join("\n");
+}
 
 /** Session-coupled seam failure with a stable, typed diagnostic. */
 export class WorkflowSessionSeamError extends Error {
@@ -912,7 +922,9 @@ export function createWorkflowSessionSeams(
           parentPath: "/root" as AgentPath,
           control,
           registry,
-          taskPrompt: input.prompt,
+          taskPrompt: [input.prompt, workflowProviderInstructions(
+            childProviderPolicy(session).cross_provider_enabled === true,
+          )].filter(Boolean).join("\n\n"),
           ...(input.kind === "verify_agent" ? { role: "verification" } : {}),
           agentName: workflowChildAgentName(input.childRunId),
           ...(input.spec.model !== undefined
