@@ -510,6 +510,34 @@ describe("ResilientMCPBridge", () => {
     await bridge.dispose();
   });
 
+  it("keeps the increased reconnect backoff when a catalog refresh happens before the healthy minute", async () => {
+    vi.useFakeTimers();
+    const initial = makeBridge("srv");
+    const reconnected = makeBridge("srv");
+    const refreshed = makeBridge("srv");
+    const later = makeBridge("srv");
+    mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(reconnected)
+      .mockResolvedValueOnce(later);
+    const bridge = new ResilientMCPBridge(
+      { name: "srv", command: "node" },
+      initial,
+    );
+
+    bridge.notifyTransportClosed();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(bridge.isReconnecting).toBe(false);
+    expect(bridge.replacePublishedCatalog(refreshed)).toBe(true);
+    bridge.notifyTransportClosed();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+    expect(bridge.isReconnecting).toBe(false);
+    await bridge.dispose();
+  });
+
   it("increases reconnect backoff when the connection drops again before the healthy minute", async () => {
     vi.useFakeTimers();
     mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
