@@ -110,6 +110,18 @@ function resolveMaxTokens(
   return normalized > 0 ? normalized : undefined;
 }
 
+function preferDefined<Key extends string, Value>(
+  key: Key,
+  primary: Value | undefined,
+  fallback: Value | undefined,
+): Partial<Record<Key, Value>> {
+  const chosen = primary !== undefined ? primary : fallback;
+  if (chosen === undefined) return {};
+  const defined: Partial<Record<Key, Value>> = {};
+  defined[key] = chosen;
+  return defined;
+}
+
 function mergeAnthropicUsage(
   usage: AnthropicUsageAccumulator,
   partUsage: unknown,
@@ -134,6 +146,10 @@ function mergeAnthropicUsage(
     (typeof record.output_tokens === "number" &&
       Number.isFinite(record.output_tokens));
   const thinkingDetails = readAnthropicThinkingTokenDetails(record);
+  const reasoningOutputTokens =
+    typeof record.reasoning_output_tokens === "number"
+      ? record.reasoning_output_tokens
+      : undefined;
   return {
     reported,
     ...(typeof record.speed === "string"
@@ -161,21 +177,23 @@ function mergeAnthropicUsage(
       : usage.cache_creation_input_tokens !== undefined
         ? { cache_creation_input_tokens: usage.cache_creation_input_tokens }
         : {}),
-    ...(typeof record.reasoning_output_tokens === "number"
-      ? { reasoning_output_tokens: record.reasoning_output_tokens }
-      : usage.reasoning_output_tokens !== undefined
-        ? { reasoning_output_tokens: usage.reasoning_output_tokens }
-        : {}),
-    ...(thinkingDetails !== undefined
-      ? { output_tokens_details: thinkingDetails }
-      : usage.output_tokens_details !== undefined
-        ? { output_tokens_details: usage.output_tokens_details }
-        : {}),
-    ...(webSearchRequests !== undefined
-      ? { server_tool_use: { web_search_requests: webSearchRequests } }
-      : usage.server_tool_use !== undefined
-        ? { server_tool_use: usage.server_tool_use }
-        : {}),
+    ...preferDefined(
+      "reasoning_output_tokens",
+      reasoningOutputTokens,
+      usage.reasoning_output_tokens,
+    ),
+    ...preferDefined(
+      "output_tokens_details",
+      thinkingDetails,
+      usage.output_tokens_details,
+    ),
+    ...preferDefined(
+      "server_tool_use",
+      webSearchRequests !== undefined
+        ? { web_search_requests: webSearchRequests }
+        : undefined,
+      usage.server_tool_use,
+    ),
   };
 }
 

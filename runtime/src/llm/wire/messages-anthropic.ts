@@ -527,7 +527,7 @@ export function readAnthropicReasoningOutputTokens(
 ): number | undefined {
   const details = asRecord(usageRecord.output_tokens_details);
   let raw: number | undefined;
-  if (details && Object.prototype.hasOwnProperty.call(details, "thinking_tokens")) {
+  if (details && Object.hasOwn(details, "thinking_tokens")) {
     raw = readAnthropicThinkingTokenDetails(usageRecord)?.thinking_tokens;
     if (raw === undefined) {
       return undefined;
