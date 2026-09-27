@@ -587,10 +587,12 @@ export class ResilientMCPBridge implements MCPToolBridge {
       this.reconnecting = false;
       // A replacement that initializes and immediately dies is still part
       // of the same crash sequence. Reset only after a healthy interval.
-      const healthyBridge = newBridge;
+      // Catalog refresh swaps `inner` without changing the live connection,
+      // so the timer follows `clientOwner` rather than that replaceable bridge.
+      const healthyOwner = this.clientOwner;
       this.stabilityTimer = setTimeout(() => {
         this.stabilityTimer = null;
-        if (!this.disposed && !this.reconnecting && this.inner === healthyBridge && this.reconnectEpoch === epoch) {
+        if (!this.disposed && !this.reconnecting && this.clientOwner === healthyOwner && this.reconnectEpoch === epoch) {
           this.backoffMs = 0;
         }
       }, RECONNECT_STABILITY_MS);

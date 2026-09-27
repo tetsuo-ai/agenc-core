@@ -681,4 +681,125 @@ describe("MCPManager list_changed catalog refresh", () => {
       await manager.stop();
     }
   });
+
+  it("publishes a tools notification that arrives while the initial tools listing is held", async () => {
+    mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
+    const releaseInitial = holdNextToolBridge();
+    mockCreateToolBridge.mockResolvedValueOnce(makeMockBridge("srv1", ["toolB"]));
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    const starting = manager.start();
+    try {
+      await vi.waitFor(() => {
+        expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+      });
+      listChangedHandlersFromConnect().onToolsListChanged();
+      await flushMicrotasks();
+      releaseInitial(makeMockBridge("srv1", ["toolA"]));
+      await starting;
+      await waitForTools(manager, ["mcp.srv1.toolB"]);
+      expect(mockCreateToolBridge).toHaveBeenCalledTimes(2);
+    } finally {
+      await manager.stop();
+    }
+  });
+
+  it("publishes a tools notification that arrives after the tool bridge exists but before the client is published", async () => {
+    mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(makeMockBridge("srv1", ["toolA"]))
+      .mockResolvedValueOnce(makeMockBridge("srv1", ["toolB"]));
+    const releaseCompanions = holdNextResourceBridge();
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    const starting = manager.start();
+    try {
+      await vi.waitFor(() => {
+        expect(mockCreateResourceBridge).toHaveBeenCalledOnce();
+      });
+      listChangedHandlersFromConnect().onToolsListChanged();
+      await flushMicrotasks();
+      releaseCompanions();
+      await starting;
+      await waitForTools(manager, ["mcp.srv1.toolB"]);
+      expect(mockCreateToolBridge).toHaveBeenCalledTimes(2);
+    } finally {
+      await manager.stop();
+    }
+  });
+
+  it("does not publish a startup notification after stop", async () => {
+    mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
+    const releaseInitial = holdNextToolBridge();
+    const manager = new MCPManager([makeConfig("srv1")]);
+    const starting = manager.start();
+    await vi.waitFor(() => {
+      expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+    });
+    listChangedHandlersFromConnect().onToolsListChanged();
+    const stopping = manager.stop();
+    releaseInitial(makeMockBridge("srv1", ["toolB"]));
+    await starting;
+    await stopping;
+    await flushMicrotasks();
+    expect(manager.getTools()).toEqual([]);
+    expect(mockCreateToolBridge).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replay a failed startup notification on the replacement connection", async () => {
+    mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
+    const failedListing = holdNextToolBridgeResult();
+    mockCreateToolBridge.mockResolvedValueOnce(makeMockBridge("srv1", ["toolA"]));
+    mockCreateToolBridge.mockResolvedValueOnce(makeMockBridge("srv1", ["toolB"]));
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    const starting = manager.start();
+    try {
+      await vi.waitFor(() => {
+        expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+      });
+      listChangedHandlersFromConnect().onToolsListChanged();
+      await flushMicrotasks();
+      failedListing.reject(new Error("tools list failed"));
+      await starting;
+      expect(manager.getTools()).toEqual([]);
+
+      const reconnected = await manager.reconnectServer("srv1");
+      expect(reconnected.success).toBe(true);
+      await flushMicrotasks();
+      expect(manager.getTools().map((tool) => tool.name)).toEqual([
+        "mcp.srv1.toolA",
+      ]);
+      expect(mockCreateToolBridge).toHaveBeenCalledTimes(2);
+    } finally {
+      await manager.stop();
+    }
+  });
+
+  it("does not let the previous connection's list_changed handler refresh the replacement", async () => {
+    mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(makeMockBridge("srv1", ["toolA"]))
+      .mockResolvedValueOnce(makeMockBridge("srv1", ["toolA"]))
+      .mockResolvedValueOnce(makeMockBridge("srv1", ["toolB"]));
+
+    const manager = await startManager([makeConfig("srv1")]);
+    const staleHandlers = listChangedHandlersFromConnect();
+    try {
+      await expect(manager.reconnectServer("srv1")).resolves.toMatchObject({
+        success: true,
+      });
+      expect(manager.getTools().map((tool) => tool.name)).toEqual([
+        "mcp.srv1.toolA",
+      ]);
+      staleHandlers.onToolsListChanged();
+      await flushMicrotasks();
+      expect(manager.getTools().map((tool) => tool.name)).toEqual([
+        "mcp.srv1.toolA",
+      ]);
+      expect(mockCreateToolBridge).toHaveBeenCalledTimes(2);
+    } finally {
+      await manager.stop();
+    }
+  });
 });

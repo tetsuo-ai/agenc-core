@@ -186,6 +186,8 @@ interface CatalogKindGenerations {
 interface CatalogRefreshState {
   readonly generations: CatalogKindGenerations;
   readonly pending: Set<MCPCatalogKind>;
+  /** Server epoch that may drain this pending work. */
+  readonly connectionEpoch: number;
   inflight?: Promise<void>;
 }
 
@@ -2720,7 +2722,14 @@ export class MCPManager {
     // must not make a still-running server's old credentials printable again.
     const sensitiveHeaders = this.connectionSensitiveHeaders(config);
     const logger = attachmentLogger(this.logger, sensitiveHeaders);
-    const listChangedHandlers = this.createListChangedHandlers(config.name);
+    const connectionEpoch = this.serverEpochs.get(config.name);
+    if (connectionEpoch === undefined) {
+      throw new Error(`MCP server "${config.name}" has no connection generation`);
+    }
+    const listChangedHandlers = this.createListChangedHandlers(
+      config.name,
+      connectionEpoch,
+    );
     let client: Awaited<ReturnType<typeof createMCPConnection>>;
     try {
       client = await createMCPConnection(
@@ -2883,8 +2892,10 @@ export class MCPManager {
       }
       this.publishConnectedServer(config, client, snapshot, sensitiveHeaders);
       this.connectionStates.set(config.name, { type: "connected" });
+      this.resumeStartupCatalogRefresh(config.name, connectionEpoch);
       return bridge;
     } catch (error) {
+      this.discardStartupCatalogRefresh(config.name, connectionEpoch);
       error = redactMcpAttachmentValue(error, sensitiveHeaders);
       if (bridge !== undefined && this.bridges.get(config.name) === bridge) {
         this.bridges.delete(config.name);
@@ -3070,14 +3081,15 @@ export class MCPManager {
 
   private createListChangedHandlers(
     serverName: string,
+    connectionEpoch: number,
   ): MCPListChangedHandlers {
     return {
       onToolsListChanged: () =>
-        this.enqueueCatalogRefresh(serverName, "tools"),
+        this.enqueueCatalogRefresh(serverName, "tools", connectionEpoch),
       onPromptsListChanged: () =>
-        this.enqueueCatalogRefresh(serverName, "prompts"),
+        this.enqueueCatalogRefresh(serverName, "prompts", connectionEpoch),
       onResourcesListChanged: () =>
-        this.enqueueCatalogRefresh(serverName, "resources"),
+        this.enqueueCatalogRefresh(serverName, "resources", connectionEpoch),
     };
   }
 
@@ -3130,20 +3142,67 @@ export class MCPManager {
   private enqueueCatalogRefresh(
     serverName: string,
     kind: MCPCatalogKind,
+    connectionEpoch = this.serverEpochs.get(serverName),
   ): void {
     if (!this.running || this.shutdownTask !== undefined) return;
-    if (!this.bridges.has(serverName)) return;
+    if (
+      connectionEpoch === undefined ||
+      this.serverEpochs.get(serverName) !== connectionEpoch
+    ) {
+      return;
+    }
     let state = this.catalogRefreshStates.get(serverName);
-    if (state === undefined) {
+    if (state === undefined || state.connectionEpoch !== connectionEpoch) {
       state = {
         generations: { tools: 0, prompts: 0, resources: 0 },
         pending: new Set(),
+        connectionEpoch,
       };
       this.catalogRefreshStates.set(serverName, state);
     }
     state.generations[kind] += 1;
     state.pending.add(kind);
+    // Startup has no published client yet. Keep the kind until publication
+    // drains it; consuming it now drops the notification permanently.
+    if (!this.catalogRefreshReady(serverName)) return;
     this.startCatalogDrain(serverName, state);
+  }
+
+  /** True once this server's bridge and connected client can service a refresh. */
+  private catalogRefreshReady(serverName: string): boolean {
+    return (
+      this.bridges.has(serverName) &&
+      this.connectedConnections.has(serverName) &&
+      !this.toolSurfaceReconnecting(serverName)
+    );
+  }
+
+  private resumeStartupCatalogRefresh(
+    serverName: string,
+    connectionEpoch: number,
+  ): void {
+    if (this.serverEpochs.get(serverName) !== connectionEpoch) return;
+    if (!this.catalogRefreshReady(serverName)) return;
+    const state = this.catalogRefreshStates.get(serverName);
+    if (
+      state === undefined ||
+      state.connectionEpoch !== connectionEpoch ||
+      state.pending.size === 0
+    ) {
+      return;
+    }
+    this.startCatalogDrain(serverName, state);
+  }
+
+  private discardStartupCatalogRefresh(
+    serverName: string,
+    connectionEpoch: number,
+  ): void {
+    if (this.connectedConnections.has(serverName)) return;
+    const state = this.catalogRefreshStates.get(serverName);
+    if (state?.connectionEpoch !== connectionEpoch) return;
+    state.pending.clear();
+    this.catalogRefreshStates.delete(serverName);
   }
 
   private startCatalogDrain(
@@ -3166,14 +3225,20 @@ export class MCPManager {
       if (
         !this.running ||
         this.shutdownTask !== undefined ||
-        !this.bridges.has(serverName)
+        !this.bridges.has(serverName) ||
+        state.connectionEpoch !== this.serverEpochs.get(serverName)
       ) {
         state.pending.clear();
         return;
       }
-      // A reconnecting bridge refuses new catalogs. Keep the queued kinds;
-      // the reconnect resumes them once it installs its bridge.
-      if (this.toolSurfaceReconnecting(serverName)) return;
+      // A reconnecting bridge, or a connection that has not published its
+      // client yet, cannot service the kinds. Keep them for the resume.
+      if (
+        this.toolSurfaceReconnecting(serverName) ||
+        !this.connectedConnections.has(serverName)
+      ) {
+        return;
+      }
       const kinds = new Set(state.pending);
       state.pending.clear();
       const refreshEpoch = this.catalogRefreshEpochs.get(serverName) ?? 0;

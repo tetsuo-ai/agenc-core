@@ -481,4 +481,71 @@ describe("ResilientMCPBridge", () => {
     expect(freshClient.close).toHaveBeenCalledOnce();
     expect(initialBridge.dispose).toHaveBeenCalledOnce();
   });
+
+  it("resets reconnect backoff after a healthy minute when the catalog was refreshed", async () => {
+    vi.useFakeTimers();
+    const initial = makeBridge("srv");
+    const reconnected = makeBridge("srv");
+    const refreshed = makeBridge("srv");
+    const later = makeBridge("srv");
+    mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(reconnected)
+      .mockResolvedValueOnce(later);
+    const bridge = new ResilientMCPBridge(
+      { name: "srv", command: "node" },
+      initial,
+    );
+
+    bridge.notifyTransportClosed();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(bridge.isReconnecting).toBe(false);
+    expect(bridge.replacePublishedCatalog(refreshed)).toBe(true);
+    await vi.advanceTimersByTimeAsync(60_000);
+    bridge.notifyTransportClosed();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+    expect(bridge.isReconnecting).toBe(false);
+    await bridge.dispose();
+  });
+
+  it("increases reconnect backoff when the connection drops again before the healthy minute", async () => {
+    vi.useFakeTimers();
+    mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
+    mockCreateToolBridge.mockResolvedValue(makeBridge("srv"));
+    const bridge = new ResilientMCPBridge(
+      { name: "srv", command: "node" },
+      makeBridge("srv"),
+    );
+
+    bridge.notifyTransportClosed();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+    bridge.notifyTransportClosed();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+    await bridge.dispose();
+  });
+
+  it("does not reconnect after disposal during the healthy interval", async () => {
+    vi.useFakeTimers();
+    mockCreateMCPConnection.mockResolvedValue({ close: vi.fn() });
+    mockCreateToolBridge.mockResolvedValue(makeBridge("srv"));
+    const bridge = new ResilientMCPBridge(
+      { name: "srv", command: "node" },
+      makeBridge("srv"),
+    );
+
+    bridge.notifyTransportClosed();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+    await bridge.dispose();
+    await vi.advanceTimersByTimeAsync(60_000);
+    bridge.notifyTransportClosed();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+  });
 });
