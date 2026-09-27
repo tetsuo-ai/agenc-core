@@ -115,7 +115,7 @@ function preferDefined<Key extends string, Value>(
   primary: Value | undefined,
   fallback: Value | undefined,
 ): Partial<Record<Key, Value>> {
-  const chosen = primary !== undefined ? primary : fallback;
+  const chosen = primary ?? fallback;
   if (chosen === undefined) return {};
   const defined: Partial<Record<Key, Value>> = {};
   defined[key] = chosen;

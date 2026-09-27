@@ -28,6 +28,9 @@ import {
   requireMappedFinishReason,
   parseAnthropicToolChoice,
   prepareMessagesForWire,
+  splitSystemPromptOnDynamicBoundary,
+  SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER,
+  SYSTEM_PROMPT_VOLATILE_BOUNDARY_MARKER,
   toAnthropicMessageContent,
   toAnthropicToolResultContent,
   withEndpointMarkers,
@@ -129,11 +132,6 @@ function buildAnthropicStructuredOutputTool(
  * gaphunt3 regression test still asserts it never diverges from
  * `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` in `src/prompts/system-prompt.ts`.
  */
-import {
-  SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER,
-  SYSTEM_PROMPT_VOLATILE_BOUNDARY_MARKER,
-  splitSystemPromptOnDynamicBoundary,
-} from "./shared.js";
 export { SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER };
 
 interface SplitOptionSystemPrompt {
