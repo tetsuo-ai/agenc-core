@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { EVENT_GAP_EVENT } from "../../src/contracts/run-contracts.js";
+import { CostSidecar } from "../../src/session/cost.js";
 import type {
   ActiveMessageSubmission,
   ActiveShellExecution,
@@ -275,6 +276,46 @@ describe("managedTokenUsage", () => {
 
 
 describe("estimated snapshot cost", () => {
+  it("retains per-call fallback costs for an undocumented Fast tier", () => {
+    const sidecar = new CostSidecar();
+    const live = { inputTokens: 1_000, outputTokens: 100, totalTokens: 1_100 };
+    const active = {
+      thread: { totalTokenUsage: () => live },
+      bootstrap: { session: { services: { costSidecar: sidecar } } },
+    } as unknown as Parameters<typeof terminalUsageForActiveAgent>[0];
+    const payload = {
+      model: "gpt-5.4-pro",
+      provider: "openai",
+      promptTokens: 1_000,
+      completionTokens: 100,
+      totalTokens: 1_100,
+    };
+    sidecar.onEvent({
+      id: "fast-usage",
+      msg: { type: "token_count", payload: { ...payload, speed: "fast" } },
+    });
+    expect(terminalUsageForActiveAgent(active)).toEqual({
+      ...live,
+      costUsd: expect.closeTo(0.21, 9),
+      costKnown: true,
+      costEstimated: true,
+    });
+
+    sidecar.onEvent({
+      id: "standard-usage",
+      msg: { type: "token_count", payload },
+    });
+    live.inputTokens *= 2;
+    live.outputTokens *= 2;
+    live.totalTokens *= 2;
+    expect(terminalUsageForActiveAgent(active)).toEqual({
+      ...live,
+      costUsd: expect.closeTo(0.21 + 0.048, 9),
+      costKnown: true,
+      costEstimated: true,
+    });
+  });
+
   it("labels a complete fallback estimate and does not attest incomplete history", () => {
     const live = { inputTokens: 100, outputTokens: 50, totalTokens: 150 };
     const sidecar = { getTotalCostUsd: () => 0.045, getSessionTotals: () => live, hasUnknownModelCost: () => true };

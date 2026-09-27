@@ -1883,13 +1883,15 @@ export class CostSidecar implements Sidecar {
             ...(msg.payload.speed === "fast" ? { speed: "fast" as const } : {}),
           };
           const standardEntry = resolveModelCostEntry(callDelta, this.registry)?.entry;
+          const callCost = computeUsdCostWithResolution(callDelta, this.registry);
           if (
-            standardEntry !== undefined &&
-            selectCallRates(standardEntry, callPricingOf(callDelta)).rates !== standardEntry
+            !callCost.known ||
+            (standardEntry !== undefined &&
+              selectCallRates(standardEntry, callPricingOf(callDelta)).rates !== standardEntry)
           ) {
-            this.recordExplicitCost(key, callDelta, computeUsdCost(callDelta, this.registry));
+            this.recordExplicitCost(key, callDelta, callCost.costUsd);
           }
-          if (!computeUsdCostWithResolution(callDelta, this.registry).known) {
+          if (!callCost.known) {
             this.unknownCostModels.add(key);
           }
         }

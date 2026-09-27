@@ -526,7 +526,11 @@ describe("durable run inspection", () => {
     );
   });
 
-  it("returns the committed M4 terminal result after the original connection is gone", () => {
+  it.each([
+    {},
+    { costKnown: true, costEstimated: true },
+    { costKnown: false, costEstimated: false },
+  ])("returns the committed M4 terminal result with accounting flags %j after disconnect", (flags) => {
     seedDurableRuns();
     const durability = new StateRunDurabilityRepository(driver);
     durability.ensureInitialEpoch({ runId: "run-complete", openedAt: NOW });
@@ -544,6 +548,7 @@ describe("durable run inspection", () => {
           outputTokens: 12,
           totalTokens: 42,
           costUsd: 0.004,
+          ...flags,
         },
         lastSequence: 44,
         finishedAt: "2026-07-18T12:05:00.000Z",
@@ -571,6 +576,7 @@ describe("durable run inspection", () => {
           outputTokens: 12,
           totalTokens: 42,
           costUsd: 0.004,
+          ...flags,
         },
         lastSequence: 44,
       },

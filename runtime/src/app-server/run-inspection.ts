@@ -1172,6 +1172,8 @@ function parseRunUsage(
     readonly outputTokens?: unknown;
     readonly totalTokens?: unknown;
     readonly costUsd?: unknown;
+    readonly costKnown?: unknown;
+    readonly costEstimated?: unknown;
   };
   if (
     typeof value.inputTokens !== "number" ||
@@ -1190,6 +1192,10 @@ function parseRunUsage(
     outputTokens: value.outputTokens,
     totalTokens: value.totalTokens,
     costUsd: value.costUsd,
+    ...(typeof value.costKnown === "boolean" ? { costKnown: value.costKnown } : {}),
+    ...(typeof value.costEstimated === "boolean"
+      ? { costEstimated: value.costEstimated }
+      : {}),
   };
 }
 
