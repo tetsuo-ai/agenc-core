@@ -1062,11 +1062,12 @@ export function computeUsdCostWithResolution(
     // Anthropic and Bedrock report cache reads/writes separately from input.
     // Preserve matched entries' cache semantics when only the call tier is unpriced.
     const provider = normalizeProviderMetadataIdentity(usage.provider);
-    const separateCacheTokens = provider === "anthropic" || provider === "bedrock";
+    const separateCacheTokens = provider === "anthropic" || provider === "bedrock" || provider === "amazon-bedrock";
+    const useProviderCacheSemantics = match === null || standardEntry.costEstimated === true;
     const cacheReadsIncluded = match?.entry.cachedInputIncludedInInputTokens ??
-      (match === null && !separateCacheTokens);
+      (useProviderCacheSemantics && !separateCacheTokens);
     const cacheWritesIncluded = match?.entry.cacheCreationIncludedInInputTokens ??
-      (match === null && !separateCacheTokens);
+      (useProviderCacheSemantics && !separateCacheTokens);
     const inputTokens = Math.max(usage.inputTokens +
       (cacheReadsIncluded ? 0 : usage.cachedInputTokens) +
       (cacheWritesIncluded ? 0 : usage.cacheCreationInputTokens),

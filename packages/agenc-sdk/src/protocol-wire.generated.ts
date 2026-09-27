@@ -2254,6 +2254,7 @@ export interface SessionTranscriptV2Event extends JsonObject {
             readonly totalTokens: number;
             readonly modelCalls: number;
             readonly hasUnknownCost: boolean;
+            readonly costEstimated?: boolean;
         }[];
         readonly agents?: readonly {
             readonly runId: string;
@@ -2264,6 +2265,7 @@ export interface SessionTranscriptV2Event extends JsonObject {
             readonly totalTokens: number;
             readonly modelCalls: number;
             readonly hasUnknownCost: boolean;
+            readonly costEstimated?: boolean;
         }[];
         readonly promptTokens?: number;
         readonly completionTokens?: number;
