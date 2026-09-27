@@ -3,7 +3,9 @@ import { describe, expect, test, vi } from "vitest";
 import {
   LLMInvalidResponseError,
   LLMProviderError,
+  isLLMPreGenerationRejection,
 } from "../../../../src/llm/errors.js";
+import { ProviderHttpError } from "../../../../src/llm/client-session.js";
 import { createTokenAccountingRequest } from "../../token-accounting.js";
 import type { LLMChatOptions, LLMMessage, LLMTool } from "../../types.js";
 import { createGeminiEndpointPlan } from "./endpoint-plan.js";
@@ -118,6 +120,49 @@ function providerWithFetch(fetchImpl: typeof fetch): GeminiProvider {
     fetchImpl,
   });
 }
+
+describe("Gemini pre-generation rejection evidence", () => {
+  test.each(["chat", "stream"] as const)("marks only single-attempt HTTP quota/payment rejections (%s)", async (operation) => {
+    for (const status of [402, 429, 500, 503]) {
+      const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+        Response.json({ error: { code: status, message: "request rejected" } }, { status }),
+      );
+      const error = await invokeGeminiWithOptions(providerWithFetch(fetchImpl), operation, {
+        singleWireAttempt: true,
+      }).catch(error => error);
+      expect(error).toBeInstanceOf(Error);
+      expect(isLLMPreGenerationRejection(error, "gemini")).toBe(status === 402 || status === 429);
+      expect(isLLMPreGenerationRejection(error, "deepseek")).toBe(false);
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    }
+  });
+
+  test("does not certify an attempt that permits hidden retries", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({ error: { code: 402, message: "payment required" } }, { status: 402 }),
+    );
+    const error = await providerWithFetch(fetchImpl).chat([{ role: "user", content: "hello" }]).catch(error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(isLLMPreGenerationRejection(error, "gemini")).toBe(false);
+  });
+
+  test.each([false, true])("keeps a post-response status ambiguous (interim usage: %s)", async (withUsage) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(sseResponse([
+      `data: ${JSON.stringify({
+        candidates: [{ content: { parts: [{ text: "partial" }] } }],
+        ...(withUsage ? { usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 1 } } : {}),
+      })}\n\n`,
+    ]));
+    const error = await providerWithFetch(fetchImpl).chatStream(
+      [{ role: "user", content: "hello" }],
+      () => { throw new ProviderHttpError({ providerName: "gemini", status: 429,
+        headers: new Headers(), url: "https://example.test", message: "late rate limit" }); },
+      { singleWireAttempt: true },
+    ).catch(error => error);
+    expect(error).toBeInstanceOf(Error);
+    expect(isLLMPreGenerationRejection(error, "gemini")).toBe(false);
+  });
+});
 
 test("a Gemini daily quota HTTP response stops after one wire attempt", async () => {
   const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ error: {

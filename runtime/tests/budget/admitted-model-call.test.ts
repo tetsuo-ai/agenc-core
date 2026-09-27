@@ -4,10 +4,12 @@ import { fitOutputReservationToContext, runAdmittedModelCall } from "../../src/b
 import type { AdmissionAcquireInput } from "../../src/budget/admission-client.js";
 import { AdmissionDeniedError } from "../../src/budget/admission-client.js";
 import { createAllowAdmissionHarness } from "./admission-test-harness.js";
-import { LLMManagedAdmissionError, LLMManagedUsagePendingError } from "../../src/llm/errors.js";
+import { LLMManagedAdmissionError, LLMManagedUsagePendingError, LLMRateLimitError, markLLMPreGenerationRejection } from "../../src/llm/errors.js";
 import type { AuthBackend } from "../../src/auth/backend.js";
 import { AgenCProvider } from "../../src/llm/providers/agenc/index.js";
 import { OllamaProvider } from "../../src/llm/providers/ollama/adapter.js";
+import { GeminiProvider } from "../../src/llm/providers/gemini/index.js";
+import { createGeminiEndpointPlan } from "../../src/llm/providers/gemini/endpoint-plan.js";
 import { FACTORY_PROVIDER_STATE } from "../../src/llm/provider.js";
 import type { ProviderTokenCountCapability, TokenAccountingRequest } from "../../src/llm/token-accounting.js";
 import type {
@@ -107,6 +109,56 @@ function callOptions(
 }
 
 describe("runAdmittedModelCall", () => {
+  test.each(["before-headers", "before-body", "after-interim-usage", "http-503"] as const)("keeps Gemini's full reservation for an ambiguous failure: %s", async (failure) => {
+    const state = harness({ maxCostUsd: 20, hasHardCostCap: true });
+    let chunks = 0;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+      if (String(url).includes(":countTokens")) return Response.json({ totalTokens: 100 });
+      if (failure === "before-headers") throw new TypeError("fetch failed");
+      if (failure === "http-503") return new Response("unavailable", { status: 503 });
+      let sent = false;
+      return new Response(new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (failure === "after-interim-usage" && !sent) {
+            sent = true;
+            controller.enqueue(new TextEncoder().encode(
+              'data: {"candidates":[{"content":{"parts":[{"text":"partial"}]}}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":1}}\n\n',
+            ));
+          } else {
+            controller.error(new Error("connection lost"));
+          }
+        },
+      }), { headers: { "content-type": "text/event-stream" } });
+    });
+    const provider = new GeminiProvider({ model: "gemini-3.8-flash", fetchImpl,
+      endpointPlan: createGeminiEndpointPlan(),
+      credentialPlan: { kind: "api-key", credential: "test-only", source: "factory" },
+    });
+    const messages = [{ role: "user" as const, content: "hello" }];
+    await expect(runAdmittedModelCall({ session: state.session, provider, messages,
+      options: { maxOutputTokens: 200 }, stepId: `ambiguous:${failure}`, model: "gemini-3.8-flash", providerName: "gemini",
+      invoke: options => provider.chatStream(messages, () => { chunks++; }, options),
+    })).rejects.toBeInstanceOf(Error);
+    if (failure === "after-interim-usage") expect(chunks).toBeGreaterThan(0);
+    expect(state.reconcile).not.toHaveBeenCalled();
+    expect(state.holdUnknown).toHaveBeenCalledWith("reservation-1", "provider_call_failed_after_dispatch");
+    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+    expect(fetchImpl.mock.calls.filter(([url]) => !String(url).includes(":countTokens"))).toHaveLength(1);
+  });
+  test.each(["matched", "unmarked", "other-provider"] as const)("refunds only adapter-certified rejection for this provider: %s", async (proof) => {
+    const state = harness({});
+    const error = new LLMRateLimitError("grok");
+    if (proof !== "unmarked") markLLMPreGenerationRejection(error, proof === "matched" ? "grok" : "gemini");
+    await expect(callOptions(state, { maxOutputTokens: 200 }, async () => { throw error; })).rejects.toBe(error);
+    if (proof === "matched") {
+      expect(state.reconcile).toHaveBeenCalledWith("reservation-1", { inputTokens: 0, outputTokens: 0, costUsd: 0 });
+      expect(state.holdUnknown).not.toHaveBeenCalled();
+    } else {
+      expect(state.reconcile).not.toHaveBeenCalled();
+      expect(state.holdUnknown).toHaveBeenCalledWith("reservation-1", "provider_call_failed_after_dispatch");
+    }
+    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
+  });
   test("counts Ollama's pinned text protocol before acquiring the actual wire lease", async () => {
     const state = harness({ maxTokens: 4_096, hasHardTokenCap: true });
     const tools = [{ type: "function" as const, function: { name: "FileRead", description: "read", parameters: { type: "object" } } }];
