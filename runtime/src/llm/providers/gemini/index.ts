@@ -12,7 +12,7 @@ import {
   type ProviderHttpStreamResponse,
 } from "../../client-session.js";
 import { parseSSEFrames } from "../../_deps/sse.js";
-import { LLMInvalidResponseError, LLMProviderError, mapLLMError } from "../../errors.js";
+import { LLMInvalidResponseError, LLMProviderError, mapLLMError, markLLMPreGenerationRejection } from "../../errors.js";
 import { resolveGeminiReasoningEffort } from "../../registry/gemini-thinking-models.js";
 import type {
   LLMChatOptions,
@@ -2997,12 +2997,19 @@ function withMetrics(
   };
 }
 
-function mapProviderError(error: unknown): never {
+function mapProviderError(error: unknown, singleAttemptPending = false): never {
   if (isFallbackTriggeredError(error)) {
     throw error;
   }
   if (error instanceof ProviderHttpError) {
-    throw mapLLMError("gemini", error, 0);
+    const mapped = mapLLMError("gemini", error, 0);
+    // Only an initial quota/payment rejection proves no generation occurred.
+    // A network/5xx failure or a status raised after accepting a response can
+    // hide billed work. Without singleWireAttempt an earlier retry can too.
+    if (singleAttemptPending && (error.status === 402 || error.status === 429)) {
+      markLLMPreGenerationRejection(mapped, "gemini");
+    }
+    throw mapped;
   }
   if (error instanceof LLMProviderError) {
     throw error;
@@ -3336,6 +3343,7 @@ export class GeminiProvider implements LLMProvider {
     });
     const metrics = requestMetrics({ messages, tools, body, stream: false });
 
+    let singleAttemptPending = options?.singleWireAttempt === true;
     try {
       const session = this.client.createTurnSession({ wireApi: "custom" });
       const response = await session.requestJson<Record<string, unknown>>({
@@ -3352,6 +3360,7 @@ export class GeminiProvider implements LLMProvider {
           : undefined,
         singleWireAttempt: options?.singleWireAttempt,
       });
+      singleAttemptPending = false;
       return withMetrics(
         parseGeminiResponse(
           model,
@@ -3362,7 +3371,7 @@ export class GeminiProvider implements LLMProvider {
         metrics,
       );
     } catch (error) {
-      mapProviderError(error);
+      mapProviderError(error, singleAttemptPending);
     }
   }
 
@@ -3385,6 +3394,7 @@ export class GeminiProvider implements LLMProvider {
     });
     const metrics = requestMetrics({ messages, tools, body, stream: true });
 
+    let singleAttemptPending = options?.singleWireAttempt === true;
     try {
       const session = this.client.createTurnSession({ wireApi: "custom" });
       const response = await session.requestStream({
@@ -3404,6 +3414,7 @@ export class GeminiProvider implements LLMProvider {
         singleWireAttempt: options?.singleWireAttempt,
         retryBudget: { maxRetries: 0 },
       });
+      singleAttemptPending = false;
       const state = new GeminiStreamState(
         model,
         toolNames,
@@ -3417,7 +3428,7 @@ export class GeminiProvider implements LLMProvider {
         requestMetrics: metrics,
       };
     } catch (error) {
-      mapProviderError(error);
+      mapProviderError(error, singleAttemptPending);
     }
   }
 
