@@ -25,6 +25,7 @@ import { getContextWindowForModel } from "../utils/context.js";
 import {
   computeUsdCostWithResolution,
   DEFAULT_MODEL_COSTS,
+  conservativeModelCost,
   resolveModelCostEntry,
   selectCallRates,
   type ModelCostEntry,
@@ -188,12 +189,12 @@ export function providerLocalModelSlug(
   return model;
 }
 
-function pricedEntry(model: string, provider: string): ModelCostEntry | null {
+function pricedEntry(model: string, provider: string): ModelCostEntry {
   const resolved = resolveModelCostEntry(
     { model, provider },
     DEFAULT_MODEL_COSTS,
   );
-  if (resolved === null) return null;
+  if (resolved === null || resolved.entry.costEstimated) return conservativeModelCost();
   const entry = resolved.entry;
   // Entries explicitly declared localZeroCost are the registry's statement
   // that this provider bills nothing. Treating them as unpriced held every
@@ -210,8 +211,8 @@ function pricedEntry(model: string, provider: string): ModelCostEntry | null {
     entry.webSearchUsdPerRequest ?? 0,
   ];
   // A zero-rate entry without the explicit local label does not prove that an
-  // arbitrary provider/model alias is free. Keep hard USD caps fail-closed.
-  return rates.some((rate) => rate > 0) ? entry : null;
+  // arbitrary provider/model alias is free. Use the conservative estimate.
+  return rates.some((rate) => rate > 0) ? entry : conservativeModelCost();
 }
 
 /**
@@ -269,13 +270,12 @@ function requestsXaiPriorityProcessing(
 }
 
 /**
- * The rates the most expensive outcome of this request bills at, or null
- * when the model is unpriced. A request that asks for fast mode is reserved
- * at fast rates. A reservation admits up to `inputTokens + outputTokens`
+ * Reserve the most expensive documented outcome, or the registry ceiling
+ * when the model or requested tier is unpriced. Fast requests reserve fast
+ * rates. A reservation admits up to `inputTokens + outputTokens`
  * before reconciliation counts a token overrun, so a price that depends on
  * one request's input length (OpenAI long context above 272K) is taken at
- * the tier that total can reach. `documented` is false when the provider
- * publishes no rate for that tier.
+ * the tier that total can reach. Undocumented tiers use the registry ceiling.
  */
 function reservationRates(
   model: string,
@@ -284,17 +284,17 @@ function reservationRates(
   outputTokens: number,
   options: LLMChatOptions,
   factoryOptions: ProviderFactoryOptions,
-): ReturnType<typeof selectCallRates> | null {
+): ModelCostEntry {
   const standardEntry = pricedEntry(model, provider);
-  if (standardEntry === null) return null;
   const fast =
     requestsAnthropicFastMode(model, provider, options) ||
     requestsOpenAiFastMode(provider, options) ||
     requestsXaiPriorityProcessing(model, provider, options, factoryOptions);
-  return selectCallRates(standardEntry, {
+  const selected = selectCallRates(standardEntry, {
     ...(fast ? { speed: "fast" as const } : {}),
     singleCallInputTokens: inputTokens + outputTokens,
   });
+  return selected.documented ? selected.rates : conservativeModelCost();
 }
 
 function maximumTokenCostUsd(
@@ -341,9 +341,8 @@ function usageCostUsd(
   provider: string,
   usage: LLMResponse["usage"],
   options: LLMChatOptions,
-): number | null {
+): { costUsd: number; costEstimated?: boolean } | null {
   const entry = pricedEntry(model, provider);
-  if (entry === null) return null;
   if (
     paidServerToolNames(options).some(
       (name) => name !== "web_search" && name !== "x_search",
@@ -390,7 +389,10 @@ function usageCostUsd(
     modelUsage,
     DEFAULT_MODEL_COSTS,
   );
-  return resolved.known ? resolved.costUsd : null;
+  return {
+    costUsd: resolved.costUsd,
+    ...(resolved.costEstimated ? { costEstimated: true } : {}),
+  };
 }
 
 function reconciledTokenUsage(usage: LLMResponse["usage"]): {
@@ -734,14 +736,12 @@ export async function runAdmittedModelCall(
     accountingOptions,
     providerFactoryOptions,
   );
-  const maximumCost = reservedRates?.documented === false
-    ? null
-    : maximumTokenCostUsd(
-      reservedRates?.rates ?? null,
-      maxInputTokens,
-      admittedMaxOutputTokens,
-      accountingOptions,
-    );
+  const maximumCost = maximumTokenCostUsd(
+    reservedRates,
+    maxInputTokens,
+    admittedMaxOutputTokens,
+    accountingOptions,
+  );
   const denialReason =
     accountingFailureReason ??
     (configuredMaxOutputTokens === undefined
@@ -750,11 +750,9 @@ export async function runAdmittedModelCall(
         ? "provider_budget_contract_unavailable"
         : unboundedPaidServerTool
           ? "unbounded_provider_tool_under_hard_cap"
-          : hasHardCostCap && reservedRates?.documented === false
-            ? "unpriced_service_tier_under_hard_cap"
-            : hasHardCostCap && maximumCost === null
-              ? "unpriced_model_under_hard_cap"
-              : undefined);
+          : hasHardCostCap && maximumCost === null
+            ? "unpriced_provider_tool_under_hard_cap"
+            : undefined);
   if (client === undefined) {
     if (params.session.services.admissionRequired !== false) {
       throw new AdmissionDeniedError("admission_kernel_unavailable");
@@ -819,6 +817,7 @@ export async function runAdmittedModelCall(
         maxInputTokens,
         maxOutputTokens: admittedMaxOutputTokens,
         maxCostUsd: maximumCost,
+        ...(reservedRates.costEstimated ? { costEstimated: true } : {}),
         ...(denialReason !== undefined ? { denialReason } : {}),
       },
       params.signal,
@@ -931,13 +930,13 @@ export async function runAdmittedModelCall(
       });
     }
     const actualModel = response.model || effectiveModel;
-    const actualCost = usageCostUsd(
+    const actualPrice = usageCostUsd(
       actualModel,
       effectiveProvider,
       usage,
       params.options,
     );
-    if (actualCost === null) {
+    if (actualPrice === null) {
       if (hasHardCostCap) {
         // This is one durable transaction, not holdUnknown followed by a
         // separate cancellation: the dispatched reservation remains fully
@@ -980,7 +979,8 @@ export async function runAdmittedModelCall(
     const outcome = client.reconcile(reservationId, {
       inputTokens: reconciled.inputTokens,
       outputTokens: reconciled.outputTokens,
-      costUsd: actualCost,
+      costUsd: actualPrice.costUsd,
+      ...(actualPrice.costEstimated ? { costEstimated: true } : {}),
     });
     settled = true;
     hitM4DurabilityFailpoint("after_model_response_commit");

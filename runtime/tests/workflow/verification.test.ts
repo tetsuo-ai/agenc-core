@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 import {
   formatVerificationCommand,
   formatVerificationResult,
+  isTrivialVerificationCommand,
   parseVerificationVerdict,
+  plannedVerification,
   runRequiredVerification,
   type WorkflowCommandResult,
   type WorkflowCommandRunner,
@@ -16,6 +18,26 @@ import type {
 import type { EvidenceArtifactSink } from "../../src/workflow/worktree-lifecycle.js";
 
 const STEP: RunStepIdentity = { runId: "run-v", stepId: "workflow.verify" };
+
+describe("verification plan placeholders", () => {
+  it.each([
+    "", "  ", "# no tests yet", "true", " true; # placeholder", ":", "exit 0", "exit 00",
+    "echo", "echo 'passed'", "printf 'ok\\n'", "/usr/bin/true", "'true'",
+    "true && :; echo done", "true\necho done", "CI=1 command true",
+    "bash -lc 'true'", "sh -c 'echo done'", "echo passed > result.txt",
+  ])("rejects a check that proves nothing: %j", (script) => {
+    expect(isTrivialVerificationCommand(script)).toBe(true);
+  });
+
+  it.each([
+    "npm test", "npm run build", "node --test test/app.test.mjs", "python3 smoke_test.py",
+    "test -s index.html", "echo starting && npm test", "echo starting\nnpm test",
+    "npm test && echo done", "sh -c 'npm test'", "node -e 'require(\"node:assert\").ok(1)'",
+    "exit 1", "echo actual | diff - expected.txt",
+  ])("leaves meaningful command evaluation to the verifier: %j", (script) => {
+    expect(isTrivialVerificationCommand(script)).toBe(false);
+  });
+});
 
 class MemorySink implements EvidenceArtifactSink {
   readonly artifacts: Array<{ role: string; text: string }> = [];
@@ -224,4 +246,21 @@ describe("verification commands in model prompts", () => {
       "`npm test`: exit 124 (timed out)",
     );
   });
+});
+
+
+describe("planned verification message contract", () => {
+  const block = (value: unknown) => "Plan\n```agenc-verification\n" + JSON.stringify(value) + "\n```";
+  it("preserves exact commands and freezes the list and entries", () => {
+    const checks = plannedVerification(block(["npm test", "cd cli && npm run build && node dist/cli.js --help"]));
+    expect(checks.map(check => check.script)).toEqual(["npm test", "cd cli && npm run build && node dist/cli.js --help"]);
+    expect(Object.isFrozen(checks)).toBe(true);
+    expect(checks.every(Object.isFrozen)).toBe(true);
+  });
+  it.each([[], ["true"], ["npm test", "npm test"], [null], [1], {}, [""], Array(21).fill("npm test"), ["npm test " + "x".repeat(4097)]].map(value => [value]))(
+    "rejects invalid check lists %j", value => expect(() => plannedVerification(block(value))).toThrow(),
+  );
+  it.each(["Plan only", "```agenc-verification\n[\n```", block(["npm test"]) + "\n" + block(["make test"])])(
+    "rejects missing, malformed or duplicate blocks", message => expect(() => plannedVerification(message)).toThrow(),
+  );
 });

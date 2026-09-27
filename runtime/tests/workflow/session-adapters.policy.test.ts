@@ -46,6 +46,7 @@ import {
 const RUN_ID = "wf-policy-run";
 
 interface FakeBootstrapCall {
+  readonly env: NodeJS.ProcessEnv | undefined;
   readonly argv: readonly string[] | undefined;
   readonly registry: PermissionModeRegistry;
   readonly conversationId: string | undefined;
@@ -115,6 +116,7 @@ const fakeBootstrap: AgenCBootstrapFunction = async (options) => {
   const eventLog = new EventLog();
   eventLog.subscribe((event) => bootstrapEvents.push(event));
   bootstrapCalls.push({
+    env: options.env,
     argv,
     registry,
     conversationId: options.conversationId,
@@ -519,5 +521,22 @@ describe("child usage rollup from reconciled admissions", () => {
     } finally {
       kernel.close();
     }
+  });
+});
+
+
+describe("workflow bootstrap credential snapshot", () => {
+  it("uses fresh keys, clears stale keys, isolates runs and reuses authority on in-process resume", async () => {
+    const seams = makeSeams(undefined, { DEEPSEEK_API_KEY: "stale-key", OPENAI_API_KEY: "other-key" });
+    const first = await seams.journal.open("wf-fresh", { repoPath: cwd, envOverrides: { DEEPSEEK_API_KEY: "fresh-goal-key-sentinel" } });
+    await seams.journal.open("wf-empty", { repoPath: cwd, envOverrides: {} });
+    expect(bootstrapCalls[0].env?.DEEPSEEK_API_KEY).toBe("fresh-goal-key-sentinel");
+    expect(bootstrapCalls[0].env?.OPENAI_API_KEY).toBeUndefined();
+    expect(bootstrapCalls[1].env?.DEEPSEEK_API_KEY).toBeUndefined();
+    await seams.journal.open("wf-fresh"); expect(bootstrapCalls).toHaveLength(2);
+    expect(JSON.stringify(bootstrapEvents)).not.toContain("fresh-goal-key-sentinel");
+    await first.close(); await seams.close();
+    const restarted = makeSeams(); await restarted.journal.open("wf-fresh");
+    expect(bootstrapCalls[2].env?.DEEPSEEK_API_KEY).toBeUndefined(); await restarted.close();
   });
 });

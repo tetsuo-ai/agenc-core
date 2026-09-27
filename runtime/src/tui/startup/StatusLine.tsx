@@ -63,7 +63,7 @@ function buildStatusLineCommandInput(exceeds200kTokens: boolean, settings: Reado
     },
     cost: {
       total_cost_usd: sessionUsage === undefined ? getTotalCost() : sessionUsage?.costUsd ?? 0,
-      ...(sessionUsage !== undefined ? { has_unknown_cost: sessionUsage?.hasUnknownCost ?? true } : {}),
+      ...(sessionUsage !== undefined ? { has_unknown_cost: sessionUsage?.hasUnknownCost ?? true, cost_estimated: sessionUsage?.costEstimated ?? false } : {}),
       total_duration_ms: getTotalDuration(),
       total_api_duration_ms: getTotalAPIDuration(),
       total_lines_added: getTotalLinesAdded(),

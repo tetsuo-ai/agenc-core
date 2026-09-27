@@ -196,7 +196,24 @@ in `runtime/src/workflow/verification.ts`). The verifier's brief also says
 that the workflow already ran each command, and gives the exit code it
 recorded. Before this rule, the verifier saw only `- verify: exit 0`. It ran
 `verify` as a command, got 127, and failed changes whose `npm test` had
-passed. AgenC Desktop starts every Goal with the label `verify`.
+passed. AgenC Desktop names a client check by its script.
+
+When intake supplies no commands, planning selects the repository's real checks,
+or the checks a new project will create. Its final message contains one fenced
+`agenc-verification` block with a JSON array of scripts. Core validates that block
+before committing the plan and stores the frozen pairs in the plan effect's
+`requiredVerification` evidence. Invalid or placeholder lists fail planning,
+never proceed to implementation. Client checks remain fixed at intake and take
+precedence over any planner suggestions.
+
+The intake spec and digest remain unchanged. Resume reads the committed plan
+checks, or adopts and validates the durable child's message if the plan commit
+was interrupted. Implementation retries cannot replace the checks. Command
+records and the verifier's verdict still independently gate completion. The
+existing child plan message exposes the selected checks to Desktop; no wire
+schema or protocol version changes are needed. Desktop renders the block under
+Planned verification and uses Core's terminal reason to distinguish a failed
+command from successful commands followed by PARTIAL, FAIL or a missing verdict.
 
 The reviewer is invoked once, has no tools, and its reply is taken as final.
 The prompt says so (`buildReviewerMessages` in

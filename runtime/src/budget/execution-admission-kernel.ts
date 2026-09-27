@@ -1699,6 +1699,7 @@ function requestFor(
     ...(input.approvalRequired !== undefined
       ? { approvalRequired: input.approvalRequired }
       : {}),
+    ...(input.costEstimated === true ? { costEstimated: true } : {}),
     ...(input.denialReason !== undefined
       ? { denialReason: input.denialReason }
       : {}),

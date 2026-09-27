@@ -2999,6 +2999,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         totalTokens: finiteNumber(usage.totalTokens),
         costUsd: finiteNumber(usage.costUsd),
         costKnown: usage.costKnown,
+        ...(usage.costEstimated ? { costEstimated: true } : {}),
       },
       cacheStats: cache,
       ...(breakdown !== undefined ? { contextBreakdown: breakdown } : {}),

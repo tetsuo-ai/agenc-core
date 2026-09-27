@@ -41,10 +41,11 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.20 adds the optional exact-attempt precondition (`attempt`) to
  * `session.resolveToolCall`: the review settles only that recorded attempt,
  * and a mismatch is refused with `EFFECT_REVIEW_STALE`.
+ * 1.21 adds an ephemeral allowlisted envOverrides snapshot to run.start.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.20.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.21.0" as const;
 
 export const AGENC_DAEMON_METHODS = [
     "remote.capabilities",
@@ -750,6 +751,10 @@ export interface RunStartVerificationCommand extends JsonObject {
 }
 
 export interface RunStartParams extends JsonObject {
+    /** Ephemeral client credential snapshot. Never persisted in the workflow spec. */
+    readonly envOverrides?: {
+        readonly [key: string]: string;
+    };
     /** The engineering goal / issue text driving the change. */
     readonly goal: string;
     /** Absolute directory inside the target git repository (daemon cwd default). */
@@ -1495,6 +1500,7 @@ export interface RunAdmissionSummary extends JsonObject {
     readonly reservedCostUsd: number;
     readonly actualTokens: number;
     readonly actualCostUsd: number;
+    readonly costEstimated?: boolean;
     readonly unpricedActualReservationCount: number;
     readonly allocationCount: number;
     readonly usedTokens: number;
@@ -1587,8 +1593,10 @@ export interface RunUsageTotals extends JsonObject {
     readonly outputTokens: number;
     readonly totalTokens: number;
     readonly costUsd: number;
-    /** False when historical coverage or model pricing is incomplete. */
+    /** False when cost accounting does not cover the reported usage. */
     readonly costKnown?: boolean;
+    /** True when cost includes conservative fallback rates. */
+    readonly costEstimated?: boolean;
 }
 
 /** Terminal output committed by M4 and readable after disconnect/restart. */
@@ -2052,8 +2060,9 @@ export interface SessionSnapshotResult extends JsonObject {
         readonly outputTokens: number;
         readonly totalTokens: number;
         readonly costUsd: number;
-        /** False when historical coverage or model pricing is incomplete. */
+        /** False when cost accounting does not cover the reported usage. */
         readonly costKnown?: boolean;
+        readonly costEstimated?: boolean;
     };
     /** Cumulative cache metrics across API calls this session. */
     readonly cacheStats: {
@@ -2239,6 +2248,7 @@ export interface SessionTranscriptV2Event extends JsonObject {
         readonly outputTokens?: number;
         readonly modelCalls?: number;
         readonly hasUnknownCost?: boolean;
+        readonly costEstimated?: boolean;
         readonly models?: readonly {
             readonly model: string;
             readonly provider?: string;
@@ -2249,6 +2259,7 @@ export interface SessionTranscriptV2Event extends JsonObject {
             readonly totalTokens: number;
             readonly modelCalls: number;
             readonly hasUnknownCost: boolean;
+            readonly costEstimated?: boolean;
         }[];
         readonly agents?: readonly {
             readonly runId: string;
@@ -2259,6 +2270,7 @@ export interface SessionTranscriptV2Event extends JsonObject {
             readonly totalTokens: number;
             readonly modelCalls: number;
             readonly hasUnknownCost: boolean;
+            readonly costEstimated?: boolean;
         }[];
         readonly promptTokens?: number;
         readonly completionTokens?: number;

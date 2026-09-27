@@ -242,6 +242,14 @@ describe.skipIf(process.platform === "win32")("daemon-owned status-line executor
     expect(await executeSessionStatusLine(owner.session)).toEqual({ status: "error", reason: "output_too_large" });
   });
 
+  test("forwards estimated provenance alongside complete accounting", async () => {
+    const owner = await fixture({ command: "cat" });
+    const usage = owner.admission.getUsageSummary();
+    vi.spyOn(owner.admission, "getUsageSummary").mockReturnValue({ ...usage, costUsd: 2.5, hasUnknownCost: false, costEstimated: true });
+    expect(JSON.parse((await executeSessionStatusLine(owner.session)).text!).cost)
+      .toMatchObject({ total_cost_usd: 2.5, has_unknown_cost: false, cost_estimated: true });
+  });
+
   test("restores available context, follows live usage, and preserves approved additional directories", async () => {
     const owner = await fixture({ command: "cat" });
     owner.session.state.unsafePeek().initialTokenUsage = Object.assign({ promptTokens: 200_001, completionTokens: 10, cachedInputTokens: 1_000 }, { model: "test-model", provider: "grok" });

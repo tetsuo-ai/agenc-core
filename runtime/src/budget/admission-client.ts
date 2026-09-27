@@ -28,6 +28,7 @@ export interface AdmissionClientScope {
 }
 
 export interface AdmissionAcquireInput {
+  readonly costEstimated?: boolean;
   readonly stepId: string;
   readonly kind: AdmissionKind;
   readonly sessionId?: string;

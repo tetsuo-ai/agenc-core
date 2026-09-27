@@ -198,6 +198,8 @@ export interface WorkflowStepEvidence {
   readonly attempt?: number;
   readonly spec?: unknown;
   readonly specDigest?: string;
+  /** Frozen at the successful plan commit when intake supplied no commands. */
+  readonly requiredVerification?: readonly { readonly label: string; readonly script: string }[];
   readonly worktree?: {
     readonly slug: string;
     readonly branch: string;
@@ -209,6 +211,8 @@ export interface WorkflowStepEvidence {
   readonly command?: VerifiedChangeCommandRecord;
   readonly excerpts?: { readonly stdout: string; readonly stderr: string };
   readonly verdict?: string;
+  /** Captured before bounding the verifier's retained report. */
+  readonly explicitVerdict?: boolean;
   readonly review?: WorkflowReviewEvidence;
   readonly finalize?: WorkflowFinalizeEvidence;
   readonly artifacts?: readonly RunArtifactPointer[];

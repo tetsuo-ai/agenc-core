@@ -1,3 +1,5 @@
+import { runAdmittedModelCall } from "../../src/budget/admitted-model-call.js";
+import type { LLMProvider } from "../../src/llm/types.js";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -901,7 +903,121 @@ describe("verifier prompt", () => {
   });
 });
 
+describe("planner-selected verification", () => {
+  const scripts = ["npm test", "npm run build && node dist/cli.js --help"];
+  const plan = "Build a small CLI with tests.\n```agenc-verification\n" + JSON.stringify(scripts) + "\n```";
+  const outcome = { status: "completed" as const, finalMessage: plan, usage: DEFAULT_USAGE };
+
+  it("freezes and runs planned checks when intake has none", async () => {
+    harness.spawner.queue("plan", outcome);
+    await runToTerminal(harness, { requiredVerification: [] });
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("completed");
+    expect(harness.commands.executed).toEqual(scripts);
+    expect(harness.repo.getEffect(RUN_ID, "workflow.plan")?.evidence).toMatchObject({
+      requiredVerification: scripts.map(script => ({ label: script, script })),
+    });
+    expect(harness.spawner.spawns[0]!.prompt).toContain("Inspect the repository");
+    expect(harness.spawner.spawns[1]!.prompt).toContain("`npm test`");
+  });
+
+  it("keeps client commands even if the planner proposes other checks", async () => {
+    harness.spawner.queue("plan", outcome);
+    await runToTerminal(harness, { requiredVerification: [{ label: "existing", script: "make test" }] });
+    expect(harness.commands.executed).toEqual(["make test"]);
+    expect(harness.repo.getEffect(RUN_ID, "workflow.plan")?.evidence).not.toHaveProperty("requiredVerification");
+  });
+
+  it.each(["planner", "client"])("fails when the shared command runner denies %s checks", async (source) => {
+    harness.spawner.queue("plan", outcome);
+    const run = vi.spyOn(harness.commands, "run").mockRejectedValue(new WorkflowApprovalFailure({
+      decision: "denied", source: "permission-evaluator", reason: "exec_command denied",
+    }));
+    await runToTerminal(harness, {
+      requiredVerification: source === "planner" ? [] : scripts.map(script => ({ label: script, script })),
+      unattendedDeny: ["exec_command"],
+      maxImplementAttempts: 1,
+    });
+    expect(run.mock.calls.map(([input]) => input.script)).toEqual([scripts[0]]);
+    expect(harness.commands.executed).toEqual([]);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", stopReason: "policy_denied",
+    });
+    expect(harness.repo.getEffect(RUN_ID, "workflow.verify.cmd.1")?.evidence).toMatchObject({
+      failure: { reason: "policy_denied", message: expect.stringContaining("exec_command denied") },
+    });
+  });
+
+  it.each(["true", ":", "exit 0", "echo ok", "bash -c 'true'"])("rejects a planned placeholder: %s", async script => {
+    harness.spawner.respond = ({ kind }) => kind === "plan" ? {
+      ...outcome, finalMessage: "Plan\n```agenc-verification\n" + JSON.stringify([script]) + "\n```",
+    } : undefined;
+    await runToTerminal(harness, { requiredVerification: [] });
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("failed");
+    expect(harness.spawner.spawns.every(spawn => spawn.kind === "plan")).toBe(true);
+    expect(harness.commands.executed).toEqual([]);
+  });
+
+  it("adopts the durable plan after a crash and never replaces its checks", async () => {
+    harness.spawner.queue("plan", outcome);
+    armFailpoint("after_spawn_before_effect_result");
+    await harness.controller.start(startParams(harness, { requiredVerification: [] }));
+    await expect(harness.controller.awaitRun(RUN_ID)).rejects.toThrow(/failpoint/);
+    disarmFailpoint();
+    recordWorkflowChildTerminal(harness.repo, `${RUN_ID}:plan#1`, outcome);
+    await harness.controller.resumeOpenWorkflows();
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("completed");
+    expect(harness.commands.executed).toEqual(scripts);
+    expect(harness.spawner.spawns.filter(spawn => spawn.kind === "plan")).toHaveLength(1);
+  });
+
+  it.each(["PARTIAL", "FAIL"])("still requires verifier PASS after planned commands pass: %s", async verdict => {
+    harness.spawner.queue("plan", outcome);
+    harness.spawner.respond = ({ kind }) => kind === "verify_agent" ? {
+      ...outcome, finalMessage: `VERDICT: ${verdict}`,
+    } : undefined;
+    await runToTerminal(harness, { requiredVerification: [] });
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "failed", stopReason: "verification_failed" });
+    expect(harness.commands.executed).toEqual([...scripts, ...scripts]);
+  });
+});
+
 describe("a Goal whose check is npm test", () => {
+  it.each(["true", ":", "exit 0", "echo ok", "true && echo ok", "# no checks"])(
+    "rejects placeholder verification before intake: %s", async (script) => {
+      await expect(harness.controller.start(startParams(harness, {
+        requiredVerification: [{ label: "check", script }],
+      }))).rejects.toThrow("required verification must test the goal");
+      expect(harness.repo.listEffects(RUN_ID)).toEqual([]);
+      expect(harness.spawner.spawns).toEqual([]);
+      expect(harness.commands.executed).toEqual([]);
+    },
+  );
+
+  it("gives every stage the greenfield interpretation and real verification requirements", async () => {
+    const plan = "Assumption: together means build a small playable browser game. Create its source and smoke test.";
+    harness.spawner.queue("plan", { status: "completed", finalMessage: plan, usage: DEFAULT_USAGE });
+    await runToTerminal(harness, {
+      goal: "use deepseek agents and build toguedet something cool",
+      requiredVerification: [{ label: "smoke", script: "node --test test/game.test.mjs" }],
+    });
+    const [planner, implementer, verifier] = harness.spawner.spawns;
+    for (const stage of [planner, implementer]) {
+      expect(stage.prompt).toContain("choose a reasonable interpretation, state it as an assumption, and proceed");
+      expect(stage.prompt).toContain("only when no reasonable interpretation exists");
+      expect(stage.prompt).toContain("create a small, complete, runnable project");
+      expect(stage.prompt).toContain("Do not weaken, skip, or replace required verification");
+      expect(stage.prompt).toContain("`node --test test/game.test.mjs`");
+    }
+    expect(planner.prompt).toContain("Do NOT modify any files");
+    expect(implementer.prompt).toContain("correct that plan and implement the goal");
+    expect(implementer.prompt).toContain(plan);
+    expect(verifier.prompt).toContain(plan);
+    expect(verifier.prompt).toContain("assess independently against the goal");
+    expect(verifier.prompt).toContain("an empty workspace or a missing implementation is FAIL");
+    expect(harness.commands.executed).toEqual(["node --test test/game.test.mjs"]);
+  });
+
   it("passes verify under a verifier that runs exactly the commands its brief names", async () => {
     // Replays Goal run wf-8b719195 without a model. AgenC Desktop sent
     // `{ label: "verify", script: "npm test" }`; the project defines `npm test`
@@ -1157,6 +1273,62 @@ describe("VerifiedChangeWorkflowController — happy path", () => {
 });
 
 describe("VerifiedChangeWorkflowController — stop reasons", () => {
+  it.each(["PARTIAL", "FAIL", "missing"])(
+    "does not describe a passing command as failed when the verdict is %s", async (verdict) => {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        harness.spawner.queue("verify_agent", {
+          status: "completed",
+          finalMessage: verdict === "missing" ? "No verdict returned" : `VERDICT: ${verdict}`,
+          usage: DEFAULT_USAGE,
+        });
+      }
+      await runToTerminal(harness);
+      const terminal = harness.repo.getCurrentTerminalResult(RUN_ID)!;
+      expect(terminal).toMatchObject({ status: "failed", stopReason: "verification_failed" });
+      expect(terminal.finalMessage).toContain("verification commands passed, but the verifier");
+      expect(terminal.finalMessage).not.toContain("command failed");
+      if (verdict === "PARTIAL") expect(terminal.finalMessage).toContain("partial or incomplete");
+      if (verdict === "missing") expect(terminal.finalMessage).toContain("did not return a verdict");
+      expect(harness.reviewer.invocations).toEqual([]);
+      expect(harness.spawner.spawns.filter((s) => s.kind === "implement")).toHaveLength(2);
+    },
+  );
+
+  it.each(["fresh", "resume", "adopt"])("retains an explicit FAIL beyond the report limit (%s)", async (mode) => {
+    const outcome: WorkflowChildOutcome = {
+      status: "completed",
+      finalMessage: "Detailed verification evidence.\n".repeat(1000) + "VERDICT: FAIL",
+      usage: DEFAULT_USAGE,
+    };
+    harness.spawner.queue("verify_agent", outcome);
+    if (mode !== "fresh") armFailpoint(mode === "adopt" ? "before_verify_commit" : "after_verify_commit");
+    await harness.controller.start(startParams(harness, { maxImplementAttempts: 1 }));
+    if (mode !== "fresh") {
+      await expect(harness.controller.awaitRun(RUN_ID)).rejects.toThrow(/failpoint/);
+      disarmFailpoint();
+      if (mode === "adopt") recordWorkflowChildTerminal(harness.repo, `${RUN_ID}:verify-agent#1`, outcome);
+      await harness.controller.resumeOpenWorkflows();
+    }
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", stopReason: "verification_failed",
+      finalMessage: expect.stringContaining("verifier judged the result incorrect"),
+    });
+    expect(harness.repo.getEffect(RUN_ID, "workflow.verify.agent")?.evidence).toMatchObject({
+      verdict: "FAIL", explicitVerdict: true,
+      child: { finalMessage: expect.not.stringContaining("VERDICT: FAIL") },
+    });
+  });
+
+  it("reports a timed-out command even if its exit code and the verdict pass", async () => {
+    harness.commands.byScript.set("run-tests", { exitCode: 0, timedOut: true });
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", stopReason: "verification_failed",
+      finalMessage: expect.stringContaining("A required verification command failed or timed out"),
+    });
+  });
+
   it("verification_failed after the bounded re-implement budget is exhausted", async () => {
     harness.commands.byScript.set("run-tests", { exitCode: 1 });
     await runToTerminal(harness);
@@ -1164,6 +1336,7 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
     expect(terminal).toMatchObject({
       status: "failed",
       stopReason: "verification_failed",
+      finalMessage: expect.stringContaining("A required verification command failed or timed out"),
     });
     // Two implement attempts, two verify attempts, all durably recorded.
     const stepIds = harness.repo.listEffects(RUN_ID).map((e) => e.stepId);
@@ -1279,6 +1452,47 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
       status: "failed",
       stopReason: "approval_required",
     });
+  });
+
+  it("completes a Goal with an unpriced provider fixture and persists estimated spend", async () => {
+    let client!: ExecutionAdmissionClient;
+    const project = makeHarness({ admission: () => client });
+    const kernel = new ExecutionAdmissionKernel({ agencHome: project.home });
+    try {
+      client = kernel.bindClient({ cwd: project.cwd, scope: { runId: RUN_ID, sessionId: RUN_ID,
+        autonomous: false, maxCostUsd: 2, hasHardCostCap: true } });
+      const session = { conversationId: RUN_ID, services: { executionAdmission: client, admissionRequired: true },
+        abortTerminal: vi.fn() } as unknown as Session;
+      const provider = { name: "qwen-token-plan", getExecutionProfile: async () => ({ usageReporting: "authoritative", supportsMaxOutputTokens: true }) } as unknown as LLMProvider;
+      let settledUsage = client.getUsageSummary?.();
+      client.subscribeUsage?.(usage => { settledUsage = usage; });
+      const spawn = project.spawner.spawn.bind(project.spawner);
+      vi.spyOn(project.spawner, "spawn").mockImplementation(async input => {
+        const response = await runAdmittedModelCall({ session, provider, model: "qwen3.8-max", providerName: "qwen-token-plan",
+          messages: [{ role: "user", content: input.prompt }], options: { maxOutputTokens: 128 },
+          stepId: `${input.kind}:fixture-model-call`, invoke: async () => ({ model: "qwen3.8-max", content: "fixture answer",
+            toolCalls: [], finishReason: "stop", usage: { promptTokens: 10, completionTokens: 10, totalTokens: 20,
+              availability: "reported", provenance: "provider" } }) });
+        expect(response.content).toBe("fixture answer");
+        return spawn(input);
+      });
+      await runToTerminal(project, { provider: "qwen-token-plan", model: "qwen3.8-max", maxCostUsd: 2 });
+      expect(project.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "completed" });
+      expect(project.spawner.spawn).toHaveBeenCalledTimes(3);
+      expect(settledUsage).toMatchObject({ costEstimated: true, hasUnknownCost: false });
+      expect(settledUsage?.costUsd).toBeGreaterThan(0);
+    } finally { kernel.close(); project.cleanup(); }
+  });
+
+  it.each([
+    ["default_deny", "denied", "approval_required"],
+    ["resolver", "timed_out", "approval_required"],
+    ["resolver", "denied", "policy_denied"],
+  ])("keeps command approval refusal %s/%s terminal without implementation retries", async (source, decision, stopReason) => {
+    vi.spyOn(harness.commands, "run").mockRejectedValue(new WorkflowApprovalFailure({ source, decision }));
+    await runToTerminal(harness);
+    expect(harness.commands.run).toHaveBeenCalledOnce();
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "failed", stopReason });
   });
 
   it("evidence_invalid when the record fails mechanical self-validation", async () => {
@@ -2043,6 +2257,14 @@ describe("VerifiedChangeWorkflowController — runs with no live pipeline", () =
     disarmFailpoint();
     expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
   }
+
+  it("terminalizes recovery without credentials instead of hanging", async () => {
+    await interruptBeforeWorktree();
+    harness.hooks.failJournalOpenWith = new Error("deepseek authentication failed (HTTP 401): deepseek provider requires credentials. Set DEEPSEEK_API_KEY.");
+    expect(await harness.controller.resumeOpenWorkflows()).toEqual([]);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "failed", finalMessage: expect.stringContaining("deepseek provider requires credentials. Set DEEPSEEK_API_KEY.") });
+    expect(await harness.controller.resumeOpenWorkflows()).toEqual([]);
+  });
 
   it("closes a run whose resume fails as failed instead of leaving it running", async () => {
     await interruptBeforeWorktree();

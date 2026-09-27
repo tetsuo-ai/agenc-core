@@ -284,6 +284,7 @@ interface UsageAggregateRow {
   readonly held_cost_nanos: number;
   readonly model_calls: number;
   readonly unknown_count: number;
+  readonly estimated_count: number;
 }
 
 function sumUsageRows(rows: readonly UsageAggregateRow[]): AdmissionUsageTotals {
@@ -311,6 +312,7 @@ function sumUsageRows(rows: readonly UsageAggregateRow[]): AdmissionUsageTotals 
     totalTokens,
     modelCalls,
     hasUnknownCost,
+    ...(rows.some(row => row.estimated_count > 0) ? { costEstimated: true } : {}),
   };
 }
 
@@ -1586,7 +1588,8 @@ export class ExecutionAdmissionRepository {
                AND reservation.actual_tokens IS NOT NULL THEN 1 ELSE 0 END) AS model_calls,
              SUM(CASE WHEN reservation.status = 'held_unknown' OR
                (reservation.status IN ('reconciled', 'provider_overrun') AND reservation.actual_cost_nanos IS NULL)
-               THEN 1 ELSE 0 END) AS unknown_count
+               THEN 1 ELSE 0 END) AS unknown_count,
+             SUM(CASE WHEN reservation.resolution_reason = 'estimated_model_price' THEN 1 ELSE 0 END) AS estimated_count
            FROM execution_admission_reservations AS reservation
            JOIN execution_admission_reservation_allocations AS allocation
              ON allocation.reservation_id = reservation.reservation_id AND allocation.scope_key = ?
@@ -2127,7 +2130,7 @@ export class ExecutionAdmissionRepository {
         finalStatus = overrun ? "provider_overrun" : "reconciled";
         event = overrun ? "provider_overrun" : "reconciled";
         reason =
-          input.reason ?? (overrun ? "provider_reported_overrun" : undefined);
+          input.reason ?? (input.usage.costEstimated ? "estimated_model_price" : overrun ? "provider_reported_overrun" : undefined);
         charge = {
           tokens: actualTokens,
           // Unknown provider cost is never treated as free. An explicit or
@@ -2210,9 +2213,9 @@ export class ExecutionAdmissionRepository {
       reservedCostNanos: reservation.reserved_cost_nanos,
       ...(actualTokens !== null ? { actualTokens } : {}),
       ...(actualCostNanos !== null ? { actualCostNanos } : {}),
-      ...(providerRequestId !== undefined
-        ? { details: { providerRequestId } }
-        : {}),
+      details: { ...(providerRequestId !== undefined ? { providerRequestId } : {}),
+        ...((input.kind === "reported" || input.kind === "provider_overrun") && input.usage.costEstimated ? { costEstimated: true } : {}),
+      },
     });
 
     if (overrun) {
@@ -2916,7 +2919,7 @@ export class ExecutionAdmissionRepository {
         input.reservedCostNanos ?? null,
         input.actualTokens ?? null,
         input.actualCostNanos ?? null,
-        JSON.stringify(input.details ?? {}),
+        JSON.stringify({ ...(input.request.costEstimated ? { costEstimated: true } : {}), ...input.details }),
       );
     const sequence = Number(result.lastInsertRowid);
     const row = this.#driver
@@ -3130,6 +3133,7 @@ function normalizeAdmissionRequest(
     sessionId,
     ...(budgetIdentity !== undefined ? { budgetIdentity } : {}),
     autonomous: request.autonomous,
+    ...(request.costEstimated === true ? { costEstimated: true } : {}),
     ...(parentScopeId !== undefined ? { parentScopeId } : {}),
     ...(deadlineAt !== undefined ? { deadlineAt } : {}),
     ...(budgetScopes !== undefined ? { budgetScopes } : {}),
