@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createWorkflowSessionSeams, type WorkflowSessionSeams } from "../../src/app-server/workflow/session-adapters.js";
 import type { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import type { WorkflowSpec } from "../../src/contracts/run-contracts.js";
+import { applyUnattendedPermissionPolicyToContext } from "../../src/permissions/unattended-policy.js";
 import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
 import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
 import { EventLog } from "../../src/session/event-log.js";
@@ -22,6 +23,7 @@ let cwd: string;
 let seams: WorkflowSessionSeams;
 let driver: StateSqliteDriver;
 let handle: WorktreeHandle;
+let permissions: PermissionModeRegistry;
 
 function alive(pid: number): boolean {
   try {
@@ -52,7 +54,7 @@ beforeEach(async () => {
   // Explicit host-process authority for this owned fixture only; production
   // still obtains its prepared command from the session's existing broker.
   const broker = new SandboxExecutionBroker({ mode: "danger_full_access", cwd });
-  const permissions = new PermissionModeRegistry({ mode: "default", additionalWorkingDirectories: new Map(),
+  permissions = new PermissionModeRegistry({ mode: "bypassPermissions", additionalWorkingDirectories: new Map(),
     alwaysAllowRules: {}, alwaysDenyRules: {}, alwaysAskRules: {}, isBypassPermissionsModeAvailable: true });
   const events = new EventLog();
   seams = createWorkflowSessionSeams({ agencHome: home, env: process.env, argv: [process.execPath, "agenc"],
@@ -70,6 +72,64 @@ afterEach(async () => {
   await seams?.close();
   driver?.close();
   rmSync(scratch, { recursive: true, force: true });
+});
+
+describe("workflow command permissions before broker execution", () => {
+  it.each(["exec_command", "system.bash"])("honors explicit %s denial even in bypass mode", async (tool) => {
+    await permissions.update(applyUnattendedPermissionPolicyToContext(permissions.current(), {
+      denylist: [tool],
+    }));
+    const prepare = vi.spyOn(SandboxExecutionBroker.prototype, "prepareSpawn");
+    try {
+      await expect(seams.commands.run({ script: "npm test", cwd })).rejects.toMatchObject({
+        name: "WorkflowApprovalFailure", stopReason: "policy_denied",
+      });
+      expect(prepare).not.toHaveBeenCalled();
+    } finally {
+      prepare.mockRestore();
+    }
+  });
+
+  it("requires shell approval before running unapproved commands", async () => {
+    await permissions.update({ ...permissions.current(), mode: "default" });
+    const prepare = vi.spyOn(SandboxExecutionBroker.prototype, "prepareSpawn");
+    try {
+      await expect(seams.commands.run({ script: "npm test", cwd })).rejects.toMatchObject({
+        name: "WorkflowApprovalFailure", stopReason: "approval_required",
+      });
+      expect(prepare).not.toHaveBeenCalled();
+    } finally {
+      prepare.mockRestore();
+    }
+  });
+
+  it("honors shell content denials even in bypass mode", async () => {
+    await permissions.update({ ...permissions.current(),
+      alwaysDenyRules: { session: ["system.bash(npm test)"] },
+    });
+    const prepare = vi.spyOn(SandboxExecutionBroker.prototype, "prepareSpawn");
+    try {
+      await expect(seams.commands.run({ script: "npm test", cwd })).rejects.toMatchObject({
+        name: "WorkflowApprovalFailure", stopReason: "policy_denied",
+      });
+      expect(prepare).not.toHaveBeenCalled();
+    } finally {
+      prepare.mockRestore();
+    }
+  });
+
+  it("still enforces broker refusal after shell permission is allowed", async () => {
+    const prepare = vi.spyOn(SandboxExecutionBroker.prototype, "prepareSpawn")
+      .mockImplementation(() => { throw new Error("broker denied command"); });
+    try {
+      await expect(seams.commands.run({ script: "npm test", cwd })).rejects.toThrow("broker denied command");
+      expect(prepare).toHaveBeenCalledWith("child_agent", expect.objectContaining({
+        args: ["-lc", "npm test"], cwd,
+      }));
+    } finally {
+      prepare.mockRestore();
+    }
+  });
 });
 
 describe("workflow command cancellation through the real process supervisor", () => {

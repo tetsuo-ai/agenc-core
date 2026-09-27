@@ -542,6 +542,7 @@ interface RunContext {
     readonly testResult: RunArtifactPointer;
   };
   verifyVerdict?: string;
+  verifyExplicitVerdict?: boolean;
   /**
    * The verification agent's final message from the latest verify attempt,
    * read back from the committed child evidence so a resumed run carries it
@@ -1209,7 +1210,7 @@ export class VerifiedChangeWorkflowController {
             (ctx.verification?.allPassed === true
               ? ctx.verifyVerdict === "PARTIAL"
                 ? "The verification commands passed, but the verifier judged the result partial or incomplete"
-                : parseVerificationVerdict(ctx.verifyReport ?? "") === undefined
+                : ctx.verifyExplicitVerdict === false
                   ? "The verification commands passed, but the verifier did not return a verdict"
                   : "The verification commands passed, but the verifier judged the result incorrect"
               : "A required verification command failed or timed out") +
@@ -1311,6 +1312,7 @@ export class VerifiedChangeWorkflowController {
           return {
             // A missing/malformed verdict is a FAIL, never an implicit pass.
             verdict: verdict ?? "FAIL",
+            explicitVerdict: verdict !== undefined,
             artifacts: [testResult],
           };
         },
@@ -1346,6 +1348,8 @@ export class VerifiedChangeWorkflowController {
     const verdict = agent.evidence.verdict ?? "FAIL";
     ctx.verification = { records, allPassed, testResult };
     ctx.verifyVerdict = verdict;
+    ctx.verifyExplicitVerdict = agent.evidence.explicitVerdict ??
+      (parseVerificationVerdict(agent.evidence.child?.finalMessage ?? "") !== undefined);
     ctx.verifyReport = agent.evidence.child?.finalMessage;
     return allPassed && verdict === "PASS";
   }
@@ -1941,7 +1945,7 @@ export class VerifiedChangeWorkflowController {
         // Re-decorate verdict-bearing evidence from the adopted message,
         // preserving the durable terminal's usage rollup.
         const child = adopted.evidence.child;
-        if (input.decorate !== undefined && child !== undefined) {
+        if (child !== undefined) {
           return toEvidence({
             status: child.status as RunTerminalStatus,
             ...(child.stopReason !== undefined ? { stopReason: child.stopReason } : {}),
@@ -2093,8 +2097,9 @@ export class VerifiedChangeWorkflowController {
           childRunId,
           status: outcome.status,
           ...(outcome.stopReason !== undefined ? { stopReason: outcome.stopReason } : {}),
-          ...(truncate(outcome.finalMessage) !== undefined
-            ? { finalMessage: truncate(outcome.finalMessage)! }
+          // toEvidence decorates the full report before bounding it for commit.
+          ...(outcome.finalMessage !== null
+            ? { finalMessage: outcome.finalMessage }
             : {}),
           ...(outcome.usage !== null ? { usage: outcome.usage } : {}),
           ...(heldUnknown > 0 ? { usageHeldUnknown: heldUnknown } : {}),

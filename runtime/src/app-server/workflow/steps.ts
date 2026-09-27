@@ -211,6 +211,8 @@ export interface WorkflowStepEvidence {
   readonly command?: VerifiedChangeCommandRecord;
   readonly excerpts?: { readonly stdout: string; readonly stderr: string };
   readonly verdict?: string;
+  /** Captured before bounding the verifier's retained report. */
+  readonly explicitVerdict?: boolean;
   readonly review?: WorkflowReviewEvidence;
   readonly finalize?: WorkflowFinalizeEvidence;
   readonly artifacts?: readonly RunArtifactPointer[];

@@ -925,6 +925,27 @@ describe("planner-selected verification", () => {
     expect(harness.repo.getEffect(RUN_ID, "workflow.plan")?.evidence).not.toHaveProperty("requiredVerification");
   });
 
+  it.each(["planner", "client"])("fails when the shared command runner denies %s checks", async (source) => {
+    harness.spawner.queue("plan", outcome);
+    const run = vi.spyOn(harness.commands, "run").mockRejectedValue(new WorkflowApprovalFailure({
+      decision: "denied", source: "permission-evaluator", reason: "exec_command denied",
+    }));
+    await runToTerminal(harness, {
+      requiredVerification: source === "planner" ? [] : scripts.map(script => ({ label: script, script })),
+      unattendedDeny: ["exec_command"],
+      maxImplementAttempts: 1,
+    });
+    expect(run.mock.calls.map(([input]) => input.script)).toEqual(scripts);
+    expect(harness.commands.executed).toEqual([]);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", stopReason: "verification_failed",
+    });
+    expect(harness.repo.getEffect(RUN_ID, "workflow.verify.cmd.1")?.evidence).toMatchObject({
+      command: { exitCode: 127 },
+      excerpts: { stderr: expect.stringContaining("exec_command denied") },
+    });
+  });
+
   it.each(["true", ":", "exit 0", "echo ok", "bash -c 'true'"])("rejects a planned placeholder: %s", async script => {
     harness.spawner.respond = ({ kind }) => kind === "plan" ? {
       ...outcome, finalMessage: "Plan\n```agenc-verification\n" + JSON.stringify([script]) + "\n```",
@@ -1271,6 +1292,32 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
       expect(harness.spawner.spawns.filter((s) => s.kind === "implement")).toHaveLength(2);
     },
   );
+
+  it.each(["fresh", "resume", "adopt"])("retains an explicit FAIL beyond the report limit (%s)", async (mode) => {
+    const outcome: WorkflowChildOutcome = {
+      status: "completed",
+      finalMessage: "Detailed verification evidence.\n".repeat(1000) + "VERDICT: FAIL",
+      usage: DEFAULT_USAGE,
+    };
+    harness.spawner.queue("verify_agent", outcome);
+    if (mode !== "fresh") armFailpoint(mode === "adopt" ? "before_verify_commit" : "after_verify_commit");
+    await harness.controller.start(startParams(harness, { maxImplementAttempts: 1 }));
+    if (mode !== "fresh") {
+      await expect(harness.controller.awaitRun(RUN_ID)).rejects.toThrow(/failpoint/);
+      disarmFailpoint();
+      if (mode === "adopt") recordWorkflowChildTerminal(harness.repo, `${RUN_ID}:verify-agent#1`, outcome);
+      await harness.controller.resumeOpenWorkflows();
+    }
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", stopReason: "verification_failed",
+      finalMessage: expect.stringContaining("verifier judged the result incorrect"),
+    });
+    expect(harness.repo.getEffect(RUN_ID, "workflow.verify.agent")?.evidence).toMatchObject({
+      verdict: "FAIL", explicitVerdict: true,
+      child: { finalMessage: expect.not.stringContaining("VERDICT: FAIL") },
+    });
+  });
 
   it("reports a timed-out command even if its exit code and the verdict pass", async () => {
     harness.commands.byScript.set("run-tests", { exitCode: 0, timedOut: true });

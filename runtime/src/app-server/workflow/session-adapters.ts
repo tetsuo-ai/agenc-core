@@ -66,6 +66,9 @@ import {
 import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.js";
 import { runSupervisedProcess } from "../../utils/supervisedProcess.js";
 import { applyUnattendedPermissionPolicyToContext } from "../../permissions/unattended-policy.js";
+import { hasPermissionsToUseTool } from "../../permissions/evaluator.js";
+import { freshDenialTracking } from "../../permissions/denial-tracking.js";
+import { createBashTool } from "../../tools/system/bash.js";
 import type { PermissionModeRegistry } from "../../permissions/permission-mode.js";
 import type { PermissionMode } from "../../permissions/types.js";
 import type { StateRunDurabilityRepository } from "../../state/run-durability.js";
@@ -857,6 +860,35 @@ export function createWorkflowSessionSeams(
       input.signal?.throwIfAborted();
       const runId = worktreeRunIds.get(input.cwd);
       const entry = await requireEntry(runId, "commands.run");
+      // Client and planner checks share the shell permission gate and broker.
+      const session = entry.bootstrap.session;
+      const denialTracking = session.denialTracking ?? freshDenialTracking();
+      const permission = await hasPermissionsToUseTool(
+        createBashTool({ cwd: input.cwd }),
+        { command: input.script, cwd: input.cwd },
+        {
+          session,
+          signal: input.signal,
+          denialTracking,
+          executionSurface: "headless",
+          getAppState: () => {
+            const current = session.permissionModeRegistry.current();
+            return {
+              toolPermissionContext: current,
+              denialTracking,
+              autoModeActive: current.autoModeActive === true,
+            };
+          },
+        },
+      );
+      if (permission.behavior !== "allow") {
+        throw new WorkflowApprovalFailure({
+          decision: "denied",
+          source: permission.behavior === "ask" ? "default_deny" : "permission-evaluator",
+          reason: permission.message,
+        });
+      }
+      input.signal?.throwIfAborted();
       const broker = sessionBroker(entry, input.cwd);
       const command = broker.prepareSpawn("child_agent", {
         program: "bash",

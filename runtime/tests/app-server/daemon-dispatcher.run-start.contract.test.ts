@@ -315,7 +315,7 @@ class FakeSpawner implements WorkflowAgentSpawner {
       input.kind === "verify_agent"
         ? "checked everything\nVERDICT: PASS"
         : input.kind === "plan"
-          ? "PLAN: make the edit"
+          ? 'PLAN: make the edit\n```agenc-verification\n["npm test"]\n```'
           : "done";
     return {
       status: "completed",
@@ -596,23 +596,17 @@ describe("daemon dispatcher — run.start", () => {
     );
   });
 
-  it("surfaces the controller's at-least-one-verification policy faithfully", async () => {
-    const omitted = await dispatchRunStart(
-      startParams({ requiredVerification: undefined }),
-    );
-    expect(omitted.error).toMatchObject({
-      code: -32602,
-      data: { code: "INVALID_ARGUMENT" },
+  it.each([undefined, []])("accepts planner-selected verification when client checks are %s", async (requiredVerification) => {
+    const { result, error } = await dispatchRunStart(startParams({ requiredVerification }));
+    expect(error).toBeUndefined();
+    expect(result).toBeDefined();
+    await harness.controller.awaitRun(result!.runId);
+    expect(harness.repo.getCurrentTerminalResult(result!.runId)).toMatchObject({ status: "completed" });
+    expect(harness.repo.getEffect(result!.runId, "workflow.intake")?.evidence).toMatchObject({
+      spec: { requiredVerification: [] },
     });
-    expect(String((omitted.error as { message?: unknown }).message)).toContain(
-      "at least one verification command",
-    );
-    const empty = await dispatchRunStart(
-      startParams({ requiredVerification: [] }),
-    );
-    expect(empty.error).toMatchObject({
-      code: -32602,
-      data: { code: "INVALID_ARGUMENT" },
+    expect(harness.repo.getEffect(result!.runId, "workflow.plan")?.evidence).toMatchObject({
+      requiredVerification: [{ label: "npm test", script: "npm test" }],
     });
   });
 
