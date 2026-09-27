@@ -1059,7 +1059,17 @@ export function computeUsdCostWithResolution(
   const entry = estimated ? conservativeModelCost(registry) : selected;
   if (estimated) {
     const outputTokens = Math.max(usage.outputTokens, usage.reasoningOutputTokens);
-    const inputTokens = Math.max(usage.inputTokens,
+    // Anthropic and Bedrock report cache reads/writes separately from input.
+    // Preserve matched entries' cache semantics when only the call tier is unpriced.
+    const provider = normalizeProviderMetadataIdentity(usage.provider);
+    const separateCacheTokens = provider === "anthropic" || provider === "bedrock";
+    const cacheReadsIncluded = match?.entry.cachedInputIncludedInInputTokens ??
+      (match === null && !separateCacheTokens);
+    const cacheWritesIncluded = match?.entry.cacheCreationIncludedInInputTokens ??
+      (match === null && !separateCacheTokens);
+    const inputTokens = Math.max(usage.inputTokens +
+      (cacheReadsIncluded ? 0 : usage.cachedInputTokens) +
+      (cacheWritesIncluded ? 0 : usage.cacheCreationInputTokens),
       usage.cachedInputTokens + usage.cacheCreationInputTokens,
       usage.totalTokens - outputTokens);
     return { costUsd: inputTokens / 1000 * entry.inputUsdPer1K +

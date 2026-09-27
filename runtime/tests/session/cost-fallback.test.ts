@@ -1,6 +1,22 @@
 import { expect, test } from "vitest";
 import { conservativeModelCost, DEFAULT_MODEL_COSTS, computeUsdCostWithResolution, type ModelCostEntry } from "../../src/session/cost.js";
 
+test.each([
+  ["anthropic", 1000, 0, 0.36],
+  ["anthropic", 0, 1000, 0.36],
+  ["anthropic", 600, 400, 0.36],
+  ["bedrock", 600, 400, 0.36],
+  ["openai", 600, 400, 0.21],
+] as const)("normalizes unpriced %s cache reads %i and writes %i", (provider, cachedInputTokens, cacheCreationInputTokens, costUsd) => {
+  const result = computeUsdCostWithResolution({
+    provider, model: "unpriced-model", inputTokens: 1000, outputTokens: 100,
+    cachedInputTokens, cacheCreationInputTokens, reasoningOutputTokens: 0,
+    webSearchRequests: 0, totalTokens: 1100, turns: 1,
+  }, DEFAULT_MODEL_COSTS);
+  expect(result).toMatchObject({ known: false, costEstimated: true });
+  expect(result.costUsd).toBeCloseTo(costUsd, 9);
+});
+
 test("fallback dominates every token rate including nested fast and long-context tiers", () => {
   const fallback = conservativeModelCost();
   const check = (entry: ModelCostEntry) => {
