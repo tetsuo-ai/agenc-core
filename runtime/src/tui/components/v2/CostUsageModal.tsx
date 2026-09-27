@@ -94,7 +94,7 @@ export function CostUsageModal({
             <Row
               key={`model-${i}`}
               label={m.label}
-              value={formatUsdCost(m.costUsd)}
+              value={`${formatUsdCost(m.costUsd)}${m.costEstimated ? ' est.' : ''}`}
               detail={`${formatTokenCount(m.inputTokens)} in · ${formatTokenCount(m.outputTokens)} out`}
             />
           ))}
@@ -113,7 +113,7 @@ export function CostUsageModal({
               label={a.label}
               value={
                 a.costUsd !== undefined
-                  ? formatUsdCost(a.costUsd)
+                  ? `${formatUsdCost(a.costUsd)}${a.costEstimated ? ' est.' : ''}`
                   : a.estimatedCostUsd !== undefined
                   ? `${formatUsdCost(a.estimatedCostUsd)} est.`
                   : '—'

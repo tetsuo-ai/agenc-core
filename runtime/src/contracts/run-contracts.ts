@@ -192,6 +192,10 @@ export interface RunUsageTotals {
   readonly outputTokens: number;
   readonly totalTokens: number;
   readonly costUsd: number;
+  /** False when cost accounting does not cover the reported usage. */
+  readonly costKnown?: boolean;
+  /** True when cost includes conservative fallback rates. */
+  readonly costEstimated?: boolean;
 }
 
 // ---------------------------------------------------------------------------

@@ -26,6 +26,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { mergeDaemonClientEnvironment } from "../client-env-snapshot.js";
 import { WorkflowApprovalFailure } from "../../permissions/approval-failure.js";
 import { markWorkflowApprovalSession } from "../../permissions/approval-failure.js";
 import { observeChildApprovalSessions } from "../../agents/child-approval-context.js";
@@ -42,6 +43,7 @@ import {
 import { buildStructuredSessionBootstrapArgv } from "../session-bootstrap-argv.js";
 import { ensureAgentControl } from "../../bin/delegate-tool.js";
 import { delegate } from "../../agents/delegate.js";
+import { childProviderPolicy } from "../../agents/cross-provider.js";
 import type { AgentPath } from "../../agents/registry.js";
 import type { ExecutionAdmissionKernel } from "../../budget/execution-admission-kernel.js";
 import type { AuthBackend } from "../../auth/backend.js";
@@ -65,6 +67,13 @@ import {
 import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.js";
 import { runSupervisedProcess } from "../../utils/supervisedProcess.js";
 import { applyUnattendedPermissionPolicyToContext } from "../../permissions/unattended-policy.js";
+import { hasPermissionsToUseTool } from "../../permissions/evaluator.js";
+import { newDefaultTurnWithSubId } from "../../session/turn-context.js";
+import { createTurnDiffTracker, parseToolName } from "../../tools/context.js";
+import { requestApproval } from "../../permissions/guardian/arbiter.js";
+import { isApprovalAccepted } from "../../tools/orchestrator.js";
+import { freshDenialTracking } from "../../permissions/denial-tracking.js";
+import { createBashTool } from "../../tools/system/bash.js";
 import type { PermissionModeRegistry } from "../../permissions/permission-mode.js";
 import type { PermissionMode } from "../../permissions/types.js";
 import type { StateRunDurabilityRepository } from "../../state/run-durability.js";
@@ -109,6 +118,15 @@ import { parseWorkflowStepId } from "./steps.js";
 
 const COMMAND_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const SETTLED_CHILDREN_LIMIT = 64;
+
+export function workflowProviderInstructions(crossProviderEnabled: boolean): string {
+  if (crossProviderEnabled) return "";
+  return [
+    "Cross-provider sub-agents are off for this Goal run.",
+    "If the goal asks for another provider's agents (for example DeepSeek), say in one line: 'Cross-provider agents are off; continuing on the selected model.' Then continue the goal on the selected model.",
+    "Do not enable providers, change settings, or claim those agents were used. This provider limitation alone does not make an otherwise complete implementation partial or failed; still verify every functional requirement.",
+  ].join("\n");
+}
 
 /** Session-coupled seam failure with a stable, typed diagnostic. */
 export class WorkflowSessionSeamError extends Error {
@@ -647,7 +665,6 @@ export function createWorkflowSessionSeams(
     ...options.env,
     AGENC_HOME: options.agencHome,
   });
-  const runtimeOptions = resolveAgentRuntimeOptions(environment);
   const entries = new Map<string, Promise<RunSessionEntry>>();
   const readyEntries = new Map<Promise<RunSessionEntry>, RunSessionEntry>();
   const worktreeRunIds = new Map<string, string>();
@@ -656,6 +673,7 @@ export function createWorkflowSessionSeams(
     runId: string,
     repoPath?: string,
     policy?: WorkflowRunSessionPolicy,
+    envOverrides?: Readonly<Record<string, string>>,
   ): Promise<RunSessionEntry> => {
     const existing = entries.get(runId);
     if (existing !== undefined) return existing;
@@ -665,9 +683,14 @@ export function createWorkflowSessionSeams(
       // A2: the frozen spec's policy governs the run session — explicit on
       // start, re-resolved from the durable intake spec on resume.
       const resolvedPolicy = policy ?? options.resolveRunPolicy(runId);
+      // A supplied snapshot clears omitted credentials, exactly like agent.create.
+      // Recovery re-resolves daemon/auth-backend authority; keys are never durable.
+      const runEnvironment = envOverrides === undefined
+        ? environment
+        : mergeDaemonClientEnvironment(environment, envOverrides)!;
       const boot = await bootstrap({
-        env: environment,
-        runtimeOptions,
+        env: runEnvironment,
+        runtimeOptions: resolveAgentRuntimeOptions(runEnvironment),
         ...(options.authBackend !== undefined
           ? { authBackend: options.authBackend }
           : {}),
@@ -765,7 +788,7 @@ export function createWorkflowSessionSeams(
     currentPermissionMode: (runId) =>
       currentEntry(runId)?.bootstrap.session.permissionModeRegistry.current().mode,
     open: async (runId, context) => {
-      const entry = await openEntry(runId, context?.repoPath, context?.policy);
+      const entry = await openEntry(runId, context?.repoPath, context?.policy, context?.envOverrides);
       return new SessionWorkflowJournal(
         entry,
         () => closeEntry(runId),
@@ -847,6 +870,60 @@ export function createWorkflowSessionSeams(
       input.signal?.throwIfAborted();
       const runId = worktreeRunIds.get(input.cwd);
       const entry = await requireEntry(runId, "commands.run");
+      // Client and planner checks share the shell permission gate and broker.
+      const session = entry.bootstrap.session;
+      const denialTracking = session.denialTracking ?? freshDenialTracking();
+      const permission = await hasPermissionsToUseTool(
+        createBashTool({ cwd: input.cwd }),
+        { command: input.script, cwd: input.cwd },
+        {
+          session,
+          signal: input.signal,
+          denialTracking,
+          executionSurface: "headless",
+          getAppState: () => {
+            const current = session.permissionModeRegistry.current();
+            return {
+              toolPermissionContext: current,
+              denialTracking,
+              autoModeActive: current.autoModeActive === true,
+            };
+          },
+        },
+      );
+      if (permission.behavior === "deny") {
+        throw new WorkflowApprovalFailure({
+          decision: "denied",
+          source: "permission-evaluator",
+          reason: permission.message,
+        });
+      }
+      if (permission.behavior === "ask") {
+        const callId = `workflow-command:${randomUUID()}`;
+        const args = { command: input.script, cwd: input.cwd };
+        // Verification is a workflow effect, outside a model turn. Its unique
+        // approval occurrence lives until the effect is cancelled or settles.
+        const approval = await requestApproval({
+          ctx: {
+            invocation: { session, callId, toolName: parseToolName("system.bash"),
+              turn: { ...newDefaultTurnWithSubId(session, callId), cwd: input.cwd },
+              tracker: createTurnDiffTracker(), source: "direct",
+              payload: { kind: "function", arguments: JSON.stringify(args) } },
+            callId, turnId: callId, toolName: "system.bash", cwd: input.cwd,
+            command: ["bash", "-lc", input.script], retryReason: permission.message,
+          },
+          args,
+          resolver: session.services.approvalResolver,
+          ...(input.signal !== undefined ? { signal: input.signal } : {}),
+          getActiveTurnId: () => input.signal?.aborted ? null : callId,
+        });
+        input.signal?.throwIfAborted();
+        if (!isApprovalAccepted(approval.decision)) {
+          throw new WorkflowApprovalFailure({ decision: approval.decision.kind,
+            source: approval.source, ...(approval.reason ? { reason: approval.reason } : {}) });
+        }
+      }
+      input.signal?.throwIfAborted();
       const broker = sessionBroker(entry, input.cwd);
       const command = broker.prepareSpawn("child_agent", {
         program: "bash",
@@ -912,7 +989,9 @@ export function createWorkflowSessionSeams(
           parentPath: "/root" as AgentPath,
           control,
           registry,
-          taskPrompt: input.prompt,
+          taskPrompt: [input.prompt, workflowProviderInstructions(
+            childProviderPolicy(session).cross_provider_enabled === true,
+          )].filter(Boolean).join("\n\n"),
           ...(input.kind === "verify_agent" ? { role: "verification" } : {}),
           agentName: workflowChildAgentName(input.childRunId),
           ...(input.spec.model !== undefined

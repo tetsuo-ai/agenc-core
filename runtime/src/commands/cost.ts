@@ -43,12 +43,14 @@ export interface CostModelRow {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly costUsd: number;
+  readonly costEstimated?: boolean;
 }
 
 /** One per-agent row. Tokens are real; cost is an estimate (or unknown). */
 export interface CostAgentRow {
   readonly runId?: string;
   readonly costUsd?: number;
+  readonly costEstimated?: boolean;
   readonly label: string;
   readonly status: string;
   readonly tokenCount?: number;
@@ -61,9 +63,7 @@ export interface CostReport {
   /** Real session total cost (USD), when the cost sidecar is available. */
   readonly totalCostUsd?: number;
   /**
-   * True when {@link totalCostUsd}/{@link totalTokens} are not the sidecar's
-   * real session figures but a fallback aggregated from the per-agent estimates
-   * (e.g. a local/self-hosted model with no cost sidecar). Surfaced as "est."
+   * True when the total includes estimated pricing. Surfaced as "est."
    * so we never present an estimate as a measured number.
    */
   readonly totalIsEstimated?: boolean;
@@ -205,6 +205,7 @@ export function buildCostReport(ctx: SlashCommandContext): CostReport {
   if (isAdmissionUsageSummary(usage)) {
     return {
       totalCostUsd: usage.costUsd,
+      ...(usage.costEstimated ? { totalIsEstimated: true } : {}),
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       totalTokens: usage.totalTokens,
@@ -214,6 +215,7 @@ export function buildCostReport(ctx: SlashCommandContext): CostReport {
         inputTokens: model.inputTokens,
         outputTokens: model.outputTokens,
         costUsd: model.costUsd,
+        ...(model.costEstimated ? { costEstimated: true } : {}),
       })),
       agents: usage.agents.map((agent) => {
         const metadata = agents.find((row) => row.runId === agent.runId);
@@ -223,6 +225,7 @@ export function buildCostReport(ctx: SlashCommandContext): CostReport {
           status: metadata?.status ?? "recorded",
           tokenCount: agent.totalTokens,
           costUsd: agent.costUsd,
+          ...(agent.costEstimated ? { costEstimated: true } : {}),
           ...(metadata?.toolUseCount !== undefined ? { toolUseCount: metadata.toolUseCount } : {}),
         };
       }),
@@ -260,7 +263,7 @@ export function formatCostReport(report: CostReport): string {
   const lines: string[] = [];
   if (report.totalCostUsd !== undefined) {
     const unknown = report.hasUnknownCost ? " (some pricing unknown)" : "";
-    const est = report.totalIsEstimated ? " est. (from agent tokens)" : "";
+    const est = report.totalIsEstimated ? " est." : "";
     lines.push(
       `Session cost: ${formatUsdCost(report.totalCostUsd)}${est}${unknown}`,
     );
@@ -283,7 +286,7 @@ export function formatCostReport(report: CostReport): string {
     lines.push("Models:");
     for (const m of report.models) {
       lines.push(
-        `  ${m.label}: ${formatTokenCount(m.inputTokens)} in, ${formatTokenCount(m.outputTokens)} out (${formatUsdCost(m.costUsd)})`,
+        `  ${m.label}: ${formatTokenCount(m.inputTokens)} in, ${formatTokenCount(m.outputTokens)} out (${formatUsdCost(m.costUsd)}${m.costEstimated ? " est." : ""})`,
       );
     }
   }
@@ -294,7 +297,7 @@ export function formatCostReport(report: CostReport): string {
         a.tokenCount !== undefined ? `${formatTokenCount(a.tokenCount)} tokens` : "—";
       const spend =
         a.costUsd !== undefined
-          ? formatUsdCost(a.costUsd)
+          ? `${formatUsdCost(a.costUsd)}${a.costEstimated ? " est." : ""}`
           : a.estimatedCostUsd !== undefined
           ? `${formatUsdCost(a.estimatedCostUsd)} est.`
           : "—";

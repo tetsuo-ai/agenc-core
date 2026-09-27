@@ -169,7 +169,7 @@ function seedDurableRuns(): readonly number[] {
     });
     admissions.reconcile(claimed.lease.reservation.reservationId, {
       kind: "reported",
-      usage: { inputTokens: 10, outputTokens: 10, costUsd: 0.002 },
+      usage: { inputTokens: 10, outputTokens: 10, costUsd: 0.002, costEstimated: true },
     });
   }
   admissions.recordFallback(
@@ -235,6 +235,7 @@ describe("durable run inspection", () => {
         reservedCostUsd: 0.02,
         actualTokens: 40,
         actualCostUsd: 0.004,
+        costEstimated: true,
         allocationCount: 1,
         usedTokens: 40,
         heldTokens: 0,
@@ -525,7 +526,11 @@ describe("durable run inspection", () => {
     );
   });
 
-  it("returns the committed M4 terminal result after the original connection is gone", () => {
+  it.each([
+    {},
+    { costKnown: true, costEstimated: true },
+    { costKnown: false, costEstimated: false },
+  ])("returns the committed M4 terminal result with accounting flags %j after disconnect", (flags) => {
     seedDurableRuns();
     const durability = new StateRunDurabilityRepository(driver);
     durability.ensureInitialEpoch({ runId: "run-complete", openedAt: NOW });
@@ -543,6 +548,7 @@ describe("durable run inspection", () => {
           outputTokens: 12,
           totalTokens: 42,
           costUsd: 0.004,
+          ...flags,
         },
         lastSequence: 44,
         finishedAt: "2026-07-18T12:05:00.000Z",
@@ -570,6 +576,7 @@ describe("durable run inspection", () => {
           outputTokens: 12,
           totalTokens: 42,
           costUsd: 0.004,
+          ...flags,
         },
         lastSequence: 44,
       },

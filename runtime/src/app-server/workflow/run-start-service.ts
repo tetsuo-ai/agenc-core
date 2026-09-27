@@ -144,7 +144,7 @@ export class DaemonWorkflowStartService {
       // use their environment defaults; the run's own sessions bind their
       // scopes as they start.
       started = await runWithBootstrapSessionScope(() =>
-        this.#options.controller.start(startParams),
+        this.#options.controller.start(startParams, params.envOverrides),
       );
     } catch (error) {
       if (error instanceof TypeError) {

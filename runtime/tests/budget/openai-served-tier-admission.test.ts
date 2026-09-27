@@ -1,3 +1,4 @@
+import { conservativeModelCost } from "../../src/session/cost.js";
 // Under a hard USD cap the reservation has to bound what OpenAI can bill for
 // the call: Fast mode doubles every GPT-6 Sol rate, a prompt over 272K input
 // tokens moves the whole request to the long-context rates, and cache writes
@@ -73,7 +74,7 @@ async function admittedCall(params: {
   });
   const client = kernel.bindClient({
     cwd: workspace,
-    scope: { runId: "openai-tier", sessionId: "openai-tier", autonomous: false, maxCostUsd: 100 },
+    scope: { runId: "openai-tier", sessionId: "openai-tier", autonomous: false, maxCostUsd: 1000 },
   });
   const acquire = vi.spyOn(client, "acquire");
   const reconcile = vi.spyOn(client, "reconcile");
@@ -114,15 +115,6 @@ async function admittedCall(params: {
     kernel.close();
     rmSync(directory, { recursive: true, force: true });
   }
-}
-
-async function deniedCall(params: Parameters<typeof admittedCall>[0]): Promise<unknown> {
-  try {
-    await admittedCall(params);
-  } catch (error) {
-    return error;
-  }
-  return undefined;
 }
 
 // Rates per token for GPT-6 Sol: the reservation charges every input token at
@@ -203,18 +195,18 @@ test("a reservation that can reach past 272K input tokens is priced at the long-
   expect(call.chargedUsd).toBeCloseTo(300_000 * 4 * PER_M + 100 * 15 * PER_M, 12);
 });
 
-test("a Fast request on a model with no documented Fast rate is refused under a hard cap", async () => {
-  const error = await deniedCall({
+test("a Fast request on a model with no documented Fast rate uses an estimate under a hard cap", async () => {
+  const call = await admittedCall({
     model: "gpt-5.4-pro",
     serviceTier: "priority",
     servedTier: "priority",
     served: { input: 1000, output: 100 },
   });
-  expect(error).toMatchObject({ reason: "unpriced_service_tier_under_hard_cap" });
+  expect(call.reservedUsd).toBeCloseTo(call.reservedInputTokens / 1000 * conservativeModelCost().inputUsdPer1K + call.reservedOutputTokens / 1000 * conservativeModelCost().outputUsdPer1K, 9);
 });
 
-test("a Fast request that could reach GPT-5.5's unpriced Fast long context is refused", async () => {
-  const error = await deniedCall({
+test("a Fast request that could reach GPT-5.5's unpriced Fast long context uses an estimate", async () => {
+  const call = await admittedCall({
     model: "gpt-5.5",
     serviceTier: "priority",
     servedTier: "priority",
@@ -222,5 +214,5 @@ test("a Fast request that could reach GPT-5.5's unpriced Fast long context is re
     maxOutputTokens: 128_000,
     prompt: "word ".repeat(200_000),
   });
-  expect(error).toMatchObject({ reason: "unpriced_service_tier_under_hard_cap" });
+  expect(call.reservedUsd).toBeCloseTo(call.reservedInputTokens / 1000 * conservativeModelCost().inputUsdPer1K + call.reservedOutputTokens / 1000 * conservativeModelCost().outputUsdPer1K, 9);
 });

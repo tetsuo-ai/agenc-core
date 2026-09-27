@@ -1,3 +1,5 @@
+import { conservativeModelCost } from "../../src/session/cost.js";
+import type { LLMProvider } from "../../src/llm/types.js";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,6 +58,40 @@ function observe(client: ExecutionAdmissionClient) {
 }
 
 describe("canonical allocation usage observers", () => {
+  it("runs an unpriced model under a hard cap, persists estimated usage and stops at the ceiling", async () => {
+    const rates = conservativeModelCost();
+    const cost = 100 / 1000 * rates.inputUsdPer1K + 200 / 1000 * rates.outputUsdPer1K;
+    const client = kernel.bindClient({ cwd: workspace,
+      scope: { runId: "estimated-goal", sessionId: "estimated-goal", autonomous: false, maxCostUsd: cost },
+    });
+    const events: import("../../src/budget/admission-types.js").AdmissionJournalEvent[] = [];
+    client.subscribe(event => events.push(event));
+    const provider = {
+      name: "meta",
+      getExecutionProfile: async () => ({ usageReporting: "authoritative", supportsMaxOutputTokens: true }),
+      tokenCountCapability: { capabilityVersion: "test", adapterRevision: "1", configurationRevision: "1",
+        countTokens: async () => ({ inputTokens: 100, complete: true, confidence: "exact",
+          countedComponents: ["system", "messages", "tools", "provider_framing"] }) },
+    } as unknown as LLMProvider;
+    const session = { conversationId: "estimated-goal", services: { executionAdmission: client, admissionRequired: true },
+      abortTerminal: vi.fn() } as unknown as Session;
+    const invoke = vi.fn(async () => ({ model: "muse-spark-future", content: "ok", toolCalls: [], finishReason: "stop" as const,
+      usage: { promptTokens: 100, completionTokens: 200, totalTokens: 300, cachedInputTokens: 20,
+        availability: "reported" as const, provenance: "provider" as const } }));
+    const call = (stepId: string) => runAdmittedModelCall({ session, provider, messages: [{role: "user", content: "hi"}],
+      options: { maxOutputTokens: 200 }, model: "muse-spark-future", providerName: "meta", stepId, invoke });
+    await expect(call("first")).resolves.toMatchObject({ content: "ok" });
+    expect(events.find(event => event.event === "allowed")).toMatchObject({ reservedCostUsd: cost, details: {costEstimated: true} });
+    expect(events.find(event => event.event === "reconciled")).toMatchObject({ actualCostUsd: cost, reason: "estimated_model_price", details: {costEstimated: true} });
+    expect(client.getUsageSummary?.()).toMatchObject({ costUsd: cost, costEstimated: true, hasUnknownCost: false });
+    await expect(call("second")).rejects.toMatchObject({ reason: "budget_exceeded" });
+    expect(invoke).toHaveBeenCalledTimes(1);
+    kernel.close();
+    kernel = new ExecutionAdmissionKernel({ agencHome: home });
+    const restored = kernel.bindClient({ cwd: workspace, scope: { runId: "estimated-goal", sessionId: "estimated-goal", autonomous: false, maxCostUsd: cost } });
+    expect(restored.getUsageSummary?.()).toMatchObject({ costUsd: cost, costEstimated: true });
+  });
+
   it("does not exhaust a Goal on rejected Gemini calls, but retains uncertain spend and bills successful cached/thinking usage", async () => {
     const parent = kernel.bindClient({ cwd: workspace,
       scope: { runId: "goal", sessionId: "goal", autonomous: false, maxCostUsd: 20 },

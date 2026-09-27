@@ -14,6 +14,8 @@
  */
 
 import { createHash } from "node:crypto";
+import { parse as parseShellWords } from "shell-quote";
+import { extractBashCommand, splitCommand } from "../shell-command/parser.js";
 
 import type { RunStepIdentity } from "../contracts/run-contracts.js";
 import type { VerifiedChangeCommandRecord } from "./evidence-record.js";
@@ -42,6 +44,49 @@ export interface WorkflowCommandRunner {
 }
 
 const EXCERPT_BYTES = 4_096;
+
+/** Reject obvious placeholder checks, not arbitrary shell programs. The verifier
+ * still has to establish that an accepted command actually tests the goal. */
+export function isTrivialVerificationCommand(script: string, depth = 0): boolean {
+  if (depth > 8) return false;
+  return splitCommand(script).every((part) => {
+    let tokens;
+    try {
+      tokens = parseShellWords(part, (name) => `$${name}`)
+        .filter((token) => typeof token === "string" || !("comment" in token));
+    } catch {
+      return false;
+    }
+    if (tokens.length === 0) return true;
+    // Output redirection doesn't turn a constant message into a check.
+    const redirect = tokens.findIndex((token) =>
+      typeof token !== "string" && "op" in token && [">", ">>", "<"].includes(token.op));
+    if (redirect >= 0) tokens = tokens.slice(0, redirect);
+    if (!tokens.every((token): token is string => typeof token === "string")) return false;
+    const words = [...tokens];
+    while (/^[A-Za-z_]\w*=/.test(words[0] ?? "")) words.shift();
+    if (words[0] === "command" || words[0] === "builtin") words.shift();
+    const wrapper = extractBashCommand(words);
+    if (wrapper !== null) return isTrivialVerificationCommand(wrapper.script, depth + 1);
+    const command = (words[0] ?? "").split("/").at(-1);
+    return command === "true" || command === ":" || command === "echo" || command === "printf" ||
+      (command === "exit" && (words.length === 1 || (words.length === 2 && /^0+$/.test(words[1]!))));
+  });
+}
+
+/** The plan message is already delivered through the child terminal protocol.
+ * Keep a single explicit block so prose cannot silently become shell commands. */
+export function plannedVerification(message: string): readonly { label: string; script: string }[] {
+  const blocks = [...message.matchAll(/^```agenc-verification\s*\n([\s\S]*?)^```\s*$/gm)];
+  if (blocks.length !== 1) throw new TypeError("The plan must contain exactly one agenc-verification block");
+  const scripts: unknown = JSON.parse(blocks[0]![1]!);
+  if (!Array.isArray(scripts) || scripts.length === 0 || scripts.length > 20 ||
+      scripts.some((script) => typeof script !== "string" || script.length > 4096 || isTrivialVerificationCommand(script))) {
+    throw new TypeError("The plan must name concrete verification commands, not placeholders");
+  }
+  if (new Set(scripts).size !== scripts.length) throw new TypeError("The plan repeats a verification command");
+  return Object.freeze(scripts.map((script: string) => Object.freeze({ label: script, script })));
+}
 
 function sha256(bytes: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
