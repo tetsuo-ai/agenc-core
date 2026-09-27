@@ -908,6 +908,17 @@ describe("planner-selected verification", () => {
   const plan = "Build a small CLI with tests.\n```agenc-verification\n" + JSON.stringify(scripts) + "\n```";
   const outcome = { status: "completed" as const, finalMessage: plan, usage: DEFAULT_USAGE };
 
+  it("freezes trailing checks from a full long plan while bounding retained prose", async () => {
+    harness.spawner.queue("plan", { ...outcome, finalMessage: "Detailed plan. ".repeat(2000) + plan });
+    await runToTerminal(harness, { requiredVerification: [] });
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("completed");
+    expect(harness.commands.executed).toEqual(scripts);
+    const evidence = harness.repo.getEffect(RUN_ID, "workflow.plan")?.evidence;
+    expect(evidence?.requiredVerification).toEqual(scripts.map(script => ({ label: script, script })));
+    expect(evidence?.child?.finalMessage?.length).toBeLessThanOrEqual(20_100);
+    expect(evidence?.child?.finalMessage).not.toContain("agenc-verification");
+  });
+
   it("freezes and runs planned checks when intake has none", async () => {
     harness.spawner.queue("plan", outcome);
     await runToTerminal(harness, { requiredVerification: [] });
@@ -1481,6 +1492,8 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
       expect(project.spawner.spawn).toHaveBeenCalledTimes(3);
       expect(settledUsage).toMatchObject({ costEstimated: true, hasUnknownCost: false });
       expect(settledUsage?.costUsd).toBeGreaterThan(0);
+      expect(project.repo.getCurrentTerminalResult(RUN_ID)?.usage).toMatchObject({ costEstimated: true });
+      expect(project.ledgers.get(RUN_ID)?.records[0]?.usage).toMatchObject({ costEstimated: true });
     } finally { kernel.close(); project.cleanup(); }
   });
 
@@ -1492,7 +1505,12 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
     vi.spyOn(harness.commands, "run").mockRejectedValue(new WorkflowApprovalFailure({ source, decision }));
     await runToTerminal(harness);
     expect(harness.commands.run).toHaveBeenCalledOnce();
-    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "failed", stopReason });
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "failed", stopReason,
+      finalMessage: stopReason === "approval_required"
+        ? "The Goal stopped because a required approval was not received. Please try again and approve the requested action."
+        : "The Goal stopped because a required action was denied. Review the permissions before trying again.",
+    });
+    expect(harness.repo.getEffect(RUN_ID, "workflow.verify.cmd.1")?.evidence.failure?.message).toContain(source);
   });
 
   it("evidence_invalid when the record fails mechanical self-validation", async () => {

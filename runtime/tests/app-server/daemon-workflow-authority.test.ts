@@ -76,7 +76,7 @@ describe("daemon workflow authority", () => {
   });
 
   it.each(["/client/bin:/usr/bin", ""])(
-    "restores the retained PATH authority %j without provider credentials",
+    "restores a supplied PATH or the daemon tool PATH for %j without provider credentials",
     async (retainedPath) => {
       let restoredEnvironment: NodeJS.ProcessEnv | undefined;
       const restoreAgent = vi.fn(async (params) => {
@@ -94,7 +94,7 @@ describe("daemon workflow authority", () => {
         restoreRecoveredAgentRuntime(runner, recoveredRun({ PATH: retainedPath })),
       ).resolves.toMatchObject({ available: true });
       expect(restoreAgent.mock.calls[0]?.[0].envOverrides).toEqual({ PATH: retainedPath });
-      expect(restoredEnvironment?.PATH).toBe(retainedPath || undefined);
+      expect(restoredEnvironment?.PATH).toBe(retainedPath || "/different-daemon/bin");
       expect(restoredEnvironment).not.toHaveProperty("XAI_API_KEY");
     },
   );

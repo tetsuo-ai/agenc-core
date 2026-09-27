@@ -1141,8 +1141,8 @@ export class VerifiedChangeWorkflowController {
           decorate: (outcome) => {
             if (ctx.spec.requiredVerification.length > 0 || outcome.status !== "completed") return {};
             try {
-              // Validate the exact message retained for replay, including its size bound.
-              return { requiredVerification: plannedVerification(truncate(outcome.finalMessage) ?? "") };
+              // Freeze checks from the full response before bounding retained prose.
+              return { requiredVerification: plannedVerification(outcome.finalMessage ?? "") };
             } catch (error) {
               return { failure: { reason: "invalid_planned_verification", message: errorMessage(error) } };
             }
@@ -2181,7 +2181,10 @@ export class VerifiedChangeWorkflowController {
     throw new WorkflowHaltError({
       status: "failed",
       stopReason,
-      finalMessage: result.evidence.child?.finalMessage ?? result.evidence.failure?.message ?? "Workflow tool approval failed.",
+      // Keep resolver diagnostics in step evidence, never in the final notice.
+      finalMessage: stopReason === "approval_required"
+        ? "The Goal stopped because a required approval was not received. Please try again and approve the requested action."
+        : "The Goal stopped because a required action was denied. Review the permissions before trying again.",
     });
   }
 
@@ -2509,7 +2512,7 @@ export class VerifiedChangeWorkflowController {
       return new WorkflowHaltError({
         status: "failed",
         stopReason: "approval_required",
-        finalMessage: `admission requires approval at ${plan.stepId}: ${error.reason}`,
+        finalMessage: "The Goal stopped because a required approval was not received. Please try again and approve the requested action.",
       });
     }
     return new WorkflowHaltError({
@@ -2627,6 +2630,7 @@ export class VerifiedChangeWorkflowController {
       outputTokens: summary.outputTokens,
       totalTokens: summary.totalTokens,
       costUsd: summary.costUsd,
+      ...(summary.costEstimated !== undefined ? { costEstimated: summary.costEstimated } : {}),
     };
   }
 
