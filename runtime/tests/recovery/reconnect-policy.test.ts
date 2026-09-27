@@ -6,6 +6,7 @@ import {
   RECONNECT_RETRY_AFTER_CEILING_MS,
   calculateReconnectDelay,
   classifyRetryAfterMilliseconds,
+  validateRetryAfterDirective,
   type RetryAfterDirective,
 } from "../../src/recovery/reconnect-policy.js";
 import {
@@ -219,3 +220,65 @@ describe("calculateReconnectDelay", () => {
     }
   });
 });
+
+describe("validateRetryAfterDirective", () => {
+  test("freezes a well-formed absent, invalid, valid, or over-policy directive", () => {
+    expect(validateRetryAfterDirective({ classification: "absent" })).toEqual({
+      classification: "absent",
+    });
+    expect(
+      validateRetryAfterDirective({
+        classification: "invalid",
+        invalidReason: "syntax",
+      }),
+    ).toEqual({ classification: "invalid", invalidReason: "syntax" });
+    expect(
+      validateRetryAfterDirective({
+        classification: "valid",
+        floorMs: RECONNECT_RETRY_AFTER_CEILING_MS,
+      }),
+    ).toEqual({
+      classification: "valid",
+      floorMs: RECONNECT_RETRY_AFTER_CEILING_MS,
+    });
+    expect(
+      validateRetryAfterDirective({
+        classification: "over_policy",
+        floorMs: RECONNECT_RETRY_AFTER_CEILING_MS + 1,
+      }),
+    ).toEqual({
+      classification: "over_policy",
+      floorMs: RECONNECT_RETRY_AFTER_CEILING_MS + 1,
+    });
+  });
+
+  test("rejects swapped floors, unknown reasons, and non-objects", () => {
+    expect(() =>
+      validateRetryAfterDirective({
+        classification: "valid",
+        floorMs: RECONNECT_RETRY_AFTER_CEILING_MS + 1,
+      }),
+    ).toThrow(/valid retryAfter exceeds the policy ceiling/);
+    expect(() =>
+      validateRetryAfterDirective({
+        classification: "over_policy",
+        floorMs: RECONNECT_RETRY_AFTER_CEILING_MS,
+      }),
+    ).toThrow(/over-policy retryAfter does not exceed the ceiling/);
+    expect(() =>
+      validateRetryAfterDirective({
+        classification: "invalid",
+        invalidReason: "too_long",
+      } as unknown as RetryAfterDirective),
+    ).toThrow(/invalid reason code/);
+    expect(() =>
+      validateRetryAfterDirective({
+        classification: "soon",
+      } as unknown as RetryAfterDirective),
+    ).toThrow(/unknown classification/);
+    expect(() =>
+      validateRetryAfterDirective(null as unknown as RetryAfterDirective),
+    ).toThrow(/must be a validated directive/);
+  });
+});
+

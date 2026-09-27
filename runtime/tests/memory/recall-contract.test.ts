@@ -7,9 +7,11 @@ import {
   MAX_C3A_TERM_OCCURRENCES_PER_TERM,
   MAX_MEMORY_SELECTOR_TOTAL_UTF8_BYTES,
   buildMemorySelectorRequest,
+  isMemoryRecallAbort,
   normalizeMemoryQuery,
   rankMemoryHeaders,
 } from "../../src/memory/recall-contract.js";
+import { AbortError } from "../../src/utils/errors.js";
 import type { MemoryHeader } from "../../src/memory/scan.js";
 
 const SIGNAL = new AbortController().signal;
@@ -152,5 +154,32 @@ describe("C3a lexical recall contract", () => {
         controller.signal,
       ),
     ).toThrow(reason);
+  });
+});
+
+describe("isMemoryRecallAbort", () => {
+  it("recognizes AbortError-shaped failures", () => {
+    expect(isMemoryRecallAbort(new DOMException("aborted", "AbortError"))).toBe(
+      true,
+    );
+    expect(isMemoryRecallAbort(new AbortError("recall cancelled"))).toBe(true);
+    expect(isMemoryRecallAbort(Object.assign(new Error("x"), { name: "AbortError" }))).toBe(
+      true,
+    );
+    expect(isMemoryRecallAbort(new Error("timeout"))).toBe(false);
+    expect(isMemoryRecallAbort(new DOMException("denied", "NotAllowedError"))).toBe(
+      false,
+    );
+    expect(isMemoryRecallAbort("AbortError")).toBe(false);
+  });
+
+  it("treats an already-aborted signal as abort even when the error is unrelated", () => {
+    const controller = new AbortController();
+    controller.abort();
+    expect(isMemoryRecallAbort(new Error("parse failed"), controller.signal)).toBe(
+      true,
+    );
+    expect(isMemoryRecallAbort(undefined, controller.signal)).toBe(true);
+    expect(isMemoryRecallAbort(new Error("parse failed"), SIGNAL)).toBe(false);
   });
 });
