@@ -184,6 +184,7 @@ export interface WorkflowSessionSeams {
 }
 
 interface RunSessionEntry {
+  readonly environment: Readonly<NodeJS.ProcessEnv>;
   readonly unregisterApprovals: () => void;
   readonly runId: string;
   readonly repoPath: string;
@@ -725,6 +726,7 @@ export function createWorkflowSessionSeams(
       })();
       return {
         unregisterApprovals,
+        environment: runEnvironment,
         runId,
         repoPath: resolvedRepoPath,
         bootstrap: boot,
@@ -930,7 +932,7 @@ export function createWorkflowSessionSeams(
         args: ["-lc", input.script],
         cwd: input.cwd,
         env: Object.fromEntries(
-          Object.entries(environment).filter(
+          Object.entries(entry.environment).filter(
             (pair): pair is [string, string] => typeof pair[1] === "string",
           ),
         ),

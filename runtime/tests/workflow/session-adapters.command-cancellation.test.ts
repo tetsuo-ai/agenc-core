@@ -59,7 +59,7 @@ beforeEach(async () => {
   permissions = new PermissionModeRegistry({ mode: "bypassPermissions", additionalWorkingDirectories: new Map(),
     alwaysAllowRules: {}, alwaysDenyRules: {}, alwaysAskRules: {}, isBypassPermissionsModeAvailable: true });
   approvalRequest = vi.fn(async () => ({ kind: "approved" as const }));
-  seams = createWorkflowSessionSeams({ agencHome: home, env: process.env, argv: [process.execPath, "agenc"],
+  seams = createWorkflowSessionSeams({ agencHome: home, env: { ...process.env, DEEPSEEK_API_KEY: "stale-key", OPENAI_API_KEY: "stale-clear", GROQ_API_KEY: "stale-omitted" }, argv: [process.execPath, "agenc"],
     kernel: {} as ExecutionAdmissionKernel, durability: () => repo, resolveRunRepoPath: () => cwd,
     resolveRunPolicy: () => undefined, fallbackCwd: cwd, warn: () => {},
     bootstrap: async () => ({ session: mkSession({ cwd, services: {
@@ -67,7 +67,7 @@ beforeEach(async () => {
       toolApprovals: new ApprovalStore() as never,
       approvalResolver: { request: (...args: unknown[]) => approvalRequest(...args) },
     } }).session, rolloutStore: { runEpoch: 1 }, shutdown: async () => {} }) as never });
-  await seams.journal.open(RUN_ID, { repoPath: cwd });
+  await seams.journal.open(RUN_ID, { repoPath: cwd, envOverrides: { DEEPSEEK_API_KEY: "fresh-key", OPENAI_API_KEY: "" } });
   handle = await seams.worktrees.provision({ runId: RUN_ID, repoPath: cwd, baseCommit } as WorkflowSpec);
   cwd = handle.path;
 });
@@ -79,6 +79,19 @@ afterEach(async () => {
 });
 
 describe("workflow command permissions before broker execution", () => {
+  it("runs checks with current credentials, cleared secrets and the daemon tool PATH", async () => {
+    const prepare = vi.spyOn(SandboxExecutionBroker.prototype, "prepareSpawn");
+    try {
+      const result = await seams.commands.run({ script: 'test "$DEEPSEEK_API_KEY" = fresh-key && test "${OPENAI_API_KEY+x}" = "" && test "${GROQ_API_KEY+x}" = ""', cwd });
+      expect(result.exitCode).toBe(0);
+      const environment = prepare.mock.calls.at(-1)?.[1].env;
+      expect(environment?.PATH).toBe(process.env.PATH);
+      expect(environment?.DEEPSEEK_API_KEY).toBe("fresh-key");
+      expect(environment).not.toHaveProperty("OPENAI_API_KEY");
+      expect(environment).not.toHaveProperty("GROQ_API_KEY");
+    } finally { prepare.mockRestore(); }
+  });
+
   it("runs npm test in acceptEdits after the registered resolver approves", async () => {
     await permissions.update({ ...permissions.current(), mode: "acceptEdits" });
     writeFileSync(join(cwd, "package.json"), JSON.stringify({ scripts: { test: "node -e \"console.log('CHECK_EXECUTED')\"" } }));

@@ -10,6 +10,15 @@ import {
 } from "../../src/app-server/client-env-snapshot.js";
 
 describe("daemon client environment snapshots", () => {
+  it.each([{}, { PATH: "" }])("retains expanded daemon PATH while clearing credentials: %j", overrides => {
+    const daemon = { PATH: "/bundled/bin:/home/user/.local/bin:/usr/bin:/bin", DEEPSEEK_API_KEY: "old-key", OPENAI_API_KEY: "old-other" };
+    const normalized = normalizeDaemonClientEnvOverrides({ ...overrides, DEEPSEEK_API_KEY: "fresh-key", OPENAI_API_KEY: "" });
+    const merged = mergeDaemonClientEnvironment(daemon, normalized);
+    expect(merged?.PATH).toBe(daemon.PATH);
+    expect(merged?.DEEPSEEK_API_KEY).toBe("fresh-key");
+    expect(merged).not.toHaveProperty("OPENAI_API_KEY");
+  });
+
   it("captures every allowlisted key and uses empty strings as clear markers", () => {
     const snapshot = collectDaemonClientEnvOverrides({
       AGENC_PROVIDER: "gemini",
