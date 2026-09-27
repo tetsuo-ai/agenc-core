@@ -2,6 +2,11 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AgenCDaemonRunInspectionService } from "../../src/app-server/run-inspection.js";
+import { LLMRateLimitError } from "../../src/llm/errors.js";
+import { reconnectWithBackoff } from "../../src/recovery/reconnection.js";
+import { EventLog } from "../../src/session/event-log.js";
+import type { Session } from "../../src/session/session.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
 import { WorkflowApprovalFailure } from "../../src/permissions/approval-failure.js";
 import type { PermissionMode } from "../../src/permissions/types.js";
@@ -47,6 +52,7 @@ import type {
 } from "../../src/workflow/verification.js";
 import type {
   BaseMovementCheck,
+  CancelledRunProof,
   EvidenceArtifactSink,
   SealedEvidenceProof,
 } from "../../src/workflow/worktree-lifecycle.js";
@@ -371,6 +377,27 @@ class FakeWorktrees implements WorkflowWorktreeBroker {
   }): Promise<void> {
     this.cleanups.push(input);
   }
+
+  /** What the run had durably recorded when its worktree was discarded. */
+  readonly discards: {
+    path: string;
+    terminal: string | undefined;
+    effects: number;
+  }[] = [];
+  durableRepo?: StateRunDurabilityRepository;
+  discardError?: Error;
+
+  async discard(input: {
+    proof: CancelledRunProof;
+    handle: WorktreeHandle;
+  }): Promise<void> {
+    this.discards.push({
+      path: input.handle.path,
+      terminal: this.durableRepo?.getCurrentTerminalResult(input.proof.runId)?.status,
+      effects: this.durableRepo?.listEffects(input.proof.runId).length ?? 0,
+    });
+    if (this.discardError !== undefined) throw this.discardError;
+  }
 }
 
 const DEFAULT_USAGE = {
@@ -391,6 +418,11 @@ class FakeSpawner implements WorkflowAgentSpawner {
   /** Mirrors production: inspect falls back to the durable child terminal. */
   durableRepo?: StateRunDurabilityRepository;
   beforeReturn?: (input: { kind: WorkflowSpawnKind }) => void;
+  /** Answers from the prompt when nothing is queued; undefined = default. */
+  respond?: (input: {
+    kind: WorkflowSpawnKind;
+    prompt: string;
+  }) => WorkflowChildOutcome | undefined;
 
   queue(kind: WorkflowSpawnKind, outcome: WorkflowChildOutcome): void {
     const queue = this.queues.get(kind) ?? [];
@@ -422,7 +454,7 @@ class FakeSpawner implements WorkflowAgentSpawner {
     const outcome =
       queue !== undefined && queue.length > 0
         ? queue.shift()!
-        : this.#default(input.kind);
+        : (this.respond?.(input) ?? this.#default(input.kind));
     this.beforeReturn?.(input);
     return outcome;
   }
@@ -506,6 +538,7 @@ interface Harness {
   /** Test seams: `failJournalOpenWith` makes the next journal open throw. */
   hooks: {
     failJournalOpenWith?: Error;
+    failTerminalWith?: Error;
     failEvidenceLedgerWith?: Error;
     effectivePermissionMode?: PermissionMode;
     currentPermissionMode?: PermissionMode;
@@ -532,6 +565,7 @@ function makeHarness(
   const reviewer = new FakeReviewer();
   const commands = new FakeCommands();
   spawner.durableRepo = repo;
+  worktrees.durableRepo = repo;
   const ledgers = new Map<string, MemoryLedger>();
   const warnings: string[] = [];
   const hooks: Harness["hooks"] = {};
@@ -542,7 +576,13 @@ function makeHarness(
         if (hooks.failJournalOpenWith !== undefined) {
           throw hooks.failJournalOpenWith;
         }
-        return new TestJournal(repo, runId, () => hooks.effectivePermissionMode);
+        const journal = new TestJournal(repo, runId, () => hooks.effectivePermissionMode);
+        const appendTerminal = journal.appendTerminal.bind(journal);
+        journal.appendTerminal = () => {
+          if (hooks.failTerminalWith !== undefined) throw hooks.failTerminalWith;
+          return appendTerminal();
+        };
+        return journal;
       },
       currentPermissionMode: () => hooks.currentPermissionMode,
     },
@@ -617,8 +657,96 @@ async function runToTerminal(
 
 let harness: Harness;
 
+/** The admission cascade of run.cancel, seen at the first step with this prefix. */
+function cancelAt(stepPrefix: string): void {
+  harness.admission.denials.push({
+    match: (stepId) => stepId.startsWith(stepPrefix),
+    error: new AdmissionDeniedError("run.cancel cascade", "cancelled"),
+  });
+}
+
 beforeEach(() => {
   harness = makeHarness();
+});
+
+describe("workflow provider waits", () => {
+  it.each(["plan", "implement", "verify_agent", "review"] as const)(
+    "projects a %s child's 429 through run.status and clears before retrying",
+    async (kind) => {
+      const controller = harness.controller;
+      const inspection = new AgenCDaemonRunInspectionService({
+        stateDatabasePaths: () => [harness.driver],
+        providerWait: (runId, stepId) => controller.currentProviderWait(runId, stepId),
+      });
+      const log = new EventLog();
+      const warnings: string[] = [];
+      log.subscribe((event) => {
+        if (event.msg.type === "warning" && event.msg.payload.cause === "provider_rate_limited") {
+          warnings.push(event.msg.payload.message);
+        }
+      });
+      const session = { eventLog: log, nextInternalSubId: () => "retry" } as unknown as Session;
+      let calls = 0;
+      let waits = 0;
+      const stage = `workflow.${kind === "verify_agent" ? "verify" : kind}`;
+      const providerCall = async () => {
+        const outcome = await reconnectWithBackoff({
+          session,
+          maxAttempts: 2,
+          rng: () => 0,
+          wallNow: () => Date.parse("2026-09-26T12:00:00.000Z"),
+          isTransient: () => true,
+          attempt: async () => {
+            calls += 1;
+            const running = inspection.status({ runId: RUN_ID }).workflow!.steps.find((step) => step.stage === stage)!;
+            expect(running.status).toBe("running");
+            expect(running).not.toHaveProperty("providerWait");
+            if (calls === 1) throw new LLMRateLimitError("test", 30_000);
+            return "recovered";
+          },
+          sleeper: async (delayMs) => {
+            waits += 1;
+            expect(delayMs).toBe(30_000);
+            // Read through the same service as the daemon's run.status RPC.
+            const status = inspection.status({ runId: RUN_ID });
+            const waiting = status.workflow!.steps.filter((step) => step.providerWait !== undefined);
+            expect(waiting).toHaveLength(1);
+            expect(waiting[0]).toMatchObject({
+              stage,
+              status: "running",
+              providerWait: {
+                cause: "provider_rate_limited",
+                message: warnings.at(-1),
+                retryAt: "2026-09-26T12:00:30.000Z",
+              },
+            });
+            expect(warnings.at(-1)).toBe("The provider is limiting requests. Retrying in 30 s.");
+            expect(controller.status(RUN_ID)!.steps.find((step) => step.stage === stage)?.providerWait)
+              .toEqual(waiting[0]!.providerWait);
+            expect(controller.currentProviderWait("another-run", waiting[0]!.stepId)).toBeUndefined();
+            expect(controller.currentProviderWait(RUN_ID, "another-step")).toBeUndefined();
+          },
+        });
+        expect(outcome).toMatchObject({ kind: "ok", attempts: 2 });
+        expect(inspection.status({ runId: RUN_ID }).workflow!.steps.every((step) => step.providerWait === undefined)).toBe(true);
+      };
+      const spawn = harness.spawner.spawn.bind(harness.spawner);
+      vi.spyOn(harness.spawner, "spawn").mockImplementation(async (input) => {
+        if (input.kind === kind) await providerCall();
+        return spawn(input);
+      });
+      const review = harness.reviewer.invoke.bind(harness.reviewer);
+      vi.spyOn(harness.reviewer, "invoke").mockImplementation(async (input) => {
+        if (kind === "review") await providerCall();
+        return review(input);
+      });
+      await runToTerminal(harness);
+      expect(controller.status(RUN_ID)?.terminal?.status).toBe("completed");
+      expect(calls).toBe(2);
+      expect(waits).toBe(1);
+      expect(inspection.status({ runId: RUN_ID }).workflow!.steps.every((step) => step.providerWait === undefined)).toBe(true);
+    },
+  );
 });
 
 describe("workflow admission ownership", () => {
@@ -683,6 +811,34 @@ describe("workflow admission ownership", () => {
   });
 });
 
+/**
+ * A verifier that takes its brief literally, as the Grok verifier of Goal run
+ * wf-8b719195 did: it re-runs every command the brief lists with an exit
+ * code, in a project whose only command is `npm test`, and fails the change
+ * when one of them does not exit 0. A brief that lists no command fails too.
+ */
+function literalVerifier(ran: string[]): NonNullable<FakeSpawner["respond"]> {
+  return ({ kind, prompt }) => {
+    if (kind !== "verify_agent") return undefined;
+    const listed = [...prompt.matchAll(/^- (.+): exit -?\d+/gmu)].map(
+      (match) => /^(`+) ?(.*?) ?\1$/u.exec(match[1]!)?.[2] ?? match[1]!,
+    );
+    const failures: string[] = [];
+    for (const command of listed) {
+      ran.push(command);
+      if (command !== "npm test") {
+        failures.push(`required command \`${command}\`: exit 127, command not found`);
+      }
+    }
+    const pass = listed.length > 0 && failures.length === 0;
+    return {
+      status: "completed",
+      finalMessage: [...failures, `VERDICT: ${pass ? "PASS" : "FAIL"}`].join("\n"),
+      usage: DEFAULT_USAGE,
+    };
+  };
+}
+
 describe("verifier prompt", () => {
   it("tells the verifier where scratch files may go", async () => {
     // Soak F65: a verifier wrote fixtures to /tmp and the sandbox refused them.
@@ -690,6 +846,79 @@ describe("verifier prompt", () => {
     const verify = harness.spawner.spawns.find((spawn) => spawn.kind === "verify_agent");
     expect(verify?.prompt).toContain("under `tmp/` inside the worktree");
     expect(verify?.prompt).toContain("refuses writes outside the workspace");
+  });
+
+  it("names each required command by its script and says the workflow already ran it", async () => {
+    // AgenC Desktop starts every Goal with `{ label: "verify", script: <check> }`.
+    // Shown only `- verify: exit 0`, the verifier ran `verify` as a command,
+    // got 127, and failed a change whose `npm test` had passed (soak F77).
+    await runToTerminal(harness, {
+      requiredVerification: [{ label: "verify", script: "npm test" }],
+    });
+    const verify = harness.spawner.spawns.find((spawn) => spawn.kind === "verify_agent");
+    expect(verify?.prompt).toContain(
+      "## Required commands, already run\n" +
+        "The workflow ran each required command below in this worktree before you\n" +
+        "started. Each line is the complete command, exactly as the workflow ran it,\n" +
+        "then the exit code the workflow recorded.\n" +
+        "- `npm test`: exit 0\n",
+    );
+    expect(verify?.prompt).not.toMatch(/^- verify\b/mu);
+    expect(verify?.prompt).not.toContain("`verify`");
+  });
+
+  it("keeps the label out of every model prompt", async () => {
+    // The label names the command for people (evidence, status). No model
+    // may read it as a command, so no prompt carries it: not the plan, the
+    // re-implement brief, either verifier, or the reviewer.
+    const label = "label-sentinel-7d3f";
+    harness.spawner.queue("verify_agent", {
+      status: "completed",
+      finalMessage: "found a defect\nVERDICT: FAIL",
+      usage: DEFAULT_USAGE,
+    });
+    await runToTerminal(harness, {
+      requiredVerification: [{ label, script: "npm test" }],
+    });
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("completed");
+    const spawns = harness.spawner.spawns;
+    expect(spawns.map((spawn) => spawn.kind)).toEqual([
+      "plan", "implement", "verify_agent", "implement", "verify_agent",
+    ]);
+    expect(harness.reviewer.invocations).toHaveLength(1);
+    const prompts = [
+      ...spawns.map((spawn) => spawn.prompt),
+      harness.reviewer.invocations[0]!.userMessage,
+    ];
+    for (const prompt of prompts) expect(prompt).not.toContain(label);
+    expect(spawns[0]!.prompt).toMatch(/^- `npm test`$/mu);
+    expect(spawns[3]!.prompt).toContain("- `npm test`: exit 0\n");
+    expect(spawns[2]!.prompt).toContain("- `npm test`: exit 0\n");
+    expect(spawns[4]!.prompt).toContain("- `npm test`: exit 0\n");
+    expect(harness.reviewer.invocations[0]!.userMessage).toContain(
+      "- `npm test`: exit 0 in 3ms\n",
+    );
+  });
+});
+
+describe("a Goal whose check is npm test", () => {
+  it("passes verify under a verifier that runs exactly the commands its brief names", async () => {
+    // Replays Goal run wf-8b719195 without a model. AgenC Desktop sent
+    // `{ label: "verify", script: "npm test" }`; the project defines `npm test`
+    // and nothing called `verify`. On a brief that listed only
+    // `- verify: exit 0`, this verifier ran `verify`, got 127, and both
+    // attempts ended `verification_failed` although `npm test` passed.
+    const ran: string[] = [];
+    harness.spawner.respond = literalVerifier(ran);
+    await runToTerminal(harness, {
+      requiredVerification: [{ label: "verify", script: "npm test" }],
+    });
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "completed",
+      stopReason: null,
+    });
+    expect(ran).toEqual(["npm test"]);
+    expect(harness.commands.executed).toEqual(["npm test"]);
   });
 });
 
@@ -904,6 +1133,7 @@ describe("VerifiedChangeWorkflowController — happy path", () => {
     expect(harness.worktrees.cleanups[0].proof.sealDigest).toBe(
       ledger.sealDigest,
     );
+    expect(harness.worktrees.discards).toEqual([]);
 
     // Status projection: every stage committed, verify verdict PASS.
     const status = harness.controller.status(RUN_ID)!;
@@ -952,6 +1182,8 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
     // The verifier's own report travels too, whatever its verdict was.
     expect(implementSpawns[1].prompt).toContain("### Verifier's report");
     expect(implementSpawns[1].prompt).toContain("checked everything");
+    // A failed run keeps its worktree for review.
+    expect(harness.worktrees.discards).toEqual([]);
   });
 
   it("review_rejected on blocking findings, with the review durably committed", async () => {
@@ -1083,15 +1315,52 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
     expect(stepIds).toContain("workflow.plan#2");
   });
 
-  it("cancellation observed mid-pipeline terminalizes cancelled", async () => {
-    harness.admission.denials.push({
-      match: (stepId) => stepId.startsWith("workflow.implement"),
-      error: new AdmissionDeniedError("run.cancel cascade", "cancelled"),
-    });
+  it("cancellation observed mid-pipeline terminalizes cancelled, then discards the worktree", async () => {
+    cancelAt("workflow.implement");
     await runToTerminal(harness);
     const terminal = harness.repo.getCurrentTerminalResult(RUN_ID)!;
     expect(terminal.status).toBe("cancelled");
     expect(terminal.exitCode).toBe(1);
+    // Discarded only once the cancelled terminal was durable, and nothing
+    // was journaled after it: the run's evidence stays as it was.
+    expect(harness.worktrees.discards).toEqual([
+      {
+        path: `/wt/${RUN_ID}`,
+        terminal: "cancelled",
+        effects: harness.repo.listEffects(RUN_ID).length,
+      },
+    ]);
+    expect(harness.worktrees.cleanups).toHaveLength(0);
+  });
+
+  it("a run cancelled before its worktree exists has nothing to discard", async () => {
+    cancelAt("workflow.worktree");
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("cancelled");
+    expect(harness.worktrees.provisions).toBe(0);
+    expect(harness.worktrees.discards).toEqual([]);
+  });
+
+  it("keeps the worktree while the cancelled terminal is not durable, so a resume still has it", async () => {
+    cancelAt("workflow.implement");
+    harness.hooks.failTerminalWith = new Error("rollout append refused");
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
+    expect(harness.worktrees.discards).toEqual([]);
+    expect(harness.warnings).toContainEqual(
+      expect.stringContaining("failed to record its terminal result: rollout append refused"),
+    );
+  });
+
+  it("a discard that fails is a warning and the run stays cancelled", async () => {
+    cancelAt("workflow.implement");
+    harness.worktrees.discardError = new Error("git worktree remove failed: busy");
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("cancelled");
+    expect(harness.worktrees.discards).toHaveLength(1);
+    expect(harness.warnings).toContainEqual(
+      `workflow ${RUN_ID} worktree cleanup failed after cancellation: git worktree remove failed: busy`,
+    );
   });
 
   it.each(["reject", "resolve"] as const)(
@@ -1141,6 +1410,7 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
         });
         expect(harness.spawner.spawns.map((spawn) => spawn.kind)).toEqual(["plan", "implement"]);
         expect(harness.worktrees.cleanups).toHaveLength(0);
+        expect(harness.worktrees.discards).toMatchObject([{ terminal: "cancelled" }]);
       } finally {
         kernel.close();
       }
@@ -1344,6 +1614,8 @@ describe("VerifiedChangeWorkflowController — crash recovery (D3)", () => {
     expect(
       harness.spawner.spawns.filter((s) => s.kind === "implement"),
     ).toHaveLength(1);
+    // Work whose outcome is unknown stays in its worktree for review.
+    expect(harness.worktrees.discards).toEqual([]);
   });
 
   it("an intake interrupted before its commit fails closed on resume", async () => {

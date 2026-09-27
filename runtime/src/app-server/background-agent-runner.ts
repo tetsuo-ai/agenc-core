@@ -4793,7 +4793,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       try {
         let resumed = false;
         try {
-          resumed = (await runDeferredDurableTurnResume()).resumed === true;
+          resumed = (await runDeferredDurableTurnResume(() => {
+            commitDurableRunStartupActivation(
+              active,
+              session.conversationId,
+              this.#now(),
+            );
+          })).resumed === true;
         } catch {
           // The resume is best-effort and already records its own failure on
           // the conversation thread record.

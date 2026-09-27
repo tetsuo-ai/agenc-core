@@ -7,7 +7,7 @@ import type {
   SlashCommandContext,
   SlashCommandResult,
 } from "./types.js";
-import { runRemoteSlash, startRemoteOn } from "../bin/remote-cli.js";
+import { parseRemoteSlashArgs, runRemoteSlash, startRemoteOn } from "../bin/remote-cli.js";
 import { remoteAuthContextFromCommandContext } from "./config-context.js";
 
 /** Persistent pairing surface: shows the code + QR and stays until the phone pairs (then auto-
@@ -70,7 +70,7 @@ export const remoteCommand: SlashCommand = {
   immediate: true,
   supportsNonInteractive: true,
   execute: async (ctx: SlashCommandContext): Promise<SlashCommandResult> => {
-    const sub = (ctx.argsRaw || "").trim() || "on";
+    const { sub, fullControl } = parseRemoteSlashArgs(ctx.argsRaw);
     const runtimeContext = remoteAuthContextFromCommandContext(ctx);
     if (sub !== "on") {
       return {
@@ -79,7 +79,7 @@ export const remoteCommand: SlashCommand = {
       };
     }
 
-    const started = await startRemoteOn(runtimeContext);
+    const started = await startRemoteOn(runtimeContext, { fullControl });
     if ("message" in started) {
       return { kind: "text", text: started.message };
     }

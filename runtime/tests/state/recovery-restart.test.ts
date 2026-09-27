@@ -116,40 +116,19 @@ describe("recoverDaemonStateOnStartup", () => {
   // row excluded the run from recovery at the next daemon start ("pending
   // operator recovery action") even though nothing was wrong with the source.
   describe("source_not_quiescent deferrals", () => {
-    const failedAtMs = Date.parse("2026-05-01T00:10:00.000Z");
-
     function seedLiveSourceDeferral(
       runId: string,
       reasonCode: "source_not_quiescent" | "database_io" = "source_not_quiescent",
     ): string {
-      insertAgentRun({
-        id: runId,
-        objective: "recover after a stale live-source deferral",
-        status: "running",
-        currentSessionId: runId,
-      });
-      const rolloutPath = writeRuntimeResumeJournal(runId);
-      bindRunJournal(runId, rolloutPath);
-      new StateRecoveryIncidentRepository(driver).recordDeferred({
-        runId,
-        sourceKind: "run_journal",
-        sourcePath: rolloutPath,
+      return seedDeferredRun(runId, {
         reasonCode,
         errorClass: "RECOVERY_SOURCE_LIVE",
-        safeDetail: { message: "canonical recovery source is not quiescent" },
-        failedAtMs,
-        nextRetryMs: failedAtMs + 60_000,
+        message: "canonical recovery source is not quiescent",
       });
-      return rolloutPath;
     }
 
     function deferredStates(runId: string): readonly string[] {
-      return driver
-        .prepareState<[string], { readonly state: string }>(
-          "SELECT state FROM run_recovery_deferred WHERE run_id = ? ORDER BY block_id",
-        )
-        .all(runId)
-        .map((row) => row.state);
+      return deferredRows(runId).map((row) => row.state);
     }
 
     it("resolves an expired source_not_quiescent deferral at startup and recovers the run", () => {
@@ -247,6 +226,99 @@ describe("recoverDaemonStateOnStartup", () => {
       });
       expect(recorded.exclusion?.evidenceId).toBeDefined();
       expect(deferredStates(runId)).toEqual(["active"]);
+    });
+  });
+
+  // Every Windows runtime before this one could not pin a descriptor path, so
+  // it recorded this deferral for every open run at every daemon start, and
+  // the active row then excluded the run from every later start: its chat
+  // never reopened ("could not verify its agent after a resume attempt").
+  describe("descriptor-path deferrals from a runtime that could not pin", () => {
+    function seedDescriptorPathDeferral(
+      runId: string,
+      errorClass = "RECOVERY_DESCRIPTOR_PATH_UNAVAILABLE",
+    ): void {
+      seedDeferredRun(runId, {
+        reasonCode: "recovery_lock_unavailable",
+        errorClass,
+        message: "descriptor-relative recovery is unavailable",
+      });
+    }
+
+    /** Restored with a retained resume source that closes and frees its budget. */
+    function expectRestoredWithResumeSource(
+      report: ReturnType<typeof recoverDaemonStateOnStartup>,
+      runId: string,
+      budget: StartupResumeSourceBudget,
+    ): void {
+      expect(report.recoveryExclusions).toEqual([]);
+      expect(report.recoveredRuns).toEqual([
+        expect.objectContaining({ id: runId, status: "running" }),
+      ]);
+      expect(report.recoveredRuns[0]?.resumeSource?.sessionId).toBe(runId);
+      report.recoveredRuns[0]?.resumeSource?.close();
+      expect(budget.retainedSources).toBe(0);
+    }
+
+    it("resolves an expired deferral at startup and restores the run with its resume source", () => {
+      const runId = "run-descriptor-path-deferral";
+      seedDescriptorPathDeferral(runId);
+      const budget = new StartupResumeSourceBudget(1);
+
+      const report = recoverDaemonStateOnStartup(driver, {
+        now: () => "2026-05-01T00:11:01.000Z",
+        retainRuntimeResumeSources: true,
+        startupResumeSourceBudget: budget,
+      });
+
+      expectRestoredWithResumeSource(report, runId, budget);
+      expect(deferredRows(runId)).toEqual([
+        { state: "resolved", resolution_actor: "daemon_startup" },
+      ]);
+    });
+
+    it.each([
+      ["an unexpired deferral", "RECOVERY_DESCRIPTOR_PATH_UNAVAILABLE", "2026-05-01T00:10:30.000Z"],
+      ["another class of the same reason code", "RECOVERY_LOCK_HELD", "2026-05-01T00:11:01.000Z"],
+    ])("keeps %s on the operator path", (_kept, errorClass, now) => {
+      const runId = `run-kept-${errorClass.toLowerCase()}`;
+      seedDescriptorPathDeferral(runId, errorClass);
+
+      const report = recoverDaemonStateOnStartup(driver, { now: () => now });
+
+      expect([report.recoveredRuns, report.recoveryExclusions]).toMatchObject([
+        [],
+        [{ runId, kind: "deferred", reasonCode: "recovery_lock_unavailable" }],
+      ]);
+      expect(deferredRows(runId)).toEqual([
+        { state: "active", resolution_actor: null },
+      ]);
+    });
+
+    it("restores an open run where the platform has no descriptor alias (Windows)", () => {
+      const runId = "run-windows-restart";
+      insertAgentRun({
+        id: runId,
+        objective: "reopen after a Windows restart",
+        status: "running",
+        currentSessionId: runId,
+      });
+      bindRunJournal(runId, writeRuntimeResumeJournal(runId));
+      const budget = new StartupResumeSourceBudget(1);
+      const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+      Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+      let report: ReturnType<typeof recoverDaemonStateOnStartup>;
+      try {
+        report = recoverDaemonStateOnStartup(driver, {
+          retainRuntimeResumeSources: true,
+          startupResumeSourceBudget: budget,
+        });
+      } finally {
+        Object.defineProperty(process, "platform", platform);
+      }
+
+      expectRestoredWithResumeSource(report, runId, budget);
+      expect(deferredRows(runId)).toEqual([]);
     });
   });
 
@@ -1759,6 +1831,52 @@ describe("recoverDaemonStateOnStartup", () => {
     );
   });
 });
+
+const DEFERRED_AT_MS = Date.parse("2026-05-01T00:10:00.000Z");
+
+/** A recoverable run with its journal bound and one active deferral against it. */
+function seedDeferredRun(
+  runId: string,
+  deferral: {
+    readonly reasonCode: "source_not_quiescent" | "database_io" | "recovery_lock_unavailable";
+    readonly errorClass: string;
+    readonly message: string;
+  },
+): string {
+  insertAgentRun({
+    id: runId,
+    objective: "recover after a stale deferral",
+    status: "running",
+    currentSessionId: runId,
+  });
+  const rolloutPath = writeRuntimeResumeJournal(runId);
+  bindRunJournal(runId, rolloutPath);
+  new StateRecoveryIncidentRepository(driver).recordDeferred({
+    runId,
+    sourceKind: "run_journal",
+    sourcePath: rolloutPath,
+    reasonCode: deferral.reasonCode,
+    errorClass: deferral.errorClass,
+    safeDetail: { message: deferral.message },
+    failedAtMs: DEFERRED_AT_MS,
+    nextRetryMs: DEFERRED_AT_MS + 60_000,
+  });
+  return rolloutPath;
+}
+
+function deferredRows(
+  runId: string,
+): { readonly state: string; readonly resolution_actor: string | null }[] {
+  return driver
+    .prepareState<
+      [string],
+      { readonly state: string; readonly resolution_actor: string | null }
+    >(
+      "SELECT state, resolution_actor FROM run_recovery_deferred WHERE run_id = ? ORDER BY block_id",
+    )
+    .all(runId)
+    .map((row) => ({ ...row }));
+}
 
 function insertAgentRun(params: {
   readonly id: string;

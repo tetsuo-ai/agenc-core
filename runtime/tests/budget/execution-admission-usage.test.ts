@@ -1,11 +1,16 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ExecutionAdmissionClient } from "../../src/budget/admission-client.js";
 import type { AdmissionUsageSummary } from "../../src/budget/admission-types.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
+import { runAdmittedModelCall } from "../../src/budget/admitted-model-call.js";
+import { GeminiProvider } from "../../src/llm/providers/gemini/index.js";
+import { createGeminiEndpointPlan } from "../../src/llm/providers/gemini/endpoint-plan.js";
+import { isLLMPreGenerationRejection } from "../../src/llm/errors.js";
+import type { Session } from "../../src/session/session.js";
 
 let home: string;
 let workspace: string;
@@ -51,6 +56,52 @@ function observe(client: ExecutionAdmissionClient) {
 }
 
 describe("canonical allocation usage observers", () => {
+  it("does not exhaust a Goal on rejected Gemini calls, but retains uncertain spend and bills successful cached/thinking usage", async () => {
+    const parent = kernel.bindClient({ cwd: workspace,
+      scope: { runId: "goal", sessionId: "goal", autonomous: false, maxCostUsd: 20 },
+    });
+    const child = parent.forSession({ runId: "child", sessionId: "child" });
+    const uncertain = await acquire(child, "disconnected", 0.5);
+    child.markDispatched(uncertain.reservation.reservationId, { boundary: "provider_wire" });
+    child.holdUnknown(uncertain.reservation.reservationId, "connection lost");
+    let status = 429;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (url) => {
+      if (String(url).includes(":countTokens")) return Response.json({ totalTokens: 23_917 });
+      if (status !== 200) return Response.json({ error: { code: status, message: "request rejected" } }, { status });
+      return new Response(`data: ${JSON.stringify({
+        candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+        usageMetadata: { promptTokenCount: 100, cachedContentTokenCount: 20,
+          candidatesTokenCount: 5, thoughtsTokenCount: 10, totalTokenCount: 115 },
+      })}\n\n`, { headers: { "content-type": "text/event-stream" } });
+    });
+    const provider = new GeminiProvider({ model: "gemini-3.8-flash", fetchImpl,
+      endpointPlan: createGeminiEndpointPlan(),
+      credentialPlan: { kind: "api-key", credential: "test-only", source: "factory" },
+    });
+    const session = { conversationId: "child", services: { executionAdmission: child, admissionRequired: true }, abortTerminal: vi.fn() } as unknown as Session;
+    const messages = [{ role: "user" as const, content: "hello" }];
+    const call = (stepId: string) => runAdmittedModelCall({ session, provider, messages,
+      options: { maxOutputTokens: 65_536 }, stepId, model: "gemini-3.8-flash", providerName: "gemini",
+      invoke: options => provider.chatStream(messages, () => {}, options),
+    });
+    // 80 x $0.26369775 would exceed the $20 cap if rejections kept their holds.
+    for (let attempt = 0; attempt < 80; attempt++) {
+      status = attempt < 78 ? 429 : 402;
+      const error = await call(`rejected:${attempt}`).catch(error => error);
+      expect(isLLMPreGenerationRejection(error, "gemini"), String(error)).toBe(true);
+    }
+    expect(parent.getUsageSummary?.()).toMatchObject({ costUsd: 0, heldCostUsd: 0.5, hasUnknownCost: true, totalTokens: 0 });
+    status = 200;
+    await call("success");
+    expect(parent.getUsageSummary?.()).toMatchObject({ costUsd: 0.00011775, heldCostUsd: 0.5, totalTokens: 115 });
+    // The failed request's cost stays conservative across restart too.
+    kernel.close();
+    kernel = new ExecutionAdmissionKernel({ agencHome: home });
+    const restored = kernel.bindClient({ cwd: workspace,
+      scope: { runId: "goal", sessionId: "goal", autonomous: false, maxCostUsd: 20 },
+    });
+    expect(restored.getUsageSummary?.()).toMatchObject({ costUsd: 0.00011775, heldCostUsd: 0.5, hasUnknownCost: true });
+  });
   it("reports descendants once without rewriting their journal identity", async () => {
     const parent = bind("parent");
     const child = parent.forSession({ runId: "child", sessionId: "child" });

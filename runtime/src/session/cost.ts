@@ -320,27 +320,68 @@ const COST_TIER_O4_MINI = openAiTier({
   fast: [2, 8, 0.5],
 });
 
+/** A Gemini row in USD per 1M tokens: input, output, cached input. */
+type GeminiRateRow = readonly [input: number, output: number, cachedInput: number];
+
+/** Gemini Pro models bill a prompt over this many tokens at the long rates. */
+const GEMINI_LONG_CONTEXT_ABOVE_INPUT_TOKENS = 200_000;
+
+function geminiRates(
+  [input, output, cachedInput]: GeminiRateRow,
+): Readonly<ModelCostEntry> {
+  return Object.freeze({
+    inputUsdPer1K: input / 1000,
+    outputUsdPer1K: output / 1000,
+    // promptTokenCount includes the cachedContentTokenCount share
+    // (ai.google.dev/api/generate-content#UsageMetadata).
+    cachedInputUsdPer1K: cachedInput / 1000,
+    cachedInputIncludedInInputTokens: true,
+  });
+}
+
+function geminiTier(
+  standard: GeminiRateRow,
+  longContext?: GeminiRateRow,
+): Readonly<ModelCostEntry> {
+  return Object.freeze({
+    ...geminiRates(standard),
+    ...(longContext !== undefined
+      ? {
+          longContext: Object.freeze({
+            aboveInputTokens: GEMINI_LONG_CONTEXT_ABOVE_INPUT_TOKENS,
+            rates: geminiRates(longContext),
+          }),
+        }
+      : {}),
+  });
+}
+
+// Gemini rows from the paid Standard table of
+// ai.google.dev/gemini-api/docs/pricing, read 2026-09-26. Implicit caching
+// is on by default for Gemini 2.5 and newer, so a repeated prefix bills at the
+// cached rate. The 3.8, 3.7 and 3.6 Flash rates are introductory through
+// 2026-12-31; from 2027-01-01 they are $1.50 / $7.50 / $0.15, and this table
+// has no date tier, so those rows need that update then. Text and image input
+// rates only; audio input costs more on the Flash-Lite and 2.5 Flash rows.
+const COST_TIER_GEMINI_3_1_PRO = geminiTier([2, 12, 0.2], [4, 18, 0.4]);
+const COST_TIER_GEMINI_3_FLASH = geminiTier([0.75, 3.75, 0.075]);
+const COST_TIER_GEMINI_3_5_FLASH = geminiTier([1.5, 9, 0.15]);
+const COST_TIER_GEMINI_3_FLASH_LITE = geminiTier([0.3, 2.5, 0.03]);
+const COST_TIER_GEMINI_3_1_FLASH_LITE = geminiTier([0.25, 1.5, 0.025]);
+const COST_TIER_GEMINI_3_FLASH_PREVIEW = geminiTier([0.5, 3, 0.05]);
+const COST_TIER_GEMINI_2_5_PRO = geminiTier([1.25, 10, 0.125], [2.5, 15, 0.25]);
+const COST_TIER_GEMINI_2_5_FLASH = geminiTier([0.3, 2.5, 0.03]);
+const COST_TIER_GEMINI_2_5_FLASH_LITE = geminiTier([0.1, 0.4, 0.01]);
+
+function geminiCostAliases(
+  model: string,
+  entry: Readonly<ModelCostEntry>,
+): Record<string, Readonly<ModelCostEntry>> {
+  return { [`gemini:${model}`]: entry, [model]: entry };
+}
+
 // Official DeepSeek API prices retrieved 2026-08-24:
 // https://api-docs.deepseek.com/quick_start/pricing/
-const COST_TIER_GEMINI_3_1_PRO = {
-  inputUsdPer1K: 0.002,
-  outputUsdPer1K: 0.012,
-} as const;
-const COST_TIER_GEMINI_3_FLASH = {
-  inputUsdPer1K: 0.00075,
-  outputUsdPer1K: 0.00375,
-} as const;
-const COST_TIER_GEMINI_3_FLASH_LITE = {
-  inputUsdPer1K: 0.0003,
-  outputUsdPer1K: 0.0025,
-} as const;
-// 3.1 Flash Lite $0.25/$1.50 per M (openrouter.ai/api/v1/models pass-through
-// of Google's list price, 2026-09-11; ai.google.dev's pricing page needs a
-// sign-in from this host).
-const COST_TIER_GEMINI_3_1_FLASH_LITE = {
-  inputUsdPer1K: 0.00025,
-  outputUsdPer1K: 0.0015,
-} as const;
 const COST_TIER_DEEPSEEK_V4_FLASH: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.00014,
   outputUsdPer1K: 0.00028,
@@ -467,6 +508,9 @@ const COST_TIER_MINIMAX_M3: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.0003,
   outputUsdPer1K: 0.0012,
   cachedInputUsdPer1K: 0.00006,
+  // MiniMax is served over Chat Completions, whose prompt_tokens include the
+  // cached_tokens it also reports, as for the other Chat Completions tiers.
+  cachedInputIncludedInInputTokens: true,
   cacheCreationUsdPer1K: 0.000375,
   webSearchUsdPerRequest: 0,
 });
@@ -474,6 +518,7 @@ const COST_TIER_MINIMAX_M2_7_HIGHSPEED: Readonly<ModelCostEntry> = Object.freeze
   inputUsdPer1K: 0.0006,
   outputUsdPer1K: 0.0024,
   cachedInputUsdPer1K: 0.00006,
+  cachedInputIncludedInInputTokens: true,
   cacheCreationUsdPer1K: 0.000375,
   webSearchUsdPerRequest: 0,
 });
@@ -481,6 +526,7 @@ const COST_TIER_MINIMAX_M2: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.0003,
   outputUsdPer1K: 0.0012,
   cachedInputUsdPer1K: 0.00003,
+  cachedInputIncludedInInputTokens: true,
   cacheCreationUsdPer1K: 0.000375,
   webSearchUsdPerRequest: 0,
 });
@@ -488,6 +534,7 @@ const COST_TIER_MINIMAX_M2_HIGHSPEED: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.0006,
   outputUsdPer1K: 0.0024,
   cachedInputUsdPer1K: 0.00003,
+  cachedInputIncludedInInputTokens: true,
   cacheCreationUsdPer1K: 0.000375,
   webSearchUsdPerRequest: 0,
 });
@@ -572,11 +619,17 @@ const COST_TIER_GROK_4X_NON_REASONING: Readonly<ModelCostEntry> = Object.freeze(
   webSearchUsdPerRequest: 0.01,
 });
 
-/** Official Grok 4.5 token pricing, including prompt-cache reads. */
+/**
+ * Official Grok 4.5 token pricing, including prompt-cache reads. xAI counts
+ * cached tokens inside the prompt tokens it reports (its prompt caching docs:
+ * "prompt_tokens: 125 with cached_tokens: 98"), so the cached part is billed
+ * at the cached rate only, not also at the input rate.
+ */
 const COST_TIER_GROK_45: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.002,
   outputUsdPer1K: 0.006,
   cachedInputUsdPer1K: 0.0005,
+  cachedInputIncludedInInputTokens: true,
   webSearchUsdPerRequest: 0.01,
 });
 
@@ -593,6 +646,7 @@ const COST_TIER_GROK_4_6_AND_4_7: Readonly<ModelCostEntry> = Object.freeze({
     inputUsdPer1K: 0.004,
     outputUsdPer1K: 0.012,
     cachedInputUsdPer1K: 0.001,
+    cachedInputIncludedInInputTokens: true,
     webSearchUsdPerRequest: 0.01,
   }),
 });
@@ -782,34 +836,18 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     "kimi:kimi-k2.7-code": COST_TIER_KIMI_K27_CODE,
     "kimi:kimi-k2.7-code-highspeed": COST_TIER_KIMI_K27_CODE_HIGHSPEED,
     "kimi:kimi-k2.6": COST_TIER_KIMI_K26,
-    "gemini:gemini-2.5-pro": {
-      inputUsdPer1K: 0.00125,
-      outputUsdPer1K: 0.01,
-    },
-    "gemini-2.5-pro": {
-      inputUsdPer1K: 0.00125,
-      outputUsdPer1K: 0.01,
-    },
-    // Gemini 3.x line, ai.google.dev/gemini-api/docs/pricing (2026-08):
-    // 3.1 Pro preview $2/$12 per M (<=200k-prompt tier); 3.7/3.6/3.5
-    // Flash share $0.75/$3.75 (intro pricing through 2026); Flash-Lite
-    // $0.30/$2.50.
-    "gemini:gemini-3.1-pro-preview": COST_TIER_GEMINI_3_1_PRO,
-    "gemini-3.1-pro-preview": COST_TIER_GEMINI_3_1_PRO,
-    // 3.8 Flash lists at the same $0.75/$3.75 as 3.7 (openrouter pass-through
-    // of Google's price, 2026-09-11).
-    "gemini:gemini-3.8-flash": COST_TIER_GEMINI_3_FLASH,
-    "gemini-3.8-flash": COST_TIER_GEMINI_3_FLASH,
-    "gemini:gemini-3.7-flash": COST_TIER_GEMINI_3_FLASH,
-    "gemini-3.7-flash": COST_TIER_GEMINI_3_FLASH,
-    "gemini:gemini-3.6-flash": COST_TIER_GEMINI_3_FLASH,
-    "gemini-3.6-flash": COST_TIER_GEMINI_3_FLASH,
-    "gemini:gemini-3.5-flash": COST_TIER_GEMINI_3_FLASH,
-    "gemini-3.5-flash": COST_TIER_GEMINI_3_FLASH,
-    "gemini:gemini-3.1-flash-lite": COST_TIER_GEMINI_3_1_FLASH_LITE,
-    "gemini-3.1-flash-lite": COST_TIER_GEMINI_3_1_FLASH_LITE,
-    "gemini:gemini-3.5-flash-lite": COST_TIER_GEMINI_3_FLASH_LITE,
-    "gemini-3.5-flash-lite": COST_TIER_GEMINI_3_FLASH_LITE,
+    // Gemini rates and sources sit with the COST_TIER_GEMINI_* rows above.
+    ...geminiCostAliases("gemini-3.1-pro-preview", COST_TIER_GEMINI_3_1_PRO),
+    ...geminiCostAliases("gemini-3.8-flash", COST_TIER_GEMINI_3_FLASH),
+    ...geminiCostAliases("gemini-3.7-flash", COST_TIER_GEMINI_3_FLASH),
+    ...geminiCostAliases("gemini-3.6-flash", COST_TIER_GEMINI_3_FLASH),
+    ...geminiCostAliases("gemini-3.5-flash", COST_TIER_GEMINI_3_5_FLASH),
+    ...geminiCostAliases("gemini-3.5-flash-lite", COST_TIER_GEMINI_3_FLASH_LITE),
+    ...geminiCostAliases("gemini-3.1-flash-lite", COST_TIER_GEMINI_3_1_FLASH_LITE),
+    ...geminiCostAliases("gemini-3-flash-preview", COST_TIER_GEMINI_3_FLASH_PREVIEW),
+    ...geminiCostAliases("gemini-2.5-pro", COST_TIER_GEMINI_2_5_PRO),
+    ...geminiCostAliases("gemini-2.5-flash", COST_TIER_GEMINI_2_5_FLASH),
+    ...geminiCostAliases("gemini-2.5-flash-lite", COST_TIER_GEMINI_2_5_FLASH_LITE),
     "mistral:mistral-medium-latest": COST_TIER_MISTRAL_MEDIUM_3_5,
     "mistral-medium-latest": COST_TIER_MISTRAL_MEDIUM_3_5,
     "nvidia-nim:nvidia/llama-3.1-nemotron-70b-instruct": DEFAULT_UNKNOWN_MODEL_COST,

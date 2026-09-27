@@ -500,6 +500,50 @@ type LinuxCgroupBoundary = {
 const linuxCgroupBoundaries = new WeakMap<object, LinuxCgroupBoundary>();
 const windowsJobBoundaries = new WeakSet<object>();
 const posixOwnerWatchdogs = new WeakMap<object, ChildProcess>();
+/**
+ * Contained launches that were abandoned before the command started: the
+ * gate was killed while it still held the command because its owner
+ * watchdog never confirmed. The supervisor reports these as spawn errors
+ * with this reason, not as a command that ran and was killed with no output.
+ */
+const containedLaunchFailures = new WeakMap<object, Error>();
+
+/**
+ * How long a contained command waits for its owner watchdog before the
+ * launch is abandoned. The command has not started while it waits, so a
+ * longer wait costs only time. On macOS the watchdog is a fresh Node process
+ * that snapshots the whole process table before it reports ready; on a busy
+ * or swapping machine that took more than the old 2 s, and every command
+ * launched then was killed before it ran (a Goal's worktree step reported
+ * its base commit as missing).
+ */
+const CONTAINED_WATCHDOG_READY_TIMEOUT_MS = 15_000;
+let containedWatchdogReadyTimeoutMs = CONTAINED_WATCHDOG_READY_TIMEOUT_MS;
+
+/** Tests only: shorten the watchdog readiness deadline. Returns a restore function. */
+export function setContainedWatchdogReadyTimeoutForTesting(ms: number): () => void {
+  const previous = containedWatchdogReadyTimeoutMs;
+  containedWatchdogReadyTimeoutMs = ms;
+  return () => {
+    containedWatchdogReadyTimeoutMs = previous;
+  };
+}
+
+/**
+ * Arm a readiness deadline that cannot beat a readiness reply that already
+ * arrived. libuv runs expired timers before it polls for I/O, so after this
+ * event loop was blocked past the deadline, a plain timer fired first and
+ * abandoned a launch whose watchdog had long since answered. Deciding one
+ * turn later lets the poll phase deliver that reply first; `onExpired` must
+ * do nothing once the launch was released.
+ */
+function armReadinessDeadline(onExpired: () => void): ReturnType<typeof setTimeout> {
+  const timer = setTimeout(() => {
+    setImmediate(onExpired);
+  }, containedWatchdogReadyTimeoutMs);
+  timer.unref?.();
+  return timer;
+}
 
 type LinuxSubreaperControlSignal = "SIGTERM" | "SIGUSR2";
 
@@ -1107,21 +1151,26 @@ function launchPosixOwnerWatchdog(
     watchdog.unref();
     gate.end(gatePayload);
   };
-  const fail = (): void => {
+  const fail = (why: string): void => {
     if (released) return;
     released = true;
     clearTimeout(startupTimer);
     readiness.removeAllListeners();
+    containedLaunchFailures.set(
+      child,
+      new Error(`the command did not start: its process watchdog ${why}`),
+    );
     safeKill(child, "SIGKILL");
     gate.destroy();
   };
-  const startupTimer = setTimeout(fail, 2_000);
-  startupTimer.unref?.();
+  const startupTimer = armReadinessDeadline(() =>
+    fail(`was not ready within ${containedWatchdogReadyTimeoutMs} ms`),
+  );
   readiness.once("data", release);
-  readiness.once("error", fail);
-  watchdog.once("error", fail);
+  readiness.once("error", () => fail("readiness pipe failed"));
+  watchdog.once("error", () => fail("could not be started"));
   watchdog.once("exit", () => {
-    if (!released) fail();
+    if (!released) fail("exited before it was ready");
   });
 }
 
@@ -1142,16 +1191,15 @@ function launchLinuxCgroupOwnerWatchdog(
 ): void {
   const state = getLinuxCgroupOwnerWatchdog();
   const id = `${process.pid}-${++linuxCgroupWatchdogRegistrationSequence}`;
-  const timer = setTimeout(() => {
+  const timer = armReadinessDeadline(() => {
     failLinuxCgroupWatchdogRegistration(
       state,
       id,
       new Error(
-        `contained process watchdog registration timed out for ${cgroupPath}`,
+        `contained process watchdog registration timed out after ${containedWatchdogReadyTimeoutMs} ms for ${cgroupPath}`,
       ),
     );
-  }, 2_000);
-  timer.unref?.();
+  });
   state.pending.set(id, { child, gate, gatePayload, timer });
   linuxCgroupWatchdogRegistrations.set(child, { state, id });
 
@@ -1274,12 +1322,16 @@ function handleLinuxCgroupWatchdogOutput(
 function failLinuxCgroupWatchdogRegistration(
   state: LinuxCgroupWatchdogState,
   id: string,
-  _error: unknown,
+  error: unknown,
 ): void {
   const pending = state.pending.get(id);
   if (pending === undefined) return;
   state.pending.delete(id);
   clearTimeout(pending.timer);
+  containedLaunchFailures.set(
+    pending.child,
+    new Error(`the command did not start: ${toError(error).message}`),
+  );
   linuxCgroupWatchdogRegistrations.delete(pending.child);
   const boundary = linuxCgroupBoundaries.get(pending.child);
   if (boundary !== undefined) signalLinuxCgroup(boundary, "SIGKILL");
@@ -1930,6 +1982,13 @@ function runSupervisedProcessCommand(
       exitCode = code;
       exitSignal = signal;
       closed = true;
+      // The launch was abandoned before the command started: say so, instead
+      // of reporting a command that ran and was killed with no output.
+      const launchFailure = containedLaunchFailures.get(child);
+      if (launchFailure !== undefined && stopReason === undefined) {
+        processError ??= launchFailure;
+        requestStop("spawn_error");
+      }
       if (stopReason !== undefined) {
         maybeFinish();
         return;

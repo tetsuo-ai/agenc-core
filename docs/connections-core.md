@@ -39,8 +39,9 @@ files, symlinks, junctions, hard links, binary files, and files over 256 KiB.
 
 Requests remain bounded while long turns run, so polling, cancellation, and
 approval can proceed concurrently. Mutation request IDs cannot be replayed across
-relay reconnects. The grant retains up to 4,096 mutation IDs; further mutations
-require a fresh pairing. Read polling does not consume that limit. Responses
+relay reconnects. The grant retains its most recent 4,096 mutation IDs and forgets
+the oldest when full; a new explicit pairing resets the ledger. Read polling does
+not consume that limit. Responses
 exceeding the relay's 1 MiB envelope limit return `REMOTE_RESPONSE_LIMIT`; transcript
 pagination is not implemented yet. Short-lived browser tickets reconnect normally.
 

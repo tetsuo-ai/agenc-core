@@ -728,8 +728,14 @@ export interface LocalRuntimeBootstrap {
    *
    * Optional so the many test doubles that stand in for a bootstrap keep
    * compiling; `bootstrapLocalRuntimeSession` always provides it.
+   *
+   * `beforeResume` commits caller-owned startup authority after eligibility
+   * checks and before the continuation's first durable write. A failure
+   * prevents the turn from starting.
    */
-  readonly runDeferredDurableTurnResume?: () => Promise<DurableResumeAttempt>;
+  readonly runDeferredDurableTurnResume?: (
+    beforeResume?: () => void,
+  ) => Promise<DurableResumeAttempt>;
 }
 
 export interface PreparedConfiguredExecutionAuthority {
@@ -828,6 +834,7 @@ export async function bootstrapLocalRuntimeSession(
     options.runtimeOptions ??
     resolveAgentRuntimeOptions(env, {
       simpleMode: cli.simpleMode === true,
+      ...(cli.lightMode === true ? { lightMode: true } : {}),
       dangerouslyBypassApprovalsAndSandbox: (() => {
         const sandboxBypass = resolveStartupSandboxBypass(cli, {
           cwd: process.cwd(),
@@ -1337,6 +1344,7 @@ async function bootstrapLocalRuntimeSessionScoped(
     toolRegistryOptions: {
       ...(options.toolRegistryOptions ?? {}),
       unifiedExecManager,
+      lightMode: runtimeOptions.lightMode === true,
       sandboxExecutionBroker,
       codeModeService,
       ...(startup.config.browser !== undefined
@@ -1588,7 +1596,9 @@ async function bootstrapLocalRuntimeSessionScoped(
     permissionContext: toolPermissionContext,
     profile: coordinatorModeEnabled
       ? "coordinator"
-      : usesLocalToolProfile(resolvedProvider)
+      : runtimeOptions.lightMode === true
+        ? "light"
+        : usesLocalToolProfile(resolvedProvider)
         ? "compact"
         : "standard",
   });
@@ -2358,10 +2368,12 @@ async function bootstrapLocalRuntimeSessionScoped(
       memoryMdPath,
       shutdown,
       autonomousModeEnabled,
-      runDeferredDurableTurnResume: async (): Promise<DurableResumeAttempt> => {
+      runDeferredDurableTurnResume: async (
+        beforeResume,
+      ): Promise<DurableResumeAttempt> => {
         const manager = conversationThreadManagerForReturn;
         if (manager === null) return { resumed: false };
-        return manager.runDeferredDurableTurnResume(session);
+        return manager.runDeferredDurableTurnResume(session, beforeResume);
       },
     };
   } catch (err) {

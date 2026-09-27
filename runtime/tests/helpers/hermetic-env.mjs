@@ -196,6 +196,8 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_WALLET_VAULT_PASSPHRASE',
   // arbitrary env-file injection
   'AGENC_ENV_FILE',
+  // system prompt layout (a test that needs it sets it explicitly)
+  'AGENC_CACHE_SESSION_TAIL',
   // config-behavior overrides (src/config/env.ts applyEnvOverrides et al.)
   'AGENC_PROFILE',
   'AGENC_PROVIDER',
@@ -208,11 +210,15 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_CAPPED_DEFAULT_MAX_OUTPUT_TOKENS',
   'AGENC_MAX_BUDGET_USD',
   'AGENC_AUTH_MANAGED_KEYS_ENABLED',
+  // system prompt head selection (a test that needs it sets it explicitly)
+  'AGENC_LEAN_SYSTEM_PROMPT',
   // ambient authorization/profile switches must not weaken a default worker
   'AGENC_ALLOW_UNTRUSTED_HOOKS',
   'AGENC_DISABLE_COMMAND_INJECTION_CHECK',
   'AGENC_SUBPROCESS_ENV_NO_SCRUB',
   'USER_TYPE',
+  // advertised tool set (a test that needs it sets it explicitly)
+  'AGENC_DEFER_RARE_TOOLS',
   // endpoints and subprocess/service activation
   'AGENC_BACKEND_URL',
   'AGENC_DAEMON_URL',
@@ -222,8 +228,14 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_INTERNAL_ARTIFACTORY_BASE_URL',
   'AGENC_INTERNAL_ARTIFACTORY_REGISTRY_URL',
   'AGENC_AUTO_BACKGROUND_TASKS',
+  // FileRead line-number format (a test that needs it sets it explicitly)
+  'AGENC_SPARSE_LINE_NUMBERS',
   // host-managed provider routing
   'AGENC_PROVIDER_MANAGED_BY_HOST',
+  // opt-in provider wire changes (tests that need one set it explicitly)
+  'AGENC_OPENAI_REASONING_REPLAY',
+  // session request-layout switch (a test that needs it sets it explicitly)
+  'AGENC_SHARED_PREFIX_TAIL',
   // MCP process injection, mutation, OAuth, and sizing overrides
   'AGENC_MCP_SERVERS',
   'AGENC_MCP_ALLOW_MUTATIONS',

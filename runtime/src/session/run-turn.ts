@@ -127,6 +127,10 @@ import {
   type LiveInstructionPolicy,
 } from "../prompts/live-instructions.js";
 import { attachmentsToMessages } from "../prompts/attachments/messages.js";
+import {
+  appendVolatileInstructions,
+  sessionTailCacheEnabled,
+} from "./session-tail-cache.js";
 import { projectRetainedAttachments } from "./attachment-retention.js";
 import { extractMentionAllowedRoots } from "../prompts/file-mentions.js";
 import { seedFileMentionAttachmentSessionReads } from "./file-mention-session-reads.js";
@@ -140,7 +144,8 @@ import {
   isTransientProviderError,
   isWithheldMaxOutputTokens,
 } from "../recovery/api-errors.js";
-import { abortableSleep, reconnectWithBackoff } from "../recovery/reconnection.js";
+import { waitForProviderRetry } from "../recovery/provider-wait.js";
+import { abortableSleep, rateLimitRetryNotice, reconnectWithBackoff } from "../recovery/reconnection.js";
 import {
   DEFAULT_PROVIDER_OUTAGE_RETRY_MS,
   DEFAULT_PROVIDER_OUTAGE_WAIT_MS,
@@ -835,6 +840,7 @@ async function prepareSamplingRequestBoundary(
   discoverDirectMcpToolMentions(session, userInput);
   const attachments = await getAttachments({
     sessionKey: session,
+    lightMode: session.services.runtimeOptions?.lightMode === true,
     admittedMemorySelector: createAdmittedMemorySelector(session),
     // Producers hold only an opaque session key, so what they decide is
     // invisible to an operator unless they can report it. Routed to the
@@ -1305,15 +1311,17 @@ async function runSamplingRequest(
     outageRetries += 1;
     waitedMs += delayMs;
     cleanupInterruptedStreamAttempt(state, session, lastError);
-    emitWarning(
-      session.eventLog,
-      session.nextInternalSubId(),
-      "provider_outage_wait",
-      `${session.services.provider.name} unavailable after ${outcome.attempts} attempt(s) ` +
-        `(${errorSummary(lastError)}); retry ${outageRetries} in ${Math.round(delayMs / 1000)} s, ` +
-        `${Math.max(0, Math.round((outage.waitMs - waitedMs) / 60_000))} min of waiting left`,
-    );
-    await abortableSleep(delayMs, signal);
+    const rateLimitNotice = rateLimitRetryNotice(lastError, delayMs);
+    await waitForProviderRetry({
+      session,
+      cause: rateLimitNotice !== undefined ? "provider_rate_limited" : "provider_outage_wait",
+      message: rateLimitNotice ??
+        (`${session.services.provider.name} is unavailable. ` +
+          `Retrying in ${Math.max(1, Math.ceil(delayMs / 1000))} s; ` +
+          `${Math.max(0, Math.round((outage.waitMs - waitedMs) / 60_000))} min of waiting left.`),
+      delayMs,
+      wait: () => abortableSleep(delayMs, signal),
+    });
     if (signal.aborted) throw samplingAbortError(signal, "aborted");
     // The fast recovery counter remains spent. This is a new physical sample,
     // so persist a distinct identity without reusing its unknown reservation.
@@ -1424,11 +1432,6 @@ function turnSignalAbortReason(reason: unknown): TurnAbortReason {
     default:
       return "interrupted";
   }
-}
-
-function errorSummary(err: unknown): string {
-  const text = err instanceof Error ? err.message : String(err);
-  return text.length > 160 ? `${text.slice(0, 157)}...` : text;
 }
 
 /**
@@ -2073,8 +2076,18 @@ async function* runTurnKernelInner(
     ...referenceContextItem,
     instructionEvidence: instructionEnvelope.evidence,
   };
+  // With session-tail caching on, per-turn guidance rides after the volatile
+  // marker so the session-fixed part of the prompt stays byte-identical
+  // across turns and remains in the provider's cached prefix.
+  const volatileTurnGuidance =
+    commons.ledgerRootTurnGuidance !== undefined &&
+    sessionTailCacheEnabled(
+      session.services.userShell?.childEnvironment ??
+        session.services.providerEnvironment,
+      ctx.modelProviderId,
+    );
   const systemPromptWithTrustedTurnGuidance =
-    commons.ledgerRootTurnGuidance === undefined
+    commons.ledgerRootTurnGuidance === undefined || volatileTurnGuidance
       ? instructionEnvelope.text
       : [instructionEnvelope.text, commons.ledgerRootTurnGuidance]
           .filter(
@@ -2082,13 +2095,16 @@ async function* runTurnKernelInner(
               typeof value === "string" && value.length > 0,
           )
           .join("\n\n");
-  const effectiveSystemPrompt =
+  const resolvedSystemPrompt =
     systemPromptWithTrustedTurnGuidance.length > 0
       ? resolveModelInstructionsForTurn(
           ctx,
           systemPromptWithTrustedTurnGuidance,
         )
       : "";
+  const effectiveSystemPrompt = volatileTurnGuidance
+    ? appendVolatileInstructions(resolvedSystemPrompt, [commons.ledgerRootTurnGuidance!])
+    : resolvedSystemPrompt;
   const { system, prior, user } = buildSeedMessages(
     effectiveSystemPrompt.length > 0
       ? { ...opts, systemPrompt: effectiveSystemPrompt }

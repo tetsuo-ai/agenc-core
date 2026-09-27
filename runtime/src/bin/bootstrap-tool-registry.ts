@@ -8,8 +8,10 @@ import {
 } from "../tool-registry.js";
 import { buildWorkflowToolController } from "./workflow-controller.js";
 import { createModelFacingTools } from "./model-facing-tools.js";
+import { sparseLineNumbersEnabled } from "../tools/system/_deps/line-numbers.js";
 import type { CsvAgentJobsRepositoryProvider } from "../app-server/csv-agent-jobs-authority.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
+import { rareToolDeferralEnabled } from "../tools/rare-tool-deferral.js";
 
 export interface BootstrapToolRegistryOptions {
   readonly workspaceRoot: string;
@@ -66,11 +68,17 @@ export function buildBootstrapToolRegistry(
   });
   return buildToolRegistry({
     workspaceRoot: options.workspaceRoot,
+    // Read from the session's captured environment, so a client sets it per
+    // session. An explicit toolRegistryOptions value below still wins.
+    sparseLineNumbers: sparseLineNumbersEnabled(options.environment ?? {}),
     ...(options.agencHome !== undefined
       ? { agencHome: options.agencHome }
       : {}),
     getSession: options.getSession,
     requireAdmission: true,
+    // Read from the session's captured environment, so a client sets it per
+    // session. An explicit toolRegistryOptions value below still wins.
+    deferRareTools: rareToolDeferralEnabled(options.environment ?? {}),
     mcpToolsProvider: options.mcpManager,
     workflowController: buildWorkflowToolController({
       getSession: options.getSession,

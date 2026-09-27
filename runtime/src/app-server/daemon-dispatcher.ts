@@ -34,6 +34,10 @@ import type { RoutinePermissionAuthority } from "../routines/types.js";
 import type { RoutineUpdatedEvent } from "../routines/types.js";
 import { isSafeSessionIdSegment } from "../session/session-store.js";
 import { DaemonOperationTimeoutError } from "./operation-deadline.js";
+import {
+  StartupSessionRestoreAbandonedError,
+  type AgenCDaemonStartupRestoreGate,
+} from "./startup-session-restores.js";
 
 import {
   AgenCDaemonAgentLifecycleError,
@@ -620,6 +624,11 @@ export interface AgenCDaemonDispatcherOptions {
   readonly projectTrust?: AgenCDaemonProjectTrustService;
   readonly pluginSettings?: PluginSettingsService;
   readonly healthStateCounter?: AgenCHealthStateCounter;
+  /**
+   * Sessions open at the daemon's last shutdown that it still restores in
+   * the background. A request naming one waits for its restore to settle.
+   */
+  readonly startupRestores?: AgenCDaemonStartupRestoreGate;
   readonly now?: () => string;
 }
 
@@ -753,6 +762,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #csvJobReview: AgenCCsvJobReviewService | undefined;
   readonly #projectTrust: AgenCDaemonProjectTrustService | undefined;
   readonly #pluginSettings: PluginSettingsService | undefined;
+  readonly #startupRestores: AgenCDaemonStartupRestoreGate | undefined;
   readonly #serverCapabilities: AgenCDaemonServerCapabilities;
   readonly #now: () => string;
 
@@ -790,6 +800,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#csvJobReview = options.csvJobReview;
     this.#projectTrust = options.projectTrust;
     this.#pluginSettings = options.pluginSettings;
+    this.#startupRestores = options.startupRestores;
     this.#authHandlers =
       options.authBackend !== undefined
         ? createAgenCDaemonAuthHandlers(options.authBackend)
@@ -883,6 +894,9 @@ export class AgenCDaemonJsonRpcDispatcher {
     if (connection.remoteAccess) {
       try {
         const params = objectParams(message.params);
+        // The boundary reads the sessions a request names before any handler
+        // runs, so a session still restoring must be restored first.
+        await this.#waitForStartupRestores(message.method, params, INERT_ABORT_SIGNAL);
         await connection.remoteAccess.authorize(message.method, params);
         connection.assertOpen();
         if (message.method !== "initialize" && !connection.initialized) throw new RemoteError("CONNECTION_NOT_INITIALIZED");
@@ -975,10 +989,12 @@ export class AgenCDaemonJsonRpcDispatcher {
 
       if ((REMOTE_METHODS as readonly string[]).includes(method)) {
         if (!this.#remote || !this.#initializeAuthenticator || connection.remoteAccess) return methodNotImplementedResponse(id, method);
+        await this.#waitForStartupRestores(method, params, INERT_ABORT_SIGNAL);
         return successResponse(id, await this.#remote.handle(method as RemoteMethod, params));
       }
       if ((OWNER_TELEGRAM_METHODS as readonly string[]).includes(method)) {
         if (!this.#ownerTelegram || !this.#initializeAuthenticator || connection.remoteAccess) return methodNotImplementedResponse(id, method);
+        await this.#waitForStartupRestores(method, params, INERT_ABORT_SIGNAL);
         return successResponse(id, await this.#ownerTelegram.handle(method as OwnerTelegramMethod, params));
       }
 
@@ -1096,6 +1112,23 @@ export class AgenCDaemonJsonRpcDispatcher {
     return takeRoutinePermissionAuthority(params);
   }
 
+  /**
+   * Wait until every session this request names that the daemon is still
+   * restoring from its last shutdown has settled. The request then runs as it
+   * would have once startup finished. Most requests name none and do not
+   * wait at all.
+   */
+  async #waitForStartupRestores(
+    method: string,
+    params: JsonObject,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const restoring = this.#startupRestores?.waitForRequest(method, params, signal);
+    if (restoring === undefined) return;
+    await restoring;
+    signal.throwIfAborted();
+  }
+
   async #dispatchKnownMethod(
     connection: AgenCDaemonJsonRpcConnection,
     id: RequestId,
@@ -1104,6 +1137,14 @@ export class AgenCDaemonJsonRpcDispatcher {
     signal: AbortSignal,
     message: JsonObject,
   ): Promise<AgenCDaemonResponse> {
+    // Every method that takes a session, agent, run or thread id reaches its
+    // handler through here. Waiting before the switch covers all of them,
+    // including ones added later, and the handler then runs unchanged.
+    const restoring = this.#startupRestores?.waitForRequest(method, params, signal);
+    if (restoring !== undefined) {
+      await restoring;
+      signal.throwIfAborted();
+    }
     switch (method) {
       case "audio.whisper.status":
         if (!this.#whisper || connection.remoteAccess) return methodNotImplementedResponse(id, method);
@@ -3536,6 +3577,7 @@ function validateSessionResolveToolCallParams(
       "attestation",
       "reviewer",
     ],
+    objectFields: ["attempt"],
   });
   validateRequiredString(validated, "session.resolveToolCall", "sessionId");
   const hasEvidenceFields = [
@@ -3545,6 +3587,11 @@ function validateSessionResolveToolCallParams(
     "attestation",
   ].some((field) => Object.prototype.hasOwnProperty.call(validated, field));
   if (!hasEvidenceFields) {
+    if (Object.prototype.hasOwnProperty.call(validated, "attempt")) {
+      throw invalidParams(
+        "session.resolveToolCall attempt requires a disposition with evidence or an operator attestation",
+      );
+    }
     if (validated.toolCallId !== undefined) {
       validateRequiredString(
         validated,
@@ -3558,6 +3605,7 @@ function validateSessionResolveToolCallParams(
     return validated as SessionResolveToolCallLegacyParams;
   }
   validateRequiredString(validated, "session.resolveToolCall", "toolCallId");
+  validateSessionResolveToolCallAttempt(validated);
   const attesting = Object.prototype.hasOwnProperty.call(
     validated,
     "attestation",
@@ -3605,6 +3653,32 @@ function validateSessionResolveToolCallParams(
     );
   }
   return validated as SessionResolveToolCallEvidenceParams;
+}
+
+function validateSessionResolveToolCallAttempt(validated: JsonObject): void {
+  if (!Object.prototype.hasOwnProperty.call(validated, "attempt")) return;
+  const attempt = validated.attempt;
+  if (!isPlainJsonObject(attempt)) {
+    throw invalidParams("session.resolveToolCall attempt must be an object");
+  }
+  validateObjectShape(attempt, {
+    methodName: "session.resolveToolCall.attempt",
+    stringFields: ["runId", "stepId", "unknownEventId"],
+    numberFields: ["unknownSequence"],
+  });
+  for (const field of ["runId", "stepId", "unknownEventId"] as const) {
+    validateRequiredString(attempt, "session.resolveToolCall.attempt", field);
+  }
+  const sequence = attempt.unknownSequence;
+  if (
+    typeof sequence !== "number" ||
+    !Number.isSafeInteger(sequence) ||
+    sequence <= 0
+  ) {
+    throw invalidParams(
+      "session.resolveToolCall attempt.unknownSequence must be a positive integer",
+    );
+  }
 }
 
 function validateSessionMcpAddServerParams(
@@ -4916,6 +4990,10 @@ function mapDispatchError(
 ): AgenCDaemonResponse {
   if (error instanceof AgenCDaemonConnectionClosedError) {
     return errorResponse(id, -32000, error.message, { code: "CONNECTION_CLOSED" });
+  }
+  // The answer a request gets when it arrives during shutdown.
+  if (error instanceof StartupSessionRestoreAbandonedError) {
+    return errorResponse(id, -32000, error.message);
   }
   if (error instanceof WhisperError) return errorResponse(id, error.code === "WHISPER_INVALID_ARGUMENT" ? -32602 : -32000, error.message, { code: error.code });
   if (error instanceof RemoteError) return errorResponse(id, -32000, error.code, { code: error.code });

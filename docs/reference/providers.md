@@ -28,6 +28,9 @@ separate provider route and its paid default remains **`x-ai/grok-4.5`**.
 
 ## Gemini reasoning effort
 
+Core defaults to `gemini-3.8-flash` for the Gemini provider.
+`gemini-3.1-pro-preview` remains selectable through an explicit model setting.
+
 The native Gemini adapter sends an explicit effort as
 `generationConfig.thinkingConfig.thinkingLevel`. The model catalog, `/effort`,
 child-agent and role overrides, and provider/model switch checks use the same
@@ -35,6 +38,7 @@ supported-level metadata.
 
 | Model | Explicit levels | Provider default when omitted |
 | --- | --- | --- |
+| `gemini-3.8-flash` | `low`, `medium`, `high` | `medium` |
 | `gemini-3.1-pro-preview` | `low`, `medium`, `high` | `high` |
 | `gemini-3.7-flash` | `low`, `medium`, `high` | `medium` |
 | `gemini-3.5-flash` | `minimal`, `low`, `medium`, `high` | `medium` |
@@ -159,7 +163,7 @@ they run only through the Grok Build CLI ACP path. See
 | `cerebras` | Cerebras | `gpt-oss-120b` | `https://api.cerebras.ai/v1` | `CEREBRAS_API_KEY` | `CEREBRAS_BASE_URL` | `api-key` |
 | `zai` | Z.AI | `glm-5.3` | `https://api.z.ai/api/paas/v4` | `ZAI_API_KEY` | `ZAI_BASE_URL` | `api-key` |
 | `zai-coding-plan` | Z.AI Coding Plan | `glm-5.3` | `https://api.z.ai/api/coding/paas/v4` | `ZAI_CODING_PLAN_API_KEY` | `ZAI_CODING_PLAN_BASE_URL` | `api-key` |
-| `gemini` | Gemini | `gemini-3.1-pro-preview` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | `GEMINI_BASE_URL` | `api-key` |
+| `gemini` | Gemini | `gemini-3.8-flash` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | `GEMINI_BASE_URL` | `api-key` |
 | `kimi` | Kimi (Moonshot) | `kimi-k3` | `https://api.moonshot.ai/v1` | `MOONSHOT_API_KEY` | _(fixed global endpoint)_ | `api-key` |
 | `mistral` | Mistral | `mistral-medium-latest` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | `MISTRAL_BASE_URL` | `api-key` |
 | `nvidia-nim` | NVIDIA NIM | `nvidia/llama-3.1-nemotron-70b-instruct` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` | `NVIDIA_BASE_URL` | `api-key` |
@@ -600,6 +604,12 @@ as unresolved session state. `closeDanglingFunctionCalls`
 `function_call_output` immediately after every unmatched call so history
 always pairs. The output text is an interrupted marker, not a fake
 success.
+
+OpenAI requests carry no reasoning items unless
+`AGENC_OPENAI_REASONING_REPLAY` is on (off by default; see
+[env.md](env.md)). With it on, the `openai` provider keeps each encrypted
+reasoning item of a Responses call and replays it on later stateless requests
+to the same provider and model, right before the function calls it led to.
 
 `previous_response_id` can only reference a **stored** response. When
 the request snapshot has `store: false` (ChatGPT subscription is always

@@ -1,5 +1,9 @@
 import { describe, expect, test, vi } from "vitest";
 import { AnthropicProvider } from "./adapter.js";
+import {
+  sseResponse,
+  sseResponseThenError,
+} from "./stream-test-helpers.js";
 
 /**
  * Regression coverage for the streaming usage gaps in the Anthropic adapter:
@@ -21,44 +25,6 @@ import { AnthropicProvider } from "./adapter.js";
  * through) and treats any finite non-negative numeric `input_tokens` as
  * authoritative.
  */
-
-/** An SSE response whose body emits `frames`, then errors the stream. */
-function sseResponseThenError(frames: string[], error: Error): Response {
-  const encoder = new TextEncoder();
-  let emitted = false;
-  const body = new ReadableStream<Uint8Array>({
-    pull(controller) {
-      if (!emitted) {
-        for (const frame of frames) {
-          controller.enqueue(encoder.encode(frame));
-        }
-        emitted = true;
-        return;
-      }
-      controller.error(error);
-    },
-  });
-  return new Response(body, {
-    status: 200,
-    headers: { "content-type": "text/event-stream" },
-  });
-}
-
-function sseResponse(frames: string[]): Response {
-  const encoder = new TextEncoder();
-  const body = new ReadableStream<Uint8Array>({
-    start(controller) {
-      for (const frame of frames) {
-        controller.enqueue(encoder.encode(frame));
-      }
-      controller.close();
-    },
-  });
-  return new Response(body, {
-    status: 200,
-    headers: { "content-type": "text/event-stream" },
-  });
-}
 
 const TEXT_DELTA =
   'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}\n\n';

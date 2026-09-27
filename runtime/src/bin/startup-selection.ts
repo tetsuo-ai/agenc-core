@@ -49,6 +49,7 @@ export interface StartupCliFlags {
   readonly bypassApprovals?: boolean;
   readonly autonomousMode?: boolean;
   readonly simpleMode?: boolean;
+  readonly lightMode?: boolean;
 }
 
 /**
@@ -124,6 +125,7 @@ export function readStartupCliFlags(
     : explicitPermissionMode;
   const autonomousMode = optionArgs.includes(AUTONOMOUS_FLAG);
   const simpleMode = optionArgs.includes("--bare");
+  const lightMode = optionArgs.includes("--light");
   return Object.freeze({
     ...(provider ? { provider } : {}),
     ...(model ? { model } : {}),
@@ -137,6 +139,7 @@ export function readStartupCliFlags(
     ...(bypassApprovals ? { bypassApprovals: true } : {}),
     ...(autonomousMode ? { autonomousMode: true } : {}),
     ...(simpleMode ? { simpleMode: true } : {}),
+    ...(lightMode ? { lightMode: true } : {}),
   });
 }
 

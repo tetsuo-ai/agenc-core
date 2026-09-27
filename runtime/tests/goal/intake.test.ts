@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
-import { GOAL_INTEGRITY_CONSTRAINT } from "../../src/goal/goal.js";
+import {
+  GOAL_INTEGRITY_CONSTRAINT,
+  GOAL_MAX_VERIFICATION_COMMANDS,
+  GOAL_OBJECTIVE_MAX_CHARS,
+} from "../../src/goal/goal.js";
 import {
   buildSessionGoal,
   detectVerificationCommands,
@@ -14,6 +18,7 @@ import {
 describe("parseGoalCommand", () => {
   test("no argument is status; lifecycle words and clear aliases are recognized", () => {
     expect(parseGoalCommand("  ")).toEqual({ kind: "status" });
+    expect(parseGoalCommand("status")).toEqual({ kind: "status" });
     expect(parseGoalCommand("pause")).toEqual({ kind: "pause" });
     expect(parseGoalCommand("Resume")).toEqual({ kind: "resume" });
     for (const alias of ["clear", "stop", "off", "cancel", "reset", "none"]) {
@@ -41,15 +46,34 @@ describe("parseGoalCommand", () => {
 
   test.each([
     ["--verify", "needs a value"],
+    ['do it --verify "   "', "needs a command"],
     ["do it --max-rounds 0", "whole number"],
     ["do it --max-rounds 101", "whole number"],
     ["do it --max-cost -1", "positive number"],
+    ["do it --max-cost 0", "positive number"],
     ["--no-verify", "needs an objective"],
     ["do it --no-verify --verify x=y", "contradict"],
   ])("rejects %j", (args, fragment) => {
     const parsed = parseGoalCommand(args);
     expect(parsed.kind).toBe("error");
     if (parsed.kind === "error") expect(parsed.message).toContain(fragment);
+  });
+
+  test("accepts the round and cost bounds and refuses an oversized objective or verify list", () => {
+    expect(parseGoalCommand("ship --max-rounds 1 --max-cost 0.01")).toMatchObject({
+      kind: "set",
+      request: { objective: "ship", maxRounds: 1, maxCostUsd: 0.01 },
+    });
+    expect(parseGoalCommand("ship --max-rounds 100")).toMatchObject({
+      request: { maxRounds: 100 },
+    });
+    const tooLong = parseGoalCommand(`${"x".repeat(GOAL_OBJECTIVE_MAX_CHARS + 1)}`);
+    expect(tooLong.kind).toBe("error");
+    if (tooLong.kind === "error") expect(tooLong.message).toContain(String(GOAL_OBJECTIVE_MAX_CHARS));
+    const tooMany = Array.from({ length: GOAL_MAX_VERIFICATION_COMMANDS + 1 }, (_, index) => `--verify c${index}=true`).join(" ");
+    const parsed = parseGoalCommand(`ship ${tooMany}`);
+    expect(parsed.kind).toBe("error");
+    if (parsed.kind === "error") expect(parsed.message).toContain(String(GOAL_MAX_VERIFICATION_COMMANDS));
   });
 });
 
@@ -84,6 +108,30 @@ describe("detectVerificationCommands", () => {
 
   test("a python project without tests proves nothing, so nothing is detected", () => {
     writeFileSync(join(dir, "requirements.txt"), "requests\n");
+    expect(detectVerificationCommands(dir)).toEqual([]);
+  });
+
+  test("pytest.ini, conftest.py, or a test/ directory are enough python proof", () => {
+    writeFileSync(join(dir, "pyproject.toml"), "");
+    writeFileSync(join(dir, "conftest.py"), "");
+    expect(detectVerificationCommands(dir)).toEqual([{ label: "tests", script: "python -m pytest" }]);
+    const ini = mkdtempSync(join(tmpdir(), "agenc-goal-pytest-ini-"));
+    try {
+      writeFileSync(join(ini, "requirements.txt"), "");
+      writeFileSync(join(ini, "pytest.ini"), "[pytest]\n");
+      expect(detectVerificationCommands(ini)).toEqual([{ label: "tests", script: "python -m pytest" }]);
+    } finally { rmSync(ini, { recursive: true, force: true }); }
+    const unit = mkdtempSync(join(tmpdir(), "agenc-goal-py-test-"));
+    try {
+      writeFileSync(join(unit, "pyproject.toml"), "");
+      mkdirSync(join(unit, "test"));
+      expect(detectVerificationCommands(unit)).toEqual([{ label: "tests", script: "python -m pytest" }]);
+    } finally { rmSync(unit, { recursive: true, force: true }); }
+  });
+
+  test("an unreadable cwd and a Makefile without a test target detect nothing", () => {
+    expect(detectVerificationCommands(join(dir, "missing"))).toEqual([]);
+    writeFileSync(join(dir, "Makefile"), "build:\n\tcc x.c\n");
     expect(detectVerificationCommands(dir)).toEqual([]);
   });
 });

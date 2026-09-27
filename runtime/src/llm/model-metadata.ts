@@ -264,11 +264,22 @@ export class ModelMetadataResolver {
     source: ModelMetadataSource,
     usedFallbackModelMetadata: boolean,
   ): ResolvedModelMetadata {
+    const builtIn = inferBuiltInMetadata(params.provider, params.model);
     // An explicit output cap overrides that field, not the model's remaining
     // metadata. Dropping its known context window makes session admission fail.
-    const mergedMetadata = source === "explicit_config"
-      ? { ...inferBuiltInMetadata(params.provider, params.model), ...metadata }
+    const sourced = source === "explicit_config"
+      ? { ...builtIn, ...metadata }
       : metadata;
+    // Any source can know a model's output limit and not its window: an
+    // explicit cap, or a models list that names the window in a field not read
+    // here. A session without a window fails every turn before sending it, so
+    // the built-in window stays, and a model nothing here knows plans against
+    // the conservative window, as it does when no source answers at all.
+    const knownContextWindow = sourced.contextWindow ?? builtIn?.contextWindow;
+    const mergedMetadata = {
+      ...sourced,
+      contextWindow: knownContextWindow ?? CONSERVATIVE_CONTEXT_WINDOW_TOKENS,
+    };
     const effectiveMetadata = applyRegisteredModelOutputContract(
       params,
       mergedMetadata,
@@ -280,15 +291,14 @@ export class ModelMetadataResolver {
       onWarn: this.warnOnce.bind(this),
     });
     return {
-      ...(mergedMetadata.contextWindow !== undefined
-        ? { contextWindow: mergedMetadata.contextWindow }
-        : {}),
+      contextWindow: mergedMetadata.contextWindow,
       maxOutputTokens: output.maxOutputTokens,
       maxOutputTokensUpperLimit: output.maxOutputTokensUpperLimit,
       maxOutputTokensExplicit: output.maxOutputTokensExplicit,
       maxOutputTokensCappedDefault: output.maxOutputTokensCappedDefault,
       source,
-      usedFallbackModelMetadata,
+      usedFallbackModelMetadata:
+        usedFallbackModelMetadata || knownContextWindow === undefined,
     };
   }
 
@@ -852,13 +862,15 @@ function metadataFromGenericRecord(
   const topProvider = asRecord(record.top_provider);
   return {
     // The served window is checked before the model's advertised maximum: a
-    // local server refuses anything past what it actually loaded.
+    // local server refuses anything past what it actually loaded. DeepSeek's
+    // /models names the advertised window `context_window`.
     ...(servedContextWindow(record) !== undefined
       ? { contextWindow: servedContextWindow(record) }
       : readPositiveInteger(
         record,
         "max_model_len",
         "context_length",
+        "context_window",
         "max_context_length",
         "max_input_tokens",
         "max_tokens",
@@ -868,6 +880,7 @@ function metadataFromGenericRecord(
             record,
             "max_model_len",
             "context_length",
+            "context_window",
             "max_context_length",
             "max_input_tokens",
             "max_tokens",

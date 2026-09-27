@@ -892,6 +892,15 @@ project directory; they open SQLite even when the daemon cannot start.
 `createRecoveryMutationAdapter()`. Actor for mutations is `--actor`, else
 `AGENC_REVIEWER_ID`, else `USER`/`USERNAME`, else `local_operator`.
 
+Daemon startup releases two kinds of deferral itself once their retry time
+has passed, then rescans the run under the full strict validation:
+`source_not_quiescent` (a live writer still held the journal) and
+`recovery_lock_unavailable` with error class
+`RECOVERY_DESCRIPTOR_PATH_UNAVAILABLE` (the runtime that looked could not pin
+the journal's directories, as every Windows build did before it could). A
+source that still cannot be read records a new block. Every other deferral
+stays until `recovery deferred retry` or `abandon`.
+
 Windows does not publish large artifacts without descriptor-relative paths
 (`ARTIFACT_SAFE_OPERATION_UNSUPPORTED`). That is fail-closed, not a recovery
 CLI.
@@ -959,7 +968,12 @@ agenc daemon restart
 
 Service templates under `packaging/` invoke `agenc daemon start --foreground`.
 Launcher autostart: `AGENC_DAEMON_AUTOSTART=0` disables; ready timeout
-`AGENC_DAEMON_READY_TIMEOUT_MS`.
+`AGENC_DAEMON_READY_TIMEOUT_MS`. After a hard kill, readiness is the
+socket accepting a connection, not the leftover inode. Direct
+`agenc daemon start` keeps waiting while the startup log advances, up to
+`AGENC_DAEMON_START_MAX_WAIT_MS`. A TUI that loses its daemon mid-turn
+ends the turn locally when the daemon does not answer within 10 s. See
+[recovery after a disappeared daemon](daemon.md#recovery-after-a-disappeared-daemon).
 
 ---
 

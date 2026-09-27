@@ -27,6 +27,7 @@ import type { VerifiedChangeCommandRecord } from "./evidence-record.js";
 import type { EvidenceArtifactSink } from "./worktree-lifecycle.js";
 import { canonicalizeJson } from "../eval-contract/canonical-json.js";
 import { boundedWorkflowDiagnostic } from "./diagnostics.js";
+import { formatVerificationResult } from "./verification.js";
 
 export interface ReviewerInvoker {
   invoke(input: {
@@ -110,11 +111,11 @@ export function buildReviewerMessages(input: ReviewerPromptInput): {
   readonly systemPrompt: string;
   readonly userMessage: string;
 } {
+  // Named by script, never by label: the label is a name for people.
   const verificationSummary = input.verification
     .map(
       (record) =>
-        `- ${record.label}: exit ${record.exitCode}` +
-        `${record.timedOut ? " (timed out)" : ""} in ${record.durationMs}ms`,
+        `- ${formatVerificationResult(record)} in ${record.durationMs}ms`,
     )
     .join("\n");
   const userMessage = [

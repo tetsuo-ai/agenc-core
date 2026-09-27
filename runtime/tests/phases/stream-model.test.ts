@@ -19,6 +19,7 @@ import type {
 import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
 import type { Tool } from "../tools/types.js";
 import { parseAnthropicMessagesResponse } from "../llm/wire/messages-anthropic.js";
+import { requestUsageFromGemini } from "../llm/providers/gemini/usage.js";
 import type {
   AdmissionAcquireInput,
   ExecutionAdmissionClient,
@@ -1854,6 +1855,54 @@ describe("streamModel — SessionState.totalTokenUsage accumulator", () => {
       }
       expect(sidecar.getTotalCostUsd(), servedSpeed).toBeCloseTo(expectedUsd, 6);
     }
+  });
+
+  test("Gemini thinking tokens reach the budget once through token_count", async () => {
+    const usage = requestUsageFromGemini({
+      promptTokenCount: 4,
+      candidatesTokenCount: 2,
+      thoughtsTokenCount: 1,
+      totalTokenCount: 7,
+    });
+    const ctx = mkCtx("chat");
+    const provider = mkProvider(async () => ({
+      content: "ok",
+      toolCalls: [],
+      usage,
+      model: "gemini-2.5-pro",
+      finishReason: "stop",
+    }));
+    const tracker = new BudgetTracker();
+    const { session, events } = mkSession(provider);
+    const sidecar = new CostSidecar({
+      defaultProvider: "gemini",
+      defaultModel: "gemini-2.5-pro",
+      budgetTracker: tracker,
+    });
+    session.eventLog.subscribe((event) => sidecar.onEvent(event));
+
+    await streamModel(
+      mkState(ctx),
+      ctx,
+      session,
+      mkRequest([{ role: "user", content: "think" }]),
+    );
+
+    expect(
+      events.find((event) => event.msg.type === "token_count")?.msg,
+    ).toEqual({
+      type: "token_count",
+      payload: {
+        promptTokens: 4,
+        completionTokens: 3,
+        totalTokens: 7,
+        model: "gemini-2.5-pro",
+        provider: "stub-provider",
+        reasoningOutputTokens: 1,
+        reasoningIncludedInCompletion: true,
+      },
+    });
+    expect(tracker.emitted).toBe(3);
   });
 
   test("survives a non-compacting turn — a third call keeps adding onto the prior two", async () => {

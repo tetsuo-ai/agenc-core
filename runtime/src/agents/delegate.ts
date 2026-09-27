@@ -352,8 +352,12 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       if (parentSandboxExecutionBroker === undefined) {
         throw missingSandboxExecutionBoundary("child_agent");
       }
+      // Creating the worktree is the runtime's own Git work on the
+      // repository: a worktree child's confinement is for its commands.
       worktreeSandboxExecutionBroker =
-        parentSandboxExecutionBroker.forkForCwd(canonicalGitRoot);
+        parentSandboxExecutionBroker.forkForCwd(canonicalGitRoot, {
+          worktreeConfinement: null,
+        });
       worktree = await getOrCreateWorktree({
         gitRoot: canonicalGitRoot,
         slug: worktreeSlug,
@@ -1148,5 +1152,6 @@ function requireChildWorktreeSandboxExecutionBroker(
   if (broker === undefined) {
     throw missingSandboxExecutionBoundary("child_agent");
   }
-  return broker.forkForCwd(cwd);
+  // Inspecting and removing the worktree is the runtime's own Git work.
+  return broker.forkForCwd(cwd, { worktreeConfinement: null });
 }

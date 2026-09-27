@@ -46,10 +46,14 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * `project.trust`), resolved to the project root a session there would use.
  * 1.17 adds a bounded routine session preparation handshake.
  * 1.18 adds display attachment events and chunked artifact reads by digest.
+ * 1.19 adds optional session-owned Light mode (deferred tool exposure).
+ * 1.20 adds the optional exact-attempt precondition (`attempt`) to
+ * `session.resolveToolCall`: the review settles only that recorded attempt,
+ * and a mismatch is refused with `EFFECT_REVIEW_STALE`.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.18.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.20.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -262,6 +266,7 @@ export const AGENC_DAEMON_CLIENT_ENV_KEYS = [
   "AGENC_MAX_BUDGET_USD",
   "AGENC_MAX_TURNS",
   "AGENC_COORDINATOR_MODE",
+  "AGENC_LEAN_SYSTEM_PROMPT",
   "AGENC_STREAM_IDLE_TIMEOUT_MS",
   "AGENC_AUTH_BACKEND",
   "AGENC_AUTH_MANAGED_KEYS_ENABLED",
@@ -294,6 +299,7 @@ export const AGENC_DAEMON_CLIENT_ENV_KEYS = [
   "AGENC_TRANSACTION_GUARD_TIMEOUT_MS",
   "AGENC_TRANSACTION_GUARD_MAX_DOCKET_BYTES",
   "AGENC_XAI_STORE",
+  "AGENC_SHARED_PREFIX_TAIL",
   "AGENC_GROK_CLI",
   "AGENC_GROK_ACP_PERMISSIONS",
   "AGENC_DISABLE_1M_CONTEXT",
@@ -307,11 +313,14 @@ export const AGENC_DAEMON_CLIENT_ENV_KEYS = [
   "AGENC_BLOCKING_LIMIT_OVERRIDE",
   "AGENC_TOKEN_BUDGET_CHECK_INTERVAL",
   "AGENC_FILE_READ_MAX_OUTPUT_TOKENS",
+  "AGENC_SPARSE_LINE_NUMBERS",
   "AGENC_MAX_CONTEXT_TOKENS",
   "AGENC_OPENAI_MAX_OUTPUT_TOKENS",
   "AGENC_OPENAI_CONTEXT_WINDOWS",
+  "AGENC_OPENAI_REASONING_REPLAY",
   "AGENC_SESSION_ACCESS_TOKEN",
   "AGENC_AFTER_LAST_COMPACT",
+  "AGENC_CACHE_SESSION_TAIL",
   "AGENC_WEBSOCKET_AUTH_FILE_DESCRIPTOR",
   "AGENC_ORGANIZATION_UUID",
   "AGENC_ENABLE_TOKEN_USAGE_ATTACHMENT",
@@ -325,6 +334,7 @@ export const AGENC_DAEMON_CLIENT_ENV_KEYS = [
   "MCP_XAA_IDP_CLIENT_SECRET",
   "AGENC_ENABLE_XAA",
   "AGENC_PLUGIN_GIT_TIMEOUT_MS",
+  "AGENC_DEFER_RARE_TOOLS",
   "MAX_THINKING_TOKENS",
   "ATOMIC_CHAT_BASE_URL",
   "AGENC_AGENT_SDK_CLIENT_APP",
@@ -1336,6 +1346,8 @@ export function isAgenCDaemonNotificationMethod(
 
 export interface AgentRuntimeOptionsParams extends JsonObject {
   readonly simpleMode: boolean;
+  /** Deferred tool exposure; omitted means false. Instructions, schemas and execution policy are unchanged. */
+  readonly lightMode?: boolean;
   /** Omission by an older client is normalized to false. */
   readonly dangerouslyBypassApprovalsAndSandbox?: boolean;
   /**
@@ -1658,6 +1670,23 @@ export interface SessionResolveToolCallLegacyParams extends JsonObject {
   readonly evidenceRef?: never;
   readonly evidenceSha256?: never;
   readonly attestation?: never;
+  readonly attempt?: never;
+}
+
+/**
+ * The exact recorded attempt a reviewer saw (protocol 1.20). Several attempts
+ * can share one tool call id, so a client that shows a recorded call sends
+ * the effect's `runId` and `stepId` and the canonical `effect_unknown_outcome`
+ * event id and journal sequence. The daemon settles that record only, and
+ * refuses a mismatch with `EFFECT_REVIEW_STALE` before appending a review.
+ * Without it, the daemon keeps the earlier rule: the pending attempt for the
+ * call id.
+ */
+export interface SessionResolveToolCallAttempt extends JsonObject {
+  readonly runId: string;
+  readonly stepId: string;
+  readonly unknownEventId: string;
+  readonly unknownSequence: number;
 }
 
 /** Evidence-bearing resolution required for every durable effect record. */
@@ -1670,6 +1699,7 @@ export interface SessionResolveToolCallEvidenceParams extends JsonObject {
   readonly evidenceSha256: string;
   readonly reviewer?: string;
   readonly attestation?: never;
+  readonly attempt?: SessionResolveToolCallAttempt;
 }
 
 /**
@@ -1687,6 +1717,7 @@ export interface SessionResolveToolCallAttestationParams extends JsonObject {
   readonly reviewer?: string;
   readonly evidenceRef?: never;
   readonly evidenceSha256?: never;
+  readonly attempt?: SessionResolveToolCallAttempt;
 }
 
 /**
@@ -2915,10 +2946,18 @@ export type RunWorkflowStepStatus =
   | "unknown_outcome"
   | "blocked";
 
+export interface RunWorkflowProviderWait extends JsonObject {
+  readonly cause: "provider_outage_wait" | "provider_rate_limited";
+  readonly message: string;
+  readonly retryAt?: string;
+}
+
 export interface RunWorkflowStatusStep extends JsonObject {
   readonly stepId: string;
   readonly stage: string;
   readonly status: RunWorkflowStepStatus;
+  /** Live provider retry wait; omitted when the call proceeds or the step ends. */
+  readonly providerWait?: RunWorkflowProviderWait;
   readonly attempts: number;
   readonly verdict?: string;
   readonly artifacts?: readonly RunWorkflowArtifactPointer[];
@@ -3942,6 +3981,13 @@ export interface HealthReadyResult extends JsonObject {
   readonly ready: boolean;
   readonly uptimeMs: number;
   readonly now: string;
+  /**
+   * Sessions open at the daemon's last shutdown that it is still restoring.
+   * The daemon answers requests while it restores them; one that names such a
+   * session waits for its restore. 0 once all of them are restored. Absent
+   * from daemons that restored every session before they started serving.
+   */
+  readonly restoringSessions?: number;
 }
 
 export interface HealthMemoryStats extends JsonObject {
