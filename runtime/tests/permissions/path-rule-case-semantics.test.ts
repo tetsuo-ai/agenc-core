@@ -414,12 +414,14 @@ describe("real filesystem probe", () => {
     await mkdir(empty);
     await writeFile(join(parent, "Probe.txt"), "probe");
     try {
+      const samePath = (left: string, right: string) =>
+        left.replaceAll("\\", "/") === right.replaceAll("\\", "/");
       __setPathCaseDirectorySemanticsForTesting((directory) =>
-        directory === parent ? "insensitive" : undefined,
+        samePath(directory, parent) ? "insensitive" : undefined,
       );
       __setPathCaseLstatForTesting((target) => {
         const stats = lstatSync(target);
-        if (target !== empty) return stats;
+        if (!samePath(target, empty)) return stats;
         const dev = typeof stats.dev === "bigint" ? stats.dev + 1n : stats.dev + 1;
         return { dev, ino: stats.ino, isDirectory: () => true };
       });

@@ -16,6 +16,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   __setPathCaseDirectorySemanticsForTesting,
+  pathForComparison,
   type PathCaseSemantics,
 } from "../../src/permissions/path-case.js";
 import { readOnlyDelegationPathAllowed } from "../../src/agents/readonly-delegation.js";
@@ -387,5 +388,13 @@ describe("pathForComparison inherits only the probed volume", () => {
       __setPathCaseDirectorySemanticsForTesting(null);
       await rm(root, { recursive: true, force: true });
     }
+  });
+  test("a bracket in a directory name does not stop case probing", () => {
+    withVolumes(new Map<string, PathCaseSemantics>([
+      ["/data", "insensitive"],
+      ["/data/proj[old]", "sensitive"],
+    ]), () => {
+      expect(pathForComparison("/data/proj[old]/PASSWORD.TXT")).toBe("/data/proj[old]/PASSWORD.TXT");
+    });
   });
 });

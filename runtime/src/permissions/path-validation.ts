@@ -19,7 +19,6 @@ import {
   join,
   normalize,
   parse,
-  relative,
   resolve,
   sep,
 } from "node:path";
@@ -155,14 +154,22 @@ export function __isPathInsideForTesting(candidate: string, root: string): boole
   return isPathInside(candidate, root);
 }
 
+function comparisonContains(root: string, candidate: string): boolean {
+  const rootSlash = root.replaceAll("\\", "/");
+  const candidateSlash = candidate.replaceAll("\\", "/");
+  if (candidateSlash === rootSlash) return true;
+  if (rootSlash === "/") return candidateSlash.startsWith("/");
+  const prefix = rootSlash.endsWith("/") ? rootSlash : `${rootSlash}/`;
+  return candidateSlash.startsWith(prefix);
+}
+
 function isPathInside(candidate: string, root: string): boolean {
   const normalizedCandidate = pathForComparison(
     normalize(candidate).normalize("NFC"),
   );
   const normalizedRoot = pathForComparison(normalize(root).normalize("NFC"));
-  if (normalizedCandidate === normalizedRoot) return true;
-  const rel = relative(normalizedRoot, normalizedCandidate);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  // node:path relative() folds case on Windows and would undo a sensitive verdict.
+  return comparisonContains(normalizedRoot, normalizedCandidate);
 }
 
 function resolveExistingAncestor(filePath: string): {

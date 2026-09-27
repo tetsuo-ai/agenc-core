@@ -388,12 +388,9 @@ function appendSegment(parent: string, segment: string): string {
 }
 
 function isWildcardSegment(segment: string): boolean {
-  return (
-    segment.includes("*") ||
-    segment.includes("?") ||
-    segment.includes("[") ||
-    segment.includes("{")
-  );
+  // '[' and '{' are literals in wildcardPatternToRegExp. A directory
+  // named proj[old] must still be probed, not inherited from its parent.
+  return segment.includes("*") || segment.includes("?");
 }
 
 function foldSegment(segment: string, verdict: PathCaseSemantics): string {
