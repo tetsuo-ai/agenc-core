@@ -26,6 +26,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { mergeDaemonClientEnvironment } from "../client-env-snapshot.js";
 import { WorkflowApprovalFailure } from "../../permissions/approval-failure.js";
 import { markWorkflowApprovalSession } from "../../permissions/approval-failure.js";
 import { observeChildApprovalSessions } from "../../agents/child-approval-context.js";
@@ -647,7 +648,6 @@ export function createWorkflowSessionSeams(
     ...options.env,
     AGENC_HOME: options.agencHome,
   });
-  const runtimeOptions = resolveAgentRuntimeOptions(environment);
   const entries = new Map<string, Promise<RunSessionEntry>>();
   const readyEntries = new Map<Promise<RunSessionEntry>, RunSessionEntry>();
   const worktreeRunIds = new Map<string, string>();
@@ -656,6 +656,7 @@ export function createWorkflowSessionSeams(
     runId: string,
     repoPath?: string,
     policy?: WorkflowRunSessionPolicy,
+    envOverrides?: Readonly<Record<string, string>>,
   ): Promise<RunSessionEntry> => {
     const existing = entries.get(runId);
     if (existing !== undefined) return existing;
@@ -665,9 +666,14 @@ export function createWorkflowSessionSeams(
       // A2: the frozen spec's policy governs the run session — explicit on
       // start, re-resolved from the durable intake spec on resume.
       const resolvedPolicy = policy ?? options.resolveRunPolicy(runId);
+      // A supplied snapshot clears omitted credentials, exactly like agent.create.
+      // Recovery re-resolves daemon/auth-backend authority; keys are never durable.
+      const runEnvironment = envOverrides === undefined
+        ? environment
+        : mergeDaemonClientEnvironment(environment, envOverrides)!;
       const boot = await bootstrap({
-        env: environment,
-        runtimeOptions,
+        env: runEnvironment,
+        runtimeOptions: resolveAgentRuntimeOptions(runEnvironment),
         ...(options.authBackend !== undefined
           ? { authBackend: options.authBackend }
           : {}),
@@ -765,7 +771,7 @@ export function createWorkflowSessionSeams(
     currentPermissionMode: (runId) =>
       currentEntry(runId)?.bootstrap.session.permissionModeRegistry.current().mode,
     open: async (runId, context) => {
-      const entry = await openEntry(runId, context?.repoPath, context?.policy);
+      const entry = await openEntry(runId, context?.repoPath, context?.policy, context?.envOverrides);
       return new SessionWorkflowJournal(
         entry,
         () => closeEntry(runId),

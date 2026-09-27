@@ -50,10 +50,11 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.20 adds the optional exact-attempt precondition (`attempt`) to
  * `session.resolveToolCall`: the review settles only that recorded attempt,
  * and a mismatch is refused with `EFFECT_REVIEW_STALE`.
+ * 1.21 adds an ephemeral allowlisted envOverrides snapshot to run.start.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.20.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.21.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -1560,6 +1561,8 @@ export interface RunStartVerificationCommand extends JsonObject {
 }
 
 export interface RunStartParams extends JsonObject {
+  /** Ephemeral client credential snapshot. Never persisted in the workflow spec. */
+  readonly envOverrides?: { readonly [key: string]: string };
   /** The engineering goal / issue text driving the change. */
   readonly goal: string;
   /** Absolute directory inside the target git repository (daemon cwd default). */

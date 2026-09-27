@@ -8,7 +8,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -375,6 +375,7 @@ interface Harness {
 }
 
 let harness: Harness;
+let seenOverrides: Readonly<Record<string, string>> | undefined;
 
 function makeHarness(): Harness {
   const home = mkdtempSync(join(tmpdir(), "agenc-m5-run-start-home-"));
@@ -391,7 +392,7 @@ function makeHarness(): Harness {
   const recorded: WorkflowStartedRunRecord[] = [];
   const controller = new VerifiedChangeWorkflowController({
     durability: () => repo,
-    journal: { open: async (runId) => new TestJournal(repo, runId) },
+    journal: { open: async (runId, context) => { seenOverrides = context?.envOverrides; return new TestJournal(repo, runId); } },
     admission: ({ runId }) => {
       admission.scope.runId = runId;
       return admission;
@@ -629,5 +630,31 @@ describe("daemon dispatcher — run.start", () => {
       startParams({ permissionMode: "yolo" }),
     );
     expect(badMode.error).toMatchObject({ code: -32602 });
+  });
+});
+
+
+describe("run.start credential authority", () => {
+  const secret = "goal-current-credential-sentinel-7a132";
+  it("passes ephemeral bootstrap context and never persists the snapshot", async () => {
+    const { result, error } = await dispatchRunStart({ ...startParams(), envOverrides: { DEEPSEEK_API_KEY: secret } });
+    expect(error).toBeUndefined();
+    expect(seenOverrides?.DEEPSEEK_API_KEY).toBe(secret);
+    expect(seenOverrides?.OPENAI_API_KEY).toBe("");
+    await harness.controller.awaitRun(result!.runId);
+    expect(harness.repo.getCurrentTerminalResult(result!.runId)?.status).toBe("completed");
+    const scan = (directory: string): void => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) scan(path);
+        else if (entry.isFile()) expect(readFileSync(path).includes(Buffer.from(secret)), path).toBe(false);
+      }
+    };
+    scan(harness.home); scan(harness.repoDir);
+    expect(JSON.stringify([harness.recorded, harness.warnings, result])).not.toContain(secret);
+  });
+  it.each([{ NOT_ALLOWED: "value" }, { DEEPSEEK_API_KEY: 42 }, [], "secret", null])("rejects invalid overrides: %j", async (envOverrides) => {
+    const { error, result } = await dispatchRunStart({ ...startParams(), envOverrides } as JsonObject);
+    expect(result).toBeUndefined(); expect(error?.code).toBe(-32602); expect(harness.recorded).toEqual([]);
   });
 });

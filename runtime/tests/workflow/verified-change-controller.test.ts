@@ -2044,6 +2044,14 @@ describe("VerifiedChangeWorkflowController — runs with no live pipeline", () =
     expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
   }
 
+  it("terminalizes recovery without credentials instead of hanging", async () => {
+    await interruptBeforeWorktree();
+    harness.hooks.failJournalOpenWith = new Error("deepseek authentication failed (HTTP 401): deepseek provider requires credentials. Set DEEPSEEK_API_KEY.");
+    expect(await harness.controller.resumeOpenWorkflows()).toEqual([]);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "failed", finalMessage: expect.stringContaining("deepseek provider requires credentials. Set DEEPSEEK_API_KEY.") });
+    expect(await harness.controller.resumeOpenWorkflows()).toEqual([]);
+  });
+
   it("closes a run whose resume fails as failed instead of leaving it running", async () => {
     await interruptBeforeWorktree();
     harness.hooks.failJournalOpenWith = new Error(

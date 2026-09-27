@@ -3001,23 +3001,7 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       );
     }
   }
-  let envOverrides: Record<string, string>;
-  if (validated.envOverrides !== undefined) {
-    validateStringRecord(
-      validated.envOverrides as JsonObject,
-      "agent.create",
-      "envOverrides",
-    );
-  }
-  try {
-    envOverrides = normalizeDaemonClientEnvOverrides(
-      validated.envOverrides as Record<string, string> | undefined,
-    );
-  } catch (error) {
-    throw invalidParams(
-      `agent.create param 'envOverrides' ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
+  const envOverrides = validateClientEnvOverrides(validated.envOverrides, "agent.create");
   if (validated.runtimeOptions === undefined) {
     throw invalidParams("agent.create requires runtimeOptions");
   }
@@ -3087,6 +3071,25 @@ function validateRunCancelParams(params: JsonObject): RunCancelParams {
   return validated as RunCancelParams;
 }
 
+function validateClientEnvOverrides(value: unknown, methodName: string): Record<string, string> {
+  if (value !== undefined) {
+    validateStringRecord(
+      value as JsonObject,
+      methodName,
+      "envOverrides",
+    );
+  }
+  try {
+    return normalizeDaemonClientEnvOverrides(
+      value as Record<string, string> | undefined,
+    );
+  } catch (error) {
+    throw invalidParams(
+      `${methodName} param 'envOverrides' ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 function validateRunStartParams(params: JsonObject): RunStartParams {
   const validated = validateObjectShape(params, {
     methodName: "run.start",
@@ -3102,6 +3105,7 @@ function validateRunStartParams(params: JsonObject): RunStartParams {
     numberFields: ["maxCostUsd", "maxTokens", "maxImplementAttempts"],
     stringArrayFields: ["unattendedAllow", "unattendedDeny"],
     valueFields: ["requiredVerification"],
+    objectFields: ["envOverrides"],
   });
   validateRequiredString(validated, "run.start", "goal");
   let cwd: string | undefined;
@@ -3180,6 +3184,9 @@ function validateRunStartParams(params: JsonObject): RunStartParams {
   }
   return {
     ...validated,
+    ...(validated.envOverrides !== undefined
+      ? { envOverrides: validateClientEnvOverrides(validated.envOverrides, "run.start") }
+      : {}),
     ...(cwd !== undefined ? { cwd } : {}),
   } as RunStartParams;
 }

@@ -233,6 +233,8 @@ export interface WorkflowJournalWriter {
     context?: {
       readonly repoPath?: string;
       readonly policy?: WorkflowRunSessionPolicy;
+      /** In-memory bootstrap authority only, never journal evidence. */
+      readonly envOverrides?: Readonly<Record<string, string>>;
     },
   ): Promise<WorkflowRunJournal>;
 }
@@ -592,7 +594,10 @@ export class VerifiedChangeWorkflowController {
    * Returns after the intake commit; the rest of the pipeline continues
    * asynchronously (track it with {@link awaitRun}).
    */
-  async start(params: WorkflowStartParams): Promise<WorkflowStartResult> {
+  async start(
+    params: WorkflowStartParams,
+    envOverrides?: Readonly<Record<string, string>>,
+  ): Promise<WorkflowStartResult> {
     if (params.requiredVerification.length === 0) {
       throw new TypeError(
         "verified-change workflow requires at least one verification command",
@@ -602,6 +607,7 @@ export class VerifiedChangeWorkflowController {
     const repo = this.#deps.durability({ runId, repoPath: params.repoPath });
     const journal = await this.#deps.journal.open(runId, {
       repoPath: params.repoPath,
+      ...(envOverrides !== undefined ? { envOverrides } : {}),
       policy: {
         permissionMode: resolveWorkflowPermissionMode(params.permissionMode),
         ...(params.unattendedAllow !== undefined
