@@ -169,7 +169,7 @@ function seedDurableRuns(): readonly number[] {
     });
     admissions.reconcile(claimed.lease.reservation.reservationId, {
       kind: "reported",
-      usage: { inputTokens: 10, outputTokens: 10, costUsd: 0.002 },
+      usage: { inputTokens: 10, outputTokens: 10, costUsd: 0.002, costEstimated: true },
     });
   }
   admissions.recordFallback(
@@ -235,6 +235,7 @@ describe("durable run inspection", () => {
         reservedCostUsd: 0.02,
         actualTokens: 40,
         actualCostUsd: 0.004,
+        costEstimated: true,
         allocationCount: 1,
         usedTokens: 40,
         heldTokens: 0,

@@ -832,6 +832,7 @@ interface AgentTerminalUsage {
   readonly costUsd: number;
   /** False when historical coverage or a per-model price is incomplete. */
   readonly costKnown: boolean;
+  readonly costEstimated?: boolean;
 }
 
 function positiveSequence(value: unknown): number | undefined {

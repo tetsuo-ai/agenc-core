@@ -147,7 +147,7 @@ function terminalUsageForActiveAgent(
 function agentCostSnapshot(
   active: ActiveBackgroundAgent,
   live: ManagedTokenUsageShape,
-): Pick<AgentTerminalUsage, "costUsd" | "costKnown"> {
+): Pick<AgentTerminalUsage, "costUsd" | "costKnown" | "costEstimated"> {
   const sidecar = active.bootstrap.session.services.costSidecar;
   if (sidecar === undefined) {
     return { costUsd: 0, costKnown: false };
@@ -170,8 +170,8 @@ function agentCostSnapshot(
       costUsd,
       costKnown:
         !resumedWithHistoricalUsage &&
-        coversLiveUsage &&
-        !sidecar.hasUnknownModelCost(),
+        coversLiveUsage,
+      ...(sidecar.hasUnknownModelCost() ? { costEstimated: true } : {}),
     };
   } catch {
     // A snapshot must remain available if optional accounting degrades. Do

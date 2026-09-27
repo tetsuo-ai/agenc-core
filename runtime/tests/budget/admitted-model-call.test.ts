@@ -884,41 +884,15 @@ describe("runAdmittedModelCall", () => {
     expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
   });
 
-  test("keeps the full reservation held when provider pricing is unknown", async () => {
-    const state = harness({});
-
-    await expect(
-      callOptions(state, { maxOutputTokens: 200 }, async () =>
-        response({ model: "unknown-model" }),
-      ),
-    ).resolves.toMatchObject({ model: "unknown-model" });
-    expect(state.holdUnknown).toHaveBeenCalledWith(
-      "reservation-1",
-      "unpriced_provider_response",
-    );
-    expect(state.reconcile).not.toHaveBeenCalled();
-  });
-
-  test("durably cancel-locks an unpriced provider response under a hard USD cap", async () => {
-    const state = harness({ maxCostUsd: 1 });
-
-    await expect(
-      callOptions(state, { maxOutputTokens: 200 }, async () =>
-        response({ model: "unknown-model" }),
-      ),
-    ).rejects.toMatchObject({
-      code: "ADMISSION_DENIED",
-      reason: "unpriced_provider_response",
+  test.each([{}, { maxCostUsd: 1 }])("estimates a successful unpriced response: %j", async (limits) => {
+    const state = harness(limits);
+    await expect(callOptions(state, { maxOutputTokens: 200 }, async () =>
+      response({ model: "unknown-model" }))).resolves.toMatchObject({ model: "unknown-model" });
+    expect(state.reconcile).toHaveBeenCalledWith("reservation-1", {
+      inputTokens: 100, outputTokens: 50, costUsd: 0.045, costEstimated: true,
     });
-    expect(state.cancelRun).toHaveBeenCalledOnce();
-    expect(state.cancelRun).toHaveBeenCalledWith("unpriced_provider_response");
-    // cancelRun owns both the full unknown hold and run-tree cascade in one
-    // transaction; a separate hold would reintroduce a crash gap.
     expect(state.holdUnknown).not.toHaveBeenCalled();
-    expect(state.acknowledgeCompletion).toHaveBeenCalledOnce();
-    expect(state.session.abortTerminal).toHaveBeenCalledWith(
-      "provider_overrun",
-    );
+    expect(state.cancelRun).not.toHaveBeenCalled();
   });
 
   test("accounts managed routing with the concrete provider and model", async () => {

@@ -132,6 +132,7 @@ interface ReservationAggregateRow {
   readonly actual_tokens: number;
   readonly actual_cost_nanos: number;
   readonly unpriced_actual_count: number;
+  readonly estimated_count: number;
   readonly used_tokens: number;
   readonly held_tokens: number;
   readonly used_cost_nanos: number;
@@ -1012,6 +1013,7 @@ function admissionSummary(
                   COALESCE(SUM(CASE WHEN actual_tokens IS NOT NULL
                     AND actual_cost_nanos IS NULL THEN 1 ELSE 0 END), 0)
                     AS unpriced_actual_count,
+                  SUM(CASE WHEN resolution_reason = 'estimated_model_price' THEN 1 ELSE 0 END) AS estimated_count,
                   COALESCE(SUM(CASE
                     WHEN status IN ('reserved', 'dispatched')
                       THEN reserved_tokens ELSE 0 END), 0) AS held_tokens,
@@ -1075,6 +1077,7 @@ function admissionSummary(
     reservedCostUsd: nanosToUsd(reservationAggregate.reserved_cost_nanos),
     actualTokens: reservationAggregate.actual_tokens,
     actualCostUsd: nanosToUsd(reservationAggregate.actual_cost_nanos),
+    ...(reservationAggregate.estimated_count > 0 ? { costEstimated: true } : {}),
     unpricedActualReservationCount: reservationAggregate.unpriced_actual_count,
     allocationCount: allocationAggregate.count,
     usedTokens: reservationAggregate.used_tokens,
@@ -1418,6 +1421,7 @@ function emptyReservationAggregate(): ReservationAggregateRow {
     actual_tokens: 0,
     actual_cost_nanos: 0,
     unpriced_actual_count: 0,
+    estimated_count: 0,
     used_tokens: 0,
     held_tokens: 0,
     used_cost_nanos: 0,

@@ -10,6 +10,7 @@ import {
   BACKGROUND_RUNNER_GAP_SOURCE,
   boundBufferedAgentEvents,
   managedTokenUsage,
+  terminalUsageForActiveAgent,
   pruneMessageSubmissionCache,
   pruneShellExecutionCache,
 } from "../../src/app-server/background-agent-runner/snapshot-retention.js";
@@ -269,5 +270,21 @@ describe("managedTokenUsage", () => {
         }),
       }),
     ).toEqual({ inputTokens: 3, outputTokens: 1, totalTokens: 4 });
+  });
+});
+
+
+describe("estimated snapshot cost", () => {
+  it("labels a complete fallback estimate and does not attest incomplete history", () => {
+    const live = { inputTokens: 100, outputTokens: 50, totalTokens: 150 };
+    const sidecar = { getTotalCostUsd: () => 0.045, getSessionTotals: () => live, hasUnknownModelCost: () => true };
+    let reported = live;
+    const active = { thread: { totalTokenUsage: () => reported }, bootstrap: { session: { services: {costSidecar: sidecar} } } } as unknown as Parameters<typeof terminalUsageForActiveAgent>[0];
+    expect(terminalUsageForActiveAgent(active)).toEqual({...live, costUsd: 0.045, costKnown: true, costEstimated: true});
+    reported = {...live, totalTokens: 200};
+    expect(terminalUsageForActiveAgent(active)).toMatchObject({costKnown: false, costEstimated: true});
+    reported = live;
+    sidecar.hasUnknownModelCost = () => false;
+    expect(terminalUsageForActiveAgent(active)).toEqual({...live, costUsd: 0.045, costKnown: true});
   });
 });

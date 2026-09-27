@@ -3042,6 +3042,7 @@ export interface RunAdmissionSummary extends JsonObject {
   readonly reservedCostUsd: number;
   readonly actualTokens: number;
   readonly actualCostUsd: number;
+  readonly costEstimated?: boolean;
   readonly unpricedActualReservationCount: number;
   readonly allocationCount: number;
   readonly usedTokens: number;
@@ -3085,8 +3086,10 @@ export interface RunUsageTotals extends JsonObject {
   readonly outputTokens: number;
   readonly totalTokens: number;
   readonly costUsd: number;
-  /** False when historical coverage or model pricing is incomplete. */
+  /** False when cost accounting does not cover the reported usage. */
   readonly costKnown?: boolean;
+  /** True when cost includes conservative fallback rates. */
+  readonly costEstimated?: boolean;
 }
 
 /** Terminal output committed by M4 and readable after disconnect/restart. */
@@ -3422,8 +3425,9 @@ export interface SessionSnapshotResult extends JsonObject {
     readonly outputTokens: number;
     readonly totalTokens: number;
     readonly costUsd: number;
-    /** False when historical coverage or model pricing is incomplete. */
+    /** False when cost accounting does not cover the reported usage. */
     readonly costKnown?: boolean;
+    readonly costEstimated?: boolean;
   };
   /** Cumulative cache metrics across API calls this session. */
   readonly cacheStats: {
@@ -3554,6 +3558,7 @@ export interface SessionTranscriptV2Event extends JsonObject {
     readonly outputTokens?: number;
     readonly modelCalls?: number;
     readonly hasUnknownCost?: boolean;
+    readonly costEstimated?: boolean;
     readonly models?: readonly {
       readonly model: string;
       readonly provider?: string;

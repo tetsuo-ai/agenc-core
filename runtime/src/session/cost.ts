@@ -87,10 +87,12 @@ export interface ModelCostEntry {
   /**
    * Explicitly declares a zero-rate entry as genuinely free (local runtime,
    * no metered billing). Budget admission treats such entries as priced at
-   * $0 instead of unknown-cost; zero-rate entries WITHOUT this flag stay
-   * fail-closed under hard USD caps.
+   * $0 instead of estimated cost; zero-rate entries WITHOUT this flag use
+   * a conservative estimate for admission.
    */
   readonly localZeroCost?: boolean;
+  /** A policy estimate, never a published provider price. */
+  readonly costEstimated?: boolean;
 }
 
 export interface CostSummaryProcessLike {
@@ -118,6 +120,7 @@ export const DEFAULT_UNKNOWN_MODEL_COST: Readonly<ModelCostEntry> =
     cacheCreationUsdPer1K: 0.00625,
     webSearchUsdPerRequest: 0.01,
     label: "fallback",
+    costEstimated: true,
   });
 
 function openAiCostAliases(
@@ -173,7 +176,7 @@ function openAiRates(
  * One OpenAI model's rows from the Standard and Fast tables of
  * developers.openai.com/api/docs/pricing. A missing Fast row, or a missing
  * Fast long-context row, is a tier OpenAI publishes no price for: a call
- * served there is unpriced, and a hard USD cap refuses to request it.
+ * served there has no published price and uses the conservative estimate.
  */
 function openAiTier(spec: {
   readonly standard: OpenAiRateRow;
@@ -670,6 +673,36 @@ function grokCostAliases(
  */
 export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
   Object.freeze({
+    // Meta Model API USD/1M: standard 1.25 / 4.25 / 0.15 cached;
+    // Contributor 0.10 / 0.20 / 0.002 cached. Verified 2026-09-27:
+    // https://dev.meta.ai/docs/pricing-rate-limits
+    // https://dev.meta.ai/models/muse-spark-1-2
+    // Only exact released IDs: discovery of a future version uses an estimate.
+    ...Object.fromEntries(["1.1", "1.2", "1.3"].flatMap(version =>
+      (version === "1.1" ? [false] : [false, true]).map(contributor => [
+        `meta:muse-spark-${version}${contributor ? "-contributor" : ""}`,
+        {
+          inputUsdPer1K: contributor ? 0.0001 : 0.00125,
+          outputUsdPer1K: contributor ? 0.0002 : 0.00425,
+          cachedInputUsdPer1K: contributor ? 0.000002 : 0.00015,
+          cachedInputIncludedInInputTokens: true,
+          webSearchUsdPerRequest: 0.0025,
+        },
+      ]),
+    )),
+    // Ollama peak rate (off-peak is cheaper), verified 2026-09-27:
+    // https://www.ollama.com/pricing
+    "ollama-cloud:deepseek-v4.1-flash": {
+      inputUsdPer1K: 0.0003, outputUsdPer1K: 0.0012,
+      cachedInputUsdPer1K: 0.000006, cachedInputIncludedInInputTokens: true,
+    },
+    // QwenCloud international/Singapore endpoint, verified 2026-09-27:
+    // https://www.alibabacloud.com/help/en/model-studio/qwen3-8-max
+    "qwen:qwen3.8-max": {
+      inputUsdPer1K: 0.002, outputUsdPer1K: 0.006,
+      cachedInputUsdPer1K: 0.00025, cachedInputIncludedInInputTokens: true,
+      cacheCreationUsdPer1K: 0.0025, cacheCreationIncludedInInputTokens: true,
+    },
     "xai:grok-4-fast": {
       inputUsdPer1K: 0.002,
       outputUsdPer1K: 0.01,
@@ -982,10 +1015,34 @@ export function computeUsdCost(
   return computeUsdCostWithResolution(usage, registry).costUsd;
 }
 
+/** Component-wise registry ceiling, including fast and long-context tiers.
+ * This bounds known rates, not an unknown provider's actual invoice.
+ */
+export function conservativeModelCost(registry: Readonly<Record<string, ModelCostEntry>> = DEFAULT_MODEL_COSTS): ModelCostEntry {
+  let input = 0, output = 0, search = 0;
+  const seen = new Set<ModelCostEntry>();
+  const visit = (entry: ModelCostEntry): void => {
+    if (seen.has(entry)) return;
+    seen.add(entry);
+    input = Math.max(input, entry.inputUsdPer1K, entry.cachedInputUsdPer1K ?? 0, entry.cacheCreationUsdPer1K ?? 0);
+    output = Math.max(output, entry.outputUsdPer1K, entry.reasoningOutputUsdPer1K ?? 0);
+    search = Math.max(search, entry.webSearchUsdPerRequest ?? 0);
+    if (entry.fastMode) visit(entry.fastMode);
+    if (entry.longContext) visit(entry.longContext.rates);
+  };
+  visit(DEFAULT_UNKNOWN_MODEL_COST);
+  Object.values(registry).forEach(visit);
+  return { inputUsdPer1K: input, outputUsdPer1K: output,
+    cachedInputUsdPer1K: input, cacheCreationUsdPer1K: input,
+    reasoningOutputUsdPer1K: output, webSearchUsdPerRequest: search,
+    costEstimated: true, label: "conservative estimate" };
+}
+
 export interface CostResolution {
   readonly costUsd: number;
   readonly known: boolean;
   readonly matchedKey?: string;
+  readonly costEstimated?: boolean;
 }
 
 export function computeUsdCostWithResolution(
@@ -993,11 +1050,24 @@ export function computeUsdCostWithResolution(
   registry: Readonly<Record<string, ModelCostEntry>>,
 ): CostResolution {
   const match = resolveModelCostEntry(usage, registry);
-  const standardEntry = match?.entry ?? DEFAULT_UNKNOWN_MODEL_COST;
-  const { rates: entry, documented } = selectCallRates(
+  const standardEntry = match?.entry ?? conservativeModelCost(registry);
+  const { rates: selected, documented } = selectCallRates(
     standardEntry,
     callPricingOf(usage),
   );
+  const estimated = standardEntry.costEstimated === true || !documented;
+  const entry = estimated ? conservativeModelCost(registry) : selected;
+  if (estimated) {
+    const outputTokens = Math.max(usage.outputTokens, usage.reasoningOutputTokens);
+    const inputTokens = Math.max(usage.inputTokens,
+      usage.cachedInputTokens + usage.cacheCreationInputTokens,
+      usage.totalTokens - outputTokens);
+    return { costUsd: inputTokens / 1000 * entry.inputUsdPer1K +
+      outputTokens / 1000 * entry.outputUsdPer1K +
+      usage.webSearchRequests * (entry.webSearchUsdPerRequest ?? 0),
+      known: false, costEstimated: true,
+      ...(match ? { matchedKey: match.key } : {}) };
+  }
   const fullRateInputTokens = Math.max(
     0,
     usage.inputTokens -
@@ -1042,7 +1112,8 @@ export function computeUsdCostWithResolution(
       cacheCreationCost +
       reasoningCost +
       webSearchCost,
-    known: match !== null && documented,
+    known: match !== null && documented && !estimated,
+    ...(estimated ? { costEstimated: true } : {}),
     ...(match ? { matchedKey: match.key } : {}),
   };
 }

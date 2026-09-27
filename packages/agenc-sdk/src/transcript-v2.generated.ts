@@ -70,6 +70,7 @@ export interface SessionTranscriptV2Event extends TranscriptV2JsonObject {
     readonly outputTokens?: number;
     readonly modelCalls?: number;
     readonly hasUnknownCost?: boolean;
+    readonly costEstimated?: boolean;
     readonly models?: readonly {
       readonly model: string;
       readonly provider?: string;

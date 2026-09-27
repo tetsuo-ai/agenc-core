@@ -11463,7 +11463,8 @@ describe("AgenC delegate background-agent runner", () => {
     expect(partiallyKnown.contextBreakdown).toMatchObject({ windowTokens: 262_144, effectiveWindowTokens: 180_000 });
     expect(partiallyKnown.tokenUsage).toMatchObject({
       costUsd: 1.2345,
-      costKnown: false,
+      costKnown: true,
+      costEstimated: true,
     });
 
     hasUnknownModelCost.mockReturnValue(false);

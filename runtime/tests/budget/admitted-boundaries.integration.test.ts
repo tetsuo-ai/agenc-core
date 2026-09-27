@@ -509,7 +509,7 @@ describe("admitted execution boundaries with the durable kernel", () => {
     expect(kernel.activeCount).toBe(0);
   });
 
-  it("atomically holds an unpriced hard-cap response and survives a crash before live shutdown", async () => {
+  it("atomically stops a provider model change whose estimate exceeds its reservation and survives a crash before live shutdown", async () => {
     const parentRunId = "unpriced_parent";
     const childRunId = "unpriced_child";
     const seeded = openStateDatabases({ cwd, agencHome });
@@ -571,7 +571,7 @@ describe("admitted execution boundaries with the durable kernel", () => {
       }),
     ).rejects.toMatchObject({
       name: "AdmissionDeniedError",
-      reason: "unpriced_provider_response",
+      reason: "provider_overrun",
     });
     expect(shutdownAgentTree).toHaveBeenCalledWith(parentRunId);
     expect(session.abortTerminal).toHaveBeenCalledWith("provider_overrun");
@@ -620,7 +620,7 @@ describe("admitted execution boundaries with the durable kernel", () => {
             `SELECT status FROM execution_admission_reservations LIMIT 1`,
           )
           .get()?.status,
-      ).toBe("held_unknown");
+      ).toBe("provider_overrun");
       expect(
         inspected
           .prepareState<[], {
@@ -657,7 +657,7 @@ describe("admitted execution boundaries with the durable kernel", () => {
            LIMIT 1`,
         )
         .get();
-      expect(charge?.used_cost_nanos).toBe(charge?.reserved_cost_nanos);
+      expect(charge?.used_cost_nanos).toBeGreaterThan(charge?.reserved_cost_nanos ?? 0);
       expect(
         inspected
           .prepareState<[], { readonly count: number }>(
