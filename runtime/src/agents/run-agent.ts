@@ -228,6 +228,8 @@ export interface RunAgentParams {
    * same live agent instead of getting AGENT_NOT_FOUND.
    */
   readonly keepAlive?: boolean;
+  /** Unattended assignments on a reusable worker also need a terminal summary. */
+  readonly summarizeAtStepLimit?: boolean;
   /** Correlation id for the initial task. Follow-up assignments replace it. */
   readonly taskId?: string;
   /** Exact commit captured at the start of this worktree-backed run. */
@@ -3882,7 +3884,7 @@ export async function* runAgent(
         ...(receipt.terminalRetryable !== undefined ? { retryable: receipt.terminalRetryable } : {}),
         dispatch: receipt.outcome === "completed" ? "sent" : childSession === null ? "not_sent" : "unknown",
         completedWork: receipt.message ?? latestChildProgress,
-        unfinishedWork: receipt.outcome === "completed" ? "" : currentTaskText,
+        unfinishedWork: receipt.outcome === "completed" && receipt.terminalReason !== "step_limit" ? "" : currentTaskText,
         ...(cost !== undefined && !cost.hasUnknownCost ? { costUsd: cost.costUsd } : {}),
       }),
     };
@@ -4415,6 +4417,7 @@ export async function* runAgent(
     let nextUserMessage: string | readonly LLMContentPart[] = userMessage;
     let firstTurn = true;
     let assistantText = "";
+    let stoppedAtStepLimit = false;
     let toolCallCount = 0;
     const processChildMailbox = async (
       pending: DrainedChildMailbox,
@@ -4529,6 +4532,10 @@ export async function* runAgent(
       let terminalError: unknown;
 
       const iter = childSession.runTurn(nextUserMessage, {
+        ...(!params.keepAlive || params.summarizeAtStepLimit ? { stepLimitWrapup: {
+          ...(params.plan?.budgetAllocation !== null && params.plan?.budgetAllocation !== undefined
+            ? { maxModelCalls: params.plan.budgetAllocation.maxModelCalls } : {}),
+        } } : {}),
         ctx: (() => {
           activeTurnContext =
             params.maxTurns !== undefined
@@ -4709,6 +4716,7 @@ export async function* runAgent(
         stopReason === "compact_failed" ||
         stopReason === "empty_response";
       const boundedTerminalReason: ChildTerminalReason | undefined =
+        stopReason === "max_turns" ? "step_limit" :
         stopReason === "max_budget_usd" ? "cost_cap_reached" :
         stopReason === "effect_review_required" ? "effect_outcome_unknown" :
         stopReason === "compact_failed" ? "context_insufficient" :
@@ -4718,7 +4726,7 @@ export async function* runAgent(
       // outcome: the backstop's message already reached the transcript,
       // and the user must be able to keep prompting. Ending the run here
       // bricked the whole session after one capped turn. One-shot agents
-      // keep failing the run — there is nobody left to continue them.
+      // return a partial result after step-limit synthesis.
       let turnFailureMessage: string | undefined;
       if (stopReason === "error" || boundedStop) {
         let message: string;
@@ -4751,7 +4759,9 @@ export async function* runAgent(
         }
         turnFailureMessage = message;
       }
-      if (stopReason === "error" || (boundedStop && !params.keepAlive)) {
+      stoppedAtStepLimit = stopReason === "max_turns" && (!params.keepAlive || params.summarizeAtStepLimit === true);
+      if (stoppedAtStepLimit) turnFailureMessage = undefined;
+      if (stopReason === "error" || (boundedStop && !params.keepAlive && !stoppedAtStepLimit)) {
         const message = turnFailureMessage ?? "subagent turn failed";
         const result = await finishErroredRun({
           message,
@@ -4828,7 +4838,7 @@ export async function* runAgent(
         const completedTaskId = currentTaskId;
         const receipt: TaskTurnReceipt = {
           ...taskCorrelation(),
-          outcome: boundedStop ? "errored" : "completed",
+          outcome: boundedStop && !stoppedAtStepLimit ? "errored" : "completed",
           ...(turnFailureMessage !== undefined ? { reason: turnFailureMessage } : {}),
           ...(boundedTerminalReason !== undefined ? { terminalReason: boundedTerminalReason } : {}),
           ...(boundedStop ? { terminalRetryable: false } : {}),
@@ -5019,6 +5029,7 @@ export async function* runAgent(
       const receiptCommitted = await commitTaskReceipt({
         ...taskCorrelation(),
         outcome: "completed",
+        ...(stoppedAtStepLimit ? { terminalReason: "step_limit" as const, terminalRetryable: false } : {}),
         ...(assistantText ? { message: assistantText } : {}),
         toolCallCount: currentTurnToolCallCount,
       });

@@ -129,6 +129,7 @@ export interface DelegateOpts {
    * agents so multiple message.stream calls land on the same live thread.
    */
   readonly keepAlive?: boolean;
+  readonly summarizeAtStepLimit?: boolean;
   readonly onProgress?: (
     event: RunAgentProgressEvent,
     thread: AgentThread,
@@ -597,6 +598,7 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
         ? { resumeManager: opts.resumeManager }
         : {}),
       ...(opts.keepAlive !== undefined ? { keepAlive: opts.keepAlive } : {}),
+      ...(opts.summarizeAtStepLimit !== undefined ? { summarizeAtStepLimit: opts.summarizeAtStepLimit } : {}),
       onWorktreeEvidence: (evidence) => {
         if (
           evidence.state !== "unchanged_clean" &&
@@ -766,6 +768,7 @@ async function runDelegateAgentLoop(opts: {
   readonly serviceTier?: string | null;
   readonly resumeManager?: ResumeManager;
   readonly keepAlive?: boolean;
+  readonly summarizeAtStepLimit?: boolean;
   readonly onWorktreeEvidence: (evidence: WorktreeTurnEvidence) => void;
   readonly onProgress?: (
     event: RunAgentProgressEvent,
@@ -811,6 +814,7 @@ async function runDelegateAgentLoop(opts: {
           ? { serviceTier: opts.serviceTier }
           : {}),
         ...(opts.keepAlive !== undefined ? { keepAlive: opts.keepAlive } : {}),
+        ...(opts.summarizeAtStepLimit !== undefined ? { summarizeAtStepLimit: opts.summarizeAtStepLimit } : {}),
         onWorktreeEvidence: opts.onWorktreeEvidence,
         onTerminalFundsStop: () => opts.control.markThreadSpawnEdgeClosed(live.agentId),
         ...(opts.finalMessageSink !== undefined

@@ -8,7 +8,7 @@ import { LLMRateLimitError, LLMTimeoutError, LLMAuthenticationError,
 
 export type ChildTerminalReason =
   | "completed" | "insufficient_funds" | "rate_limited" | "provider_unavailable"
-  | "timeout" | "auth_required" | "model_unavailable" | "context_insufficient"
+  | "step_limit" | "timeout" | "auth_required" | "model_unavailable" | "context_insufficient"
   | "tool_protocol_unreliable" | "model_refused" | "parent_cancelled"
   | "policy_revoked" | "resume_blocked" | "cost_cap_reached"
   | "effect_outcome_unknown" | "consent_denied" | "consent_unavailable";
@@ -108,7 +108,8 @@ export function classifyChildFailure(provider: string, error: unknown): {
   }
   if (error instanceof LLMTimeoutError || /(?:^|\b)(?:timeout|timed out|deadline_reached|role_timeout)(?:\b|$)/.test(message))
     return { reason: "timeout", retryable: true };
-  if (/maxturns|max.turns|no.progress/.test(message)) return { reason: "timeout", retryable: false };
+  if (/maxturns|max.turns/.test(message)) return { reason: "step_limit", retryable: false };
+  if (/no.progress/.test(message)) return { reason: "timeout", retryable: false };
   if (error instanceof LLMAuthenticationError || status === 401 || status === 403)
     return { reason: "auth_required", retryable: false };
   if (error instanceof LLMContextWindowExceededError || status === 413 || /context|compact_failed/.test(message))

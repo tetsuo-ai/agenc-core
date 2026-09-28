@@ -428,7 +428,7 @@ export function buildAnthropicMessagesRequest(
     alwaysOnThinking || input.options?.reasoningEffort !== undefined;
   if (input.options?.toolChoice !== undefined) {
     const toolChoice = parseAnthropicToolChoice(input.options.toolChoice);
-    if (toolChoice !== undefined && !thinkingEnabled) {
+    if (toolChoice !== undefined && (!thinkingEnabled || input.options.toolChoice === "none")) {
       body.tool_choice = toolChoice;
     }
   }

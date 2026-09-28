@@ -694,7 +694,7 @@ export function parseAnthropicToolChoice(
 ): unknown {
   if (toolChoice === undefined || toolChoice === "auto") return undefined;
   if (toolChoice === "required") return { type: "any" };
-  if (toolChoice === "none") return undefined;
+  if (toolChoice === "none") return { type: "none" };
   return {
     type: "tool",
     // Must match the encoded `tools[]` entry (see parseOpenAIToolChoice).

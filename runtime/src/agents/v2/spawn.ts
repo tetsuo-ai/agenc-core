@@ -1015,6 +1015,8 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         // Keep collab workers alive so assign_task after first completion
         // has a consumer (todo-106). close_agent still tears them down.
         keepAlive: true,
+        // Tasks are unattended even though the worker remains reusable.
+        summarizeAtStepLimit: true,
         ...(toolFree ? { toolAllowlist: [] } : {}),
         ...(role !== undefined ? { role } : {}),
         ...(plan !== undefined ? { plan } : {}),

@@ -299,7 +299,11 @@ export type {
   AutoCompactImpl,
 } from "./run-turn-compaction.js";
 
+import { StepLimitTrail, stepLimitReminder, stepLimitWrapup, STEP_LIMIT_WRAPUP_INSTRUCTION } from "./step-limit-wrapup.js";
+
 export interface RunTurnOptions {
+  /** Only unattended child tasks opt in; interactive turns retain their lifecycle. */
+  readonly stepLimitWrapup?: { readonly maxModelCalls?: number };
   readonly systemPrompt?: string;
   /** Classifies a supplemental prompt without allowing it to replace core instructions. */
   readonly systemPromptTrust?: "trusted_internal" | "workspace_role";
@@ -766,6 +770,78 @@ function reportWithheldImages(
   });
 }
 
+function projectSamplingImages(
+  state: TurnState,
+  ctx: TurnContext,
+  session: Session,
+  currentConfig: AgenCConfig,
+): void {
+  // Leave out every image the selected model must not receive: all of them
+  // when the registry knows the model is text-only, and any image this
+  // provider and model refused earlier in this session. Before the byte
+  // budget, so the budget counts only images that are sent.
+  const imagePolicy = modelImagePolicy(
+    session,
+    ctx,
+    state,
+    currentConfig,
+  );
+  rememberRequestImageRoute(state, imagePolicy.route);
+  // A refusal matters only while its image can be sent again.
+  pruneRejectedImages(session, [state.messages, state.messagesForQuery]);
+  const withheldForModel = withholdImagesForModel(
+    state.messagesForQuery,
+    imagePolicy,
+    rejectedImagesFor(session, imagePolicy.route),
+  );
+  state.messagesForQuery = withheldForModel.messages;
+
+  // Bound the fully assembled query, including fresh image mentions from
+  // attachment producers. Durable history and retained attachments keep
+  // every image; only this request projection changes.
+  const imageBudgetBytes = resolveContextImageBudgetBytes(
+    session.services.userShell?.childEnvironment ?? process.env,
+  );
+  const boundedImages = boundContextImageBytes(
+    state.messagesForQuery,
+    imageBudgetBytes,
+  );
+  if (boundedImages.omitted > 0) {
+    state.messagesForQuery = boundedImages.messages;
+    const tracked = state as TurnState & { contextImagesOmitted?: number };
+    if (tracked.contextImagesOmitted !== boundedImages.omitted) {
+      tracked.contextImagesOmitted = boundedImages.omitted;
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "context_images_omitted",
+            message:
+              `${boundedImages.omitted} inline image(s) left out of the request: ` +
+              `${Math.round(boundedImages.totalBytes / 1024)} KB of images exceeded the ` +
+              `${Math.round(imageBudgetBytes / 1024)} KB budget (${CONTEXT_IMAGE_BUDGET_ENV}); ` +
+              `${Math.round(boundedImages.retainedBytes / 1024)} KB of the newest kept`,
+          },
+        },
+      });
+    }
+  }
+
+  // A tool-result image whose bytes are not a complete image is refused by
+  // every provider, and because tool results are replayed, by every request
+  // after it. After the budget, so only images still on the wire are decoded.
+  const withheldUndecodable = withholdUndecodableToolImages(
+    state.messagesForQuery,
+  );
+  state.messagesForQuery = withheldUndecodable.messages;
+  reportWithheldImages(session, state, {
+    unsupported: withheldForModel.unsupported,
+    rejected: withheldForModel.rejected,
+    undecodable: withheldUndecodable.undecodable,
+  });
+}
+
 async function prepareSamplingRequestBoundary(
   state: TurnState,
   ctx: TurnContext,
@@ -894,70 +970,7 @@ async function prepareSamplingRequestBoundary(
   }
   state.attachmentsAnchoredForTurn = true;
 
-  // Leave out every image the selected model must not receive: all of them
-  // when the registry knows the model is text-only, and any image this
-  // provider and model refused earlier in this session. Before the byte
-  // budget, so the budget counts only images that are sent.
-  const imagePolicy = modelImagePolicy(
-    session,
-    samplingContext,
-    state,
-    currentConfig,
-  );
-  rememberRequestImageRoute(state, imagePolicy.route);
-  // A refusal matters only while its image can be sent again.
-  pruneRejectedImages(session, [state.messages, state.messagesForQuery]);
-  const withheldForModel = withholdImagesForModel(
-    state.messagesForQuery,
-    imagePolicy,
-    rejectedImagesFor(session, imagePolicy.route),
-  );
-  state.messagesForQuery = withheldForModel.messages;
-
-  // Bound the fully assembled query, including fresh image mentions from
-  // attachment producers. Durable history and retained attachments keep
-  // every image; only this request projection changes.
-  const imageBudgetBytes = resolveContextImageBudgetBytes(
-    session.services.userShell?.childEnvironment ?? process.env,
-  );
-  const boundedImages = boundContextImageBytes(
-    state.messagesForQuery,
-    imageBudgetBytes,
-  );
-  if (boundedImages.omitted > 0) {
-    state.messagesForQuery = boundedImages.messages;
-    const tracked = state as TurnState & { contextImagesOmitted?: number };
-    if (tracked.contextImagesOmitted !== boundedImages.omitted) {
-      tracked.contextImagesOmitted = boundedImages.omitted;
-      session.emit({
-        id: session.nextInternalSubId(),
-        msg: {
-          type: "warning",
-          payload: {
-            cause: "context_images_omitted",
-            message:
-              `${boundedImages.omitted} inline image(s) left out of the request: ` +
-              `${Math.round(boundedImages.totalBytes / 1024)} KB of images exceeded the ` +
-              `${Math.round(imageBudgetBytes / 1024)} KB budget (${CONTEXT_IMAGE_BUDGET_ENV}); ` +
-              `${Math.round(boundedImages.retainedBytes / 1024)} KB of the newest kept`,
-          },
-        },
-      });
-    }
-  }
-
-  // A tool-result image whose bytes are not a complete image is refused by
-  // every provider, and because tool results are replayed, by every request
-  // after it. After the budget, so only images still on the wire are decoded.
-  const withheldUndecodable = withholdUndecodableToolImages(
-    state.messagesForQuery,
-  );
-  state.messagesForQuery = withheldUndecodable.messages;
-  reportWithheldImages(session, state, {
-    unsupported: withheldForModel.unsupported,
-    rejected: withheldForModel.rejected,
-    undecodable: withheldUndecodable.undecodable,
-  });
+  projectSamplingImages(state, samplingContext, session, currentConfig);
 
   // Remaining run budget on each tool result (#2503), fixed when the result
   // completed so its bytes never change between requests. Projection only.
@@ -2649,6 +2662,8 @@ async function* runTurnKernelInner(
     provenance: "synthetic",
   };
   let lastContent = "";
+  const stepTrail = new StepLimitTrail();
+  const stepReminders = new Set<number>();
   let emptyResponseRetryCount =
     state.modelSampleResumePrompt === "empty_response" ? 1 : 0;
   // The deadline stop (#2503): a bounded failure, not a cancellation, so the
@@ -2744,21 +2759,6 @@ async function* runTurnKernelInner(
       return terminal;
     }
 
-    const maxTurns = resolveMaxTurns(ctx);
-    if (state.turnCount > maxTurns) {
-      await drainInFlight(state, ctx, session);
-      await syncSessionState();
-      emitTurnComplete(lastContent, "max_turns");
-      const terminal: Terminal = { reason: "max_turns" };
-      yield {
-        type: "turn_complete",
-        content: lastContent,
-        usage,
-        stopReason: "max_turns",
-      };
-      return terminal;
-    }
-
     const maxBudgetUsd = ctx.config.maxBudgetUsd;
     const totalCostUsd = session.services.costSidecar?.getTotalCostUsd();
     if (
@@ -2780,6 +2780,54 @@ async function* runTurnKernelInner(
         stopReason: "max_budget_usd",
       };
       return terminal;
+    }
+
+    // A cross-provider allocation covers the final sample too. Reserve one
+    // of its calls without widening the consented allocation.
+    const maxTurns = Math.min(resolveMaxTurns(ctx),
+      opts.stepLimitWrapup?.maxModelCalls !== undefined
+        ? Math.max(0, opts.stepLimitWrapup.maxModelCalls - 1) : Infinity);
+    if (state.turnCount > maxTurns) {
+      await drainInFlight(state, ctx, session);
+      if (opts.stepLimitWrapup !== undefined) {
+        state.messages.push({ role: "user", content: STEP_LIMIT_WRAPUP_INSTRUCTION,
+          runtimeOnly: { excludeFromDurableHistory: true } });
+        await prepareAgenCTurnContext(state, ctx, session, turnQuerySource, signal);
+        state.messagesForQuery = projectRetainedAttachments(
+          state.messagesForQuery,
+          getAttachmentTrackingState(session).retainedAttachments,
+          session.permissionModeRegistry.current().mode,
+        ).messages;
+        projectSamplingImages(state, ctx, session, session.services.configStore!.current());
+        const wrapped = await stepLimitWrapup({ session, ctx,
+          request: buildSamplingRequestContract(state, session, ctx), signal,
+          fallback: stepTrail.fallback(lastContent) });
+        const cancelled = await finishCancelledIfAborted();
+        if (cancelled !== null) {
+          yield cancelled.event;
+          return cancelled.terminal;
+        }
+        opts.assistantOutputSink?.reset();
+        opts.assistantOutputSink?.writeCanonicalDelta(wrapped.text);
+        lastContent = wrapped.text;
+        if (wrapped.usage) usage = cumulativeUsage(usage, wrapped.usage);
+        state.messages.push({ role: "assistant", content: lastContent });
+        session.emit({ id: session.nextInternalSubId(), msg: {
+          type: "agent_message", payload: { message: lastContent },
+        } });
+        yield { type: "assistant_text", content: lastContent };
+      }
+      await syncSessionState();
+      emitTurnComplete(lastContent, "max_turns");
+      yield { type: "turn_complete", content: lastContent, usage, stopReason: "max_turns" };
+      return { reason: "max_turns" };
+    }
+    if (opts.stepLimitWrapup !== undefined && !stepReminders.has(state.turnCount)) {
+      const reminder = stepLimitReminder(state.turnCount - 1, maxTurns);
+      if (reminder) {
+        state.messages.push(reminder);
+        stepReminders.add(state.turnCount);
+      }
     }
 
     // Run deadline (#2503): tell the model its remaining budget once per
@@ -3361,6 +3409,7 @@ async function* runTurnKernelInner(
     // around the dispatch.
     if (lastAssistant && lastAssistant.toolCalls.length > 0) {
       for (const toolCall of lastAssistant.toolCalls) {
+        stepTrail.record(toolCall);
         const event: PhaseEvent = { type: "tool_call", toolCall };
         yield event;
       }
@@ -3652,6 +3701,7 @@ export function runTurn(
       userMessage: string | readonly LLMContentPart[],
       opts?: {
         ctx?: TurnContext;
+        stepLimitWrapup?: RunTurnOptions["stepLimitWrapup"];
         systemPrompt?: string;
         history?: readonly LLMMessage[];
         initialHistoryPersistence?: RunTurnOptions["initialHistoryPersistence"];
@@ -3673,6 +3723,7 @@ export function runTurn(
   if (typeof sessionOwner.runTurn === "function") {
     return sessionOwner.runTurn(userMessage, {
       ctx,
+      stepLimitWrapup: opts.stepLimitWrapup,
       systemPrompt: opts.systemPrompt,
       history: opts.history,
       initialHistoryPersistence: opts.initialHistoryPersistence,
