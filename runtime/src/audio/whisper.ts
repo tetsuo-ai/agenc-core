@@ -44,7 +44,7 @@ export interface WhisperService {
 // are multilingual. LFS SHA256 and byte lengths verified against the revision.
 const MODEL_REVISION = "5359861c739e955e79d9a303bcbc70fb988958b1";
 /** Give up on a download only after this long with no bytes arriving. */
-const DOWNLOAD_IDLE_MS = 60 * 1000;
+export const DOWNLOAD_IDLE_MS = 60 * 1000;
 export const WHISPER_MODELS = {
   base: { bytes: 147951465, sha256: "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe" },
   small: { bytes: 487601967, sha256: "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b" },

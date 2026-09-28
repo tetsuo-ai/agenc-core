@@ -122,6 +122,7 @@ Everything past the launcher lives in the single runtime workspace
 | `bootstrap/` / `lifecycle/` / `conversation/`                            | Bootstrap state, shutdown/signals, conversation token-budget and realtime                                                                                                                                                                      |
 | `constants/` / `types/` / `errors/` / `utils/` / `context/` / `schemas/` | Shared constants, pure types, error shaping, utilities                                                                                                                                                                                         |
 | `browser/`                                                               | Isolated Chromium CDP driver + SSRF proxy for the LIVE `Browser` tool                                                                                                                                                                          |
+| `audio/`                                                                 | Local Whisper dictation and verified model install. Downloads fail after 60 s of silence, not a ten-minute wall clock: [whisper-local.md](whisper-local.md#download-idle-clock).                                                               |
 | `build/` / `version.ts` / `index.ts`                                     | Feature flags, version stamp (`0.18.0`), public barrel                                                                                                                                                                                         |
 
 ## State on disk (`AGENC_HOME`, default `~/.agenc`)
@@ -145,6 +146,7 @@ The daemon and runtime persist under one home. Relocate with an absolute
 | `projects/<slug>/agenc-state_1.pre-v15.sqlite`                     | Automatic verified rollback snapshot created before upgrading an existing project database to schema v15                             |
 | `sessions/` (project-scoped)                                       | Canonical append-only JSONL rollouts + advisory `index.json` (atomic tmp+fsync+rename). The daemon sweep deletes idle session dirs after `agent.retention.rollout_days` (default 30; 0 keeps every session): [session rollout retention](reference/daemon.md#session-rollout-retention). |
 | `derived-indexes/memory-v1.sqlite`                                 | Rebuildable full-corpus memory FTS cache (not source authority). See [memory.md](reference/memory.md).                               |
+| `whisper/`                                                         | Private Whisper model weights (`ggml-base.bin`, `ggml-small.bin`). Downloads use a 60 s idle clock: [whisper-local.md](whisper-local.md#download-idle-clock). |
 | logs / state DBs                                                   | SQLite state + logs databases under project/home layout                                                                              |
 
 Login tokens, provider BYOK keys, remote bearers, and persisted remote
