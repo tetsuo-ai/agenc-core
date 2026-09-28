@@ -84,7 +84,7 @@ interface AnthropicUsageAccumulator {
   readonly cache_creation_input_tokens?: number;
   readonly reasoning_output_tokens?: number;
   readonly output_tokens_details?: {
-    readonly thinking_tokens: number;
+    readonly thinking_tokens: unknown;
   };
   readonly server_tool_use?: {
     readonly web_search_requests?: number;
@@ -639,6 +639,7 @@ export class AnthropicProvider implements LLMProvider {
       let model = requestModel;
       let stopReason = "end_turn";
       let sawMessageStop = false;
+      let sawFinalMessageDelta = false;
       let usage: AnthropicUsageAccumulator = {
         input_tokens: 0,
         output_tokens: 0,
@@ -905,6 +906,7 @@ export class AnthropicProvider implements LLMProvider {
           usage = mergeAnthropicUsage(usage, event.data.usage);
           if (typeof delta.stop_reason === "string") {
             stopReason = delta.stop_reason;
+            sawFinalMessageDelta = true;
           }
           continue;
         }
@@ -1065,8 +1067,10 @@ export class AnthropicProvider implements LLMProvider {
       // by itself make the fault unreproducible. #2107 is the in-adapter
       // fallback above: `streamHasEmittedOutput()` refuses that restart once
       // thinking was delivered, because a second `onChunk` pass would duplicate
-      // it. A partial is only for a fault the ladder cannot re-sample when
-      // user-visible text or thinking was already delivered — rethrowing a
+      // it. Once the final message_delta arrives, preserve its usage in a
+      // partial even for transient faults to avoid re-sampling billed output.
+      // Otherwise, a partial is only for a fault the ladder cannot re-sample
+      // when user-visible text or thinking was already delivered. Rethrowing a
       // non-transient fault would drop that content, and a streamed tool call
       // may already have been dispatched. A caller abort (options.signal or
       // AbortError) rethrows so stream-model can turn its own watchdog abort
@@ -1080,7 +1084,8 @@ export class AnthropicProvider implements LLMProvider {
         deliveredVisibleContent &&
         !isAnthropicStreamAbort(error, options?.signal) &&
         !(error instanceof LLMInvalidResponseError) &&
-        !isResampleableStreamInterruption(mappedError, streamedToolCount);
+        (sawFinalMessageDelta ||
+          !isResampleableStreamInterruption(mappedError, streamedToolCount));
       if (shouldSurfacePartial) {
         const partialToolCalls: LLMToolCall[] = completedToolCalls.flatMap(
           (toolCall) => {
