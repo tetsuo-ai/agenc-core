@@ -7,7 +7,10 @@ import type { TurnContext } from "./turn-context.js";
 import { sanitizeModelOutput, stripCitations, stripProposedPlanBlocks } from "../llm/stream-parser.js";
 import { isPlanMode } from "./plan-mode.js";
 
-export const STEP_LIMIT_WRAPUP_TIMEOUT_MS = 30_000;
+// A live deepseek-flash child sent response headers after about 13 s and was
+// still streaming its reasoning when a 30 s bound cut the answer off. Leave
+// room for reasoning plus the capped 4,096-token answer.
+export const STEP_LIMIT_WRAPUP_TIMEOUT_MS = 120_000;
 export const STEP_LIMIT_WRAPUP_INSTRUCTION =
   "You have reached the step limit. Stop investigating. Write the final answer now from what you found, " +
   "including findings and conclusions. Say what you could not check. Tools are unavailable.";
