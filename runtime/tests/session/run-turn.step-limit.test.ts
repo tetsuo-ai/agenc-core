@@ -203,6 +203,24 @@ describe("one-shot child step limit", () => {
     expect(phases.at(-1)).toMatchObject({ stopReason: "max_budget_usd" });
   });
 
+  it.each([
+    { name: "ollama", sent: [] as string[] },
+    { name: "stub-provider", sent: ["read_probe"] },
+  ])("withholds the tool catalog from synthesis only for $name", async ({ name, sent }) => {
+    const chatStream = vi.fn<ReturnType<typeof mkProvider>["chatStream"]>(async () => ({
+      content: "Found a defect.", toolCalls: [], model: "test-model", finishReason: "stop" as const }));
+    const { session } = mkSession({ provider: { ...mkProvider(), name, chatStream } });
+    const tool = { type: "function" as const,
+      function: { name: "read_probe", description: "Read evidence", parameters: { type: "object" } } };
+    const result = await stepLimitWrapup({ session, ctx: mkCtx(), signal: new AbortController().signal,
+      request: { input: [], tools: [tool], baseInstructions: "", parallelToolCalls: false }, fallback: "fallback trail" });
+    expect(result.text).toBe("Partial result: stopped at the step limit.\n\nFound a defect.");
+    const options = chatStream.mock.calls[0]?.[2];
+    expect(options?.toolChoice).toBe("none");
+    expect((options?.tools ?? []).map((spec) => spec.function.name)).toEqual(sent);
+    expect(options?.toolRouting?.allowedToolNames ?? []).toEqual(sent);
+  });
+
   it("bounds synthesis even if the provider ignores abort", async () => {
     vi.useFakeTimers();
     const chatStream = vi.fn<ReturnType<typeof mkProvider>["chatStream"]>(() => new Promise<never>(() => {}));

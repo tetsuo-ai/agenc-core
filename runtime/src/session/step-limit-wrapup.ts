@@ -64,7 +64,11 @@ export async function stepLimitWrapup(args: {
     if (controller.signal.aborted) return { text: fallback };
     const request: StreamModelRequestContract = {
       ...args.request,
-      // Tool history still requires definitions, even when new calls are disabled.
+      // Ollama ignores toolChoice and its text-tool protocol advertises every
+      // attached tool, so withhold the catalog there; its history projection
+      // needs no definitions. Elsewhere tool history still requires them,
+      // even when new calls are disabled.
+      ...(session.services.provider.name === "ollama" ? { tools: [] } : {}),
       toolChoice: "none",
       parallelToolCalls: false,
       maxOutputTokens: Math.min(args.request.maxOutputTokens ?? 4096, 4096),
