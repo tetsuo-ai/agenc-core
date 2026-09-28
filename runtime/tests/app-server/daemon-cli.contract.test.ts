@@ -1687,6 +1687,29 @@ describe("AgenC daemon CLI", () => {
     }
   });
 
+  it.each([undefined, "production"])("does not turn Core's NODE_ENV into a daemon user setting (%s)", async original => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    host.env.NODE_ENV = "production";
+    const spawn = vi.fn(host.spawnDetachedDaemon);
+    host.spawnDetachedDaemon = spawn;
+    const key = Symbol.for("agenc.originalRuntimeEnvironment");
+    const saved = Object.getOwnPropertyDescriptor(globalThis, key);
+    Object.defineProperty(globalThis, key, { value: { NODE_ENV: original }, configurable: true });
+    try {
+      expect(await runAgenCDaemonCli({ kind: "command", action: "start" }, {
+        host, io: createIo(), ...createReadyPublishedDaemonOptions(agencHome, host),
+      })).toBe(0);
+      expect(spawn).toHaveBeenCalledOnce();
+      expect(spawn.mock.calls[0]?.[0].NODE_ENV).toBe(original);
+      expect(host.env.NODE_ENV).toBe("production");
+    } finally {
+      Reflect.deleteProperty(globalThis, key);
+      if (saved) Object.defineProperty(globalThis, key, saved);
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("leaves canonical config validation to the spawned daemon", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);

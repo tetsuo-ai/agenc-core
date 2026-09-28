@@ -6,12 +6,17 @@ const runtimeRoot = join(__dirname, "..", "..");
 
 describe("bootstrap/node-env", () => {
   const original = process.env.NODE_ENV;
+  const snapshotKey = Symbol.for("agenc.originalRuntimeEnvironment");
+  const savedSnapshot = Object.getOwnPropertyDescriptor(globalThis, snapshotKey);
 
   beforeEach(() => {
+    Reflect.deleteProperty(globalThis, snapshotKey);
     vi.resetModules();
   });
 
   afterEach(() => {
+    Reflect.deleteProperty(globalThis, snapshotKey);
+    if (savedSnapshot) Object.defineProperty(globalThis, snapshotKey, savedSnapshot);
     if (original === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = original;
   });
@@ -27,6 +32,77 @@ describe("bootstrap/node-env", () => {
     await import("../../src/bootstrap/node-env.js");
     expect(process.env.NODE_ENV).toBe("test");
   });
+
+  it.each([undefined, "development", "production", "test", ""])(
+    "passes the original NODE_ENV (%s) through both child environment paths",
+    async (value) => {
+      if (value === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = value;
+      await import("../../src/bootstrap/node-env.js");
+      const { subprocessEnv } = await import("../../src/utils/subprocessEnv.js");
+      const { scrubEnvForChildProcess, buildScrubbedSpawnEnv } = await import("../../src/unified-exec/scrub-env.js");
+      const base = { ...process.env };
+      expect(process.env.NODE_ENV).toBe(value ?? "production");
+      for (const child of [
+        subprocessEnv(base),
+        subprocessEnv({ ...base, AGENC_SUBPROCESS_ENV_NO_SCRUB: "1" }),
+        scrubEnvForChildProcess(base),
+        buildScrubbedSpawnEnv(undefined, base),
+      ]) {
+        expect(child.NODE_ENV).toBe(value);
+        expect(Object.hasOwn(child, "NODE_ENV")).toBe(value !== undefined);
+      }
+      expect(base.NODE_ENV).toBe(value ?? "production");
+      expect(buildScrubbedSpawnEnv({ NODE_ENV: "production" }, base).NODE_ENV).toBe("production");
+      expect(subprocessEnv({ NODE_ENV: "development" }).NODE_ENV).toBe("development");
+      expect(subprocessEnv({})).not.toHaveProperty("NODE_ENV");
+    },
+  );
+
+  it.each(["AGENC_ONBOARDING", "AGENC_DAEMON_AUTOSTART_FAILURE"] as const)(
+    "restores CLI-only %s without changing Core state", async key => {
+      const saved = process.env[key];
+      const { setCoreOnlyEnvironmentVariable } = await import("../../src/utils/runtimeEnvironment.js");
+      const { subprocessEnv } = await import("../../src/utils/subprocessEnv.js");
+      const { scrubEnvForChildProcess } = await import("../../src/unified-exec/scrub-env.js");
+      try {
+        delete process.env[key];
+        setCoreOnlyEnvironmentVariable(key, "core-first");
+        setCoreOnlyEnvironmentVariable(key, "core-second");
+        expect(subprocessEnv()).not.toHaveProperty(key);
+        expect(scrubEnvForChildProcess(process.env)).not.toHaveProperty(key);
+        expect(process.env[key]).toBe("core-second");
+        vi.resetModules();
+        process.env[key] = "user-value";
+        const { setCoreOnlyEnvironmentVariable: setAgain, userRuntimeEnvironment } = await import("../../src/utils/runtimeEnvironment.js");
+        setAgain(key, "core-value");
+        expect(userRuntimeEnvironment(process.env)[key]).toBe("user-value");
+        expect(process.env[key]).toBe("core-value");
+      } finally {
+        if (saved === undefined) delete process.env[key];
+        else process.env[key] = saved;
+      }
+    },
+  );
+
+  it("leaves environments unchanged when Core has not defaulted NODE_ENV", async () => {
+    const { subprocessEnv } = await import("../../src/utils/subprocessEnv.js");
+    expect(subprocessEnv({})).not.toHaveProperty("NODE_ENV");
+    expect(subprocessEnv({ NODE_ENV: "production" }).NODE_ENV).toBe("production");
+  });
+
+  it.each(["src/bin/agenc.ts", "src/sandbox/linux-launcher/main.ts"])(
+    "%s captures before defaulting and a second bootstrap preserves it",
+    async (entry) => {
+      delete process.env.NODE_ENV;
+      const source = readFileSync(join(runtimeRoot, entry), "utf8");
+      new Function(source.replace(/^#!.*\n/, "").split("await import(")[0])();
+      expect(process.env.NODE_ENV).toBe("production");
+      await import("../../src/bootstrap/node-env.js");
+      const { subprocessEnv } = await import("../../src/utils/subprocessEnv.js");
+      expect(subprocessEnv()).not.toHaveProperty("NODE_ENV");
+    },
+  );
 });
 
 describe("process entries are order-proof NODE_ENV wrappers", () => {

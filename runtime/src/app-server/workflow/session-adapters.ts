@@ -25,6 +25,7 @@
  *   isolated child session pinned to the spec's reviewer model.
  */
 
+import { userRuntimeEnvironment } from "../../utils/runtimeEnvironment.js";
 import { randomUUID } from "node:crypto";
 import { mergeDaemonClientEnvironment } from "../client-env-snapshot.js";
 import { WorkflowApprovalFailure } from "../../permissions/approval-failure.js";
@@ -932,7 +933,7 @@ export function createWorkflowSessionSeams(
         args: ["-lc", input.script],
         cwd: input.cwd,
         env: Object.fromEntries(
-          Object.entries(entry.environment).filter(
+          Object.entries(userRuntimeEnvironment(entry.environment)).filter(
             (pair): pair is [string, string] => typeof pair[1] === "string",
           ),
         ),

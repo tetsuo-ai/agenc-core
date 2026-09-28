@@ -1284,6 +1284,24 @@ describe("VerifiedChangeWorkflowController — happy path", () => {
 });
 
 describe("VerifiedChangeWorkflowController — stop reasons", () => {
+  it.each([
+    ["**VERDICT: PASS**", "completed"],
+    ["VERDICT: **PASS**", "completed"],
+    ["**VERDICT: FAIL**", "failed"],
+    ["VERDICT: **FAIL**", "failed"],
+    ["**VERDICT: PARTIAL**", "failed"],
+  ])("recognizes the formatted verdict %s", async (line, status) => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      harness.spawner.queue("verify_agent", {
+        status: "completed", finalMessage: `Evidence\n${line}`, usage: DEFAULT_USAGE,
+      });
+    }
+    await runToTerminal(harness);
+    const terminal = harness.repo.getCurrentTerminalResult(RUN_ID)!;
+    expect(terminal.status).toBe(status);
+    expect(terminal.finalMessage).not.toContain("did not return a verdict");
+  });
+
   it.each(["PARTIAL", "FAIL", "missing"])(
     "does not describe a passing command as failed when the verdict is %s", async (verdict) => {
       for (let attempt = 0; attempt < 2; attempt++) {
