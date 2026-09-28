@@ -4,8 +4,14 @@ import { runTurn } from "../../src/session/run-turn.js";
 import { STEP_LIMIT_WRAPUP_TIMEOUT_MS, StepLimitTrail, stepLimitWrapup } from "../../src/session/step-limit-wrapup.js";
 import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
 import type { SessionServices } from "../../src/session/session.js";
+import { WorkflowHandoffSpool } from "../../src/agents/workflow-handoff-spool.js";
+import { CONTEXT_IMAGE_BUDGET_ENV } from "../../src/session/query-image-budget.js";
+import { imageRoute, recordRejectedImages, requestImageUrls } from "../../src/session/query-image-safety.js";
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllEnvs();
+});
 
 function investigatingProvider() {
   const requests: { messages: LLMMessage[]; options?: LLMChatOptions }[] = [];
@@ -41,6 +47,79 @@ describe("one-shot child step limit", () => {
     expect(requests.at(-1)!.options).toMatchObject({ tools: [], toolChoice: "none", singleWireAttempt: true });
     expect(requests.at(-1)!.messages.at(-1)?.content).toContain("Stop investigating");
     expect(requests.at(-1)!.messages.some((m) => m.role === "tool")).toBe(true);
+  });
+
+  it.each([false, true])("publishes the capped workflow result through its spool (fallback: %s)", async (fallback) => {
+    const { provider, requests } = investigatingProvider();
+    const chatStream = provider.chatStream;
+    provider.chatStream = async (...args) => {
+      const response = await chatStream(...args);
+      return fallback && args[2]?.toolChoice === "none"
+        ? { ...response, content: "" } : response;
+    };
+    const spool = WorkflowHandoffSpool.create({ maximumBytes: 8192, maximumTokens: 8192 });
+    try {
+      const { session } = mkSession({ provider });
+      const ctx = mkCtx();
+      const phases = [];
+      for await (const phase of runTurn(session, { ...ctx, config: { ...ctx.config, maxTurns: 1 } }, "review", {
+        stepLimitWrapup: {}, assistantOutputSink: spool,
+      })) phases.push(phase);
+      const chunks: Buffer[] = [];
+      for await (const chunk of spool.seal().chunks()) chunks.push(Buffer.from(chunk));
+      const artifact = Buffer.concat(chunks).toString("utf8");
+      expect(phases.at(-1)).toMatchObject({ type: "turn_complete", content: artifact, stopReason: "max_turns" });
+      expect(artifact).toContain(fallback ? "Final-answer synthesis was unavailable" : "Found a defect");
+      expect(requests).toHaveLength(2);
+    } finally {
+      await spool.dispose();
+    }
+  });
+
+  it.each(["reset", "writeCanonicalDelta"] as const)("propagates workflow sink %s failures during wrap-up", async (method) => {
+    const { provider, requests } = investigatingProvider();
+    const { session } = mkSession({ provider });
+    const ctx = mkCtx();
+    const error = new Error("workflow sink failed");
+    const sink = { reset() {}, writeCanonicalDelta(_delta: string) {} };
+    sink[method] = () => {
+      if (requests.length === 2) throw error;
+    };
+    await expect(drain(runTurn(session, { ...ctx, config: { ...ctx.config, maxTurns: 1 } }, "review", {
+      stepLimitWrapup: {}, assistantOutputSink: sink,
+    }))).rejects.toBe(error);
+    expect(requests).toHaveLength(2);
+  });
+
+  it.each(["rejected", "undecodable", "over budget"])("keeps previously %s images out of synthesis", async (reason) => {
+    const url = reason === "undecodable"
+      ? "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
+      : "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg==";
+    if (reason === "over budget") vi.stubEnv(CONTEXT_IMAGE_BUDGET_ENV, "1");
+    const history: LLMMessage[] = [
+      { role: "user", content: "inspect image" },
+      { role: "assistant", content: "", toolCalls: [{ id: "image", name: "Read", arguments: "{}" }] },
+      { role: "tool", toolCallId: "image", toolName: "Read", content: [
+        { type: "text", text: "image evidence" },
+        { type: "image_url", image_url: { url } },
+      ] },
+    ];
+    const { provider, requests } = investigatingProvider();
+    const { session, state } = mkSession({ provider, history });
+    const ctx = mkCtx();
+    if (reason === "rejected") {
+      recordRejectedImages(session, imageRoute(provider.name, session.config.model ?? ctx.modelInfo.slug), [url], {
+        provider: provider.name, reason: "unsupported image",
+      });
+    }
+    await drain(runTurn(session, { ...ctx, config: { ...ctx.config, maxTurns: 1 } }, "review", { stepLimitWrapup: {} }));
+    expect(requests).toHaveLength(2);
+    expect(requestImageUrls(requests[0]!.messages)).toEqual([]);
+    expect(requestImageUrls(requests[1]!.messages)).toEqual([]);
+    expect(requests[1]!.messages.find((message) => message.toolCallId === "image")).toEqual(
+      requests[0]!.messages.find((message) => message.toolCallId === "image"),
+    );
+    expect(requestImageUrls(state.history)).toEqual([url]);
   });
 
   it("reserves synthesis within an explicit cross-provider call allocation", async () => {
