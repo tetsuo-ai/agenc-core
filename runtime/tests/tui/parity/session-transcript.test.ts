@@ -2087,6 +2087,10 @@ describe("AgenC TUI session transcript", () => {
           "editor_proposal_missing",
           "The Editor request returned no valid proposal",
         ],
+        [
+          "stream_idle_warning",
+          "no output from the model for 10 minutes",
+        ],
       ] as const;
       const transcript = adaptTranscriptEvents(
         warnings.map(([cause, message], index) => ({
@@ -2100,6 +2104,7 @@ describe("AgenC TUI session transcript", () => {
       expect(allText).toContain("mid_turn_compact_skipped");
       expect(allText).toContain("Dropped @file/path");
       expect(allText).toContain("returned no valid proposal");
+      expect(allText).toContain("no output from the model for 10 minutes");
     });
   });
 });
