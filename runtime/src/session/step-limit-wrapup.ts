@@ -9,11 +9,12 @@ import { isPlanMode } from "./plan-mode.js";
 
 // A live deepseek-flash child sent response headers after about 13 s and was
 // still streaming its reasoning when a 30 s bound cut the answer off. Leave
-// room for reasoning plus the capped 4,096-token answer.
+// room for reasoning plus the answer.
 export const STEP_LIMIT_WRAPUP_TIMEOUT_MS = 120_000;
 export const STEP_LIMIT_WRAPUP_INSTRUCTION =
   "You have reached the step limit. Stop investigating. Write the final answer now from what you found, " +
-  "including findings and conclusions. Say what you could not check. Tools are unavailable.";
+  "including findings and conclusions. Say what you could not check. Tools are unavailable. " +
+  "Keep it concise: about 500 words at most.";
 
 function boundedText(text: string, bytes: number): string {
   return Buffer.from(text).subarray(0, bytes).toString("utf8");
@@ -74,7 +75,9 @@ export async function stepLimitWrapup(args: {
       ...(session.services.provider.name === "ollama" ? { tools: [] } : {}),
       toolChoice: "none",
       parallelToolCalls: false,
-      maxOutputTokens: Math.min(args.request.maxOutputTokens ?? 4096, 4096),
+      // Keep the turn's own output budget. Reasoning models count thinking
+      // against it: a live deepseek-flash child spent a 4,096-token cap on
+      // reasoning and returned an empty answer. The timeout bounds the call.
     };
     const messages = [...request.input];
     const options = {

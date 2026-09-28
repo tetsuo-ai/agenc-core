@@ -221,6 +221,16 @@ describe("one-shot child step limit", () => {
     expect(options?.toolRouting?.allowedToolNames ?? []).toEqual(sent);
   });
 
+  it("keeps the turn's own output budget for synthesis", async () => {
+    const chatStream = vi.fn<ReturnType<typeof mkProvider>["chatStream"]>(async () => ({
+      content: "Found a defect.", toolCalls: [], model: "test-model", finishReason: "stop" as const }));
+    const { session } = mkSession({ provider: { ...mkProvider(), chatStream } });
+    await stepLimitWrapup({ session, ctx: mkCtx(), signal: new AbortController().signal,
+      request: { input: [], tools: [], baseInstructions: "", parallelToolCalls: false, maxOutputTokens: 64_000 },
+      fallback: "fallback trail" });
+    expect(chatStream.mock.calls[0]?.[2]?.maxOutputTokens).toBe(64_000);
+  });
+
   it("bounds synthesis even if the provider ignores abort", async () => {
     vi.useFakeTimers();
     const chatStream = vi.fn<ReturnType<typeof mkProvider>["chatStream"]>(() => new Promise<never>(() => {}));
