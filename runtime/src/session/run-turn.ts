@@ -2792,7 +2792,12 @@ async function* runTurnKernelInner(
       if (opts.stepLimitWrapup !== undefined) {
         state.messages.push({ role: "user", content: STEP_LIMIT_WRAPUP_INSTRUCTION,
           runtimeOnly: { excludeFromDurableHistory: true } });
-        state.messagesForQuery = [...state.messages];
+        await prepareAgenCTurnContext(state, ctx, session, turnQuerySource, signal);
+        state.messagesForQuery = projectRetainedAttachments(
+          state.messagesForQuery,
+          getAttachmentTrackingState(session).retainedAttachments,
+          session.permissionModeRegistry.current().mode,
+        ).messages;
         projectSamplingImages(state, ctx, session, session.services.configStore!.current());
         const wrapped = await stepLimitWrapup({ session, ctx,
           request: buildSamplingRequestContract(state, session, ctx), signal,

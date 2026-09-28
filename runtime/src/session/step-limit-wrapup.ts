@@ -4,7 +4,8 @@ import { buildProviderOptions, type StreamModelRequestContract } from "../phases
 import type { Session } from "./session.js";
 import { usageToTokenCountEvent } from "./event-log.js";
 import type { TurnContext } from "./turn-context.js";
-import { sanitizeModelOutput } from "../llm/stream-parser.js";
+import { sanitizeModelOutput, stripCitations, stripProposedPlanBlocks } from "../llm/stream-parser.js";
+import { isPlanMode } from "./plan-mode.js";
 
 export const STEP_LIMIT_WRAPUP_TIMEOUT_MS = 30_000;
 export const STEP_LIMIT_WRAPUP_INSTRUCTION =
@@ -97,8 +98,10 @@ export async function stepLimitWrapup(args: {
         } });
       }
     }
+    const citationsStripped = stripCitations(response.content ?? "").visibleText;
+    const visibleText = isPlanMode(ctx) ? stripProposedPlanBlocks(citationsStripped) : citationsStripped;
     const text = response.error || response.toolCalls?.length
-      ? "" : sanitizeModelOutput(response.content ?? "", { strict: true }).text.trim();
+      ? "" : sanitizeModelOutput(visibleText, { strict: true }).text.trim();
     return { text: text ? `Partial result: stopped at the step limit.\n\n${text}` : fallback,
       ...(response.usage ? { usage: response.usage } : {}) };
   } catch {
