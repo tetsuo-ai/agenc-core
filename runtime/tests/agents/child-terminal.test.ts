@@ -9,7 +9,7 @@ import type { Session } from "../../src/session/session.js";
 
 describe("child terminal failures", () => {
   const reasons = ["completed", "insufficient_funds", "rate_limited", "provider_unavailable",
-    "timeout", "auth_required", "model_unavailable", "context_insufficient",
+    "step_limit", "timeout", "auth_required", "model_unavailable", "context_insufficient",
     "tool_protocol_unreliable", "model_refused", "parent_cancelled", "policy_revoked",
     "resume_blocked", "cost_cap_reached", "effect_outcome_unknown", "consent_denied",
     "consent_unavailable"] as const;
@@ -20,10 +20,11 @@ describe("child terminal failures", () => {
       reason, dispatch: reason === "consent_denied" || reason === "consent_unavailable" ? "not_sent" : "sent",
       completedWork: "Read two files", unfinishedWork: reason === "completed" ? "" : "Run tests", costUsd: 0.02 });
     const status = new AgentStatusTracker();
-    status.markErrored("turn", reason, terminal);
+    if (reason === "step_limit") status.markCompleted("turn", terminal.completedWork, terminal);
+    else status.markErrored("turn", reason, terminal);
     expect(toListedAgentJson({ agentName: "/root/child", agentStatus: status.value }).terminal).toEqual(terminal);
     const notification = formatSubagentNotification({ agentPath: "/root/child", status: status.value,
-      receipt: { lifecycle: "turn", outcome: "errored", turn_id: "turn", tool_call_count: 2, terminal } });
+      receipt: { lifecycle: "turn", outcome: reason === "step_limit" ? "completed" : "errored", turn_id: "turn", tool_call_count: 2, terminal } });
     expect(JSON.parse(notification.slice("<subagent_notification>\n".length,
       -"\n</subagent_notification>".length)).receipt.terminal).toEqual(terminal);
     const session = { conversationId: "root-session", activeTurn: { unsafePeek: () => ({ turnId: "turn" }) },
@@ -94,6 +95,7 @@ describe("child terminal failures", () => {
   it.each([
     ["provider_unavailable", { status: 503 }],
     ["timeout", new Error("deadline_reached")],
+    ["step_limit", new Error("subagent exceeded maxTurns (32)")],
     ["auth_required", { status: 401 }],
     ["model_unavailable", { status: 404 }],
     ["context_insufficient", { status: 413 }],

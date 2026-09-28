@@ -299,7 +299,11 @@ export type {
   AutoCompactImpl,
 } from "./run-turn-compaction.js";
 
+import { StepLimitTrail, stepLimitReminder, stepLimitWrapup, STEP_LIMIT_WRAPUP_INSTRUCTION } from "./step-limit-wrapup.js";
+
 export interface RunTurnOptions {
+  /** Only unattended child tasks opt in; interactive turns retain their lifecycle. */
+  readonly stepLimitWrapup?: { readonly maxModelCalls?: number };
   readonly systemPrompt?: string;
   /** Classifies a supplemental prompt without allowing it to replace core instructions. */
   readonly systemPromptTrust?: "trusted_internal" | "workspace_role";
@@ -2649,6 +2653,8 @@ async function* runTurnKernelInner(
     provenance: "synthetic",
   };
   let lastContent = "";
+  const stepTrail = new StepLimitTrail();
+  const stepReminders = new Set<number>();
   let emptyResponseRetryCount =
     state.modelSampleResumePrompt === "empty_response" ? 1 : 0;
   // The deadline stop (#2503): a bounded failure, not a cancellation, so the
@@ -2744,21 +2750,6 @@ async function* runTurnKernelInner(
       return terminal;
     }
 
-    const maxTurns = resolveMaxTurns(ctx);
-    if (state.turnCount > maxTurns) {
-      await drainInFlight(state, ctx, session);
-      await syncSessionState();
-      emitTurnComplete(lastContent, "max_turns");
-      const terminal: Terminal = { reason: "max_turns" };
-      yield {
-        type: "turn_complete",
-        content: lastContent,
-        usage,
-        stopReason: "max_turns",
-      };
-      return terminal;
-    }
-
     const maxBudgetUsd = ctx.config.maxBudgetUsd;
     const totalCostUsd = session.services.costSidecar?.getTotalCostUsd();
     if (
@@ -2780,6 +2771,46 @@ async function* runTurnKernelInner(
         stopReason: "max_budget_usd",
       };
       return terminal;
+    }
+
+    // A cross-provider allocation covers the final sample too. Reserve one
+    // of its calls without widening the consented allocation.
+    const maxTurns = Math.min(resolveMaxTurns(ctx),
+      opts.stepLimitWrapup?.maxModelCalls !== undefined
+        ? Math.max(0, opts.stepLimitWrapup.maxModelCalls - 1) : Infinity);
+    if (state.turnCount > maxTurns) {
+      await drainInFlight(state, ctx, session);
+      if (opts.stepLimitWrapup !== undefined) {
+        state.messages.push({ role: "user", content: STEP_LIMIT_WRAPUP_INSTRUCTION,
+          runtimeOnly: { excludeFromDurableHistory: true } });
+        state.messagesForQuery = [...state.messages];
+        const wrapped = await stepLimitWrapup({ session, ctx,
+          request: buildSamplingRequestContract(state, session, ctx), signal,
+          fallback: stepTrail.fallback(lastContent) });
+        const cancelled = await finishCancelledIfAborted();
+        if (cancelled !== null) {
+          yield cancelled.event;
+          return cancelled.terminal;
+        }
+        lastContent = wrapped.text;
+        if (wrapped.usage) usage = cumulativeUsage(usage, wrapped.usage);
+        state.messages.push({ role: "assistant", content: lastContent });
+        session.emit({ id: session.nextInternalSubId(), msg: {
+          type: "agent_message", payload: { message: lastContent },
+        } });
+        yield { type: "assistant_text", content: lastContent };
+      }
+      await syncSessionState();
+      emitTurnComplete(lastContent, "max_turns");
+      yield { type: "turn_complete", content: lastContent, usage, stopReason: "max_turns" };
+      return { reason: "max_turns" };
+    }
+    if (opts.stepLimitWrapup !== undefined && !stepReminders.has(state.turnCount)) {
+      const reminder = stepLimitReminder(state.turnCount - 1, maxTurns);
+      if (reminder) {
+        state.messages.push(reminder);
+        stepReminders.add(state.turnCount);
+      }
     }
 
     // Run deadline (#2503): tell the model its remaining budget once per
@@ -3361,6 +3392,7 @@ async function* runTurnKernelInner(
     // around the dispatch.
     if (lastAssistant && lastAssistant.toolCalls.length > 0) {
       for (const toolCall of lastAssistant.toolCalls) {
+        stepTrail.record(toolCall);
         const event: PhaseEvent = { type: "tool_call", toolCall };
         yield event;
       }
@@ -3652,6 +3684,7 @@ export function runTurn(
       userMessage: string | readonly LLMContentPart[],
       opts?: {
         ctx?: TurnContext;
+        stepLimitWrapup?: RunTurnOptions["stepLimitWrapup"];
         systemPrompt?: string;
         history?: readonly LLMMessage[];
         initialHistoryPersistence?: RunTurnOptions["initialHistoryPersistence"];
@@ -3673,6 +3706,7 @@ export function runTurn(
   if (typeof sessionOwner.runTurn === "function") {
     return sessionOwner.runTurn(userMessage, {
       ctx,
+      stepLimitWrapup: opts.stepLimitWrapup,
       systemPrompt: opts.systemPrompt,
       history: opts.history,
       initialHistoryPersistence: opts.initialHistoryPersistence,

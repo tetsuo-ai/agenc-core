@@ -3155,19 +3155,21 @@ describe("runAgent", () => {
     );
   });
 
-  it("treats child maxTurns termination as an errored run", async () => {
+  it.each(["success", "failure", "empty", "unsolicited-tool"])("returns a partial child result at maxTurns: %s", async (mode) => {
     const provider = makeProvider([
       {
-        content: "",
-        toolCalls: [{ id: "call-1", name: "system.echo", arguments: "{}" }],
+        content: "Found a missing check; verifying the caller next.",
+        toolCalls: [{ id: "call-1", name: "system.echo", arguments: '{"file":"caller.ts"}' }],
         finishReason: "tool_calls",
       },
-      {
-        content: "",
-        toolCalls: [{ id: "call-2", name: "system.echo", arguments: "{}" }],
-        finishReason: "tool_calls",
-      },
+      { content: mode === "success" ? "The caller lacks validation. Tests were not checked." : "",
+        ...(mode === "unsolicited-tool" ? { toolCalls: [{ id: "forbidden", name: "system.echo", arguments: "{}" }] } : {}) },
     ]);
+    if (mode === "failure") provider.chatStream.mockImplementationOnce(async () => ({
+      content: "Found a missing check; verifying the caller next.",
+      toolCalls: [{ id: "call-1", name: "system.echo", arguments: '{"file":"caller.ts"}' }],
+      model: "mock", finishReason: "tool_calls", usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+    })).mockImplementationOnce(async () => { throw new Error("provider unavailable"); });
     const session = makeStubSession({
       services: {
         provider,
@@ -3207,20 +3209,66 @@ describe("runAgent", () => {
       }),
     );
 
-    expect(result.outcome).toBe("errored");
-    expect(result.error).toBeInstanceOf(Error);
-    expect((result.error as Error).message).toBe(
-      "subagent exceeded maxTurns (1)",
-    );
+    expect(result.outcome).toBe("completed");
+    expect(result.error).toBeUndefined();
+    expect(result.finalMessage).toContain("stopped at the step limit");
+    expect(provider.chatStream).toHaveBeenCalledTimes(2);
+    const finalOptions = provider.chatStream.mock.calls[1]![2];
+    expect(finalOptions).toMatchObject({ tools: [], toolChoice: "none", singleWireAttempt: true });
+    if (mode === "success") {
+      expect(result.finalMessage).toContain("The caller lacks validation. Tests were not checked.");
+    } else {
+      expect(result.finalMessage).toContain("Found a missing check");
+      expect(result.finalMessage).toContain('system.echo {"file":"caller.ts"}');
+    }
+    expect(result.toolCallCount).toBe(1);
+    const receipt = session.mailbox.drain().find((message) => message.metadata?.lifecycle === "turn");
+    expect(receipt?.metadata).toMatchObject({ outcome: "completed", taskId: "max-turns-task" });
+    expect(receipt?.content).toContain('"reason":"step_limit"');
+    expect(receipt?.content).toContain('"outcome":"completed"');
+    expect(toListedAgentJson({ agentName: live.agentPath, agentStatus: live.status.value }).terminal)
+      .toMatchObject({ reason: "step_limit", retryable: false, completedWork: result.finalMessage, unfinishedWork: "go" });
+
+  });
+
+  it("keeps interactive capped turns alive without a wrap-up call", async () => {
+    const provider = makeProvider([{ content: "Still investigating.",
+      toolCalls: [{ id: "read", name: "missing-tool", arguments: "{}" }], finishReason: "tool_calls" }]);
+    const session = makeStubSession({ services: { provider } });
+    const { live } = await spawnLive(session);
+    const iter = runAgent({ live, parent: session,
+      initialMessages: [{ role: "user", content: "review" }], taskPrompt: "review", maxTurns: 1, keepAlive: true });
+    await nextProgressEvent(iter, "turn_complete");
     expect(provider.chatStream).toHaveBeenCalledTimes(1);
-    const receipt = session.mailbox
-      .drain()
-      .find((message) => message.metadata?.lifecycle === "turn");
-    expect(receipt?.metadata).toMatchObject({
-      outcome: "errored",
-      taskId: "max-turns-task",
-    });
-    expect(receipt?.content).toContain('"outcome":"errored"');
+    expect(live.status.value).toMatchObject({ status: "idle", terminal: { reason: "step_limit" } });
+    live.abortController.abort("test complete");
+    expect((await collectRun(iter)).result.outcome).toBe("errored");
+  });
+
+  it("summarizes an unattended task on a reusable worker and accepts another assignment", async () => {
+    const provider = makeProvider([
+      { content: "Investigating.", toolCalls: [{ id: "read", name: "missing-tool", arguments: "{}" }], finishReason: "tool_calls" },
+      { content: "Partial findings; tests unchecked." },
+      { content: "Follow-up completed." },
+    ]);
+    const session = makeStubSession({ services: { provider } });
+    const { live, control } = await spawnLive(session);
+    const iter = runAgent({ live, parent: session,
+      initialMessages: [{ role: "user", content: "review" }], taskPrompt: "review", taskId: "first-task",
+      maxTurns: 1, keepAlive: true, summarizeAtStepLimit: true });
+    const first = await nextProgressEvent(iter, "turn_complete");
+    expect(first.finalMessage).toContain("Partial findings; tests unchecked.");
+    expect(provider.chatStream).toHaveBeenCalledTimes(2);
+    expect(live.status.value).toMatchObject({ status: "idle", terminal: { reason: "step_limit", retryable: false } });
+    const receipt = session.mailbox.drain().find((message) => message.metadata?.lifecycle === "turn");
+    expect(receipt?.metadata).toMatchObject({ outcome: "completed", taskId: "first-task" });
+    expect(receipt?.content).toContain('"reason":"step_limit"');
+    const next = nextProgressEvent(iter, "turn_complete");
+    control.assignTask(live.agentId, { author: "/root", recipient: live.agentPath, content: "finish", taskId: "second-task" });
+    expect((await next).finalMessage).toBe("Follow-up completed.");
+    expect(live.status.value).toMatchObject({ status: "idle", terminal: { reason: "completed" } });
+    live.abortController.abort("test complete");
+    expect((await collectRun(iter)).result.outcome).toBe("completed");
   });
 
   it("does not reuse a non-keep-alive worker for queued follow-up input", async () => {
@@ -3295,7 +3343,7 @@ describe("runAgent", () => {
   });
 
   it.each([
-    ["max_turns", "subagent exceeded maxTurns", "timeout"],
+    ["max_turns", "subagent exceeded maxTurns", "step_limit"],
     ["max_budget_usd", "subagent reached the canonical session cost cap", "cost_cap_reached"],
     ["no_progress", "Turn stopped because progress stalled.", "timeout"],
     ["compact_failed", "compact request does not fit", "context_insufficient"],
@@ -3476,19 +3524,19 @@ describe("runAgent", () => {
       const completed = await nextProgressEvent(iter, "turn_complete");
       expect(completed.finalMessage).toBe("subagent exceeded maxTurns");
       expect(live.status.value).toMatchObject({ status: "idle", terminal: {
-        reason: "timeout", retryable: false,
+        reason: "step_limit", retryable: false,
       } });
       live.abortController.abort("worker closed");
       const { result } = await collectRun(iter);
       expect(result.outcome).toBe("errored");
       expect(live.status.value).toMatchObject({ status: "errored", terminal: {
-        reason: "timeout", retryable: false,
+        reason: "step_limit", retryable: false,
       } });
       const terminal = live.status.value.status === "errored" ? live.status.value.terminal : undefined;
       expect(terminal).toBeDefined();
       control.recordTerminalOutcome(live.agentId, terminal!);
       expect(control.getAgentConfigSnapshot(live.agentId)).toMatchObject({
-        terminalOutcome: { reason: "timeout", retryable: false },
+        terminalOutcome: { reason: "step_limit", retryable: false },
       });
     } finally {
       turnSpy.mockRestore();

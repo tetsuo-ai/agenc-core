@@ -42,10 +42,11 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * `session.resolveToolCall`: the review settles only that recorded attempt,
  * and a mismatch is refused with `EFFECT_REVIEW_STALE`.
  * 1.21 adds an ephemeral allowlisted envOverrides snapshot to run.start.
+ * 1.22 adds the step_limit child terminal reason for partial task results.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.21.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.22.0" as const;
 
 export const AGENC_DAEMON_METHODS = [
     "remote.capabilities",
@@ -2017,7 +2018,7 @@ export interface SessionClearResult extends JsonObject {
 export interface ChildTerminalOutcomeWire extends JsonObject {
     readonly provider: string;
     readonly model: string;
-    readonly reason: "completed" | "insufficient_funds" | "rate_limited" | "provider_unavailable" | "timeout" | "auth_required" | "model_unavailable" | "context_insufficient" | "tool_protocol_unreliable" | "model_refused" | "parent_cancelled" | "policy_revoked" | "resume_blocked" | "cost_cap_reached" | "effect_outcome_unknown" | "consent_denied" | "consent_unavailable";
+    readonly reason: "completed" | "insufficient_funds" | "rate_limited" | "provider_unavailable" | "step_limit" | "timeout" | "auth_required" | "model_unavailable" | "context_insufficient" | "tool_protocol_unreliable" | "model_refused" | "parent_cancelled" | "policy_revoked" | "resume_blocked" | "cost_cap_reached" | "effect_outcome_unknown" | "consent_denied" | "consent_unavailable";
     readonly retryable: boolean;
     readonly retryAfterMs?: number;
     readonly dispatch: "not_sent" | "sent" | "unknown";
