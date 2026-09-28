@@ -499,16 +499,17 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 /**
- * Nested `usage.output_tokens_details.thinking_tokens` when the count is a
- * finite, non-negative number. Malformed values are omitted so stream
- * accumulation can keep a previously valid count.
+ * Preserve an explicitly present nested count, even when malformed, so chat
+ * and streaming both suppress flat fallback for an invalid nested value.
+ * In streams the latest explicit count replaces the previous one, including
+ * invalid updates; an omitted count leaves the previous value unchanged.
  */
 export function readAnthropicThinkingTokenDetails(
   usageRecord: Record<string, unknown>,
-): { readonly thinking_tokens: number } | undefined {
-  const nested = asRecord(usageRecord.output_tokens_details)?.thinking_tokens;
-  return isFiniteNumber(nested) && nested >= 0
-    ? { thinking_tokens: nested }
+): { readonly thinking_tokens: unknown } | undefined {
+  const details = asRecord(usageRecord.output_tokens_details);
+  return details && Object.hasOwn(details, "thinking_tokens")
+    ? { thinking_tokens: details.thinking_tokens }
     : undefined;
 }
 
@@ -523,13 +524,13 @@ export function readAnthropicThinkingTokenDetails(
 export function readAnthropicReasoningOutputTokens(
   usageRecord: Record<string, unknown>,
 ): number | undefined {
-  const details = asRecord(usageRecord.output_tokens_details);
+  const details = readAnthropicThinkingTokenDetails(usageRecord);
   let raw: number | undefined;
-  if (details && Object.hasOwn(details, "thinking_tokens")) {
-    raw = readAnthropicThinkingTokenDetails(usageRecord)?.thinking_tokens;
-    if (raw === undefined) {
+  if (details) {
+    if (!isFiniteNumber(details.thinking_tokens) || details.thinking_tokens < 0) {
       return undefined;
     }
+    raw = details.thinking_tokens;
   } else if (
     isFiniteNumber(usageRecord.reasoning_output_tokens) &&
     usageRecord.reasoning_output_tokens >= 0
