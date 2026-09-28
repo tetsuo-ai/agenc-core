@@ -218,9 +218,26 @@ describe("verification agent verdict parsing", () => {
     expect(
       parseVerificationVerdict("VERDICT: PASS\nre-ran suite\nVERDICT: FAIL"),
     ).toBe("FAIL");
-    expect(parseVerificationVerdict("  VERDICT: PARTIAL (2 checks skipped)")).toBe(
+    expect(parseVerificationVerdict("  VERDICT: PARTIAL \r")).toBe(
       "PARTIAL",
     );
+  });
+
+  it.each(["PASS", "FAIL", "PARTIAL"])("accepts balanced bold verdicts: %s", (verdict) => {
+    for (const line of [`**VERDICT: ${verdict}**`, `VERDICT: **${verdict}**`]) {
+      expect(parseVerificationVerdict(`Report\n  ${line} \r\n`)).toBe(verdict);
+      expect(parseVerificationVerdict(`VERDICT: PASS\n${line}`)).toBe(verdict);
+    }
+  });
+
+  it.each([
+    "VERDICT: PASSING", "VERDICT: PASS because it works", "VERDICT: PARTIAL (skipped)",
+    "the **VERDICT: PASS** came earlier", "**VERDICT: PASS** trailing",
+    "VERDICT: **PASS** trailing", "**VERDICT: PASS", "VERDICT: PASS**",
+    "VERDICT: **PASS", "VERDICT: PASS FAIL", "VERDICT:\nPASS", "- VERDICT: PASS",
+    "`VERDICT: PASS`", "# VERDICT: PASS", "VERDICT: pass",
+  ])("rejects non-whole or malformed verdict lines: %s", (line) => {
+    expect(parseVerificationVerdict(line)).toBeUndefined();
   });
 
   it("a missing or malformed verdict is undefined — callers treat it as failure", () => {

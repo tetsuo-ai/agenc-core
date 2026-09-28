@@ -1,3 +1,4 @@
+import { userRuntimeEnvironment } from "../../utils/runtimeEnvironment.js";
 import type { BoundReadOnlyCwdIdentity } from "../bound-readonly-cwd.js";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
@@ -75,6 +76,9 @@ async function runLinuxSandboxOptions(
   deps: LinuxSandboxRunDeps = {},
 ): Promise<number> {
   const hostCommandCwd = options.inheritedCwd ? "." : options.commandCwd;
+  // Each launcher process defaults its own React environment again. Restore
+  // the incoming command environment before re-exec or an inner-stage hop.
+  const env = userRuntimeEnvironment(deps.env ?? process.env);
   if (
     options.browserCdpOverStdio &&
     (options.allowNetworkForProxy ||
@@ -83,7 +87,6 @@ async function runLinuxSandboxOptions(
     throw new Error("Browser CDP pipe transport requires the browser's enabled-network profile");
   }
   if (options.applySeccompThenExec) {
-    const env = deps.env ?? process.env;
     if (env[ACTIVE_INNER_ENV] !== "1") {
       throw new Error("inner Linux sandbox stage must run inside bubblewrap");
     }
@@ -111,7 +114,6 @@ async function runLinuxSandboxOptions(
     }
   }
 
-  const env = deps.env ?? process.env;
   const runtimePermissions = permissionProfileToRuntimePermissions(
     options.permissionProfile,
   );
@@ -148,7 +150,7 @@ async function runLinuxSandboxOptions(
   const extraReadOnlyBindRoots = inferredInnerLauncherBindRoots(selfCommand);
   const extraWritableBindRoots =
     preparedProxy === null ? [] : [preparedProxy.socketDir];
-  const extraDeviceBindPaths = resolveSandboxDeviceBinds(deps.env ?? process.env);
+  const extraDeviceBindPaths = resolveSandboxDeviceBinds(env);
   const proxyRoutedNetwork = options.allowNetworkForProxy;
   const seccompMode = networkSeccompMode(
     network,

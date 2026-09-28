@@ -1406,6 +1406,35 @@ describe("Linux sandbox launcher", () => {
     expect(errors.join("\n")).toContain("enabled-network profile");
   });
 
+  it.each([false, true])("restores user NODE_ENV at the launcher exec boundary (inner=%s)", async inner => {
+    const key = Symbol.for("agenc.originalRuntimeEnvironment");
+    const saved = Object.getOwnPropertyDescriptor(globalThis, key);
+    const previousCwd = process.cwd();
+    let environment: Readonly<Record<string, string>> | undefined;
+    Object.defineProperty(globalThis, key, { value: { NODE_ENV: undefined }, configurable: true });
+    const execve = vi.spyOn(process, "execve").mockImplementation(((_file, _args, env): never => {
+      environment = env;
+      throw new Error("captured exec");
+    }) as typeof process.execve);
+    try {
+      await runLinuxSandboxMain([
+        "--sandbox-policy-cwd", previousCwd,
+        "--command-cwd", previousCwd,
+        "--session-temp-root", os.tmpdir(),
+        "--permission-profile", JSON.stringify({ fileSystem: unrestrictedFileSystemPolicy(), network: "enabled" }),
+        ...(inner ? ["--apply-seccomp-then-exec"] : []),
+        "--", process.execPath, "--version",
+      ], { env: { NODE_ENV: "production", AGENC_LINUX_SANDBOX_ACTIVE: "1" } });
+      expect(execve).toHaveBeenCalledOnce();
+      expect(environment).not.toHaveProperty("NODE_ENV");
+    } finally {
+      execve.mockRestore();
+      process.chdir(previousCwd);
+      Reflect.deleteProperty(globalThis, key);
+      if (saved) Object.defineProperty(globalThis, key, saved);
+    }
+  });
+
   it("supervises a direct child process exit", async () => {
     const child = spawn(process.execPath, ["-e", "process.exit(0)"]);
     await new Promise<void>((resolve, reject) => {

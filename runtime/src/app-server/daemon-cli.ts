@@ -6,6 +6,7 @@
  * later daemon rows.
  */
 
+import { userRuntimeEnvironment } from "../utils/runtimeEnvironment.js";
 import { LiveApprovalBroker, crossProviderConsentAvailability } from "./live-approval-broker.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { enterDaemonWorkingDirectory } from "./daemon-working-directory.js";
@@ -1507,7 +1508,7 @@ async function startAgenCDaemon(
       };
     }
     const childPid = host.spawnDetachedDaemon({
-      ...host.env,
+      ...userRuntimeEnvironment(host.env),
       AGENC_DAEMON_RUN: "1",
     });
     // From this instruction onward every failure must cancel this exact child
@@ -4070,10 +4071,11 @@ async function runAgenCDaemonForegroundLocked(
       const snapshot = await runner.getAgentSnapshot?.(session.agentId);
       assertSafeRemoteSessionPolicy(snapshot?.runtimeSettings, session.metadata?.runtimeOptions);
     };
-    const createRemoteSession = async (workspacePath: string, title: string, signal: AbortSignal) => {
+    const createRemoteSession = async (workspacePath: string, title: string, signal: AbortSignal, selection?: import("../gateway/owner-telegram.js").TelegramSessionOptions) => {
         signal.throwIfAborted();
         const agent = await agentManager.createAgent({
           cwd: workspacePath, objective: title, deferInitialTurn: true, permissionMode: "default",
+          ...(selection ? { provider: selection.provider, model: selection.model, envOverrides: selection.envOverrides } : {}),
           runtimeOptions: resolveAgentRuntimeOptions(
             { ...host.env, AGENC_HOME: authStartup.daemonHome },
             { dangerouslyBypassApprovalsAndSandbox: false, allowUntrustedHooks: false, remoteMode: true, stdinDataMode: false },
@@ -4098,6 +4100,7 @@ async function runAgenCDaemonForegroundLocked(
       ownerTelegram = new OwnerTelegramService({
         home: authStartup.daemonHome,
         storage: createOwnerTelegramStorage(remoteContext.home),
+        onSessionFailure: (diagnostic) => writeErrorLog(`agenc: Telegram session.create failed: ${diagnostic}\n`),
         lookupSession: (sessionId) => sessionManager.getSession(sessionId),
         createConnection: (remoteAccess) => dispatcher.createConnection({ remoteAccess }),
         createSession: createRemoteSession,
