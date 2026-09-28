@@ -1317,6 +1317,7 @@ export class VerifiedChangeWorkflowController {
         decorate: (outcome) => {
           const verdict = parseVerificationVerdict(outcome.finalMessage ?? "");
           return {
+            // The shared parser accepts whole plain or bold verdict lines.
             // A missing/malformed verdict is a FAIL, never an implicit pass.
             verdict: verdict ?? "FAIL",
             explicitVerdict: verdict !== undefined,

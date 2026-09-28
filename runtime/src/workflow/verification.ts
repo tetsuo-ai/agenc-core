@@ -230,7 +230,8 @@ export type VerificationVerdict = "PASS" | "FAIL" | "PARTIAL";
 
 /**
  * Parse the adversarial verification agent's terminal `VERDICT:` line
- * (VERIFICATION_SYSTEM_PROMPT contract). The LAST verdict line wins; a
+ * (VERIFICATION_SYSTEM_PROMPT contract), allowing balanced bold markup. Only
+ * whole verdict lines count. The LAST verdict line wins; a
  * missing or malformed verdict is `undefined` and callers MUST treat it as
  * a failure — never as an implicit pass.
  */
@@ -239,8 +240,15 @@ export function parseVerificationVerdict(
 ): VerificationVerdict | undefined {
   let verdict: VerificationVerdict | undefined;
   for (const line of text.split("\n")) {
-    const match = /^\s*VERDICT:\s*(PASS|FAIL|PARTIAL)\b/.exec(line.trim());
-    if (match !== null) verdict = match[1] as VerificationVerdict;
+    // Accept balanced bold around the whole line or the verdict value. Keep
+    // anchors after unwrapping so prose, partial words and malformed markup
+    // cannot become a passing verdict.
+    const trimmed = line.trim();
+    const plain = trimmed.startsWith("**") && trimmed.endsWith("**")
+      ? trimmed.slice(2, -2)
+      : trimmed;
+    const match = /^VERDICT:[ \t]*(?:\*\*(PASS|FAIL|PARTIAL)\*\*|(PASS|FAIL|PARTIAL))$/.exec(plain);
+    if (match !== null) verdict = (match[1] ?? match[2]) as VerificationVerdict;
   }
   return verdict;
 }

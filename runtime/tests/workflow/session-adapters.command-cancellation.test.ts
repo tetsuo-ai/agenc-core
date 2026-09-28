@@ -59,7 +59,7 @@ beforeEach(async () => {
   permissions = new PermissionModeRegistry({ mode: "bypassPermissions", additionalWorkingDirectories: new Map(),
     alwaysAllowRules: {}, alwaysDenyRules: {}, alwaysAskRules: {}, isBypassPermissionsModeAvailable: true });
   approvalRequest = vi.fn(async () => ({ kind: "approved" as const }));
-  seams = createWorkflowSessionSeams({ agencHome: home, env: { ...process.env, DEEPSEEK_API_KEY: "stale-key", OPENAI_API_KEY: "stale-clear", GROQ_API_KEY: "stale-omitted" }, argv: [process.execPath, "agenc"],
+  seams = createWorkflowSessionSeams({ agencHome: home, env: { ...process.env, NODE_ENV: "production", DEEPSEEK_API_KEY: "stale-key", OPENAI_API_KEY: "stale-clear", GROQ_API_KEY: "stale-omitted" }, argv: [process.execPath, "agenc"],
     kernel: {} as ExecutionAdmissionKernel, durability: () => repo, resolveRunRepoPath: () => cwd,
     resolveRunPolicy: () => undefined, fallbackCwd: cwd, warn: () => {},
     bootstrap: async () => ({ session: mkSession({ cwd, services: {
@@ -79,6 +79,23 @@ afterEach(async () => {
 });
 
 describe("workflow command permissions before broker execution", () => {
+  it.each([undefined, "production"])("restores the original NODE_ENV (%s) for Goal checks", async original => {
+    const key = Symbol.for("agenc.originalRuntimeEnvironment");
+    const saved = Object.getOwnPropertyDescriptor(globalThis, key);
+    Object.defineProperty(globalThis, key, { value: { NODE_ENV: original }, configurable: true });
+    const prepare = vi.spyOn(SandboxExecutionBroker.prototype, "prepareSpawn");
+    try {
+      const result = await seams.commands.run({ script: original === undefined
+        ? 'test "${NODE_ENV+x}" = ""' : 'test "$NODE_ENV" = production', cwd });
+      expect(result.exitCode).toBe(0);
+      expect(prepare.mock.calls.at(-1)?.[1].env.NODE_ENV).toBe(original);
+    } finally {
+      prepare.mockRestore();
+      Reflect.deleteProperty(globalThis, key);
+      if (saved) Object.defineProperty(globalThis, key, saved);
+    }
+  });
+
   it("runs checks with current credentials, cleared secrets and the daemon tool PATH", async () => {
     const prepare = vi.spyOn(SandboxExecutionBroker.prototype, "prepareSpawn");
     try {

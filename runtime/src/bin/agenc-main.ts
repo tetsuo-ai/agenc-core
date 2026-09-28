@@ -22,6 +22,7 @@
  *   I-52 (AGENC_HOME / $HOME/.agenc writable precheck)
  */
 
+import { setCoreOnlyEnvironmentVariable } from "../utils/runtimeEnvironment.js";
 import {
   closeSync,
   constants as fsConstants,
@@ -6499,7 +6500,7 @@ export async function main(): Promise<number> {
     }
     // Force the first-run wizard for this process only (never persisted);
     // consumed by shouldShowFirstRunOnboarding via the TUI's env snapshot.
-    process.env.AGENC_ONBOARDING = "force";
+    setCoreOnlyEnvironmentVariable("AGENC_ONBOARDING", "force");
     return runDefaultAgenCCliRoute(process.argv.slice(0, 2));
   }
   const securityCommand = parseAgenCSecurityCliArgs(argv);
@@ -6652,7 +6653,7 @@ async function runDefaultAgenCCliRoute(
       // Interactive sessions still get a working (daemon-less) TUI with a
       // visible error notice rather than an exit back to the shell. The
       // notice reads this env var at render time (StatusNotices).
-      process.env.AGENC_DAEMON_AUTOSTART_FAILURE = message;
+      setCoreOnlyEnvironmentVariable("AGENC_DAEMON_AUTOSTART_FAILURE", message);
     }
   }
   return routeCLI({

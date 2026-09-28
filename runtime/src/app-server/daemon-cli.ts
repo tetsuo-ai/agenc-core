@@ -6,6 +6,7 @@
  * later daemon rows.
  */
 
+import { userRuntimeEnvironment } from "../utils/runtimeEnvironment.js";
 import { LiveApprovalBroker, crossProviderConsentAvailability } from "./live-approval-broker.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { enterDaemonWorkingDirectory } from "./daemon-working-directory.js";
@@ -1507,7 +1508,7 @@ async function startAgenCDaemon(
       };
     }
     const childPid = host.spawnDetachedDaemon({
-      ...host.env,
+      ...userRuntimeEnvironment(host.env),
       AGENC_DAEMON_RUN: "1",
     });
     // From this instruction onward every failure must cancel this exact child
