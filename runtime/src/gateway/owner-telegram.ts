@@ -1,4 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { normalizeDaemonClientEnvOverrides } from "../app-server/client-env-snapshot.js";
+import { resolveBuiltInProviderSlug } from "../llm/registry/provider-info.js";
+import { telegramSessionFailure } from "./telegram-session-failure.js";
 import QRCode from "qrcode";
 import type { AgenCDaemonResponse, JsonObject } from "../app-server/protocol/index.js";
 import { AGENC_DAEMON_PROTOCOL_VERSION } from "../app-server/protocol/index.js";
@@ -9,18 +12,24 @@ import { FetchTelegramTransport, type TelegramTransport, type TelegramUpdate } f
 import { LEGACY_TELEGRAM_AGENT_ID, type OwnerTelegramStorage } from "./owner-telegram-storage.js";
 import type { OwnerTelegramBinding, OwnerTelegramCapabilities, OwnerTelegramConfigureParams, OwnerTelegramMethod, OwnerTelegramStatus, TelegramAccountCandidate, TelegramAgentCreateParams, TelegramAgentPairing, TelegramAgentPairingResult, TelegramAgentRecord, TelegramAgentStatus, TelegramAgentUpdateParams } from "./owner-telegram-types.js";
 
+export interface TelegramSessionOptions {
+  readonly provider?: string;
+  readonly model?: string;
+  readonly envOverrides?: Readonly<Record<string, string>>;
+}
 interface Connection { dispatch(message: JsonObject): Promise<AgenCDaemonResponse>; close(): Promise<void> }
 export interface OwnerTelegramOptions {
   readonly home: string;
   readonly storage: OwnerTelegramStorage;
   readonly lookupSession: RemoteSessionLookup;
-  readonly createSession: (workspacePath: string, title: string, signal: AbortSignal) => Promise<{ sessionId: string; agentId: string }>;
+  readonly createSession: (workspacePath: string, title: string, signal: AbortSignal, selection?: TelegramSessionOptions) => Promise<{ sessionId: string; agentId: string }>;
   readonly createConnection: (access: RemoteAccessBoundary) => Connection;
   readonly assertControlSession?: (sessionId: string) => Promise<void>;
   readonly transport?: (token: string, signal: AbortSignal) => TelegramTransport;
   readonly instructions?: string;
   readonly displayName?: string;
   readonly managedAgentId?: string;
+  readonly onSessionFailure?: (diagnostic: string) => void;
 }
 
 /** An isolated private-chat runtime; the manager below owns its identity and credentials. */
@@ -39,6 +48,7 @@ class OwnerTelegramRuntime {
   #error: string | null = null;
   #lastUpdateAt: string | null = null;
   #creating = false;
+  #creationFailure?: ReturnType<typeof telegramSessionFailure>;
   #turnActive = false;
   #handlers = 0;
   #startedAt = 0;
@@ -46,7 +56,7 @@ class OwnerTelegramRuntime {
   readonly #notifiedApprovals = new Set<string>();
 
   constructor(options: OwnerTelegramOptions) { this.#options = options; this.#binding = options.storage.load(); }
-  capabilities(): OwnerTelegramCapabilities { return { available: true, contractVersion: 2, multiAgent: true, accountLinking: "local-confirmation", ownerOnly: true, privateChatOnly: true, nativeCredentialStorage: true, approvals: "host-only", commands: ["new", "status", "cancel"] }; }
+  capabilities(): OwnerTelegramCapabilities { return { available: true, contractVersion: 2, multiAgent: true, providerSelection: true, accountLinking: "local-confirmation", ownerOnly: true, privateChatOnly: true, nativeCredentialStorage: true, approvals: "host-only", commands: ["new", "status", "cancel"] }; }
   status(): OwnerTelegramStatus { return { configured: this.#binding !== null, enabled: this.#enabled, state: this.#error ? "error" : !this.#binding ? "unconfigured" : !this.#enabled ? "stopped" : this.#connected ? "connected" : "connecting", ownerUserId: this.#binding?.ownerUserId ?? null, ownerChatId: this.#binding?.ownerChatId ?? null, workspacePath: this.#binding?.workspacePath ?? null, sessionId: this.#sessionId, botUsername: this.#botUsername, error: this.#error, lastUpdateAt: this.#lastUpdateAt }; }
   configure(params: OwnerTelegramConfigureParams): OwnerTelegramStatus {
     if (!params || typeof params.token !== "string" || params.token.length > 512 || !/^[0-9]+:[A-Za-z0-9_-]{16,}$/u.test(params.token) || typeof params.ownerUserId !== "string" || !/^[1-9]\d{0,15}$/u.test(params.ownerUserId) || !Number.isSafeInteger(Number(params.ownerUserId)) || (params.ownerChatId !== undefined && params.ownerChatId !== params.ownerUserId) || typeof params.workspacePath !== "string") throw new RemoteError("TELEGRAM_CONFIG_INVALID");
@@ -78,7 +88,15 @@ class OwnerTelegramRuntime {
       const identity = await transport.getMe?.();
       if (!this.#current(generation)) return this.status();
       this.#botUsername = identity?.username ?? null;
-      const access = new RemoteAccessBoundary({ workspaceId: randomUUID(), workspacePath: binding.workspacePath, sessionIds: [], role: "control", allowFiles: false, allowApprovals: false }, () => this.#current(generation), this.#options.lookupSession, this.#options.home, { approvals: new RemoteApprovalProjection(), assertControlSession: this.#options.assertControlSession, createSession: (title) => this.#options.createSession(binding.workspacePath, title, signal) });
+      const access = new RemoteAccessBoundary({ workspaceId: randomUUID(), workspacePath: binding.workspacePath, sessionIds: [], role: "control", allowFiles: false, allowApprovals: false }, () => this.#current(generation), this.#options.lookupSession, this.#options.home, { approvals: new RemoteApprovalProjection(), assertControlSession: this.#options.assertControlSession, createSession: async (title) => {
+        try { return await this.#options.createSession(binding.workspacePath, title, signal); }
+        catch (error) {
+          // The remote dispatcher deliberately replaces internal failures with
+          // REMOTE_REQUEST_FAILED. Classify locally before that privacy boundary.
+          if (this.#current(generation)) this.#creationFailure = telegramSessionFailure(error);
+          throw error;
+        }
+      } });
       this.#connection = this.#options.createConnection(access);
       const initialized = await this.#rpc("initialize", { protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION } });
       if (initialized.error) throw new RemoteError("TELEGRAM_CORE_UNAVAILABLE");
@@ -107,7 +125,7 @@ class OwnerTelegramRuntime {
     try {
       const updates = await this.#transport!.getUpdates(this.#binding.lastUpdateId + 1, 20);
       if (!this.#current(generation)) return;
-      this.#connected = true; this.#error = null; this.#lastUpdateAt = new Date().toISOString();
+      this.#connected = true; if (this.#error === "TELEGRAM_POLL_FAILED") this.#error = null; this.#lastUpdateAt = new Date().toISOString();
       for (const update of updates.slice(0, 100)) {
         if (!this.#binding) return;
         if (!Number.isSafeInteger(update.update_id) || update.update_id <= this.#binding.lastUpdateId) continue;
@@ -141,12 +159,21 @@ class OwnerTelegramRuntime {
   }
   async #newSession(generation: number): Promise<boolean> {
     if (this.#creating || this.#turnActive) { await this.#reply("A session is busy. Use /cancel before starting another.", generation); return false; }
-    this.#creating = true;
+    this.#creating = true; this.#creationFailure = undefined;
     try {
+      canonicalRemoteWorkspace(this.#binding!.workspacePath, this.#options.home);
       const created = await this.#rpc("session.create", { title: this.#options.displayName ? `Telegram · ${this.#options.displayName}` : "Telegram owner session" });
       if (!this.#current(generation)) return false;
-      if (created.error || typeof created.result?.sessionId !== "string") { await this.#reply("Could not create a session. Check AgenC on the host.", generation); return false; }
-      this.#sessionId = created.result.sessionId; this.#instructionsSent = false; return true;
+      if (created.error) throw created.error;
+      if (typeof created.result?.sessionId !== "string") throw new Error("TELEGRAM_SESSION_RESPONSE_INVALID");
+      this.#error = null; this.#sessionId = created.result.sessionId; this.#instructionsSent = false; return true;
+    } catch (error) {
+      if (!this.#current(generation)) return false;
+      const failure = this.#creationFailure ?? telegramSessionFailure(error);
+      this.#options.onSessionFailure?.(failure.diagnostic);
+      this.#error = failure.code;
+      await this.#reply(failure.reply, generation);
+      return false;
     } finally { if (this.#current(generation)) this.#creating = false; }
   }
   async #handleText(text: string, updateId: number, generation: number): Promise<void> {
@@ -198,6 +225,7 @@ interface AgentEntry {
   error: string | null;
   generation: number;
   operation: AbortController | null;
+  envOverrides?: Readonly<Record<string, string>>;
 }
 interface PairingState {
   readonly challengeId: string;
@@ -244,7 +272,10 @@ export class OwnerTelegramService {
       setToken: (token) => this.#store().setToken(record.agentId, token),
       revoke: () => this.#store().remove(record.agentId),
     };
-    entry.runtime = new OwnerTelegramRuntime({ ...this.#options, storage, displayName: record.name, instructions: record.instructions, managedAgentId: record.agentId });
+    entry.runtime = new OwnerTelegramRuntime({ ...this.#options,
+      createSession: (workspace, title, signal) => this.#options.createSession(workspace, title, signal, {
+        provider: entry.record.provider, model: entry.record.model, envOverrides: entry.envOverrides,
+      }), storage, displayName: record.name, instructions: record.instructions, managedAgentId: record.agentId });
     this.#entries.set(record.agentId, entry);
     return entry;
   }
@@ -297,13 +328,14 @@ export class OwnerTelegramService {
     const { record, pairing } = entry;
     const runtime = entry.runtime.status();
     const state = entry.error || runtime.error ? "error" : pairing ? pairing.candidate ? "awaiting_confirmation" : "linking" : !record.ownerUserId ? "unlinked" : runtime.state === "connected" ? "running" : runtime.state === "connecting" ? "connecting" : "stopped";
-    return { agentId: record.agentId, name: record.name, instructions: record.instructions, workspacePath: record.workspacePath, username: runtime.botUsername ?? record.username, ownerUserId: record.ownerUserId, ownerUsername: record.ownerUsername, enabled: runtime.enabled, state, sessionId: runtime.sessionId, error: entry.error ?? runtime.error, lastUpdateAt: runtime.lastUpdateAt, pairing: pairing ? this.#pairingProjection(pairing) : null };
+    return { provider: record.provider, model: record.model, agentId: record.agentId, name: record.name, instructions: record.instructions, workspacePath: record.workspacePath, username: runtime.botUsername ?? record.username, ownerUserId: record.ownerUserId, ownerUsername: record.ownerUsername, enabled: runtime.enabled, state, sessionId: runtime.sessionId, error: entry.error ?? runtime.error, lastUpdateAt: runtime.lastUpdateAt, pairing: pairing ? this.#pairingProjection(pairing) : null };
   }
   list(): { agents: TelegramAgentStatus[] } { return { agents: [...this.#entries.values()].map((entry) => this.#status(entry)) }; }
   #pairingProjection(pairing: PairingState): TelegramAgentPairing { return { challengeId: pairing.challengeId, url: pairing.url, qrDataUrl: pairing.qrDataUrl, expiresAt: pairing.expiresAt, candidate: pairing.candidate }; }
-  #validateProfile(params: { name: unknown; workspacePath: unknown; instructions?: unknown }): { name: string; workspacePath: string; instructions: string } {
+  #validateProfile(params: { name: unknown; workspacePath: unknown; instructions?: unknown; provider?: unknown; model?: unknown }): { name: string; workspacePath: string; instructions: string; provider?: string; model?: string } {
     if (typeof params.name !== "string" || !params.name.trim() || params.name.length > 100 || /[\x00-\x1f\x7f]/u.test(params.name) || typeof params.workspacePath !== "string" || (params.instructions !== undefined && (typeof params.instructions !== "string" || params.instructions.length > 16_000))) throw new RemoteError("TELEGRAM_CONFIG_INVALID");
-    return { name: params.name.trim(), workspacePath: canonicalRemoteWorkspace(params.workspacePath, this.#options.home), instructions: typeof params.instructions === "string" ? params.instructions : "" };
+    if ((params.provider === undefined) !== (params.model === undefined) || (params.provider !== undefined && (typeof params.provider !== "string" || !resolveBuiltInProviderSlug(params.provider) || typeof params.model !== "string" || !params.model.trim() || params.model.length > 256 || /[\x00-\x1f\x7f]/u.test(params.model)))) throw new RemoteError("TELEGRAM_CONFIG_INVALID");
+    return { provider: params.provider as string | undefined, model: params.model as string | undefined, name: params.name.trim(), workspacePath: canonicalRemoteWorkspace(params.workspacePath, this.#options.home), instructions: typeof params.instructions === "string" ? params.instructions : "" };
   }
   #transport(token: string, signal: AbortSignal): TelegramTransport {
     return this.#options.transport?.(token, signal) ?? new FetchTelegramTransport({ token, fetchImpl: (url, init) => fetch(url, { ...init, redirect: "error", signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]) }) });
@@ -353,7 +385,7 @@ export class OwnerTelegramService {
   async #update(params: TelegramAgentUpdateParams): Promise<TelegramAgentStatus> {
     const entry = this.#entry(params.agentId);
     const signal = this.#beginOperation(entry);
-    const profile = this.#validateProfile({ name: params.name ?? entry.record.name, workspacePath: params.workspacePath ?? entry.record.workspacePath, instructions: params.instructions ?? entry.record.instructions });
+    const profile = this.#validateProfile({ name: params.name ?? entry.record.name, workspacePath: params.workspacePath ?? entry.record.workspacePath, instructions: params.instructions ?? entry.record.instructions, provider: params.provider ?? entry.record.provider, model: params.model ?? entry.record.model });
     const identity = params.token !== undefined ? await this.#identity(params.token, params.agentId, signal) : null;
     signal.throwIfAborted();
     this.#cancelPairing(entry); entry.runtime.stop();
@@ -376,13 +408,13 @@ export class OwnerTelegramService {
   }
   #stopEntry(entry: AgentEntry): TelegramAgentStatus {
     entry.generation++; entry.operation?.abort(); entry.operation = null;
-    this.#cancelPairing(entry); entry.runtime.stop(); entry.error = null;
+    this.#cancelPairing(entry); entry.runtime.stop(); entry.envOverrides = undefined; entry.error = null;
     return this.#status(entry);
   }
   #expirePairing(entry: AgentEntry): void { if (entry.pairing && entry.pairing.expiresAtMs <= Date.now()) this.#cancelPairing(entry); }
   async #beginPairing(entry: AgentEntry): Promise<TelegramAgentPairingResult> {
     const signal = this.#beginOperation(entry);
-    this.#cancelPairing(entry); entry.runtime.stop(); entry.error = null;
+    this.#cancelPairing(entry); entry.runtime.stop(); entry.envOverrides = undefined; entry.error = null;
     const token = this.#token(entry);
     const identity = await this.#identity(token, entry.record.agentId, signal);
     const record = { ...entry.record, telegramIdentityId: identity.id, username: identity.username };
@@ -443,7 +475,14 @@ export class OwnerTelegramService {
     this.#cancelPairing(entry);
     return this.#status(this.#addEntry(record));
   }
-  async #startAgent(entry: AgentEntry): Promise<TelegramAgentStatus> {
+  async #startAgent(entry: AgentEntry, envOverrides?: unknown, provider?: unknown): Promise<TelegramAgentStatus> {
+    let snapshot: Record<string, string> | undefined;
+    if (envOverrides !== undefined) {
+      if (typeof provider !== "string" || provider !== entry.record.provider) throw new RemoteError("TELEGRAM_PROVIDER_CHANGED");
+      if (!envOverrides || typeof envOverrides !== "object" || Array.isArray(envOverrides) || Object.keys(envOverrides).length > 256 || Object.values(envOverrides).some(value => typeof value !== "string" || value.length > 32_768)) throw new RemoteError("TELEGRAM_CONFIG_INVALID");
+      try { snapshot = normalizeDaemonClientEnvOverrides(envOverrides as Record<string, string>); }
+      catch { throw new RemoteError("TELEGRAM_CONFIG_INVALID"); }
+    }
     if (!entry.record.ownerUserId) throw new RemoteError("TELEGRAM_ACCOUNT_NOT_LINKED");
     this.#cancelPairing(entry);
     const signal = this.#beginOperation(entry);
@@ -454,18 +493,20 @@ export class OwnerTelegramService {
     // Rehydrate replay progress changed by account-link polling before a new activation.
     if (!entry.runtime.status().enabled) {
       const replacement = this.#addEntry(record);
+      replacement.envOverrides = snapshot;
       replacement.operation = entry.operation;
       replacement.generation = entry.generation;
       await replacement.runtime.start();
       return this.#status(replacement);
     }
+    if (snapshot !== undefined) entry.envOverrides = snapshot;
     return this.#status(entry);
   }
   async #handle(method: OwnerTelegramMethod, params: JsonObject): Promise<unknown> {
     switch (method) {
       case "telegram.agents.create": return this.#create(params as unknown as TelegramAgentCreateParams);
       case "telegram.agents.update": return this.#update(params as unknown as TelegramAgentUpdateParams);
-      case "telegram.agents.start": return this.#startAgent(this.#entry(params.agentId));
+      case "telegram.agents.start": return this.#startAgent(this.#entry(params.agentId), params.envOverrides, params.provider);
       case "telegram.agents.stop": return this.#stopEntry(this.#entry(params.agentId));
       case "telegram.agents.remove": {
         const entry = this.#entry(params.agentId); this.#stopEntry(entry); this.#store().remove(entry.record.agentId); this.#entries.delete(entry.record.agentId);
