@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LLMChatOptions, LLMMessage } from "../../src/llm/types.js";
 import { runTurn } from "../../src/session/run-turn.js";
-import { STEP_LIMIT_WRAPUP_TIMEOUT_MS, StepLimitTrail, stepLimitWrapup } from "../../src/session/step-limit-wrapup.js";
+import { STEP_LIMIT_WRAPUP_MAX_TEXT_BYTES, STEP_LIMIT_WRAPUP_TIMEOUT_MS, StepLimitTrail, stepLimitWrapup } from "../../src/session/step-limit-wrapup.js";
 import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
 import type { SessionServices } from "../../src/session/session.js";
 import { WorkflowHandoffSpool } from "../../src/agents/workflow-handoff-spool.js";
@@ -221,14 +221,25 @@ describe("one-shot child step limit", () => {
     expect(options?.toolRouting?.allowedToolNames ?? []).toEqual(sent);
   });
 
-  it("keeps the turn's own output budget for synthesis", async () => {
+  it.each([
+    { requested: 64_000, sent: 16_384 },
+    { requested: 8_000, sent: 8_000 },
+  ])("gives synthesis room for reasoning within a ceiling: $requested", async ({ requested, sent }) => {
     const chatStream = vi.fn<ReturnType<typeof mkProvider>["chatStream"]>(async () => ({
       content: "Found a defect.", toolCalls: [], model: "test-model", finishReason: "stop" as const }));
     const { session } = mkSession({ provider: { ...mkProvider(), chatStream } });
     await stepLimitWrapup({ session, ctx: mkCtx(), signal: new AbortController().signal,
-      request: { input: [], tools: [], baseInstructions: "", parallelToolCalls: false, maxOutputTokens: 64_000 },
+      request: { input: [], tools: [], baseInstructions: "", parallelToolCalls: false, maxOutputTokens: requested },
       fallback: "fallback trail" });
-    expect(chatStream.mock.calls[0]?.[2]?.maxOutputTokens).toBe(64_000);
+    expect(chatStream.mock.calls[0]?.[2]?.maxOutputTokens).toBe(sent);
+  });
+
+  it("bounds the returned synthesis text", async () => {
+    const { session } = mkSession({ provider: mkProvider({ content: "finding ".repeat(20_000) }) });
+    const result = await stepLimitWrapup({ session, ctx: mkCtx(), signal: new AbortController().signal,
+      request: { input: [], tools: [], baseInstructions: "", parallelToolCalls: false }, fallback: "fallback trail" });
+    expect(result.text.startsWith("Partial result: stopped at the step limit.")).toBe(true);
+    expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(STEP_LIMIT_WRAPUP_MAX_TEXT_BYTES);
   });
 
   it("bounds synthesis even if the provider ignores abort", async () => {

@@ -11,6 +11,9 @@ import { isPlanMode } from "./plan-mode.js";
 // still streaming its reasoning when a 30 s bound cut the answer off. Leave
 // room for reasoning plus the answer.
 export const STEP_LIMIT_WRAPUP_TIMEOUT_MS = 120_000;
+export const STEP_LIMIT_WRAPUP_MAX_OUTPUT_TOKENS = 16_384;
+/** Workflow handoffs reject large payloads; the wrap-up is a summary. */
+export const STEP_LIMIT_WRAPUP_MAX_TEXT_BYTES = 32_768;
 export const STEP_LIMIT_WRAPUP_INSTRUCTION =
   "You have reached the step limit. Stop investigating. Write the final answer now from what you found, " +
   "including findings and conclusions. Say what you could not check. Tools are unavailable. " +
@@ -75,9 +78,12 @@ export async function stepLimitWrapup(args: {
       ...(session.services.provider.name === "ollama" ? { tools: [] } : {}),
       toolChoice: "none",
       parallelToolCalls: false,
-      // Keep the turn's own output budget. Reasoning models count thinking
-      // against it: a live deepseek-flash child spent a 4,096-token cap on
-      // reasoning and returned an empty answer. The timeout bounds the call.
+      // Reasoning models count thinking against this budget: a live
+      // deepseek-flash child spent a 4,096-token cap on reasoning and returned
+      // an empty answer. 16,384 leaves room for reasoning plus the answer
+      // while keeping the admission reservation well below a full turn's.
+      maxOutputTokens: Math.min(args.request.maxOutputTokens ?? STEP_LIMIT_WRAPUP_MAX_OUTPUT_TOKENS,
+        STEP_LIMIT_WRAPUP_MAX_OUTPUT_TOKENS),
     };
     const messages = [...request.input];
     const options = {
@@ -112,7 +118,7 @@ export async function stepLimitWrapup(args: {
     const visibleText = isPlanMode(ctx) ? stripProposedPlanBlocks(citationsStripped) : citationsStripped;
     const text = response.error || response.toolCalls?.length
       ? "" : sanitizeModelOutput(visibleText, { strict: true }).text.trim();
-    return { text: text ? `Partial result: stopped at the step limit.\n\n${text}` : fallback,
+    return { text: text ? boundedText(`Partial result: stopped at the step limit.\n\n${text}`, STEP_LIMIT_WRAPUP_MAX_TEXT_BYTES) : fallback,
       ...(response.usage ? { usage: response.usage } : {}) };
   } catch {
     return { text: fallback };
