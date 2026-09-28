@@ -3214,7 +3214,7 @@ describe("runAgent", () => {
     expect(result.finalMessage).toContain("stopped at the step limit");
     expect(provider.chatStream).toHaveBeenCalledTimes(2);
     const finalOptions = provider.chatStream.mock.calls[1]![2];
-    expect(finalOptions).toMatchObject({ tools: [], toolChoice: "none", singleWireAttempt: true });
+    expect(finalOptions).toMatchObject({ tools: provider.chatStream.mock.calls[0]![2]?.tools, toolChoice: "none", singleWireAttempt: true });
     if (mode === "success") {
       expect(result.finalMessage).toContain("The caller lacks validation. Tests were not checked.");
     } else {

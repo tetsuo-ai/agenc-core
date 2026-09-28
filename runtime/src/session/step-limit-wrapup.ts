@@ -64,7 +64,7 @@ export async function stepLimitWrapup(args: {
     if (controller.signal.aborted) return { text: fallback };
     const request: StreamModelRequestContract = {
       ...args.request,
-      tools: [],
+      // Tool history still requires definitions, even when new calls are disabled.
       toolChoice: "none",
       parallelToolCalls: false,
       maxOutputTokens: Math.min(args.request.maxOutputTokens ?? 4096, 4096),

@@ -22,7 +22,7 @@ function investigatingProvider(toolName = "Read") {
   const provider = mkProvider();
   provider.chatStream = vi.fn(async (messages, _onChunk, options) => {
     requests.push({ messages: structuredClone(messages), options: structuredClone({ ...options, signal: undefined, trace: undefined }) });
-    return options?.tools?.length === 0 && options.toolChoice === "none"
+    return options?.toolChoice === "none"
       ? { content: "Found a defect. Integration tests were not checked.", toolCalls: [], model: "test-model",
           usage: { promptTokens: 2, completionTokens: 2, totalTokens: 4, availability: "reported" as const, provenance: "provider" as const }, finishReason: "stop" as const }
       : { content: "Checking the next file.", toolCalls: [{ id: `read-${requests.length}`, name: toolName, arguments: `{"file":"${requests.length}.ts"}` }],
@@ -104,7 +104,7 @@ describe("one-shot child step limit", () => {
       expect(requests[i]!.messages.slice(0, previous.messages.length)).toEqual(previous.messages);
       expect(requests[i]!.options?.systemPrompt).toBe(previous.options?.systemPrompt);
     }
-    expect(requests.at(-1)!.options).toMatchObject({ tools: [], toolChoice: "none", singleWireAttempt: true });
+    expect(requests.at(-1)!.options).toMatchObject({ tools: requests[0]!.options?.tools, toolChoice: "none", singleWireAttempt: true });
     expect(requests.at(-1)!.messages.at(-1)?.content).toContain("Stop investigating");
     expect(requests.at(-1)!.messages.some((m) => m.role === "tool")).toBe(true);
   });
