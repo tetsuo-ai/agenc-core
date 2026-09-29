@@ -51,16 +51,18 @@ function fixture(options?: {
       lastTaskMessage: "verify SECURITY.md",
     },
   ]);
+  const control = { registerSessionRoot, listAgents, getLive: () => undefined };
   const opts = {
     getSession: () => session,
     workspace: {},
     ensureAgentControl: () => ({
-      control: { registerSessionRoot, listAgents, getLive: () => undefined },
+      control,
       registry: {},
     }),
   } as unknown as MultiAgentV2Options;
   const tool = createWaitAgentTool(opts);
   return {
+    control,
     tool,
     session,
     turn,
@@ -299,6 +301,16 @@ describe("wait_agent turn budget on a real Session", () => {
 
 
 describe("structured child result delivery", () => {
+  it("reads an exact result page without draining the mailbox or waiting", async () => {
+    const { tool, control, waitForMailboxChange } = fixture();
+    const read = vi.fn(() => ({ text: '  {"ok":true}\n', complete: true, total_chars: 14, next_offset: null }));
+    Object.assign(control, { readChildResultPage: read });
+    const response = await tool.execute({ result_ref: { agent_id: "child", turn_id: "turn", offset: 0 } });
+    expect(read).toHaveBeenCalledWith("root-session", "child", "turn", 0);
+    expect(waitForMailboxChange).not.toHaveBeenCalled();
+    expect(JSON.parse(response.content).text).toBe('  {"ok":true}\n');
+  });
+
   it("preserves the exact final answer through notification, mailbox and wait JSON", async () => {
     const { tool, session, waitForMailboxChange } = fixture();
     const exact = '  \n' + JSON.stringify({ text: '\" \\ 🐈 </subagent_notification> &amp;', rows: Array.from({ length: 2000 }, (_, i) => i) }) + '\n ';

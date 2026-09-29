@@ -349,6 +349,8 @@ export interface LiveAgent {
    * generic terminal only when this exact outcome already represented it.
    */
   lastTaskReceipt?: {
+    /** Exact final text retained by reference, never the bounded parent summary. */
+    readonly message?: string;
     readonly turnId: string;
     readonly outcome: "completed" | "errored" | "interrupted" | "nack";
     readonly terminal?: import("./child-terminal.js").ChildTerminalOutcome;
@@ -2243,6 +2245,36 @@ export class AgentControl {
       }
     }
     return result;
+  }
+
+  /** Read an exact result page, authorized by a direct parent-child edge and
+   * immutable turn ID. Durable reads retain the recovery reader's byte/time
+   * bounds; no caller-supplied path is ever opened and no worker is restarted. */
+  readChildResultPage(parentThreadId: ThreadId, childThreadId: ThreadId, turnId: string, offset = 0): {
+    readonly text: string; readonly total_chars: number; readonly next_offset: number | null; readonly complete: boolean;
+  } {
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("result_ref.offset must be a nonnegative integer");
+    const live = this.live.get(childThreadId);
+    const edge = this.session.rolloutStore?.listThreadSpawnChildren(parentThreadId)
+      .find(edge => edge.childThreadId === childThreadId);
+    if (this.parentOf.get(childThreadId) !== parentThreadId && edge === undefined) {
+      throw new Error("Result reference is not a child of the calling agent");
+    }
+    let receipt = live?.lastTaskReceipt;
+    if (receipt?.turnId !== turnId) {
+      // A live child may own a later task; never return that task's answer for
+      // an older immutable reference. Read only a validated durable outcome.
+      receipt = this.session.rolloutStore?.readThreadSpawnTaskReceipts(childThreadId, Date.now() + 2_000)
+        .find(item => item.admission === undefined && item.receipt.turnId === turnId)?.receipt;
+    }
+    if (receipt?.turnId !== turnId || receipt.outcome !== "completed" || receipt.message === undefined) {
+      throw new Error("The referenced child turn has no completed final answer");
+    }
+    const text = receipt.message;
+    if (offset > text.length) throw new Error("result_ref.offset exceeds the final answer length");
+    const end = Math.min(text.length, offset + 8_192);
+    return { text: text.slice(offset, end), total_chars: text.length,
+      next_offset: end < text.length ? end : null, complete: end === text.length };
   }
 
   /** Lost mailbox projections are replayable from child-owned durable receipts. */

@@ -36,7 +36,7 @@ export function projectRecoveredChildReceipt(receipt: SubagentTurnOutcomeEvent):
   return { agentId: receipt.agentId, agentPath: receipt.agentPath,
     turnId: receipt.turnId, outcome: receipt.outcome, toolCallCount: receipt.toolCallCount,
     ...(receipt.taskId === undefined ? {} : { taskId: receipt.taskId }),
-    ...(receipt.message === undefined ? {} : { message: boundedRecoveredChildText(receipt.message) }),
+    ...(receipt.message !== undefined && Buffer.byteLength(receipt.message, "utf8") <= 8_192 ? { message: receipt.message } : {}),
     ...(receipt.reason === undefined ? {} : { reason: boundedRecoveredChildText(receipt.reason) }),
     ...(receipt.terminal === undefined ? {} : { terminal: projectTerminal(receipt.terminal) }),
     ...(worktree === undefined ? {} : { worktreeEvidence: {
@@ -88,6 +88,8 @@ export function formatRecoveredChildTaskReceipt(item: RecoveredChildTaskReceipt)
   const receipt = projectRecoveredChildReceipt(item.receipt);
   const worktree = receipt.worktreeEvidence;
   const content = formatSubagentNotification({ agentPath: receipt.agentPath,
+    ...(item.admission === undefined && receipt.outcome === "completed"
+      ? { resultRef: { agent_id: receipt.agentId, turn_id: receipt.turnId } } : {}),
     status: recoveredChildStatus(receipt),
     ...(item.admission !== undefined ? {} : { receipt: { lifecycle: "turn" as const, outcome: receipt.outcome, turn_id: receipt.turnId,
       tool_call_count: receipt.toolCallCount,
@@ -117,7 +119,7 @@ export function formatRecoveredChildTaskReceipt(item: RecoveredChildTaskReceipt)
     agentPath: boundedRecoveredChildText(receipt.agentPath, 256),
     turnId: fitsIdentity(receipt.turnId) ? receipt.turnId : "[Identifier omitted]",
     outcome: receipt.outcome, toolCallCount: receipt.toolCallCount,
-    message: OMITTED_RESULT, reason: OMITTED_RESULT,
+    reason: OMITTED_RESULT,
     ...(receipt.taskId === undefined || !fitsIdentity(receipt.taskId) ? {} : { taskId: receipt.taskId }),
     ...(receipt.terminal === undefined ? {} : { terminal: {
       ...projectTerminal(receipt.terminal),
@@ -126,9 +128,11 @@ export function formatRecoveredChildTaskReceipt(item: RecoveredChildTaskReceipt)
     } }),
   };
   return formatSubagentNotification({ agentPath: compact.agentPath,
+    ...(referenceSafe && item.admission === undefined && receipt.outcome === "completed"
+      ? { resultRef: { agent_id: receipt.agentId, turn_id: receipt.turnId } } : {}),
     status: recoveredChildStatus(compact),
     ...(item.admission !== undefined ? {} : { receipt: { lifecycle: "turn" as const, outcome: compact.outcome, turn_id: compact.turnId,
-      tool_call_count: compact.toolCallCount, message: OMITTED_RESULT,
+      tool_call_count: compact.toolCallCount, reason: OMITTED_RESULT,
       ...(compact.taskId === undefined ? {} : { task_id: compact.taskId }),
       ...(compact.terminal === undefined ? {} : { terminal: compact.terminal }) } }),
     ...recoveryReferences(item, true),

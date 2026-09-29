@@ -1060,16 +1060,17 @@ function truncateReceiptField(value: string): string {
 function projectTaskReceiptForParent(
   receipt: TaskTurnReceipt,
 ): TaskTurnReceipt {
+  const { message, ...rest } = receipt;
   return {
-    ...receipt,
+    ...rest,
     ...(receipt.terminal !== undefined ? { terminal: {
       ...receipt.terminal,
       completedWork: truncateReceiptField(receipt.terminal.completedWork),
       unfinishedWork: truncateReceiptField(receipt.terminal.unfinishedWork),
     } } : {}),
-    ...(receipt.message !== undefined
-      ? { message: truncateReceiptField(receipt.message) }
-      : {}),
+    // Larger final answers use result_ref; never publish broken JSON.
+    ...(message !== undefined && Buffer.byteLength(message, "utf8") <= MAX_PARENT_RECEIPT_FIELD_BYTES
+      ? { message } : {}),
     ...(receipt.reason !== undefined
       ? { reason: truncateReceiptField(receipt.reason) }
       : {}),
@@ -1251,6 +1252,8 @@ function sendSubagentNotificationToParent(params: {
       : undefined;
   const content = formatSubagentNotification({
     agentPath: params.live.agentPath,
+    ...(params.receipt?.outcome === "completed" && params.receipt.message !== undefined
+      ? { resultRef: { agent_id: params.live.agentId, turn_id: params.receipt.turnId } } : {}),
     status:
       projectedReceipt === undefined
         ? params.live.status.value
@@ -3994,6 +3997,7 @@ export async function* runAgent(
     currentCommittedReceipt = receiptToCommit;
     currentReceiptWorktreeEvidence = receiptToCommit.worktreeEvidence;
     live.lastTaskReceipt = {
+      ...(receiptToCommit.message === undefined ? {} : { message: receiptToCommit.message }),
       turnId: receiptToCommit.turnId,
       outcome: receiptToCommit.outcome,
       ...(receiptToCommit.terminal !== undefined ? { terminal: receiptToCommit.terminal } : {}),

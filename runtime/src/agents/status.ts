@@ -192,6 +192,7 @@ export function toAgentStatusJson(status: AgentStatus | AgentStatusJson): AgentS
 }
 
 export function formatSubagentNotification(params: {
+  readonly resultRef?: { readonly agent_id: string; readonly turn_id: string };
   readonly agentPath: string;
   readonly status: AgentStatus;
   readonly durableOutcomeRef?: {
@@ -241,6 +242,7 @@ export function formatSubagentNotification(params: {
 }): string {
   const payload = JSON.stringify({
     agent_path: params.agentPath,
+    ...(params.resultRef === undefined ? {} : { result_ref: params.resultRef }),
     status: toAgentStatusJson(params.status),
     ...(params.receipt !== undefined ? { receipt: params.receipt } : {}),
     ...(params.durableOutcomeRef !== undefined

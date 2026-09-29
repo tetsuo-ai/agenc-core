@@ -168,6 +168,46 @@ afterEach(() => {
 });
 
 describe("AgentControl", () => {
+  it("reads lossless bounded final-result pages only for the owning parent and exact turn", async () => {
+    const session = stubSession();
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    control.registerSessionRoot(session.conversationId);
+    const child = await control.spawn({ parentPath: "/root" });
+    const text = ' \n' + JSON.stringify({ rows: '🐈 " &amp;'.repeat(5000) }) + '\n ';
+    child.lastTaskReceipt = { turnId: "done", outcome: "completed", message: text };
+    let result = "", offset = 0;
+    for (;;) {
+      const page = control.readChildResultPage(session.conversationId, child.agentId, "done", offset);
+      expect(page.text.length).toBeLessThanOrEqual(8192);
+      result += page.text;
+      if (page.next_offset === null) break;
+      offset = page.next_offset;
+    }
+    expect(result).toBe(text);
+    expect(JSON.parse(result)).toEqual(JSON.parse(text));
+    expect(() => control.readChildResultPage("another-parent", child.agentId, "done")).toThrow(/not a child/);
+    expect(() => control.readChildResultPage(session.conversationId, child.agentId, "stale")).toThrow(/no completed/);
+    expect(() => control.readChildResultPage(session.conversationId, child.agentId, "done", -1)).toThrow(/nonnegative/);
+    await control.shutdownAll();
+  });
+
+  it("reads exact recovered results through the authorized durable reader, without restarting a child", () => {
+    const message = JSON.stringify({ data: "x".repeat(12000) });
+    const read = vi.fn(() => [{ receipt: { turnId: "old-turn", outcome: "completed", message } }]);
+    const store = { listThreadSpawnDescendants: () => [],
+      listThreadSpawnChildren: (parent: string) => parent === "session-test" ? [{ childThreadId: "old-child" }] : [],
+      readThreadSpawnTaskReceipts: read } as unknown as RolloutStore;
+    const session = stubSession({ rolloutStore: store });
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    control.registerSessionRoot(session.conversationId);
+    expect(() => control.readChildResultPage("outsider", "old-child", "old-turn")).toThrow(/not a child/);
+    expect(read).not.toHaveBeenCalled();
+    const first = control.readChildResultPage(session.conversationId, "old-child", "old-turn");
+    const last = control.readChildResultPage(session.conversationId, "old-child", "old-turn", first.next_offset!);
+    expect(first.text + last.text).toBe(message);
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
   it("snapshots and interrupts a worker with a string status projection", async () => {
     const session = stubSession();
     const control = new AgentControl({ session, registry: new AgentRegistry() });

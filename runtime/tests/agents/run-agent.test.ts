@@ -4023,6 +4023,32 @@ describe("runAgent", () => {
       .toBe("completed");
   });
 
+  it("delivers a large structured final answer by exact result reference without cutting JSON", async () => {
+    const exact = JSON.stringify({ values: "🐈 quotes \" &amp; ".repeat(2000) });
+    const provider = makeProvider([{ content: exact }]);
+    const session = makeStubSession({ services: { provider } });
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    control.registerSessionRoot(session.conversationId);
+    const live = await control.spawn({ parentPath: "/root" });
+    const { result } = await collectRun(runAgent({ live, parent: session,
+      initialMessages: [{ role: "user", content: "Return JSON only." }], taskPrompt: "Return JSON only." }));
+    expect(result.outcome).toBe("completed");
+    const notification = session.mailbox.drain().find(item => item.metadata?.lifecycle === "turn");
+    const payload = JSON.parse(String(notification!.content).split("\n")[1]!);
+    expect(payload.receipt.message).toBeUndefined();
+    expect(payload.status.completed).toBeNull();
+    expect(payload.result_ref).toEqual({ agent_id: live.agentId, turn_id: live.lastTaskReceipt!.turnId });
+    let text = "", offset = 0;
+    for (;;) {
+      const page = control.readChildResultPage(session.conversationId, live.agentId, payload.result_ref.turn_id, offset);
+      text += page.text;
+      if (page.next_offset === null) break;
+      offset = page.next_offset;
+    }
+    expect(text).toBe(exact);
+    expect(JSON.parse(text)).toEqual(JSON.parse(exact));
+  });
+
   it("bounds parent receipt reason metadata while retaining the durable full outcome", async () => {
     const hugeReason = `provider_boom:${"x".repeat(
       MAX_PARENT_RECEIPT_FIELD_BYTES * 4,

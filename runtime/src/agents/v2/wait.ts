@@ -188,7 +188,7 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
     args: Record<string, unknown>,
   ): Promise<ToolResult> => {
     const strict = strictArgs(args, {
-      allowed: new Set(["timeout_ms"]),
+      allowed: new Set(["timeout_ms", "result_ref"]),
     });
     if (strict) return strict;
     if (
@@ -222,6 +222,25 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
           liveAgentSession(caller) === session);
     if (session === undefined || !callerIsCurrent()) {
       return agentValidationError("invalid-runtime-identity: calling agent session is not live");
+    }
+    if (args.result_ref !== undefined) {
+      const ref = args.result_ref;
+      if (ref === null || typeof ref !== "object" || Array.isArray(ref)) return agentValidationError("result_ref must be an object");
+      const value = ref as Record<string, unknown>;
+      if (Object.keys(value).some(key => !["agent_id", "turn_id", "offset"].includes(key)) ||
+          typeof value.agent_id !== "string" || typeof value.turn_id !== "string" ||
+          !value.agent_id || !value.turn_id || value.agent_id.length > 512 || value.turn_id.length > 512 ||
+          (value.offset !== undefined && (typeof value.offset !== "number" || !Number.isSafeInteger(value.offset) || value.offset < 0))) {
+        return agentValidationError("result_ref requires agent_id, turn_id and an optional nonnegative integer offset");
+      }
+      try {
+        const resultControl = control ?? opts.ensureAgentControl(rootSession).control;
+        resultControl.registerSessionRoot(rootSession.conversationId);
+        return json({ result_ref: { agent_id: value.agent_id, turn_id: value.turn_id },
+          ...resultControl.readChildResultPage(current.threadId, value.agent_id, value.turn_id, value.offset as number | undefined) });
+      } catch (error) {
+        return agentValidationError(error instanceof Error ? error.message : String(error));
+      }
     }
     const timeoutMs = waitTimeoutMs(args, session);
     const waitCallId = callIdFromArgs(args, "wait");
@@ -354,6 +373,7 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
       "Wait for a mailbox update from any live agent, including queued messages " +
       "and final-status notifications. When updates arrive, returns the drained " +
       "mailbox content so you can report completed agent findings immediately. " +
+      "Child final answers are exact in receipt.message or status.completed. If omitted for size, pass the notification result_ref to wait_agent to read exact text pages. Concatenate text pages without separators using next_offset until complete; never use a truncated completedWork summary as the final answer. This reads the result without waiting or rerunning the child. " +
       "After restart, returns recovered durable child task results without rerunning the child. " +
       "If a child reports insufficient_funds, tell the user what finished and what remains, then ask before switching providers; never retry it on the exhausted provider. " +
       "If no mailbox update arrives before the deadline, returns a timeout summary. " +
@@ -375,6 +395,12 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
     inputSchema: {
       type: "object",
       properties: {
+        result_ref: {
+          type: "object",
+          description: "Read an exact completed child answer using its notification reference. offset counts UTF-16 code units and defaults to zero; each page contains at most 8192 code units.",
+          properties: { agent_id: { type: "string" }, turn_id: { type: "string" }, offset: { type: "integer", minimum: 0 } },
+          required: ["agent_id", "turn_id"], additionalProperties: false,
+        },
         timeout_ms: {
           type: "number",
           minimum: minTimeoutMs,
