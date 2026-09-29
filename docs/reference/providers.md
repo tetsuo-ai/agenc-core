@@ -174,6 +174,10 @@ they run only through the Grok Build CLI ACP path. See
 
 `openrouter` remains an `api-key` first-run route, but a signed-in AgenC
 subscription can supply its managed key access when that feature is enabled.
+
+For current Claude models, limits and thinking behavior, see
+[Anthropic models](./anthropic-models.md).
+
 Amazon Bedrock is an environment-only first-run route because SigV4 requires
 both an access-key ID and secret access key. The optional session token is used
 when present. AgenC's one-field BYOK paste/store path does not accept or persist

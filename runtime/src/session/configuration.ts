@@ -217,7 +217,7 @@ export function sessionConfigurationFromAgenCConfig(params: {
   const legacyAnthropicEffort = normalizeProviderIdentity(
     params.provider ?? params.config.model_provider,
     "configured reasoning effort",
-  ) === "anthropic" && !effort.registered && !effort.levels.includes("xhigh");
+  ) === "anthropic" && !effort.levels.includes("xhigh");
   const supportsLiteralMax = effort.levels.includes("max") && !legacyAnthropicEffort;
   const configuredEffort = params.config.reasoning_effort;
   const configPolicy = approvalPolicyValueFromAgenCConfig(

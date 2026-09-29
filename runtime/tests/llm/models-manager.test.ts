@@ -105,7 +105,6 @@ describe("StaticModelsManager", () => {
       "claude-opus-5-5-fast",
       "claude-opus-5-5-preview",
       "claude-opus-5-50",
-      "claude-opus-5",
     ]) {
       const info = await manager.getModelInfo(model);
       expect(info.contextWindow, model).toBe(200_000);
@@ -143,11 +142,14 @@ describe("StaticModelsManager", () => {
       expect(info.serviceTiers, model).toBeUndefined();
     }
     // Models without a registered contract keep their Bedrock fallback.
-    for (const model of ["anthropic.claude-opus-5", "amazon.nova-pro-v1:0"]) {
+    for (const model of ["anthropic.claude-opus-5-50", "amazon.nova-pro-v1:0"]) {
       const info = await manager.getModelInfo(model);
       expect(info.supportedReasoningLevels, model).toEqual([]);
       expect(info.contextWindow, model).toBe(CONSERVATIVE_CONTEXT_WINDOW_TOKENS);
     }
+    expect(await manager.getModelInfo("anthropic.claude-opus-5")).toMatchObject({
+      contextWindow: 1_000_000, supportedReasoningLevels: [],
+    });
   });
 
   it("reads a configured Bedrock application profile as the Claude model it serves", async () => {

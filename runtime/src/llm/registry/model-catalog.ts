@@ -26,6 +26,7 @@ import {
 } from "./gemini-thinking-models.js";
 import { parseClaudeModelId } from "../../utils/model/claudeModelId.js";
 import { isAlwaysOnThinkingAnthropicModel } from "../../utils/model/alwaysOnThinking.js";
+import { anthropicSupportsBetweenToolsThinking } from "../../utils/model/anthropicThinkingControl.js";
 
 export type ModelInputModality = "text" | "image" | "audio";
 export type ModelWebSearchToolType = "none" | "text" | "text_and_image";
@@ -635,8 +636,7 @@ const GEMINI_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
 // 2026-09-22): 1M context, 128K max output, all five effort levels with
 // medium as the API default. The default output reservation is 64K, the
 // starting point the Opus 5.5 guidance gives for agentic turns, since
-// always-on thinking counts toward max_tokens. Other Claude models have no
-// row here yet and keep the generic Anthropic fallbacks. Fast mode is not a
+// always-on thinking counts toward max_tokens. Fast mode is not a
 // catalog tier: the registry derives it from the Anthropic fast-mode list.
 const ANTHROPIC_OPUS_5_5_ENTRY: RegisteredModelCatalogEntry = Object.freeze({
   provider: "anthropic",
@@ -669,9 +669,79 @@ const ANTHROPIC_OPUS_5_5_ENTRY: RegisteredModelCatalogEntry = Object.freeze({
   visibility: "list",
 });
 
+// Official model pages and authenticated Models API, checked 2026-09-29:
+// https://platform.claude.com/docs/en/models/sonnet-5-5/overview
+// https://platform.claude.com/docs/en/models/haiku-4-5/overview
+// Keep AgenC's 64K default output reservation separate from the API limit.
+const ANTHROPIC_SONNET_5_5_ENTRY: RegisteredModelCatalogEntry = Object.freeze({
+  ...ANTHROPIC_OPUS_5_5_ENTRY,
+  model: "claude-sonnet-5-5",
+  displayName: "Claude Sonnet 5.5",
+  defaultReasoningLevel: "high",
+  priority: 1,
+});
+
+const ANTHROPIC_HAIKU_4_5_ENTRY: RegisteredModelCatalogEntry = Object.freeze({
+  ...ANTHROPIC_OPUS_5_5_ENTRY,
+  model: "claude-haiku-4-5-20251001",
+  displayName: "Claude Haiku 4.5",
+  contextWindow: 200_000,
+  maxContextWindow: 200_000,
+  maxOutputTokensUpperLimit: 64_000,
+  // Manual extended thinking exists, but this model rejects the effort
+  // parameter. A visible model does not have to expose an effort dial.
+  supportedReasoningLevels: NO_REASONING_LEVELS,
+  defaultReasoningLevel: undefined,
+  priority: 3,
+});
+
+// Already-supported Claude models previously inherited the generic 200K /
+// 64K fallback. Models API limits and each official overview now anchor
+// their metadata too. Keep older uncurated variants out of derived pickers.
+const ANTHROPIC_EXISTING_ENTRIES: readonly RegisteredModelCatalogEntry[] = ([
+  ["claude-fable-5-1", "Claude Fable 5.1", 2],
+  ["claude-sonnet-5", "Claude Sonnet 5", 4],
+  ["claude-fable-5", "Claude Fable 5", 5],
+  ["claude-opus-5", "Claude Opus 5", 6],
+  ["claude-opus-4-8", "Claude Opus 4.8", 7],
+  ["claude-opus-4-7", "Claude Opus 4.7", 8],
+] as const).map(([model, displayName, priority]) => Object.freeze({
+  ...ANTHROPIC_OPUS_5_5_ENTRY,
+  model,
+  displayName,
+  defaultReasoningLevel: "high" as const,
+  priority,
+}));
+
+const ANTHROPIC_UNCURATED_ENTRIES: readonly RegisteredModelCatalogEntry[] = ([
+  { model: "claude-opus-4-6", displayName: "Claude Opus 4.6", contextWindow: 1_000_000,
+    maxContextWindow: 1_000_000, maxOutputTokensUpperLimit: 128_000,
+    supportedReasoningLevels: ["low", "medium", "high", "max"], defaultReasoningLevel: "high" },
+  { model: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", contextWindow: 1_000_000,
+    maxContextWindow: 1_000_000, maxOutputTokensUpperLimit: 128_000,
+    supportedReasoningLevels: ["low", "medium", "high", "max"], defaultReasoningLevel: "high" },
+  { model: "claude-opus-4-5-20251101", displayName: "Claude Opus 4.5", contextWindow: 200_000,
+    maxContextWindow: 200_000, maxOutputTokensUpperLimit: 64_000,
+    supportedReasoningLevels: ["low", "medium", "high"], defaultReasoningLevel: "high" },
+  // The overview's default is 200K; the Models API advertises the 1M
+  // maximum. The ordinary route keeps the documented default window.
+  { model: "claude-sonnet-4-5-20250929", displayName: "Claude Sonnet 4.5", contextWindow: 200_000,
+    maxContextWindow: 1_000_000, maxOutputTokensUpperLimit: 64_000,
+    supportedReasoningLevels: [], defaultReasoningLevel: undefined },
+] as const).map((entry) => Object.freeze({
+  ...ANTHROPIC_OPUS_5_5_ENTRY,
+  ...entry,
+  supportedReasoningLevels: Object.freeze(entry.supportedReasoningLevels),
+  visibility: "none" as const,
+}));
+
 export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
   Object.freeze([
     ANTHROPIC_OPUS_5_5_ENTRY,
+    ANTHROPIC_SONNET_5_5_ENTRY,
+    ANTHROPIC_HAIKU_4_5_ENTRY,
+    ...ANTHROPIC_EXISTING_ENTRIES,
+    ...ANTHROPIC_UNCURATED_ENTRIES,
     ...GEMINI_MODEL_CATALOG.filter((entry) =>
       GEMINI_THINKING_MODELS.some((model) => model.curated && model.model === entry.model)
     ),
@@ -1577,7 +1647,7 @@ function bedrockClaudeCatalogEntry(
   model: string,
 ): RegisteredModelCatalogEntry {
   const { defaultReasoningLevel, ...contract } = row;
-  const levels = isAlwaysOnThinkingAnthropicModel(row.model)
+  const levels = isAlwaysOnThinkingAnthropicModel(row.model) || anthropicSupportsBetweenToolsThinking(row.model)
     ? row.supportedReasoningLevels
     : NO_REASONING_LEVELS;
   return Object.freeze({

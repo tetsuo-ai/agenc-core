@@ -600,6 +600,12 @@ const COST_TIER_FABLE_10_50: Readonly<ModelCostEntry> = Object.freeze({
   cacheCreationUsdPer1K: 0.0125,
   webSearchUsdPerRequest: 0.01,
 });
+// Fable 5.1 discounts cache reads to $0.25/MTok; Fable 5 stays $1/MTok.
+// Official per-model pricing pages checked 2026-09-29.
+const COST_TIER_FABLE_5_1: Readonly<ModelCostEntry> = Object.freeze({
+  ...COST_TIER_FABLE_10_50,
+  cachedInputUsdPer1K: 0.00025,
+});
 const COST_TIER_SONNET_2_10: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.002,
   outputUsdPer1K: 0.01,
@@ -794,14 +800,16 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     ...openAiCostAliases("o3-pro", COST_TIER_O3_PRO),
     ...openAiCostAliases("o3-mini", COST_TIER_O3_MINI),
     ...openAiCostAliases("o4-mini", COST_TIER_O4_MINI),
-    "anthropic:claude-fable-5-1": COST_TIER_FABLE_10_50,
-    "claude-fable-5-1": COST_TIER_FABLE_10_50,
+    "anthropic:claude-fable-5-1": COST_TIER_FABLE_5_1,
+    "claude-fable-5-1": COST_TIER_FABLE_5_1,
     "anthropic:claude-fable-5": COST_TIER_FABLE_10_50,
     "claude-fable-5": COST_TIER_FABLE_10_50,
     "anthropic:claude-opus-5-5": COST_TIER_OPUS_5_5_4_20,
     "claude-opus-5-5": COST_TIER_OPUS_5_5_4_20,
     "anthropic:claude-opus-5": COST_TIER_OPUS_5_25_FAST_10_50,
     "claude-opus-5": COST_TIER_OPUS_5_25_FAST_10_50,
+    "anthropic:claude-sonnet-5-5": COST_TIER_SONNET_2_10,
+    "claude-sonnet-5-5": COST_TIER_SONNET_2_10,
     "anthropic:claude-sonnet-5": COST_TIER_SONNET_2_10,
     "claude-sonnet-5": COST_TIER_SONNET_2_10,
     "anthropic:claude-sonnet-4-6": COST_TIER_SONNET,
