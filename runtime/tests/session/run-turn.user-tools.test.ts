@@ -48,3 +48,9 @@ test("existing direct MCP discovery still applies in normal sessions", () => {
   discoverUserToolMentions(session, "Use mcp.docs.lookup");
   expect(registry.getDiscoveredToolNames?.()).toContain("mcp.docs.lookup");
 });
+
+test("sentence punctuation does not hide an exact tool name", () => {
+  const { session, registry } = setup();
+  discoverUserToolMentions(session, "Use TodoWrite.");
+  expect(registry.getDiscoveredToolNames?.()).toContain("TodoWrite");
+});

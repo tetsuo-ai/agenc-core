@@ -131,7 +131,7 @@ function discoverUserToolMentions(
   if (text && session.services.runtimeOptions.lightMode === true) {
     // Exact public names in user input need no catalog round trip. Visibility
     // does not bypass registry availability, admission or execution policy.
-    const mentions = new Set(text.match(/[A-Za-z_][A-Za-z0-9_.-]*/gu) ?? []);
+    const mentions = new Set(text.match(/[\w]+(?:[.-][\w]+)*/gu) ?? []);
     for (const tool of session.services.registry.tools) {
       if (tool.metadata?.source === "builtin" && !LIGHT_INITIAL_TOOL_NAMES.has(tool.name) && mentions.has(tool.name)) {
         names.add(tool.name);
