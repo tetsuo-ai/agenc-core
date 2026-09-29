@@ -142,7 +142,7 @@ export function resolveReasoningEffort(input: {
     const entry = resolveRegisteredModelCatalogEntry(input);
     reasoningEffortAllowedValues = new Set(entry?.supportedReasoningLevels ?? []);
     acceptsReasoningEffort = reasoningEffortAllowedValues.size > 0;
-  } else if (slug === "qwen" && model?.trim().toLowerCase() === "qwen3.8-omni-flash") {
+  } else if (slug === "qwen") {
     reasoningEffortAllowedValues = new Set(resolveRegisteredModelCatalogEntry(input)?.supportedReasoningLevels ?? []);
     acceptsReasoningEffort = reasoningEffortAllowedValues.size > 0;
   } else if (slug === "openai") {

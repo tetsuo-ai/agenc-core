@@ -733,6 +733,12 @@ export function buildChatCompletionsRequest(
   if (input.providerCapabilityHints?.reasoningSplit === true) {
     body.reasoning_split = true;
   }
+  if (tools.length > 0 && input.providerCapabilityHints?.enablesToolStreaming === true) {
+    body.tool_stream = true;
+  }
+  if (input.providerCapabilityHints?.clearsThinkingAfterHistoryChange === true) {
+    body.clear_thinking = !allowsFullReasoningHistoryReplay;
+  }
   if (
     input.options?.parallelToolCalls !== undefined &&
     !(autoOnlyToolChoice && tools.length === 0) &&

@@ -35,6 +35,7 @@ import {
   mapLLMError,
 } from "../../errors.js";
 import { isProviderFundsFailure } from "../../funds.js";
+import { resolveQwenCurrentModel } from "../../registry/qwen-current-models.js";
 import { ProviderHttpClient } from "../../client.js";
 import {
   ProviderHttpError,
@@ -847,6 +848,12 @@ export class OpenAIProvider implements LLMProvider {
     const headers = this.managedRequestHeaders(options);
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options?.timeoutMs);
     const model = options?.model?.trim() || this.config.model;
+    // Qwen's older open-source thinking deployments and Omni routes require
+    // SSE. Preserve the public chat() contract by buffering our existing
+    // stream parser, including tool arguments, reasoning provenance and usage.
+    if (this.name === "qwen" && resolveQwenCurrentModel(model)?.bufferedChat === true) {
+      return this.chatStream(messages, () => {}, options);
+    }
     const requestTools = options?.tools
       ? [...options.tools]
       : this.config.tools ?? [];
@@ -944,7 +951,7 @@ export class OpenAIProvider implements LLMProvider {
           tools: requestTools,
           options,
           maxTokens: this.resolveRequestMaxTokens(options),
-          maxTokenField: this.resolveChatCompletionsMaxTokenField(),
+          maxTokenField: this.resolveChatCompletionsMaxTokenField(model),
           providerCapabilityHints,
           toolCallIdNamespace: headers?.["Idempotency-Key"],
         });
@@ -1155,7 +1162,9 @@ export class OpenAIProvider implements LLMProvider {
     };
   }
 
-  private resolveChatCompletionsMaxTokenField(): ChatCompletionsMaxTokenField {
+  private resolveChatCompletionsMaxTokenField(model: string): ChatCompletionsMaxTokenField {
+    const qwenModel = this.name === "qwen" ? resolveQwenCurrentModel(model) : undefined;
+    if (qwenModel !== undefined && !qwenModel.totalOutputCap) return "max_tokens";
     if (
       this.name === "meta" ||
       this.name === "cerebras" ||
@@ -1326,12 +1335,20 @@ export class OpenAIProvider implements LLMProvider {
       tools: args.tools,
       options: args.options,
       maxTokens: this.resolveRequestMaxTokens(args.options),
-      maxTokenField: this.resolveChatCompletionsMaxTokenField(),
+      maxTokenField: this.resolveChatCompletionsMaxTokenField(args.model),
       providerCapabilityHints,
       sharedPrefixTail: sessionSharedPrefixTail(),
     });
     for (const [key, value] of Object.entries(this.config.extraBody ?? {})) {
       request[key] = value;
+    }
+    const qwenModel = this.name === "qwen" ? resolveQwenCurrentModel(args.model) : undefined;
+    if (qwenModel?.model.startsWith("qwen") && !qwenModel.totalOutputCap &&
+      qwenModel.thinking !== "none" && request.enable_thinking !== false &&
+      request.thinking_budget === undefined && typeof request.max_tokens === "number") {
+      // These older Qwen routes cap the answer separately from reasoning.
+      // Bound both parts when Core supplies an output reservation.
+      request.thinking_budget = request.max_tokens;
     }
     if (typeof request.prompt_cache_key === "string") {
       request.prompt_cache_key = normalizePromptCacheKey(request.prompt_cache_key);
@@ -1689,7 +1706,7 @@ export class OpenAIProvider implements LLMProvider {
       tools: options?.tools ? [...options.tools] : this.config.tools ?? [],
       options,
       maxTokens: this.resolveRequestMaxTokens(options),
-      maxTokenField: this.resolveChatCompletionsMaxTokenField(),
+      maxTokenField: this.resolveChatCompletionsMaxTokenField(requestModel),
       providerCapabilityHints: streamCapabilityHints,
       toolCallIdNamespace: headers?.["Idempotency-Key"],
     };
