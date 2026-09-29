@@ -1623,10 +1623,14 @@ export function resolveRegisteredModelCatalogEntry(input: {
     return canonical === undefined ? undefined : findExactModel(canonical, MISTRAL_MODEL_CATALOG);
   }
   if (provider === "amazon-bedrock") {
-    return resolveBedrockCatalogEntry(model) ?? findExactModel(
+    const documented = findExactModel(
       model,
       REGISTERED_MODEL_CATALOG.filter((entry) => entry.provider === provider),
     );
+    const claude = resolveBedrockCatalogEntry(model);
+    // Native Anthropic picker policy must not hide a separately reviewed AWS ID.
+    return claude === undefined ? documented : documented === undefined ? claude
+      : Object.freeze({ ...claude, visibility: documented.visibility });
   }
   const candidates = REGISTERED_MODEL_CATALOG.filter(
     (entry) => modelCatalogProviderIdentity(entry.provider) === provider,

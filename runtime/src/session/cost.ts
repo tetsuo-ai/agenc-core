@@ -146,6 +146,29 @@ type OpenAiRateRow = readonly [
   cacheWrite?: number,
 ];
 
+/** Copilot rates are independent of direct-provider fast/search charges.
+ * https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing
+ * Reviewed 2026-09-29. Published long-context billing threshold: 272K inputs.
+ */
+function copilotCostAliases(
+  model: string,
+  [input, output, cachedInput, cacheWrite]: readonly [number, number, number, number],
+  longContext?: readonly [number, number, number, number],
+): Readonly<Record<string, ModelCostEntry>> {
+  const rates = ([i, o, c, w]: readonly [number, number, number, number]): ModelCostEntry => ({
+    inputUsdPer1K: i / 1000, outputUsdPer1K: o / 1000,
+    cachedInputUsdPer1K: c / 1000, cacheCreationUsdPer1K: w / 1000,
+    cachedInputIncludedInInputTokens: true, cacheCreationIncludedInInputTokens: true,
+  });
+  const entry: ModelCostEntry = {
+    ...rates([input, output, cachedInput, cacheWrite]),
+    ...(longContext === undefined ? {} : { longContext: { aboveInputTokens: 272_000, rates: rates(longContext) } }),
+  };
+  return Object.fromEntries([
+    `github:${model}`, `github:copilot:${model}`, `github:github:copilot:${model}`,
+  ].map(key => [key, entry]));
+}
+
 /** OpenAI bills a request over this many input tokens at long-context rates. */
 const OPENAI_LONG_CONTEXT_ABOVE_INPUT_TOKENS = 272_000;
 
@@ -854,6 +877,10 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       cacheCreationUsdPer1K: 0.00125,
       webSearchUsdPerRequest: 0.01,
     },
+    ...copilotCostAliases("gpt-6-astra", [10, 50, 1, 12.5], [20, 75, 2, 25]),
+    ...copilotCostAliases("gpt-6-sol", [2, 10, 0.2, 2.5], [4, 15, 0.4, 5]),
+    ...copilotCostAliases("gpt-6-luna", [0.1, 0.5, 0.01, 0.125], [0.2, 0.75, 0.02, 0.25]),
+    ...copilotCostAliases("claude-opus-5.5", [4, 20, 0.2, 5]),
     // Groq published per-token prices, checked 2026-09-29.
     // https://console.groq.com/docs/models
     // Retired shared Llama and enterprise-preview MiniMax prices are unknown.

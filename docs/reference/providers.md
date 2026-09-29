@@ -308,11 +308,13 @@ enterprise prices remain unknown. Sources: [models](https://console.groq.com/doc
 [tools](https://console.groq.com/docs/tool-use/overview), and
 [deprecations](https://console.groq.com/docs/deprecations).
 
-GitHub's catalog includes the documented Copilot CLI ID `gpt-6-astra` and
+GitHub's catalog includes the [documented Copilot CLI IDs](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference)
+`gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, and `claude-opus-5.5`, and
 removes models marked retired in the [Copilot model reference](https://docs.github.com/en/copilot/reference/ai-models/supported-models).
 The separate GitHub Models service retired on July 30, 2026. Copilot model
 access depends on the account and plan; no account-specific discovery was
-available during this review.
+available during this review. The four added IDs use [Copilot-specific published prices](https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing),
+including long-context tiers, without borrowing direct-provider fast or search rates.
 
 Bedrock's catalog additionally contains active model cards that explicitly
 advertise Converse and client-side function tools. The exact IDs and source

@@ -25,13 +25,23 @@ describe("documented providers without live credentials", () => {
       .toMatchObject({ visibility: "none", supportsToolUse: true });
   });
   test("adds the documented Copilot ID and excludes retired entries", () => {
-    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.github).toContain("github:copilot:gpt-6-astra");
+    for (const model of ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "claude-opus-5.5"]) {
+      expect(BUILT_IN_PROVIDER_MODEL_CATALOG.github).toContain(`github:copilot:${model}`);
+      const cost = resolveModelCostEntry({ provider: "github", model }, DEFAULT_MODEL_COSTS);
+      expect(cost?.key).toBe(`github:${model}`);
+      expect(cost?.entry.fastMode).toBeUndefined();
+      expect(cost?.entry.webSearchUsdPerRequest).toBeUndefined();
+    }
+    expect(resolveModelCostEntry({ provider: "github", model: "gpt-6-astra" }, DEFAULT_MODEL_COSTS)?.entry)
+      .toMatchObject({ inputUsdPer1K: 0.01, outputUsdPer1K: 0.05,
+        longContext: { aboveInputTokens: 272_000, rates: { inputUsdPer1K: 0.02, outputUsdPer1K: 0.075 } } });
     for (const model of ["claude-opus-4.5", "claude-opus-4.6", "claude-sonnet-4.5", "gemini-3.1-pro-preview", "mai-code-1-flash-picker", "raptor-mini"]) {
       expect(BUILT_IN_PROVIDER_MODEL_CATALOG.github).not.toContain(`github:copilot:${model}`);
     }
   });
   test.each(BEDROCK_CONVERSE_MODELS)("keeps literal Bedrock $model text/tool contracts without guessed limits", ({ model }) => {
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG["amazon-bedrock"]).toContain(model);
+    expect(resolveRegisteredModelCatalogEntry({ provider: "amazon-bedrock", model })?.visibility).toBe("list");
     expect(resolveProviderCapabilityEntry({ provider: "amazon-bedrock", model }))
       .toMatchObject({ supportsToolUse: true, supportsImageInput: false });
     if (!model.startsWith("anthropic.")) {
