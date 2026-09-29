@@ -1322,8 +1322,12 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           return nextObservation;
         },
       }).then(result => {
-        if (result.attempts.length > 1 || result.stopReason !== "completed") {
-          notice(`Finished after ${result.attempts.length} attempt(s). Routing status: ${result.stopReason}. Use each child's durable result and terminal reason.`);
+        if (verifiedRouting !== undefined || result.attempts.length > 1 || result.stopReason !== "completed") {
+          notice(verifiedRouting !== undefined
+            ? result.stopReason === "completed"
+              ? `Independent verification passed for ${result.value?.live.agentPath}. Use that child's durable result.`
+              : `Independent verification did not pass. Routing status: ${result.stopReason}. Do not accept the failed attempts as a verified answer.`
+            : `Finished after ${result.attempts.length} attempt(s). Routing status: ${result.stopReason}. Use each child's durable result and terminal reason.`);
         }
       }, () => notice("Stopped automatic fallback. The next attempt lacked current authority or verified accounting. Use the existing child results."));
     }

@@ -15,6 +15,7 @@ describe("host verification through spawn_agent", () => {
     expect(response.isError).not.toBe(true);
     value.finishFirst("completed");
     await vi.waitFor(() => expect(check).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(value.send.mock.calls.some(([message]) => message.content.includes("Independent verification passed"))).toBe(true));
     expect(mockDelegate).toHaveBeenCalledOnce();
   });
   it("creates a fresh authorized attempt after an independent failed verdict", async () => {
