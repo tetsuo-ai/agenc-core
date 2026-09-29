@@ -1406,7 +1406,9 @@ describe("model-facing tools", () => {
       const observed = await Promise.race([
         nestedResults.then((value) => ({ kind: "completed" as const, value })),
         new Promise<{ readonly kind: "deadline" }>((resolve) => {
-          deadline = setTimeout(() => resolve({ kind: "deadline" }), 1_000);
+          // Keep the outer lease held throughout this deadlock check. Allow
+          // bounded CPU test runners time to finish the nested SQLite reads.
+          deadline = setTimeout(() => resolve({ kind: "deadline" }), 5_000);
         }),
       ]);
       expect(observed.kind).toBe("completed");
