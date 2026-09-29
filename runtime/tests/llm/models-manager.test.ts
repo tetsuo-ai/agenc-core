@@ -320,8 +320,10 @@ describe("StaticModelsManager", () => {
     const listed = await manager.listModels();
     expect(listed.map((entry) => entry.slug)).toEqual(
       expect.arrayContaining([
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.8-27b",
+        "minimaxai/minimax-m2.7",
       ]),
     );
     expect(listed.map((entry) => entry.slug)).not.toContain(

@@ -434,6 +434,12 @@ export function chatCompletionsCapabilityHintsForProvider(
         reasoningContentField: "reasoning_content" as const,
       } : {}),
     } : {}),
+    ...(slug === "groq" ? {
+      acceptsDirectImageInput: acceptsToolResultImages,
+      toolResultImagePolicy: acceptsToolResultImages ? "relay_as_user" as const : "strip" as const,
+      acceptsParallelToolCalls: model === "qwen/qwen3.8-27b" || model === "minimaxai/minimax-m2.7",
+      omitsToolControlsWithoutTools: true,
+    } : {}),
     ...(slug === "ollama-cloud" ? {
       acceptsDirectImageInput: acceptsToolResultImages,
       toolResultImagePolicy: acceptsToolResultImages ? "relay_as_user" as const : "strip" as const,

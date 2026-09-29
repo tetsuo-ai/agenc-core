@@ -154,7 +154,7 @@ they run only through the Grok Build CLI ACP path. See
 | `lmstudio` | LM Studio | `gpt-4o-mini` | `http://localhost:1234/v1` | `LMSTUDIO_API_KEY` (optional) | `LMSTUDIO_BASE_URL` | `local` |
 | `openai-compatible` | OpenAI-compatible | `local-model` | `http://localhost:8000/v1` | `OPENAI_COMPATIBLE_API_KEY`, `OPENAI_API_KEY` | `OPENAI_COMPATIBLE_BASE_URL`, `OPENAI_BASE_URL`, `OPENAI_API_BASE` | `local` |
 | `openrouter` | OpenRouter | `x-ai/grok-4.5` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL` | `api-key` |
-| `groq` | Groq | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | `GROQ_BASE_URL` | `api-key` |
+| `groq` | Groq | `openai/gpt-oss-120b` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | `GROQ_BASE_URL` | `api-key` |
 | `deepseek` | DeepSeek | `deepseek-v4-flash` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `DEEPSEEK_BASE_URL` | `api-key` |
 | `meta` | Meta | `muse-spark-1.3` | `https://api.meta.ai/v1` | `MODEL_API_KEY` | `META_BASE_URL` | `api-key` |
 | `qwen` | QwenCloud Pay-As-You-Go | `qwen3.8-max` | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY`, `QWEN_API_KEY` | `DASHSCOPE_BASE_URL`, `QWEN_BASE_URL` | `api-key` |
@@ -297,18 +297,48 @@ Exact per-token pricing is not published in the authoritative
 provider documentation, so AgenC reports the cost as unknown instead of
 treating its conservative fallback estimate as authoritative.
 
+Groq defaults to `openai/gpt-oss-120b`. Its reviewed public catalog also
+contains `openai/gpt-oss-20b`, `qwen/qwen3.8-27b` (preview), and
+`minimaxai/minimax-m2.7` (enterprise preview). The GPT OSS models accept
+`low`, `medium`, and `high` effort; Qwen additionally accepts `none` and
+supports images. Parallel tools are advertised only for Qwen and MiniMax.
+The shared Llama models retired on August 16, 2026 and are no longer offered
+in the fallback picker. Enterprise customers can still enter a custom ID;
+enterprise prices remain unknown. Sources: [models](https://console.groq.com/docs/models),
+[tools](https://console.groq.com/docs/tool-use/overview), and
+[deprecations](https://console.groq.com/docs/deprecations).
+
+GitHub's catalog includes the documented Copilot CLI ID `gpt-6-astra` and
+removes models marked retired in the [Copilot model reference](https://docs.github.com/en/copilot/reference/ai-models/supported-models).
+The separate GitHub Models service retired on July 30, 2026. Copilot model
+access depends on the account and plan; no account-specific discovery was
+available during this review.
+
+Bedrock's catalog additionally contains active model cards that explicitly
+advertise Converse and client-side function tools. The exact IDs and source
+URLs are kept in `runtime/src/llm/registry/bedrock-converse-models.ts`.
+Cards showing only rounded K/M limits do not establish exact catalog limits.
+Regional prices and account availability remain unknown. The current adapter
+supports text input only, including for models whose AWS card also advertises
+vision. Existing Nova defaults and Claude-specific wire behavior are retained.
+
 Cerebras uses `CEREBRAS_API_KEY` with the OpenAI-compatible
 `https://api.cerebras.ai/v1/chat/completions` endpoint. The optional
 `CEREBRAS_BASE_URL` override supports a private/dedicated deployment without
-restricting its model name to the public catalog. The public chat catalog is:
+restricting its model name to the public catalog. The public chat catalog is listed below. `gemma-4-31b` was
+[removed from shared inference on September 3, 2026](https://inference-docs.cerebras.ai/support/deprecation).
+Its dedicated-deployment metadata remains available for explicit model IDs,
+while the shared fallback picker omits it. Qwen's catalog preserves the
+conservative free-tier context/output contract; paid plans support larger limits.
+
+The public chat catalog is:
 
 | Model | Context | Max output | Input / output per 1M tokens | Image input | Parallel tools | Reasoning effort (default) |
 | --- | ---: | ---: | ---: | --- | --- | --- |
 | `gpt-oss-120b` | 131,072 | 40,960 | $0.35 / $0.75 | no | no | `low`, `medium`, `high` (`medium`) |
 | `qwen-3.8-27b` | 65,536 | 32,768 | $0.99 / $1.49 | yes | yes | `none`, `low`, `medium`, `high` (`high`) |
-| `gemma-4-31b` | 131,072 | 40,960 | $0.99 / $1.49 | yes | yes | `none`, `low`, `medium`, `high` (`none`) |
 
-All three expose function tools and JSON-schema structured output, but
+Both shared models expose function tools and JSON-schema structured output, but
 Cerebras rejects combining those two modes in one request; AgenC blocks that
 combination before dispatch. AgenC sends
 `max_completion_tokens`, keeps Cerebras' `reasoning` response field out of

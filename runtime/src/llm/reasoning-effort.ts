@@ -184,7 +184,7 @@ export function resolveReasoningEffort(input: {
     reasoningEffortAllowedValues =
       CEREBRAS_QWEN_GEMMA_REASONING_EFFORT_VALUES;
     acceptsReasoningEffort = true;
-  } else if (slug === "ollama-cloud") {
+  } else if (slug === "ollama-cloud" || slug === "groq") {
     const entry = resolveRegisteredModelCatalogEntry({ provider: slug, model });
     reasoningEffortAllowedValues = new Set(entry?.supportedReasoningLevels ?? []);
     acceptsReasoningEffort = reasoningEffortAllowedValues.size > 0;

@@ -854,14 +854,12 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       cacheCreationUsdPer1K: 0.00125,
       webSearchUsdPerRequest: 0.01,
     },
-    "groq:llama-3.3-70b-versatile": {
-      inputUsdPer1K: 0.00059,
-      outputUsdPer1K: 0.00079,
-    },
-    "llama-3.3-70b-versatile": {
-      inputUsdPer1K: 0.00059,
-      outputUsdPer1K: 0.00079,
-    },
+    // Groq published per-token prices, checked 2026-09-29.
+    // https://console.groq.com/docs/models
+    // Retired shared Llama and enterprise-preview MiniMax prices are unknown.
+    "groq:openai/gpt-oss-120b": { inputUsdPer1K: 0.00015, outputUsdPer1K: 0.0006 },
+    "groq:openai/gpt-oss-20b": { inputUsdPer1K: 0.000075, outputUsdPer1K: 0.0003 },
+    "groq:qwen/qwen3.8-27b": { inputUsdPer1K: 0.0008, outputUsdPer1K: 0.004 },
     "deepseek:deepseek-flash": COST_TIER_DEEPSEEK_V41_FLASH_NATIVE,
     "deepseek-flash": COST_TIER_DEEPSEEK_V41_FLASH_NATIVE,
     "deepseek:deepseek-v4-flash": COST_TIER_DEEPSEEK_V41_FLASH_NATIVE,
