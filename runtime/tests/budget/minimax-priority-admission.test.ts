@@ -111,9 +111,13 @@ test("MiniMax priority is sent, reserved at 1.5x and charged from the served tie
 });
 
 test("MiniMax M2 never inherits the M3 priority contract", async () => {
+  const standard = await admittedCall({ model: "MiniMax-M2.7", servedTier: "standard" });
   const call = await admittedCall({ model: "MiniMax-M2.7", serviceTier: "priority", servedTier: "standard" });
   expect(call.requestBody).not.toHaveProperty("service_tier");
+  expect(call.chargedUsd).toBeCloseTo(standard.chargedUsd, 12);
+  // M2.7's $0.375/M cache-write rate exceeds its $0.30/M input rate.
+  // Admission covers that standard-tier worst case, not M3 priority prices.
   expect(call.reservedUsd).toBeCloseTo(
-    (call.reservedInputTokens * 0.3 + call.reservedOutputTokens * 1.2) * PER_M, 12,
+    (call.reservedInputTokens * 0.375 + call.reservedOutputTokens * 1.2) * PER_M, 12,
   );
 });
