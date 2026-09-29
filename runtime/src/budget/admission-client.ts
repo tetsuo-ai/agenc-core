@@ -145,6 +145,8 @@ export interface ExecutionAdmissionClient {
     readonly limit?: number;
   }): readonly AdmissionJournalEvent[];
   getUsageSummary?(): AdmissionUsageSummary;
+  /** This bound run/task's usage only, excluding delegated descendants. */
+  getDirectUsageSummary?(): AdmissionUsageSummary;
   /** Snapshot only. Minimum remaining dollars across durable task, ancestor
    * and current calendar caps, including held reservations. Undefined means
    * no monetary cap. Dispatch still needs an atomic admission lease. */

@@ -744,6 +744,12 @@ export class ExecutionAdmissionKernel {
     return binding.workspace.repository.getRemainingCostUsd(scopes);
   }
 
+  getDirectUsageSummary(binding: ClientBinding): AdmissionUsageSummary {
+    this.#assertOpen();
+    return binding.workspace.repository.getUsageSummary(binding.scope.runId,
+      binding.budget.taskAllocationKey ?? binding.budget.runAllocationKey, true);
+  }
+
   subscribeUsage(
     binding: ClientBinding,
     listener: (summary: AdmissionUsageSummary) => void,
@@ -1680,6 +1686,10 @@ class KernelAdmissionClient implements ExecutionAdmissionClient {
 
   getRemainingCostUsd(): number | undefined {
     return this.kernel.getRemainingCostUsd(this.binding);
+  }
+
+  getDirectUsageSummary(): AdmissionUsageSummary {
+    return this.kernel.getDirectUsageSummary(this.binding);
   }
 
   subscribeUsage(listener: (summary: AdmissionUsageSummary) => void): () => void {

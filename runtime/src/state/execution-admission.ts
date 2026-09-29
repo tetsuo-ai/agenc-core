@@ -1579,7 +1579,7 @@ export class ExecutionAdmissionRepository {
     };
   }
 
-  getUsageSummary(runId: string, allocationKey: string): AdmissionUsageSummary {
+  getUsageSummary(runId: string, allocationKey: string, directOnly = false): AdmissionUsageSummary {
     requireNonEmpty(runId, "runId");
     requireNonEmpty(allocationKey, "allocationKey");
     return this.#driver.transaction(() => {
@@ -1589,7 +1589,7 @@ export class ExecutionAdmissionRepository {
         )
         .get()?.sequence ?? 0;
       const rows = this.#driver
-        .prepareState<[string], UsageAggregateRow>(
+        .prepareState<string[], UsageAggregateRow>(
           `SELECT reservation.run_id, reservation.kind, reservation.model, reservation.provider,
              COALESCE(SUM(CASE WHEN reservation.status IN ('reconciled', 'provider_overrun', 'held_unknown')
                THEN COALESCE(reservation.actual_input_tokens, 0) ELSE 0 END), 0) AS input_tokens,
@@ -1613,10 +1613,11 @@ export class ExecutionAdmissionRepository {
            JOIN execution_admission_reservation_allocations AS allocation
              ON allocation.reservation_id = reservation.reservation_id AND allocation.scope_key = ?
            WHERE reservation.status != 'voided'
+             ${directOnly ? "AND reservation.run_id = ?" : ""}
            GROUP BY reservation.run_id, reservation.kind, reservation.model, reservation.provider
            ORDER BY reservation.run_id, reservation.kind, reservation.model, reservation.provider`,
         )
-        .all(allocationKey);
+        .all(...(directOnly ? [allocationKey, runId] : [allocationKey]));
       const modelRows = new Map<string, UsageAggregateRow[]>();
       const agentRows = new Map<string, UsageAggregateRow[]>();
       for (const row of rows) {

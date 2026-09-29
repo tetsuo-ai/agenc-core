@@ -3773,8 +3773,16 @@ export async function* runAgent(
   let parentProjectionError: Error | undefined;
   let parentProjectionTurnId: string | undefined;
   let pendingPreconstructionReceipt: TaskTurnReceipt | undefined;
+  // Capture the parent's current task reader before a reusable parent moves
+  // its admission facade to another assignment. Prefer our stable run below.
+  const originalParentAdmission = parent.services.executionAdmission;
+  const readOriginalParentUsage = originalParentAdmission?.getUsageSummary?.bind(originalParentAdmission);
   const knownWorkerCost = (): number | undefined => {
-    const summary = parent.services.executionAdmission?.getUsageSummary?.();
+    const direct = workerAdmission?.getDirectUsageSummary?.();
+    if (direct !== undefined) {
+      return direct.runId !== live.agentId || direct.hasUnknownCost ? undefined : direct.costUsd;
+    }
+    const summary = readOriginalParentUsage?.();
     if (summary === undefined) return undefined;
     const usage = summary.agents.find((agent) => agent.runId === live.agentId);
     return usage?.hasUnknownCost ? undefined : usage?.costUsd ?? 0;

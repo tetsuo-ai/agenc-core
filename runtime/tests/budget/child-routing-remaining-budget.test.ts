@@ -40,6 +40,27 @@ function reconcile(client: ExecutionAdmissionClient, lease: AdmissionLease, cost
   client.acknowledgeCompletion(lease.reservation.reservationId);
 }
 describe("child routing budget snapshots", () => {
+  it("reads direct worker/task usage separately from descendant spend and unknown holds", async () => {
+    const parent = root(kernel(), 5);
+    reconcile(parent, await acquire(parent, "parent-start", 0, 0), 0, 0);
+    const worker = parent.forSession({ runId: "worker", sessionId: "worker" });
+    const a = worker.forSession({ sessionId: "worker", taskId: "a" });
+    reconcile(a, await acquire(a, "own", 0.4), 0.4);
+    const child = a.forSession({ runId: "child", sessionId: "child" });
+    reconcile(child, await acquire(child, "spent", 0.2), 0.2);
+    const held = await acquire(child, "held", 0.3);
+    child.markDispatched(held.reservation.reservationId, { boundary: "provider_wire" });
+    child.holdUnknown(held.reservation.reservationId, "timeout");
+    expect(a.getUsageSummary?.()).toMatchObject({ costUsd: 0.6, heldCostUsd: 0.3, hasUnknownCost: true });
+    expect(a.getDirectUsageSummary?.()).toMatchObject({ costUsd: 0.4, heldCostUsd: 0,
+      hasUnknownCost: false, agents: [], modelCalls: 1 });
+    const b = worker.forSession({ sessionId: "worker", taskId: "b" });
+    reconcile(b, await acquire(b, "own", 0.1), 0.1);
+    expect(worker.getDirectUsageSummary?.().costUsd).toBe(0.5);
+    expect(a.getDirectUsageSummary?.().costUsd).toBe(0.4);
+    expect(b.getDirectUsageSummary?.().costUsd).toBe(0.1);
+  });
+
   it("returns no monetary ceiling for an uncapped tree", () => {
     const parent = root(kernel());
     const child = parent.forSession({ runId: "child", sessionId: "child", taskId: "task" });

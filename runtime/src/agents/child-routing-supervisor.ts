@@ -57,6 +57,9 @@ export function observeChildRoutingAttempt(
 ): Promise<ChildRoutingAttemptResult<AgentThread>> {
   const live = thread.live;
   let admission: ExecutionAdmissionClient | undefined;
+  let readDirectUsage: ExecutionAdmissionClient["getDirectUsageSummary"];
+  const originalParentAdmission = parent.services.executionAdmission;
+  const readParentUsage = originalParentAdmission?.getUsageSummary?.bind(originalParentAdmission);
   let turnId: string | undefined;
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -82,6 +85,9 @@ export function observeChildRoutingAttempt(
       try {
         if (thread.live !== live) throw new Error("Child routing live identity changed.");
         admission ??= liveAgentSession(live)?.services.executionAdmission;
+        // Read the method once. Session admission can be a proxy that binds
+        // methods to whichever task is active at property access time.
+        readDirectUsage ??= admission?.getDirectUsageSummary?.bind(admission);
         if ("turnId" in status) {
           if (turnId !== undefined && turnId !== status.turnId) {
             throw new Error("Child routing initial task changed before observation completed.");
@@ -98,8 +104,12 @@ export function observeChildRoutingAttempt(
         if (receipt?.terminal === undefined || receipt.turnId !== turnId) {
           throw new Error("Child routing ended without a durable task receipt.");
         }
-        const summary = parent.services.executionAdmission?.getUsageSummary?.();
-        const usage: AdmissionUsageTotals | undefined = summary?.agents.find(
+        const direct = readDirectUsage?.();
+        if (direct !== undefined && direct.runId !== live.agentId) {
+          throw new Error("Child routing received usage for another run.");
+        }
+        const summary = direct ?? readParentUsage?.();
+        const usage: AdmissionUsageTotals | undefined = direct ?? summary?.agents.find(
           (agent) => agent.runId === live.agentId,
         );
         // Summary modelCalls excludes voided 402/429 calls. Count dispatch

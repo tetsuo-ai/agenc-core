@@ -4886,10 +4886,17 @@ describe("runAgent", () => {
     const { control, live } = await spawnLive(session);
     const template = makeChildToolAdmission({ runId: session.conversationId, sessionId: session.conversationId }).client;
     const bindings: { client: ExecutionAdmissionClient; release: ReturnType<typeof vi.fn> }[] = [];
+    let workerCost = 0;
     const makeAdmission = (scope: ExecutionAdmissionClient["scope"]): ExecutionAdmissionClient => {
       const release = vi.fn();
       const client: ExecutionAdmissionClient = { ...template, scope, release,
         forSession: (options) => makeAdmission({ ...scope, ...options }),
+        getUsageSummary: () => ({ runId: scope.runId, sequence: 1, costUsd: 0,
+          heldCostUsd: 0, hasUnknownCost: false, modelCalls: 0, inputTokens: 0, outputTokens: 0,
+          totalTokens: 0, models: [], agents: [] }),
+        getDirectUsageSummary: () => ({ runId: scope.runId, sequence: 1, costUsd: workerCost,
+          heldCostUsd: 0, hasUnknownCost: false, modelCalls: 0, inputTokens: 0, outputTokens: 0,
+          totalTokens: 0, models: [], agents: [] }),
       };
       bindings.push({ client, release });
       return client;
@@ -4901,6 +4908,7 @@ describe("runAgent", () => {
     const plan = await planFor("first-budget-task", 0.2);
     const outcomeSpy = vi.spyOn(childRouting, "recordChildRoutingOutcome").mockImplementation(async (_parent, recordedPlan, outcome) => {
       expect(recordedPlan?.task.id).toMatch(/^(first|second)-budget-task$/);
+      expect(outcome.terminal.costUsd).toBeCloseTo(0.1);
       // An outcome can teach local reliability only after its receipt is durable.
       const journal = readFileSync(live.rolloutPath!, "utf8");
       expect(journal).toContain('"type":"subagent_turn_outcome"');
@@ -4909,6 +4917,13 @@ describe("runAgent", () => {
     const observed: ExecutionAdmissionClient["scope"][] = [];
     const turnSpy = vi.spyOn(Session.prototype, "runTurn").mockImplementation(async function* (this: Session) {
       observed.push(this.services.executionAdmission!.scope);
+      workerCost += 0.1;
+      // A new parent assignment no longer lists this child. Receipt accounting
+      // must use the child's stable run allocation instead of that facade.
+      Object.assign(session.services.executionAdmission!, { getUsageSummary: () => ({
+        runId: session.conversationId, sequence: 2, costUsd: 0, heldCostUsd: 0, hasUnknownCost: false,
+        modelCalls: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, models: [], agents: [],
+      }) });
       yield { type: "turn_complete", content: "bounded result", stopReason: "completed",
         usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
       return { reason: "completed" };

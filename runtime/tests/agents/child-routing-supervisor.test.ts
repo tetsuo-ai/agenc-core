@@ -63,6 +63,34 @@ function fixture(options: {
 }
 
 describe("child routing durable attempt observation", () => {
+  test("uses the child's captured direct task usage when a reusable parent changes assignment", async () => {
+    const state = fixture({ usage: null });
+    const original = () => ({ ...usageDefaults, runId: state.live.agentId, sequence: 1,
+      costUsd: 0.04, models: [], agents: [] });
+    let currentReader = original;
+    Object.defineProperty(state.child.services.executionAdmission!, "getDirectUsageSummary", { get: () => currentReader });
+    const observed = observeChildRoutingAttempt(state.parent, state.thread);
+    state.status.markRunning("turn-1");
+    // Both facades now point at another assignment. The observer must retain
+    // the concrete reader it captured for the original child task.
+    currentReader = () => ({ ...original(), costUsd: 99 });
+    Object.assign(state.parent.services.executionAdmission!, { getUsageSummary: () => ({
+      ...usageDefaults, runId: "parent", sequence: 2, models: [], agents: [],
+    }) });
+    state.finish("idle");
+    expect(await observed).toMatchObject({ costUsd: 0.04, terminal: { reason: "completed" } });
+  });
+
+  test("rejects captured direct accounting for a different run", async () => {
+    const state = fixture();
+    Object.assign(state.child.services.executionAdmission!, { getDirectUsageSummary: () => ({
+      ...usageDefaults, runId: "other-child", sequence: 1, models: [], agents: [],
+    }) });
+    const observed = observeChildRoutingAttempt(state.parent, state.thread);
+    state.finish();
+    await expect(observed).rejects.toThrow("another run");
+  });
+
   test("settles keep-alive idle on its durable receipt with exact child spend", async () => {
     const state = fixture({ usage: { costUsd: 0.02 } });
     const observed = observeChildRoutingAttempt(state.parent, state.thread);
