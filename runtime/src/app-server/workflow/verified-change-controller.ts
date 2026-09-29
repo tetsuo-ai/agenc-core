@@ -3145,6 +3145,10 @@ function buildImplementPrompt(ctx: RunContext, attempt: number): string {
   const lines = [
     "You are the implementation stage of a verified-change workflow.",
     "Implement the goal below inside the current worktree.",
+    "This worktree is owned by Goal. Leave changed and new files here.",
+    "The Goal controller stages files, creates snapshot commits, exports evidence, and delivers the reviewable result.",
+    "Do not run git add, git commit, git merge, or git push, or edit Git metadata.",
+    "After the required checks, report changed files and test results. A child commit is not required for this stage.",
     AUTONOMOUS_GOAL_INSTRUCTIONS,
     "If the plan only asks for clarification despite a reasonable interpretation, correct that plan and implement the goal. Create any missing project and verification files, then run the required checks.",
     "",
