@@ -119,7 +119,9 @@ const OPENAI_CONTEXT_WINDOWS: Record<string, number> = {
   'mixtral-8x7b-32768':        32_768,
 
   // Mistral
-  'mistral-large-latest':     256_000,
+  // Large 3's hosted card publishes only rounded 256k, and the account's
+  // models endpoint omits it. Keep exact metadata unknown; runtime fallback
+  // budgets are explicitly marked as estimates by ModelMetadataResolver.
   'mistral-small-latest':     256_000,
   'ministral-3b-latest':      256_000,
 
@@ -359,7 +361,7 @@ const OPENAI_MAX_OUTPUT_TOKENS: Record<string, number> = {
   'mixtral-8x7b-32768':       32_768,
 
   // Mistral
-  'mistral-large-latest':     32_768,
+  // Large 3 has no independently documented exact output maximum.
   'mistral-small-latest':     32_768,
 
   // MiniMax (M3 and all M2.x variants share 131,072 max output)
