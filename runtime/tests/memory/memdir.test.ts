@@ -144,14 +144,15 @@ describe("memory prompt", () => {
     expect(light!.instructions).not.toContain(tempRoot);
     const { lightMemoryInstructions } = await import("../../src/memory/light-memory-prompt.js");
     const instructions = lightMemoryInstructions(["user", "feedback", "project", "reference"], 200);
-    expect(light!.instructions).toContain('instructions: "memory"');
+    expect(light!.instructions).toContain('instructions:"memory"');
     for (const contract of ["Save requested memories immediately", "deleting the file and index entry", "user | feedback | project | reference", "YAML frontmatter name, description", "**Why:**", "**How to apply:**", "150 characters", "200 lines", "check memory", "fix or delete stale", "ignore memory", "AGENC.md duplicates"]) {
       expect(instructions).toContain(contract);
     }
     expect(light!.directories).toContain(getProjectMemoryPath());
     expect(light!.directories).toContain(getGlobalMemoryPath());
-    expect(light!.directories).toContain("shared by worktrees");
-    expect(light!.directories).toContain("session state stays in the conversation");
+    expect(instructions).toContain("shared by worktrees");
+    expect(instructions).toContain("current task state");
+    expect(light!.directories).toContain("Directories exist.");
     expect(existsSync(getGlobalMemoryPath())).toBe(true);
     expect(existsSync(getProjectMemoryPath())).toBe(true);
     expect(await memory.loadMemoryPrompt()).toEqual(standard);
