@@ -830,6 +830,8 @@ export interface LLMResponse {
   toolCalls: LLMToolCall[];
   /** Non-executable, bounded provider diagnostic for a fresh admitted correction. */
   readonly toolCallRecovery?: {
+    /** Native calls rejected by provider validation, with no executable payload. */
+    readonly source?: "native";
     readonly reason: "invalid_arguments" | "not_advertised";
     readonly toolName: string;
     readonly message: string;

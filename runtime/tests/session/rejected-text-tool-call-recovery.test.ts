@@ -9,6 +9,8 @@ import { buildInitialTurnState, restoreFromCheckpoint, toCheckpointSlice } from 
 import { postSampleRecovery } from "../../src/phases/post-sample-recovery.js";
 import { clearTextToolCallCorrectionPrompt, currentTextToolCallCorrectionPrompt, injectTextToolCallCorrection, recoverRejectedTextToolCall, textToolCallCorrectionPrompt } from "../../src/recovery/rejected-text-tool-call.js";
 import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
+import { DeepSeekProvider } from "../../src/llm/providers/deepseek/index.js";
+import { bodyAt, sseResponse } from "../llm/providers/openai-compatible-test-helpers.js";
 
 const correction = { toolName: "system.readFile", reason: "invalid_arguments" } as const;
 const rejected = (overrides: Partial<LLMResponse> = {}): LLMResponse => ({
@@ -52,24 +54,46 @@ function sequence(responses: LLMResponse[], afterSample?: (index: number) => voi
 }
 
 describe("bounded admitted text-tool correction", () => {
-  test("native malformed JSON retries a complete call, never dispatching the partial arguments", async () => {
+  test.each([false, true])("DeepSeek native malformed JSON uses bounded correction (exhausted=%s)", async exhausted => {
     const r = registry();
     const spawn = { ...r.registry.tools[0]!, name: "spawn_agent" };
     const tools: ToolRegistry = { ...r.registry, tools: [spawn], toLLMTools: () => [{ type: "function", function: { name: spawn.name, description: spawn.description, parameters: spawn.inputSchema } }] };
-    const wire = sequence([
+    const model = "test-model";
+    const frame = (delta: object, finish_reason: string | null = null) =>
+      `data: ${JSON.stringify({ id: "native-spawn", model, choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
+    const responses: LLMResponse[] = [
       { ...success, content: "", finishReason: "tool_calls", toolCalls: [{ id: "cut", name: "spawn_agent", arguments: '{"file_path":"unfinished' }] },
       { ...success, content: "", finishReason: "tool_calls", toolCalls: [{ id: "retry", name: "spawn_agent", arguments: '{"file_path":"fixture"}' }] },
       success,
-    ]);
-    const provider = { ...wire.provider, name: "deepseek" };
+    ];
+    let samples = 0;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => {
+      const response = responses[exhausted ? 0 : Math.min(samples, 2)]!;
+      samples += 1;
+      return sseResponse([
+        frame({ content: response.content, ...(response.toolCalls.length === 0 ? {} : {
+          tool_calls: response.toolCalls.map(call => ({ index: 0, id: call.id, type: "function",
+            function: { name: call.name, arguments: call.arguments } })),
+        }) }),
+        frame({}, response.finishReason), "data: [DONE]\n\n",
+      ]);
+    });
+    const provider = new DeepSeekProvider({ apiKey: "test", model, fetchImpl });
     const { session, events } = mkSession({ provider, registry: tools });
-    await drain(runTurn(session, mkCtx(), "Read the fixture."));
-    expect(wire.inputs).toHaveLength(3);
-    expect(r.execute).toHaveBeenCalledTimes(1);
-    expect(wire.inputs[1]!.some(message => message.content === textToolCallCorrectionPrompt({ toolName: "spawn_agent", reason: "invalid_arguments" }))).toBe(true);
-    const rejectedCall = events.find(event => event.msg.type === "tool_call_completed" && event.msg.payload.callId === "cut");
-    expect(rejectedCall?.msg.payload).toMatchObject({ isError: true });
-    expect(events.some(event => event.msg.type === "turn_complete")).toBe(true);
+    const ctx = mkCtx();
+    await drain(runTurn(session, { ...ctx, config: { ...ctx.config, model, model_provider: "deepseek" } }, "Read the fixture."));
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(r.execute).toHaveBeenCalledTimes(exhausted ? 0 : 1);
+    const retryMessages = bodyAt(fetchImpl, 1).messages as Array<{ content?: string; tool_calls?: unknown[] }>;
+    expect(retryMessages.some(message => message.content?.includes(textToolCallCorrectionPrompt({ toolName: "spawn_agent", reason: "invalid_arguments" })))).toBe(true);
+    expect(retryMessages.flatMap(message => message.tool_calls ?? [])).toEqual([]);
+    expect(events.some(event => event.msg.type === "tool_call_completed" && event.msg.payload.callId === "cut")).toBe(false);
+    if (exhausted) {
+      expect(events.find(event => event.msg.type === "turn_failed")?.msg).toMatchObject({ payload: { message: expect.stringContaining("correction is exhausted") } });
+    } else {
+      expect(r.execute.mock.calls[0]?.[0]).toMatchObject({ file_path: "fixture" });
+      expect(events.some(event => event.msg.type === "turn_complete")).toBe(true);
+    }
   });
 
   test("two rejected calls then a valid call use fresh samples, execute only once and retain usage/pairing", async () => {

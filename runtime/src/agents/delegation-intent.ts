@@ -6,11 +6,15 @@ import type { LLMToolChoice } from "../llm/types.js";
  * for unambiguous commands even on providers which otherwise prefer file work.
  */
 export function explicitlyRequestsDelegation(text: string): boolean {
-  const prose = text.replace(/```[^]*?```|~~~[^]*?~~~/gu, "")
+  // Remove quoted spans before splitting sentences, including examples that
+  // contain an imperative in their second sentence.
+  const prose = text.replace(/```[^]*?```|~~~[^]*?~~~|`[^`]*`|"[^"]*"|“[^”]*”|‘[^’]*’|(?<!\w)'[^']*'(?!\w)/gu, "")
     .split("\n").filter(line => !/^\s*>/u.test(line)).join("\n");
   const clauses = prose.split(/(?:[.!?;]\s+|\n)/u);
   return clauses.some(clause => {
     const command = clause.trim().replace(/^(?:please\s+|(?:can|could|will|would)\s+you\s+)/iu, "");
+    if (/\b(?:if|unless|after|before|once|when|until|provided|pending)\b/iu.test(command) ||
+        /\b(?:web|service|shared|dedicated)\s+workers?\b/iu.test(command)) return false;
     if (/^(?:use|spawn|launch|ask)\s+(?:(?:exactly|just)\s+)?(?:no|zero|0)\b/iu.test(command)) return false;
     return /^delegate\s+(?:this|the)\s+(?:task|work|request)\b/iu.test(command) ||
       /^(?:use|spawn|launch|ask)\s+(?:(?:exactly|just)\s+)?(?:(?:a|an|the|one|two|three|four|[1-9]|multiple|several)\s+)?(?:[\w-]+\s+){0,2}(?:sub[ -]?agents?|child(?:ren)?(?!\s+(?:process(?:es)?|components?|elements?|nodes?|routes?)\b)|workers?(?!\s+(?:threads?|process(?:es)?|pools?)\b))\b/iu.test(command) ||

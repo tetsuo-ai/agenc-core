@@ -355,6 +355,8 @@ export interface LiveAgent {
     readonly outcome: "completed" | "errored" | "interrupted" | "nack";
     readonly terminal?: import("./child-terminal.js").ChildTerminalOutcome;
   };
+  /** Exact completed answers remain readable while this worker owns its journal. */
+  completedTaskResults?: Map<string, string>;
   /** Effective child configuration snapshot once the child session is built. */
   configSnapshot?: Record<string, unknown>;
   /** Local rollout path for the live child session once initialized. */
@@ -2260,7 +2262,9 @@ export class AgentControl {
     if (this.parentOf.get(childThreadId) !== parentThreadId && edge === undefined) {
       throw new Error("Result reference is not a child of the calling agent");
     }
-    let receipt = live?.lastTaskReceipt;
+    const completedMessage = live?.completedTaskResults?.get(turnId);
+    let receipt = completedMessage === undefined ? live?.lastTaskReceipt
+      : { turnId, outcome: "completed" as const, message: completedMessage };
     if (receipt?.turnId !== turnId) {
       // A live child may own a later task; never return that task's answer for
       // an older immutable reference. Read only a validated durable outcome.

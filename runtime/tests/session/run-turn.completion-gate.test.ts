@@ -183,11 +183,12 @@ describe("completion gate in the turn loop", () => {
     "Read the file and return JSON only.",
     "Only JSON. Read the file and report its values.",
     "Read the file and respond in JSON.",
+    "Read the file. Your final response must contain JSON only.",
     'Read the file and return exactly {"ok":true}.',
     "Delegate the task and return the child's final JSON answer verbatim, without commentary.",
     "Read the file and reply with exactly the requested JSON final answer.",
     "Read the file and return exactly \"ok\".",
-    "Read the file. " + "context ".repeat(1000) + "Return JSON only.",
+    "Read the file. " + "context ".repeat(1000) + "\nReturn JSON only.",
   ])("#2798 preserves exact output after tool work: %s", async (task) => {
     const exact = ' {"text":"quotes \\" and 🐈", "items": [1,2]} \n';
     expect(() => JSON.parse(exact)).not.toThrow();

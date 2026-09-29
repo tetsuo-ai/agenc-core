@@ -3996,6 +3996,9 @@ export async function* runAgent(
     currentTurnReceiptCommitted = true;
     currentCommittedReceipt = receiptToCommit;
     currentReceiptWorktreeEvidence = receiptToCommit.worktreeEvidence;
+    if (receiptToCommit.outcome === "completed" && receiptToCommit.message !== undefined) {
+      (live.completedTaskResults ??= new Map()).set(receiptToCommit.turnId, receiptToCommit.message);
+    }
     live.lastTaskReceipt = {
       ...(receiptToCommit.message === undefined ? {} : { message: receiptToCommit.message }),
       turnId: receiptToCommit.turnId,

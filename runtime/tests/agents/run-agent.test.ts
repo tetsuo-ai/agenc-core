@@ -4025,28 +4025,39 @@ describe("runAgent", () => {
 
   it("delivers a large structured final answer by exact result reference without cutting JSON", async () => {
     const exact = JSON.stringify({ values: "🐈 quotes \" &amp; ".repeat(2000) });
-    const provider = makeProvider([{ content: exact }]);
+    const provider = makeProvider([{ content: exact }, { content: "Second task completed." }]);
     const session = makeStubSession({ services: { provider } });
     const control = new AgentControl({ session, registry: new AgentRegistry() });
     control.registerSessionRoot(session.conversationId);
     const live = await control.spawn({ parentPath: "/root" });
-    const { result } = await collectRun(runAgent({ live, parent: session,
-      initialMessages: [{ role: "user", content: "Return JSON only." }], taskPrompt: "Return JSON only." }));
-    expect(result.outcome).toBe("completed");
-    const notification = session.mailbox.drain().find(item => item.metadata?.lifecycle === "turn");
-    const payload = JSON.parse(String(notification!.content).split("\n")[1]!);
-    expect(payload.receipt.message).toBeUndefined();
-    expect(payload.status.completed).toBeNull();
-    expect(payload.result_ref).toEqual({ agent_id: live.agentId, turn_id: live.lastTaskReceipt!.turnId });
-    let text = "", offset = 0;
-    for (;;) {
-      const page = control.readChildResultPage(session.conversationId, live.agentId, payload.result_ref.turn_id, offset);
-      text += page.text;
-      if (page.next_offset === null) break;
-      offset = page.next_offset;
+    const iter = runAgent({ live, parent: session, keepAlive: true,
+      initialMessages: [{ role: "user", content: "Return JSON only." }], taskPrompt: "Return JSON only." });
+    try {
+      await nextProgressEvent(iter, "turn_complete");
+      const notification = session.mailbox.drain().find(item => item.metadata?.lifecycle === "turn");
+      const payload = JSON.parse(String(notification!.content).split("\n")[1]!);
+      expect(payload.receipt.message).toBeUndefined();
+      expect(payload.status.completed).toBeNull();
+      expect(payload.result_ref).toEqual({ agent_id: live.agentId, turn_id: live.lastTaskReceipt!.turnId });
+      const next = nextProgressEvent(iter, "turn_complete");
+      control.assignTask(live.agentId, { author: "/root", recipient: live.agentPath,
+        content: "Complete the second task.", taskId: "second-task" });
+      expect((await next).finalMessage).toBe("Second task completed.");
+      expect(live.lastTaskReceipt!.turnId).not.toBe(payload.result_ref.turn_id);
+      expect(live.status.value.status).toBe("idle");
+      let text = "", offset = 0;
+      for (;;) {
+        const page = control.readChildResultPage(session.conversationId, live.agentId, payload.result_ref.turn_id, offset);
+        text += page.text;
+        if (page.next_offset === null) break;
+        offset = page.next_offset;
+      }
+      expect(text).toBe(exact);
+      expect(JSON.parse(text)).toEqual(JSON.parse(exact));
+      expect(() => control.readChildResultPage("unrelated-parent", live.agentId, payload.result_ref.turn_id)).toThrow("not a child");
+    } finally {
+      await stopKeepAliveRun(iter, live.abortController);
     }
-    expect(text).toBe(exact);
-    expect(JSON.parse(text)).toEqual(JSON.parse(exact));
   });
 
   it("bounds parent receipt reason metadata while retaining the durable full outcome", async () => {

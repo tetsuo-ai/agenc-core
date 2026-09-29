@@ -124,7 +124,16 @@ describe("planCompletionGateForTurn", () => {
     taskText: "Fix the failing test",
   });
 
-  test.each(["Update config.json only.", "Change settings.yaml only.", "Edit data.csv only."])(
+  test.each([
+    "Update config.json only.", "Change settings.yaml only.", "Edit data.csv only.",
+    "Fix the endpoint to return JSON only. Run the tests and summarize the changes",
+    "Make the serializer output only XML.",
+    "The CLI should emit CSV only.",
+    "Do not return JSON only.",
+    "Don't respond in JSON.",
+    "Never reply with only YAML.",
+    "Do not copy the result verbatim.",
+  ])(
     "keeps verification for a file scope restriction: %s", taskText => {
       expect(planCompletionGateForTurn({ ...base(), taskText })).toMatchObject({ taskText, maxRounds: 3 });
     },

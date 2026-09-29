@@ -2091,13 +2091,26 @@ export class OpenAIProvider implements LLMProvider {
 
       const includeToolCalls =
         finishReason === "stop" || finishReason === "tool_calls";
+      let toolCallRecovery: LLMResponse["toolCallRecovery"];
       const toolCalls = includeToolCalls
-        ? Array.from(toolCallAccumulator.values()).map((toolCall) =>
-          validateProviderToolCallOrThrow(
+        ? Array.from(toolCallAccumulator.values()).flatMap((toolCall) => {
+          const validation = validateToolCallDetailed(toolCall);
+          // Admit correction only for a solitary, advertised native call.
+          // Never expose the rejected arguments as an executable tool call.
+          if (validation.failure?.code === "invalid_json" &&
+              toolCallAccumulator.size === 1 && content === "" && finishReason === "tool_calls" &&
+              toolCall.name.length <= 256 && /^[A-Za-z0-9_.:-]+$/.test(toolCall.name) &&
+              requestOptions.tools.some(tool => tool.function.name === toolCall.name)) {
+            toolCallRecovery = { source: "native", reason: "invalid_arguments",
+              toolName: toolCall.name, message: "Tool call arguments are not valid JSON." };
+            return [];
+          }
+          return [validateProviderToolCallOrThrow(
             this.name,
             toolCall,
             OPENAI_CHAT_COMPLETIONS_INVALID_TOOL_CALL_MESSAGE,
-          ))
+          )];
+        })
         // The wire parser retains only identities at length, never arguments
         // or executable calls. Recovery must know a handoff was interrupted.
         : finishReason === "length" ? Array.from(toolCallAccumulator.values()) : [];
@@ -2168,6 +2181,7 @@ export class OpenAIProvider implements LLMProvider {
       });
       return {
         ...parsed,
+        ...(toolCallRecovery === undefined ? {} : { toolCallRecovery }),
         ...(reasoningContent.length > 0
           ? {
             thinking: Object.freeze([

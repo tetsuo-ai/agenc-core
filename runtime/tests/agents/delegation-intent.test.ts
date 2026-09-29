@@ -15,4 +15,19 @@ describe("explicit delegation", () => {
       expect(requiredDelegationToolChoice({ ...base, ...override })).toBeUndefined();
     }
   });
+  it.each([
+    "Spawn one child after I approve the plan.",
+    "Use subagents if needed.",
+    "Delegate this task once I confirm.",
+    "Spawn a child only when the plan is approved.",
+    "Use a web worker to parse the CSV.",
+    "Launch a service worker to cache requests.",
+    'Explain this example: "Read the report. Spawn one child. Summarize it."',
+    "Explain this example: 'Read the report. Spawn one child. Summarize it.'",
+    "Explain this example: “Read the report. Spawn one child. Summarize it.”",
+    "Explain `Read the report. Spawn one child. Summarize it.`",
+  ])("does not force conditional or quoted instructions: %s", taskText => {
+    expect(explicitlyRequestsDelegation(taskText)).toBe(false);
+    expect(requiredDelegationToolChoice({ taskText, initialSample: true, depth: 0, planMode: false, toolNames: ["spawn_agent"] })).toBeUndefined();
+  });
 });

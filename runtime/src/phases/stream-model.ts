@@ -1785,10 +1785,13 @@ export async function streamModel(
         advertised.includes("system.searchTools") &&
         !advertised.includes(marker.toolName) &&
         /^mcp\.[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+$/.test(marker.toolName);
-    if (providerName !== "ollama" || !safeName || !safeMessage || !validTarget ||
+    const nativeCorrection = marker.source === "native" && marker.reason === "invalid_arguments" &&
+      response.finishReason === "tool_calls";
+    const textCorrection = marker.source === undefined && providerName === "ollama" &&
+      response.finishReason === "stop";
+    if ((!nativeCorrection && !textCorrection) || !safeName || !safeMessage || !validTarget ||
         response.content !== "" || response.toolCalls.length !== 0 ||
-        streamedToolCalls.size !== 0 || state.toolUseBlocks.length !== 0 ||
-        response.finishReason !== "stop") {
+        streamedToolCalls.size !== 0 || state.toolUseBlocks.length !== 0) {
       throw new StreamModelError(new Error("Invalid tool-call correction response; no correction was admitted."), response);
     }
     state.pendingTextToolCallCorrection = { toolName: marker.toolName, reason: marker.reason };
