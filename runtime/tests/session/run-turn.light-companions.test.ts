@@ -59,7 +59,7 @@ test("a real Light turn advertises polling immediately after canonical async exe
   expect(requests).toHaveLength(3);
   expect(reasoningReplay).toEqual([true, true, true]);
   expect([...requests[0]!].sort()).toEqual([
-    "FileRead", "MultiEdit", "exec_command", "system.searchTools",
+    "FileRead", "MultiEdit", "Write", "exec_command", "system.searchTools",
   ]);
   expect(requests[0]).not.toContain("write_stdin");
   expect(requests[1]).toContain("write_stdin");
