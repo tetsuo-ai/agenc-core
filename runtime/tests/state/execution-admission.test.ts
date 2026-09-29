@@ -1112,3 +1112,28 @@ describe("durable admission limit dimensions", () => {
     });
   });
 });
+
+describe("admission read snapshots", () => {
+  it("reads committed state while another WAL connection holds the writer lock", () => {
+    const queued = admissions.enqueue(request("snapshot-run", "step"));
+    const lease = claimReservation(queued.record.key);
+    const writer = new Database(driver.stateDbPath);
+    driver.state.pragma("busy_timeout = 1");
+    try {
+      writer.exec("BEGIN IMMEDIATE");
+      writer.prepare("UPDATE execution_admission_reservations SET provider_request_id = ? WHERE reservation_id = ?")
+        .run("uncommitted", lease.reservationId);
+      expect(admissions.get(queued.record.key)?.status).toBe("running");
+      expect(admissions.list({ runId: "snapshot-run" })).toHaveLength(1);
+      expect(admissions.getReservation(lease.reservationId)?.providerRequestId).toBeUndefined();
+      expect(admissions.listReservations({ runId: "snapshot-run" })).toHaveLength(1);
+      expect(admissions.listAllocations()).toEqual([]);
+      expect(admissions.listJournal({ runId: "snapshot-run" })).toHaveLength(2);
+      writer.exec("COMMIT");
+      expect(admissions.getReservation(lease.reservationId)?.providerRequestId).toBe("uncommitted");
+    } finally {
+      if (writer.inTransaction) writer.exec("ROLLBACK");
+      writer.close();
+    }
+  });
+});

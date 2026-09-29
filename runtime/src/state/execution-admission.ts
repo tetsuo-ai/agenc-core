@@ -1422,9 +1422,11 @@ export class ExecutionAdmissionRepository {
     );
   }
 
+  // Read APIs need a consistent SQLite snapshot, not a WAL writer reservation.
+  // Mutation APIs recheck policy under their own BEGIN IMMEDIATE boundary.
   get(key: string): PersistedAdmissionRecord | undefined {
     requireNonEmpty(key, "admission key");
-    return this.#driver.transactionImmediate(() => {
+    return this.#driver.transaction(() => {
       const row = this.#jobByKeyLocked(key);
       return row === undefined ? undefined : this.#recordFromRowLocked(row);
     });
@@ -1434,7 +1436,7 @@ export class ExecutionAdmissionRepository {
     options: ListAdmissionOptions = {},
   ): readonly PersistedAdmissionRecord[] {
     const limit = normalizeLimit(options.limit);
-    return this.#driver.transactionImmediate(() => {
+    return this.#driver.transaction(() => {
       const where = ["admission_run_id IS NOT NULL"];
       const params: unknown[] = [];
       if (options.statuses !== undefined && options.statuses.length > 0) {
@@ -1484,10 +1486,8 @@ export class ExecutionAdmissionRepository {
     reservationId: string,
   ): PersistedAdmissionReservation | undefined {
     requireNonEmpty(reservationId, "reservationId");
-    return this.#driver.transactionImmediate(() => {
-      const row = this.#reservationLocked(reservationId);
-      return row === undefined ? undefined : reservationFromRow(row);
-    });
+    const row = this.#reservationLocked(reservationId);
+    return row === undefined ? undefined : reservationFromRow(row);
   }
 
   listReservations(
@@ -1498,28 +1498,26 @@ export class ExecutionAdmissionRepository {
     } = {},
   ): readonly PersistedAdmissionReservation[] {
     const limit = normalizeLimit(options.limit);
-    return this.#driver.transactionImmediate(() => {
-      const where = ["1 = 1"];
-      const params: unknown[] = [];
-      if (options.runId !== undefined) {
-        where.push("run_id = ?");
-        params.push(options.runId);
-      }
-      if (options.statuses !== undefined && options.statuses.length > 0) {
-        where.push(`status IN (${sqlPlaceholders(options.statuses.length)})`);
-        params.push(...options.statuses);
-      }
-      params.push(limit);
-      return this.#driver
-        .prepareState<unknown[], ReservationRow>(
-          `SELECT * FROM execution_admission_reservations
-           WHERE ${where.join(" AND ")}
-           ORDER BY created_at ASC, reservation_id ASC
-           LIMIT ?`,
-        )
-        .all(...params)
-        .map(reservationFromRow);
-    });
+    const where = ["1 = 1"];
+    const params: unknown[] = [];
+    if (options.runId !== undefined) {
+      where.push("run_id = ?");
+      params.push(options.runId);
+    }
+    if (options.statuses !== undefined && options.statuses.length > 0) {
+      where.push(`status IN (${sqlPlaceholders(options.statuses.length)})`);
+      params.push(...options.statuses);
+    }
+    params.push(limit);
+    return this.#driver
+      .prepareState<unknown[], ReservationRow>(
+        `SELECT * FROM execution_admission_reservations
+         WHERE ${where.join(" AND ")}
+         ORDER BY created_at ASC, reservation_id ASC
+         LIMIT ?`,
+      )
+      .all(...params)
+      .map(reservationFromRow);
   }
 
   /**
@@ -1653,23 +1651,21 @@ export class ExecutionAdmissionRepository {
     } = {},
   ): readonly PersistedAdmissionAllocation[] {
     const limit = normalizeLimit(options.limit);
-    return this.#driver.transactionImmediate(() => {
-      const rows =
-        options.ownerRunId === undefined
-          ? this.#driver
-              .prepareState<[number], AllocationRow>(
-                `SELECT * FROM execution_admission_allocations
-                 ORDER BY scope_key ASC LIMIT ?`,
-              )
-              .all(limit)
-          : this.#driver
-              .prepareState<[string, number], AllocationRow>(
-                `SELECT * FROM execution_admission_allocations
-                 WHERE owner_run_id = ? ORDER BY scope_key ASC LIMIT ?`,
-              )
-              .all(options.ownerRunId, limit);
-      return rows.map(allocationFromRow);
-    });
+    const rows =
+      options.ownerRunId === undefined
+        ? this.#driver
+            .prepareState<[number], AllocationRow>(
+              `SELECT * FROM execution_admission_allocations
+               ORDER BY scope_key ASC LIMIT ?`,
+            )
+            .all(limit)
+        : this.#driver
+            .prepareState<[string, number], AllocationRow>(
+              `SELECT * FROM execution_admission_allocations
+               WHERE owner_run_id = ? ORDER BY scope_key ASC LIMIT ?`,
+            )
+            .all(options.ownerRunId, limit);
+    return rows.map(allocationFromRow);
   }
 
   /** Last event only: an earlier denial followed by work is not a terminal cause. */
@@ -1685,33 +1681,31 @@ export class ExecutionAdmissionRepository {
     options: ListAdmissionJournalOptions = {},
   ): readonly AdmissionJournalEvent[] {
     const limit = normalizeLimit(options.limit);
-    return this.#driver.transactionImmediate(() => {
-      const where = ["1 = 1"];
-      const params: unknown[] = [];
-      if (options.runId !== undefined) {
-        where.push("run_id = ?");
-        params.push(options.runId);
-      }
-      if (options.stepId !== undefined) {
-        where.push("step_id = ?");
-        params.push(options.stepId);
-      }
-      if (options.afterSequence !== undefined) {
-        where.push("sequence > ?");
-        params.push(
-          normalizeNonNegativeInteger(options.afterSequence, "afterSequence"),
-        );
-      }
-      params.push(limit);
-      return this.#driver
-        .prepareState<unknown[], JournalRow>(
-          `SELECT * FROM execution_admission_journal
-           WHERE ${where.join(" AND ")}
-           ORDER BY sequence ASC LIMIT ?`,
-        )
-        .all(...params)
-        .map(journalFromRow);
-    });
+    const where = ["1 = 1"];
+    const params: unknown[] = [];
+    if (options.runId !== undefined) {
+      where.push("run_id = ?");
+      params.push(options.runId);
+    }
+    if (options.stepId !== undefined) {
+      where.push("step_id = ?");
+      params.push(options.stepId);
+    }
+    if (options.afterSequence !== undefined) {
+      where.push("sequence > ?");
+      params.push(
+        normalizeNonNegativeInteger(options.afterSequence, "afterSequence"),
+      );
+    }
+    params.push(limit);
+    return this.#driver
+      .prepareState<unknown[], JournalRow>(
+        `SELECT * FROM execution_admission_journal
+         WHERE ${where.join(" AND ")}
+         ORDER BY sequence ASC LIMIT ?`,
+      )
+      .all(...params)
+      .map(journalFromRow);
   }
 
   #timestamp(): string {

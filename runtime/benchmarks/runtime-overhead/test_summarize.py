@@ -12,6 +12,13 @@ class IntervalTests(unittest.TestCase):
         spans=[{'name':'admission.model','start_ms':0,'duration_ms':10},
                {'name':'persistence.fsync','start_ms':2,'duration_ms':3}]
         self.assertEqual(module.post_tool_attribution([(0,12)],spans),{'admission':7,'fsync':3,'other':2})
+    def test_sync_counts_require_an_actual_sync_and_choose_innermost_boundary(self):
+        spans=[{'name':'persistence.flush','boundary':'outer','start_ms':0,'duration_ms':10},
+               {'name':'persistence.flush','boundary':'effect_intent','start_ms':1,'duration_ms':5},
+               {'name':'persistence.fsync','start_ms':2,'duration_ms':2,'count':1},
+               {'name':'persistence.flush','boundary':'empty','start_ms':11,'duration_ms':1},
+               {'name':'persistence.fsync','start_ms':15,'duration_ms':1,'count':1}]
+        self.assertEqual(module.fsync_boundaries(spans),{'effect_intent':1,'outside_flush':1})
     def test_no_tools_and_adjacent_tools(self):
         self.assertEqual(module.union_ms([]),0)
         self.assertEqual(module.union_ms([(20,30),(10,20)]),20)
