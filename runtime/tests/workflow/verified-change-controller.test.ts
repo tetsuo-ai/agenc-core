@@ -1,6 +1,6 @@
 import { runAdmittedModelCall } from "../../src/budget/admitted-model-call.js";
 import type { LLMProvider } from "../../src/llm/types.js";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -544,6 +544,8 @@ interface Harness {
     failEvidenceLedgerWith?: Error;
     effectivePermissionMode?: PermissionMode;
     currentPermissionMode?: PermissionMode;
+    opened: string[];
+    closed: string[];
   };
   cleanup(): void;
 }
@@ -570,11 +572,12 @@ function makeHarness(
   worktrees.durableRepo = repo;
   const ledgers = new Map<string, MemoryLedger>();
   const warnings: string[] = [];
-  const hooks: Harness["hooks"] = {};
+  const hooks: Harness["hooks"] = { opened: [], closed: [] };
   const controller = new VerifiedChangeWorkflowController({
     durability: () => repo,
     journal: {
       open: async (runId) => {
+        hooks.opened.push(runId);
         if (hooks.failJournalOpenWith !== undefined) {
           throw hooks.failJournalOpenWith;
         }
@@ -584,6 +587,7 @@ function makeHarness(
           if (hooks.failTerminalWith !== undefined) throw hooks.failTerminalWith;
           return appendTerminal();
         };
+        journal.close = async () => { hooks.closed.push(runId); };
         return journal;
       },
       currentPermissionMode: () => hooks.currentPermissionMode,
@@ -669,6 +673,136 @@ function cancelAt(stepPrefix: string): void {
 
 beforeEach(() => {
   harness = makeHarness();
+});
+
+describe("workflow repository ownership and intake cleanup", () => {
+  it("reserves the repository before asynchronous intake and releases it after completion", async () => {
+    const captured = Promise.withResolvers<void>();
+    const proceed = Promise.withResolvers<void>();
+    const original = harness.worktrees.captureBaseState.bind(harness.worktrees);
+    vi.spyOn(harness.worktrees, "captureBaseState").mockImplementationOnce(async () => {
+      captured.resolve();
+      await proceed.promise;
+      return original();
+    });
+    const first = harness.controller.start(startParams(harness));
+    await captured.promise;
+    await expect(harness.controller.start(startParams(harness, { runId: "second" })))
+      .rejects.toThrow(`A Goal is already active for this repository (${RUN_ID})`);
+    expect(harness.hooks.opened).toEqual([RUN_ID]);
+    proceed.resolve();
+    await first;
+    await harness.controller.awaitRun(RUN_ID);
+    await runToTerminal(harness, { runId: "after-completion" });
+    expect(harness.repo.getCurrentTerminalResult("after-completion")?.status).toBe("completed");
+  });
+
+  it("treats symlink paths as the same repository while allowing another repository", async () => {
+    const proceed = Promise.withResolvers<void>();
+    const captured = Promise.withResolvers<void>();
+    const original = harness.worktrees.captureBaseState.bind(harness.worktrees);
+    vi.spyOn(harness.worktrees, "captureBaseState").mockImplementationOnce(async () => {
+      captured.resolve();
+      await proceed.promise;
+      return original();
+    });
+    const alias = join(harness.home, "repo-alias");
+    symlinkSync(harness.cwd, alias, "junction");
+    const first = harness.controller.start(startParams(harness));
+    await captured.promise;
+    await expect(harness.controller.start(startParams(harness, { repoPath: alias, runId: "alias" })))
+      .rejects.toThrow("already active");
+    await runToTerminal(harness, { repoPath: harness.home, runId: "other-repo" });
+    proceed.resolve();
+    await first;
+    await harness.controller.awaitRun(RUN_ID);
+  });
+
+  it.each(["base", "reviewer", "admission"] as const)("closes the journal after a pre-intake %s failure and allows a retry", async (failure) => {
+    const params = startParams(harness);
+    if (failure === "base") {
+      vi.spyOn(harness.worktrees, "captureBaseState").mockRejectedValueOnce(new Error("git HEAD unavailable"));
+    } else if (failure === "reviewer") {
+      Object.assign(params, { model: undefined, reviewerModel: undefined });
+    } else {
+      harness.cleanup();
+      let first = true;
+      harness = makeHarness({ admission: () => {
+        if (first) { first = false; throw new Error("admission database unavailable"); }
+        return new FakeAdmission();
+      } });
+      Object.assign(params, startParams(harness));
+    }
+    await expect(harness.controller.start(params)).rejects.toBeInstanceOf(WorkflowIntakeError);
+    expect(harness.hooks.closed).toEqual([RUN_ID]);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("failed");
+    expect(harness.spawner.spawns).toHaveLength(0);
+    await runToTerminal(harness, { runId: "retry" });
+    expect(harness.repo.getCurrentTerminalResult("retry")?.status).toBe("completed");
+  });
+
+  it("releases the pending owner when journal bootstrap fails", async () => {
+    harness.hooks.failJournalOpenWith = new Error("bootstrap failed");
+    await expect(harness.controller.start(startParams(harness))).rejects.toThrow("bootstrap failed");
+    delete harness.hooks.failJournalOpenWith;
+    await runToTerminal(harness, { runId: "retry" });
+    expect(harness.hooks.closed).toEqual(["retry"]);
+  });
+});
+
+describe("workflow terminal persistence failures", () => {
+  it("records stopped status through SQLite if the terminal journal append fails and keeps the result", async () => {
+    harness.hooks.failTerminalWith = new Error("ENOSPC: journal disk full");
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", stopReason: "evidence_invalid", lastSequence: null,
+      finalMessage: expect.stringContaining(`Work is preserved in /wt/${RUN_ID}`),
+    });
+    expect(harness.worktrees.cleanups).toHaveLength(0);
+    expect(harness.controller.activeRunIds()).toEqual([]);
+    delete harness.hooks.failTerminalWith;
+    await runToTerminal(harness, { runId: "after-storage-repair" });
+  });
+
+  it("retries the exact terminal projection after its journal append succeeds", async () => {
+    const original = harness.repo.recordTerminalResult.bind(harness.repo);
+    const writes: Parameters<typeof original>[0][] = [];
+    vi.spyOn(harness.repo, "recordTerminalResult").mockImplementation((input) => {
+      if (input.result.runId === RUN_ID) {
+        writes.push(input);
+        if (writes.length === 1) throw new Error("temporary SQLite write failure");
+      }
+      return original(input);
+    });
+    await runToTerminal(harness);
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toEqual(writes[0]);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("completed");
+    expect(harness.worktrees.cleanups).toHaveLength(1);
+  });
+
+  it("retains work and repository ownership when no terminal can be persisted", async () => {
+    harness.hooks.failTerminalWith = new Error("journal disk full");
+    const terminalWrite = vi.spyOn(harness.repo, "recordTerminalResult").mockImplementation(() => {
+      throw new Error("SQLite disk full");
+    });
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
+    expect(harness.worktrees.cleanups).toHaveLength(0);
+    expect(harness.worktrees.discards).toHaveLength(0);
+    expect(harness.controller.activeRunIds()).toEqual([]);
+    await expect(harness.controller.start(startParams(harness, { runId: "second" })))
+      .rejects.toThrow("already active");
+    terminalWrite.mockRestore();
+    delete harness.hooks.failTerminalWith;
+    // Recovery can project the terminal after storage is repaired. Its
+    // durable result must release the old in-process reservation too.
+    harness.repo.recordTerminalResult({ epoch: harness.repo.currentEpoch(RUN_ID)!.epoch,
+      eventId: "recovered-terminal", result: { runId: RUN_ID, status: "failed", exitCode: 1,
+        stopReason: "evidence_invalid", finalMessage: "Storage recovered", usage: null,
+        lastSequence: null, finishedAt: new Date().toISOString() } });
+    await runToTerminal(harness, { runId: "after-recovery" });
+  });
 });
 
 describe("workflow provider waits", () => {
@@ -1524,9 +1658,9 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
     await runToTerminal(harness);
     expect(harness.commands.run).toHaveBeenCalledOnce();
     expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "failed", stopReason,
-      finalMessage: stopReason === "approval_required"
+      finalMessage: expect.stringContaining(stopReason === "approval_required"
         ? "The Goal stopped because a required approval was not received. Please try again and approve the requested action."
-        : "The Goal stopped because a required action was denied. Review the permissions before trying again.",
+        : "The Goal stopped because a required action was denied. Review the permissions before trying again."),
     });
     expect(harness.repo.getEffect(RUN_ID, "workflow.verify.cmd.1")?.evidence.failure?.message).toContain(source);
   });
@@ -1565,21 +1699,14 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
     expect(stepIds).toContain("workflow.plan#2");
   });
 
-  it("cancellation observed mid-pipeline terminalizes cancelled, then discards the worktree", async () => {
+  it("cancellation observed mid-pipeline terminalizes cancelled and preserves partial work", async () => {
     cancelAt("workflow.implement");
     await runToTerminal(harness);
     const terminal = harness.repo.getCurrentTerminalResult(RUN_ID)!;
     expect(terminal.status).toBe("cancelled");
     expect(terminal.exitCode).toBe(1);
-    // Discarded only once the cancelled terminal was durable, and nothing
-    // was journaled after it: the run's evidence stays as it was.
-    expect(harness.worktrees.discards).toEqual([
-      {
-        path: `/wt/${RUN_ID}`,
-        terminal: "cancelled",
-        effects: harness.repo.listEffects(RUN_ID).length,
-      },
-    ]);
+    expect(terminal.finalMessage).toContain(`Work is preserved in /wt/${RUN_ID} (branch agenc/m5).`);
+    expect(harness.worktrees.discards).toEqual([]);
     expect(harness.worktrees.cleanups).toHaveLength(0);
   });
 
@@ -1591,26 +1718,24 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
     expect(harness.worktrees.discards).toEqual([]);
   });
 
-  it("keeps the worktree while the cancelled terminal is not durable, so a resume still has it", async () => {
+  it("keeps the worktree and records cancellation if the terminal journal is unavailable", async () => {
     cancelAt("workflow.implement");
     harness.hooks.failTerminalWith = new Error("rollout append refused");
     await runToTerminal(harness);
-    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "cancelled", lastSequence: null });
     expect(harness.worktrees.discards).toEqual([]);
     expect(harness.warnings).toContainEqual(
       expect.stringContaining("failed to record its terminal result: rollout append refused"),
     );
   });
 
-  it("a discard that fails is a warning and the run stays cancelled", async () => {
-    cancelAt("workflow.implement");
-    harness.worktrees.discardError = new Error("git worktree remove failed: busy");
+  it("preserves unexported changes when the implementation is interrupted", async () => {
+    harness.spawner.queue("implement", { status: "cancelled", finalMessage: "Interrupted after editing files", usage: DEFAULT_USAGE });
     await runToTerminal(harness);
     expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("cancelled");
-    expect(harness.worktrees.discards).toHaveLength(1);
-    expect(harness.warnings).toContainEqual(
-      `workflow ${RUN_ID} worktree cleanup failed after cancellation: git worktree remove failed: busy`,
-    );
+    expect(harness.ledgers.get(RUN_ID)?.recordedRoles).not.toContain("patch");
+    expect(harness.worktrees.discards).toHaveLength(0);
+    expect(harness.worktrees.cleanups).toHaveLength(0);
   });
 
   it.each(["reject", "resolve"] as const)(
@@ -1660,7 +1785,7 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
         });
         expect(harness.spawner.spawns.map((spawn) => spawn.kind)).toEqual(["plan", "implement"]);
         expect(harness.worktrees.cleanups).toHaveLength(0);
-        expect(harness.worktrees.discards).toMatchObject([{ terminal: "cancelled" }]);
+        expect(harness.worktrees.discards).toEqual([]);
       } finally {
         kernel.close();
       }
@@ -1882,7 +2007,7 @@ describe("VerifiedChangeWorkflowController — crash recovery (D3)", () => {
     expect(resumed).toEqual([RUN_ID]);
     const terminal = harness.repo.getCurrentTerminalResult(RUN_ID)!;
     expect(terminal.status).toBe("failed");
-    expect(terminal.finalMessage).toContain("re-submit");
+    expect(terminal.finalMessage).toContain("Start it again.");
     expect(harness.repo.getEffect(RUN_ID, "workflow.intake")?.outcome).toBe(
       "failed",
     );
@@ -2293,6 +2418,24 @@ describe("VerifiedChangeWorkflowController — runs with no live pipeline", () =
     disarmFailpoint();
     expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
   }
+
+  it("closes the reopened writer when admission setup fails during recovery", async () => {
+    harness.cleanup();
+    let failAdmission = false;
+    harness = makeHarness({ admission: () => {
+      if (failAdmission) throw new Error("admission storage unavailable");
+      return harness.admission;
+    } });
+    await interruptBeforeWorktree();
+    const closed = harness.hooks.closed.length;
+    failAdmission = true;
+    expect(await harness.controller.resumeOpenWorkflows()).toEqual([]);
+    expect(harness.hooks.closed).toHaveLength(closed + 1);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", finalMessage: expect.stringContaining("admission storage unavailable"),
+    });
+    expect(harness.spawner.spawns).toEqual([]);
+  });
 
   it("terminalizes recovery without credentials instead of hanging", async () => {
     await interruptBeforeWorktree();

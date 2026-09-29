@@ -34,6 +34,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import { ProviderWaitScope, type ProviderWait } from "../../recovery/provider-wait.js";
 import { workflowApprovalFailureCause } from "../../permissions/approval-failure.js";
 
@@ -97,7 +99,6 @@ import {
   type WorkflowCommandRunner,
 } from "../../workflow/verification.js";
 import {
-  mintCancelledRunProof,
   mintSealedEvidenceProof,
   workflowWorktreeSlug,
   type BaseMovementCheck,
@@ -580,6 +581,8 @@ export class VerifiedChangeWorkflowController {
   readonly #now: () => Date;
   readonly #newRunId: () => string;
   readonly #active = new Map<string, Promise<void>>();
+  /** Includes starts waiting on bootstrap and stopped runs awaiting durable status. */
+  readonly #repositoryOwners = new Map<string, string>();
   readonly #providerWaits = new Map<string, { stepId: string; scope: ProviderWaitScope }>();
 
   constructor(deps: VerifiedChangeWorkflowControllerDeps) {
@@ -611,55 +614,80 @@ export class VerifiedChangeWorkflowController {
       }
     }
     const runId = params.runId ?? this.#newRunId();
+    const repositoryKey = this.#repositoryKey(params.repoPath);
     const repo = this.#deps.durability({ runId, repoPath: params.repoPath });
-    const journal = await this.#deps.journal.open(runId, {
-      repoPath: params.repoPath,
-      ...(envOverrides !== undefined ? { envOverrides } : {}),
-      policy: {
-        permissionMode: resolveWorkflowPermissionMode(params.permissionMode),
-        ...(params.unattendedAllow !== undefined
-          ? { unattendedAllow: params.unattendedAllow }
-          : {}),
-        ...(params.unattendedDeny !== undefined
-          ? { unattendedDeny: params.unattendedDeny }
-          : {}),
-        // The model the run was asked for, on start as well as on resume:
-        // the session is bootstrapped from this policy, and without them it
-        // takes the daemon's default no matter what the caller requested.
-        ...(params.model !== undefined ? { model: params.model } : {}),
-        ...(params.provider !== undefined ? { provider: params.provider } : {}),
-      },
-    });
-    const base = await this.#deps.worktrees.captureBaseState(params.repoPath, {
-      runId,
-    });
-    const spec = freezeWorkflowSpec(
-      runId,
-      params,
-      base,
-      this.#deps.defaultReviewerModel?.(),
-    );
-    const specDigest = computeSpecDigest(spec);
-    const admission = this.#deps.admission({
-      runId,
-      sessionId: journal.sessionId,
-      ...(params.workspaceId !== undefined
-        ? { workspaceId: params.workspaceId }
-        : {}),
-      spec,
-    });
-    const ctx: RunContext = {
-      runId,
-      spec,
-      specDigest,
-      repo,
-      journal,
-      admission,
-      startedAt: this.#nowIso(),
-      usage: { input: 0, output: 0, cost: 0, any: false },
-      terminalized: false,
-    };
+    let owner = this.#repositoryOwners.get(repositoryKey);
+    if (owner !== undefined && repo.getCurrentTerminalResult(owner) !== undefined) {
+      this.#releaseRepository(owner);
+      owner = undefined;
+    }
+    if (owner === undefined) {
+      // A new request can arrive before the startup recovery sweep finishes.
+      // Durable ownership also protects that interval and an interrupted run.
+      owner = repo.listRunIdsWithStep("workflow.intake").find((candidate) => {
+        if (repo.getCurrentTerminalResult(candidate) !== undefined) return false;
+        const intake = repo.getEffect(candidate, "workflow.intake");
+        const spec = intake === undefined ? undefined : readWorkflowStepEvidence(intake).spec as WorkflowSpec | undefined;
+        return spec !== undefined && this.#repositoryKey(spec.repoPath) === repositoryKey;
+      });
+    }
+    if (owner !== undefined) {
+      throw new TypeError(`A Goal is already active for this repository (${owner}). Wait for it to finish or stop it before starting another Goal.`);
+    }
+    // No await before this reservation: two concurrent run.start calls cannot
+    // both open sessions or buy separate budgets for the same repository.
+    this.#repositoryOwners.set(repositoryKey, runId);
+    let journal: WorkflowRunJournal | undefined;
+    let admission: ExecutionAdmissionClient | undefined;
+    let ctx: RunContext | undefined;
     try {
+      journal = await this.#deps.journal.open(runId, {
+        repoPath: params.repoPath,
+        ...(envOverrides !== undefined ? { envOverrides } : {}),
+        policy: {
+          permissionMode: resolveWorkflowPermissionMode(params.permissionMode),
+          ...(params.unattendedAllow !== undefined
+            ? { unattendedAllow: params.unattendedAllow }
+            : {}),
+          ...(params.unattendedDeny !== undefined
+            ? { unattendedDeny: params.unattendedDeny }
+            : {}),
+          // The model the run was asked for, on start as well as on resume:
+          // the session is bootstrapped from this policy, and without them it
+          // takes the daemon's default no matter what the caller requested.
+          ...(params.model !== undefined ? { model: params.model } : {}),
+          ...(params.provider !== undefined ? { provider: params.provider } : {}),
+        },
+      });
+      const base = await this.#deps.worktrees.captureBaseState(params.repoPath, {
+        runId,
+      });
+      const spec = freezeWorkflowSpec(
+        runId,
+        params,
+        base,
+        this.#deps.defaultReviewerModel?.(),
+      );
+      const specDigest = computeSpecDigest(spec);
+      admission = this.#deps.admission({
+        runId,
+        sessionId: journal.sessionId,
+        ...(params.workspaceId !== undefined
+          ? { workspaceId: params.workspaceId }
+          : {}),
+        spec,
+      });
+      ctx = {
+        runId,
+        spec,
+        specDigest,
+        repo,
+        journal,
+        admission,
+        startedAt: this.#nowIso(),
+        usage: { input: 0, output: 0, cost: 0, any: false },
+        terminalized: false,
+      };
       await this.#stageIntake(ctx);
     } catch (error) {
       try {
@@ -672,28 +700,45 @@ export class VerifiedChangeWorkflowController {
                 stopReason: null,
                 finalMessage: `workflow intake error: ${errorMessage(error)}`,
               } satisfies WorkflowTerminalIntent);
-        await this.#terminalize(ctx, terminal);
-        await this.#closeJournal(ctx);
+        if (journal !== undefined) {
+          ctx ??= this.#bareContext(runId, repo, journal);
+          await this.#terminalize(ctx, terminal);
+        }
         throw new WorkflowIntakeError(
           runId,
           terminal.stopReason,
           terminal.finalMessage ?? terminal.status,
         );
       } finally {
-        admission.release?.();
+        if (journal !== undefined) await this.#closeJournal(ctx ?? this.#bareContext(runId, repo, journal));
+        admission?.release?.();
+        if (ctx?.terminalized === true || repo.getEffect(runId, "workflow.intake") === undefined) {
+          this.#repositoryOwners.delete(repositoryKey);
+        }
       }
     }
-    const effectivePermissionMode = journal.effectivePermissionMode;
+    const effectivePermissionMode = ctx.journal.effectivePermissionMode;
     const pipeline = this.#continue(ctx);
     this.#active.set(runId, pipeline);
     return {
       runId,
-      specDigest,
-      baseCommit: spec.baseCommit,
-      baseDirty: spec.baseDirty,
-      requestedPermissionMode: spec.permissionMode,
+      specDigest: ctx.specDigest,
+      baseCommit: ctx.spec.baseCommit,
+      baseDirty: ctx.spec.baseDirty,
+      requestedPermissionMode: ctx.spec.permissionMode,
       ...(effectivePermissionMode !== undefined ? { effectivePermissionMode } : {}),
     };
+  }
+
+  #repositoryKey(repoPath: string): string {
+    try { return realpathSync(repoPath); }
+    catch { return resolve(repoPath); }
+  }
+
+  #releaseRepository(runId: string): void {
+    for (const [key, owner] of this.#repositoryOwners) {
+      if (owner === runId) this.#repositoryOwners.delete(key);
+    }
   }
 
   /** Await the asynchronous pipeline for a started/resumed run (test hook). */
@@ -816,9 +861,13 @@ export class VerifiedChangeWorkflowController {
     runId: string,
     status: "failed" | "cancelled",
     finalMessage: string,
+    details: { readonly stopReason?: WorkflowStopReason | null; readonly usage?: RunUsageTotals | null } = {},
   ): boolean {
     try {
-      if (repo.getCurrentTerminalResult(runId) !== undefined) return true;
+      if (repo.getCurrentTerminalResult(runId) !== undefined) {
+        this.#releaseRepository(runId);
+        return true;
+      }
       const epoch = repo.currentEpoch(runId)?.epoch;
       if (epoch === undefined) return false;
       repo.recordTerminalResult({
@@ -828,13 +877,14 @@ export class VerifiedChangeWorkflowController {
           runId,
           status,
           exitCode: 1,
-          stopReason: null,
+          stopReason: details.stopReason ?? null,
           finalMessage,
-          usage: null,
+          usage: details.usage ?? null,
           lastSequence: null,
           finishedAt: this.#nowIso(),
         },
       });
+      this.#releaseRepository(runId);
       return true;
     } catch (error) {
       this.#deps.warn(
@@ -848,7 +898,17 @@ export class VerifiedChangeWorkflowController {
     repo: StateRunDurabilityRepository,
     runId: string,
   ): Promise<boolean> {
+    if (this.#active.has(runId)) return false;
     const journal = await this.#deps.journal.open(runId);
+    try { return await this.#resumeOpened(repo, runId, journal); }
+    catch (error) {
+      try { await journal.close(); }
+      catch (closeError) { this.#deps.warn(`Goal ${runId} resume cleanup failed: ${errorMessage(closeError)}`); }
+      throw error;
+    }
+  }
+
+  async #resumeOpened(repo: StateRunDurabilityRepository, runId: string, journal: WorkflowRunJournal): Promise<boolean> {
     const intake = repo.getEffect(runId, "workflow.intake");
     if (intake === undefined) {
       await journal.close();
@@ -876,7 +936,7 @@ export class VerifiedChangeWorkflowController {
         status: "failed",
         stopReason: null,
         finalMessage:
-          "workflow interrupted before the intake commit; the spec was never durable — re-submit the request",
+          "The Goal stopped before its instructions were saved. Start it again.",
       });
       await this.#closeJournal(ctx);
       return true;
@@ -894,6 +954,13 @@ export class VerifiedChangeWorkflowController {
       return true;
     }
     const specDigest = (evidence.specDigest ?? computeSpecDigest(spec)) as Sha256Digest;
+    const repositoryKey = this.#repositoryKey(spec.repoPath);
+    const owner = this.#repositoryOwners.get(repositoryKey);
+    if (owner !== undefined && owner !== runId) {
+      await journal.close();
+      throw new Error(`Another Goal is active for this repository (${owner}). The interrupted work is retained.`);
+    }
+    this.#repositoryOwners.set(repositoryKey, runId);
     const admission = this.#deps.admission({
       runId,
       sessionId: journal.sessionId,
@@ -926,11 +993,7 @@ export class VerifiedChangeWorkflowController {
       this.#active.set(runId, pipeline);
       return true;
     } catch (error) {
-      try {
-        await this.#closeJournal(ctx);
-      } finally {
-        admission.release?.();
-      }
+      admission.release?.();
       throw error;
     }
   }
@@ -980,9 +1043,9 @@ export class VerifiedChangeWorkflowController {
         );
       }
       await this.#terminalize(ctx, terminal);
-      await this.#discardCancelledWorktree(ctx);
     } finally {
       this.#active.delete(ctx.runId);
+      if (ctx.terminalized) this.#releaseRepository(ctx.runId);
       try {
         await this.#closeJournal(ctx);
       } finally {
@@ -997,31 +1060,6 @@ export class VerifiedChangeWorkflowController {
     } catch (error) {
       this.#deps.warn(
         `workflow ${ctx.runId} journal close failed: ${errorMessage(error)}`,
-      );
-    }
-  }
-
-  /**
-   * A cancelled run has no further use for its worktree: nothing resumes a
-   * terminal run and nothing was delivered. Remove the worktree and its
-   * branch as a completed run's are removed, but only once the cancelled
-   * terminal is durable; until then a restart resumes the run, and the run
-   * needs the worktree it left. Failed and unknown-outcome runs keep theirs
-   * for review.
-   */
-  async #discardCancelledWorktree(ctx: RunContext): Promise<void> {
-    const handle = ctx.handle;
-    if (handle === undefined) return;
-    try {
-      const terminal = ctx.repo.getCurrentTerminalResult(ctx.runId);
-      if (terminal?.status !== "cancelled") return;
-      await this.#deps.worktrees.discard({
-        proof: mintCancelledRunProof({ runId: ctx.runId }),
-        handle,
-      });
-    } catch (error) {
-      this.#deps.warn(
-        `workflow ${ctx.runId} worktree cleanup failed after cancellation: ${errorMessage(error)}`,
       );
     }
   }
@@ -1773,6 +1811,9 @@ export class VerifiedChangeWorkflowController {
       },
     );
     hitM5WorkflowFailpoint("after_terminal_before_cleanup");
+    // A sealed ledger alone does not authorize removing a resumable tree.
+    // If status storage failed, recovery still needs the exact worktree.
+    if (ctx.repo.getCurrentTerminalResult(ctx.runId)?.status !== "completed") return;
     try {
       await this.#deps.worktrees.cleanup({
         proof: mintSealedEvidenceProof({ runId: ctx.runId, sealDigest }),
@@ -2546,6 +2587,12 @@ export class VerifiedChangeWorkflowController {
       ctx.terminalized = true;
       return;
     }
+    if (terminal.status !== "completed" && ctx.handle !== undefined) {
+      terminal = {
+        ...terminal,
+        finalMessage: `${terminal.finalMessage ?? "The Goal stopped."} Work is preserved in ${ctx.handle.path} (branch ${ctx.handle.branch}).`,
+      };
+    }
     if (terminal.status === "completed") {
       const failures: string[] = [];
       if (gates === undefined) failures.push("completed gates missing");
@@ -2579,8 +2626,9 @@ export class VerifiedChangeWorkflowController {
         return;
       }
     }
+    let terminalWrite: Parameters<StateRunDurabilityRepository["recordTerminalResult"]>[0] | undefined;
+    let usage: RunUsageTotals | null = null;
     try {
-      let usage: RunUsageTotals | null = null;
       try {
         usage = this.#canonicalUsage(ctx);
       } catch (error) {
@@ -2588,14 +2636,15 @@ export class VerifiedChangeWorkflowController {
           `workflow ${ctx.runId} canonical usage is unavailable: ${errorMessage(error)}`,
         );
       }
+      const finishedAt = this.#nowIso();
       const terminalEvent = ctx.journal.appendTerminal({
         status: terminal.status,
         stopReason: terminal.stopReason,
         finalMessage: terminal.finalMessage,
         usage,
-        finishedAt: this.#nowIso(),
+        finishedAt,
       });
-      ctx.repo.recordTerminalResult({
+      terminalWrite = {
         epoch: ctx.journal.epoch,
         eventId: terminalEvent.eventId,
         result: {
@@ -2606,22 +2655,46 @@ export class VerifiedChangeWorkflowController {
           finalMessage: terminal.finalMessage,
           usage,
           lastSequence: terminalEvent.sequence,
-          finishedAt: this.#nowIso(),
+          finishedAt,
         },
-      });
+      };
+      ctx.repo.recordTerminalResult(terminalWrite);
       ctx.terminalized = true;
     } catch (error) {
       if (error instanceof M5WorkflowFailpointError) throw error;
-      // Terminal recording must never take the daemon down; the run stays
-      // open and startup recovery terminalizes it on the next resume.
       this.#deps.warn(
         `workflow ${ctx.runId} failed to record its terminal result: ${errorMessage(error)}`,
       );
+      if (terminalWrite !== undefined) {
+        // The journal append succeeded. Retry its exact projection so replay
+        // cannot later encounter a conflicting terminal event or timestamp.
+        try {
+          ctx.repo.recordTerminalResult(terminalWrite);
+          ctx.terminalized = true;
+        } catch (retryError) {
+          this.#deps.warn(`workflow ${ctx.runId} terminal projection retry failed: ${errorMessage(retryError)}`);
+        }
+      } else {
+        // A broken rollout file must not leave a stopped Goal looking live.
+        // The same durable-only path used by offline cancellation remains
+        // available when SQLite is writable. Never call this completion:
+        // without a terminal journal boundary the work needs recovery.
+        ctx.terminalized = this.#recordDetachedTerminal(
+          ctx.repo,
+          ctx.runId,
+          terminal.status === "cancelled" ? "cancelled" : "failed",
+          `The Goal stopped because its final status could not be saved to the run journal: ${errorMessage(error)}. ${terminal.finalMessage ?? ""}` +
+            (terminal.status === "completed" && ctx.handle !== undefined
+              ? ` Work is preserved in ${ctx.handle.path} (branch ${ctx.handle.branch}).`
+              : ""),
+          { usage, stopReason: terminal.status === "completed" ? "evidence_invalid" : terminal.stopReason },
+        );
+      }
     }
   }
 
   #canonicalUsage(ctx: RunContext): RunUsageTotals | null {
-    const summary = ctx.admission.getUsageSummary?.();
+    const summary = ctx.admission?.getUsageSummary?.();
     if (summary !== undefined && summary.runId !== ctx.runId) {
       throw new Error(`canonical usage belongs to ${summary.runId}, not workflow ${ctx.runId}`);
     }
