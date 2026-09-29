@@ -298,14 +298,21 @@ export class SessionProviderService {
    * Missing, unsupported and custom-endpoint authorities are excluded without
    * exposing credential material or provider error text to the router. */
   async isChildProviderConnected(selection: ProviderSelection): Promise<boolean> {
+    return (await this.childProviderRoutingInfo(selection)).connected;
+  }
+
+  async childProviderRoutingInfo(selection: ProviderSelection): Promise<{
+    readonly connected: boolean;
+    readonly billingSource?: "byok" | "sign_in" | "managed" | "local";
+  }> {
     // A managed route needs a concrete destination and separate consent. It is
     // not an independently connected model candidate for local routing.
-    if (selection.provider === "agenc") return false;
+    if (selection.provider === "agenc") return { connected: false };
     try {
-      await this.#previewChildDestination(selection, undefined, true);
-      return true;
+      const preview = await this.#previewChildDestination(selection, undefined, true);
+      return { connected: true, billingSource: preview.billingSource };
     } catch {
-      return false;
+      return { connected: false };
     }
   }
 

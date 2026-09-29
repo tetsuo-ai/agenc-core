@@ -75,7 +75,7 @@ export interface ChildExecutionPlan {
   };
   readonly modelInfo: ModelInfo;
   readonly catalogRevision: string;
-  readonly requiredCapabilities: { readonly clientTools: boolean };
+  readonly requiredCapabilities: { readonly clientTools: boolean; readonly vision?: boolean; readonly contextTokens?: number };
   readonly parent: { readonly sessionId: string; readonly agentPath: string };
   readonly task: { readonly id: string; readonly name: string; readonly text: string; readonly attachments: readonly string[]; readonly parentTurnId?: string };
   readonly scope: { readonly tools: "parent_filtered" | readonly string[]; readonly data: "task_only" | "forked_history"; readonly cwd: string;
@@ -83,7 +83,13 @@ export interface ChildExecutionPlan {
     readonly fileReadDenylist?: readonly string[]; readonly networkEnabled?: boolean };
   readonly policyRevision: string;
   readonly consentGrant: CrossProviderConsentGrant | null;
-  readonly budgetAllocation: { readonly maxModelCalls: number } | null;
+  readonly budgetAllocation: { readonly maxModelCalls: number; readonly maxCostUsd?: number } | null;
+  readonly routing?: {
+    readonly taskKind: import("./provider-selector-types.js").ChildTaskKind;
+    readonly complexity: import("./provider-selector-types.js").ChildTaskComplexity;
+    readonly reason: string;
+    readonly estimatedCostUsd?: number;
+  };
   readonly reasoningEffort?: ReasoningEffort;
   readonly serviceTier?: string;
   readonly crossProvider: boolean;
@@ -152,6 +158,11 @@ export async function createChildExecutionPlan(params: {
   readonly reasoningEffort?: ReasoningEffort;
   readonly serviceTier?: string;
   readonly toolAllowlist?: readonly string[];
+  readonly maxCostUsd?: number;
+  readonly routing?: ChildExecutionPlan["routing"];
+  readonly requiresVision?: boolean;
+  readonly contextTokens?: number;
+  readonly maxModelCalls?: number;
   /** Destination provenance inherited through a same-provider child. */
   readonly inheritedConsentPlan?: ChildExecutionPlan;
   /**
@@ -167,6 +178,10 @@ export async function createChildExecutionPlan(params: {
   };
 }, preliminaryManaged = false): Promise<ChildExecutionPlan> {
   const { session, selection } = params;
+  if (params.routing !== undefined) {
+    assertCrossProviderAllowed(session, selection.provider);
+    if (childProviderPolicy(session).cross_provider_auto !== true) throw new Error("Automatic child selection was disabled.");
+  }
   const plannedPolicyRevision = policyRevision(session);
   const crossProvider = selection.provider !== currentChildProvider(session).provider ||
     params.inheritedConsentPlan?.crossProvider === true;
@@ -191,6 +206,13 @@ export async function createChildExecutionPlan(params: {
   }
   const destinationModelInfo = selection.provider === "agenc"
     ? await childModelInfo(session, destination) : params.modelInfo;
+  if (params.requiresVision && resolveRegisteredModelCatalogEntry(destination)?.inputModalities.includes("image") !== true) {
+    throw new Error(`Model ${destination.provider}/${destination.model} does not support image input.`);
+  }
+  if (params.contextTokens !== undefined && (destinationModelInfo.contextWindow === undefined ||
+      params.contextTokens > destinationModelInfo.contextWindow * 0.95)) {
+    throw new Error(`Model ${destination.provider}/${destination.model} cannot fit the required context.`);
+  }
   const managed = selection.provider === "agenc" && !preliminaryManaged
     ? params.managedDestinationSettings?.(destination, destinationModelInfo) : undefined;
   const reasoningEffort = managed !== undefined ? managed.reasoningEffort : params.reasoningEffort;
@@ -224,7 +246,10 @@ export async function createChildExecutionPlan(params: {
     destination: Object.freeze({ ...destination, endpoint: endpointIdentity(endpoint), authProfile, billingSource }),
     modelInfo: freezeValue({ ...structuredClone(destinationModelInfo) }),
     catalogRevision: catalogRevision(session),
-    requiredCapabilities: Object.freeze({ clientTools: !params.toolFree }),
+    requiredCapabilities: Object.freeze({ clientTools: !params.toolFree,
+      ...(params.requiresVision ? { vision: true } : {}),
+      ...(params.contextTokens !== undefined ? { contextTokens: params.contextTokens } : {}),
+    }),
     parent: Object.freeze({ sessionId: session.conversationId, agentPath: params.parentPath }),
     task: Object.freeze({ id: params.taskId, name: params.taskName, text: params.taskText,
       attachments: Object.freeze([...(params.attachments ?? [])]),
@@ -244,9 +269,11 @@ export async function createChildExecutionPlan(params: {
       networkEnabled: session.sessionConfiguration.networkSandboxPolicy?.enabled !== false }),
     policyRevision: plannedPolicyRevision,
     consentGrant: null,
-    budgetAllocation: crossProvider ? Object.freeze({
-      maxModelCalls: Math.min(32, Math.max(1, session.config?.maxTurns ?? 32)),
+    budgetAllocation: crossProvider || params.maxCostUsd !== undefined || params.routing !== undefined ? Object.freeze({
+      maxModelCalls: Math.min(32, Math.max(1, session.config?.maxTurns ?? 32), params.maxModelCalls ?? 32),
+      ...(params.maxCostUsd !== undefined ? { maxCostUsd: params.maxCostUsd } : {}),
     }) : null,
+    ...(params.routing !== undefined ? { routing: Object.freeze({ ...params.routing }) } : {}),
     ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
     ...(serviceTier !== undefined ? { serviceTier } : {}),
     crossProvider,
@@ -356,6 +383,14 @@ export async function authorizeChildExecutionPlan(session: Session, plan: ChildE
 }
 
 export async function assertChildExecutionPlan(session: Session, plan: ChildExecutionPlan): Promise<void> {
+  if (plan.routing !== undefined) {
+    assertCrossProviderAllowed(session, plan.route.provider);
+    if (childProviderPolicy(session).cross_provider_auto !== true) throw new Error("Automatic child selection was disabled.");
+  }
+  const taskCap = plan.budgetAllocation?.maxCostUsd;
+  if (taskCap !== undefined && (!Number.isFinite(taskCap) || taskCap < 0)) {
+    throw new Error("resume_blocked: child task has an invalid dollar allocation");
+  }
   if (plan.crossProvider) {
     if (plan.budgetAllocation === null || !Number.isSafeInteger(plan.budgetAllocation.maxModelCalls) ||
         plan.budgetAllocation.maxModelCalls < 1 || plan.budgetAllocation.maxModelCalls > 32) {
@@ -404,6 +439,13 @@ export async function assertChildExecutionPlan(session: Session, plan: ChildExec
   const catalogEntry = resolveRegisteredModelCatalogEntry({
     provider: plan.destination.provider, model: plan.destination.model,
   });
+  if (plan.requiredCapabilities.vision && catalogEntry?.inputModalities.includes("image") !== true) {
+    throw new Error("resume_blocked: child model no longer supports image input");
+  }
+  if (plan.requiredCapabilities.contextTokens !== undefined &&
+      (catalogEntry?.contextWindow === undefined || plan.requiredCapabilities.contextTokens > catalogEntry.contextWindow * 0.95)) {
+    throw new Error("resume_blocked: child model cannot fit the required context");
+  }
   if (plan.requiredCapabilities.clientTools && plan.modelInfo.supportsToolUse === false) {
     throw new Error(`Model ${plan.destination.provider}/${plan.destination.model} cannot call client-side tools`);
   }

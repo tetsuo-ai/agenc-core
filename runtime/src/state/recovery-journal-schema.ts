@@ -1422,7 +1422,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       prompt: isString,
       model: isString,
     },
-    { taskName: isString, agentType: isString, provider: isString, reasoningEffort: isString },
+    { taskName: isString, agentType: isString, provider: isString, routingReason: isString, reasoningEffort: isString },
   ),
   collab_agent_spawn_end: objectShape(
     {
@@ -1442,7 +1442,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       taskName: isString,
       agentType: isString,
       provider: isString,
-      reasoningEffort: isString,
+      routingReason: isString, reasoningEffort: isString,
       terminal: isChildTerminalOutcome,
     },
   ),
@@ -1462,7 +1462,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       prompt: isString,
       model: isString,
       provider: isString,
-      reasoningEffort: isString,
+      routingReason: isString, reasoningEffort: isString,
       toolUseCount: isNonNegativeInteger,
       tokenCount: isNonNegativeInteger,
       error: isString,

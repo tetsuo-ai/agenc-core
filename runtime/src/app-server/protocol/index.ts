@@ -55,7 +55,7 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.22.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.23.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
