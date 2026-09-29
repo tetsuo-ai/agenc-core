@@ -89,3 +89,30 @@ it("queues the whole group ahead of a re-entrant event", async () => {
   expect(published.map(e => e.seq)).toEqual([...published.map(e => e.seq)].sort((a,b) => a!-b!));
   expect(published.at(-1)?.id).toBe("nested");
 });
+
+it.each(["provider_wire", "tool_effect"] as const)(
+  "refuses %s dispatch after a failed canonical flush and durably repairs before retry",
+  async boundary => {
+    const client = setup();
+    const lease = await client.acquire({ ...input, kind: boundary === "tool_effect" ? "tool_exec" : "model_turn" });
+    const reservationId = lease.reservation.reservationId;
+    published.length = 0;
+    let physicalCalls = 0;
+    const dispatch = () => {
+      client.markDispatched(reservationId, { boundary });
+      physicalCalls += 1;
+    };
+    rollout.store.setFsyncImplForTest(() => { throw Object.assign(new Error("failed sync"), { code: "EIO" }); });
+    expect(dispatch).toThrow(/fsync-committed/);
+    expect(physicalCalls).toBe(0);
+    expect(published).toEqual([]);
+    let repaired = false;
+    rollout.store.setFsyncImplForTest(fd => { fsyncSync(fd); repaired = true; });
+    dispatch();
+    expect(repaired).toBe(true);
+    expect(physicalCalls).toBe(1);
+    const dispatched = rollout.readAll().filter(row => row.type === "event_msg" &&
+      row.payload.msg.type === "execution_admission" && row.payload.msg.payload.event === "dispatched");
+    expect(dispatched).toHaveLength(1);
+  },
+);

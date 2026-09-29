@@ -34,6 +34,17 @@ def post_tool_attribution(intervals, spans):
             totals[min(kinds)[1] if kinds else 'other']+=b-a
     return dict(totals)
 
+def fsync_boundaries(spans):
+    """Count actual syncs, not empty or append-only flush attempts."""
+    flushes=[s for s in spans if s['name']=='persistence.flush']
+    counts=collections.Counter()
+    for sync in (s for s in spans if s['name']=='persistence.fsync'):
+        owners=[f for f in flushes if f['start_ms']<=sync['start_ms'] and
+                sync['start_ms']+sync['duration_ms']<=f['start_ms']+f['duration_ms']]
+        owner=min(owners,key=lambda f:f['duration_ms']) if owners else None
+        counts[owner.get('boundary','unlabelled') if owner else 'outside_flush']+=sync.get('count',1)
+    return dict(counts)
+
 def summarize(root, label):
     runs=[]
     for f in sorted(root.glob(label+'-*/result.json')):
@@ -53,12 +64,13 @@ def summarize(root, label):
             models=[{'start_ms':e['request_ms'],'duration_ms':e['response_end_ms']-e['request_ms']} for e in wire]
             boundary_source='scripted_server_wire'
         tools=by['tool.invoke']
-        gaps=[];pre=[];post=[];between=[];post_intervals=[]
+        gaps=[];pre=[];post=[];between=[];post_intervals=[];pre_intervals=[]
         for before,after in zip(models,models[1:]):
             begin=before['start_ms']+before['duration_ms'];end=after['start_ms']
             interval=[t for t in tools if t['start_ms']<end and t['start_ms']+t['duration_ms']>begin]
             if interval:
                 pre.append(max(0,min(t['start_ms'] for t in interval)-begin))
+                pre_intervals.append((begin,begin+pre[-1]))
                 post_start=min(end,max(begin,max(t['start_ms']+t['duration_ms'] for t in interval)))
                 post.append(end-post_start);post_intervals.append((post_start,end))
                 busy=union_ms((max(begin,t['start_ms']),min(end,t['start_ms']+t['duration_ms'])) for t in interval)
@@ -75,11 +87,17 @@ def summarize(root, label):
             totals['daemon.priming']=result['daemon_client']['priming_ms']
         totals['between_tools']=sum(between)
         totals.update({'post_tool.'+key:value for key,value in post_tool_attribution(post_intervals,spans).items()})
+        totals.update({'pre_tool.'+key:value for key,value in post_tool_attribution(pre_intervals,spans).items()})
+        totals.update({'fsync_boundary.'+key:value for key,value in fsync_boundaries(spans).items()})
         totals['post_tool.fsync_count']=sum(s.get('count',0) for s in spans if any(a<=s['start_ms']<b for a,b in post_intervals))
         totals['post_tool.written_bytes']=sum(s.get('bytes',0) for s in spans if s['name']=='persistence.write' and any(a<=s['start_ms']<b for a,b in post_intervals))
         totals['first_request_assembly']=by['prompt.assembly'][0]['duration_ms'] if by['prompt.assembly'] else 0
         totals['boundary.overhead']=sum(gaps);totals['response_to_tool']=sum(pre);totals['tool_to_request']=sum(post)
         totals['fsync_count']=sum(s.get('count',0) for s in spans);totals['written_bytes']=sum(s.get('bytes',0) for s in spans if s['name']=='persistence.write')
+        for name in ('persistence.sqlite_immediate', 'persistence.sqlite_transaction'):
+            totals[name+'.count']=len(by[name])
+            totals[name+'.per_call']=len(by[name])/result['calls'] if result['calls'] else 0
+        totals['fsync_per_call']=totals['fsync_count']/result['calls'] if result['calls'] else 0
         totals['native_fsync_count']=sum(s['name'] in ('native.fsync','native.fdatasync') for s in spans)
         totals['native_written_bytes']=sum(s.get('bytes',0) for s in spans if s['name'].startswith('native.'))
         runs.append({**result,'totals':totals,'boundary_source':boundary_source,'boundary_gaps_ms':gaps})
