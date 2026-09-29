@@ -35,7 +35,7 @@ export function getLightSystemPrompt(options: {
     ...(options.headless ? [
       "",
       "# Completing work without a human",
-      "Nobody can answer questions. Resolve ambiguity with a reasonable stated assumption. Check every stated requirement, including exact paths, formats and boundaries. Your final message is the deliverable: briefly report observed verification and anything unverified. Authorization still limits actions outside the request.",
+      "Nobody can answer questions. Resolve ambiguity with a reasonable stated assumption. Check every stated requirement, including exact paths, formats and boundaries. Your final message is the deliverable. Group requirements covered by the same check: `- [x] <command or inspection>: <observed result>`. Use `- [ ]` for unmet requirements and `- [-] <observed limitation>` for unavailable checks. Authorization still limits actions outside the request.",
       ...(options.deadline ? [
         "This run has a fixed time budget. Follow time_remaining_sec; preserve a working result and finish before the deadline. Near the limit, restore your best verified state and report it.",
       ] : []),

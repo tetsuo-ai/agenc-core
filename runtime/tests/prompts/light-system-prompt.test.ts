@@ -17,12 +17,17 @@ describe("Light system head", () => {
     expect(text).toContain("fixed time budget");
     expect(text).toContain("time_remaining_sec");
     expect(text).toContain("exact paths, formats and boundaries");
+    expect(text).toContain("Group requirements covered by the same check");
+    expect(text).toContain("`- [x] <command or inspection>: <observed result>`");
+    expect(text).toContain("`- [ ]` for unmet requirements");
+    expect(text).toContain("`- [-] <observed limitation>` for unavailable checks");
   });
 
   test("interactive sessions do not receive the no-human contract", () => {
     const text = getLightSystemPrompt({ headless: false, deadline: false });
     expect(text).not.toContain("Nobody can answer");
     expect(text).not.toContain("time_remaining_sec");
+    expect(text).not.toContain("`- [x]");
     expect(text).toContain("concrete blocker requires the user");
   });
 });
