@@ -11,7 +11,7 @@ function failedCheck(result: CompletedToolResultRecord): boolean {
   const command = args.cmd ?? args.command;
   if (typeof command !== "string") return false;
   // A failed search, missing executable or permission refusal is not a check.
-  if (exit === 126 || exit === 127) return false;
+  if (exit === 126 || exit === 127 || /(?:ModuleNotFoundError|No module named|command not found)/.test(result.content)) return false;
   return /(?:^|[;&|\n]\s*|\s)(?:pytest|vitest|jest|tsc|cargo\s+(?:test|check)|go\s+test|python\d?\s+-m\s+(?:pytest|unittest)|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|check|typecheck|lint|build)(?:[:\w-]*))(?=\s|$)/.test(command);
 }
 

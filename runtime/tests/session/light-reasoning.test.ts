@@ -14,7 +14,7 @@ test("Light starts low and raises only after a completed failing validation", ()
   expect(lightReasoningEffort(true, "low", levels, [result("npm run typecheck", 2), result("npm test", 0)])).toBe("medium");
 });
 test("search failures, refusals and missing programs do not raise effort", () => {
-  for (const r of [result("rg missing .", 1), result("npm test", 127),
+  for (const r of [result("rg missing .", 1), { ...result("python3 -m unittest", 1), content: "ModuleNotFoundError: No module named pytest" }, result("npm test", 127),
     { ...result("npm test", 1), metadata: {} },
     { ...result("npm test", 1), toolName: "FileRead" }]) {
     expect(lightReasoningEffort(true, "low", levels, [r])).toBe("low");
