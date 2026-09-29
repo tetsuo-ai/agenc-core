@@ -128,7 +128,7 @@ def main():
         adjusted_yields=prepare_polled_commands(server.replies,server.expected_yields)
         cli=['node',str(core/'runtime/bin/agenc')]
         native_daemon=None
-        if mode=='warm':
+        if mode in ('warm', 'daemon'):
             if args.native_io:
                 # Autostart correctly sanitizes loader variables. Start the
                 # diagnostic daemon in this process so the preload stays loaded.
@@ -139,7 +139,13 @@ def main():
                     if native_daemon.poll() is not None or time.monotonic()>deadline:raise RuntimeError('native diagnostic daemon failed')
                     time.sleep(.05)
             elif command(cli+['daemon','start'],env=env,cwd=repo,log=dest/'daemon-start.log'):raise RuntimeError('warm daemon failed')
-        start=time.time();rc=command(cli+['--provider','deepseek','--model','deepseek-flash','-p','--output-format','json','--dangerously-bypass-approvals-and-sandbox',task['prompt']],env=env,cwd=repo,log=dest/'agent.log',timeout=240);end=time.time()
+        if mode=='daemon':
+            (dest/'client-input.json').write_text(json.dumps({'cwd':str(repo),'prompt':task['prompt']}))
+            rc=command(['node',str(core/'runtime/benchmarks/runtime-overhead/daemon-client.mjs'),str(dest/'client-input.json'),str(dest/'client-result.json')],env=env,cwd=repo,log=dest/'agent.log',timeout=240)
+            measured=json.loads((dest/'client-result.json').read_text())
+            start=measured['start_ms']/1000;end=measured['end_ms']/1000
+        else:
+            start=time.time();rc=command(cli+['--provider','deepseek','--model','deepseek-flash','-p','--output-format','json','--dangerously-bypass-approvals-and-sandbox',task['prompt']],env=env,cwd=repo,log=dest/'agent.log',timeout=240);end=time.time()
         stopstart=time.time()
         if native_daemon is not None:
             native_daemon.terminate()  # Only the diagnostic process created above.
@@ -149,6 +155,9 @@ def main():
         stopend=time.time()
         check=command(['python3',str(root/'bench/tasks'/task['check_script']),str(repo)],log=dest/'check.log')
         result={'label':args.label,'core_revision':revision,'harness_sha256':harness_digest,'trace_sha256':trace_digest,'source_dir':str(source),'adjusted_yield_calls':adjusted_yields,'replay_errors':server.replay_errors,'replay_valid':not server.replay_errors and server.calls==len(server.replies),'mode':mode,'task':task['id'],'repeat':repeat+1,'start_ms':start*1000,'end_ms':end*1000,'wall_ms':(end-start)*1000,'daemon_stop_ms':(stopend-stopstart)*1000,'exit_code':rc,'stop_exit_code':stoprc,'check_exit_code':check,'calls':server.calls,'recorded_calls':len(server.replies),'request_boundaries':server.boundaries,'load':os.getloadavg()}
+        if mode=='daemon':
+            result['daemon_client']=measured
+            result['client_harness_sha256']=hashlib.sha256((core/'runtime/benchmarks/runtime-overhead/daemon-client.ts').read_bytes()).hexdigest()
         (dest/'result.json').write_text(json.dumps(result,indent=2));print(json.dumps({k:v for k,v in result.items() if k!='request_boundaries'}),flush=True)
     server.shutdown()
 if __name__=='__main__':main()

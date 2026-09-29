@@ -23,7 +23,43 @@ export function bindExecutionAdmissionJournal(
   const append = (event: AdmissionJournalEvent): void => {
     appendExecutionAdmissionEvent(session, event);
   };
-  const unsubscribe =
+  let lastUsageSequence = -1;
+  let lastUsageSignature = "";
+  const appendBatch = (payloads: readonly AdmissionJournalEvent[]): void => {
+    const rollout = session.rolloutStore;
+    if (!rollout || typeof session.emitAdmissionBatch !== "function") {
+      for (const payload of payloads) append(payload);
+      return;
+    }
+    const fresh: Event[] = [];
+    for (const payload of payloads) {
+      const existing = findExecutionAdmissionEvent(rollout, payload.eventId);
+      if (existing) assertMatchingExecutionAdmissionEvent(existing, payload);
+      else fresh.push({ eventId: payload.eventId, id: payload.eventId, msg: { type: "execution_admission", payload } });
+    }
+    // Usage is a derived observer, including during kernel shutdown. Its
+    // unavailable summary must not block canonical cancellation evidence.
+    let usage: AdmissionUsageSummary | undefined;
+    try { usage = admission.getUsageSummary?.(); } catch { /* best effort projection */ }
+    const signature = usage === undefined ? "" : JSON.stringify({ ...usage, sequence: 0 });
+    if (usage && signature !== lastUsageSignature) {
+      fresh.push({ id: `usage:${usage.runId}:${usage.sequence}`, eventId: randomUUID(), msg: { type: "session_usage", payload: usage } });
+    }
+    try {
+      if (fresh.length > 0) {
+        for (const event of session.emitAdmissionBatch(fresh)) {
+          if (event.msg.type === "execution_admission") rememberExecutionAdmissionEvent(rollout, event);
+        }
+      } else rollout.syncCanonicalTail();
+      if (usage) { lastUsageSequence = usage.sequence; lastUsageSignature = signature; }
+    } catch (error) {
+      // A post-fsync publication error may leave a committed prefix. Rebuild
+      // from the canonical bytes on retry, never from an uncommitted cache.
+      executionAdmissionEventIndexes.delete(rollout);
+      throw error;
+    }
+  };
+  const unsubscribe = admission.subscribeCriticalBatch?.(appendBatch) ??
     admission.subscribeCritical?.(append) ?? admission.subscribe(append);
   let unsubscribeUsage: (() => void) | undefined;
   try {
@@ -65,12 +101,12 @@ export function bindExecutionAdmissionJournal(
       }
       if (page.length < EXECUTION_ADMISSION_CATCHUP_PAGE_SIZE) break;
     }
-    let lastUsageSequence = -1;
     const appendUsage = (summary: AdmissionUsageSummary): void => {
       if (summary.sequence <= lastUsageSequence) return;
       if (typeof session.conversationId === "string" && summary.runId !== session.conversationId) return;
       session.emit({ id: `usage:${summary.runId}:${summary.sequence}`, eventId: randomUUID(), msg: { type: "session_usage", payload: summary } }, { durable: true });
       lastUsageSequence = summary.sequence;
+      lastUsageSignature = JSON.stringify({ ...summary, sequence: 0 });
     };
     unsubscribeUsage = admission.subscribeUsage?.(appendUsage);
     const usage = admission.getUsageSummary?.();

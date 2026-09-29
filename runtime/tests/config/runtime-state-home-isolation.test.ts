@@ -22,7 +22,7 @@ import { acquireConfigAuthorityLocks } from "../../src/config/authority-lock.js"
 import { resolveHomeContext } from "../../src/config/home.js";
 import { RuntimeStateRepository } from "../../src/config/runtime-state-repository.js";
 import { ConfigStore } from "../../src/config/store.js";
-import { loadBypassPermissionsConsent } from "../../src/permissions/bypass-consent-state.js";
+import { loadBypassPermissionsConsent, recordBypassPermissionsConsent } from "../../src/permissions/bypass-consent-state.js";
 import {
   createCanonicalStateDocument,
   writeCanonicalStateAtomicSync,
@@ -84,6 +84,25 @@ afterEach(() => {
 });
 
 describe("home-bound mutable state authority", () => {
+  test("an unchanged namespace retains the durable file and rechecks external updates", () => {
+    const root = temporaryDirectory();
+    const home = resolveHomeContext({ AGENC_HOME: join(root, "home"), HOME: root });
+    const first = new RuntimeStateRepository(home, { storage: "disk" });
+    const second = new RuntimeStateRepository(home, { storage: "disk" });
+    repositories.push(first, second);
+    recordBypassPermissionsConsent(first, root);
+    const before = lstatSync(first.statePath, { bigint: true });
+    const bytes = readFileSync(first.statePath, "utf8");
+    first.updateNamespace("permissions", current => current);
+    const after = lstatSync(first.statePath, { bigint: true });
+    expect([after.ino, after.mtimeNs]).toEqual([before.ino, before.mtimeNs]);
+    expect(readFileSync(first.statePath, "utf8")).toBe(bytes);
+    second.updateNamespace("permissions", () => ({ bypassPermissionsAcceptedByCwd: {} }));
+    let observed: unknown;
+    first.updateNamespace("permissions", current => { observed = current.bypassPermissionsAcceptedByCwd; return current; });
+    expect(observed).toEqual({});
+  });
+
   test("creates runtime-state directories with owner-only permissions", () => {
     if (process.platform === "win32") return;
     const root = temporaryDirectory();

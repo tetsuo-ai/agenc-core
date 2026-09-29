@@ -907,10 +907,13 @@ export class RuntimeStateRepository {
           this.statePath,
         );
       }
-      const next = updater(
-        freezeRuntimeStateValue(existing ? cloneRecord(existing) : {}) as
-          Readonly<JsonRecord>,
-      );
+      const snapshot = freezeRuntimeStateValue(
+        existing ? cloneRecord(existing) : {},
+      ) as Readonly<JsonRecord>;
+      const next = updater(snapshot);
+      // Preserve the updater's explicit no-op under the authority lock. A
+      // fresh disk read still checks revocation and other processes' writes.
+      if (next === snapshot) return current;
       if (!isPlainRecord(next)) {
         throw new StateRepositoryError(
           `runtime-state namespace updater must return an object: ${namespace}`,

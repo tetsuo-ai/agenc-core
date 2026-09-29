@@ -129,6 +129,8 @@ export interface ExecutionAdmissionClient {
    * provider/tool/spawn boundary proceeds. Ordinary `subscribe` listeners
    * remain best-effort observers.
    */
+  /** A committed boundary, projected and acknowledged as one durable group. */
+  subscribeCriticalBatch?(listener: (events: readonly AdmissionJournalEvent[]) => void): () => void;
   subscribeCritical?(
     listener: (event: AdmissionJournalEvent) => void,
   ): () => void;

@@ -1935,6 +1935,26 @@ export class SessionStore {
    * project or publish an event that the canonical rollout rejected. Events
    * WITHOUT seq (sidecar synth or replay re-entry) remain deduped by `event.id`.
    */
+  private collectingDurableBatch = false;
+
+  /** One synchronous boundary: no caller can observe a partial acknowledgement. */
+  appendDurableBatch(events: readonly Event[]): void {
+    if (!this.opened || this.closed || this.collectingDurableBatch) {
+      throw new Error("cannot begin durable rollout batch");
+    }
+    this.collectingDurableBatch = true;
+    try {
+      for (const event of events) {
+        if (!this.append(event, { durable: true })) {
+          throw new Error("durable rollout batch append failed");
+        }
+      }
+    } finally {
+      this.collectingDurableBatch = false;
+    }
+    if (!this.flushBatch(true)) throw new Error("durable rollout batch was not fsync-committed");
+  }
+
   append(event: Event, opts: AppendOptions = {}): boolean {
     if (!this.opened || this.closed) return false;
     this.lastBoundReadProof = undefined;
@@ -2001,6 +2021,7 @@ export class SessionStore {
     this.pending.push(item);
 
     const durable = opts.durable === true || isDurableEvent(event);
+    if (this.collectingDurableBatch) return true;
     if (durable) {
       return this.flushBatch(/*durable*/ true);
     } else if (this.pending.length >= 1024) {
@@ -2041,7 +2062,10 @@ export class SessionStore {
    * for tests.
    */
   flushBatch(durable: boolean): boolean {
-  const finishRuntimeSpan = runtimeSpan("persistence.flush");
+  const tail = this.pending.at(-1);
+  const finishRuntimeSpan = runtimeSpan("persistence.flush", {
+    boundary: tail?.type === "event_msg" ? tail.payload.msg.type : tail?.type ?? "empty",
+  });
   try {
     // A slow flush (a large batch, or a durable fsync on a busy disk) stalls
     // the event loop that streams to every client, so it is worth reporting.

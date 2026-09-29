@@ -434,20 +434,18 @@ function verifyBoundary(
 ): void {
   expect(report.failpoint).toBe(failpoint);
 
-  if (
-    failpoint === "after_admission_sqlite_commit_before_canonical_append" ||
-    failpoint === "before_reservation_commit"
-  ) {
+  if (failpoint === "before_reservation_commit") {
+    // The immediate path has not acknowledged queue insertion: both queue
+    // and reservation roll back when the process dies inside the transaction.
     expect(report.admission?.reservations).toEqual([]);
-    expect(report.admission?.jobs).toHaveLength(1);
-    expect(report.admission?.jobs[0]?.status).toBe("queued");
+    expect(report.admission?.jobs).toEqual([]);
     expect(report.admission?.journalCounts.allowed ?? 0).toBe(0);
-    expect(report.admission?.journalCounts.queued).toBe(1);
-    expect(report.admission?.journalCounts.recovered).toBe(1);
+    expect(report.admission?.journalCounts.queued ?? 0).toBe(0);
     expectIdempotentSecondRecovery(report);
     return;
   }
-  if (failpoint === "after_reservation_commit") {
+  if (failpoint === "after_reservation_commit" ||
+      failpoint === "after_admission_sqlite_commit_before_canonical_append") {
     expect(report.admission?.reservations).toHaveLength(1);
     expect(report.admission?.reservations[0]?.status).toBe("voided");
     expect(report.admission?.journalCounts.allowed).toBe(1);
