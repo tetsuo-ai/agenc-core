@@ -2132,7 +2132,8 @@ describe("Light presentation and deferred capability preservation", () => {
   });
 
   test("keeps the executable catalog and schema constraints while reducing Light documentation", () => {
-    const normal = buildToolRegistry({ workspaceRoot: "/tmp" });
+    // Hold read formatting constant when comparing canonical descriptions.
+    const normal = buildToolRegistry({ workspaceRoot: "/tmp", sparseLineNumbers: true });
     const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
     expect(light.tools.map(tool => tool.name)).toEqual(normal.tools.map(tool => tool.name));
     expect(light.toLLMTools().map(tool => tool.function.name).sort()).toEqual([
