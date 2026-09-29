@@ -9,7 +9,7 @@ import type { Session } from "../../src/session/session.js";
 
 describe("child terminal failures", () => {
   const reasons = ["completed", "insufficient_funds", "rate_limited", "provider_unavailable",
-    "step_limit", "timeout", "auth_required", "model_unavailable", "context_insufficient",
+    "step_limit", "no_progress", "timeout", "auth_required", "model_unavailable", "context_insufficient",
     "tool_protocol_unreliable", "model_refused", "parent_cancelled", "policy_revoked",
     "resume_blocked", "cost_cap_reached", "effect_outcome_unknown", "consent_denied",
     "consent_unavailable"] as const;
@@ -96,6 +96,7 @@ describe("child terminal failures", () => {
     ["provider_unavailable", { status: 503 }],
     ["timeout", new Error("deadline_reached")],
     ["step_limit", new Error("subagent exceeded maxTurns (32)")],
+    ["no_progress", new Error("subagent stopped by the no-progress backstop")],
     ["auth_required", { status: 401 }],
     ["model_unavailable", { status: 404 }],
     ["context_insufficient", { status: 413 }],

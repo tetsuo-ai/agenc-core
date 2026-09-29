@@ -8,7 +8,7 @@ import { resolveBuiltInProviderInfo, resolveBuiltInProviderSlug } from "../llm/r
 import { assertSupportedCrossProviderAuth, type ChildAuthProfile, type ChildBillingSource } from "../llm/cross-provider-auth.js";
 import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
 import type { ModelInfo, ReasoningEffort } from "../session/turn-context.js";
-import { DEFAULT_MODEL_COSTS, resolveModelCostEntry } from "../session/cost.js";
+import { DEFAULT_MODEL_COSTS, resolveModelCostEntry, selectCallRates } from "../session/cost.js";
 
 export interface CrossProviderConsentGrant {
   readonly kind: "once" | "session";
@@ -116,8 +116,26 @@ function endpointIdentity(value: string): string {
 
 function policyRevision(session: Session): string {
   const policy = childProviderPolicy(session);
+  // Limits and automatic selection are authority too. A plan can await
+  // consent while either is lowered by a settings reload. Normalize the
+  // default limits so spelling out minimal/standard does not revoke a plan.
+  const limits = Object.fromEntries(Object.entries(policy.subagent_limits ?? {})
+    .sort(([left], [right]) => left.localeCompare(right))
+    .flatMap(([provider, limit]) => {
+      const effective = {
+        ...(limit.effort !== undefined && limit.effort !== "minimal" ? { effort: limit.effort } : {}),
+        ...(limit.speed === "fast" ? { speed: limit.speed } : {}),
+      };
+      return Object.keys(effective).length === 0 ? [] : [[provider, effective]];
+    }));
   return `agents-v1:${fingerprint({ enabled: policy.cross_provider_enabled === true, allowed: policy.allowed_providers ?? [],
-    ...(policy.cross_provider_ask_each_spawn === true ? { askEachSpawn: true } : {}) })}`;
+    ...(policy.cross_provider_ask_each_spawn === true ? { askEachSpawn: true } : {}),
+    ...(policy.cross_provider_auto === true ? { auto: true } : {}),
+    ...(Object.keys(limits).length > 0 ? { limits } : {}) })}`;
+}
+
+export function isChildExecutionPolicyCurrent(session: Session, plan: ChildExecutionPlan): boolean {
+  return plan.policyRevision === policyRevision(session);
 }
 
 function catalogRevision(session: Session): string {
@@ -153,6 +171,7 @@ export async function createChildExecutionPlan(params: {
   };
 }, preliminaryManaged = false): Promise<ChildExecutionPlan> {
   const { session, selection } = params;
+  const plannedPolicyRevision = policyRevision(session);
   const crossProvider = selection.provider !== currentChildProvider(session).provider ||
     params.inheritedConsentPlan?.crossProvider === true;
   if (crossProvider) assertCrossProviderAllowed(session, selection.provider);
@@ -200,6 +219,9 @@ export async function createChildExecutionPlan(params: {
     endpoint = session.providerService?.current().factoryOptions?.baseURL ?? endpoint;
   }
   if (crossProvider) assertSupportedCrossProviderAuth(destination.provider, authProfile);
+  if (plannedPolicyRevision !== policyRevision(session)) {
+    throw new Error("child execution plan policy changed");
+  }
   return Object.freeze({
     version: 1 as const,
     route: Object.freeze({ ...selection }),
@@ -224,7 +246,7 @@ export async function createChildExecutionPlan(params: {
       fileReadAllowlist: Object.freeze([...(session.sessionConfiguration.fileSystemSandboxPolicy?.allowRead ?? [])]),
       fileReadDenylist: Object.freeze([...(session.sessionConfiguration.fileSystemSandboxPolicy?.denyRead ?? [])]),
       networkEnabled: session.sessionConfiguration.networkSandboxPolicy?.enabled !== false }),
-    policyRevision: policyRevision(session),
+    policyRevision: plannedPolicyRevision,
     consentGrant: null,
     budgetAllocation: crossProvider ? Object.freeze({
       maxModelCalls: Math.min(32, Math.max(1, session.config?.maxTurns ?? 32)),
@@ -249,11 +271,19 @@ export function buildCrossProviderDisclosure(
   const scopeKey = fingerprint({ destination: plan.destination, data: plan.scope.data,
     cwd: plan.scope.cwd, tools, network, search, sandboxMode: plan.scope.sandboxMode,
     fileReadAllowlist: plan.scope.fileReadAllowlist, fileReadDenylist: plan.scope.fileReadDenylist,
-    attachments, budget: plan.budgetAllocation });
+    attachments, budget: plan.budgetAllocation,
+    reasoningEffort: plan.reasoningEffort ?? null, serviceTier: plan.serviceTier ?? null });
   const payloadKey = fingerprint({ scopeKey, taskId: plan.task.id, taskText, attachments });
   const parentTurnId = sessionTurnIdForPlan(plan);
   const denialKey = crossProviderDenialKey({ scopeKey, taskText, attachments }, parentTurnId);
   const cost = resolveModelCostEntry({ provider: plan.destination.provider, model: plan.destination.model }, DEFAULT_MODEL_COSTS);
+  // A disclosure cannot know future tool-result context. Quote the highest
+  // documented context tier at the chosen speed, never a cheaper standard
+  // price for a priority child. Undocumented/estimated prices stay unknown.
+  const quote = cost === null ? undefined : selectCallRates(cost.entry, {
+    singleCallInputTokens: plan.modelInfo.contextWindow,
+    ...(plan.serviceTier === "priority" || plan.serviceTier === "fast" ? { speed: "fast" } : {}),
+  });
   return Object.freeze({
     kind: "cross_provider_spawn" as const,
     provider: plan.destination.provider, model: plan.destination.model,
@@ -264,8 +294,9 @@ export function buildCrossProviderDisclosure(
     fileReadDenylist: plan.scope.fileReadDenylist ?? [],
     dataScope: plan.scope.data, tools,
     network, search,
-    price: plan.destination.billingSource === "sign_in" || cost === null ? "price unknown" as const : {
-      inputUsdPer1K: cost.entry.inputUsdPer1K, outputUsdPer1K: cost.entry.outputUsdPer1K,
+    price: plan.destination.billingSource === "sign_in" || quote === undefined ||
+      quote.documented === false || cost?.entry.costEstimated === true || quote.rates.costEstimated === true ? "price unknown" as const : {
+      inputUsdPer1K: quote.rates.inputUsdPer1K, outputUsdPer1K: quote.rates.outputUsdPer1K,
     },
     ...(plan.destination.billingSource === "sign_in" ? {
       subscriptionUsageNote: "Usage counts against your subscription limits.",
@@ -318,9 +349,18 @@ export async function authorizeChildExecutionPlan(session: Session, plan: ChildE
   if (!plan.crossProvider) return { kind: "granted", plan };
   const service = (session.services as { readonly crossProviderConsent?: CrossProviderConsentService }).crossProviderConsent;
   if (service === undefined) return { kind: "consent_unavailable", reason: "No attached client can answer cross-provider consent. Continue this task yourself." };
+  const requestingPolicyRevision = policyRevision(session);
   const outcome = await service.request(session, buildCrossProviderDisclosure(plan),
     { ...options, routeProvider: plan.route.provider });
   if (outcome.kind !== "granted") return outcome;
+  // Message and assignment callers do not prepare another provider binding.
+  // Their approval must therefore revalidate authority here too.
+  if (requestingPolicyRevision !== policyRevision(session)) {
+    return { kind: "consent_unavailable", reason: "Child execution policy changed while consent was pending. Request a new child plan." };
+  }
+  if (session.services.crossProviderConsent !== service) {
+    return { kind: "consent_unavailable", reason: "The consent owner is no longer active. Request consent again." };
+  }
   const granted = withChildConsentGrant(plan, outcome.grant);
   if (!consentGrantCoversPlan(granted, service.ownerSessionId, plan.task.text,
       plan.task.attachments, service.sessionEpoch)) {
