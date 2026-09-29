@@ -300,7 +300,9 @@ export async function resolveLiveInstructionEnvelope(input: {
   readonly policy?: LiveInstructionPolicy;
 }): Promise<LiveInstructionEnvelope> {
   const policy = input.policy ?? "workspace_agent";
-  if (policy === "isolated") {
+  // Light reads task-relevant guidance through its core tools. Do not scan
+  // project instructions or memory indexes on every model request.
+  if (policy === "isolated" || input.session.services.runtimeOptions?.lightMode === true) {
     return {
       text: input.baseInstructions,
       workspaceText: "",

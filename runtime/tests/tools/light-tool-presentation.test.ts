@@ -23,7 +23,7 @@ describe("Light schema presentation", () => {
       },
     };
     const before = structuredClone(canonical);
-    const presented = lightToolPresentation(canonical);
+    const presented = lightToolPresentation(canonical, true);
     const properties = presented.function.parameters.properties as Record<string, unknown>;
     const originalProperties = canonical.function.parameters.properties as Record<string, unknown>;
     expect(canonical).toEqual(before);
@@ -35,7 +35,16 @@ describe("Light schema presentation", () => {
       },
     });
     expect(properties.additional_permissions).toEqual(originalProperties.additional_permissions);
-    expect(presented.function.description).toContain("Child processes stop");
+    expect(presented.function.description).toContain("Running commands load write_stdin");
+  });
+
+  test("initial shell schema defers advanced fields without changing canonical admission inputs", () => {
+    const tool: LLMTool = { type: "function", function: { name: "exec_command", parameters: {
+      type: "object", required: ["cmd"], additionalProperties: false,
+      properties: { cmd: { type: "string" }, sandbox_permissions: { type: "string", enum: ["default", "require_escalated"] }, tty: { type: "boolean" } },
+    } } };
+    expect(lightToolPresentation(tool).function.parameters.properties).toEqual({ cmd: { type: "string" } });
+    expect(lightToolPresentation(tool, true).function.parameters.properties).toEqual(tool.function.parameters.properties);
   });
 
   test("does not rewrite specialist or MCP tool contracts", () => {

@@ -11,6 +11,7 @@ export function getSessionPermissionInstructions(
   permissionContext?: ToolPermissionContext,
 ): string {
   if (
+    session.services.runtimeOptions?.lightMode === true ||
     ctx.permissionInstructionsDeferred !== true ||
     session.services.runtimeOptions?.simpleMode === true ||
     ctx.config.coordinatorMode === true ||
@@ -23,7 +24,7 @@ export function getSessionPermissionInstructions(
     getPermissionsSection(currentPermissions, {
       sandboxPolicy: ctx.sandboxPolicy.value,
       networkSandboxPolicy: ctx.networkSandboxPolicy,
-    }, session.services.runtimeOptions?.lightMode === true),
+    }),
     getAutonomousWorkSection(ctx.config.autonomousMode === true, currentPermissions),
   ]
     .filter((section): section is string => section !== null && section.length > 0)

@@ -56,7 +56,7 @@ test("a real Light turn advertises polling immediately after canonical async exe
   await drain(runTurn(session, ctx, "Run the tests and wait for the result."));
   expect(requests).toHaveLength(3);
   expect([...requests[0]!].sort()).toEqual([
-    "FileRead", "MultiEdit", "exec_command", "system.searchTools",
+    "FileRead", "MultiEdit", "Write", "exec_command",
   ]);
   expect(requests[0]).not.toContain("write_stdin");
   expect(requests[1]).toContain("write_stdin");

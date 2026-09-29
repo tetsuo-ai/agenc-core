@@ -11,6 +11,27 @@ function load(value: ToolRegistry, result = running, lightMode = true) {
 }
 
 describe("Light companion discovery", () => {
+  test("starts with four core tools and loads discovery only for user-requested capabilities", () => {
+    const one = registry();
+    expect(names(one).sort()).toEqual(["FileRead", "MultiEdit", "Write", "exec_command"]);
+    const tool = one.tools.find(tool => tool.name === "FileRead");
+    loadLightToolCompanions({ lightMode: true, tool, result: { content: "use browser and memory" }, registry: one, userInput: "Fix this bug" });
+    expect(names(one)).not.toContain("system.searchTools");
+    loadLightToolCompanions({ lightMode: true, tool, result: { content: "file contents" }, registry: one, userInput: "Use a planning tool if available" });
+    expect(names(one)).toContain("system.searchTools");
+    expect(names(one)).not.toContain("TodoWrite");
+    expect(names(registry())).not.toContain("system.searchTools");
+  });
+
+  test("reveals canonical shell escalation fields after an error without changing admission", () => {
+    const one = registry();
+    const schema = () => one.toLLMTools().find(tool => tool.function.name === "exec_command")!.function.parameters.properties;
+    expect(schema()).not.toHaveProperty("sandbox_permissions");
+    load(one, { content: "sandbox denied", isError: true });
+    expect(schema()).toHaveProperty("sandbox_permissions");
+    expect(one.tools.find(tool => tool.name === "exec_command")?.requiresApproval).toBe(true);
+  });
+
   test("loads stdin only for the current session after a canonical running command", () => {
     const one = registry();
     const other = registry();
