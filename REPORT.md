@@ -100,3 +100,40 @@ The branch has no failures absent from main. The initial nine-file run passed al
 Standard core typecheck (`npm --workspace=@tetsuo-ai/runtime run typecheck`, including test-support checks) passed on the PC in `node:26.5.0-bookworm`. `git diff --check` passed. All seven changed source/test files matched the PC checkout byte-for-byte; their manifest digest is `68edb0420f2803ac92725ae83569a8662ca68bb0f5ea30b3662659f03720c1c0`. The helper ran the branch's base checkout with the recorded patch applied before testing; the report was updated afterward.
 
 PC evidence is under `/home/paul/claude-agenc-work/results/`: the final paired logs and empty `.fails` files, `core-2811-review-r9-typecheck.log`, `core-2811-review-r9-fix.patch`, and `core-2811-review-r9-source-verification.json`. Local regression evidence is under `/private/tmp/e2e-delegation/`: `review-r9-red-final.log`, `review-r9-green3.log`, `review-r9-fix.patch`, and `review-r9-source-verification.json`. These checks used mocked providers and made no paid model calls.
+
+## Buffered tool progress follow-up — 2026-09-29
+
+Addressed the latest review's idle-timeout regression. Responses function-call items now emit an empty, non-executable `bufferedContentProgress` chunk when new buffered output arrives. Identical item snapshots do not reset the watchdog. Tool names and arguments remain private to the adapter until the terminal status permits validation; output-limited calls retain non-executable recovery identities. All earlier handoff, Unicode, result-cache, output-contract, and test synchronization fixes remain intact.
+
+Added five regression cases in `adapter.progress.test.ts`: completed and output-limited calls for both Responses and Chat Completions, plus repeated Responses items. The delayed-terminal cases run the real `streamModel` watchdog with a 60-second idle deadline, a tool item at 45 seconds, and the terminal event at 90 seconds. They assert successful completion, one provider request, no tool text or executable call before validation, and no executable calls after truncation. The replay case verifies that duplicate items cannot keep the stream alive. Before the fix, both delayed Responses cases reproduced `stream_idle: no progress for 60000ms`; the Chat Completions cases already passed. All 86 tests in the three focused adapter files pass locally after the fix.
+
+Ran the PC helper on branch and main for the same 17 files:
+
+- `tests/llm/stream-watchdog.test.ts`
+- `tests/llm/stream-watchdog.silent-generation.test.ts`
+- `tests/llm/stream-parser.test.ts`
+- `tests/llm/providers/openai/adapter.test.ts`
+- `tests/llm/providers/openai/adapter.progress.test.ts`
+- `tests/llm/providers/openai/adapter.streaming-gaps.test.ts`
+- `tests/llm/providers/openai/adapter-reasoning-replay.test.ts`
+- `tests/llm/providers/openai/adapter-reasoning-resume.test.ts`
+- `tests/llm/wire/responses-openai.test.ts`
+- `tests/llm/wire/chat-completions.test.ts`
+- `tests/phases/stream-model.test.ts`
+- `tests/phases/stream-model.progress.test.ts`
+- `tests/session/run-turn.stream-progress.test.ts`
+- `tests/session/run-turn-stream-retry.rebuilt.test.ts`
+- `tests/session/rejected-text-tool-call-recovery.test.ts`
+- `tests/bin/model-facing-tools.test.ts`
+- `tests/session/run-turn.test.ts`
+
+| Ref / tested source | Final result | PC log label |
+|---|---|---|
+| Main `3caa13df9d56d1623766096f013e8ffc7e54c043` | 17 files, 499 passed, zero failures | `core-2811-review-r10-final-main` |
+| Branch `ecea71831a95a2f1c8fc1cc5cd2221422baba5f8` plus this commit's source/test changes | 17 files, 521 passed, zero failures | `core-2811-review-r10-final-branch` |
+
+The branch has no failures absent from main. The initial branch run passed 520 tests and exceeded the existing durable-restart test's 3-second wait for its second model sample. The same 17-file run on unchanged source then passed all 521 tests; that restart test completed in 759 ms. No assertions or timeouts were weakened. Main passed all 499 tests on its first run; the final helper invocation reused that fresh same-commit/same-scope baseline under its shared-host guard. No full-suite result is claimed.
+
+Standard core typecheck (`npm --workspace=@tetsuo-ai/runtime run typecheck`, including test-support checks) passed on the PC in `node:26.5.0-bookworm` with npm 11.17.0. `git diff --check` passed. All four changed source/test files matched the PC checkout byte-for-byte; their manifest digest is `857933fe45d7b408c51ef4616849ba9cee14d885852910f512bd7f400eda89ef`. The report was updated after validation.
+
+PC evidence is under `/home/paul/claude-agenc-work/results/`: `core-2811-review-r10-{main,branch,final-main,final-branch}.log`, their `.fails` files (both final files empty), `core-2811-review-r10-typecheck.log`, `core-2811-review-r10-fix.patch`, and `core-2811-review-r10-source-verification.json`. Local evidence is under `/private/tmp/e2e-delegation/`: `review-r10-red.log`, `review-r10-green.log`, `review-r10-fix.patch`, and `review-r10-source-verification.json`. These checks used mocked providers and made no paid model calls.

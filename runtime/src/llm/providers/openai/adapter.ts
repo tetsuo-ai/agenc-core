@@ -1502,6 +1502,7 @@ export class OpenAIProvider implements LLMProvider {
         { id: string; name: string; arguments: string }
       >();
       const streamedFunctionItems: Record<string, unknown>[] = [];
+      const bufferedFunctionSnapshots = new Map<string, string>();
       const streamedReasoningItems: Record<string, unknown>[] = [];
       let completedResponse: Record<string, unknown> | null = null;
 
@@ -1533,6 +1534,16 @@ export class OpenAIProvider implements LLMProvider {
             // A done item can still belong to an output-limited response.
             // Wait for the terminal status before validating or publishing it.
             streamedFunctionItems.push(item);
+            const id = String(item.call_id ?? item.id ?? "").trim();
+            const name = String(item.name ?? "").trim();
+            const args = String(item.arguments ?? "");
+            const snapshot = JSON.stringify([name, args]);
+            if ((id || name || args.trim()) && bufferedFunctionSnapshots.get(id) !== snapshot) {
+              bufferedFunctionSnapshots.set(id, snapshot);
+              // Only signal new buffered output. Replayed items cannot reset
+              // the watchdog, and unvalidated tool text stays inside the adapter.
+              onChunk({ content: "", done: false, bufferedContentProgress: true });
+            }
           }
           continue;
         }
