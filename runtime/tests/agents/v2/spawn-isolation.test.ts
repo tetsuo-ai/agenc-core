@@ -137,7 +137,8 @@ describe("spawn_agent isolation", () => {
         collaborationMode: { model: config.model },
       },
       config: { ...base.config, agents: config.agents },
-      providerService: { current: () => ({ provider: activeProvider, model: config.model }) },
+      providerService: { current: () => ({ provider: activeProvider, model: config.model }),
+        isChildProviderConnected: async ({ provider }: { provider: string }) => allowed.includes(provider) },
       services: {
         ...base.services,
         modelsManager,
@@ -154,6 +155,37 @@ describe("spawn_agent isolation", () => {
     } as unknown as Session;
     return { session, tool: createSpawnAgentTool(makeOptions(session)) };
   }
+
+  it("automatically selects a connected permitted model and returns an explanation and task cap", async () => {
+    const { tool } = await crossProviderFixture(["deepseek"]);
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    const result = await tool.execute({ message: "Extract a short list of exports", task_name: "extractor", max_cost_usd: 0.5 });
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.content)).toMatchObject({ provider: "deepseek", model: "deepseek-flash", routing_reason: expect.any(String) });
+    expect(mockDelegate.mock.calls[0]?.[0].plan).toMatchObject({
+      destination: { provider: "deepseek", model: "deepseek-flash" },
+      budgetAllocation: { maxCostUsd: 0.5 }, routing: { taskKind: "extraction" },
+    });
+  });
+
+  it("refuses automatic selection when allowed providers are disconnected", async () => {
+    const { session, tool } = await crossProviderFixture(["deepseek"]);
+    Object.assign(session.providerService, { isChildProviderConnected: async () => false });
+    const result = await tool.execute({ message: "Extract names", task_name: "extractor" });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("No connected and allowed model");
+    expect(mockDelegate).not.toHaveBeenCalled();
+    expect(result.effectDisposition?.disposition).toBe("confirmed_no_effect");
+  });
+
+  it("keeps an explicit model override and permits explicit parent inheritance", async () => {
+    const { tool } = await crossProviderFixture(["deepseek"]);
+    mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
+    await tool.execute({ message: "Extract names", task_name: "manual", provider: "deepseek", model: "deepseek-v4-pro" });
+    expect(mockDelegate.mock.calls[0]?.[0].plan?.destination.model).toBe("deepseek-v4-pro");
+    await tool.execute({ message: "Extract names", task_name: "inherited", routing: "inherit" });
+    expect(mockDelegate.mock.calls[1]?.[0].plan).toBeUndefined();
+  });
 
   it("keeps cross-provider spawning off by default", async () => {
     const { tool } = await crossProviderFixture(["deepseek"], false);
@@ -254,7 +286,7 @@ describe("spawn_agent isolation", () => {
     const { session } = await crossProviderFixture(["openai"]);
     mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
     const result = await createSpawnAgentTool(makeOptions(session)).execute({
-      message: "research this", task_name: "researcher", tool_free: true,
+      message: "research this", task_name: "researcher", tool_free: true, routing: "inherit",
     });
     expect(result.isError).not.toBe(true);
     expect(mockDelegate.mock.calls[0]?.[0].toolAllowlist).toBeUndefined();
@@ -317,7 +349,7 @@ describe("spawn_agent isolation", () => {
   it("with automatic choice on, lists allowed models with their API prices", async () => {
     const { session } = await crossProviderFixture(["deepseek"]);
     const description = createSpawnAgentTool(makeOptions(session)).description;
-    expect(description).toContain("You may pick an allowed pair yourself");
+    expect(description).toContain("Omit provider and model for local automatic selection");
     expect(description).toContain("with API prices per 1M input/output tokens");
     expect(description).toMatch(/deepseek\/deepseek-v4-pro \$[\d.]+\/\$[\d.]+/u);
     expect(description).toContain("Sub-agents run at the lowest effort and standard speed;");
@@ -752,7 +784,7 @@ describe("spawn_agent isolation", () => {
         modelsManager: new StaticModelsManager({ config, fallbackProvider: "deepseek" }),
         crossProviderConsent: { ownerSessionId: "conv-1", sessionEpoch: "epoch", request } } });
     mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
-    const result = await createSpawnAgentTool(fixture.opts).execute(fixture.args);
+    const result = await createSpawnAgentTool(fixture.opts).execute({ ...fixture.args, routing: "inherit" });
     expect(result.isError).not.toBe(true);
     expect(request).toHaveBeenCalledOnce();
     expect(mockDelegate.mock.calls[0]?.[0].plan).toMatchObject({ crossProvider: true,

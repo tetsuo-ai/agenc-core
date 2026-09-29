@@ -1,0 +1,42 @@
+{
+  "provenance": "synthetic-policy-only",
+  "split": "held-out",
+  "description": "Mock outcomes exercise routing policy. They are not provider measurements.",
+  "candidates": [
+    { "provider": "deepseek", "model": "deepseek-v4-flash", "connected": true, "allowed": true, "supportsToolUse": true, "supportsVision": true, "supportsReasoning": true, "contextWindow": 100000, "maxOutputTokens": 8192, "cost": { "inputUsdPer1K": 0.0001, "outputUsdPer1K": 0.0002 } },
+    { "provider": "deepseek", "model": "deepseek-v4-pro", "connected": true, "allowed": true, "supportsToolUse": true, "supportsVision": false, "supportsReasoning": true, "contextWindow": 100000, "maxOutputTokens": 8192, "cost": { "inputUsdPer1K": 0.003, "outputUsdPer1K": 0.012 } },
+    { "provider": "openai", "model": "gpt-6-astra", "connected": true, "allowed": true, "supportsToolUse": true, "supportsVision": true, "supportsReasoning": true, "contextWindow": 100000, "maxOutputTokens": 8192, "cost": { "inputUsdPer1K": 0.01, "outputUsdPer1K": 0.04 } }
+  ],
+  "baselines": { "strongest": "openai/gpt-6-astra", "parent": "deepseek/deepseek-v4-pro" },
+  "tasks": [
+    { "id": "invoice-identifiers", "prompt": "Extract the invoice IDs from these short records.", "kind": "extraction", "complexity": "simple", "expectedChoice": "deepseek/deepseek-v4-flash", "outcomeCase": "simple" },
+    { "id": "unit-labels", "prompt": "Classify these short unit labels by measurement type.", "kind": "extraction", "complexity": "simple", "expectedChoice": "deepseek/deepseek-v4-flash", "outcomeCase": "simple" },
+    { "id": "csv-fields", "prompt": "Extract the count of missing fields from this small CSV.", "kind": "extraction", "complexity": "simple", "expectedChoice": "deepseek/deepseek-v4-flash", "outcomeCase": "simple" },
+    { "id": "changelog-summary", "prompt": "Write a brief summary of this changelog.", "kind": "extraction", "complexity": "simple", "expectedChoice": "deepseek/deepseek-v4-flash", "outcomeCase": "simple" },
+    { "id": "single-guard-review", "prompt": "Review this simple null guard for an obvious omission.", "kind": "review", "complexity": "simple", "expectedChoice": "deepseek/deepseek-v4-flash", "outcomeCase": "simple" },
+    { "id": "slug-normalization", "prompt": "Implement a small slug normalization function.", "kind": "coding", "complexity": "simple", "expectedChoice": "deepseek/deepseek-v4-flash", "outcomeCase": "simple" },
+    { "id": "transaction-race", "prompt": "Fix the complex concurrency bug in transaction cancellation.", "kind": "coding", "complexity": "hard", "expectedChoice": "deepseek/deepseek-v4-pro", "outcomeCase": "hard" },
+    { "id": "key-authority-review", "prompt": "Audit security boundaries in key authority during a concurrent reload.", "kind": "review", "complexity": "hard", "expectedChoice": "deepseek/deepseek-v4-pro", "outcomeCase": "hard" },
+    { "id": "scheduler-proof", "prompt": "Prove that this scheduler cannot starve a ready task.", "kind": "reasoning", "complexity": "hard", "expectedChoice": "deepseek/deepseek-v4-pro", "outcomeCase": "hard" },
+    { "id": "recovery-architecture", "prompt": "Design a recovery architecture that preserves uncertain external effects.", "kind": "reasoning", "complexity": "hard", "expectedChoice": "deepseek/deepseek-v4-pro", "outcomeCase": "hard" },
+    { "id": "error-message-review", "prompt": "Review the changed error messages for accuracy.", "kind": "review", "complexity": "standard", "expectedChoice": "deepseek/deepseek-v4-flash", "outcomeCase": "standard" },
+    { "id": "documentation-research", "prompt": "Research primary sources for the documented retry protocol.", "kind": "research", "complexity": "standard", "expectedChoice": "deepseek/deepseek-v4-flash", "outcomeCase": "standard" }
+  ],
+  "outcomes": {
+    "simple": {
+      "deepseek/deepseek-v4-flash": { "passed": true, "costUsd": 0.001, "latencyMs": 3000 },
+      "deepseek/deepseek-v4-pro": { "passed": true, "costUsd": 0.005, "latencyMs": 12000 },
+      "openai/gpt-6-astra": { "passed": true, "costUsd": 0.02, "latencyMs": 20000 }
+    },
+    "standard": {
+      "deepseek/deepseek-v4-flash": { "passed": true, "costUsd": 0.003, "latencyMs": 10000 },
+      "deepseek/deepseek-v4-pro": { "passed": true, "costUsd": 0.012, "latencyMs": 20000 },
+      "openai/gpt-6-astra": { "passed": true, "costUsd": 0.03, "latencyMs": 30000 }
+    },
+    "hard": {
+      "deepseek/deepseek-v4-flash": { "passed": false, "costUsd": 0.04, "latencyMs": 90000 },
+      "deepseek/deepseek-v4-pro": { "passed": true, "costUsd": 0.012, "latencyMs": 30000 },
+      "openai/gpt-6-astra": { "passed": true, "costUsd": 0.03, "latencyMs": 45000 }
+    }
+  }
+}

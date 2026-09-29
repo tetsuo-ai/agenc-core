@@ -485,7 +485,7 @@ type AgentStatusPayload = EventPayload<"collab_agent_spawn_end">["status"];
 const isChildTerminalOutcome = objectShape(
   {
     provider: isString, model: isString,
-    reason: oneOf("step_limit", "completed", "insufficient_funds", "rate_limited", "provider_unavailable", "timeout", "auth_required", "model_unavailable", "context_insufficient", "tool_protocol_unreliable", "model_refused", "parent_cancelled", "policy_revoked", "resume_blocked", "cost_cap_reached", "effect_outcome_unknown", "consent_denied", "consent_unavailable"),
+    reason: oneOf("step_limit", "no_progress", "completed", "insufficient_funds", "rate_limited", "provider_unavailable", "timeout", "auth_required", "model_unavailable", "context_insufficient", "tool_protocol_unreliable", "model_refused", "parent_cancelled", "policy_revoked", "resume_blocked", "cost_cap_reached", "effect_outcome_unknown", "consent_denied", "consent_unavailable"),
     retryable: isBoolean,
     dispatch: oneOf("not_sent", "sent", "unknown"),
     completedWork: isString, unfinishedWork: isString,
@@ -1426,7 +1426,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       prompt: isString,
       model: isString,
     },
-    { taskName: isString, agentType: isString, provider: isString, reasoningEffort: isString },
+    { taskName: isString, agentType: isString, provider: isString, routingReason: isString, reasoningEffort: isString },
   ),
   collab_agent_spawn_end: objectShape(
     {
@@ -1446,7 +1446,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       taskName: isString,
       agentType: isString,
       provider: isString,
-      reasoningEffort: isString,
+      routingReason: isString, reasoningEffort: isString,
       terminal: isChildTerminalOutcome,
     },
   ),
@@ -1466,7 +1466,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       prompt: isString,
       model: isString,
       provider: isString,
-      reasoningEffort: isString,
+      routingReason: isString, reasoningEffort: isString,
       toolUseCount: isNonNegativeInteger,
       tokenCount: isNonNegativeInteger,
       error: isString,

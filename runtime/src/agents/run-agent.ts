@@ -35,6 +35,8 @@ import {
 } from "../tools/runtimes/context.js";
 import { attachReadOnlyDelegationReadGuard } from "../permissions/readonly-read-guard.js";
 import { LRUCache } from "lru-cache";
+import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
+import { recordChildRoutingOutcome } from "./child-routing.js";
 import { registerChildApprovalSession, revokeChildApprovalSession } from "./child-approval-context.js";
 import { bindLiveAgentSession } from "./live-session.js";
 import { createInertMcpManager } from "../mcp-client/inert-manager.js";
@@ -1653,7 +1655,7 @@ const followupTurnStateByParent = new WeakMap<Session, ParentFollowupState>();
 const PARENT_FOLLOWUP_COALESCE_MS = 200;
 const PARENT_FOLLOWUP_RETRY_MAX_MS = 5_000;
 
-function requestParentFollowupTurn(params: {
+export function requestParentFollowupTurn(params: {
   readonly live: LiveAgent;
   readonly parent: Session;
 }): void {
@@ -3526,6 +3528,7 @@ function buildChildSession(
   provider: LLMProvider,
   authority: ChildSessionAuthority,
   terminalResult: () => ChildRunTerminalResult,
+  executionAdmission?: ExecutionAdmissionClient,
 ): ChildSession {
   const { sessionConfiguration, sandboxExecutionBroker } = authority;
   if (sandboxExecutionBroker !== undefined) {
@@ -3598,24 +3601,8 @@ function buildChildSession(
       }, params.plan?.crossProvider ? params.plan.route : undefined),
       providerEnvironment: params.parent.providerService.environment(),
       registry,
-      ...(params.parent.services.executionAdmission !== undefined
-        ? {
-            executionAdmission:
-              params.parent.services.executionAdmission.forSession({
-                runId: params.live.agentId,
-                sessionId: params.live.agentId,
-                parentRunId:
-                  params.parent.services.executionAdmission.scope.runId,
-                // Give each spawned child its OWN admission parent-scope (its
-                // agentId) instead of sharing the parent's single bucket. A
-                // shared scope capped the whole fan-out at `parent: 4`
-                // concurrent streams regardless of swarm size; per-child scopes
-                // let N workers actually run in parallel, bounded by the
-                // provider/workspace/global limits (the real backstop).
-                parentScopeId: params.live.agentId,
-              }),
-          }
-        : {}),
+      // Explicitly shadow the inherited service even for admission-free embeds.
+      executionAdmission,
       // A child has no independently owned MCP transport in this path. Never
       // retain the parent's manager or its live tool closures under a forked
       // sandbox authority; refresh is deliberately inert and local.
@@ -3738,6 +3725,33 @@ export async function* runAgent(
   let turnId: string = params.initialTurnId ?? crypto.randomUUID();
   const { live, parent } = params;
   let childSession: ChildSession | null = null;
+  let workerAdmission: ExecutionAdmissionClient | undefined;
+  let taskAdmission: ExecutionAdmissionClient | undefined;
+  let workerAdmissionReleased = false;
+  const releaseTaskAdmission = (): void => {
+    const previous = taskAdmission;
+    taskAdmission = undefined;
+    if (previous !== workerAdmission) previous?.release?.();
+  };
+  const releaseWorkerAdmission = (): void => {
+    releaseTaskAdmission();
+    if (!workerAdmissionReleased) {
+      workerAdmissionReleased = true;
+      workerAdmission?.release?.();
+    }
+  };
+  const bindTaskAdmission = (taskId: string | undefined, plan?: ChildExecutionPlan): void => {
+    const identity = taskId ?? plan?.task.id;
+    if (plan?.budgetAllocation?.maxCostUsd !== undefined && workerAdmission === undefined) {
+      throw new Error("child cost cap requires execution admission");
+    }
+    const next = workerAdmission === undefined || identity === undefined ? undefined :
+      workerAdmission.forSession({ sessionId: live.agentId, taskId: identity,
+        ...(plan?.budgetAllocation?.maxCostUsd !== undefined ? { maxCostUsd: plan.budgetAllocation.maxCostUsd } : {}),
+      });
+    releaseTaskAdmission();
+    taskAdmission = next;
+  };
   let ownedChildProvider: LLMProvider | null = null;
   let ownedPreparedProvider: LLMProvider | null = null;
   let unsubscribeCrossPolicy: (() => void) | null = null;
@@ -3748,6 +3762,7 @@ export async function* runAgent(
   let roleTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
   let currentTaskId: string | undefined = params.taskId ?? turnId;
   let currentTaskText = params.taskPrompt;
+  let taskStartedAt = startedAt;
   let currentTurnReceiptCommitted = false;
   let currentCommittedReceipt: TaskTurnReceipt | undefined;
   let currentTurnToolCallCount = 0;
@@ -3759,8 +3774,16 @@ export async function* runAgent(
   let parentProjectionError: Error | undefined;
   let parentProjectionTurnId: string | undefined;
   let pendingPreconstructionReceipt: TaskTurnReceipt | undefined;
+  // Capture the parent's current task reader before a reusable parent moves
+  // its admission facade to another assignment. Prefer our stable run below.
+  const originalParentAdmission = parent.services.executionAdmission;
+  const readOriginalParentUsage = originalParentAdmission?.getUsageSummary?.bind(originalParentAdmission);
   const knownWorkerCost = (): number | undefined => {
-    const summary = parent.services.executionAdmission?.getUsageSummary?.();
+    const direct = workerAdmission?.getDirectUsageSummary?.();
+    if (direct !== undefined) {
+      return direct.runId !== live.agentId || direct.hasUnknownCost ? undefined : direct.costUsd;
+    }
+    const summary = readOriginalParentUsage?.();
     if (summary === undefined) return undefined;
     const usage = summary.agents.find((agent) => agent.runId === live.agentId);
     return usage?.hasUnknownCost ? undefined : usage?.costUsd ?? 0;
@@ -3998,6 +4021,12 @@ export async function* runAgent(
       outcome: receiptToCommit.outcome,
       ...(receiptToCommit.terminal !== undefined ? { terminal: receiptToCommit.terminal } : {}),
     };
+    if (receiptToCommit.terminal !== undefined) {
+      await recordChildRoutingOutcome(parent, live.assignment?.executionPlan ?? live.metadata.executionPlan ?? params.plan, {
+        receiptId: `${live.agentId}:${receiptToCommit.turnId}`, terminal: receiptToCommit.terminal,
+        latencyMs: Math.max(0, Date.now() - taskStartedAt),
+      });
+    }
     if (
       receiptToCommit.taskId !== undefined &&
       live.assignment?.taskId === receiptToCommit.taskId
@@ -4399,11 +4428,29 @@ export async function* runAgent(
     const childProvider = params.onCacheSafeParams
       ? wrapProviderForAgentSummary(childProviderBase, captureCacheSafeParams)
       : childProviderBase;
+    workerAdmission = parent.services.executionAdmission?.forSession({
+      runId: live.agentId, sessionId: live.agentId,
+      parentRunId: parent.services.executionAdmission.scope.runId,
+      // A child owns its concurrency bucket while inheriting the parent budget.
+      parentScopeId: live.agentId,
+    });
+    bindTaskAdmission(currentTaskId, params.plan);
+    // Session services are immutable. Keep a stable facade whose per-task
+    // methods resolve to the active durable allocation on reusable workers.
+    const admission = workerAdmission === undefined ? undefined : new Proxy(workerAdmission, {
+      get(_target, property) {
+        if (property === "release") return releaseWorkerAdmission;
+        const current = taskAdmission ?? workerAdmission!;
+        const member: unknown = Reflect.get(current, property, current);
+        return typeof member === "function" ? member.bind(current) : member;
+      },
+    });
     childSession = buildChildSession(
       params,
       childProvider,
       childAuthority,
       terminalResultForPendingWorker,
+      admission,
     );
     if (childSession.rolloutStore !== null) {
       const destination = params.plan?.destination ?? currentChildProvider(childSession);
@@ -4499,6 +4546,8 @@ export async function* runAgent(
         live.metadata.executionPlan?.task.text ??
         (typeof accepted.nextUserMessage === "string" ? accepted.nextUserMessage : currentTaskText);
       currentTaskId = accepted.taskId;
+      bindTaskAdmission(currentTaskId, live.assignment?.executionPlan ?? live.metadata.executionPlan);
+      taskStartedAt = Date.now();
       turnId = accepted.turnId ?? crypto.randomUUID();
       currentTurnReceiptCommitted = false;
       taskStartingCost = knownWorkerCost();
@@ -4555,6 +4604,7 @@ export async function* runAgent(
       let terminalError: unknown;
 
       const iter = childSession.runTurn(nextUserMessage, {
+        automaticChildRouting: (live.assignment?.executionPlan ?? live.metadata.executionPlan ?? params.plan)?.routing !== undefined,
         ...(!params.keepAlive || params.summarizeAtStepLimit ? { stepLimitWrapup: {
           ...(params.plan?.budgetAllocation !== null && params.plan?.budgetAllocation !== undefined
             ? { maxModelCalls: params.plan.budgetAllocation.maxModelCalls } : {}),
@@ -4740,6 +4790,7 @@ export async function* runAgent(
         stopReason === "empty_response";
       const boundedTerminalReason: ChildTerminalReason | undefined =
         stopReason === "max_turns" ? "step_limit" :
+        stopReason === "no_progress" ? "no_progress" :
         stopReason === "max_budget_usd" ? "cost_cap_reached" :
         stopReason === "effect_review_required" ? "effect_outcome_unknown" :
         stopReason === "compact_failed" ? "context_insufficient" :
@@ -4895,6 +4946,7 @@ export async function* runAgent(
         if (committedReceipt === undefined) {
           throw new Error("committed task receipt payload is unavailable");
         }
+        releaseTaskAdmission();
         if (reuseBlockedReason === undefined) {
           live.status.markIdle(completedTurnId, currentCommittedReceipt?.terminal);
           pendingWorkerTerminal = turnFailureMessage !== undefined
@@ -5154,6 +5206,7 @@ export async function* runAgent(
     if (acceptedNotStarted !== undefined && childSession !== null) {
       turnId = acceptedNotStarted.turnId;
       currentTaskId = acceptedNotStarted.taskId;
+      taskStartedAt = Date.now();
       currentTurnReceiptCommitted = false;
       currentTurnToolCallCount = 0;
       const nackCommitted = await commitTaskReceipt({
@@ -5228,6 +5281,12 @@ export async function* runAgent(
             outcome: committedReceipt.outcome,
             ...(committedReceipt.terminal !== undefined ? { terminal: committedReceipt.terminal } : {}),
           };
+          if (committedReceipt.terminal !== undefined) {
+            await recordChildRoutingOutcome(parent, live.metadata.executionPlan ?? params.plan, {
+              receiptId: `${live.agentId}:${committedReceipt.turnId}`, terminal: committedReceipt.terminal,
+              latencyMs: Math.max(0, Date.now() - taskStartedAt),
+            });
+          }
           if (
             committedReceipt.taskId !== undefined &&
             live.assignment?.taskId === committedReceipt.taskId
@@ -5252,6 +5311,11 @@ export async function* runAgent(
       } catch (error) {
         cleanupErrors.push(error);
       }
+    }
+    try {
+      releaseWorkerAdmission();
+    } catch (error) {
+      cleanupErrors.push(error);
     }
     const childInspectionBrokers = childSession === null ? undefined : inspectionBrokers.get(childSession);
     if (childInspectionBrokers !== undefined) {
