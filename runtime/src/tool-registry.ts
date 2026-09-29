@@ -678,7 +678,7 @@ export function buildToolRegistry(
 ): ToolRegistry {
   const unifiedExecManager =
     options.unifiedExecManager ??
-    new UnifiedExecProcessManager({ cwd: options.workspaceRoot });
+    new UnifiedExecProcessManager({ cwd: options.workspaceRoot, ...(options.lightMode === true ? { settleOnStreamClose: true, tailOutput: true } : {}) });
   const discoveredToolNames = new Set<string>();
   const markDiscovered = (toolNames: readonly string[]): void => {
     for (const name of toolNames) {

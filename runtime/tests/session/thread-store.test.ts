@@ -1330,3 +1330,25 @@ describe("Light derived-index coalescing", () => {
     }
   });
 });
+
+it("retries a failed Light projection at a synchronous barrier", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "agenc-light-index-retry-"));
+  const rollout = openStore({ cwd, sessionId: "light-index-retry" });
+  const store = new FileThreadStore({ agencHome, cwd });
+  const commits = vi.spyOn(StateThreadRepository.prototype, "commitRolloutProjection");
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  vi.useFakeTimers();
+  try {
+    store.createThread({ threadId: "light-index-retry", rolloutStore: rollout, coalesceDerivedIndex: true });
+    commits.mockClear();
+    rollout.appendRollout(responseItem("durable", "retry-me"), { durable: true });
+    commits.mockImplementationOnce(() => { throw new Error("derived index unavailable"); });
+    vi.advanceTimersByTime(500);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(readFileSync(rollout.rolloutPath, "utf8")).toContain("retry-me");
+    store.flushThread("light-index-retry");
+    expect(commits).toHaveBeenCalledTimes(2);
+  } finally {
+    vi.useRealTimers(); commits.mockRestore(); warn.mockRestore(); store.close(); rollout.close(); rmSync(cwd, { recursive: true, force: true });
+  }
+});

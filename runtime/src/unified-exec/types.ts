@@ -64,6 +64,10 @@ export interface UnifiedExecRuntimeSandbox {
 }
 
 export interface UnifiedExecManagerOptions {
+  /** Light: settle drained pipes promptly; descendant containment still runs. */
+  readonly settleOnStreamClose?: boolean;
+  /** Light command responses retain the bounded tail of each stream. */
+  readonly tailOutput?: boolean;
   readonly cwd?: string;
   readonly env?: Record<string, string>;
   readonly baseEnv?: Readonly<Record<string, string | undefined>>;

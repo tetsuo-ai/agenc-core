@@ -1252,6 +1252,7 @@ async function bootstrapLocalRuntimeSessionScoped(
     commandExecutionAuthority.childEnvironment,
   );
   const unifiedExecManager = new UnifiedExecProcessManager({
+    ...(runtimeOptions.lightMode === true ? { settleOnStreamClose: true, tailOutput: true } : {}),
     cwd: workspaceRoot,
     baseEnv: env,
     shellPath: commandExecutionAuthority.path,

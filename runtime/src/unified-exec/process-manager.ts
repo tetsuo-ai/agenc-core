@@ -458,7 +458,15 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
 
+function truncateTail(text: string, maxChars: number): { text: string; truncated: boolean } {
+  if (text.length <= maxChars) return { text, truncated: false };
+  const marker = `[... earlier output omitted; ${text.length} original chars ...]\n`;
+  const tailChars = Math.max(0, maxChars - marker.length);
+  return { text: marker.slice(0, maxChars) + (tailChars > 0 ? text.slice(-tailChars) : ""), truncated: true };
+}
+
 function createResult(params: {
+  readonly tailOutput?: boolean;
   readonly stdout: string;
   readonly stderr: string;
   readonly exitCode: number | null;
@@ -473,8 +481,9 @@ function createResult(params: {
   };
 }): ExecCommandToolOutput {
   const maxChars = maxCharsForTokens(params.maxOutputTokens);
-  const stdout = truncateHeadTail(params.stdout, maxChars);
-  const stderr = truncateHeadTail(params.stderr, maxChars);
+  const truncate = params.tailOutput === true ? truncateTail : truncateHeadTail;
+  const stdout = truncate(params.stdout, maxChars);
+  const stderr = truncate(params.stderr, maxChars);
   const output = [stdout.text, stderr.text]
     .filter((part) => part.length > 0)
     .join("");
@@ -531,6 +540,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private readonly baseEnv: Readonly<Record<string, string | undefined>>;
   private readonly sessionTempRoot: string;
   private readonly shellPath: string;
+  private readonly settleOnStreamClose: boolean;
+  private readonly tailOutput: boolean;
   private readonly commandWrapperArgv: readonly string[];
   private readonly maxProcesses: number;
   private readonly sandboxManager: UnifiedExecSandboxManager;
@@ -547,6 +558,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
 
   constructor(options: UnifiedExecManagerOptions = {}) {
     this.cwd = options.cwd ?? process.cwd();
+    this.settleOnStreamClose = options.settleOnStreamClose === true;
+    this.tailOutput = options.tailOutput === true;
     this.env = options.env === undefined
       ? undefined
       : Object.freeze({ ...options.env });
@@ -897,6 +910,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     const output = readFileHead(logPath, DETACHED_LOG_READ_LIMIT_BYTES);
     const durationMs = Date.now() - startedAt;
     const result = createResult({
+      tailOutput: this.tailOutput,
       stdout: output,
       stderr: outcome?.error === undefined ? "" : outcome.error.message,
       exitCode: outcome?.exitCode ?? null,
@@ -1460,14 +1474,16 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       ...(detachUpstreamAbort !== undefined ? { detachUpstreamAbort } : {}),
     };
     let settlementStarted = false;
+    let settlementTimer: ReturnType<typeof setTimeout> | undefined;
+    let pendingSettlement: { state: ExitState; error?: Error } | undefined;
     const settleContainedProcess = (
       state: ExitState,
       spawnError?: Error,
     ): void => {
       if (settlementStarted) return;
       settlementStarted = true;
-      setTimeout(() => {
-        void terminateProcessTreeAndReport(child, {
+      if (settlementTimer !== undefined) clearTimeout(settlementTimer);
+      void terminateProcessTreeAndReport(child, {
           label: `exec_command process ${params.processId}`,
         }).then(
           (outcome) => {
@@ -1497,14 +1513,27 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
             });
           },
         );
-      }, 20).unref?.();
+    };
+    const scheduleSettlement = (state: ExitState, error?: Error): void => {
+      if (settlementStarted || settlementTimer !== undefined) return;
+      pendingSettlement = { state, ...(error !== undefined ? { error } : {}) };
+      // Keep the fallback for descendants holding pipes open after leader exit.
+      settlementTimer = setTimeout(() => settleContainedProcess(state, error), 20);
+      settlementTimer.unref?.();
     };
     child.on("exit", (code, signal) => {
-      settleContainedProcess({ exitCode: code, signal });
+      scheduleSettlement({ exitCode: code, signal });
     });
     child.on("error", (error) => {
-      settleContainedProcess({ exitCode: 1 }, error);
+      scheduleSettlement({ exitCode: 1 }, error);
     });
+    if (this.settleOnStreamClose) {
+      child.on("close", (code, signal) => {
+        // Node emits close after both output streams drain. Containment is still
+        // mandatory, including the failure path that poisons sandbox authority.
+        settleContainedProcess(pendingSettlement?.state ?? { exitCode: code, signal }, pendingSettlement?.error);
+      });
+    }
     this.attachAbortTermination(entry);
     this.processes.set(params.processId, entry);
     child.unref();
@@ -1684,6 +1713,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       .map((chunk) => chunk.chunk)
       .join("");
     return createResult({
+      tailOutput: this.tailOutput,
       stdout,
       stderr,
       exitCode: entry.exitState?.exitCode ?? null,

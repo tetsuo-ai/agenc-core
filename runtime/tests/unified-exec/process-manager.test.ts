@@ -326,13 +326,13 @@ describe("UnifiedExecProcessManager", () => {
     }
   });
 
-  test("contains a detached delayed descendant before the operation lifetime settles", async () => {
+  test.each([false, true])("contains a detached delayed descendant before the operation lifetime settles (drained=%s)", async (settleOnStreamClose) => {
     if (process.platform === "win32") return;
     const root = await mkdtemp(join(tmpdir(), "agenc-exec-editor-descendant-"));
     const target = join(root, "loaded.ts");
     const marker = `agenc-delayed-descendant-${process.pid}-${Date.now()}`;
     await writeFile(target, "before\n", "utf8");
-    const manager = new UnifiedExecProcessManager({ cwd: root });
+    const manager = new UnifiedExecProcessManager({ cwd: root, settleOnStreamClose });
     const lifetime = createWorkspaceOperationLifetime(() => {});
     const delayedWriter = [
       `process.title=${JSON.stringify(marker)};`,
@@ -1295,4 +1295,23 @@ describe("background-shell trio (task 8)", () => {
 
     await manager.closeAll();
   }, 40_000);
+});
+
+
+describe("Light command results", () => {
+  test("retains stream tails, exit status and total size after pipe drain", async () => {
+    const manager = new UnifiedExecProcessManager({ tailOutput: true, settleOnStreamClose: true });
+    try {
+      const script = "process.stdout.write('FIRST'+'.'.repeat(5000)+'LAST');process.stderr.write('ERROR'+'.'.repeat(5000)+'FAIL');process.exitCode=7";
+      const result = await manager.execCommand({ cmd: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`, max_output_tokens: 100, yield_time_ms: 1000 });
+      expect(result.stdout).toContain("earlier output omitted");
+      expect(result.stdout).toMatch(/LAST$/u);
+      expect(result.stderr).toMatch(/FAIL$/u);
+      expect(result.stdout).not.toContain("FIRST");
+      expect(result.exitCode).toBe(7);
+      expect(result.process_id).toBeUndefined();
+      expect(result.truncated).toBe(true);
+      expect(result.original_token_count).toBeGreaterThan(100);
+    } finally { await manager.closeAll("test cleanup"); }
+  });
 });

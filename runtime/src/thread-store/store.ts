@@ -1339,12 +1339,12 @@ export class FileThreadStore implements ThreadStore {
     const pending = this.pendingIndexes.get(rolloutPath);
     if (pending !== undefined) {
       clearTimeout(pending);
-      this.pendingIndexes.delete(rolloutPath);
     }
     backfillRolloutFile({
       rolloutPath,
       threads: this.threadIndex,
     });
+    this.pendingIndexes.delete(rolloutPath);
   }
 
   /**
@@ -1367,7 +1367,6 @@ export class FileThreadStore implements ThreadStore {
       }
       if (this.pendingIndexes.has(rolloutPath)) return;
       const timer = setTimeout(() => {
-        this.pendingIndexes.delete(rolloutPath);
         if (this.closed || this.liveRecorders.get(threadId) !== rolloutStore) return;
         try {
           this.indexRolloutFile(rolloutPath);
