@@ -2219,7 +2219,7 @@ export class AgentControl {
         if (recovered === undefined) continue;
         const terminal = recovered.receipt.terminal;
         const destination = terminal ?? edge.metadata.executionPlan?.destination;
-        const taskText = recovered.admission?.taskText ?? edge.metadata.lastTaskMessage;
+        const taskText = recovered.taskText ?? recovered.admission?.taskText ?? edge.metadata.lastTaskMessage;
         const listed: ListedAgent = { agentName: recovered.receipt.agentPath,
           agentStatus: recoveredChildStatus(recovered.receipt),
           ...(destination === undefined ? {} : { provider: boundedRecoveredChildText(destination.provider, 512),
@@ -2286,6 +2286,7 @@ export class AgentControl {
           const receipt = projectRecoveredChildReceipt(item.receipt);
           const admission = item.admission;
           return { edge: item.edge, sourcePath: item.sourcePath, sequence: item.sequence, receipt,
+            ...(item.taskText === undefined ? {} : { taskText: boundedRecoveredChildText(item.taskText) }),
             ...(item.eventId === undefined ? {} : { eventId: item.eventId }),
             ...(item.spawnEdgeId === undefined ? {} : { spawnEdgeId: item.spawnEdgeId }),
             ...(admission === undefined ? {} : { admission: { agentId: admission.agentId,

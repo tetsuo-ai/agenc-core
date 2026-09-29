@@ -183,6 +183,22 @@ describe("durable child results after daemon restart", () => {
     expect(updates[0]!.content).not.toContain('"durable_admission_ref"');
   });
 
+  test("lists the latest completed assignment's task instead of the original spawn prompt", async () => {
+    const parent = open("parent");
+    const state = await durableIdleWorker(parent);
+    const accepted = state.assign();
+    appendReceipt(state.childStore, 2, { agentPath: state.live.agentPath,
+      taskId: accepted.taskId, turnId: accepted.turnId });
+    state.revoke();
+    close(state.childStore);
+    const restored = controlFixture(parent);
+    const listing = restored.control.listAgents().find((agent) => agent.agentName === state.live.agentPath);
+    expect(listing?.lastTaskMessage).toBe("Implement the new validation rule");
+    const updates = restored.control.drainRecoveredChildTaskUpdates("parent");
+    expect(updates[0]!.content).toContain('"durable_outcome_ref"');
+    expect(updates[0]!.content).not.toContain('"durable_admission_ref"');
+  });
+
   test("admission publication cannot reenter and admit a second assignment", async () => {
     const parent = open("parent");
     const state = await durableIdleWorker(parent);

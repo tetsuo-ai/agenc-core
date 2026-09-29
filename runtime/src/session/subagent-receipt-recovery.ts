@@ -13,6 +13,8 @@ export interface RecoveredChildTaskReceipt {
   readonly sourcePath: string;
   readonly sequence: number;
   readonly receipt: SubagentTurnOutcomeEvent;
+  /** Task text for a matched outcome, without marking it as unfinished admission. */
+  readonly taskText?: string;
   readonly admission?: SubagentTaskAdmissionEvent;
   readonly eventId?: string;
   readonly spawnEdgeId?: string;
@@ -147,6 +149,7 @@ export function readSubagentTaskReceipts(options: {
       if (outcome.receipt.taskId !== admitted.admission.taskId) {
         throw new Error("Child task outcome does not match its admitted task.");
       }
+      receipts.set(key, { ...outcome, taskText: admitted.admission.taskText });
       continue;
     }
     const { admission, sourcePath, sequence, eventId, spawnEdgeId } = admitted;
