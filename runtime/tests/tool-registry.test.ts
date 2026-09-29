@@ -2136,7 +2136,7 @@ describe("Light presentation and deferred capability preservation", () => {
     const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
     expect(light.tools.map(tool => tool.name)).toEqual(normal.tools.map(tool => tool.name));
     expect(light.toLLMTools().map(tool => tool.function.name).sort()).toEqual([
-      "FileRead", "MultiEdit", "exec_command", "system.searchTools",
+      "FileRead", "MultiEdit", "Write", "exec_command", "system.searchTools",
     ].sort());
     for (const presented of light.toLLMTools()) {
       const canonical = light.tools.find(tool => tool.name === presented.function.name)!;
@@ -2184,9 +2184,30 @@ describe("Light presentation and deferred capability preservation", () => {
     expect(execute).toHaveBeenCalledOnce();
     expect(other.toLLMTools().some(tool => tool.function.name === extra.name)).toBe(false);
     expect(normal.toLLMTools()).toEqual(normalBefore);
-    await light.dispatch({ id: "load-full-write", name: "system.searchTools", arguments: '{"select":"Write"}' });
-    const write = light.tools.find(tool => tool.name === "Write")!;
-    expect(light.toLLMTools().find(tool => tool.function.name === "Write")?.function).toEqual({ name: write.name, description: write.description, parameters: write.inputSchema });
+    await light.dispatch({ id: "load-full-edit", name: "system.searchTools", arguments: '{"select":"Edit"}' });
+    const edit = light.tools.find(tool => tool.name === "Edit")!;
+    expect(light.toLLMTools().find(tool => tool.function.name === "Edit")?.function).toEqual({ name: edit.name, description: edit.description, parameters: edit.inputSchema });
+  });
+
+  test("initial Write keeps required content, strict fields, and stable discovery presentation", async () => {
+    const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+    const initial = structuredClone(light.toLLMTools());
+    const presented = initial.find(tool => tool.function.name === "Write")!;
+    expect(presented.function.parameters).toMatchObject({
+      type: "object",
+      required: ["file_path", "content"],
+      properties: { file_path: { type: "string" }, content: { type: "string" } },
+      additionalProperties: false,
+    });
+    expect(presented.function.description).toContain("existing files only after FileRead");
+    await light.dispatch({ id: "inspect-initial-write", name: "system.searchTools", arguments: '{"select":"Write"}' });
+    expect(light.toLLMTools()).toEqual(initial);
+    const admitted = buildProductionToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+    expect(await admitted.dispatch({
+      id: "write-without-authority",
+      name: "Write",
+      arguments: '{"file_path":"/tmp/light-write-no-authority","content":"must not write"}',
+    })).toMatchObject({ isError: true, content: expect.stringContaining("tool_admission_session_unavailable") });
   });
 
   test.each([undefined, { disabled_tools: ["system.searchTools"] }])(
