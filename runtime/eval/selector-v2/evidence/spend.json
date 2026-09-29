@@ -1,0 +1,13 @@
+{
+  "deepseek": {
+    "calls": 31,
+    "estimatedUsd": 0.019817808,
+    "budgetChargeUsd": 0.14733839999999998,
+    "unresolvedUsd": 0,
+    "roles": {
+      "parent": 24,
+      "child": 7
+    },
+    "minimumBalanceUsd": 43.05
+  }
+}

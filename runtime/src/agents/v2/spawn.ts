@@ -31,7 +31,7 @@ import type { SubagentSpeed } from "../../config/schema.js";
 import { CROSS_PROVIDER_AUTH_DESCRIPTION } from "../../llm/cross-provider-auth.js";
 import { DEFAULT_MODEL_COSTS, resolveModelCostEntry } from "../../session/cost.js";
 import type { ProviderSelection } from "../../session/provider-service.js";
-import { routeChildTask, childRoutingBudget } from "../child-routing.js";
+import { routeChildTask, childRoutingBudget, recordChildRoutingVerification } from "../child-routing.js";
 import { CHILD_TASK_KINDS, CHILD_TASK_COMPLEXITIES, type ChildSelectionTask, type RankedChildCandidate } from "../provider-selector.js";
 import type { ChildExecutionPlan } from "../cross-provider.js";
 import { runChildRoutingFallback, type ChildRoutingAttemptResult } from "../child-routing-fallback.js";
@@ -543,6 +543,7 @@ function buildSpawnAgentSchema(opts: MultiAgentV2Options, session = opts.getSess
       },
       reasoning_effort: { type: "string" },
       service_tier: { type: "string" },
+      routing_preference: { type: "string", enum: ["balanced", "economy", "quality", "fast"], description: "User budget or speed preference for automatic selection. Defaults to balanced." },
       routing: { type: "string", enum: ["auto", "inherit"], description: "Optional routing override. Auto requires enabled automatic selection. Inherit keeps the parent model." },
       task_kind: { type: "string", enum: [...CHILD_TASK_KINDS], description: "Optional task category for automatic selection." },
       complexity: { type: "string", enum: [...CHILD_TASK_COMPLEXITIES], description: "Optional task difficulty for automatic selection." },
@@ -611,11 +612,12 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         "fork_turns",
         "fork_context",
         "isolation",
-        "routing", "task_kind", "complexity", "requires_vision", "context_tokens", "max_cost_usd",
+        "routing", "routing_preference", "task_kind", "complexity", "requires_vision", "context_tokens", "max_cost_usd",
       ]),
       required: ["message", "task_name"],
     });
     if (strict) return confirmedNoSpawn(strict);
+    if (args.routing_preference !== undefined && !["balanced", "economy", "quality", "fast"].includes(String(args.routing_preference))) return spawnValidationError("Invalid routing preference");
     if (args.routing !== undefined && args.routing !== "auto" && args.routing !== "inherit") return spawnValidationError("routing must be auto or inherit");
     if (args.task_kind !== undefined && !CHILD_TASK_KINDS.includes(args.task_kind as ChildSelectionTask["kind"])) return spawnValidationError("invalid task_kind");
     if (args.complexity !== undefined && !CHILD_TASK_COMPLEXITIES.includes(args.complexity as ChildSelectionTask["complexity"])) return spawnValidationError("invalid complexity");
@@ -745,6 +747,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     let routingDecision: ChildExecutionPlan["routing"] = automaticAttempt?.routing;
     let routingCandidates: readonly RankedChildCandidate[] | undefined;
     let routingBudget: number | undefined;
+    let verifiedRouting: Awaited<ReturnType<typeof routeChildTask>> | undefined;
     const requestedTaskCap = args.max_cost_usd as number | undefined;
     const taskCap = requestedTaskCap === undefined ? undefined : childRoutingBudget(session, requestedTaskCap);
     let reportedProvider = requestedProvider ?? activeProvider;
@@ -821,6 +824,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         args.routing !== "inherit" && requestedProvider === undefined && effectiveModel === undefined && forkMode === undefined) {
       const routed = await routeChildTask(session, {
         requiresTools: args.tool_free !== true,
+        ...(args.routing_preference !== undefined ? { preferences: args.routing_preference === "fast" ? { speed: "fast" as const } : { cost: args.routing_preference as "balanced" | "economy" | "quality" } } : {}),
         prompt, ...(role !== undefined ? { role } : {}),
         ...(args.task_kind !== undefined ? { taskKind: args.task_kind as ChildSelectionTask["kind"] } : {}),
         ...(args.complexity !== undefined ? { complexity: args.complexity as ChildSelectionTask["complexity"] } : {}),
@@ -841,7 +845,8 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       routingDecision = { taskKind: routed.task.kind, complexity: routed.task.complexity,
         reason: routed.result.reason,
         ...(routed.result.selected.estimatedCostUsd !== undefined ? { estimatedCostUsd: routed.result.selected.estimatedCostUsd } : {}) };
-      routingCandidates = routed.result.ranked;
+      routingCandidates = routed.result.cascade?.candidates ?? (routed.verification !== undefined ? [routed.result.selected] : routed.result.ranked);
+      if (routed.verification !== undefined) verifiedRouting = routed;
       routingBudget = routed.task.maxCostUsd;
     }
     if (!crossProviderRequested) crossProviderRequested = requestsOtherProvider(session, requestedProvider, effectiveModel);
@@ -1280,13 +1285,23 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         maxModelCalls: Math.min(32, Math.max(1, session.config?.maxTurns ?? 32)),
         ...(routingBudget !== undefined ? { maxCostUsd: routingBudget } : {}),
         signal: session.abortController.signal,
+        ...(verifiedRouting?.verification !== undefined ? { verification: {
+          retrySafe: verifiedRouting.verification.retrySafe, costUsd: verifiedRouting.verification.costUsd,
+          check: async (attempt: import("../child-routing-fallback.js").ChildRoutingAttempt<AgentThread>) => {
+            const verdict = await verifiedRouting!.verification!.check(attempt.terminal);
+            if (verdict === "pass" || verdict === "fail") await recordChildRoutingVerification(session,
+              `${attempt.value.live.agentId}:${attempt.value.live.lastTaskReceipt?.turnId ?? callId}`,
+              attempt.terminal, verifiedRouting!.features, verdict === "pass");
+            return verdict;
+          },
+        } } : {}),
         runAttempt: async context => {
           if (context.attempt === 1) return firstObservation;
           if (!callerIsCurrent() || session.isShuttingDown || session.activeTurn?.unsafePeek()?.turnId !== originalTurnId) {
             throw new Error("The parent turn ended before automatic fallback.");
           }
           const nextName = `${taskName.slice(0, 42)}_retry${context.attempt}`;
-          notice(`Starting ${nextName} on ${context.candidate.provider}/${context.candidate.model} after a provider failure. Wait for this attempt before concluding the task.`);
+          notice(`Starting ${nextName} on ${context.candidate.provider}/${context.candidate.model} after ${verifiedRouting ? "an independent check failed" : "a provider failure"}. Wait for this attempt before concluding the task.`);
           let nextObservation: Promise<ChildRoutingAttemptResult<AgentThread>> | undefined;
           const retryArgs = { ...args, __callId: `${callId}:retry:${context.attempt}`, task_name: nextName,
             provider: context.candidate.provider, model: context.candidate.model,
@@ -1298,7 +1313,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
             Object.defineProperty(retryArgs, "__abortSignal", { value: originatingSignal });
           }
           const retry = await execute(retryArgs, {
-            routing: { ...decision, reason: `${context.candidate.provider}/${context.candidate.model} is the next eligible provider after a provider failure.`,
+            routing: { ...decision, reason: `${context.candidate.provider}/${context.candidate.model} is the next eligible model after ${verifiedRouting ? "an independent check failed" : "a provider failure"}.`,
               ...(context.candidate.estimatedCostUsd !== undefined ? { estimatedCostUsd: context.candidate.estimatedCostUsd } : {}) },
             maxModelCalls: context.remainingModelCalls,
             onStarted: (_thread, observation) => { nextObservation = observation; },
@@ -1307,15 +1322,19 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           return nextObservation;
         },
       }).then(result => {
-        if (result.attempts.length > 1 || result.stopReason !== "completed") {
-          notice(`Finished after ${result.attempts.length} attempt(s). Routing status: ${result.stopReason}. Use each child's durable result and terminal reason.`);
+        if (verifiedRouting !== undefined || result.attempts.length > 1 || result.stopReason !== "completed") {
+          notice(verifiedRouting !== undefined
+            ? result.stopReason === "completed"
+              ? `Independent verification passed for ${result.value?.live.agentPath}. Use that child's durable result.`
+              : `Independent verification did not pass. Routing status: ${result.stopReason}. Do not accept the failed attempts as a verified answer.`
+            : `Finished after ${result.attempts.length} attempt(s). Routing status: ${result.stopReason}. Use each child's durable result and terminal reason.`);
         }
       }, () => notice("Stopped automatic fallback. The next attempt lacked current authority or verified accounting. Use the existing child results."));
     }
     return json({
       task_name: live.agentPath,
       ...(routingDecision !== undefined ? { routing_reason: routingDecision.reason } : {}),
-      ...(routingCandidates !== undefined ? { automatic_fallback: "Provider failures before any child tool call may start up to two named retry workers. Wait for routing updates and all attempt receipts." } : {}),
+      ...(routingCandidates !== undefined ? { automatic_fallback: verifiedRouting ? "Independent checks may trigger the reserved second attempt. Wait for routing updates and both receipts." : "Provider failures before any child tool call may start up to two named retry workers. Wait for routing updates and all attempt receipts." } : {}),
       ...(crossProviderRequested ? {
         provider: reportedProvider,
         model: reportedModel,

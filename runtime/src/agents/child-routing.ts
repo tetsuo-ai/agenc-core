@@ -1,9 +1,12 @@
+import { extractTaskFeatures, type TaskFeatures } from "./provider-selector-irt.js";
+import { selectChildProviderV2, type V2Selection, type RoutingPreferences } from "./provider-selector-v2.js";
+import type { TrustedChildVerification } from "./child-routing-verifier.js";
 import type { Session } from "../session/session.js";
 import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
 import { DEFAULT_MODEL_COSTS, resolveModelCostEntry } from "../session/cost.js";
 import { allowedChildPairs, childModelInfo, currentChildProvider, childProviderPolicy } from "./cross-provider.js";
-import { classifyChildTask, selectChildProvider, type ChildProviderCandidate,
-  type ChildRoutingSnapshot, type ChildSelectionResult, type ChildSelectionTask } from "./provider-selector.js";
+import { classifyChildTask, type ChildProviderCandidate,
+  type ChildRoutingSnapshot, type ChildSelectionTask } from "./provider-selector.js";
 import { childModelProfile } from "./provider-selector-profiles.js";
 import { subagentLimit } from "./subagent-limits.js";
 import { join } from "node:path";
@@ -54,6 +57,7 @@ export interface ChildRoutingRequest {
   readonly contextTokens?: number;
   readonly maxCostUsd?: number;
   readonly outcomes?: ChildRoutingSnapshot;
+  readonly preferences?: RoutingPreferences;
 }
 
 /** The ranking estimate never replaces atomic admission at the provider wire. */
@@ -73,10 +77,14 @@ export function childRoutingBudget(session: Session, requested?: number): number
 /** No provider discovery, credential refresh or remote router call is performed. */
 export async function routeChildTask(session: Session, request: ChildRoutingRequest): Promise<{
   readonly task: ChildSelectionTask;
-  readonly result: ChildSelectionResult;
+  readonly result: V2Selection;
+  readonly features: TaskFeatures;
+  readonly verification?: TrustedChildVerification;
 }> {
   const outcomes = request.outcomes ?? (await outcomeStore(session))?.snapshot();
   const inferred = classifyChildTask(request.prompt, request.role);
+  const features = extractTaskFeatures(request.prompt, request.requiresTools ?? true);
+  const verification = await session.services.childRoutingVerifier?.prepare({ prompt: request.prompt, features });
   const kind = request.taskKind ?? inferred.kind;
   const complexity = request.complexity ?? inferred.complexity;
   const maxCostUsd = childRoutingBudget(session, request.maxCostUsd);
@@ -96,7 +104,8 @@ export async function routeChildTask(session: Session, request: ChildRoutingRequ
   // Read authority once per provider, then revalidate the exact model and
   // credentials during ordinary plan preparation after consent.
   const connected = new Map<string, Promise<{ readonly connected: boolean; readonly billingSource?: string }>>();
-  const pairs = allowedChildPairs(session).filter(pair => childModelProfile(pair.provider, pair.model) !== undefined);
+  const pairs = allowedChildPairs(session).filter(pair => (pair.provider === active.provider && pair.model === active.model) ||
+    childModelProfile(pair.provider, pair.model) !== undefined);
   for (const pair of pairs) {
     if (!connected.has(pair.provider)) {
       connected.set(pair.provider, typeof session.providerService?.childProviderRoutingInfo === "function"
@@ -131,6 +140,17 @@ export async function routeChildTask(session: Session, request: ChildRoutingRequ
       // connected provider unavailable. Dispatch still checks exact metadata.
     }
   }
-  return { task, result: selectChildProvider({ task, candidates,
-    ...(outcomes !== undefined ? { outcomes } : {}) }) };
+  return { task, features, ...(verification !== undefined ? { verification } : {}),
+    result: selectChildProviderV2({ task, features, parent: active, candidates,
+      ...(request.preferences !== undefined ? { preferences: request.preferences } : {}),
+      ...(verification !== undefined ? { verification } : {}),
+      ...(outcomes !== undefined ? { outcomes } : {}) }) };
+}
+
+/** Receipt-deduplicated quality update, separate from terminal execution telemetry. */
+export async function recordChildRoutingVerification(session: Session, receiptId: string,
+  terminal: ChildTerminalOutcome, features: TaskFeatures, passed: boolean): Promise<void> {
+  try { await (await outcomeStore(session))?.recordVerification({ receiptId, provider: terminal.provider,
+    model: terminal.model, features, passed, atMs: Date.now() }); }
+  catch { /* Verifier telemetry must not invalidate the durable attempt. */ }
 }

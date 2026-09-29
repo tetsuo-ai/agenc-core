@@ -1,0 +1,98 @@
+{
+  "chosen": {
+    "name": "cascade_0.95_economy",
+    "learn": true,
+    "verify": true,
+    "target": 0.95,
+    "preferences": {
+      "cost": "economy"
+    }
+  },
+  "calibrationTarget": 26,
+  "trials": [
+    {
+      "name": "parent_first_cold",
+      "passed": 26,
+      "costUsd": 0.036869268000000004,
+      "coverage": 28
+    },
+    {
+      "name": "irt",
+      "passed": 26,
+      "costUsd": 0.036869268000000004,
+      "coverage": 28
+    },
+    {
+      "name": "cascade_0.8_quality",
+      "passed": 25,
+      "costUsd": 0.024119370000000008,
+      "coverage": 28
+    },
+    {
+      "name": "cascade_0.8_balanced",
+      "passed": 25,
+      "costUsd": 0.019987722,
+      "coverage": 28
+    },
+    {
+      "name": "cascade_0.8_economy",
+      "passed": 25,
+      "costUsd": 0.019305922000000003,
+      "coverage": 28
+    },
+    {
+      "name": "cascade_0.85_quality",
+      "passed": 25,
+      "costUsd": 0.02654808000000001,
+      "coverage": 28
+    },
+    {
+      "name": "cascade_0.85_balanced",
+      "passed": 25,
+      "costUsd": 0.022416432,
+      "coverage": 28
+    },
+    {
+      "name": "cascade_0.85_economy",
+      "passed": 25,
+      "costUsd": 0.021734631999999997,
+      "coverage": 28
+    },
+    {
+      "name": "cascade_0.9_quality",
+      "passed": 25,
+      "costUsd": 0.038273776,
+      "coverage": 28
+    },
+    {
+      "name": "cascade_0.9_balanced",
+      "passed": 25,
+      "costUsd": 0.034142127999999994,
+      "coverage": 28
+    },
+    {
+      "name": "cascade_0.9_economy",
+      "passed": 25,
+      "costUsd": 0.033460328,
+      "coverage": 28
+    },
+    {
+      "name": "cascade_0.95_quality",
+      "passed": 26,
+      "costUsd": 0.045574732,
+      "coverage": 28
+    },
+    {
+      "name": "cascade_0.95_balanced",
+      "passed": 26,
+      "costUsd": 0.045378532,
+      "coverage": 28
+    },
+    {
+      "name": "cascade_0.95_economy",
+      "passed": 26,
+      "costUsd": 0.044696732,
+      "coverage": 28
+    }
+  ]
+}

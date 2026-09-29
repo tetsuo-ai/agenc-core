@@ -1,0 +1,26 @@
+{
+  "frozenAt": "2026-09-29T10:04:11.248361+00:00",
+  "files": {
+    "../../../src/agents/provider-selector-irt.ts": "6fe978c5e3fd663dcf79c6cb0ce824fbc4c04924488329a5d36fedc8257632c4",
+    "../../../src/agents/provider-selector-outcomes.ts": "517d58eb061b75b45b5767a623467462afb72f062069700ad7ba0ea6cfdccd89",
+    "../../../src/agents/provider-selector-types.ts": "6716a8df9d29644a29cf2506aa703e216634b10ae320ce70fd6ee1c49131dca6",
+    "../../../src/agents/provider-selector-v2.ts": "6ed1d0939ff80a4c5f3e697b22b9cc7ab107ef20c5f96825c7adc14f144db7d3",
+    "../../../src/agents/provider-selector-evaluation.ts": "8b81ffd7b7b22d4c4f1109540f16bd36a68ba0c7c150b96cafb72bd5c5792a5b",
+    "../../../src/agents/provider-selector-profiles.ts": "c13373135a375493ffc65ffd6a0fcb5cf27e9a496514b35e343b43b2cdabdd0c",
+    "../../../src/agents/provider-selector.ts": "922251ae2d4d227d9696292741b9d158e590be19d5969720c4945402adba9d74",
+    "../calibrate.mts": "5283969dfd10ddf2a8adadac2e4f9f83942c0996ea6a3ebca1b3bf50c1e2cf7b",
+    "calibration.json": "6a323ca67eacc8c21e00c695b5c4a7d219a2ee68fbedc3e2f9e20563bdebdebc",
+    "calibration-input.json": "2b68752adc3bb288b51e2fea8997a00a70b75f98b08a84cf7b4cfce61ac81166"
+  },
+  "calibrationOnly": true,
+  "heldoutScored": false,
+  "note": "Source and fitted policy locked before task-level held-out scoring. Published aggregate summaries read as requested. Portable paths are relative to this evidence folder; decompress calibration inputs here first.",
+  "postEvaluationChanges": [
+    {
+      "file": "../../../src/agents/provider-selector-v2.ts",
+      "originalSha256": "442c087846063d1997576ec9225343bf425d17f911232c2518b89fb11f9fb763",
+      "replaySha256": "6ed1d0939ff80a4c5f3e697b22b9cc7ab107ef20c5f96825c7adc14f144db7d3",
+      "reason": "Restore existing rejection wording by inserting \"and\". No routing behavior or fitted policy changed; all 378 decisions, verdicts, request IDs and costs replay identically."
+    }
+  ]
+}
