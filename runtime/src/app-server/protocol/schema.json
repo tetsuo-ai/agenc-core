@@ -2402,6 +2402,137 @@
         "sessionId"
       ]
     },
+    "SessionProcessesListParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        }
+      },
+      "required": [
+        "sessionId"
+      ]
+    },
+    "SessionProcessesStopParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "taskId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "maxLength": 128
+        }
+      },
+      "required": [
+        "sessionId",
+        "taskId"
+      ]
+    },
+    "SessionGoalSetRequest": {
+      "type": "object",
+      "properties": {
+        "objective": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "maxLength": 4000
+        },
+        "verify": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "script": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S",
+                "maxLength": 2000
+              }
+            },
+            "required": [
+              "label",
+              "script"
+            ]
+          }
+        },
+        "noVerify": {
+          "type": "boolean"
+        },
+        "maxRounds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "maxCostUsd": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "required": [
+        "objective",
+        "verify",
+        "noVerify"
+      ]
+    },
+    "SessionGoalParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "action": {
+          "enum": [
+            "get",
+            "set",
+            "clear",
+            "pause",
+            "resume"
+          ]
+        },
+        "request": {
+          "$ref": "#/definitions/SessionGoalSetRequest"
+        }
+      },
+      "required": [
+        "sessionId",
+        "action"
+      ],
+      "if": {
+        "properties": {
+          "action": {
+            "const": "set"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "request"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "request"
+          ]
+        }
+      }
+    },
     "SessionTranscriptParams": {
       "type": "object",
       "additionalProperties": false,
@@ -4345,6 +4476,15 @@
           "$ref": "#/definitions/SessionSnapshotRequest"
         },
         {
+          "$ref": "#/definitions/SessionProcessesListRequest"
+        },
+        {
+          "$ref": "#/definitions/SessionProcessesStopRequest"
+        },
+        {
+          "$ref": "#/definitions/SessionGoalRequest"
+        },
+        {
           "$ref": "#/definitions/SessionTranscriptRequest"
         },
         {
@@ -5480,6 +5620,78 @@
         },
         "params": {
           "$ref": "#/definitions/SessionSnapshotParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "SessionProcessesListRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.processes.list"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionProcessesListParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "SessionProcessesStopRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.processes.stop"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionProcessesStopParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "SessionGoalRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.goal"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionGoalParams"
         }
       },
       "required": [

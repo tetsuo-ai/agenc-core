@@ -744,6 +744,36 @@ describe("AgenC daemon protocol surface", () => {
     expect(validate(request("run.resume", { runId: "run-1", suspensionId: "pause:1", deadline: "later" }))).toBe(false);
   });
 
+  it("matches every advertised request to exactly one schema envelope", () => {
+    const schema = readProtocolSchema();
+    const union = schema.definitions.AgenCDaemonRequest as { oneOf: { $ref: string }[] };
+    const methods = union.oneOf.map(({ $ref }) => {
+      const definition = schema.definitions[$ref.split("/").at(-1)!] as { properties: { method: { const: string } } };
+      return definition.properties.method.const;
+    });
+    expect(methods.slice().sort()).toEqual([...expectedMethods].sort());
+    expect(new Set(methods).size).toBe(methods.length);
+  });
+
+  it("publishes existing session process and session goal request contracts", () => {
+    const validate = compileRequestValidator(readProtocolSchema());
+    const request = (method: string, params: unknown) => ({ jsonrpc: JSON_RPC_VERSION, id: "session", method, params });
+    expect(validate(request("session.processes.list", { sessionId: "s1" }))).toBe(true);
+    expect(validate(request("session.processes.stop", { sessionId: "s1", taskId: "task-1" }))).toBe(true);
+    expect(validate(request("session.processes.stop", { sessionId: "s1" }))).toBe(false);
+    expect(validate(request("session.processes.stop", { sessionId: "s1", taskId: "x".repeat(129) }))).toBe(false);
+    for (const action of ["get", "clear", "pause", "resume"]) {
+      expect(validate(request("session.goal", { sessionId: "s1", action }))).toBe(true);
+      expect(validate(request("session.goal", { sessionId: "s1", action, request: {} }))).toBe(false);
+    }
+    const goal = { objective: "Fix the test", verify: [{ label: "unit", script: "npm test" }], noVerify: false, maxRounds: 3, maxCostUsd: 1 };
+    expect(validate(request("session.goal", { sessionId: "s1", action: "set", request: goal }))).toBe(true);
+    expect(validate(request("session.goal", { sessionId: "s1", action: "set" }))).toBe(false);
+    for (const invalid of [{ objective: " " }, { verify: Array(9).fill({ label: "unit", script: "npm test" }) }, { maxRounds: 0 }, { maxCostUsd: 0 }]) {
+      expect(validate(request("session.goal", { sessionId: "s1", action: "set", request: { ...goal, ...invalid } }))).toBe(false);
+    }
+  });
+
   it("validates all request-bearing methods through the published schema", () => {
     const validate = compileRequestValidator(readProtocolSchema());
     const samples: readonly AgenCDaemonRequest[] = [
