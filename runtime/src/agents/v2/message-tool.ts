@@ -80,7 +80,11 @@ export async function handleMessageStringTool(
     ? undefined : control.getLive(current.threadId);
   const callerSession = current.threadId === sessionOrError.conversationId
     ? sessionOrError : caller === undefined ? undefined : liveAgentSession(caller);
+  const callerTurnId = callerSession?.activeTurn?.unsafePeek()?.turnId;
+  const abortSignal = (args as { readonly __abortSignal?: AbortSignal }).__abortSignal;
   const callerIsCurrent = (): boolean => callerSession !== undefined &&
+    abortSignal?.aborted !== true &&
+    callerSession.activeTurn?.unsafePeek()?.turnId === callerTurnId &&
     opts.getSession() === sessionOrError && !sessionOrError.isShuttingDown &&
     !callerSession.isShuttingDown && (caller === undefined
       ? callerSession === sessionOrError

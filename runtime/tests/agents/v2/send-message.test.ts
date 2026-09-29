@@ -83,7 +83,7 @@ function fixture(initialStatus: AgentStatus, onBegin?: () => void, crossProvider
 
 describe("send_message delivery report", () => {
   it.each((["queue_only", "trigger_turn"] as const).flatMap((mode) =>
-    (["root_closed", "root_replaced", "caller_revoked", "target_replaced", "target_plan_changed"] as const)
+    (["root_closed", "root_replaced", "caller_revoked", "target_replaced", "target_plan_changed", "turn_cancelled", "turn_replaced"] as const)
       .map((change) => ({ mode, change }))))(
     "refuses $mode after $change while consent waits", async ({ mode, change }) => {
       const f = fixture({ status: "running", turnId: "child-turn", startedAtMs: 1 }, undefined, true);
@@ -102,6 +102,10 @@ describe("send_message delivery report", () => {
       } });
       let revoke: (() => void) | undefined;
       const identity: Record<string, unknown> = {};
+      const turnAbort = new AbortController();
+      identity.__abortSignal = turnAbort.signal;
+      let activeTurnId = "requesting-turn";
+      Object.assign(f.session, { activeTurn: { unsafePeek: () => ({ turnId: activeTurnId }) } });
       if (change === "caller_revoked") {
         const caller = { agentId: "caller", agentPath: "/root/parent",
           abortController: new AbortController(), role: { name: "worker" } } as LiveAgent;
@@ -117,6 +121,8 @@ describe("send_message delivery report", () => {
         await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
         if (change === "root_closed") Object.assign(f.session, { isShuttingDown: true });
         if (change === "root_replaced") Object.assign(f.opts, { getSession: () => ({ ...f.session }) });
+        if (change === "turn_cancelled") turnAbort.abort("user stopped the turn");
+        if (change === "turn_replaced") activeTurnId = "replacement-turn";
         if (change === "caller_revoked") revoke!();
         if (change === "target_replaced") f.control.getLive.mockImplementation(() => ({ ...f.live }));
         if (change === "target_plan_changed") Object.assign(f.live.metadata, {
