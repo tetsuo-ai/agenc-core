@@ -954,6 +954,36 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     "cerebras:gpt-oss-120b": COST_TIER_CEREBRAS_GPT_OSS_120B,
     "cerebras:qwen-3.8-27b": COST_TIER_CEREBRAS_QWEN_38_27B,
     "cerebras:gemma-4-31b": COST_TIER_CEREBRAS_GEMMA_4_31B,
+    // https://docs.z.ai/guides/overview/pricing (2026-09-29).
+    // GLM-5-Turbo has no published rate; keep the unknown-price fallback.
+    "zai:glm-5.2": {
+      inputUsdPer1K: 0.0014, outputUsdPer1K: 0.0044,
+      cachedInputUsdPer1K: 0.00026, cachedInputIncludedInInputTokens: true,
+    },
+    "zai:glm-5.1": {
+      inputUsdPer1K: 0.0014, outputUsdPer1K: 0.0044,
+      cachedInputUsdPer1K: 0.00026, cachedInputIncludedInInputTokens: true,
+    },
+    "zai:glm-5": {
+      inputUsdPer1K: 0.001, outputUsdPer1K: 0.0032,
+      cachedInputUsdPer1K: 0.0002, cachedInputIncludedInInputTokens: true,
+    },
+    "zai:glm-4.7": {
+      inputUsdPer1K: 0.0006, outputUsdPer1K: 0.0022,
+      cachedInputUsdPer1K: 0.00011, cachedInputIncludedInInputTokens: true,
+    },
+    "zai:glm-4.6": {
+      inputUsdPer1K: 0.0006, outputUsdPer1K: 0.0022,
+      cachedInputUsdPer1K: 0.00011, cachedInputIncludedInInputTokens: true,
+    },
+    "zai:glm-4.5": {
+      inputUsdPer1K: 0.0006, outputUsdPer1K: 0.0022,
+      cachedInputUsdPer1K: 0.00011, cachedInputIncludedInInputTokens: true,
+    },
+    "zai:glm-4.5-air": {
+      inputUsdPer1K: 0.0002, outputUsdPer1K: 0.0011,
+      cachedInputUsdPer1K: 3e-05, cachedInputIncludedInInputTokens: true,
+    },
     "zai:glm-5.3": COST_TIER_ZAI_GLM_53,
     "zai:glm-5.3-flash": COST_TIER_ZAI_GLM_53_FLASH,
     // https://docs.z.ai/guides/overview/pricing (2026-09-29)

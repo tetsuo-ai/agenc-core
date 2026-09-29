@@ -206,10 +206,14 @@ interface ZaiChatModelSpec {
   readonly displayName: string;
   readonly vision: boolean;
   readonly payGoOnly?: boolean;
+  readonly contextWindow?: number;
+  readonly maxOutputTokens?: number;
+  readonly reasoningLevels?: readonly ReasoningEffort[];
+  readonly defaultReasoningLevel?: ReasoningEffort;
   readonly priority: number;
 }
 
-const ZAI_CHAT_MODELS = Object.freeze([
+const ZAI_CHAT_MODELS: readonly ZaiChatModelSpec[] = Object.freeze([
   {
     model: "glm-5.3",
     displayName: "GLM-5.3",
@@ -228,6 +232,90 @@ const ZAI_CHAT_MODELS = Object.freeze([
     vision: true,
     payGoOnly: true,
     priority: 2,
+  },
+  // Older canonical PAYG deployments remain in the live model list. Coding Plan
+  // aliases instead route to 5.3/5.3-Flash; do not advertise the old metadata there.
+  // Sources: docs.z.ai/guides/llm/glm-4.5 through glm-5.2 (2026-09-29).
+  {
+    model: "glm-5.2",
+    displayName: "GLM-5.2",
+    vision: false,
+    payGoOnly: true,
+    contextWindow: 1_000_000,
+    maxOutputTokens: 131_072,
+    reasoningLevels: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+    defaultReasoningLevel: "max",
+    priority: 3,
+  },
+  {
+    model: "glm-5.1",
+    displayName: "GLM-5.1",
+    vision: false,
+    payGoOnly: true,
+    contextWindow: 200_000,
+    maxOutputTokens: 131_072,
+    reasoningLevels: NO_REASONING_LEVELS,
+    priority: 4,
+  },
+  {
+    model: "glm-5-turbo",
+    displayName: "GLM-5 Turbo",
+    vision: false,
+    payGoOnly: true,
+    contextWindow: 200_000,
+    maxOutputTokens: 131_072,
+    reasoningLevels: NO_REASONING_LEVELS,
+    priority: 5,
+  },
+  {
+    model: "glm-5",
+    displayName: "GLM-5",
+    vision: false,
+    payGoOnly: true,
+    contextWindow: 200_000,
+    maxOutputTokens: 131_072,
+    reasoningLevels: NO_REASONING_LEVELS,
+    priority: 6,
+  },
+  {
+    model: "glm-4.7",
+    displayName: "GLM-4.7",
+    vision: false,
+    payGoOnly: true,
+    contextWindow: 200_000,
+    maxOutputTokens: 131_072,
+    reasoningLevels: NO_REASONING_LEVELS,
+    priority: 7,
+  },
+  {
+    model: "glm-4.6",
+    displayName: "GLM-4.6",
+    vision: false,
+    payGoOnly: true,
+    contextWindow: 200_000,
+    maxOutputTokens: 131_072,
+    reasoningLevels: NO_REASONING_LEVELS,
+    priority: 8,
+  },
+  {
+    model: "glm-4.5",
+    displayName: "GLM-4.5",
+    vision: false,
+    payGoOnly: true,
+    contextWindow: 128_000,
+    maxOutputTokens: 96_000,
+    reasoningLevels: NO_REASONING_LEVELS,
+    priority: 9,
+  },
+  {
+    model: "glm-4.5-air",
+    displayName: "GLM-4.5 Air",
+    vision: false,
+    payGoOnly: true,
+    contextWindow: 128_000,
+    maxOutputTokens: 96_000,
+    reasoningLevels: NO_REASONING_LEVELS,
+    priority: 10,
   },
 ] as const satisfies readonly ZaiChatModelSpec[]);
 
@@ -502,13 +590,13 @@ function qwenCloudCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
 
 function zaiCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
   return ZAI_PROVIDER_IDS.flatMap((provider) =>
-    ZAI_CHAT_MODELS.filter((model) => provider === "zai" || !("payGoOnly" in model)).map((model) => Object.freeze({
+    ZAI_CHAT_MODELS.filter((model) => provider === "zai" || !model.payGoOnly).map((model) => Object.freeze({
       provider,
       model: model.model,
       displayName: model.displayName,
-      contextWindow: 1_000_000,
-      maxContextWindow: 1_000_000,
-      maxOutputTokens: 131_072,
+      contextWindow: model.contextWindow ?? 1_000_000,
+      maxContextWindow: model.contextWindow ?? 1_000_000,
+      maxOutputTokens: model.maxOutputTokens ?? 131_072,
       inputModalities: model.vision
         ? TEXT_IMAGE_MODALITIES
         : TEXT_MODALITIES,
@@ -523,8 +611,12 @@ function zaiCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
       webSearchToolType: "none" as const,
       supportsReasoningSummaries: false,
       defaultReasoningSummary: "none" as const,
-      supportedReasoningLevels: ZAI_GLM_53_REASONING_LEVELS,
-      defaultReasoningLevel: "max" as const,
+      supportedReasoningLevels: model.reasoningLevels ?? ZAI_GLM_53_REASONING_LEVELS,
+      ...(model.reasoningLevels === undefined
+        ? { defaultReasoningLevel: "max" as const }
+        : model.defaultReasoningLevel !== undefined
+          ? { defaultReasoningLevel: model.defaultReasoningLevel }
+          : {}),
       additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
       priority: model.priority,
       visibility: "list" as const,
@@ -1628,8 +1720,10 @@ export function resolveRegisteredModelCatalogEntry(input: {
     if (exact !== undefined) return exact;
     if (QWEN_CURRENT_MODEL_CATALOG.some((entry) => normalizeId(model).startsWith(normalizeId(entry.model)))) return undefined;
   }
-  // FlashX is explicitly unavailable on Coding Plan; do not prefix-match Flash.
-  if (provider === "zai-coding-plan" && model.toLowerCase() === "glm-5.3-flashx") return undefined;
+  // PAYG-only deployments must not inherit metadata from a Coding Plan alias.
+  if (provider === "zai-coding-plan" && ZAI_CHAT_MODELS.some(
+    (entry) => entry.payGoOnly && entry.model === model.toLowerCase(),
+  )) return undefined;
   if (provider === "mistral") {
     const canonical = resolveMistralChatModel(model)?.model;
     return canonical === undefined ? undefined : findExactModel(canonical, MISTRAL_MODEL_CATALOG);
