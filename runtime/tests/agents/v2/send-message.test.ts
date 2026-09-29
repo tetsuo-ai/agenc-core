@@ -16,6 +16,19 @@ const destinationModelInfo = modelRegistryEntryToModelInfo(new ModelRegistry({
   provider: "deepseek", model: "deepseek-v4-pro",
 }));
 
+function approvedChildPlan() {
+  return {
+    version: 1, crossProvider: true, modelInfo: destinationModelInfo,
+    route: { provider: "deepseek", model: "deepseek-v4-pro" },
+    destination: { provider: "deepseek", model: "deepseek-v4-pro",
+      endpoint: "https://api.deepseek.com/v1", authProfile: "api_key", billingSource: "byok" },
+    task: { id: "first", name: "child", text: "first task", attachments: [] },
+    parent: { sessionId: "root-session", agentPath: "/root" },
+    scope: { tools: [], data: "task_only", cwd: "/workspace", networkEnabled: false },
+    budgetAllocation: { maxModelCalls: 2 },
+  };
+}
+
 function fixture(initialStatus: AgentStatus, onBegin?: () => void, crossProvider = false) {
   let status = initialStatus;
   const sendInterAgentCommunication = vi.fn(async () => {});
@@ -104,16 +117,7 @@ describe("send_message delivery report", () => {
       .map((change) => ({ mode, change }))))(
     "refuses $mode after $change while consent waits", async ({ mode, change }) => {
       const f = fixture({ status: "running", turnId: "child-turn", startedAtMs: 1 }, undefined, true);
-      Object.assign(f.live.metadata, { executionPlan: {
-        version: 1, crossProvider: true, modelInfo: destinationModelInfo,
-        route: { provider: "deepseek", model: "deepseek-v4-pro" },
-        destination: { provider: "deepseek", model: "deepseek-v4-pro",
-          endpoint: "https://api.deepseek.com/v1", authProfile: "api_key", billingSource: "byok" },
-        task: { id: "first", name: "child", text: "first task", attachments: [] },
-        parent: { sessionId: "root-session", agentPath: "/root" },
-        scope: { tools: [], data: "task_only", cwd: "/workspace", networkEnabled: false },
-        budgetAllocation: { maxModelCalls: 2 },
-      } });
+      Object.assign(f.live.metadata, { executionPlan: approvedChildPlan() });
       let release!: () => void;
       const gate = new Promise<void>((resolve) => { release = resolve; });
       const request = vi.fn(async (_session: Session,
@@ -165,16 +169,7 @@ describe("send_message delivery report", () => {
   it.each(["queue_only", "trigger_turn"] as const)(
     "%s suppresses a denial within the requesting turn and asks again on the next turn", async (mode) => {
       const f = fixture({ status: "running", turnId: "child-turn", startedAtMs: 1 }, undefined, true);
-      Object.assign(f.live.metadata, { executionPlan: {
-        version: 1, crossProvider: true, modelInfo: destinationModelInfo,
-        route: { provider: "deepseek", model: "deepseek-v4-pro" },
-        destination: { provider: "deepseek", model: "deepseek-v4-pro",
-          endpoint: "https://api.deepseek.com/v1", authProfile: "api_key", billingSource: "byok" },
-        task: { id: "first", name: "child", text: "first task", attachments: [] },
-        parent: { sessionId: "root-session", agentPath: "/root" },
-        scope: { tools: [], data: "task_only", cwd: "/workspace", networkEnabled: false },
-        budgetAllocation: { maxModelCalls: 2 },
-      } });
+      Object.assign(f.live.metadata, { executionPlan: approvedChildPlan() });
       let humanTurnId = "human-turn-1";
       Object.assign(f.session, {
         // The user asks at each spawn, so messages to the child ask too.
@@ -231,16 +226,7 @@ describe("send_message delivery report", () => {
 
   it("holds a cross-provider passive message until its text receives fresh approval", async () => {
     const f = fixture({ status: "running", turnId: "turn-1", startedAtMs: 1 }, undefined, true);
-    Object.assign(f.live.metadata, { executionPlan: {
-      version: 1, crossProvider: true, modelInfo: destinationModelInfo,
-      route: { provider: "deepseek", model: "deepseek-v4-pro" },
-      destination: { provider: "deepseek", model: "deepseek-v4-pro",
-        endpoint: "https://api.deepseek.com/v1", authProfile: "api_key", billingSource: "byok" },
-      task: { id: "first", name: "child", text: "first task", attachments: [] },
-      parent: { sessionId: "root-session", agentPath: "/root" },
-      scope: { tools: [], data: "task_only", cwd: "/workspace", networkEnabled: false },
-      budgetAllocation: { maxModelCalls: 2 },
-    } });
+    Object.assign(f.live.metadata, { executionPlan: approvedChildPlan() });
     let allow: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => { allow = resolve; });
     const request = vi.fn(async (_session: Session, disclosure: { taskId: string; taskText: string; scopeKey: string; payloadKey: string },
