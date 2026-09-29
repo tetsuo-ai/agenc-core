@@ -27,6 +27,7 @@ import { AgentControl } from "./control.js";
 import { toListedAgentJson } from "./v2/common.js";
 import { delegate } from "./delegate.js";
 import { authorizeChildExecutionPlan, createChildExecutionPlan } from "./cross-provider.js";
+import * as childRouting from "./child-routing.js";
 import type { AgentThread } from "./thread.js";
 import { buildToolRegistry as buildProductionToolRegistry } from "../../src/tool-registry.js";
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
@@ -4872,6 +4873,74 @@ describe("runAgent", () => {
       }
     },
   );
+
+  it("binds and releases the current plan budget for each reusable worker assignment", async () => {
+    const taskHome = mkdtempSync(join(tmpdir(), "agenc-worker-budget-"));
+    const session = makeStubSession({ services: { provider: makeProvider([]) },
+      sessionConfiguration: mkSessionConfiguration({ cwd: taskHome }), config: { ...mkConfig(), cwd: taskHome } });
+    const store = new RolloutStore({ cwd: taskHome, sessionId: session.conversationId,
+      agencVersion: "0.2.0", agencHome: taskHome, sessionTempRoot: taskHome });
+    store.open({ sessionId: session.conversationId, timestamp: new Date().toISOString(), cwd: taskHome,
+      originator: "worker-budget-test", agencVersion: "0.2.0", model: "fake-model", modelProvider: "fake" });
+    session.mountRolloutStore(store);
+    const { control, live } = await spawnLive(session);
+    const template = makeChildToolAdmission({ runId: session.conversationId, sessionId: session.conversationId }).client;
+    const bindings: { client: ExecutionAdmissionClient; release: ReturnType<typeof vi.fn> }[] = [];
+    const makeAdmission = (scope: ExecutionAdmissionClient["scope"]): ExecutionAdmissionClient => {
+      const release = vi.fn();
+      const client: ExecutionAdmissionClient = { ...template, scope, release,
+        forSession: (options) => makeAdmission({ ...scope, ...options }),
+      };
+      bindings.push({ client, release });
+      return client;
+    };
+    Object.assign(session.services, { executionAdmission: makeAdmission(template.scope) });
+    const planFor = (taskId: string, maxCostUsd: number) => createChildExecutionPlan({ session,
+      selection: session.providerService.current(), modelInfo: mkModelInfo(), parentPath: "/root",
+      taskId, taskName: "worker", taskText: taskId, toolFree: true, forkedHistory: false, maxCostUsd });
+    const plan = await planFor("first-budget-task", 0.2);
+    const outcomeSpy = vi.spyOn(childRouting, "recordChildRoutingOutcome").mockImplementation(async (_parent, recordedPlan, outcome) => {
+      expect(recordedPlan?.task.id).toMatch(/^(first|second)-budget-task$/);
+      // An outcome can teach local reliability only after its receipt is durable.
+      const journal = readFileSync(live.rolloutPath!, "utf8");
+      expect(journal).toContain('"type":"subagent_turn_outcome"');
+      expect(journal).toContain(outcome.receiptId.slice(live.agentId.length + 1));
+    });
+    const observed: ExecutionAdmissionClient["scope"][] = [];
+    const turnSpy = vi.spyOn(Session.prototype, "runTurn").mockImplementation(async function* (this: Session) {
+      observed.push(this.services.executionAdmission!.scope);
+      yield { type: "turn_complete", content: "bounded result", stopReason: "completed",
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } };
+      return { reason: "completed" };
+    });
+    const iter = runAgent({ live, parent: session, plan,
+      initialMessages: [{ role: "user", content: "first-budget-task" }], taskPrompt: "first-budget-task",
+      taskId: "first-budget-task", keepAlive: true });
+    try {
+      await nextProgressEvent(iter, "turn_complete");
+      expect(observed[0]).toMatchObject({ runId: live.agentId, taskId: "first-budget-task", maxCostUsd: 0.2 });
+      expect(outcomeSpy).toHaveBeenCalledWith(session, expect.objectContaining({ task: expect.objectContaining({ id: "first-budget-task" }) }),
+        expect.objectContaining({ receiptId: expect.stringContaining(`${live.agentId}:`), terminal: expect.objectContaining({ reason: "completed" }), latencyMs: expect.any(Number) }));
+      expect(bindings.find(entry => entry.client.scope.taskId === "first-budget-task")?.release).toHaveBeenCalledOnce();
+      const nextPlan = await planFor("second-budget-task", 0.4);
+      live.metadata = { ...live.metadata, executionPlan: nextPlan };
+      const second = nextProgressEvent(iter, "turn_complete");
+      control.assignTask(live.agentId, { author: "/root", recipient: live.agentPath,
+        content: "second-budget-task", taskId: "second-budget-task" });
+      await second;
+      expect(observed[1]).toMatchObject({ runId: live.agentId, taskId: "second-budget-task", maxCostUsd: 0.4 });
+      expect(outcomeSpy).toHaveBeenCalledTimes(2);
+      expect(bindings.find(entry => entry.client.scope.taskId === "second-budget-task")?.release).toHaveBeenCalledOnce();
+    } finally {
+      await stopKeepAliveRun(iter, live.abortController);
+      turnSpy.mockRestore();
+      outcomeSpy.mockRestore();
+      store.close();
+      rmSync(taskHome, { recursive: true, force: true });
+    }
+    expect(bindings.filter(entry => entry.client.scope.runId === live.agentId).every(entry => entry.release.mock.calls.length === 1)).toBe(true);
+    expect(bindings[0]!.release).not.toHaveBeenCalled();
+  });
 
   it("queues passive context without starting a turn and folds it into the next assignment", async () => {
     const provider = makeProvider([
