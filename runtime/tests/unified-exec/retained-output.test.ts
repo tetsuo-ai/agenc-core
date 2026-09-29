@@ -1,7 +1,7 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { UnifiedExecProcessManager } from "../../src/unified-exec/process-manager.js";
 import { formatUnifiedExecToolContent } from "../../src/tools/system/exec-result-format.js";
 

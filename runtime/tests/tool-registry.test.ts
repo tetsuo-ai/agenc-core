@@ -2216,4 +2216,7 @@ test("Light discovery appends schemas and full exposure still respects availabil
   const full = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true, lightFullCatalog: true, toolsConfig: { disabled_tools: ["Write"] } });
   expect(full.toLLMTools().some(tool => tool.function.name === "TodoWrite")).toBe(true);
   expect(full.toLLMTools().some(tool => tool.function.name === "Write")).toBe(false);
+  const catalog = full.toLLMTools();
+  await full.dispatch({ id: "already-present", name: "system.searchTools", arguments: '{"select":"TodoWrite"}' });
+  expect(full.toLLMTools()).toEqual(catalog);
 });

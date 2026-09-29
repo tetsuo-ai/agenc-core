@@ -1264,7 +1264,8 @@ export function buildToolRegistry(
     toLLMTools(): LLMTool[] {
       const visible = [...visibleSpecs()];
       if (options.lightMode === true) {
-        const order = [...LIGHT_INITIAL_TOOL_NAMES, ...discoveredToolNames];
+        const order = [...LIGHT_INITIAL_TOOL_NAMES,
+          ...(options.lightFullCatalog === true ? [] : discoveredToolNames)];
         const rank = (name: string) => { const i = order.indexOf(name); return i < 0 ? order.length : i; };
         visible.sort((a, b) => rank(a.tool.name) - rank(b.tool.name) ||
           (a.tool.name < b.tool.name ? -1 : a.tool.name > b.tool.name ? 1 : 0));
