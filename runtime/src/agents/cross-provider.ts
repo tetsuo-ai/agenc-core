@@ -116,8 +116,22 @@ function endpointIdentity(value: string): string {
 
 function policyRevision(session: Session): string {
   const policy = childProviderPolicy(session);
+  // Limits and automatic selection are authority too. A plan can await
+  // consent while either is lowered by a settings reload. Normalize the
+  // default limits so spelling out minimal/standard does not revoke a plan.
+  const limits = Object.fromEntries(Object.entries(policy.subagent_limits ?? {})
+    .sort(([left], [right]) => left.localeCompare(right))
+    .flatMap(([provider, limit]) => {
+      const effective = {
+        ...(limit.effort !== undefined && limit.effort !== "minimal" ? { effort: limit.effort } : {}),
+        ...(limit.speed === "fast" ? { speed: limit.speed } : {}),
+      };
+      return Object.keys(effective).length === 0 ? [] : [[provider, effective]];
+    }));
   return `agents-v1:${fingerprint({ enabled: policy.cross_provider_enabled === true, allowed: policy.allowed_providers ?? [],
-    ...(policy.cross_provider_ask_each_spawn === true ? { askEachSpawn: true } : {}) })}`;
+    ...(policy.cross_provider_ask_each_spawn === true ? { askEachSpawn: true } : {}),
+    ...(policy.cross_provider_auto === true ? { auto: true } : {}),
+    ...(Object.keys(limits).length > 0 ? { limits } : {}) })}`;
 }
 
 function catalogRevision(session: Session): string {
@@ -153,6 +167,7 @@ export async function createChildExecutionPlan(params: {
   };
 }, preliminaryManaged = false): Promise<ChildExecutionPlan> {
   const { session, selection } = params;
+  const plannedPolicyRevision = policyRevision(session);
   const crossProvider = selection.provider !== currentChildProvider(session).provider ||
     params.inheritedConsentPlan?.crossProvider === true;
   if (crossProvider) assertCrossProviderAllowed(session, selection.provider);
@@ -200,6 +215,9 @@ export async function createChildExecutionPlan(params: {
     endpoint = session.providerService?.current().factoryOptions?.baseURL ?? endpoint;
   }
   if (crossProvider) assertSupportedCrossProviderAuth(destination.provider, authProfile);
+  if (plannedPolicyRevision !== policyRevision(session)) {
+    throw new Error("child execution plan policy changed");
+  }
   return Object.freeze({
     version: 1 as const,
     route: Object.freeze({ ...selection }),
@@ -224,7 +242,7 @@ export async function createChildExecutionPlan(params: {
       fileReadAllowlist: Object.freeze([...(session.sessionConfiguration.fileSystemSandboxPolicy?.allowRead ?? [])]),
       fileReadDenylist: Object.freeze([...(session.sessionConfiguration.fileSystemSandboxPolicy?.denyRead ?? [])]),
       networkEnabled: session.sessionConfiguration.networkSandboxPolicy?.enabled !== false }),
-    policyRevision: policyRevision(session),
+    policyRevision: plannedPolicyRevision,
     consentGrant: null,
     budgetAllocation: crossProvider ? Object.freeze({
       maxModelCalls: Math.min(32, Math.max(1, session.config?.maxTurns ?? 32)),
