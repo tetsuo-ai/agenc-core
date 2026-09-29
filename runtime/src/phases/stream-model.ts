@@ -140,7 +140,7 @@ function resolveSessionReasoningEffort(
       ? "none"
       : undefined;
   }
-  if (selection?.provider === "anthropic" && contract?.registered === false) {
+  if (selection?.provider === "anthropic" && contract !== undefined && !contract.levels.includes("xhigh")) {
     // Settings fallback is legacy configuration, not a literal session choice.
     // Configured max is seeded as xhigh for these older models; an explicit
     // applyConfig max remains max and must be forwarded exactly as accepted.
