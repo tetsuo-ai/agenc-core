@@ -105,9 +105,12 @@ From `formatCliHelpText()`:
   unrelated successful read does not verify a different claim. This is a
   structural check, not a guarantee of task correctness and not a
   benchmark pass. In Light mode, current successful evidence can satisfy the
-  first checklist or a formatting retry without rerunning checks. Writes,
-  unknown tools and arbitrary commands invalidate earlier evidence; a completed
-  successful command can verify its own result. Pending commands do not count.
+  first checklist or a formatting retry without rerunning checks. Before a
+  verification request, arbitrary commands invalidate earlier evidence and a
+  completed successful command can verify its own result. After the request,
+  independent commands accumulate evidence, as in normal mode. This does not
+  prove those commands left the filesystem unchanged. Canonical writes and
+  unknown tools still invalidate earlier evidence. Pending commands do not count.
   A failed command needs an associated successful command to recover, not a
   later file read. Coordinator and Goal verification retain their own behavior.
   After `completion_gate.max_rounds` (default 3), an

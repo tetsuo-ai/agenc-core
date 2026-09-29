@@ -365,7 +365,7 @@ function itemHasAssociatedSuccess(
   results: readonly CompletedToolResultRecord[],
   freshFrom: number,
   successful: (result: CompletedToolResultRecord) => boolean = isSuccessfulResult,
-  requireRunnableRecovery = false,
+  requireCommandEvidence = false,
 ): boolean {
   const related = associatedIndexed(itemText, results);
   const lastSuccess = related
@@ -378,11 +378,13 @@ function itemHasAssociatedSuccess(
         isRunnableEvidence(entry.result) && !isSuccessfulResult(entry.result),
     )
     .at(-1);
-  // Reusing earlier Light evidence must not let a later README/file read
-  // erase a real failing command merely because their words overlap.
-  if (requireRunnableRecovery && lastFailure !== undefined) {
+  // A read cannot verify a running command or erase a failed one merely
+  // because their words overlap. Light keeps command evidence across retries.
+  if (requireCommandEvidence && related.some(({ result }) =>
+    isRunnableEvidence(result) || result.metadata?.exitCode === null)) {
     return related.some((entry) => entry.index >= freshFrom &&
-      entry.index > lastFailure.index && isRunnableEvidence(entry.result) &&
+      (lastFailure === undefined || entry.index > lastFailure.index) &&
+      isRunnableEvidence(entry.result) &&
       successful(entry.result));
   }
   return lastFailure === undefined || lastFailure.index < lastSuccess.index;
@@ -411,7 +413,7 @@ function classifyChecklist(
   allResults: readonly CompletedToolResultRecord[],
   freshFrom: number,
   successful: (result: CompletedToolResultRecord) => boolean = isSuccessfulResult,
-  requireRunnableRecovery = false,
+  requireCommandEvidence = false,
 ): {
   hasCheckedItem: boolean;
   hasMalformedItem: boolean;
@@ -429,7 +431,7 @@ function classifyChecklist(
     }
     if (item.mark === "x" || item.mark === "X") {
       hasCheckedItem = true;
-      if (!itemHasAssociatedSuccess(item.text, allResults, freshFrom, successful, requireRunnableRecovery)) {
+      if (!itemHasAssociatedSuccess(item.text, allResults, freshFrom, successful, requireCommandEvidence)) {
         pushBounded(unmetItems, item.text);
       }
       continue;
@@ -655,7 +657,8 @@ export async function completionGate(
     round === 0 ? 0 : Math.max(0, postInjectionResults.length);
   const lightEvidence = session.services.runtimeOptions?.lightMode === true &&
       ctx.config.coordinatorMode !== true
-    ? lightCompletionEvidence(state.completedToolResults, session.services.registry.tools)
+    ? lightCompletionEvidence(state.completedToolResults, session.services.registry.tools,
+        state.completionGateEvidenceMark)
     : undefined;
   const hasSuccessfulResult = lightEvidence === undefined
     ? postInjectionResults.some(isSuccessfulResult)
@@ -729,6 +732,11 @@ export async function completionGate(
     reason === "unavailable_unproven" ? unavailableItems : unmetItems;
   state.completionGateRound += 1;
   state.completionGateToolLedgerMark = state.completedToolResults.length;
+  if (lightEvidence !== undefined) {
+    // This is runtime-owned provenance, separate from the actual injection
+    // mark used in telemetry. Never infer the frontier from transcript tags.
+    state.completionGateEvidenceMark = lightEvidence.freshFrom;
+  }
   if (reason === "unavailable_unproven") {
     state.completionGateUnavailablePrompted = true;
   }

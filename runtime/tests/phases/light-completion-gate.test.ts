@@ -7,11 +7,14 @@ import type { CompletedToolResultRecord, TurnState } from "../../src/session/tur
 import type { Tool } from "../../src/tools/types.js";
 
 const tools: Pick<Tool, "name" | "metadata">[] = [
-  ...["exec_command", "write_stdin", "Edit", "Write"].map((name) => ({
+  ...["exec_command", "write_stdin", "system.bash", "Edit", "Write"].map((name) => ({
     name, metadata: { source: "builtin" as const, mutating: true },
   })),
   { name: "FileRead", metadata: { source: "builtin", mutating: false } },
   { name: "remote_probe", metadata: { source: "mcp", mutating: false } },
+  ...["TodoWrite", "spawn_agent", "wait_agent"].map((name) => ({
+    name, metadata: { source: "builtin" as const, mutating: true, virtualNoFsWrites: true },
+  })),
 ];
 function result(toolName: string, overrides: Partial<CompletedToolResultRecord> = {}): CompletedToolResultRecord {
   return { callId: toolName, toolName, arguments: "{}", content: "ok", isError: false, ...overrides };
@@ -46,6 +49,52 @@ async function run(f: ReturnType<typeof fixture>) {
 }
 
 describe("Light completion evidence", () => {
+  const independentCommands = ["npm run typecheck", "eslint src/foo.ts"];
+  const independentChecklist = independentCommands.map((cmd) => `- [x] ${cmd}: verified`).join("\n");
+  const commandCheck = (cmd: string) => check({ arguments: JSON.stringify({ cmd }), content: "ok" });
+
+  test.each([independentCommands, [...independentCommands].reverse()])(
+    "independent verification commands accumulate after the runtime request (%s then %s)", async (first, second) => {
+      const f = fixture([result("Edit")], independentChecklist);
+      expect((await run(f))?.outcome).toBe("injected");
+      f.state.transition = undefined;
+      f.state.completedToolResults.push(commandCheck(first), commandCheck(second));
+      expect((await run(f))?.outcome).toBe("verified");
+    },
+  );
+
+  test("an edit between independent checks invalidates the earlier check without a retry cycle", async () => {
+    const f = fixture([result("Edit")], independentChecklist);
+    await run(f);
+    f.state.transition = undefined;
+    f.state.completedToolResults.push(commandCheck(independentCommands[0]!), result("Edit"), commandCheck(independentCommands[1]!));
+    expect(await run(f)).toMatchObject({ outcome: "injected", reason: "unmet_items" });
+    f.state.transition = undefined;
+    f.state.completedToolResults.push(commandCheck(independentCommands[0]!));
+    expect((await run(f))?.outcome).toBe("verified");
+  });
+
+  test("keeps initial reuse conservative, then converges with the existing fresh check and one missing check", async () => {
+    const f = fixture(independentCommands.map(commandCheck), independentChecklist);
+    expect((await run(f))?.outcome).toBe("injected");
+    f.state.transition = undefined;
+    f.state.completedToolResults.push(commandCheck(independentCommands[0]!));
+    expect((await run(f))?.outcome).toBe("verified");
+  });
+
+  test("deferred builtin system.bash can verify an allowlist without exec_command", async () => {
+    const f = fixture([check({ toolName: "system.bash", arguments: '{"command":"pytest","args":["tests/test_chunks.py"]}' })]);
+    Object.assign(f.session.services.registry, { tools: tools.filter((tool) => tool.name === "system.bash") });
+    expect((await run(f))?.outcome).toBe("verified");
+  });
+
+  test("TodoWrite completion bookkeeping preserves evidence but child lifecycle tools do not", async () => {
+    expect((await run(fixture([check(), result("TodoWrite")])))?.outcome).toBe("verified");
+    for (const name of ["spawn_agent", "wait_agent"]) {
+      expect((await run(fixture([check(), result(name)])))?.outcome).toBe("injected");
+    }
+  });
+
   test("first answer accepts relevant verification after an edit, including a successful negative edge case", async () => {
     const f = fixture([result("Edit"), check()], "- [x] pytest tests/test_chunks.py: 12 passed, including ValueError for incomplete chunks.\n\nNo dependencies were installed.");
     expect(await run(f)).toMatchObject({ outcome: "verified", round: 0 });

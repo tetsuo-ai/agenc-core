@@ -2,10 +2,13 @@ import type { CompletedToolResultRecord } from "../session/turn-state.js";
 import type { Tool } from "../tools/types.js";
 
 /**
- * Light may reuse observations of the current workspace, including before the
- * first reminder. This is deliberately conservative: arbitrary commands and
- * unknown tools invalidate earlier checks. Only canonical builtin metadata
- * can declare a tool read-only; result text/metadata cannot grant that status.
+ * Before a verification request, arbitrary commands invalidate earlier checks.
+ * Once the runtime asks for verification, independent command results can
+ * accumulate from the captured frontier, as in the normal completion gate.
+ * Commands are not proof of an unchanged filesystem: an arbitrary script can
+ * mutate it. This is the normal gate's existing limitation, not a read-only
+ * classification inferred from shell words, result text or model metadata.
+ * Canonical writes and unknown tools still advance the frontier.
  *
  * A completed command can verify its own final state. File writes themselves
  * are not verification. A running command keeps every observation provisional
@@ -14,18 +17,25 @@ import type { Tool } from "../tools/types.js";
 export function lightCompletionEvidence(
   results: readonly CompletedToolResultRecord[],
   tools: readonly Pick<Tool, "name" | "metadata">[],
+  verificationStart?: number,
 ): { readonly freshFrom: number; readonly isSuccessful: (result: CompletedToolResultRecord) => boolean } {
   const canonical = new Map(tools.map((tool) => [tool.name, tool]));
   const successful = new Set<CompletedToolResultRecord>();
   const running = new Set<number>();
   let untrackedRunning = false;
-  let freshFrom = 0;
+  let freshFrom = verificationStart === undefined ? 0
+    : Math.max(0, Math.min(results.length, verificationStart));
   for (let index = 0; index < results.length; index += 1) {
     const result = results[index]!;
     const tool = canonical.get(result.toolName);
     const builtin = tool?.metadata?.source === "builtin";
-    const shell = builtin && (tool.name === "exec_command" || tool.name === "write_stdin");
+    const shell = builtin && (tool.name === "exec_command" ||
+      tool.name === "write_stdin" || tool.name === "system.bash");
     const readOnly = builtin && tool.metadata?.mutating === false;
+    // TodoWrite updates only the task list. Do not generalize this exemption
+    // to virtualNoFsWrites: spawn/wait tools can supervise child file writes.
+    const bookkeeping = builtin && tool.name === "TodoWrite" &&
+      tool.metadata?.virtualNoFsWrites === true;
     const exitCode = result.metadata?.exitCode;
     const passed = !result.isError && (exitCode === undefined || exitCode === 0);
     if (shell) {
@@ -40,12 +50,12 @@ export function lightCompletionEvidence(
       // A terminal shell observation, unlike a write acknowledgement, can
       // itself be the relevant check. Never infer success from output words.
       const terminalSuccess = passed && exitCode === 0;
-      freshFrom = terminalSuccess ? index : index + 1;
+      if (verificationStart === undefined) freshFrom = terminalSuccess ? index : index + 1;
       if (terminalSuccess) successful.add(result);
     } else if (readOnly) {
       if (passed) successful.add(result);
-    } else {
-      freshFrom = index + 1;
+    } else if (!bookkeeping) {
+      freshFrom = Math.max(freshFrom, index + 1);
     }
   }
   if (running.size > 0 || untrackedRunning) freshFrom = results.length;

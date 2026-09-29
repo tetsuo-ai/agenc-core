@@ -578,11 +578,17 @@ describe("completion gate in the turn loop", () => {
     const state = buildInitialTurnState(mkCtx(), { role: "user", content: TASK });
     expect(toCheckpointSlice(state)).not.toHaveProperty("completionGateRound");
     state.completionGateRound = 2;
+    state.completionGateEvidenceMark = 99;
     expect(toCheckpointSlice(state).completionGateRound).toBe(2);
+    expect(toCheckpointSlice(state)).not.toHaveProperty("completionGateEvidenceMark");
 
     const restored = buildInitialTurnState(mkCtx(), { role: "user", content: TASK });
     restoreFromCheckpoint(restored, { ...toCheckpointSlice(state), completionGateRound: 2 });
     expect(restored.completionGateRound).toBe(2);
+    // The resumed tool ledger starts empty, so old ledger indices must not
+    // become trusted verification frontiers in the new process.
+    expect(restored.completedToolResults).toHaveLength(0);
+    expect(restored.completionGateEvidenceMark).toBeUndefined();
   });
 
   test("the event schema rejects a payload without its required fields", () => {
