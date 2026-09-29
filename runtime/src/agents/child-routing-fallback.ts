@@ -116,13 +116,22 @@ export async function runChildRoutingFallback<T>(options: {
     }
     const usageKnown = costUsd !== undefined || held !== undefined || outcome.terminal.dispatch === "not_sent";
     accountedCostUsd = usageKnown ? accountedCostUsd! + (costUsd ?? 0) + (held ?? 0) : undefined;
+    if (!Number.isSafeInteger(modelCalls) ||
+        (accountedCostUsd !== undefined && !nonNegative(accountedCostUsd))) {
+      accountedCostUsd = undefined;
+      return finish("invalid_usage");
+    }
+    // A provider's completion label cannot authorize usage beyond the task
+    // bounds. Exact exhaustion may complete; overspend must remain visible.
+    if (modelCalls > options.maxModelCalls) return finish("model_call_budget_exhausted");
+    if (options.maxCostUsd !== undefined) {
+      if (!usageKnown) return finish("usage_unknown");
+      if (accountedCostUsd! > options.maxCostUsd) return finish("cost_budget_exhausted");
+    }
     if (options.signal?.aborted) return finish("cancelled");
     if (outcome.terminal.reason === "completed") return finish("completed");
     if (!canFallback(outcome.terminal)) return finish("terminal_outcome");
     if (outcome.toolCalls > 0) return finish("tools_already_run");
     if (!usageKnown) return finish("usage_unknown");
-    if (options.maxCostUsd !== undefined && accountedCostUsd! > options.maxCostUsd) {
-      return finish("cost_budget_exhausted");
-    }
   }
 }

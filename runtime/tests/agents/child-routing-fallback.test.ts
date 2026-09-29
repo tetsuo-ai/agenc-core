@@ -74,6 +74,46 @@ describe("bounded fresh child fallback", () => {
     expect(result.accountedCostUsd).toBeCloseTo(0.8);
   });
 
+  it.each([
+    { name: "model calls", first: { modelCalls: 2 }, last: { modelCalls: 2 }, stopReason: "model_call_budget_exhausted" },
+    { name: "known spend", first: { costUsd: 0.6 }, last: { costUsd: 0.5 }, stopReason: "cost_budget_exhausted" },
+    { name: "spend and holds", first: { costUsd: 0.2, heldUnknownCostUsd: 0.4 }, last: { costUsd: 0.5 }, stopReason: "cost_budget_exhausted" },
+  ])("rejects completed results exceeding cumulative $name", async ({ first, last, stopReason }) => {
+    const runAttempt = vi.fn(async (context: ChildRoutingAttemptContext<string>) => outcome(context,
+      context.attempt === 1 ? "timeout" : "completed", context.attempt === 1 ? first : last));
+    const result = await runChildRoutingFallback({ candidates: [candidate("a"), candidate("b"), candidate("c")],
+      maxModelCalls: 3, maxCostUsd: 1, runAttempt });
+    expect(result.stopReason).toBe(stopReason);
+    expect(result.value).toBe("b");
+    expect(result.attempts.at(-1)?.terminal.reason).toBe("completed");
+    expect(runAttempt).toHaveBeenCalledTimes(2);
+  });
+
+  it("accepts completion at the exact aggregate cost and model-call limits", async () => {
+    const runAttempt = vi.fn(async (context: ChildRoutingAttemptContext<string>) => outcome(context,
+      context.attempt === 1 ? "timeout" : "completed", { modelCalls: context.attempt, costUsd: 0.5 }));
+    const result = await runChildRoutingFallback({ candidates: [candidate("a"), candidate("b")],
+      maxModelCalls: 3, maxCostUsd: 1, runAttempt });
+    expect(result).toMatchObject({ stopReason: "completed", modelCalls: 3, accountedCostUsd: 1 });
+  });
+
+  it("refuses unverified completed spend under a hard task budget", async () => {
+    const runAttempt = vi.fn(async (context: ChildRoutingAttemptContext<string>) => outcome(context, "completed", { costUsd: undefined }));
+    const result = await runChildRoutingFallback({ candidates: [candidate("a"), candidate("b")],
+      maxModelCalls: 3, maxCostUsd: 1, runAttempt });
+    expect(result.stopReason).toBe("usage_unknown");
+    expect(result.accountedCostUsd).toBeUndefined();
+    expect(runAttempt).toHaveBeenCalledOnce();
+  });
+
+  it("rejects overflow when finite spend and held reservations are combined", async () => {
+    const runAttempt = vi.fn(async (context: ChildRoutingAttemptContext<string>) => outcome(context, "completed",
+      { costUsd: Number.MAX_VALUE, heldUnknownCostUsd: Number.MAX_VALUE }));
+    const result = await runChildRoutingFallback({ candidates: [candidate("a")], maxModelCalls: 3, runAttempt });
+    expect(result.stopReason).toBe("invalid_usage");
+    expect(result.accountedCostUsd).toBeUndefined();
+  });
+
   it("stops when no remaining candidate fits the unspent task budget", async () => {
     const runAttempt = vi.fn(async (context: ChildRoutingAttemptContext<string>) => outcome(context, "timeout", { costUsd: 0.2, heldUnknownCostUsd: 0.7 }));
     const result = await runChildRoutingFallback({ candidates: [candidate("a"), candidate("b", "model", 0.2)], maxModelCalls: 5, maxCostUsd: 1, runAttempt });
