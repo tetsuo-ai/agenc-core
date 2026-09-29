@@ -307,6 +307,7 @@ chunk that crosses the limit. Multiple bounded lines can share a chunk.
 | `request.cancel`                                                                                            | Cancel an in-flight request                                                                                        |
 | `agent.create` / `agent.list` / `agent.attach` / `agent.stop` / `agent.logs`                                | Background agents                                                                                                  |
 | `run.start` / `run.status` / `run.result` / `run.replay` / `run.evidence` / `run.cancel`                    | Start a verified-change run; inspect durable state, journal replay/evidence, terminal result, or tree cancellation |
+| `run.pause` / `run.resume`                                                                               | Pause a verified-change workflow at a safe checkpoint and resume the same run with its original limits (protocol 1.25) |
 | `csvJob.review.list` / `csvJob.review.show` / `csvJob.review.resolve`                                       | Inspect and settle durable CSV batch-review items                                                                  |
 | `session.create` / `session.list` / `session.attach` / `session.detach`                                     | Session lifecycle                                                                                                  |
 | `session.terminate` / `session.clear` / `session.snapshot` / `session.transcript` / `session.transcript.v2` | Session control and identity-bearing history sync                                                                  |
@@ -346,6 +347,56 @@ reviews are still pending. See
 [durable-runs-effects-events.md](../design/durable-runs-effects-events.md#resume-and-effect-review)
 and
 [provider-aware-token-accounting.md](../design/provider-aware-token-accounting.md#session-context-estimate).
+
+#### Workflow pause and resume (protocol 1.25)
+
+`run.pause` takes `runId` and a client-generated `requestId`. Retry the same
+request ID after a lost response. The response is a workflow control state,
+not a terminal result. `pause_requested` means the active stage is still
+finishing. Only `paused` confirms a durable safe checkpoint. Inspect
+`run.status.workflow.control` for the current state and `suspensionId`.
+
+`run.resume` takes `runId` and the exact `suspensionId` returned for that pause.
+A stale suspension cannot resume a later pause. Resume keeps the original run,
+worktree, evidence, cumulative cost and token usage, cost and token caps, and
+absolute deadline. Time spent paused does not extend the deadline. Resume may
+accept the same ephemeral provider `envOverrides` as `run.start`; it does not
+accept a replacement goal, model, budget, or deadline.
+
+Controls are advertised in `daemon.methods` only when their backend is wired.
+Clients should hide unavailable controls and distinguish a pending pause from a
+durable pause. `run.pause` is admitted as a stop control when ordinary requests
+are over the connection limit; `run.resume` remains subject to normal limits.
+Pause does not cancel active verification or interrupt a filesystem operation.
+Cancellation remains available through `run.cancel`.
+
+The CLI exposes `agenc run pause <run-id> [--request-id <id>]` and
+`agenc run resume <run-id> [--suspension <id>]`. Without `--suspension`, the CLI
+reads the current paused token from status before resuming. `run start --follow`
+stops when the run is terminal or durably paused.
+
+#### Planner requirement conflicts (protocol 1.28)
+
+A workflow may stop after planning with terminal status `failed` and
+`stopReason: "requirement_conflict"`. Its final message begins
+`The planner found conflicting requirements: ` and contains the planner's
+bounded explanation. This is a reasoned refusal. It is not successful
+completion or independent proof that the goal is impossible.
+
+The planner must emit a complete raw JSON response with kind
+`agenc.goal.plan-blocked.v1`, reason `requirement_conflict`, a nonempty
+`explanation` of at most 2,000 characters, and `conflictingRequirements`
+containing two to eight distinct nonempty strings of at most 1,000 characters
+each. Extra fields, markdown fences, quoted examples, ordinary prose and
+ambiguous requirements do not trigger this control result.
+
+The validated report is committed as `planBlocked` evidence on the planning
+step before the failed terminal is written. A restarted daemon uses the same
+report without another planner or downstream model call. No implementation,
+verification, independent review or finalization runs after that checkpoint.
+Required checks are unchanged and a verifier's PASS label cannot override a
+failing required command. Correcting the requirements requires an explicit
+new Goal; the frozen specification is not modified.
 
 #### Remote and Telegram methods
 

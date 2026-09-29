@@ -54,11 +54,15 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.22 adds the step_limit child terminal reason for partial task results.
  * 1.23 adds the no_progress child terminal reason.
  * 1.24 adds durable child task admission and restart recovery references.
- * 1.25 adds the model_loop child terminal reason.
+ * 1.25 adds cooperative workflow pause/resume and its durable control status.
+ * 1.26 adds live workflow stop observations when terminal persistence fails.
+ * 1.27 adds explicit, idempotent continuation of completed verified results.
+ * 1.28 adds requirement_conflict for a failed structured planner report.
+ * 1.29 adds the model_loop child terminal reason.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.25.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.29.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -71,6 +75,7 @@ export const AGENC_DAEMON_PROTOCOL_PUBLISH_TARGET = {
   schemaId: AGENC_DAEMON_PROTOCOL_SCHEMA_ID,
 } as const;
 export const AGENC_DAEMON_METHOD_CAPABILITIES_KEY = "daemon.methods" as const;
+export const AGENC_WORKFLOW_CONTINUATION_CAPABILITY = "workflow.continuation.v1" as const;
 /** A session authority may carry its in-flight toolCallId; that write answers during the turn. */
 export const AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY =
   "routine.sessionAuthority.v1" as const;
@@ -143,6 +148,8 @@ export const AGENC_DAEMON_METHODS = [
   "run.replay",
   "run.evidence",
   "run.cancel",
+  "run.pause",
+  "run.resume",
   "run.start",
   "routine.capabilities",
   "routine.list",
@@ -244,6 +251,7 @@ export type AgenCDaemonMethodCapabilities = JsonObject & {
 export type AgenCDaemonServerCapabilities = JsonObject & {
   readonly [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: AgenCDaemonMethodCapabilities;
   readonly [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]?: true;
+  readonly [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]?: true;
 };
 
 /**
@@ -687,6 +695,24 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     description:
       "Tree-scoped cancel: the run plus its queued and running descendants. " +
       "Durable cascade first, live interrupt second.",
+  },
+  "run.pause": {
+    method: "run.pause",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Request a durable workflow pause after the active stage settles. " +
+      "Acknowledgement of a request does not imply that the run is paused.",
+  },
+  "run.resume": {
+    method: "run.resume",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Resume the matching workflow suspension with the same run, worktree, " +
+      "charged usage, limits, and absolute deadline.",
   },
   "run.start": {
     method: "run.start",
@@ -1558,6 +1584,35 @@ export interface RunCancelParams extends JsonObject {
   readonly reason?: string;
 }
 
+export interface RunPauseParams extends JsonObject {
+  readonly runId: string;
+  /** Caller-generated idempotency key, 1..128 identifier characters. */
+  readonly requestId: string;
+}
+
+export interface RunResumeParams extends JsonObject {
+  readonly runId: string;
+  /** Exact durable suspension event being resumed, not a later pause. */
+  readonly suspensionId: string;
+  /** Filtered credential snapshot. Never persisted in control evidence. */
+  readonly envOverrides?: { readonly [key: string]: string };
+}
+
+/** Authoritative workflow control state. A pause is not a terminal result. */
+export interface RunWorkflowControlState extends JsonObject {
+  readonly runId: string;
+  readonly state: "running" | "pause_requested" | "paused" | "terminal";
+  readonly requestId?: string;
+  readonly suspensionId?: string;
+  readonly requestedAt?: string;
+  readonly pausedAt?: string;
+  /** Active stage that must settle before a requested pause can take effect. */
+  readonly afterStage?: string;
+}
+
+export type RunPauseResult = RunWorkflowControlState;
+export type RunResumeResult = RunWorkflowControlState;
+
 /** One required verification command for a verified-change workflow run. */
 export interface RunStartVerificationCommand extends JsonObject {
   readonly label: string;
@@ -1565,6 +1620,8 @@ export interface RunStartVerificationCommand extends JsonObject {
 }
 
 export interface RunStartParams extends JsonObject {
+  /** New iteration from a completed result. Requires explicit cost and deadline. */
+  readonly continuation?: { readonly sourceRunId: string; readonly requestId: string };
   /** Ephemeral client credential snapshot. Never persisted in the workflow spec. */
   readonly envOverrides?: { readonly [key: string]: string };
   /** The engineering goal / issue text driving the change. */
@@ -2625,6 +2682,8 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"run.replay", RunReplayParams>
   | AgenCDaemonRequestWithParams<"run.evidence", RunEvidenceParams>
   | AgenCDaemonRequestWithParams<"run.cancel", RunCancelParams>
+  | AgenCDaemonRequestWithParams<"run.pause", RunPauseParams>
+  | AgenCDaemonRequestWithParams<"run.resume", RunResumeParams>
   | AgenCDaemonRequestWithParams<"run.start", RunStartParams>
   | AgenCDaemonRequestWithParams<"csvJob.review.list", CsvJobReviewListParams>
   | AgenCDaemonRequestWithParams<"csvJob.review.show", CsvJobReviewShowParams>
@@ -2810,6 +2869,9 @@ export type RunEffectivePermissionMode =
   | "dontAsk" | "auto" | "unattended" | "bubble";
 
 export interface RunStartResult extends JsonObject {
+  /** True when the exact continuation request already owns this run and budget. */
+  readonly replayed?: boolean;
+  readonly continuationOf?: RunWorkflowContinuation;
   readonly runId: string;
   /** Canonical digest of the frozen WorkflowSpec (the spec's durable identity). */
   readonly specDigest: string;
@@ -2971,17 +3033,75 @@ export interface RunWorkflowStatusStep extends JsonObject {
 }
 
 /**
+ * A live daemon observation, not a persisted terminal result. The execution
+ * has stopped, so clients must stop spinners and disable workflow controls,
+ * while retaining durable run tracking for recovery and result inspection.
+ * A recovered durable terminal supersedes this observation.
+ */
+export interface RunWorkflowRuntimeFailure extends JsonObject {
+  readonly state: "stopped";
+  readonly reason: "terminal_persistence_failed";
+  readonly observedAt: string;
+  readonly message: string;
+  readonly worktree?: { readonly path: string; readonly branch: string };
+  /** Last canonical usage observed before shutdown, omitted when unavailable. */
+  readonly usage?: {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly totalTokens: number;
+    readonly costUsd: number;
+    readonly costEstimated?: boolean;
+  };
+}
+
+/** Immutable provenance pinned by Core, never supplied as a git revision by a client. */
+export interface RunWorkflowContinuation extends JsonObject {
+  readonly sourceRunId: string;
+  readonly sourceSpecDigest: string;
+  readonly sourceBaseCommit: string;
+  readonly sourceHeadCommit: string;
+  readonly sourceTreeHash: string;
+  readonly sourcePatchDigest: string;
+  readonly sourceSealDigest: string;
+  readonly seriesRootRunId: string;
+  readonly requestId: string;
+  readonly requestDigest: string;
+  /** Earlier iteration spend, including the source. Null remains unknown. */
+  readonly previousCostUsd: number | null;
+  readonly previousCostEstimated?: boolean;
+  readonly sourceUsage: {
+    readonly inputTokens: number; readonly outputTokens: number;
+    readonly totalTokens: number; readonly costUsd: number;
+    readonly costKnown?: boolean; readonly costEstimated?: boolean;
+  } | null;
+}
+
+/** Recorded source for the Continue form. Core revalidates its Git snapshot at intake. */
+export interface RunWorkflowCompletedResult extends JsonObject {
+  readonly headCommit: string;
+  readonly specDigest: string;
+  readonly baseCommit: string;
+  readonly cumulativeCostUsd: number | null;
+  readonly cumulativeCostEstimated?: boolean;
+}
+
+/**
  * M5 verified-change workflow projection, present on `run.status` only for
  * runs that recorded workflow steps. Stages and requested mode derive from
  * durable `run_effects` rows; effective mode requires an owned live session.
  */
 export interface RunWorkflowStatus extends JsonObject {
   readonly steps: readonly RunWorkflowStatusStep[];
+  /** Absent on daemons without durable workflow controls. */
+  readonly control?: RunWorkflowControlState;
+  readonly runtimeFailure?: RunWorkflowRuntimeFailure;
+  readonly continuationOf?: RunWorkflowContinuation;
+  readonly completedResult?: RunWorkflowCompletedResult;
   /** Mode requested in the frozen workflow spec; does not establish live authority. */
   readonly requestedPermissionMode?: RunStartParams["permissionMode"];
   /** Actual mode observed from the owning live session; absent when unavailable. */
   readonly effectivePermissionMode?: RunEffectivePermissionMode;
-  /** Present when the run terminated with a frozen workflow stop reason. */
+  /** Present when the run terminated with a workflow stop reason. Protocol 1.28 adds requirement_conflict for a failed planner report. */
   readonly stopReason?: string;
 }
 
@@ -3069,6 +3189,7 @@ export interface RunStatusResult extends JsonObject {
   /** Terminal is true only for the current lifecycle epoch. */
   readonly terminal: boolean;
   readonly statusSource:
+    | "runtime_observation"
     | "run_terminal_result"
     | "run_lifecycle_epoch"
     | "agent_run"
@@ -4125,6 +4246,8 @@ export interface AgenCDaemonResultByMethod {
   readonly "run.replay": RunReplayResult;
   readonly "run.evidence": RunEvidenceResult;
   readonly "run.cancel": RunCancelResult;
+  readonly "run.pause": RunPauseResult;
+  readonly "run.resume": RunResumeResult;
   readonly "run.start": RunStartResult;
   readonly "routine.capabilities": RoutineCapabilities;
   readonly "remote.capabilities": JsonObject;

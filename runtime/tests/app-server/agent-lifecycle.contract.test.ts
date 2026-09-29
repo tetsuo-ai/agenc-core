@@ -7146,7 +7146,6 @@ describe("AgenC background agent lifecycle", () => {
         capabilities: {},
       },
     });
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.25.0");
     expect(connection.initializeState).toMatchObject({
       protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
       clientProtocol: { version: "1.0.0" },

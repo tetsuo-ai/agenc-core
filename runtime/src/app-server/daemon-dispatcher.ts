@@ -111,6 +111,7 @@ import type { AgenCDaemonProjectTrustService } from "./project-trust.js";
 import {
   AGENC_DAEMON_INTERNAL_METHODS,
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
+  AGENC_WORKFLOW_CONTINUATION_CAPABILITY,
   AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY,
   AGENC_DAEMON_METHODS,
   AGENC_DAEMON_PROTOCOL_VERSION,
@@ -132,6 +133,10 @@ import {
   type RunResultParams,
   type RunStatusParams,
   type RunCancelParams,
+  type RunPauseParams,
+  type RunPauseResult,
+  type RunResumeParams,
+  type RunResumeResult,
   type RunStartParams,
   type RunStartResult,
   type CsvJobReviewListParams,
@@ -213,6 +218,7 @@ import {
 import { isRecord } from "../utils/record.js";
 import { LEDGER_SOLANA_SIGN_CLIENT_CAPABILITY } from "../elicitation/types.js";
 import { AgenCDaemonWorkflowStartError } from "./workflow/run-start-service.js";
+import { AgenCDaemonWorkflowControlError } from "./workflow/run-control-service.js";
 
 /**
  * Narrow daemon seam for the M5 verified-change workflow `run.start` method.
@@ -221,7 +227,11 @@ import { AgenCDaemonWorkflowStartError } from "./workflow/run-start-service.js";
  * implementations.
  */
 export interface AgenCDaemonWorkflowStartService {
+  readonly supportsContinuation?: true;
   startRun(params: RunStartParams): Promise<RunStartResult>;
+  /** Advertised only when a durable control implementation is wired. */
+  pauseRun?(params: RunPauseParams): Promise<RunPauseResult>;
+  resumeRun?(params: RunResumeParams): Promise<RunResumeResult>;
   /**
    * Closes a workflow run's projection when run.cancel finds no live
    * pipeline for it. Optional: older wirings without it keep the previous
@@ -356,6 +366,8 @@ function buildServerCapabilities(
     "run.replay": hasMethod(inputs.runInspection, "replay"),
     "run.evidence": hasMethod(inputs.runInspection, "evidence"),
     "run.cancel": hasMethod(agentManager, "cancelRunTree"),
+    "run.pause": hasMethod(inputs.workflow, "pauseRun"),
+    "run.resume": hasMethod(inputs.workflow, "resumeRun"),
     "run.start": hasMethod(inputs.workflow, "startRun"),
     "routine.capabilities": inputs.routines !== undefined,
     "routine.list": inputs.routines !== undefined,
@@ -501,6 +513,7 @@ function buildServerCapabilities(
       methodCapabilities,
     ) as AgenCDaemonMethodCapabilities,
     ...(inputs.routines !== undefined ? { [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]: true } : {}),
+    ...(inputs.workflow?.supportsContinuation === true ? { [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]: true } : {}),
   }) as AgenCDaemonServerCapabilities;
 }
 
@@ -927,11 +940,13 @@ export class AgenCDaemonJsonRpcDispatcher {
           const negotiated = negotiateInitializeProtocol(
             initializeParams,
             connection.remoteAccess ? {
-              ...Object.fromEntries(Object.entries(this.#serverCapabilities).filter(([key]) => key !== AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY)),
+              ...Object.fromEntries(Object.entries(this.#serverCapabilities).filter(([key]) => key !== AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY && key !== AGENC_WORKFLOW_CONTINUATION_CAPABILITY)),
               [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.fromEntries(Object.entries(this.#serverCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY]).map(([key, value]) => [key, value && connection.remoteAccess!.allowsMethod(key)])) as AgenCDaemonMethodCapabilities,
               // Match the filtered routine methods in this remote-access view.
               ...(this.#serverCapabilities[AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY] && connection.remoteAccess.allowsMethod("routine.create") && connection.remoteAccess.allowsMethod("routine.update")
                 ? { [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]: true as const } : {}),
+              ...(this.#serverCapabilities[AGENC_WORKFLOW_CONTINUATION_CAPABILITY] && connection.remoteAccess.allowsMethod("run.start")
+                ? { [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]: true as const } : {}),
             } : this.#serverCapabilities,
           );
           if (!negotiated.supported) {
@@ -1277,14 +1292,29 @@ export class AgenCDaemonJsonRpcDispatcher {
         });
         return successResponse(id, result);
       }
-      case "run.start":
+      case "run.pause":
+        if (this.#workflow?.pauseRun === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(id, await this.#workflow.pauseRun(validateRunPauseParams(params)));
+      case "run.resume":
+        if (this.#workflow?.resumeRun === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(id, await this.#workflow.resumeRun(validateRunResumeParams(params)));
+      case "run.start": {
         if (this.#workflow === undefined) {
           return methodNotImplementedResponse(id, method);
         }
+        const startParams = validateRunStartParams(params);
+        if (startParams.continuation !== undefined && this.#workflow.supportsContinuation !== true) {
+          throw invalidParams("This daemon does not support completed Goal continuation.");
+        }
         return successResponse(
           id,
-          await this.#workflow.startRun(validateRunStartParams(params)),
+          await this.#workflow.startRun(startParams),
         );
+      }
       case "csvJob.review.list":
         if (this.#csvJobReview === undefined) {
           return methodNotImplementedResponse(id, method);
@@ -3090,6 +3120,45 @@ function validateClientEnvOverrides(value: unknown, methodName: string): Record<
   }
 }
 
+function validateWorkflowControlId(
+  params: JsonObject,
+  methodName: "run.pause" | "run.resume",
+  field: "runId" | "requestId" | "suspensionId",
+  maxLength: number,
+): void {
+  const value = params[field];
+  if (typeof value !== "string" || value.length > maxLength ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:#-]*$/.test(value)) {
+    throw invalidParams(`${methodName} param '${field}' must be a 1..${maxLength} character identifier`);
+  }
+}
+
+function validateRunPauseParams(params: JsonObject): RunPauseParams {
+  const validated = validateObjectShape(params, {
+    methodName: "run.pause",
+    stringFields: ["runId", "requestId"],
+  });
+  validateWorkflowControlId(validated, "run.pause", "runId", 256);
+  validateWorkflowControlId(validated, "run.pause", "requestId", 128);
+  return validated as RunPauseParams;
+}
+
+function validateRunResumeParams(params: JsonObject): RunResumeParams {
+  const validated = validateObjectShape(params, {
+    methodName: "run.resume",
+    stringFields: ["runId", "suspensionId"],
+    objectFields: ["envOverrides"],
+  });
+  validateWorkflowControlId(validated, "run.resume", "runId", 256);
+  validateWorkflowControlId(validated, "run.resume", "suspensionId", 512);
+  return {
+    ...validated,
+    ...(validated.envOverrides !== undefined
+      ? { envOverrides: validateClientEnvOverrides(validated.envOverrides, "run.resume") }
+      : {}),
+  } as RunResumeParams;
+}
+
 function validateRunStartParams(params: JsonObject): RunStartParams {
   const validated = validateObjectShape(params, {
     methodName: "run.start",
@@ -3105,9 +3174,21 @@ function validateRunStartParams(params: JsonObject): RunStartParams {
     numberFields: ["maxCostUsd", "maxTokens", "maxImplementAttempts"],
     stringArrayFields: ["unattendedAllow", "unattendedDeny"],
     valueFields: ["requiredVerification"],
-    objectFields: ["envOverrides"],
+    objectFields: ["envOverrides", "continuation"],
   });
   validateRequiredString(validated, "run.start", "goal");
+  if (validated.continuation !== undefined) {
+    const continuation = validated.continuation as JsonObject;
+    validateObjectShape(continuation, { methodName: "run.start.continuation", stringFields: ["sourceRunId", "requestId"] });
+    validateRequiredString(continuation, "run.start.continuation", "sourceRunId");
+    if (typeof continuation.sourceRunId !== "string" || continuation.sourceRunId.length > 256
+      || typeof continuation.requestId !== "string" || !/^[a-zA-Z0-9._:-]{1,128}$/u.test(continuation.requestId)) {
+      throw invalidParams("Continue requires a source Goal and a bounded request ID.");
+    }
+    if (validated.maxCostUsd === undefined || typeof validated.deadlineAt !== "string" || !Number.isFinite(Date.parse(validated.deadlineAt))) {
+      throw invalidParams("Continue requires an explicit additional cost limit and deadline.");
+    }
+  }
   let cwd: string | undefined;
   if (validated.cwd !== undefined) {
     // Same DAE-02 discipline as agent.create/session.create: an absolute,
@@ -5033,6 +5114,9 @@ function mapDispatchError(
     return errorResponse(id, -32602, error.message, { code: error.code });
   }
   if (error instanceof AgenCDaemonWorkflowStartError) {
+    return errorResponse(id, -32602, error.message, { code: error.code });
+  }
+  if (error instanceof AgenCDaemonWorkflowControlError) {
     return errorResponse(id, -32602, error.message, { code: error.code });
   }
   if (error instanceof AgenCCsvJobReviewError) {

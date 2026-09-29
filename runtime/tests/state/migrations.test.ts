@@ -58,7 +58,7 @@ describe("state migration registry", () => {
   it("loads state migrations from numbered migration files in order", () => {
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.version)).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-      22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36,
+      22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37,
     ]);
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.name)).toEqual([
       "initial_state_schema",
@@ -97,6 +97,7 @@ describe("state migration registry", () => {
       "thread_archive_cleanup_generation",
       "idempotent_unknown_effect_outcome",
       "canonical_projection_marker",
+      "workflow_pause",
     ]);
     expectMigrationVersionsAreUnique(STATE_DB_MIGRATIONS);
   });
@@ -151,6 +152,7 @@ describe("state migration registry", () => {
       "034_thread_archive_cleanup_generation.ts",
       "035_idempotent_unknown_effect_outcome.ts",
       "036_canonical_projection_marker.ts",
+      "037_workflow_pause.ts",
     ]);
   });
 

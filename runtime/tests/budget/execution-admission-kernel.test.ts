@@ -1646,3 +1646,21 @@ describe("ExecutionAdmissionKernel active cancellation", () => {
     ).toEqual(["month-one", "month-two"]);
   });
 });
+
+
+it("exposes durable admission dimensions for Goal without relabeling other callers", async () => {
+  const value = kernel("goal-stop-dimensions");
+  const parent = value.bindClient({ cwd, scope: { runId: "goal", sessionId: "goal", autonomous: true },
+    budget: { runMaxTokens: 1, runMaxCostUsd: 1 } });
+  const child = parent.forSession({ runId: "goal-child", sessionId: "goal-child" });
+  await expect(acquire(child)).rejects.toMatchObject({ reason: "budget_exceeded" });
+  expect(value.getLatestJournalEventByRunId("goal-child")).toMatchObject({
+    event: "denied", reason: "budget_exceeded", details: { budgetDimension: "tokens" },
+  });
+  expect(value.getLatestJournalEventByRunId("absent")).toBeUndefined();
+  child.release?.();
+  parent.release?.();
+  expect(value.getLatestJournalEventByRunId("goal-child")).toMatchObject({
+    event: "denied", details: { budgetDimension: "tokens" },
+  });
+});

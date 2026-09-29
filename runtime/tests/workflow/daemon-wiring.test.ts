@@ -439,8 +439,10 @@ describe("createDaemonWorkflowController — per-run durability resolution", () 
         close: async () => {
           expect(childSettled).toBe(true);
           expect(projectA.repo.getCurrentTerminalResult(runId)?.status).toBe("cancelled");
-          // The worktree went while the run's session could still run git.
-          expect(discarded).toEqual([`/wt/${runId}`]);
+          // Cancellation keeps unfinished work available after the session closes.
+          expect(discarded).toEqual([]);
+          expect(projectA.repo.getCurrentTerminalResult(runId)?.finalMessage)
+            .toContain(`/wt/${runId}`);
           seamsClosed = true;
         },
       },

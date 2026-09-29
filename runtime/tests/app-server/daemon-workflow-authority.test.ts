@@ -46,6 +46,19 @@ function recoveredRun(commandEnvironment?: unknown): RecoveredAgentRun {
 }
 
 describe("daemon workflow authority", () => {
+  it.each(["running", "suspended"] as const)("leaves %s Goals to workflow recovery without restoring a conversation", async (status) => {
+    const ordinary = recoveredRun({ PATH: "/client/bin:/usr/bin" });
+    const run: RecoveredAgentRun = {
+      ...ordinary, status,
+      metadata: { ...ordinary.metadata, kind: "verified-change-workflow" },
+    };
+    const restoreAgent = vi.fn(async () => true);
+    await expect(restoreRecoveredAgentRuntime({ startAgent: vi.fn(), restoreAgent }, run))
+      .resolves.toEqual({ available: false });
+    expect(restoreAgent).not.toHaveBeenCalled();
+    expect(run.resumeSource?.close).toHaveBeenCalledOnce();
+  });
+
   it("persists only the explicit client PATH for command recovery", async () => {
     const startAgent = vi.fn(async () => ({
       agentId: "conv-path-authority",

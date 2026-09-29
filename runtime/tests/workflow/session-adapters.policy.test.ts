@@ -17,7 +17,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AgenCBootstrapFunction } from "../../src/app-server/background-agent-runner.js";
 import {
@@ -52,6 +52,11 @@ interface FakeBootstrapCall {
   readonly conversationId: string | undefined;
   readonly resumeConversation: boolean | undefined;
   readonly runtimeOptions: AgentRuntimeOptions | undefined;
+  readonly resumeSuspendedConversation?: boolean;
+  readonly suspendedResumeReason?: string;
+  readonly deferAgentStartupSideEffects?: boolean;
+  readonly deferDurableTurnResume?: boolean;
+  readonly executionAdmissionBudgetIdentity?: string;
 }
 
 let home: string;
@@ -64,6 +69,7 @@ let resolvedPolicies: (WorkflowRunSessionPolicy | undefined)[];
 let actualBootstrapMode: ToolPermissionContext["mode"] | undefined;
 let bootstrapShuttingDown: boolean;
 let bootstrapBarrier: Promise<void> | undefined;
+let suspensionPreflightError: Error | undefined;
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "agenc-m5-policy-home-"));
@@ -77,6 +83,7 @@ beforeEach(() => {
   actualBootstrapMode = undefined;
   bootstrapShuttingDown = false;
   bootstrapBarrier = undefined;
+  suspensionPreflightError = undefined;
 });
 
 afterEach(() => {
@@ -122,6 +129,11 @@ const fakeBootstrap: AgenCBootstrapFunction = async (options) => {
     conversationId: options.conversationId,
     resumeConversation: options.resumeConversation,
     runtimeOptions: options.runtimeOptions,
+    resumeSuspendedConversation: options.resumeSuspendedConversation,
+    suspendedResumeReason: options.suspendedResumeReason,
+    deferAgentStartupSideEffects: options.deferAgentStartupSideEffects,
+    deferDurableTurnResume: options.deferDurableTurnResume,
+    executionAdmissionBudgetIdentity: options.executionAdmissionBudgetIdentity,
   });
   return {
     session: {
@@ -131,7 +143,9 @@ const fakeBootstrap: AgenCBootstrapFunction = async (options) => {
       emit: (event: Event) => eventLog.emit(event),
       services: {},
     },
-    rolloutStore: { runEpoch: 1 },
+    rolloutStore: { runEpoch: 1, assertRunSuspendable: () => {
+      if (suspensionPreflightError !== undefined) throw suspensionPreflightError;
+    } },
     shutdown: async () => {},
   } as never;
 };
@@ -317,6 +331,73 @@ describe("A2 — spec permission policy on the run session", () => {
     await seams.close();
   });
 
+});
+
+describe("workflow pause journal and resume bootstrap", () => {
+  const at = "2026-09-29T00:00:00.000Z";
+
+  it("appends the pause boundary before projecting the same-epoch suspension", async () => {
+    const seams = makeSeams();
+    try {
+      const journal = await seams.journal.open(RUN_ID, { repoPath: cwd });
+      repo.ensureInitialEpoch({ runId: RUN_ID, openedAt: at });
+      const original = repo.recordRunSuspended.bind(repo);
+      const project = vi.spyOn(repo, "recordRunSuspended").mockImplementation((input) => {
+        expect(bootstrapEvents.at(-1)?.msg).toMatchObject({
+          type: "run_suspended", payload: { runId: RUN_ID, reason: "workflow_user_pause", epoch: 1 },
+        });
+        return original(input);
+      });
+      const boundary = journal.appendSuspended!({ suspendedAt: at });
+      expect(project).toHaveBeenCalledOnce();
+      expect(repo.getActiveSuspension(RUN_ID)).toMatchObject({
+        eventId: boundary.eventId, suspensionSequence: boundary.sequence,
+        epoch: 1, reason: "workflow_user_pause", suspendedAt: at,
+      });
+      expect(repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
+    } finally { await seams.close(); }
+  });
+
+  it("refuses a nonquiescent pause before writing a boundary", async () => {
+    const seams = makeSeams();
+    try {
+      const journal = await seams.journal.open(RUN_ID, { repoPath: cwd });
+      repo.ensureInitialEpoch({ runId: RUN_ID, openedAt: at });
+      suspensionPreflightError = new Error("an effect is still in flight");
+      expect(() => journal.appendSuspended!({ suspendedAt: at })).toThrow("an effect is still in flight");
+      expect(bootstrapEvents.filter((event) => event.msg.type === "run_suspended")).toEqual([]);
+      expect(repo.getActiveSuspension(RUN_ID)).toBeUndefined();
+    } finally { await seams.close(); }
+  });
+
+  it("resumes the exact paused run and budget while deferring startup hooks and old turns", async () => {
+    repo.ensureInitialEpoch({ runId: RUN_ID, openedAt: at });
+    repo.recordRunSuspended({ runId: RUN_ID, epoch: 1, eventId: "pause-checkpoint", eventSequence: 1,
+      reason: "workflow_user_pause", suspendedAt: at });
+    const seams = makeSeams(() => ({ permissionMode: "acceptEdits", model: "test-model", provider: "deepseek" }));
+    try {
+      await seams.journal.open(RUN_ID, { resumeSuspensionId: "pause-checkpoint" });
+      expect(bootstrapCalls).toHaveLength(1);
+      expect(bootstrapCalls[0]).toMatchObject({
+        conversationId: RUN_ID, resumeConversation: true, resumeSuspendedConversation: true,
+        suspendedResumeReason: "workflow_user_resume", deferAgentStartupSideEffects: true,
+        deferDurableTurnResume: true, executionAdmissionBudgetIdentity: RUN_ID,
+      });
+      expect(bootstrapCalls[0].argv).toEqual(expect.arrayContaining(["test-model", "deepseek", "acceptEdits"]));
+    } finally { await seams.close(); }
+  });
+
+  it("rejects a stale pause identity before creating a runtime session", async () => {
+    repo.ensureInitialEpoch({ runId: RUN_ID, openedAt: at });
+    repo.recordRunSuspended({ runId: RUN_ID, epoch: 1, eventId: "current-pause", eventSequence: 1,
+      reason: "workflow_user_pause", suspendedAt: at });
+    const seams = makeSeams();
+    try {
+      await expect(seams.journal.open(RUN_ID, { resumeSuspensionId: "old-pause" })).rejects.toThrow("checkpoint changed");
+      expect(bootstrapCalls).toEqual([]);
+      expect(repo.getActiveSuspension(RUN_ID)?.eventId).toBe("current-pause");
+    } finally { await seams.close(); }
+  });
 });
 
 describe("A1 — effect evidence format", () => {

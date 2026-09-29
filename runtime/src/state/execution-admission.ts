@@ -790,12 +790,13 @@ export class ExecutionAdmissionRepository {
           row,
           request,
           "denied",
-          allocationResult,
+          allocationResult.reason,
           now,
+          allocationResult.details,
         );
         return {
           kind: "not_claimed",
-          reason: allocationResult,
+          reason: allocationResult.reason,
           record: denied,
         };
       }
@@ -1656,6 +1657,15 @@ export class ExecutionAdmissionRepository {
     });
   }
 
+  /** Last event only: an earlier denial followed by work is not a terminal cause. */
+  getLatestJournalEvent(runId: string): AdmissionJournalEvent | undefined {
+    const row = this.#driver.prepareState<[string], JournalRow>(
+      `SELECT * FROM execution_admission_journal
+       WHERE run_id = ? ORDER BY sequence DESC LIMIT 1`,
+    ).get(runId);
+    return row === undefined ? undefined : journalFromRow(row);
+  }
+
   listJournal(
     options: ListAdmissionJournalOptions = {},
   ): readonly AdmissionJournalEvent[] {
@@ -1819,6 +1829,7 @@ export class ExecutionAdmissionRepository {
     status: "denied" | "cancelled",
     reason: string,
     at: string,
+    details?: Readonly<Record<string, unknown>>,
   ): PersistedAdmissionRecord {
     this.#driver
       .prepareState(
@@ -1836,6 +1847,7 @@ export class ExecutionAdmissionRepository {
       request,
       event: status === "denied" ? "denied" : "cancelled",
       reason,
+      ...(details !== undefined ? { details } : {}),
     });
     return this.#recordFromRowLocked(this.#requireJobByIdLocked(row.id));
   }
@@ -1846,18 +1858,17 @@ export class ExecutionAdmissionRepository {
     reservedTokens: number,
     reservedCostNanos: number | null,
     now: string,
-  ):
-    | "budget_exceeded"
-    | "unpriced_under_hard_cap"
-    | "allocation_blocked"
-    | null {
+  ): {
+    readonly reason: "budget_exceeded" | "unpriced_under_hard_cap" | "allocation_blocked";
+    readonly details?: Readonly<Record<string, unknown>>;
+  } | null {
     for (const scope of scopes) {
       this.#ensureAllocationLocked(request.step.runId, scope, now);
     }
     const closure = this.#allocationClosureLocked(scopes);
     for (const allocation of closure) {
       if (allocation.blocked_by_provider_overrun === 1) {
-        return "allocation_blocked";
+        return { reason: "allocation_blocked" };
       }
       if (
         allocation.max_tokens !== null &&
@@ -1867,10 +1878,17 @@ export class ExecutionAdmissionRepository {
           reservedTokens,
         ) > allocation.max_tokens
       ) {
-        return "budget_exceeded";
+        return { reason: "budget_exceeded", details: {
+          budgetDimension: "tokens",
+          allocationKey: allocation.scope_key,
+          usedTokens: allocation.used_tokens,
+          heldTokens: allocation.held_tokens,
+          requestedTokens: reservedTokens,
+          maxTokens: allocation.max_tokens,
+        } };
       }
       if (allocation.max_cost_nanos !== null) {
-        if (reservedCostNanos === null) return "unpriced_under_hard_cap";
+        if (reservedCostNanos === null) return { reason: "unpriced_under_hard_cap" };
         if (
           checkedNanoSum(
             allocation.used_cost_nanos,
@@ -1878,7 +1896,14 @@ export class ExecutionAdmissionRepository {
             reservedCostNanos,
           ) > allocation.max_cost_nanos
         ) {
-          return "budget_exceeded";
+          return { reason: "budget_exceeded", details: {
+            budgetDimension: "cost",
+            allocationKey: allocation.scope_key,
+            usedCostNanos: allocation.used_cost_nanos,
+            heldCostNanos: allocation.held_cost_nanos,
+            requestedCostNanos: reservedCostNanos,
+            maxCostNanos: allocation.max_cost_nanos,
+          } };
         }
       }
     }
