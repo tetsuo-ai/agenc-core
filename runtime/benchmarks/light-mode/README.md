@@ -87,14 +87,14 @@ python3 "$HARNESS/summarize.py" --runs "$BENCH_ROOT/runs" \
   --json-out "$BENCH_ROOT/analysis.json" --markdown-out "$BENCH_ROOT/analysis.md" \
   --fail-unproven
 python3 "$HARNESS/trace_audit.py" --runs "$BENCH_ROOT/runs" \
-  --benchmark-root "$BENCH_ROOT" --out "$BENCH_ROOT/trace-review.json"
+  --benchmark-root "$BENCH_ROOT" --completed-only --out "$BENCH_ROOT/trace-review.json"
 ```
 
 The strict gate requires at least two distinct repeats per task/model/agent. Candidate Light must have no greater mean total token use and no lower pass rate than Pi on every task and in totals. The normal baseline is required; original baseline Light is shown diagnostically. All selected failures remain in denominators and cost totals. A timeout, budget stop or abnormal exit is not a passing task even when artifact checks pass. Missing/incomplete usage and mismatched provider/model/sampling evidence make the comparison insufficient, not a win.
 
 Every captured request is checked for the run's declared model and reasoning/sampling settings, including subagent and fallback calls. System/developer content and Responses instructions are hashed across calls without normalizing their text. Character anatomy is only a prompt-size proxy, not billed token usage. Two repeats support an exploratory comparison on these tasks, not a statistical proof across every workload.
 
-The trace audit reviews tool-call arguments in every captured request, deduplicating repeated history. It emits hashes, tool names and review categories without argument content. It flags potential hidden-checker/reference/sibling paths and ambiguous out-of-workspace references for human review. A flag is not an automatic cheating claim. Obfuscated accesses and indirect script behavior may not be detected.
+The trace audit reviews tool-call arguments in captured requests and responses, including final and partial streamed calls that never appear in a later request history. It deduplicates repeated calls and emits hashes, tool names and review categories without argument content. It flags potential hidden-checker/reference/sibling paths and ambiguous out-of-workspace references for human review. A flag is not an automatic cheating claim. Obfuscated accesses and indirect script behavior may not be detected. `--completed-only` includes failed result records but skips active directories without a result. Use `--phase baseline` to inspect one exact phase. Later audits can use `--prior-report FILE` to reuse unchanged capture inventories; changing files are flagged for a later stable audit. Run the audit with the same mount paths used during measurement so legitimate workspace paths are recognized.
 
 ## Integrity limits and publishing evidence
 

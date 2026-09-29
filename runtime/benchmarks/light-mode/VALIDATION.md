@@ -5,7 +5,7 @@ Validated on Linux on 2026-09-29. No paid provider request or real credential re
 | Check | Result |
 | --- | --- |
 | Runner accounting synthetic tests | 17 passed, 0 failed |
-| Portable configuration, lock, credential boundary, trace audit/export and transport-cap tests | 10 passed, 0 failed |
+| Portable configuration, lock, credential boundary, trace audit/export and transport-cap tests | 11 passed, 0 failed |
 | Summarizer self-test | Passed, including later-call model fallback rejection and incomplete/failed-run retention |
 | Luna framed transport self-test | Passed with fake local responses, 0 provider calls |
 | Original unsolved tasks | 12/12 correctly rejected |
@@ -17,7 +17,7 @@ The full offline set passed both with the Linux host's Python and in the benchma
 
 The packaging tests mock all external provider/process operations; the bridge self-test uses an owned Linux child and loopback listener to exchange fake frames. Its absolute-duration and byte-cap checks use fake worker streams. The task self-validation uses fresh copies of the pinned real repositories and no model. The first added cap test asserted against framed base64 text instead of its decoded error payload; that test assertion was corrected and the complete packaging set passed afterward.
 
-The bare Linux host has no Node executable, so real-path `--validate-only` was run successfully in the pinned Node container. No runtime source, Core unit test, Desktop source or active benchmark-runner file is modified by this package. The existing 17 runner accounting checks remain passing; the portable packaging adds 10 checks. Full Core/Desktop baseline comparisons and paid token comparisons belong to the implementation study, not to these offline packaging checks.
+The bare Linux host has no Node executable, so real-path `--validate-only` was run successfully in the pinned Node container. No runtime source, Core unit test, Desktop source or active benchmark-runner file is modified by this package. The existing 17 runner accounting checks remain passing; the portable packaging adds 11 checks, including response-only streamed tool-call review and legacy Luna cost normalization. Full Core/Desktop baseline comparisons and paid token comparisons belong to the implementation study, not to these offline packaging checks.
 
 Final paid study evidence is intentionally pending. See `evidence/README.md` for the publication contract.
 

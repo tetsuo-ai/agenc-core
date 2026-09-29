@@ -116,6 +116,26 @@ class PackagingTests(unittest.TestCase):
         for index,body in enumerate(bodies,1):(run/f'wire-{index:03}.json').write_text(json.dumps({'body':body}))
         self.assertTrue(planning_evidence(run,'light')['pass'])
 
+    def test_trace_review_includes_response_only_and_partial_streamed_calls(self):
+        run=self.root/'terminal-calls';run.mkdir()
+        hidden=str(self.root/'tasks/reference.py')
+        events=[{'choices':[{'delta':{'tool_calls':[{'index':0,'id':'chat-call','function':{'name':'FileRead','arguments':'{"file_path":'}}]}}]},
+                {'choices':[{'delta':{'tool_calls':[{'index':0,'function':{'arguments':json.dumps(hidden)+'}'}}]}}]}]
+        (run/'response-001.txt').write_text(''.join('data: '+json.dumps(e)+'\n\n' for e in events)+'data: [DONE]\n')
+        events=[{'type':'response.output_item.added','output_index':0,'item':{'type':'function_call','id':'item','call_id':'responses-call','name':'FileRead','arguments':''}},
+                {'type':'response.function_call_arguments.delta','item_id':'item','output_index':0,'delta':'{"file_path":'+json.dumps(hidden)}]
+        (run/'response-002.txt').write_text(''.join('data: '+json.dumps(e)+'\n\n' for e in events))
+        (run/'response-003.txt').write_text(json.dumps({'output':[{'type':'function_call','id':'full-item','call_id':'full-call','name':'FileRead','arguments':json.dumps({'file_path':hidden})}]}))
+        # Replayed calls are deduplicated even if JSON whitespace differs.
+        (run/'wire-004.json').write_text(json.dumps({'body':{'messages':[{'tool_calls':[{'id':'chat-call','function':{'name':'FileRead','arguments':json.dumps({'file_path':hidden})}}]}]}}))
+        result=trace_audit.audit_run(run,self.root)
+        self.assertEqual(result['unique_calls_reviewed'],3);self.assertEqual(result['flagged_calls'],3)
+        self.assertEqual(result['malformed_captures'],[])
+        self.assertFalse(result['capture_changed_during_audit'])
+        self.assertNotIn(hidden,json.dumps(result))
+        (run/'response-005.txt').write_text('data: {broken\n')
+        self.assertEqual(trace_audit.audit_run(run,self.root)['malformed_captures'],['response-005.txt'])
+
     def test_evidence_export_keeps_failures_and_strips_private_content(self):
         runs=self.root/'runs';run=runs/'baseline-fixture-pi-r1';run.mkdir(parents=True)
         cancelled=runs/'candidate-fixture-light-r1';cancelled.mkdir()
