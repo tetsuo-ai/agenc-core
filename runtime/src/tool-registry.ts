@@ -1231,22 +1231,8 @@ export function buildToolRegistry(
         });
       }
       const result = await spec.tool.execute(args);
-      let content = result.content;
-      // Advanced core arguments are appended as discovery data. Replacing an
-      // already advertised schema would invalidate every cached request after it.
-      if (options.lightMode === true && options.lightFullCatalog !== true &&
-          spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME && !result.isError) {
-        const payload = JSON.parse(content) as { loaded?: string[] };
-        const argumentSchemas = (payload.loaded ?? []).flatMap(name => {
-          if (!LIGHT_INITIAL_TOOL_NAMES.has(name)) return [];
-          const selected = allSpecs().find(candidate => candidate.tool.name === name && candidate.unavailable !== true);
-          if (!selected || selected.tool.metadata?.source !== "builtin") return [];
-          return [{ name, parameters: lightPresentation(toolToLLMTool(selected.tool), true).function.parameters }];
-        });
-        if (argumentSchemas.length > 0) content = safeStringify({ ...payload, argumentSchemas });
-      }
       return {
-        content,
+        content: result.content,
         isError: result.isError,
         codeModeResult: result.codeModeResult,
         contentItems: result.contentItems,

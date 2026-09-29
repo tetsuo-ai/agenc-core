@@ -4,6 +4,8 @@ import {
   encodeMcpToolNameForWire,
 } from "../../llm/wire/mcp-tool-naming.js";
 import { sanitizeSystemReminderContent } from "../../prompts/attachments/system-reminder-sanitizer.js";
+import { compactLightSchema } from "../light-presentation.js";
+import { LIGHT_INITIAL_TOOL_NAMES } from "../light-profile.js";
 import { SYSTEM_SEARCH_TOOLS_NAME } from "./tool-search-name.js";
 import {
   codingToolMetadata,
@@ -290,7 +292,14 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
         config.onDiscoverTools?.(loaded);
       }
 
+      // Append complete argument definitions to discovery history instead of
+      // replacing a core schema that the provider has already cached.
+      const argumentSchemas = config.lightMode === true
+        ? selectedEntries.filter(entry => entry.metadata.source === "builtin" && LIGHT_INITIAL_TOOL_NAMES.has(entry.name))
+          .map(entry => ({ name: entry.name, parameters: compactLightSchema(entry.inputSchema) }))
+        : [];
       return okResult({
+        ...(argumentSchemas.length > 0 ? { argumentSchemas } : {}),
         totalCatalogSize: catalog.length,
         loaded: loaded.map(modelFacingToolSearchText),
         missingSelections: missingSelections.map(modelFacingToolSearchText),

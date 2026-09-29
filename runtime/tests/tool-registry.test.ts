@@ -2158,6 +2158,8 @@ describe("Light presentation and deferred capability preservation", () => {
     const shell = registry.tools.find(tool => tool.name === "exec_command")!;
     expect(initial.find(tool => tool.function.name === shell.name)?.function.parameters.properties).not.toHaveProperty("sandbox_permissions");
     const result = await registry.dispatch({ id: "load-advanced-shell", name: "system.searchTools", arguments: '{"select":"exec_command"}' });
+    const direct = await registry.tools.find(tool => tool.name === "system.searchTools")!.execute({ select: "exec_command" });
+    expect(JSON.parse(direct.content).argumentSchemas).toEqual(JSON.parse(result.content).argumentSchemas);
     const revealed = JSON.parse(result.content).argumentSchemas[0];
     expect(revealed.name).toBe(shell.name);
     expect(Object.keys(revealed.parameters.properties).sort()).toEqual(Object.keys(shell.inputSchema.properties ?? {}).sort());
