@@ -11,7 +11,7 @@ import { EventLog } from "../../src/session/event-log.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
 import { openStateDatabases } from "../../src/state/sqlite-driver.js";
 
-const calls = vi.hoisted(() => [] as { role?: string; parentMessagesOverride?: unknown[]; isolation?: string; toolAllowlist?: string[]; inspectionWorktree?: { path: string; created: boolean } }[]);
+const calls = vi.hoisted(() => [] as { role?: string; taskPrompt?: string; parentMessagesOverride?: unknown[]; isolation?: string; toolAllowlist?: string[]; inspectionWorktree?: { path: string; created: boolean } }[]);
 vi.mock("../../src/bin/delegate-tool.js", () => ({ ensureAgentControl: () => ({ control: {}, registry: {} }) }));
 vi.mock("../../src/agents/delegate.js", () => ({
   delegate: async (input: { role?: string; parentMessagesOverride?: unknown[] }) => {
@@ -61,6 +61,7 @@ it("delegates Goal planning through the read-only Plan role even when the run al
     expect(calls.map((call) => call.isolation)).toEqual(["none", "worktree", "worktree"]);
     expect(calls[0]?.inspectionWorktree).toMatchObject({ path: home, created: false });
     expect(calls[0]?.toolAllowlist).toEqual(["FileRead", "Glob", "Grep"]);
+    expect(calls[0]?.taskPrompt).toContain(`Your only readable workspace is ${home}.`);
     expect(calls.every((call) => call.parentMessagesOverride?.length === 0)).toBe(true);
     const role = listBuiltInAgentRoles().find((candidate) => candidate.name === calls[0]?.role);
     expect(role?.config.executionConstraint).toBe("read-only");

@@ -992,7 +992,12 @@ export function createWorkflowSessionSeams(
           parentPath: "/root" as AgentPath,
           control,
           registry,
-          taskPrompt: [input.prompt, workflowProviderInstructions(
+          taskPrompt: [
+            ...(input.kind === "plan" ? [
+              `Your only readable workspace is ${input.worktreePath}. Inspect that checkout with FileRead, Glob, and Grep.`,
+              "Use relative paths within this workspace. Do not read the original checkout, parent directories, or external verification scripts. Their command and the goal below define the required checks.",
+            ] : []),
+            input.prompt, workflowProviderInstructions(
             childProviderPolicy(session).cross_provider_enabled === true,
           )].filter(Boolean).join("\n\n"),
           ...(input.kind === "verify_agent"
