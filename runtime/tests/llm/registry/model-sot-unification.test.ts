@@ -171,6 +171,12 @@ describe("retired models remain historical metadata, not live choices", () => {
 });
 
 describe("canonical provider catalogs preserve supported selection rows", () => {
+  it("keeps Copilot Claude identifiers out of the native Anthropic catalog", () => {
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.anthropic).toContain("claude-opus-5-5");
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.anthropic).not.toContain("claude-opus-5.5");
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.github).toContain("github:copilot:claude-opus-5.5");
+  });
+
   it("contains no duplicate raw or provider-local rows", () => {
     for (const [provider, models] of Object.entries(
       BUILT_IN_PROVIDER_MODEL_CATALOG,
