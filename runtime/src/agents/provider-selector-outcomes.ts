@@ -16,7 +16,7 @@ const INFRASTRUCTURE_FAILURES = new Set([
   "parent_cancelled", "policy_revoked", "resume_blocked", "cost_cap_reached",
   "effect_outcome_unknown", "consent_denied", "consent_unavailable",
 ]);
-const TASK_OUTCOMES = new Set(["completed", "step_limit", "model_unavailable", "context_insufficient",
+const TASK_OUTCOMES = new Set(["completed", "step_limit", "no_progress", "model_unavailable", "context_insufficient",
   "tool_protocol_unreliable", "model_refused"]);
 
 interface StoredHistory extends ChildRoutingSnapshot {

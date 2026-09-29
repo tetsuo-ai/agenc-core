@@ -2018,7 +2018,7 @@ export interface SessionClearResult extends JsonObject {
 export interface ChildTerminalOutcomeWire extends JsonObject {
     readonly provider: string;
     readonly model: string;
-    readonly reason: "completed" | "insufficient_funds" | "rate_limited" | "provider_unavailable" | "step_limit" | "timeout" | "auth_required" | "model_unavailable" | "context_insufficient" | "tool_protocol_unreliable" | "model_refused" | "parent_cancelled" | "policy_revoked" | "resume_blocked" | "cost_cap_reached" | "effect_outcome_unknown" | "consent_denied" | "consent_unavailable";
+    readonly reason: "completed" | "insufficient_funds" | "rate_limited" | "provider_unavailable" | "step_limit" | "no_progress" | "timeout" | "auth_required" | "model_unavailable" | "context_insufficient" | "tool_protocol_unreliable" | "model_refused" | "parent_cancelled" | "policy_revoked" | "resume_blocked" | "cost_cap_reached" | "effect_outcome_unknown" | "consent_denied" | "consent_unavailable";
     readonly retryable: boolean;
     readonly retryAfterMs?: number;
     readonly dispatch: "not_sent" | "sent" | "unknown";

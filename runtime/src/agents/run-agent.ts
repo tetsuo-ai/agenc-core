@@ -4777,6 +4777,7 @@ export async function* runAgent(
         stopReason === "empty_response";
       const boundedTerminalReason: ChildTerminalReason | undefined =
         stopReason === "max_turns" ? "step_limit" :
+        stopReason === "no_progress" ? "no_progress" :
         stopReason === "max_budget_usd" ? "cost_cap_reached" :
         stopReason === "effect_review_required" ? "effect_outcome_unknown" :
         stopReason === "compact_failed" ? "context_insufficient" :
