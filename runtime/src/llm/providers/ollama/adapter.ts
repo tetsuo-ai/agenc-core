@@ -707,6 +707,9 @@ export class OllamaProvider implements LLMProvider {
                   });
                   emittedLength = safeLength;
                 }
+                if (chunkContent.slice(safeDeltaLength).trim()) {
+                  onChunk({ content: "", done: false, bufferedContentProgress: true });
+                }
               }
 
               toolCalls = [

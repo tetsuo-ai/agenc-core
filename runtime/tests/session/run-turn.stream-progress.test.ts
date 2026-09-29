@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { runTurn } from "../../src/session/run-turn.js";
 import { StreamProgressError, STREAM_STALL_RETRY_BUDGET_MS } from "../../src/llm/stream-progress.js";
 import { LLMServerError } from "../../src/llm/errors.js";
+import { FallbackTriggeredError } from "../../src/recovery/api-errors.js";
 import { childDispatchCertainty, childTerminalOutcome } from "../../src/agents/child-terminal.js";
 import { mkCtx, mkSession } from "../fixtures.js";
 import { goodSample, recordingAdmission, repeatingSample, scriptedProvider, type Sample } from "../helpers/stream-progress-fixture.js";
@@ -105,6 +106,18 @@ describe("runTurn bounded stream recovery", () => {
   test("a stalled retry cannot enter the provider outage ladder after a 503", async () => {
     vi.useFakeTimers();
     const run = turn([repeatingSample(), async () => { throw new LLMServerError("grok", 503, "overloaded"); }]);
+    await vi.waitFor(() => expect(run.calls()).toBeGreaterThan(0));
+    await vi.advanceTimersByTimeAsync(2 * STREAM_STALL_RETRY_BUDGET_MS);
+    expect((await run.pending).phases.at(-1)).toMatchObject({ stopReason: "error" });
+    expect(run.calls()).toBe(2);
+  });
+
+  test("a stalled retry cannot restart through model fallback after a 503", async () => {
+    vi.useFakeTimers();
+    const fallback = new FallbackTriggeredError("test-model", "fallback-model", {
+      reason: "server_error", message: "503 overloaded",
+    });
+    const run = turn([repeatingSample(), async () => { throw fallback; }, goodSample]);
     await vi.waitFor(() => expect(run.calls()).toBeGreaterThan(0));
     await vi.advanceTimersByTimeAsync(2 * STREAM_STALL_RETRY_BUDGET_MS);
     expect((await run.pending).phases.at(-1)).toMatchObject({ stopReason: "error" });

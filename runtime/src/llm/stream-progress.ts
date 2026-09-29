@@ -76,12 +76,13 @@ export class StreamProgressTracker {
         if (this.repeatedChars >= REPEATED_CHARS && count >= MIN_OCCURRENCES) loop = true;
       }
     }
-    if (newVisibleText || toolProgress) {
+    const outputProgress = newVisibleText || toolProgress || chunk.bufferedContentProgress === true;
+    if (outputProgress) {
       // A new answer or tool action breaks the reasoning-only stall. Retain
       // the dictionary so a loop cannot evade detection by opening blocks.
       this.repeatedChars = 0;
       loop = false;
     }
-    return { progress: newVisibleText || toolProgress || novel, reasoning, loop };
+    return { progress: outputProgress || novel, reasoning, loop };
   }
 }

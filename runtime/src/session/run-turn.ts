@@ -1029,6 +1029,7 @@ async function tryRunSamplingRequest(
   signal: AbortSignal,
   events: PhaseEvent[],
   assistantOutputSink?: AssistantOutputStreamSink,
+  stallRetryStarted = false,
 ): Promise<SamplingRequestResult> {
   // Plan-mode stream state (T11). When the turn's collaboration mode is
   // `plan`, stash per-turn plan-mode bookkeeping on turn-state so the
@@ -1115,8 +1116,10 @@ async function tryRunSamplingRequest(
   // Phase 3: post-sample recovery. Always runs — even on stream
   // error — so the ladder can decide between recovery vs terminal.
   // Progress stops have their own one-retry bound. No fallback trigger may
-  // swallow them and start a second, independent recovery ladder.
-  if (streamModelError && isStreamProgressStop(streamModelError)) throw streamModelError;
+  // swallow them or errors from their retry and restart the recovery ladder.
+  if (streamModelError && (stallRetryStarted || isStreamProgressStop(streamModelError))) {
+    throw streamModelError;
+  }
   await postSampleRecovery(state, ctx, session, signal);
 
   // If recovery applied a transition (any of I-10's triggers fired),
@@ -1273,6 +1276,7 @@ async function runSamplingRequest(
             signal,
             events,
             assistantOutputSink,
+            stallRetryStarted,
           ),
         isTransient: isTransientSamplingError,
         onTransientRetry: async (attempt, err) => {
