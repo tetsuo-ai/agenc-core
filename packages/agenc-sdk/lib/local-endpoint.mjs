@@ -47,6 +47,12 @@ function ensurePrivateDirectory(directory, uid) {
   }
 }
 
+/** Reserved by the runtime sandbox even before a long-home daemon starts. */
+export function agenCDaemonFallbackDirectory() {
+  const uid = process.getuid?.();
+  return uid === undefined ? undefined : `/tmp/agenc-${uid}`;
+}
+
 /** Shared by the daemon, SDK and gate scripts. Short paths and pipes stay stable. */
 export function agenCDaemonLocalEndpoint(daemonHome, platform = process.platform) {
   if (platform === "win32") {
@@ -65,7 +71,7 @@ export function agenCDaemonLocalEndpoint(daemonHome, platform = process.platform
   }
   // Intentionally independent of TMPDIR/XDG_RUNTIME_DIR: launch agents and
   // interactive clients may have different environments for the same home.
-  const directory = `/tmp/agenc-${uid}`;
+  const directory = agenCDaemonFallbackDirectory();
   const identity = createHash("sha256").update(canonicalHome(daemonHome)).digest("hex");
   const fallback = join(directory, `${identity}.sock`);
   try {

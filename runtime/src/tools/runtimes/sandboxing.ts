@@ -39,6 +39,7 @@ import { analyzeShellRuntimeAccess } from "./shell.js";
 import { isSessionCronMemoryMutation } from "./session-cron.js";
 import { cronLockAuthorityRoots, overlapsCronAuthority, protectCronAuthority } from "../../sandbox/cron-authority-protection.js";
 import { desktopAuthorityRoot, overlapsDesktopAuthority, protectDesktopAuthority } from "../../sandbox/desktop-authority-protection.js";
+import { daemonSocketAuthorityRoots, protectDaemonSocket } from "../../sandbox/daemon-socket-protection.js";
 import { routineRunOptions } from "../../session/runtime-options.js";
 
 export interface RuntimeSandboxProfileOptions {
@@ -300,10 +301,10 @@ export function permissionProfileForRuntimeContext(
         network,
       })
     : permissionProfileFromRuntimePermissions(fileSystem, network);
-  const protectedProfile = protectCronAuthority(protectDesktopAuthority(
+  const protectedProfile = protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
     applyRuntimeAdditionalPermissions(profile, context, options.cwd),
     runtimeDesktopAuthorityRoot(context),
-  ));
+  )));
   return routineRunOptions(context.invocation.session) === undefined
     ? protectedProfile
     : confineRoutineProfile(protectedProfile);
@@ -447,7 +448,13 @@ export function enforceRuntimeSandboxAttempt(
     : analyzeWrites(input.tool, input.args, cwd);
   const authorityRoot = runtimeDesktopAuthorityRoot(input.context);
   const cronAuthorityRoots = cronLockAuthorityRoots();
+  const socketAuthorityRoots = daemonSocketAuthorityRoots();
   for (const target of writes.targets) {
+    if (socketAuthorityRoots.some((root) => overlapsCronAuthority(target, root))) {
+      throw new SandboxDeniedError("Daemon sockets are reserved for the native host", {
+        denial: "filesystem", target, policy,
+      });
+    }
     if (cronAuthorityRoots.some((root) => overlapsCronAuthority(target, root))) {
       throw new SandboxDeniedError("Cron locks are reserved for the native host", {
         denial: "filesystem", target, policy,
