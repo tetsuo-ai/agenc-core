@@ -963,6 +963,13 @@ describe("daemon-owned scheduled turns", () => {
       registry.tools[0]!.execute = tool;
       const { session } = create("cron-delete", provider, registry);
       __installDaemonTurnDriverHooksForTest(session, session.services.configStore!);
+      const queued = Promise.withResolvers<void>();
+      const submitTurn = session.submit.bind(session);
+      vi.spyOn(session, "submit").mockImplementation((...args) => {
+        const completion = submitTurn(...args);
+        if (args[0] === "run the scheduled check") queued.resolve();
+        return completion;
+      });
       const active = session.submit("busy");
       try {
         await started.promise;
@@ -971,6 +978,9 @@ describe("daemon-owned scheduled turns", () => {
           { kind: "session", conversationId: session.conversationId }, workspaceRoot);
         const scheduler = await start(session);
         await advance();
+        // Real storage reads may outlive advance()'s timer/polling window.
+        // Prove the cancelled task is queued behind the busy turn first.
+        await queued.promise;
         expect(samples).toBe(1);
         const cronDelete = createModelFacingTools({ workspaceRoot, getSession: () => session })
           .find((candidate) => candidate.name === "CronDelete")!;
@@ -978,6 +988,10 @@ describe("daemon-owned scheduled turns", () => {
         expect(JSON.parse(String(result.content)).deleted).toBe(true);
         busy.resolve();
         await active;
+        // Cancellation retires this tick and re-arms the survivor on a new
+        // timer. Finish that real-I/O re-arm before advancing the fake clock;
+        // drain() alone does not fire timers created while it is waiting.
+        await scheduler.drain();
         await advance();
         await scheduler.drain();
         expect(tool).toHaveBeenCalledTimes(1);

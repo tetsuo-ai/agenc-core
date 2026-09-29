@@ -5169,6 +5169,7 @@ describe("model-facing tools", () => {
         turn_id: "assigned-turn-1",
       });
       expect(assignTask).toHaveBeenCalledWith("agent-1", {
+        exactOutput: false,
         author: "/root",
         recipient: "/root/task_1",
         content: "report now",
