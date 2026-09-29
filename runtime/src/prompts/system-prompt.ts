@@ -517,12 +517,15 @@ export async function resolveMemoryPromptInputs(session: SystemPromptSessionSnap
   try {
     const configStore = session.services?.configStore;
     if (configStore === undefined) return { memoryInstructions: "", memoryPrompt: "" };
-    const prompt = await loadMemoryPrompt({
+    const owner = {
       cwd,
       configStore,
       env: session.services?.userShell?.childEnvironment ?? session.services?.providerEnvironment ?? {},
       runtimeOptions: { remoteMode: false, ...session.services?.runtimeOptions },
-    }, session.services?.runtimeOptions?.lightMode === true);
+    };
+    const prompt = await (session.services?.runtimeOptions?.lightMode === true
+      ? loadMemoryPrompt(owner, true)
+      : loadMemoryPrompt(owner));
     return {
       memoryInstructions: prompt?.instructions ?? "",
       memoryPrompt: prompt?.directories ?? "",
