@@ -1354,7 +1354,7 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
     const light = await assembleSystemPromptSnapshot({ ...options, profile: "light" });
     const standard = await assembleSystemPromptSnapshot({ ...options, profile: "standard" });
     expect(light.staticPrefix.length).toBeLessThan(standard.staticPrefix.length * 0.5);
-    for (const text of ["USER_PROJECT_SENTINEL", "MEMORY_RULE_SENTINEL", "MEMORY_PATH_SENTINEL", "MCP_INSTRUCTIONS_SENTINEL", "# Environment", "/workspace/scratchpad", "system.searchTools", "Never bypass a denial"]) {
+    for (const text of ["USER_PROJECT_SENTINEL", "MEMORY_RULE_SENTINEL", "MEMORY_PATH_SENTINEL", "MCP_INSTRUCTIONS_SENTINEL", "# Environment", "/workspace/scratchpad", "Never bypass a denial"]) {
       expect(light.text).not.toContain(text);
     }
     expect(light.text).toContain("time_remaining_sec");
@@ -1370,7 +1370,7 @@ test("Light's cached head is independent of provider defaults and loaded tools",
   const initial = await assembleSystemPromptSnapshot({ ...options, provider: "deepseek", enabledToolNames: new Set(["FileRead", "system.searchTools"]) });
   const expanded = await assembleSystemPromptSnapshot({ ...options, provider: "openai", enabledToolNames: new Set(["FileRead", "system.searchTools", "spawn_agent", "Skill", "TodoWrite"]) });
   expect(expanded.staticPrefix).toBe(initial.staticPrefix);
-  expect(initial.staticPrefix).not.toContain("system.searchTools");
+  expect(initial.staticPrefix).toContain("Use system.searchTools when it becomes available");
   expect(initial.staticPrefix).not.toContain("- [x]");
   expect(initial.text).not.toContain("The target is a hard minimum");
 });
