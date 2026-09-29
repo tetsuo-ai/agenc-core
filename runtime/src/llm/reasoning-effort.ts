@@ -2,6 +2,7 @@
  * Registered models retain their catalog levels and defaults. Hosted NIM
  * models have separate contracts, even when the model id names another vendor.
  */
+import { resolveNvidiaCurrentModel } from "./registry/nvidia-current-models.js";
 import { supportsXaiReasoningEffortParam } from "./structured-output.js";
 import { isOpenAiReasoningFamilyModel } from "./registry/openai-reasoning-models.js";
 import { isAgenCDeepSeekModel, AGENC_DEEPSEEK_REASONING_LEVELS } from "./registry/agenc-deepseek.js";
@@ -188,7 +189,8 @@ export function resolveReasoningEffort(input: {
     reasoningEffortAllowedValues = new Set(entry?.supportedReasoningLevels ?? []);
     acceptsReasoningEffort = reasoningEffortAllowedValues.size > 0;
   } else if (slug === "nvidia-nim") {
-    reasoningEffortAllowedValues = nimReasoningEffortValues(model);
+    const current = resolveNvidiaCurrentModel(model);
+    reasoningEffortAllowedValues = current ? (current.efforts.length ? new Set(current.efforts) : undefined) : nimReasoningEffortValues(model);
     acceptsReasoningEffort = (reasoningEffortAllowedValues?.size ?? 0) > 0;
   } else if (
     slug === "amazon-bedrock" &&

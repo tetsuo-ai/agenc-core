@@ -4,16 +4,16 @@
  * (GPT-5.6 and GPT-6 Astra) and 2026-09-22 (GPT-6 Sol and GPT-6 Luna).
  * GPT-6 Sol and Luna also document `none`, which the turn pipeline sends on
  * the wire for them (omitting the field would run their `medium` default).
- * Astra takes no `none`, and GPT-5.6 does not document it.
+ * Astra takes no `none`. GPT-5.6 now documents it (2026-09-29).
  * Desktop generates its matching rows from this module, not a second enum.
  */
 const POSITIVE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 const EFFORTS_WITH_NONE = ["none", ...POSITIVE_EFFORTS] as const;
 
 export const OPENAI_REASONING_MODELS = [
-  { model: "gpt-5.6-sol", label: "GPT-5.6 Sol", efforts: POSITIVE_EFFORTS },
-  { model: "gpt-5.6-terra", label: "GPT-5.6 Terra", efforts: POSITIVE_EFFORTS },
-  { model: "gpt-5.6-luna", label: "GPT-5.6 Luna", efforts: POSITIVE_EFFORTS },
+  { model: "gpt-5.6-sol", label: "GPT-5.6 Sol", efforts: EFFORTS_WITH_NONE },
+  { model: "gpt-5.6-terra", label: "GPT-5.6 Terra", efforts: EFFORTS_WITH_NONE },
+  { model: "gpt-5.6-luna", label: "GPT-5.6 Luna", efforts: EFFORTS_WITH_NONE },
   // Keep the existing default order. Adding Astra must not select it for users.
   { model: "gpt-6-astra", label: "GPT-6 Astra", efforts: POSITIVE_EFFORTS },
   // Appended after Astra for the same reason: the first row stays GPT-5.6 Sol.
