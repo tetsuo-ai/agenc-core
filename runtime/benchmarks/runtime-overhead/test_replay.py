@@ -7,6 +7,20 @@ from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('replay',pathlib.Path(__file__).with_name('replay.py'))
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 class ReplayTests(unittest.TestCase):
+    def test_cache_revision_validation_precedes_path_resolution(self):
+        invalid = ('', '../outside', '/tmp/cache', 'a/b', '--help', 'a'*39,
+                   'a'*41, 'g'*40, 'A'*40, 'a'*40+'\n', None, 42, ['a'*40])
+        for value in invalid:
+            with self.subTest(value=value), patch.object(m, 'confined_path') as resolve:
+                with self.assertRaises(ValueError):m.repository_cache_path('/cache', value)
+                resolve.assert_not_called()
+    def test_cache_revision_retains_resolved_containment(self):
+        revision='a'*40
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)/'root';root.mkdir()
+            self.assertEqual(m.repository_cache_path(root,revision),root.resolve()/revision)
+            (root/revision).symlink_to(pathlib.Path(directory))
+            with self.assertRaises(ValueError):m.repository_cache_path(root,revision)
     def test_confined_paths_reject_absolute_traversal_and_symlink_escape(self):
         with tempfile.TemporaryDirectory() as directory:
             root=pathlib.Path(directory)/'root';root.mkdir()

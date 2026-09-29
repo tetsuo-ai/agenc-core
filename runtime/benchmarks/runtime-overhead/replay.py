@@ -15,6 +15,16 @@ def confined_path(root, relative):
         raise ValueError('Path escapes its benchmark root')
     return resolved
 
+def repository_cache_path(root, revision):
+    """A cache selector is a pinned Git object ID, never a general path.
+
+    Fixtures are trusted local workloads. Resolved containment is still needed
+    for stable symlinks; neither validation nor resolve prevents rename races.
+    """
+    if not isinstance(revision, str) or not re.fullmatch(r'[0-9a-f]{40}', revision):
+        raise ValueError('Expected a pinned 40-character lowercase Git object ID')
+    return confined_path(root, revision)
+
 def command(args, *, env=None, cwd=None, log=None, timeout=120, stdin_text=None):
     # Only interpreter + absolute script invocations, never interpreter flags
     # or an executable supplied by a task manifest. Script content is trusted
@@ -136,7 +146,7 @@ def main():
         check_script=confined_path(root/'bench/tasks',task['check_script'])
         dest=root/'replay-runs'/f'{args.label}-{mode}-{task["id"]}-{repeat+1}'
         dest.mkdir(parents=True,exist_ok=False);repo=dest/'repo';home=dest/'home';home.mkdir()
-        cache=confined_path('/evidence/light-ultra/repos',task['repo_sha'])
+        cache=repository_cache_path('/evidence/light-ultra/repos',task['repo_sha'])
         shutil.copytree(cache,repo,symlinks=True)
         if command(['python3',str(setup_script),str(repo)],log=dest/'setup.log'):raise RuntimeError('setup failed')
         env={k:v for k,v in os.environ.items() if not any(s in k for s in ('KEY','TOKEN','SECRET','AGENC'))}
