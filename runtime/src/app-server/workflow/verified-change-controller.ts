@@ -113,7 +113,9 @@ import {
   encodeWorkflowReviewTerminal,
   recordWorkflowChildTerminal,
 } from "./child-terminals.js";
+import { boundedWorkflowDiagnostic } from "../../workflow/diagnostics.js";
 import { projectWorkflowStatus, type WorkflowRunStatus } from "./status-projection.js";
+import { isWorkflowChildStopReason, workflowAdmissionStopReason, workflowStopMessage, type WorkflowChildStopReason } from "./stop-reasons.js";
 import { WORKFLOW_PAUSE_PREFIX, workflowControlState } from "./control-state.js";
 import { AgenCDaemonWorkflowControlError } from "./run-control-service.js";
 import type { RunPauseParams, RunResumeParams, RunWorkflowControlState, RunWorkflowRuntimeFailure } from "../protocol/index.js";
@@ -253,7 +255,7 @@ export type WorkflowSpawnKind = "plan" | "implement" | "verify_agent" | "review"
 
 export interface WorkflowChildOutcome {
   readonly status: RunTerminalStatus;
-  readonly stopReason?: "approval_required" | "policy_denied";
+  readonly stopReason?: WorkflowChildStopReason;
   readonly finalMessage: string | null;
   /**
    * Reconciled actual usage for the child's own admissions (null = nothing
@@ -575,6 +577,11 @@ function truncate(text: string | null | undefined): string | undefined {
   return text.length > EVIDENCE_MESSAGE_LIMIT
     ? `${text.slice(0, EVIDENCE_MESSAGE_LIMIT)}…[truncated]`
     : text;
+}
+
+function failedStepMessage(summary: string, result: EffectStepResult): string {
+  const detail = result.evidence.child?.finalMessage ?? result.evidence.failure?.message;
+  return detail?.trim() ? `${summary}. ${boundedWorkflowDiagnostic(detail)}` : summary;
 }
 
 function errorMessage(error: unknown): string {
@@ -1429,7 +1436,7 @@ export class VerifiedChangeWorkflowController {
           throw new WorkflowHaltError({
             status: "failed",
             stopReason: "step_retries_exhausted",
-            finalMessage: `implement failed terminally after ${attempt} attempt(s)`,
+            finalMessage: failedStepMessage(`implement failed terminally after ${attempt} attempt(s)`, implement),
           });
         }
         attempt += 1;
@@ -1590,7 +1597,7 @@ export class VerifiedChangeWorkflowController {
       throw new WorkflowHaltError({
         status: "failed",
         stopReason: "step_retries_exhausted",
-        finalMessage: "adversarial verification agent run failed terminally",
+        finalMessage: failedStepMessage("adversarial verification agent run failed terminally", agent),
       });
     }
     const verdict = agent.evidence.verdict ?? "FAIL";
@@ -1740,18 +1747,20 @@ export class VerifiedChangeWorkflowController {
               );
             } catch (error) {
               const approvalFailure = workflowApprovalFailureCause(error);
-              if (approvalFailure !== undefined) {
+              const stopReason = approvalFailure?.stopReason ?? workflowAdmissionStopReason(error);
+              if (stopReason !== undefined) {
+                const message = approvalFailure?.message ?? workflowStopMessage(stopReason);
                 this.#recordReviewChildTerminal(ctx, childRunId, {
                   status: "failed",
-                  stopReason: approvalFailure.stopReason,
-                  finalMessage: approvalFailure.message,
+                  stopReason,
+                  finalMessage: message,
                   usage: null,
                 });
                 return {
                   outcome: "failed",
                   evidence: {
                     stage: "workflow.review", attempt,
-                    failure: { reason: approvalFailure.stopReason, message: approvalFailure.message },
+                    failure: { reason: stopReason, message },
                   },
                 };
               }
@@ -2420,7 +2429,7 @@ export class VerifiedChangeWorkflowController {
         throw new WorkflowHaltError({
           status: "failed",
           stopReason: "step_retries_exhausted",
-          finalMessage: `${input.stage} failed terminally after ${attempt} attempt(s)`,
+          finalMessage: failedStepMessage(`${input.stage} failed terminally after ${attempt} attempt(s)`, result),
         });
       }
       attempt += 1;
@@ -2429,14 +2438,12 @@ export class VerifiedChangeWorkflowController {
 
   #haltPermanentChildFailure(result: EffectStepResult): void {
     const stopReason = result.evidence.child?.stopReason ?? result.evidence.failure?.reason;
-    if (stopReason !== "approval_required" && stopReason !== "policy_denied") return;
+    if (!isWorkflowChildStopReason(stopReason)) return;
     throw new WorkflowHaltError({
       status: "failed",
-      stopReason,
-      // Keep resolver diagnostics in step evidence, never in the final notice.
-      finalMessage: stopReason === "approval_required"
-        ? "The Goal stopped because a required approval was not received. Please try again and approve the requested action."
-        : "The Goal stopped because a required action was denied. Review the permissions before trying again.",
+      stopReason: stopReason === "approval_required" || stopReason === "policy_denied"
+        ? stopReason : "budget_exhausted",
+      finalMessage: workflowStopMessage(stopReason),
     });
   }
 
@@ -2556,15 +2563,16 @@ export class VerifiedChangeWorkflowController {
         });
       }
       if (lease.signal.aborted) {
+        const bound = workflowAdmissionStopReason(lease.signal.reason);
         const result = this.#commitResult(
           ctx,
           plan,
           {
-            outcome: "cancelled",
+            outcome: bound === undefined ? "cancelled" : "failed",
             evidence: {
               stage: plan.stage,
               attempt: plan.attempt,
-              failure: { reason: "cancelled_before_dispatch" },
+              failure: { reason: bound ?? "cancelled_before_dispatch" },
             },
           },
           false,
@@ -2588,6 +2596,11 @@ export class VerifiedChangeWorkflowController {
         execution = await scope.run(() => plan.execute(lease.signal));
       } finally {
         this.#providerWaits.delete(ctx.runId);
+      }
+      const bound = lease.signal.aborted ? workflowAdmissionStopReason(lease.signal.reason) : undefined;
+      if (bound !== undefined) {
+        execution = { ...execution, outcome: "failed", evidence: { ...execution.evidence,
+          failure: { reason: bound, message: workflowStopMessage(bound) } } };
       }
       for (const failpoint of plan.beforeCommitFailpoints ?? []) {
         hitM5WorkflowFailpoint(failpoint);
@@ -2628,29 +2641,31 @@ export class VerifiedChangeWorkflowController {
         throw error;
       }
       if (!settled) {
-        if (dispatched && lease.signal.aborted) {
+        if (lease.signal.aborted) {
+          const bound = workflowAdmissionStopReason(lease.signal.reason);
           this.#commitResult(
             ctx,
             plan,
             {
-              outcome: "cancelled",
+              outcome: bound === undefined ? "cancelled" : "failed",
               evidence: {
                 stage: plan.stage,
                 attempt: plan.attempt,
                 failure: {
-                  reason: "cancelled_after_dispatch",
+                  reason: bound ?? (dispatched ? "cancelled_after_dispatch" : "cancelled_before_dispatch"),
                   message: errorMessage(error),
                 },
               },
             },
-            true,
+            dispatched,
           );
-          ctx.admission.holdUnknown(reservationId, "workflow_cancelled_after_dispatch");
+          if (dispatched) ctx.admission.holdUnknown(reservationId, "workflow_cancelled_after_dispatch");
+          else ctx.admission.void(reservationId, "workflow_cancelled_before_dispatch");
           settled = true;
           throw new WorkflowHaltError({
-            status: "cancelled",
-            stopReason: null,
-            finalMessage: `workflow cancelled during ${plan.stepId}`,
+            status: bound === undefined ? "cancelled" : "failed",
+            stopReason: bound === undefined ? null : "budget_exhausted",
+            finalMessage: bound === undefined ? `workflow cancelled during ${plan.stepId}` : workflowStopMessage(bound),
           });
         }
         if (dispatched && plan.recoveryCategory === "side-effecting") {
@@ -2751,6 +2766,11 @@ export class VerifiedChangeWorkflowController {
     plan: EffectStepPlan,
     error: AdmissionDeniedError,
   ): WorkflowHaltError {
+    const bound = workflowAdmissionStopReason(error);
+    if (bound !== undefined) {
+      return new WorkflowHaltError({ status: "failed", stopReason: "budget_exhausted",
+        finalMessage: workflowStopMessage(bound) });
+    }
     if (error.decision === "cancelled") {
       return new WorkflowHaltError({
         status: "cancelled",

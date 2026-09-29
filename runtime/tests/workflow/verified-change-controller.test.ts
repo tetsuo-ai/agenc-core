@@ -2018,6 +2018,38 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
     });
   });
 
+  it("reports an expired deadline at admission as a run limit, not user cancellation", async () => {
+    harness.admission.denials.push({ match: (stepId) => stepId === "workflow.implement",
+      error: new AdmissionDeniedError("deadline_expired", "cancelled") });
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", stopReason: "budget_exhausted", finalMessage: expect.stringContaining("deadline was reached"),
+    });
+    expect(harness.spawner.spawns.map(spawn => spawn.kind)).toEqual(["plan"]);
+    expect(harness.worktrees.discards).toHaveLength(0);
+  });
+
+  it("reports deadline expiry between admission and dispatch without starting another child", async () => {
+    const acquire = harness.admission.acquire.bind(harness.admission);
+    vi.spyOn(harness.admission, "acquire").mockImplementation(async input => {
+      const lease = await acquire(input);
+      if (input.stepId === "workflow.implement") {
+        harness.admission.abort.abort(new AdmissionDeniedError("deadline_expired", "cancelled"));
+      }
+      return lease;
+    });
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", stopReason: "budget_exhausted", finalMessage: expect.stringContaining("deadline was reached"),
+    });
+    expect(harness.repo.getEffect(RUN_ID, "workflow.implement")).toMatchObject({
+      outcome: "failed", evidence: { failure: { reason: "deadline_exceeded" } },
+    });
+    expect(harness.spawner.spawns.map(spawn => spawn.kind)).toEqual(["plan"]);
+    expect(harness.admission.heldUnknown).toHaveLength(0);
+    expect(harness.admission.voided).toHaveLength(1);
+  });
+
   it("completes a Goal with an unpriced provider fixture and persists estimated spend", async () => {
     let client!: ExecutionAdmissionClient;
     const project = makeHarness({ admission: () => client });
@@ -2094,6 +2126,7 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
     expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
       status: "failed",
       stopReason: "step_retries_exhausted",
+      finalMessage: expect.stringContaining("planner crashed again"),
     });
     const stepIds = harness.repo.listEffects(RUN_ID).map((e) => e.stepId);
     expect(stepIds).toContain("workflow.plan");
@@ -2139,9 +2172,11 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
     expect(harness.worktrees.cleanups).toHaveLength(0);
   });
 
-  it.each(["reject", "resolve"] as const)(
-    "cancels dispatched verification when the runner settles by %s",
-    async (settlement) => {
+  it.each([
+    ["reject", false], ["resolve", false], ["reject", true], ["resolve", true],
+  ] as const)(
+    "settles dispatched verification by %s with deadline=%s",
+    async (settlement, deadline) => {
       harness.cleanup();
       let client: ExecutionAdmissionClient;
       harness = makeHarness({ admission: () => client });
@@ -2175,14 +2210,16 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
         }));
         await dispatched.promise;
         // This is the real admission cancellation cascade used by run.cancel.
-        client.cancelRun("operator cancelled during command verification");
+        client.cancelRun(deadline ? "deadline_expired" : "operator cancelled during command verification");
         await harness.controller.awaitRun(started.runId);
         expect(observedAbort).toBe(true);
         expect(run).toHaveBeenCalledTimes(1);
-        expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "cancelled" });
+        expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject(deadline
+          ? { status: "failed", stopReason: "budget_exhausted", finalMessage: expect.stringContaining("deadline was reached") }
+          : { status: "cancelled" });
         expect(harness.repo.getEffect(RUN_ID, "workflow.verify.cmd.1")).toMatchObject({
-          outcome: "cancelled",
-          evidence: { failure: { reason: "cancelled_after_dispatch" } },
+          outcome: deadline ? "failed" : "cancelled",
+          evidence: { failure: { reason: deadline ? "deadline_exceeded" : "cancelled_after_dispatch" } },
         });
         expect(harness.spawner.spawns.map((spawn) => spawn.kind)).toEqual(["plan", "implement"]);
         expect(harness.worktrees.cleanups).toHaveLength(0);
@@ -2221,6 +2258,40 @@ describe("VerifiedChangeWorkflowController — prerequisite gating", () => {
     expect(harness.commands.executed).toHaveLength(0);
   });
 
+  it.each([
+    ["token_budget_exhausted", "remaining token budget"],
+    ["cost_budget_exhausted", "remaining cost budget"],
+    ["deadline_exceeded", "deadline was reached"],
+    ["budget_exhausted", "remaining budget"],
+  ] as const)("does not retry implement after %s and preserves its partial work", async (reason, message) => {
+    harness.spawner.queue("implement", { status: "failed", stopReason: reason,
+      finalMessage: "misleading child cost cap", usage: DEFAULT_USAGE });
+    await runToTerminal(harness);
+    const terminal = harness.repo.getCurrentTerminalResult(RUN_ID)!;
+    expect(terminal).toMatchObject({ status: "failed", stopReason: "budget_exhausted",
+      finalMessage: expect.stringContaining(message) });
+    expect(terminal.finalMessage).toContain(`Work is preserved in /wt/${RUN_ID} (branch agenc/m5).`);
+    expect(harness.repo.getEffect(RUN_ID, "workflow.implement")).toMatchObject({
+      outcome: "failed", evidence: { child: { stopReason: reason } },
+    });
+    expect(harness.spawner.spawns.filter((spawn) => spawn.kind === "implement")).toHaveLength(1);
+    expect(harness.commands.executed).toHaveLength(0);
+    expect(harness.worktrees.cleanups).toHaveLength(0);
+    expect(harness.worktrees.discards).toHaveLength(0);
+  });
+
+  it("does not retry independent review after an admission budget failure", async () => {
+    harness.reviewer.errors.push(new ReviewInvocationError("review failed", {
+      cause: new AdmissionDeniedError("budget_exceeded"),
+    }));
+    await runToTerminal(harness);
+    expect(harness.reviewer.invocations).toHaveLength(1);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", stopReason: "budget_exhausted", finalMessage: expect.stringContaining("remaining budget"),
+    });
+    expect(inspectWorkflowChildTerminal(harness.repo, `${RUN_ID}:review#1`)).toMatchObject({ stopReason: "budget_exhausted" });
+  });
+
   it("verify never starts when implement failed terminally", async () => {
     harness.spawner.queue("implement", {
       status: "failed",
@@ -2247,6 +2318,30 @@ describe("VerifiedChangeWorkflowController — prerequisite gating", () => {
 });
 
 describe("VerifiedChangeWorkflowController — crash recovery (D3)", () => {
+  it.each(["token_budget_exhausted", "cost_budget_exhausted", "deadline_exceeded"] as const)(
+    "adopts %s after a crash without another implementation attempt", async (stopReason) => {
+      const outcome: WorkflowChildOutcome = { status: "failed", stopReason, finalMessage: "bounded stop", usage: DEFAULT_USAGE };
+      harness.spawner.queue("implement", outcome);
+      // Plan has already committed before the implement child settles.
+      const original = harness.spawner.spawn.bind(harness.spawner);
+      vi.spyOn(harness.spawner, "spawn").mockImplementation(async (input) => {
+        const result = await original(input);
+        if (input.kind === "implement") armFailpoint("after_spawn_before_effect_result");
+        return result;
+      });
+      const started = await harness.controller.start(startParams(harness));
+      await expect(harness.controller.awaitRun(started.runId)).rejects.toThrow(/failpoint/);
+      disarmFailpoint();
+      recordWorkflowChildTerminal(harness.repo, `${RUN_ID}:implement#1`, outcome);
+      harness.spawner.inspections.clear();
+      await harness.controller.resumeOpenWorkflows();
+      await harness.controller.awaitRun(RUN_ID);
+      expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "failed", stopReason: "budget_exhausted" });
+      expect(harness.spawner.spawns.filter((spawn) => spawn.kind === "implement")).toHaveLength(1);
+      expect(harness.commands.executed).toHaveLength(0);
+    },
+  );
+
   it("adopts a permanent child failure after a crash without spawning its stage again", async () => {
     const outcome: WorkflowChildOutcome = {
       status: "failed", stopReason: "policy_denied", finalMessage: "operator denied", usage: DEFAULT_USAGE,

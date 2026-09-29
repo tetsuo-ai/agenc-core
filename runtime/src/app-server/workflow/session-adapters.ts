@@ -46,6 +46,7 @@ import { ensureAgentControl } from "../../bin/delegate-tool.js";
 import { delegate } from "../../agents/delegate.js";
 import { childProviderPolicy } from "../../agents/cross-provider.js";
 import type { AgentPath } from "../../agents/registry.js";
+import { workflowAdmissionStopReason, workflowStopMessage, type WorkflowChildStopReason } from "./stop-reasons.js";
 import type { ExecutionAdmissionKernel } from "../../budget/execution-admission-kernel.js";
 import type { AuthBackend } from "../../auth/backend.js";
 import {
@@ -1069,9 +1070,21 @@ export function createWorkflowSessionSeams(
           );
         }
         const result = outcome.result;
+        let stopReason: WorkflowChildStopReason | undefined = result.error instanceof WorkflowApprovalFailure
+          ? result.error.stopReason : undefined;
+        if (result.outcome !== "completed" && stopReason === undefined) {
+          try {
+            stopReason = workflowAdmissionStopReason(result.error,
+              options.kernel.getLatestJournalEventByRunId(result.threadId));
+          } catch (error) {
+            stopReason = workflowAdmissionStopReason(result.error);
+            options.warn(`workflow ${input.kind} child admission stop lookup failed: ${errorMessage(error)}`);
+          }
+        }
         const status: WorkflowChildOutcome["status"] =
           result.outcome === "completed"
             ? "completed"
+            : stopReason !== undefined ? "failed"
             : result.outcome === "interrupted" || result.outcome === "aborted"
               ? "cancelled"
               : "failed";
@@ -1103,12 +1116,9 @@ export function createWorkflowSessionSeams(
         }
         return {
           status,
-          ...(result.error instanceof WorkflowApprovalFailure
-            ? { stopReason: result.error.stopReason }
-            : {}),
-          finalMessage:
-            result.finalMessage ??
-            workflowChildFailureMessage(input.kind, result),
+          ...(stopReason !== undefined ? { stopReason } : {}),
+          finalMessage: stopReason !== undefined ? workflowStopMessage(stopReason)
+            : result.finalMessage ?? workflowChildFailureMessage(input.kind, result),
           usage,
           ...(heldUnknownCount > 0
             ? { usageHeldUnknownCount: heldUnknownCount }
