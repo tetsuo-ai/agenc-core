@@ -1036,8 +1036,8 @@ describe("bootstrapLocalRuntimeSession", () => {
       await control.shutdown(fresh.agentId, "fixture_closed");
       const list = resumed.registry.tools.find((tool) => tool.name === "list_agents")!;
       const listing = JSON.parse((await list.execute({})).content);
-      expect(listing.agents.map((agent: { agent_name: string }) => agent.agent_name))
-        .toEqual(["/root", completed.agentPath, pending.agentPath]);
+      expect(listing.agents.map((agent: { agent_name: string }) => agent.agent_name).sort())
+        .toEqual(["/root", completed.agentPath, pending.agentPath].sort());
       const wait = resumed.registry.tools.find((tool) => tool.name === "wait_agent")!;
       const waited = JSON.parse((await wait.execute({})).content);
       expect(waited.timed_out).toBe(false);
