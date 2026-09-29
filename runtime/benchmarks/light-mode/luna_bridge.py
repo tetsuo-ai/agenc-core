@@ -432,7 +432,7 @@ def main():
         origin=urllib.parse.urlparse(args.proxy)
         if origin.scheme!='http' or origin.hostname not in ('127.0.0.1','localhost','::1') or origin.username or origin.password or origin.path not in ('','/') or origin.query or origin.fragment:
             raise ValueError('Proxy origin must be credential-free HTTP loopback')
-        if not 0<args.request_seconds<=TIMEOUT or not 0<args.response_bytes<=10*1024*1024 or not 1<=args.max_requests<=40:
+        if not 0<args.request_seconds<=TIMEOUT or not 0<args.response_bytes<=10*1024*1024 or not 1<=args.max_requests<=600:
             raise ValueError('Invalid confirmatory request limits')
         args.proxy=args.proxy.rstrip('/')
         relay(args)
