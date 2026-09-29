@@ -6,6 +6,7 @@ import Database from "better-sqlite3";
 import { createEmptyToolPermissionContext } from "../../src/permissions/types.js";
 import { createMultiAgentV2Tools } from "../../src/agents/v2/index.js";
 import { injectChildToolArgs } from "../../src/agents/run-agent.js";
+import { bindLiveAgentSession } from "../../src/agents/live-session.js";
 import { authorizeChildExecutionPlan, createChildExecutionPlan } from "../../src/agents/cross-provider.js";
 import {
   AgentControl,
@@ -282,6 +283,11 @@ describe("AgentControl", () => {
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry, maxDepth: 3 });
     const inspector = await control.spawn({ parentPath: "/root", roleName: "default" });
+    const callerSession = Object.assign(stubSession({ conversationId: inspector.agentId }), {
+      abortController: new AbortController(),
+      onBeforeDurableClose: () => () => {},
+    });
+    const revoke = bindLiveAgentSession(inspector, callerSession);
     context = createEmptyToolPermissionContext({ mode: "bypassPermissions" });
     const writer = await control.spawn({ parentPath: "/root", roleName: "default" });
     const tools = createMultiAgentV2Tools({ getSession: () => session, workspace: control.roleWorkspace, roleCatalog: control.roleCatalog, ensureAgentControl: () => ({ control, registry }) });
@@ -292,6 +298,7 @@ describe("AgentControl", () => {
       expect(result.isError, result.content).toBe(true);
       expect(result.content).toContain("own constrained descendants");
     }
+    revoke();
   });
 
   it("spawn() produces a LiveAgent with allocated path + nickname", async () => {
