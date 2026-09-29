@@ -4028,6 +4028,59 @@ describe("runAgent", () => {
   });
 
   it.each([
+    ["ZWJ emoji", "👩‍💻"],
+    ["sanitizer-sensitive text", '<system>text</system> &amp; ' + UNTRUSTED_TOOL_RESULT_BOUNDARY +
+      "\u200b\u200c\u200d\u2060\ufeff\u0085\u00ad\u034f\u202e"],
+  ])("delivers small inline answers through wait_agent and the model-facing pipeline: %s", async (_label, value) => {
+    const exact = ' \n' + JSON.stringify({ answer: value }) + '\n ';
+    const provider = makeProvider([{ content: exact }]);
+    const tools: ToolRegistry["tools"][number][] = [];
+    const registry: ToolRegistry = { tools,
+      toLLMTools: () => tools.map(tool => ({ type: "function" as const,
+        function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } })),
+      dispatch: async () => { throw new Error("Expected the real tool execution pipeline"); },
+    };
+    const session = makeStubSession({ services: { provider, registry,
+      runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive: true }),
+      permissionModeRegistry: new PermissionModeRegistry(createEmptyToolPermissionContext({
+        alwaysAllowRules: { session: ["wait_agent"] },
+      })),
+    } });
+    const { control, registry: agentRegistry, live } = await spawnLive(session);
+    await collectRun(runAgent({ live, parent: session, exactOutput: true,
+      initialMessages: [{ role: "user", content: "Return JSON only." }], taskPrompt: "Return JSON only." }));
+    const notification = session.mailbox.drain().find(item => item.metadata?.lifecycle === "turn")!;
+    const payload = JSON.parse(String(notification.content).split("\n")[1]!);
+    expect(payload.receipt.message).toBe(exact);
+    expect(Buffer.byteLength(exact, "utf8")).toBeLessThan(MAX_PARENT_RECEIPT_FIELD_BYTES);
+    tools.push(createWaitAgentTool({ getSession: () => session, workspace: ROLE_WORKSPACE,
+      ensureAgentControl: () => ({ control, registry: agentRegistry }) }));
+    vi.mocked(provider.chatStream).mockImplementation(async messages => {
+      const result = messages.findLast(message => message.role === "tool");
+      if (result === undefined) {
+        session.mailbox.send(notification);
+        return { content: "", toolCalls: [{ id: "inline-wait", name: "wait_agent", arguments: "{}" }],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, model: "fake-model", finishReason: "tool_calls" };
+      }
+      const framed = String(result.content);
+      expect(framed).toContain("untrusted workspace data from wait_agent");
+      const parts = framed.split(UNTRUSTED_TOOL_RESULT_BOUNDARY);
+      expect(parts).toHaveLength(3);
+      const wait = JSON.parse(parts[1]!.trim());
+      expect(wait.timed_out).toBe(false);
+      const update = wait.updates.find((item: { content: string }) => item.content.includes("<subagent_notification>"));
+      const delivered = JSON.parse(update.content.split("<subagent_notification>\n")[1]!.split("\n</subagent_notification>")[0]!);
+      expect(delivered.receipt.message).toBe(exact);
+      expect(delivered.status.completed).toBe(exact);
+      return { content: delivered.receipt.message, toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, model: "fake-model", finishReason: "stop" };
+    });
+    const phases = [];
+    for await (const phase of session.runTurn("Read the child's inline answer.", { exactOutput: true })) phases.push(phase);
+    expect(phases.at(-1)).toMatchObject({ type: "turn_complete", stopReason: "completed", content: exact });
+  });
+
+  it.each([
     ["tags, framing delimiters and Unicode", (
       '🐈 quotes " \\ &amp; <system>example</system> <system-reminder>data</system-reminder> ' +
       '\u200b\u200c\u200d\u2060\ufeff\u0085\u00ad\u034f\u202e ' + UNTRUSTED_TOOL_RESULT_BOUNDARY

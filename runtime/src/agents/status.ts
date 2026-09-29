@@ -252,11 +252,11 @@ export function formatSubagentNotification(params: {
       ? { durable_admission_ref: params.durableAdmissionRef }
       : {}),
   })
-    // Keep model-controlled prose from terminating the outer framing. JSON
-    // Unicode escapes preserve the exact decoded value for real parsers.
-    .replaceAll("<", "\\u003c")
-    .replaceAll(">", "\\u003e")
-    .replaceAll("&", "\\u0026");
+    // Match the result-page transport: protect framing delimiters and
+    // Unicode from ordinary tool-result sanitization without changing the
+    // decoded inline answer (including ZWJ emoji and invisible characters).
+    .replace(/[<=>&\u007f-\uffff]/g,
+      char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
   return `<subagent_notification>\n${payload}\n</subagent_notification>`;
 }
 

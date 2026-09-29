@@ -321,10 +321,6 @@ function resolveResponsesFinishReason(
   response: Record<string, unknown>,
   toolCalls: readonly LLMToolCall[],
 ): LLMResponse["finishReason"] {
-  if (toolCalls.length > 0) {
-    return "tool_calls";
-  }
-
   const status = String(response.status ?? "");
   if (status === "incomplete") {
     const details =
@@ -339,9 +335,7 @@ function resolveResponsesFinishReason(
     if (reason.includes("content_filter") || reason.includes("refusal")) {
       return "content_filter";
     }
-    if (reason.includes("error")) {
-      return "error";
-    }
+    return "error";
   }
 
   if (
@@ -352,7 +346,7 @@ function resolveResponsesFinishReason(
     return "error";
   }
 
-  return normalizeFinishReason(status);
+  return toolCalls.length > 0 ? "tool_calls" : normalizeFinishReason(status);
 }
 
 export function buildOpenAIResponsesRequest(
@@ -562,23 +556,29 @@ export function parseOpenAIResponsesResponse(
   const output = Array.isArray(response.output)
     ? (response.output as Array<Record<string, unknown>>)
     : [];
-  const toolCalls = normalizeToolCallsStrict(
-    output
-      .filter((item) => item.type === "function_call")
-      .map(
-        (item): LLMToolCall => ({
-          id: String(item.call_id ?? item.id ?? ""),
-          // Decode the strict-regex wire name back to the
-          // internal-registry form before dispatch.
-          name: decodeMcpToolNameFromWire(
-            String(item.name ?? ""),
-            request.tools.map((tool) => tool.function.name),
-          ),
-          arguments: String(item.arguments ?? "{}"),
-        }),
-      ),
+  const functionCalls = output.filter((item) => item.type === "function_call");
+  const initialFinishReason = resolveResponsesFinishReason(response, []);
+  const acceptsToolCalls = initialFinishReason === "stop" || initialFinishReason === "tool_calls";
+  // Output limits can cut off even a done item's JSON. Keep only identities
+  // for the turn's bounded recovery; never repair or execute partial calls.
+  const incompleteToolCalls = initialFinishReason === "length"
+    ? functionCalls.flatMap((item, index) => {
+      const name = decodeMcpToolNameFromWire(String(item.name ?? "").trim(),
+        request.tools.map((tool) => tool.function.name));
+      if (!name || name.length > 256) return [];
+      const id = String(item.call_id ?? item.id ?? "").trim() || `incomplete-${index}`;
+      return [{ id, name }];
+    }) : [];
+  const toolCalls = acceptsToolCalls ? normalizeToolCallsStrict(
+    functionCalls.map((item): LLMToolCall => ({
+      id: String(item.call_id ?? item.id ?? ""),
+      // Decode the strict-regex wire name before dispatch.
+      name: decodeMcpToolNameFromWire(String(item.name ?? ""),
+        request.tools.map((tool) => tool.function.name)),
+      arguments: String(item.arguments ?? "{}"),
+    })),
     "OpenAI Responses response emitted invalid function_call",
-  );
+  ) : [];
 
   const content = output
     .filter((item) => item.type === "message")
@@ -629,6 +629,7 @@ export function parseOpenAIResponsesResponse(
   return {
     content,
     toolCalls,
+    ...(incompleteToolCalls.length > 0 ? { incompleteToolCalls } : {}),
     ...extractOpenAIReasoningReplay(output, request),
     usage: coerceUsage({
       promptTokens: usageRecord.input_tokens,

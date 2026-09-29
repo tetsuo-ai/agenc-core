@@ -66,3 +66,37 @@ The final main helper invocation, `core-2811-regressions-fixed-main`, reused the
 Core typecheck, including `typecheck:test-support`, passed on the PC in `node:26.5.0-bookworm` using npm 11.17.0 (`core-2811-regressions-typecheck.log`). `git diff --check` passed.
 
 Evidence is in `/home/paul/claude-agenc-work/results/`: the paired logs above, `core-2811-regressions-fix.patch`, `core-2811-regressions-typecheck.log`, `core-2811-cron-delay-branch.log`, and `core-2811-cron-delay-fixed.log`. The intentionally failing main diagnostic and delayed-probe patch are in `core-2811-diagnostics/`, outside the helper's reusable main-baseline cache. Temporary diagnostic edits to main were restored.
+
+## Review fixes and paired PC validation — 2026-09-29
+
+Addressed both findings in `core-2811.REVIEW.md`:
+
+- **Interrupted Responses handoffs:** the OpenAI adapter buffers `response.output_item.done` function calls until the terminal response status arrives. The wire parser gives incomplete/error status precedence over tool calls and returns only non-executable identities after an output-limit cutoff, including when the terminal payload omits the streamed items. Argument fragments never reach execution or strict JSON parsing. Existing bounded output recovery closes the interrupted attempt, requests complete arguments with `message_ref` guidance, and stops when its retry budget is exhausted. Completed calls retain strict validation and the existing partial-output error handling.
+- **Small inline Unicode results:** `formatSubagentNotification` now escapes the same characters as result paging: framing-sensitive ASCII and non-ASCII UTF-16 code units. Ordinary result sanitization remains active, while JSON decoding restores the original answer, including ZWJ emoji. The tests drive a real child result through its notification, ordinary `wait_agent`, tool-result sanitization/framing, and the next parent model request, then verify the exact parent final answer.
+
+Added ten regression cases: three incomplete wire statuses; three mocked SSE cases covering truncated and complete JSON plus terminal payload omission; successful and exhausted session recovery; and two small inline answers containing a ZWJ emoji or sanitizer-sensitive text. All ten failed against the pre-fix branch sources and passed with these fixes. Existing completed-call validation and paging coverage also pass.
+
+Ran `~/claude-agenc-work/bin/run-core-tests.sh <ref> <label> <files>` on the PC for the same eleven files on both refs:
+
+- `tests/llm/wire/responses-openai.test.ts`
+- `tests/llm/providers/openai/adapter.test.ts`
+- `tests/llm/providers/openai/adapter.streaming-gaps.test.ts`
+- `tests/agents/status.test.ts`
+- `tests/agents/run-agent.test.ts`
+- `tests/agents/v2/wait.test.ts`
+- `tests/agents/recovered-child-results.test.ts`
+- `tests/session/subagent-receipt-recovery.test.ts`
+- `tests/session/rejected-text-tool-call-recovery.test.ts`
+- `tests/bin/model-facing-tools.test.ts`
+- `tests/session/run-turn.test.ts`
+
+| Ref / tested source | Final result | PC log label |
+|---|---|---|
+| Main `3caa13df9d56d1623766096f013e8ffc7e54c043` | 11 files, 637 passed, zero failures | `core-2811-review-r9-final-main` |
+| Branch `6fe991488a096d0b1144c0ee9091b045cd367f2c` plus this commit's source/test changes | 11 files, 665 passed, zero failures | `core-2811-review-r9-final-branch` |
+
+The branch has no failures absent from main. The initial nine-file run passed all 631 branch tests; main had only the previously documented CronDelete timing failure (603 passed, one failed). The final comparison above also covers recovered-notification consumers and passed on both refs. No full-suite result is claimed.
+
+Standard core typecheck (`npm --workspace=@tetsuo-ai/runtime run typecheck`, including test-support checks) passed on the PC in `node:26.5.0-bookworm`. `git diff --check` passed. All seven changed source/test files matched the PC checkout byte-for-byte; their manifest digest is `68edb0420f2803ac92725ae83569a8662ca68bb0f5ea30b3662659f03720c1c0`. The helper ran the branch's base checkout with the recorded patch applied before testing; the report was updated afterward.
+
+PC evidence is under `/home/paul/claude-agenc-work/results/`: the final paired logs and empty `.fails` files, `core-2811-review-r9-typecheck.log`, `core-2811-review-r9-fix.patch`, and `core-2811-review-r9-source-verification.json`. Local regression evidence is under `/private/tmp/e2e-delegation/`: `review-r9-red-final.log`, `review-r9-green3.log`, `review-r9-fix.patch`, and `review-r9-source-verification.json`. These checks used mocked providers and made no paid model calls.

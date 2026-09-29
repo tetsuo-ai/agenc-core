@@ -1501,6 +1501,7 @@ export class OpenAIProvider implements LLMProvider {
         string,
         { id: string; name: string; arguments: string }
       >();
+      const streamedFunctionItems: Record<string, unknown>[] = [];
       const streamedReasoningItems: Record<string, unknown>[] = [];
       let completedResponse: Record<string, unknown> | null = null;
 
@@ -1529,66 +1530,9 @@ export class OpenAIProvider implements LLMProvider {
             streamedReasoningItems.push(item);
           }
           if (item?.type === "function_call") {
-            let toolCall: LLMToolCall;
-            try {
-              toolCall = validateProviderToolCallOrThrow(
-                this.name,
-                {
-                  id: String(item.call_id ?? item.id ?? "").trim(),
-                  // Streaming-path decode (mirrors the non-streaming
-                  // path in `parseOpenAIResponsesResponse`). Without
-                  // this, mid-stream `onChunk(toolCalls)` carries the
-                  // wire-form `mcp__server__tool` straight into the
-                  // dispatcher, which keys on the dotted internal form
-                  // and reports a silent dispatch miss.
-                  name: decodeMcpToolNameFromWire(
-                    String(item.name ?? "").trim(),
-                    requestOptions.tools.map((tool) => tool.function.name),
-                  ),
-                  arguments: String(item.arguments ?? "{}"),
-                },
-                OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
-              );
-            } catch (validationError) {
-              // A single malformed function_call must not discard output
-              // already forwarded to the consumer. When nothing has been
-              // emitted yet, rethrow so the outer fallback/retry path can
-              // act; otherwise surface a partial response (mirrors the
-              // Anthropic adapter's partial-recovery and the in-stream
-              // `response.failed` branch below).
-              if (
-                streamedContent.length === 0 &&
-                streamedToolCalls.size === 0
-              ) {
-                throw validationError;
-              }
-              const partialError =
-                validationError instanceof Error
-                  ? validationError
-                  : new LLMProviderError(
-                    this.name,
-                    OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
-                  );
-              const recoveredToolCalls = Array.from(streamedToolCalls.values());
-              onChunk({
-                content: "",
-                done: true,
-                ...(recoveredToolCalls.length > 0
-                  ? { toolCalls: recoveredToolCalls }
-                  : {}),
-              });
-              return {
-                content: streamedContent,
-                toolCalls: recoveredToolCalls,
-                usage: coerceUsage({}),
-                model,
-                finishReason: "error",
-                error: partialError,
-                partial: true,
-              };
-            }
-            streamedToolCalls.set(toolCall.id, toolCall);
-            onChunk({ content: "", done: false, toolCalls: [toolCall] });
+            // A done item can still belong to an output-limited response.
+            // Wait for the terminal status before validating or publishing it.
+            streamedFunctionItems.push(item);
           }
           continue;
         }
@@ -1660,10 +1604,84 @@ export class OpenAIProvider implements LLMProvider {
         );
       }
 
+      if (completedResponse.status === "completed" || completedResponse.status === undefined) {
+        for (const item of streamedFunctionItems) {
+          let toolCall: LLMToolCall;
+          try {
+            toolCall = validateProviderToolCallOrThrow(
+              this.name,
+              {
+                id: String(item.call_id ?? item.id ?? "").trim(),
+                // Streaming-path decode (mirrors the non-streaming
+                // path in `parseOpenAIResponsesResponse`). Without
+                // this, mid-stream `onChunk(toolCalls)` carries the
+                // wire-form `mcp__server__tool` straight into the
+                // dispatcher, which keys on the dotted internal form
+                // and reports a silent dispatch miss.
+                name: decodeMcpToolNameFromWire(
+                  String(item.name ?? "").trim(),
+                  requestOptions.tools.map((tool) => tool.function.name),
+                ),
+                arguments: String(item.arguments ?? "{}"),
+              },
+              OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
+            );
+          } catch (validationError) {
+            // A single malformed function_call must not discard output
+            // already forwarded to the consumer. When nothing has been
+            // emitted yet, rethrow so the outer fallback/retry path can
+            // act; otherwise surface a partial response (mirrors the
+            // Anthropic adapter's partial-recovery and the in-stream
+            // `response.failed` branch below).
+            if (
+              streamedContent.length === 0 &&
+              streamedToolCalls.size === 0
+            ) {
+              throw validationError;
+            }
+            const partialError =
+              validationError instanceof Error
+                ? validationError
+                : new LLMProviderError(
+                  this.name,
+                  OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
+                );
+            const recoveredToolCalls = Array.from(streamedToolCalls.values());
+            onChunk({
+              content: "",
+              done: true,
+              ...(recoveredToolCalls.length > 0
+                ? { toolCalls: recoveredToolCalls }
+                : {}),
+            });
+            return {
+              content: streamedContent,
+              toolCalls: recoveredToolCalls,
+              usage: coerceUsage({}),
+              model,
+              finishReason: "error",
+              error: partialError,
+              partial: true,
+            };
+          }
+          streamedToolCalls.set(toolCall.id, toolCall);
+          onChunk({ content: "", done: false, toolCalls: [toolCall] });
+        }
+      }
+      const terminalOutput = Array.isArray(completedResponse.output)
+        ? completedResponse.output as Record<string, unknown>[] : [];
+      // Some Responses backends omit streamed items in the terminal payload.
+      // Preserve their identities for recovery as well as completed calls.
+      const responseWithStreamedCalls = {
+        ...completedResponse,
+        output: terminalOutput.some(item => item.type === "function_call")
+          ? terminalOutput : [...terminalOutput, ...streamedFunctionItems],
+      };
+
       const parsed = withStreamingMetrics(
         parseOpenAIResponsesResponse(
           model,
-          completedResponse,
+          responseWithStreamedCalls,
           requestOptions,
         ),
       );
