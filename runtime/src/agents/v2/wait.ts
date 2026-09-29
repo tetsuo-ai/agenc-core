@@ -244,9 +244,13 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
     // hold its parent turn open until this wait's deadline (#2201).
     const abortSignal = (args as { readonly __abortSignal?: AbortSignal })
       .__abortSignal;
+    const recoveryControl = control ?? opts.ensureAgentControl(rootSession).control;
+    recoveryControl.registerSessionRoot(rootSession.conversationId);
+    const recoveredUpdates = abortSignal?.aborted === true ? []
+      : recoveryControl.drainRecoveredChildTaskUpdates?.(current.threadId) ?? [];
     let mailboxChanged = false;
     try {
-      mailboxChanged = await session.waitForMailboxChange(
+      mailboxChanged = recoveredUpdates.length > 0 || await session.waitForMailboxChange(
         timeoutMs,
         undefined,
         abortSignal,
@@ -275,7 +279,7 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
       return agentValidationError("invalid-runtime-identity: calling agent session is no longer live");
     }
     const timedOut = !mailboxChanged;
-    const updates = timedOut ? [] : drainMailboxUpdates(session);
+    const updates = timedOut ? [] : [...recoveredUpdates, ...drainMailboxUpdates(session)];
     emit(session, {
       type: "collab_waiting_end",
       payload: {
@@ -349,6 +353,7 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
       "Wait for a mailbox update from any live agent, including queued messages " +
       "and final-status notifications. When updates arrive, returns the drained " +
       "mailbox content so you can report completed agent findings immediately. " +
+      "After restart, returns recovered durable child task results without rerunning the child. " +
       "If a child reports insufficient_funds, tell the user what finished and what remains, then ask before switching providers; never retry it on the exhausted provider. " +
       "If no mailbox update arrives before the deadline, returns a timeout summary. " +
       "After several consecutive timeouts with no update the call fails and asks " +

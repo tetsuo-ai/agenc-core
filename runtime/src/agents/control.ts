@@ -36,6 +36,8 @@ import { childReadOnlyDelegation, normalizeReadOnlyDelegationConstraint } from "
 import type { LLMMessage, LLMUsage } from "../llm/types.js";
 import { assertAgentInvocationChannelMessage } from "../contracts/agent-invocation-envelope.js";
 import type { ThreadSpawnEdgeStatus } from "../session/rollout-store.js";
+import type { RecoveredChildTaskReceipt } from "../session/subagent-receipt-recovery.js";
+import { formatRecoveredChildTaskReceipt, recoveredChildProjectionId, recoveredChildStatus } from "./recovered-child-results.js";
 import type { Session } from "../session/session.js";
 import type { SessionSubmitOptions } from "../session/autonomous-mode.js";
 import {
@@ -390,6 +392,9 @@ export class AgentControl {
   /** Sole executable role authority for schema, spawn, and resume. */
   readonly roleCatalog: AgentRoleCatalog;
   private readonly live = new Map<ThreadId, LiveAgent>();
+  private readonly recoveredTaskReceipts = new Map<ThreadId, readonly RecoveredChildTaskReceipt[]>();
+  private readonly deliveredRecoveredTaskReceipts = new Set<string>();
+  private readonly recoverableChildIds: ReadonlySet<ThreadId>;
   /** Cancellation tokens scoped to parents — I-32. */
   private readonly parentTokens = new Map<AgentPath, AbortController>();
   /** Registered session-root thread id (see `registerSessionRoot`). */
@@ -406,6 +411,11 @@ export class AgentControl {
   constructor(opts: AgentControlOpts) {
     this.session = opts.session;
     this.registry = opts.registry;
+    // Only pre-existing edges need restart replay. Closing a worker spawned
+    // in this control generation must not replay its already-delivered result.
+    this.recoverableChildIds = new Set(opts.session.rolloutStore?.listThreadSpawnDescendants(
+      opts.session.conversationId,
+    ).map((edge) => edge.childThreadId) ?? []);
     const sessionRoleWorkspace = (
       opts.session as Session & { readonly roleWorkspace?: AgentRoleWorkspace }
     ).roleWorkspace;
@@ -2111,7 +2121,59 @@ export class AgentControl {
       });
     }
 
+    if (this.rootThreadId !== undefined) {
+      for (const edge of this.session.rolloutStore?.listThreadSpawnDescendants(this.rootThreadId) ?? []) {
+        if (!this.recoverableChildIds.has(edge.childThreadId) || this.live.has(edge.childThreadId) ||
+            (roleName !== undefined && edge.metadata.agentRole !== roleName) ||
+            (prefix !== undefined && !agentMatchesPrefix(edge.metadata.agentPath, prefix))) continue;
+        const recovered = this.readRecoveredChildTaskReceipts(edge.childThreadId).at(-1);
+        if (recovered === undefined) continue;
+        const terminal = recovered.receipt.terminal;
+        const destination = terminal ?? edge.metadata.executionPlan?.destination;
+        result.push({ agentName: recovered.receipt.agentPath,
+          agentStatus: recoveredChildStatus(recovered.receipt),
+          ...(destination === undefined ? {} : { provider: destination.provider, model: destination.model }),
+          ...(edge.metadata.lastTaskMessage === undefined ? {} : { lastTaskMessage: edge.metadata.lastTaskMessage }) });
+      }
+    }
     return result;
+  }
+
+  /** Lost mailbox projections are replayable from child-owned durable receipts. */
+  drainRecoveredChildTaskUpdates(parentThreadId: ThreadId): readonly { role: "user"; content: string }[] {
+    if (parentThreadId !== this.rootThreadId && !this.live.has(parentThreadId)) return [];
+    const updates: { role: "user"; content: string }[] = [];
+    let bytes = 0;
+    for (const edge of this.session.rolloutStore?.listThreadSpawnChildren(parentThreadId) ?? []) {
+      if (!this.recoverableChildIds.has(edge.childThreadId) || this.live.has(edge.childThreadId)) continue;
+      for (const receipt of this.readRecoveredChildTaskReceipts(edge.childThreadId)) {
+        const projectionId = recoveredChildProjectionId(receipt);
+        if (this.deliveredRecoveredTaskReceipts.has(projectionId)) continue;
+        const content = formatRecoveredChildTaskReceipt(receipt);
+        const size = Buffer.byteLength(content, "utf8");
+        // Unreturned receipts remain eligible for the next wait. Recovery
+        // must not overwhelm the parent context after a long worker lifetime.
+        if (updates.length > 0 && (updates.length >= 16 || bytes + size > 128 * 1_024)) return updates;
+        this.deliveredRecoveredTaskReceipts.add(projectionId);
+        updates.push({ role: "user", content });
+        bytes += size;
+      }
+    }
+    return updates;
+  }
+
+  private readRecoveredChildTaskReceipts(threadId: ThreadId): readonly RecoveredChildTaskReceipt[] {
+    const cached = this.recoveredTaskReceipts.get(threadId);
+    if (cached !== undefined) return cached;
+    try {
+      const receipts = this.session.rolloutStore?.readThreadSpawnTaskReceipts(threadId) ?? [];
+      if (receipts.length > 0) this.recoveredTaskReceipts.set(threadId, receipts);
+      return receipts;
+    } catch (error) {
+      emitWarning(this.session.eventLog, this.session.nextInternalSubId(), "subagent_receipt_recovery_failed",
+        `thread=${threadId}: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    }
   }
 
   snapshotNativeWorkers(parentThreadId: ThreadId): readonly NativeWorkerSnapshot[] {

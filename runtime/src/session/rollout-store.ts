@@ -38,6 +38,7 @@ import {
   withAtomicArtifactObservationSync,
 } from "../durability/atomic-artifact.js";
 import { withPinnedOfflineRolloutLease } from "../durability/offline-rollout.js";
+import { readSubagentTaskReceipts, type RecoveredChildTaskReceipt } from "./subagent-receipt-recovery.js";
 import {
   AgentIdExistsError,
   InvalidAgentMetadataError,
@@ -3657,6 +3658,17 @@ export class RolloutStore {
     parentThreadId: ThreadId,
   ): ReadonlyArray<ThreadSpawnEdgeRecord> {
     return this.listThreadSpawnChildrenMatching(parentThreadId);
+  }
+
+  /** Recover committed task results without reopening the worker's execution epoch. */
+  readThreadSpawnTaskReceipts(childThreadId: ThreadId): readonly RecoveredChildTaskReceipt[] {
+    const edge = this.getThreadSpawnEdge(childThreadId);
+    if (edge === undefined) throw new Error("Child receipt recovery requires a durable spawn edge.");
+    return readSubagentTaskReceipts({ edge,
+      projectDir: getProjectDir(this.store.cwd, this.projectRootMarkers, this.store.agencHome),
+      projectsDir: join(this.store.agencHome, "projects"),
+      bindings: this.runDurabilityRepo.listJournalBindings(childThreadId),
+      resolveSourcePath: resolveCurrentBoundRolloutPath });
   }
 
   listThreadSpawnDescendants(
