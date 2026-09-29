@@ -51,16 +51,17 @@ const AUTHORITY_SHAPED_TAG_RE =
 
 export type UntrustedToolResultKind = "external" | "workspace";
 
-function neutralizeBoundary(text: string): string {
-  return text
+function neutralizeBoundary(text: string, compactMarkers: boolean): string {
+  const traditional = text
     .split(UNTRUSTED_TOOL_RESULT_BOUNDARY)
-    .join("= A G E N C  U N T R U S T E D  T O O L  R E S U L T =")
-    .split(LIGHT_WORKSPACE_DATA_BOUNDARY)
-    .join("A G E N C _ D A T A");
+    .join("= A G E N C  U N T R U S T E D  T O O L  R E S U L T =");
+  return compactMarkers
+    ? traditional.split(LIGHT_WORKSPACE_DATA_BOUNDARY).join("A G E N C _ D A T A")
+    : traditional;
 }
 
-function sanitizeToolResultText(text: string): string {
-  return neutralizeBoundary(sanitizeSystemReminderContent(text)).replace(
+function sanitizeToolResultText(text: string, compactMarkers = true): string {
+  return neutralizeBoundary(sanitizeSystemReminderContent(text), compactMarkers).replace(
     AUTHORITY_SHAPED_TAG_RE,
     (_match, tag: string) =>
       `<neutralized-${tag.toLowerCase().replaceAll("_", "-")}-tag>`,
@@ -109,6 +110,8 @@ function legacyWorkspaceFramingHeader(toolName: string): string {
   ].join("\n");
 }
 
+// Older full frames may contain the later compact marker as ordinary data.
+// Recognize them with their original sanitizer so replay never changes bytes.
 function canonicalFramingHeaders(toolName: string): readonly string[] {
   return [
     framingHeader(toolName, "external"),
@@ -154,7 +157,7 @@ function isCanonicalFramedString(
     const body = content.slice(prefix.length, -suffix.length);
     if (
       boundaryOccurrences(content) === 2 &&
-      sanitizeToolResultText(body) === body
+      sanitizeToolResultText(body, false) === body
     ) {
       return true;
     }
@@ -182,7 +185,7 @@ function isCanonicalFramedParts(
   return content.slice(1, -1).every(
     (part) =>
       part.type !== "text" ||
-      (sanitizeToolResultText(part.text) === part.text &&
+      (sanitizeToolResultText(part.text, false) === part.text &&
         !part.text.includes(UNTRUSTED_TOOL_RESULT_BOUNDARY)),
   );
 }

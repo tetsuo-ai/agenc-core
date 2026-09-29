@@ -179,6 +179,14 @@ describe("Light workspace frames", () => {
     expect(frameUntrustedToolResultContent("Edit", "ok", "workspace", true)).toBe("ok");
     const previous = frameUntrustedToolResultContent("FileRead", "old", "workspace");
     expect(frameUntrustedToolResultContent("FileRead", previous, "workspace", true)).toBe(previous);
+    const olderWithMarker = String(previous).replace("\nold\n", `\n${LIGHT_WORKSPACE_DATA_BOUNDARY}\n`);
+    expect(frameUntrustedToolResultContent("FileRead", olderWithMarker, "workspace", true)).toBe(olderWithMarker);
+    const olderParts = [
+      { type: "text" as const, text: String(previous).slice(0, String(previous).indexOf("\nold\n")) },
+      { type: "text" as const, text: LIGHT_WORKSPACE_DATA_BOUNDARY },
+      { type: "text" as const, text: UNTRUSTED_TOOL_RESULT_BOUNDARY },
+    ];
+    expect(frameUntrustedToolResultContent("FileRead", olderParts, "workspace", true)).toBe(olderParts);
     const messages: LLMMessage[] = [{ role: "tool", toolName: "FileRead", toolCallId: "r", content: framed }];
     expect(frameUntrustedToolHistoryMessages(messages)).toEqual(messages);
   });
