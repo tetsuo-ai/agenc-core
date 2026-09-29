@@ -17,7 +17,7 @@ describe("Light companion discovery", () => {
     expect(names(one)).not.toContain("TodoWrite");
     loadLightToolCompanions({ lightMode: true, tool, result: { content: "TodoWrite" }, registry: one, userInput: "Fix TodoWriteHelper" });
     expect(names(one)).not.toContain("TodoWrite");
-    loadLightToolCompanions({ lightMode: true, tool, result: { content: "file" }, registry: one, userInput: "Use TodoWrite for my checklist" });
+    loadLightToolCompanions({ lightMode: true, tool, result: { content: "file" }, registry: one, userInput: "For the checklist, use TodoWrite." });
     expect(names(one)).toContain("TodoWrite");
     expect(names(registry())).not.toContain("TodoWrite");
     const filtered = buildFilteredRegistry(one, { lightMode: true, childConversationId: "limited", disabledTools: new Set(["TodoWrite"]) });

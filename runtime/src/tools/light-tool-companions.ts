@@ -14,7 +14,8 @@ export function loadLightToolCompanions(input: {
   // An exact name in user-authored task text is already a discovery request.
   // Delay exposure until the first core result so session startup stays small.
   // Eligibility and all execution permissions still belong to the registry.
-  const mentioned = new Set(input.userInput?.match(/[A-Za-z_][A-Za-z0-9_.-]*/g) ?? []);
+  const taskWords = input.userInput?.split(/[^\w.-]+/u) ?? [];
+  const mentioned = new Set(taskWords.map(word => word.replace(/\.+$/u, "")));
   const requested = registry.tools.filter(candidate =>
     candidate.metadata?.source === "builtin" && mentioned.has(candidate.name) &&
     !registry.getUnavailableToolNames?.().has(candidate.name));
