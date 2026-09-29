@@ -1,3 +1,4 @@
+import { validateFileMutationPath } from "./light-write-path.js";
 /**
  * `Write` — port of the donor UI snapshot's file-write tool.
  *
@@ -51,7 +52,6 @@ import {
   getSessionReadSnapshot,
   hasSessionRead,
   recordSessionRead,
-  safePathAllowingSessionPlanFile,
   SESSION_ID_ARG,
   type SessionReadViewKind,
 } from "./filesystem.js";
@@ -235,6 +235,7 @@ export interface FileWriteToolConfig extends WorkspaceFileMutationTestHooks {
    * of these. When omitted, falls back to `process.cwd()` so the tool
    * is still safely usable in headless / direct-invocation contexts.
    */
+  readonly lightMode?: boolean;
   readonly allowedPaths?: readonly string[];
   /** Optional cap on the number of bytes the tool will write. */
   readonly maxWriteBytes?: number;
@@ -383,10 +384,11 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
 
       const absoluteInput = resolve(cwd, filePath);
 
-      const safe = await safePathAllowingSessionPlanFile(
+      const safe = await validateFileMutationPath(
         absoluteInput,
         allowedPaths,
         rawArgs,
+        config.lightMode,
       );
       if (!safe.safe) {
         return preMutationErrorResult(

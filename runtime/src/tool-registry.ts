@@ -779,14 +779,17 @@ export function buildToolRegistry(
     }),
     createFileEditTool({
       allowedPaths: [options.workspaceRoot],
+      ...(options.lightMode ? { lightMode: true } : {}),
       ...(options.sparseLineNumbers === true ? { sparseLineNumbers: true } : {}),
     }),
     // MultiEdit is the multi-edit batch editor for one-file rewrite sets.
     createFileMultiEditTool({
       allowedPaths: [options.workspaceRoot],
+      ...(options.lightMode ? { lightMode: true } : {}),
     }),
     createFileWriteTool({
       allowedPaths: [options.workspaceRoot],
+      ...(options.lightMode ? { lightMode: true } : {}),
       onTouchedPath: notifySessionSkillsForTouchedPath,
     }),
     createGlobTool({

@@ -1,3 +1,4 @@
+import { validateFileMutationPath } from "./light-write-path.js";
 /**
  * `Edit` / `MultiEdit` — first-class string-replacement editors.
  *
@@ -49,7 +50,6 @@ import {
   getSessionReadSnapshot,
   recordSessionRead,
   resolveSessionId,
-  safePathAllowingSessionPlanFile,
 } from "./filesystem.js";
 import { checkMemorySecrets } from "../../memory/privacy.js";
 import {
@@ -272,6 +272,7 @@ function preserveQuoteStyle(
 
 export interface FileEditToolConfig extends WorkspaceFileMutationTestHooks {
   /** Allowed path prefixes (required). */
+  readonly lightMode?: boolean;
   readonly allowedPaths: readonly string[];
   /** FileRead numbers only some lines (the session's `AGENC_SPARSE_LINE_NUMBERS`). */
   readonly sparseLineNumbers?: boolean;
@@ -923,10 +924,11 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       // existing parent — so creation under an allowed root still
       // resolves correctly. Same trick filesystem.ts uses for
       // writeFile creates.
-      const safe = await safePathAllowingSessionPlanFile(
+      const safe = await validateFileMutationPath(
         candidatePath,
         config.allowedPaths,
         rawArgs,
+        config.lightMode,
       );
       if (!safe.safe) {
         return preMutationErrorResult(
@@ -1292,10 +1294,11 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       const candidatePath = isAbsolute(file_path)
         ? file_path
         : resolve(cwd, file_path);
-      const safe = await safePathAllowingSessionPlanFile(
+      const safe = await validateFileMutationPath(
         candidatePath,
         config.allowedPaths,
         rawArgs,
+        config.lightMode,
       );
       if (!safe.safe) {
         return preMutationErrorResult(

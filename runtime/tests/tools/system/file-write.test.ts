@@ -90,12 +90,12 @@ describe("Write tool", () => {
     expect(snap?.viewKind).toBe("full");
   });
 
-  test("creates the active session plan file outside the workspace root", async () => {
+  test.each([false, true])("creates the active session plan file outside the workspace root (Light=%s)", async lightMode => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-plan-write-home-"));
     try {
       setPlanSlug({ agencHome, sessionId }, "ivory-bridge-aaed0227");
       const planPath = getPlanFilePath({ agencHome, sessionId });
-      const tool = createFileWriteTool({ allowedPaths: [root] });
+      const tool = createFileWriteTool({ allowedPaths: [root], lightMode });
 
       const result = await tool.execute({
         file_path: planPath,
