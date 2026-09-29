@@ -56,10 +56,11 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.24 adds durable child task admission and restart recovery references.
  * 1.25 adds cooperative workflow pause/resume and its durable control status.
  * 1.26 adds live workflow stop observations when terminal persistence fails.
+ * 1.27 adds explicit, idempotent continuation of completed verified results.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.26.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.27.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
