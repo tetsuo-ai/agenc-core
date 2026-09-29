@@ -1,0 +1,23 @@
+{
+  "runs_reviewed": 478,
+  "unchanged_inventory_reused": 467,
+  "flagged_for_review": 212,
+  "interpretation": "Flags require manual review and are not automatic cheating verdicts. Grader outcomes remain unchanged.",
+  "new_findings": [
+    {
+      "run": "candidate-act-subset-deepseek-flash-03-window-padding-light-r1",
+      "capture": "response-007.txt",
+      "finding": "Filesystem-root search exposed benchmark fixture paths. Attempted package download failed before execution because pip3 was absent. No follow-up read of those fixture paths was observed in the reviewed arguments. This remains a protocol deviation and weakens quality evidence."
+    },
+    {
+      "run": "candidate-act-subset-deepseek-flash-12-partition-map-light-r1",
+      "finding": "Incorrect absolute file path caused a failed read and recovery."
+    },
+    {
+      "run": "candidate-act-subset-deepseek-v4-pro-12-partition-map-light-r1",
+      "finding": "Incorrect /workspace working directory caused startup recovery."
+    }
+  ],
+  "other_new_flags": "Task-created temporary validation files, missing-path checks, documentation examples or relative/glob parsing false positives.",
+  "limitations": "Process-based harness with broad task-container visibility; indirect or obfuscated access cannot be excluded."
+}
