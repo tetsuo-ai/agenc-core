@@ -1676,7 +1676,7 @@ export interface RunWorkflowStatus extends JsonObject {
     readonly requestedPermissionMode?: RunStartParams["permissionMode"];
     /** Actual mode observed from the owning live session; absent when unavailable. */
     readonly effectivePermissionMode?: RunEffectivePermissionMode;
-    /** Present when the run terminated with a frozen workflow stop reason. */
+    /** Present when the run terminated with a workflow stop reason. Protocol 1.26 adds requirement_conflict for a failed planner report. */
     readonly stopReason?: string;
 }
 

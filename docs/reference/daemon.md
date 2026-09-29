@@ -375,6 +375,29 @@ The CLI exposes `agenc run pause <run-id> [--request-id <id>]` and
 reads the current paused token from status before resuming. `run start --follow`
 stops when the run is terminal or durably paused.
 
+#### Planner requirement conflicts (protocol 1.26)
+
+A workflow may stop after planning with terminal status `failed` and
+`stopReason: "requirement_conflict"`. Its final message begins
+`The planner found conflicting requirements: ` and contains the planner's
+bounded explanation. This is a reasoned refusal. It is not successful
+completion or independent proof that the goal is impossible.
+
+The planner must emit a complete raw JSON response with kind
+`agenc.goal.plan-blocked.v1`, reason `requirement_conflict`, a nonempty
+`explanation` of at most 2,000 characters, and `conflictingRequirements`
+containing two to eight distinct nonempty strings of at most 1,000 characters
+each. Extra fields, markdown fences, quoted examples, ordinary prose and
+ambiguous requirements do not trigger this control result.
+
+The validated report is committed as `planBlocked` evidence on the planning
+step before the failed terminal is written. A restarted daemon uses the same
+report without another planner or downstream model call. No implementation,
+verification, independent review or finalization runs after that checkpoint.
+Required checks are unchanged and a verifier's PASS label cannot override a
+failing required command. Correcting the requirements requires an explicit
+new Goal; the frozen specification is not modified.
+
 #### Remote and Telegram methods
 
 These are **local management RPCs**, not methods that a paired browser or
