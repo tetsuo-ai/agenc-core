@@ -110,3 +110,12 @@ Raw request bodies, responses, logs and homes can contain private content. Keep 
 ### Reusing completed screening cells
 
 Keep every raw result in its original phase. `--repeat-start 2 --repeats 1` schedules only repeat2 for tasks whose repeat1 is already finished. Use a separate phase for each complementary launch so provenance is never overwritten. Analyze the combined matrix with `--candidate-phase candidate-new --reuse-candidate-phase candidate-screen --reuse-candidate-phase candidate-repeat2`. All selected Light results are included, including failures. Duplicate repeat IDs, mixed source revisions, prompt mismatches or sampling mismatches block acceptance. Reused screening results are explicitly listed; the completed two-repeat matrix is not an independent fresh confirmation sample.
+
+
+### Analytic decomposition
+
+`decompose.py ROOT --tokenizer /path/to/tokenizer.json --out decomposition.json` reads completed wire/usage captures without making provider calls. Install the Python `tokenizers` package in the analysis environment. It reports each run's model-call count, raw system/schema token sizes, history residual, largest tool results and replay positions, provider-reported visible/reasoning output split, request timing and runtime residual. Missing measurements remain null.
+
+Raw prefix tokens exclude provider framing. The history residual includes the initial task, framing and schema growth, so prefix plus residual plus output equals provider totals exactly. Historical traces without stream timestamps cannot supply a TTFT/generation split. A decrease in reasoning is an observed association, not causal proof about a prompt.
+
+Planning-evidence version 2 recognizes automatic discovery by an absent-to-present schema transition followed by a successful planning call. Explicit search evidence and the legacy predicate remain separate fields. The 38 previously completed planning-task traces retain identical outcomes under both predicates. A fixed-full-catalog experiment has no transition and still fails the Light discovery invariant, even if it completes the task and planning action.

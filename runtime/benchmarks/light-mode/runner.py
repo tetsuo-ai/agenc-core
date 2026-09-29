@@ -105,8 +105,11 @@ class Proxy(http.server.BaseHTTPRequestHandler):
         upstream=OPENAI_UPSTREAM if PROVIDER=='openai' else 'https://api.deepseek.com/chat/completions'
         req=urllib.request.Request(upstream,data=json.dumps(body).encode(),headers={'Authorization':'Bearer '+(KEY if PROVIDER=='deepseek' else 'benchmark-proxy'),'Content-Type':'application/json'})
         usage={}; toolids=set();error=None
+        timing={'request_received_at':stamp,'upstream_start_at':time.time(),
+                'response_headers_at':None,'first_token_at':None,'last_token_at':None,'stream_end_at':None}
         try:
             with urllib.request.urlopen(req,timeout=180) as res:
+                timing['response_headers_at']=time.time()
                 self.send_response(res.status);self.send_header('Content-Type',res.headers.get('Content-Type','text/event-stream'));self.end_headers()
                 chunks=[]
                 for line in res:
@@ -116,6 +119,11 @@ class Proxy(http.server.BaseHTTPRequestHandler):
                     if line.startswith(b'data: '):
                         try:
                             event=json.loads(line[6:])
+                            token=any(any(c.get('delta',{}).get(k) for k in ('content','reasoning_content','tool_calls')) for c in event.get('choices',[]))
+                            if token:
+                                now=time.time()
+                                if timing['first_token_at'] is None:timing['first_token_at']=now
+                                timing['last_token_at']=now
                             if event.get('usage'):usage=event['usage']
                             if event.get('type') in ('response.completed','response.failed','response.incomplete') and event.get('response',{}).get('usage'):
                                 usage=event['response']['usage']
@@ -127,6 +135,7 @@ class Proxy(http.server.BaseHTTPRequestHandler):
                             for c in event.get('choices',[]):
                                 for t in c.get('delta',{}).get('tool_calls',[]): toolids.add(t.get('index',t.get('id')))
                         except (ValueError,TypeError):pass
+                timing['stream_end_at']=time.time()
                 raw=b''.join(chunks)
                 if not body.get('stream'):
                     event=json.loads(raw);usage=event.get('usage',{})
@@ -154,6 +163,7 @@ class Proxy(http.server.BaseHTTPRequestHandler):
         cost=(hit*price[0]+miss*price[1]+out*price[2])/1e6 if PROVIDER=='deepseek' else None
         budget_charge=(cost or 0) if usage or (error and 400<=error.get('status',0)<500) else reserve
         record={'run':rid,'call':n,'model':body['model'],'input_tokens':inp,'cached_tokens':hit,'uncached_tokens':miss,'output_tokens':out,'tool_calls':len(toolids),'cost_usd':cost,'cost_basis':'provider-list-rate' if PROVIDER=='deepseek' else 'subscription-unpriced','rates':price,'time':stamp,'seconds':time.time()-stamp,'error':error,'usage':usage,'budget_charge_usd':budget_charge,'usage_missing':not bool(usage) and not (error and 400<=error.get('status',0)<500)}
+        record['timing']=timing
         with LOCK:
             with LEDGER.open('a') as f:f.write(json.dumps(record)+'\n')
             state['records'].append(record);state['reserved'].pop(n,None)
@@ -285,8 +295,8 @@ def configure(args):
     if sys.platform!='linux':raise RuntimeError('Benchmarks must run on Linux')
     if not 1<=args.workers<=2 or args.repeats<1 or args.repeat_start<1 or args.max_calls<1:
         raise ValueError('Require workers 1..2, repeats/repeat-start >=1 and max-calls >=1')
-    if not (0<args.spend_cap_usd<=25) or not (args.balance_floor_usd>=10):
-        raise ValueError('Spend cap must be in (0,25]; balance floor must be at least10')
+    if not (0<args.spend_cap_usd<=35) or not (args.balance_floor_usd>=10):
+        raise ValueError('Spend cap must be in (0,35]; balance floor must be at least10')
     if not re.fullmatch(r'baseline(?:-[A-Za-z0-9_-]+)?|candidate-[A-Za-z0-9_-]+',args.phase):
         raise ValueError('Use a baseline or candidate-NAME phase')
     parsed=urllib.parse.urlparse(args.openai_upstream)

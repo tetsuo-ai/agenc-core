@@ -37,5 +37,10 @@ def planning_evidence(directory,agent):
                 loaded|=any('TodoWrite' in d.get('loaded',[]) for d in nested_json(content))
             if called=='todowrite':
                 planned|='Todos have been modified successfully' in str(content)
-    discovery=loaded and schema and 'todowrite' not in (initial or [])
-    return {'required':True,'plan_call_success':planned,'discovery_success':discovery,'pass':planned and (agent!='light' or discovery)}
+    # Registry-driven loading is visible as an actual provider schema transition.
+    # A model's claim that it loaded a tool is insufficient, as is mere mention.
+    discovery=schema and 'todowrite' not in (initial or [])
+    return {'evidence_version':2,'required':True,'plan_call_success':planned,
+            'explicit_search_load':loaded,'discovery_success':discovery,
+            'legacy_pass':planned and (agent!='light' or (loaded and discovery)),
+            'pass':planned and (agent!='light' or discovery)}

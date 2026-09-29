@@ -48,10 +48,10 @@ class PackagingTests(unittest.TestCase):
 
     def test_portable_paths_and_provenance_without_network(self):
         args=self.arguments()
-        args.spend_cap_usd=25
+        args.spend_cap_usd=35
         with mock.patch.object(runner,'cmd',side_effect=self.fake_cmd):
             tasks,agents,models=runner.configure(args)
-        self.assertEqual(runner.SPEND_CAP,25)
+        self.assertEqual(runner.SPEND_CAP,35)
         self.assertEqual(runner.ROOT,self.root/'output');self.assertEqual(runner.CORE_CANDIDATE,self.root/'candidate')
         self.assertEqual(tasks[0]['id'],'01-chunked-strict');self.assertEqual(models,['deepseek-flash'])
         self.assertEqual(agents,['pi','normal','light'])
@@ -98,7 +98,7 @@ class PackagingTests(unittest.TestCase):
 
     def test_limits_and_remote_or_credential_urls_refused(self):
         args=self.arguments()
-        for field,value in [('workers',3),('repeats',0),('repeat_start',0),('spend_cap_usd',26),('balance_floor_usd',9),('phase','../escape'),('openai_upstream','https://example.com/v1/responses'),('openai_upstream','http://user:password@localhost/responses')]:
+        for field,value in [('workers',3),('repeats',0),('repeat_start',0),('spend_cap_usd',36),('balance_floor_usd',9),('phase','../escape'),('openai_upstream','https://example.com/v1/responses'),('openai_upstream','http://user:password@localhost/responses')]:
             before=getattr(args,field);setattr(args,field,value)
             with self.assertRaises(ValueError):runner.configure(args)
             setattr(args,field,before)
@@ -132,6 +132,18 @@ class PackagingTests(unittest.TestCase):
                   {'type':'function_call_output','call_id':'plan','output':'Todos have been modified successfully'}]}]
         for index,body in enumerate(bodies,1):(run/f'wire-{index:03}.json').write_text(json.dumps({'body':body}))
         self.assertTrue(planning_evidence(run,'light')['pass'])
+
+    def test_automatic_discovery_requires_schema_transition_and_success(self):
+        run=self.root/'auto-planning';run.mkdir()
+        for expose,success,initial in [(True,True,False),(False,True,False),(True,False,False),(True,True,True)]:
+            first={'messages':[], 'tools':[{'function':{'name':'TodoWrite'}}] if initial else []}
+            later={'tools':[{'function':{'name':'TodoWrite'}}] if expose else [],'messages':[
+                {'role':'assistant','tool_calls':[{'id':'plan','function':{'name':'TodoWrite','arguments':'{}'}}]},
+                {'role':'tool','tool_call_id':'plan','content':'Todos have been modified successfully' if success else 'denied'}]}
+            for i,b in enumerate((first,later),1):(run/f'wire-{i:03}.json').write_text(json.dumps({'body':b}))
+            evidence=planning_evidence(run,'light')
+            self.assertEqual(evidence['pass'],expose and success and not initial)
+            self.assertFalse(evidence['legacy_pass'])
 
     def test_trace_review_flags_bare_root_searches(self):
         repo=self.root/'repo';repo.mkdir()
