@@ -2136,7 +2136,7 @@ describe("Light presentation and deferred capability preservation", () => {
     const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
     expect(light.tools.map(tool => tool.name)).toEqual(normal.tools.map(tool => tool.name));
     expect(light.toLLMTools().map(tool => tool.function.name).sort()).toEqual([
-      "FileRead", "MultiEdit", "exec_command", "system.searchTools", "write_stdin",
+      "FileRead", "MultiEdit", "exec_command", "system.searchTools",
     ].sort());
     for (const presented of light.toLLMTools()) {
       const canonical = light.tools.find(tool => tool.name === presented.function.name)!;

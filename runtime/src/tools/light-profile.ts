@@ -4,5 +4,4 @@ export const LIGHT_INITIAL_TOOL_NAMES: ReadonlySet<string> = new Set([
   "FileRead",
   "MultiEdit",
   "exec_command",
-  "write_stdin",
 ]);
