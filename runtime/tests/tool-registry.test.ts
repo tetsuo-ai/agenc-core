@@ -2148,7 +2148,13 @@ describe("Light presentation and deferred capability preservation", () => {
       const canonical = light.tools.find(tool => tool.name === presented.function.name)!;
       expect(withoutDescriptions(presented.function.parameters)).toEqual(withoutDescriptions(canonical.inputSchema));
       expect(canonical.inputSchema).toEqual(normal.tools.find(tool => tool.name === canonical.name)?.inputSchema);
-      expect(canonical.description).toBe(normal.tools.find(tool => tool.name === canonical.name)?.description);
+      if (canonical.name === "system.searchTools") {
+        expect(canonical.description).toContain("unique best query match loads automatically");
+        expect(normal.tools.find(tool => tool.name === canonical.name)?.description)
+          .toContain("Use select or select:<tool_name> to load");
+      } else {
+        expect(canonical.description).toBe(normal.tools.find(tool => tool.name === canonical.name)?.description);
+      }
     }
     const normalInitial = normal.toLLMTools().filter(tool => light.toLLMTools().some(loaded => loaded.function.name === tool.function.name));
     expect(JSON.stringify(light.toLLMTools()).length).toBeLessThan(JSON.stringify(normalInitial).length * 0.8);

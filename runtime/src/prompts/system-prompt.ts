@@ -1192,6 +1192,7 @@ export async function assembleSystemPrompt(
         getLightSystemPrompt({
           headless: headlessCompletionSection !== null,
           deadline: typeof session.services?.runtimeOptions?.deadlineAt === "number",
+          hasOutputStyle: opts.outputStyle != null,
         }),
         getMemoryInstructionsSection(opts.memoryInstructions),
       ]

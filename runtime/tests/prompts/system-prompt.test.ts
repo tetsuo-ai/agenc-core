@@ -1387,3 +1387,20 @@ test("Light's cached head is independent of provider defaults and loaded tools",
   expect(initial.staticPrefix).toContain("worktree isolation");
   expect(initial.staticPrefix).toContain("runtime's verification, review and budget controls");
 });
+
+test("Light custom output styles replace the default coding workflow while retaining tool and authority rules", async () => {
+  const style = { name: "review-only", prompt: "Review the supplied essay. Discuss its argument without changing files or executing tests." };
+  const light = await assembleSystemPromptSnapshot({
+    session: fakeSession, ctx: fakeCtx(), profile: "light", outputStyle: style,
+  });
+  expect(light.staticPrefix).toContain('following the "Output Style" below');
+  expect(light.staticPrefix).not.toContain("a coding agent");
+  expect(light.staticPrefix).not.toContain("# Work\n");
+  expect(light.staticPrefix).not.toContain("make the smallest complete change");
+  expect(light.staticPrefix).not.toContain("rerun affected checks");
+  expect(light.staticPrefix).toContain("system.searchTools");
+  expect(light.staticPrefix).toContain("Read existing files with FileRead before Edit or Write");
+  expect(light.staticPrefix).toContain("Never bypass a denial");
+  expect(light.staticPrefix).toContain("Do not claim actions or results without evidence");
+  expect(light.dynamicSuffix).toContain(style.prompt);
+});

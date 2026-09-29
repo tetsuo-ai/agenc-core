@@ -3722,7 +3722,9 @@ async function refreshChildBaseInstructions(parent: Session, child: ChildSession
     permissionContext: child.permissionModeRegistry.current(),
     profile: child.config.coordinatorMode === true
       ? "coordinator"
-      : usesLocalToolProfile(childIdentity.provider) ? "compact" : "standard",
+      : child.services.runtimeOptions.lightMode === true
+        ? "light"
+        : usesLocalToolProfile(childIdentity.provider) ? "compact" : "standard",
   });
   await child.state.with((state) => {
     state.sessionConfiguration = { ...state.sessionConfiguration, baseInstructions };
