@@ -235,14 +235,15 @@ def aggregate(runs):
 def comparison(pi, light):
     complete_usage = all(g['usage_complete_runs']==g['runs'] and g['runs']>0 for g in (pi,light))
     tokens = (light['means']['total_tokens'] <= pi['means']['total_tokens']) if complete_usage and light['means']['total_tokens'] is not None and pi['means']['total_tokens'] is not None else None
+    tokens_lower = (light['means']['total_tokens'] < pi['means']['total_tokens']) if tokens is not None else None
     quality = light['pass_rate'] >= pi['pass_rate'] if light['pass_rate'] is not None and pi['pass_rate'] is not None else None
     ratio = light['means']['total_tokens']/pi['means']['total_tokens'] if complete_usage and light['means']['total_tokens'] is not None and pi['means']['total_tokens'] else None
     median = light['wall_seconds']['median'] < pi['wall_seconds']['median'] if all(g['wall_seconds']['median'] is not None for g in (pi,light)) else None
     p90 = light['wall_seconds']['p90'] < pi['wall_seconds']['p90'] if all(g['wall_seconds']['p90'] is not None for g in (pi,light)) else None
-    return {'tokens_at_most_pi': tokens, 'pass_rate_at_least_pi': quality,
+    return {'tokens_at_most_pi': tokens, 'tokens_lower_than_pi': tokens_lower, 'pass_rate_at_least_pi': quality,
             'wall_median_lower_than_pi': median, 'wall_p90_lower_than_pi': p90,
-            'light_to_pi_token_ratio': ratio, 'raw_metrics_meet_target': tokens is True and quality is True,
-            'all_owner_metrics_met': tokens is True and quality is True and median is True and p90 is True}
+            'light_to_pi_token_ratio': ratio, 'raw_metrics_meet_target': tokens_lower is True and quality is True,
+            'all_owner_metrics_met': tokens_lower is True and quality is True and median is True and p90 is True}
 
 
 def summarize(root, manifest_tasks, candidate_phase, baseline_phase, models, required_runs, confirmatory=False, reuse_candidate_phases=()):
@@ -340,7 +341,7 @@ def summarize(root, manifest_tasks, candidate_phase, baseline_phase, models, req
             balanced[agent] = {'mean_total_tokens':statistics.mean(values) if values and all(v is not None for v in values) else None,
                                'mean_pass_rate':statistics.mean(quality) if quality and all(v is not None for v in quality) else None}
         balanced_target = (all(balanced[a][k] is not None for a in ('pi','light') for k in ('mean_total_tokens','mean_pass_rate'))
-                           and balanced['light']['mean_total_tokens'] <= balanced['pi']['mean_total_tokens']
+                           and balanced['light']['mean_total_tokens'] < balanced['pi']['mean_total_tokens']
                            and balanced['light']['mean_pass_rate'] >= balanced['pi']['mean_pass_rate'])
         total_check['task_balanced_target_met'] = balanced_target
         total_check['accepted'] = not model_blockers and bool(task_reports) and all(t['acceptance']['accepted'] for t in task_reports) and total_check['all_owner_metrics_met'] and balanced_target
@@ -407,7 +408,7 @@ def markdown(report):
         for agent in AGENTS:
             distribution = model['totals'][agent]['wall_seconds']
             lines.append(f"| {agent} | {format_number(distribution['median'],1)} | {format_number(distribution['p90'],1)} |")
-        lines += ['','Per-task strict target: Light mean total tokens <= Pi; Light pass rate >= Pi.','','| Task | Light/Pi tokens | Quality >= Pi | Evidence | Flags |','| --- | ---: | --- | --- | --- |']
+        lines += ['','Per-task strict target: Light mean total tokens < Pi; Light pass rate >= Pi.','','| Task | Light/Pi tokens | Quality >= Pi | Evidence | Flags |','| --- | ---: | --- | --- | --- |']
         for task in model['tasks']:
             check=task['acceptance']; issues=task['blockers']+task['warnings']
             lines.append(f"| {task['task']} | {format_number(check['light_to_pi_token_ratio'],3)} | {check['pass_rate_at_least_pi']} | {check['status']} | {'; '.join(issues) or 'none'} |")
@@ -457,6 +458,8 @@ def self_test():
         result=summarize(root,['task'],'candidate-final','baseline',['fixture-model'],2)
         assert result['accepted'] and result['inventory']['selected_result_files']==6
         assert result['owner_target_accepted']
+        equal=comparison(result['models'][0]['totals']['light'],result['models'][0]['totals']['light'])
+        assert equal['tokens_at_most_pi'] and not equal['tokens_lower_than_pi'] and not equal['raw_metrics_meet_target']
         reused_dir=root/'candidate-final-fixture-model-task-light-r1'
         reused_record=reused_dir/'result.json'; reused_original=reused_record.read_text()
         reused=json.loads(reused_original); reused['phase']='candidate-screen'; reused['id']='candidate-screen-fixture-model-task-light-r1'
