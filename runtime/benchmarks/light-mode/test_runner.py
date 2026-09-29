@@ -219,6 +219,30 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(state['budget_stop']);self.assertEqual(state['stop_reason'],'call_limit');self.assertEqual(handler.statuses,[429])
         self.network.assert_not_called()
 
+    def test_luna_cap_counts_legacy_usage_and_interrupted_admissions(self):
+        runner.LEDGER.write_text(json.dumps({'run':'old','call':1})+'\n')
+        (self.root/'luna-admissions.jsonl').write_text('\n'.join(json.dumps(v) for v in [
+            {'run':'old','call':1},{'run':'interrupted','call':1}])+'\n')
+        with mock.patch.object(runner,'LUNA_CALL_CAP',3):
+            self.assertTrue(runner.reserve_luna_call('last',1))
+            self.assertFalse(runner.reserve_luna_call('over',1))
+        self.assertEqual(len(runner.luna_call_ids()),3)
+        self.network.assert_not_called()
+
+    def test_luna_study_cap_refuses_before_network(self):
+        with mock.patch.object(runner,'LUNA_CALL_CAP',0):
+            state,handler=self.proxy([])
+        self.assertEqual(handler.statuses,[429])
+        self.assertEqual(state['stop_reason'],'study_call_cap')
+        self.network.assert_not_called()
+
+    def test_responses_stream_records_first_and_last_visible_delta(self):
+        state,_=self.proxy([{'type':'response.function_call_arguments.delta','delta':'{}'},
+            {'type':'response.completed','response':{'usage':{'input_tokens':10,'output_tokens':2}}}])
+        timing=state['records'][0]['timing']
+        self.assertIsNotNone(timing['first_token_at'])
+        self.assertGreaterEqual(timing['last_token_at'],timing['first_token_at'])
+
     def test_http_429_stops_subset_and_remains_visible(self):
         error=urllib.error.HTTPError('http://fixture.invalid',429,'fixture limit',{},io.BytesIO(b'{"error":"fixture"}'))
         state,_=self.proxy([],http_error=error);record=state['records'][0]

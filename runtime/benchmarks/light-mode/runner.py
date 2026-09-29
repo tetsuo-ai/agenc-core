@@ -23,7 +23,30 @@ MAX_CALLS=45
 OPENAI_UPSTREAM='http://127.0.0.1:8809/v1/responses'
 PI_VERSION='0.73.1'
 PROVENANCE={}
+LUNA_CALL_CAP=600
+OPENAI_REASONING_REPLAY=False
 PRICING=json.loads((HERE/'pricing.json').read_text())
+
+
+def luna_call_ids():
+    """Count earlier usage and preflight reservations once, including interrupted calls."""
+    calls=set()
+    for path in (LEDGER, ROOT/'luna-admissions.jsonl'):
+        if path.exists():
+            for line in path.read_text().splitlines():
+                record=json.loads(line)
+                calls.add((record['run'],record['call']))
+    return calls
+
+
+def reserve_luna_call(run, call):
+    # Caller holds LOCK, and the provider lock excludes another orchestrator.
+    if len(luna_call_ids())>=LUNA_CALL_CAP:
+        return False
+    with (ROOT/'luna-admissions.jsonl').open('a') as handle:
+        handle.write(json.dumps({'run':run,'call':call,'time':time.time()})+'\n')
+        handle.flush();os.fsync(handle.fileno())
+    return True
 
 
 @contextmanager
@@ -98,6 +121,9 @@ class Proxy(http.server.BaseHTTPRequestHandler):
                 self.send_error(429,'Benchmark spend cap');state['budget_stop']=True;state['stop_reason']='spend_cap';return
             if RATE_LIMITED.is_set() or state['calls']>=MAX_CALLS:
                 self.send_error(429,'Benchmark call limit');state['budget_stop']=True;state['stop_reason']='provider_subset_stop' if RATE_LIMITED.is_set() else 'call_limit';return
+            if PROVIDER=='openai' and not reserve_luna_call(rid,state['calls']+1):
+                RATE_LIMITED.set();state['budget_stop']=True;state['stop_reason']='study_call_cap'
+                self.send_error(429,'Study call cap');return
             state['calls']+=1; n=state['calls']
             state.setdefault('reserved',{})[n]=reserve
         dest=state['dir']/f'wire-{n:03}.json'
@@ -120,6 +146,7 @@ class Proxy(http.server.BaseHTTPRequestHandler):
                         try:
                             event=json.loads(line[6:])
                             token=any(any(c.get('delta',{}).get(k) for k in ('content','reasoning_content','tool_calls')) for c in event.get('choices',[]))
+                            token=token or (event.get('type') in ('response.output_text.delta','response.function_call_arguments.delta','response.reasoning_summary_text.delta','response.reasoning_text.delta') and bool(event.get('delta')))
                             if token:
                                 now=time.time()
                                 if timing['first_token_at'] is None:timing['first_token_at']=now
@@ -187,6 +214,8 @@ def one(task,agent,model,repeat,phase,port):
     if d.exists():raise RuntimeError('Incomplete attempt preserved; use a new phase: '+rid)
     with LOCK:
         if RATE_LIMITED.is_set():raise RuntimeError('Provider subset stopped after rate limit')
+        if PROVIDER=='openai' and len(luna_call_ids())>=LUNA_CALL_CAP:
+            raise RuntimeError('Luna study call cap reached; remaining cells stay unstarted')
         if PROVIDER=='deepseek':
             b=balance();print(json.dumps(b),flush=True)
             if not b['is_available'] or float(b['total_balance'])<BALANCE_FLOOR or spend()>=SPEND_CAP:
@@ -213,6 +242,7 @@ def one(task,agent,model,repeat,phase,port):
     if PROVIDER=='openai':
         env.pop('DEEPSEEK_API_KEY',None);env.pop('DEEPSEEK_BASE_URL',None)
         env.update(OPENAI_API_KEY='benchmark-proxy',OPENAI_BASE_URL=base,AGENC_EFFORT_LEVEL='low')
+        env['AGENC_OPENAI_REASONING_REPLAY']='1' if OPENAI_REASONING_REPLAY else '0'
     effort='low' if PROVIDER=='openai' else 'high'
     if agent!='pi':
         # The owner authorized these task-owned repositories for benchmark edits.
@@ -286,15 +316,18 @@ def parser():
     ap.add_argument('--max-calls',type=int,default=45)
     ap.add_argument('--seed',type=int,default=29092026)
     ap.add_argument('--openai-upstream',default=OPENAI_UPSTREAM,help='Existing loopback Responses bridge; no proxy is started')
+    ap.add_argument('--openai-reasoning-replay',action='store_true',help='Explicit Light replay ablation; default omits optional replay')
     ap.add_argument('--validate-only',action='store_true',help='Validate paths and write provenance without credentials or provider calls')
     return ap
 
 
 def configure(args):
-    global ROOT,CORE_BASE,CORE_CANDIDATE,PI_PREFIX,TASKS_DIR,PROVIDER,LEDGER,PRICING,PROVENANCE,SPEND_CAP,BALANCE_FLOOR,MAX_CALLS,OPENAI_UPSTREAM
+    global ROOT,CORE_BASE,CORE_CANDIDATE,PI_PREFIX,TASKS_DIR,PROVIDER,LEDGER,PRICING,PROVENANCE,SPEND_CAP,BALANCE_FLOOR,MAX_CALLS,OPENAI_UPSTREAM,OPENAI_REASONING_REPLAY,UPSTREAM
     if sys.platform!='linux':raise RuntimeError('Benchmarks must run on Linux')
     if not 1<=args.workers<=2 or args.repeats<1 or args.repeat_start<1 or args.max_calls<1:
         raise ValueError('Require workers 1..2, repeats/repeat-start >=1 and max-calls >=1')
+    if args.provider=='openai' and args.workers!=1:
+        raise ValueError('Luna permits exactly one concurrent run')
     if not (0<args.spend_cap_usd<=35) or not (args.balance_floor_usd>=10):
         raise ValueError('Spend cap must be in (0,35]; balance floor must be at least10')
     if not re.fullmatch(r'baseline(?:-[A-Za-z0-9_-]+)?|candidate-[A-Za-z0-9_-]+',args.phase):
@@ -304,7 +337,9 @@ def configure(args):
         raise ValueError('OpenAI upstream must be an existing credential-free HTTP loopback URL')
     ROOT=args.root.resolve();CORE_BASE=args.core_base.resolve();CORE_CANDIDATE=args.core_candidate.resolve();PI_PREFIX=args.pi_prefix.resolve()
     TASKS_DIR=args.tasks_manifest.resolve().parent
-    PROVIDER=args.provider;LEDGER=ROOT/f'spend-{PROVIDER}.jsonl'
+    PROVIDER=args.provider;LEDGER=ROOT/('spend-luna.jsonl' if PROVIDER=='openai' else 'spend-deepseek.jsonl')
+    OPENAI_REASONING_REPLAY=args.openai_reasoning_replay
+    UPSTREAM=threading.BoundedSemaphore(1 if PROVIDER=='openai' else 2)
     SPEND_CAP=args.spend_cap_usd;BALANCE_FLOOR=args.balance_floor_usd;MAX_CALLS=args.max_calls;OPENAI_UPSTREAM=args.openai_upstream
     PRICING=json.loads(args.pricing_file.read_text())
     tasks=json.loads(args.tasks_manifest.read_text())['tasks']
@@ -339,6 +374,8 @@ def configure(args):
       'provider':PROVIDER,'models':models,'tasks':selected,'agents':agents,'phase':args.phase,
       'repeats':args.repeats,'repeat_start':args.repeat_start,'workers':args.workers,'seed':args.seed,'max_calls':MAX_CALLS,
       'spend_cap_usd':SPEND_CAP,'balance_floor_usd':BALANCE_FLOOR,
+      'luna_study_call_cap':LUNA_CALL_CAP if PROVIDER=='openai' else None,
+      'openai_reasoning_replay':OPENAI_REASONING_REPLAY if PROVIDER=='openai' else None,
       'reasoning_effort':'low' if PROVIDER=='openai' else 'high','output_cap':8192,
       'pricing_verified_on':PRICING['verified_on']}
     PROVENANCE['configuration_sha256']=hashlib.sha256(json.dumps(PROVENANCE,sort_keys=True).encode()).hexdigest()

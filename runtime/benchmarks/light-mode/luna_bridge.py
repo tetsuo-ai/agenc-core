@@ -206,7 +206,7 @@ class LinuxBridge(http.server.ThreadingHTTPServer):
         self.frames = frames
         self.pending = {}
         self.pending_lock = threading.Lock()
-        self.capacity = threading.BoundedSemaphore(2)
+        self.capacity = threading.BoundedSemaphore(1)
         super().__init__(('127.0.0.1', port), Handler)
 
     def disconnect(self):
@@ -321,8 +321,8 @@ def relay(args):
     # The bearer was removed before spawning SSH, so it cannot enter that process.
     proc = subprocess.Popen(ssh, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     frames = Frames(proc.stdin)
-    capacity = threading.BoundedSemaphore(2)
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+    capacity = threading.BoundedSemaphore(1)
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     requests = 0
     def worker(frame):
         try:

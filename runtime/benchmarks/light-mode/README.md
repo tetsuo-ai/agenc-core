@@ -10,7 +10,7 @@ The suite has 12 tasks over fresh checkouts of two real repositories. Seven task
 | more-itertools | [`790bb0bb2c03e7a07282e5f16f4b1fde35b8fcf5`](https://github.com/more-itertools/more-itertools/commit/790bb0bb2c03e7a07282e5f16f4b1fde35b8fcf5) |
 | ItsDangerous | [`672971d66a2ef9f85151e53283113f33d642dabd`](https://github.com/pallets/itsdangerous/commit/672971d66a2ef9f85151e53283113f33d642dabd) |
 | Primary models | `deepseek-flash`, `deepseek-v4-pro`; reasoning high; output cap 8192 |
-| Optional secondary model | `gpt-6-luna`; reasoning low; output cap 8192; subscription cost unpriced |
+| Second model family | `gpt-6-luna`; reasoning low; output cap 8192; subscription cost unpriced |
 | Validated runtime | Linux, Python 3.11.2, Node 26.5.0; image `node@sha256:219fc9da91e7f29a9f32290ff598cdf8886fd68f421ff515c8f93434da39a271` |
 
 The image digest above was resolved from the local `node:26.5.0-bookworm` image during Linux validation. The runner records actual Node/Python versions, both Core Git revisions, Pi version, task/pricing/source hashes, randomization seed and limits. Pi uses its default `read`, `write`, `edit`, `bash` tools with an isolated configuration and no user extensions.
@@ -56,7 +56,7 @@ Supply `DEEPSEEK_API_KEY` only through the runner's process environment. Never p
 
 The provider-facing proxy owns the actual credential. Child coding agents receive only a dummy proxy bearer. Each run has an isolated `HOME`, `AGENC_HOME` and Pi directory. The harness automatically authorizes edits only in its newly created task repositories and runs the Core CLI with approvals/sandbox bypass for those benchmark workspaces. This is a measurement setup, not a sandbox safety evaluation.
 
-The default job cap is $10. The maximum accepted cap is $25; use `--spend-cap-usd 25` only when the study owner authorizes that total. Changing the cap does not reset the cumulative ledger. A run is not launched when the account balance is below $10; only `is_available` and `total_balance` are printed. Peak-price reservations bound outstanding calls, including calls made by children. Unknown usage retains a conservative reserved charge. Balance changes on a shared account are not attributed as this job's spend. Do not launch another benchmark orchestrator with a different output root for the same study/provider: the advisory lock coordinates one provider per output root, not all hosts or unrelated jobs.
+The default job cap is $10. The maximum accepted cap is $35; use `--spend-cap-usd 35` only when the study owner authorizes that total. Changing the cap does not reset the cumulative ledger. A run is not launched when the account balance is below $10; only `is_available` and `total_balance` are printed. Peak-price reservations bound outstanding calls, including calls made by children. Unknown usage retains a conservative reserved charge. Balance changes on a shared account are not attributed as this job's spend. Do not launch another benchmark orchestrator with a different output root for the same study/provider: the advisory lock coordinates one provider per output root, not all hosts or unrelated jobs.
 
 ```sh
 # DEEPSEEK_API_KEY is already present in this command's process environment.
@@ -119,3 +119,13 @@ Keep every raw result in its original phase. `--repeat-start 2 --repeats 1` sche
 Raw prefix tokens exclude provider framing. The history residual includes the initial task, framing and schema growth, so prefix plus residual plus output equals provider totals exactly. Historical traces without stream timestamps cannot supply a TTFT/generation split. A decrease in reasoning is an observed association, not causal proof about a prompt.
 
 Planning-evidence version 2 recognizes automatic discovery by an absent-to-present schema transition followed by a successful planning call. Explicit search evidence and the legacy predicate remain separate fields. The 38 previously completed planning-task traces retain identical outcomes under both predicates. A fixed-full-catalog experiment has no transition and still fails the Light discovery invariant, even if it completes the task and planning action.
+
+## Expanded Luna study and replay controls
+
+The same frozen twelve tasks and two repeats now apply to Luna. Use `--provider openai --models gpt-6-luna --workers 1`; the runner rejects higher concurrency. `spend-luna.jsonl` retains historical usage. `luna-admissions.jsonl` durably reserves each new attempt before forwarding, so an interrupted request without usage still counts toward the whole-study limit of600calls. Admission and usage are deduplicated by run/call identity. Do not reset either file.
+
+Luna uses the existing owner's proxy through the credential relay; nothing starts or changes that proxy. The relay permits one request at a time. The proxy may remove the requested output cap, so8192is client metadata, not an upstream guarantee. Subscription cost is unpriced.
+
+AgenC optional OpenAI reasoning replay is explicitly off in the main comparison, matching its default. `--openai-reasoning-replay` enables the existing option for a separately named ablation. This changes no Pi source or prompt. DeepSeek tool-bearing requests require prior reasoning; that required context remains. Compare billed input/output, completion and wall time rather than assuming encrypted transport bytes are plaintext model tokens.
+
+The decomposition analyzer additionally uses `tiktoken`'s `o200k_base` for Luna as a labeled reference estimate. The exact Luna tokenizer is unavailable. Provider totals remain authoritative; P and raw-history diagnostics are estimates. Hidden reasoning generation before the first exposed SSE delta is included in observed time to first exposed token.
