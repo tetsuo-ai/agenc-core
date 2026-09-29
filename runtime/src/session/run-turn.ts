@@ -302,6 +302,8 @@ export type {
 import { StepLimitTrail, stepLimitReminder, stepLimitWrapup, STEP_LIMIT_WRAPUP_INSTRUCTION } from "./step-limit-wrapup.js";
 
 export interface RunTurnOptions {
+  /** The child routing supervisor owns retries across providers for this task. */
+  readonly automaticChildRouting?: boolean;
   /** Only unattended child tasks opt in; interactive turns retain their lifecycle. */
   readonly stepLimitWrapup?: { readonly maxModelCalls?: number };
   readonly systemPrompt?: string;
@@ -1210,6 +1212,7 @@ async function runSamplingRequest(
   assistantOutputSink?: AssistantOutputStreamSink,
   beforeDispatch?: (request: StreamModelRequestContract) => Promise<boolean>,
   beforeOutageRetry?: () => void,
+  automaticChildRouting = false,
 ): Promise<SamplingRequestResult> {
   const trackingState = getAttachmentTrackingState(session);
   const previousSwarmChoiceTurnId = trackingState.lastSwarmSpawnToolChoiceTurnId;
@@ -1248,7 +1251,7 @@ async function runSamplingRequest(
       // One initial provider call plus the five recovery-ladder reservations.
       // The reservation hook remains authoritative when another recovery path
       // has already consumed part of the shared A1 ladder.
-      maxAttempts: MAX_RECOVERY_REENTRIES + 1,
+      maxAttempts: automaticChildRouting ? 1 : MAX_RECOVERY_REENTRIES + 1,
       attempt: () =>
         tryRunSamplingRequest(
           state,
@@ -1309,6 +1312,7 @@ async function runSamplingRequest(
     const lastError = outcome.lastError;
     const delayMs = providerOutageDelayMs(outage.retryMs, outageRetries);
     const canWait =
+      !automaticChildRouting &&
       !retryBlocked &&
       outage.waitMs > 0 &&
       waitedMs + delayMs <= outage.waitMs &&
@@ -3015,6 +3019,7 @@ async function* runTurnKernelInner(
           emitTurnCheckpoint("iteration", { force: true });
           checkpointedModelSampleOrdinal = state.modelSampleOrdinal;
         },
+        opts.automaticChildRouting,
       );
       for (const ev of pending) {
         yield ev;
@@ -3702,6 +3707,7 @@ export function runTurn(
       opts?: {
         ctx?: TurnContext;
         stepLimitWrapup?: RunTurnOptions["stepLimitWrapup"];
+        automaticChildRouting?: boolean;
         systemPrompt?: string;
         history?: readonly LLMMessage[];
         initialHistoryPersistence?: RunTurnOptions["initialHistoryPersistence"];
@@ -3724,6 +3730,7 @@ export function runTurn(
     return sessionOwner.runTurn(userMessage, {
       ctx,
       stepLimitWrapup: opts.stepLimitWrapup,
+      automaticChildRouting: opts.automaticChildRouting,
       systemPrompt: opts.systemPrompt,
       history: opts.history,
       initialHistoryPersistence: opts.initialHistoryPersistence,

@@ -4583,6 +4583,7 @@ export async function* runAgent(
       let terminalError: unknown;
 
       const iter = childSession.runTurn(nextUserMessage, {
+        automaticChildRouting: (live.assignment?.executionPlan ?? live.metadata.executionPlan ?? params.plan)?.routing !== undefined,
         ...(!params.keepAlive || params.summarizeAtStepLimit ? { stepLimitWrapup: {
           ...(params.plan?.budgetAllocation !== null && params.plan?.budgetAllocation !== undefined
             ? { maxModelCalls: params.plan.budgetAllocation.maxModelCalls } : {}),
