@@ -987,6 +987,79 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
+  it("recovers old child work when bootstrap mounts its rollout after control construction", async () => {
+    const home = await realpath(await mkdtemp(join(tmpdir(), "agenc-child-recovery-home-")));
+    const workspace = await realpath(await mkdtemp(join(tmpdir(), "agenc-child-recovery-ws-")));
+    const conversationId = "conv-bootstrap-child-recovery";
+    const createProviderSpy = await installBootstrapProviderStub();
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const env = { ...process.env, AGENC_HOME: home, AGENC_WORKSPACE: workspace, HOME: home };
+    const { ensureAgentControl } = await import("./delegate-tool.js");
+    let firstShutdown: (() => Promise<void>) | null = null;
+    let resumedShutdown: (() => Promise<void>) | null = null;
+    let childStore: RolloutStore | null = null;
+    try {
+      const first = await bootstrapLocalRuntimeSession({ apiKey: "test-key", conversationId,
+        resumeConversation: false, env, fetchImpl: offlineFetchFixture() });
+      firstShutdown = first.shutdown;
+      const firstControl = ensureAgentControl(first.session).control;
+      const completed = await firstControl.spawn({ parentPath: "/root", agentName: "completed",
+        initialTask: { taskId: "completed-task", text: "Review code", provider: "grok", model: "test-model" } });
+      const admitted = completed.metadata.initialTaskAdmission!;
+      childStore = new RolloutStore({ cwd: workspace, sessionId: completed.agentId, agencHome: home,
+        agencVersion: "0.2.0", sessionTempRoot: home, autoStartScheduler: false });
+      childStore.open({ sessionId: completed.agentId, timestamp: new Date().toISOString(),
+        cwd: workspace, originator: "bootstrap-recovery-test", agencVersion: "0.2.0",
+        model: admitted.model, modelProvider: admitted.provider });
+      childStore.append({ id: "completed-receipt", eventId: "completed-receipt", seq: 1,
+        msg: { type: "subagent_turn_outcome", payload: { agentId: completed.agentId,
+          agentPath: completed.agentPath, taskId: admitted.taskId, turnId: admitted.turnId,
+          outcome: "completed", toolCallCount: 0, message: "Original review result" } } }, { durable: true });
+      childStore.close();
+      childStore = null;
+      await firstControl.shutdown(completed.agentId, "fixture_completed");
+      const pending = await firstControl.spawn({ parentPath: "/root", agentName: "pending",
+        initialTask: { taskId: "pending-task", text: "Accepted before restart", provider: "grok", model: "test-model" } });
+      await firstControl.shutdown(pending.agentId, "fixture_restart");
+      expect(firstControl.drainRecoveredChildTaskUpdates(conversationId)).toEqual([]);
+      await first.shutdown();
+      firstShutdown = null;
+
+      const resumed = await bootstrapLocalRuntimeSession({ apiKey: "test-key", conversationId,
+        env, fetchImpl: offlineFetchFixture() });
+      resumedShutdown = resumed.shutdown;
+      const control = ensureAgentControl(resumed.session).control;
+      // A newly created child must not make the deferred snapshot forget the
+      // old children or treat current-generation results as lost projections.
+      const fresh = await control.spawn({ parentPath: "/root", agentName: "fresh",
+        initialTask: { text: "New task", provider: "grok", model: "test-model" } });
+      await control.shutdown(fresh.agentId, "fixture_closed");
+      const list = resumed.registry.tools.find((tool) => tool.name === "list_agents")!;
+      const listing = JSON.parse((await list.execute({})).content);
+      expect(listing.agents.map((agent: { agent_name: string }) => agent.agent_name))
+        .toEqual(["/root", completed.agentPath, pending.agentPath]);
+      const wait = resumed.registry.tools.find((tool) => tool.name === "wait_agent")!;
+      const waited = JSON.parse((await wait.execute({})).content);
+      expect(waited.timed_out).toBe(false);
+      expect(waited.updates).toHaveLength(2);
+      expect(waited.updates[0].content).toContain("Original review result");
+      expect(waited.updates[1].content).toContain("Accepted before restart");
+      expect(waited.updates[1].content).toContain('"reason":"resume_blocked"');
+      expect(control.drainRecoveredChildTaskUpdates(conversationId)).toEqual([]);
+      expect(control.getLive(completed.agentId)).toBeUndefined();
+      expect(control.getLive(pending.agentId)).toBeUndefined();
+      for (const result of createProviderSpy.mock.results) {
+        if (result.type === "return") expect(result.value.chat).not.toHaveBeenCalled();
+      }
+    } finally {
+      childStore?.close();
+      await resumedShutdown?.();
+      await firstShutdown?.();
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("mounts and seeds a resumed rollout before replaying detached admission evidence", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));

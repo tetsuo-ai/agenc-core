@@ -397,7 +397,7 @@ export class AgentControl {
   private readonly recoveredTaskReceiptSizes = new Map<ThreadId, number>();
   private recoveredTaskReceiptBytes = 0;
   private readonly deliveredRecoveredTaskReceipts = new Set<string>();
-  private readonly recoverableChildIds: ReadonlySet<ThreadId>;
+  private recoverableChildIds: ReadonlySet<ThreadId> | undefined;
   private recoveryNotice: { readonly incomplete: true; readonly message: string;
     readonly child_thread_id?: string; readonly parent_rollout_path?: string } | undefined;
 
@@ -426,11 +426,7 @@ export class AgentControl {
   constructor(opts: AgentControlOpts) {
     this.session = opts.session;
     this.registry = opts.registry;
-    // Only pre-existing edges need restart replay. Closing a worker spawned
-    // in this control generation must not replay its already-delivered result.
-    this.recoverableChildIds = new Set(opts.session.rolloutStore?.listThreadSpawnDescendants(
-      opts.session.conversationId,
-    ).map((edge) => edge.childThreadId) ?? []);
+    this.captureRecoverableChildIds();
     const sessionRoleWorkspace = (
       opts.session as Session & { readonly roleWorkspace?: AgentRoleWorkspace }
     ).roleWorkspace;
@@ -448,6 +444,16 @@ export class AgentControl {
     this.maxDepth =
       opts.maxDepth ?? resolveSessionMaxDepth(opts.session) ?? MAX_AGENT_DEPTH;
     this.threadManager = opts.threadManager;
+  }
+
+  private captureRecoverableChildIds(): void {
+    if (this.recoverableChildIds !== undefined || this.session.rolloutStore == null) return;
+    // Bootstrap creates this control before mounting resumed storage. Freeze
+    // the old generation only once a store exists, and before any new spawn
+    // edge is written. Current-generation results retain their live delivery.
+    this.recoverableChildIds = new Set(this.session.rolloutStore.listThreadSpawnDescendants(
+      this.session.conversationId,
+    ).map((edge) => edge.childThreadId));
   }
 
   bindThreadManager(threadManager: ThreadManager): void {
@@ -2141,6 +2147,7 @@ export class AgentControl {
       readonly pathPrefix?: AgentPath;
     } = {},
   ): ReadonlyArray<ListedAgent> {
+    this.captureRecoverableChildIds();
     this.recoveryNotice = undefined;
     const prefix = opts.pathPrefix;
     const roleName = opts.roleName
@@ -2192,7 +2199,7 @@ export class AgentControl {
       let recoveredBytes = 0;
       let recoveredCount = 0;
       for (const edge of this.session.rolloutStore?.listThreadSpawnDescendants(this.rootThreadId) ?? []) {
-        if (!this.recoverableChildIds.has(edge.childThreadId) || this.live.has(edge.childThreadId) ||
+        if (!this.recoverableChildIds?.has(edge.childThreadId) || this.live.has(edge.childThreadId) ||
             (roleName !== undefined && edge.metadata.agentRole !== roleName) ||
             (prefix !== undefined && !agentMatchesPrefix(edge.metadata.agentPath, prefix))) continue;
         if (Date.now() > recoveryDeadline) {
@@ -2229,13 +2236,14 @@ export class AgentControl {
 
   /** Lost mailbox projections are replayable from child-owned durable receipts. */
   drainRecoveredChildTaskUpdates(parentThreadId: ThreadId): readonly { role: "user"; content: string }[] {
+    this.captureRecoverableChildIds();
     this.recoveryNotice = undefined;
     if (parentThreadId !== this.rootThreadId && !this.live.has(parentThreadId)) return [];
     const updates: { role: "user"; content: string }[] = [];
     let bytes = 0;
     const recoveryDeadline = Date.now() + 2_000;
     for (const edge of this.session.rolloutStore?.listThreadSpawnChildren(parentThreadId) ?? []) {
-      if (!this.recoverableChildIds.has(edge.childThreadId) || this.live.has(edge.childThreadId)) continue;
+      if (!this.recoverableChildIds?.has(edge.childThreadId) || this.live.has(edge.childThreadId)) continue;
       if (Date.now() > recoveryDeadline) {
         this.noteIncompleteChildRecovery("Child recovery reached its time limit. Results are incomplete. Retry wait_agent or inspect the durable child journals.", edge.childThreadId);
         return updates;
@@ -2707,6 +2715,7 @@ export class AgentControl {
     const storedMetadata =
       metadata ?? this.registry.agentMetadataForThread(childThreadId);
     if (!storedMetadata) return;
+    this.captureRecoverableChildIds();
     rolloutStore.createThreadSpawnEdge({
       childThreadId,
       parentThreadId,
