@@ -1,3 +1,4 @@
+import { openAiModelRequiresResponses, openAiModelRequiresBufferedResponse } from "../../registry/openai-current-models.js";
 /**
  * OpenAI provider adapter.
  *
@@ -34,6 +35,7 @@ import {
   mapLLMError,
 } from "../../errors.js";
 import { isProviderFundsFailure } from "../../funds.js";
+import { resolveQwenCurrentModel } from "../../registry/qwen-current-models.js";
 import { ProviderHttpClient } from "../../client.js";
 import {
   ProviderHttpError,
@@ -57,6 +59,8 @@ import { sharedPrefixTailEnabled } from "../../wire/shared-prefix-tail.js";
 import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import {
   coerceUsage,
+  assistantTextFromContentBlocks,
+  thinkingTextFromContentBlocks,
   normalizeFinishReason,
   serializeProviderToolArguments,
 } from "../../wire/shared.js";
@@ -844,6 +848,12 @@ export class OpenAIProvider implements LLMProvider {
     const headers = this.managedRequestHeaders(options);
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options?.timeoutMs);
     const model = options?.model?.trim() || this.config.model;
+    // Qwen's older open-source thinking deployments and Omni routes require
+    // SSE. Preserve the public chat() contract by buffering our existing
+    // stream parser, including tool arguments, reasoning provenance and usage.
+    if (this.name === "qwen" && resolveQwenCurrentModel(model)?.bufferedChat === true) {
+      return this.chatStream(messages, () => {}, options);
+    }
     const requestTools = options?.tools
       ? [...options.tools]
       : this.config.tools ?? [];
@@ -941,7 +951,7 @@ export class OpenAIProvider implements LLMProvider {
           tools: requestTools,
           options,
           maxTokens: this.resolveRequestMaxTokens(options),
-          maxTokenField: this.resolveChatCompletionsMaxTokenField(),
+          maxTokenField: this.resolveChatCompletionsMaxTokenField(model),
           providerCapabilityHints,
           toolCallIdNamespace: headers?.["Idempotency-Key"],
         });
@@ -978,6 +988,14 @@ export class OpenAIProvider implements LLMProvider {
     onChunk: StreamProgressCallback,
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
+    // o1-pro and o3-pro expose Responses without SSE. Keep the public stream
+    // contract while making exactly one ordinary, cancellable JSON request.
+    if (this.name === "openai" && openAiModelRequiresBufferedResponse(options?.model?.trim() || this.config.model)) {
+      const response = await this.chat(messages, options);
+      onChunk({ content: response.content, done: true,
+        ...(response.toolCalls.length > 0 ? { toolCalls: response.toolCalls } : {}) });
+      return response;
+    }
     const headers = this.managedRequestHeaders(options);
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options?.timeoutMs);
 
@@ -1039,6 +1057,7 @@ export class OpenAIProvider implements LLMProvider {
     options: LLMChatOptions | undefined,
   ): boolean {
     if (this.config.useResponsesApi !== false) return true;
+    if (this.name === "openai" && openAiModelRequiresResponses(model)) return true;
     return (
       this.name === "openai" &&
       tools.length > 0 &&
@@ -1061,12 +1080,19 @@ export class OpenAIProvider implements LLMProvider {
     }
   }
 
-  async getExecutionProfile() {
+  async getExecutionProfile(options?: LLMChatOptions) {
+    const model = options?.model?.trim() || this.config.model;
+    const qwenModel = this.name === "qwen" ? resolveQwenCurrentModel(model) : undefined;
+    // An answer-only cap plus an independent thinking budget can produce more
+    // billable output than the single reservation. Keep uncapped sessions
+    // usable, but do not promise a total ceiling to hard-budget admission.
+    const separateThinkingLimit = qwenModel !== undefined &&
+      !qwenModel.totalOutputCap && qwenModel.thinking !== "none";
     return {
       provider: this.name,
-      model: this.config.model,
+      model,
       usageReporting: "authoritative" as const,
-      supportsMaxOutputTokens: this.config.chatgptBackend !== true,
+      supportsMaxOutputTokens: this.config.chatgptBackend !== true && !separateThinkingLimit,
       // Only the chat-completions path applies this buffer
       // (`fitRequestWithinContextWindow`). The Responses path does not, so it
       // must not inherit it.
@@ -1143,7 +1169,9 @@ export class OpenAIProvider implements LLMProvider {
     };
   }
 
-  private resolveChatCompletionsMaxTokenField(): ChatCompletionsMaxTokenField {
+  private resolveChatCompletionsMaxTokenField(model: string): ChatCompletionsMaxTokenField {
+    const qwenModel = this.name === "qwen" ? resolveQwenCurrentModel(model) : undefined;
+    if (qwenModel !== undefined && !qwenModel.totalOutputCap) return "max_tokens";
     if (
       this.name === "meta" ||
       this.name === "cerebras" ||
@@ -1314,12 +1342,20 @@ export class OpenAIProvider implements LLMProvider {
       tools: args.tools,
       options: args.options,
       maxTokens: this.resolveRequestMaxTokens(args.options),
-      maxTokenField: this.resolveChatCompletionsMaxTokenField(),
+      maxTokenField: this.resolveChatCompletionsMaxTokenField(args.model),
       providerCapabilityHints,
       sharedPrefixTail: sessionSharedPrefixTail(),
     });
     for (const [key, value] of Object.entries(this.config.extraBody ?? {})) {
       request[key] = value;
+    }
+    const qwenModel = this.name === "qwen" ? resolveQwenCurrentModel(args.model) : undefined;
+    if (qwenModel?.model.startsWith("qwen") && !qwenModel.totalOutputCap &&
+      qwenModel.thinking !== "none" && request.enable_thinking !== false &&
+      request.thinking_budget === undefined && typeof request.max_tokens === "number") {
+      // These older Qwen routes cap the answer separately from reasoning.
+      // Bound both parts when Core supplies an output reservation.
+      request.thinking_budget = request.max_tokens;
     }
     if (typeof request.prompt_cache_key === "string") {
       request.prompt_cache_key = normalizePromptCacheKey(request.prompt_cache_key);
@@ -1677,7 +1713,7 @@ export class OpenAIProvider implements LLMProvider {
       tools: options?.tools ? [...options.tools] : this.config.tools ?? [],
       options,
       maxTokens: this.resolveRequestMaxTokens(options),
-      maxTokenField: this.resolveChatCompletionsMaxTokenField(),
+      maxTokenField: this.resolveChatCompletionsMaxTokenField(requestModel),
       providerCapabilityHints: streamCapabilityHints,
       toolCallIdNamespace: headers?.["Idempotency-Key"],
     };
@@ -1851,8 +1887,11 @@ export class OpenAIProvider implements LLMProvider {
             choice.delta && typeof choice.delta === "object"
               ? (choice.delta as Record<string, unknown>)
               : {};
-          if (typeof delta.content === "string" && delta.content.length > 0) {
-            const split = thinkFilter.push(delta.content);
+          const contentDelta = typeof delta.content === "string" ? delta.content
+            : streamCapabilityHints.usesThinkingContentBlocks === true && Array.isArray(delta.content)
+              ? assistantTextFromContentBlocks(delta.content) : "";
+          if (contentDelta.length > 0) {
+            const split = thinkFilter.push(contentDelta);
             if (split.text.length > 0) {
               content += split.text;
               onChunk({ content: split.text, done: false });
@@ -1881,7 +1920,9 @@ export class OpenAIProvider implements LLMProvider {
               : delta.reasoning_content;
           const fallbackReasoningField = streamCapabilityHints.reasoningContentFallbackField;
           const reasoningDelta = primaryReasoningDelta ??
-            (fallbackReasoningField !== undefined ? delta[fallbackReasoningField] : undefined);
+            (fallbackReasoningField !== undefined ? delta[fallbackReasoningField] : undefined) ??
+            (streamCapabilityHints.usesThinkingContentBlocks === true && Array.isArray(delta.content)
+              ? thinkingTextFromContentBlocks(delta.content) : undefined);
           if (typeof reasoningDelta === "string" && reasoningDelta.length > 0) {
             reasoningContent += reasoningDelta;
             onChunk({

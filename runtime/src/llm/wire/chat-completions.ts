@@ -22,6 +22,7 @@ import { openAiAcceptsSamplingTemperature } from "../registry/openai-reasoning-m
 import { DEFAULT_MAX_OUTPUT_TOKENS } from "../openai-compatible-token-limits.js";
 import {
   assistantTextFromContentBlocks,
+  thinkingTextFromContentBlocks,
   applyToolResultImagePolicyForWire,
   coerceUsage,
   collectRequestMetrics,
@@ -56,6 +57,7 @@ import {
 } from "./cerebras-contract.js";
 import { splitLeadingThinkBlock } from "./think-tags.js";
 import { applyZaiImageInputContract } from "./zai-contract.js";
+import { applyQwenKimiImageInputContract } from "./qwen-contract.js";
 import {
   applyKimiImageInputContract,
   assertKimiRequestPayloadSize,
@@ -291,9 +293,10 @@ function toChatCompletionsMessages(
   reasoningContinuation?: ReasoningToolContinuation,
   allowsFullReasoningHistoryReplay = true,
   requiresStrictToolResultSequence = false,
-  imageInputContract?: "cerebras_v2" | "zai_flash" | "kimi_global",
+  imageInputContract?: "cerebras_v2" | "zai_flash" | "kimi_global" | "qwen_kimi",
   acceptsDirectImageInput?: boolean,
   sessionTailAfterSetup = false,
+  usesThinkingContentBlocks = false,
 ): Array<Record<string, unknown>> {
   // The caller passes the exact normalized sequence used to derive the
   // reasoning replay plan. Keeping a single projection prevents boundary or
@@ -312,6 +315,8 @@ function toChatCompletionsMessages(
     imageSafeMessages = applyZaiImageInputContract(normalized);
   } else if (imageInputContract === "kimi_global") {
     imageSafeMessages = applyKimiImageInputContract(normalized);
+  } else if (imageInputContract === "qwen_kimi") {
+    imageSafeMessages = applyQwenKimiImageInputContract(normalized);
   } else if (acceptsDirectImageInput === false) {
     imageSafeMessages = assertNoDirectImageInput(normalized);
   }
@@ -380,6 +385,15 @@ function toChatCompletionsMessages(
       ? message.providerReasoningContent
       : undefined;
   };
+  const assistantContent = (content: unknown, reasoning: string | undefined): unknown =>
+    usesThinkingContentBlocks && reasoning !== undefined
+      ? [
+          { type: "thinking", thinking: [{ type: "text", text: reasoning }] },
+          ...(typeof content === "string" && content.length > 0
+            ? [{ type: "text", text: content }]
+            : Array.isArray(content) ? content : []),
+        ]
+      : content;
   for (const message of prepared) {
     if (message.role === "system" || message.role === "developer") continue;
     if (message.role === "tool") {
@@ -394,8 +408,8 @@ function toChatCompletionsMessages(
       const providerReasoningContent = replayReasoningContent(message);
       wireMessages.push({
         role: "assistant",
-        content: messageTextContent(message.content),
-        ...(providerReasoningContent !== undefined
+        content: assistantContent(messageTextContent(message.content), providerReasoningContent),
+        ...(!usesThinkingContentBlocks && providerReasoningContent !== undefined
           ? { [reasoningContentField]: providerReasoningContent }
           : {}),
         tool_calls: message.toolCalls.map((toolCall) => ({
@@ -416,8 +430,10 @@ function toChatCompletionsMessages(
     const providerReasoningContent = replayReasoningContent(message);
     wireMessages.push({
       role: message.role,
-      content: toOpenAIMessageContent(message.content),
-      ...(message.role === "assistant" &&
+      content: message.role === "assistant"
+        ? assistantContent(toOpenAIMessageContent(message.content), providerReasoningContent)
+        : toOpenAIMessageContent(message.content),
+      ...(!usesThinkingContentBlocks && message.role === "assistant" &&
       providerReasoningContent !== undefined
         ? { [reasoningContentField]: providerReasoningContent }
         : {}),
@@ -628,6 +644,7 @@ export function buildChatCompletionsRequest(
       input.providerCapabilityHints?.acceptsDirectImageInput,
       input.providerCapabilityHints?.sharesPromptPrefixAcrossSessions === true &&
         input.sharedPrefixTail !== false,
+      input.providerCapabilityHints?.usesThinkingContentBlocks === true,
     ),
     [maxTokenField]: maxTokens,
   };
@@ -719,6 +736,12 @@ export function buildChatCompletionsRequest(
   if (input.providerCapabilityHints?.reasoningSplit === true) {
     body.reasoning_split = true;
   }
+  if (tools.length > 0 && input.providerCapabilityHints?.enablesToolStreaming === true) {
+    body.tool_stream = true;
+  }
+  if (input.providerCapabilityHints?.clearsThinkingAfterHistoryChange === true) {
+    body.clear_thinking = !allowsFullReasoningHistoryReplay;
+  }
   if (
     input.options?.parallelToolCalls !== undefined &&
     !(autoOnlyToolChoice && tools.length === 0) &&
@@ -769,13 +792,21 @@ export function buildChatCompletionsRequest(
         input.options.reasoningEffort,
       ))
   ) {
-    body.reasoning_effort = input.options.reasoningEffort;
+    if (input.providerCapabilityHints?.reasoningEffortEnvelope === "openrouter") {
+      body.reasoning = { effort: input.options.reasoningEffort };
+    } else {
+      body.reasoning_effort = input.options.reasoningEffort;
+    }
   }
   if (
     input.options?.serviceTier !== undefined &&
     input.providerCapabilityHints?.acceptsServiceTier !== false
   ) {
-    body.service_tier = input.options.serviceTier;
+    const tierMap = input.providerCapabilityHints?.serviceTierMap;
+    const tier = tierMap === undefined
+      ? input.options.serviceTier
+      : tierMap[input.options.serviceTier];
+    if (tier !== undefined) body.service_tier = tier;
   }
   if (usesZaiJsonObject) {
     body.response_format = { type: "json_object" };
@@ -968,7 +999,10 @@ export function parseChatCompletionsResponse(
     "reasoning_content";
   const fallbackReasoningField = request.providerCapabilityHints?.reasoningContentFallbackField;
   const rawProviderReasoningContent = message[reasoningContentField] ??
-    (fallbackReasoningField !== undefined ? message[fallbackReasoningField] : undefined);
+    (fallbackReasoningField !== undefined ? message[fallbackReasoningField] : undefined) ??
+    (request.providerCapabilityHints?.usesThinkingContentBlocks === true && Array.isArray(message.content)
+      ? thinkingTextFromContentBlocks(message.content)
+      : undefined);
   const providerReasoningContent =
     typeof rawProviderReasoningContent === "string" &&
       rawProviderReasoningContent.length > 0

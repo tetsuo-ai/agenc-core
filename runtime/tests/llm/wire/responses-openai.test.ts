@@ -601,7 +601,7 @@ describe("buildOpenAIResponsesRequest", () => {
     // never the dotted internal name the provider never saw.
     expect(request.tool_choice).toEqual({
       type: "function",
-      function: { name: tools[0]!.name },
+      name: tools[0]!.name,
     });
   });
 });

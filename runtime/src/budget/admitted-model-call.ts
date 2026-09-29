@@ -289,6 +289,8 @@ function reservationRates(
   const fast =
     requestsAnthropicFastMode(model, provider, options) ||
     requestsOpenAiFastMode(provider, options) ||
+    (provider.trim().toLowerCase() === "minimax" &&
+      model.trim().toLowerCase() === "minimax-m3" && options.serviceTier === "priority") ||
     requestsXaiPriorityProcessing(model, provider, options, factoryOptions);
   const selected = selectCallRates(standardEntry, {
     ...(fast ? { speed: "fast" as const } : {}),

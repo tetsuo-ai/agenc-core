@@ -280,7 +280,7 @@ describe("CerebrasProvider", () => {
       reasoningLevels,
       defaultReasoningLevel,
     ) => {
-      expect(BUILT_IN_PROVIDER_MODEL_CATALOG.cerebras).toContain(model);
+      expect(BUILT_IN_PROVIDER_MODEL_CATALOG.cerebras.includes(model)).toBe(model !== "gemma-4-31b");
       expect(resolveModelCatalogMetadata({ provider: "cerebras", model }))
         .toEqual({
           contextWindow,

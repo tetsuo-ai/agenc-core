@@ -6,11 +6,24 @@ import {
   anthropicEffort,
   anthropicEffortLevels,
   anthropicManualBudgetTokens,
+  anthropicSupportsBetweenToolsThinking,
   anthropicThinkingControl,
 } from "../../../src/utils/model/anthropicThinkingControl.js";
 import { isAlwaysOnThinkingAnthropicModel } from "../../../src/utils/model/alwaysOnThinking.js";
 
 describe("anthropicThinkingControl", () => {
+  test("Sonnet 5.5 alone accepts between-tools thinking and all five effort levels", () => {
+    for (const model of ["claude-sonnet-5-5", "claude-sonnet-5.5", "anthropic.claude-sonnet-5-5"]) {
+      expect(anthropicSupportsBetweenToolsThinking(model)).toBe(true);
+      expect(anthropicThinkingControl(model)).toBe("adaptive");
+      expect(anthropicAcceptsSamplingParameters(model)).toBe(false);
+      expect(anthropicEffortLevels(model)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+      expect(isAlwaysOnThinkingAnthropicModel(model)).toBe(false);
+    }
+    for (const model of ["claude-sonnet-5", "claude-sonnet-5-50", "claude-sonnet-5-5-preview", "claude-opus-5-5"]) {
+      expect(anthropicSupportsBetweenToolsThinking(model)).toBe(false);
+    }
+  });
   test("classifies every generation the way the Messages API answered on 2026-09-11", () => {
     expect(anthropicThinkingControl("claude-fable-5-1")).toBe("always_on");
     expect(anthropicThinkingControl("claude-fable-5")).toBe("always_on");

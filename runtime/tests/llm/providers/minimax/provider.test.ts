@@ -70,10 +70,14 @@ describe("MiniMax catalog", () => {
     );
     expect(
       resolveModelCatalogMetadata({ provider: "minimax", model: "MiniMax-M3" }),
-    ).toMatchObject({ contextWindow: 1_000_000, maxOutputTokens: 131_072 });
+    ).toMatchObject({ contextWindow: 1_000_000, maxOutputTokens: 131_072, maxOutputTokensUpperLimit: 524_288 });
     expect(
       resolveModelCatalogMetadata({ provider: "minimax", model: "MiniMax-M2.7-highspeed" }),
-    ).toMatchObject({ contextWindow: 204_800, maxOutputTokens: 131_072 });
+    ).toMatchObject({ contextWindow: 204_800, maxOutputTokens: 131_072, maxOutputTokensUpperLimit: 204_800 });
+    for (const model of BUILT_IN_PROVIDER_MODEL_CATALOG.minimax) {
+      expect(resolveRegisteredModelCatalogEntry({ provider: "minimax", model })?.maxOutputTokensUpperLimit)
+        .toBe(model === "MiniMax-M3" ? 524_288 : 204_800);
+    }
   });
 
   test("M3 alone carries the two-position thinking switch and image input", () => {
@@ -117,6 +121,25 @@ describe("MiniMax catalog", () => {
 });
 
 describe("MiniMaxProvider wire", () => {
+  test("forwards M3 priority and recognizes the served tier", async () => {
+    const payload = await successfulChat("MiniMax-M3").json() as Record<string, unknown>;
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ ...payload, service_tier: "priority" }), { headers: { "content-type": "application/json" } }),
+    );
+    const provider = new MiniMaxProvider({ apiKey: "minimax-test", model: "MiniMax-M3", fetchImpl });
+    const response = await provider.chat([{ role: "user", content: "hello" }], { serviceTier: "priority" });
+    expect(bodyAt(fetchImpl).service_tier).toBe("priority");
+    expect(response.usage?.speed).toBe("fast");
+    const m2 = createSuccessfulMinimaxProvider("MiniMax-M2.7");
+    await m2.provider.chat([{ role: "user", content: "hello" }], { serviceTier: "priority" });
+    expect(bodyAt(m2.fetchImpl)).not.toHaveProperty("service_tier");
+    const standard = createSuccessfulMinimaxProvider();
+    await standard.provider.chat([{ role: "user", content: "hello" }], { serviceTier: "default" });
+    expect(bodyAt(standard.fetchImpl).service_tier).toBe("standard");
+    await standard.provider.chat([{ role: "user", content: "hello" }], { serviceTier: "flex" });
+    expect(bodyAt(standard.fetchImpl, 1)).not.toHaveProperty("service_tier");
+  });
+
   test("asks for split reasoning and adaptive thinking on M3 by default", async () => {
     const { fetchImpl, provider } = createSuccessfulMinimaxProvider();
     await provider.chat([{ role: "user", content: "hello" }], {

@@ -47,6 +47,21 @@ function usd(usage: ModelUsage): number {
 }
 
 describe("cached prompt tokens that are part of the reported prompt", () => {
+  it.each([524_288, 524_289])("uses the published MiniMax M3 context tier at %s input tokens", (input) => {
+    const multiplier = input > 524_288 ? 2 : 1;
+    const standard = call("MiniMax-M3", "minimax", input, 100_000, 1_000);
+    const expected = ((input - 100_000) * 0.3 + 100_000 * 0.06 + 1_000 * 1.2) * multiplier * PER_M;
+    expect(usd(standard)).toBeCloseTo(expected, 12);
+    expect(usd({ ...standard, speed: "fast" })).toBeCloseTo(expected * 1.5, 12);
+  });
+
+  it("keeps unpublished M3 cache writes separate from the M2.7 price", () => {
+    expect(DEFAULT_MODEL_COSTS["minimax:MiniMax-M3"]?.cacheCreationUsdPer1K).toBeUndefined();
+    expect(DEFAULT_MODEL_COSTS["minimax:MiniMax-M2.7"]?.cacheCreationUsdPer1K).toBe(0.000375);
+    expect(DEFAULT_MODEL_COSTS["minimax:MiniMax-M2.7"]?.longContext).toBeUndefined();
+    expect(DEFAULT_MODEL_COSTS["minimax:MiniMax-M2.7"]?.fastMode).toBeUndefined();
+  });
+
   it.each(["grok-4.7", "grok-4.6", "grok-4.5", "xai:grok-4.7"])(
     "bills a cached %s call once, at the cached rate",
     (model) => {
