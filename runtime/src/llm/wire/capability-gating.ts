@@ -179,6 +179,8 @@ export interface ChatCompletionsCapabilityHints {
    * either reject it or silently ignore it.
    */
   readonly acceptsServiceTier?: boolean;
+  /** Translate known service tiers; unmapped values are omitted. */
+  readonly serviceTierMap?: Readonly<Record<string, string>>;
   /**
    * If `false`, `stream_options.include_usage` is omitted from
    * streaming requests. Some local openai-compat servers reject the
@@ -631,6 +633,7 @@ export function chatCompletionsCapabilityHintsForProvider(
       : {}),
     acceptsStopSequences: slug !== "meta",
     acceptsServiceTier,
+    ...(isMinimaxM3 ? { serviceTierMap: { priority: "priority", default: "standard" } } : {}),
     acceptsStreamUsage: isZai || (nimModel && !nimModel.model.startsWith("moonshotai/")) ? false : acceptsStreamUsage,
     requiresGrammarSafeToolSchemas,
     ...(outputTokensCeiling !== undefined ? { outputTokensCeiling } : {}),

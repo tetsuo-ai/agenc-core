@@ -133,6 +133,11 @@ describe("MiniMaxProvider wire", () => {
     const m2 = createSuccessfulMinimaxProvider("MiniMax-M2.7");
     await m2.provider.chat([{ role: "user", content: "hello" }], { serviceTier: "priority" });
     expect(bodyAt(m2.fetchImpl)).not.toHaveProperty("service_tier");
+    const standard = createSuccessfulMinimaxProvider();
+    await standard.provider.chat([{ role: "user", content: "hello" }], { serviceTier: "default" });
+    expect(bodyAt(standard.fetchImpl).service_tier).toBe("standard");
+    await standard.provider.chat([{ role: "user", content: "hello" }], { serviceTier: "flex" });
+    expect(bodyAt(standard.fetchImpl, 1)).not.toHaveProperty("service_tier");
   });
 
   test("asks for split reasoning and adaptive thinking on M3 by default", async () => {
