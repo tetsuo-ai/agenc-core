@@ -16,6 +16,11 @@ spec.loader.exec_module(runner)
 
 
 class GraderTests(unittest.TestCase):
+    def test_infeasible_scheduler_has_an_explicit_failure(self):
+        with patch.object(runner.itertools, "combinations", return_value=iter(())):
+            with self.assertRaisesRegex(ValueError, "no feasible result"):
+                runner.schedule_oracle()
+
     def test_known_answers_and_scheduler(self):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(runner.self_test(types.SimpleNamespace(suite=HERE / "live-eval-tasks.json")), 0)

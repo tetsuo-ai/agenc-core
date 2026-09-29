@@ -1,5 +1,5 @@
 """Verify frozen measured records offline. No keys, network or account state."""
-import hashlib
+import ast
 import importlib.util
 import json
 import pathlib
@@ -11,11 +11,22 @@ runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 folder = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else HERE / "measurements-2026-09-29"
 capture = json.loads((folder / "capture.json").read_text())
+archived_source = folder / "collection-runner-source.txt"
+assert runner.digest(archived_source.read_bytes()) == capture["runnerSha256"], "archived collection runner changed"
+# Parse the historical source as data, never execute a run-folder artifact.
+# Only offline self-test invariants changed after collection. The collector,
+# graders, usage prices and their supporting constants must remain identical.
+def measured_code(source):
+    tree = ast.parse(source)
+    tree.body = [node for node in tree.body if not (
+        isinstance(node, ast.FunctionDef) and node.name in {"schedule_oracle", "self_test"})]
+    return ast.dump(tree, include_attributes=False)
+
+assert measured_code(archived_source.read_text()) == measured_code((HERE / "live-eval.py").read_text()), "measured runner behavior changed"
 suite, _ = runner.load_suite(folder / "suite.json")
 suite_source = (HERE / "live-eval-tasks.json").read_bytes()
 assert runner.digest(suite_source) == capture["suiteSha256"], "predeclared suite changed"
 assert runner.canonical_digest(suite) == capture["suiteCanonicalSha256"], "captured suite changed"
-assert runner.digest((HERE / "live-eval.py").read_bytes()) == capture["runnerSha256"], "collection runner changed"
 raw_records = (folder / "records.jsonl").read_bytes()
 assert runner.digest(raw_records) == capture["recordsSha256"], "recorded answers changed"
 records = [json.loads(line) for line in raw_records.splitlines() if line]

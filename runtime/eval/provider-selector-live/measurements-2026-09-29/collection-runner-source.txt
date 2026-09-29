@@ -428,8 +428,6 @@ def schedule_oracle():
                 next_starts = tuple(t if j in chosen else value for j, value in enumerate(starts))
                 visit(min(finish for _, finish in active), done, active, next_starts)
     visit(0, frozenset(), (), (-1,) * 7)
-    if best is None:
-        raise ValueError("The fixed scheduling oracle has no feasible result")
     return {"makespan": best[0], "starts": list(best[1])}
 
 
@@ -450,8 +448,8 @@ def self_test(args):
     assert not grade('{"x":1} {"x":1}', {"x": 1})["passed"]
     assert grade('Answer: {"x":1}', {"x": 1})["passed"]
     assert not grade('{"x":NaN}', {"x": 1})["passed"]
-    assert math.isclose(usage_cost("deepseek-flash", {"prompt_tokens": 1000, "completion_tokens": 1000, "reasoning_tokens": 900}), 0.0015, rel_tol=0, abs_tol=1e-12)
-    assert math.isclose(usage_cost("deepseek-flash", {"prompt_tokens": 1000, "completion_tokens": 1000, "prompt_cache_hit_tokens": 500}), 0.001353, rel_tol=0, abs_tol=1e-12)
+    assert usage_cost("deepseek-flash", {"prompt_tokens": 1000, "completion_tokens": 1000, "reasoning_tokens": 900}) == 0.0015
+    assert usage_cost("deepseek-flash", {"prompt_tokens": 1000, "completion_tokens": 1000, "prompt_cache_hit_tokens": 500}) == 0.001353
     assert usage_cost("deepseek-flash", {}) is None
     assert usage_cost("deepseek-flash", {"prompt_tokens": 1, "completion_tokens": 1, "prompt_cache_hit_tokens": 2}) is None
     assert redact({"answer": "test-secret"}, "test-secret") == {"answer": "[REDACTED]"}

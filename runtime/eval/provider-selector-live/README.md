@@ -10,10 +10,10 @@ Expected answers have deterministic JSON graders. Object key order is ignored; a
 
 - `live-eval-tasks.json`: fixed prompts, split, labels, expected answers and verification notes.
 - `live-eval.py`: Linux-only live runner, exact grader, offline self-test and measured-matrix exporter.
-- `test-live-eval.py`: eleven offline harness tests with mock API responses. Mock responses are not benchmark evidence.
+- `test-live-eval.py`: twelve offline harness tests with mock API responses. Mock responses are not benchmark evidence.
 - `live-eval-replay.mjs`: imports the actual Core selector and classifier for measured replay. It does not write the installation's routing-outcome store.
-- `verify-recorded.py`: checks frozen source and data hashes, recalculates every recorded grade and usage price, and checks the exported holdout matrix.
-- `measurements-2026-09-29/`: 24 normalized live records, task snapshot, capture metadata, held-out matrix and reproducible replay report. Account balances and the collection account manifest stay outside the repository.
+- `verify-recorded.py`: checks archived collection source and data hashes, confirms the maintained collector/grader/pricing code is unchanged, recalculates every recorded grade and usage price, and checks the exported holdout matrix. It parses the source archive as data and never executes it.
+- `measurements-2026-09-29/`: 24 normalized live records, task snapshot, capture metadata, held-out matrix, reproducible replay report and `collection-runner-source.txt`, the exact original runner bytes matching the captured SHA-256. Account balances and the collection account manifest stay outside the repository.
 
 ## Recorded results
 
@@ -90,11 +90,17 @@ node_modules/.bin/tsx runtime/eval/provider-selector-live/live-eval-replay.mjs \
 
 The replay writes `selector-replay.json` and `selector-replay.md`, recording selector and profile source hashes. It compares cold-start selection, selection calibrated only from the six calibration tasks, current text classification plus selection, always Pro, always cheapest and fixed Flash. Calibration quality uses independent JSON verifier results, not merely completion. Calibration cost learning is omitted because per-call dollars are not reconciled.
 
-For the checked-in collection, use `runtime/eval/provider-selector-live/measurements-2026-09-29` as the run folder. Replay reads its normalized `capture.json`; it does not need an account manifest. Run `verify-recorded.py` first. The collection runner remains byte-identical to the version identified by the capture hash.
+For the checked-in collection, use `runtime/eval/provider-selector-live/measurements-2026-09-29` as the run folder. Replay reads its normalized `capture.json`; it does not need an account manifest. Run `verify-recorded.py` first. The immutable source archive matches the original capture hash. The maintained `live-eval.py` subsequently gained an explicit feasibility guard and tolerant numeric assertions in its offline self-test. It is not relabeled as the code that made the recorded calls. The verifier permits those two self-test functions to differ while requiring the remaining parsed code to match the archive.
 
 `selector` and `selector_calibrated` use the predeclared human task kind and complexity. `selector_classified` uses the runtime text classifier. All strategies use the identical measured holdout outcome matrix, actual pre-call input bounds, the fixed output cap and no tools. Passes per estimated dollar remains unknown if selected observations or usage costs are missing. Sum of call latency is not parallel-agent wall time.
 
-The exported `recorded-measurements.json` also works with `runtime/scripts/eval-child-provider-selection.ts`. That older replay helper uses standardized 2000-input/500-output estimates and tool support, so name the replay used when quoting numbers.
+The bundled measured matrix also works with the named-dataset CLI from the repository root:
+
+```sh
+node_modules/.bin/tsx runtime/scripts/eval-child-provider-selection.ts deepseek-2026-09-29
+```
+
+That CLI accepts only `synthetic` (the default) or `deepseek-2026-09-29`, never arbitrary filesystem paths. It uses standardized 2000-input/500-output estimates and tool support, so name the replay used when quoting numbers. For a separately collected run folder, use `live-eval-replay.mjs` as shown above.
 
 ## Limits
 

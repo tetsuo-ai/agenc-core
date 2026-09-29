@@ -10,4 +10,6 @@ Run on the Linux test host after building the branch:
 node_modules/.bin/tsx runtime/scripts/eval-child-provider-selection.ts
 ```
 
+The optional dataset name is `synthetic` or `deepseek-2026-09-29`. The latter replays the bundled recorded matrix. Arbitrary paths and extra arguments are rejected before reading a fixture. Separate live collection folders use the dedicated `provider-selector-live/live-eval-replay.mjs` replay command.
+
 The report compares completed tasks, actual fixture outcome cost (including failed attempts), completed tasks per dollar and total latency. Baselines are always strongest, always cheapest and fixed parent. A selected route that lacks an outcome is an uncovered task, not a success.
