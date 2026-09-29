@@ -3884,7 +3884,7 @@ export async function* runAgent(
       parent.services.provider.name;
     const model = params.plan?.destination.model ?? params.model ??
       live.role.config.model ?? parent.sessionConfiguration.collaborationMode.model;
-    const costUsd = knownTaskCost();
+    const costUsd = receipt.outcome === "nack" ? 0 : knownTaskCost();
     const terminal = receipt.terminal ?? childTerminalOutcome({
       provider, model,
       ...(receipt.terminalReason !== undefined ? { reason: receipt.terminalReason } :
@@ -3893,7 +3893,7 @@ export async function* runAgent(
             ? { reason: crossPolicyWasRevoked ? "policy_revoked" as const : "parent_cancelled" as const }
             : { error: new Error(receipt.reason ?? receipt.message ?? "subagent failed") }),
       ...(receipt.terminalRetryable !== undefined ? { retryable: receipt.terminalRetryable } : {}),
-      dispatch: receipt.outcome === "completed" ? "sent" : childSession === null ? "not_sent" : "unknown",
+      dispatch: receipt.outcome === "completed" ? "sent" : receipt.outcome === "nack" || childSession === null ? "not_sent" : "unknown",
       completedWork: receipt.message ?? latestChildProgress,
       unfinishedWork: receipt.outcome === "completed" && receipt.terminalReason !== "step_limit" ? "" : currentTaskText,
     });
@@ -5155,6 +5155,8 @@ export async function* runAgent(
     if (acceptedNotStarted !== undefined && childSession !== null) {
       turnId = acceptedNotStarted.turnId;
       currentTaskId = acceptedNotStarted.taskId;
+      currentTaskText = acceptedNotStarted.taskText;
+      latestChildProgress = "";
       currentTurnReceiptCommitted = false;
       currentTurnToolCallCount = 0;
       const nackCommitted = await commitTaskReceipt({

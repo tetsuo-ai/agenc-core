@@ -236,6 +236,7 @@ export class AgentAssignmentRejectedError extends Error {
 
 export interface AgentAssignmentAdmission {
   readonly taskId: string;
+  readonly taskText: string;
   readonly executionPlan?: import("./cross-provider.js").ChildExecutionPlan;
   readonly turnId: string;
   readonly author: AgentPath;
@@ -1296,6 +1297,7 @@ export class AgentControl {
 
     const admission: AgentAssignmentAdmission = {
       taskId: assignment.taskId,
+      taskText: assignment.content,
       turnId: crypto.randomUUID(),
       author: assignment.author,
       acceptedAtMs: Date.now(),
