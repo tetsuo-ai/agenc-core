@@ -2124,7 +2124,7 @@ describe("Light presentation and deferred capability preservation", () => {
     expect(disabled.tools.map(tool => tool.name)).toEqual(normal.tools.map(tool => tool.name));
     expect(baseline.length).toBeGreaterThan(light.toLLMTools().length);
 
-    await light.dispatch({ id: "other-session-discovery", name: "system.searchTools", arguments: '{"select":"MultiEdit"}' });
+    await light.dispatch({ id: "other-session-discovery", name: "system.searchTools", arguments: '{"select":"Write"}' });
     expect(normal.toLLMTools()).toEqual(baseline);
     expect(disabled.toLLMTools()).toEqual(baseline);
     expect(normal.getDiscoveredToolNames?.().size).toBe(0);
@@ -2137,7 +2137,7 @@ describe("Light presentation and deferred capability preservation", () => {
     const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
     expect(light.tools.map(tool => tool.name)).toEqual(normal.tools.map(tool => tool.name));
     expect(light.toLLMTools().map(tool => tool.function.name).sort()).toEqual([
-      "Edit", "FileRead", "Write", "exec_command", "system.searchTools",
+      "FileRead", "MultiEdit", "exec_command", "system.searchTools",
     ].sort());
     const withoutDescriptions = (value: unknown): unknown => Array.isArray(value)
       ? value.map(withoutDescriptions)

@@ -3,6 +3,7 @@ import type { LLMTool } from "../llm/types.js";
 /** Presentation only; canonical validation and execution stay intact. */
 const PRESENTATIONS: Readonly<Record<string, string>> = {
   FileRead: "Read files. offset/limit are 1-indexed lines; display numbers may be sparse. PDFs over 10 pages require pages (max 20).",
+  MultiEdit: "Batch exact replacements in one file, applied in order and written atomically. FileRead existing files first; shell reads do not count. Keep old_string small and unique, or set replace_all. Exclude display numbers. Create a new file with one edit: old_string empty, new_string is its content.",
   Edit: "Replace unique old_string (or replace_all) after FileRead. Exclude display numbers.",
   Write: "Write content; FileRead existing files first.",
   Grep: "Search file contents with ripgrep regex. Defaults to matching file paths; use output_mode content for lines. Escape literal regex metacharacters. Ignored/build files are excluded unless includeIgnored.",

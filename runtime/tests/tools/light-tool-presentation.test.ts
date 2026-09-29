@@ -48,5 +48,8 @@ describe("Light schema presentation", () => {
     expect(present("FileRead").function.description).toContain("PDFs over 10 pages");
     expect(present("FileRead").function.parameters).toMatchObject({ properties: { offset: { anyOf: [{ type: "number" }, { type: "string", pattern: "^[1-9]\\d*$" }] } } });
     expect(present("Edit").function.description).toContain("after FileRead");
+    expect(present("MultiEdit").function.description).toContain("shell reads do not count");
+    expect(present("MultiEdit").function.description).toContain("applied in order");
+    expect(present("MultiEdit").function.description).toContain("old_string empty");
   });
 });

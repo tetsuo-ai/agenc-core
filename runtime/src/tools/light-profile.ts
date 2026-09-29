@@ -2,7 +2,6 @@
 export const LIGHT_INITIAL_TOOL_NAMES: ReadonlySet<string> = new Set([
   "system.searchTools",
   "FileRead",
-  "Edit",
-  "Write",
+  "MultiEdit",
   "exec_command",
 ]);
