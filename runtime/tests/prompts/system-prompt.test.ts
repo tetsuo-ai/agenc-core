@@ -1354,7 +1354,8 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
     const light = await assembleSystemPromptSnapshot({ ...options, profile: "light" });
     expect(light.staticPrefix).toContain("You are AgenC.");
     expect(light.staticPrefix).not.toContain("# Completing work without a human");
-    expect(light.text).toContain("system.searchTools");
+    expect(light.text).toContain("catalog loader");
+    expect(light.text).toContain("select TodoWrite");
     expect(light.text).toContain(UNTRUSTED_TOOL_RESULT_BOUNDARY);
 
     expect(light.text).toContain("USER_PROJECT_SENTINEL");
@@ -1365,7 +1366,7 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
     expect(light.dynamicSuffix).toContain("/workspace/scratchpad");
     expect(light.text.toLowerCase()).toContain("plan");
     if (outputStyle === undefined) {
-      expect(light.text).toContain("run checks that exercise it");
+      expect(light.text).toContain("Run checks for the requested behavior");
     } else {
       expect(light.dynamicSuffix).toContain("OUTPUT_STYLE_SENTINEL");
       expect(light.text).not.toContain("# Doing tasks");
