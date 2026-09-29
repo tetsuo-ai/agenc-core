@@ -201,10 +201,10 @@ describe("checkModelHistoryCompat", () => {
       ],
     });
 
-    const result = checkModelHistoryCompat(session, "openai/gpt-4.1");
+    const result = checkModelHistoryCompat(session, "openai/gpt-oss-120b");
     expect(result.compatible).toBe(false);
     expect(result.missingCapabilities).toEqual(["image history"]);
-    expect(result.reason).toMatch(/openrouter \/ openai\/gpt-4\.1/);
+    expect(result.reason).toMatch(/openrouter \/ openai\/gpt-oss-120b/);
   });
 
   it("treats reasoning effort as a compatibility requirement", () => {
@@ -631,7 +631,7 @@ describe("modelCommand", () => {
       ],
     });
 
-    const res = await modelCommand.execute(mkctx(session, "openai/gpt-4.1"));
+    const res = await modelCommand.execute(mkctx(session, "openrouter:openai/gpt-oss-120b"));
     expect(res.kind).toBe("text");
     if (res.kind === "text") {
       expect(res.text).toMatch(/blocked/);
@@ -662,7 +662,7 @@ describe("modelCommand", () => {
     const setModel = vi.fn();
 
     const res = await modelCommand.execute(
-      mkctx(session, "openai/gpt-4.1", { setModel }),
+      mkctx(session, "openrouter:openai/gpt-oss-120b", { setModel }),
     );
 
     expect(res.kind).toBe("text");
