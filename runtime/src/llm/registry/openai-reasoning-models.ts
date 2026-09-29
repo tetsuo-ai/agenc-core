@@ -16,8 +16,8 @@ export const OPENAI_REASONING_MODELS = [
   { model: "gpt-5.6-luna", label: "GPT-5.6 Luna", efforts: EFFORTS_WITH_NONE },
   // Keep the existing default order. Adding Astra must not select it for users.
   { model: "gpt-6-astra", label: "GPT-6 Astra", efforts: POSITIVE_EFFORTS },
-  // Independently verified 2026-09-29: /api/docs/models/gpt-6.1-sol and
-  // live Responses agree on low..max, 1,050,000 context and 128,000 output.
+  // /api/docs/models/gpt-6.1-sol independently verifies the limits below
+  // (2026-09-29); live Responses verifies low..max and rejects none/minimal.
   { model: "gpt-6.1-sol", label: "GPT-6.1 Sol", efforts: POSITIVE_EFFORTS },
   // Appended after Astra for the same reason: the first row stays GPT-5.6 Sol.
   { model: "gpt-6-sol", label: "GPT-6 Sol", efforts: EFFORTS_WITH_NONE },
