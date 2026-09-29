@@ -89,7 +89,7 @@ test("named capabilities gain one availability notice after the initial core res
       expect(visible).toContain("TodoWrite");
       expect(text.split("User-requested tools are ready: TodoWrite")).toHaveLength(2);
     }
-    return { content: calls > 2 ? "Done" : "", toolCalls: calls > 2 ? [] : [{ id: `command-${calls}`, name: "exec_command", arguments: '{"cmd":"true"}' }], usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, model: "test-model", finishReason: calls > 2 ? "stop" : "tool_calls" };
+    return { content: calls > 2 ? "Done" : "", toolCalls: calls > 2 ? [] : Array.from({ length: calls === 1 ? 2 : 1 }, (_, index) => ({ id: `command-${calls}-${index}`, name: "exec_command", arguments: JSON.stringify({ cmd: `printf ${calls}-${index}` }) })), usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, model: "test-model", finishReason: calls > 2 ? "stop" : "tool_calls" };
   };
   const { session } = mkSession({ provider, registry, services: {
     runtimeOptions: resolveAgentRuntimeOptions({}, { lightMode: true }), sandboxExecutionBroker: explicitDangerBroker,
@@ -97,5 +97,5 @@ test("named capabilities gain one availability notice after the initial core res
   } });
   await drain(runTurn(session, mkCtx({ sandboxPolicy: { value: "danger_full_access" }, permissionMode: "bypassPermissions" }), "Inspect the work and use TodoWrite for a checklist."));
   expect(calls).toBe(3);
-  expect(manager.execCommand).toHaveBeenCalledTimes(2);
+  expect(manager.execCommand).toHaveBeenCalledTimes(3);
 });

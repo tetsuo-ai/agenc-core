@@ -590,6 +590,7 @@ function recordCompletedToolCall(
   toolCall: LLMToolCall,
   result: ToolDispatchResult,
   durationMs?: number,
+  loadedCapabilities?: Set<string>,
 ): CompletedToolResultRecord {
   // Remaining run budget when this result landed (#2503); rendered on the
   // result in the query projection only.
@@ -657,13 +658,7 @@ function recordCompletedToolCall(
       untrustedKind,
     ),
   );
-  if (requestedToolsLoaded.length > 0) {
-    // Append a capability fact with this result batch. It is not an execution
-    // approval, a reminder turn, or a rewrite of the sealed tool response.
-    const content = `User-requested tools are ready: ${requestedToolsLoaded.join(", ")}. Use their loaded schemas.`;
-    state.toolResults.push({ uuid: crypto.randomUUID(), role: "user", kind: "attachment", content });
-    state.messages.push({ role: "user", content, runtimeOnly: { mergeBoundary: "user_context" } });
-  }
+  for (const name of requestedToolsLoaded) loadedCapabilities?.add(name);
   return completed;
 }
 
@@ -768,6 +763,7 @@ export async function executeTools(
 
   const executor = ensureStreamingToolExecutor(state, ctx, session, signal);
   const additionalContexts: string[] = [];
+  const loadedCapabilities = new Set<string>();
   const completedThisPass = new Map<string, CompletedToolResultRecord>();
   let preventContinuation = false;
 
@@ -811,7 +807,7 @@ export async function executeTools(
         id: session.nextInternalSubId(),
         msg: toolCallStartedEvent(call),
       });
-      const completed = recordCompletedToolCall(state, ctx, session, call, blocked);
+      const completed = recordCompletedToolCall(state, ctx, session, call, blocked, undefined, loadedCapabilities);
       completedThisPass.set(completed.callId, completed);
       if (blocked.preventContinuation === true) {
         preventContinuation = true;
@@ -854,6 +850,7 @@ export async function executeTools(
       toolCall,
       result,
       durationMs,
+      loadedCapabilities,
     );
     completedThisPass.set(completed.callId, completed);
     additionalContexts.push(...(contexts ?? []));
@@ -867,6 +864,13 @@ export async function executeTools(
       preventContinuation = true;
       state.effectReviewStop ??= { explanation: reviewStop };
     }
+  }
+  if (loadedCapabilities.size > 0) {
+    // All assistant calls must have adjacent results before any new context.
+    // This fact changes no permission and leaves each sealed result intact.
+    const content = `User-requested tools are ready: ${[...loadedCapabilities].join(", ")}. Use their loaded schemas.`;
+    state.toolResults.push({ uuid: crypto.randomUUID(), role: "user", kind: "attachment", content });
+    state.messages.push({ role: "user", content, runtimeOnly: { mergeBoundary: "user_context" } });
   }
   appendHookAdditionalContexts(state, session, additionalContexts);
   // Advisory loop-breaker: after the batch's results are on the record,
