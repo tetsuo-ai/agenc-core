@@ -22,10 +22,13 @@ import {
 import type {
   DurableRunEffect,
   DurableRunTerminalRecord,
+  DurableRunSuspension,
 } from "../../state/run-durability.js";
 import { deriveAllStageProjections, readWorkflowStepEvidence } from "./steps.js";
 import type { ProviderWait } from "../../recovery/provider-wait.js";
 import type { PermissionMode } from "../../permissions/types.js";
+import type { RunWorkflowControlState } from "../protocol/index.js";
+import { workflowControlState } from "./control-state.js";
 
 export interface WorkflowStatusStep {
   readonly stepId: string;
@@ -39,6 +42,7 @@ export interface WorkflowStatusStep {
 
 export interface WorkflowRunStatus {
   readonly runId: string;
+  readonly control: RunWorkflowControlState;
   readonly requestedPermissionMode?: WorkflowSpec["permissionMode"];
   /** Only a live, owned Session can supply this field; durable projection cannot. */
   readonly effectivePermissionMode?: PermissionMode;
@@ -73,6 +77,7 @@ export function projectWorkflowStatus(input: {
   readonly runId: string;
   readonly effects: readonly DurableRunEffect[];
   readonly terminal?: DurableRunTerminalRecord;
+  readonly suspensions?: readonly DurableRunSuspension[];
 }): WorkflowRunStatus {
   const projections = deriveAllStageProjections(input.effects);
   const steps: WorkflowStatusStep[] = [];
@@ -123,6 +128,7 @@ export function projectWorkflowStatus(input: {
     : undefined;
   return {
     runId: input.runId,
+    control: workflowControlState({ ...input, suspensions: input.suspensions ?? [], terminal: input.terminal !== undefined }),
     ...(permissionMode === "default" || permissionMode === "plan" || permissionMode === "acceptEdits" || permissionMode === "bypassPermissions"
       ? { requestedPermissionMode: permissionMode }
       : {}),

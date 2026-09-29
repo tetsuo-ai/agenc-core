@@ -29,6 +29,7 @@ import { isTerminalAgentRunStatus } from "../state/run-cancellation.js";
 import type {
   DurableRunEffect,
   DurableRunTerminalRecord,
+  DurableRunSuspension,
 } from "../state/run-durability.js";
 import type { EffectOutcome } from "../contracts/run-contracts.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
@@ -578,7 +579,7 @@ function buildRunStatus(
     runId,
     status:
       durableTerminal?.status ??
-      (reopenedWithoutTerminal && run !== undefined && isTerminalAgentRunStatus(run.status)
+      (workflow?.control?.state === "paused" ? "paused" : reopenedWithoutTerminal && run !== undefined && isTerminalAgentRunStatus(run.status)
         ? "running"
         : run?.status ?? "admission_only"),
     terminal:
@@ -732,11 +733,19 @@ function workflowStatusProjection(
   const projected = projectWorkflowStatus({
     runId,
     effects,
+    suspensions: tableExists(db, "run_suspensions") ? db.prepare<[string], DurableRunSuspension>(`
+      SELECT run_id AS runId, epoch, suspension_event_id AS eventId,
+        suspension_sequence AS suspensionSequence, reason, suspended_at AS suspendedAt,
+        resume_event_id AS resumeEventId, resume_sequence AS resumeSequence,
+        resume_reason AS resumeReason, resumed_at AS resumedAt
+      FROM run_suspensions WHERE run_id = ? ORDER BY suspension_sequence ASC
+    `).all(runId).map(row => Object.fromEntries(Object.entries(row).filter(([, value]) => value !== null)) as unknown as DurableRunSuspension) : [],
     ...(terminal !== undefined
       ? { terminal: durableTerminalRecordFromRow(terminal) }
       : {}),
   });
   return {
+    control: projected.control,
     steps: projected.steps.map((step) => ({
       stepId: step.stepId,
       stage: step.stage,

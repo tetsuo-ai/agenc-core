@@ -1095,7 +1095,10 @@ export class StateRunDurabilityRepository {
           `run ${params.result.runId} epoch ${params.epoch} already has a different terminal result`,
         );
       }
-      if (this.getActiveSuspension(params.result.runId) !== undefined) {
+      const suspension = this.getActiveSuspension(params.result.runId);
+      // User cancellation may close a parked Goal without reopening a writer
+      // or spending budget. Every other terminal still requires active authority.
+      if (suspension !== undefined && !(suspension.reason === "workflow_user_pause" && params.result.status === "cancelled")) {
         throw conflict(
           "RUN_SUSPENSION_CONFLICT",
           `run ${params.result.runId} cannot become terminal while suspended`,

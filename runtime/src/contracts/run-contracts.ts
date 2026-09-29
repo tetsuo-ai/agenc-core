@@ -65,12 +65,13 @@ export interface RunTerminalResult {
 }
 
 /** Internal lifecycle reasons are protocol values, never caller prose. */
-export const RUN_SUSPENSION_REASONS = ["daemon_shutdown_idle"] as const;
+export const RUN_SUSPENSION_REASONS = ["daemon_shutdown_idle", "workflow_user_pause"] as const;
 export type RunSuspensionReason = (typeof RUN_SUSPENSION_REASONS)[number];
 
 export const RUN_RESUME_REASONS = [
   "daemon_startup_restore",
   "explicit_continue",
+  "workflow_user_resume",
 ] as const;
 export type RunResumeReason = (typeof RUN_RESUME_REASONS)[number];
 
@@ -453,6 +454,8 @@ export const RESERVED_RUN_METHODS = [
   "run.cancel",
   /** Start the M5 verified-change workflow as a durable run (contract-change PR, additive). */
   "run.start",
+  "run.pause",
+  "run.resume",
 ] as const;
 export type ReservedRunMethod = (typeof RESERVED_RUN_METHODS)[number];
 

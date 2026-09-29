@@ -2357,14 +2357,14 @@ function requireRecoveryCategory(value: unknown): ToolRecoveryCategory {
 }
 
 function requireSuspensionReason(value: unknown): RunSuspensionReason {
-  if (value !== "daemon_shutdown_idle") {
+  if (value !== "daemon_shutdown_idle" && value !== "workflow_user_pause") {
     throw new TypeError("run suspension reason is invalid");
   }
   return value;
 }
 
 function requireResumeReason(value: unknown): RunResumeReason {
-  if (value !== "daemon_startup_restore" && value !== "explicit_continue") {
+  if (value !== "daemon_startup_restore" && value !== "explicit_continue" && value !== "workflow_user_resume") {
     throw new TypeError("run resume reason is invalid");
   }
   return value;

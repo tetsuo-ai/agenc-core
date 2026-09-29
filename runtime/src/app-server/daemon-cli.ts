@@ -13,6 +13,7 @@ import { enterDaemonWorkingDirectory } from "./daemon-working-directory.js";
 import { randomUUID } from "node:crypto";
 import { createDaemonWorkflowController } from "./workflow/daemon-wiring.js";
 import { DaemonWorkflowStartService } from "./workflow/run-start-service.js";
+import { DaemonWorkflowControlService } from "./workflow/run-control-service.js";
 import {
   closeSync,
   existsSync,
@@ -3922,6 +3923,7 @@ async function runAgenCDaemonForegroundLocked(
       },
       warn: (message) => io.stderr.write(`agenc: ${message}\n`),
     });
+    const workflowControlService = new DaemonWorkflowControlService(workflowWiring.controller);
     const health = new AgenCDaemonHealthService({
       sessionCounter: sessionManager,
       stateCounter: new StateSqliteHealthStatsReader(
@@ -4153,7 +4155,12 @@ async function runAgenCDaemonForegroundLocked(
           ),
         agencHome: authStartup.daemonHome,
       }),
-      workflow: workflowStartService,
+      workflow: {
+        startRun: (params) => workflowStartService.startRun(params),
+        cancelDetachedRun: (params) => workflowStartService.cancelDetachedRun(params),
+        pauseRun: (params) => workflowControlService.pauseRun(params),
+        resumeRun: (params) => workflowControlService.resumeRun(params),
+      },
       csvJobReview: new AgenCCsvJobReviewStateService(csvAgentJobsRepositories),
       // Sessions this daemon starts read trust from its home, with the
       // operator's root markers; a reload replaces activeConfig.
@@ -6035,6 +6042,12 @@ export async function restoreRecoveredAgentRuntime(
   readonly restoreAttemptId?: string;
 }> {
   const resumeSource = run.resumeSource;
+  // Workflow stages own their child adoption and checkpoint resume. Generic
+  // conversation restoration must never reopen a user-paused Goal or run hooks.
+  if (run.metadata?.kind === "verified-change-workflow") {
+    resumeSource?.close();
+    return { available: false };
+  }
   // Routine invocations are one-shot. Rehydrating their ordinary runtime here
   // would replay tools/startup hooks before the routine owner records interruption.
   if (typeof run.metadata?.routineId === "string" || typeof run.metadata?.routineRunId === "string") {
