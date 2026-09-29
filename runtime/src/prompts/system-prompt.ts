@@ -1306,7 +1306,7 @@ export async function assembleSystemPrompt(
     ),
     // The lean head leaves the token-target explanation to the continuation
     // message the runtime sends when a target is set.
-    ...(feature("TOKEN_BUDGET") && !lean
+    ...(feature("TOKEN_BUDGET") && !lean && profile !== "light"
       ? [
           systemPromptSection(
             "token_budget",

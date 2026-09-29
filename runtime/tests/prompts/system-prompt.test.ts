@@ -1388,6 +1388,7 @@ test("Light's cached head is independent of provider defaults and loaded tools",
   expect(expanded.staticPrefix).toBe(initial.staticPrefix);
   expect(initial.staticPrefix).toContain("system.searchTools");
   expect(initial.staticPrefix).not.toContain("- [x]");
+  expect(initial.text).not.toContain("The target is a hard minimum");
 });
 
 test("Light custom output styles replace the default coding workflow while retaining tool and authority rules", async () => {
