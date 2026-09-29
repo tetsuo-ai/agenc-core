@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../src/agents/delegate.js", () => ({ delegate: vi.fn() }));
 vi.mock("../../../src/agents/child-routing-supervisor.js", () => ({ observeChildRoutingAttempt: vi.fn() }));
 
 import { delegate } from "../../../src/agents/delegate.js";
 import { observeChildRoutingAttempt } from "../../../src/agents/child-routing-supervisor.js";
+import { requestParentFollowupTurn } from "../../../src/agents/run-agent.js";
 import { createSpawnAgentTool } from "../../../src/agents/v2/spawn.js";
 import { createAgentRoleWorkspace } from "../../../src/agents/role.js";
 import { AgentRoleCatalog } from "../../../src/agents/role-catalog.js";
@@ -22,16 +23,20 @@ const roles = new AgentRoleCatalog(workspace);
 const mockDelegate = vi.mocked(delegate);
 const mockObserve = vi.mocked(observeChildRoutingAttempt);
 
-async function fixture() {
+async function fixture(options: { deferRetry?: boolean } = {}) {
   const config = { ...defaultConfig(), model_provider: "grok", model: "grok-4.6",
     agents: { cross_provider_enabled: true, cross_provider_auto: true, allowed_providers: ["deepseek", "openai"] } };
   const modelsManager = new StaticModelsManager({ config, fallbackProvider: "grok", metadata: { env: {} } });
   const events: Array<{ msg?: { type?: string; payload?: { callId?: string } } }> = [];
-  const send = vi.fn();
+  const queuedMessages: unknown[] = [];
+  const send = vi.fn((message: { content: string; triggerTurn?: boolean }) => { queuedMessages.push(message); return queuedMessages.length; });
+  const submitChildFollowup = vi.fn(async () => { queuedMessages.length = 0; return true; });
   let activeTurnId: string | undefined = "human-turn-a";
   let denyNextConsent = false;
   let resolveFirst!: (outcome: ChildRoutingAttemptResult<AgentThread>) => void;
   const firstObservation = new Promise<ChildRoutingAttemptResult<AgentThread>>(resolve => { resolveFirst = resolve; });
+  let resolveRetry!: (outcome: ChildRoutingAttemptResult<AgentThread>) => void;
+  const retryObservation = new Promise<ChildRoutingAttemptResult<AgentThread>>(resolve => { resolveRetry = resolve; });
   const requestConsent = vi.fn(async (_session: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => {
     if (denyNextConsent) return { kind: "consent_unavailable" as const, reason: "A fresh funds-stop confirmation is unavailable." };
     return { kind: "granted" as const, grant: { kind: "once" as const, ownerSessionId: "routing-parent", sessionEpoch: "epoch",
@@ -39,6 +44,8 @@ async function fixture() {
   });
   const session = {
     conversationId: "routing-parent", abortController: new AbortController(), roleWorkspace: workspace,
+    userStopGeneration: 0, stoppedByUserSinceLastPrompt: false, submitChildFollowup,
+    hasDeferredAgentMailboxMessages: () => false,
     onBeforeDurableClose: () => () => {}, agentStatus: new BehaviorSubject({ status: "idle" }),
     activeTurn: { unsafePeek: () => activeTurnId === undefined ? undefined : { turnId: activeTurnId } },
     mailbox: { send }, emit: (event: typeof events[number]) => events.push(event),
@@ -73,20 +80,23 @@ async function fixture() {
       dispatch: "sent", completedWork: "", unfinishedWork: reason === "completed" ? "" : "Extract IDs" },
       modelCalls: options.modelCalls ?? 2, toolCalls: options.toolCalls ?? 0, costUsd: options.costUsd ?? 0.02 };
   };
-  mockObserve.mockImplementation(async (_session, thread) => threads.indexOf(thread) === 0 ? firstObservation : observation(thread, "completed"));
+  mockObserve.mockImplementation(async (_session, thread) => threads.indexOf(thread) === 0 ? firstObservation
+    : options.deferRetry ? retryObservation : observation(thread, "completed"));
   const tool = createSpawnAgentTool({ getSession: () => session, workspace, roleCatalog: roles,
     ensureAgentControl: () => ({ control: { roleWorkspace: workspace, assertRoleWorkspace: () => {}, getLive: () => undefined }, registry: {} }),
   } as unknown as MultiAgentV2Options);
-  return { tool, session, config, events, send, requestConsent,
+  return { tool, session, config, events, send, requestConsent, submitChildFollowup, queuedMessages, threads,
     changeTurn: (id?: string) => { activeTurnId = id; },
     denyConsent: () => { denyNextConsent = true; },
     finishFirst: (reason: ChildTerminalReason, options?: Parameters<typeof observation>[2]) => resolveFirst(observation(threads[0]!, reason, options)),
+    finishRetry: () => resolveRetry(observation(threads[1]!, "completed")),
   };
 }
 
 const args = { message: "Extract a short list of record IDs", task_name: "extractor", __callId: "original-tool-call", max_cost_usd: 0.5 };
 
 beforeEach(() => { mockDelegate.mockReset(); mockObserve.mockReset(); });
+afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
 
 describe("automatic fallback through spawn_agent", () => {
   it.each(["rate_limited", "provider_unavailable", "timeout"] as const)(
@@ -163,5 +173,53 @@ describe("automatic fallback through spawn_agent", () => {
     value.finishFirst("timeout");
     await vi.waitFor(() => expect(value.send.mock.calls.some(([message]) => message.content.includes("Stopped automatic fallback"))).toBe(true));
     expect(mockDelegate).toHaveBeenCalledOnce();
+  });
+
+  it("schedules a delayed final routing notice after earlier receipt and retry notices were drained", async () => {
+    const value = await fixture({ deferRetry: true });
+    vi.useFakeTimers();
+    await value.tool.execute(args);
+    value.send({ content: "Initial child failure receipt", triggerTurn: true });
+    requestParentFollowupTurn({ parent: value.session, live: value.threads[0]!.live });
+    await vi.advanceTimersByTimeAsync(200);
+    expect(value.submitChildFollowup).toHaveBeenCalledOnce();
+    expect(value.queuedMessages).toEqual([]);
+
+    value.finishFirst("timeout");
+    await vi.advanceTimersByTimeAsync(200);
+    expect(mockDelegate).toHaveBeenCalledTimes(2);
+    expect(value.submitChildFollowup).toHaveBeenCalledTimes(2);
+    expect(value.queuedMessages).toEqual([]);
+    value.finishRetry();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(value.submitChildFollowup).toHaveBeenCalledTimes(3);
+    expect(value.send.mock.calls.at(-1)?.[0]).toMatchObject({ triggerTurn: true,
+      content: expect.stringContaining("Finished after 2 attempt(s)") });
+  });
+
+  it("holds the routing notice without scheduling when the user stopped the parent", async () => {
+    const value = await fixture();
+    vi.useFakeTimers();
+    await value.tool.execute(args);
+    Object.assign(value.session, { stoppedByUserSinceLastPrompt: true, userStopGeneration: 1 });
+    value.changeTurn(undefined);
+    value.finishFirst("timeout");
+    await vi.advanceTimersByTimeAsync(500);
+    expect(mockDelegate).toHaveBeenCalledOnce();
+    expect(value.send.mock.calls.at(-1)?.[0]).toMatchObject({ triggerTurn: true,
+      content: expect.stringContaining("Stopped automatic fallback") });
+    expect(value.submitChildFollowup).not.toHaveBeenCalled();
+    expect(value.queuedMessages).toHaveLength(1);
+  });
+
+  it("does not schedule a followup when the routing notice was refused by the mailbox", async () => {
+    const value = await fixture();
+    vi.useFakeTimers();
+    await value.tool.execute(args);
+    value.send.mockReturnValue(-1);
+    value.finishFirst("timeout", { toolCalls: 1 });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(value.send).toHaveBeenCalled();
+    expect(value.submitChildFollowup).not.toHaveBeenCalled();
   });
 });

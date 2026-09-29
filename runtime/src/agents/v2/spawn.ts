@@ -36,7 +36,8 @@ import { CHILD_TASK_KINDS, CHILD_TASK_COMPLEXITIES, type ChildSelectionTask, typ
 import type { ChildExecutionPlan } from "../cross-provider.js";
 import { runChildRoutingFallback, type ChildRoutingAttemptResult } from "../child-routing-fallback.js";
 import { observeChildRoutingAttempt } from "../child-routing-supervisor.js";
-import { createMailboxMetadataRecord, readMailboxMetadata } from "../mailbox.js";
+import { requestParentFollowupTurn } from "../run-agent.js";
+import { createMailboxMetadataRecord, isMailboxSendAccepted, readMailboxMetadata } from "../mailbox.js";
 import {
   describeSubagentLimits,
   limitedReasoningEffort,
@@ -812,6 +813,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     if (autoPolicy.cross_provider_enabled === true && autoPolicy.cross_provider_auto === true &&
         args.routing !== "inherit" && requestedProvider === undefined && effectiveModel === undefined && forkMode === undefined) {
       const routed = await routeChildTask(session, {
+        requiresTools: args.tool_free !== true,
         prompt, ...(role !== undefined ? { role } : {}),
         ...(args.task_kind !== undefined ? { taskKind: args.task_kind as ChildSelectionTask["kind"] } : {}),
         ...(args.complexity !== undefined ? { complexity: args.complexity as ChildSelectionTask["complexity"] } : {}),
@@ -1257,11 +1259,12 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       const notice = (message: string): void => {
         if (session.isShuttingDown) return;
         try {
-          session.mailbox.send({ author: live.agentPath, recipient: current.agentPath,
+          const delivery = session.mailbox.send({ author: live.agentPath, recipient: current.agentPath,
             content: `Automatic routing for ${live.agentPath}: ${message}`,
-            triggerTurn: false, direction: "up",
+            triggerTurn: true, direction: "up",
             metadata: readMailboxMetadata(createMailboxMetadataRecord("inter_agent_communication", [])),
           });
+          if (isMailboxSendAccepted(delivery)) requestParentFollowupTurn({ parent: session, live });
         } catch { /* The durable attempt receipts remain the source of truth. */ }
       };
       void runChildRoutingFallback<AgentThread>({

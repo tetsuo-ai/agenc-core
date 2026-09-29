@@ -1654,7 +1654,7 @@ const followupTurnStateByParent = new WeakMap<Session, ParentFollowupState>();
 const PARENT_FOLLOWUP_COALESCE_MS = 200;
 const PARENT_FOLLOWUP_RETRY_MAX_MS = 5_000;
 
-function requestParentFollowupTurn(params: {
+export function requestParentFollowupTurn(params: {
   readonly live: LiveAgent;
   readonly parent: Session;
 }): void {
