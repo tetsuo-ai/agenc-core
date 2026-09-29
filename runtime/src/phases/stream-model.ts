@@ -183,6 +183,8 @@ import type {
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 
 export interface StreamModelRequestContract {
+  /** Frozen Light effort decision; retries reuse the same option. */
+  readonly lightReasoningEffort?: ReasoningEffort;
   /** Internal managed transport UUID, stable for every retry of this snapshot. */
   readonly managedRequestId?: string;
   readonly input: ReadonlyArray<LLMMessage>;
@@ -388,7 +390,7 @@ export function buildProviderOptions(
         : {}),
     toolRouting: { allowedToolNames },
     reasoningEffort: resolveSessionReasoningEffort(
-      ctx.reasoningEffort,
+      request.lightReasoningEffort ?? ctx.reasoningEffort,
       ctx.modelInfo.supportedReasoningLevels,
       {
         provider: session.services.provider.name,
