@@ -1,0 +1,16 @@
+{
+  "time": "2026-09-29T18:01:53.424439+00:00",
+  "status": "upstream_unavailable",
+  "attempts": 269,
+  "cap": 600,
+  "main_completed_new": 27,
+  "main_reused": 2,
+  "main_planned": 48,
+  "unstarted": 19,
+  "replay_control": "not_started_upstream_unavailable",
+  "reason": "Repeated upstream 503 responses on both agents, with transport timeouts between successful responses. Three cooldown resumes preserved finished cells. Owner proxy unchanged.",
+  "terminated_owned_pids": [
+    36206,
+    46138
+  ]
+}

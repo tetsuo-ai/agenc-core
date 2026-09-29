@@ -177,6 +177,8 @@ class PackagingTests(unittest.TestCase):
     def test_evidence_export_keeps_failures_and_strips_private_content(self):
         runs=self.root/'runs';run=runs/'baseline-fixture-pi-r1';run.mkdir(parents=True)
         cancelled=runs/'candidate-fixture-light-r1';cancelled.mkdir()
+        misplaced=runs/'misplaced-output/repo';misplaced.mkdir(parents=True)
+        (misplaced/'source.py').write_text('PRIVATE_SENTINEL')
         (cancelled/'CANCELLED-BEFORE-LAUNCH.json').write_text('{"private_note":"PRIVATE_SENTINEL"}')
         result={'id':run.name,'phase':'baseline','model':'deepseek-flash','pass':False,'check_pass':False,'cost_usd':.5,'private_path':str(self.root)}
         (run/'result.json').write_text(json.dumps(result))
@@ -193,6 +195,7 @@ class PackagingTests(unittest.TestCase):
         self.assertFalse(selected['pass']);self.assertEqual(selected['cost_usd'],.5)
         self.assertEqual(json.loads((out/'all-call-accounting.json').read_text())['calls'][0]['http_status'],503)
         self.assertEqual(json.loads((out/'all-attempts.json').read_text())['attempts'][1]['status'],'cancelled_before_launch')
+        self.assertEqual(json.loads((out/'all-attempts.json').read_text())['non_run_directories'],['misplaced-output'])
         legacy=json.loads((out/'all-call-accounting.json').read_text())['calls'][1]
         self.assertIsNone(legacy['cost_usd']);self.assertEqual(legacy['reported_cost_usd'],0)
         self.assertEqual(legacy['cost_basis'],'subscription-unpriced')

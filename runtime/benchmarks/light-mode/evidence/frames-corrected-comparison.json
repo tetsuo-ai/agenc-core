@@ -1,0 +1,82 @@
+{
+  "baseline": {
+    "file": "light-ultra-main-core-v2.log",
+    "header": "ref=main sha=1370385d69e3c52939f82890f386df5160bccc82 folders=tests start=2026-09-29T07:55:38Z",
+    "failures": [
+      "tests/benchmarks/fuzzy-search-benchmark.contract.test.ts > D2 fuzzy benchmark contract > runs the quick matcher and persistent-index workers through the public script",
+      "tests/browser/manager-navigation-failure.test.ts > project-scoped browser profiles > accepts an agencHome named through a symlinked tmp path",
+      "tests/eval/agent-eval-suite.test.ts > agent eval suite (mock executor) > full suite passes with the scripted solutions",
+      "tests/fnd/benchmark-baselines.contract.test.ts > FND benchmark baseline contract > binds every measured point to its generated fixture and production source",
+      "tests/fnd/benchmark-baselines.contract.test.ts > FND benchmark baseline contract > pins generated baseline artifacts to LF on every checkout",
+      "tests/fnd/red-probe-runner.contract.test.ts > red-probe discovery wiring > keeps both required JSON control files visible to Git",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > fails closed when the Docker boundary platform is too old or lacks seccomp",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > ignores ambient Git repository overrides when resolving its readonly metadata mount",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > live discovery is an explicit allowlist of external-I/O tests",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > maps the container UID to an isolated writable account home",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > pins the Docker seccomp allowlist by reviewed content hash",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > rejects FIFO files in host bind trees",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > rejects host bind trees containing IPC broker files",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > resolves ripgrep from the pinned platform package without loading its facade",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > runs test-support typechecking and red probes inside the authoritative boundary",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > streams attached test output without daemon-side Docker log persistence",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > uses the exact release-toolchain Node image for the hermetic suite",
+      "tests/packaging/reproducible-build.test.ts > reproducible install and release contract > release-sensitive text inputs check out with canonical LF endings",
+      "tests/permissions/donor-stack-import-boundary.test.ts > utils/permissions compatibility import boundary > gains no new importers (the donor stack may only shrink)",
+      "tests/prompts/agenc-md.test.ts > agenc-md (T10-B tiered + @include) > EACCES mid-walk: parent dir becomes unreadable \u2192 fail-closed (not_found)",
+      "tests/prompts/agenc-md.test.ts > agenc-md (T10-B tiered + @include) > read_error marker emitted when file is stat-able but not readable",
+      "tests/routines/scheduled-session-mode.e2e.test.ts > scheduled routines run with the mode of the session that created them > confines a Bypass routine's shell to its workspace: no session temp root, TMPDIR in a scratch folder there",
+      "tests/runtime-session.compact-contract.test.ts > runtime session compact contract > compact worktree does not edit durable memory implementation files",
+      "tests/session/runtime-options.test.ts > agent runtime options > rejects a plugin root that is not readable",
+      "tests/session/runtime-options.test.ts > agent runtime options > rejects a temp root that is not writable",
+      "tests/session/session-fd-leaks.test.ts > session descriptor ownership > returns to baseline as daemon discovery visits ended projects",
+      "tests/state/recovery-mutations.test.ts > E1a recovery mutation adapter > defers permission-denied recovery storage with zero projection on POSIX"
+    ],
+    "summary": [
+      "Test Files  14 failed | 2673 passed | 1 skipped (2688)",
+      "Tests  27 failed | 31236 passed | 11 skipped (31274)",
+      "Duration  2118.12s (transform 79.31s, setup 363.59s, import 1173.48s, tests 2341.00s, environment 141ms)",
+      "exit=1 end=2026-09-29T08:30:59Z"
+    ]
+  },
+  "candidate": {
+    "file": "light-ultra-frames-corrected-full.log",
+    "header": "ref=6c4c68431 sha=6c4c68431a1f1e388a58dac503706b77ef9ef524 folders=tests start=2026-09-29T17:07:35Z",
+    "failures": [
+      "tests/benchmarks/fuzzy-search-benchmark.contract.test.ts > D2 fuzzy benchmark contract > runs the quick matcher and persistent-index workers through the public script",
+      "tests/browser/manager-navigation-failure.test.ts > project-scoped browser profiles > accepts an agencHome named through a symlinked tmp path",
+      "tests/eval/agent-eval-suite.test.ts > agent eval suite (mock executor) > full suite passes with the scripted solutions",
+      "tests/fnd/benchmark-baselines.contract.test.ts > FND benchmark baseline contract > binds every measured point to its generated fixture and production source",
+      "tests/fnd/benchmark-baselines.contract.test.ts > FND benchmark baseline contract > pins generated baseline artifacts to LF on every checkout",
+      "tests/fnd/red-probe-runner.contract.test.ts > red-probe discovery wiring > keeps both required JSON control files visible to Git",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > fails closed when the Docker boundary platform is too old or lacks seccomp",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > ignores ambient Git repository overrides when resolving its readonly metadata mount",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > live discovery is an explicit allowlist of external-I/O tests",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > maps the container UID to an isolated writable account home",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > pins the Docker seccomp allowlist by reviewed content hash",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > rejects FIFO files in host bind trees",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > rejects host bind trees containing IPC broker files",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > resolves ripgrep from the pinned platform package without loading its facade",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > runs test-support typechecking and red probes inside the authoritative boundary",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > streams attached test output without daemon-side Docker log persistence",
+      "tests/hermetic-test-discovery.test.ts > hermetic test discovery > uses the exact release-toolchain Node image for the hermetic suite",
+      "tests/packaging/reproducible-build.test.ts > reproducible install and release contract > release-sensitive text inputs check out with canonical LF endings",
+      "tests/permissions/donor-stack-import-boundary.test.ts > utils/permissions compatibility import boundary > gains no new importers (the donor stack may only shrink)",
+      "tests/prompts/agenc-md.test.ts > agenc-md (T10-B tiered + @include) > EACCES mid-walk: parent dir becomes unreadable \u2192 fail-closed (not_found)",
+      "tests/prompts/agenc-md.test.ts > agenc-md (T10-B tiered + @include) > read_error marker emitted when file is stat-able but not readable",
+      "tests/routines/scheduled-session-mode.e2e.test.ts > scheduled routines run with the mode of the session that created them > confines a Bypass routine's shell to its workspace: no session temp root, TMPDIR in a scratch folder there",
+      "tests/runtime-session.compact-contract.test.ts > runtime session compact contract > compact worktree does not edit durable memory implementation files",
+      "tests/session/runtime-options.test.ts > agent runtime options > rejects a plugin root that is not readable",
+      "tests/session/runtime-options.test.ts > agent runtime options > rejects a temp root that is not writable",
+      "tests/session/session-fd-leaks.test.ts > session descriptor ownership > returns to baseline as daemon discovery visits ended projects",
+      "tests/state/recovery-mutations.test.ts > E1a recovery mutation adapter > defers permission-denied recovery storage with zero projection on POSIX"
+    ],
+    "summary": [
+      "Test Files  14 failed | 2678 passed | 1 skipped (2693)",
+      "Tests  27 failed | 31316 passed | 11 skipped (31354)",
+      "Duration  1506.52s (transform 39.88s, setup 260.78s, import 829.68s, tests 1651.56s, environment 115ms)",
+      "exit=1 end=2026-09-29T17:32:43Z"
+    ]
+  },
+  "new_failures": [],
+  "baseline_failures_absent": []
+}

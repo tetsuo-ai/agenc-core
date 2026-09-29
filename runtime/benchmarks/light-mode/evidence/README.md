@@ -1,24 +1,37 @@
-# Evidence publication
+# Light study evidence
 
-Final study measurements are still in progress. This directory intentionally contains no selected results yet.
+The simultaneous completion, time and token target is **not met**. Light stays default-off and experimental. Nothing was merged, released or deployed.
 
-The summary reports both complete three-way acceptance and `owner_target_accepted` for Pi versus Light. Missing normal-mode usage blocks complete three-way evidence but does not change a fully observed Pi/Light comparison. Recorded timeouts and other failed attempts remain in pass, token, cost and wall-time denominators. Every Light task completed by Pi must pass all Light repeats; each model must also meet the token, median and p90 gates. Unknown Pi/Light usage, unmatched sampling and other evidence defects still block the owner gate.
+The complete DeepSeek comparison uses 12 frozen tasks and two repeats per agent/model. Pi and normal mode reuse the original baseline; final Light production source is `11e51dcc132dac8f413b59cc745135592f90dfed`. Test-only tip `6c4c68431` has the same production behavior. All earlier candidates, failures and interrupted calls remain recorded.
 
-`test-results.json` records the completed Core/Desktop regression comparisons and SHA256 hashes of all retained study-labelled test logs. The final Core full run has four extra failed observations; matching-main or passing isolated checks support no reproducible Light-specific regression, not a green full suite. Desktop has zero new failures. Earlier interrupted and failed runs remain in the hash inventory and are not silently substituted for acceptance evidence.
+| Model | Pi effective | Light effective | Pi / Light tokens per task | Pi / Light median seconds | Pi / Light p90 seconds |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| deepseek-flash | 24/24 | 23/24 | 185724 / 159836 | 43.14 / 50.98 | 91.00 / 70.70 |
+| deepseek-v4-pro | 23/24 | 20/24 | 254787 / 356101 | 97.65 / 129.85 | 198.32 / 300.31 |
 
-`legacy-harness/*.py.txt` preserves the exact historical local runner source hashes for auditing, not as recommended launchers. The original baseline source SHA256 is `9f8287611438941866cdaee3728d30c54ca985b395cf0858323cf718a34d89ad`. The later local runner fixes outcome/usage accounting and rejects incomplete-attempt reuse; its DeepSeek request settings, agent commands and task protocol are unchanged. Completed results are never replaced. Use the maintained portable runner at the package root for new studies. The accounting reconciliation report identifies the immutable original ledger and every reserve-price adjustment.
+Two Light task 06 cells failed before a model call because the benchmark directory produced an invalid UNIX socket path. Three other Pro cells timed out despite passing artifacts. All remain strict failures. Excluding task 06 from both cohorts still fails the target.
 
-After all selected runs and accounting files stop changing, export allowlisted metrics with `export_evidence.py` on Linux:
+Luna used low reasoning, the same tasks and graders, and one concurrent run. It stopped at 269/600 whole-study attempts after repeated upstream 503 responses on both agents, despite three cooldown resumes. There are 29/48 main observations, including two reused Pi cells, and 19 unstarted cells. Missing usage remains unknown. The replay-on control was not started; no causal benefit from disabling replay is claimed. The owner proxy was never restarted or reconfigured.
 
-```sh
-python3 "$HARNESS/export_evidence.py" --runs "$BENCH_ROOT/runs" \
-  --ledger "$BENCH_ROOT/spend-deepseek.jsonl" \
-  --ledger "$BENCH_ROOT/spend-openai.jsonl" \
-  --phases baseline,candidate-FINAL --out "$BENCH_ROOT/public-evidence"
-```
+## Published artifacts
 
-Supply only ledgers that exist. An older study may use different ledger filenames. The export keeps selected per-run metrics, all attempts including failures/incomplete runs, all supplied per-call spend accounting, and SHA256 hashes of retained raw artifacts. `CANCELLED-BEFORE-LAUNCH.json` marks a cancellation separately; it is not a failed coding attempt or a provider request. The export does not publish request bodies, responses, logs, homes, source trees, provider error bodies, credentials or absolute paths. Historical raw pass fields are retained beside conservative effective outcomes.
+- `expanded-comparison.json`: main aggregate and per-task results, exact run identities, acceptance gates and complete-study spend.
+- `all-recorded-results.json`, `all-attempts.json`, `all-call-accounting.json`: allowlisted observations and charges. A misplaced model output directory is recorded separately rather than counted as a benchmark attempt.
+- `raw-artifact-sha256.json`: hashes linking metrics to retained private captures. Request bodies, provider responses, logs, homes and credentials are not published.
+- `decomposition.json`: per-run fixed prefix, history residual, output/reasoning and timing attribution. Raw prefix estimates are labeled; missing instrumentation remains null.
+- `expanded-first-heads.json`: system/schema sizes, hashes and tool names, without Pi prompt or schema prose.
+- `iterations.json`: every measured candidate cohort. Later brief, relative-path and required-actions screens remain unselected.
+- `luna-mechanisms.json`, `luna-stop.json`: provider-attributed prefix diagnostics and the availability stop.
+- `similarity-authored-source.json`: clean-room overlap counts and source hashes. Frozen third-party task inputs are separately verified clean.
 
-Review the exported files and scan them before copying them here. Add the final summary table, immutable study configuration, phase selection, source revisions, price/date and limitations. The raw hash inventory links each exported run to private retained artifacts; it does not make those raw sessions public. Task count, repeat count and missing/incomplete evidence remain visible.
+Core main: 31,236 passed, 27 failed, 11 skipped. Corrected frame candidate: 31,316/27/11 with the same failure identities and zero new failures. Desktop main: 5,237/1/32; candidate: 5,238/1/32 with the same existing failure. Source/test-support and Desktop typechecks pass. The earlier `test-results.json` is retained as a historical snapshot; `frames-corrected-comparison.json` records the later full validation.
 
-Historical Luna ledger records sometimes stored a zero placeholder. Identifiable subscription/Luna records export `cost_usd: null` and `cost_basis: subscription-unpriced`; the old numeric value is retained only as `reported_cost_usd`. The raw ledger is never rewritten, and a zero budget charge is not presented as a priced provider charge.
+## Interpretation and reproduction
+
+Effective completion requires the agent to finish and the grader to pass. Timeouts remain failures even if artifacts pass. Unknown usage is not zero. The strict gate requires no task completion loss, fewer tokens, and lower median and p90 time on every required model.
+
+`legacy-harness/*.py.txt` preserves historical executed runner source for audit, not as a recommended launcher. Existing result identities are never rerun or overwritten. The maintained runner records source/task/configuration hashes and checks provider limits before admission. The complete ledger includes pilots, rejected calls and missing-usage reserves.
+
+DeepSeek tool requests require prior reasoning content, so it is retained. Optional OpenAI reasoning replay was already off and is explicitly disabled in the main Luna runs. The exact Luna tokenizer is unavailable; raw diagnostics use a labeled reference estimate. Encrypted reasoning is counted as bytes, not plaintext tokens. The owner's proxy strips the requested output cap for both agents.
+
+This process-based harness is not an adversarial filesystem sandbox. Shared scratch space and recorded fixture-path exposure limit the strength of its quality evidence. Shared host/provider load, serial candidate cohorts and small repeat counts also limit causal attribution. A lexical overlap screen does not prove semantic independence.

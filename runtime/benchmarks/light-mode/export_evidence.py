@@ -50,11 +50,17 @@ def export(runs,ledgers,phases,destination):
         return data
     directories=sorted(p for p in runs.iterdir() if p.is_dir())
     filenames={directory:sorted(p.name for p in directory.iterdir() if p.is_file()) for directory in directories}
-    results=[];attempts=[];inventory=[]
+    results=[];attempts=[];inventory=[];non_run_directories=[]
     for directory in directories:
         identity=safe_value(directory.name)
         result_path=directory/'result.json'
         record=json.loads(read(result_path)) if result_path.exists() else None
+        if record is None and not any(name in ('setup.log','CANCELLED-BEFORE-LAUNCH.json') or
+                re.fullmatch(r'(?:wire|usage)-\d+\.json',name) for name in filenames[directory]):
+            # A model can create a misplaced output folder beside its workspace.
+            # Retain its identity without inventing another benchmark attempt.
+            non_run_directories.append(identity)
+            continue
         if record is not None:
             public=fields(record,RUN_FIELDS)
             preserve_unpriced_cost(record,public)
@@ -82,7 +88,7 @@ def export(runs,ledgers,phases,destination):
     if any(names!=sorted(p.name for p in directory.iterdir() if p.is_file()) for directory,names in filenames.items()):raise RuntimeError('Run artifacts changed during export')
     if any((p.stat().st_size,p.stat().st_mtime_ns)!=stamp for p,stamp in watched.items()):raise RuntimeError('Evidence changed during export; wait for runs to stop')
     output={'selected-results.json':{'schema_version':1,'selected_phases':phases,'runs':results},
-            'all-attempts.json':{'schema_version':1,'attempts':attempts},
+            'all-attempts.json':{'schema_version':1,'attempts':attempts,'non_run_directories':non_run_directories},
             'all-call-accounting.json':{'schema_version':1,'calls':accounting},
             'raw-artifact-sha256.json':{'schema_version':1,'artifacts':inventory}}
     serialized={name:json.dumps(value,indent=2,allow_nan=False)+'\n' for name,value in output.items()}

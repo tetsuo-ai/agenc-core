@@ -1,0 +1,12 @@
+[
+  {
+    "path": "bench/sources/itsdangerous",
+    "revision": "672971d66a2ef9f85151e53283113f33d642dabd",
+    "clean": true
+  },
+  {
+    "path": "bench/sources/more-itertools",
+    "revision": "790bb0bb2c03e7a07282e5f16f4b1fde35b8fcf5",
+    "clean": true
+  }
+]
