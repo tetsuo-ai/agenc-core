@@ -27,7 +27,7 @@ import type {
 import { deriveAllStageProjections, readWorkflowStepEvidence } from "./steps.js";
 import type { ProviderWait } from "../../recovery/provider-wait.js";
 import type { PermissionMode } from "../../permissions/types.js";
-import type { RunWorkflowControlState } from "../protocol/index.js";
+import type { RunWorkflowControlState, RunWorkflowRuntimeFailure } from "../protocol/index.js";
 import { workflowControlState } from "./control-state.js";
 
 export interface WorkflowStatusStep {
@@ -43,6 +43,8 @@ export interface WorkflowStatusStep {
 export interface WorkflowRunStatus {
   readonly runId: string;
   readonly control: RunWorkflowControlState;
+  /** Volatile execution health; never substitutes for the durable terminal. */
+  readonly runtimeFailure?: RunWorkflowRuntimeFailure;
   readonly requestedPermissionMode?: WorkflowSpec["permissionMode"];
   /** Only a live, owned Session can supply this field; durable projection cannot. */
   readonly effectivePermissionMode?: PermissionMode;
