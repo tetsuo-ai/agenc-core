@@ -240,6 +240,7 @@ export function sessionConfigurationFromAgenCConfig(params: {
       : [];
   const configured: SessionConfiguration = {
     cwd: params.workspaceRoot,
+    lightReasoningPolicy: params.config.light_reasoning_policy ?? "fixed",
     approvalPolicy: { value: approval },
     sandboxPolicy: { value: sandbox },
     fileSystemSandboxPolicy: {

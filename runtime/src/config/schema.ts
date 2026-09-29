@@ -83,6 +83,9 @@ export type ReasoningEffort =
   | "xhigh"
   | "max";
 
+/** Light preserves configured effort unless adaptive recovery is opted into. */
+export type LightReasoningPolicy = "fixed" | "adaptive";
+
 export type ReasoningSummary = "auto" | "concise" | "detailed" | "none";
 
 export type Personality = "none" | "friendly" | "pragmatic";
@@ -184,6 +187,7 @@ export interface ProfileOverride {
   readonly approval_policy?: ApprovalPolicy;
   readonly sandbox_mode?: SandboxMode;
   readonly reasoning_effort?: ReasoningEffort;
+  readonly light_reasoning_policy?: LightReasoningPolicy;
   readonly reasoning_summary?: ReasoningSummary;
   readonly approvals_reviewer?: ApprovalsReviewer;
   readonly model_verbosity?: ModelVerbosity;
@@ -857,6 +861,8 @@ export interface AgenCConfig {
   readonly sandbox?: SandboxConfig;
   readonly shell_environment_policy?: ShellEnvironmentPolicy;
   readonly reasoning_effort?: ReasoningEffort;
+  /** Adaptive recovery may raise low to medium after a failed validation. */
+  readonly light_reasoning_policy?: LightReasoningPolicy;
   readonly reasoning_summary?: ReasoningSummary;
   readonly approvals_reviewer?: ApprovalsReviewer;
   readonly model_verbosity?: ModelVerbosity;
@@ -1010,6 +1016,7 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
   "sandbox",
   "shell_environment_policy",
   "reasoning_effort",
+  "light_reasoning_policy",
   "reasoning_summary",
   "approvals_reviewer",
   "model_verbosity",
@@ -1134,6 +1141,7 @@ export function defaultConfig(): AgenCConfig {
     approval_policy: "on-request" as ApprovalPolicy,
     sandbox_mode: "workspace-write" as SandboxMode,
     reasoning_effort: "medium" as ReasoningEffort,
+    light_reasoning_policy: "fixed" as LightReasoningPolicy,
     approvals_reviewer: "user" as ApprovalsReviewer,
     agent_max_depth: 1,
     auth: Object.freeze({
@@ -3465,6 +3473,7 @@ export const PROFILE_OVERRIDE_KEYS = Object.freeze([
   "approval_policy",
   "sandbox_mode",
   "reasoning_effort",
+  "light_reasoning_policy",
   "reasoning_summary",
   "approvals_reviewer",
   "model_verbosity",
@@ -3544,6 +3553,12 @@ export function validateProfilesConfig(
       profile.reasoning_effort,
       `${name}.reasoning_effort`,
       ["minimal", "low", "medium", "high", "xhigh", "max", "none"],
+      makeError,
+    );
+    validateEnumValue(
+      profile.light_reasoning_policy,
+      `${name}.light_reasoning_policy`,
+      ["fixed", "adaptive"],
       makeError,
     );
     validateEnumValue(

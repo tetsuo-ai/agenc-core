@@ -1,4 +1,5 @@
 import type { ReasoningEffort } from "./turn-context.js";
+import type { LightReasoningPolicy } from "../config/schema.js";
 import type { CompletedToolResultRecord } from "./turn-state.js";
 import type { LLMMessage } from "../llm/types.js";
 
@@ -28,13 +29,13 @@ function failedCheck(result: CompletedToolResultRecord): boolean {
       && /(?:AssertionError|SyntaxError|IndentationError):/.test(result.content);
 }
 
-/** The policy changes a request option, never the cached prompt or history. */
+/** Only explicit adaptive policy may change effort; fixed/absent preserve it. */
 export function lightReasoningEffort(
-  enabled: boolean,
+  policy: LightReasoningPolicy | undefined,
   requested: ReasoningEffort | undefined,
   supported: ReadonlyArray<ReasoningEffort> | undefined,
   results: ReadonlyArray<CompletedToolResultRecord>,
 ): ReasoningEffort | undefined {
-  if (!enabled || requested !== "low" || !supported?.includes("medium")) return undefined;
+  if (policy !== "adaptive" || requested !== "low" || !supported?.includes("medium")) return undefined;
   return results.some(failedCheck) ? "medium" : "low";
 }

@@ -26,6 +26,7 @@ Boolean-like values that go through `applyEnvOverrides` treat
 | `AGENC_MODEL` | Session model (`grok-4.6` when unset and config is fresh) |
 | `AGENC_PROVIDER` | Canonical provider slug. Retired selector spellings are rejected; use `grok` and `openai-compatible` directly |
 | `AGENC_EFFORT_LEVEL` | Reasoning effort captured into canonical session config: `minimal`, `low`, `medium`, `high`, `xhigh`, or `none`; other values are rejected |
+| `AGENC_LIGHT_REASONING_POLICY` | `fixed` or `adaptive`, overriding `light_reasoning_policy` including the selected profile. Default `fixed` preserves configured effort; opt-in `adaptive` allows Light's bounded low-to-medium recovery after failed validation. Captured and forwarded per daemon client; invalid values are rejected. |
 | `AGENC_PROFILE` | Named config profile (`--profile`) |
 | `AGENC_AUTONOMOUS` | Truthy enables autonomous tick mode |
 | `AGENC_MAX_OUTPUT_TOKENS` | Positive integer output-token budget |

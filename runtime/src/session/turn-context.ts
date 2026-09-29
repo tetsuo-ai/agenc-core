@@ -33,7 +33,7 @@ import type {
 } from "../sandbox/network-policy.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
 import type { RunInstructionEvidence } from "../prompts/instruction-evidence.js";
-import type { CompactionConfig, CompletionGateConfig, DurableTurnsConfig, GoalConfig } from "../config/schema.js";
+import type { CompactionConfig, CompletionGateConfig, DurableTurnsConfig, GoalConfig, LightReasoningPolicy } from "../config/schema.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Forward-dep structural types. Keep these narrow so TurnContext can carry
@@ -361,6 +361,7 @@ export interface SessionConfiguration {
   readonly personality?: Personality;
   readonly modelVerbosity?: "low" | "medium" | "high";
   readonly modelReasoningSummary?: ReasoningSummary;
+  readonly lightReasoningPolicy?: LightReasoningPolicy;
   readonly serviceTier?: string;
   readonly approvalsReviewer?: string;
   readonly developerInstructions?: string;
@@ -467,6 +468,7 @@ export interface Config {
   readonly modelVerbosity?: "low" | "medium" | "high";
   readonly modelReasoningEffort?: ReasoningEffort;
   readonly modelReasoningSummary?: ReasoningSummary;
+  readonly lightReasoningPolicy?: LightReasoningPolicy;
   readonly serviceTier?: string;
   readonly personality?: Personality;
   readonly autonomousMode?: boolean;
@@ -1398,6 +1400,8 @@ export function buildPerTurnConfig(
     session.sessionConfiguration.collaborationMode.reasoningEffort;
   mutableCloned.modelReasoningSummary =
     session.sessionConfiguration.modelReasoningSummary;
+  mutableCloned.lightReasoningPolicy =
+    session.sessionConfiguration.lightReasoningPolicy ?? "fixed";
   mutableCloned.serviceTier = session.sessionConfiguration.serviceTier;
   mutableCloned.personality = session.sessionConfiguration.personality;
   mutableCloned.approvalsReviewer =

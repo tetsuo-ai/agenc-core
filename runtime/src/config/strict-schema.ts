@@ -593,6 +593,7 @@ const ROOT_FIELD_VALIDATORS = {
   sandbox: delegatedObjectValidator("sandbox"),
   shell_environment_policy: validateShellEnvironmentPolicy,
   reasoning_effort: enumValidator("reasoning_effort", ["minimal", "low", "medium", "high", "xhigh", "max", "none"]),
+  light_reasoning_policy: enumValidator("light_reasoning_policy", ["fixed", "adaptive"]),
   reasoning_summary: enumValidator("reasoning_summary", ["auto", "concise", "detailed", "none"]),
   approvals_reviewer: enumValidator("approvals_reviewer", ["user", "auto_review"]),
   model_verbosity: enumValidator("model_verbosity", ["low", "medium", "high"]),
