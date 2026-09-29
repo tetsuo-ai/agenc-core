@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { lightReasoningEffort } from "../../src/session/light-reasoning.js";
+import { lastToolBatchResults, lightReasoningEffort } from "../../src/session/light-reasoning.js";
 import type { CompletedToolResultRecord } from "../../src/session/turn-state.js";
 
 const levels = ["low", "medium", "high"] as const;
@@ -30,11 +30,28 @@ test("normal sessions, opt-out and unknown model contracts retain their setting"
   expect(lightReasoningEffort(true, "low", ["low", "medium"], [result("npm test", 1)])).toBe("medium");
 });
 
-test("two failed checks escalate a low start to high without changing an explicit high setting", () => {
+test("multiple failures get a bounded recovery step without changing an explicit high setting", () => {
   const failures = [result("npm test", 1), result("npm test", 1)];
-  expect(lightReasoningEffort(true, "low", levels, failures)).toBe("high");
+  expect(lightReasoningEffort(true, "low", levels, failures)).toBe("medium");
   expect(lightReasoningEffort(true, "low", ["low", "medium"], failures)).toBe("medium");
   expect(lightReasoningEffort(true, "high", levels, failures)).toBeUndefined();
+});
+
+test("old failures stop raising effort after a later tool batch; parallel failures still count", () => {
+  const old = { ...result("npm test", 1), callId: "old" };
+  const pass = { ...result("npm test", 0), callId: "pass" };
+  const failure = { ...result("npm run typecheck", 2), callId: "failure" };
+  const tool = (id: string) => ({ id, name: "exec_command", arguments: "{}" });
+  const recent = lastToolBatchResults([
+    { role: "assistant", content: "", toolCalls: [tool("old")] },
+    { role: "assistant", content: "", toolCalls: [tool("pass")] },
+  ], [old, pass]);
+  expect(lightReasoningEffort(true, "low", levels, recent)).toBe("low");
+  const batch = lastToolBatchResults([
+    { role: "assistant", content: "", toolCalls: [tool("failure"), tool("pass")] },
+  ], [old, failure, pass]);
+  expect(lightReasoningEffort(true, "low", levels, batch)).toBe("medium");
+  expect(lastToolBatchResults([{ role: "user", content: "npm test failed" }], [old])).toEqual([]);
 });
 
 test("syntax checks and inline Python assertions are validation failures too", () => {

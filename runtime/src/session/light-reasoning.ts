@@ -1,5 +1,16 @@
 import type { ReasoningEffort } from "./turn-context.js";
 import type { CompletedToolResultRecord } from "./turn-state.js";
+import type { LLMMessage } from "../llm/types.js";
+
+/** Recovery effort belongs to the latest tool batch, not the rest of a turn. */
+export function lastToolBatchResults(
+  messages: ReadonlyArray<LLMMessage>,
+  results: ReadonlyArray<CompletedToolResultRecord>,
+): ReadonlyArray<CompletedToolResultRecord> {
+  const assistant = messages.findLast(message => message.role === "assistant");
+  const ids = new Set(assistant?.toolCalls?.map(call => call.id) ?? []);
+  return results.filter(result => ids.has(result.callId));
+}
 
 /** Only completed validation failures justify spending more reasoning. */
 function failedCheck(result: CompletedToolResultRecord): boolean {
@@ -25,7 +36,5 @@ export function lightReasoningEffort(
   results: ReadonlyArray<CompletedToolResultRecord>,
 ): ReasoningEffort | undefined {
   if (!enabled || requested !== "low" || !supported?.includes("medium")) return undefined;
-  const failures = results.filter(failedCheck).length;
-  if (failures >= 2 && supported.includes("high")) return "high";
-  return failures > 0 ? "medium" : "low";
+  return results.some(failedCheck) ? "medium" : "low";
 }
