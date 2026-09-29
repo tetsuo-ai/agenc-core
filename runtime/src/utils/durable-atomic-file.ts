@@ -1,3 +1,4 @@
+import { runtimeSpan } from "../diagnostics/runtime-timing.js";
 import {
   closeSync,
   fsyncSync,
@@ -63,6 +64,8 @@ export function writeDurableAtomicFileSync(
   mode = 0o600,
   operations: DurableAtomicSyncOperations = DEFAULT_SYNC_OPERATIONS,
 ): void {
+  const finishRuntimeSpan = runtimeSpan("persistence.atomic_sync");
+  try {
   operations.mkdir(dirname(path));
   let handle: unknown;
   let openHandle = false;
@@ -103,6 +106,8 @@ export function writeDurableAtomicFileSync(
     }
   }
   throwDurableAtomicFileErrors(hasPrimaryError, primaryError, cleanupErrors);
+
+  } finally { finishRuntimeSpan(); }
 }
 
 export async function writeDurableAtomicFile(
@@ -112,6 +117,8 @@ export async function writeDurableAtomicFile(
   mode = 0o600,
   operations: DurableAtomicAsyncOperations = DEFAULT_ASYNC_OPERATIONS,
 ): Promise<void> {
+  const finishRuntimeSpan = runtimeSpan("persistence.atomic_async");
+  try {
   await operations.mkdir(dirname(path));
   let handle: unknown;
   let openHandle = false;
@@ -150,6 +157,8 @@ export async function writeDurableAtomicFile(
     }
   }
   throwDurableAtomicFileErrors(hasPrimaryError, primaryError, cleanupErrors);
+
+  } finally { finishRuntimeSpan(); }
 }
 
 function throwDurableAtomicFileErrors(

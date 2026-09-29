@@ -1,3 +1,4 @@
+import { runtimeSpan } from "../diagnostics/runtime-timing.js";
 /**
  * AgenC daemon autostart orchestration.
  *
@@ -225,7 +226,11 @@ export async function resolveAgenCDaemonAutostartConfig(
 export async function ensureAgenCDaemonAutostart(
   options: AgenCDaemonAutostartOptions = {},
 ): Promise<AgenCDaemonAutostartResult> {
-  return ensureAgenCDaemonAutostartCycle(options, 0);
+  const finishRuntimeSpan = runtimeSpan("lifecycle.daemon_start");
+  try {
+  return await ensureAgenCDaemonAutostartCycle(options, 0);
+
+  } finally { finishRuntimeSpan(); }
 }
 
 /**
