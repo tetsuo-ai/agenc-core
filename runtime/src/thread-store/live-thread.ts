@@ -19,6 +19,7 @@ import {
  * accepted for signature stability but ignored by the default store.
  */
 export interface CreateLiveThreadParams {
+  readonly coalesceDerivedIndex?: boolean;
   readonly threadId: ThreadId;
   readonly forkedFromId?: ThreadId;
   /**
@@ -47,6 +48,7 @@ export interface CreateLiveThreadParams {
  * `ResumeThreadParams`.
  */
 export interface ResumeLiveThreadParams {
+  readonly coalesceDerivedIndex?: boolean;
   readonly threadId: ThreadId;
   readonly rolloutPath?: string;
   readonly history?: ReadonlyArray<RolloutItem>;
@@ -222,6 +224,7 @@ export function createLiveThread(params: CreateLiveThreadParams): LiveThread {
     params.threadStore.createThread({
       threadId: params.threadId,
       rolloutStore: params.rolloutStore,
+      ...(params.coalesceDerivedIndex === true ? { coalesceDerivedIndex: true } : {}),
       ...(params.forkedFromId !== undefined
         ? { forkedFromId: params.forkedFromId }
         : {}),
@@ -260,6 +263,7 @@ export function resumeLiveThread(params: ResumeLiveThreadParams): LiveThread {
     params.threadStore.resumeThread({
       threadId: params.threadId,
       rolloutStore: params.rolloutStore,
+      ...(params.coalesceDerivedIndex === true ? { coalesceDerivedIndex: true } : {}),
       ...(params.rolloutPath !== undefined
         ? { rolloutPath: params.rolloutPath }
         : {}),

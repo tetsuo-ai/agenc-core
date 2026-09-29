@@ -984,6 +984,7 @@ export function buildBootstrapSessionServices(
       const liveThread = binding.resume
         ? resumeLiveThread({
             threadId: binding.session.conversationId,
+            ...(opts.runtimeOptions.lightMode === true ? { coalesceDerivedIndex: true } : {}),
             rolloutStore: binding.rolloutStore,
             rolloutPath: binding.rolloutStore.rolloutPath,
             includeArchived: true,
@@ -993,6 +994,7 @@ export function buildBootstrapSessionServices(
           })
         : createLiveThread({
             threadId: binding.session.conversationId,
+            ...(opts.runtimeOptions.lightMode === true ? { coalesceDerivedIndex: true } : {}),
             rolloutStore: binding.rolloutStore,
             threadStore: fileThreadStore,
             source: "cli_main",

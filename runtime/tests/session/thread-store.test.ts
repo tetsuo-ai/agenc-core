@@ -1290,3 +1290,43 @@ describe("FileThreadStore mirror keeps pace with live recorder flushes (#2028)",
     }
   });
 });
+
+
+describe("Light derived-index coalescing", () => {
+  it("keeps canonical writes durable and publishes one projection at an explicit barrier", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-light-index-"));
+    const rollout = openStore({ cwd, sessionId: "light-index" });
+    const store = new FileThreadStore({ agencHome, cwd });
+    const commits = vi.spyOn(StateThreadRepository.prototype, "commitRolloutProjection");
+    try {
+      store.createThread({ threadId: "light-index", rolloutStore: rollout, coalesceDerivedIndex: true });
+      commits.mockClear();
+      for (let index = 0; index < 3; index++) rollout.appendRollout(responseItem(`message-${index}`, `committed-${index}`), { durable: true });
+      expect(readFileSync(rollout.rolloutPath, "utf8")).toContain("committed-2");
+      expect(commits).not.toHaveBeenCalled();
+      store.flushThread("light-index");
+      expect(commits).toHaveBeenCalledTimes(1);
+      expect(store.loadHistory({ threadId: "light-index", includeArchived: false }).items.length).toBeGreaterThan(3);
+    } finally {
+      commits.mockRestore(); store.close(); rollout.close(); rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("drains a pending projection on shutdown without delaying canonical durability", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-light-index-close-"));
+    const rollout = openStore({ cwd, sessionId: "light-index-close" });
+    const store = new FileThreadStore({ agencHome, cwd });
+    const commits = vi.spyOn(StateThreadRepository.prototype, "commitRolloutProjection");
+    try {
+      store.createThread({ threadId: "light-index-close", rolloutStore: rollout, coalesceDerivedIndex: true });
+      commits.mockClear();
+      rollout.appendRollout(responseItem("committed", "durable"), { durable: true });
+      expect(commits).not.toHaveBeenCalled();
+      store.shutdownThread("light-index-close");
+      expect(commits).toHaveBeenCalledTimes(1);
+      expect(readFileSync(rollout.rolloutPath, "utf8")).toContain("durable");
+    } finally {
+      commits.mockRestore(); store.close(); rollout.close(); rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+});

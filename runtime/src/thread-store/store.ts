@@ -83,6 +83,8 @@ export type ThreadSource = string | Readonly<Record<string, unknown>>;
 
 /** Parameters for creating a new thread. */
 export interface CreateThreadParams {
+  /** Light only: coalesce the derived search/list index, never canonical writes. */
+  readonly coalesceDerivedIndex?: boolean;
   readonly threadId: ThreadId;
   readonly forkedFromId?: ThreadId;
   readonly source?: ThreadSource;
@@ -101,6 +103,7 @@ export interface CreateThreadParams {
 
 /** Parameters for resuming an existing thread. */
 export interface ResumeThreadParams {
+  readonly coalesceDerivedIndex?: boolean;
   readonly threadId: ThreadId;
   readonly rolloutPath?: string;
   readonly history?: ReadonlyArray<RolloutItem>;
@@ -372,6 +375,7 @@ export class FileThreadStore implements ThreadStore {
   private readonly stateDriver: StateSqliteDriver;
   private readonly threadIndex: StateThreadRepository;
   private readonly liveRecorders = new Map<ThreadId, RolloutStore>();
+  private readonly pendingIndexes = new Map<string, ReturnType<typeof setTimeout>>();
   private closed = false;
   /** One legacy sessions-dir import per store instance (see readRegistryUnlocked). */
   private legacyImportDone = false;
@@ -471,7 +475,7 @@ export class FileThreadStore implements ThreadStore {
       };
       registry.set(threadId, entry);
     });
-    this.bindLiveRecorder(threadId, params.rolloutStore);
+    this.bindLiveRecorder(threadId, params.rolloutStore, params.coalesceDerivedIndex === true);
   }
 
   resumeThread(params: ResumeThreadParams): void {
@@ -535,7 +539,7 @@ export class FileThreadStore implements ThreadStore {
       };
       registry.set(threadId, entry);
     });
-    this.bindLiveRecorder(threadId, params.rolloutStore);
+    this.bindLiveRecorder(threadId, params.rolloutStore, params.coalesceDerivedIndex === true);
   }
 
   appendItems(params: AppendThreadItemsParams): void {
@@ -552,12 +556,14 @@ export class FileThreadStore implements ThreadStore {
     this.assertOpen();
     const recorder = this.liveRecorderOrThrow(threadId);
     recorder.flushDurable();
+    this.indexRolloutFile(recorder.rolloutPath);
   }
 
   flushThread(threadId: ThreadId): void {
     this.assertOpen();
     const recorder = this.liveRecorderOrThrow(threadId);
     recorder.flushDurable();
+    this.indexRolloutFile(recorder.rolloutPath);
   }
 
   shutdownThread(threadId: ThreadId): void {
@@ -806,6 +812,7 @@ export class FileThreadStore implements ThreadStore {
 
   listThreads(params: ListThreadsParams): ThreadPage {
     this.assertOpen();
+    this.flushPendingIndexes();
     const pageSize = validatePageSize(params.pageSize);
     const scope = normalizeListScope(params);
     const cursor = parseThreadCursor(params.cursor, scope.hash);
@@ -1075,6 +1082,7 @@ export class FileThreadStore implements ThreadStore {
 
   close(): void {
     if (this.closed) return;
+    this.flushPendingIndexes();
     this.closed = true;
     for (const recorder of this.liveRecorders.values()) {
       recorder.setOnRolloutCommitted(undefined);
@@ -1328,6 +1336,11 @@ export class FileThreadStore implements ThreadStore {
   }
 
   private indexRolloutFile(rolloutPath: string): void {
+    const pending = this.pendingIndexes.get(rolloutPath);
+    if (pending !== undefined) {
+      clearTimeout(pending);
+      this.pendingIndexes.delete(rolloutPath);
+    }
     backfillRolloutFile({
       rolloutPath,
       threads: this.threadIndex,
@@ -1340,11 +1353,33 @@ export class FileThreadStore implements ThreadStore {
    * without this hook the mirror only updates on explicit store calls
    * (`appendItems`, metadata patches, path lookups).
    */
-  private bindLiveRecorder(threadId: ThreadId, rolloutStore: RolloutStore): void {
+  private flushPendingIndexes(): void {
+    for (const path of [...this.pendingIndexes.keys()]) this.indexRolloutFile(path);
+  }
+
+  private bindLiveRecorder(threadId: ThreadId, rolloutStore: RolloutStore, coalesce = false): void {
     rolloutStore.setOnRolloutCommitted((rolloutPath) => {
       if (this.closed) return;
       if (this.liveRecorders.get(threadId) !== rolloutStore) return;
-      this.indexRolloutFile(rolloutPath);
+      if (!coalesce) {
+        this.indexRolloutFile(rolloutPath);
+        return;
+      }
+      if (this.pendingIndexes.has(rolloutPath)) return;
+      const timer = setTimeout(() => {
+        this.pendingIndexes.delete(rolloutPath);
+        if (this.closed || this.liveRecorders.get(threadId) !== rolloutStore) return;
+        try {
+          this.indexRolloutFile(rolloutPath);
+        } catch {
+          // This is a rebuildable search/list projection. Canonical appends,
+          // admission decisions and effect receipts were already committed.
+          // Explicit reads/flushes repair it synchronously and surface errors.
+          console.warn("agenc: deferred Light thread index refresh failed");
+        }
+      }, 500);
+      timer.unref?.();
+      this.pendingIndexes.set(rolloutPath, timer);
     });
     this.liveRecorders.set(threadId, rolloutStore);
   }
@@ -1360,6 +1395,7 @@ export class FileThreadStore implements ThreadStore {
     rolloutStore: RolloutStore,
   ): void {
     if (this.liveRecorders.get(threadId) === rolloutStore) {
+      if (this.pendingIndexes.has(rolloutStore.rolloutPath)) this.indexRolloutFile(rolloutStore.rolloutPath);
       this.liveRecorders.delete(threadId);
     }
     rolloutStore.setOnRolloutCommitted(undefined);
