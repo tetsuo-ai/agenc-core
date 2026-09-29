@@ -900,6 +900,15 @@ export class VerifiedChangeWorkflowController {
   ): Promise<boolean> {
     if (this.#active.has(runId)) return false;
     const journal = await this.#deps.journal.open(runId);
+    try { return await this.#resumeOpened(repo, runId, journal); }
+    catch (error) {
+      try { await journal.close(); }
+      catch (closeError) { this.#deps.warn(`Goal ${runId} resume cleanup failed: ${errorMessage(closeError)}`); }
+      throw error;
+    }
+  }
+
+  async #resumeOpened(repo: StateRunDurabilityRepository, runId: string, journal: WorkflowRunJournal): Promise<boolean> {
     const intake = repo.getEffect(runId, "workflow.intake");
     if (intake === undefined) {
       await journal.close();
@@ -927,7 +936,7 @@ export class VerifiedChangeWorkflowController {
         status: "failed",
         stopReason: null,
         finalMessage:
-          "workflow interrupted before the intake commit; the spec was never durable — re-submit the request",
+          "The Goal stopped before its instructions were saved. Start it again.",
       });
       await this.#closeJournal(ctx);
       return true;
@@ -984,11 +993,7 @@ export class VerifiedChangeWorkflowController {
       this.#active.set(runId, pipeline);
       return true;
     } catch (error) {
-      try {
-        await this.#closeJournal(ctx);
-      } finally {
-        admission.release?.();
-      }
+      admission.release?.();
       throw error;
     }
   }

@@ -2007,7 +2007,7 @@ describe("VerifiedChangeWorkflowController — crash recovery (D3)", () => {
     expect(resumed).toEqual([RUN_ID]);
     const terminal = harness.repo.getCurrentTerminalResult(RUN_ID)!;
     expect(terminal.status).toBe("failed");
-    expect(terminal.finalMessage).toContain("re-submit");
+    expect(terminal.finalMessage).toContain("Start it again.");
     expect(harness.repo.getEffect(RUN_ID, "workflow.intake")?.outcome).toBe(
       "failed",
     );
@@ -2418,6 +2418,24 @@ describe("VerifiedChangeWorkflowController — runs with no live pipeline", () =
     disarmFailpoint();
     expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
   }
+
+  it("closes the reopened writer when admission setup fails during recovery", async () => {
+    harness.cleanup();
+    let failAdmission = false;
+    harness = makeHarness({ admission: () => {
+      if (failAdmission) throw new Error("admission storage unavailable");
+      return harness.admission;
+    } });
+    await interruptBeforeWorktree();
+    const closed = harness.hooks.closed.length;
+    failAdmission = true;
+    expect(await harness.controller.resumeOpenWorkflows()).toEqual([]);
+    expect(harness.hooks.closed).toHaveLength(closed + 1);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", finalMessage: expect.stringContaining("admission storage unavailable"),
+    });
+    expect(harness.spawner.spawns).toEqual([]);
+  });
 
   it("terminalizes recovery without credentials instead of hanging", async () => {
     await interruptBeforeWorktree();
