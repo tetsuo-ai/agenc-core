@@ -243,6 +243,7 @@ interface ThinkingDisplayState {
 class AssistantVisibleTextStreamParser {
   private readonly citations = new CitationStreamParser();
   private readonly plan?: ProposedPlanStreamParser;
+  planText = "";
 
   constructor(planMode: boolean) {
     this.plan = planMode ? new ProposedPlanStreamParser() : undefined;
@@ -264,7 +265,11 @@ class AssistantVisibleTextStreamParser {
 
   private pushVisibleText(text: string): string {
     if (!this.plan || text.length === 0) return text;
-    return this.plan.pushStr(text).visibleText;
+    const parsed = this.plan.pushStr(text);
+    for (const segment of parsed.extracted) {
+      if (segment.kind === "proposed_plan_delta") this.planText += segment.text;
+    }
+    return parsed.visibleText;
   }
 }
 
@@ -1213,6 +1218,7 @@ export async function streamModel(
     if (scoped.signal.aborted) return;
     receivedProviderChunk = true;
     const previousVisibleText = display.visibleText;
+    const previousPlanText = display.parser.planText;
     let newVisibleText = false;
 
     // I-22: per-chunk token accounting + sampling gate. The sampling
@@ -1256,6 +1262,8 @@ export async function streamModel(
       writeCanonicalAssistantDelta(canonicalDelta);
       newVisibleText = canonicalDelta.trim().length > 0 &&
         (!chunk.resetBuffer || display.visibleText !== previousVisibleText);
+      const planDelta = display.parser.planText.slice(chunk.resetBuffer ? 0 : previousPlanText.length);
+      newVisibleText ||= planDelta.trim().length > 0 && display.parser.planText !== previousPlanText;
     }
 
     const progress = progressTracker.observe(chunk, newVisibleText);

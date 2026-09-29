@@ -7,13 +7,12 @@ import { answer, longReasoningTrace, recordingAdmission, repeatingSample, script
 
 afterEach(() => vi.useRealTimers());
 
-function sampleTurn(sample: Sample, admitted = false) {
+function sampleTurn(sample: Sample, admitted = false, ctx = mkCtx()) {
   const { provider } = scriptedProvider([sample]);
   const admission = recordingAdmission();
   const { session, events } = mkSession({ provider, services: admitted ? {
     admissionRequired: true, executionAdmission: admission.client,
   } : undefined });
-  const ctx = mkCtx();
   const state = buildInitialTurnState(ctx, { role: "user", content: "Solve the problem" });
   const pending = streamModel(state, ctx, session, {
     input: state.messages, tools: [], parallelToolCalls: false, baseInstructions: "",
@@ -50,17 +49,72 @@ describe("shared stream progress guard", () => {
     expect(await pending).toBeUndefined();
   });
 
-  test("replayed visible snapshots do not keep reasoning alive", async () => {
+  test.each(["visible", "plan"])("replayed %s snapshots do not keep reasoning alive", async channel => {
     vi.useFakeTimers();
+    const content = channel === "plan" ? "<proposed_plan>\nExisting plan.\n</proposed_plan>" : "Existing answer.";
     const { pending } = sampleTurn((emit, options) => new Promise((_resolve, reject) => {
-      emit({ content: "Existing answer.", done: false, resetBuffer: true });
+      emit({ content, done: false, resetBuffer: true });
       emit({ content: "", done: false, thinkingDelta: { index: 0, delta: " " } });
-      const timer = setInterval(() => emit({ content: "Existing answer.", done: false, resetBuffer: true }), 1000);
+      const timer = setInterval(() => emit({ content, done: false, resetBuffer: true }), 1000);
+      options.signal!.addEventListener("abort", () => {
+        clearInterval(timer); reject(options.signal!.reason);
+      }, { once: true });
+    }), false, mkCtx({ permissionMode: channel === "plan" ? "plan" : "default" }));
+    await vi.advanceTimersByTimeAsync(REASONING_NO_PROGRESS_MS + 1);
+    expect((await pending).cause).toMatchObject({ reason: "stream_no_progress" });
+  });
+
+  test("slow proposed-plan output clears reasoning stalls and keeps the watchdog alive", async () => {
+    vi.useFakeTimers();
+    const { pending } = sampleTurn(async (emit, options) => {
+      emit({ content: "", done: false, thinkingDelta: { index: 0, delta: "Let me prepare the plan." } });
+      emit({ content: "<proposed_plan>\n", done: false });
+      for (let step = 0; step < 12; step++) {
+        await new Promise(resolve => setTimeout(resolve, 60_000));
+        expect(options.signal?.aborted).toBe(false);
+        emit({ content: `Step ${step}: validate the next partition.\n`, done: false });
+      }
+      emit({ content: "</proposed_plan>", done: true });
+      return { ...answer, content: "<proposed_plan>\nValidate the partitions.\n</proposed_plan>" };
+    }, false, mkCtx({ permissionMode: "plan" }));
+    await vi.advanceTimersByTimeAsync(12 * 60_000);
+    expect(await pending).toBeUndefined();
+  });
+
+  test("long engineering-trace replays stop being novel and trigger loop detection", () => {
+    const tracker = new StreamProgressTracker();
+    const trace = longReasoningTrace().slice(0, 20);
+    let detectedLoop = false;
+    let replayProgress = false;
+    for (let replay = 0; replay < 10; replay++) {
+      for (const paragraph of trace) {
+        for (let i = 0; i < paragraph.length; i += 13) {
+          const result = tracker.observe({ content: "", done: false,
+            reasoningSummaryDelta: { delta: paragraph.slice(i, i + 13), summaryIndex: replay % 2 } }, false);
+          detectedLoop ||= result.loop;
+          if (replay >= 2) replayProgress ||= result.progress;
+        }
+      }
+    }
+    expect(replayProgress).toBe(false);
+    expect(detectedLoop).toBe(true);
+  });
+
+  test("slow engineering-trace replays expire the no-progress deadline", async () => {
+    vi.useFakeTimers();
+    const trace = longReasoningTrace().slice(0, 20);
+    const delayMs = 90_000;
+    const { pending } = sampleTurn((emit, options) => new Promise((_resolve, reject) => {
+      let index = 0;
+      const timer = setInterval(() => {
+        emit({ content: "", done: false,
+          thinkingDelta: { index: 0, delta: trace[index++ % trace.length]! } });
+      }, delayMs);
       options.signal!.addEventListener("abort", () => {
         clearInterval(timer); reject(options.signal!.reason);
       }, { once: true });
     }));
-    await vi.advanceTimersByTimeAsync(REASONING_NO_PROGRESS_MS + 1);
+    await vi.advanceTimersByTimeAsync(trace.length * delayMs * 2 + REASONING_NO_PROGRESS_MS);
     expect((await pending).cause).toMatchObject({ reason: "stream_no_progress" });
   });
 

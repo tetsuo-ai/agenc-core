@@ -28,10 +28,22 @@ const MAX_WINDOWS = 8_192;
 const REPEATED_CHARS = 4_096;
 const MIN_OCCURRENCES = 8;
 
+// Content-defined sampling retains much longer cycles in the same bounded
+// dictionary. Unlike sampling by offset, identical windows are selected even
+// when a replay starts at a different position or uses different chunks.
+function retainWindow(window: string): boolean {
+  let hash = 2166136261;
+  for (let i = 0; i < window.length; i++) {
+    hash = Math.imul(hash ^ window.charCodeAt(i), 16777619);
+  }
+  return (hash & 15) === 0;
+}
+
 /** Bounded-memory detector; never places a total time limit on novel reasoning. */
 export class StreamProgressTracker {
   private reasoningTail = "";
   private readonly windows = new Map<string, number>();
+  private charsSinceWindow = 0;
   private repeatedChars = 0;
   private readonly tools = new Map<string, string>();
 
@@ -63,6 +75,8 @@ export class StreamProgressTracker {
         continue;
       }
       const key = this.reasoningTail;
+      this.charsSinceWindow += 1;
+      if (!retainWindow(key)) continue;
       const count = (this.windows.get(key) ?? 0) + 1;
       this.windows.delete(key);
       this.windows.set(key, count);
@@ -72,15 +86,17 @@ export class StreamProgressTracker {
         this.repeatedChars = 0;
         loop = false;
       } else {
-        this.repeatedChars += 1;
+        this.repeatedChars += this.charsSinceWindow;
         if (this.repeatedChars >= REPEATED_CHARS && count >= MIN_OCCURRENCES) loop = true;
       }
+      this.charsSinceWindow = 0;
     }
     const outputProgress = newVisibleText || toolProgress || chunk.bufferedContentProgress === true;
     if (outputProgress) {
       // A new answer or tool action breaks the reasoning-only stall. Retain
       // the dictionary so a loop cannot evade detection by opening blocks.
       this.repeatedChars = 0;
+      this.charsSinceWindow = 0;
       loop = false;
     }
     return { progress: outputProgress || novel, reasoning, loop };
