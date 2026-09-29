@@ -106,6 +106,9 @@ class TestJournal implements WorkflowRunJournal {
     for (const effect of this.repo.listEffects(runId)) {
       max = Math.max(max, effect.intentSequence, effect.resultSequence ?? 0);
     }
+    for (const suspension of this.repo.listSuspensions(runId)) {
+      max = Math.max(max, suspension.suspensionSequence, suspension.resumeSequence ?? 0);
+    }
     this.#seq = max;
   }
 
@@ -176,6 +179,20 @@ class TestJournal implements WorkflowRunJournal {
 
   appendTerminal() {
     return this.#next();
+  }
+
+  appendSuspended(input: { readonly suspendedAt: string }) {
+    const ref = this.#next();
+    this.repo.recordRunSuspended({ runId: this.runId, epoch: this.epoch,
+      eventId: ref.eventId, eventSequence: ref.sequence, reason: "workflow_user_pause", suspendedAt: input.suspendedAt });
+    return ref;
+  }
+
+  resume(suspensionId: string) {
+    const ref = this.#next();
+    this.repo.recordRunResumed({ runId: this.runId, epoch: this.epoch,
+      suspensionEventId: suspensionId, eventId: ref.eventId, eventSequence: ref.sequence,
+      reason: "workflow_user_resume", resumedAt: new Date().toISOString() });
   }
 
   async close(): Promise<void> {}
@@ -542,6 +559,13 @@ interface Harness {
     failJournalOpenWith?: Error;
     failTerminalWith?: Error;
     failEvidenceLedgerWith?: Error;
+    failAdmissionWith?: Error;
+    failPauseResultWith?: Error;
+    failCheckpointResultWith?: Error;
+    failSuspendWith?: Error;
+    beforeJournalOpen?: () => Promise<void>;
+    afterJournalResume?: () => Promise<void>;
+    beforeJournalClose?: () => Promise<void>;
     effectivePermissionMode?: PermissionMode;
     currentPermissionMode?: PermissionMode;
     opened: string[];
@@ -576,23 +600,47 @@ function makeHarness(
   const controller = new VerifiedChangeWorkflowController({
     durability: () => repo,
     journal: {
-      open: async (runId) => {
+      open: async (runId, context) => {
         hooks.opened.push(runId);
+        if (hooks.beforeJournalOpen !== undefined) await hooks.beforeJournalOpen();
         if (hooks.failJournalOpenWith !== undefined) {
           throw hooks.failJournalOpenWith;
         }
         const journal = new TestJournal(repo, runId, () => hooks.effectivePermissionMode);
+        if (context?.resumeSuspensionId !== undefined) {
+          journal.resume(context.resumeSuspensionId);
+          if (hooks.afterJournalResume !== undefined) await hooks.afterJournalResume();
+        }
+        const appendResult = journal.appendResult.bind(journal);
+        journal.appendResult = (input) => {
+          if (input.stepId.startsWith("workflow.control.pause.") && hooks.failPauseResultWith !== undefined) {
+            throw hooks.failPauseResultWith;
+          }
+          if (input.stepId.startsWith("workflow.control.checkpoint.") && hooks.failCheckpointResultWith !== undefined) {
+            throw hooks.failCheckpointResultWith;
+          }
+          return appendResult(input);
+        };
+        const appendSuspended = journal.appendSuspended.bind(journal);
+        journal.appendSuspended = input => {
+          if (hooks.failSuspendWith !== undefined) throw hooks.failSuspendWith;
+          return appendSuspended(input);
+        };
         const appendTerminal = journal.appendTerminal.bind(journal);
         journal.appendTerminal = () => {
           if (hooks.failTerminalWith !== undefined) throw hooks.failTerminalWith;
           return appendTerminal();
         };
-        journal.close = async () => { hooks.closed.push(runId); };
+        journal.close = async () => {
+          if (hooks.beforeJournalClose !== undefined) await hooks.beforeJournalClose();
+          hooks.closed.push(runId);
+        };
         return journal;
       },
       currentPermissionMode: () => hooks.currentPermissionMode,
     },
     admission: ({ runId }) => {
+      if (hooks.failAdmissionWith !== undefined) throw hooks.failAdmissionWith;
       if (options.admission !== undefined) return options.admission();
       admission.scope.runId = runId;
       return admission;
@@ -673,6 +721,257 @@ function cancelAt(stepPrefix: string): void {
 
 beforeEach(() => {
   harness = makeHarness();
+});
+
+describe("durable Goal pause and resume", () => {
+  it("parks between stages, survives recovery, and resumes the same bounds and run", async () => {
+    const bounds = { maxCostUsd: 2, maxTokens: 10000, deadlineAt: "2099-01-01T00:00:00.000Z" };
+    await harness.controller.start(startParams(harness, { budget: bounds }));
+    const requested = await harness.controller.requestPause({ runId: RUN_ID, requestId: "pause-one" });
+    expect(requested.state).toBe("pause_requested");
+    await harness.controller.awaitRun(RUN_ID);
+    const paused = harness.controller.controlState(RUN_ID);
+    expect(paused.state).toBe("paused");
+    expect(paused.suspensionId).toBeTypeOf("string");
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
+    expect(harness.worktrees.cleanups).toEqual([]);
+    expect(harness.spawner.spawns).toEqual([]);
+    const opened = harness.hooks.opened.length;
+    expect(await harness.controller.resumeOpenWorkflows()).toEqual([]);
+    expect(harness.hooks.opened).toHaveLength(opened);
+    await expect(harness.controller.start(startParams(harness, { runId: "duplicate" }))).rejects.toThrow("already active");
+    await expect(harness.controller.resumePaused({ runId: RUN_ID, suspensionId: "stale" })).rejects.toThrow("stale");
+    const resume = { runId: RUN_ID, suspensionId: paused.suspensionId! };
+    await Promise.all([harness.controller.resumePaused(resume), harness.controller.resumePaused(resume)]);
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("completed");
+    expect(harness.hooks.opened).toHaveLength(opened + 1);
+    expect(harness.spawner.spawns.map(spawn => spawn.kind)).toEqual(["plan", "implement", "verify_agent"]);
+    expect((harness.repo.getEffect(RUN_ID, "workflow.intake")?.evidence as { spec: WorkflowSpec }).spec.budget).toEqual(bounds);
+    expect(harness.repo.listSuspensions(RUN_ID)[0]?.resumeReason).toBe("workflow_user_resume");
+    expect((await harness.controller.resumePaused(resume)).state).toBe("terminal");
+  });
+
+  it("settles an active child before pausing and never dispatches the next child", async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const original = harness.spawner.spawn.bind(harness.spawner);
+    vi.spyOn(harness.spawner, "spawn").mockImplementationOnce(async input => {
+      entered.resolve(); await release.promise; return original(input);
+    });
+    await harness.controller.start(startParams(harness));
+    await entered.promise;
+    await harness.controller.requestPause({ runId: RUN_ID, requestId: "pause-plan" });
+    await harness.controller.requestPause({ runId: RUN_ID, requestId: "pause-plan" });
+    expect(harness.controller.controlState(RUN_ID).state).toBe("pause_requested");
+    expect(harness.repo.getActiveSuspension(RUN_ID)).toBeUndefined();
+    release.resolve(); await harness.controller.awaitRun(RUN_ID);
+    expect(harness.controller.controlState(RUN_ID)).toMatchObject({ state: "paused", afterStage: "workflow.plan" });
+    expect(harness.spawner.spawns.map(spawn => spawn.kind)).toEqual(["plan"]);
+    expect(harness.repo.listEffects(RUN_ID).filter(effect => effect.toolName === "workflow.control.pause")).toHaveLength(1);
+  });
+
+  it("can cancel a paused run without reopening a session or losing its worktree", async () => {
+    await harness.controller.start(startParams(harness));
+    await harness.controller.requestPause({ runId: RUN_ID, requestId: "pause-cancel" });
+    await harness.controller.awaitRun(RUN_ID);
+    const opened = harness.hooks.opened.length;
+    expect(harness.controller.cancelDetached(RUN_ID, "user cancelled paused Goal")).toBe("cancelled");
+    expect(harness.controller.controlState(RUN_ID).state).toBe("terminal");
+    expect(harness.hooks.opened).toHaveLength(opened);
+    expect(harness.worktrees.discards).toEqual([]);
+  });
+
+  it("waits for the paused writer to close before opening its replacement", async () => {
+    const closing = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    await harness.controller.start(startParams(harness));
+    harness.hooks.beforeJournalClose = async () => { closing.resolve(); await release.promise; };
+    await harness.controller.requestPause({ runId: RUN_ID, requestId: "close-gate" });
+    await closing.promise;
+    const paused = harness.controller.controlState(RUN_ID);
+    expect(paused.state).toBe("paused");
+    const opened = harness.hooks.opened.length;
+    const resume = harness.controller.resumePaused({ runId: RUN_ID, suspensionId: paused.suspensionId! });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(harness.controller.activeRunIds()).toContain(RUN_ID);
+    expect(harness.hooks.opened).toHaveLength(opened);
+    expect(harness.hooks.closed).toEqual([]);
+    delete harness.hooks.beforeJournalClose;
+    release.resolve();
+    await resume;
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.hooks.opened).toHaveLength(opened + 1);
+    expect(harness.hooks.closed).toHaveLength(2);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("completed");
+  });
+
+  it("routes cancellation through admission while a resumed writer is opening", async () => {
+    await harness.controller.start(startParams(harness));
+    await harness.controller.requestPause({ runId: RUN_ID, requestId: "cancel-opening" });
+    await harness.controller.awaitRun(RUN_ID);
+    const paused = harness.controller.controlState(RUN_ID);
+    const opening = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    harness.hooks.beforeJournalOpen = async () => { opening.resolve(); await release.promise; };
+    const resume = harness.controller.resumePaused({ runId: RUN_ID, suspensionId: paused.suspensionId! });
+    await opening.promise;
+    expect(harness.controller.cancelDetached(RUN_ID, "cancel while resuming")).toBe("live");
+    cancelAt("workflow.plan");
+    release.resolve();
+    await resume;
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("cancelled");
+    expect(harness.spawner.spawns).toEqual([]);
+    expect(harness.worktrees.discards).toEqual([]);
+  });
+
+  it("skips startup recovery while explicit resume has consumed the suspension", async () => {
+    await harness.controller.start(startParams(harness));
+    await harness.controller.requestPause({ runId: RUN_ID, requestId: "opening-startup" });
+    await harness.controller.awaitRun(RUN_ID);
+    const paused = harness.controller.controlState(RUN_ID);
+    const opening = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    harness.hooks.afterJournalResume = async () => { opening.resolve(); await release.promise; };
+    const resume = harness.controller.resumePaused({ runId: RUN_ID, suspensionId: paused.suspensionId! });
+    await opening.promise;
+    expect(harness.repo.getActiveSuspension(RUN_ID)).toBeUndefined();
+    const opened = harness.hooks.opened.length;
+    expect(await harness.controller.resumeOpenWorkflows()).toEqual([]);
+    expect(harness.hooks.opened).toHaveLength(opened);
+    release.resolve();
+    await resume;
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("completed");
+  });
+
+  it("does not dispatch work if a terminal arrives while the resumed writer opens", async () => {
+    await harness.controller.start(startParams(harness));
+    await harness.controller.requestPause({ runId: RUN_ID, requestId: "terminal-opening" });
+    await harness.controller.awaitRun(RUN_ID);
+    const paused = harness.controller.controlState(RUN_ID);
+    const opening = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    harness.hooks.afterJournalResume = async () => { opening.resolve(); await release.promise; };
+    const resume = harness.controller.resumePaused({ runId: RUN_ID, suspensionId: paused.suspensionId! });
+    await opening.promise;
+    harness.repo.recordTerminalResult({
+      epoch: harness.repo.currentEpoch(RUN_ID)!.epoch,
+      eventId: "cancel-during-resume-open",
+      result: { runId: RUN_ID, status: "cancelled", exitCode: 1, stopReason: null,
+        finalMessage: "cancelled while opening", usage: null, lastSequence: null,
+        finishedAt: new Date().toISOString() },
+    });
+    const acquired = [...harness.admission.acquired];
+    release.resolve();
+    expect((await resume).state).toBe("terminal");
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.admission.acquired).toEqual(acquired);
+    expect(harness.spawner.spawns).toEqual([]);
+    expect(harness.hooks.closed).toHaveLength(2);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.finalMessage).toBe("cancelled while opening");
+  });
+
+  it("preserves a paused checkpoint when resume fails before consuming it", async () => {
+    await harness.controller.start(startParams(harness));
+    await harness.controller.requestPause({ runId: RUN_ID, requestId: "open-failure" });
+    await harness.controller.awaitRun(RUN_ID);
+    const paused = harness.controller.controlState(RUN_ID);
+    const params = { runId: RUN_ID, suspensionId: paused.suspensionId! };
+    harness.hooks.failJournalOpenWith = new Error("writer unavailable");
+    await expect(harness.controller.resumePaused(params)).rejects.toThrow("writer unavailable");
+    expect(harness.controller.controlState(RUN_ID)).toEqual(paused);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
+    delete harness.hooks.failJournalOpenWith;
+    await harness.controller.resumePaused(params);
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("completed");
+  });
+
+  it.each(["admission", "ledger"] as const)("terminalizes %s failure after consuming an explicit resume", async failure => {
+    await harness.controller.start(startParams(harness));
+    await harness.controller.requestPause({ runId: RUN_ID, requestId: `resume-${failure}-failure` });
+    await harness.controller.awaitRun(RUN_ID);
+    const paused = harness.controller.controlState(RUN_ID);
+    const failureMessage = `${failure} unavailable after resume`;
+    if (failure === "admission") harness.hooks.failAdmissionWith = new Error(failureMessage);
+    else harness.hooks.failEvidenceLedgerWith = new Error(failureMessage);
+    const released = harness.admission.release.mock.calls.length;
+    await expect(harness.controller.resumePaused({ runId: RUN_ID, suspensionId: paused.suspensionId! })).rejects.toThrow(failureMessage);
+    expect(harness.repo.getActiveSuspension(RUN_ID)).toBeUndefined();
+    expect(harness.controller.controlState(RUN_ID).state).toBe("terminal");
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", finalMessage: expect.stringContaining(failureMessage),
+    });
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.finalMessage).toContain(`/wt/${RUN_ID}`);
+    expect(harness.controller.activeRunIds()).toEqual([]);
+    expect(harness.hooks.closed).toHaveLength(2);
+    expect(harness.admission.release.mock.calls.length).toBe(released + (failure === "ledger" ? 1 : 0));
+    expect(harness.spawner.spawns).toEqual([]);
+    expect(harness.worktrees.discards).toEqual([]);
+  });
+
+  it.each(["committed", "intent_only"])("recovers a %s pause request without dispatching another stage", async requestState => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const provision = harness.worktrees.provision.bind(harness.worktrees);
+    vi.spyOn(harness.worktrees, "provision").mockImplementationOnce(async spec => {
+      entered.resolve(); await release.promise; return provision(spec);
+    });
+    armFailpoint("after_worktree_provision");
+    await harness.controller.start(startParams(harness));
+    await entered.promise;
+    if (requestState === "intent_only") harness.hooks.failPauseResultWith = new Error("pause acknowledgement lost");
+    const request = harness.controller.requestPause({ runId: RUN_ID, requestId: `recover-${requestState}` });
+    if (requestState === "intent_only") await expect(request).rejects.toThrow("pause acknowledgement lost");
+    else expect((await request).state).toBe("pause_requested");
+    delete harness.hooks.failPauseResultWith;
+    release.resolve();
+    await expect(harness.controller.awaitRun(RUN_ID)).rejects.toThrow(/failpoint/u);
+    disarmFailpoint();
+    expect(harness.repo.getActiveSuspension(RUN_ID)).toBeUndefined();
+    expect(await harness.controller.resumeOpenWorkflows()).toEqual([RUN_ID]);
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.controller.controlState(RUN_ID)).toMatchObject({ state: "paused", afterStage: "workflow.worktree" });
+    const requests = harness.repo.listEffects(RUN_ID).filter(effect => effect.toolName === "workflow.control.pause");
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.outcome).toBe("committed");
+    expect(harness.spawner.spawns).toEqual([]);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
+  });
+
+  it.each(["before_checkpoint_commit", "before_suspension"])("recovers %s and keeps canonical cost when cancelled while paused", async crashBoundary => {
+    const usage = { inputTokens: 700, outputTokens: 100, totalTokens: 800, costUsd: 0.14, costEstimated: true };
+    Object.assign(harness.admission, { getUsageSummary: (): ReturnType<NonNullable<ExecutionAdmissionClient["getUsageSummary"]>> => ({
+      ...usage, runId: RUN_ID, sequence: 1, modelCalls: 1, hasUnknownCost: false,
+      heldCostUsd: 0, models: [], agents: [],
+    }) });
+    const crash = new M5WorkflowFailpointError("after_worktree_provision");
+    if (crashBoundary === "before_checkpoint_commit") harness.hooks.failCheckpointResultWith = crash;
+    else harness.hooks.failSuspendWith = crash;
+    await harness.controller.start(startParams(harness));
+    await harness.controller.requestPause({ runId: RUN_ID, requestId: crashBoundary });
+    await expect(harness.controller.awaitRun(RUN_ID)).rejects.toThrow(/failpoint/u);
+    expect(harness.repo.getActiveSuspension(RUN_ID)).toBeUndefined();
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
+    const checkpoint = harness.repo.listEffects(RUN_ID).find(effect => effect.toolName === "workflow.control.checkpoint");
+    expect(checkpoint).toBeDefined();
+    expect(checkpoint?.outcome).toBe(crashBoundary === "before_checkpoint_commit" ? undefined : "committed");
+    delete harness.hooks.failCheckpointResultWith;
+    delete harness.hooks.failSuspendWith;
+    expect(await harness.controller.resumeOpenWorkflows()).toEqual([RUN_ID]);
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.controller.controlState(RUN_ID).state).toBe("paused");
+    expect(harness.repo.listEffects(RUN_ID).filter(effect => effect.toolName === "workflow.control.checkpoint"))
+      .toHaveLength(1);
+    expect(harness.controller.cancelDetached(RUN_ID, "user cancelled")).toBe("cancelled");
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "cancelled", usage });
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.finalMessage).toContain(`/wt/${RUN_ID}`);
+    expect(harness.spawner.spawns).toEqual([]);
+    expect(harness.worktrees.discards).toEqual([]);
+  });
 });
 
 describe("workflow repository ownership and intake cleanup", () => {
@@ -2531,8 +2830,7 @@ describe("VerifiedChangeWorkflowController — runs with no live pipeline", () =
       exitCode: 1,
       stopReason: null,
     });
-    expect(terminal?.finalMessage).toContain("run.cancel (operator)");
-    expect(terminal?.finalMessage).toContain("no live pipeline");
+    expect(terminal?.finalMessage).toBe("Goal cancelled (operator).");
     expect(harness.controller.cancelDetached(RUN_ID, "operator")).toBe(
       "already_terminal",
     );
