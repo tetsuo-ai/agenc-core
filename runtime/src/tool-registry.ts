@@ -1231,8 +1231,22 @@ export function buildToolRegistry(
         });
       }
       const result = await spec.tool.execute(args);
+      let content = result.content;
+      // Advanced core arguments are appended as discovery data. Replacing an
+      // already advertised schema would invalidate every cached request after it.
+      if (options.lightMode === true && options.lightFullCatalog !== true &&
+          spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME && !result.isError) {
+        const payload = JSON.parse(content) as { loaded?: string[] };
+        const argumentSchemas = (payload.loaded ?? []).flatMap(name => {
+          if (!LIGHT_INITIAL_TOOL_NAMES.has(name)) return [];
+          const selected = allSpecs().find(candidate => candidate.tool.name === name && candidate.unavailable !== true);
+          if (!selected || selected.tool.metadata?.source !== "builtin") return [];
+          return [{ name, parameters: lightPresentation(toolToLLMTool(selected.tool), true).function.parameters }];
+        });
+        if (argumentSchemas.length > 0) content = safeStringify({ ...payload, argumentSchemas });
+      }
       return {
-        content: result.content,
+        content,
         isError: result.isError,
         codeModeResult: result.codeModeResult,
         contentItems: result.contentItems,
@@ -1278,7 +1292,7 @@ export function buildToolRegistry(
       const tools = visible.map((spec) => {
         const tool = toolToLLMTool(spec.tool);
         return options.lightMode === true && spec.tool.metadata?.source === "builtin"
-          ? lightPresentation(tool, discoveredToolNames.has(spec.tool.name) || options.lightFullCatalog === true) : tool;
+          ? lightPresentation(tool, options.lightFullCatalog === true || !LIGHT_INITIAL_TOOL_NAMES.has(spec.tool.name)) : tool;
       });
       if (!deferRareTools) return tools;
       const pointer = rareToolPointer(new Set(

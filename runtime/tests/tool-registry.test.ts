@@ -2152,17 +2152,20 @@ describe("Light presentation and deferred capability preservation", () => {
     expect(light.tools.find(tool => tool.name === "Write")?.recoveryCategory).toBe("side-effecting");
   });
 
-  test("explicit discovery restores advanced arguments without changing canonical enforcement", async () => {
+  test("advanced core discovery appends argument data and preserves advertised schemas", async () => {
     const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
     const initial = structuredClone(registry.toLLMTools());
     const shell = registry.tools.find(tool => tool.name === "exec_command")!;
     expect(initial.find(tool => tool.function.name === shell.name)?.function.parameters.properties).not.toHaveProperty("sandbox_permissions");
-    await registry.dispatch({ id: "load-advanced-shell", name: "system.searchTools", arguments: '{"select":"exec_command"}' });
-    const expanded = registry.toLLMTools().find(tool => tool.function.name === shell.name)!;
-    expect(Object.keys(expanded.function.parameters.properties ?? {}).sort()).toEqual(Object.keys(shell.inputSchema.properties ?? {}).sort());
-    expect(expanded.function.parameters.properties?.sandbox_permissions).toEqual(expect.objectContaining({ enum: expect.arrayContaining(["require_escalated"]) }));
+    const result = await registry.dispatch({ id: "load-advanced-shell", name: "system.searchTools", arguments: '{"select":"exec_command"}' });
+    const revealed = JSON.parse(result.content).argumentSchemas[0];
+    expect(revealed.name).toBe(shell.name);
+    expect(Object.keys(revealed.parameters.properties).sort()).toEqual(Object.keys(shell.inputSchema.properties ?? {}).sort());
+    expect(revealed.parameters.properties.sandbox_permissions).toEqual(expect.objectContaining({ enum: expect.arrayContaining(["require_escalated"]) }));
     expect(registry.tools.find(tool => tool.name === shell.name)).toBe(shell);
-    expect(registry.toLLMTools().filter(tool => tool.function.name !== shell.name)).toEqual(initial.filter(tool => tool.function.name !== shell.name));
+    expect(registry.toLLMTools()).toEqual(initial);
+    await registry.dispatch({ id: "load-deferred", name: "system.searchTools", arguments: '{"select":"TodoWrite"}' });
+    expect(registry.toLLMTools().slice(0, initial.length)).toEqual(initial);
   });
 
   test("loads full deferred schemas through real discovery without changing another profile", async () => {
