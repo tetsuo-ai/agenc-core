@@ -28,11 +28,14 @@ async function outcomeStore(session: Session): Promise<ChildRoutingOutcomeStore 
 
 export async function recordChildRoutingOutcome(session: Session, plan: ChildExecutionPlan | undefined,
   outcome: { readonly receiptId: string; readonly terminal: ChildTerminalOutcome; readonly latencyMs: number }): Promise<void> {
-  if (plan?.routing === undefined) return;
+  if (plan === undefined) return;
+  // A successful explicit override can restore a provider after credits or
+  // credentials are repaired. Only verified quality labels train accuracy.
+  const classification = plan.routing ?? classifyChildTask(plan.task.text);
   try {
     const store = await outcomeStore(session);
     await store?.record({ receiptId: outcome.receiptId, provider: outcome.terminal.provider,
-      model: outcome.terminal.model, taskKind: plan.routing.taskKind, complexity: plan.routing.complexity,
+      model: outcome.terminal.model, taskKind: "taskKind" in classification ? classification.taskKind : classification.kind, complexity: classification.complexity,
       terminalReason: outcome.terminal.reason, success: outcome.terminal.reason === "completed",
       latencyMs: outcome.latencyMs, atMs: Date.now(),
       ...(outcome.terminal.costUsd !== undefined ? { costUsd: outcome.terminal.costUsd } : {}),
@@ -47,6 +50,7 @@ export interface ChildRoutingRequest {
   readonly taskKind?: ChildSelectionTask["kind"];
   readonly complexity?: ChildSelectionTask["complexity"];
   readonly requiresVision?: boolean;
+  readonly requiresTools?: boolean;
   readonly contextTokens?: number;
   readonly maxCostUsd?: number;
   readonly outcomes?: ChildRoutingSnapshot;
@@ -73,7 +77,7 @@ export async function routeChildTask(session: Session, request: ChildRoutingRequ
   const complexity = request.complexity ?? inferred.complexity;
   const maxCostUsd = childRoutingBudget(session, request.maxCostUsd);
   const task: ChildSelectionTask = {
-    kind, complexity, requiresTools: true,
+    kind, complexity, requiresTools: request.requiresTools ?? true,
     ...(request.requiresVision ? { requiresVision: true } : {}),
     ...(kind === "reasoning" ? { requiresReasoning: true } : {}),
     // Include the runtime/tool catalog and room for early tool results. The

@@ -1,6 +1,10 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ChildExecutionPlan } from "../../src/agents/cross-provider.js";
 import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../../src/config/schema.js";
-import { routeChildTask, childRoutingBudget } from "../../src/agents/child-routing.js";
+import { routeChildTask, childRoutingBudget, recordChildRoutingOutcome } from "../../src/agents/child-routing.js";
 import type { Session } from "../../src/session/session.js";
 
 function fixture(connected: readonly string[], allowed = ["deepseek", "openai"]) {
@@ -17,6 +21,24 @@ function fixture(connected: readonly string[], allowed = ["deepseek", "openai"])
 }
 
 describe("child routing integration", () => {
+  it("an explicit successful child restores a provider after its funds block", async () => {
+    const home = await mkdtemp(join(tmpdir(), "child-routing-health-"));
+    try {
+      const { session } = fixture(["deepseek"]);
+      Object.assign(session.services.configStore!, { homeContext: { path: home } });
+      const plan = { task: { text: "Extract names" } } as ChildExecutionPlan;
+      const terminal = { provider: "deepseek", model: "deepseek-flash", reason: "insufficient_funds" as const,
+        retryable: false, dispatch: "sent" as const, completedWork: "", unfinishedWork: "Extract names" };
+      await recordChildRoutingOutcome(session, plan, { receiptId: "failed", terminal, latencyMs: 2 });
+      expect((await routeChildTask(session, { prompt: "Extract names" })).result.selected).toBeUndefined();
+      await recordChildRoutingOutcome(session, plan, { receiptId: "manual-success", terminal: { ...terminal, reason: "completed" }, latencyMs: 2 });
+      expect((await routeChildTask(session, { prompt: "Extract names" })).result.selected?.provider).toBe("deepseek");
+    } finally { await rm(home, { recursive: true, force: true }); }
+  });
+  it("retains explicit tool-free task requirements", async () => {
+    const { session } = fixture(["deepseek"]);
+    expect((await routeChildTask(session, { prompt: "Extract names", requiresTools: false })).task.requiresTools).toBe(false);
+  });
   it("chooses an allowed connected candidate and checks authority once per provider", async () => {
     const { session, readiness } = fixture(["deepseek"]);
     const routed = await routeChildTask(session, { prompt: "Extract a short list of names" });
