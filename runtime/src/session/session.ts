@@ -1338,6 +1338,8 @@ export interface StateDbContext {
 
 /** DI container of all session-scoped services. */
 export interface SessionServices {
+  /** Independent task checks supplied by a trusted host, never by the child model. */
+  readonly childRoutingVerifier?: import("../agents/child-routing-verifier.js").ChildRoutingVerifier;
   readonly readOnlyDelegation?: ReadOnlyDelegationConstraint;
   /** Immutable operator policy captured for this session at creation time. */
   readonly runtimeOptions: AgentRuntimeOptions;

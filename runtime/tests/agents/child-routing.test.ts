@@ -80,9 +80,9 @@ describe("child routing integration", () => {
     expect(childRoutingBudget(session)).toBeUndefined();
     expect(childRoutingBudget(session, 0.5)).toBe(0.5);
   });
-  it("explicit task difficulty selects a strong model for hard reasoning", async () => {
+  it("difficulty labels do not force an expensive model over current ability evidence", async () => {
     const { session } = fixture(["deepseek"]);
     const routed = await routeChildTask(session, { prompt: "Prove the invariant", taskKind: "reasoning", complexity: "hard" });
-    expect(routed.result.selected).toMatchObject({ provider: "deepseek", model: "deepseek-v4-pro" });
+    expect(routed.result.selected).toMatchObject({ provider: "deepseek", model: "deepseek-flash" });
   });
 });

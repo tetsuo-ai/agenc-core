@@ -29,7 +29,7 @@ export interface ChildRoutingAttemptContext<T> {
 
 export type ChildRoutingStopReason = "completed" | "terminal_outcome" | "tools_already_run"
   | "cancelled" | "attempt_limit" | "no_candidate" | "model_call_budget_exhausted"
-  | "cost_budget_exhausted" | "usage_unknown" | "invalid_usage";
+  | "cost_budget_exhausted" | "usage_unknown" | "invalid_usage" | "verification_unavailable";
 
 export interface ChildRoutingFallbackResult<T> {
   readonly value?: T;
@@ -65,16 +65,23 @@ export async function runChildRoutingFallback<T>(options: {
   readonly maxCostUsd?: number;
   readonly maxAttempts?: number;
   readonly signal?: AbortSignal;
+  readonly verification?: {
+    readonly retrySafe: boolean;
+    readonly costUsd: number;
+    readonly check: (result: ChildRoutingAttempt<T>) => Promise<"pass" | "fail" | "unavailable">;
+  };
   readonly runAttempt: (context: ChildRoutingAttemptContext<T>) => Promise<ChildRoutingAttemptResult<T>>;
 }): Promise<ChildRoutingFallbackResult<T>> {
   const maxAttempts = options.maxAttempts ?? 3;
   if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 3 ||
       !Number.isSafeInteger(options.maxModelCalls) || options.maxModelCalls < 0 ||
-      (options.maxCostUsd !== undefined && !nonNegative(options.maxCostUsd))) {
+      (options.maxCostUsd !== undefined && !nonNegative(options.maxCostUsd)) ||
+      (options.verification !== undefined && !nonNegative(options.verification.costUsd))) {
     throw new RangeError("Child fallback requires at most 3 attempts and finite non-negative budgets.");
   }
   const attempts: ChildRoutingAttempt<T>[] = [];
   const attemptedProviders = new Set<string>();
+  const attemptedPairs = new Set<string>();
   let modelCalls = 0;
   let accountedCostUsd: number | undefined = 0;
   const finish = (stopReason: ChildRoutingStopReason): ChildRoutingFallbackResult<T> => ({
@@ -88,9 +95,10 @@ export async function runChildRoutingFallback<T>(options: {
     if (modelCalls >= options.maxModelCalls) return finish("model_call_budget_exhausted");
     const remainingCostUsd = options.maxCostUsd === undefined ? undefined
       : Math.max(0, options.maxCostUsd - accountedCostUsd!);
-    const eligible = options.candidates.filter((candidate) => !attemptedProviders.has(candidate.provider));
+    const eligible = options.candidates.filter((candidate) => !attemptedProviders.has(candidate.provider) &&
+      !attemptedPairs.has(`${candidate.provider}/${candidate.model}`));
     const candidate = eligible.find((item) => remainingCostUsd === undefined ||
-      (nonNegative(item.estimatedCostUsd) && item.estimatedCostUsd <= remainingCostUsd));
+      (nonNegative(item.estimatedCostUsd) && item.estimatedCostUsd + (options.verification?.costUsd ?? 0) <= remainingCostUsd));
     if (candidate === undefined) {
       return finish(eligible.length === 0 ? "no_candidate" : "cost_budget_exhausted");
     }
@@ -99,7 +107,7 @@ export async function runChildRoutingFallback<T>(options: {
       ...(remainingCostUsd !== undefined ? { remainingCostUsd } : {}),
       previousAttempts: [...attempts] });
     attempts.push({ ...outcome, candidate, attempt: attempts.length + 1 });
-    attemptedProviders.add(candidate.provider);
+    attemptedPairs.add(`${candidate.provider}/${candidate.model}`);
     if (!Number.isSafeInteger(outcome.modelCalls) || outcome.modelCalls < 0 ||
         !Number.isSafeInteger(outcome.toolCalls) || outcome.toolCalls < 0 ||
         (outcome.terminal.dispatch !== "not_sent" && outcome.modelCalls === 0) ||
@@ -129,7 +137,22 @@ export async function runChildRoutingFallback<T>(options: {
       if (accountedCostUsd! > options.maxCostUsd) return finish("cost_budget_exhausted");
     }
     if (options.signal?.aborted) return finish("cancelled");
+    if (options.verification !== undefined && ["completed", "step_limit", "no_progress"].includes(outcome.terminal.reason)) {
+      if (!usageKnown || (held ?? 0) > 0) return finish("usage_unknown");
+      if (options.maxCostUsd !== undefined && accountedCostUsd! + options.verification.costUsd > options.maxCostUsd) return finish("cost_budget_exhausted");
+      // Retain the declared verifier charge even if its result becomes unavailable.
+      accountedCostUsd = accountedCostUsd! + options.verification.costUsd;
+      let verdict: "pass" | "fail" | "unavailable";
+      try { verdict = await options.verification.check(attempts.at(-1)!); }
+      catch { return finish("verification_unavailable"); }
+      if (options.signal?.aborted) return finish("cancelled");
+      if (verdict === "pass") return finish("completed");
+      if (verdict !== "fail") return finish("verification_unavailable");
+      if (outcome.toolCalls > 0 && !options.verification.retrySafe) return finish("tools_already_run");
+      continue;
+    }
     if (outcome.terminal.reason === "completed") return finish("completed");
+    attemptedProviders.add(candidate.provider);
     if (!canFallback(outcome.terminal)) return finish("terminal_outcome");
     if (outcome.toolCalls > 0) return finish("tools_already_run");
     if (!usageKnown) return finish("usage_unknown");
