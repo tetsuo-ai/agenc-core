@@ -848,8 +848,8 @@ describe("runAgent", () => {
     expect(requestPrompt).toContain(`${provider.toUpperCase()} provider notes`);
     expect(requestPrompt).not.toMatch(/grok|xai/iu);
     if (lightMode) {
-      expect(requestPrompt).toContain("# Authority");
-      expect(requestPrompt).toContain("# Capabilities");
+      expect(requestPrompt).toContain("Never bypass a denial");
+      expect(requestPrompt).toContain("system.searchTools");
       expect(requestPrompt).not.toContain("# Doing tasks");
     }
   });
