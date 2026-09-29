@@ -234,7 +234,9 @@ function buildSamplingRequestContract(
     ...(session.services.runtimeOptions.lightMode === true
       ? { openaiReasoningReplay: true } : {}),
     lightReasoningEffort: lightReasoningEffort(
-      session.services.runtimeOptions.lightMode === true,
+      session.services.runtimeOptions.lightMode === true
+        ? ctx.config.lightReasoningPolicy
+        : "fixed",
       ctx.reasoningEffort,
       ctx.modelInfo.supportedReasoningLevels,
       lastToolBatchResults(state.messagesForQuery, state.completedToolResults),

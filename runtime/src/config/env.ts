@@ -7,6 +7,7 @@
 //   AGENC_PROFILE                                  → profile selector
 //   AGENC_MODEL                                    → model slug
 //   AGENC_EFFORT_LEVEL                             → reasoning_effort
+//   AGENC_LIGHT_REASONING_POLICY                   → light_reasoning_policy
 //   AGENC_MAX_TURNS                               → max_turns
 //   AGENC_COORDINATOR_MODE                        → coordinator_mode
 //   AGENC_STREAM_IDLE_TIMEOUT_MS                  → stream_watchdog_timeout_ms
@@ -55,6 +56,7 @@ export interface EnvSnapshot {
   readonly AGENC_PROVIDER?: string;
   readonly AGENC_MODEL?: string;
   readonly AGENC_EFFORT_LEVEL?: string;
+  readonly AGENC_LIGHT_REASONING_POLICY?: string;
   readonly AGENC_AGENT_MAX_DEPTH?: string;
   readonly AGENC_MAX_TURNS?: string;
   readonly AGENC_COORDINATOR_MODE?: string;
@@ -384,6 +386,15 @@ export function applyEnvOverrides(
           "expected one of minimal, low, medium, high, xhigh, max, or none",
       );
     }
+  }
+  if (e.AGENC_LIGHT_REASONING_POLICY !== undefined) {
+    const policy = readNonEmpty(e.AGENC_LIGHT_REASONING_POLICY)?.toLowerCase();
+    if (policy !== "fixed" && policy !== "adaptive") {
+      throw new Error(
+        "invalid AGENC_LIGHT_REASONING_POLICY; expected fixed or adaptive",
+      );
+    }
+    override.light_reasoning_policy = policy;
   }
   const provider = normalizeProviderIdentity(e.AGENC_PROVIDER, "AGENC_PROVIDER");
   if (provider) {

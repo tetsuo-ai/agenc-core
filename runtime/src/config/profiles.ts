@@ -7,6 +7,7 @@
 //   - approval_policy
 //   - sandbox_mode
 //   - reasoning_effort
+//   - light_reasoning_policy
 //   - reasoning_summary
 //   - model_verbosity
 //   - service_tier
@@ -75,6 +76,8 @@ export function resolveProfile(
     override.sandbox_mode = profile.sandbox_mode;
   if (hasProfileOverride(profile, "reasoning_effort"))
     override.reasoning_effort = profile.reasoning_effort;
+  if (hasProfileOverride(profile, "light_reasoning_policy"))
+    override.light_reasoning_policy = profile.light_reasoning_policy;
   if (hasProfileOverride(profile, "reasoning_summary"))
     override.reasoning_summary = profile.reasoning_summary;
   if (hasProfileOverride(profile, "approvals_reviewer"))

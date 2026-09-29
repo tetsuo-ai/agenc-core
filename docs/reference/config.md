@@ -498,6 +498,7 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | `approval_policy` | `untrusted`, `on-failure`, `on-request`, or `never`. |
 | `sandbox_mode` | `read-only`, `workspace-write`, or `danger-full-access`. |
 | `reasoning_effort` | `minimal`, `low`, `medium`, `high`, `xhigh`, or `none`. |
+| `light_reasoning_policy` | `fixed` (default) preserves the configured effort in Light. Opt-in `adaptive` raises `low` to `medium` for recovery after a completed failing validation in the latest tool batch, when supported by the model. Later successful batches return to `low`; other requested efforts and ordinary sessions are unchanged. Captured in the session configuration and per-turn snapshot. On process restart, resolved again from the active configuration/profile and client environment, not persisted in durable turn checkpoints. |
 | `reasoning_summary` | `auto`, `concise`, `detailed`, or `none`. |
 | `approvals_reviewer` | `user` or `auto_review`. |
 | `model_verbosity` | `low`, `medium`, or `high`. |
@@ -667,6 +668,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `profiles.<profile>.model`, `profiles.<profile>.model_provider` | Model/provider override. Provider values follow the same strict canonical-selector rule as root `model_provider`. |
 | `profiles.<profile>.approval_policy`, `profiles.<profile>.sandbox_mode` | Approval/sandbox override. |
 | `profiles.<profile>.reasoning_effort`, `profiles.<profile>.reasoning_summary` | Reasoning overrides. |
+| `profiles.<profile>.light_reasoning_policy` | Profile override for Light's `fixed` or `adaptive` reasoning policy. |
 | `profiles.<profile>.approvals_reviewer`, `profiles.<profile>.model_verbosity`, `profiles.<profile>.service_tier`, `profiles.<profile>.personality` | Reviewer/presentation overrides. |
 | `profiles.<profile>.tools_config` | Profile-local tool block with the same fields as `tools_config`. |
 | `profiles.<profile>.tools_config.web_search_endpoint`, `profiles.<profile>.tools_config.web_search_endpoint_kind` | Search URL and `duckduckgo`/`searxng`/`brave`/`json` decoder. |
