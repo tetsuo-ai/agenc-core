@@ -1129,6 +1129,12 @@ function normalizeToolArguments(
   toolName: string,
   argumentsRaw: string,
 ): { value: unknown } | null {
+  // Handoffs carry exact task text and literal reference delimiters. Never
+  // repair a partial JSON string into an empty object or decode its contents.
+  if (toolName === "spawn_agent") {
+    try { return { value: JSON.parse(argumentsRaw) as unknown }; }
+    catch { return null; }
+  }
   const finalizeParsed = (value: unknown): { value: unknown } => {
     if (isRecord(value)) {
       return { value };
@@ -1241,7 +1247,7 @@ export function validateToolCallDetailed(
   }
 
   const normalizedArguments = JSON.stringify(
-    decodeHtmlEntitiesDeep(parsed) as Record<string, unknown>,
+    (name === "spawn_agent" ? parsed : decodeHtmlEntitiesDeep(parsed)) as Record<string, unknown>,
   );
 
   return {
