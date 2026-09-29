@@ -115,7 +115,9 @@ describe("byok-login-notice", () => {
 
   test("registry ownership: anthropic and unknown models stay on the notice path", () => {
     expect(isRegistryOwnedNonAnthropicModel("gpt-5")).toBe(true);
-    expect(isRegistryOwnedNonAnthropicModel("claude-opus-5")).toBe(false);
+    for (const model of ["claude-opus-5", "claude-opus-5-5", "claude-sonnet-5-5", "claude-opus-4-6", "claude-haiku-4-5-20251001"]) {
+      expect(isRegistryOwnedNonAnthropicModel(model), model).toBe(false);
+    }
     expect(isRegistryOwnedNonAnthropicModel("")).toBe(false);
     expect(loginNoticeVisible("anthropic", "missing", false, "claude-opus-5")).toBe(true);
   });
