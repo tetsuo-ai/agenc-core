@@ -46,6 +46,7 @@ import {
   type RunTerminalStatus,
   type RunUsageTotals,
   type WorkflowSpec,
+  type WorkflowContinuation,
   type WorkflowStepId,
   type WorkflowStopReason,
 } from "../../contracts/run-contracts.js";
@@ -119,6 +120,7 @@ import { isWorkflowChildStopReason, workflowAdmissionStopReason, workflowStopMes
 import { WORKFLOW_PAUSE_PREFIX, workflowControlState } from "./control-state.js";
 import { AgenCDaemonWorkflowControlError } from "./run-control-service.js";
 import type { RunPauseParams, RunResumeParams, RunWorkflowControlState, RunWorkflowRuntimeFailure } from "../protocol/index.js";
+import { completedContinuationSource, continuationRunId } from "./continuation.js";
 import {
   deriveStageProjection,
   finalizeIdempotencyKey,
@@ -298,8 +300,9 @@ export interface WorkflowWorktreeBroker {
     context?: { readonly runId?: string },
   ): Promise<BaseState>;
   provision(
-    spec: Pick<WorkflowSpec, "runId" | "repoPath" | "baseCommit">,
+    spec: Pick<WorkflowSpec, "runId" | "repoPath" | "baseCommit" | "continuationOf">,
   ): Promise<WorktreeHandle>;
+  validateContinuation?(input: { readonly runId: string; readonly repoPath: string; readonly source: WorkflowContinuation }): Promise<void>;
   exportPatch(input: {
     readonly handle: WorktreeHandle;
     readonly baseCommit: string;
@@ -379,6 +382,7 @@ export interface VerifiedChangeWorkflowControllerDeps {
 // ---------------------------------------------------------------------------
 
 export interface WorkflowStartParams {
+  readonly continuation?: { readonly sourceRunId: string; readonly requestId: string };
   readonly goal: string;
   readonly repoPath: string;
   readonly model?: string;
@@ -399,6 +403,8 @@ export interface WorkflowStartParams {
 }
 
 export interface WorkflowStartResult {
+  readonly replayed?: boolean;
+  readonly continuationOf?: WorkflowContinuation;
   readonly runId: string;
   readonly requestedPermissionMode: WorkflowSpec["permissionMode"];
   readonly effectivePermissionMode?: PermissionMode;
@@ -604,6 +610,7 @@ export class VerifiedChangeWorkflowController {
   readonly #providerWaits = new Map<string, { stepId: string; scope: ProviderWaitScope }>();
   /** One bounded observation per stopped run; never an alternative terminal authority. */
   readonly #runtimeFailures = new Map<string, RunWorkflowRuntimeFailure>();
+  readonly #continuationRequests = new Map<string, { digest: string; promise: Promise<WorkflowStartResult> }>();
 
   constructor(deps: VerifiedChangeWorkflowControllerDeps) {
     this.#deps = deps;
@@ -624,6 +631,54 @@ export class VerifiedChangeWorkflowController {
   async start(
     params: WorkflowStartParams,
     envOverrides?: Readonly<Record<string, string>>,
+  ): Promise<WorkflowStartResult> {
+    if (params.continuation === undefined) return this.#start(params, envOverrides);
+    const request = params.continuation;
+    if (!/^[a-zA-Z0-9._:-]{1,128}$/u.test(request.requestId) || !request.sourceRunId.trim()) {
+      throw new TypeError("Continue requires a source Goal and a bounded request ID.");
+    }
+    if (params.runId !== undefined) throw new TypeError("A continuation run ID is assigned from its request ID.");
+    if (!params.goal.trim() || !Number.isFinite(params.budget?.maxCostUsd) || params.budget!.maxCostUsd! <= 0
+      || params.budget?.deadlineAt === undefined || !Number.isFinite(Date.parse(params.budget.deadlineAt))) {
+      throw new TypeError("Continue requires a new goal, an explicit additional cost limit, and a deadline.");
+    }
+    const runId = continuationRunId(request.sourceRunId, request.requestId);
+    const requestDigest = sha256Digest(canonicalizeJson(params));
+    const pending = this.#continuationRequests.get(runId);
+    if (pending !== undefined) {
+      if (pending.digest !== requestDigest) throw new TypeError("This continuation request ID was already used with different instructions or limits.");
+      return { ...await pending.promise, replayed: true };
+    }
+    const repo = this.#deps.durability({ runId, repoPath: params.repoPath });
+    const previous = repo.getEffect(runId, "workflow.intake");
+    if (previous !== undefined) {
+      const evidence = readWorkflowStepEvidence(previous);
+      const spec = evidence.spec as WorkflowSpec | undefined;
+      if (previous.outcome !== "committed" || spec?.continuationOf?.requestDigest !== requestDigest
+        || spec.runId !== runId || evidence.specDigest !== computeSpecDigest(spec)) {
+        throw new TypeError("This continuation request ID is already recorded with different instructions or incomplete intake. Inspect its run before retrying.");
+      }
+      return { runId, specDigest: evidence.specDigest!, baseCommit: spec.baseCommit, baseDirty: spec.baseDirty,
+        requestedPermissionMode: spec.permissionMode, continuationOf: spec.continuationOf, replayed: true };
+    }
+    if (repo.currentEpoch(runId) !== undefined) {
+      throw new TypeError("This continuation request already opened a run but did not commit intake. Inspect its run before creating another request.");
+    }
+    if (Date.parse(params.budget.deadlineAt) <= this.#now().getTime()) throw new TypeError("The continuation deadline must be in the future.");
+    const source = completedContinuationSource({ repo: this.#deps.durability({ runId: request.sourceRunId }),
+      sourceRunId: request.sourceRunId, repoPath: params.repoPath, requestId: request.requestId, requestDigest });
+    // Reserve the request before bootstrap can yield. The durable intake is
+    // the retry authority once this short-lived promise is removed.
+    const promise = this.#start({ ...params, runId }, envOverrides, source);
+    this.#continuationRequests.set(runId, { digest: requestDigest, promise });
+    try { return await promise; }
+    finally { if (this.#continuationRequests.get(runId)?.promise === promise) this.#continuationRequests.delete(runId); }
+  }
+
+  async #start(
+    params: WorkflowStartParams,
+    envOverrides?: Readonly<Record<string, string>>,
+    continuationOf?: WorkflowContinuation,
   ): Promise<WorkflowStartResult> {
     for (const command of params.requiredVerification) {
       if (isTrivialVerificationCommand(command.script)) {
@@ -682,11 +737,19 @@ export class VerifiedChangeWorkflowController {
       const base = await this.#deps.worktrees.captureBaseState(params.repoPath, {
         runId,
       });
+      if (continuationOf !== undefined) {
+        if (base.dirty || (base.baseCommit !== continuationOf.sourceBaseCommit && base.baseCommit !== continuationOf.sourceHeadCommit)) {
+          throw new TypeError("The checkout changed since the source Goal. Continue from its unchanged clean base or its exact delivered commit.");
+        }
+        if (this.#deps.worktrees.validateContinuation === undefined) throw new TypeError("This runtime cannot validate a delivered Goal for continuation.");
+        await this.#deps.worktrees.validateContinuation({ runId, repoPath: params.repoPath, source: continuationOf });
+      }
       const spec = freezeWorkflowSpec(
         runId,
         params,
         base,
         this.#deps.defaultReviewerModel?.(),
+        continuationOf,
       );
       const specDigest = computeSpecDigest(spec);
       admission = this.#deps.admission({
@@ -745,6 +808,7 @@ export class VerifiedChangeWorkflowController {
       specDigest: ctx.specDigest,
       baseCommit: ctx.spec.baseCommit,
       baseDirty: ctx.spec.baseDirty,
+      ...(ctx.spec.continuationOf !== undefined ? { continuationOf: ctx.spec.continuationOf } : {}),
       requestedPermissionMode: ctx.spec.permissionMode,
       ...(effectivePermissionMode !== undefined ? { effectivePermissionMode } : {}),
     };
@@ -3003,12 +3067,14 @@ function freezeWorkflowSpec(
   params: WorkflowStartParams,
   base: BaseState,
   daemonDefaultModel: string | undefined,
+  continuationOf?: WorkflowContinuation,
 ): WorkflowSpec {
   return {
     runId,
     goal: params.goal,
     repoPath: params.repoPath,
     baseCommit: base.baseCommit,
+    ...(continuationOf !== undefined ? { continuationOf } : {}),
     baseDirty: {
       dirty: base.dirty,
       summaryDigest: base.summaryDigest,

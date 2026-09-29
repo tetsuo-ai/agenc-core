@@ -47,10 +47,11 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.24 adds durable child task admission and restart recovery references.
  * 1.25 adds cooperative workflow pause/resume and its durable control status.
  * 1.26 adds live workflow stop observations when terminal persistence fails.
+ * 1.27 adds explicit, idempotent continuation of completed verified results.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.26.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.27.0" as const;
 
 export const AGENC_DAEMON_METHODS = [
     "remote.capabilities",
@@ -774,6 +775,11 @@ export interface RunStartVerificationCommand extends JsonObject {
 }
 
 export interface RunStartParams extends JsonObject {
+    /** New iteration from a completed result. Requires explicit cost and deadline. */
+    readonly continuation?: {
+        readonly sourceRunId: string;
+        readonly requestId: string;
+    };
     /** Ephemeral client credential snapshot. Never persisted in the workflow spec. */
     readonly envOverrides?: {
         readonly [key: string]: string;
@@ -1247,9 +1253,12 @@ export type AgenCDaemonMethodCapabilities = JsonObject & {
 /** A session authority may carry its in-flight toolCallId; that write answers during the turn. */
 export const AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY = "routine.sessionAuthority.v1" as const;
 
+export const AGENC_WORKFLOW_CONTINUATION_CAPABILITY = "workflow.continuation.v1" as const;
+
 export type AgenCDaemonServerCapabilities = JsonObject & {
     readonly [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: AgenCDaemonMethodCapabilities;
     readonly [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]?: true;
+    readonly [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]?: true;
 };
 
 export interface DaemonInstanceIdentity extends JsonObject {
@@ -1614,6 +1623,40 @@ export interface RunWorkflowRuntimeFailure extends JsonObject {
     };
 }
 
+/** Immutable provenance pinned by Core, never supplied as a git revision by a client. */
+export interface RunWorkflowContinuation extends JsonObject {
+    readonly sourceRunId: string;
+    readonly sourceSpecDigest: string;
+    readonly sourceBaseCommit: string;
+    readonly sourceHeadCommit: string;
+    readonly sourceTreeHash: string;
+    readonly sourcePatchDigest: string;
+    readonly sourceSealDigest: string;
+    readonly seriesRootRunId: string;
+    readonly requestId: string;
+    readonly requestDigest: string;
+    /** Earlier iteration spend, including the source. Null remains unknown. */
+    readonly previousCostUsd: number | null;
+    readonly previousCostEstimated?: boolean;
+    readonly sourceUsage: {
+        readonly inputTokens: number;
+        readonly outputTokens: number;
+        readonly totalTokens: number;
+        readonly costUsd: number;
+        readonly costKnown?: boolean;
+        readonly costEstimated?: boolean;
+    } | null;
+}
+
+/** Recorded source for the Continue form. Core revalidates its Git snapshot at intake. */
+export interface RunWorkflowCompletedResult extends JsonObject {
+    readonly headCommit: string;
+    readonly specDigest: string;
+    readonly baseCommit: string;
+    readonly cumulativeCostUsd: number | null;
+    readonly cumulativeCostEstimated?: boolean;
+}
+
 /** Live runtime modes, declared as a pure wire union for SDK generation. */
 export type RunEffectivePermissionMode = "default" | "acceptEdits" | "plan" | "bypassPermissions" | "dontAsk" | "auto" | "unattended" | "bubble";
 
@@ -1627,6 +1670,8 @@ export interface RunWorkflowStatus extends JsonObject {
     /** Absent on daemons without durable workflow controls. */
     readonly control?: RunWorkflowControlState;
     readonly runtimeFailure?: RunWorkflowRuntimeFailure;
+    readonly continuationOf?: RunWorkflowContinuation;
+    readonly completedResult?: RunWorkflowCompletedResult;
     /** Mode requested in the frozen workflow spec; does not establish live authority. */
     readonly requestedPermissionMode?: RunStartParams["permissionMode"];
     /** Actual mode observed from the owning live session; absent when unavailable. */
@@ -1854,6 +1899,9 @@ export interface RunStartBaseDirty extends JsonObject {
 }
 
 export interface RunStartResult extends JsonObject {
+    /** True when the exact continuation request already owns this run and budget. */
+    readonly replayed?: boolean;
+    readonly continuationOf?: RunWorkflowContinuation;
     readonly runId: string;
     /** Canonical digest of the frozen WorkflowSpec (the spec's durable identity). */
     readonly specDigest: string;

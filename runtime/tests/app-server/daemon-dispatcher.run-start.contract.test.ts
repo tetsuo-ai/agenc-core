@@ -245,6 +245,7 @@ class MemoryLedger implements WorkflowEvidenceLedger {
 }
 
 class FakeWorktrees implements WorkflowWorktreeBroker {
+  async validateContinuation(): Promise<void> {}
   provisions = 0;
   readonly patchText = "diff --git a/f b/f\n--- a/f\n+++ b/f\n+x\n";
 
@@ -492,6 +493,47 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("daemon dispatcher — run.start", () => {
+  it("advertises continuation only with the implemented feature and rejects unsupported requests", async () => {
+    const { initialize } = await initializedConnection();
+    expect((initialize as unknown as { result: { capabilities: JsonObject } }).result.capabilities["workflow.continuation.v1"]).toBe(true);
+    const legacy = new AgenCDaemonJsonRpcDispatcher({ agentManager: new AgenCDaemonAgentManager(),
+      workflow: { startRun: async () => { throw new Error("must not start a plain Goal"); } } });
+    const connection = legacy.createConnection();
+    const initialized = await connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "init", method: "initialize", params: { protocol: { version: "1.0.0" } } });
+    expect((initialized as unknown as { result: { capabilities: JsonObject } }).result.capabilities).not.toHaveProperty("workflow.continuation.v1");
+    const response = await connection.dispatch({ jsonrpc: JSON_RPC_VERSION, id: "continue", method: "run.start",
+      params: startParams({ continuation: { sourceRunId: "old-run", requestId: "retry" }, maxCostUsd: 1, deadlineAt: "2099-01-01T00:00:00.000Z" }) });
+    expect(response).toMatchObject({ error: { code: -32602, message: expect.stringContaining("does not support") } });
+  });
+
+  it("routes a continuation once and never re-registers its completed rail row on retry", async () => {
+    const source = await dispatchRunStart(startParams());
+    await harness.controller.awaitRun(source.result!.runId);
+    const params = startParams({ goal: "Add the next feature", continuation: { sourceRunId: source.result!.runId, requestId: "feature-next" },
+      maxCostUsd: 1, deadlineAt: "2099-01-01T00:00:00.000Z" });
+    const continued = await dispatchRunStart(params);
+    expect(continued.error).toBeUndefined();
+    await harness.controller.awaitRun(continued.result!.runId);
+    expect(continued.result).toMatchObject({ continuationOf: { sourceRunId: source.result!.runId, sourceHeadCommit: HEAD_COMMIT } });
+    const registered = harness.recorded.length;
+    const retry = await dispatchRunStart(params);
+    expect(retry.result).toMatchObject({ runId: continued.result!.runId, replayed: true });
+    expect(harness.recorded).toHaveLength(registered);
+    const changed = await dispatchRunStart({ ...params, maxCostUsd: 2 });
+    expect(changed.error).toMatchObject({ message: expect.stringContaining("different instructions") });
+  });
+
+  it.each([
+    { continuation: { sourceRunId: "source", requestId: "request" } },
+    { continuation: { sourceRunId: "source", requestId: "request" }, maxCostUsd: 1 },
+    { continuation: { sourceRunId: "source", requestId: "bad request" }, maxCostUsd: 1, deadlineAt: "2099-01-01T00:00:00.000Z" },
+    { continuation: { sourceRunId: "source", requestId: "request", sourceHeadCommit: HEAD_COMMIT }, maxCostUsd: 1, deadlineAt: "2099-01-01T00:00:00.000Z" },
+  ])("rejects invalid continuation transport before creating a run: %j", async continuation => {
+    const response = await dispatchRunStart(startParams(continuation));
+    expect(response.error?.code).toBe(-32602);
+    expect(harness.recorded).toEqual([]);
+  });
+
   it("advertises the run.start capability exactly when the workflow seam exists", async () => {
     const { initialize } = await initializedConnection();
     const capabilities = (

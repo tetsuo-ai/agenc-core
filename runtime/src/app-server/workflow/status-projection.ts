@@ -27,7 +27,7 @@ import type {
 import { deriveAllStageProjections, readWorkflowStepEvidence } from "./steps.js";
 import type { ProviderWait } from "../../recovery/provider-wait.js";
 import type { PermissionMode } from "../../permissions/types.js";
-import type { RunWorkflowControlState, RunWorkflowRuntimeFailure } from "../protocol/index.js";
+import type { RunWorkflowCompletedResult, RunWorkflowControlState, RunWorkflowRuntimeFailure } from "../protocol/index.js";
 import { workflowControlState } from "./control-state.js";
 
 export interface WorkflowStatusStep {
@@ -45,6 +45,8 @@ export interface WorkflowRunStatus {
   readonly control: RunWorkflowControlState;
   /** Volatile execution health; never substitutes for the durable terminal. */
   readonly runtimeFailure?: RunWorkflowRuntimeFailure;
+  readonly continuationOf?: WorkflowSpec["continuationOf"];
+  readonly completedResult?: RunWorkflowCompletedResult;
   readonly requestedPermissionMode?: WorkflowSpec["permissionMode"];
   /** Only a live, owned Session can supply this field; durable projection cannot. */
   readonly effectivePermissionMode?: PermissionMode;
@@ -128,8 +130,26 @@ export function projectWorkflowStatus(input: {
   const permissionMode = spec !== null && typeof spec === "object"
     ? (spec as Record<string, unknown>).permissionMode
     : undefined;
+  const finalized = input.effects.find(effect => effect.stepId === "workflow.finalize" && effect.outcome === "committed");
+  const delivered = finalized === undefined ? undefined : readWorkflowStepEvidence(finalized).finalize;
+  const sourceSpec = spec !== null && typeof spec === "object" ? spec as WorkflowSpec : undefined;
+  const sourceDigest = intake === undefined ? undefined : readWorkflowStepEvidence(intake).specDigest;
+  const previousCost = sourceSpec?.continuationOf === undefined ? 0 : sourceSpec.continuationOf.previousCostUsd;
+  const usage = input.terminal?.usage;
+  const totalCost = usage != null && usage.costKnown !== false && previousCost !== null
+    && Number.isFinite(previousCost) && previousCost >= 0 && Number.isFinite(usage.costUsd) && usage.costUsd >= 0
+    ? previousCost + usage.costUsd : null;
+  const completedResult = input.terminal?.status === "completed" && sourceSpec !== undefined
+    && sourceDigest !== undefined && delivered?.headCommit !== undefined
+    ? { headCommit: delivered.headCommit, specDigest: sourceDigest, baseCommit: sourceSpec.baseCommit,
+        cumulativeCostUsd: totalCost !== null && Number.isFinite(totalCost) ? totalCost : null,
+        ...(usage?.costEstimated === true || sourceSpec.continuationOf?.previousCostEstimated === true
+          ? { cumulativeCostEstimated: true } : {}) } : undefined;
   return {
     runId: input.runId,
+    ...(completedResult !== undefined ? { completedResult } : {}),
+    ...((spec as WorkflowSpec | undefined)?.continuationOf !== undefined
+      ? { continuationOf: (spec as WorkflowSpec).continuationOf } : {}),
     control: workflowControlState({ ...input, suspensions: input.suspensions ?? [], terminal: input.terminal !== undefined }),
     ...(permissionMode === "default" || permissionMode === "plan" || permissionMode === "acceptEdits" || permissionMode === "bypassPermissions"
       ? { requestedPermissionMode: permissionMode }

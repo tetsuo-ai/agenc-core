@@ -94,6 +94,7 @@ import {
   discardCancelledWorktree,
   exportPatchArtifacts,
   provisionWorkflowWorktree,
+  validateContinuationSnapshot,
   workflowWorktreeSlug,
 } from "../../workflow/worktree-lifecycle.js";
 import type {
@@ -839,6 +840,10 @@ export function createWorkflowSessionSeams(
   };
 
   const worktrees: WorkflowWorktreeBroker = {
+    validateContinuation: async (input) => {
+      const entry = await requireEntry(input.runId, "worktrees.validateContinuation");
+      await validateContinuationSnapshot({ ...input, broker: sessionBroker(entry, input.repoPath) });
+    },
     captureBaseState: async (repoPath, context) => {
       const entry = await requireEntry(
         context?.runId,

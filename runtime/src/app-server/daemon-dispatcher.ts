@@ -111,6 +111,7 @@ import type { AgenCDaemonProjectTrustService } from "./project-trust.js";
 import {
   AGENC_DAEMON_INTERNAL_METHODS,
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
+  AGENC_WORKFLOW_CONTINUATION_CAPABILITY,
   AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY,
   AGENC_DAEMON_METHODS,
   AGENC_DAEMON_PROTOCOL_VERSION,
@@ -226,6 +227,7 @@ import { AgenCDaemonWorkflowControlError } from "./workflow/run-control-service.
  * implementations.
  */
 export interface AgenCDaemonWorkflowStartService {
+  readonly supportsContinuation?: true;
   startRun(params: RunStartParams): Promise<RunStartResult>;
   /** Advertised only when a durable control implementation is wired. */
   pauseRun?(params: RunPauseParams): Promise<RunPauseResult>;
@@ -511,6 +513,7 @@ function buildServerCapabilities(
       methodCapabilities,
     ) as AgenCDaemonMethodCapabilities,
     ...(inputs.routines !== undefined ? { [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]: true } : {}),
+    ...(inputs.workflow?.supportsContinuation === true ? { [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]: true } : {}),
   }) as AgenCDaemonServerCapabilities;
 }
 
@@ -937,11 +940,13 @@ export class AgenCDaemonJsonRpcDispatcher {
           const negotiated = negotiateInitializeProtocol(
             initializeParams,
             connection.remoteAccess ? {
-              ...Object.fromEntries(Object.entries(this.#serverCapabilities).filter(([key]) => key !== AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY)),
+              ...Object.fromEntries(Object.entries(this.#serverCapabilities).filter(([key]) => key !== AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY && key !== AGENC_WORKFLOW_CONTINUATION_CAPABILITY)),
               [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.fromEntries(Object.entries(this.#serverCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY]).map(([key, value]) => [key, value && connection.remoteAccess!.allowsMethod(key)])) as AgenCDaemonMethodCapabilities,
               // Match the filtered routine methods in this remote-access view.
               ...(this.#serverCapabilities[AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY] && connection.remoteAccess.allowsMethod("routine.create") && connection.remoteAccess.allowsMethod("routine.update")
                 ? { [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]: true as const } : {}),
+              ...(this.#serverCapabilities[AGENC_WORKFLOW_CONTINUATION_CAPABILITY] && connection.remoteAccess.allowsMethod("run.start")
+                ? { [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]: true as const } : {}),
             } : this.#serverCapabilities,
           );
           if (!negotiated.supported) {
@@ -1297,14 +1302,19 @@ export class AgenCDaemonJsonRpcDispatcher {
           return methodNotImplementedResponse(id, method);
         }
         return successResponse(id, await this.#workflow.resumeRun(validateRunResumeParams(params)));
-      case "run.start":
+      case "run.start": {
         if (this.#workflow === undefined) {
           return methodNotImplementedResponse(id, method);
         }
+        const startParams = validateRunStartParams(params);
+        if (startParams.continuation !== undefined && this.#workflow.supportsContinuation !== true) {
+          throw invalidParams("This daemon does not support completed Goal continuation.");
+        }
         return successResponse(
           id,
-          await this.#workflow.startRun(validateRunStartParams(params)),
+          await this.#workflow.startRun(startParams),
         );
+      }
       case "csvJob.review.list":
         if (this.#csvJobReview === undefined) {
           return methodNotImplementedResponse(id, method);
@@ -3164,9 +3174,21 @@ function validateRunStartParams(params: JsonObject): RunStartParams {
     numberFields: ["maxCostUsd", "maxTokens", "maxImplementAttempts"],
     stringArrayFields: ["unattendedAllow", "unattendedDeny"],
     valueFields: ["requiredVerification"],
-    objectFields: ["envOverrides"],
+    objectFields: ["envOverrides", "continuation"],
   });
   validateRequiredString(validated, "run.start", "goal");
+  if (validated.continuation !== undefined) {
+    const continuation = validated.continuation as JsonObject;
+    validateObjectShape(continuation, { methodName: "run.start.continuation", stringFields: ["sourceRunId", "requestId"] });
+    validateRequiredString(continuation, "run.start.continuation", "sourceRunId");
+    if (typeof continuation.sourceRunId !== "string" || continuation.sourceRunId.length > 256
+      || typeof continuation.requestId !== "string" || !/^[a-zA-Z0-9._:-]{1,128}$/u.test(continuation.requestId)) {
+      throw invalidParams("Continue requires a source Goal and a bounded request ID.");
+    }
+    if (validated.maxCostUsd === undefined || typeof validated.deadlineAt !== "string" || !Number.isFinite(Date.parse(validated.deadlineAt))) {
+      throw invalidParams("Continue requires an explicit additional cost limit and deadline.");
+    }
+  }
   let cwd: string | undefined;
   if (validated.cwd !== undefined) {
     // Same DAE-02 discipline as agent.create/session.create: an absolute,

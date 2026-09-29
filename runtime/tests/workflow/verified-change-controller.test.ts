@@ -330,6 +330,7 @@ const BASE_COMMIT = "c".repeat(40);
 const HEAD_COMMIT = "d".repeat(40);
 
 class FakeWorktrees implements WorkflowWorktreeBroker {
+  async validateContinuation(): Promise<void> {}
   dirty = false;
   movement: BaseMovementCheck = { kind: "unmoved" };
   patchText = "diff --git a/f b/f\n--- a/f\n+++ b/f\n+x\n";
@@ -1157,6 +1158,100 @@ describe("workflow terminal persistence failures", () => {
     release.resolve();
     await harness.controller.awaitRun(RUN_ID);
     expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeDefined();
+  });
+});
+
+describe("completed Goal continuation", () => {
+  function request(overrides: Partial<WorkflowStartParams> = {}): WorkflowStartParams {
+    const { runId: _runId, ...params } = startParams(harness);
+    return { ...params, goal: "Add the next feature", budget: { maxCostUsd: 1, deadlineAt: "2099-01-01T00:00:00.000Z" },
+      continuation: { sourceRunId: RUN_ID, requestId: "next-feature" }, ...overrides };
+  }
+
+  it("shares one budget for concurrent and durable retries while keeping the source immutable", async () => {
+    await runToTerminal(harness);
+    const source = harness.repo.getCurrentTerminalResult(RUN_ID);
+    const opening = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    harness.hooks.beforeJournalOpen = async () => { opening.resolve(); await release.promise; };
+    const first = harness.controller.start(request());
+    await opening.promise;
+    const duplicate = harness.controller.start(request());
+    await expect(harness.controller.start(request({ goal: "Different goal" }))).rejects.toThrow("different instructions");
+    release.resolve();
+    const [started, replay] = await Promise.all([first, duplicate]);
+    expect(started.runId).toMatch(/^wf-[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+    expect(replay).toMatchObject({ runId: started.runId, replayed: true });
+    await harness.controller.awaitRun(started.runId);
+    expect(harness.repo.getCurrentTerminalResult(started.runId)?.status).toBe("completed");
+    const opened = harness.hooks.opened.length;
+    expect(await harness.controller.start(request())).toMatchObject({ runId: started.runId, replayed: true });
+    expect(harness.hooks.opened).toHaveLength(opened);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toEqual(source);
+    const spec = (harness.repo.getEffect(started.runId, "workflow.intake")?.evidence as { spec: WorkflowSpec }).spec;
+    expect(spec).toMatchObject({ runId: started.runId, goal: "Add the next feature", budget: request().budget,
+      baseCommit: BASE_COMMIT, continuationOf: { sourceRunId: RUN_ID, sourceHeadCommit: HEAD_COMMIT,
+        sourceBaseCommit: BASE_COMMIT, seriesRootRunId: RUN_ID, previousCostUsd: null } });
+    expect(harness.controller.status(started.runId)?.continuationOf).toEqual(spec.continuationOf);
+    expect(harness.controller.status(RUN_ID)?.completedResult).toMatchObject({ headCommit: HEAD_COMMIT, cumulativeCostUsd: null });
+    await expect(harness.controller.start(request({ budget: { maxCostUsd: 2, deadlineAt: request().budget!.deadlineAt } })))
+      .rejects.toThrow("different instructions");
+  });
+
+  it("records previous canonical spend once across a linked series", async () => {
+    Object.assign(harness.admission, { getUsageSummary: () => ({ runId: harness.admission.scope.runId,
+      inputTokens: 700, outputTokens: 100, totalTokens: 800, costUsd: 0.14, costEstimated: true, sequence: 1,
+      modelCalls: 1, hasUnknownCost: false, heldCostUsd: 0, models: [], agents: [] }) });
+    await runToTerminal(harness);
+    const next = await harness.controller.start(request());
+    await harness.controller.awaitRun(next.runId);
+    expect(next.continuationOf?.previousCostUsd).toBe(0.14);
+    expect(next.continuationOf?.previousCostEstimated).toBe(true);
+    expect(harness.controller.status(next.runId)?.completedResult?.cumulativeCostUsd).toBe(0.28);
+    expect(harness.controller.status(next.runId)?.completedResult?.cumulativeCostEstimated).toBe(true);
+    const third = await harness.controller.start(request({ continuation: { sourceRunId: next.runId, requestId: "third" } }));
+    await harness.controller.awaitRun(third.runId);
+    expect(third.continuationOf).toMatchObject({ seriesRootRunId: RUN_ID, previousCostUsd: 0.28 });
+  });
+
+  it.each([{ budget: {} }, { budget: { maxCostUsd: 1 } }, { budget: { maxCostUsd: 1, deadlineAt: "yesterday" } },
+    { budget: { maxCostUsd: 1, deadlineAt: "2000-01-01T00:00:00.000Z" } }])("refuses missing or expired explicit bounds before opening a writer: %j", async invalid => {
+    await runToTerminal(harness);
+    const opened = harness.hooks.opened.length;
+    await expect(harness.controller.start(request(invalid))).rejects.toThrow(/Continue requires|future/u);
+    expect(harness.hooks.opened).toHaveLength(opened);
+  });
+
+  it("rejects incomplete intake on retry without allocating a second run", async () => {
+    await runToTerminal(harness);
+    armFailpoint("before_intake_commit");
+    await expect(harness.controller.start(request())).rejects.toThrow(/failpoint/u);
+    disarmFailpoint();
+    const opened = harness.hooks.opened.length;
+    await expect(harness.controller.start(request())).rejects.toThrow("already recorded");
+    expect(harness.hooks.opened).toHaveLength(opened);
+  });
+
+  it("rejects a source whose frozen spec no longer matches its digest", async () => {
+    await runToTerminal(harness);
+    const getEffect = harness.repo.getEffect.bind(harness.repo);
+    const read = vi.spyOn(harness.repo, "getEffect").mockImplementation((runId, stepId) => {
+      const effect = getEffect(runId, stepId);
+      return runId === RUN_ID && stepId === "workflow.intake" && effect !== undefined
+        ? { ...effect, evidence: { ...(effect.evidence as Record<string, unknown>), specDigest: `sha256:${"0".repeat(64)}` } } : effect;
+    });
+    const opened = harness.hooks.opened.length;
+    await expect(harness.controller.start(request())).rejects.toThrow("source Goal spec");
+    expect(harness.hooks.opened).toHaveLength(opened);
+    read.mockRestore();
+  });
+
+  it("does not continue a failed or cancelled source", async () => {
+    harness.spawner.queue("plan", { status: "failed", finalMessage: "Plan failed", usage: null });
+    harness.spawner.queue("plan", { status: "failed", finalMessage: "Plan failed", usage: null });
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("failed");
+    await expect(harness.controller.start(request())).rejects.toThrow("completed verified Goal");
   });
 });
 
