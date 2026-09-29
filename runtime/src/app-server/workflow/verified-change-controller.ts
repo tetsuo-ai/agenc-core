@@ -1430,14 +1430,18 @@ export class VerifiedChangeWorkflowController {
     const { result } = await this.#runStageWithRetries(ctx, {
       stage: "workflow.plan",
       maxAttempts: MAX_STAGE_ATTEMPTS,
-      makePlan: (attempt) =>
-        this.#spawnPlan(ctx, {
+      makePlan: (attempt) => {
+        const previous = attempt > 1
+          ? ctx.repo.getEffect(ctx.runId, stageStepId("workflow.plan", attempt - 1))
+          : undefined;
+        return this.#spawnPlan(ctx, {
           stage: "workflow.plan",
           stepId: stageStepId("workflow.plan", attempt),
           attempt,
           spawnKind: "plan",
           childRunId: `${ctx.runId}:plan#${attempt}`,
-          prompt: buildPlanPrompt(ctx.spec),
+          prompt: buildPlanPrompt(ctx.spec, previous === undefined
+            ? undefined : readWorkflowStepEvidence(previous).failure?.message),
           decorate: (outcome) => {
             if (outcome.status !== "completed") return {};
             const planBlocked = parsePlanBlockedResponse(outcome.finalMessage);
@@ -1450,7 +1454,8 @@ export class VerifiedChangeWorkflowController {
               return { failure: { reason: "invalid_planned_verification", message: errorMessage(error) } };
             }
           },
-        }),
+        });
+      },
     });
     const planBlocked = readPlanBlocked(result.evidence.planBlocked);
     if (planBlocked !== undefined) {
@@ -3113,7 +3118,7 @@ const AUTONOMOUS_GOAL_INSTRUCTIONS = [
   "Keep existing-project changes focused. Do not weaken, skip, or replace required verification to get a pass.",
 ].join("\n");
 
-function buildPlanPrompt(spec: WorkflowSpec): string {
+function buildPlanPrompt(spec: WorkflowSpec, previousFailure?: string): string {
   return [
     "You are the planning stage of a verified-change workflow.",
     "Produce a concrete implementation plan sufficient to fulfill the goal below.",
@@ -3121,6 +3126,11 @@ function buildPlanPrompt(spec: WorkflowSpec): string {
     "Include your interpretation, deliverables, and how each required command will verify them. In a greenfield workspace, plan the files and real checks the implementer must create; do not substitute true, :, exit 0, or echo.",
     "Do NOT modify any files. Respond with the plan or an explicit requirement conflict report.",
     PLAN_BLOCKED_INSTRUCTIONS,
+    ...(previousFailure === undefined ? [] : [
+      "## Previous plan validation failure",
+      boundedWorkflowDiagnostic(previousFailure),
+      "Correct the plan's check construction without weakening the goal or its acceptance criteria. No implementation has started.",
+    ]),
     "",
     "## Goal",
     spec.goal,
@@ -3130,6 +3140,7 @@ function buildPlanPrompt(spec: WorkflowSpec): string {
       "No client checks were supplied. Inspect the repository and select its real test, build or lint commands.",
       "For a new project, choose the commands the implementation will create, including tests and a CLI smoke run when applicable.",
       "These commands will be frozen when this plan commits and must pass unchanged. Run from the repository root; include any needed cd. Commands run in listed order.",
+      "Commands are shell scripts. Do not use legacy backtick command substitution. Literal Markdown backticks must be single-quoted or escaped; double quotes still allow shell substitution. Prefer repository test scripts. For a complex assertion, plan a test file and invoke it instead of embedding code in a shell string.",
       'For an ordinary implementation plan, end with exactly one fenced agenc-verification block containing a JSON array of command strings, for example:',
       '```agenc-verification',
       '["npm test", "npm run build && node dist/cli.js --help"]',

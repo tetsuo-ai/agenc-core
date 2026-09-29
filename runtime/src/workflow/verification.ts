@@ -85,7 +85,32 @@ export function plannedVerification(message: string): readonly { label: string; 
     throw new TypeError("The plan must name concrete verification commands, not placeholders");
   }
   if (new Set(scripts).size !== scripts.length) throw new TypeError("The plan repeats a verification command");
+  for (const script of scripts) {
+    if (hasLegacyBacktickSubstitution(script)) {
+      throw new TypeError("A planned check contains shell backtick substitution. Put literal backticks inside single quotes, escape them, or plan a test file and invoke it. Keep the same acceptance criteria.");
+    }
+  }
   return Object.freeze(scripts.map((script: string) => Object.freeze({ label: script, script })));
+}
+
+/** A conservative authoring lint for generated checks, not a shell security
+ * boundary. Legacy substitution commonly corrupts inline Markdown assertions.
+ * Complex shell programs should live in a planned test file. Client-supplied
+ * checks are never rewritten or subjected to this planner-only restriction. */
+function hasLegacyBacktickSubstitution(script: string): boolean {
+  let quote: "'" | '"' | undefined;
+  for (let index = 0; index < script.length; index++) {
+    const char = script[index];
+    if (quote === "'") {
+      if (char === "'") quote = undefined;
+      continue;
+    }
+    if (char === "\\") { index++; continue; }
+    if (char === "`") return true;
+    if (char === '"') quote = quote === '"' ? undefined : '"';
+    else if (char === "'" && quote === undefined) quote = "'";
+  }
+  return false;
 }
 
 function sha256(bytes: Uint8Array): `sha256:${string}` {

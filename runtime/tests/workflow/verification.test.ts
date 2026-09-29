@@ -268,6 +268,19 @@ describe("verification commands in model prompts", () => {
 
 describe("planned verification message contract", () => {
   const block = (value: unknown) => "Plan\n```agenc-verification\n" + JSON.stringify(value) + "\n```";
+  it.each([
+    'node -e "const s=require(\'fs\').readFileSync(\'README.md\',\'utf8\');if(!/```js[\\s\\S]*?```/.test(s))process.exit(1)"',
+    'test -s `pwd`/README.md',
+  ])("rejects shell backticks before freezing a generated check: %s", script => {
+    expect(() => plannedVerification(block([script]))).toThrow("shell backtick substitution");
+  });
+  it.each([
+    'node -e \'const fs=require("fs");if(!fs.readFileSync("README.md","utf8").includes("```js"))process.exit(1)\'',
+    'node -e "if(!require(\'fs\').readFileSync(\'README.md\',\'utf8\').includes(\'\\`\\`\\`js\'))process.exit(1)"',
+    'node --test test/readme.test.mjs',
+  ])("preserves literal backticks or a test-file invocation: %s", script => {
+    expect(plannedVerification(block([script]))[0]?.script).toBe(script);
+  });
   it("preserves exact commands and freezes the list and entries", () => {
     const checks = plannedVerification(block(["npm test", "cd cli && npm run build && node dist/cli.js --help"]));
     expect(checks.map(check => check.script)).toEqual(["npm test", "cd cli && npm run build && node dist/cli.js --help"]);
