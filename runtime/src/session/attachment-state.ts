@@ -64,6 +64,8 @@ export interface AttachmentTrackingState {
    * AgenC tracks it directly here).
    */
   lastDeferredToolsSet?: ReadonlySet<string>;
+  /** User-referenced deferred capability hint, emitted once per human turn. */
+  lastRequestedToolsTurnId?: string;
   /** Hash of the agent listing last announced. */
   lastAgentListingHash?: string;
   /**

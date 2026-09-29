@@ -71,3 +71,48 @@ test("a real Light turn advertises polling immediately after canonical async exe
   expect(completed.map((entry) => entry.toolName)).toEqual(["exec_command", "write_stdin"]);
   expect(completed.every((entry) => !entry.isError)).toBe(true);
 });
+
+test("a user-named deferred tool is announced once and still requires normal discovery", async () => {
+  const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true,
+    requireAdmission: false, sandboxExecutionBroker: explicitDangerBroker });
+  const requests: Array<{ names: string[]; messages: string; system: string }> = [];
+  const provider = mkProvider();
+  provider.chatStream = async (messages, _onChunk, options): Promise<LLMResponse> => {
+    requests.push({ names: (options?.tools ?? []).map(tool => tool.function.name),
+      messages: JSON.stringify(messages), system: options?.systemPrompt ?? "" });
+    const toolCalls = requests.length === 1
+      ? [{ id: "discover", name: "system.searchTools", arguments: '{"select":"TodoWrite"}' }]
+      : requests.length === 2
+        ? [{ id: "plan", name: "TodoWrite", arguments: '{"todos":[{"content":"Review the change","activeForm":"Reviewing the change","status":"completed"}]}' }]
+        : [];
+    return { content: toolCalls.length ? "" : "Done.", toolCalls,
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, model: "test-model",
+      finishReason: toolCalls.length ? "tool_calls" : "stop" };
+  };
+  const { session, events } = mkSession({ provider, registry, services: {
+    runtimeOptions: resolveAgentRuntimeOptions({}, { lightMode: true }),
+    sandboxExecutionBroker: explicitDangerBroker,
+    permissionModeRegistry: new PermissionModeRegistry(createEmptyToolPermissionContext({
+      mode: "bypassPermissions", isBypassPermissionsModeAvailable: true,
+    })),
+  } });
+  const prompt = "Use TodoWrite to track the review.";
+  await drain(runTurn(session, mkCtx({ sandboxPolicy: { value: "danger_full_access" },
+    permissionMode: "bypassPermissions" }), prompt, { rootHumanTurnText: prompt }));
+  expect(requests).toHaveLength(3);
+  expect(requests[0]!.names).not.toContain("TodoWrite");
+  expect(requests[1]!.names).toContain("TodoWrite");
+  expect(requests[1]!.names.slice(0, requests[0]!.names.length)).toEqual(requests[0]!.names);
+  for (const request of requests) {
+    expect(request.messages.match(/Referenced tools available through catalog search/g)).toHaveLength(1);
+    expect(request.system).toBe(requests[0]!.system);
+  }
+  const initial = JSON.parse(requests[0]!.messages);
+  for (const request of requests.slice(1)) {
+    expect(JSON.parse(request.messages).slice(0, initial.length)).toEqual(initial);
+  }
+  const completed = events.filter(event => event.msg.type === "tool_call_completed")
+    .map(event => event.msg.payload as { toolName: string; isError: boolean });
+  expect(completed.map(event => event.toolName)).toEqual(["system.searchTools", "TodoWrite"]);
+  expect(completed.every(event => !event.isError)).toBe(true);
+});

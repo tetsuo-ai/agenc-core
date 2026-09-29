@@ -202,6 +202,11 @@ export interface DeferredToolsDeltaAttachment {
   readonly removedNames: readonly string[];
 }
 
+export interface RequestedToolsAttachment {
+  readonly kind: "requested_tools";
+  readonly names: readonly string[];
+}
+
 /**
  * Subagent listing delta (new agents available, agents removed).
  * Source: upstream attachment donor `attachments.ts:1491-1560`.
@@ -374,6 +379,7 @@ export type Attachment =
   | OutputTokenUsageAttachment
   | CompactionReminderAttachment
   | DeferredToolsDeltaAttachment
+  | RequestedToolsAttachment
   | AgentListingDeltaAttachment
   | McpInstructionsDeltaAttachment
   | EditedTextFileAttachment

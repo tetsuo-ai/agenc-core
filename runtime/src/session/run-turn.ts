@@ -923,6 +923,7 @@ async function prepareSamplingRequestBoundary(
   const userInput = extractLastUserText(state.messagesForQuery);
   const rootHumanTurn = session.currentRootHumanTurn();
   discoverDirectMcpToolMentions(session, userInput);
+  const unavailableTools = session.services.registry.getUnavailableToolNames?.();
   const attachments = await getAttachments({
     sessionKey: session,
     lightMode: session.services.runtimeOptions?.lightMode === true,
@@ -943,6 +944,11 @@ async function prepareSamplingRequestBoundary(
     },
     userInput,
     loadedTools: builtTools(session, ctx),
+    ...(unavailableTools !== undefined ? {
+      catalogToolNames: session.services.registry.tools
+        .filter(tool => tool.metadata?.source === "builtin" && !unavailableTools.has(tool.name))
+        .map(tool => tool.name),
+    } : {}),
     discoveredToolNames:
       session.services.registry.getDiscoveredToolNames?.() ?? new Set(),
     messages: state.messagesForQuery,

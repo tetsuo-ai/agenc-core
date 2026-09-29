@@ -48,5 +48,6 @@ export interface ToolRegistry {
   toLLMTools(): LLMTool[];
   dispatch(toolCall: LLMToolCall): Promise<ToolDispatchResult>;
   getDiscoveredToolNames?(): ReadonlySet<string>;
+  getUnavailableToolNames?(): ReadonlySet<string>;
   discoverToolNames?(toolNames: readonly string[]): void;
 }

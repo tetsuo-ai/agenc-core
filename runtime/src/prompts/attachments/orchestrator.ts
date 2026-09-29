@@ -33,6 +33,7 @@ import { criticalReminderProducer } from "./critical-reminder.js";
 import { dateChangeProducer } from "./date-change.js";
 import { instructionUpdateProducer } from "./instruction-update.js";
 import { deferredToolsDeltaProducer } from "./deferred-tools-delta.js";
+import { requestedToolsProducer } from "./requested-tools.js";
 import { mcpInstructionsDeltaProducer } from "./mcp-delta.js";
 import { outputStyleProducer } from "./output-style.js";
 import { planModeProducer } from "./plan-mode.js";
@@ -117,6 +118,8 @@ export interface GetAttachmentsOptions {
    * `session.services.registry.getDiscoveredToolNames?.() ?? new Set()`.
    */
   readonly discoveredToolNames?: ReadonlySet<string>;
+  /** Available canonical names, including deferred tools, without schemas. */
+  readonly catalogToolNames?: readonly string[];
   /**
    * Conversation history projected for the next model request, post-
    * compaction. Producers scan this for prior `<system-reminder>` markers
@@ -198,6 +201,7 @@ const PRODUCERS: readonly AttachmentProducer[] = [
   //
   // Phase 3 — Mid-session deltas:
   deferredToolsDeltaProducer,
+  requestedToolsProducer,
   agentListingDeltaProducer,
   mcpInstructionsDeltaProducer,
   //

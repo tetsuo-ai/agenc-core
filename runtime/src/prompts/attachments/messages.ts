@@ -150,6 +150,12 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
         ),
       );
     }
+    case "requested_tools": {
+      const names = attachment.names.map(sanitizeSystemReminderContent);
+      return names.length === 0 ? null : userContextMessage(wrapSystemReminder(
+        `Referenced tools available through catalog search: ${names.join(", ")}.`,
+      ));
+    }
     case "deferred_tools_delta": {
       const parts: string[] = [];
       if (attachment.addedNames.length > 0) {
