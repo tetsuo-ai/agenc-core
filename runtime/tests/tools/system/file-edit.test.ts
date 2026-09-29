@@ -142,6 +142,45 @@ describe("Edit tool", () => {
     expect(tool.metadata?.mutating).toBe(true);
   });
 
+  test("Light reports all unchanged batch entries without applying the valid edit", async () => {
+    const file = await seedReadFile(root, "batch.txt", "alpha beta gamma\n");
+    const tool = createFileMultiEditTool({ allowedPaths: [root], lightMode: true });
+    const result = await tool.execute({ file_path: file, [SESSION_ID_ARG]: SESSION_ID, edits: [
+      { old_string: "alpha", new_string: "alpha" },
+      { old_string: "beta", new_string: "changed" },
+      { old_string: "gamma", new_string: "gamma" },
+    ] });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("edits[0], edits[2]");
+    expect(result.content).toContain("Remove unchanged entries");
+    expect(result.content).not.toContain("To create a file");
+    expectPreMutationNoEffect(result, FILE_MULTI_EDIT_TOOL_NAME);
+    expect(await readFile(file, "utf8")).toBe("alpha beta gamma\n");
+    const retry = await tool.execute({ file_path: file, [SESSION_ID_ARG]: SESSION_ID,
+      edits: [{ old_string: "beta", new_string: "changed" }] });
+    expect(retry.isError).not.toBe(true);
+    expect(await readFile(file, "utf8")).toBe("alpha changed gamma\n");
+  });
+
+  test("Light creation and unread-file errors name the required recovery", async () => {
+    const tool = createFileMultiEditTool({ allowedPaths: [root], lightMode: true });
+    const file = join(root, "needs-read.txt");
+    const empty = await tool.execute({ file_path: file, [SESSION_ID_ARG]: SESSION_ID,
+      edits: [{ old_string: "", new_string: "" }] });
+    expect(empty.content).toContain("new_string to its complete content");
+    expectPreMutationNoEffect(empty, FILE_MULTI_EDIT_TOOL_NAME);
+    await writeFile(file, "before");
+    for (const editing of [tool, createFileEditTool({ allowedPaths: [root], lightMode: true })]) {
+      const result = await editing.execute({ file_path: file, [SESSION_ID_ARG]: SESSION_ID,
+        old_string: "before", new_string: "after", edits: [{ old_string: "before", new_string: "after" }] });
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("Call FileRead with file_path");
+      expect(result.content).toContain("Shell reads do not refresh");
+      expectPreMutationNoEffect(result, editing.name);
+    }
+    expect(await readFile(file, "utf8")).toBe("before");
+  });
+
   test("a verified rollback after a post-write fault settles as no-effect (#2500)", async () => {
     const file = await seedReadFile(root, "rolled-back.txt", "alpha\nbeta\n");
     const tool = createFileEditTool({

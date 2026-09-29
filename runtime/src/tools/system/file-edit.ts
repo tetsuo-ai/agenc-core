@@ -1041,7 +1041,9 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         recordedSnapshot = getSessionReadSnapshot(sessionId, absoluteFilePath);
         if (!isAuthorizingSessionRead(recordedSnapshot)) {
           return preMutationErrorResult(
-            READ_BEFORE_WRITE_ERROR,
+            config.lightMode
+              ? `Nothing was written. Call FileRead with file_path ${JSON.stringify(file_path)} before retrying this edit. Shell reads do not refresh the edit snapshot.`
+              : READ_BEFORE_WRITE_ERROR,
             FILE_EDIT_TOOL_NAME,
           );
         }
@@ -1279,11 +1281,22 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         );
       }
 
+      const unchanged = edits.flatMap((edit, i) => edit.old_string === edit.new_string ? [i] : []);
+      if (config.lightMode && unchanged.length > 0) {
+        const entries = unchanged.slice(0, 30).map(i => `edits[${i}]`).join(", ");
+        const remainder = unchanged.length > 30 ? ` and ${unchanged.length - 30} more` : "";
+        const hint = edits.length === 1 && firstEdit.old_string === ""
+          ? "To create a file, set old_string to an empty string and new_string to its complete content."
+          : "Remove unchanged entries, then resubmit the complete batch. Existing files must first be read with FileRead.";
+        return preMutationErrorResult(
+          `Nothing was written. Identical old_string and new_string in ${entries}${remainder}. ${hint}`,
+          FILE_MULTI_EDIT_TOOL_NAME,
+        );
+      }
       for (const [i, edit] of edits.entries()) {
         if (edit.old_string === edit.new_string) {
           return preMutationErrorResult(
-            `No changes to make: edits[${i}].old_string and edits[${i}].new_string are exactly the same.` +
-              (config.lightMode ? " Nothing was written. To create a file, send one edit with old_string empty and new_string containing the file content." : ""),
+            `No changes to make: edits[${i}].old_string and edits[${i}].new_string are exactly the same.`,
             FILE_MULTI_EDIT_TOOL_NAME,
           );
         }
@@ -1412,7 +1425,9 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         recordedSnapshot = getSessionReadSnapshot(sessionId, absoluteFilePath);
         if (!isAuthorizingSessionRead(recordedSnapshot)) {
           return preMutationErrorResult(
-            READ_BEFORE_WRITE_ERROR,
+            config.lightMode
+              ? `Nothing was written. Call FileRead with file_path ${JSON.stringify(file_path)} before retrying this edit. Shell reads do not refresh the edit snapshot.`
+              : READ_BEFORE_WRITE_ERROR,
             FILE_MULTI_EDIT_TOOL_NAME,
           );
         }
