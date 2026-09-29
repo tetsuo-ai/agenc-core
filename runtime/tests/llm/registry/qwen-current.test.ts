@@ -3,7 +3,7 @@ import { createProvider } from "../../../src/llm/provider.js";
 import type { LLMTool } from "../../../src/llm/types.js";
 import { resolveProviderRuntimeRequest } from "../../../src/llm/provider-request.js";
 import { buildProviderModelCatalog, resolveProviderModelInput } from "../../../src/config/provider-model-authority.js";
-import { resolveRegisteredModelCatalogEntry } from "../../../src/llm/registry/model-catalog.js";
+import { resolveModelCatalogMetadata, resolveRegisteredModelCatalogEntry } from "../../../src/llm/registry/model-catalog.js";
 import { QWEN_CURRENT_MODELS } from "../../../src/llm/registry/qwen-current-models.js";
 import { chatCompletionsCapabilityHintsForProvider } from "../../../src/llm/wire/capability-gating.js";
 import { buildChatCompletionsRequest } from "../../../src/llm/wire/chat-completions.js";
@@ -44,6 +44,8 @@ describe("Qwen current native and hosted chat models", () => {
     expect(entry("qwen3.7-plus")?.maxOutputTokens).toBe(131_072);
     expect(entry("qwen3.7-flash")?.maxOutputTokens).toBe(131_072);
     expect(entry("qwen3-max")?.maxOutputTokensUpperLimit).toBe(65_536);
+    expect(resolveModelCatalogMetadata({ provider: "qwen", model: "qwen3-max" }))
+      .toMatchObject({ maxOutputTokens: 32_768, maxOutputTokensUpperLimit: 65_536, maxOutputTokensCappedDefault: true });
     expect(entry("kimi/kimi-k3")).toMatchObject({ inputModalities: ["text", "image"], visibility: "none" });
     expect(entry("deepseek-v4-pro-0813")?.supportedReasoningLevels).toEqual(["low", "high", "max"]);
   });

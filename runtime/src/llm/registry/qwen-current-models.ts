@@ -99,7 +99,7 @@ export const QWEN_CURRENT_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] 
     provider: "qwen", model: entry.model, displayName: entry.displayName,
     ...(entry.contextWindow === undefined ? {} : {contextWindow: entry.contextWindow, maxContextWindow: entry.contextWindow}),
     ...(entry.maxOutputTokens === undefined ? {} : {maxOutputTokens: entry.maxOutputTokens}),
-    ...(entry.maxOutputTokensUpperLimit === undefined ? {} : {maxOutputTokensUpperLimit: entry.maxOutputTokensUpperLimit, maxOutputTokensIsCappedDefault: true}),
+    ...(entry.maxOutputTokensUpperLimit === undefined ? {} : {maxOutputTokensUpperLimit: entry.maxOutputTokensUpperLimit, maxOutputTokensCappedDefault: true}),
     inputModalities: entry.vision ? ["text", "image"] as const : ["text"] as const,
     supportsToolUse: true, supportsParallelToolCalls: true,
     // JSON object support does not establish the JSON Schema contract Core uses.
