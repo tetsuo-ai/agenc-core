@@ -1080,12 +1080,19 @@ export class OpenAIProvider implements LLMProvider {
     }
   }
 
-  async getExecutionProfile() {
+  async getExecutionProfile(options?: LLMChatOptions) {
+    const model = options?.model?.trim() || this.config.model;
+    const qwenModel = this.name === "qwen" ? resolveQwenCurrentModel(model) : undefined;
+    // An answer-only cap plus an independent thinking budget can produce more
+    // billable output than the single reservation. Keep uncapped sessions
+    // usable, but do not promise a total ceiling to hard-budget admission.
+    const separateThinkingLimit = qwenModel !== undefined &&
+      !qwenModel.totalOutputCap && qwenModel.thinking !== "none";
     return {
       provider: this.name,
-      model: this.config.model,
+      model,
       usageReporting: "authoritative" as const,
-      supportsMaxOutputTokens: this.config.chatgptBackend !== true,
+      supportsMaxOutputTokens: this.config.chatgptBackend !== true && !separateThinkingLimit,
       // Only the chat-completions path applies this buffer
       // (`fitRequestWithinContextWindow`). The Responses path does not, so it
       // must not inherit it.

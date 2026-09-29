@@ -118,3 +118,8 @@ Every dated chat deployment in the live endpoint is classified below. Historical
 | `qwen3-coder-plus-2025-09-23` | `qwen3-coder-plus` | Added: distinct current deployment or architecture with verified metadata. | [Official](https://www.alibabacloud.com/help/en/model-studio/qwen3-coder-plus) |
 | `qwen3-vl-plus-2025-09-23` | `qwen3-vl-plus` | Older Snapshot Versions deployment than the documented canonical replacement. Kept as a historical inventory row, not declared retired or an exact alias. | [Official](https://www.alibabacloud.com/help/en/model-studio/qwen3-vl-plus) |
 | `qwen-plus-2025-09-11` | `qwen-plus` | Older Snapshot Versions deployment than the documented canonical replacement. Kept as a historical inventory row, not declared retired or an exact alias. | [Official](https://www.alibabacloud.com/help/en/model-studio/qwen-plus) |
+
+Hard token or USD budgets reject reasoning deployments whose `max_tokens` caps
+only the answer, before dispatch. An independent `thinking_budget` is not the
+single total-output ceiling reserved by Core. Uncapped sessions remain usable;
+verified total-output routes and non-thinking routes retain hard-budget support.
