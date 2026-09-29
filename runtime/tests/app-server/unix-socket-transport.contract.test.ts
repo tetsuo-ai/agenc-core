@@ -141,7 +141,9 @@ describe("AgenC Unix socket transport", () => {
   });
 
   itUnix("rejects a non-socket file at the daemon socket path", async () => {
-    const dir = await tempDir();
+    // A short root keeps this path under the macOS socket limit, so the
+    // non-socket check runs instead of the path length check.
+    const dir = await mkdtemp("/tmp/agenc-us-");
     const socketPath = join(dir, ".agenc", "daemon.sock");
     await writeFile(socketPath, "not a socket", { flag: "w" }).catch(
       async () => {
