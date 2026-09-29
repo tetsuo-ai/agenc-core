@@ -3347,7 +3347,7 @@ describe("runAgent", () => {
   it.each([
     ["max_turns", "subagent exceeded maxTurns", "step_limit"],
     ["max_budget_usd", "subagent reached the canonical session cost cap", "cost_cap_reached"],
-    ["no_progress", "Turn stopped because progress stalled.", "timeout"],
+    ["no_progress", "Turn stopped because progress stalled.", "no_progress"],
     ["compact_failed", "compact request does not fit", "context_insufficient"],
     ["empty_response", "subagent returned no assistant output after a retry", "model_refused"],
   ] as const)("publishes an errored %s receipt and accepts the next assignment", async (stopReason, reason, terminalReason) => {
