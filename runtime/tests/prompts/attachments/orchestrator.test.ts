@@ -41,6 +41,7 @@ describe("attachments orchestrator", () => {
       "autoModeProducer",
       "swarmModeProducer",
       "deferredToolsDeltaProducer",
+      "requestedToolsProducer",
       "agentListingDeltaProducer",
       "mcpInstructionsDeltaProducer",
       "dateChangeProducer",
