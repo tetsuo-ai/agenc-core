@@ -153,7 +153,7 @@ export function selectChildProviderV2(input: {
       reason: "" });
   }
   ranked.sort((a, b) => b.score - a.score || pairKey(a).localeCompare(pairKey(b)));
-  if (!ranked.length) return finish(undefined, "unavailable", "No connected allowed model fits the task and spend cap.");
+  if (!ranked.length) return finish(undefined, "unavailable", "No connected and allowed model fits the task and spend cap.");
   if (input.override) return finish(ranked[0], "override", `${pairKey(ranked[0]!)} is your override; capability and spend checks passed.`);
   const parent = ranked.find(item => pairKey(item) === pairKey(input.parent));
   let selected = parent ?? ranked[0]!;
