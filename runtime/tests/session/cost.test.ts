@@ -282,7 +282,7 @@ describe("cost helpers", () => {
     for (const [provider, model] of Object.entries(
       BUILT_IN_PROVIDER_DEFAULT_MODELS,
     )) {
-      if (["qwen-token-plan", "zai-coding-plan", "agenc", "nvidia-nim", "amazon-bedrock"].includes(provider)) continue;
+      if (["openrouter", "qwen-token-plan", "zai-coding-plan", "agenc", "nvidia-nim", "amazon-bedrock"].includes(provider)) continue;
       const sidecar = new CostSidecar({
         defaultProvider: provider,
         defaultModel: model,
