@@ -53,15 +53,30 @@ describe("reviewed OpenRouter catalog", () => {
     expect(resolveRegisteredModelCatalogEntry({provider: "openrouter", model: "openai/gpt-6-luna"})?.supportedReasoningLevels).toContain("none");
   });
 
-  test("uses provider rates and long-context boundaries instead of upstream tariffs", () => {
-    expect(cost("anthropic/claude-sonnet-5.5")).toMatchObject({known: true});
-    expect(cost("anthropic/claude-sonnet-5.5").costUsd).toBeCloseTo(0.012);
-    const row = OPENROUTER_MODELS.find(row => row.model === "openai/gpt-6-sol")!;
-    const long = row.priceOverrides![0]!;
-    expect(cost(row.model, long.min_prompt_tokens! - 1).costUsd).toBeCloseTo(
-      (long.min_prompt_tokens! - 1) * Number(row.pricing.prompt) + 1000 * Number(row.pricing.completion), 9);
-    expect(cost(row.model, long.min_prompt_tokens!).costUsd).toBeCloseTo(
-      long.min_prompt_tokens! * Number(long.prompt) + 1000 * Number(long.completion), 9);
+  test("does not treat catalog floor prices as routed endpoint bills", () => {
+    // The public endpoint inventory includes GPT-OSS hosts charging more than
+    // the catalog's $0.037/$0.17 per million. No endpoint is pinned by Core.
+    const routed = cost("openai/gpt-oss-120b");
+    expect(routed).toMatchObject({ known: false, costEstimated: true });
+    expect(routed.costUsd).toBeGreaterThanOrEqual((0.35 + 0.95) / 1000);
+    for (const model of ["anthropic/claude-sonnet-5.5", "openai/gpt-6-sol"]) {
+      expect(cost(model)).toMatchObject({ known: false, costEstimated: true });
+      expect(cost(model, 300_000)).toMatchObject({ known: false, costEstimated: true });
+    }
+  });
+
+  test("only explicitly free routes without other charges are known zero", () => {
+    for (const row of OPENROUTER_MODELS) {
+      const entry = DEFAULT_MODEL_COSTS[`openrouter:${row.model}`]!;
+      if (entry.localZeroCost) {
+        expect(row.model.endsWith(":free")).toBe(true);
+        expect(Object.values(row.pricing).every(value => Number(value) === 0)).toBe(true);
+        expect(row.priceOverrides).toBeUndefined();
+        expect(cost(row.model)).toMatchObject({ known: true, costUsd: 0 });
+      } else {
+        expect(cost(row.model)).toMatchObject({ known: false, costEstimated: true });
+      }
+    }
   });
 
   test("retains admission for unknown pricing without claiming it is free", () => {
