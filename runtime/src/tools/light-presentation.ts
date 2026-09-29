@@ -2,7 +2,7 @@ import type { LLMTool } from "../llm/types.js";
 
 const summaries: Readonly<Record<string, string>> = {
   FileRead: "Read and refresh for edits. offset: line 1 onward; limit: 120 lines.",
-  MultiEdit: "Replace exact text after FileRead; preserve surrounding code. Batch same-file edits. Create: old_string empty, new_string entire content.",
+  MultiEdit: "Replace exact text after FileRead; preserve surrounding code. Group same-file changes; submit independent files together. Create: old_string empty, new_string entire content.",
   exec_command: "Workspace shell; 30s wait, 700-token output. Continue session_id with write_stdin.",
   write_stdin: "Send chars or wait 30s for output, bounded to 700 tokens.",
   "system.searchTools": "Find additional capabilities. Listed tools are ready to use. select: extra tool name; query: capability search.",
