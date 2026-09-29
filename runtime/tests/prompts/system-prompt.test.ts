@@ -1354,7 +1354,7 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
     const light = await assembleSystemPromptSnapshot({ ...options, profile: "light" });
     expect(light.staticPrefix).toContain("You are AgenC.");
     expect(light.staticPrefix).not.toContain("# Completing work without a human");
-    expect(light.text).toContain("Search the catalog");
+    expect(light.text).toContain("from the catalog");
     expect(light.text).toContain("explicit user request");
     expect(light.text).toContain(UNTRUSTED_TOOL_RESULT_BOUNDARY);
 
