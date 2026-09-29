@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../../src/config/schema.js";
-import { assertChildExecutionPlan, assertPreparedChildMatchesPlan, authorizeChildExecutionPlan, childModelInfo, createChildExecutionPlan, resolveChildSelection } from "../../src/agents/cross-provider.js";
+import { assertChildExecutionPlan, assertPreparedChildMatchesPlan, authorizeChildExecutionPlan, buildCrossProviderDisclosure, childModelInfo, createChildExecutionPlan, resolveChildSelection } from "../../src/agents/cross-provider.js";
 import { StaticModelsManager } from "../../src/llm/models-manager.js";
 import type { Session } from "../../src/session/session.js";
 
@@ -27,6 +27,19 @@ function sessionWithModels(provider: string, model: string, liveModels: string[]
 }
 
 describe("child provider selection", () => {
+  it("discloses priority and long-context prices instead of the cheaper standard rate", async () => {
+    const session = sessionWithModels("grok", "grok-4.6", ["grok-4.6"], {
+      agents: { cross_provider_enabled: true, allowed_providers: ["openai"] },
+    });
+    Object.assign(session, { conversationId: "parent", sessionConfiguration: { cwd: "/workspace" } });
+    const plan = await createChildExecutionPlan({ session,
+      selection: { provider: "openai", model: "gpt-6-sol" },
+      modelInfo: { slug: "gpt-6-sol", provider: "openai", supportsToolUse: true, contextWindow: 1_000_000 } as Session["modelInfo"],
+      parentPath: "/root", taskId: "pricing", taskName: "review", taskText: "review",
+      toolFree: false, forkedHistory: false, serviceTier: "priority" });
+    expect(buildCrossProviderDisclosure(plan).price).toEqual({ inputUsdPer1K: 0.008, outputUsdPer1K: 0.030 });
+  });
+
   it.each([
     { name: "automatic selection", change: { cross_provider_auto: false } },
     { name: "reasoning effort", change: { subagent_limits: { openai: { effort: "low", speed: "fast" } } } },

@@ -8,7 +8,7 @@ import { resolveBuiltInProviderInfo, resolveBuiltInProviderSlug } from "../llm/r
 import { assertSupportedCrossProviderAuth, type ChildAuthProfile, type ChildBillingSource } from "../llm/cross-provider-auth.js";
 import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
 import type { ModelInfo, ReasoningEffort } from "../session/turn-context.js";
-import { DEFAULT_MODEL_COSTS, resolveModelCostEntry } from "../session/cost.js";
+import { DEFAULT_MODEL_COSTS, resolveModelCostEntry, selectCallRates } from "../session/cost.js";
 
 export interface CrossProviderConsentGrant {
   readonly kind: "once" | "session";
@@ -272,6 +272,13 @@ export function buildCrossProviderDisclosure(
   const parentTurnId = sessionTurnIdForPlan(plan);
   const denialKey = crossProviderDenialKey({ scopeKey, taskText, attachments }, parentTurnId);
   const cost = resolveModelCostEntry({ provider: plan.destination.provider, model: plan.destination.model }, DEFAULT_MODEL_COSTS);
+  // A disclosure cannot know future tool-result context. Quote the highest
+  // documented context tier at the chosen speed, never a cheaper standard
+  // price for a priority child. Undocumented/estimated prices stay unknown.
+  const quote = cost === null ? undefined : selectCallRates(cost.entry, {
+    singleCallInputTokens: plan.modelInfo.contextWindow,
+    ...(plan.serviceTier === "priority" || plan.serviceTier === "fast" ? { speed: "fast" } : {}),
+  });
   return Object.freeze({
     kind: "cross_provider_spawn" as const,
     provider: plan.destination.provider, model: plan.destination.model,
@@ -282,8 +289,9 @@ export function buildCrossProviderDisclosure(
     fileReadDenylist: plan.scope.fileReadDenylist ?? [],
     dataScope: plan.scope.data, tools,
     network, search,
-    price: plan.destination.billingSource === "sign_in" || cost === null ? "price unknown" as const : {
-      inputUsdPer1K: cost.entry.inputUsdPer1K, outputUsdPer1K: cost.entry.outputUsdPer1K,
+    price: plan.destination.billingSource === "sign_in" || quote === undefined ||
+      quote.documented === false || cost?.entry.costEstimated === true || quote.rates.costEstimated === true ? "price unknown" as const : {
+      inputUsdPer1K: quote.rates.inputUsdPer1K, outputUsdPer1K: quote.rates.outputUsdPer1K,
     },
     ...(plan.destination.billingSource === "sign_in" ? {
       subscriptionUsageNote: "Usage counts against your subscription limits.",
