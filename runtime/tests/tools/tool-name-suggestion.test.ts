@@ -73,6 +73,17 @@ describe("suggestAvailableToolName", () => {
     expect(suggestAvailableToolName(requested, catalog)).toBe(expected);
   });
 
+  test("repairs an encoded-name typo in the error without dispatching or exposing another catalog", () => {
+    const typo = "tool2__system_xesearchTools";
+    expect(suggestAvailableToolName(typo, ["system.searchTools"])).toBe("system.searchTools");
+    expect(suggestAvailableToolName(typo, ["FileRead"])).toBeUndefined();
+    expect(suggestAvailableToolName(typo, ["system.searchTools", "system.searchToolz"])).toBe("system.searchTools");
+    expect(suggestAvailableToolName("tool2__system_x2esearchToolx", ["system.searchTools", "system.searchToolz"])).toBeUndefined();
+    expect(formatUnknownToolMessage(typo, "system.searchTools")).toContain(
+      "closest available tool is tool2__system_x2esearchTools",
+    );
+  });
+
   test("every tool it can point to is a real default tool", () => {
     const catalog = productionCatalog();
     for (const entry of FOREIGN_TOOL_NAME_TARGETS) {

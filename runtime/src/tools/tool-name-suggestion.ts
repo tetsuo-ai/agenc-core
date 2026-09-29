@@ -10,6 +10,19 @@
  * @module
  */
 
+import { encodeMcpToolNameForWire } from "../llm/wire/mcp-tool-naming.js";
+
+/** One missing, extra or mistyped character, without guessing a dispatch. */
+function differsByOneCharacter(left: string, right: string): boolean {
+  if (Math.abs(left.length - right.length) > 1) return false;
+  let i = 0;
+  while (i < left.length && i < right.length && left[i] === right[i]) i++;
+  if (left.length === right.length) return left.slice(i + 1) === right.slice(i + 1);
+  return left.length < right.length
+    ? left.slice(i) === right.slice(i + 1)
+    : left.slice(i + 1) === right.slice(i);
+}
+
 /** Lowercase letters and digits only, so `edit_file` and `EditFile` compare equal. */
 function toolNameKey(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -82,6 +95,13 @@ export function suggestAvailableToolName(
   if (key.length === 0) return undefined;
   const sameKey = [...available].filter((name) => toolNameKey(name) === key);
   if (sameKey.length > 0) return sameKey.length === 1 ? sameKey[0] : undefined;
+  // Encoded punctuation is easy to mistype. Compare only supplied candidates;
+  // hidden/unavailable tools are filtered before this helper is called.
+  if (/^(?:tool2|mcp2)__/.test(requested)) {
+    const near = [...available].filter(name =>
+      differsByOneCharacter(requested, encodeMcpToolNameForWire(name)));
+    if (near.length === 1) return near[0];
+  }
   const target = FOREIGN_TOOL_NAME_TARGETS.find((entry) =>
     entry.names.includes(key),
   );
@@ -148,8 +168,10 @@ export function formatUnknownToolMessage(
 ): string {
   const message = `No such tool available: ${requested}`;
   if (suggestion === undefined) return message;
+  const displayName = /^(?:tool2|mcp2)__/.test(requested)
+    ? encodeMcpToolNameForWire(suggestion) : suggestion;
   const closest =
-    `${message}. The closest available tool is ${suggestion}, ` +
+    `${message}. The closest available tool is ${displayName}, ` +
     `which has its own parameters.`;
   return loadWith === undefined
     ? closest
