@@ -789,9 +789,11 @@ describe("runAgent", () => {
   }
 
   it.each([
-    { provider: "deepseek", model: "deepseek-v4-pro", authProfile: undefined },
-    { provider: "openai", model: "gpt-6-luna", authProfile: "sign_in" as const },
-  ])("sends a $provider child's own identity and prompt to its provider", async ({ provider, model, authProfile }) => {
+    { provider: "deepseek", model: "deepseek-v4-pro", authProfile: undefined, lightMode: false },
+    { provider: "openai", model: "gpt-6-luna", authProfile: "sign_in" as const, lightMode: false },
+    { provider: "deepseek", model: "deepseek-v4-pro", authProfile: undefined, lightMode: true },
+    { provider: "openai", model: "gpt-6-luna", authProfile: "sign_in" as const, lightMode: true },
+  ])("sends a $provider child's own identity and prompt to its provider (Light=$lightMode)", async ({ provider, model, authProfile, lightMode }) => {
     const selection = { provider, model };
     const configStore = new ConfigStore({ cwd: "/tmp", base: {
       agents: { cross_provider_enabled: true, allowed_providers: ["deepseek", "openai"] },
@@ -810,6 +812,7 @@ describe("runAgent", () => {
       }),
     } satisfies LLMProvider;
     const { parent, modelInfo } = crossProviderRuntime(target, configStore, selection, authProfile);
+    Object.assign(parent.services, { runtimeOptions: resolveAgentRuntimeOptions({}, { lightMode }) });
     const spawnTool = createSpawnAgentTool({
       getSession: () => parent,
       workspace: ROLE_WORKSPACE,
@@ -844,6 +847,11 @@ describe("runAgent", () => {
     expect(requestSpawnModel?.description).not.toContain("current model (`grok-4.7`)");
     expect(requestPrompt).toContain(`${provider.toUpperCase()} provider notes`);
     expect(requestPrompt).not.toMatch(/grok|xai/iu);
+    if (lightMode) {
+      expect(requestPrompt).toContain("Never bypass a denial");
+      expect(requestPrompt).toContain("system.searchTools");
+      expect(requestPrompt).not.toContain("# Doing tasks");
+    }
   });
 
   it.each([

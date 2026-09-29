@@ -21,6 +21,7 @@ import { isAbsolute, normalize, resolve as resolvePath } from "node:path";
 import { inheritBuiltinToolProvenance } from "../tools/builtin-provenance.js";
 import { SESSION_BOUND_TOOL_SURFACE, type SessionBoundToolSurface } from "../tools/session-bound-surface.js";
 import { createToolSearchTool } from "../tools/system/tool-search.js";
+import { lightToolPresentation } from "../tools/light-tool-presentation.js";
 import { SYSTEM_SEARCH_TOOLS_NAME } from "../tools/system/tool-search-name.js";
 import {
   SESSION_ADVERTISED_TOOL_NAMES_ARG,
@@ -2306,6 +2307,7 @@ export function buildFilteredRegistry(
     }
   };
   const localSearch = opts.lightMode === true ? createToolSearchTool({
+    lightMode: true,
     allowedPaths: [],
     persistenceRootDir: "",
     getToolCatalog: () => eligibleTools.map((tool): ToolCatalogEntry => ({
@@ -2417,7 +2419,11 @@ export function buildFilteredRegistry(
       return wrappedTools.filter((tool) => names.has(tool.name));
     },
     toLLMTools() {
-      return advertisedLLMTools();
+      const tools = advertisedLLMTools();
+      return opts.lightMode === true
+        ? tools.map(tool => wrappedByName.get(tool.function.name)?.metadata?.source === "builtin"
+            ? lightToolPresentation(tool) : tool)
+        : tools;
     },
     getUnavailableToolNames() {
       return unavailable;
@@ -3717,7 +3723,9 @@ async function refreshChildBaseInstructions(parent: Session, child: ChildSession
     permissionContext: child.permissionModeRegistry.current(),
     profile: child.config.coordinatorMode === true
       ? "coordinator"
-      : usesLocalToolProfile(childIdentity.provider) ? "compact" : "standard",
+      : child.services.runtimeOptions.lightMode === true
+        ? "light"
+        : usesLocalToolProfile(childIdentity.provider) ? "compact" : "standard",
   });
   await child.state.with((state) => {
     state.sessionConfiguration = { ...state.sessionConfiguration, baseInstructions };

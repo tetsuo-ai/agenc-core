@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { ToolCatalogEntry } from "../types.js";
 import { encodeMcpToolNameForWire } from "../../llm/wire/mcp-tool-naming.js";
 import { createToolSearchTool } from "./tool-search.js";
-import { SESSION_ADVERTISED_TOOL_NAMES_ARG } from "./coding-common.js";
+import { SESSION_ADVERTISED_TOOL_NAMES_ARG, SESSION_TOOL_CATALOG_SCOPE_ARG } from "./coding-common.js";
 
 function deferredCatalogEntry(name = "system.deepTool"): ToolCatalogEntry {
   return {
@@ -26,6 +26,36 @@ function deferredCatalogEntry(name = "system.deepTool"): ToolCatalogEntry {
 }
 
 describe("system.searchTools", () => {
+  test("Light finds a uniquely relevant tool when a natural query contains unmatched words", async () => {
+    const catalog = [
+      { ...deferredCatalogEntry("TodoWrite"), description: "Create a checklist of tasks", metadata: { ...deferredCatalogEntry().metadata, keywords: ["todo", "task"] } },
+      { ...deferredCatalogEntry("PlanMode"), description: "Plan before implementation" },
+    ];
+    const discovered: string[][] = [];
+    const base = { allowedPaths: [process.cwd()], persistenceRootDir: process.cwd(), getToolCatalog: () => catalog, onDiscoverTools: (names: readonly string[]) => discovered.push([...names]) };
+    const query = "checklist todo task planning tool";
+    const payload = JSON.parse((await createToolSearchTool({ ...base, lightMode: true }).execute({ query })).content);
+    expect(payload.loaded).toEqual(["TodoWrite"]);
+    expect(discovered).toEqual([["TodoWrite"]]);
+    expect(JSON.parse((await createToolSearchTool(base).execute({ query })).content).loaded).toEqual([]);
+    const scoped = JSON.parse((await createToolSearchTool({ ...base, lightMode: true }).execute({ query, [SESSION_TOOL_CATALOG_SCOPE_ARG]: ["PlanMode"] })).content);
+    expect(scoped.loaded).not.toContain("TodoWrite");
+    const tied = createToolSearchTool({ ...base, lightMode: true, getToolCatalog: () => [catalog[0]!, { ...catalog[0]!, name: "OtherTodoWrite" }] });
+    expect(JSON.parse((await tied.execute({ query, maxResults: 1 })).content).loaded).toEqual([]);
+  });
+
+  test("loads memory rules in one call only for Light without discovering unrelated tools", async () => {
+    let discoveries = 0;
+    const tool = createToolSearchTool({ lightMode: true, allowedPaths: [process.cwd()], persistenceRootDir: process.cwd(), onDiscoverTools: () => { discoveries++; } });
+    const result = await tool.execute({ instructions: "memory" });
+    expect(result.content).toContain("Save requested memories immediately");
+    expect(result.content).toContain("200 lines");
+    expect(result.content).toContain("fix or delete stale");
+    expect(discoveries).toBe(0);
+    const normal = createToolSearchTool({ allowedPaths: [process.cwd()], persistenceRootDir: process.cwd() });
+    expect(normal.inputSchema.properties).not.toHaveProperty("instructions");
+  });
+
   test("is side-effecting because selected tools update advertised session state", () => {
     const tool = createToolSearchTool({
       allowedPaths: [process.cwd()],
@@ -356,5 +386,59 @@ describe("system.searchTools", () => {
       name: "system.deep<neutralized-system-reminder-tag> Tool",
       selected: true,
     });
+  });
+});
+
+
+describe("light discovery", () => {
+  function create(catalog: ToolCatalogEntry[], discovered: string[][], lightMode = true) {
+    return createToolSearchTool({ allowedPaths: [process.cwd()], persistenceRootDir: process.cwd(),
+      lightMode, getToolCatalog: () => catalog, onDiscoverTools: names => discovered.push([...names]) });
+  }
+
+  test("loads a unique best query match in one call without executing it", async () => {
+    const discovered: string[][] = [];
+    const tool = create([deferredCatalogEntry("update_plan"), deferredCatalogEntry("other")], discovered);
+    const payload = JSON.parse((await tool.execute({ query: "update_plan" })).content);
+    expect(payload.loaded).toEqual(["update_plan"]);
+    expect(discovered).toEqual([["update_plan"]]);
+    expect(payload.results[0]).toMatchObject({ selected: true, useHint: "Call update_plan with its loaded schema." });
+    expect(payload.results[0].metadata).toBeUndefined();
+  });
+
+  test("keeps tied matches unloaded even when maxResults hides one", async () => {
+    const discovered: string[][] = [];
+    const tool = create([deferredCatalogEntry("one"), deferredCatalogEntry("two")], discovered);
+    const payload = JSON.parse((await tool.execute({ query: "inspect", maxResults: 1 })).content);
+    expect(payload.loaded).toEqual([]);
+    expect(discovered).toEqual([]);
+    expect(payload.results).toHaveLength(1);
+  });
+
+  test("never auto-loads an out-of-scope or filtered tool", async () => {
+    const discovered: string[][] = [];
+    const tool = create([deferredCatalogEntry("hidden"), deferredCatalogEntry("visible")], discovered);
+    const result = await tool.execute({ query: "hidden", [SESSION_TOOL_CATALOG_SCOPE_ARG]: ["visible"] });
+    expect(JSON.parse(result.content).loaded).toEqual([]);
+    expect(discovered).toEqual([]);
+    const filtered = await tool.execute({ query: "visible", family: "absent" });
+    expect(JSON.parse(filtered.content).loaded).toEqual([]);
+  });
+
+  test("normal queries preserve explicit selection behavior", async () => {
+    const discovered: string[][] = [];
+    const tool = create([deferredCatalogEntry("update_plan")], discovered, false);
+    expect(JSON.parse((await tool.execute({ query: "update_plan" })).content).loaded).toEqual([]);
+    expect(discovered).toEqual([]);
+  });
+
+  test("bounds browsing and descriptions without loading the catalog", async () => {
+    const discovered: string[][] = [];
+    const tool = create(Array.from({ length: 70 }, (_, i) => ({ ...deferredCatalogEntry(`tool${i}`),
+      description: "A long description. ".repeat(500) })), discovered);
+    const payload = JSON.parse((await tool.execute({})).content);
+    expect(payload.results).toHaveLength(5);
+    expect(payload.results.every((entry: { description: string }) => entry.description.length <= 240)).toBe(true);
+    expect(payload.loaded).toEqual([]);
   });
 });

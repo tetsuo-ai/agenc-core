@@ -57,6 +57,12 @@ function humanTurn(text = "another step"): LLMMessage {
 }
 
 describe("auto-mode attachment producer", () => {
+  test("Light omits repeated workflow pulses without changing normal mode", async () => {
+    const opts = makeOpts({ lightMode: true, permissionContext: { mode: "bypassPermissions" } as ToolPermissionContext });
+    expect(await autoModeProducer(opts, getAttachmentTrackingState(opts.sessionKey))).toEqual([]);
+    _resetAttachmentTrackingStateForTest(opts.sessionKey);
+  });
+
   test("config matches AgenC AUTO_MODE_ATTACHMENT_CONFIG", () => {
     expect(AUTO_MODE_ATTACHMENT_CONFIG.TURNS_BETWEEN_ATTACHMENTS).toBe(5);
     expect(AUTO_MODE_ATTACHMENT_CONFIG.FULL_REMINDER_EVERY_N_ATTACHMENTS).toBe(

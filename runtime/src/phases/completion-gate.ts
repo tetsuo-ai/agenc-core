@@ -55,6 +55,8 @@ import type {
 import { isPlanMode } from "../session/plan-mode.js";
 import { inDeadlineReserve } from "../session/run-deadline.js";
 import { isSubagentSessionSource } from "../session/run-turn-queued-commands.js";
+import { lightCompletionEvidence } from "./light-completion-evidence.js";
+import { buildLightCompletionGateMessage } from "../prompts/light-completion-gate.js";
 
 export const DEFAULT_COMPLETION_GATE_ROUNDS = 3;
 export const COMPLETION_GATE_ROUNDS_HARD_CAP = 10;
@@ -140,8 +142,8 @@ const UNAVAILABLE_INVESTIGATION_MARKER =
   "A `- [-]` mark is not itself evidence.";
 
 export function resolveCompletionGatePolicy(
-  config: Pick<Config, "completionGate"> | undefined,
-  runtimeOptions: Pick<AgentRuntimeOptions, "nonInteractive"> | undefined,
+  config: Pick<Config, "completionGate" | "coordinatorMode"> | undefined,
+  runtimeOptions: Pick<AgentRuntimeOptions, "nonInteractive" | "lightMode"> | undefined,
 ): ResolvedCompletionGatePolicy {
   const mode: CompletionGateMode = config?.completionGate?.mode ?? "auto";
   const enabled =
@@ -149,7 +151,7 @@ export function resolveCompletionGatePolicy(
       ? true
       : mode === "never"
         ? false
-        : runtimeOptions?.nonInteractive === true;
+        : runtimeOptions?.nonInteractive === true && (runtimeOptions?.lightMode !== true || config?.coordinatorMode === true);
   const requested = config?.completionGate?.max_rounds;
   const maxRounds =
     typeof requested === "number" && Number.isFinite(requested)
@@ -362,10 +364,12 @@ function itemHasAssociatedSuccess(
   itemText: string,
   results: readonly CompletedToolResultRecord[],
   freshFrom: number,
+  successful: (result: CompletedToolResultRecord) => boolean = isSuccessfulResult,
+  requireCommandEvidence = false,
 ): boolean {
   const related = associatedIndexed(itemText, results);
   const lastSuccess = related
-    .filter((entry) => entry.index >= freshFrom && isSuccessfulResult(entry.result))
+    .filter((entry) => entry.index >= freshFrom && successful(entry.result))
     .at(-1);
   if (lastSuccess === undefined) return false;
   const lastFailure = related
@@ -374,6 +378,15 @@ function itemHasAssociatedSuccess(
         isRunnableEvidence(entry.result) && !isSuccessfulResult(entry.result),
     )
     .at(-1);
+  // A read cannot verify a running command or erase a failed one merely
+  // because their words overlap. Light keeps command evidence across retries.
+  if (requireCommandEvidence && related.some(({ result }) =>
+    isRunnableEvidence(result) || result.metadata?.exitCode === null)) {
+    return related.some((entry) => entry.index >= freshFrom &&
+      (lastFailure === undefined || entry.index > lastFailure.index) &&
+      isRunnableEvidence(entry.result) &&
+      successful(entry.result));
+  }
   return lastFailure === undefined || lastFailure.index < lastSuccess.index;
 }
 
@@ -399,6 +412,8 @@ function classifyChecklist(
   text: string,
   allResults: readonly CompletedToolResultRecord[],
   freshFrom: number,
+  successful: (result: CompletedToolResultRecord) => boolean = isSuccessfulResult,
+  requireCommandEvidence = false,
 ): {
   hasCheckedItem: boolean;
   hasMalformedItem: boolean;
@@ -416,7 +431,7 @@ function classifyChecklist(
     }
     if (item.mark === "x" || item.mark === "X") {
       hasCheckedItem = true;
-      if (!itemHasAssociatedSuccess(item.text, allResults, freshFrom)) {
+      if (!itemHasAssociatedSuccess(item.text, allResults, freshFrom, successful, requireCommandEvidence)) {
         pushBounded(unmetItems, item.text);
       }
       continue;
@@ -640,7 +655,14 @@ export async function completionGate(
       : state.completedToolResults.slice(state.completionGateToolLedgerMark);
   const toolCallsSinceInjection =
     round === 0 ? 0 : Math.max(0, postInjectionResults.length);
-  const hasSuccessfulResult = postInjectionResults.some(isSuccessfulResult);
+  const lightEvidence = session.services.runtimeOptions?.lightMode === true &&
+      ctx.config.coordinatorMode !== true
+    ? lightCompletionEvidence(state.completedToolResults, session.services.registry.tools,
+        state.completionGateEvidenceMark)
+    : undefined;
+  const hasSuccessfulResult = lightEvidence === undefined
+    ? postInjectionResults.some(isSuccessfulResult)
+    : state.completedToolResults.some(lightEvidence.isSuccessful);
   if (inDeadlineReserve(session)) {
     // The run's deadline reserve (#2503): the model was told to restore its
     // best verified state and finish, so the answer is accepted rather than
@@ -651,7 +673,9 @@ export async function completionGate(
     classifyChecklist(
       text,
       state.completedToolResults,
-      round === 0 ? 0 : state.completionGateToolLedgerMark,
+      lightEvidence?.freshFrom ?? (round === 0 ? 0 : state.completionGateToolLedgerMark),
+      lightEvidence?.isSuccessful,
+      lightEvidence !== undefined,
     );
   const reportedItems = [...unmetItems, ...unavailableItems].slice(
     0,
@@ -708,12 +732,22 @@ export async function completionGate(
     reason === "unavailable_unproven" ? unavailableItems : unmetItems;
   state.completionGateRound += 1;
   state.completionGateToolLedgerMark = state.completedToolResults.length;
+  if (lightEvidence !== undefined) {
+    // This is runtime-owned provenance, separate from the actual injection
+    // mark used in telemetry. Never infer the frontier from transcript tags.
+    state.completionGateEvidenceMark = lightEvidence.freshFrom;
+  }
   if (reason === "unavailable_unproven") {
     state.completionGateUnavailablePrompted = true;
   }
   injectCompletionGateMessage(
     state,
-    buildCompletionGateMessage({
+    lightEvidence !== undefined ? buildLightCompletionGateMessage({
+      round: state.completionGateRound,
+      maxRounds: plan.maxRounds,
+      reason,
+      quotedUntrustedItems: quotedUntrustedItems(injectItems),
+    }) : buildCompletionGateMessage({
       round: state.completionGateRound,
       maxRounds: plan.maxRounds,
       taskText: plan.taskText,

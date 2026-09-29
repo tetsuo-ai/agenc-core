@@ -430,6 +430,9 @@ export interface TurnState {
   completionGateRound: number;
   /** `completedToolResults.length` when the last gate prompt was injected. */
   completionGateToolLedgerMark: number;
+  /** Light verification frontier in this turn's tool ledger. Like that ledger,
+   * it is not journaled: resumed turns establish fresh evidence conservatively. */
+  completionGateEvidenceMark: number | undefined;
   /** Latched once a final answer was accepted (verified, exhausted or skipped). */
   completionGateSettled: boolean;
   /**
@@ -601,6 +604,7 @@ export function buildInitialTurnState(
     completionGate: undefined,
     completionGateRound: 0,
     completionGateToolLedgerMark: 0,
+    completionGateEvidenceMark: undefined,
     completionGateSettled: false,
     completionGateUnavailablePrompted: false,
     goalGateToolLedgerMark: 0,

@@ -104,7 +104,18 @@ From `formatCliHelpText()`:
   tools and explicitly still-running commands do not count, and an
   unrelated successful read does not verify a different claim. This is a
   structural check, not a guarantee of task correctness and not a
-  benchmark pass. After `completion_gate.max_rounds` (default 3), an
+  benchmark pass. Light omits this automatic reminder loop; use
+  `completion_gate.mode = "always"` to opt in. With that explicit setting,
+  current successful evidence can satisfy the
+  first checklist or a formatting retry without rerunning checks. Before a
+  verification request, arbitrary commands invalidate earlier evidence and a
+  completed successful command can verify its own result. After the request,
+  independent commands accumulate evidence, as in normal mode. This does not
+  prove those commands left the filesystem unchanged. Canonical writes and
+  unknown tools still invalidate earlier evidence. Pending commands do not count.
+  A failed command needs an associated successful command to recover, not a
+  later file read. Coordinator and Goal verification retain their own behavior.
+  After `completion_gate.max_rounds` (default 3), an
   unmet answer still ends the turn with the existing exit code. Text-mode
   `agenc -p` prints a warning to stderr (`exhausted` or `partial`) and
   structured output includes the event. `completion_gate.mode = "never"`

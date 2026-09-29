@@ -1,3 +1,5 @@
+import { lightMemoryInstructions } from "../../memory/light-memory-prompt.js";
+import { MEMORY_TYPES } from "../../memory/types.js";
 import type { Tool, ToolCatalogEntry } from "../types.js";
 import {
   decodeMcpToolNameFromWire,
@@ -49,7 +51,7 @@ function parseToolSearchQuery(rawQuery?: string): {
   };
 }
 
-function scoreCatalogEntry(entry: ToolCatalogEntry, query?: string): number {
+function scoreCatalogEntry(entry: ToolCatalogEntry, query?: string, partial = false): number {
   if (!query) return 10;
   const lowered = query.toLowerCase();
   const entryName = entry.name.toLowerCase();
@@ -74,12 +76,17 @@ function scoreCatalogEntry(entry: ToolCatalogEntry, query?: string): number {
   }
   if (entry.description.toLowerCase().includes(lowered)) return 5;
   if (keywords.some((keyword) => keyword.includes(lowered))) return 6;
+  if (partial) {
+    const terms = [...new Set(tokens)].filter(token => token.length >= 3 && !["tool", "tools", "for", "the", "and", "with", "capability"].includes(token));
+    const weight = terms.reduce((sum, token) => sum + (entryName.includes(token) ? 4 : keywords.some(keyword => keyword.includes(token)) ? 3 : family.includes(token) ? 2 : entry.description.toLowerCase().includes(token) ? 1 : 0), 0);
+    if (weight > 0) return 50 - Math.min(weight, 30);
+  }
   return 99;
 }
 
-function matchesCatalogQuery(entry: ToolCatalogEntry, query?: string): boolean {
+function matchesCatalogQuery(entry: ToolCatalogEntry, query?: string, partial = false): boolean {
   if (!query) return true;
-  return scoreCatalogEntry(entry, query) < 99;
+  return scoreCatalogEntry(entry, query, partial) < 99;
 }
 
 function mcpUseHint(toolName: string, available: boolean): string | undefined {
@@ -175,8 +182,9 @@ function resolveSelection(
 export function createToolSearchTool(config: CodingToolConfig): Tool {
   return {
     name: SYSTEM_SEARCH_TOOLS_NAME,
-    description:
-      "Search the runtime tool catalog by name, family, source, keyword, or preferred profile. Use select or select:<tool_name> to load a deferred tool schema. Selection alone returns only selected tools or scoped name suggestions; use query or filters to search further.",
+    description: config.lightMode === true
+      ? "Find tools by name or capability. A unique best query match loads automatically; use select for exact names or ambiguous results. Loading exposes the schema, never executes the tool."
+      : "Search the runtime tool catalog by name, family, source, keyword, or preferred profile. Use select or select:<tool_name> to load a deferred tool schema. Selection alone returns only selected tools or scoped name suggestions; use query or filters to search further.",
     metadata: {
       ...codingToolMetadata(SYSTEM_SEARCH_TOOLS_NAME, false, ["coding", "general", "operator"]),
       keywords: ["tools", "catalog", "discovery", "select", "deferred"],
@@ -186,6 +194,7 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
     inputSchema: {
       type: "object",
       properties: {
+        ...(config.lightMode === true ? { instructions: { type: "string", enum: ["memory"] } } : {}),
         query: {
           type: "string",
           description:
@@ -209,6 +218,9 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
       additionalProperties: false,
     },
     async execute(args) {
+      if (config.lightMode === true && args.instructions === "memory") {
+        return okResult(lightMemoryInstructions(MEMORY_TYPES, 200));
+      }
       await config.onBeforeSearch?.();
       // A subagent shares this tool with its parent's registry but cannot call
       // MCP, disabled or out-of-allowlist tools. Never offer or load those.
@@ -248,7 +260,7 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
               .filter((value): value is string => typeof value === "string"),
           )
         : undefined;
-      const matchedResults = searchCatalog
+      const rankedResults = searchCatalog
         .filter((entry) => {
           if (args.includeHidden !== true && entry.metadata.hiddenByDefault) return false;
           if (args.advertisedOnly === true && advertisedToolNames && !advertisedToolNames.has(entry.name)) {
@@ -263,15 +275,25 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
           ) {
             return false;
           }
-          return matchesCatalogQuery(entry, query);
+          return matchesCatalogQuery(entry, query, config.lightMode === true);
         })
         .sort((left, right) => {
-          const leftScore = scoreCatalogEntry(left, query);
-          const rightScore = scoreCatalogEntry(right, query);
+          const leftScore = scoreCatalogEntry(left, query, config.lightMode === true);
+          const rightScore = scoreCatalogEntry(right, query, config.lightMode === true);
           if (leftScore !== rightScore) return leftScore - rightScore;
           return left.name.localeCompare(right.name);
-        })
-        .slice(0, normalizePositiveInteger(args.maxResults, 50, MAX_RESULTS));
+        });
+      // Decide before limiting the response: maxResults:1 must never turn an
+      // ambiguous query into an apparently unique match. Selection only
+      // changes schema visibility; execution still uses normal admission.
+      const best = rankedResults[0];
+      if (config.lightMode === true && query && explicitSelections.length === 0 && best &&
+          (rankedResults[1] === undefined ||
+           scoreCatalogEntry(best, query, config.lightMode === true) < scoreCatalogEntry(rankedResults[1], query, config.lightMode === true))) {
+        selectedEntries.push(best);
+      }
+      const matchedResults = rankedResults.slice(0,
+        normalizePositiveInteger(args.maxResults, config.lightMode === true ? 5 : 50, MAX_RESULTS));
       const results = [
         ...selectedEntries,
         ...matchedResults,
@@ -293,6 +315,17 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
             (candidate) => candidate.name === entry.name,
           );
           const advertised = advertisedToolNames?.has(entry.name) ?? false;
+          if (config.lightMode === true) {
+            return {
+              name: modelFacingToolSearchText(entry.name),
+              description: modelFacingToolSearchText(entry.description).slice(0, 240),
+              selected,
+              advertised,
+              ...(selected || advertised
+                ? { useHint: modelFacingToolSearchText(`Call ${encodeMcpToolNameForWire(entry.name)} with its loaded schema.`) }
+                : { loadHint: modelFacingToolSearchText(`Select ${entry.name} to load its schema.`) }),
+            };
+          }
           const useHint = mcpUseHint(entry.name, selected || advertised);
           return {
             name: modelFacingToolSearchText(entry.name),

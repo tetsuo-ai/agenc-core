@@ -100,6 +100,12 @@ describe("resolveCompletionGatePolicy", () => {
     expect(resolveCompletionGatePolicy(undefined, undefined).enabled).toBe(false);
   });
 
+  test("Light disables automatic reminder turns but retains explicit always policy", () => {
+    expect(resolveCompletionGatePolicy(undefined, { nonInteractive: true, lightMode: true }).enabled).toBe(false);
+    expect(resolveCompletionGatePolicy({ coordinatorMode: true }, { nonInteractive: true, lightMode: true }).enabled).toBe(true);
+    expect(resolveCompletionGatePolicy({ completionGate: { mode: "always" } }, { nonInteractive: true, lightMode: true }).enabled).toBe(true);
+  });
+
   test("always and never override the session", () => {
     expect(
       resolveCompletionGatePolicy({ completionGate: { mode: "always" } }, { nonInteractive: false }).enabled,

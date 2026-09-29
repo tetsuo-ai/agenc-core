@@ -70,7 +70,10 @@ export function buildBootstrapToolRegistry(
     workspaceRoot: options.workspaceRoot,
     // Read from the session's captured environment, so a client sets it per
     // session. An explicit toolRegistryOptions value below still wins.
-    sparseLineNumbers: sparseLineNumbersEnabled(options.environment ?? {}),
+    sparseLineNumbers: sparseLineNumbersEnabled(
+      options.environment ?? {},
+      options.toolRegistryOptions?.lightMode === true,
+    ),
     ...(options.agencHome !== undefined
       ? { agencHome: options.agencHome }
       : {}),

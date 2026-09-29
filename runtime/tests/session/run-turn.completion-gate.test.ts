@@ -95,12 +95,13 @@ function headlessSession(
   provider: ReturnType<typeof mkProvider>,
   nonInteractive: boolean,
   registry = toolRegistry(),
+  lightMode = false,
 ) {
   return mkSession({
     provider,
     registry,
     services: {
-      runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive }),
+      runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive, lightMode }),
     },
   });
 }
@@ -179,6 +180,16 @@ async function exhaustGate(maxRounds: number) {
 }
 
 describe("completion gate in the turn loop", () => {
+  test("Light accepts the first final answer after tool execution without a reminder request", async () => {
+    const { provider, requests } = scriptedProvider([toolStep("work-1"), textStep("Done. Tests pass.")]);
+    const { session, events, state } = headlessSession(provider, true, toolRegistry(), true);
+    await collect(session);
+    expect(requests).toHaveLength(2);
+    expect(gatePayloads(events)).toEqual([]);
+    expect(state.history.some(message => String(message.content).includes("<completion_gate"))).toBe(false);
+    expectCompletedTurn(events);
+  });
+
   test("a non-interactive turn is asked to verify once and accepted after a tool-backed answer", async () => {
     const { provider, requests } = scriptedProvider([
       toolStep("work-1"),
@@ -578,11 +589,17 @@ describe("completion gate in the turn loop", () => {
     const state = buildInitialTurnState(mkCtx(), { role: "user", content: TASK });
     expect(toCheckpointSlice(state)).not.toHaveProperty("completionGateRound");
     state.completionGateRound = 2;
+    state.completionGateEvidenceMark = 99;
     expect(toCheckpointSlice(state).completionGateRound).toBe(2);
+    expect(toCheckpointSlice(state)).not.toHaveProperty("completionGateEvidenceMark");
 
     const restored = buildInitialTurnState(mkCtx(), { role: "user", content: TASK });
     restoreFromCheckpoint(restored, { ...toCheckpointSlice(state), completionGateRound: 2 });
     expect(restored.completionGateRound).toBe(2);
+    // The resumed tool ledger starts empty, so old ledger indices must not
+    // become trusted verification frontiers in the new process.
+    expect(restored.completedToolResults).toHaveLength(0);
+    expect(restored.completionGateEvidenceMark).toBeUndefined();
   });
 
   test("the event schema rejects a payload without its required fields", () => {

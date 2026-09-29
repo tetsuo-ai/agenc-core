@@ -65,7 +65,9 @@ import {
 import { sanitizeSystemReminderContent } from "./attachments/system-reminder-sanitizer.js";
 import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./system-prompt-boundary.js";
 import { BRIEF_TOOL_NAME } from "../tools/BriefTool/prompt.js";
-import { loadMemoryPrompt } from "../memory/memdir.js";
+import { lightMemoryInstructions, LIGHT_MEMORY_DEFERRED_INSTRUCTIONS } from "../memory/light-memory-prompt.js";
+import { MEMORY_TYPES } from "../memory/types.js";
+import { MAX_ENTRYPOINT_LINES, loadMemoryPrompt } from "../memory/memdir.js";
 import { UNTRUSTED_TOOL_RESULT_BOUNDARY } from "../tools/untrusted-tool-result-framing.js";
 import { logForDebugging } from "../utils/debug.js";
 import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
@@ -75,6 +77,7 @@ import {
   selectOutputStyleConfig,
 } from "../constants/outputStyles.js";
 import { getClientRenderingSection } from "./client-rendering.js";
+import { getLightSystemPrompt } from "./light-system-prompt.js";
 import {
   getLeanActionsSection,
   getLeanAgentToolSection,
@@ -516,12 +519,15 @@ export async function resolveMemoryPromptInputs(session: SystemPromptSessionSnap
   try {
     const configStore = session.services?.configStore;
     if (configStore === undefined) return { memoryInstructions: "", memoryPrompt: "" };
-    const prompt = await loadMemoryPrompt({
+    const owner = {
       cwd,
       configStore,
       env: session.services?.userShell?.childEnvironment ?? session.services?.providerEnvironment ?? {},
       runtimeOptions: { remoteMode: false, ...session.services?.runtimeOptions },
-    });
+    };
+    const prompt = await (session.services?.runtimeOptions?.lightMode === true
+      ? loadMemoryPrompt(owner, true)
+      : loadMemoryPrompt(owner));
     return {
       memoryInstructions: prompt?.instructions ?? "",
       memoryPrompt: prompt?.directories ?? "",
@@ -581,8 +587,9 @@ export interface EnvInfoInputs {
 }
 
 /** env_info_simple — cwd, model, git branch, time, OS. AgenC-original. */
-export function buildEnvInfoSection(inputs: EnvInfoInputs): string {
+export function buildEnvInfoSection(inputs: EnvInfoInputs, light = false): string {
   const { model, provider, cwd } = inputs;
+  if (light) return `# Environment\nWorking directory: <cwd>${cwd}</cwd>\n${provider ? `Model: ${model} (provider: ${provider})` : `Model: ${model}`}\nPlatform: ${osPlatform()}. Date: ${new Date().toISOString().slice(0, 10)}.`;
   const branch = readGitBranch(cwd, inputs.sandboxExecutionBroker);
   // I-82: wall-clock OK here — display only, not a deadline.
   const now = new Date().toISOString();
@@ -591,8 +598,12 @@ export function buildEnvInfoSection(inputs: EnvInfoInputs): string {
   // not files; absolute Linux paths under `/root` are filesystem paths.
   const items: string[] = [
     `Filesystem working directory: <cwd>${cwd}</cwd>`,
-    `All relative file paths in tool calls resolve against <cwd>. Absolute filesystem paths, including Linux paths under /root, are valid file paths. Agent-tree identifiers such as /root/task1 are agent addresses, not files.`,
-    `Primary working directory: ${cwd}`,
+    ...(light ? [
+      `Relative paths resolve against <cwd>; absolute filesystem paths are valid. Agent identifiers such as /root/task1 are addresses, not files.`,
+    ] : [
+      `All relative file paths in tool calls resolve against <cwd>. Absolute filesystem paths, including Linux paths under /root, are valid file paths. Agent-tree identifiers such as /root/task1 are agent addresses, not files.`,
+      `Primary working directory: ${cwd}`,
+    ]),
     `Platform: ${osPlatform()}`,
     `OS: ${osType()} ${osRelease()}`,
     provider ? `Model: ${model} (provider: ${provider})` : `Model: ${model}`,
@@ -927,8 +938,7 @@ export async function assembleSystemPromptSnapshot(
   };
   switch (opts.profile ?? "standard") {
     case "light":
-      // Light changes tool exposure only; keep the canonical work instructions.
-      return assembleSystemPrompt(opts);
+      return assembleSystemPrompt(opts, "light");
     case "compact":
       return withClientRendering(
         compactSystemPromptSnapshot(
@@ -1116,6 +1126,7 @@ export function buildEffectiveSystemPrompt(
  */
 export async function assembleSystemPrompt(
   opts: AssembleSystemPromptOpts,
+  profile: "standard" | "light" = "standard",
 ): Promise<AssembledSystemPrompt> {
   const { ctx, session } = opts;
   const enabledTools = opts.enabledToolNames ?? new Set<string>();
@@ -1186,7 +1197,18 @@ export async function assembleSystemPrompt(
   // descriptions; its default depends on the provider
   // (prompts/lean-system-prompt.ts).
   const lean = leanSystemPromptEnabled(promptEnvironment, envInfoInputs.provider);
-  const staticSections: Array<string | null> = lean
+  const staticSections: Array<string | null> = profile === "light"
+    ? [
+        getLightSystemPrompt({
+          headless: headlessCompletionSection !== null,
+          deadline: typeof session.services?.runtimeOptions?.deadlineAt === "number",
+          hasOutputStyle: opts.outputStyle != null,
+          completionGate: opts.ctx.config.completionGate?.mode === "always",
+        }),
+        getMemoryInstructionsSection(opts.memoryInstructions === LIGHT_MEMORY_DEFERRED_INSTRUCTIONS && !enabledTools.has("system.searchTools")
+          ? lightMemoryInstructions(MEMORY_TYPES, MAX_ENTRYPOINT_LINES) : opts.memoryInstructions),
+      ]
+    : lean
     ? [
         getLeanIntroSection(opts.outputStyle != null),
         getLeanSystemSection(),
@@ -1231,7 +1253,7 @@ export async function assembleSystemPrompt(
           : getPermissionsSection(opts.permissionContext ?? null, {
               sandboxPolicy: opts.ctx.sandboxPolicy.value,
               networkSandboxPolicy: opts.ctx.networkSandboxPolicy,
-            }),
+            }, profile === "light"),
       "permission mode can change mid-session via /mode and bypass toggles",
     ),
     DANGEROUS_uncachedSystemPromptSection(
@@ -1259,7 +1281,7 @@ export async function assembleSystemPrompt(
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "env_info_simple",
-      () => buildEnvInfoSection(envInfoInputs),
+      () => buildEnvInfoSection(envInfoInputs, profile === "light"),
       "environment info includes wall-clock time and current branch",
     ),
     DANGEROUS_uncachedSystemPromptSection(
@@ -1284,7 +1306,7 @@ export async function assembleSystemPrompt(
     ),
     // The lean head leaves the token-target explanation to the continuation
     // message the runtime sends when a target is set.
-    ...(feature("TOKEN_BUDGET") && !lean
+    ...(feature("TOKEN_BUDGET") && !lean && profile !== "light"
       ? [
           systemPromptSection(
             "token_budget",

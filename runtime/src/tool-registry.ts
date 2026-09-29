@@ -24,6 +24,7 @@
 
 import type { LLMTool, LLMToolCall } from "./llm/types.js";
 import { LIGHT_INITIAL_TOOL_NAMES } from "./tools/light-profile.js";
+import { lightToolPresentation } from "./tools/light-tool-presentation.js";
 import type { FunctionCallOutputContentItem } from "./tools/context.js";
 import type {
   Tool,
@@ -715,6 +716,7 @@ export function buildToolRegistry(
           isDeferredSpec(spec) ? { ...spec, deferred: true } : spec,
         )),
     onDiscoverTools: markDiscovered,
+    lightMode: options.lightMode,
     ...(options.mcpToolsProvider?.primeCatalogs !== undefined
       ? { onBeforeSearch: () => options.mcpToolsProvider!.primeCatalogs!() }
       : {}),
@@ -769,11 +771,11 @@ export function buildToolRegistry(
   const firstClassFileTools = [
     createFileReadTool({
       allowedPaths: [options.workspaceRoot],
-      ...(options.sparseLineNumbers === true ? { sparseLineNumbers: true } : {}),
+      ...((options.sparseLineNumbers ?? options.lightMode) === true ? { sparseLineNumbers: true } : {}),
     }),
     createFileEditTool({
       allowedPaths: [options.workspaceRoot],
-      ...(options.sparseLineNumbers === true ? { sparseLineNumbers: true } : {}),
+      ...((options.sparseLineNumbers ?? options.lightMode) === true ? { sparseLineNumbers: true } : {}),
     }),
     // MultiEdit is the multi-edit batch editor for one-file rewrite sets.
     createFileMultiEditTool({
@@ -1256,7 +1258,12 @@ export function buildToolRegistry(
       return allSpecs().map((spec) => spec.tool);
     },
     toLLMTools(): LLMTool[] {
-      const tools = visibleSpecs().map((spec) => toolToLLMTool(spec.tool));
+      const tools = visibleSpecs().map((spec) => {
+        const tool = toolToLLMTool(spec.tool);
+        return options.lightMode === true && spec.tool.metadata?.source === "builtin"
+          ? lightToolPresentation(tool)
+          : tool;
+      });
       if (!deferRareTools) return tools;
       const pointer = rareToolPointer(new Set(
         allSpecs()

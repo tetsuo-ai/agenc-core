@@ -23,8 +23,10 @@ export const SPARSE_LINE_NUMBERS_ENV = "AGENC_SPARSE_LINE_NUMBERS";
 
 export function sparseLineNumbersEnabled(
   env: Readonly<Record<string, string | undefined>>,
+  defaultValue = false,
 ): boolean {
-  return isEnvTruthy(env[SPARSE_LINE_NUMBERS_ENV]);
+  const value = env[SPARSE_LINE_NUMBERS_ENV];
+  return value === undefined ? defaultValue : isEnvTruthy(value);
 }
 
 export function addLineNumbers({

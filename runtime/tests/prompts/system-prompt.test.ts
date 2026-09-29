@@ -1336,7 +1336,7 @@ describe("assembleSystemPrompt", () => {
 
 
 test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: explain tradeoffs." }])(
-  "Light uses unchanged standard instructions and preserves optional inputs (style=%s)",
+  "Light reduces the head while preserving policy and optional inputs (style=%s)",
   async (outputStyle) => {
     const session = { services: { runtimeOptions: { lightMode: true, simpleMode: false, nonInteractive: true, deadlineAt: 123 }, providerEnvironment: {} } } as unknown as Session;
     const options = {
@@ -1345,7 +1345,7 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
       memoryInstructions: "MEMORY_RULE_SENTINEL: keep scope boundaries.",
       memoryPrompt: "MEMORY_PATH_SENTINEL: /workspace/memory",
       permissionContext: { mode: "plan" } as never,
-      enabledToolNames: new Set(["FileRead", "Edit", "Write", "exec_command", "write_stdin", "Grep", "Glob", "system.searchTools"]),
+      enabledToolNames: new Set(["FileRead", "Edit", "Write", "exec_command", "system.searchTools"]),
       outputStyle,
       language: "French",
       mcpServers: [{ name: "example", instructions: "MCP_INSTRUCTIONS_SENTINEL" }],
@@ -1353,12 +1353,14 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
     };
     const light = await assembleSystemPromptSnapshot({ ...options, profile: "light" });
     const standard = await assembleSystemPromptSnapshot({ ...options, profile: "standard" });
-    // Only the environment's wall-clock timestamp may differ between calls.
-    const withoutClock = (text: string) => text.replace(/Current time \(UTC\): [^\n]+/gu, "Current time (UTC): <captured>");
-    expect(light.staticPrefix).toBe(standard.staticPrefix);
-    expect(withoutClock(light.text)).toBe(withoutClock(standard.text));
-    expect(withoutClock(light.dynamicSuffix)).toBe(withoutClock(standard.dynamicSuffix));
-    for (const heading of ["# System", "# Executing actions with care", "# Using your tools", "# Tone and style", "# Output efficiency", "# Completing work without a human", "# Environment"]) {
+    // Light compacts the environment and omits idle token-target guidance.
+    // Caller-supplied policy, memory, MCP and output-style sections stay intact.
+    const withoutEnvironment = (text: string) => text.replace(/# Environment\n[\s\S]*?(?=\n\n#|$)/gu, "# Environment").replace(/\n\nWhen the user specifies a token target[^\n]+$/u, "");
+    expect(light.staticPrefix.length).toBeLessThan(standard.staticPrefix.length * 0.5);
+    expect(withoutEnvironment(light.dynamicSuffix)).toBe(withoutEnvironment(standard.dynamicSuffix));
+    expect(light.dynamicSuffix).toContain("Working directory: <cwd>");
+    expect(light.dynamicSuffix).not.toContain("Primary working directory:");
+    for (const heading of ["Never bypass a denial", "system.searchTools", "No human is available", "# Environment"]) {
       expect(light.text).toContain(heading);
     }
     expect(light.text).toContain("system.searchTools");
@@ -1372,11 +1374,46 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
     expect(light.dynamicSuffix).toContain("/workspace/scratchpad");
     expect(light.text.toLowerCase()).toContain("plan");
     if (outputStyle === undefined) {
-      expect(light.text).toContain("# Doing tasks");
-      expect(light.text).toContain("never suppress or simplify failing checks");
+      expect(light.text).toContain("Never weaken checks");
     } else {
       expect(light.dynamicSuffix).toContain("OUTPUT_STYLE_SENTINEL");
       expect(light.text).not.toContain("# Doing tasks");
     }
   },
 );
+
+test("Light's cached head is independent of provider defaults and loaded tools", async () => {
+  const options = { session: fakeSession, ctx: fakeCtx(), profile: "light" as const };
+  const initial = await assembleSystemPromptSnapshot({ ...options, provider: "deepseek", enabledToolNames: new Set(["FileRead", "system.searchTools"]) });
+  const expanded = await assembleSystemPromptSnapshot({ ...options, provider: "openai", enabledToolNames: new Set(["FileRead", "system.searchTools", "spawn_agent", "Skill", "TodoWrite"]) });
+  expect(expanded.staticPrefix).toBe(initial.staticPrefix);
+  expect(initial.staticPrefix).toContain("system.searchTools");
+  expect(initial.staticPrefix).not.toContain("- [x]");
+  expect(initial.text).not.toContain("The target is a hard minimum");
+});
+
+test("Light custom output styles replace the default coding workflow while retaining tool and authority rules", async () => {
+  const style = { name: "review-only", prompt: "Review the supplied essay. Discuss its argument without changing files or executing tests." };
+  const light = await assembleSystemPromptSnapshot({
+    session: fakeSession, ctx: fakeCtx(), profile: "light", outputStyle: style,
+  });
+  expect(light.staticPrefix).toContain('Follow the "Output Style" below');
+  expect(light.staticPrefix).not.toContain("a coding agent");
+  expect(light.staticPrefix).not.toContain("# Work\n");
+  expect(light.staticPrefix).not.toContain("make the smallest complete change");
+  expect(light.staticPrefix).not.toContain("rerun affected checks");
+  expect(light.staticPrefix).toContain("system.searchTools");
+  expect(light.staticPrefix).toContain("Never bypass a denial");
+  expect(light.staticPrefix).toContain("unobserved success");
+  expect(light.dynamicSuffix).toContain(style.prompt);
+});
+
+ test("Light retains memory rules when discovery is unavailable", async () => {
+  const { LIGHT_MEMORY_DEFERRED_INSTRUCTIONS } = await import("../../src/memory/light-memory-prompt.js");
+  const opts = { session: fakeSession, ctx: fakeCtx(), profile: "light" as const, memoryInstructions: LIGHT_MEMORY_DEFERRED_INSTRUCTIONS };
+  const fallback = await assembleSystemPromptSnapshot({ ...opts, enabledToolNames: new Set(["FileRead"]) });
+  expect(fallback.staticPrefix).toContain("Save requested memories immediately");
+  const deferred = await assembleSystemPromptSnapshot({ ...opts, enabledToolNames: new Set(["system.searchTools"]) });
+  expect(deferred.staticPrefix).not.toContain("Save requested memories immediately");
+  expect(deferred.staticPrefix).toContain(LIGHT_MEMORY_DEFERRED_INSTRUCTIONS);
+});

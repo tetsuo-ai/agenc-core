@@ -2124,25 +2124,44 @@ describe("Light presentation and deferred capability preservation", () => {
     expect(disabled.tools.map(tool => tool.name)).toEqual(normal.tools.map(tool => tool.name));
     expect(baseline.length).toBeGreaterThan(light.toLLMTools().length);
 
-    await light.dispatch({ id: "other-session-discovery", name: "system.searchTools", arguments: '{"select":"MultiEdit"}' });
+    await light.dispatch({ id: "other-session-discovery", name: "system.searchTools", arguments: '{"select":"Write"}' });
     expect(normal.toLLMTools()).toEqual(baseline);
     expect(disabled.toLLMTools()).toEqual(baseline);
     expect(normal.getDiscoveredToolNames?.().size).toBe(0);
     expect(disabled.getDiscoveredToolNames?.().size).toBe(0);
   });
 
-  test("keeps the complete executable catalog and unchanged function and parameter documentation", () => {
-    const normal = buildToolRegistry({ workspaceRoot: "/tmp" });
+  test("keeps the executable catalog and schema constraints while reducing Light documentation", () => {
+    // Hold read formatting constant when comparing canonical descriptions.
+    const normal = buildToolRegistry({ workspaceRoot: "/tmp", sparseLineNumbers: true });
     const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
     expect(light.tools.map(tool => tool.name)).toEqual(normal.tools.map(tool => tool.name));
     expect(light.toLLMTools().map(tool => tool.function.name).sort()).toEqual([
-      "Edit", "FileRead", "Glob", "Grep", "Write", "exec_command", "system.searchTools", "write_stdin",
+      "FileRead", "MultiEdit", "exec_command", "system.searchTools",
     ].sort());
+    const withoutDescriptions = (value: unknown): unknown => Array.isArray(value)
+      ? value.map(withoutDescriptions)
+      : value !== null && typeof value === "object"
+        ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== "description")
+            .map(([key, entry]) => [key, withoutDescriptions(entry)]))
+        : value;
     for (const presented of light.toLLMTools()) {
       const canonical = light.tools.find(tool => tool.name === presented.function.name)!;
-      expect(presented.function).toEqual({ name: canonical.name, description: canonical.description, parameters: canonical.inputSchema });
-      expect(presented).toEqual(normal.toLLMTools().find(tool => tool.function.name === canonical.name));
+      expect(withoutDescriptions(presented.function.parameters)).toEqual(withoutDescriptions(canonical.inputSchema));
+      const normalSchema = normal.tools.find(tool => tool.name === canonical.name)!.inputSchema;
+      expect(canonical.inputSchema).toEqual(canonical.name === "system.searchTools"
+        ? { ...normalSchema, properties: { ...normalSchema.properties, instructions: { type: "string", enum: ["memory"] } } }
+        : normalSchema);
+      if (canonical.name === "system.searchTools") {
+        expect(canonical.description).toContain("unique best query match loads automatically");
+        expect(normal.tools.find(tool => tool.name === canonical.name)?.description)
+          .toContain("Use select or select:<tool_name> to load");
+      } else {
+        expect(canonical.description).toBe(normal.tools.find(tool => tool.name === canonical.name)?.description);
+      }
     }
+    const normalInitial = normal.toLLMTools().filter(tool => light.toLLMTools().some(loaded => loaded.function.name === tool.function.name));
+    expect(JSON.stringify(light.toLLMTools()).length).toBeLessThan(JSON.stringify(normalInitial).length * 0.8);
     expect(light.tools.find(tool => tool.name === "Write")?.requiresApproval).toBe(true);
     expect(light.tools.find(tool => tool.name === "Write")?.recoveryCategory).toBe("side-effecting");
   });
@@ -2162,8 +2181,9 @@ describe("Light presentation and deferred capability preservation", () => {
     expect(other.toLLMTools().some(tool => tool.function.name === extra.name)).toBe(false);
     expect(normal.toLLMTools()).toEqual(normalBefore);
     await light.dispatch({ id: "load-full-read", name: "system.searchTools", arguments: '{"select":"FileRead"}' });
-    const read = light.tools.find(tool => tool.name === "FileRead")!;
-    expect(light.toLLMTools().find(tool => tool.function.name === "FileRead")?.function).toEqual({ name: read.name, description: read.description, parameters: read.inputSchema });
+    // Selecting an already exposed core tool does not rewrite its schema.
+    expect(light.toLLMTools().find(tool => tool.function.name === "FileRead"))
+      .toEqual(other.toLLMTools().find(tool => tool.function.name === "FileRead"));
   });
 
   test.each([undefined, { disabled_tools: ["system.searchTools"] }])(

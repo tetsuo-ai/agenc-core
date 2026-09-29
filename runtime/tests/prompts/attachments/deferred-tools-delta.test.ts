@@ -199,3 +199,15 @@ describe("deferredToolsDeltaProducer", () => {
     _resetAttachmentTrackingStateForTest(sessionKey);
   });
 });
+
+
+test("light discovery appends names without duplicating loaded schema descriptions", async () => {
+  const sessionKey = {};
+  const state = getAttachmentTrackingState(sessionKey);
+  const loaded = [tool("new_tool", "verbose schema description")];
+  await deferredToolsDeltaProducer({ ...makeOpts(sessionKey, loaded, new Set()), lightMode: true }, state);
+  const out = await deferredToolsDeltaProducer({ ...makeOpts(sessionKey, loaded, new Set(["new_tool"])), lightMode: true }, state);
+  expect(out).toEqual([{ kind: "deferred_tools_delta", addedNames: ["new_tool"], addedLines: ["new_tool"], removedNames: [] }]);
+  expect(await deferredToolsDeltaProducer({ ...makeOpts(sessionKey, loaded, new Set(["new_tool"])), lightMode: true }, state)).toEqual([]);
+  _resetAttachmentTrackingStateForTest(sessionKey);
+});

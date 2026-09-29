@@ -82,6 +82,7 @@ import {
 import { freshDenialTracking } from "../permissions/denial-tracking.js";
 import { recoverableFailureKind } from "../tools/result-metadata.js";
 import { markLoadedToolNamesDiscovered } from "../tools/deferred-discovery.js";
+import { loadLightToolCompanions } from "../tools/light-tool-companions.js";
 import { isEnvTruthy } from "../utils/envUtils.js";
 import { createToolUseSummaryMessage } from "../utils/messages.js";
 import {
@@ -596,6 +597,12 @@ function recordCompletedToolCall(
   const registryTool = session.services.registry.tools.find(
     (tool) => tool.name === toolCall.name,
   );
+  loadLightToolCompanions({
+    lightMode: session.services.runtimeOptions?.lightMode === true,
+    tool: registryTool,
+    result,
+    registry: session.services.registry,
+  });
   const untrustedKind = classifyUntrustedToolResult(
     toolCall.name,
     registryTool,

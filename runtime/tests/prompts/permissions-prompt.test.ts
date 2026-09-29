@@ -56,6 +56,18 @@ function unattendedCtx(
   });
 }
 
+test("Light bypass prose retains independent sandbox/network authority; other policies stay exact", () => {
+  const light = getPermissionsSection(ctxForMode("bypassPermissions"), WORKSPACE_AUTHORITY, true)!;
+  expect(light).toContain("workspace_write");
+  expect(light).toContain("network restricted");
+  expect(light).toContain("No sandbox escalation");
+  expect(light).toContain("Never bypass a denial");
+  expect(light.length).toBeLessThan(350);
+  for (const mode of ["default", "plan", "acceptEdits", "unattended"] as const) {
+    expect(getPermissionsSection(ctxForMode(mode), WORKSPACE_AUTHORITY, true)).toBe(getPermissionsSection(ctxForMode(mode), WORKSPACE_AUTHORITY));
+  }
+});
+
 describe("approval-policy constants", () => {
   test("never.md", () => {
     expect(APPROVAL_POLICY_NEVER).toBe(
