@@ -430,8 +430,10 @@ export function runMaxOutputTokensRecovery(
   const overrideUnset = state.maxOutputTokensOverride === undefined;
   const truncatedTools = (state.truncatedToolCallNames?.length ?? 0) > 0;
   // Referenced handoffs fit the configured cap; do not spend a larger budget
-  // repeating copied context. Ordinary responses retain bounded escalation.
-  const escalateAllowed = opts.escalateAllowed !== false && !truncatedTools;
+  // repeating copied context. Other tools and responses retain escalation.
+  const referencedHandoffsOnly = truncatedTools &&
+    state.truncatedToolCallNames!.every(name => name === "spawn_agent");
+  const escalateAllowed = opts.escalateAllowed !== false && !referencedHandoffsOnly;
 
   // Step 1: escalate path — first attempt, override unset.
   if (overrideUnset && escalateAllowed) {

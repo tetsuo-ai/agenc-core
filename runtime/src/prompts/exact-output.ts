@@ -6,7 +6,12 @@ export function requestsExactOutput(task: string): boolean {
   // Require a direct affirmative instruction to the assistant. Embedded
   // requirements such as "fix the endpoint to return JSON only" are work to
   // verify, not a contract for the assistant's final response.
-  return task.split(/(?:[.!?;]\s+|\n|\band\s+)/iu).some(clause => {
+  // Mask example contents before splitting clauses, but retain quote markers
+  // so direct contracts such as 'return exactly "ok"' still match.
+  const prose = task.replace(/```[^]*?```|~~~[^]*?~~~/gu, " ")
+    .replace(/`[^`]*`|"[^"]*"|“[^”]*”|‘[^’]*’|(?<!\w)'[^']*'(?!\w)/gu, '""')
+    .split("\n").filter(line => !/^\s*>/u.test(line)).join("\n");
+  return prose.split(/(?:[.!?;]\s+|\n|\band\s+)/iu).some(clause => {
     const command = clause.trim().replace(/^(?:please\s+|(?:can|could|will|would)\s+you\s+)/iu, "");
     return /^(?:json|xml|csv|yaml)\s*[- ]?only\s*[.!?]?$/iu.test(command) ||
       /^only\s+(?:valid\s+)?(?:json|xml|csv|yaml)\s*[.!?]?$/iu.test(command) ||

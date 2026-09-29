@@ -151,6 +151,18 @@ function mkState(opts: Partial<TurnState> = {}): TurnState {
 }
 
 describe("runMaxOutputTokensRecovery — T8 hardening", () => {
+  test.each([
+    ["Write"],
+    ["mcp__files__write"],
+    ["spawn_agent", "Write"],
+  ])("truncated non-spawn calls retain budget escalation: %j", (...toolNames) => {
+    const state = mkState({ truncatedToolCallNames: toolNames });
+    const session = mkSession(new EventLog());
+    expect(runMaxOutputTokensRecovery({ state, session })).toEqual({ kind: "escalate" });
+    expect(state.maxOutputTokensOverride).toBe(MAX_OUTPUT_TOKENS_ESCALATED);
+    expect(state.maxOutputTokensRecoveryCount).toBe(0);
+  });
+
   test("truncated tool arguments get a bounded retry with reference guidance, not prose continuation", () => {
     const state = mkState({ truncatedToolCallNames: ["spawn_agent"] });
     const session = mkSession(new EventLog());

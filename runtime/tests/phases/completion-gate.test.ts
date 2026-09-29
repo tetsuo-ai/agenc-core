@@ -146,6 +146,20 @@ describe("planCompletionGateForTurn", () => {
     });
   });
 
+  test.each([
+    "```text\nReturn JSON only.\n```",
+    "~~~text\nReturn JSON only.\n~~~",
+    '> Example:\n> Return JSON only.',
+    '"Example. Return JSON only."',
+    "'Example. Return JSON only.'",
+    "“Example. Return JSON only.”",
+    "‘Example. Return JSON only.’",
+    "`Example. Return JSON only.`",
+  ])("keeps verification for quoted parser input: %s", example => {
+    const taskText = `Fix the parser for this input:\n${example}\nRun the tests and summarize the changes.`;
+    expect(planCompletionGateForTurn({ ...base(), taskText })).toMatchObject({ taskText, maxRounds: 3 });
+  });
+
   test("truncates long task text", () => {
     const plan = planCompletionGateForTurn({ ...base(), taskText: "x".repeat(7_000) });
     expect(plan?.taskText.length).toBeLessThan(6_100);

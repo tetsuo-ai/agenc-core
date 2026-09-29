@@ -16,6 +16,13 @@ describe("explicit delegation", () => {
     }
   });
   it.each([
+    "Use a background worker to send email. Do not use subagents.",
+    "Use subagents to inspect the files. Do not use subagents.",
+    "Don't delegate. Use a worker to inspect the files.",
+    "Never spawn children. Delegate this task.",
+    "Use no subagents. Use a worker to inspect the files.",
+    "Use a background worker to send email.",
+    "Launch an application worker to process jobs.",
     "Spawn one child after I approve the plan.",
     "Use subagents if needed.",
     "Delegate this task once I confirm.",
