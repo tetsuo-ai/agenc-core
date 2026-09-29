@@ -6,7 +6,7 @@ describe("explicit delegation", () => {
     expect(explicitlyRequestsDelegation(text)).toBe(true);
     expect(requiredDelegationToolChoice({ taskText: text, initialSample: true, depth: 0, planMode: false, toolNames: ["FileRead", "spawn_agent"] })).toEqual({ type: "function", name: "spawn_agent" });
   });
-  it.each(["Explain how sub-agents work.", "Use a child process to run the command.", "Spawn a worker thread for parsing.", "Use a child component for the button.", "Use a worker pool for jobs.", "Do not spawn one child.", "Fix the spawn_agent function.", "If useful, delegate this task to a child.", "> Spawn a child.\nExplain that quote.", "```\nSpawn one child.\n```\nExplain that example."])("keeps ordinary chat local: %s", text => {
+  it.each(["Explain how sub-agents work.", "Use no subagents.", "Spawn zero workers.", "Use exactly zero child agents.", "Use a child process to run the command.", "Spawn a worker thread for parsing.", "Use a child component for the button.", "Use a worker pool for jobs.", "Do not spawn one child.", "Fix the spawn_agent function.", "If useful, delegate this task to a child.", "> Spawn a child.\nExplain that quote.", "```\nSpawn one child.\n```\nExplain that example."])("keeps ordinary chat local: %s", text => {
     expect(explicitlyRequestsDelegation(text)).toBe(false);
   });
   it("does not force replacement workers, children, plans, or unavailable tools", () => {

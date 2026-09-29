@@ -124,6 +124,12 @@ describe("planCompletionGateForTurn", () => {
     taskText: "Fix the failing test",
   });
 
+  test.each(["Update config.json only.", "Change settings.yaml only.", "Edit data.csv only."])(
+    "keeps verification for a file scope restriction: %s", taskText => {
+      expect(planCompletionGateForTurn({ ...base(), taskText })).toMatchObject({ taskText, maxRounds: 3 });
+    },
+  );
+
   test("plans for a root human turn of a non-interactive session", () => {
     expect(planCompletionGateForTurn(base())).toEqual({
       maxRounds: 3,

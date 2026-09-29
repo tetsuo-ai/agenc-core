@@ -11,6 +11,7 @@ export function explicitlyRequestsDelegation(text: string): boolean {
   const clauses = prose.split(/(?:[.!?;]\s+|\n)/u);
   return clauses.some(clause => {
     const command = clause.trim().replace(/^(?:please\s+|(?:can|could|will|would)\s+you\s+)/iu, "");
+    if (/^(?:use|spawn|launch|ask)\s+(?:(?:exactly|just)\s+)?(?:no|zero|0)\b/iu.test(command)) return false;
     return /^delegate\s+(?:this|the)\s+(?:task|work|request)\b/iu.test(command) ||
       /^(?:use|spawn|launch|ask)\s+(?:(?:exactly|just)\s+)?(?:(?:a|an|the|one|two|three|four|[1-9]|multiple|several)\s+)?(?:[\w-]+\s+){0,2}(?:sub[ -]?agents?|child(?:ren)?(?!\s+(?:process(?:es)?|components?|elements?|nodes?|routes?)\b)|workers?(?!\s+(?:threads?|process(?:es)?|pools?)\b))\b/iu.test(command) ||
       /^(?:delegate|assign)\b[^.!?\n]{0,100}\bto\s+(?:(?:a|an|the|one|multiple)\s+)?(?:sub[ -]?agents?|child(?!\s+(?:process(?:es)?|components?|elements?|nodes?|routes?)\b)|workers?(?!\s+(?:threads?|process(?:es)?|pools?)\b))\b/iu.test(command) ||
