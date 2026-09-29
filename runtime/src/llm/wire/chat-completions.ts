@@ -22,6 +22,7 @@ import { openAiAcceptsSamplingTemperature } from "../registry/openai-reasoning-m
 import { DEFAULT_MAX_OUTPUT_TOKENS } from "../openai-compatible-token-limits.js";
 import {
   assistantTextFromContentBlocks,
+  thinkingTextFromContentBlocks,
   applyToolResultImagePolicyForWire,
   coerceUsage,
   collectRequestMetrics,
@@ -294,6 +295,7 @@ function toChatCompletionsMessages(
   imageInputContract?: "cerebras_v2" | "zai_flash" | "kimi_global",
   acceptsDirectImageInput?: boolean,
   sessionTailAfterSetup = false,
+  usesThinkingContentBlocks = false,
 ): Array<Record<string, unknown>> {
   // The caller passes the exact normalized sequence used to derive the
   // reasoning replay plan. Keeping a single projection prevents boundary or
@@ -380,6 +382,15 @@ function toChatCompletionsMessages(
       ? message.providerReasoningContent
       : undefined;
   };
+  const assistantContent = (content: unknown, reasoning: string | undefined): unknown =>
+    usesThinkingContentBlocks && reasoning !== undefined
+      ? [
+          { type: "thinking", thinking: [{ type: "text", text: reasoning }] },
+          ...(typeof content === "string" && content.length > 0
+            ? [{ type: "text", text: content }]
+            : Array.isArray(content) ? content : []),
+        ]
+      : content;
   for (const message of prepared) {
     if (message.role === "system" || message.role === "developer") continue;
     if (message.role === "tool") {
@@ -394,8 +405,8 @@ function toChatCompletionsMessages(
       const providerReasoningContent = replayReasoningContent(message);
       wireMessages.push({
         role: "assistant",
-        content: messageTextContent(message.content),
-        ...(providerReasoningContent !== undefined
+        content: assistantContent(messageTextContent(message.content), providerReasoningContent),
+        ...(!usesThinkingContentBlocks && providerReasoningContent !== undefined
           ? { [reasoningContentField]: providerReasoningContent }
           : {}),
         tool_calls: message.toolCalls.map((toolCall) => ({
@@ -416,8 +427,10 @@ function toChatCompletionsMessages(
     const providerReasoningContent = replayReasoningContent(message);
     wireMessages.push({
       role: message.role,
-      content: toOpenAIMessageContent(message.content),
-      ...(message.role === "assistant" &&
+      content: message.role === "assistant"
+        ? assistantContent(toOpenAIMessageContent(message.content), providerReasoningContent)
+        : toOpenAIMessageContent(message.content),
+      ...(!usesThinkingContentBlocks && message.role === "assistant" &&
       providerReasoningContent !== undefined
         ? { [reasoningContentField]: providerReasoningContent }
         : {}),
@@ -628,6 +641,7 @@ export function buildChatCompletionsRequest(
       input.providerCapabilityHints?.acceptsDirectImageInput,
       input.providerCapabilityHints?.sharesPromptPrefixAcrossSessions === true &&
         input.sharedPrefixTail !== false,
+      input.providerCapabilityHints?.usesThinkingContentBlocks === true,
     ),
     [maxTokenField]: maxTokens,
   };
@@ -972,7 +986,10 @@ export function parseChatCompletionsResponse(
     "reasoning_content";
   const fallbackReasoningField = request.providerCapabilityHints?.reasoningContentFallbackField;
   const rawProviderReasoningContent = message[reasoningContentField] ??
-    (fallbackReasoningField !== undefined ? message[fallbackReasoningField] : undefined);
+    (fallbackReasoningField !== undefined ? message[fallbackReasoningField] : undefined) ??
+    (request.providerCapabilityHints?.usesThinkingContentBlocks === true && Array.isArray(message.content)
+      ? thinkingTextFromContentBlocks(message.content)
+      : undefined);
   const providerReasoningContent =
     typeof rawProviderReasoningContent === "string" &&
       rawProviderReasoningContent.length > 0

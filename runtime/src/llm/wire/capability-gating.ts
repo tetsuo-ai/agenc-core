@@ -109,6 +109,8 @@ export interface ChatCompletionsCapabilityHints {
    * `reasoning_content`, where the tool turn can replay it.
    */
   readonly reasoningSplit?: boolean;
+  /** Mistral places thinking chunks inside message.content instead of a sibling field. */
+  readonly usesThinkingContentBlocks?: boolean;
   /** vLLM receives Jinja thinking controls inside chat_template_kwargs. */
   readonly usesVllmThinkingTemplate?: boolean;
   /**
@@ -410,6 +412,12 @@ export function chatCompletionsCapabilityHintsForProvider(
       ? { reasoningEffortEnvelope: "openrouter" as const }
       : {}),
     ...(slug === "openai" ? { gatesTemperatureOnOpenAiReasoning: true } : {}),
+    ...(slug === "mistral" ? {
+      usesThinkingContentBlocks: true,
+      replaysReasoningContent: true,
+      acceptsDirectImageInput: acceptsToolResultImages,
+      toolResultImagePolicy: acceptsToolResultImages ? "relay_as_user" as const : "strip" as const,
+    } : {}),
     ...(slug === "ollama-cloud" ? {
       acceptsDirectImageInput: acceptsToolResultImages,
       toolResultImagePolicy: acceptsToolResultImages ? "relay_as_user" as const : "strip" as const,
@@ -531,7 +539,12 @@ export function chatCompletionsCapabilityHintsForProvider(
           ...(preservesThinkingHistory
             ? { preservesThinkingHistory: true }
             : {}),
-          disablesThinkingForForcedToolChoice: true,
+          // The 2.4T model is thinking-only; it cannot take enable_thinking:false.
+          ...(normalizedModel === "qwen3.8-2.4t-a95b"
+            ? { toolChoicePolicy: "auto_only" as const }
+            : normalizedModel === "qwen3.8-omni-flash"
+              ? { toolChoicePolicy: "auto_only" as const }
+              : { disablesThinkingForForcedToolChoice: true }),
         }
       : {}),
     ...(isQwenFlashNext
@@ -558,7 +571,7 @@ export function chatCompletionsCapabilityHintsForProvider(
         }
       : {}),
     ...(isZai &&
-    /(?:^|[/:])glm-5\.3(?:-flash)?$/i.test(model ?? "")
+    /(?:^|[/:])glm-5\.3(?:-flashx?)?$/i.test(model ?? "")
       ? {
           replaysReasoningContent: true,
           replaysReasoningContentOnlyForAdjacentToolContinuation: true,

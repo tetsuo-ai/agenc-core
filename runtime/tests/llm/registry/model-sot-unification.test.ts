@@ -154,7 +154,9 @@ describe("retired models remain historical metadata, not live choices", () => {
       "mixtral-8x7b-32768",
     );
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.mistral).toEqual([
-      "mistral-medium-latest",
+      "mistral-medium-latest", "mistral-small-latest", "codestral-latest",
+      "ministral-14b-latest", "ministral-8b-latest", "ministral-3b-latest",
+      "voxtral-small-latest", "labs-leanstral-1-5",
     ]);
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.minimax).toContain("MiniMax-M3");
   });

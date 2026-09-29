@@ -19,6 +19,7 @@
  * @module
  */
 
+import { MISTRAL_CHAT_MODELS } from "../llm/registry/mistral-models.js";
 import { join } from "node:path";
 import { promises as fsp } from "node:fs";
 import { monotonicMs } from "./_deps/utils.js";
@@ -874,6 +875,27 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     "cerebras:gemma-4-31b": COST_TIER_CEREBRAS_GEMMA_4_31B,
     "zai:glm-5.3": COST_TIER_ZAI_GLM_53,
     "zai:glm-5.3-flash": COST_TIER_ZAI_GLM_53_FLASH,
+    // https://docs.z.ai/guides/overview/pricing (2026-09-29)
+    "zai:glm-5.3-flashx": {
+      inputUsdPer1K: 0.00037,
+      outputUsdPer1K: 0.00125,
+      cachedInputUsdPer1K: 0.000075,
+      cachedInputIncludedInInputTokens: true,
+    },
+    // Singapore Pay-As-You-Go model pages, retrieved 2026-09-29.
+    "qwen:qwen3.8-27b": {
+      inputUsdPer1K: 0.0005, outputUsdPer1K: 0.003,
+      cachedInputUsdPer1K: 0.0001, cachedInputIncludedInInputTokens: true,
+    },
+    // https://www.alibabacloud.com/help/en/model-studio/model-pricing
+    "qwen:qwen3.8-omni-flash": {
+      inputUsdPer1K: 0.00015, outputUsdPer1K: 0.00047,
+      cachedInputUsdPer1K: 0.000016, cachedInputIncludedInInputTokens: true,
+    },
+    "qwen:qwen3.8-2.4t-a95b": {
+      inputUsdPer1K: 0.002, outputUsdPer1K: 0.006,
+      cachedInputUsdPer1K: 0.00025, cachedInputIncludedInInputTokens: true,
+    },
     "kimi:kimi-k3": COST_TIER_KIMI_K3,
     "kimi:kimi-k2.7-code": COST_TIER_KIMI_K27_CODE,
     "kimi:kimi-k2.7-code-highspeed": COST_TIER_KIMI_K27_CODE_HIGHSPEED,
@@ -890,7 +912,15 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     ...geminiCostAliases("gemini-2.5-pro", COST_TIER_GEMINI_2_5_PRO),
     ...geminiCostAliases("gemini-2.5-flash", COST_TIER_GEMINI_2_5_FLASH),
     ...geminiCostAliases("gemini-2.5-flash-lite", COST_TIER_GEMINI_2_5_FLASH_LITE),
-    "mistral:mistral-medium-latest": COST_TIER_MISTRAL_MEDIUM_3_5,
+    ...Object.fromEntries(MISTRAL_CHAT_MODELS.flatMap((entry) => {
+      const rates: ModelCostEntry = {
+        inputUsdPer1K: entry.rates[0] / 1000,
+        outputUsdPer1K: entry.rates[1] / 1000,
+        ...(entry.free ? { localZeroCost: true } : {}),
+        ...(entry.rates[2] === undefined ? {} : {cachedInputUsdPer1K: entry.rates[2] / 1000, cachedInputIncludedInInputTokens: true}),
+      };
+      return [entry.model, ...entry.aliases].map((model) => [`mistral:${model}`, rates]);
+    })),
     "mistral-medium-latest": COST_TIER_MISTRAL_MEDIUM_3_5,
     "nvidia-nim:nvidia/llama-3.1-nemotron-70b-instruct": DEFAULT_UNKNOWN_MODEL_COST,
     "nvidia/llama-3.1-nemotron-70b-instruct": DEFAULT_UNKNOWN_MODEL_COST,
