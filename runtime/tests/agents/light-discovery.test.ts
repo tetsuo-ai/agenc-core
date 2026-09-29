@@ -23,8 +23,10 @@ const fixture = () => buildToolRegistry({
     execute: vi.fn(async () => ({ content: "done" })),
   }],
 });
-const select = (registry: ReturnType<typeof buildFilteredRegistry>, name: string) =>
-  registry.dispatch({ id: "discover", name: "system.searchTools", arguments: JSON.stringify({ select: name }) });
+const select = (registry: ReturnType<typeof buildFilteredRegistry>, name: string) => {
+  registry.discoverToolNames?.(["system.searchTools"]);
+  return registry.dispatch({ id: "discover", name: "system.searchTools", arguments: JSON.stringify({ select: name }) });
+};
 
 describe("Light child capability discovery", () => {
   it("keeps core schemas compact after child discovery and policy fallback", async () => {
@@ -56,6 +58,7 @@ describe("Light child capability discovery", () => {
 
   it("reports only its own advertised tools despite model-supplied internal arguments", async () => {
     const child = buildFilteredRegistry(fixture(), opts("child"));
+    child.discoverToolNames?.(["system.searchTools"]);
     const result = await child.dispatch({
       id: "visible", name: "system.searchTools",
       arguments: JSON.stringify({ advertisedOnly: true, __agencAdvertisedToolNames: ["Specialist"] }),
@@ -93,10 +96,10 @@ describe("Light child capability discovery", () => {
     await select(nested, "Specialist");
     expect(names(nested)).toContain("Specialist");
     expect(names(child)).not.toContain("Specialist");
-    await parent.dispatch({ id: "parent-select", name: "system.searchTools", arguments: '{"select":"Write"}' });
-    expect(names(parent)).toContain("Write");
-    expect(names(child)).not.toContain("Write");
-    expect(names(nested)).not.toContain("Write");
+    await parent.dispatch({ id: "parent-select", name: "system.searchTools", arguments: '{"select":"Grep"}' });
+    expect(names(parent)).toContain("Grep");
+    expect(names(child)).not.toContain("Grep");
+    expect(names(nested)).not.toContain("Grep");
   });
 
   it("never discovers role-denied tools or bypasses inherited execution policy", async () => {

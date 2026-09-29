@@ -1166,11 +1166,8 @@ export function buildToolRegistry(
 
   function visibleSpecs(): readonly ConfiguredToolSpec[] {
     const specs = allSpecs().filter((spec) => spec.unavailable !== true);
-    // A restrictive policy may remove discovery itself. Keep its remaining
-    // capabilities callable instead of stranding them behind an absent tool.
-    if (options.lightMode === true && !specs.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME)) {
-      return specs;
-    }
+    // Explicit tool policies that exclude discovery retain their allowed set.
+    if (options.lightMode === true && !specs.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME)) return specs;
     return specs.filter(
       (spec) =>
         (options.lightMode === true
@@ -1264,7 +1261,7 @@ export function buildToolRegistry(
       const tools = visibleSpecs().map((spec) => {
         const tool = toolToLLMTool(spec.tool);
         return options.lightMode === true && spec.tool.metadata?.source === "builtin"
-          ? lightToolPresentation(tool)
+          ? lightToolPresentation(tool, discoveredToolNames.has(spec.tool.name))
           : tool;
       });
       if (!deferRareTools) return tools;

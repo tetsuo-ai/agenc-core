@@ -599,6 +599,8 @@ function recordCompletedToolCall(
   );
   loadLightToolCompanions({
     lightMode: session.services.runtimeOptions?.lightMode === true,
+    userInput: session.services.runtimeOptions?.lightMode === true
+      ? session.currentRootHumanTurn()?.text : undefined,
     tool: registryTool,
     result,
     registry: session.services.registry,

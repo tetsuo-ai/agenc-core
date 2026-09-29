@@ -245,7 +245,9 @@ export async function getAttachments(
   if (opts.effectsPolicy === "local_read_only") return [];
   const trackingState = getAttachmentTrackingState(opts.sessionKey);
   const settled = await Promise.allSettled(
-    PRODUCERS.map((producer) => producer(opts, trackingState)),
+    (opts.lightMode === true
+      ? [planModeProducer, outputStyleProducer, fileMentionsProducer, agentMentionsProducer]
+      : PRODUCERS).map((producer) => producer(opts, trackingState)),
   );
   const all: Attachment[] = [];
   for (const result of settled) {

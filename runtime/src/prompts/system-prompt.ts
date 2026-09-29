@@ -65,9 +65,7 @@ import {
 import { sanitizeSystemReminderContent } from "./attachments/system-reminder-sanitizer.js";
 import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./system-prompt-boundary.js";
 import { BRIEF_TOOL_NAME } from "../tools/BriefTool/prompt.js";
-import { lightMemoryInstructions, LIGHT_MEMORY_DEFERRED_INSTRUCTIONS } from "../memory/light-memory-prompt.js";
-import { MEMORY_TYPES } from "../memory/types.js";
-import { MAX_ENTRYPOINT_LINES, loadMemoryPrompt } from "../memory/memdir.js";
+import { loadMemoryPrompt } from "../memory/memdir.js";
 import { UNTRUSTED_TOOL_RESULT_BOUNDARY } from "../tools/untrusted-tool-result-framing.js";
 import { logForDebugging } from "../utils/debug.js";
 import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
@@ -516,6 +514,9 @@ export async function resolveMemoryPromptInputs(session: SystemPromptSessionSnap
   readonly memoryInstructions: string;
   readonly memoryPrompt: string;
 }> {
+  if (session.services?.runtimeOptions?.lightMode === true) {
+    return { memoryInstructions: "", memoryPrompt: "" };
+  }
   try {
     const configStore = session.services?.configStore;
     if (configStore === undefined) return { memoryInstructions: "", memoryPrompt: "" };
@@ -525,9 +526,7 @@ export async function resolveMemoryPromptInputs(session: SystemPromptSessionSnap
       env: session.services?.userShell?.childEnvironment ?? session.services?.providerEnvironment ?? {},
       runtimeOptions: { remoteMode: false, ...session.services?.runtimeOptions },
     };
-    const prompt = await (session.services?.runtimeOptions?.lightMode === true
-      ? loadMemoryPrompt(owner, true)
-      : loadMemoryPrompt(owner));
+    const prompt = await loadMemoryPrompt(owner);
     return {
       memoryInstructions: prompt?.instructions ?? "",
       memoryPrompt: prompt?.directories ?? "",
@@ -1205,8 +1204,7 @@ export async function assembleSystemPrompt(
           hasOutputStyle: opts.outputStyle != null,
           completionGate: opts.ctx.config.completionGate?.mode === "always",
         }),
-        getMemoryInstructionsSection(opts.memoryInstructions === LIGHT_MEMORY_DEFERRED_INSTRUCTIONS && !enabledTools.has("system.searchTools")
-          ? lightMemoryInstructions(MEMORY_TYPES, MAX_ENTRYPOINT_LINES) : opts.memoryInstructions),
+
       ]
     : lean
     ? [
@@ -1248,17 +1246,17 @@ export async function assembleSystemPrompt(
     DANGEROUS_uncachedSystemPromptSection(
       "permissions",
       () =>
-        opts.deferPermissionInstructions === true
+        opts.deferPermissionInstructions === true || profile === "light"
           ? null
           : getPermissionsSection(opts.permissionContext ?? null, {
               sandboxPolicy: opts.ctx.sandboxPolicy.value,
               networkSandboxPolicy: opts.ctx.networkSandboxPolicy,
-            }, profile === "light"),
+            }),
       "permission mode can change mid-session via /mode and bypass toggles",
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "autonomous_work",
-      () => opts.deferPermissionInstructions === true
+      () => opts.deferPermissionInstructions === true || profile === "light"
         ? null
         : getAutonomousWorkSection(
             opts.autonomousMode,
@@ -1268,20 +1266,20 @@ export async function assembleSystemPrompt(
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "memory",
-      () => getMemorySection(opts.memoryPrompt),
+      () => profile === "light" ? null : getMemorySection(opts.memoryPrompt),
       "memory directories are per session and must not leak across sessions",
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "project_instructions",
       () =>
-        opts.projectInstructions && opts.projectInstructions.trim().length > 0
+        profile !== "light" && opts.projectInstructions && opts.projectInstructions.trim().length > 0
           ? opts.projectInstructions
           : null,
       "instruction inputs reload between turns and repos",
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "env_info_simple",
-      () => buildEnvInfoSection(envInfoInputs, profile === "light"),
+      () => profile === "light" ? null : buildEnvInfoSection(envInfoInputs),
       "environment info includes wall-clock time and current branch",
     ),
     DANGEROUS_uncachedSystemPromptSection(
@@ -1296,12 +1294,12 @@ export async function assembleSystemPrompt(
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "mcp_instructions",
-      () => getMcpInstructionsSection(opts.mcpServers),
+      () => profile === "light" ? null : getMcpInstructionsSection(opts.mcpServers),
       "MCP servers connect/disconnect between turns",
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "scratchpad",
-      () => getScratchpadSection(opts.scratchpadDir),
+      () => profile === "light" ? null : getScratchpadSection(opts.scratchpadDir),
       "scratchpad availability is session-specific",
     ),
     // The lean head leaves the token-target explanation to the continuation

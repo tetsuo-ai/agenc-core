@@ -2137,7 +2137,7 @@ describe("Light presentation and deferred capability preservation", () => {
     const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
     expect(light.tools.map(tool => tool.name)).toEqual(normal.tools.map(tool => tool.name));
     expect(light.toLLMTools().map(tool => tool.function.name).sort()).toEqual([
-      "FileRead", "MultiEdit", "exec_command", "system.searchTools",
+      "FileRead", "MultiEdit", "Write", "exec_command",
     ].sort());
     const withoutDescriptions = (value: unknown): unknown => Array.isArray(value)
       ? value.map(withoutDescriptions)
@@ -2147,7 +2147,12 @@ describe("Light presentation and deferred capability preservation", () => {
         : value;
     for (const presented of light.toLLMTools()) {
       const canonical = light.tools.find(tool => tool.name === presented.function.name)!;
-      expect(withoutDescriptions(presented.function.parameters)).toEqual(withoutDescriptions(canonical.inputSchema));
+      if (canonical.name === "exec_command") {
+        const full = withoutDescriptions(canonical.inputSchema) as { properties: Record<string, unknown> };
+        expect(withoutDescriptions(presented.function.parameters)).toEqual({ ...full, properties: Object.fromEntries(
+          ["cmd", "workdir", "timeoutMs", "yield_time_ms", "max_output_tokens"].map(key => [key, full.properties[key]]),
+        ) });
+      } else expect(withoutDescriptions(presented.function.parameters)).toEqual(withoutDescriptions(canonical.inputSchema));
       const normalSchema = normal.tools.find(tool => tool.name === canonical.name)!.inputSchema;
       expect(canonical.inputSchema).toEqual(canonical.name === "system.searchTools"
         ? { ...normalSchema, properties: { ...normalSchema.properties, instructions: { type: "string", enum: ["memory"] } } }
