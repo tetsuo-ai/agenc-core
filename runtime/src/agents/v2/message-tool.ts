@@ -180,6 +180,14 @@ export async function handleMessageStringTool(
       prompt: message,
     },
   });
+  // Event publication can synchronously run subscribers. Check again at the
+  // delivery boundary, including policy changes after consent returned.
+  if (!callerIsCurrent() || !targetIsCurrent()) {
+    return agentValidationError("invalid-runtime-identity: calling or target agent session is no longer live");
+  }
+  if (targetPlan?.crossProvider && !isChildExecutionPolicyCurrent(callerSession!, targetPlan)) {
+    return agentValidationError("consent_unavailable: child execution policy changed; spawn a new worker under the current limits");
+  }
   let deliveryError: unknown;
   let acceptedTask:
     { readonly taskId: string; readonly turnId: string } | undefined;

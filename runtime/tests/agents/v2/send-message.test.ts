@@ -83,6 +83,25 @@ function fixture(initialStatus: AgentStatus, onBegin?: () => void, crossProvider
 
 describe("send_message delivery report", () => {
   it.each(["queue_only", "trigger_turn"] as const)(
+    "rechecks %s policy after synchronous interaction observers run", async (mode) => {
+      const f = fixture({ status: "idle", turnId: "first", endedAtMs: 1 }, () => {
+        Object.assign(f.session.config!.agents!, { subagent_limits: { deepseek: { effort: "minimal" } } });
+      }, true);
+      Object.assign(f.session.config!.agents!, { subagent_limits: { deepseek: { effort: "high" } } });
+      Object.assign(f.live.metadata, { executionPlan: await approvedChildPlan(f.session) });
+      Object.assign(f.session.services, { crossProviderConsent: { ownerSessionId: "root-session", sessionEpoch: "epoch",
+        request: async (_session: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+          kind: "granted", grant: { kind: "once", ownerSessionId: "root-session", sessionEpoch: "epoch",
+            taskId: disclosure.taskId, scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey },
+        }),
+      } });
+      const result = await handleMessageStringTool({ target: f.live.agentPath, message: "new task" }, f.opts, mode);
+      expect(result.content).toContain("child execution policy changed");
+      expect(f.assignTask).not.toHaveBeenCalled();
+      expect(f.sendInterAgentCommunication).not.toHaveBeenCalled();
+    });
+
+  it.each(["queue_only", "trigger_turn"] as const)(
     "refuses %s for a worker planned before its effort ceiling changed", async (mode) => {
       const f = fixture({ status: "idle", turnId: "first", endedAtMs: 1 }, undefined, true);
       Object.assign(f.session.config!.agents!, { subagent_limits: { deepseek: { effort: "high" } } });
