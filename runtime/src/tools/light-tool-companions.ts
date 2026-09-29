@@ -34,7 +34,10 @@ export function loadLightToolCompanions(input: {
       registry.discoverToolNames?.([search.name]);
     }
   }
-  if (tool?.name === "exec_command" && result.isError === true && tool.metadata?.source === "builtin") {
+  // A completed process failure cannot be fixed by adding execution fields.
+  // Validation and admission failures lack a process exit and still reveal them.
+  if (tool?.name === "exec_command" && result.isError === true &&
+      typeof result.metadata?.exitCode !== "number" && tool.metadata?.source === "builtin") {
     registry.discoverToolNames?.([tool.name]);
   }
   if (tool?.name !== "exec_command" ||

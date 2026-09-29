@@ -2173,6 +2173,22 @@ describe("Light presentation and deferred capability preservation", () => {
     expect(light.tools.find(tool => tool.name === "Write")?.recoveryCategory).toBe("side-effecting");
   });
 
+  test("appends discovered schemas without moving or changing the existing prefix", () => {
+    const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+    const initial = light.toLLMTools();
+    light.discoverToolNames?.(["TodoWrite", "system.searchTools"]);
+    const expanded = light.toLLMTools();
+    expect(expanded.slice(0, initial.length)).toEqual(initial);
+    expect(expanded.map(tool => tool.function.name)).toEqual([
+      ...initial.map(tool => tool.function.name), "system.searchTools", "TodoWrite",
+    ]);
+    light.discoverToolNames?.(["Grep"]);
+    const final = light.toLLMTools();
+    expect(final.slice(0, expanded.length)).toEqual(expanded);
+    expect(final.at(-1)?.function.name).toBe("Grep");
+    expect(light.toLLMTools()).toEqual(final);
+  });
+
   test("loads full deferred schemas through real discovery without changing another profile", async () => {
     const execute = vi.fn(async () => ({ content: "capability executed" }));
     const extra: Tool = { name: "Specialist", description: "Complete specialist instructions", inputSchema: { type: "object", properties: { exact: { type: "string" } }, required: ["exact"] }, execute };
