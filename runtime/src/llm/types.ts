@@ -874,6 +874,8 @@ export interface LLMStreamChunk {
   content: string;
   done: boolean;
   toolCalls?: LLMToolCall[];
+  /** New non-whitespace output buffered for validation; carries no displayable text. */
+  bufferedContentProgress?: boolean;
   /**
    * When true, `content` is the full-so-far snapshot of the assistant
    * reply rather than an incremental delta. Downstream consumers MUST

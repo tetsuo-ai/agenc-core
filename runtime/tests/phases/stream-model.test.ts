@@ -631,7 +631,7 @@ describe("streamModel — live assistant text sanitization", () => {
         }),
       );
       expect(error).toBeInstanceOf(StreamModelError);
-      expect((error as Error).message).toMatch(/^stream_idle: no data for 600000ms/);
+      expect((error as Error).message).toMatch(/^stream_idle: no progress for 600000ms/);
       expect(isRetryableStreamError(error)).toBe(true);
     } finally {
       vi.useRealTimers();

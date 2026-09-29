@@ -11,10 +11,10 @@
  *
  * Invariants wired here:
  *   I-11 (stream idle watchdog) — installStreamWatchdog wraps the stream;
- *        `kick()` fires on every chunk. The canonical config carries a
+ *        `kick()` fires only on meaningful progress. The canonical config carries a
  *        ten-minute default idle expiry (`stream_watchdog_timeout_ms`,
  *        `0` disables) that aborts the underlying fetch via the scoped
- *        AbortController; sessions without a config store stay unbounded.
+ *        AbortController. Reasoning progress is guarded even without a config store.
  *   I-22 (token budget mid-stream) — per-chunk
  *        `budgetTracker.addEmitted(..., "estimate") + sampleMidStream`
  *        keeps a coarse estimate during streaming, but the actual
@@ -50,6 +50,11 @@ import {
   STREAM_IDLE_ABORT_REASON,
 } from "../llm/stream-watchdog.js";
 import { DEFAULT_STREAM_WATCHDOG_TIMEOUT_MS } from "../config/schema.js";
+import {
+  REASONING_NO_PROGRESS_MS,
+  StreamProgressError,
+  StreamProgressTracker,
+} from "../llm/stream-progress.js";
 import {
   CitationStreamParser,
   ProposedPlanStreamParser,
@@ -238,6 +243,7 @@ interface ThinkingDisplayState {
 class AssistantVisibleTextStreamParser {
   private readonly citations = new CitationStreamParser();
   private readonly plan?: ProposedPlanStreamParser;
+  planText = "";
 
   constructor(planMode: boolean) {
     this.plan = planMode ? new ProposedPlanStreamParser() : undefined;
@@ -259,7 +265,11 @@ class AssistantVisibleTextStreamParser {
 
   private pushVisibleText(text: string): string {
     if (!this.plan || text.length === 0) return text;
-    return this.plan.pushStr(text).visibleText;
+    const parsed = this.plan.pushStr(text);
+    for (const segment of parsed.extracted) {
+      if (segment.kind === "proposed_plan_delta") this.planText += segment.text;
+    }
+    return parsed.visibleText;
   }
 }
 
@@ -1161,6 +1171,21 @@ export async function streamModel(
   };
   const thinkingDisplays = new Map<string, ThinkingDisplayState>();
   const providerName = session.services.provider.name;
+  const progressTracker = new StreamProgressTracker();
+  let progressError: StreamProgressError | undefined;
+  let reasoningTimer: ReturnType<typeof setTimeout> | undefined;
+  const stopForProgress = (reason: "stream_loop" | "stream_no_progress"): void => {
+    if (scoped.signal.aborted) return;
+    progressError = new StreamProgressError(providerName, reason);
+    try {
+      session.emit({
+        id: session.nextInternalSubId(),
+        msg: { type: "stream_error", payload: { cause: reason, message: progressError.message } },
+      });
+    } finally {
+      scoped.abort(progressError);
+    }
+  };
   const streamedToolCalls = new Map<string, LLMToolCall>();
   const streamedToolBlocks = new Map<string, ToolUseBlock>();
   const malformedToolCompletionIds = new Set<string>();
@@ -1190,9 +1215,11 @@ export async function streamModel(
   };
 
   const onChunk = (chunk: LLMStreamChunk): void => {
+    if (scoped.signal.aborted) return;
     receivedProviderChunk = true;
-    // I-11: any chunk resets the idle timer.
-    watchdog.kick();
+    const previousVisibleText = display.visibleText;
+    const previousPlanText = display.parser.planText;
+    let newVisibleText = false;
 
     // I-22: per-chunk token accounting + sampling gate. The sampling
     // result is estimation-only; the continuation decision stays on
@@ -1233,6 +1260,28 @@ export async function streamModel(
         session,
       );
       writeCanonicalAssistantDelta(canonicalDelta);
+      newVisibleText = canonicalDelta.trim().length > 0 &&
+        (!chunk.resetBuffer || display.visibleText !== previousVisibleText);
+      const planDelta = display.parser.planText.slice(chunk.resetBuffer ? 0 : previousPlanText.length);
+      newVisibleText ||= planDelta.trim().length > 0 && display.parser.planText !== previousPlanText;
+    }
+
+    const progress = progressTracker.observe(chunk, newVisibleText);
+    if (progress.loop) {
+      stopForProgress("stream_loop");
+      return;
+    }
+    if (progress.progress) {
+      watchdog.kick();
+      clearTimeout(reasoningTimer);
+      reasoningTimer = undefined;
+    }
+    // Unlike the optional socket-idle timer, observed reasoning must make
+    // progress even when the operator permits long silent model requests.
+    // Novel reasoning re-arms this timer indefinitely; bytes alone cannot.
+    if (progress.reasoning && reasoningTimer === undefined) {
+      reasoningTimer = setTimeout(() => stopForProgress("stream_no_progress"), REASONING_NO_PROGRESS_MS);
+      reasoningTimer.unref?.();
     }
 
     // Incremental thinking emission. Messages-API providers emit
@@ -1347,6 +1396,9 @@ export async function streamModel(
       invoke: (admittedOptions) =>
         provider.chatStream(messages, onChunk, admittedOptions),
     });
+    // Legacy admission-disabled providers can resolve after an abort. Never
+    // accept that response as success. Admitted calls settle usage first.
+    if (scoped.signal.aborted) throw scoped.signal.reason;
     // Admission can be explicitly disabled for legacy callers. In that case
     // there is no durable evidence callback, but a completed wire call still
     // consumes the one-shot recovery decision.
@@ -1360,6 +1412,16 @@ export async function streamModel(
       signal: scoped.signal,
     });
   let shouldDisposeStartupPrewarmHandle = startupPrewarmHandle !== undefined;
+  const streamFailure = (error: unknown): StreamModelError => {
+    if (progressError !== undefined) return new StreamModelError(progressError);
+    if (scoped.signal.reason instanceof StreamProgressError) {
+      return new StreamModelError(scoped.signal.reason);
+    }
+    if (scoped.signal.aborted && watchdog.firedAt !== null) {
+      return new StreamModelError(new Error(`stream_idle: no progress for ${watchdog.timeoutMs}ms`));
+    }
+    return new StreamModelError(error);
+  };
   try {
     response =
       startupPrewarmHandle !== undefined
@@ -1389,17 +1451,14 @@ export async function streamModel(
           "prewarm_fallback",
         );
       } catch (fallbackError) {
-        throw new StreamModelError(fallbackError);
+        closeOpenThinkingDisplays(thinkingDisplays, session);
+        throw streamFailure(fallbackError);
       }
     } else {
-      if (scoped.signal.aborted && watchdog.firedAt !== null) {
-        throw new StreamModelError(
-          new Error(`stream_idle: no data for ${watchdog.timeoutMs}ms`),
-        );
-      }
-      throw new StreamModelError(error);
+      throw streamFailure(error);
     }
   } finally {
+    clearTimeout(reasoningTimer);
     if (
       startupPrewarmHandle !== undefined &&
       shouldDisposeStartupPrewarmHandle

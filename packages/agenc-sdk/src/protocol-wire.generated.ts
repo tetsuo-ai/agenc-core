@@ -49,10 +49,11 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.26 adds live workflow stop observations when terminal persistence fails.
  * 1.27 adds explicit, idempotent continuation of completed verified results.
  * 1.28 adds requirement_conflict for a failed structured planner report.
+ * 1.29 adds the model_loop child terminal reason.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.28.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.29.0" as const;
 
 export const AGENC_DAEMON_METHODS = [
     "remote.capabilities",
@@ -2133,7 +2134,7 @@ export interface SessionClearResult extends JsonObject {
 export interface ChildTerminalOutcomeWire extends JsonObject {
     readonly provider: string;
     readonly model: string;
-    readonly reason: "completed" | "insufficient_funds" | "rate_limited" | "provider_unavailable" | "step_limit" | "no_progress" | "timeout" | "auth_required" | "model_unavailable" | "context_insufficient" | "tool_protocol_unreliable" | "model_refused" | "parent_cancelled" | "policy_revoked" | "resume_blocked" | "cost_cap_reached" | "effect_outcome_unknown" | "consent_denied" | "consent_unavailable";
+    readonly reason: "completed" | "insufficient_funds" | "rate_limited" | "provider_unavailable" | "step_limit" | "no_progress" | "timeout" | "auth_required" | "model_unavailable" | "context_insufficient" | "tool_protocol_unreliable" | "model_refused" | "parent_cancelled" | "policy_revoked" | "resume_blocked" | "cost_cap_reached" | "effect_outcome_unknown" | "consent_denied" | "consent_unavailable" | "model_loop";
     readonly retryable: boolean;
     readonly retryAfterMs?: number;
     readonly dispatch: "not_sent" | "sent" | "unknown";

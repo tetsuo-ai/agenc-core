@@ -1953,10 +1953,13 @@ export class OpenAIProvider implements LLMProvider {
               name: "",
               arguments: "",
             };
+            let bufferedToolProgress = false;
             if (typeof toolCall.id === "string" && toolCall.id.length > 0) {
+              bufferedToolProgress ||= existing.id !== toolCall.id;
               existing.id = toolCall.id;
             }
             if (typeof fn.name === "string" && fn.name.length > 0) {
+              bufferedToolProgress ||= existing.name !== fn.name;
               existing.name = fn.name;
             }
             if (fn.arguments !== undefined && fn.arguments !== null) {
@@ -1965,9 +1968,15 @@ export class OpenAIProvider implements LLMProvider {
               );
               if (argumentDelta.length > 0) {
                 existing.arguments += argumentDelta;
+                bufferedToolProgress ||= argumentDelta.trim().length > 0;
               }
             }
             toolCallAccumulator.set(index, existing);
+            if (bufferedToolProgress) {
+              // Keep slow tool generation alive without exposing an executable
+              // call before the complete stream has passed validation.
+              onChunk({ content: "", done: false, bufferedContentProgress: true });
+            }
           }
 
           if (typeof choice.finish_reason === "string") {

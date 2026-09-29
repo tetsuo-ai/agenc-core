@@ -3641,6 +3641,42 @@ describe("runAgent", () => {
     ).toHaveLength(1);
   });
 
+  it("ends a looping child with model_loop in its journal, status and parent receipt", async () => {
+    // Synchronous fake stream avoids substituting a mocked runTurn: this goes
+    // through the same shared stream guard and reconnect path as a real child.
+    const provider = makeProvider([]);
+    provider.chatStream = vi.fn(async (_messages, emit, options) => {
+      for (let i = 0; i < 500 && !options?.signal?.aborted; i++) {
+        emit({ content: "", done: false, reasoningSummaryDelta: {
+          delta: i % 2 ? "Let me know if you want to tweak anything! " : "I can adjust the implementation if you would like changes. ",
+          summaryIndex: i % 2,
+        } });
+      }
+      throw options?.signal?.reason ?? new Error("Expected loop guard to abort");
+    });
+    const session = makeStubSession({ services: { provider } });
+    const { live } = await spawnLive(session);
+    const outcomes: unknown[] = [];
+    const { result } = await collectRun(runAgent({
+      live, parent: session, initialMessages: [{ role: "user", content: "build the parser" }],
+      taskPrompt: "build the parser", taskId: "loop-task",
+      onCacheSafeParams: captured => {
+        const child = (captured as unknown as { toolUseContext: { admissionSession: Session } }).toolUseContext.admissionSession;
+        child.eventLog.subscribe(event => {
+          if (event.msg.type === "subagent_turn_outcome") outcomes.push(event.msg.payload);
+        });
+      },
+    }));
+    expect(result.outcome).toBe("errored");
+    expect(provider.chatStream).toHaveBeenCalledTimes(2);
+    expect(live.status.value).toMatchObject({ status: "errored", terminal: {
+      reason: "model_loop", retryable: false, dispatch: "sent",
+    } });
+    expect(outcomes).toEqual([expect.objectContaining({ terminal: expect.objectContaining({ reason: "model_loop" }) })]);
+    expect(session.mailbox.drain().some(message =>
+      typeof message.content === "string" && message.content.includes('"reason":"model_loop"'))).toBe(true);
+  });
+
   it("stops a funds-exhausted child once and projects one typed outcome to journal, mailbox, status, and user notice", async () => {
     const billing = Object.assign(new Error("Insufficient Balance"), { status: 402 });
     const provider: LLMProvider = {
