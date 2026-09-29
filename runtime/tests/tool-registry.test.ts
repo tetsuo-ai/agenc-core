@@ -2137,7 +2137,7 @@ describe("Light presentation and deferred capability preservation", () => {
     const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
     expect(light.tools.map(tool => tool.name)).toEqual(normal.tools.map(tool => tool.name));
     expect(light.toLLMTools().map(tool => tool.function.name).sort()).toEqual([
-      "Edit", "FileRead", "Glob", "Grep", "Write", "exec_command", "system.searchTools", "write_stdin",
+      "Edit", "FileRead", "Write", "exec_command", "system.searchTools",
     ].sort());
     const withoutDescriptions = (value: unknown): unknown => Array.isArray(value)
       ? value.map(withoutDescriptions)

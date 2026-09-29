@@ -1345,7 +1345,7 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
       memoryInstructions: "MEMORY_RULE_SENTINEL: keep scope boundaries.",
       memoryPrompt: "MEMORY_PATH_SENTINEL: /workspace/memory",
       permissionContext: { mode: "plan" } as never,
-      enabledToolNames: new Set(["FileRead", "Edit", "Write", "exec_command", "write_stdin", "Grep", "Glob", "system.searchTools"]),
+      enabledToolNames: new Set(["FileRead", "Edit", "Write", "exec_command", "system.searchTools"]),
       outputStyle,
       language: "French",
       mcpServers: [{ name: "example", instructions: "MCP_INSTRUCTIONS_SENTINEL" }],
