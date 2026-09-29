@@ -262,6 +262,13 @@ const COST_TIER_GPT_6_SOL = openAiTier({
   fast: [4, 20, 0.4, 5],
   longContext: { standard: [4, 15, 0.4, 5], fast: [8, 30, 0.8, 10] },
 });
+// Independently verified against /api/docs/models/gpt-6.1-sol and
+// /api/docs/pricing on 2026-09-29. Cache reads are 5% of input, not 10%.
+const COST_TIER_GPT_6_1_SOL = openAiTier({
+  standard: [2, 10, 0.1, 2.5],
+  fast: [4, 20, 0.2, 5],
+  longContext: { standard: [4, 15, 0.2, 5], fast: [8, 30, 0.4, 10] },
+});
 const COST_TIER_GPT_6_LUNA = openAiTier({
   standard: [0.1, 0.5, 0.01, 0.125],
   fast: [0.2, 1, 0.02, 0.25],
@@ -847,6 +854,7 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     ),
     ...openAiCostAliases("gpt-6-astra", COST_TIER_GPT_6_ASTRA),
     ...openAiCostAliases("gpt-6-sol", COST_TIER_GPT_6_SOL),
+    ...openAiCostAliases("gpt-6.1-sol", COST_TIER_GPT_6_1_SOL),
     ...openAiCostAliases("gpt-6-luna", COST_TIER_GPT_6_LUNA),
     ...openAiCostAliases("gpt-5.6-sol", COST_TIER_GPT_5_6_SOL),
     ...openAiCostAliases("gpt-5.6-terra", COST_TIER_GPT_5_6_TERRA),
@@ -1387,6 +1395,7 @@ export function resolveModelCostEntry(
  * because a Pro sibling costs many times its base model.
  */
 const OPENAI_EXACTLY_PRICED_MODELS = Object.freeze([
+  "gpt-6.1-sol",
   "gpt-6-astra",
   "gpt-6-sol",
   "gpt-6-luna",
