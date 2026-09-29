@@ -18,6 +18,8 @@ const NON_ENV_RUNTIME_NAMES = new Set([
   // Error code attached to authority-lock release diagnostics, not an
   // environment variable read by the runtime.
   "AGENC_CONFIG_AUTHORITY_RELEASE",
+  // Delimiter for untrusted tool data. It is never read from process.env.
+  "AGENC_DATA",
 ]);
 
 function sourceFiles(directory: string): string[] {
