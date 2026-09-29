@@ -134,6 +134,10 @@ function policyRevision(session: Session): string {
     ...(Object.keys(limits).length > 0 ? { limits } : {}) })}`;
 }
 
+export function isChildExecutionPolicyCurrent(session: Session, plan: ChildExecutionPlan): boolean {
+  return plan.policyRevision === policyRevision(session);
+}
+
 function catalogRevision(session: Session): string {
   return `catalog-v1:${fingerprint(buildProviderModelCatalog(childCatalogConfig(session), { includeConfiguredSelection: true }))}`;
 }

@@ -6,7 +6,7 @@ import {
 } from "../control.js";
 import { createMailboxMetadataRecord } from "../mailbox.js";
 import type { ThreadId } from "../registry.js";
-import { authorizeChildExecutionPlan, type ChildExecutionPlan } from "../cross-provider.js";
+import { authorizeChildExecutionPlan, isChildExecutionPolicyCurrent, type ChildExecutionPlan } from "../cross-provider.js";
 import { liveAgentSession } from "../live-session.js";
 import {
   agentValidationError,
@@ -128,6 +128,9 @@ export async function handleMessageStringTool(
   if ((live?.metadata.crossProvider !== undefined || metadata?.crossProvider !== undefined) &&
       targetPlan?.crossProvider !== true) {
     return agentValidationError("consent_unavailable: destination has no consent provenance");
+  }
+  if (targetPlan?.crossProvider && !isChildExecutionPolicyCurrent(callerSession!, targetPlan)) {
+    return agentValidationError("consent_unavailable: child execution policy changed; spawn a new worker under the current limits");
   }
   let assignedPlan: ChildExecutionPlan | undefined;
   if (mode === "queue_only" && targetPlan?.crossProvider) {
