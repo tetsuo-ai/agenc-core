@@ -2371,7 +2371,8 @@ export class SessionStore {
       // loop. The data is already in the OS buffer from writeSync, so
       // re-opening the file and calling fsyncSync on that fd flushes
       // the same kernel-level buffers to disk.
-      this.scheduleFsyncRetry(firstErr, onRetryFailure);
+      // scheduleFsyncRetry owns the task in pendingFsyncRetries; close drains it.
+      void this.scheduleFsyncRetry(firstErr, onRetryFailure);
       return false;
     }
     return true;

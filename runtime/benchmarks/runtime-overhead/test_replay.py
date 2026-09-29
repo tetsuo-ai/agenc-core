@@ -2,9 +2,31 @@ import importlib.util
 import json
 import pathlib
 import unittest
+import tempfile
+from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('replay',pathlib.Path(__file__).with_name('replay.py'))
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 class ReplayTests(unittest.TestCase):
+    def test_confined_paths_reject_absolute_traversal_and_symlink_escape(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)/'root';root.mkdir()
+            (root/'escape').symlink_to(pathlib.Path(directory))
+            for value in ('../outside', '/tmp/outside', 'escape/outside', '.'):
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    m.confined_path(root,value)
+            self.assertEqual(m.confined_path(root,'setup/task.py'),root.resolve()/'setup/task.py')
+    def test_command_rejects_interpreter_flags_and_unapproved_executables(self):
+        for args in (['sh','/tmp/script'], ['python3','-c','print(1)'], ['node','--eval','x'], 'node /tmp/script'):
+            with self.subTest(args=args), patch.object(m.subprocess,'run') as run:
+                with self.assertRaises(ValueError):m.command(args)
+                run.assert_not_called()
+    def test_command_keeps_script_arguments_literal_without_a_shell(self):
+        with patch.object(m.subprocess,'run') as run:
+            run.return_value.returncode=0
+            args=['node','/work/core/runtime/bin/agenc','literal; $(not-executed)']
+            self.assertEqual(m.command(args),0)
+            self.assertEqual(run.call_args.args[0],args)
+            self.assertIs(run.call_args.kwargs['shell'],False)
     def test_a_poll_uses_the_handle_returned_by_the_matching_live_tool(self):
         reply={'tool_calls':[{'id':'poll','function':{'name':'write_stdin','arguments':'{"session_id":16,"chars":""}'}}]}
         body={'messages':[{'role':'tool','tool_call_id':'other','content':'session_id=99'},

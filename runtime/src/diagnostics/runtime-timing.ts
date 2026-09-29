@@ -48,10 +48,14 @@ export function timedRuntime<T>(
 ): Promise<T> {
   if (!enabled) return operation();
   const end = runtimeSpan(name, fields);
+  let result: Promise<T>;
   try {
-    return operation().then(
-      value => { end(); return value; },
-      error => { end(); throw error; },
-    );
+    result = operation();
   } catch (error) { end(); return Promise.reject(error); }
+  // The catch above handles synchronous invocation only; rejection belongs
+  // to the returned promise and must close the span in its own handler.
+  return result.then(
+    value => { end(); return value; },
+    error => { end(); throw error; },
+  );
 }

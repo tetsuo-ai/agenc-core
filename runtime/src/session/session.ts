@@ -3630,7 +3630,9 @@ export class Session {
     this.lifecycleState = "shutting_down";
     if (this.ownsMcpManager) {
       this.services.mcpStartupCancellationToken.cancel();
-      this.startOwnedMcpDisposal(false);
+      // The disposal task retains rejection handlers and is awaited by shutdown.
+      // Keep this admission-closing transition synchronous.
+      void this.startOwnedMcpDisposal(false);
     }
     if (this.deferredSessionStartHookPromise === null) {
       this.deferredSessionStartHook = null;
