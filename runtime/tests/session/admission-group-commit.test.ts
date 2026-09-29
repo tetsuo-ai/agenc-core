@@ -1,6 +1,6 @@
 import { fsyncSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { tmpdir as admissionTempDir } from "node:os";
+import { join as admissionPath } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { Session } from "../../src/session/session.js";
 import { EventLog, type Event } from "../../src/session/event-log.js";
@@ -16,12 +16,12 @@ let session: Session;
 let syncs: number;
 let published: Event[];
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), "admission-group-"));
+  home = mkdtempSync(admissionPath(admissionTempDir(), "admission-group-"));
   oldHome = process.env.AGENC_HOME;
   process.env.AGENC_HOME = home;
-  const cwd = join(home, "workspace");
-  mkdirSync(join(cwd, ".git"), { recursive: true });
-  rollout = new RolloutStore({ cwd, sessionId: "group", agencVersion: "0.2.0", sessionTempRoot: tmpdir(), autoStartScheduler: false });
+  const cwd = admissionPath(home, "workspace");
+  mkdirSync(admissionPath(cwd, ".git"), { recursive: true });
+  rollout = new RolloutStore({ cwd, sessionId: "group", agencVersion: "0.2.0", sessionTempRoot: admissionTempDir(), autoStartScheduler: false });
   rollout.open({ sessionId: "group", timestamp: new Date().toISOString(), cwd, originator: "test", agencVersion: "0.2.0" });
   published = [];
   const eventLog = new EventLog();
@@ -42,7 +42,7 @@ afterEach(() => {
   rmSync(home, { recursive: true, force: true });
 });
 function setup() {
-  const client = kernel.bindClient({ cwd: join(home, "workspace"), scope: { runId: "group", sessionId: "group", autonomous: false } });
+  const client = kernel.bindClient({ cwd: admissionPath(home, "workspace"), scope: { runId: "group", sessionId: "group", autonomous: false } });
   bindExecutionAdmissionJournal(session, client);
   syncs = 0;
   published.length = 0;
