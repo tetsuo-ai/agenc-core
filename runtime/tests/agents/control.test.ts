@@ -198,10 +198,33 @@ describe("AgentControl", () => {
         reason: "completed", dispatch: "sent", completedWork: "done" });
       worker.status.markIdle("turn-1", terminal);
       expect(control.snapshotNativeWorkers(session.conversationId)[0]).toMatchObject({
-        agentId: worker.agentId, status: "idle", terminal,
+        agentId: worker.agentId, status: "idle", provider: "fake", model: "fake-model", terminal,
       });
+      expect(control.listAgents().find((item) => item.agentName === worker.agentPath))
+        .toMatchObject({ provider: "fake", model: "fake-model" });
     } finally { await control.shutdownAll(); }
   });
+  it("uses the initial child admission before binding and never infers its labels from the parent", async () => {
+    const session = stubSession();
+    const parentCurrent = vi.fn(() => ({ provider: "grok", model: "parent-current-model" }));
+    Object.assign(session, { providerService: { current: parentCurrent } });
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    control.registerSessionRoot(session.conversationId);
+    const worker = await control.spawn({ parentPath: "/root", initialTask: {
+      text: "inspect", provider: "deepseek", model: "deepseek-v4-flash",
+    } });
+    const unknown = await control.spawn({ parentPath: "/root" });
+    parentCurrent.mockReturnValue({ provider: "openai", model: "changed-parent-model" });
+    try {
+      expect(control.listAgents().find((item) => item.agentName === worker.agentPath))
+        .toMatchObject({ provider: "deepseek", model: "deepseek-v4-flash" });
+      expect(control.snapshotNativeWorkers(session.conversationId).find((item) => item.agentId === worker.agentId))
+        .toMatchObject({ provider: "deepseek", model: "deepseek-v4-flash" });
+      expect(control.listAgents().find((item) => item.agentName === unknown.agentPath)).not.toHaveProperty("provider");
+      expect(control.snapshotNativeWorkers(session.conversationId).find((item) => item.agentId === unknown.agentId)).not.toHaveProperty("model");
+    } finally { await control.shutdownAll(); }
+  });
+
   it("preserves actual turn timing when interrupting a worker by its thread ID", async () => {
     const session = stubSession();
     const control = new AgentControl({ session, registry: new AgentRegistry() });
@@ -1219,10 +1242,23 @@ describe("AgentControl", () => {
         .rejects.toThrow(/consent provenance/u);
       expect(rolloutStore.getThreadSpawnEdge(live.agentId)?.metadata.executionPlan).toEqual(plan);
       expect(control.getAgentConfigSnapshot(live.agentId)?.executionPlan).toEqual(plan);
+      const childSession = Object.assign(stubSession({ conversationId: live.agentId }), {
+        abortController: new AbortController(), onBeforeDurableClose: () => () => {},
+        providerService: { current: () => ({ provider: "openai", model: "unexpected-provider-drift" }) },
+      });
+      const revokeChild = bindLiveAgentSession(live, childSession);
       expect(control.listAgents().find((agent) => agent.agentName === live.agentPath))
         .toMatchObject({ provider: "deepseek", model: "deepseek-v4-pro" });
       expect(control.snapshotNativeWorkers(session.conversationId).find((agent) => agent.agentId === live.agentId))
         .toMatchObject({ provider: "deepseek", model: "deepseek-v4-pro" });
+      const { childTerminalOutcome } = await import("../../src/agents/child-terminal.js");
+      live.status.markIdle("finished-task", childTerminalOutcome({ provider: "deepseek", model: "terminal-actual-model",
+        reason: "completed", dispatch: "sent", completedWork: "done" }));
+      expect(control.listAgents().find((agent) => agent.agentName === live.agentPath))
+        .toMatchObject({ provider: "deepseek", model: "terminal-actual-model" });
+      expect(control.snapshotNativeWorkers(session.conversationId).find((agent) => agent.agentId === live.agentId))
+        .toMatchObject({ provider: "deepseek", model: "terminal-actual-model" });
+      revokeChild();
       allowed = ["deepseek", "openai"];
       await expect(control.resume({ parentPath: "/root", metadata: live.metadata }))
         .rejects.toThrow(/execution plan.*policy changed/u);

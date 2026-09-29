@@ -2574,6 +2574,44 @@ describe("runAgent", () => {
     }
   });
 
+  it("projects the bound child provider while the parent and child selections change independently", async () => {
+    const provider = makeProvider([{ content: "ok" }]);
+    const session = makeStubSession({ services: { provider } });
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    control.registerSessionRoot(session.conversationId);
+    const live = await control.spawn({ parentPath: "/root" });
+    const projections: unknown[] = [];
+    const originalChat = provider.chatStream!;
+    vi.spyOn(provider, "chatStream").mockImplementationOnce(async (...args) => {
+      const child = liveAgentSession(live);
+      expect(child).toBeDefined();
+      if (child === undefined) throw new Error("child binding missing during model call");
+      const parentCurrent = vi.spyOn(session.providerService, "current").mockReturnValue({ provider: "openai", model: "parent-only" });
+      const childCurrent = vi.spyOn(child.providerService, "current").mockReturnValue({ provider: "deepseek", model: "child-first" });
+      try {
+        const capture = () => projections.push(
+          control.listAgents().find((item) => item.agentName === live.agentPath),
+          control.snapshotNativeWorkers(session.conversationId).find((item) => item.agentId === live.agentId),
+        );
+        capture();
+        parentCurrent.mockReturnValue({ provider: "grok", model: "parent-changed" });
+        capture();
+        childCurrent.mockReturnValue({ provider: "deepseek", model: "child-second" });
+        capture();
+      } finally { childCurrent.mockRestore(); parentCurrent.mockRestore(); }
+      return originalChat(...args);
+    });
+    const { result } = await collectRun(runAgent({ live, parent: session,
+      initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go" }));
+    expect(result.outcome).toBe("completed");
+    expect(projections).toEqual([
+      ...Array.from({ length: 4 }, () => expect.objectContaining({ provider: "deepseek", model: "child-first" })),
+      ...Array.from({ length: 2 }, () => expect.objectContaining({ provider: "deepseek", model: "child-second" })),
+    ]);
+    await control.shutdownAll();
+    await session.shutdown();
+  });
+
   it("marks completed on success", async () => {
     const provider = makeProvider([{ content: "ok" }]);
     const session = makeStubSession({ services: { provider } });

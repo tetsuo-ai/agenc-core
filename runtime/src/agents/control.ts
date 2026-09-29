@@ -2136,6 +2136,17 @@ export class AgentControl {
     return lines.join("\n");
   }
 
+  private childProviderProjection(agent: LiveAgent): ProviderSelection | undefined {
+    const terminal = terminalFromAgentStatus(agent.status.value);
+    if (terminal !== undefined) return { provider: terminal.provider, model: terminal.model };
+    const plan = agent.metadata.executionPlan;
+    if (plan !== undefined) return plan.destination;
+    const child = liveAgentSession(agent);
+    if (child?.providerService !== undefined) return currentChildProvider(child);
+    const initial = agent.metadata.initialTaskAdmission;
+    return initial === undefined ? undefined : { provider: initial.provider, model: initial.model };
+  }
+
   /**
    * Lists agents with an optional role +
    * path-prefix filter. Includes root when no prefix is supplied or
@@ -2179,15 +2190,13 @@ export class AgentControl {
         ? this.live.get(metadata.agentId)
         : undefined;
       if (!agent) continue;
+      const destination = this.childProviderProjection(agent);
       result.push({
         agentName: metadata.agentPath ?? agent.agentId,
         agentStatus: agent.status.value,
-        ...(metadata.executionPlan !== undefined ? {
-          provider: metadata.executionPlan.destination.provider,
-          model: metadata.executionPlan.destination.model,
-          ...(metadata.executionPlan.reasoningEffort !== undefined
-            ? { reasoningEffort: metadata.executionPlan.reasoningEffort } : {}),
-        } : {}),
+        ...(destination !== undefined ? { provider: destination.provider, model: destination.model } : {}),
+        ...(metadata.executionPlan?.reasoningEffort !== undefined
+          ? { reasoningEffort: metadata.executionPlan.reasoningEffort } : {}),
         ...(metadata.lastTaskMessage !== undefined
           ? { lastTaskMessage: metadata.lastTaskMessage }
           : {}),
@@ -2322,17 +2331,15 @@ export class AgentControl {
         const status = agent.status.value;
         const statusName = typeof status === "string" ? status : status.status;
         const terminal = terminalFromAgentStatus(status);
+        const destination = this.childProviderProjection(agent);
         result.push({
           agentId: id,
           agentPath: agent.agentPath,
           nickname: agent.nickname,
           role: agent.role.name,
-          ...(metadata.executionPlan !== undefined ? {
-            provider: metadata.executionPlan.destination.provider,
-            model: metadata.executionPlan.destination.model,
-            ...(metadata.executionPlan.reasoningEffort !== undefined
-              ? { reasoningEffort: metadata.executionPlan.reasoningEffort } : {}),
-          } : {}),
+          ...(destination !== undefined ? { provider: destination.provider, model: destination.model } : {}),
+          ...(metadata.executionPlan?.reasoningEffort !== undefined
+            ? { reasoningEffort: metadata.executionPlan.reasoningEffort } : {}),
           ...(metadata.lastTaskMessage !== undefined ? { prompt: metadata.lastTaskMessage } : {}),
           status: statusName,
           ...(typeof status === "object" && status !== null && status.status === "errored"
