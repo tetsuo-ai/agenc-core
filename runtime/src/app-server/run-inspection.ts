@@ -769,6 +769,9 @@ function workflowStatusProjection(
   });
   return {
     control: projected.control,
+    ...(projected.completedResult !== undefined ? { completedResult: projected.completedResult } : {}),
+    ...(projected.continuationOf !== undefined ? { continuationOf: { ...projected.continuationOf,
+      sourceUsage: projected.continuationOf.sourceUsage === null ? null : { ...projected.continuationOf.sourceUsage } } } : {}),
     steps: projected.steps.map((step) => ({
       stepId: step.stepId,
       stage: step.stage,

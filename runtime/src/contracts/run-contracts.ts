@@ -546,6 +546,23 @@ export type WorkflowStopReason = (typeof WORKFLOW_STOP_REASONS)[number];
  * Resolved fields (reviewerModel, baseCommit) are never re-resolved later —
  * a moved base is detected against `baseCommit` and surfaced explicitly.
  */
+export interface WorkflowContinuation {
+  readonly sourceRunId: RunId;
+  readonly sourceSpecDigest: string;
+  readonly sourceBaseCommit: string;
+  readonly sourceHeadCommit: string;
+  readonly sourceTreeHash: string;
+  readonly sourcePatchDigest: string;
+  readonly sourceSealDigest: string;
+  readonly seriesRootRunId: RunId;
+  readonly requestId: string;
+  readonly requestDigest: string;
+  /** Cumulative recorded spend of earlier iterations. Null means unknown. */
+  readonly previousCostUsd: number | null;
+  readonly previousCostEstimated?: boolean;
+  readonly sourceUsage: RunUsageTotals | null;
+}
+
 export interface WorkflowSpec {
   readonly runId: RunId;
   /** The engineering goal / issue text driving the change. */
@@ -554,6 +571,8 @@ export interface WorkflowSpec {
   readonly repoPath: string;
   /** Exact base commit recorded before any work begins. */
   readonly baseCommit: string;
+  /** Immutable link to the verified result used to seed this iteration. */
+  readonly continuationOf?: WorkflowContinuation;
   /** Dirty-state summary of the user's checkout at intake (never mutated). */
   readonly baseDirty: {
     readonly dirty: boolean;

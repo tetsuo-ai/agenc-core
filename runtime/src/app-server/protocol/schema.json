@@ -2091,7 +2091,17 @@
     "RunStartParams": {
       "type": "object",
       "additionalProperties": false,
+      "allOf": [{ "if": { "required": ["continuation"] }, "then": { "required": ["maxCostUsd", "deadlineAt"] } }],
       "properties": {
+        "continuation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sourceRunId", "requestId"],
+          "properties": {
+            "sourceRunId": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "requestId": { "type": "string", "pattern": "^[a-zA-Z0-9._:-]{1,128}$" }
+          }
+        },
         "envOverrides": {
           "type": "object",
           "additionalProperties": { "type": "string" }

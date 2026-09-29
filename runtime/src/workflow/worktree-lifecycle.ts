@@ -28,6 +28,7 @@ import type {
   RunArtifactPointer,
   RunStepIdentity,
   WorkflowSpec,
+  WorkflowContinuation,
 } from "../contracts/run-contracts.js";
 import {
   getOrCreateWorktree,
@@ -160,15 +161,35 @@ export async function captureBaseState(
  * `getOrCreateWorktree` fast-resumes an existing worktree.
  */
 export async function provisionWorkflowWorktree(
-  spec: Pick<WorkflowSpec, "runId" | "repoPath" | "baseCommit">,
+  spec: Pick<WorkflowSpec, "runId" | "repoPath" | "baseCommit" | "continuationOf">,
   broker: SandboxExecutionBrokerLike,
 ): Promise<WorktreeHandle> {
   return getOrCreateWorktree({
     gitRoot: spec.repoPath,
     slug: workflowWorktreeSlug(spec.runId),
-    base: spec.baseCommit,
+    base: spec.continuationOf?.sourceHeadCommit ?? spec.baseCommit,
     sandboxExecutionBroker: broker,
   });
+}
+
+/** Pin a completed delivered ref to its recorded commit, tree, and full patch. */
+export async function validateContinuationSnapshot(input: {
+  readonly repoPath: string;
+  readonly source: WorkflowContinuation;
+  readonly broker: SandboxExecutionBrokerLike;
+}): Promise<void> {
+  const { source, repoPath, broker } = input;
+  const ref = workflowRunRef(source.sourceRunId);
+  const head = await runGit(["rev-parse", "--verify", `${ref}^{commit}`], repoPath, broker);
+  if (head.code !== 0 || head.stdout.trim() !== source.sourceHeadCommit) {
+    throw new WorkflowGitError("continue", "The source Goal delivered ref is missing or no longer matches its verified result.");
+  }
+  const tree = await runGit(["rev-parse", "--verify", `${source.sourceHeadCommit}^{tree}`], repoPath, broker);
+  const diff = await runGit(["diff", "--full-index", "--no-color", "--no-ext-diff", `${source.sourceBaseCommit}..${source.sourceHeadCommit}`], repoPath, broker);
+  if (tree.code !== 0 || tree.stdout.trim() !== source.sourceTreeHash || diff.code !== 0
+    || `sha256:${sha256Hex(diff.stdout)}` !== source.sourcePatchDigest) {
+    throw new WorkflowGitError("continue", "The source Goal files no longer match its verified snapshot and patch.");
+  }
 }
 
 export interface ExportedPatchArtifacts {

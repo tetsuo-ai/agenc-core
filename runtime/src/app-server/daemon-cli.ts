@@ -4157,6 +4157,7 @@ async function runAgenCDaemonForegroundLocked(
         agencHome: authStartup.daemonHome,
       }),
       workflow: {
+        supportsContinuation: true,
         startRun: (params) => workflowStartService.startRun(params),
         cancelDetachedRun: (params) => workflowStartService.cancelDetachedRun(params),
         pauseRun: (params) => workflowControlService.pauseRun(params),
