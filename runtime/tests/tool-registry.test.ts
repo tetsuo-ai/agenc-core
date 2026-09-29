@@ -2163,9 +2163,9 @@ describe("Light presentation and deferred capability preservation", () => {
     expect(execute).toHaveBeenCalledOnce();
     expect(other.toLLMTools().some(tool => tool.function.name === extra.name)).toBe(false);
     expect(normal.toLLMTools()).toEqual(normalBefore);
-    await light.dispatch({ id: "load-full-read", name: "system.searchTools", arguments: '{"select":"FileRead"}' });
-    const read = light.tools.find(tool => tool.name === "FileRead")!;
-    expect(light.toLLMTools().find(tool => tool.function.name === "FileRead")?.function).toEqual({ name: read.name, description: read.description, parameters: read.inputSchema });
+    await light.dispatch({ id: "load-full-write", name: "system.searchTools", arguments: '{"select":"Write"}' });
+    const write = light.tools.find(tool => tool.name === "Write")!;
+    expect(light.toLLMTools().find(tool => tool.function.name === "Write")?.function).toEqual({ name: write.name, description: write.description, parameters: write.inputSchema });
   });
 
   test.each([undefined, { disabled_tools: ["system.searchTools"] }])(
