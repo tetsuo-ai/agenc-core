@@ -3740,6 +3740,7 @@ export async function* runAgent(
   let ownedChildProvider: LLMProvider | null = null;
   let ownedPreparedProvider: LLMProvider | null = null;
   let unsubscribeCrossPolicy: (() => void) | null = null;
+  let crossPolicyWasRevoked = false;
   let childSandboxExecutionBroker: SandboxExecutionBrokerLike | undefined;
   let unsubscribeChildUsage: (() => void) | null = null;
   let forwardMergedAbort: (() => void) | null = null;
@@ -3757,6 +3758,18 @@ export async function* runAgent(
   let parentProjectionError: Error | undefined;
   let parentProjectionTurnId: string | undefined;
   let pendingPreconstructionReceipt: TaskTurnReceipt | undefined;
+  const knownWorkerCost = (): number | undefined => {
+    const summary = parent.services.executionAdmission?.getUsageSummary?.();
+    if (summary === undefined) return undefined;
+    const usage = summary.agents.find((agent) => agent.runId === live.agentId);
+    return usage?.hasUnknownCost ? undefined : usage?.costUsd ?? 0;
+  };
+  let taskStartingCost = knownWorkerCost();
+  const knownTaskCost = (): number | undefined => {
+    const current = knownWorkerCost();
+    return taskStartingCost === undefined || current === undefined || current < taskStartingCost
+      ? undefined : current - taskStartingCost;
+  };
   let pendingWorkerTerminal:
     | {
         readonly status: "completed";
@@ -3870,23 +3883,22 @@ export async function* runAgent(
       parent.services.provider.name;
     const model = params.plan?.destination.model ?? params.model ??
       live.role.config.model ?? parent.sessionConfiguration.collaborationMode.model;
-    const cost = parent.services.executionAdmission?.getUsageSummary?.().agents
-      .find((agent) => agent.runId === live.agentId);
+    const costUsd = knownTaskCost();
+    const terminal = receipt.terminal ?? childTerminalOutcome({
+      provider, model,
+      ...(receipt.terminalReason !== undefined ? { reason: receipt.terminalReason } :
+        receipt.outcome === "completed" ? { reason: "completed" as const } :
+          receipt.outcome === "interrupted" || receipt.outcome === "nack"
+            ? { reason: crossPolicyWasRevoked ? "policy_revoked" as const : "parent_cancelled" as const }
+            : { error: new Error(receipt.reason ?? receipt.message ?? "subagent failed") }),
+      ...(receipt.terminalRetryable !== undefined ? { retryable: receipt.terminalRetryable } : {}),
+      dispatch: receipt.outcome === "completed" ? "sent" : childSession === null ? "not_sent" : "unknown",
+      completedWork: receipt.message ?? latestChildProgress,
+      unfinishedWork: receipt.outcome === "completed" && receipt.terminalReason !== "step_limit" ? "" : currentTaskText,
+    });
     let receiptToCommit: TaskTurnReceipt = {
       ...receipt,
-      terminal: receipt.terminal ?? childTerminalOutcome({
-        provider, model,
-        ...(receipt.terminalReason !== undefined ? { reason: receipt.terminalReason } :
-          receipt.outcome === "completed" ? { reason: "completed" as const } :
-            receipt.outcome === "interrupted" || receipt.outcome === "nack"
-              ? { reason: "parent_cancelled" as const }
-              : { error: new Error(receipt.reason ?? receipt.message ?? "subagent failed") }),
-        ...(receipt.terminalRetryable !== undefined ? { retryable: receipt.terminalRetryable } : {}),
-        dispatch: receipt.outcome === "completed" ? "sent" : childSession === null ? "not_sent" : "unknown",
-        completedWork: receipt.message ?? latestChildProgress,
-        unfinishedWork: receipt.outcome === "completed" && receipt.terminalReason !== "step_limit" ? "" : currentTaskText,
-        ...(cost !== undefined && !cost.hasUnknownCost ? { costUsd: cost.costUsd } : {}),
-      }),
+      terminal: { ...terminal, ...(costUsd !== undefined ? { costUsd } : {}) },
     };
     if (params.worktree !== undefined) {
       let evidence: WorktreeTurnEvidence;
@@ -4041,10 +4053,6 @@ export async function* runAgent(
         dispatch: childSession === null ? "not_sent" : childDispatchCertainty(opts.error),
         completedWork: latestChildProgress,
         unfinishedWork: currentTaskText,
-        ...(parent.services.executionAdmission?.getUsageSummary?.().agents
-          .find((agent) => agent.runId === live.agentId && !agent.hasUnknownCost)?.costUsd !== undefined
-          ? { costUsd: parent.services.executionAdmission.getUsageSummary!().agents
-            .find((agent) => agent.runId === live.agentId)!.costUsd } : {}),
       }),
       toolCallCount: currentTurnToolCallCount,
     });
@@ -4252,6 +4260,7 @@ export async function* runAgent(
         (params.plan?.route.provider === "agenc" &&
          !(config.agents.allowed_providers ?? []).includes(params.plan.destination.provider));
       const stopForPolicy = (): void => {
+        crossPolicyWasRevoked = true;
         live.abortController.abort("cross-provider subagent policy was disabled or provider removed");
       };
       // Also when a daemon reload refreshes only the [agents] section.
@@ -4479,6 +4488,7 @@ export async function* runAgent(
       currentTaskId = accepted.taskId;
       turnId = accepted.turnId ?? crypto.randomUUID();
       currentTurnReceiptCommitted = false;
+      taskStartingCost = knownWorkerCost();
       latestChildProgress = "";
       currentCommittedReceipt = undefined;
       currentTurnToolCallCount = 0;
