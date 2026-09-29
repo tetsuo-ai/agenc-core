@@ -1353,8 +1353,9 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
     };
     const light = await assembleSystemPromptSnapshot({ ...options, profile: "light" });
     const standard = await assembleSystemPromptSnapshot({ ...options, profile: "standard" });
-    // Light compacts the environment; all other caller-supplied tail sections stay intact.
-    const withoutEnvironment = (text: string) => text.replace(/# Environment\n[\s\S]*?(?=\n\n#|$)/gu, "# Environment");
+    // Light compacts the environment and omits idle token-target guidance.
+    // Caller-supplied policy, memory, MCP and output-style sections stay intact.
+    const withoutEnvironment = (text: string) => text.replace(/# Environment\n[\s\S]*?(?=\n\n#|$)/gu, "# Environment").replace(/\n\nWhen the user specifies a token target[^\n]+$/u, "");
     expect(light.staticPrefix.length).toBeLessThan(standard.staticPrefix.length * 0.5);
     expect(withoutEnvironment(light.dynamicSuffix)).toBe(withoutEnvironment(standard.dynamicSuffix));
     expect(light.dynamicSuffix).toContain("Working directory: <cwd>");
@@ -1402,7 +1403,7 @@ test("Light custom output styles replace the default coding workflow while retai
   expect(light.staticPrefix).not.toContain("make the smallest complete change");
   expect(light.staticPrefix).not.toContain("rerun affected checks");
   expect(light.staticPrefix).toContain("system.searchTools");
-  expect(light.staticPrefix).toContain("Read before editing");
+  expect(light.staticPrefix).toContain("FileRead before edits");
   expect(light.staticPrefix).toContain("Never bypass a denial");
   expect(light.staticPrefix).toContain("unobserved success");
   expect(light.dynamicSuffix).toContain(style.prompt);
