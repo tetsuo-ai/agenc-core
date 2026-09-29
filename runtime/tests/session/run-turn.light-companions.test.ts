@@ -2,6 +2,8 @@ import { expect, test, vi } from "vitest";
 import type { LLMResponse } from "../../src/llm/types.js";
 import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../../src/permissions/types.js";
+import { verifyToolResultIntegrity } from "../../src/session/tool-result-integrity.js";
+import { LIGHT_WORKSPACE_DATA_BOUNDARY } from "../../src/tools/untrusted-tool-result-framing.js";
 import { runTurn } from "../../src/session/run-turn.js";
 import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
 import { buildToolRegistry } from "../../src/tool-registry.js";
@@ -86,6 +88,16 @@ test("named capabilities gain one availability notice after the initial core res
       expect(visible.sort()).toEqual(["FileRead", "MultiEdit", "Write", "exec_command"]);
       expect(text).not.toContain("User-requested tools are ready");
     } else {
+      const results = messages.filter((message) => message.role === "tool");
+      for (const result of results) {
+        expect(result.content).toContain(LIGHT_WORKSPACE_DATA_BOUNDARY);
+        expect(result.content).not.toContain("untrusted workspace data");
+        expect(verifyToolResultIntegrity({
+          integrity: result.runtimeOnly?.toolResultIntegrity,
+          toolCallId: result.toolCallId,
+          content: result.content,
+        })).toMatchObject({ status: "valid" });
+      }
       expect(visible).toContain("TodoWrite");
       expect(text.split("User-requested tools are ready: TodoWrite")).toHaveLength(2);
     }
