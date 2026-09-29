@@ -520,6 +520,7 @@ export type WorkflowStepStatus = (typeof WORKFLOW_STEP_STATUSES)[number];
  */
 export const WORKFLOW_STOP_REASONS = [
   "verification_failed",
+  "requirement_conflict",
   "review_rejected",
   "base_moved_conflict",
   "budget_exhausted",

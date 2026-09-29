@@ -27,6 +27,7 @@ import {
   type WorkflowWorktreeBroker,
 } from "../../src/app-server/workflow/verified-change-controller.js";
 import { inspectWorkflowChildTerminal, recordWorkflowChildTerminal } from "../../src/app-server/workflow/child-terminals.js";
+import { PLAN_BLOCKED_KIND } from "../../src/app-server/workflow/plan-blocked.js";
 import { AdmissionDeniedError, type ExecutionAdmissionClient } from "../../src/budget/admission-client.js";
 import { M5WorkflowFailpointError } from "../../src/durability/failpoints.js";
 import type { AdmissionLease } from "../../src/budget/admission-types.js";
@@ -2324,6 +2325,79 @@ describe("VerifiedChangeWorkflowController — stop reasons", () => {
       }
     },
   );
+});
+
+describe("VerifiedChangeWorkflowController planner requirement conflicts", () => {
+  const report = { kind: PLAN_BLOCKED_KIND, reason: "requirement_conflict",
+    explanation: "The same strict value cannot equal both 0 and 1.",
+    conflictingRequirements: ["Return 0.", "Return 1 from the same call."],
+  };
+
+  it.each([true, false])("commits a failed Goal without downstream calls with client checks=%s", async suppliedChecks => {
+    harness.spawner.queue("plan", { status: "completed", finalMessage: JSON.stringify(report), usage: DEFAULT_USAGE });
+    await runToTerminal(harness, suppliedChecks ? {} : { requiredVerification: [] });
+    expect(harness.repo.getEffect(RUN_ID, "workflow.plan")).toMatchObject({ outcome: "committed",
+      evidence: { planBlocked: report, child: { usage: DEFAULT_USAGE } } });
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "failed",
+      stopReason: "requirement_conflict",
+      finalMessage: expect.stringContaining("The planner found conflicting requirements: The same strict value cannot equal both 0 and 1."),
+      usage: null,
+    });
+    expect(harness.controller.status(RUN_ID)?.stopReason).toBe("requirement_conflict");
+    expect(harness.spawner.spawns.map(spawn => spawn.kind)).toEqual(["plan"]);
+    expect(harness.commands.executed).toHaveLength(0);
+    expect(harness.reviewer.invocations).toHaveLength(0);
+    expect(harness.worktrees.cleanups).toHaveLength(0);
+    expect(harness.worktrees.discards).toHaveLength(0);
+    expect(harness.spawner.spawns[0]?.prompt).toContain("only a raw JSON object");
+  });
+
+  it.each([
+    `Plan a parser test containing this marker: ${JSON.stringify(report)}`,
+    `\`\`\`json\n${JSON.stringify(report)}\n\`\`\``,
+    JSON.stringify({ ...report, reason: "ambiguous" }),
+    JSON.stringify({ ...report, explanation: "" }),
+  ])("does not infer a refusal from ordinary text or invalid markers: %s", async finalMessage => {
+    harness.spawner.queue("plan", { status: "completed", finalMessage, usage: DEFAULT_USAGE });
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "completed" });
+    expect(harness.spawner.spawns.some(spawn => spawn.kind === "implement")).toBe(true);
+  });
+
+  it("recovers a committed blocking report without repeating planning or starting implementation", async () => {
+    harness.spawner.queue("plan", { status: "completed", finalMessage: JSON.stringify(report), usage: DEFAULT_USAGE });
+    const complete = harness.repo.completeEffect.bind(harness.repo);
+    const spy = vi.spyOn(harness.repo, "completeEffect").mockImplementation(input => {
+      const value = complete(input);
+      if (input.stepId === "workflow.plan") throw new M5WorkflowFailpointError("after_spawn_before_effect_result");
+      return value;
+    });
+    const started = await harness.controller.start(startParams(harness, { requiredVerification: [] }));
+    await expect(harness.controller.awaitRun(started.runId)).rejects.toThrow(/failpoint/);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
+    expect(harness.repo.getEffect(RUN_ID, "workflow.plan")).toMatchObject({ outcome: "committed", evidence: { planBlocked: report } });
+    spy.mockRestore();
+    await harness.controller.resumeOpenWorkflows();
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "failed", stopReason: "requirement_conflict" });
+    expect(harness.spawner.spawns.map(spawn => spawn.kind)).toEqual(["plan"]);
+    expect(harness.commands.executed).toHaveLength(0);
+    expect(harness.reviewer.invocations).toHaveLength(0);
+  });
+
+  it("reconstructs a blocking report from a durably settled child after a crash", async () => {
+    const outcome: WorkflowChildOutcome = { status: "completed", finalMessage: JSON.stringify(report), usage: DEFAULT_USAGE };
+    harness.spawner.queue("plan", outcome);
+    armFailpoint("after_spawn_before_effect_result");
+    const started = await harness.controller.start(startParams(harness, { requiredVerification: [] }));
+    await expect(harness.controller.awaitRun(started.runId)).rejects.toThrow(/failpoint/);
+    disarmFailpoint();
+    recordWorkflowChildTerminal(harness.repo, `${RUN_ID}:plan#1`, outcome);
+    await harness.controller.resumeOpenWorkflows();
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({ status: "failed", stopReason: "requirement_conflict" });
+    expect(harness.spawner.spawns.map(spawn => spawn.kind)).toEqual(["plan"]);
+  });
 });
 
 describe("VerifiedChangeWorkflowController — prerequisite gating", () => {
