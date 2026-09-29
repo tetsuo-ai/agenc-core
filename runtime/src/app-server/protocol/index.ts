@@ -55,10 +55,11 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.23 adds the no_progress child terminal reason.
  * 1.24 adds durable child task admission and restart recovery references.
  * 1.25 adds cooperative workflow pause/resume and its durable control status.
+ * 1.26 adds live workflow stop observations when terminal persistence fails.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.25.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.26.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -3022,6 +3023,28 @@ export interface RunWorkflowStatusStep extends JsonObject {
 }
 
 /**
+ * A live daemon observation, not a persisted terminal result. The execution
+ * has stopped, so clients must stop spinners and disable workflow controls,
+ * while retaining durable run tracking for recovery and result inspection.
+ * A recovered durable terminal supersedes this observation.
+ */
+export interface RunWorkflowRuntimeFailure extends JsonObject {
+  readonly state: "stopped";
+  readonly reason: "terminal_persistence_failed";
+  readonly observedAt: string;
+  readonly message: string;
+  readonly worktree?: { readonly path: string; readonly branch: string };
+  /** Last canonical usage observed before shutdown, omitted when unavailable. */
+  readonly usage?: {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    readonly totalTokens: number;
+    readonly costUsd: number;
+    readonly costEstimated?: boolean;
+  };
+}
+
+/**
  * M5 verified-change workflow projection, present on `run.status` only for
  * runs that recorded workflow steps. Stages and requested mode derive from
  * durable `run_effects` rows; effective mode requires an owned live session.
@@ -3030,6 +3053,7 @@ export interface RunWorkflowStatus extends JsonObject {
   readonly steps: readonly RunWorkflowStatusStep[];
   /** Absent on daemons without durable workflow controls. */
   readonly control?: RunWorkflowControlState;
+  readonly runtimeFailure?: RunWorkflowRuntimeFailure;
   /** Mode requested in the frozen workflow spec; does not establish live authority. */
   readonly requestedPermissionMode?: RunStartParams["permissionMode"];
   /** Actual mode observed from the owning live session; absent when unavailable. */
@@ -3122,6 +3146,7 @@ export interface RunStatusResult extends JsonObject {
   /** Terminal is true only for the current lifecycle epoch. */
   readonly terminal: boolean;
   readonly statusSource:
+    | "runtime_observation"
     | "run_terminal_result"
     | "run_lifecycle_epoch"
     | "agent_run"

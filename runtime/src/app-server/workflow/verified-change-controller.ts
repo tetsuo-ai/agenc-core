@@ -116,7 +116,7 @@ import {
 import { projectWorkflowStatus, type WorkflowRunStatus } from "./status-projection.js";
 import { WORKFLOW_PAUSE_PREFIX, workflowControlState } from "./control-state.js";
 import { AgenCDaemonWorkflowControlError } from "./run-control-service.js";
-import type { RunPauseParams, RunResumeParams, RunWorkflowControlState } from "../protocol/index.js";
+import type { RunPauseParams, RunResumeParams, RunWorkflowControlState, RunWorkflowRuntimeFailure } from "../protocol/index.js";
 import {
   deriveStageProjection,
   finalizeIdempotencyKey,
@@ -595,6 +595,8 @@ export class VerifiedChangeWorkflowController {
   /** Includes starts waiting on bootstrap and stopped runs awaiting durable status. */
   readonly #repositoryOwners = new Map<string, string>();
   readonly #providerWaits = new Map<string, { stepId: string; scope: ProviderWaitScope }>();
+  /** One bounded observation per stopped run; never an alternative terminal authority. */
+  readonly #runtimeFailures = new Map<string, RunWorkflowRuntimeFailure>();
 
   constructor(deps: VerifiedChangeWorkflowControllerDeps) {
     this.#deps = deps;
@@ -747,6 +749,7 @@ export class VerifiedChangeWorkflowController {
   }
 
   #releaseRepository(runId: string): void {
+    this.#runtimeFailures.delete(runId);
     for (const [key, owner] of this.#repositoryOwners) {
       if (owner === runId) this.#repositoryOwners.delete(key);
     }
@@ -842,6 +845,21 @@ export class VerifiedChangeWorkflowController {
     return active?.stepId === stepId ? active.scope.current() : undefined;
   }
 
+  /** Runtime-only health survives writer closure, but a durable terminal wins. */
+  currentRuntimeFailure(runId: string): RunWorkflowRuntimeFailure | undefined {
+    const failure = this.#runtimeFailures.get(runId);
+    if (failure === undefined) return undefined;
+    try {
+      if (this.#deps.durability({ runId }).getCurrentTerminalResult(runId) !== undefined) {
+        this.#runtimeFailures.delete(runId);
+        return undefined;
+      }
+    } catch {
+      // Unreadable storage must not hide an already observed execution stop.
+    }
+    return failure;
+  }
+
   /** Durable status projection with optional live session details. */
   status(runId: string): WorkflowRunStatus | undefined {
     const repo = this.#deps.durability({ runId });
@@ -854,13 +872,15 @@ export class VerifiedChangeWorkflowController {
       suspensions: repo.listSuspensions(runId),
       ...(terminal !== undefined ? { terminal } : {}),
     });
-    const effectivePermissionMode = terminal === undefined
+    const runtimeFailure = this.currentRuntimeFailure(runId);
+    const effectivePermissionMode = terminal === undefined && runtimeFailure === undefined
       ? this.currentPermissionMode(runId)
       : undefined;
     return {
       ...projected,
+      ...(runtimeFailure !== undefined ? { runtimeFailure } : {}),
       steps: projected.steps.map((step) => {
-        const providerWait = terminal === undefined && step.status === "running"
+        const providerWait = terminal === undefined && runtimeFailure === undefined && step.status === "running"
           ? this.currentProviderWait(runId, step.stepId)
           : undefined;
         return { ...step, ...(providerWait !== undefined ? { providerWait } : {}) };
@@ -986,8 +1006,32 @@ export class VerifiedChangeWorkflowController {
       this.#deps.warn(
         `workflow ${runId} could not record its ${status} terminal: ${errorMessage(error)}`,
       );
+      this.#observePersistenceFailure(repo, runId, error, { usage: details.usage });
       return false;
     }
+  }
+
+  #observePersistenceFailure(
+    repo: StateRunDurabilityRepository,
+    runId: string,
+    error: unknown,
+    details: { readonly usage?: RunUsageTotals | null; readonly worktree?: { readonly path: string; readonly branch: string } } = {},
+  ): void {
+    let worktree = details.worktree;
+    if (worktree === undefined) {
+      try {
+        const recorded = repo.listEffects(runId).map(readWorkflowStepEvidence).find(item => item.worktree !== undefined)?.worktree;
+        if (recorded !== undefined) worktree = { path: recorded.path, branch: recorded.branch };
+      } catch { /* Storage may be unreadable as well as unwritable. */ }
+    }
+    const previous = this.#runtimeFailures.get(runId);
+    this.#runtimeFailures.set(runId, {
+      state: "stopped", reason: "terminal_persistence_failed",
+      observedAt: previous?.observedAt ?? this.#nowIso(),
+      message: `Goal stopped, but its final status could not be saved. Check disk space and storage access. ${errorMessage(error).slice(0, 2048)}`,
+      ...(worktree !== undefined ? { worktree } : previous?.worktree !== undefined ? { worktree: previous.worktree } : {}),
+      ...(details.usage != null ? { usage: { ...details.usage } } : previous?.usage !== undefined ? { usage: previous.usage } : {}),
+    });
   }
 
   async #resumeRun(
@@ -1093,6 +1137,7 @@ export class VerifiedChangeWorkflowController {
             ? undefined
             : readWorkflowStepEvidence(planEffect).child?.finalMessage;
       }
+      this.#runtimeFailures.delete(runId);
       const pipeline = this.#continue(ctx);
       this.#active.set(runId, pipeline);
       return true;
@@ -2854,6 +2899,12 @@ export class VerifiedChangeWorkflowController {
               : ""),
           { usage, stopReason: terminal.status === "completed" ? "evidence_invalid" : terminal.stopReason },
         );
+      }
+      if (!ctx.terminalized) {
+        this.#observePersistenceFailure(ctx.repo, ctx.runId, error, {
+          usage,
+          ...(ctx.handle !== undefined ? { worktree: { path: ctx.handle.path, branch: ctx.handle.branch } } : {}),
+        });
       }
     }
   }

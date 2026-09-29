@@ -1080,8 +1080,13 @@ describe("workflow terminal persistence failures", () => {
     expect(harness.worktrees.cleanups).toHaveLength(1);
   });
 
-  it("retains work and repository ownership when no terminal can be persisted", async () => {
-    harness.hooks.failTerminalWith = new Error("journal disk full");
+  it.each(["journal_and_database", "database_projection"])("reports stopped execution and keeps work when %s cannot save the terminal", async failure => {
+    if (failure === "journal_and_database") harness.hooks.failTerminalWith = new Error("journal disk full");
+    const usage = { inputTokens: 700, outputTokens: 100, totalTokens: 800, costUsd: 0.14, costEstimated: true };
+    Object.assign(harness.admission, { getUsageSummary: (): ReturnType<NonNullable<ExecutionAdmissionClient["getUsageSummary"]>> => ({
+      ...usage, runId: RUN_ID, sequence: 1, modelCalls: 1, hasUnknownCost: false,
+      heldCostUsd: 0, models: [], agents: [],
+    }) });
     const terminalWrite = vi.spyOn(harness.repo, "recordTerminalResult").mockImplementation(() => {
       throw new Error("SQLite disk full");
     });
@@ -1090,6 +1095,22 @@ describe("workflow terminal persistence failures", () => {
     expect(harness.worktrees.cleanups).toHaveLength(0);
     expect(harness.worktrees.discards).toHaveLength(0);
     expect(harness.controller.activeRunIds()).toEqual([]);
+    const observation = harness.controller.currentRuntimeFailure(RUN_ID);
+    expect(observation).toMatchObject({ state: "stopped", reason: "terminal_persistence_failed",
+      worktree: { path: `/wt/${RUN_ID}`, branch: "agenc/m5" }, usage });
+    expect(observation?.message).toContain("Goal stopped, but its final status could not be saved.");
+    expect(harness.controller.status(RUN_ID)).toMatchObject({ runtimeFailure: observation });
+    expect(harness.controller.status(RUN_ID)).not.toHaveProperty("terminal");
+    const status = new AgenCDaemonRunInspectionService({
+      stateDatabasePaths: () => [{ stateDbPath: harness.driver.stateDbPath,
+        logsDbPath: harness.driver.logsDbPath, projectDir: harness.driver.projectDir }],
+      agencHome: harness.home,
+      runtimeFailure: runId => harness.controller.currentRuntimeFailure(runId),
+      effectivePermissionMode: () => { throw new Error("closed writer permission state"); },
+    }).status({ runId: RUN_ID });
+    expect(status).toMatchObject({ status: "stopped", terminal: false, statusSource: "runtime_observation",
+      workflow: { runtimeFailure: observation } });
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeUndefined();
     await expect(harness.controller.start(startParams(harness, { runId: "second" })))
       .rejects.toThrow("already active");
     terminalWrite.mockRestore();
@@ -1100,7 +1121,42 @@ describe("workflow terminal persistence failures", () => {
       eventId: "recovered-terminal", result: { runId: RUN_ID, status: "failed", exitCode: 1,
         stopReason: "evidence_invalid", finalMessage: "Storage recovered", usage: null,
         lastSequence: null, finishedAt: new Date().toISOString() } });
+    expect(harness.controller.currentRuntimeFailure(RUN_ID)).toBeUndefined();
+    expect(harness.controller.status(RUN_ID)).not.toHaveProperty("runtimeFailure");
+    delete (harness.admission as Partial<ExecutionAdmissionClient>).getUsageSummary;
     await runToTerminal(harness, { runId: "after-recovery" });
+  });
+
+  it("keeps the observed stop when status storage reads also fail", async () => {
+    harness.hooks.failTerminalWith = new Error("journal disk full");
+    vi.spyOn(harness.repo, "recordTerminalResult").mockImplementation(() => { throw new Error("SQLite disk full"); });
+    await runToTerminal(harness);
+    const observation = harness.controller.currentRuntimeFailure(RUN_ID);
+    const read = vi.spyOn(harness.repo, "getCurrentTerminalResult").mockImplementation(() => { throw new Error("database unavailable"); });
+    expect(harness.controller.currentRuntimeFailure(RUN_ID)).toEqual(observation);
+    read.mockRestore();
+    expect(harness.controller.currentRuntimeFailure(RUN_ID)).toEqual(observation);
+  });
+
+  it("clears an old stop observation when recovery actually restarts the same run", async () => {
+    harness.hooks.failTerminalWith = new Error("journal disk full");
+    const write = vi.spyOn(harness.repo, "recordTerminalResult").mockImplementation(() => { throw new Error("SQLite disk full"); });
+    await runToTerminal(harness);
+    expect(harness.controller.currentRuntimeFailure(RUN_ID)?.state).toBe("stopped");
+    delete harness.hooks.failTerminalWith;
+    write.mockRestore();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const provision = harness.worktrees.provision.bind(harness.worktrees);
+    vi.spyOn(harness.worktrees, "provision").mockImplementationOnce(async spec => {
+      entered.resolve(); await release.promise; return provision(spec);
+    });
+    expect(await harness.controller.resumeOpenWorkflows()).toEqual([RUN_ID]);
+    await entered.promise;
+    expect(harness.controller.currentRuntimeFailure(RUN_ID)).toBeUndefined();
+    release.resolve();
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toBeDefined();
   });
 });
 

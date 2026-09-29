@@ -24,6 +24,7 @@ import { upsertAgentRun } from "../../src/state/agent-runs.js";
 import { ExecutionAdmissionRepository } from "../../src/state/execution-admission.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
 import { serializeRolloutItem } from "../../src/session/rollout-item.js";
+import * as journalRecovery from "../../src/state/startup-run-journal-recovery.js";
 import {
   openStateDatabases,
   type StateDatabasePaths,
@@ -33,6 +34,7 @@ import {
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
   JSON_RPC_VERSION,
   type JsonObject,
+  type RunWorkflowRuntimeFailure,
 } from "../../src/app-server/protocol/index.js";
 import {
   createAgencClient,
@@ -1037,6 +1039,60 @@ describe("M5 workflow run inspection (additive fields)", () => {
     expect(terminal.workflow).toMatchObject({ requestedPermissionMode: "bypassPermissions" });
     expect(terminal.workflow).not.toHaveProperty("effectivePermissionMode");
     expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it("shows a live stopped observation without fabricating a durable result or consulting closed session state", () => {
+    seedDurableRuns();
+    seedWorkflowEffects("bypassPermissions");
+    const observation: RunWorkflowRuntimeFailure = {
+      state: "stopped", reason: "terminal_persistence_failed", observedAt: NOW,
+      message: "Goal stopped, but its final status could not be saved.",
+      worktree: { path: "/worktrees/retained-goal", branch: "agenc/retained-goal" },
+      usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, costUsd: 0.01 },
+    };
+    const unavailableSession = vi.fn(() => { throw new Error("session is closed"); });
+    const live = new AgenCDaemonRunInspectionService({
+      stateDatabasePaths: () => [paths], agencHome: home,
+      runtimeFailure: () => observation,
+      effectivePermissionMode: unavailableSession,
+      providerWait: unavailableSession,
+      pendingApprovals: unavailableSession,
+    });
+    const status = live.status({ runId: WORKFLOW_RUN_ID });
+    expect(status).toMatchObject({ status: "stopped", terminal: false, statusSource: "runtime_observation",
+      workflow: { runtimeFailure: observation }, pendingRequests: [] });
+    expect(status.workflow).not.toHaveProperty("effectivePermissionMode");
+    expect(status.workflow?.steps.every(step => step.providerWait === undefined)).toBe(true);
+    expect(unavailableSession).not.toHaveBeenCalled();
+    expect(() => live.result({ runId: WORKFLOW_RUN_ID })).toThrowError(
+      expect.objectContaining({ code: "RUN_NOT_TERMINAL" }),
+    );
+    expect(live.evidence({ runId: WORKFLOW_RUN_ID }).runId).toBe(WORKFLOW_RUN_ID);
+    expect(service.status({ runId: WORKFLOW_RUN_ID }).workflow).not.toHaveProperty("runtimeFailure");
+    const durability = new StateRunDurabilityRepository(driver);
+    durability.recordTerminalResult({ epoch: durability.currentEpoch(WORKFLOW_RUN_ID)!.epoch,
+      eventId: `evt-${++sequence}`, result: { runId: WORKFLOW_RUN_ID, status: "failed", exitCode: 1,
+        stopReason: "evidence_invalid", finalMessage: "Storage recovered", usage: null,
+        lastSequence: sequence, finishedAt: NOW } });
+    const recovered = live.status({ runId: WORKFLOW_RUN_ID });
+    expect(recovered).toMatchObject({ status: "failed", terminal: true, statusSource: "run_terminal_result" });
+    expect(recovered.workflow).not.toHaveProperty("runtimeFailure");
+    expect(live.result({ runId: WORKFLOW_RUN_ID })).toMatchObject({ terminal: true, output: { finalMessage: "Storage recovered" } });
+  });
+
+  it("keeps the stopped observation visible when a projection repair cannot write", () => {
+    seedWorkflowEffects();
+    const observation: RunWorkflowRuntimeFailure = { state: "stopped", reason: "terminal_persistence_failed",
+      observedAt: NOW, message: "Goal stopped, but its final status could not be saved." };
+    const recovery = vi.spyOn(journalRecovery, "recoverCanonicalRunJournalForRun")
+      .mockImplementation(() => { throw new Error("SQLITE_FULL"); });
+    try {
+      const live = new AgenCDaemonRunInspectionService({ stateDatabasePaths: () => [paths], runtimeFailure: () => observation });
+      expect(live.status({ runId: WORKFLOW_RUN_ID })).toMatchObject({ status: "stopped", terminal: false,
+        statusSource: "runtime_observation", workflow: { runtimeFailure: observation } });
+      // Ordinary inspection still reports the repair error instead of hiding it.
+      expect(() => service.status({ runId: WORKFLOW_RUN_ID })).toThrow("SQLITE_FULL");
+    } finally { recovery.mockRestore(); }
   });
 
   it("omits stale provider waits on ended steps, terminal runs, and offline inspection", () => {

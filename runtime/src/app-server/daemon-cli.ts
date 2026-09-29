@@ -4145,6 +4145,7 @@ async function runAgenCDaemonForegroundLocked(
       realtime,
       whisper: new LocalWhisperService({ home: authStartup.daemonHome, env: host.env }),
       runInspection: new AgenCDaemonRunInspectionService({
+        runtimeFailure: (runId) => workflowWiring.controller.currentRuntimeFailure(runId),
         effectivePermissionMode: (runId) => workflowWiring.controller.currentPermissionMode(runId),
         providerWait: (runId, stepId) => workflowWiring.controller.currentProviderWait(runId, stepId),
         pendingApprovals: (runId) => approvalBroker.list(runId),

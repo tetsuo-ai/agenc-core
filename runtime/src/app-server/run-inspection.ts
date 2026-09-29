@@ -20,6 +20,7 @@ import type {
   RunStatusResult,
   RunWorkflowArtifactPointer,
   RunWorkflowStatus,
+  RunWorkflowRuntimeFailure,
 } from "./protocol/index.js";
 import type {
   RunArtifactPointer,
@@ -66,6 +67,8 @@ export interface AgenCDaemonRunInspectionOptions {
   readonly providerWait?: (runId: string, stepId: string) => import("../recovery/provider-wait.js").ProviderWait | undefined;
   readonly effectivePermissionMode?: (runId: string) => InternalPermissionMode | undefined;
   readonly pendingApprovals?: (runId: string) => readonly import("./protocol/index.js").PendingToolApproval[];
+  /** Live stop observation only. Never used as a durable result or evidence source. */
+  readonly runtimeFailure?: (runId: string) => RunWorkflowRuntimeFailure | undefined;
   /**
    * Fresh discovery on every request keeps projects created after daemon
    * startup visible. Callers should return only state DBs owned by this
@@ -184,6 +187,7 @@ export class AgenCDaemonRunInspectionService {
   readonly #providerWait: AgenCDaemonRunInspectionOptions["providerWait"];
   readonly #effectivePermissionMode: AgenCDaemonRunInspectionOptions["effectivePermissionMode"];
   readonly #pendingApprovals: AgenCDaemonRunInspectionOptions["pendingApprovals"];
+  readonly #runtimeFailure: AgenCDaemonRunInspectionOptions["runtimeFailure"];
   readonly #stateDatabasePaths: () => readonly StateDatabasePaths[];
   readonly #agencHome: string | undefined;
 
@@ -191,29 +195,35 @@ export class AgenCDaemonRunInspectionService {
     this.#providerWait = options.providerWait;
     this.#effectivePermissionMode = options.effectivePermissionMode;
     this.#pendingApprovals = options.pendingApprovals;
+    this.#runtimeFailure = options.runtimeFailure;
     this.#stateDatabasePaths = options.stateDatabasePaths;
     this.#agencHome = options.agencHome;
   }
 
   status(params: RunStatusParams): RunStatusResult {
     const runId = normalizeRunId(params.runId, "run.status");
-    const located = this.#locate(runId);
-    refreshRunJournalProjection(located.paths, runId);
+    const observedStop = this.#runtimeFailure?.(runId) !== undefined;
+    const located = this.#locate(runId, observedStop);
+    this.#refreshStatusProjection(located.paths, runId, observedStop);
     const result = withReadonlyStateDatabase(located.paths, (db) =>
       buildRunStatus(db, located, runId),
     );
-    const mode = result.workflow !== undefined && !result.terminal
+    const runtimeFailure = result.workflow !== undefined && !result.terminal
+      ? this.#runtimeFailure?.(runId) : undefined;
+    const mode = result.workflow !== undefined && !result.terminal && runtimeFailure === undefined
       ? this.#effectivePermissionMode?.(runId)
       : undefined;
     return {
       ...result,
+      ...(runtimeFailure !== undefined ? { status: "stopped", statusSource: "runtime_observation" as const } : {}),
       ...(result.workflow !== undefined ? {
         workflow: {
           ...result.workflow,
+          ...(runtimeFailure !== undefined ? { runtimeFailure } : {}),
           ...(mode !== undefined && (ALL_PERMISSION_MODES as readonly string[]).includes(mode)
             ? { effectivePermissionMode: mode } : {}),
           steps: result.workflow.steps.map((step) => {
-            const providerWait = !result.terminal && step.status === "running"
+            const providerWait = !result.terminal && runtimeFailure === undefined && step.status === "running"
               ? this.#providerWait?.(runId, step.stepId)
               : undefined;
             return { ...step, ...(providerWait !== undefined ? { providerWait: { ...providerWait } } : {}) };
@@ -221,7 +231,7 @@ export class AgenCDaemonRunInspectionService {
         },
       } : {}),
       ...(this.#pendingApprovals !== undefined
-        ? { pendingRequests: result.terminal ? [] : this.#pendingApprovals(runId) }
+        ? { pendingRequests: result.terminal || runtimeFailure !== undefined ? [] : this.#pendingApprovals(runId) }
         : {}),
     };
   }
@@ -391,7 +401,16 @@ export class AgenCDaemonRunInspectionService {
     });
   }
 
-  #locate(runId: string): LocatedRun {
+  #refreshStatusProjection(paths: StateDatabasePaths, runId: string, observedStop: boolean): void {
+    try { refreshRunJournalProjection(paths, runId); }
+    catch (error) {
+      // A known storage failure may prevent rebuilding the durable projection.
+      // Serve its last readable state plus the explicit live stop observation.
+      if (!observedStop) throw error;
+    }
+  }
+
+  #locate(runId: string, observedStop = false): LocatedRun {
     const matches: (LocatedRun & { readonly canonical: boolean; readonly hasAdmission: boolean })[] = [];
     const discovered: StateDatabasePaths[] = [];
     const seen = new Set<string>();
@@ -420,7 +439,7 @@ export class AgenCDaemonRunInspectionService {
     if (canonicalMatches.length === 0 && matches.length === 1) return matches[0]!;
     if (canonicalMatches.length !== 1) throw ambiguousRunOwner(runId);
     const canonical = canonicalMatches[0]!;
-    refreshRunJournalProjection(canonical.paths, runId);
+    this.#refreshStatusProjection(canonical.paths, runId, observedStop);
     const authority = withReadonlyStateDatabase(canonical.paths, (db) => readRunAdmissionAuthority(db, runId));
     if (matches.length === 1 && authority.owner === undefined) return canonical;
     const admissionMatches = matches.filter((match) => match.hasAdmission);
