@@ -19,10 +19,13 @@ describe("Qwen current native and hosted chat models", () => {
   it("keeps reviewed PAYG routes on the selected provider through catalog and runtime resolution", () => {
     const catalog = buildProviderModelCatalog({});
     for (const { model } of QWEN_CURRENT_MODELS) {
-      expect(catalog.qwen).toContain(model);
+      const config = model === "kimi/kimi-k3"
+        ? { providers: { qwen: { default_model: model } } } : {};
+      if (model === "kimi/kimi-k3") expect(catalog.qwen).not.toContain(model);
+      else expect(catalog.qwen).toContain(model);
       expect(catalog["qwen-token-plan"]).not.toContain(model);
-      expect(resolveProviderModelInput({}, "qwen", model)).toEqual({ provider: "qwen", model });
-      expect(resolveProviderRuntimeRequest({ provider: "qwen", model, config: {}, environment: {} }).requested)
+      expect(resolveProviderModelInput(config, "qwen", model)).toEqual({ provider: "qwen", model });
+      expect(resolveProviderRuntimeRequest({ provider: "qwen", model, config, environment: {} }).requested)
         .toMatchObject({ model });
     }
     expect(entry("glm-5.3-future")).toBeUndefined();
@@ -40,6 +43,9 @@ describe("Qwen current native and hosted chat models", () => {
     expect(entry("ZHIPU/GLM-5.3")?.maxOutputTokens).toBeUndefined();
     expect(entry("qwen3.7-plus")?.maxOutputTokens).toBe(131_072);
     expect(entry("qwen3.7-flash")?.maxOutputTokens).toBe(131_072);
+    expect(entry("qwen3-max")?.maxOutputTokensUpperLimit).toBe(65_536);
+    expect(entry("kimi/kimi-k3")).toMatchObject({ inputModalities: ["text", "image"], visibility: "none" });
+    expect(entry("deepseek-v4-pro-0813")?.supportedReasoningLevels).toEqual(["low", "high", "max"]);
   });
 
   it("uses route-specific reasoning enums and never disables thinking-only models", () => {
@@ -56,6 +62,23 @@ describe("Qwen current native and hosted chat models", () => {
     expect(wire("kimi/kimi-k3", "low").reasoning_effort).toBeUndefined();
     expect(wire("kimi/kimi-k3", "max").reasoning_effort).toBe("max");
     expect(wire("qwen3-next-80b-a3b-thinking", "low").enable_thinking).toBeUndefined();
+  });
+
+  it("keeps the direct Beijing Kimi image, sampling and tool contract separate", () => {
+    const hints = chatCompletionsCapabilityHintsForProvider("qwen", "kimi/kimi-k3");
+    const request = buildChatCompletionsRequest({
+      model: "kimi/kimi-k3", messages, tools: [tool],
+      options: { temperature: .2, toolChoice: "required" }, providerCapabilityHints: hints,
+    });
+    expect(request).toMatchObject({ preserve_thinking: true, tool_choice: "required" });
+    expect(request.temperature).toBeUndefined();
+    expect(request.enable_thinking).toBeUndefined();
+    const withImage = (url: string) => buildChatCompletionsRequest({
+      model: "kimi/kimi-k3", tools: [], providerCapabilityHints: hints,
+      messages: [{ role: "user", content: [{ type: "image_url", image_url: { url } }] }],
+    });
+    expect(() => withImage("data:image/png;base64,YQ==")).toThrow(/public HTTP/);
+    expect(() => withImage("https://example.com/image.png")).not.toThrow();
   });
 
   it.each(["qwen3-next-80b-a3b-thinking", "qwen3.5-omni-plus"])("buffers mandatory SSE through chat for %s", async (model) => {

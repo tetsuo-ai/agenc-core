@@ -57,6 +57,7 @@ import {
 } from "./cerebras-contract.js";
 import { splitLeadingThinkBlock } from "./think-tags.js";
 import { applyZaiImageInputContract } from "./zai-contract.js";
+import { applyQwenKimiImageInputContract } from "./qwen-contract.js";
 import {
   applyKimiImageInputContract,
   assertKimiRequestPayloadSize,
@@ -292,7 +293,7 @@ function toChatCompletionsMessages(
   reasoningContinuation?: ReasoningToolContinuation,
   allowsFullReasoningHistoryReplay = true,
   requiresStrictToolResultSequence = false,
-  imageInputContract?: "cerebras_v2" | "zai_flash" | "kimi_global",
+  imageInputContract?: "cerebras_v2" | "zai_flash" | "kimi_global" | "qwen_kimi",
   acceptsDirectImageInput?: boolean,
   sessionTailAfterSetup = false,
   usesThinkingContentBlocks = false,
@@ -314,6 +315,8 @@ function toChatCompletionsMessages(
     imageSafeMessages = applyZaiImageInputContract(normalized);
   } else if (imageInputContract === "kimi_global") {
     imageSafeMessages = applyKimiImageInputContract(normalized);
+  } else if (imageInputContract === "qwen_kimi") {
+    imageSafeMessages = applyQwenKimiImageInputContract(normalized);
   } else if (acceptsDirectImageInput === false) {
     imageSafeMessages = assertNoDirectImageInput(normalized);
   }

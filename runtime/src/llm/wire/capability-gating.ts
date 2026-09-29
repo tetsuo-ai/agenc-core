@@ -70,7 +70,7 @@ export interface ChatCompletionsCapabilityHints {
   /** Enforce API-v2 adjacent, complete, unique tool-call/result groups. */
   readonly requiresStrictToolResultSequence?: boolean;
   /** Apply Cerebras' strict base64 PNG/JPEG image payload contract. */
-  readonly imageInputContract?: "cerebras_v2" | "zai_flash" | "kimi_global";
+  readonly imageInputContract?: "cerebras_v2" | "zai_flash" | "kimi_global" | "qwen_kimi";
   /** Whether the selected model accepts direct user image input. */
   readonly acceptsDirectImageInput?: boolean;
   /** Apply Cerebras API v2's supported strict JSON-Schema subset. */
@@ -365,6 +365,7 @@ export function chatCompletionsCapabilityHintsForProvider(
   const isQwenCloud = (slug === "qwen" || slug === "qwen-token-plan") &&
     !isQwenCoder30BModel(model);
   const qwenCurrentModel = slug === "qwen" ? resolveQwenCurrentModel(model) : undefined;
+  const isQwenDirectKimi = slug === "qwen" && normalizedModel === "kimi/kimi-k3";
   const isQwenFlashNext = slug === "qwen" && isQwenFlashNextModel(model);
   const preservesThinkingHistory =
     (slug === "qwen" &&
@@ -576,7 +577,15 @@ export function chatCompletionsCapabilityHintsForProvider(
             replaysReasoningContentOnlyForIntactHistory: true,
             clearsThinkingAfterHistoryChange: true,
           } : {}),
-          ...(qwenCurrentModel?.thinking === "always" || normalizedModel === "qwen3.8-2.4t-a95b"
+          ...(isQwenDirectKimi
+            ? {
+                toolChoicePolicy: "no_named" as const,
+                acceptsTemperature: false,
+                preservesThinkingHistory: true,
+                replaysReasoningContentOnlyForIntactHistory: true,
+                imageInputContract: "qwen_kimi" as const,
+              }
+            : qwenCurrentModel?.thinking === "always" || normalizedModel === "qwen3.8-2.4t-a95b"
             ? { toolChoicePolicy: "auto_only" as const }
             : normalizedModel === "qwen3.8-omni-flash"
               ? { toolChoicePolicy: "auto_only" as const }
