@@ -291,6 +291,30 @@ export class SessionProviderService {
     readonly authProfile: "api_key" | "sign_in" | "managed" | "local" | "aws_sigv4";
     readonly billingSource: "byok" | "sign_in" | "managed" | "local";
   }> {
+    return this.#previewChildDestination(selection, concreteDestination, false);
+  }
+
+  /** Local readiness only. Never refreshes credentials or probes a remote model.
+   * Missing, unsupported and custom-endpoint authorities are excluded without
+   * exposing credential material or provider error text to the router. */
+  async isChildProviderConnected(selection: ProviderSelection): Promise<boolean> {
+    // A managed route needs a concrete destination and separate consent. It is
+    // not an independently connected model candidate for local routing.
+    if (selection.provider === "agenc") return false;
+    try {
+      await this.#previewChildDestination(selection, undefined, true);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async #previewChildDestination(selection: ProviderSelection, concreteDestination: ProviderSelection | undefined,
+    requireConnected: boolean): Promise<{
+      readonly endpoint: string;
+      readonly authProfile: "api_key" | "sign_in" | "managed" | "local" | "aws_sigv4";
+      readonly billingSource: "byok" | "sign_in" | "managed" | "local";
+    }> {
     const provider = resolveBuiltInProviderSlug(selection.provider);
     if (provider === undefined) throw new Error(`unknown provider "${selection.provider}"`);
     if (provider === "agenc") {
@@ -322,6 +346,7 @@ export class SessionProviderService {
       ...(preparation.runtime?.freeManagedCredential !== undefined
         ? { freeManagedCredential: preparation.runtime.freeManagedCredential } : {}),
     });
+    if (requireConnected) requireProviderRuntimeCredential(provider, authority);
     const authProfile = authority.managedCredential ? "managed" as const
       : authority.factoryOptions.extra?.authMode === "oauth" ? "sign_in" as const
       : provider === "amazon-bedrock" ? "aws_sigv4" as const
