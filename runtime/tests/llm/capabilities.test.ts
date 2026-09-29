@@ -144,7 +144,7 @@ describe("resolveProviderModelCapabilities", () => {
     });
   });
 
-  it("keeps routed compatible providers fail-closed where the matrix says varies", () => {
+  it("uses exact routed metadata and stays conservative for unreviewed providers", () => {
     expect(
       resolveProviderModelCapabilities({
         provider: "openrouter",
@@ -152,7 +152,7 @@ describe("resolveProviderModelCapabilities", () => {
       }),
     ).toMatchObject({
       provider: "openrouter",
-      acceptsImageHistory: false,
+      acceptsImageHistory: true,
       acceptsAudioHistory: false,
       acceptsThinkingHistory: false,
       acceptsReasoningEffort: false,

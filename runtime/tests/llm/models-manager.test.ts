@@ -84,7 +84,6 @@ describe("StaticModelsManager", () => {
     const manager = claudeManager();
     for (const model of [
       "claude-opus-5.5",
-      "anthropic/claude-opus-5.5",
       "claude-opus-5-5-20260922",
       "claude-opus-5-5[1m]",
     ]) {
@@ -97,6 +96,14 @@ describe("StaticModelsManager", () => {
         defaultReasoningLevel: "medium",
       });
     }
+  });
+
+  it("uses the exact OpenRouter contract for its vendor-qualified Opus ID", async () => {
+    expect(await claudeManager().getModelInfo("anthropic/claude-opus-5.5")).toMatchObject({
+      contextWindow: 1_000_000, maxOutputTokens: 128_000,
+      supportedReasoningLevels: ["max", "xhigh", "high", "medium", "low"],
+      defaultReasoningLevel: "high",
+    });
   });
 
   it("never lends the Opus 5.5 row by prefix to ids the parser rejects", async () => {

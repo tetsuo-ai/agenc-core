@@ -3,6 +3,9 @@ import { BUILT_IN_PROVIDER_MODEL_CATALOG } from "../../../src/llm/registry/provi
 import { resolveRegisteredModelCatalogEntry } from "../../../src/llm/registry/model-catalog.js";
 import { OPENROUTER_MODELS } from "../../../src/llm/registry/openrouter-models.js";
 import { computeUsdCostWithResolution, DEFAULT_MODEL_COSTS } from "../../../src/session/cost.js";
+import { buildChatCompletionsRequest } from "../../../src/llm/wire/chat-completions.js";
+import { chatCompletionsCapabilityHintsForProvider } from "../../../src/llm/wire/capability-gating.js";
+import { mergeProviderModelLayer } from "../../../src/config/provider-model-authority.js";
 
 const cost = (model: string, inputTokens = 1000) => computeUsdCostWithResolution({
   provider: "openrouter", model, inputTokens, outputTokens: 1000,
@@ -11,6 +14,28 @@ const cost = (model: string, inputTokens = 1000) => computeUsdCostWithResolution
 }, DEFAULT_MODEL_COSTS);
 
 describe("reviewed OpenRouter catalog", () => {
+  test("serializes only advertised efforts in OpenRouter's nested envelope", () => {
+    const model = "openai/gpt-oss-120b";
+    const request = (reasoningEffort: "low" | "none") => buildChatCompletionsRequest({
+      model, messages: [], tools: [], options: { reasoningEffort },
+      providerCapabilityHints: chatCompletionsCapabilityHintsForProvider("openrouter", model),
+    });
+    expect(request("low").reasoning).toEqual({ effort: "low" });
+    expect(request("low")).not.toHaveProperty("reasoning_effort");
+    expect(request("none")).not.toHaveProperty("reasoning");
+    const managed = buildChatCompletionsRequest({ model, messages: [], tools: [],
+      options: { reasoningEffort: "low" },
+      providerCapabilityHints: chatCompletionsCapabilityHintsForProvider("openrouter", model, { managedGateway: true }),
+    });
+    expect(managed).not.toHaveProperty("reasoning");
+  });
+
+  test.each(["nvidia-nim", "lmstudio", "ollama", "openai-compatible"])(
+    "gateway names do not override explicit %s model selection", provider => {
+      expect(mergeProviderModelLayer({}, {model_provider: provider, model: "moonshotai/kimi-k3"}))
+        .toMatchObject({model_provider: provider, model: "moonshotai/kimi-k3"});
+      expect(() => mergeProviderModelLayer({}, {model_provider: provider, model: "openrouter:moonshotai/kimi-k3"})).toThrow();
+    });
   test("exposes current tool models without changing the configured default ordering", () => {
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.openrouter[0]).toBe("x-ai/grok-4.5");
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.openrouter).toContain("anthropic/claude-sonnet-5.5");

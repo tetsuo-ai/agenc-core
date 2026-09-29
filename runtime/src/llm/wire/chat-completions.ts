@@ -769,7 +769,11 @@ export function buildChatCompletionsRequest(
         input.options.reasoningEffort,
       ))
   ) {
-    body.reasoning_effort = input.options.reasoningEffort;
+    if (input.providerCapabilityHints?.reasoningEffortEnvelope === "openrouter") {
+      body.reasoning = { effort: input.options.reasoningEffort };
+    } else {
+      body.reasoning_effort = input.options.reasoningEffort;
+    }
   }
   if (
     input.options?.serviceTier !== undefined &&

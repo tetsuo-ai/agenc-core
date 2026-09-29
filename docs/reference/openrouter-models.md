@@ -32,3 +32,5 @@ Sources:
 - [Model API fields and filtering](https://openrouter.ai/docs/guides/overview/models)
 - [Reasoning controls](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)
 - [Request parameters](https://openrouter.ai/docs/api/reference/parameters)
+
+Reviewed reasoning efforts use OpenRouter’s nested `reasoning: { effort }` envelope. Unlisted efforts stay omitted, and managed gateway request contracts remain separate. Source: https://openrouter.ai/docs/guides/best-practices/reasoning-tokens. Explicit NIM and local compatible provider selections retain their vendor/model identity when OpenRouter adds the same model ID.

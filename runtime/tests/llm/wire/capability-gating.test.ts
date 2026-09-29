@@ -206,7 +206,7 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
       expect(
         chatCompletionsCapabilityHintsForProvider(
           "openrouter",
-          "moonshotai/kimi-k3",
+          "unreviewed/kimi-k3",
         ).acceptsReasoningEffort,
       ).toBe(false);
       expect(
