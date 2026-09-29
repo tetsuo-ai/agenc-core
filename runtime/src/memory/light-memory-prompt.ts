@@ -16,7 +16,6 @@ export function lightMemoryDirectories(project: string, global: string, extra?: 
     "# Memory directories",
     `Global: \`${global}\``,
     `Project: \`${project}\``,
-    "Directories exist.",
     ...(extra ?? []),
   ].join("\n");
 }

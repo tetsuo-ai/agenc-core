@@ -152,7 +152,6 @@ describe("memory prompt", () => {
     expect(light!.directories).toContain(getGlobalMemoryPath());
     expect(instructions).toContain("shared by worktrees");
     expect(instructions).toContain("current task state");
-    expect(light!.directories).toContain("Directories exist.");
     expect(existsSync(getGlobalMemoryPath())).toBe(true);
     expect(existsSync(getProjectMemoryPath())).toBe(true);
     expect(await memory.loadMemoryPrompt()).toEqual(standard);
