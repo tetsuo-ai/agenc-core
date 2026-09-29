@@ -1039,7 +1039,7 @@ function buildPolicyMessage(blockedTargets: readonly string[]): string {
   return (
     "shell_workspace_file_write_disallowed: shell commands may not write " +
     "workspace files except under build, dist, logs, .cache, tmp, or coverage; " +
-    "use Edit or Write instead." +
+    'use MultiEdit for workspace changes. To create a file, use file_path and edits:[{old_string:"",new_string:"<file content>"}]. For an existing file, FileRead then replace exact text.' +
     (blockedTargets.length > 0
       ? ` Blocked target(s): ${blockedTargets.join(", ")}`
       : "")
