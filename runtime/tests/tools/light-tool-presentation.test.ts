@@ -43,10 +43,10 @@ describe("Light schema presentation", () => {
     expect(lightToolPresentation(tool)).toBe(tool);
   });
 
-  test("preserves read indexing and edit freshness conventions", () => {
+  test("preserves read indexing and the read-before-edit requirement", () => {
     const present = (name: string) => lightToolPresentation({ type: "function", function: { name, description: "Full documentation", parameters: { type: "object", properties: { offset: { anyOf: [{ type: "number" }, { type: "string", pattern: "^[1-9]\\d*$" }] } } } } });
     expect(present("FileRead").function.description).toContain("PDFs over 10 pages");
     expect(present("FileRead").function.parameters).toMatchObject({ properties: { offset: { anyOf: [{ type: "number" }, { type: "string", pattern: "^[1-9]\\d*$" }] } } });
-    expect(present("Edit").function.description).toContain("Fails if the file changed since read");
+    expect(present("Edit").function.description).toContain("after FileRead");
   });
 });
