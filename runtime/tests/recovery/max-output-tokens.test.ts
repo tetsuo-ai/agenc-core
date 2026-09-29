@@ -151,6 +151,17 @@ function mkState(opts: Partial<TurnState> = {}): TurnState {
 }
 
 describe("runMaxOutputTokensRecovery — T8 hardening", () => {
+  test("truncated tool arguments get a bounded retry with reference guidance, not prose continuation", () => {
+    const state = mkState({ truncatedToolCallNames: ["spawn_agent"] });
+    const session = mkSession(new EventLog());
+    expect(runMaxOutputTokensRecovery({ state, session, escalateAllowed: true })).toEqual({ kind: "continuation" });
+    expect(state.maxOutputTokensOverride).toBeUndefined();
+    expect(state.messages.at(-1)?.content).toContain("incomplete calls were not executed");
+    expect(state.messages.at(-1)?.content).toContain("message_ref");
+    state.maxOutputTokensRecoveryCount = MAX_OUTPUT_TOKENS_RECOVERY_LIMIT;
+    expect(runMaxOutputTokensRecovery({ state, session })).toMatchObject({ kind: "exhausted" });
+  });
+
   test("escalate path: discards pending executor + nulls slot", () => {
     const log = new EventLog();
     const session = mkSession(log);

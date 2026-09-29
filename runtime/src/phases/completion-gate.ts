@@ -43,6 +43,7 @@
  * @module
  */
 
+import { requestsExactOutput } from "../prompts/exact-output.js";
 import { Lexer, type Token, type Tokens } from "marked";
 import type { LLMMessage } from "../llm/types.js";
 import type { Session } from "../session/session.js";
@@ -183,6 +184,8 @@ export function planCompletionGateForTurn(input: {
   }
   const taskText = (input.taskText ?? "").trim();
   if (taskText.length === 0) return undefined;
+  // #2798: a Markdown verification round must never replace an exact answer.
+  if (requestsExactOutput(taskText)) return undefined;
   return {
     maxRounds: policy.maxRounds,
     taskText:

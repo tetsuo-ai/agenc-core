@@ -1,0 +1,18 @@
+import { describe, expect, it } from "vitest";
+import { explicitlyRequestsDelegation, requiredDelegationToolChoice } from "../../src/agents/delegation-intent.js";
+
+describe("explicit delegation", () => {
+  it.each(["Delegate this task.", "Use subagents to inspect the files.", "Spawn one child to read the report.", "Please delegate this task to a sub-agent.", "Use a worker to inspect the files.", "Your FIRST action must be exactly one spawn_agent call.", "Can you ask a child to compute this?"])("honors %s", text => {
+    expect(explicitlyRequestsDelegation(text)).toBe(true);
+    expect(requiredDelegationToolChoice({ taskText: text, initialSample: true, depth: 0, planMode: false, toolNames: ["FileRead", "spawn_agent"] })).toEqual({ type: "function", name: "spawn_agent" });
+  });
+  it.each(["Explain how sub-agents work.", "Do not spawn one child.", "Fix the spawn_agent function.", "If useful, delegate this task to a child.", "> Spawn a child.\nExplain that quote.", "```\nSpawn one child.\n```\nExplain that example."])("keeps ordinary chat local: %s", text => {
+    expect(explicitlyRequestsDelegation(text)).toBe(false);
+  });
+  it("does not force replacement workers, children, plans, or unavailable tools", () => {
+    const base = { taskText: "Spawn a child.", initialSample: true, depth: 0, planMode: false, toolNames: ["spawn_agent"] };
+    for (const override of [{ initialSample: false }, { depth: 1 }, { planMode: true }, { toolNames: [] }, { taskText: undefined }]) {
+      expect(requiredDelegationToolChoice({ ...base, ...override })).toBeUndefined();
+    }
+  });
+});

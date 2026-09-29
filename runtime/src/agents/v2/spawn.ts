@@ -15,6 +15,7 @@ import { delegate } from "../delegate.js";
 import { terminalFromAgentStatus } from "../status.js";
 import { liveAgentSession } from "../live-session.js";
 import { READ_ONLY_DELEGATION_PROMPT, sessionIsPlanning, sessionReadOnlyDelegation } from "../readonly-delegation.js";
+import { AGENT_MESSAGE_REFERENCE_GUIDANCE, agentMessageReferenceSchema, resolveAgentMessage } from "../message-reference.js";
 import type { ForkMode } from "../fork-context.js";
 import type { AgentThread } from "../thread.js";
 import {
@@ -155,7 +156,8 @@ from the Environment section of this prompt — never assume "/root" or
 
 ${SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
-The new agent's canonical task name will be provided to it along with the message.`;
+The new agent's canonical task name will be provided to it along with the message.
+${AGENT_MESSAGE_REFERENCE_GUIDANCE}`;
   const cfg = session?.config?.multiAgentV2;
   const policy = session?.services == null ? undefined : childProviderPolicy(session);
   const pairs = policy?.cross_provider_enabled === true ? allowedChildPairs(session!) : [];
@@ -513,8 +515,9 @@ function buildSpawnAgentSchema(opts: MultiAgentV2Options, session = opts.getSess
       message: {
         type: "string",
         description:
-          "REQUIRED. The complete task prompt for the spawned agent: the overall goal, the files it owns, local conventions it must follow, and how to verify its work. The agent sees only this message (plus any forked turns) — never assume it has context you did not include. A call without `message` is rejected.",
+          "The complete task prompt (at most 256 KiB UTF-8). Supply either message or message_ref. Prefer message_ref for existing user text, especially long tasks; never copy large context through your output tokens.",
       },
+      message_ref: { ...agentMessageReferenceSchema, description: AGENT_MESSAGE_REFERENCE_GUIDANCE },
       task_name: {
         type: "string",
         description:
@@ -552,17 +555,20 @@ function buildSpawnAgentSchema(opts: MultiAgentV2Options, session = opts.getSess
           "Optional filesystem isolation. `worktree` runs the agent in its own git worktree (branch + directory derived from its session-scoped full agent identity and this spawn), so parallel agents that WRITE files never clobber each other or your working tree and a later logical respawn cannot inherit retained state. Requires the cwd to be inside a git repository. Unchanged newly created worktrees are removed automatically when the agent closes; worktrees resumed within the same logical spawn and worktrees with commits or dirty files are kept for review. Default `none` (shared cwd).",
       },
     },
-    required: ["message", "task_name"],
+    required: ["task_name"],
     additionalProperties: false,
   };
 }
 
 export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
   const preflight: NonNullable<Tool["preflight"]> = (args) => {
-    for (const key of ["message", "task_name"]) {
+    for (const key of ["task_name"]) {
       if (typeof args[key] !== "string" || args[key].trim().length === 0) {
         return { code: `missing-${key}`, message: `${key} is required` };
       }
+    }
+    if (args.message_ref === undefined && (typeof args.message !== "string" || args.message.trim().length === 0)) {
+      return { code: "missing-message", message: "message or message_ref is required" };
     }
     return null;
   };
@@ -583,6 +589,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     const strict = strictArgs(args, {
       allowed: new Set([
         "message",
+        "message_ref",
         "task_name",
         "agent_type",
         "model",
@@ -594,7 +601,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         "fork_context",
         "isolation",
       ]),
-      required: ["message", "task_name"],
+      required: ["task_name"],
     });
     if (strict) return confirmedNoSpawn(strict);
     for (const key of [
@@ -620,10 +627,6 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     }
     if (args.tool_free !== undefined && typeof args.tool_free !== "boolean") {
       return spawnValidationError("tool_free must be a boolean");
-    }
-    const prompt = stringValue(args.message);
-    if (!prompt || prompt.trim().length === 0) {
-      return spawnValidationError("message is required");
     }
     if (args.fork_context !== undefined) {
       return spawnValidationError(
@@ -666,6 +669,12 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     }
     try {
       assertAgentRoleWorkspaceMatches(session.roleWorkspace, opts.workspace.id);
+    } catch (error) {
+      return spawnValidationError(error instanceof Error ? error.message : String(error));
+    }
+    let prompt: string;
+    try {
+      prompt = resolveAgentMessage(args, session);
     } catch (error) {
       return spawnValidationError(error instanceof Error ? error.message : String(error));
     }

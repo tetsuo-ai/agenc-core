@@ -179,6 +179,25 @@ async function exhaustGate(maxRounds: number) {
 }
 
 describe("completion gate in the turn loop", () => {
+  test.each([
+    "Read the file and return JSON only.",
+    "Delegate the task and return the child's final JSON answer verbatim, without commentary.",
+    "Read the file and reply with exactly the requested JSON final answer.",
+    "Read the file and return exactly \"ok\".",
+    "Read the file. " + "context ".repeat(1000) + "Return JSON only.",
+  ])("#2798 preserves exact output after tool work: %s", async (task) => {
+    const exact = ' {"text":"quotes \\" and 🐈", "items": [1,2]} \n';
+    const { provider, requests } = scriptedProvider([toolStep("work-1"), textStep(exact)]);
+    const { session, events } = headlessSession(provider, true);
+    const phases = [];
+    for await (const phase of runTurn(session, mkCtx(), task)) phases.push(phase);
+    expect(requests).toHaveLength(2);
+    expect(gatePayloads(events)).toEqual([]);
+    expectCompletedTurn(events);
+    const terminal = events.map(event => classifyTurnTerminal(event.msg)).find(item => item?.outcome === "completed");
+    expect(terminal?.message).toBe(exact);
+  });
+
   test("a non-interactive turn is asked to verify once and accepted after a tool-backed answer", async () => {
     const { provider, requests } = scriptedProvider([
       toolStep("work-1"),

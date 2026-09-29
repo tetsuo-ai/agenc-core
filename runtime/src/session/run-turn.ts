@@ -120,6 +120,7 @@ import {
 } from "../phases/post-sample-recovery.js";
 import { getAttachments } from "../prompts/attachments/orchestrator.js";
 import { getAttachmentTrackingState } from "./attachment-state.js";
+import { requiredDelegationToolChoice } from "../agents/delegation-intent.js";
 import { claimRequiredSwarmToolChoice } from "../prompts/attachments/swarm-mode.js";
 import {
   frameWorkspaceAgentRoleGuidance,
@@ -988,7 +989,14 @@ async function prepareSamplingRequestBoundary(
   }
 
   const request = buildSamplingRequestContract(state, session, samplingContext, permissionContext);
-  const swarmToolChoice = claimRequiredSwarmToolChoice({
+  const explicitDelegationChoice = requiredDelegationToolChoice({
+    taskText: rootHumanTurn?.turnId === ctx.subId ? rootHumanTurn.text : undefined,
+    initialSample: state.turnCount === 1,
+    depth: ctx.depth,
+    planMode: planModeHelpers.isPlanMode(samplingContext),
+    toolNames: request.tools.map((tool) => tool.function.name),
+  });
+  const swarmToolChoice = explicitDelegationChoice ?? claimRequiredSwarmToolChoice({
     trackingState: getAttachmentTrackingState(session),
     turnId: ctx.subId,
     subagentDepth: ctx.depth,

@@ -135,7 +135,7 @@ type WaitMailboxUpdate = {
 };
 
 function contentToText(content: unknown): string {
-  if (typeof content === "string") return content.trim();
+  if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     return content
       .map((part) => {
@@ -150,8 +150,7 @@ function contentToText(content: unknown): string {
         }
         return "";
       })
-      .join("\n")
-      .trim();
+      .join("\n");
   }
   return "";
 }
@@ -170,7 +169,7 @@ function drainMailboxUpdates(session: unknown): readonly WaitMailboxUpdate[] {
         ? message.role
         : "user";
       const content = contentToText(message.content);
-      if (content.length === 0) return null;
+      if (content.trim().length === 0) return null;
       return { role, content };
     })
     .filter((message): message is WaitMailboxUpdate => message !== null);

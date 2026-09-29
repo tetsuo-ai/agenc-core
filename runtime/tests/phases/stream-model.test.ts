@@ -1294,6 +1294,7 @@ describe("streamModel — live assistant text sanitization", () => {
       undefined,
     );
 
+    expect(state.pendingTextToolCallCorrection).toEqual({ toolName: "FileRead", reason: "invalid_arguments" });
     expect(streamedDispatchCalls).toEqual([]);
     expect(state.toolUseBlocks).toEqual([]);
     expect(
@@ -1310,6 +1311,29 @@ describe("streamModel — live assistant text sanitization", () => {
           event.msg.payload.cause === "malformed_tool_call",
       ),
     ).toBe(true);
+  });
+
+  test("a truncated spawn argument produces a retryable error and never dispatches", async () => {
+    const ctx = mkCtx("chat");
+    const state = mkState(ctx);
+    streamedDispatchCalls.length = 0;
+    const provider = mkProvider(async (_messages, onChunk) => {
+      onChunk({ done: false, toolInputBlockStart: { callId: "spawn-cut", index: 0,
+        contentBlock: { type: "tool_use", id: "spawn-cut", name: "spawn_agent", input: {} } } });
+      onChunk({ done: false, toolInputDelta: { callId: "spawn-cut", index: 0,
+        partialJson: '{"task_name":"child","message":"' + "long task ".repeat(5_000) } });
+      return { content: "", toolCalls: [], model: "test-model", finishReason: "length",
+        usage: { promptTokens: 20_000, completionTokens: 4096, totalTokens: 24096 } };
+    });
+    const { session, events } = mkSession(provider);
+    await streamModel(state, ctx, session, mkRequest([{ role: "user", content: "Delegate this" }]));
+    expect(streamedDispatchCalls).toEqual([]);
+    expect(state.truncatedToolCallNames).toEqual(["spawn_agent"]);
+    const completion = events.find(event => event.msg.type === "tool_call_completed");
+    expect(completion?.msg.payload).toMatchObject({ callId: "spawn-cut", isError: true });
+    expect(JSON.parse((completion?.msg.payload as { result: string }).result)).toMatchObject({
+      code: "tool_arguments_truncated", retryable: true, executed: false,
+    });
   });
 
   test("marks length responses for max-output recovery and drops tool calls", async () => {
