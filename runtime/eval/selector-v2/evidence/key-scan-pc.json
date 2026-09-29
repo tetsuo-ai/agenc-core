@@ -1,0 +1,25 @@
+{
+  "scannedFiles": 107186,
+  "filesRedacted": 0,
+  "compressedPayloadsScanned": 120,
+  "unreadableFiles": 0,
+  "remainingHits": 0,
+  "keyValuesPrinted": false,
+  "missingRoots": [],
+  "roots": [
+    "/home/paul/claude-agenc-work/selector-v2",
+    "/home/paul/claude-agenc-work/wt/94f6b0b9abed",
+    "/home/paul/claude-agenc-work/wt/4e962317b520",
+    "/home/paul/claude-agenc-work/wt/6225ea0e919e",
+    "/home/paul/claude-agenc-work/results/selector-v2-full.log",
+    "/home/paul/claude-agenc-work/results/selector-v2-full.fails",
+    "/home/paul/claude-agenc-work/results/selector-v2-main.log",
+    "/home/paul/claude-agenc-work/results/selector-v2-main.fails",
+    "/home/paul/claude-agenc-work/results/selector-v2-notice.log",
+    "/home/paul/claude-agenc-work/results/selector-v2-notice.fails",
+    "/home/paul/claude-agenc-work/results/selector-v2-regressions.log",
+    "/home/paul/claude-agenc-work/results/selector-v2-regressions.fails",
+    "/home/paul/claude-agenc-work/results/selector-v2-main-mcp.log",
+    "/home/paul/claude-agenc-work/results/selector-v2-main-mcp.fails"
+  ]
+}

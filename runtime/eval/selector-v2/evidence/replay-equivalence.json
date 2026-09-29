@@ -1,0 +1,20 @@
+{
+  "rows": 378,
+  "equalFields": [
+    "taskId",
+    "split",
+    "arm",
+    "covered",
+    "passed",
+    "costUsd",
+    "requestIds",
+    "models",
+    "actualModels",
+    "costReconciled",
+    "errors",
+    "mode"
+  ],
+  "missing": [],
+  "newProviderCalls": 0,
+  "ignored": "Only replay timestamp and measured local verifier process duration vary."
+}

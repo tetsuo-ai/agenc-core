@@ -2,7 +2,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
 import { extractTaskFeatures } from "../../src/agents/provider-selector-irt.js";
 import { selectChildProviderV2, pairKey } from "../../src/agents/provider-selector-v2.js";
 import { selectChildProvider, classifyChildTask } from "../../src/agents/provider-selector.js";
@@ -11,7 +11,7 @@ const [bench, calibrationPath, freezePath, outputPath] = process.argv.slice(2);
 if (!bench || !calibrationPath || !freezePath || !outputPath) throw Error("evaluate benchmark calibration freeze output");
 const hash = (s: string | Buffer) => createHash("sha256").update(s).digest("hex");
 const freeze = JSON.parse(readFileSync(freezePath, "utf8"));
-for (const [file, expected] of Object.entries(freeze.files)) if (hash(readFileSync(file)) !== expected) throw Error("Policy freeze mismatch: " + file);
+for (const [file, expected] of Object.entries(freeze.files)) if (hash(readFileSync(resolve(dirname(freezePath), file))) !== expected) throw Error("Policy freeze mismatch: " + file);
 const cal = JSON.parse(readFileSync(calibrationPath, "utf8"));
 const suite = JSON.parse(readFileSync(resolve(bench, "tasks.json"), "utf8"));
 const tasks = Array.isArray(suite) ? suite : suite.tasks;

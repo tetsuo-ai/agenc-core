@@ -1,0 +1,48 @@
+{
+  "mac": {
+    "sourceTypecheck": "pass",
+    "testSupportTypecheck": "pass",
+    "focusedPassed": 145,
+    "notificationPassed": 16,
+    "finalCompatibilityPassed": 113
+  },
+  "linux": {
+    "fullHead": "94f6b0b9abed",
+    "passed": 31503,
+    "failed": 29,
+    "skipped": 11,
+    "baselineHead": "1370385d69e3",
+    "baselinePassed": 31236,
+    "baselineFailed": 27,
+    "baselineSkipped": 11,
+    "matchedBaselineFailures": 27,
+    "extraFailures": [
+      {
+        "test": "spawn-isolation disconnected automatic provider rejection",
+        "resolution": "Fixed exact message compatibility; final Linux agents suite passes."
+      },
+      {
+        "test": "mcp-cli actual agenc stdio entrypoint",
+        "resolution": "Same timeout reproduced in finished main baseline; final Linux focused suite passes."
+      }
+    ],
+    "finalRegressionHead": "6225ea0e919e",
+    "finalRegressionScope": [
+      "tests/agents",
+      "tests/bin/mcp-cli.test.ts"
+    ],
+    "finalRegressionFilesPassed": 79,
+    "finalRegressionPassed": 1426,
+    "finalRegressionSkipped": 1,
+    "finalRegressionExit": 0,
+    "notificationPassed": 16,
+    "unresolvedNewFailures": 0,
+    "fullSuiteGreen": false
+  },
+  "portableReplay": {
+    "rows": 378,
+    "missing": 0,
+    "newProviderCalls": 0,
+    "modelsGradesRequestsCostsEqual": true
+  }
+}

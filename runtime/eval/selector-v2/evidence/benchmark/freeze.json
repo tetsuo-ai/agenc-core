@@ -1,0 +1,24 @@
+{
+  "suiteVersion": "router-bench-v1-42",
+  "frozenAtUtc": "2026-09-29T09:06:34.062715+00:00",
+  "source": "/private/tmp/xprov-ultra/live-eval-tasks.json",
+  "sourceSha256": "5ead6e531662613d49a12929e3b6ff203510506c492caf671b5c7236fc00639a",
+  "counts": {
+    "tasks": 42,
+    "calibration": 28,
+    "holdout": 14,
+    "newHoldout": 8,
+    "reusedHoldout": 6
+  },
+  "files": {
+    "tasks.json": "ea6dc326c3c373ae52b734855a96f51d1961e5ef6c41d0d187bdedddfe3b49a4",
+    "bench_tasks.py": "d19a5c761dc668a2db256205f59c980dbc7369f806bddc47c37858e8a09d04dc",
+    "TASKS.md": "99f4483fdd8ece0b45f8b3977735e93fb0dba4921daeef623e713299a3cddb34"
+  },
+  "selfTest": {
+    "pass": true,
+    "checks": 134,
+    "tasks": 42
+  },
+  "noPaidCallsBeforeFreeze": true
+}

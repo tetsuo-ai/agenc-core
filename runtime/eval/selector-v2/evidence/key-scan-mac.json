@@ -1,0 +1,12 @@
+{
+  "scannedFiles": 6279,
+  "filesRedacted": 0,
+  "compressedPayloadsScanned": 79,
+  "unreadableFiles": 0,
+  "remainingHits": 0,
+  "keyValuesPrinted": false,
+  "missingRoots": [],
+  "roots": [
+    "/private/tmp/selector-v2"
+  ]
+}
