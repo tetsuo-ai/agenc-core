@@ -795,6 +795,21 @@ export class ExecutionAdmissionKernel {
     });
   }
 
+  /** Read the final admission evidence without reclassifying legacy stop codes. */
+  getLatestJournalEventByRunId(runId: string): AdmissionJournalEvent | undefined {
+    this.#assertOpen();
+    return this.#withBindingsForRun(runId, (bindings) => {
+      let latest: AdmissionJournalEvent | undefined;
+      for (const binding of bindings) {
+        const event = binding.repository.getLatestJournalEvent(runId);
+        if (event !== undefined && (latest === undefined || event.timestamp > latest.timestamp)) {
+          latest = event;
+        }
+      }
+      return latest;
+    });
+  }
+
   cancelRun(
     runId: string,
     reason: string,

@@ -18,6 +18,7 @@
  */
 
 import { createHash } from "node:crypto";
+import type { WorkflowChildStopReason } from "./stop-reasons.js";
 
 import {
   WORKFLOW_STEP_IDS,
@@ -158,7 +159,7 @@ export function finalizeIdempotencyKey(
 export interface WorkflowChildEvidence {
   readonly childRunId: string;
   readonly status: string;
-  readonly stopReason?: "approval_required" | "policy_denied";
+  readonly stopReason?: WorkflowChildStopReason;
   readonly finalMessage?: string;
   /**
    * Reconciled actual usage of the child's own admissions (absent =
