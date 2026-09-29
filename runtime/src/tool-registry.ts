@@ -1166,6 +1166,8 @@ export function buildToolRegistry(
 
   function visibleSpecs(): readonly ConfiguredToolSpec[] {
     const specs = allSpecs().filter((spec) => spec.unavailable !== true);
+    // Isolated measurement variant: hold the complete eligible catalog fixed.
+    if (options.lightMode === true) return specs;
     // Explicit tool policies that exclude discovery retain their allowed set.
     if (options.lightMode === true && !specs.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME)) return specs;
     return specs.filter(
