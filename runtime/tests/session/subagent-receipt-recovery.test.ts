@@ -6,12 +6,13 @@ import { AgentControl } from "../../src/agents/control.js";
 import { AgentRegistry } from "../../src/agents/registry.js";
 import { createAgentRoleWorkspace } from "../../src/agents/role.js";
 import { childTerminalOutcome } from "../../src/agents/child-terminal.js";
+import { bindLiveAgentSession } from "../../src/agents/live-session.js";
 import { createWaitAgentTool } from "../../src/agents/v2/wait.js";
 import { createListAgentsTool } from "../../src/agents/v2/list-agents.js";
 import type { MultiAgentV2Options } from "../../src/agents/v2/common.js";
 import type { Session } from "../../src/session/session.js";
 import { RolloutStore } from "../../src/session/rollout-store.js";
-import type { SubagentTurnOutcomeEvent } from "../../src/session/event-log.js";
+import type { Event, SubagentTurnOutcomeEvent } from "../../src/session/event-log.js";
 import { openStateDatabases } from "../../src/state/sqlite-driver.js";
 import { upsertAgentRun } from "../../src/state/agent-runs.js";
 
@@ -84,7 +85,163 @@ function controlFixture(store: RolloutStore) {
     wait: createWaitAgentTool(options), list: createListAgentsTool(options) };
 }
 
+async function durableIdleWorker(parent: RolloutStore) {
+  const state = controlFixture(parent);
+  const live = await state.control.spawn({ parentPath: "/root", roleName: "default", agentName: "reusable" });
+  const store = open(live.agentId);
+  let sequence = 0;
+  const session = { conversationId: live.agentId, rolloutStore: store, abortController: new AbortController(),
+    providerService: { current: () => ({ provider: "deepseek", model: "deepseek-v4-flash" }) },
+    onBeforeDurableClose: () => () => {}, nextInternalSubId: () => `child-event-${sequence + 1}`,
+    emit: (event: Event) => {
+      const stamped = { ...event, eventId: event.id, seq: ++sequence };
+      if (!store.append(stamped, { durable: true })) throw new Error("Child admission was not durably committed.");
+      return stamped;
+    } } as unknown as Session;
+  const revoke = bindLiveAgentSession(live, session);
+  live.status.markIdle("old-task");
+  return { ...state, live, childStore: store, childSession: session, revoke,
+    assign: () => state.control.assignTask(live.agentId, { author: "/root", recipient: live.agentPath,
+      content: "Implement the new validation rule", taskId: "new-task" }) };
+}
+
 describe("durable child results after daemon restart", () => {
+  test("recovers an initial task admitted by spawn before child journal construction", async () => {
+    const parent = open("parent");
+    const state = controlFixture(parent);
+    const live = await state.control.spawn({ parentPath: "/root", agentName: "initial",
+      initialTask: { taskId: "initial-task", text: "Review the patch", provider: "deepseek", model: "deepseek-v4-flash" } });
+    const admitted = parent.getThreadSpawnEdge(live.agentId)!.metadata.initialTaskAdmission!;
+    expect(admitted.taskText).toBe("Review the patch");
+    close(parent);
+    const restored = controlFixture(open("parent", cwd, true));
+    const updates = restored.control.drainRecoveredChildTaskUpdates("parent");
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.content).toContain('"spawn_edge_id"');
+    expect(updates[0]!.content).toContain(admitted.turnId);
+    expect(updates[0]!.content).toContain("Review the patch");
+    expect(updates[0]!.content).not.toContain('"rollout_path"');
+    expect(restored.prepareChild).not.toHaveBeenCalled();
+  });
+
+  test("the child journal supersedes matching initial spawn admission provenance", async () => {
+    const parent = open("parent");
+    const state = controlFixture(parent);
+    const live = await state.control.spawn({ parentPath: "/root", agentName: "initial",
+      initialTask: { taskId: "initial-task", text: "Review the patch", provider: "deepseek", model: "deepseek-v4-flash" } });
+    const admitted = parent.getThreadSpawnEdge(live.agentId)!.metadata.initialTaskAdmission!;
+    const child = open(live.agentId);
+    child.append({ id: "initial-admission", eventId: "initial-admission", seq: 1,
+      msg: { type: "subagent_task_admitted", payload: admitted } }, { durable: true });
+    appendReceipt(child, 2, { agentPath: live.agentPath, taskId: admitted.taskId, turnId: admitted.turnId });
+    close(child);
+    const updates = controlFixture(parent).control.drainRecoveredChildTaskUpdates("parent");
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.content).toContain('"durable_outcome_ref"');
+    expect(updates[0]!.content).not.toContain('"durable_admission_ref"');
+  });
+
+  test("fsyncs an accepted assignment before queue delivery and reports it blocked after restart", async () => {
+    const parent = open("parent");
+    const state = await durableIdleWorker(parent);
+    const send = state.live.downInbox.send.bind(state.live.downInbox);
+    const queue = vi.spyOn(state.live.downInbox, "send").mockImplementation((message) => {
+      expect(state.childStore.readAll()).toContainEqual(expect.objectContaining({ type: "event_msg",
+        payload: expect.objectContaining({ msg: expect.objectContaining({ type: "subagent_task_admitted" }) }) }));
+      return send(message);
+    });
+    const accepted = state.assign();
+    expect(queue).toHaveBeenCalledOnce();
+    state.revoke();
+    close(state.childStore);
+    close(parent);
+    const restored = controlFixture(open("parent", cwd, true));
+    const updates = restored.control.drainRecoveredChildTaskUpdates("parent");
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.content).toContain('"durable_admission_ref"');
+    expect(updates[0]!.content).toContain(accepted.turnId);
+    expect(updates[0]!.content).toContain('"reason":"resume_blocked"');
+    expect(updates[0]!.content).toContain('"dispatch":"unknown"');
+    expect(updates[0]!.content).toContain("Implement the new validation rule");
+    expect(updates[0]!.content).not.toContain('"durable_outcome_ref"');
+    expect(updates[0]!.content).not.toContain('"receipt"');
+    expect(restored.control.getLive(state.live.agentId)).toBeUndefined();
+    expect(restored.prepareChild).not.toHaveBeenCalled();
+  });
+
+  test("a matched outcome supersedes admission without an extra blocked notification", async () => {
+    const parent = open("parent");
+    const state = await durableIdleWorker(parent);
+    const accepted = state.assign();
+    appendReceipt(state.childStore, 2, { agentPath: state.live.agentPath, taskId: accepted.taskId, turnId: accepted.turnId });
+    state.revoke();
+    close(state.childStore);
+    const restored = controlFixture(parent);
+    const updates = restored.control.drainRecoveredChildTaskUpdates("parent");
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.content).toContain('"durable_outcome_ref"');
+    expect(updates[0]!.content).not.toContain('"durable_admission_ref"');
+  });
+
+  test("admission publication cannot reenter and admit a second assignment", async () => {
+    const parent = open("parent");
+    const state = await durableIdleWorker(parent);
+    const emit = state.childSession.emit.bind(state.childSession);
+    const send = vi.spyOn(state.live.downInbox, "send");
+    vi.spyOn(state.childSession, "emit").mockImplementation((event, options) => {
+      const stamped = emit(event, options);
+      if (event.msg.type === "subagent_task_admitted") {
+        expect(state.live.assignment?.turnId).toBe(event.msg.payload.turnId);
+        expect(() => state.control.assignTask(state.live.agentId, { author: "/root",
+          recipient: state.live.agentPath, content: "Second task", taskId: "second-task" }))
+          .toThrow("outstanding assignment");
+      }
+      return stamped;
+    });
+    const accepted = state.assign();
+    expect(send).toHaveBeenCalledOnce();
+    expect(state.live.assignment?.turnId).toBe(accepted.turnId);
+    state.revoke();
+    close(state.childStore);
+    expect(parent.readThreadSpawnTaskReceipts(state.live.agentId)).toHaveLength(1);
+  });
+
+  test("failed durable admission never queues or accepts the assignment", async () => {
+    const parent = open("parent");
+    const state = await durableIdleWorker(parent);
+    vi.spyOn(state.childSession, "emit").mockImplementation(() => { throw new Error("fsync failed"); });
+    const send = vi.spyOn(state.live.downInbox, "send");
+    expect(state.assign).toThrow("fsync failed");
+    expect(send).not.toHaveBeenCalled();
+    expect(state.live.assignment).toBeUndefined();
+    state.revoke();
+  });
+
+  test("queue rejection durably nacks an admitted task", async () => {
+    const parent = open("parent");
+    const state = await durableIdleWorker(parent);
+    vi.spyOn(state.live.downInbox, "send").mockImplementation(() => { throw new Error("queue unavailable"); });
+    expect(state.assign).toThrow("queue unavailable");
+    expect(state.live.assignment).toBeUndefined();
+    state.revoke();
+    close(state.childStore);
+    const receipts = parent.readThreadSpawnTaskReceipts(state.live.agentId);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.receipt).toMatchObject({ outcome: "nack", reason: "assignment_mailbox_rejected",
+      terminal: { dispatch: "not_sent", costUsd: 0 } });
+    expect(receipts[0]!.admission).toBeUndefined();
+  });
+
+  test("cannot pair an outcome with a different admitted task", async () => {
+    const parent = open("parent");
+    const state = await durableIdleWorker(parent);
+    const accepted = state.assign();
+    appendReceipt(state.childStore, 2, { agentPath: state.live.agentPath, taskId: "other-task", turnId: accepted.turnId });
+    state.revoke();
+    close(state.childStore);
+    expect(() => parent.readThreadSpawnTaskReceipts(state.live.agentId)).toThrow("admitted task");
+  });
+
   test.each([false, true])("recovers receipts from a stopped child without resuming it, worktree=%s", async (worktree) => {
     const parent = open("parent");
     edge(parent, "reviewer");
@@ -220,6 +377,53 @@ describe("durable child results after daemon restart", () => {
     expect(payload.receipt.message).toContain("durable outcome reference");
   });
 
+  test("bounds the completed child's durable original task in list output", async () => {
+    const parent = open("parent");
+    const state = controlFixture(parent);
+    const live = await state.control.spawn({ parentPath: "/root", agentName: "large_task",
+      initialTask: { text: "🙂".repeat(20_000), provider: "deepseek", model: "deepseek-v4-flash" } });
+    const admission = live.metadata.initialTaskAdmission!;
+    const child = open(live.agentId);
+    appendReceipt(child, 1, { agentPath: live.agentPath, taskId: admission.taskId, turnId: admission.turnId });
+    close(child);
+    const restored = controlFixture(parent);
+    const listing = JSON.parse((await restored.list.execute({}, {} as never)).content);
+    const item = listing.agents.find((agent: { agent_name: string }) => agent.agent_name === live.agentPath);
+    expect(item).toBeDefined();
+    expect(Buffer.byteLength(item.last_task_message, "utf8")).toBeLessThanOrEqual(8_192);
+    expect(item.last_task_message).toContain("truncated");
+  });
+
+  test("an outcome without task identity cannot supersede a durable admission", async () => {
+    const parent = open("parent");
+    const state = await durableIdleWorker(parent);
+    const accepted = state.assign();
+    state.childStore.append({ id: "missing-task-id", eventId: "missing-task-id", seq: 2,
+      msg: { type: "subagent_turn_outcome", payload: { agentId: state.live.agentId,
+        agentPath: state.live.agentPath, turnId: accepted.turnId, outcome: "completed", toolCallCount: 0 } } },
+      { durable: true });
+    state.revoke();
+    close(state.childStore);
+    expect(() => parent.readThreadSpawnTaskReceipts(state.live.agentId)).toThrow("admitted task");
+  });
+
+  test("list and wait explicitly report an incomplete bounded recovery scan", async () => {
+    const parent = open("parent");
+    edge(parent, "reviewer");
+    const state = controlFixture(parent);
+    vi.spyOn(parent, "readThreadSpawnTaskReceipts").mockImplementation(() => {
+      throw new Error("Child receipt recovery time limit exceeded.");
+    });
+    const listing = JSON.parse((await state.list.execute({}, {} as never)).content);
+    expect(listing.recovery).toMatchObject({ incomplete: true, child_thread_id: "reviewer",
+      parent_rollout_path: parent.rolloutPath, message: expect.stringContaining("time limit") });
+    const waited = JSON.parse((await state.wait.execute({}, {} as never)).content);
+    expect(waited).toMatchObject({ timed_out: false, recovery: { incomplete: true,
+      child_thread_id: "reviewer", parent_rollout_path: parent.rolloutPath } });
+    expect(state.waitForMailboxChange).not.toHaveBeenCalled();
+    expect(state.prepareChild).not.toHaveBeenCalled();
+  });
+
   test("pages a long worker history across waits without losing receipts", () => {
     const parent = open("parent");
     edge(parent, "reviewer");
@@ -228,8 +432,11 @@ describe("durable child results after daemon restart", () => {
     close(child);
     const state = controlFixture(parent);
     expect(state.control.drainRecoveredChildTaskUpdates("parent")).toHaveLength(16);
+    expect(state.control.childResultRecoveryNotice).toMatchObject({ incomplete: true,
+      message: expect.stringContaining("next page"), parent_rollout_path: parent.rolloutPath });
     const remaining = state.control.drainRecoveredChildTaskUpdates("parent");
     expect(remaining).toHaveLength(2);
+    expect(state.control.childResultRecoveryNotice).toBeUndefined();
     expect(remaining[0]!.content).toContain('"turn_id":"turn-17"');
     expect(state.control.drainRecoveredChildTaskUpdates("parent")).toEqual([]);
   });

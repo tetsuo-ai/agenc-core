@@ -3328,7 +3328,7 @@ describe("runAgent", () => {
           direction: "up",
           triggerTurn: true,
           content: expect.stringContaining(
-            `"durable_outcome_ref":{"projection_id":"${live.agentId}:${completed.turnId}:completed","agent_id":"${live.agentId}","turn_id":"${completed.turnId}"}`,
+            `"durable_outcome_ref":{"projection_id":"${live.agentId}:${completed.turnId}:completed","agent_id":"${live.agentId}","turn_id":"${completed.turnId}","task_id":"${completed.turnId}"}`,
           ),
           metadata: expect.objectContaining({
             kind: "subagent_notification",
@@ -6964,12 +6964,24 @@ describe("runAgent", () => {
           event.msg.type === "execution_admission" ? event.msg.payload : null,
         )
         .filter((event) => event !== null);
-      const childAdmissionEvents = readFileSync(childRolloutPath!, "utf8")
+      const childJournalEvents = readFileSync(childRolloutPath!, "utf8")
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line) as { type: string; payload?: Event })
         .filter((item) => item.type === "event_msg")
-        .map((item) => item.payload!)
+        .map((item) => item.payload!);
+      const taskAdmissionIndex = childJournalEvents.findIndex((event) => event.msg.type === "subagent_task_admitted");
+      const firstModelDispatchIndex = childJournalEvents.findIndex((event) => event.msg.type === "execution_admission" &&
+        event.msg.payload.kind === "model_turn" && event.msg.payload.event === "dispatched");
+      expect(taskAdmissionIndex).toBeGreaterThanOrEqual(0);
+      expect(firstModelDispatchIndex).toBeGreaterThan(taskAdmissionIndex);
+      expect(childJournalEvents[taskAdmissionIndex]!.msg).toMatchObject({ type: "subagent_task_admitted",
+        payload: { agentId: live.agentId, agentPath: live.agentPath, taskText: "go", author: "/root" } });
+      const initialAdmission = childJournalEvents[taskAdmissionIndex]!.msg;
+      if (initialAdmission.type !== "subagent_task_admitted") throw new Error("Expected durable task admission.");
+      expect(childJournalEvents.find((event) => event.msg.type === "subagent_turn_outcome")?.msg)
+        .toMatchObject({ payload: { taskId: initialAdmission.payload.taskId, turnId: initialAdmission.payload.turnId } });
+      const childAdmissionEvents = childJournalEvents
         .filter((event) => event.msg.type === "execution_admission")
         .map((event) =>
           event.msg.type === "execution_admission" ? event.msg.payload : null,

@@ -248,9 +248,10 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
     recoveryControl.registerSessionRoot(rootSession.conversationId);
     const recoveredUpdates = abortSignal?.aborted === true ? []
       : recoveryControl.drainRecoveredChildTaskUpdates?.(current.threadId) ?? [];
+    const recoveryNotice = recoveryControl.childResultRecoveryNotice;
     let mailboxChanged = false;
     try {
-      mailboxChanged = recoveredUpdates.length > 0 || await session.waitForMailboxChange(
+      mailboxChanged = recoveredUpdates.length > 0 || recoveryNotice !== undefined || await session.waitForMailboxChange(
         timeoutMs,
         undefined,
         abortSignal,
@@ -306,6 +307,7 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
       return json({
         message: "Wait completed.",
         timed_out: false,
+        ...(recoveryNotice === undefined ? {} : { recovery: recoveryNotice }),
         ...(updates.length > 0 ? { updates } : {}),
       });
     }

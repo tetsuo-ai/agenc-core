@@ -4,14 +4,18 @@ import { withPinnedOfflineRolloutReadLease } from "../durability/offline-rollout
 import { StrictCanonicalJournalValidator } from "../state/recovery-journal-contract.js";
 import { LOGS_DATABASE_FILENAME, STATE_DATABASE_FILENAME, StateSqliteReader } from "../state/sqlite-driver.js";
 import type { RunJournalBinding } from "../state/run-durability.js";
-import type { SubagentTurnOutcomeEvent } from "./event-log.js";
+import type { SubagentTaskAdmissionEvent, SubagentTurnOutcomeEvent } from "./event-log.js";
 import type { ThreadSpawnEdgeRecord } from "./rollout-store.js";
+import { childTerminalOutcome } from "../agents/child-terminal.js";
 
 export interface RecoveredChildTaskReceipt {
   readonly edge: ThreadSpawnEdgeRecord;
   readonly sourcePath: string;
   readonly sequence: number;
   readonly receipt: SubagentTurnOutcomeEvent;
+  readonly admission?: SubagentTaskAdmissionEvent;
+  readonly eventId?: string;
+  readonly spawnEdgeId?: string;
 }
 
 type SourceBinding = Pick<RunJournalBinding, "runId" | "childRunId" | "sessionId" | "sourcePath">;
@@ -23,9 +27,10 @@ export function readSubagentTaskReceipts(options: {
   readonly projectsDir: string;
   readonly bindings: readonly SourceBinding[];
   readonly resolveSourcePath: (path: string) => string;
+  readonly deadline?: number;
 }): readonly RecoveredChildTaskReceipt[] {
   const { edge } = options;
-  const deadline = Date.now() + 2_000;
+  const deadline = Math.min(Date.now() + 2_000, options.deadline ?? Number.POSITIVE_INFINITY);
   const checkOperationalBudget = (): void => {
     if (Date.now() > deadline) throw new Error("Child receipt recovery time limit exceeded.");
   };
@@ -66,6 +71,14 @@ export function readSubagentTaskReceipts(options: {
     }
   }
   const receipts = new Map<string, RecoveredChildTaskReceipt>();
+  const admissions = new Map<string, { admission: SubagentTaskAdmissionEvent; sourcePath: string; sequence: number; eventId: string; spawnEdgeId?: string }>();
+  const initialAdmission = edge.metadata.initialTaskAdmission;
+  if (initialAdmission !== undefined) {
+    if (initialAdmission.agentId !== edge.childThreadId || initialAdmission.agentPath !== edge.metadata.agentPath ||
+        initialAdmission.author !== edge.parentPath) throw new Error("Initial task admission does not match its spawn identity.");
+    admissions.set(`${initialAdmission.agentId}:${initialAdmission.turnId}`, { admission: initialAdmission,
+      sourcePath: "", sequence: 0, eventId: `spawn-edge:${edge.childThreadId}`, spawnEdgeId: edge.childThreadId });
+  }
   const sources = new Set<string>();
   for (const binding of bindings) {
     checkOperationalBudget();
@@ -78,12 +91,26 @@ export function readSubagentTaskReceipts(options: {
     sources.add(sourcePath);
     if (sources.size > 64) throw new Error("Child receipt journal source limit exceeded.");
     const fromSource: RecoveredChildTaskReceipt[] = [];
+    const sourceAdmissions: { admission: SubagentTaskAdmissionEvent; sourcePath: string; sequence: number; eventId: string }[] = [];
     withPinnedOfflineRolloutReadLease({ projectDir, sessionId: binding.sessionId, sourcePath }, (rollout) => {
       const validator = new StrictCanonicalJournalValidator({ expectedRunId: edge.childThreadId,
         retainRecords: false, terminalPolicy: "allow_missing", maxSourceBytes: 64 * 1_024 * 1_024,
         checkOperationalBudget,
         onRecord: ({ item }) => {
-          if (item.type !== "event_msg" || item.payload.msg.type !== "subagent_turn_outcome") return;
+          if (item.type !== "event_msg") return;
+          if (item.payload.msg.type === "subagent_task_admitted") {
+            const admission = item.payload.msg.payload;
+            if (admission.agentId !== edge.childThreadId || admission.agentPath !== edge.metadata.agentPath ||
+                (admission.author !== edge.parentPath && !admission.agentPath.startsWith(`${admission.author}/`)) ||
+                !Number.isSafeInteger(item.payload.seq) || item.payload.seq! <= 0) {
+              throw new Error("Child task admission does not match its spawn identity.");
+            }
+            if (sourceAdmissions.length >= 1_024) throw new Error("Child task admission count limit exceeded.");
+            sourceAdmissions.push({ admission, sourcePath, sequence: item.payload.seq!,
+              eventId: item.payload.eventId ?? item.payload.id });
+            return;
+          }
+          if (item.payload.msg.type !== "subagent_turn_outcome") return;
           const receipt = item.payload.msg.payload;
           if (receipt.agentId !== edge.childThreadId || receipt.agentPath !== edge.metadata.agentPath ||
               !Number.isSafeInteger(item.payload.seq) || item.payload.seq! <= 0) {
@@ -95,6 +122,15 @@ export function readSubagentTaskReceipts(options: {
       rollout.scanChunks(64 * 1_024, (chunk) => validator.push(chunk));
       validator.finish();
     });
+    for (const admitted of sourceAdmissions) {
+      const key = `${admitted.admission.agentId}:${admitted.admission.turnId}`;
+      const previous = admissions.get(key);
+      if (previous !== undefined && JSON.stringify(previous.admission) !== JSON.stringify(admitted.admission)) {
+        throw new Error("Child task has conflicting durable admissions.");
+      }
+      admissions.set(key, admitted);
+      if (admissions.size > 1_024) throw new Error("Child task admission count limit exceeded.");
+    }
     for (const recovered of fromSource) {
       const key = `${recovered.receipt.agentId}:${recovered.receipt.turnId}`;
       const existing = receipts.get(key);
@@ -104,6 +140,23 @@ export function readSubagentTaskReceipts(options: {
       receipts.set(key, recovered);
       if (receipts.size > 1_024) throw new Error("Child task receipt count limit exceeded.");
     }
+  }
+  for (const [key, admitted] of admissions) {
+    const outcome = receipts.get(key);
+    if (outcome !== undefined) {
+      if (outcome.receipt.taskId !== admitted.admission.taskId) {
+        throw new Error("Child task outcome does not match its admitted task.");
+      }
+      continue;
+    }
+    const { admission, sourcePath, sequence, eventId, spawnEdgeId } = admitted;
+    const reason = "The child task was admitted but has no durable outcome after restart. Effects are unknown. The task was not replayed.";
+    receipts.set(key, { edge, sourcePath, sequence, eventId, admission,
+      ...(spawnEdgeId === undefined ? {} : { spawnEdgeId }),
+      receipt: { agentId: admission.agentId, agentPath: admission.agentPath,
+        turnId: admission.turnId, taskId: admission.taskId, outcome: "interrupted", toolCallCount: 0,
+        reason, terminal: childTerminalOutcome({ provider: admission.provider, model: admission.model,
+          reason: "resume_blocked", retryable: false, dispatch: "unknown", unfinishedWork: admission.taskText }) } });
   }
   return [...receipts.values()].sort((left, right) => left.sequence - right.sequence);
 }
