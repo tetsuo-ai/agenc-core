@@ -95,12 +95,13 @@ function headlessSession(
   provider: ReturnType<typeof mkProvider>,
   nonInteractive: boolean,
   registry = toolRegistry(),
+  lightMode = false,
 ) {
   return mkSession({
     provider,
     registry,
     services: {
-      runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive }),
+      runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive, lightMode }),
     },
   });
 }
@@ -179,6 +180,16 @@ async function exhaustGate(maxRounds: number) {
 }
 
 describe("completion gate in the turn loop", () => {
+  test("Light accepts the first final answer after tool execution without a reminder request", async () => {
+    const { provider, requests } = scriptedProvider([toolStep("work-1"), textStep("Done. Tests pass.")]);
+    const { session, events, state } = headlessSession(provider, true, toolRegistry(), true);
+    await collect(session);
+    expect(requests).toHaveLength(2);
+    expect(gatePayloads(events)).toEqual([]);
+    expect(state.history.some(message => String(message.content).includes("<completion_gate"))).toBe(false);
+    expectCompletedTurn(events);
+  });
+
   test("a non-interactive turn is asked to verify once and accepted after a tool-backed answer", async () => {
     const { provider, requests } = scriptedProvider([
       toolStep("work-1"),
