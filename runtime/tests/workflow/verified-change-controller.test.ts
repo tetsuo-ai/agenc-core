@@ -1539,6 +1539,26 @@ describe("planner-selected verification", () => {
   const plan = "Build a small CLI with tests.\n```agenc-verification\n" + JSON.stringify(scripts) + "\n```";
   const outcome = { status: "completed" as const, finalMessage: plan, usage: DEFAULT_USAGE };
 
+  it("returns durable check-construction feedback to the bounded planner retry", async () => {
+    const broken = 'node -e "if(!/```js/.test(require(\'fs\').readFileSync(\'README.md\',\'utf8\')))process.exit(1)"';
+    harness.spawner.queue("plan", { ...outcome, finalMessage: "Plan\n```agenc-verification\n" + JSON.stringify([broken]) + "\n```" });
+    harness.spawner.queue("plan", outcome);
+    await runToTerminal(harness, { requiredVerification: [] });
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("completed");
+    const plans = harness.spawner.spawns.filter(spawn => spawn.kind === "plan");
+    expect(plans).toHaveLength(2);
+    expect(plans[1]!.prompt).toContain("shell backtick substitution");
+    expect(plans[1]!.prompt).toContain("without weakening the goal");
+    expect(harness.commands.executed).toEqual(scripts);
+    expect(harness.repo.getEffect(RUN_ID, "workflow.plan")?.outcome).toBe("failed");
+  });
+
+  it("does not rewrite client checks containing shell backticks", async () => {
+    const script = 'test -s `pwd`/README.md';
+    await runToTerminal(harness, { requiredVerification: [{ label: "client check", script }] });
+    expect(harness.commands.executed).toEqual([script]);
+  });
+
   it("freezes trailing checks from a full long plan while bounding retained prose", async () => {
     harness.spawner.queue("plan", { ...outcome, finalMessage: "Detailed plan. ".repeat(2000) + plan });
     await runToTerminal(harness, { requiredVerification: [] });
@@ -1589,13 +1609,14 @@ describe("planner-selected verification", () => {
     });
   });
 
-  it.each(["true", ":", "exit 0", "echo ok", "bash -c 'true'"])("rejects a planned placeholder: %s", async script => {
+  it.each(["true", ":", "exit 0", "echo ok", "bash -c 'true'", 'node -e "const fence=\'```\'"'])("rejects an invalid planned check: %s", async script => {
     harness.spawner.respond = ({ kind }) => kind === "plan" ? {
       ...outcome, finalMessage: "Plan\n```agenc-verification\n" + JSON.stringify([script]) + "\n```",
     } : undefined;
     await runToTerminal(harness, { requiredVerification: [] });
     expect(harness.repo.getCurrentTerminalResult(RUN_ID)?.status).toBe("failed");
     expect(harness.spawner.spawns.every(spawn => spawn.kind === "plan")).toBe(true);
+    expect(harness.spawner.spawns).toHaveLength(2);
     expect(harness.commands.executed).toEqual([]);
   });
 
