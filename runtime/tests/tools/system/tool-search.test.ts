@@ -26,6 +26,44 @@ function deferredCatalogEntry(name = "system.deepTool"): ToolCatalogEntry {
 }
 
 describe("system.searchTools", () => {
+  test("Light loads one named capability in a descriptive query", async () => {
+    const discovered: string[][] = [];
+    const tool = createToolSearchTool({
+      allowedPaths: [], persistenceRootDir: "", lightMode: true,
+      getToolCatalog: () => [deferredCatalogEntry("TodoWrite")],
+      onDiscoverTools: names => { discovered.push([...names]); },
+    });
+    const result = await tool.execute({ query: "TodoWrite checklist planning task", maxResults: 1 });
+    expect(discovered).toEqual([["TodoWrite"]]);
+    expect(JSON.parse(result.content).loaded).toEqual(["TodoWrite"]);
+  });
+
+  test.each([
+    { query: "TodoWrite system.deepTool", maxResults: 1 },
+    { query: "TodoWrite", family: "different" },
+    { query: "TodoWrite", __agencToolCatalogScope: ["system.deepTool"] },
+  ])("Light keeps ambiguity and catalog filters authoritative: %j", async args => {
+    const discovered: string[][] = [];
+    const tool = createToolSearchTool({
+      allowedPaths: [], persistenceRootDir: "", lightMode: true,
+      getToolCatalog: () => [deferredCatalogEntry("TodoWrite"), deferredCatalogEntry()],
+      onDiscoverTools: names => { discovered.push([...names]); },
+    });
+    await tool.execute(args);
+    expect(discovered).toEqual([]);
+  });
+
+  test("normal query discovery still requires explicit selection", async () => {
+    const discovered: string[][] = [];
+    const tool = createToolSearchTool({
+      allowedPaths: [], persistenceRootDir: "",
+      getToolCatalog: () => [deferredCatalogEntry("TodoWrite")],
+      onDiscoverTools: names => { discovered.push([...names]); },
+    });
+    await tool.execute({ query: "TodoWrite" });
+    expect(discovered).toEqual([]);
+  });
+
   test("is side-effecting because selected tools update advertised session state", () => {
     const tool = createToolSearchTool({
       allowedPaths: [process.cwd()],

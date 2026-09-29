@@ -706,6 +706,7 @@ export function buildToolRegistry(
     allowDelete: options.allowBashDelete ?? false,
   });
   const codingTools = createCodingTools({
+    ...(options.lightMode ? { lightMode: true } : {}),
     allowedPaths: [options.workspaceRoot],
     persistenceRootDir: options.workspaceRoot,
     codeIntelligenceTools: options.codeIntelligenceTools ?? true,

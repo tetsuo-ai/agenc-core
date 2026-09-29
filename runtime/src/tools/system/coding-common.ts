@@ -42,6 +42,7 @@ export const SESSION_ADVERTISED_TOOL_NAMES_ARG = "__agencAdvertisedToolNames";
 export const SESSION_TOOL_CATALOG_SCOPE_ARG = "__agencToolCatalogScope";
 
 export interface CodingToolConfig {
+  readonly lightMode?: boolean;
   readonly allowedPaths: readonly string[];
   readonly persistenceRootDir: string;
   readonly logger?: Logger;

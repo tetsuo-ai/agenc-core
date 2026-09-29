@@ -2306,6 +2306,7 @@ export function buildFilteredRegistry(
     }
   };
   const localSearch = opts.lightMode === true ? createToolSearchTool({
+    lightMode: true,
     allowedPaths: [],
     persistenceRootDir: "",
     getToolCatalog: () => eligibleTools.map((tool): ToolCatalogEntry => ({

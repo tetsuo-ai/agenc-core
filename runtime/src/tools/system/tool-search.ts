@@ -248,7 +248,7 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
               .filter((value): value is string => typeof value === "string"),
           )
         : undefined;
-      const matchedResults = searchCatalog
+      const eligibleResults = searchCatalog
         .filter((entry) => {
           if (args.includeHidden !== true && entry.metadata.hiddenByDefault) return false;
           if (args.advertisedOnly === true && advertisedToolNames && !advertisedToolNames.has(entry.name)) {
@@ -263,8 +263,14 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
           ) {
             return false;
           }
-          return matchesCatalogQuery(entry, query);
-        })
+          return true;
+        });
+      const queryNames = new Set(splitSearchTokens(query ?? ""));
+      const namedEntries = config.lightMode === true && explicitSelections.length === 0
+        ? eligibleResults.filter(entry => queryNames.has(entry.name.toLowerCase())) : [];
+      if (namedEntries.length === 1) selectedEntries.push(namedEntries[0]!);
+      const matchedResults = eligibleResults
+        .filter(entry => matchesCatalogQuery(entry, query))
         .sort((left, right) => {
           const leftScore = scoreCatalogEntry(left, query);
           const rightScore = scoreCatalogEntry(right, query);
