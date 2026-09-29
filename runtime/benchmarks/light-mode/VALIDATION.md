@@ -19,7 +19,7 @@ The packaging tests mock all external provider/process operations; the bridge se
 
 The bare Linux host has no Node executable, so real-path `--validate-only` was run successfully in the pinned Node container. No runtime source, Core unit test, Desktop source or active benchmark-runner file is modified by this package. The existing 17 runner accounting checks remain passing; the portable packaging adds 11 checks, including response-only streamed tool-call review and legacy Luna cost normalization. Full Core/Desktop baseline comparisons and paid token comparisons belong to the implementation study, not to these offline packaging checks.
 
-Final paid study evidence is intentionally pending. See `evidence/README.md` for the publication contract.
+Final paid study evidence and its limitations are recorded in `evidence/README.md`.
 
 Later accounting change,2026-09-29: eight new `test_reconcile_budget.py` checks passed on Linux. They cover peak Pro retention, off-peak Pro/Flash bounds, unchanged measured costs, and refusal of mismatched rates/models/reserves, conflicting usage and absent or excessive output caps. The changed exporter regression also passed in isolation and verifies both reserve values survive publication while usage remains missing. The earlier28 offline checks are reused; no paid call or completed suite was rerun for this change. Reconciliation keeps the original ledger and task results intact and does not raise the study cap.
 
@@ -29,3 +29,7 @@ Operator-cap and owner-target update: the cap validator accepts an explicitly au
 
 
 Missing-cell scheduling and analysis validation:17 runner tests plus12 packaging tests pass on Linux, including scheduling repeat2 without repeat1. The summary self-test proves complementary phase reuse, rejection of duplicate repeat IDs, and rejection of mixed agent revisions. No provider requests are used by these checks. The first new test attempt mocked the shared threading module and stalled its own executor; that owned test process was stopped, the test fixture was corrected, and the29 tests plus summary self-test passed. No paid runner was involved.
+
+Strict-token-gate validation: the summarizer self-test also rejects equal-token ties under the September 29 owner mandate. The descriptive at-most field remains available but does not determine owner acceptance.
+
+Final audit correction:13 packaging tests pass on pinned Linux, including root-search detection. Audit version3 invalidates older classification caches. One selected run actually listed task-validation fixture paths through a root find; subsequent call review found no read of those files. The raw completion result is retained with an explicit integrity caveat. The active paid runner and task protocol were not changed.

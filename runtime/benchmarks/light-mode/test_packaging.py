@@ -133,6 +133,15 @@ class PackagingTests(unittest.TestCase):
         for index,body in enumerate(bodies,1):(run/f'wire-{index:03}.json').write_text(json.dumps({'body':body}))
         self.assertTrue(planning_evidence(run,'light')['pass'])
 
+    def test_trace_review_flags_bare_root_searches(self):
+        repo=self.root/'repo';repo.mkdir()
+        for command in ('find / -name more.py', 'find -L "/" -name more.py', 'ls -la /'):
+            with self.subTest(command=command):
+                flags=trace_audit.classify({'cmd':command},repo,self.root)
+                self.assertIn('filesystem_root_listing_or_search',flags)
+        self.assertNotIn('filesystem_root_listing_or_search',
+                         trace_audit.classify({'cmd':'find . -name more.py'},repo,self.root))
+
     def test_trace_review_includes_response_only_and_partial_streamed_calls(self):
         run=self.root/'terminal-calls';run.mkdir()
         hidden=str(self.root/'tasks/reference.py')

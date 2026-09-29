@@ -80,6 +80,11 @@ def classify(arguments,repo,benchmark_root=None):
     except ValueError:value=arguments
     reasons=set()
     for text in texts(value):
+        # A bare root has no non-whitespace suffix, so the path tokenizer below
+        # cannot see it. Broad searches can expose sibling fixture paths even
+        # when the command contains no literal benchmark-directory name.
+        if re.search(r"\b(?:find|ls|tree|du)\s+(?:-[^\s]+\s+)*[\"']?/[\"']?(?=\s|$)",text):
+            reasons.add('filesystem_root_listing_or_search')
         if re.search(r'(?:^|[/\\\s])(?:reference\.py|task_support\.py|self_validate\.py)(?:$|[\s"\'])|(?:bench(?:marks)?/[^\s]*/)?tasks/(?:manifest\.json|[^\s]*/check\.py)|tasks-self-validation',text):
             reasons.add('possible_hidden_checker_or_reference')
         for raw in re.findall(r'(?<![A-Za-z0-9])/(?:[^\s"\'`<>|;&]+)',text):
@@ -116,7 +121,7 @@ def audit_run(directory,benchmark_root=None):
             reasons=classify(arguments,repo,benchmark_root)
             if reasons:findings.append({'call_sha256':digest,'wire':path.name,'tool':tool,'review_reasons':reasons})
     changed=before!=capture_inventory(directory)
-    return {'run':directory.name,'audit_version':2,'capture_inventory':before,
+    return {'run':directory.name,'audit_version':3,'capture_inventory':before,
             'unique_calls_reviewed':reviewed,'flagged_calls':len(findings),
             'review_required':bool(findings or malformed or changed),'findings':findings,
             'malformed_captures':malformed,'capture_changed_during_audit':changed}
@@ -134,7 +139,7 @@ def main():
     parser.add_argument('--out',type=Path,required=True)
     parser.add_argument('--completed-only',action='store_true',help='Audit only directories with result.json; failed runs remain included')
     parser.add_argument('--phase',help='Only results with this exact phase')
-    parser.add_argument('--prior-report',type=Path,help='Reuse unchanged capture inventories from an earlier version-2 audit')
+    parser.add_argument('--prior-report',type=Path,help='Reuse unchanged capture inventories from an earlier version-3 audit')
     args=parser.parse_args();runs=args.runs.resolve();out=args.out.resolve()
     if out.is_relative_to(runs):raise ValueError('Write the audit outside raw run directories')
     previous={r['run']:r for r in json.loads(args.prior_report.read_text())['runs']} if args.prior_report else {}
@@ -144,7 +149,7 @@ def main():
         if args.completed_only and not result.is_file():continue
         if args.phase and (not result.is_file() or json.loads(result.read_text()).get('phase')!=args.phase):continue
         prior=previous.get(directory.name)
-        if prior and prior.get('audit_version')==2 and not prior.get('capture_changed_during_audit') and prior.get('capture_inventory')==capture_inventory(directory):
+        if prior and prior.get('audit_version')==3 and not prior.get('capture_changed_during_audit') and prior.get('capture_inventory')==capture_inventory(directory):
             reviewed.append(prior);reused+=1
         else:reviewed.append(audit_run(directory,args.benchmark_root.resolve() if args.benchmark_root else None))
     report={'schema_version':1,'interpretation':'Review flags, not automatic cheating findings; no argument content is printed.',
