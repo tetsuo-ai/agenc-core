@@ -2148,7 +2148,10 @@ describe("Light presentation and deferred capability preservation", () => {
     for (const presented of light.toLLMTools()) {
       const canonical = light.tools.find(tool => tool.name === presented.function.name)!;
       expect(withoutDescriptions(presented.function.parameters)).toEqual(withoutDescriptions(canonical.inputSchema));
-      expect(canonical.inputSchema).toEqual(normal.tools.find(tool => tool.name === canonical.name)?.inputSchema);
+      const normalSchema = normal.tools.find(tool => tool.name === canonical.name)!.inputSchema;
+      expect(canonical.inputSchema).toEqual(canonical.name === "system.searchTools"
+        ? { ...normalSchema, properties: { ...normalSchema.properties, instructions: { type: "string", enum: ["memory"] } } }
+        : normalSchema);
       if (canonical.name === "system.searchTools") {
         expect(canonical.description).toContain("unique best query match loads automatically");
         expect(normal.tools.find(tool => tool.name === canonical.name)?.description)
