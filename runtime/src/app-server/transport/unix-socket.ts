@@ -11,7 +11,6 @@
  *     local daemon socket surface.
  */
 
-import { createHash } from "node:crypto";
 import { lstat, mkdir, chmod, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, win32 } from "node:path";
@@ -31,27 +30,20 @@ import {
   type AgenCNativePeerCredentialBinding,
 } from "./peer-credentials.js";
 
+import {
+  agenCDaemonLocalEndpoint,
+  assertAgenCUnixSocketPathLength,
+} from "../../../../packages/agenc-sdk/lib/local-endpoint.mjs";
+export { agenCDaemonLocalEndpoint } from "../../../../packages/agenc-sdk/lib/local-endpoint.mjs";
+
 const AGENC_DAEMON_SOCKET_DIR_MODE = 0o700;
 const AGENC_DAEMON_SOCKET_MODE = 0o600;
 const AGENC_DAEMON_SOCKET_ACCEPT_AUTH_TIMEOUT_MS = 5000;
 
 const AGENC_WINDOWS_NAMED_PIPE_ROOT = "\\\\.\\pipe\\";
-const AGENC_DAEMON_WINDOWS_PIPE_PREFIX = `${AGENC_WINDOWS_NAMED_PIPE_ROOT}agenc-daemon-`;
 
 export function isAgenCWindowsNamedPipePath(endpoint: string): boolean {
   return endpoint.toLowerCase().startsWith(AGENC_WINDOWS_NAMED_PIPE_ROOT);
-}
-
-export function agenCDaemonLocalEndpoint(
-  daemonHome: string,
-  platform: NodeJS.Platform = process.platform,
-): string {
-  if (platform !== "win32") {
-    return join(daemonHome, "daemon.sock");
-  }
-  const canonicalHome = win32.resolve(daemonHome).toLowerCase();
-  const identity = createHash("sha256").update(canonicalHome).digest("hex");
-  return `${AGENC_DAEMON_WINDOWS_PIPE_PREFIX}${identity}`;
 }
 
 export function defaultAgenCDaemonSocketPath(
@@ -489,6 +481,7 @@ export class AgenCUnixSocketServer {
 export async function prepareAgenCUnixSocketPath(
   socketPath: string,
 ): Promise<void> {
+  assertAgenCUnixSocketPathLength(socketPath);
   await mkdir(dirname(socketPath), {
     recursive: true,
     mode: AGENC_DAEMON_SOCKET_DIR_MODE,

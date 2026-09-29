@@ -4520,6 +4520,7 @@ async function runAgenCDaemonForegroundLocked(
             // Records the port actually bound, which is not the default when
             // another daemon already holds it and the listener fell back.
             webSocketUrl: webSocketAddress.url,
+            socketPath,
           });
           await writeAgenCDaemonPid(pidPath, host.pid);
           await options.releaseLifecycleLock();

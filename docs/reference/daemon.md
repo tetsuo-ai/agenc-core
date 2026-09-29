@@ -201,7 +201,7 @@ Packaging units under `packaging/` (systemd, launchd, Windows service) run
 
 | File                   | Mode / notes                                                                                  |
 | ---------------------- | --------------------------------------------------------------------------------------------- |
-| `daemon.sock`          | Unix domain socket path clients connect to; Windows uses a stable per-home named pipe instead |
+| `daemon.sock`          | Unix socket for short home paths; long paths use the private fallback described below. Windows uses a stable per-home named pipe instead |
 | `daemon.cookie`        | Shared secret; cookie auth for local clients                                                  |
 | `daemon.pid`           | Detached process id                                                                           |
 | `daemon.log`           | Size-capped log sink                                                                          |
@@ -216,7 +216,18 @@ export AGENC_HOME=/var/lib/agenc
 
 ## Transports & auth
 
-- **Default local transport:** Unix socket at `$AGENC_HOME/daemon.sock`, or a
+Unix socket paths are limited by UTF-8 byte length: 107 usable bytes on Linux,
+103 on macOS (and the conservative default for other Unix platforms). Longer
+home paths use `/tmp/agenc-<uid>/<sha256-of-canonical-home>.sock`. This fixed
+location lets services and interactive clients agree even when their temporary
+or XDG runtime directories differ. The directory is created with mode `0700`;
+existing symlinks, other owners, and non-private permissions are refused. Socket
+mode remains `0600`, with the existing peer-credential and cookie checks. The
+bound endpoint is published as `socketPath` in `daemon-runtime.json`; older
+sidecars may omit it. Cleanup uses the same resolver as startup and discovery.
+
+- **Default local transport:** Unix socket at `$AGENC_HOME/daemon.sock` (or the
+  private fallback above for long paths), or a
   stable pipe derived from `AGENC_HOME` on Windows.
 - **Auth:** cookie file `$AGENC_HOME/daemon.cookie` (ensured on start; private
   socket owner identity + peer UID checks on supported platforms).

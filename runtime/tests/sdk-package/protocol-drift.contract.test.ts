@@ -93,6 +93,8 @@ describe("agenc-sdk protocol mirror", () => {
     try {
       for (const [home, platform] of [
         [join(root, "unix-home"), "linux"],
+        [join(root, "long-home-".repeat(15)), "linux"],
+        [join(root, "long-home-".repeat(15)), "darwin"],
         [join(root, "windows-home"), "win32"],
       ] as const) {
         const env = { AGENC_HOME: home };
