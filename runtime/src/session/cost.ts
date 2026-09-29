@@ -20,6 +20,7 @@
  */
 
 import { MISTRAL_CHAT_MODELS } from "../llm/registry/mistral-models.js";
+import { QWEN_CURRENT_MODELS, QWEN_EXISTING_RATE_ROWS, type QwenCurrentRate } from "../llm/registry/qwen-current-models.js";
 import { join } from "node:path";
 import { promises as fsp } from "node:fs";
 import { monotonicMs } from "./_deps/utils.js";
@@ -101,6 +102,23 @@ export interface CostSummaryProcessLike {
   readonly stdout: { write: (value: string) => unknown };
   on(event: "exit", listener: () => void): unknown;
   off(event: "exit", listener: () => void): unknown;
+}
+
+/** Alibaba's pricing tiers use decimal K and bill the entire request. */
+function qwenCurrentRates(rows: readonly QwenCurrentRate[]): Readonly<ModelCostEntry> {
+  const [row, ...rest] = rows;
+  if (row === undefined) throw new Error("Qwen pricing requires a rate row");
+  return Object.freeze({
+    inputUsdPer1K: row.input / 1000,
+    outputUsdPer1K: row.output / 1000,
+    ...(row.cached === undefined ? {} : {
+      cachedInputUsdPer1K: row.cached / 1000,
+      cachedInputIncludedInInputTokens: true,
+    }),
+    ...(rest[0] === undefined ? {} : {
+      longContext: { aboveInputTokens: rest[0].aboveInputTokens, rates: qwenCurrentRates(rest) },
+    }),
+  });
 }
 
 export interface CostSummaryExitHookOptions {
@@ -736,6 +754,10 @@ function grokCostAliases(
  */
 export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
   Object.freeze({
+    ...Object.fromEntries(QWEN_CURRENT_MODELS.flatMap((entry) => entry.rates === undefined
+      ? [] : [[`qwen:${entry.model}`, qwenCurrentRates(entry.rates)]])),
+    ...Object.fromEntries(Object.entries(QWEN_EXISTING_RATE_ROWS).map(([model, rates]) =>
+      [`qwen:${model}`, qwenCurrentRates(rates)])),
     // Meta Model API USD/1M: standard 1.25 / 4.25 / 0.15 cached;
     // Contributor 0.10 / 0.20 / 0.002 cached. Verified 2026-09-27:
     // https://dev.meta.ai/docs/pricing-rate-limits
@@ -1302,12 +1324,14 @@ export function selectCallRates(
   entry: Readonly<ModelCostEntry>,
   call: CallPricing,
 ): { readonly rates: Readonly<ModelCostEntry>; readonly documented: boolean } {
-  const tier =
-    entry.longContext !== undefined &&
+  let tier = entry;
+  while (
+    tier.longContext !== undefined &&
     call.singleCallInputTokens !== undefined &&
-    call.singleCallInputTokens > entry.longContext.aboveInputTokens
-      ? entry.longContext.rates
-      : entry;
+    call.singleCallInputTokens > tier.longContext.aboveInputTokens
+  ) {
+    tier = tier.longContext.rates;
+  }
   if (call.speed !== "fast") return { rates: tier, documented: true };
   if (tier.fastMode !== undefined) {
     return { rates: tier.fastMode, documented: true };

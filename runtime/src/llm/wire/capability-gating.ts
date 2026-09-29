@@ -32,6 +32,7 @@ import {
 import type { ProviderReasoningProvenance } from "../types.js";
 import { isQwenFlashNextModel } from "../registry/qwen-flash-next.js";
 import { isQwenCoder30BModel } from "../registry/qwen-coder-30b.js";
+import { resolveQwenCurrentModel } from "../registry/qwen-current-models.js";
 import { isAgenCDeepSeekModel, AGENC_DEEPSEEK_V41_MODEL } from "../registry/agenc-deepseek.js";
 import { isNativeDeepSeekModel } from "../registry/deepseek-models.js";
 
@@ -69,7 +70,7 @@ export interface ChatCompletionsCapabilityHints {
   /** Enforce API-v2 adjacent, complete, unique tool-call/result groups. */
   readonly requiresStrictToolResultSequence?: boolean;
   /** Apply Cerebras' strict base64 PNG/JPEG image payload contract. */
-  readonly imageInputContract?: "cerebras_v2" | "zai_flash" | "kimi_global";
+  readonly imageInputContract?: "cerebras_v2" | "zai_flash" | "kimi_global" | "qwen_kimi";
   /** Whether the selected model accepts direct user image input. */
   readonly acceptsDirectImageInput?: boolean;
   /** Apply Cerebras API v2's supported strict JSON-Schema subset. */
@@ -137,6 +138,10 @@ export interface ChatCompletionsCapabilityHints {
   };
   /** Enable provider-native incremental function argument streaming. */
   readonly streamsToolCalls?: boolean;
+  /** Alibaba-hosted GLM requires tool_stream for its function-call route. */
+  readonly enablesToolStreaming?: boolean;
+  /** Alibaba GLM's top-level spelling; clear after history normalization. */
+  readonly clearsThinkingAfterHistoryChange?: boolean;
   /**
    * Qwen 3.6/3.7 default `preserve_thinking` to false. Their thinking-mode
    * tool loop only consumes replayed `reasoning_content` when this request
@@ -359,6 +364,8 @@ export function chatCompletionsCapabilityHintsForProvider(
     );
   const isQwenCloud = (slug === "qwen" || slug === "qwen-token-plan") &&
     !isQwenCoder30BModel(model);
+  const qwenCurrentModel = slug === "qwen" ? resolveQwenCurrentModel(model) : undefined;
+  const isQwenDirectKimi = slug === "qwen" && normalizedModel === "kimi/kimi-k3";
   const isQwenFlashNext = slug === "qwen" && isQwenFlashNextModel(model);
   const preservesThinkingHistory =
     (slug === "qwen" &&
@@ -565,11 +572,26 @@ export function chatCompletionsCapabilityHintsForProvider(
             ? { preservesThinkingHistory: true }
             : {}),
           // The 2.4T model is thinking-only; it cannot take enable_thinking:false.
-          ...(normalizedModel === "qwen3.8-2.4t-a95b"
+          ...(qwenCurrentModel?.toolStream ? {
+            streamsToolCalls: true, enablesToolStreaming: true,
+            replaysReasoningContentOnlyForIntactHistory: true,
+            clearsThinkingAfterHistoryChange: true,
+          } : {}),
+          ...(isQwenDirectKimi
+            ? {
+                toolChoicePolicy: "no_named" as const,
+                acceptsTemperature: false,
+                preservesThinkingHistory: true,
+                replaysReasoningContentOnlyForIntactHistory: true,
+                imageInputContract: "qwen_kimi" as const,
+              }
+            : qwenCurrentModel?.thinking === "always" || normalizedModel === "qwen3.8-2.4t-a95b"
             ? { toolChoicePolicy: "auto_only" as const }
             : normalizedModel === "qwen3.8-omni-flash"
               ? { toolChoicePolicy: "auto_only" as const }
-              : { disablesThinkingForForcedToolChoice: true }),
+              : qwenCurrentModel?.thinking === "none"
+                ? {}
+                : { disablesThinkingForForcedToolChoice: true }),
         }
       : {}),
     ...(isQwenFlashNext

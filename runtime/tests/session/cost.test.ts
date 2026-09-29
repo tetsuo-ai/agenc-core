@@ -350,7 +350,7 @@ describe("cost helpers", () => {
 
   test.each(
     (["qwen", "qwen-token-plan"] as const).flatMap((provider) =>
-      BUILT_IN_PROVIDER_MODEL_CATALOG[provider].filter(model => provider !== "qwen" || !["qwen3.8-max", "qwen3.8-27b", "qwen3.8-2.4t-a95b", "qwen3.8-omni-flash"].includes(model)).map((model) => [
+      BUILT_IN_PROVIDER_MODEL_CATALOG[provider].filter(model => provider !== "qwen" || DEFAULT_MODEL_COSTS[`qwen:${model}`] === undefined).map((model) => [
         provider,
         model,
       ] as const)

@@ -816,7 +816,7 @@ describe("delegate lifecycle recovery", () => {
       });
       const pair = { provider: "deepseek", model: "deepseek-v4-pro" };
       const plan = await grantedTestPlan(harness.parent as Session, pair,
-        await modelsManager.getModelInfo(pair.model), "inspect", "delegate-restart", "/root");
+        await modelsManager.getModelInfoForProvider(pair.provider, pair.model), "inspect", "delegate-restart", "/root");
       const spawnSpy = vi.spyOn(harness.control, "spawn");
       const resumeManager = {
         recordFailure: vi.fn(() => ({ kind: "restart" as const, reason: "hard_error" })),

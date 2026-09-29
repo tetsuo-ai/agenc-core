@@ -25,6 +25,7 @@ import { OPENROUTER_MODELS } from "./openrouter-models.js";
 import { DEEPSEEK_MODELS, DEEPSEEK_MODEL_ALIASES } from "./deepseek-models.js";
 import { QWEN_FLASH_NEXT_MODEL } from "./qwen-flash-next.js";
 import { QWEN_CODER_30B_MODEL } from "./qwen-coder-30b.js";
+import { QWEN_CURRENT_MODEL_CATALOG } from "./qwen-current-models.js";
 import { AGENC_DEEPSEEK_MODELS, AGENC_DEEPSEEK_REASONING_LEVELS } from "./agenc-deepseek.js";
 import {
   GEMINI_THINKING_MODELS,
@@ -368,7 +369,7 @@ const QWEN_CLOUD_CHAT_MODELS = Object.freeze([
     model: "qwen3.7-plus",
     displayName: "Qwen3.7 Plus",
     contextWindow: 1_000_000,
-    maxOutputTokens: 65_536,
+    maxOutputTokens: 131_072,
     vision: true,
     priority: 3,
   },
@@ -376,7 +377,7 @@ const QWEN_CLOUD_CHAT_MODELS = Object.freeze([
     model: "qwen3.7-flash",
     displayName: "Qwen3.7 Flash",
     contextWindow: 1_000_000,
-    maxOutputTokens: 65_536,
+    maxOutputTokens: 131_072,
     vision: true,
     payGoOnly: true,
     priority: 4,
@@ -456,7 +457,7 @@ function qwenCloudCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
           model.payGoOnly !== true,
       )
       .map((model) => {
-        const supportsReasoningEffort = /^qwen3\.8-(?:max|flash|omni-flash)$/i.test(
+        const supportsReasoningEffort = /^qwen3\.8-(?:max|flash|omni-flash|27b|2\.4t-a95b)$/i.test(
           model.model,
         );
         return Object.freeze({
@@ -840,6 +841,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       visibility: "list",
     })),
     ...qwenCloudCatalogEntries(),
+    ...QWEN_CURRENT_MODEL_CATALOG,
     ...[...DEEPSEEK_MODELS, ...DEEPSEEK_MODEL_ALIASES].map((entry, index): RegisteredModelCatalogEntry => ({
       provider: "deepseek",
       model: entry.model,
@@ -1619,6 +1621,13 @@ export function resolveRegisteredModelCatalogEntry(input: {
     );
   }
   if (provider === "anthropic") return resolveAnthropicCatalogEntry(model);
+  // PAYG hosted/vendor models are distinct deployments. Do not give an
+  // unlisted variant another route's limits or reasoning enum.
+  if (provider === "qwen") {
+    const exact = REGISTERED_MODEL_CATALOG.find((entry) => entry.provider === "qwen" && normalizeId(entry.model) === normalizeId(model));
+    if (exact !== undefined) return exact;
+    if (QWEN_CURRENT_MODEL_CATALOG.some((entry) => normalizeId(model).startsWith(normalizeId(entry.model)))) return undefined;
+  }
   // FlashX is explicitly unavailable on Coding Plan; do not prefix-match Flash.
   if (provider === "zai-coding-plan" && model.toLowerCase() === "glm-5.3-flashx") return undefined;
   if (provider === "mistral") {
