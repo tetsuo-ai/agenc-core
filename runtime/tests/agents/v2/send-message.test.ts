@@ -8,6 +8,13 @@ import { LiveApprovalBroker } from "../../../src/app-server/live-approval-broker
 import type { LiveAgent } from "../../../src/agents/control.js";
 import { bindLiveAgentSession } from "../../../src/agents/live-session.js";
 import { signSessionId } from "../../../src/agents/_deps/filesystem-args.js";
+import { ModelRegistry, modelRegistryEntryToModelInfo } from "../../../src/llm/model-registry.js";
+
+const destinationModelInfo = modelRegistryEntryToModelInfo(new ModelRegistry({
+  config: {}, metadata: { env: {} },
+}).resolveSync({
+  provider: "deepseek", model: "deepseek-v4-pro",
+}));
 
 function fixture(initialStatus: AgentStatus, onBegin?: () => void, crossProvider = false) {
   let status = initialStatus;
@@ -68,7 +75,7 @@ describe("send_message delivery report", () => {
     "refuses $mode after $change while consent waits", async ({ mode, change }) => {
       const f = fixture({ status: "running", turnId: "child-turn", startedAtMs: 1 }, undefined, true);
       Object.assign(f.live.metadata, { executionPlan: {
-        version: 1, crossProvider: true,
+        version: 1, crossProvider: true, modelInfo: destinationModelInfo,
         route: { provider: "deepseek", model: "deepseek-v4-pro" },
         destination: { provider: "deepseek", model: "deepseek-v4-pro",
           endpoint: "https://api.deepseek.com/v1", authProfile: "api_key", billingSource: "byok" },
@@ -129,7 +136,7 @@ describe("send_message delivery report", () => {
     "%s suppresses a denial within the requesting turn and asks again on the next turn", async (mode) => {
       const f = fixture({ status: "running", turnId: "child-turn", startedAtMs: 1 }, undefined, true);
       Object.assign(f.live.metadata, { executionPlan: {
-        version: 1, crossProvider: true,
+        version: 1, crossProvider: true, modelInfo: destinationModelInfo,
         route: { provider: "deepseek", model: "deepseek-v4-pro" },
         destination: { provider: "deepseek", model: "deepseek-v4-pro",
           endpoint: "https://api.deepseek.com/v1", authProfile: "api_key", billingSource: "byok" },
@@ -195,7 +202,7 @@ describe("send_message delivery report", () => {
   it("holds a cross-provider passive message until its text receives fresh approval", async () => {
     const f = fixture({ status: "running", turnId: "turn-1", startedAtMs: 1 }, undefined, true);
     Object.assign(f.live.metadata, { executionPlan: {
-      version: 1, crossProvider: true,
+      version: 1, crossProvider: true, modelInfo: destinationModelInfo,
       route: { provider: "deepseek", model: "deepseek-v4-pro" },
       destination: { provider: "deepseek", model: "deepseek-v4-pro",
         endpoint: "https://api.deepseek.com/v1", authProfile: "api_key", billingSource: "byok" },
