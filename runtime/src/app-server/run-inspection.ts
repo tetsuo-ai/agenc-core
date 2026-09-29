@@ -575,11 +575,15 @@ function buildRunStatus(
   const workflow = workflowStatusProjection(db, runId, durableTerminal);
   const reopenedWithoutTerminal =
     currentLifecycleEpoch !== undefined && durableTerminal === undefined;
+  const staleLegacyStatus = reopenedWithoutTerminal && run !== undefined && (
+    isTerminalAgentRunStatus(run.status) ||
+    (run.status === "suspended" && latestSuspensionResumed(db, runId, currentLifecycleEpoch))
+  );
   return {
     runId,
     status:
       durableTerminal?.status ??
-      (workflow?.control?.state === "paused" ? "paused" : reopenedWithoutTerminal && run !== undefined && isTerminalAgentRunStatus(run.status)
+      (workflow?.control?.state === "paused" ? "paused" : staleLegacyStatus
         ? "running"
         : run?.status ?? "admission_only"),
     terminal:
@@ -1170,6 +1174,21 @@ function readCurrentLifecycleEpoch(
        LIMIT 1`,
     )
     .get(runId)?.epoch;
+}
+
+/** A same-epoch resume supersedes the legacy rail's suspended snapshot. */
+function latestSuspensionResumed(
+  db: BetterSqlite3.Database,
+  runId: string,
+  epoch: number,
+): boolean {
+  if (!tableExists(db, "run_suspensions")) return false;
+  const latest = db.prepare<[string, number], { readonly resume_event_id: string | null }>(`
+    SELECT resume_event_id FROM run_suspensions
+    WHERE run_id = ? AND epoch = ?
+    ORDER BY suspension_sequence DESC LIMIT 1
+  `).get(runId, epoch);
+  return latest !== undefined && latest.resume_event_id !== null;
 }
 
 function parseRunUsage(

@@ -959,6 +959,47 @@ describe("M5 workflow run inspection (additive fields)", () => {
     expect(service.status({ runId: "run-complete" }).workflow).toBeUndefined();
   });
 
+  it.each(["workflow_user_pause", "daemon_shutdown_idle"] as const)("projects the canonical resume after %s over a stale suspended rail row", reason => {
+    seedWorkflowEffects();
+    const durability = new StateRunDurabilityRepository(driver);
+    durability.completeEffect({ runId: WORKFLOW_RUN_ID, stepId: "workflow.plan", outcome: "committed",
+      effectBoundary: "crossed", eventId: "plan-finished", eventSequence: ++sequence,
+      evidence: { stage: "workflow.plan", attempt: 1 }, completedAt: NOW });
+    upsertAgentRun(driver, { id: WORKFLOW_RUN_ID, objective: "Goal: fix it", status: "suspended",
+      startedAt: NOW, lastActiveAt: NOW, currentSessionId: WORKFLOW_RUN_ID });
+    durability.recordRunSuspended({ runId: WORKFLOW_RUN_ID, epoch: 1, eventId: "pause-first",
+      eventSequence: ++sequence, reason, suspendedAt: NOW });
+    expect(service.status({ runId: WORKFLOW_RUN_ID })).toMatchObject({
+      status: reason === "workflow_user_pause" ? "paused" : "suspended", terminal: false,
+      durableRun: { status: "suspended" }, statusSource: "run_lifecycle_epoch",
+    });
+
+    durability.recordRunResumed({ runId: WORKFLOW_RUN_ID, epoch: 1, suspensionEventId: "pause-first",
+      eventId: "resume-first", eventSequence: ++sequence,
+      reason: reason === "workflow_user_pause" ? "workflow_user_resume" : "explicit_continue", resumedAt: NOW });
+    // A fresh service has no live controller state. The persisted resume alone
+    // must correct the rail snapshot after a daemon restart.
+    const restarted = new AgenCDaemonRunInspectionService({ stateDatabasePaths: () => [paths], agencHome: home });
+    expect(restarted.status({ runId: WORKFLOW_RUN_ID })).toMatchObject({
+      status: "running", terminal: false, durableRun: { status: "suspended" },
+      statusSource: "run_lifecycle_epoch", workflow: { control: { state: "running" } },
+    });
+
+    // An older resume cannot hide a new suspension.
+    durability.recordRunSuspended({ runId: WORKFLOW_RUN_ID, epoch: 1, eventId: "pause-again",
+      eventSequence: ++sequence, reason, suspendedAt: NOW });
+    expect(restarted.status({ runId: WORKFLOW_RUN_ID })).toMatchObject({
+      status: reason === "workflow_user_pause" ? "paused" : "suspended", terminal: false,
+    });
+  });
+
+  it("does not infer a resume from a stale suspended rail without a canonical resume", () => {
+    seedWorkflowEffects();
+    upsertAgentRun(driver, { id: WORKFLOW_RUN_ID, objective: "Goal: fix it", status: "suspended",
+      startedAt: NOW, lastActiveAt: NOW, currentSessionId: WORKFLOW_RUN_ID });
+    expect(service.status({ runId: WORKFLOW_RUN_ID })).toMatchObject({ status: "suspended", terminal: false });
+  });
+
   it("keeps frozen requested bypass separate from the current live mode and omits unavailable authority", () => {
     seedDurableRuns();
     seedWorkflowEffects("bypassPermissions");
