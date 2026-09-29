@@ -27,6 +27,15 @@ class ReplayTests(unittest.TestCase):
             self.assertEqual(m.command(args),0)
             self.assertEqual(run.call_args.args[0],args)
             self.assertIs(run.call_args.kwargs['shell'],False)
+    def test_prompt_starting_with_an_option_is_stdin_data(self):
+        with patch.object(m.subprocess,'run') as run:
+            run.return_value.returncode=0
+            args=['node','/work/core/runtime/bin/agenc','-p']
+            prompt='--some-option\nLiteral prompt with $() and quotes'
+            self.assertEqual(m.command(args,stdin_text=prompt),0)
+            self.assertEqual(run.call_args.args[0],args)
+            self.assertEqual(run.call_args.kwargs['input'],prompt)
+            self.assertTrue(run.call_args.kwargs['text'])
     def test_a_poll_uses_the_handle_returned_by_the_matching_live_tool(self):
         reply={'tool_calls':[{'id':'poll','function':{'name':'write_stdin','arguments':'{"session_id":16,"chars":""}'}}]}
         body={'messages':[{'role':'tool','tool_call_id':'other','content':'session_id=99'},

@@ -15,7 +15,7 @@ def confined_path(root, relative):
         raise ValueError('Path escapes its benchmark root')
     return resolved
 
-def command(args, *, env=None, cwd=None, log=None, timeout=120):
+def command(args, *, env=None, cwd=None, log=None, timeout=120, stdin_text=None):
     # Only interpreter + absolute script invocations, never interpreter flags
     # or an executable supplied by a task manifest. Script content is trusted
     # benchmark code, confined to the disposable container, not a sandbox here.
@@ -24,7 +24,7 @@ def command(args, *, env=None, cwd=None, log=None, timeout=120):
             not isinstance(args[1], str) or not pathlib.Path(args[1]).is_absolute()):
         raise ValueError('Expected an approved interpreter and absolute script')
     with open(log or '/dev/null','w') as output:
-        return subprocess.run(args,shell=False,env=env,cwd=cwd,stdout=output,stderr=subprocess.STDOUT,timeout=timeout).returncode
+        return subprocess.run(args,shell=False,input=stdin_text,text=True,env=env,cwd=cwd,stdout=output,stderr=subprocess.STDOUT,timeout=timeout).returncode
 
 def responses(source, repo):
     result=[]
@@ -169,7 +169,9 @@ def main():
             measured=json.loads((dest/'client-result.json').read_text())
             start=measured['start_ms']/1000;end=measured['end_ms']/1000
         else:
-            start=time.time();rc=command(cli+['--provider','deepseek','--model','deepseek-flash','-p','--output-format','json','--dangerously-bypass-approvals-and-sandbox',task['prompt']],env=env,cwd=repo,log=dest/'agent.log',timeout=240);end=time.time()
+            # Prompt text is data, never command-line options (even if it starts
+            # with a dash). The CLI's existing stdin prompt path preserves it.
+            start=time.time();rc=command(cli+['--provider','deepseek','--model','deepseek-flash','-p','--output-format','json','--dangerously-bypass-approvals-and-sandbox'],stdin_text=task['prompt'],env=env,cwd=repo,log=dest/'agent.log',timeout=240);end=time.time()
         stopstart=time.time()
         if native_daemon is not None:
             native_daemon.terminate()  # Only the diagnostic process created above.

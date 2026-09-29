@@ -48,14 +48,13 @@ export function timedRuntime<T>(
 ): Promise<T> {
   if (!enabled) return operation();
   const end = runtimeSpan(name, fields);
-  let result: Promise<T>;
+  return finishTimedOperation(operation, end);
+}
+
+async function finishTimedOperation<T>(operation: () => Promise<T>, end: () => void): Promise<T> {
   try {
-    result = operation();
-  } catch (error) { end(); return Promise.reject(error); }
-  // The catch above handles synchronous invocation only; rejection belongs
-  // to the returned promise and must close the span in its own handler.
-  return result.then(
-    value => { end(); return value; },
-    error => { end(); throw error; },
-  );
+    return await operation();
+  } finally {
+    end();
+  }
 }
