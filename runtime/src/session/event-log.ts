@@ -1739,9 +1739,15 @@ export class EventLog {
    * every listener observes monotonically increasing sequence order.
    */
   publish(event: Event, afterPublish?: EventListener): Event {
-    if (this.closed) return event;
-    this.pendingPublications.push({ event, afterPublish });
-    if (this.publishing) return event;
+    this.publishBatch([event], afterPublish);
+    return event;
+  }
+
+  /** Queue the complete committed group before invoking re-entrant listeners. */
+  publishBatch(events: readonly Event[], afterPublish?: EventListener): void {
+    if (this.closed) return;
+    for (const event of events) this.pendingPublications.push({ event, afterPublish });
+    if (this.publishing) return;
     this.publishing = true;
     try {
       let next: PendingPublication | undefined;
@@ -1759,7 +1765,6 @@ export class EventLog {
     } finally {
       this.publishing = false;
     }
-    return event;
   }
 
   /**

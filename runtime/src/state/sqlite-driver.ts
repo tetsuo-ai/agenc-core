@@ -199,6 +199,8 @@ export class StateSqliteDriver {
    * savepoint inside the outer transaction (better-sqlite3 semantics).
    */
   transactionImmediate<T>(fn: () => T): T {
+    // A nested savepoint is part of the outer commit span, not another flush.
+    if (this.state.inTransaction) return this.state.transaction(fn).immediate();
   const finishRuntimeSpan = runtimeSpan("persistence.sqlite_immediate");
   try {
     return this.state.transaction(fn).immediate();

@@ -69,6 +69,10 @@ def summarize(root, label):
         totals={key:sum(s['duration_ms'] for s in value) for key,value in by.items()}
         union=union_ms((s['start_ms'],s['start_ms']+s['duration_ms']) for s in tools)
         totals['runtime_outside_tools']=result['wall_ms']-union
+        if 'daemon_client' in result:
+            totals['daemon.session_create']=result['daemon_client']['session_create_ms']
+            totals['daemon.session_teardown']=result['daemon_client']['teardown_ms']
+            totals['daemon.priming']=result['daemon_client']['priming_ms']
         totals['between_tools']=sum(between)
         totals.update({'post_tool.'+key:value for key,value in post_tool_attribution(post_intervals,spans).items()})
         totals['post_tool.fsync_count']=sum(s.get('count',0) for s in spans if any(a<=s['start_ms']<b for a,b in post_intervals))

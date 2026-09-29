@@ -977,6 +977,10 @@ export class RolloutStore {
     }
   }
 
+  appendDurableBatch(events: readonly Event[]): void {
+    this.store.appendDurableBatch(events);
+  }
+
   append(event: Event, opts: AppendOptions = {}): boolean {
     return this.store.append(event, opts);
   }

@@ -1,3 +1,4 @@
+import { Session } from "../../../src/session/session.js";
 /**
  * Child process used by the M4 crash/restart acceptance matrix.
  *
@@ -199,6 +200,9 @@ async function openRolloutSession(
       },
     },
     isRolloutPersistenceSuspended: () => false,
+    emitAdmissionBatch(events: readonly Event[]) {
+      return Session.prototype.emitAdmissionBatch.call(session as unknown as Session, events);
+    },
     emit(event: Event, appendOptions: { readonly durable?: boolean } = {}) {
       const stamped = eventLog.stamp(event);
       const durable = isDurableEvent(stamped) || appendOptions.durable === true;

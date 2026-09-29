@@ -1,3 +1,4 @@
+import { hitM4DurabilityFailpoint } from "../durability/failpoints.js";
 import { randomUUID } from "node:crypto";
 
 import type {
@@ -692,6 +693,20 @@ export class ExecutionAdmissionRepository {
         .run(journal.sequence, jobId);
       const persisted = this.#requireJobByIdLocked(jobId);
       return attemptForRecord(this.#recordFromRowLocked(persisted));
+    });
+  }
+
+  /** Queue insertion and immediate reservation share one SQLite durable commit. */
+  enqueueAndClaim(request: RuntimeAdmissionRequest, options: EnqueueAdmissionOptions = {}): {
+    readonly attempt: AdmissionAttempt;
+    readonly claim?: AdmissionClaimResult;
+  } {
+    return this.#driver.transactionImmediate(() => {
+      const attempt = this.enqueue(request, options);
+      if (attempt.decision.decision !== "queue") return { attempt };
+      hitM4DurabilityFailpoint("before_reservation_commit");
+      const claim = this.claim({ ...options, key: attempt.record.key });
+      return { attempt, claim };
     });
   }
 

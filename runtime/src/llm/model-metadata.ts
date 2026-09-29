@@ -363,7 +363,7 @@ export class ModelMetadataResolver {
     params: LookupParams,
   ): Promise<ModelMetadataValues | undefined> {
     if (normalizeMetadataProviderIdentity(params.provider) !== "openrouter") return undefined;
-    const response = await this.fetchJson(OPENROUTER_MODELS_URL);
+    const response = await this.fetchPublicCatalog(OPENROUTER_MODELS_URL);
     return metadataFromOpenAiModelsResponse(response, params.model);
   }
 

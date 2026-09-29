@@ -1,0 +1,4942 @@
+{
+  "before": {
+    "groups": {
+      "cold": {
+        "n": 4,
+        "wall_ms": 9088.17857503891,
+        "daemon_stop_ms": 614.6060824394226,
+        "calls": 63,
+        "exit_codes": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "boundary_mean_ms": 104.87643173993644,
+        "boundary_p95_ms": 177.693603515625,
+        "spans_per_task": {
+          "admission.model": 295.7233237499992,
+          "admission.tool": 196.54316175000167,
+          "between_tools": 174.02923583984375,
+          "boundary.overhead": 1546.9273681640625,
+          "first_request_assembly": 11.599554749999982,
+          "fsync_count": 263.25,
+          "lifecycle.daemon_ready": 4.1513382500000375,
+          "lifecycle.daemon_start": 864.761235,
+          "lifecycle.session_create": 870.5022872500001,
+          "lifecycle.teardown": 48.32566499999996,
+          "model.admitted": 505.95695525000036,
+          "model.request": 103.22603299999986,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0,
+          "persistence.atomic": 3.4799552499997617,
+          "persistence.atomic_async": 11.911019750000008,
+          "persistence.atomic_sync": 18.71119775000028,
+          "persistence.flush": 536.7678165000029,
+          "persistence.fsync": 511.76307175000017,
+          "persistence.history": 51.55444649999896,
+          "persistence.index": 3.672352500000102,
+          "persistence.iteration": 1.3489392500002282,
+          "persistence.rollout": 514.7267625000027,
+          "persistence.sqlite_immediate": 566.8692934999958,
+          "persistence.sqlite_transaction": 15.119146500002358,
+          "persistence.write": 4.345328500001983,
+          "post_tool.admission": 37.38360595703125,
+          "post_tool.derived_index": 1.20703125,
+          "post_tool.fsync": 204.60577392578125,
+          "post_tool.fsync_count": 103.25,
+          "post_tool.other": 176.22430419921875,
+          "post_tool.persistence_other": 16.06536865234375,
+          "post_tool.prompt_assembly": 128.36602783203125,
+          "post_tool.receipts": 3.12774658203125,
+          "post_tool.sqlite": 237.22393798828125,
+          "post_tool.written_bytes": 152967.5,
+          "projection.thread_index": 38.28226699999948,
+          "prompt.assembly": 147.25118675000004,
+          "receipts.commit": 182.78284050000076,
+          "response_to_tool": 568.6943359375,
+          "runtime_outside_tools": 4012.61168050766,
+          "tool.admitted": 5558.0984075,
+          "tool.by_name.FileRead": 33.043594749999954,
+          "tool.by_name.MultiEdit": 16.206464250000067,
+          "tool.by_name.TodoWrite": 8.050051000000508,
+          "tool.by_name.Write": 58.35116950000008,
+          "tool.by_name.exec_command": 2805.0049142499997,
+          "tool.by_name.write_stdin": 2157.1413764999998,
+          "tool.invoke": 5077.79757025,
+          "tool_to_request": 804.2037963867188,
+          "written_bytes": 342193
+        }
+      },
+      "daemon": {
+        "n": 4,
+        "wall_ms": 7519.372582435608,
+        "daemon_stop_ms": 614.4813895225525,
+        "calls": 63,
+        "exit_codes": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "boundary_mean_ms": 116.1673232256356,
+        "boundary_p95_ms": 187.091064453125,
+        "spans_per_task": {
+          "admission.model": 325.7147965000013,
+          "admission.tool": 231.51376675000046,
+          "between_tools": 215.36859130859375,
+          "boundary.overhead": 1713.468017578125,
+          "daemon.priming": 954.25,
+          "daemon.session_create": 307.33526611328125,
+          "daemon.session_teardown": 69.6783447265625,
+          "first_request_assembly": 8.780532750000077,
+          "fsync_count": 263.25,
+          "model.admitted": 554.0623417500005,
+          "model.request": 105.60465099999959,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0,
+          "persistence.atomic": 4.616749249999998,
+          "persistence.atomic_sync": 7.995999499999925,
+          "persistence.flush": 628.6977374999957,
+          "persistence.fsync": 608.1763534999986,
+          "persistence.history": 58.00606875000011,
+          "persistence.index": 4.768417499999259,
+          "persistence.iteration": 1.3390712500000745,
+          "persistence.rollout": 608.0787390000019,
+          "persistence.sqlite_immediate": 663.668061250002,
+          "persistence.sqlite_transaction": 14.411164250001832,
+          "persistence.write": 4.311168749999695,
+          "post_tool.admission": 36.263671875,
+          "post_tool.derived_index": 1.69329833984375,
+          "post_tool.fsync": 237.231689453125,
+          "post_tool.fsync_count": 103.25,
+          "post_tool.other": 178.40106201171875,
+          "post_tool.persistence_other": 16.5733642578125,
+          "post_tool.prompt_assembly": 134.46197509765625,
+          "post_tool.receipts": 3.1488037109375,
+          "post_tool.sqlite": 267.9561767578125,
+          "post_tool.written_bytes": 153225.25,
+          "projection.thread_index": 44.32755174999977,
+          "prompt.assembly": 152.04353949999955,
+          "receipts.commit": 214.03284925000014,
+          "response_to_tool": 622.369384765625,
+          "runtime_outside_tools": 2202.0439081192017,
+          "tool.admitted": 5882.206271500002,
+          "tool.by_name.FileRead": 29.197886499999868,
+          "tool.by_name.MultiEdit": 18.012838000000215,
+          "tool.by_name.TodoWrite": 7.844922500000052,
+          "tool.by_name.Write": 61.1929980000001,
+          "tool.by_name.exec_command": 3119.44343525,
+          "tool.by_name.write_stdin": 2084.3464999999997,
+          "tool.invoke": 5320.0385802499995,
+          "tool_to_request": 875.7300415039062,
+          "written_bytes": 342742.75
+        }
+      },
+      "warm": {
+        "n": 4,
+        "wall_ms": 11705.148994922638,
+        "daemon_stop_ms": 614.4083142280579,
+        "calls": 63,
+        "exit_codes": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "boundary_mean_ms": 310.2963412010063,
+        "boundary_p95_ms": 1428.01953125,
+        "spans_per_task": {
+          "admission.model": 827.9986474999985,
+          "admission.tool": 637.6260414999995,
+          "between_tools": 761.4885864257812,
+          "boundary.overhead": 4576.871032714844,
+          "first_request_assembly": 13.6248142500001,
+          "fsync_count": 263.25,
+          "lifecycle.daemon_ready": 3.3401067499999897,
+          "lifecycle.daemon_start": 10.925081500000061,
+          "lifecycle.session_create": 978.4002535,
+          "lifecycle.teardown": 77.57356925000022,
+          "model.admitted": 1367.4590770000004,
+          "model.request": 206.7352297499998,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0,
+          "persistence.atomic": 4.178193500000361,
+          "persistence.atomic_sync": 58.8989775,
+          "persistence.flush": 1817.9020479999967,
+          "persistence.fsync": 1793.7840052500032,
+          "persistence.history": 158.59670999999923,
+          "persistence.index": 4.380181000000903,
+          "persistence.iteration": 1.4508847499995454,
+          "persistence.rollout": 1795.1948420000008,
+          "persistence.sqlite_immediate": 2027.3780930000016,
+          "persistence.sqlite_transaction": 17.181131000004598,
+          "persistence.write": 4.866289000002553,
+          "post_tool.admission": 38.39788818359375,
+          "post_tool.derived_index": 2.32012939453125,
+          "post_tool.fsync": 708.0369262695312,
+          "post_tool.fsync_count": 103.25,
+          "post_tool.other": 222.07855224609375,
+          "post_tool.persistence_other": 39.49163818359375,
+          "post_tool.prompt_assembly": 235.47760009765625,
+          "post_tool.receipts": 3.3248291015625,
+          "post_tool.sqlite": 805.273193359375,
+          "post_tool.written_bytes": 151857,
+          "projection.thread_index": 282.2310275000002,
+          "prompt.assembly": 305.14450750000026,
+          "receipts.commit": 678.328330500004,
+          "response_to_tool": 1760.981689453125,
+          "runtime_outside_tools": 6354.740059375763,
+          "tool.admitted": 7032.88638575,
+          "tool.by_name.FileRead": 90.04185650000011,
+          "tool.by_name.MultiEdit": 104.90604749999989,
+          "tool.by_name.TodoWrite": 7.84487474999969,
+          "tool.by_name.Write": 103.23688324999966,
+          "tool.by_name.exec_command": 3072.69616525,
+          "tool.by_name.write_stdin": 1973.6714065,
+          "tool.invoke": 5352.397233749999,
+          "tool_to_request": 2054.4007568359375,
+          "written_bytes": 341079
+        }
+      }
+    },
+    "runs": [
+      {
+        "label": "r2-paired-before",
+        "core_revision": "fcb24b1a0e251393b259e47a16aa747e813af44d",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "cb3ce1e787dab195912b098a35441251333ac556a54e556e8d836cbcdefb68ed",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-new-deepseek-flash-03-window-padding-light-r1",
+        "adjusted_yield_calls": [
+          "call_01_ET_jTINB9gRceFRZJz8ZtIj0302"
+        ],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "cold",
+        "task": "03-window-padding",
+        "repeat": 1,
+        "start_ms": 1790714702020.3542,
+        "end_ms": 1790714715100.0852,
+        "wall_ms": 13079.730987548828,
+        "daemon_stop_ms": 615.3526306152344,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 16,
+        "recorded_calls": 16,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714704277.4958,
+            "call": 1,
+            "response_end_ms": 1790714704277.5647
+          },
+          {
+            "request_ms": 1790714704422.3203,
+            "call": 2,
+            "response_end_ms": 1790714704422.3757
+          },
+          {
+            "request_ms": 1790714704536.372,
+            "call": 3,
+            "response_end_ms": 1790714704536.4197
+          },
+          {
+            "request_ms": 1790714704589.1995,
+            "call": 4,
+            "response_end_ms": 1790714704589.248
+          },
+          {
+            "request_ms": 1790714704706.2786,
+            "call": 5,
+            "response_end_ms": 1790714704706.3247
+          },
+          {
+            "request_ms": 1790714704760.9346,
+            "call": 6,
+            "response_end_ms": 1790714704760.968
+          },
+          {
+            "request_ms": 1790714704884.6091,
+            "call": 7,
+            "response_end_ms": 1790714704884.6687
+          },
+          {
+            "request_ms": 1790714705029.4458,
+            "call": 8,
+            "response_end_ms": 1790714705029.5386
+          },
+          {
+            "request_ms": 1790714705160.1003,
+            "call": 9,
+            "response_end_ms": 1790714705160.1572
+          },
+          {
+            "request_ms": 1790714705370.6492,
+            "call": 10,
+            "response_end_ms": 1790714705370.7085
+          },
+          {
+            "request_ms": 1790714705465.3894,
+            "call": 11,
+            "response_end_ms": 1790714705465.44
+          },
+          {
+            "request_ms": 1790714705555.7085,
+            "call": 12,
+            "response_end_ms": 1790714705555.766
+          },
+          {
+            "request_ms": 1790714705706.8733,
+            "call": 13,
+            "response_end_ms": 1790714705706.929
+          },
+          {
+            "request_ms": 1790714706108.3232,
+            "call": 14,
+            "response_end_ms": 1790714706108.3845
+          },
+          {
+            "request_ms": 1790714714821.0964,
+            "call": 15,
+            "response_end_ms": 1790714714821.158
+          },
+          {
+            "request_ms": 1790714714914.3633,
+            "call": 16,
+            "response_end_ms": 1790714714914.419
+          }
+        ],
+        "load": [
+          1.830078125,
+          2.22021484375,
+          2.2548828125
+        ],
+        "totals": {
+          "persistence.sqlite_transaction": 14.730378999997924,
+          "persistence.sqlite_immediate": 292.3676509999874,
+          "persistence.atomic_sync": 26.493684000001053,
+          "persistence.atomic_async": 11.169100999999955,
+          "persistence.fsync": 223.30945000000497,
+          "persistence.write": 4.180320999998685,
+          "persistence.rollout": 228.71276900000362,
+          "projection.thread_index": 22.19043399999873,
+          "persistence.flush": 249.3658900000014,
+          "prompt.assembly": 202.2866500000007,
+          "admission.model": 176.8461980000002,
+          "model.request": 90.39993499999969,
+          "model.admitted": 324.0434400000008,
+          "admission.tool": 91.61209200000212,
+          "receipts.commit": 86.34950699999945,
+          "tool.invoke": 9576.484308999998,
+          "tool.by_name.exec_command": 899.3645469999994,
+          "tool.admitted": 9810.284913,
+          "persistence.iteration": 1.4099770000023,
+          "persistence.history": 29.170448999998598,
+          "tool.by_name.FileRead": 8.924441999999772,
+          "tool.by_name.MultiEdit": 9.484590000000026,
+          "tool.by_name.Write": 30.14522399999987,
+          "tool.by_name.write_stdin": 8628.565505999999,
+          "persistence.atomic": 1.6995289999995293,
+          "persistence.index": 1.8789940000006027,
+          "lifecycle.daemon_start": 919.6836900000001,
+          "lifecycle.daemon_ready": 3.12787000000003,
+          "lifecycle.session_create": 765.011158,
+          "lifecycle.teardown": 34.75281200000063,
+          "runtime_outside_tools": 3503.247344970703,
+          "between_tools": 89.53955078125,
+          "post_tool.other": 160.211181640625,
+          "post_tool.receipts": 2.731689453125,
+          "post_tool.fsync": 96.702392578125,
+          "post_tool.sqlite": 132.427490234375,
+          "post_tool.persistence_other": 16.18603515625,
+          "post_tool.prompt_assembly": 187.67578125,
+          "post_tool.admission": 36.836181640625,
+          "post_tool.derived_index": 0.748046875,
+          "post_tool.fsync_count": 105,
+          "post_tool.written_bytes": 126438,
+          "first_request_assembly": 12.559129999999868,
+          "boundary.overhead": 1059.528564453125,
+          "response_to_tool": 336.47021484375,
+          "tool_to_request": 633.518798828125,
+          "fsync_count": 269,
+          "written_bytes": 311626,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          78.408203125,
+          57.302734375,
+          48.170166015625,
+          57.750732421875,
+          50.295166015625,
+          63.739013671875,
+          63.1640625,
+          121.0771484375,
+          62.862548828125,
+          52.054443359375,
+          46.71728515625,
+          120.9619140625,
+          93.105224609375,
+          84.146484375,
+          59.7734375
+        ]
+      },
+      {
+        "label": "r2-paired-before",
+        "core_revision": "fcb24b1a0e251393b259e47a16aa747e813af44d",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "b789b7722904734914dbf37b4bc7e221c5c0f399d06c439cf6a1dd096362fdfb",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-new-deepseek-flash-07-source-manifest-light-r1",
+        "adjusted_yield_calls": [],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "cold",
+        "task": "07-source-manifest",
+        "repeat": 1,
+        "start_ms": 1790714791936.6494,
+        "end_ms": 1790714795804.9727,
+        "wall_ms": 3868.32332611084,
+        "daemon_stop_ms": 614.3126487731934,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 14,
+        "recorded_calls": 14,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714794165.3792,
+            "call": 1,
+            "response_end_ms": 1790714794165.4336
+          },
+          {
+            "request_ms": 1790714794281.3062,
+            "call": 2,
+            "response_end_ms": 1790714794281.364
+          },
+          {
+            "request_ms": 1790714794414.397,
+            "call": 3,
+            "response_end_ms": 1790714794414.4912
+          },
+          {
+            "request_ms": 1790714794534.8645,
+            "call": 4,
+            "response_end_ms": 1790714794534.9272
+          },
+          {
+            "request_ms": 1790714794672.2231,
+            "call": 5,
+            "response_end_ms": 1790714794672.288
+          },
+          {
+            "request_ms": 1790714794782.052,
+            "call": 6,
+            "response_end_ms": 1790714794782.1133
+          },
+          {
+            "request_ms": 1790714794902.931,
+            "call": 7,
+            "response_end_ms": 1790714794902.9941
+          },
+          {
+            "request_ms": 1790714795119.2097,
+            "call": 8,
+            "response_end_ms": 1790714795119.2625
+          },
+          {
+            "request_ms": 1790714795323.9192,
+            "call": 9,
+            "response_end_ms": 1790714795323.9866
+          },
+          {
+            "request_ms": 1790714795379.751,
+            "call": 10,
+            "response_end_ms": 1790714795379.7766
+          },
+          {
+            "request_ms": 1790714795438.1768,
+            "call": 11,
+            "response_end_ms": 1790714795438.2415
+          },
+          {
+            "request_ms": 1790714795492.4507,
+            "call": 12,
+            "response_end_ms": 1790714795492.5103
+          },
+          {
+            "request_ms": 1790714795547.6758,
+            "call": 13,
+            "response_end_ms": 1790714795547.737
+          },
+          {
+            "request_ms": 1790714795702.764,
+            "call": 14,
+            "response_end_ms": 1790714795702.8186
+          }
+        ],
+        "load": [
+          1.85205078125,
+          2.1240234375,
+          2.216796875
+        ],
+        "totals": {
+          "persistence.sqlite_transaction": 12.320519000001582,
+          "persistence.sqlite_immediate": 273.39650499999834,
+          "persistence.atomic_sync": 3.1242220000000316,
+          "persistence.atomic_async": 7.334093999999936,
+          "persistence.fsync": 213.42516999999998,
+          "persistence.write": 3.6875060000015765,
+          "persistence.rollout": 217.7111480000044,
+          "projection.thread_index": 19.23982799999976,
+          "persistence.flush": 238.28491399999825,
+          "prompt.assembly": 70.38466999999969,
+          "admission.model": 151.81047299999818,
+          "model.request": 96.77225200000089,
+          "model.admitted": 299.4640979999988,
+          "admission.tool": 100.94232200000101,
+          "receipts.commit": 82.40869699999894,
+          "tool.invoke": 655.6975810000004,
+          "tool.by_name.exec_command": 538.505823,
+          "tool.admitted": 888.3310870000003,
+          "persistence.iteration": 1.347488999999996,
+          "persistence.history": 25.931951999999455,
+          "tool.by_name.Write": 93.29699500000015,
+          "tool.by_name.FileRead": 10.847565000000031,
+          "tool.by_name.MultiEdit": 13.047198000000208,
+          "persistence.atomic": 1.6967829999998685,
+          "persistence.index": 1.8551290000000336,
+          "lifecycle.daemon_start": 807.5014060000001,
+          "lifecycle.daemon_ready": 3.246069999999918,
+          "lifecycle.session_create": 851.1155240000003,
+          "lifecycle.teardown": 34.28512300000011,
+          "runtime_outside_tools": 3212.62606048584,
+          "between_tools": 97.55517578125,
+          "post_tool.other": 142.47509765625,
+          "post_tool.receipts": 2.7587890625,
+          "post_tool.fsync": 81.1376953125,
+          "post_tool.sqlite": 107.33349609375,
+          "post_tool.persistence_other": 12.83642578125,
+          "post_tool.prompt_assembly": 61.697509765625,
+          "post_tool.admission": 30.982421875,
+          "post_tool.fsync_count": 91,
+          "post_tool.written_bytes": 126372,
+          "first_request_assembly": 8.687114999999949,
+          "boundary.overhead": 880.8974609375,
+          "response_to_tool": 344.120849609375,
+          "tool_to_request": 439.221435546875,
+          "fsync_count": 235,
+          "written_bytes": 311257,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          78.671142578125,
+          74.1416015625,
+          87.504150390625,
+          73.268310546875,
+          75.676025390625,
+          77.056396484375,
+          76.048095703125,
+          72.1845703125,
+          52.670166015625,
+          55.420654296875,
+          51.15966796875,
+          51.257568359375,
+          55.839111328125
+        ]
+      },
+      {
+        "label": "r2-paired-before",
+        "core_revision": "fcb24b1a0e251393b259e47a16aa747e813af44d",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "9f55e044f655f06ffcd306ee0f2675eebc3bc12206f77e058ea2696fcd1ea302",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-new-deepseek-flash-09-separator-payload-light-r1",
+        "adjusted_yield_calls": [],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "cold",
+        "task": "09-separator-payload",
+        "repeat": 1,
+        "start_ms": 1790714822633.8872,
+        "end_ms": 1790714827405.7236,
+        "wall_ms": 4771.836280822754,
+        "daemon_stop_ms": 614.3918037414551,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 14,
+        "recorded_calls": 14,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714825119.8733,
+            "call": 1,
+            "response_end_ms": 1790714825119.9233
+          },
+          {
+            "request_ms": 1790714825297.2773,
+            "call": 2,
+            "response_end_ms": 1790714825297.3113
+          },
+          {
+            "request_ms": 1790714825469.859,
+            "call": 3,
+            "response_end_ms": 1790714825469.8828
+          },
+          {
+            "request_ms": 1790714825683.8877,
+            "call": 4,
+            "response_end_ms": 1790714825683.917
+          },
+          {
+            "request_ms": 1790714825822.7256,
+            "call": 5,
+            "response_end_ms": 1790714825822.7698
+          },
+          {
+            "request_ms": 1790714825951.8848,
+            "call": 6,
+            "response_end_ms": 1790714825951.9253
+          },
+          {
+            "request_ms": 1790714826122.2952,
+            "call": 7,
+            "response_end_ms": 1790714826122.3447
+          },
+          {
+            "request_ms": 1790714826315.6587,
+            "call": 8,
+            "response_end_ms": 1790714826315.73
+          },
+          {
+            "request_ms": 1790714826526.821,
+            "call": 9,
+            "response_end_ms": 1790714826526.8792
+          },
+          {
+            "request_ms": 1790714826671.1218,
+            "call": 10,
+            "response_end_ms": 1790714826671.1885
+          },
+          {
+            "request_ms": 1790714826813.7505,
+            "call": 11,
+            "response_end_ms": 1790714826813.8142
+          },
+          {
+            "request_ms": 1790714826948.1223,
+            "call": 12,
+            "response_end_ms": 1790714826948.1887
+          },
+          {
+            "request_ms": 1790714827103.5696,
+            "call": 13,
+            "response_end_ms": 1790714827103.643
+          },
+          {
+            "request_ms": 1790714827250.899,
+            "call": 14,
+            "response_end_ms": 1790714827250.958
+          }
+        ],
+        "load": [
+          2.19873046875,
+          2.18701171875,
+          2.23486328125
+        ],
+        "totals": {
+          "persistence.sqlite_transaction": 12.166417000001047,
+          "persistence.sqlite_immediate": 639.2667999999941,
+          "persistence.atomic_sync": 10.534629999999993,
+          "persistence.atomic_async": 12.228077000000098,
+          "persistence.fsync": 630.6119820000038,
+          "persistence.write": 3.6737490000018624,
+          "persistence.rollout": 629.1489119999981,
+          "projection.thread_index": 39.96667700000057,
+          "persistence.flush": 645.8542620000007,
+          "prompt.assembly": 130.24629100000038,
+          "admission.model": 374.42099599999983,
+          "model.request": 92.11900999999989,
+          "model.admitted": 603.2527100000004,
+          "admission.tool": 206.1961449999992,
+          "receipts.commit": 188.75952800000005,
+          "tool.invoke": 546.2375620000005,
+          "tool.by_name.exec_command": 425.7866900000006,
+          "tool.admitted": 1047.9842900000003,
+          "persistence.iteration": 1.2898309999995945,
+          "persistence.history": 54.05953900000031,
+          "tool.by_name.FileRead": 72.41168900000002,
+          "tool.by_name.MultiEdit": 10.963140999999723,
+          "tool.by_name.Write": 37.07604200000014,
+          "persistence.atomic": 5.712180999999873,
+          "persistence.index": 5.921604000000116,
+          "lifecycle.daemon_start": 860.7052370000001,
+          "lifecycle.daemon_ready": 2.6853920000000926,
+          "lifecycle.session_create": 1031.9978839999999,
+          "lifecycle.teardown": 66.19270999999935,
+          "runtime_outside_tools": 4234.520606994629,
+          "between_tools": 38.92724609375,
+          "post_tool.other": 156.5009765625,
+          "post_tool.receipts": 3.1328125,
+          "post_tool.fsync": 276.182373046875,
+          "post_tool.sqlite": 298.301513671875,
+          "post_tool.persistence_other": 15.205810546875,
+          "post_tool.prompt_assembly": 101.505615234375,
+          "post_tool.admission": 32.816650390625,
+          "post_tool.derived_index": 2.1025390625,
+          "post_tool.fsync_count": 91,
+          "post_tool.written_bytes": 160464,
+          "first_request_assembly": 12.853125000000091,
+          "boundary.overhead": 1593.038818359375,
+          "response_to_tool": 668.36328125,
+          "tool_to_request": 885.748291015625,
+          "fsync_count": 211,
+          "written_bytes": 293232,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          131.64404296875,
+          117.195556640625,
+          168.453125,
+          127.845458984375,
+          92.0390625,
+          134.42333984375,
+          131.984375,
+          159.182861328125,
+          109.2314453125,
+          98.1806640625,
+          100.204345703125,
+          116.28369140625,
+          106.370849609375
+        ]
+      },
+      {
+        "label": "r2-paired-before",
+        "core_revision": "fcb24b1a0e251393b259e47a16aa747e813af44d",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "3e3ade941bfd6f0b8ba180c5da089b5579aa9908dac05debc758994efee15474",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-confirm-screen-deepseek-flash-12-partition-map-light-r1",
+        "adjusted_yield_calls": [],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "cold",
+        "task": "12-partition-map",
+        "repeat": 1,
+        "start_ms": 1790714914606.346,
+        "end_ms": 1790714929239.1697,
+        "wall_ms": 14632.823705673218,
+        "daemon_stop_ms": 614.3672466278076,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 19,
+        "recorded_calls": 19,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714916897.2395,
+            "call": 1,
+            "response_end_ms": 1790714916897.2969
+          },
+          {
+            "request_ms": 1790714917170.091,
+            "call": 2,
+            "response_end_ms": 1790714917170.1392
+          },
+          {
+            "request_ms": 1790714917362.9526,
+            "call": 3,
+            "response_end_ms": 1790714917362.9912
+          },
+          {
+            "request_ms": 1790714917595.6821,
+            "call": 4,
+            "response_end_ms": 1790714917595.731
+          },
+          {
+            "request_ms": 1790714917811.387,
+            "call": 5,
+            "response_end_ms": 1790714917811.4385
+          },
+          {
+            "request_ms": 1790714918078.7354,
+            "call": 6,
+            "response_end_ms": 1790714918078.8098
+          },
+          {
+            "request_ms": 1790714918304.8767,
+            "call": 7,
+            "response_end_ms": 1790714918304.9302
+          },
+          {
+            "request_ms": 1790714918439.9207,
+            "call": 8,
+            "response_end_ms": 1790714918439.9705
+          },
+          {
+            "request_ms": 1790714918629.3787,
+            "call": 9,
+            "response_end_ms": 1790714918629.4333
+          },
+          {
+            "request_ms": 1790714918745.1433,
+            "call": 10,
+            "response_end_ms": 1790714918745.182
+          },
+          {
+            "request_ms": 1790714918951.1694,
+            "call": 11,
+            "response_end_ms": 1790714918951.2131
+          },
+          {
+            "request_ms": 1790714919096.1062,
+            "call": 12,
+            "response_end_ms": 1790714919096.159
+          },
+          {
+            "request_ms": 1790714919304.7117,
+            "call": 13,
+            "response_end_ms": 1790714919304.7766
+          },
+          {
+            "request_ms": 1790714919470.491,
+            "call": 14,
+            "response_end_ms": 1790714919470.6008
+          },
+          {
+            "request_ms": 1790714919819.1873,
+            "call": 15,
+            "response_end_ms": 1790714919819.248
+          },
+          {
+            "request_ms": 1790714928649.945,
+            "call": 16,
+            "response_end_ms": 1790714928649.995
+          },
+          {
+            "request_ms": 1790714928810.157,
+            "call": 17,
+            "response_end_ms": 1790714928810.2053
+          },
+          {
+            "request_ms": 1790714928966.9775,
+            "call": 18,
+            "response_end_ms": 1790714928967.0723
+          },
+          {
+            "request_ms": 1790714929085.2957,
+            "call": 19,
+            "response_end_ms": 1790714929085.3542
+          }
+        ],
+        "load": [
+          1.796875,
+          2.0908203125,
+          2.19677734375
+        ],
+        "totals": {
+          "persistence.atomic_async": 16.912807000000043,
+          "lifecycle.daemon_start": 871.1546069999999,
+          "lifecycle.daemon_ready": 7.54602100000011,
+          "lifecycle.session_create": 833.8845830000002,
+          "lifecycle.teardown": 58.07201499999974,
+          "persistence.sqlite_transaction": 21.25927100000888,
+          "persistence.sqlite_immediate": 1062.4462180000032,
+          "persistence.atomic_sync": 34.692255000000046,
+          "persistence.fsync": 979.705684999992,
+          "persistence.write": 5.839738000005809,
+          "persistence.rollout": 983.3342210000046,
+          "projection.thread_index": 71.73212899999885,
+          "persistence.flush": 1013.5662000000116,
+          "prompt.assembly": 186.08713599999942,
+          "admission.model": 479.8156279999987,
+          "model.request": 133.61293499999897,
+          "model.admitted": 797.0675730000014,
+          "admission.tool": 387.42208800000435,
+          "receipts.commit": 373.6136300000046,
+          "tool.invoke": 9532.770829000001,
+          "tool.by_name.exec_command": 9356.362597,
+          "tool.admitted": 10485.79334,
+          "persistence.iteration": 1.3484599999990223,
+          "persistence.history": 97.05584599999747,
+          "tool.by_name.TodoWrite": 32.20020400000203,
+          "tool.by_name.FileRead": 39.99068299999999,
+          "tool.by_name.MultiEdit": 31.330928000000313,
+          "tool.by_name.Write": 72.88641700000016,
+          "persistence.atomic": 4.811327999999776,
+          "persistence.index": 5.033682999999655,
+          "runtime_outside_tools": 5100.052709579468,
+          "between_tools": 470.094970703125,
+          "post_tool.other": 245.7099609375,
+          "post_tool.receipts": 3.8876953125,
+          "post_tool.fsync": 364.400634765625,
+          "post_tool.sqlite": 410.833251953125,
+          "post_tool.persistence_other": 20.033203125,
+          "post_tool.prompt_assembly": 162.585205078125,
+          "post_tool.admission": 48.899169921875,
+          "post_tool.derived_index": 1.9775390625,
+          "post_tool.fsync_count": 126,
+          "post_tool.written_bytes": 198596,
+          "first_request_assembly": 12.298849000000018,
+          "boundary.overhead": 2654.24462890625,
+          "response_to_tool": 925.822998046875,
+          "tool_to_request": 1258.32666015625,
+          "fsync_count": 338,
+          "written_bytes": 452657,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          194.882568359375,
+          145.019775390625,
+          152.83203125,
+          144.989013671875,
+          205.486328125,
+          171.97509765625,
+          122.1484375,
+          147.551025390625,
+          106.052001953125,
+          157.884521484375,
+          111.278564453125,
+          157.54150390625,
+          119.272705078125,
+          206.173828125,
+          177.693603515625,
+          107.88818359375,
+          117.7978515625,
+          107.777587890625
+        ]
+      },
+      {
+        "label": "r2-paired-before",
+        "core_revision": "fcb24b1a0e251393b259e47a16aa747e813af44d",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "cb3ce1e787dab195912b098a35441251333ac556a54e556e8d836cbcdefb68ed",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-new-deepseek-flash-03-window-padding-light-r1",
+        "adjusted_yield_calls": [
+          "call_01_ET_jTINB9gRceFRZJz8ZtIj0302"
+        ],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "daemon",
+        "task": "03-window-padding",
+        "repeat": 1,
+        "start_ms": 1790714689008.9292,
+        "end_ms": 1790714701169.071,
+        "wall_ms": 12160.141706466675,
+        "daemon_stop_ms": 614.7751808166504,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 16,
+        "recorded_calls": 16,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714689438.8545,
+            "call": 1,
+            "response_end_ms": 1790714689438.8845
+          },
+          {
+            "request_ms": 1790714689680.5945,
+            "call": 2,
+            "response_end_ms": 1790714689680.6287
+          },
+          {
+            "request_ms": 1790714689882.0237,
+            "call": 3,
+            "response_end_ms": 1790714689882.06
+          },
+          {
+            "request_ms": 1790714689993.1055,
+            "call": 4,
+            "response_end_ms": 1790714689993.152
+          },
+          {
+            "request_ms": 1790714690207.3625,
+            "call": 5,
+            "response_end_ms": 1790714690207.3967
+          },
+          {
+            "request_ms": 1790714690305.579,
+            "call": 6,
+            "response_end_ms": 1790714690305.6125
+          },
+          {
+            "request_ms": 1790714690529.8252,
+            "call": 7,
+            "response_end_ms": 1790714690529.8818
+          },
+          {
+            "request_ms": 1790714690797.4558,
+            "call": 8,
+            "response_end_ms": 1790714690797.5151
+          },
+          {
+            "request_ms": 1790714691001.5693,
+            "call": 9,
+            "response_end_ms": 1790714691001.6074
+          },
+          {
+            "request_ms": 1790714691312.6887,
+            "call": 10,
+            "response_end_ms": 1790714691312.7373
+          },
+          {
+            "request_ms": 1790714691468.1685,
+            "call": 11,
+            "response_end_ms": 1790714691468.2324
+          },
+          {
+            "request_ms": 1790714691629.1306,
+            "call": 12,
+            "response_end_ms": 1790714691629.185
+          },
+          {
+            "request_ms": 1790714691870.9414,
+            "call": 13,
+            "response_end_ms": 1790714691871.0227
+          },
+          {
+            "request_ms": 1790714692368.7856,
+            "call": 14,
+            "response_end_ms": 1790714692368.8452
+          },
+          {
+            "request_ms": 1790714700819.2031,
+            "call": 15,
+            "response_end_ms": 1790714700819.2598
+          },
+          {
+            "request_ms": 1790714700975.7888,
+            "call": 16,
+            "response_end_ms": 1790714700975.8435
+          }
+        ],
+        "load": [
+          1.5908203125,
+          2.197265625,
+          2.24755859375
+        ],
+        "daemon_client": {
+          "start_ms": 1790714689008.9292,
+          "created_ms": 1790714689363.8018,
+          "turn_end_ms": 1790714701031.521,
+          "end_ms": 1790714701169.071,
+          "wall_ms": 12160.141845703125,
+          "session_create_ms": 354.87255859375,
+          "teardown_ms": 137.550048828125,
+          "priming_ms": 1108,
+          "stop_reason": "completed"
+        },
+        "client_harness_sha256": "0aed4edb6845362c259f24beb2eec455ee0e12361ff82565b5a4bd259ba24719",
+        "totals": {
+          "persistence.sqlite_immediate": 842.605492000002,
+          "persistence.fsync": 766.4773229999973,
+          "persistence.write": 4.580050999999912,
+          "persistence.rollout": 763.8887380000015,
+          "persistence.sqlite_transaction": 16.240542999999434,
+          "projection.thread_index": 64.86191899999949,
+          "persistence.flush": 783.214852999999,
+          "prompt.assembly": 252.48889699999927,
+          "admission.model": 402.1671220000021,
+          "model.request": 113.80772399999933,
+          "model.admitted": 674.0132250000011,
+          "admission.tool": 279.190102,
+          "receipts.commit": 269.13991599999827,
+          "tool.invoke": 9422.394154999998,
+          "tool.by_name.exec_command": 1013.3656229999992,
+          "tool.admitted": 10116.171426000003,
+          "persistence.iteration": 1.3379610000006323,
+          "persistence.history": 73.85122299999966,
+          "tool.by_name.FileRead": 15.779955999999856,
+          "tool.by_name.MultiEdit": 14.07102900000018,
+          "tool.by_name.Write": 41.79154699999981,
+          "persistence.atomic_sync": 17.217634000001453,
+          "tool.by_name.write_stdin": 8337.385999999999,
+          "persistence.atomic": 6.458980999999767,
+          "persistence.index": 6.633717999999135,
+          "runtime_outside_tools": 2737.74790763855,
+          "daemon.session_create": 354.87255859375,
+          "daemon.session_teardown": 137.550048828125,
+          "daemon.priming": 1108,
+          "between_tools": 269.43994140625,
+          "post_tool.other": 169.56005859375,
+          "post_tool.receipts": 2.803955078125,
+          "post_tool.fsync": 304.9150390625,
+          "post_tool.sqlite": 344.8857421875,
+          "post_tool.persistence_other": 17.938720703125,
+          "post_tool.prompt_assembly": 228.607666015625,
+          "post_tool.admission": 37.2578125,
+          "post_tool.derived_index": 2.437744140625,
+          "post_tool.fsync_count": 105,
+          "post_tool.written_bytes": 126180,
+          "first_request_assembly": 9.116311000000223,
+          "boundary.overhead": 2113.80712890625,
+          "response_to_tool": 735.96044921875,
+          "tool_to_request": 1108.40673828125,
+          "fsync_count": 269,
+          "written_bytes": 311626,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          163.479736328125,
+          134.734375,
+          102.458984375,
+          144.0712890625,
+          90.98876953125,
+          154.025390625,
+          165.243408203125,
+          189.983154296875,
+          150.181884765625,
+          106.199951171875,
+          109.7421875,
+          199.96484375,
+          172.8427734375,
+          112.971923828125,
+          116.91845703125
+        ]
+      },
+      {
+        "label": "r2-paired-before",
+        "core_revision": "fcb24b1a0e251393b259e47a16aa747e813af44d",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "b789b7722904734914dbf37b4bc7e221c5c0f399d06c439cf6a1dd096362fdfb",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-new-deepseek-flash-07-source-manifest-light-r1",
+        "adjusted_yield_calls": [],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "daemon",
+        "task": "07-source-manifest",
+        "repeat": 1,
+        "start_ms": 1790714789269.7678,
+        "end_ms": 1790714791114.15,
+        "wall_ms": 1844.3820476531982,
+        "daemon_stop_ms": 614.3226623535156,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 14,
+        "recorded_calls": 14,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714789598.2168,
+            "call": 1,
+            "response_end_ms": 1790714789598.2725
+          },
+          {
+            "request_ms": 1790714789717.9275,
+            "call": 2,
+            "response_end_ms": 1790714789718.003
+          },
+          {
+            "request_ms": 1790714789846.3196,
+            "call": 3,
+            "response_end_ms": 1790714789846.3748
+          },
+          {
+            "request_ms": 1790714789939.443,
+            "call": 4,
+            "response_end_ms": 1790714789939.499
+          },
+          {
+            "request_ms": 1790714790073.138,
+            "call": 5,
+            "response_end_ms": 1790714790073.1987
+          },
+          {
+            "request_ms": 1790714790168.5347,
+            "call": 6,
+            "response_end_ms": 1790714790168.5872
+          },
+          {
+            "request_ms": 1790714790274.565,
+            "call": 7,
+            "response_end_ms": 1790714790274.6162
+          },
+          {
+            "request_ms": 1790714790488.5586,
+            "call": 8,
+            "response_end_ms": 1790714790488.6167
+          },
+          {
+            "request_ms": 1790714790688.8452,
+            "call": 9,
+            "response_end_ms": 1790714790688.8977
+          },
+          {
+            "request_ms": 1790714790743.6675,
+            "call": 10,
+            "response_end_ms": 1790714790743.6965
+          },
+          {
+            "request_ms": 1790714790796.1067,
+            "call": 11,
+            "response_end_ms": 1790714790796.1323
+          },
+          {
+            "request_ms": 1790714790848.569,
+            "call": 12,
+            "response_end_ms": 1790714790848.59
+          },
+          {
+            "request_ms": 1790714790901.6697,
+            "call": 13,
+            "response_end_ms": 1790714790901.693
+          },
+          {
+            "request_ms": 1790714791059.16,
+            "call": 14,
+            "response_end_ms": 1790714791059.2134
+          }
+        ],
+        "load": [
+          1.8388671875,
+          2.12646484375,
+          2.21826171875
+        ],
+        "daemon_client": {
+          "start_ms": 1790714789269.7678,
+          "created_ms": 1790714789546.6052,
+          "turn_end_ms": 1790714791081.8218,
+          "end_ms": 1790714791114.15,
+          "wall_ms": 1844.382080078125,
+          "session_create_ms": 276.83740234375,
+          "teardown_ms": 32.328125,
+          "priming_ms": 801,
+          "stop_reason": "completed"
+        },
+        "client_harness_sha256": "0aed4edb6845362c259f24beb2eec455ee0e12361ff82565b5a4bd259ba24719",
+        "totals": {
+          "persistence.sqlite_immediate": 253.4975160000024,
+          "persistence.fsync": 198.20707800000514,
+          "persistence.write": 3.6108399999984613,
+          "persistence.rollout": 199.68242900000246,
+          "persistence.sqlite_transaction": 10.895953999999847,
+          "projection.thread_index": 19.539720000000898,
+          "persistence.flush": 217.5225619999933,
+          "prompt.assembly": 68.04016500000012,
+          "admission.model": 139.2245300000004,
+          "model.request": 85.40554700000007,
+          "model.admitted": 269.8051759999996,
+          "admission.tool": 83.74218799999949,
+          "receipts.commit": 72.49036800000113,
+          "tool.invoke": 662.5302020000006,
+          "tool.by_name.exec_command": 545.4781250000003,
+          "tool.admitted": 863.1293610000005,
+          "persistence.iteration": 1.4048860000007153,
+          "persistence.history": 22.68731300000013,
+          "tool.by_name.Write": 95.23594200000025,
+          "tool.by_name.FileRead": 10.128330000000005,
+          "tool.by_name.MultiEdit": 11.687805000000026,
+          "persistence.atomic": 1.6579710000000887,
+          "persistence.index": 1.8086519999997108,
+          "runtime_outside_tools": 1181.8517742156982,
+          "daemon.session_create": 276.83740234375,
+          "daemon.session_teardown": 32.328125,
+          "daemon.priming": 801,
+          "between_tools": 80.8759765625,
+          "post_tool.other": 149.856201171875,
+          "post_tool.receipts": 2.74609375,
+          "post_tool.fsync": 72.23291015625,
+          "post_tool.sqlite": 94.5,
+          "post_tool.persistence_other": 13.131103515625,
+          "post_tool.prompt_assembly": 59.534912109375,
+          "post_tool.admission": 31.712646484375,
+          "post_tool.fsync_count": 91,
+          "post_tool.written_bytes": 126119,
+          "first_request_assembly": 8.505464999999958,
+          "boundary.overhead": 797.79638671875,
+          "response_to_tool": 293.20654296875,
+          "tool_to_request": 423.7138671875,
+          "fsync_count": 235,
+          "written_bytes": 311228,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          81.514892578125,
+          67.768798828125,
+          61.64404296875,
+          67.86767578125,
+          61.76904296875,
+          64.03125,
+          68.6494140625,
+          64.927734375,
+          51.687255859375,
+          49.353271484375,
+          49.46728515625,
+          49.212646484375,
+          59.903076171875
+        ]
+      },
+      {
+        "label": "r2-paired-before",
+        "core_revision": "fcb24b1a0e251393b259e47a16aa747e813af44d",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "9f55e044f655f06ffcd306ee0f2675eebc3bc12206f77e058ea2696fcd1ea302",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-new-deepseek-flash-09-separator-payload-light-r1",
+        "adjusted_yield_calls": [],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "daemon",
+        "task": "09-separator-payload",
+        "repeat": 1,
+        "start_ms": 1790714819579.237,
+        "end_ms": 1790714821908.7297,
+        "wall_ms": 2329.4928073883057,
+        "daemon_stop_ms": 614.3579483032227,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 14,
+        "recorded_calls": 14,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714819944.2766,
+            "call": 1,
+            "response_end_ms": 1790714819944.3376
+          },
+          {
+            "request_ms": 1790714820092.007,
+            "call": 2,
+            "response_end_ms": 1790714820092.0806
+          },
+          {
+            "request_ms": 1790714820240.5906,
+            "call": 3,
+            "response_end_ms": 1790714820240.645
+          },
+          {
+            "request_ms": 1790714820416.1643,
+            "call": 4,
+            "response_end_ms": 1790714820416.2437
+          },
+          {
+            "request_ms": 1790714820527.9246,
+            "call": 5,
+            "response_end_ms": 1790714820527.9773
+          },
+          {
+            "request_ms": 1790714820663.4382,
+            "call": 6,
+            "response_end_ms": 1790714820663.5083
+          },
+          {
+            "request_ms": 1790714820789.073,
+            "call": 7,
+            "response_end_ms": 1790714820789.134
+          },
+          {
+            "request_ms": 1790714820945.2874,
+            "call": 8,
+            "response_end_ms": 1790714820945.3423
+          },
+          {
+            "request_ms": 1790714821093.475,
+            "call": 9,
+            "response_end_ms": 1790714821093.525
+          },
+          {
+            "request_ms": 1790714821230.294,
+            "call": 10,
+            "response_end_ms": 1790714821230.3496
+          },
+          {
+            "request_ms": 1790714821365.797,
+            "call": 11,
+            "response_end_ms": 1790714821365.8477
+          },
+          {
+            "request_ms": 1790714821513.1526,
+            "call": 12,
+            "response_end_ms": 1790714821513.1978
+          },
+          {
+            "request_ms": 1790714821659.7903,
+            "call": 13,
+            "response_end_ms": 1790714821659.841
+          },
+          {
+            "request_ms": 1790714821812.6045,
+            "call": 14,
+            "response_end_ms": 1790714821812.658
+          }
+        ],
+        "load": [
+          2.322265625,
+          2.2109375,
+          2.2431640625
+        ],
+        "daemon_client": {
+          "start_ms": 1790714819579.237,
+          "created_ms": 1790714819872.0366,
+          "turn_end_ms": 1790714821856.5312,
+          "end_ms": 1790714821908.7297,
+          "wall_ms": 2329.49267578125,
+          "session_create_ms": 292.799560546875,
+          "teardown_ms": 52.198486328125,
+          "priming_ms": 1007,
+          "stop_reason": "completed"
+        },
+        "client_harness_sha256": "0aed4edb6845362c259f24beb2eec455ee0e12361ff82565b5a4bd259ba24719",
+        "totals": {
+          "persistence.sqlite_immediate": 517.0200209999966,
+          "persistence.fsync": 510.02998899999784,
+          "persistence.write": 3.5009320000021944,
+          "persistence.rollout": 508.91466000000537,
+          "persistence.sqlite_transaction": 10.632143000001179,
+          "projection.thread_index": 30.21893,
+          "persistence.flush": 525.4514639999979,
+          "prompt.assembly": 124.95159899999908,
+          "admission.model": 294.37048200000027,
+          "model.request": 89.66924199999949,
+          "model.admitted": 500.39588100000174,
+          "admission.tool": 166.85980700000073,
+          "receipts.commit": 157.87188800000013,
+          "tool.invoke": 524.6392330000008,
+          "tool.by_name.exec_command": 411.68729400000075,
+          "tool.admitted": 932.7549790000003,
+          "persistence.iteration": 1.2728600000004917,
+          "persistence.history": 43.02124999999978,
+          "tool.by_name.FileRead": 66.83637199999976,
+          "tool.by_name.MultiEdit": 9.67890000000034,
+          "tool.by_name.Write": 36.43666699999994,
+          "persistence.atomic": 5.175188000000162,
+          "persistence.index": 5.297956999999769,
+          "runtime_outside_tools": 1815.6930027008057,
+          "daemon.session_create": 292.799560546875,
+          "daemon.session_teardown": 52.198486328125,
+          "daemon.priming": 1007,
+          "between_tools": 29.799560546875,
+          "post_tool.other": 155.2314453125,
+          "post_tool.receipts": 2.9765625,
+          "post_tool.fsync": 219.660888671875,
+          "post_tool.sqlite": 233.806640625,
+          "post_tool.persistence_other": 15.15283203125,
+          "post_tool.prompt_assembly": 99.718505859375,
+          "post_tool.admission": 31.2138671875,
+          "post_tool.derived_index": 2.9619140625,
+          "post_tool.fsync_count": 91,
+          "post_tool.written_bytes": 161674,
+          "first_request_assembly": 8.242964000000029,
+          "boundary.overhead": 1353.76904296875,
+          "response_to_tool": 563.246826171875,
+          "tool_to_request": 760.72265625,
+          "fsync_count": 211,
+          "written_bytes": 294662,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          106.79931640625,
+          99.06201171875,
+          131.488037109375,
+          102.001953125,
+          99.024169921875,
+          91.560791015625,
+          95.31396484375,
+          99.75634765625,
+          101.956298828125,
+          98.52099609375,
+          103.0322265625,
+          108.795654296875,
+          116.457275390625
+        ]
+      },
+      {
+        "label": "r2-paired-before",
+        "core_revision": "fcb24b1a0e251393b259e47a16aa747e813af44d",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "3e3ade941bfd6f0b8ba180c5da089b5579aa9908dac05debc758994efee15474",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-confirm-screen-deepseek-flash-12-partition-map-light-r1",
+        "adjusted_yield_calls": [],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "daemon",
+        "task": "12-partition-map",
+        "repeat": 1,
+        "start_ms": 1790714900122.9624,
+        "end_ms": 1790714913866.4363,
+        "wall_ms": 13743.473768234253,
+        "daemon_stop_ms": 614.4697666168213,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 19,
+        "recorded_calls": 19,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714900503.5127,
+            "call": 1,
+            "response_end_ms": 1790714900503.5784
+          },
+          {
+            "request_ms": 1790714900763.7332,
+            "call": 2,
+            "response_end_ms": 1790714900763.858
+          },
+          {
+            "request_ms": 1790714900991.055,
+            "call": 3,
+            "response_end_ms": 1790714900991.11
+          },
+          {
+            "request_ms": 1790714901247.0354,
+            "call": 4,
+            "response_end_ms": 1790714901247.0957
+          },
+          {
+            "request_ms": 1790714901453.6155,
+            "call": 5,
+            "response_end_ms": 1790714901453.6711
+          },
+          {
+            "request_ms": 1790714901649.794,
+            "call": 6,
+            "response_end_ms": 1790714901649.8523
+          },
+          {
+            "request_ms": 1790714901864.949,
+            "call": 7,
+            "response_end_ms": 1790714901865.0
+          },
+          {
+            "request_ms": 1790714902019.7776,
+            "call": 8,
+            "response_end_ms": 1790714902019.8362
+          },
+          {
+            "request_ms": 1790714902225.7266,
+            "call": 9,
+            "response_end_ms": 1790714902225.7837
+          },
+          {
+            "request_ms": 1790714902346.4138,
+            "call": 10,
+            "response_end_ms": 1790714902346.4626
+          },
+          {
+            "request_ms": 1790714902522.8784,
+            "call": 11,
+            "response_end_ms": 1790714902522.9277
+          },
+          {
+            "request_ms": 1790714902673.0684,
+            "call": 12,
+            "response_end_ms": 1790714902673.1208
+          },
+          {
+            "request_ms": 1790714902862.8506,
+            "call": 13,
+            "response_end_ms": 1790714902862.9053
+          },
+          {
+            "request_ms": 1790714903008.5847,
+            "call": 14,
+            "response_end_ms": 1790714903008.6387
+          },
+          {
+            "request_ms": 1790714903342.6519,
+            "call": 15,
+            "response_end_ms": 1790714903342.7065
+          },
+          {
+            "request_ms": 1790714913332.2524,
+            "call": 16,
+            "response_end_ms": 1790714913332.3188
+          },
+          {
+            "request_ms": 1790714913495.7231,
+            "call": 17,
+            "response_end_ms": 1790714913495.771
+          },
+          {
+            "request_ms": 1790714913649.6902,
+            "call": 18,
+            "response_end_ms": 1790714913649.749
+          },
+          {
+            "request_ms": 1790714913763.6768,
+            "call": 19,
+            "response_end_ms": 1790714913763.7378
+          }
+        ],
+        "load": [
+          1.9296875,
+          2.13037109375,
+          2.2119140625
+        ],
+        "daemon_client": {
+          "start_ms": 1790714900122.9624,
+          "created_ms": 1790714900427.794,
+          "turn_end_ms": 1790714913809.7996,
+          "end_ms": 1790714913866.4363,
+          "wall_ms": 13743.473876953125,
+          "session_create_ms": 304.83154296875,
+          "teardown_ms": 56.63671875,
+          "priming_ms": 901,
+          "stop_reason": "completed"
+        },
+        "client_harness_sha256": "0aed4edb6845362c259f24beb2eec455ee0e12361ff82565b5a4bd259ba24719",
+        "totals": {
+          "persistence.sqlite_immediate": 1041.5492160000072,
+          "persistence.fsync": 957.991023999994,
+          "persistence.write": 5.552851999998211,
+          "persistence.rollout": 959.8291289999979,
+          "persistence.sqlite_transaction": 19.87601700000687,
+          "projection.thread_index": 62.689637999998695,
+          "persistence.flush": 988.6020709999925,
+          "prompt.assembly": 162.69349699999975,
+          "admission.model": 467.09705200000235,
+          "model.request": 133.5360909999995,
+          "model.admitted": 772.0350849999995,
+          "admission.tool": 396.2629700000016,
+          "receipts.commit": 356.62922500000104,
+          "tool.invoke": 10670.590731,
+          "tool.by_name.exec_command": 10507.242699,
+          "tool.admitted": 11616.769320000003,
+          "persistence.iteration": 1.3405779999984588,
+          "persistence.history": 92.46448900000087,
+          "tool.by_name.TodoWrite": 31.37969000000021,
+          "tool.by_name.FileRead": 24.046887999999853,
+          "tool.by_name.MultiEdit": 36.613618000000315,
+          "tool.by_name.Write": 71.3078360000004,
+          "persistence.atomic_sync": 14.766363999998248,
+          "persistence.atomic": 5.1748569999999745,
+          "persistence.index": 5.333342999998422,
+          "runtime_outside_tools": 3072.882947921753,
+          "daemon.session_create": 304.83154296875,
+          "daemon.session_teardown": 56.63671875,
+          "daemon.priming": 901,
+          "between_tools": 481.35888671875,
+          "post_tool.other": 238.95654296875,
+          "post_tool.receipts": 4.068603515625,
+          "post_tool.fsync": 352.117919921875,
+          "post_tool.sqlite": 398.63232421875,
+          "post_tool.persistence_other": 20.07080078125,
+          "post_tool.prompt_assembly": 149.98681640625,
+          "post_tool.admission": 44.870361328125,
+          "post_tool.derived_index": 1.37353515625,
+          "post_tool.fsync_count": 126,
+          "post_tool.written_bytes": 198928,
+          "first_request_assembly": 9.257391000000098,
+          "boundary.overhead": 2588.49951171875,
+          "response_to_tool": 897.063720703125,
+          "tool_to_request": 1210.076904296875,
+          "fsync_count": 338,
+          "written_bytes": 453455,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          182.39794921875,
+          172.065185546875,
+          180.90771484375,
+          138.6416015625,
+          138.90478515625,
+          168.0546875,
+          141.412353515625,
+          161.747802734375,
+          105.453857421875,
+          134.0810546875,
+          113.095458984375,
+          144.577880859375,
+          99.7822265625,
+          187.091064453125,
+          189.945068359375,
+          110.0390625,
+          116.6611328125,
+          103.640625
+        ]
+      },
+      {
+        "label": "r2-paired-before",
+        "core_revision": "fcb24b1a0e251393b259e47a16aa747e813af44d",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "cb3ce1e787dab195912b098a35441251333ac556a54e556e8d836cbcdefb68ed",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-new-deepseek-flash-03-window-padding-light-r1",
+        "adjusted_yield_calls": [
+          "call_01_ET_jTINB9gRceFRZJz8ZtIj0302"
+        ],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "warm",
+        "task": "03-window-padding",
+        "repeat": 1,
+        "start_ms": 1790714717291.0715,
+        "end_ms": 1790714728918.845,
+        "wall_ms": 11627.773523330688,
+        "daemon_stop_ms": 614.4871711730957,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 16,
+        "recorded_calls": 16,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714718760.7915,
+            "call": 1,
+            "response_end_ms": 1790714718760.8525
+          },
+          {
+            "request_ms": 1790714718924.7915,
+            "call": 2,
+            "response_end_ms": 1790714718924.8503
+          },
+          {
+            "request_ms": 1790714719038.929,
+            "call": 3,
+            "response_end_ms": 1790714719038.987
+          },
+          {
+            "request_ms": 1790714719092.4968,
+            "call": 4,
+            "response_end_ms": 1790714719092.5454
+          },
+          {
+            "request_ms": 1790714719223.6968,
+            "call": 5,
+            "response_end_ms": 1790714719223.7695
+          },
+          {
+            "request_ms": 1790714719272.3457,
+            "call": 6,
+            "response_end_ms": 1790714719272.3926
+          },
+          {
+            "request_ms": 1790714719399.7249,
+            "call": 7,
+            "response_end_ms": 1790714719399.788
+          },
+          {
+            "request_ms": 1790714719552.0586,
+            "call": 8,
+            "response_end_ms": 1790714719552.113
+          },
+          {
+            "request_ms": 1790714719682.5574,
+            "call": 9,
+            "response_end_ms": 1790714719682.6184
+          },
+          {
+            "request_ms": 1790714719895.861,
+            "call": 10,
+            "response_end_ms": 1790714719895.9163
+          },
+          {
+            "request_ms": 1790714719989.9097,
+            "call": 11,
+            "response_end_ms": 1790714719989.972
+          },
+          {
+            "request_ms": 1790714720090.8296,
+            "call": 12,
+            "response_end_ms": 1790714720090.8906
+          },
+          {
+            "request_ms": 1790714720245.9238,
+            "call": 13,
+            "response_end_ms": 1790714720245.987
+          },
+          {
+            "request_ms": 1790714720645.3508,
+            "call": 14,
+            "response_end_ms": 1790714720645.401
+          },
+          {
+            "request_ms": 1790714728622.1956,
+            "call": 15,
+            "response_end_ms": 1790714728622.2605
+          },
+          {
+            "request_ms": 1790714728722.1934,
+            "call": 16,
+            "response_end_ms": 1790714728722.2502
+          }
+        ],
+        "load": [
+          1.8798828125,
+          2.2099609375,
+          2.2509765625
+        ],
+        "totals": {
+          "persistence.sqlite_immediate": 320.22491800000626,
+          "persistence.fsync": 243.18420099999594,
+          "persistence.write": 4.279417999999623,
+          "persistence.rollout": 249.0580530000061,
+          "persistence.sqlite_transaction": 14.364654999998947,
+          "projection.thread_index": 31.702437999998892,
+          "persistence.flush": 269.8582689999962,
+          "prompt.assembly": 207.2037539999983,
+          "admission.model": 189.37741500000084,
+          "model.request": 94.3461799999991,
+          "model.admitted": 344.0769700000001,
+          "admission.tool": 102.04356300000109,
+          "receipts.commit": 90.73184100000162,
+          "tool.invoke": 8850.410161,
+          "tool.by_name.exec_command": 906.7208859999992,
+          "tool.admitted": 9105.724138000001,
+          "persistence.iteration": 1.627672999999504,
+          "persistence.history": 30.649168000001737,
+          "tool.by_name.FileRead": 9.003151000000344,
+          "tool.by_name.MultiEdit": 8.612239000000045,
+          "tool.by_name.Write": 31.388258999999834,
+          "persistence.atomic_sync": 14.084505000000718,
+          "tool.by_name.write_stdin": 7894.685626,
+          "persistence.atomic": 1.5705479999996896,
+          "persistence.index": 1.8275080000003072,
+          "lifecycle.daemon_start": 10.759896000000026,
+          "lifecycle.daemon_ready": 3.4215300000000752,
+          "lifecycle.session_create": 884.8875469999999,
+          "lifecycle.teardown": 115.48932299999979,
+          "runtime_outside_tools": 2777.3628787994385,
+          "between_tools": 98.690185546875,
+          "post_tool.other": 163.162109375,
+          "post_tool.receipts": 2.725341796875,
+          "post_tool.fsync": 109.583740234375,
+          "post_tool.sqlite": 137.072509765625,
+          "post_tool.persistence_other": 16.35888671875,
+          "post_tool.prompt_assembly": 189.406982421875,
+          "post_tool.derived_index": 1.136474609375,
+          "post_tool.admission": 36.218994140625,
+          "post_tool.fsync_count": 105,
+          "post_tool.written_bytes": 126437,
+          "first_request_assembly": 15.258147999999892,
+          "boundary.overhead": 1110.109619140625,
+          "response_to_tool": 355.75439453125,
+          "tool_to_request": 655.6650390625,
+          "fsync_count": 269,
+          "written_bytes": 311628,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          96.7392578125,
+          56.51123046875,
+          48.57275390625,
+          69.57275390625,
+          44.510009765625,
+          66.056396484375,
+          65.53955078125,
+          121.83203125,
+          66.457275390625,
+          51.006591796875,
+          57.802490234375,
+          123.64501953125,
+          91.368408203125,
+          82.109130859375,
+          68.38671875
+        ]
+      },
+      {
+        "label": "r2-paired-before",
+        "core_revision": "fcb24b1a0e251393b259e47a16aa747e813af44d",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "b789b7722904734914dbf37b4bc7e221c5c0f399d06c439cf6a1dd096362fdfb",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-new-deepseek-flash-07-source-manifest-light-r1",
+        "adjusted_yield_calls": [],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "warm",
+        "task": "07-source-manifest",
+        "repeat": 1,
+        "start_ms": 1790714797898.6313,
+        "end_ms": 1790714815893.77,
+        "wall_ms": 17995.13864517212,
+        "daemon_stop_ms": 614.3486499786377,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 14,
+        "recorded_calls": 14,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714799938.5847,
+            "call": 1,
+            "response_end_ms": 1790714799938.6394
+          },
+          {
+            "request_ms": 1790714801040.2456,
+            "call": 2,
+            "response_end_ms": 1790714801040.3005
+          },
+          {
+            "request_ms": 1790714802749.113,
+            "call": 3,
+            "response_end_ms": 1790714802749.1716
+          },
+          {
+            "request_ms": 1790714803529.773,
+            "call": 4,
+            "response_end_ms": 1790714803529.8289
+          },
+          {
+            "request_ms": 1790714804308.9128,
+            "call": 5,
+            "response_end_ms": 1790714804308.9707
+          },
+          {
+            "request_ms": 1790714805927.0872,
+            "call": 6,
+            "response_end_ms": 1790714805927.1514
+          },
+          {
+            "request_ms": 1790714807585.5886,
+            "call": 7,
+            "response_end_ms": 1790714807585.6458
+          },
+          {
+            "request_ms": 1790714809476.8723,
+            "call": 8,
+            "response_end_ms": 1790714809476.9329
+          },
+          {
+            "request_ms": 1790714810966.8345,
+            "call": 9,
+            "response_end_ms": 1790714810966.8882
+          },
+          {
+            "request_ms": 1790714812454.846,
+            "call": 10,
+            "response_end_ms": 1790714812454.903
+          },
+          {
+            "request_ms": 1790714813338.5881,
+            "call": 11,
+            "response_end_ms": 1790714813338.6853
+          },
+          {
+            "request_ms": 1790714814091.7163,
+            "call": 12,
+            "response_end_ms": 1790714814091.7805
+          },
+          {
+            "request_ms": 1790714815173.409,
+            "call": 13,
+            "response_end_ms": 1790714815173.4885
+          },
+          {
+            "request_ms": 1790714815733.838,
+            "call": 14,
+            "response_end_ms": 1790714815733.8994
+          }
+        ],
+        "load": [
+          2.3505859375,
+          2.21484375,
+          2.24462890625
+        ],
+        "totals": {
+          "lifecycle.daemon_start": 11.214081000000078,
+          "lifecycle.daemon_ready": 3.404015999999956,
+          "lifecycle.session_create": 1277.088603,
+          "lifecycle.teardown": 61.05207700000028,
+          "persistence.sqlite_immediate": 6274.937932000018,
+          "persistence.fsync": 5505.158280999993,
+          "persistence.write": 5.964585999999599,
+          "persistence.rollout": 5502.481154999992,
+          "persistence.sqlite_transaction": 23.35933100001148,
+          "projection.thread_index": 991.5913239999986,
+          "persistence.flush": 5526.850860000002,
+          "prompt.assembly": 720.181618000001,
+          "admission.model": 2338.711483999997,
+          "model.request": 498.4718079999993,
+          "model.admitted": 3825.8905979999977,
+          "admission.tool": 1944.5537389999981,
+          "receipts.commit": 2134.882275000008,
+          "tool.invoke": 2472.5612239999996,
+          "tool.by_name.exec_command": 1583.030013000001,
+          "tool.admitted": 7673.411824999997,
+          "persistence.iteration": 1.512000000000171,
+          "persistence.history": 465.90435900000057,
+          "persistence.atomic_sync": 206.3416879999986,
+          "tool.by_name.Write": 269.5955129999993,
+          "tool.by_name.FileRead": 259.18290100000013,
+          "tool.by_name.MultiEdit": 360.7527969999992,
+          "persistence.atomic": 4.992366000002221,
+          "persistence.index": 5.164197000001877,
+          "runtime_outside_tools": 15522.57761001587,
+          "between_tools": 2521.921630859375,
+          "post_tool.other": 311.313232421875,
+          "post_tool.receipts": 3.459228515625,
+          "post_tool.fsync": 2138.9365234375,
+          "post_tool.sqlite": 2444.903564453125,
+          "post_tool.persistence_other": 105.856689453125,
+          "post_tool.prompt_assembly": 506.796142578125,
+          "post_tool.derived_index": 3.183349609375,
+          "post_tool.admission": 36.216796875,
+          "post_tool.fsync_count": 91,
+          "post_tool.written_bytes": 121931,
+          "first_request_assembly": 13.574574000000212,
+          "boundary.overhead": 13321.87646484375,
+          "response_to_tool": 5249.289306640625,
+          "tool_to_request": 5550.66552734375,
+          "fsync_count": 235,
+          "written_bytes": 306797,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          1020.48681640625,
+          1428.01953125,
+          673.62646484375,
+          636.794677734375,
+          1289.9111328125,
+          1467.288330078125,
+          1438.58642578125,
+          1102.595703125,
+          1442.289306640625,
+          866.10107421875,
+          712.33154296875,
+          845.819091796875,
+          398.0263671875
+        ]
+      },
+      {
+        "label": "r2-paired-before",
+        "core_revision": "fcb24b1a0e251393b259e47a16aa747e813af44d",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "9f55e044f655f06ffcd306ee0f2675eebc3bc12206f77e058ea2696fcd1ea302",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-new-deepseek-flash-09-separator-payload-light-r1",
+        "adjusted_yield_calls": [],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "warm",
+        "task": "09-separator-payload",
+        "repeat": 1,
+        "start_ms": 1790714829541.996,
+        "end_ms": 1790714833260.4092,
+        "wall_ms": 3718.4131145477295,
+        "daemon_stop_ms": 614.4309043884277,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 14,
+        "recorded_calls": 14,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714831100.124,
+            "call": 1,
+            "response_end_ms": 1790714831100.1765
+          },
+          {
+            "request_ms": 1790714831262.4675,
+            "call": 2,
+            "response_end_ms": 1790714831262.5205
+          },
+          {
+            "request_ms": 1790714831416.383,
+            "call": 3,
+            "response_end_ms": 1790714831416.4507
+          },
+          {
+            "request_ms": 1790714831664.0374,
+            "call": 4,
+            "response_end_ms": 1790714831664.0981
+          },
+          {
+            "request_ms": 1790714831788.2043,
+            "call": 5,
+            "response_end_ms": 1790714831788.2717
+          },
+          {
+            "request_ms": 1790714831925.6404,
+            "call": 6,
+            "response_end_ms": 1790714831925.7083
+          },
+          {
+            "request_ms": 1790714832076.383,
+            "call": 7,
+            "response_end_ms": 1790714832076.4363
+          },
+          {
+            "request_ms": 1790714832239.4075,
+            "call": 8,
+            "response_end_ms": 1790714832239.4646
+          },
+          {
+            "request_ms": 1790714832400.5847,
+            "call": 9,
+            "response_end_ms": 1790714832400.6448
+          },
+          {
+            "request_ms": 1790714832549.8328,
+            "call": 10,
+            "response_end_ms": 1790714832549.885
+          },
+          {
+            "request_ms": 1790714832685.235,
+            "call": 11,
+            "response_end_ms": 1790714832685.2744
+          },
+          {
+            "request_ms": 1790714832833.0127,
+            "call": 12,
+            "response_end_ms": 1790714832833.0493
+          },
+          {
+            "request_ms": 1790714832970.2793,
+            "call": 13,
+            "response_end_ms": 1790714832970.3489
+          },
+          {
+            "request_ms": 1790714833115.3918,
+            "call": 14,
+            "response_end_ms": 1790714833115.4424
+          }
+        ],
+        "load": [
+          2.1826171875,
+          2.18359375,
+          2.2333984375
+        ],
+        "totals": {
+          "persistence.sqlite_immediate": 591.4727450000014,
+          "persistence.fsync": 579.9343440000071,
+          "persistence.write": 3.5760070000010273,
+          "persistence.rollout": 578.7553930000008,
+          "persistence.sqlite_transaction": 11.065883000001577,
+          "projection.thread_index": 45.38836600000104,
+          "persistence.flush": 594.8177899999982,
+          "prompt.assembly": 119.85811300000023,
+          "admission.model": 336.44038299999966,
+          "model.request": 92.81641800000034,
+          "model.admitted": 552.3169590000011,
+          "admission.tool": 180.81213699999944,
+          "receipts.commit": 175.6715160000017,
+          "tool.invoke": 533.7251919999999,
+          "tool.by_name.exec_command": 413.601533,
+          "tool.admitted": 990.233376000001,
+          "persistence.iteration": 1.3053890000010142,
+          "persistence.history": 53.49115599999823,
+          "tool.by_name.FileRead": 70.12381000000005,
+          "tool.by_name.MultiEdit": 10.11900199999991,
+          "tool.by_name.Write": 39.8808469999999,
+          "persistence.atomic": 5.248644999999669,
+          "persistence.index": 5.405789000000368,
+          "lifecycle.daemon_start": 11.065904000000046,
+          "lifecycle.daemon_ready": 3.5329869999999346,
+          "lifecycle.session_create": 955.5778980000001,
+          "lifecycle.teardown": 74.22049200000038,
+          "runtime_outside_tools": 3192.6418743133545,
+          "between_tools": 62.60302734375,
+          "post_tool.other": 156.559326171875,
+          "post_tool.receipts": 3.1328125,
+          "post_tool.fsync": 252.79248046875,
+          "post_tool.sqlite": 259.951416015625,
+          "post_tool.persistence_other": 14.897216796875,
+          "post_tool.prompt_assembly": 99.379638671875,
+          "post_tool.derived_index": 2.209228515625,
+          "post_tool.admission": 31.65087890625,
+          "post_tool.fsync_count": 91,
+          "post_tool.written_bytes": 160467,
+          "first_request_assembly": 12.53246500000023,
+          "boundary.overhead": 1488.75927734375,
+          "response_to_tool": 605.583251953125,
+          "tool_to_request": 820.572998046875,
+          "fsync_count": 211,
+          "written_bytes": 293235,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          119.357421875,
+          103.48388671875,
+          196.100830078125,
+          113.9873046875,
+          97.48779296875,
+          113.24365234375,
+          99.075927734375,
+          111.018798828125,
+          113.572998046875,
+          98.227783203125,
+          113.493408203125,
+          99.676025390625,
+          110.033447265625
+        ]
+      },
+      {
+        "label": "r2-paired-before",
+        "core_revision": "fcb24b1a0e251393b259e47a16aa747e813af44d",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "3e3ade941bfd6f0b8ba180c5da089b5579aa9908dac05debc758994efee15474",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-confirm-screen-deepseek-flash-12-partition-map-light-r1",
+        "adjusted_yield_calls": [],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "warm",
+        "task": "12-partition-map",
+        "repeat": 1,
+        "start_ms": 1790714931381.4263,
+        "end_ms": 1790714944860.697,
+        "wall_ms": 13479.270696640015,
+        "daemon_stop_ms": 614.3665313720703,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 19,
+        "recorded_calls": 19,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714932783.4429,
+            "call": 1,
+            "response_end_ms": 1790714932783.4954
+          },
+          {
+            "request_ms": 1790714933045.6035,
+            "call": 2,
+            "response_end_ms": 1790714933045.6636
+          },
+          {
+            "request_ms": 1790714933229.2393,
+            "call": 3,
+            "response_end_ms": 1790714933229.3105
+          },
+          {
+            "request_ms": 1790714933446.7788,
+            "call": 4,
+            "response_end_ms": 1790714933446.8347
+          },
+          {
+            "request_ms": 1790714933656.9644,
+            "call": 5,
+            "response_end_ms": 1790714933657.049
+          },
+          {
+            "request_ms": 1790714933847.3076,
+            "call": 6,
+            "response_end_ms": 1790714933847.387
+          },
+          {
+            "request_ms": 1790714934039.168,
+            "call": 7,
+            "response_end_ms": 1790714934039.241
+          },
+          {
+            "request_ms": 1790714934162.8179,
+            "call": 8,
+            "response_end_ms": 1790714934162.8792
+          },
+          {
+            "request_ms": 1790714934342.7173,
+            "call": 9,
+            "response_end_ms": 1790714934342.7693
+          },
+          {
+            "request_ms": 1790714934490.9395,
+            "call": 10,
+            "response_end_ms": 1790714934490.9924
+          },
+          {
+            "request_ms": 1790714934691.405,
+            "call": 11,
+            "response_end_ms": 1790714934691.4697
+          },
+          {
+            "request_ms": 1790714934826.19,
+            "call": 12,
+            "response_end_ms": 1790714934826.2485
+          },
+          {
+            "request_ms": 1790714935012.7349,
+            "call": 13,
+            "response_end_ms": 1790714935012.785
+          },
+          {
+            "request_ms": 1790714935157.536,
+            "call": 14,
+            "response_end_ms": 1790714935157.6233
+          },
+          {
+            "request_ms": 1790714935448.9111,
+            "call": 15,
+            "response_end_ms": 1790714935448.9607
+          },
+          {
+            "request_ms": 1790714944322.9744,
+            "call": 16,
+            "response_end_ms": 1790714944323.0364
+          },
+          {
+            "request_ms": 1790714944476.0798,
+            "call": 17,
+            "response_end_ms": 1790714944476.1287
+          },
+          {
+            "request_ms": 1790714944612.1887,
+            "call": 18,
+            "response_end_ms": 1790714944612.2437
+          },
+          {
+            "request_ms": 1790714944724.1936,
+            "call": 19,
+            "response_end_ms": 1790714944724.2544
+          }
+        ],
+        "load": [
+          1.84130859375,
+          2.0859375,
+          2.19287109375
+        ],
+        "totals": {
+          "lifecycle.daemon_start": 10.660445000000095,
+          "lifecycle.daemon_ready": 3.001893999999993,
+          "lifecycle.session_create": 796.0469660000001,
+          "lifecycle.teardown": 59.53238500000043,
+          "persistence.sqlite_immediate": 922.8767769999804,
+          "persistence.fsync": 846.8591950000168,
+          "persistence.write": 5.645145000009961,
+          "persistence.rollout": 850.4847670000036,
+          "persistence.sqlite_transaction": 19.934655000006387,
+          "projection.thread_index": 60.24198200000228,
+          "persistence.flush": 880.0812729999898,
+          "prompt.assembly": 173.33454500000153,
+          "admission.model": 447.4653079999962,
+          "model.request": 141.30651300000045,
+          "model.admitted": 747.5517810000033,
+          "admission.tool": 323.09472699999924,
+          "receipts.commit": 312.02769000000444,
+          "tool.invoke": 9552.892357999997,
+          "tool.by_name.exec_command": 9387.432229,
+          "tool.admitted": 10362.176204,
+          "persistence.iteration": 1.3584769999974924,
+          "persistence.history": 84.3421569999964,
+          "tool.by_name.TodoWrite": 31.37949899999876,
+          "tool.by_name.FileRead": 21.85756399999991,
+          "tool.by_name.MultiEdit": 40.1401520000004,
+          "tool.by_name.Write": 72.08291399999962,
+          "persistence.atomic_sync": 15.169717000000674,
+          "persistence.atomic": 4.9012149999998655,
+          "persistence.index": 5.123230000001058,
+          "runtime_outside_tools": 3926.3778743743896,
+          "between_tools": 362.739501953125,
+          "post_tool.other": 257.279541015625,
+          "post_tool.receipts": 3.98193359375,
+          "post_tool.fsync": 330.8349609375,
+          "post_tool.sqlite": 379.165283203125,
+          "post_tool.persistence_other": 20.853759765625,
+          "post_tool.prompt_assembly": 146.32763671875,
+          "post_tool.admission": 49.5048828125,
+          "post_tool.derived_index": 2.75146484375,
+          "post_tool.fsync_count": 126,
+          "post_tool.written_bytes": 198593,
+          "first_request_assembly": 13.134070000000065,
+          "boundary.overhead": 2386.73876953125,
+          "response_to_tool": 833.2998046875,
+          "tool_to_request": 1190.699462890625,
+          "fsync_count": 338,
+          "written_bytes": 452656,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          186.83837890625,
+          136.813232421875,
+          139.604248046875,
+          141.271484375,
+          145.262939453125,
+          148.09326171875,
+          110.680419921875,
+          139.041015625,
+          129.51220703125,
+          153.389404296875,
+          101.07470703125,
+          141.30078125,
+          110.075927734375,
+          159.3603515625,
+          142.6591796875,
+          101.0126953125,
+          99.975830078125,
+          100.772705078125
+        ]
+      }
+    ]
+  },
+  "after": {
+    "groups": {
+      "cold": {
+        "n": 4,
+        "wall_ms": 8913.174331188202,
+        "daemon_stop_ms": 614.4311428070068,
+        "calls": 63,
+        "exit_codes": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "boundary_mean_ms": 98.83847407971399,
+        "boundary_p95_ms": 198.81298828125,
+        "spans_per_task": {
+          "admission.model": 203.89846875000046,
+          "admission.tool": 117.12257249999863,
+          "between_tools": 194.2137451171875,
+          "boundary.overhead": 1457.8674926757812,
+          "first_request_assembly": 9.11841000000004,
+          "fsync_count": 194.75,
+          "lifecycle.daemon_ready": 2.8202514999999835,
+          "lifecycle.daemon_start": 851.978329,
+          "lifecycle.session_create": 647.461516,
+          "lifecycle.teardown": 66.26043425000012,
+          "model.admitted": 396.5643432499996,
+          "model.request": 108.22637674999993,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0,
+          "persistence.atomic": 3.1939902500001836,
+          "persistence.atomic_async": 13.540223750000024,
+          "persistence.atomic_sync": 17.343359749999735,
+          "persistence.flush": 462.61881400000306,
+          "persistence.fsync": 440.4092507500031,
+          "persistence.history": 55.05274674999947,
+          "persistence.index": 3.3724062499995853,
+          "persistence.iteration": 1.3793117500000562,
+          "persistence.rollout": 442.19821025000243,
+          "persistence.sqlite_immediate": 543.8236879999963,
+          "persistence.sqlite_transaction": 16.938458999997636,
+          "persistence.write": 3.3931120000000305,
+          "post_tool.admission": 34.8817138671875,
+          "post_tool.derived_index": 1.48553466796875,
+          "post_tool.fsync": 164.4290771484375,
+          "post_tool.fsync_count": 73.75,
+          "post_tool.other": 181.52178955078125,
+          "post_tool.persistence_other": 14.8406982421875,
+          "post_tool.prompt_assembly": 138.92822265625,
+          "post_tool.receipts": 3.1717529296875,
+          "post_tool.sqlite": 219.09674072265625,
+          "post_tool.written_bytes": 153024.75,
+          "projection.thread_index": 39.8860127500007,
+          "prompt.assembly": 154.12436474999998,
+          "receipts.commit": 222.1823962500003,
+          "response_to_tool": 505.2982177734375,
+          "runtime_outside_tools": 3680.5621485710144,
+          "startup.auth": 8.950548499999996,
+          "startup.authority": 0.5447414999999864,
+          "startup.config": 3.54729875000001,
+          "startup.instructions": 7.167000250000001,
+          "startup.model_metadata": 360.59094025,
+          "startup.permissions": 17.788252750000026,
+          "startup.provider": 2.2447104999999965,
+          "startup.registry": 7.463004249999983,
+          "startup.roles": 4.3453110000000095,
+          "startup.services": 112.44643724999997,
+          "startup.session": 73.47181149999994,
+          "startup.session_mount": 48.75463500000001,
+          "startup.shell": 8.797542499999963,
+          "startup.sidecars": 0.162080499999945,
+          "tool.admitted": 5697.56230075,
+          "tool.by_name.FileRead": 29.429361500000084,
+          "tool.by_name.MultiEdit": 19.46817900000036,
+          "tool.by_name.TodoWrite": 11.356331249999982,
+          "tool.by_name.Write": 57.92105250000003,
+          "tool.by_name.exec_command": 2880.2743675,
+          "tool.by_name.write_stdin": 2236.2025985,
+          "tool.invoke": 5234.651890250001,
+          "tool_to_request": 758.3555297851562,
+          "written_bytes": 342287.75
+        }
+      },
+      "daemon": {
+        "n": 4,
+        "wall_ms": 6790.069818496704,
+        "daemon_stop_ms": 614.5011186599731,
+        "calls": 63,
+        "exit_codes": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "boundary_mean_ms": 89.01102356991525,
+        "boundary_p95_ms": 134.0517578125,
+        "spans_per_task": {
+          "admission.model": 193.47647074999992,
+          "admission.tool": 101.24742149999963,
+          "between_tools": 132.650634765625,
+          "boundary.overhead": 1312.91259765625,
+          "daemon.priming": 765,
+          "daemon.session_create": 97.27752685546875,
+          "daemon.session_teardown": 65.654541015625,
+          "first_request_assembly": 8.879079750000074,
+          "fsync_count": 194.75,
+          "model.admitted": 384.01114324999975,
+          "model.request": 115.73972424999943,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0,
+          "persistence.atomic": 3.735107249999942,
+          "persistence.atomic_sync": 5.550069749999693,
+          "persistence.flush": 384.98690225000115,
+          "persistence.fsync": 364.9316157500003,
+          "persistence.history": 49.84091200000017,
+          "persistence.index": 3.8929427500004294,
+          "persistence.iteration": 1.336357750000559,
+          "persistence.rollout": 365.57542599999795,
+          "persistence.sqlite_immediate": 467.12454399999854,
+          "persistence.sqlite_transaction": 16.05931724999948,
+          "persistence.write": 3.364917499999649,
+          "post_tool.admission": 35.7596435546875,
+          "post_tool.derived_index": 1.68048095703125,
+          "post_tool.fsync": 143.237060546875,
+          "post_tool.fsync_count": 73.75,
+          "post_tool.other": 194.46624755859375,
+          "post_tool.persistence_other": 15.14251708984375,
+          "post_tool.prompt_assembly": 123.5428466796875,
+          "post_tool.receipts": 3.036865234375,
+          "post_tool.sqlite": 199.72479248046875,
+          "post_tool.written_bytes": 152195.5,
+          "projection.thread_index": 35.410761999999636,
+          "prompt.assembly": 143.05195649999928,
+          "receipts.commit": 168.1073707500002,
+          "response_to_tool": 463.6715087890625,
+          "runtime_outside_tools": 1570.2305850982666,
+          "startup.auth": 4.799037750000082,
+          "startup.authority": 0.1067524999999705,
+          "startup.config": 1.4425975000000335,
+          "startup.instructions": 3.748532749999981,
+          "startup.model_metadata": 3.224362499999984,
+          "startup.permissions": 0.9556747500000711,
+          "startup.provider": 0.3631217500000048,
+          "startup.registry": 1.1239340000000198,
+          "startup.roles": 0.7415317499999787,
+          "startup.services": 11.935815999999988,
+          "startup.session": 38.658912250000014,
+          "startup.session_mount": 29.96127699999994,
+          "startup.shell": 9.850408749999986,
+          "startup.sidecars": 0.028335500000025604,
+          "tool.admitted": 5590.277633250001,
+          "tool.by_name.FileRead": 26.243989499999998,
+          "tool.by_name.MultiEdit": 15.862486250000075,
+          "tool.by_name.TodoWrite": 8.073883499999965,
+          "tool.by_name.Write": 59.846598499999914,
+          "tool.by_name.exec_command": 2929.651995,
+          "tool.by_name.write_stdin": 2182.0936675,
+          "tool.invoke": 5221.77262025,
+          "tool_to_request": 716.5904541015625,
+          "written_bytes": 342402
+        }
+      },
+      "warm": {
+        "n": 4,
+        "wall_ms": 7799.553453922272,
+        "daemon_stop_ms": 614.5356893539429,
+        "calls": 63,
+        "exit_codes": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "boundary_mean_ms": 83.49567581435382,
+        "boundary_p95_ms": 136.0634765625,
+        "spans_per_task": {
+          "admission.model": 175.30379075000013,
+          "admission.tool": 94.22362350000071,
+          "between_tools": 138.29241943359375,
+          "boundary.overhead": 1231.5612182617188,
+          "first_request_assembly": 8.727260000000115,
+          "fsync_count": 194.75,
+          "lifecycle.daemon_ready": 3.6861455000000376,
+          "lifecycle.daemon_start": 11.208913249999952,
+          "lifecycle.session_create": 792.742569,
+          "lifecycle.teardown": 63.21890399999995,
+          "model.admitted": 337.5919284999992,
+          "model.request": 95.3999982499995,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0,
+          "persistence.atomic": 3.290240249999556,
+          "persistence.atomic_sync": 12.623577999999725,
+          "persistence.flush": 358.10594600000155,
+          "persistence.fsync": 337.72795199999825,
+          "persistence.history": 46.15935300000035,
+          "persistence.index": 3.469169999999963,
+          "persistence.iteration": 1.4314394999992146,
+          "persistence.rollout": 338.45825899999494,
+          "persistence.sqlite_immediate": 435.7754915000002,
+          "persistence.sqlite_transaction": 15.556965999996862,
+          "persistence.write": 3.327912500002242,
+          "post_tool.admission": 34.36566162109375,
+          "post_tool.derived_index": 1.67193603515625,
+          "post_tool.fsync": 130.15216064453125,
+          "post_tool.fsync_count": 73.75,
+          "post_tool.other": 173.5478515625,
+          "post_tool.persistence_other": 14.43133544921875,
+          "post_tool.prompt_assembly": 123.4263916015625,
+          "post_tool.receipts": 3.251220703125,
+          "post_tool.sqlite": 183.79229736328125,
+          "post_tool.written_bytes": 153466.75,
+          "projection.thread_index": 34.33255274999976,
+          "prompt.assembly": 142.3813267500002,
+          "receipts.commit": 163.1568664999997,
+          "response_to_tool": 428.62994384765625,
+          "runtime_outside_tools": 2738.7521233558655,
+          "startup.auth": 9.724687499999959,
+          "startup.authority": 0.49155700000000024,
+          "startup.config": 3.1333517499999743,
+          "startup.instructions": 7.310581000000127,
+          "startup.model_metadata": 474.828358,
+          "startup.permissions": 24.189749999999947,
+          "startup.provider": 2.3553547500000036,
+          "startup.registry": 7.8624829999999974,
+          "startup.roles": 4.277198250000026,
+          "startup.services": 120.77136199999995,
+          "startup.session": 86.80915325000007,
+          "startup.session_mount": 57.73668225,
+          "startup.shell": 10.165359000000024,
+          "startup.sidecars": 0.18128650000005564,
+          "tool.admitted": 5414.296704499999,
+          "tool.by_name.FileRead": 27.46492899999987,
+          "tool.by_name.MultiEdit": 14.948361250000175,
+          "tool.by_name.TodoWrite": 7.792173499999876,
+          "tool.by_name.Write": 58.62560974999997,
+          "tool.by_name.exec_command": 2803.1283842499997,
+          "tool.by_name.write_stdin": 2150.78907025,
+          "tool.invoke": 5062.748528,
+          "tool_to_request": 664.6388549804688,
+          "written_bytes": 342731.75
+        }
+      }
+    },
+    "runs": [
+      {
+        "label": "r2-paired-after",
+        "core_revision": "36751015fdf7c4e2b45506f131d5025be7bcfbcc",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "cb3ce1e787dab195912b098a35441251333ac556a54e556e8d836cbcdefb68ed",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-new-deepseek-flash-03-window-padding-light-r1",
+        "adjusted_yield_calls": [
+          "call_01_ET_jTINB9gRceFRZJz8ZtIj0302"
+        ],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "cold",
+        "task": "03-window-padding",
+        "repeat": 1,
+        "start_ms": 1790714744221.283,
+        "end_ms": 1790714757305.403,
+        "wall_ms": 13084.120035171509,
+        "daemon_stop_ms": 614.6461963653564,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 16,
+        "recorded_calls": 16,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714746263.8264,
+            "call": 1,
+            "response_end_ms": 1790714746263.8865
+          },
+          {
+            "request_ms": 1790714746399.595,
+            "call": 2,
+            "response_end_ms": 1790714746399.6277
+          },
+          {
+            "request_ms": 1790714746506.0547,
+            "call": 3,
+            "response_end_ms": 1790714746506.0825
+          },
+          {
+            "request_ms": 1790714746552.734,
+            "call": 4,
+            "response_end_ms": 1790714746552.758
+          },
+          {
+            "request_ms": 1790714746670.167,
+            "call": 5,
+            "response_end_ms": 1790714746670.2097
+          },
+          {
+            "request_ms": 1790714746713.0493,
+            "call": 6,
+            "response_end_ms": 1790714746713.103
+          },
+          {
+            "request_ms": 1790714746828.6401,
+            "call": 7,
+            "response_end_ms": 1790714746828.6912
+          },
+          {
+            "request_ms": 1790714746965.2222,
+            "call": 8,
+            "response_end_ms": 1790714746965.2783
+          },
+          {
+            "request_ms": 1790714747089.5325,
+            "call": 9,
+            "response_end_ms": 1790714747089.5867
+          },
+          {
+            "request_ms": 1790714747293.4578,
+            "call": 10,
+            "response_end_ms": 1790714747293.5027
+          },
+          {
+            "request_ms": 1790714747381.1296,
+            "call": 11,
+            "response_end_ms": 1790714747381.1648
+          },
+          {
+            "request_ms": 1790714747468.5693,
+            "call": 12,
+            "response_end_ms": 1790714747468.601
+          },
+          {
+            "request_ms": 1790714747612.2988,
+            "call": 13,
+            "response_end_ms": 1790714747612.3718
+          },
+          {
+            "request_ms": 1790714747995.6045,
+            "call": 14,
+            "response_end_ms": 1790714747995.6714
+          },
+          {
+            "request_ms": 1790714757024.4343,
+            "call": 15,
+            "response_end_ms": 1790714757024.5276
+          },
+          {
+            "request_ms": 1790714757111.773,
+            "call": 16,
+            "response_end_ms": 1790714757111.8306
+          }
+        ],
+        "load": [
+          1.63671875,
+          2.12353515625,
+          2.22119140625
+        ],
+        "totals": {
+          "persistence.sqlite_transaction": 16.327810999998064,
+          "persistence.sqlite_immediate": 272.50184199999114,
+          "persistence.atomic_sync": 19.74628699999994,
+          "persistence.atomic_async": 8.28637900000001,
+          "startup.shell": 10.42536999999993,
+          "startup.config": 3.190488000000073,
+          "startup.authority": 0.4683559999999716,
+          "startup.permissions": 11.912672000000043,
+          "startup.auth": 9.216539000000012,
+          "startup.roles": 4.326532000000043,
+          "startup.registry": 7.572843999999918,
+          "startup.provider": 2.1393410000000586,
+          "startup.model_metadata": 416.89879399999995,
+          "startup.instructions": 7.532799000000068,
+          "startup.services": 100.27667900000006,
+          "persistence.fsync": 174.71344899999986,
+          "persistence.write": 3.399213999997073,
+          "persistence.rollout": 178.54416999999648,
+          "projection.thread_index": 25.456256999999596,
+          "persistence.flush": 198.06604900000775,
+          "startup.session_mount": 39.8130470000001,
+          "startup.sidecars": 0.16860499999984313,
+          "startup.session": 65.20166399999994,
+          "prompt.assembly": 186.68273399999975,
+          "admission.model": 124.469787,
+          "model.request": 95.42857499999809,
+          "model.admitted": 263.4704129999982,
+          "admission.tool": 60.12488499999881,
+          "receipts.commit": 93.01600000000099,
+          "tool.invoke": 9881.20091,
+          "tool.by_name.exec_command": 888.4228579999992,
+          "tool.admitted": 10091.526051,
+          "persistence.iteration": 1.3681879999996909,
+          "persistence.history": 29.670720999999958,
+          "tool.by_name.FileRead": 8.455684999999903,
+          "tool.by_name.MultiEdit": 9.566543000000365,
+          "tool.by_name.Write": 29.94542999999976,
+          "tool.by_name.write_stdin": 8944.810394,
+          "persistence.atomic": 1.6620890000012878,
+          "persistence.index": 1.8304529999986698,
+          "lifecycle.daemon_start": 803.6381670000001,
+          "lifecycle.daemon_ready": 2.6849120000001676,
+          "lifecycle.session_create": 666.4418720000001,
+          "lifecycle.teardown": 111.56207100000029,
+          "runtime_outside_tools": 3202.919839859009,
+          "between_tools": 86.76513671875,
+          "post_tool.other": 160.92724609375,
+          "post_tool.receipts": 2.71240234375,
+          "post_tool.fsync": 73.316650390625,
+          "post_tool.sqlite": 111.542724609375,
+          "post_tool.persistence_other": 14.37353515625,
+          "post_tool.prompt_assembly": 177.736083984375,
+          "post_tool.admission": 33.433349609375,
+          "post_tool.derived_index": 0.763427734375,
+          "post_tool.fsync_count": 75,
+          "post_tool.written_bytes": 126399,
+          "first_request_assembly": 8.94685400000003,
+          "boundary.overhead": 965.998779296875,
+          "response_to_tool": 304.42822265625,
+          "tool_to_request": 574.805419921875,
+          "fsync_count": 199,
+          "written_bytes": 311841,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          70.713623046875,
+          51.37646484375,
+          41.941650390625,
+          58.598876953125,
+          39.09375,
+          56.39306640625,
+          54.17529296875,
+          114.6875,
+          60.50146484375,
+          45.02685546875,
+          44.8193359375,
+          113.75244140625,
+          76.02783203125,
+          83.95263671875,
+          54.93798828125
+        ]
+      },
+      {
+        "label": "r2-paired-after",
+        "core_revision": "36751015fdf7c4e2b45506f131d5025be7bcfbcc",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "b789b7722904734914dbf37b4bc7e221c5c0f399d06c439cf6a1dd096362fdfb",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-new-deepseek-flash-07-source-manifest-light-r1",
+        "adjusted_yield_calls": [],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "cold",
+        "task": "07-source-manifest",
+        "repeat": 1,
+        "start_ms": 1790714777605.8816,
+        "end_ms": 1790714781124.6182,
+        "wall_ms": 3518.7363624572754,
+        "daemon_stop_ms": 614.2752170562744,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 14,
+        "recorded_calls": 14,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714779613.4443,
+            "call": 1,
+            "response_end_ms": 1790714779613.5015
+          },
+          {
+            "request_ms": 1790714779714.351,
+            "call": 2,
+            "response_end_ms": 1790714779714.3977
+          },
+          {
+            "request_ms": 1790714779834.786,
+            "call": 3,
+            "response_end_ms": 1790714779834.8267
+          },
+          {
+            "request_ms": 1790714779924.2979,
+            "call": 4,
+            "response_end_ms": 1790714779924.3425
+          },
+          {
+            "request_ms": 1790714780049.569,
+            "call": 5,
+            "response_end_ms": 1790714780049.626
+          },
+          {
+            "request_ms": 1790714780139.7554,
+            "call": 6,
+            "response_end_ms": 1790714780139.81
+          },
+          {
+            "request_ms": 1790714780240.7854,
+            "call": 7,
+            "response_end_ms": 1790714780240.8323
+          },
+          {
+            "request_ms": 1790714780454.2058,
+            "call": 8,
+            "response_end_ms": 1790714780454.263
+          },
+          {
+            "request_ms": 1790714780655.5103,
+            "call": 9,
+            "response_end_ms": 1790714780655.569
+          },
+          {
+            "request_ms": 1790714780710.091,
+            "call": 10,
+            "response_end_ms": 1790714780710.1436
+          },
+          {
+            "request_ms": 1790714780758.1167,
+            "call": 11,
+            "response_end_ms": 1790714780758.161
+          },
+          {
+            "request_ms": 1790714780806.9539,
+            "call": 12,
+            "response_end_ms": 1790714780807.013
+          },
+          {
+            "request_ms": 1790714780855.743,
+            "call": 13,
+            "response_end_ms": 1790714780855.7937
+          },
+          {
+            "request_ms": 1790714781008.6228,
+            "call": 14,
+            "response_end_ms": 1790714781008.6746
+          }
+        ],
+        "load": [
+          1.904296875,
+          2.1484375,
+          2.2265625
+        ],
+        "totals": {
+          "persistence.sqlite_transaction": 14.007958999998323,
+          "persistence.sqlite_immediate": 218.44965899999727,
+          "persistence.atomic_sync": 6.722230999999965,
+          "persistence.atomic_async": 8.869296000000077,
+          "startup.shell": 7.410518000000025,
+          "startup.config": 4.593248999999901,
+          "startup.authority": 0.6942890000000261,
+          "startup.permissions": 14.13727700000004,
+          "startup.auth": 8.789676999999983,
+          "startup.roles": 4.273151000000098,
+          "startup.registry": 7.316341999999963,
+          "startup.provider": 2.2675309999999627,
+          "startup.model_metadata": 316.0943060000001,
+          "startup.instructions": 7.293658999999934,
+          "startup.services": 105.13893000000007,
+          "persistence.fsync": 140.78699200000096,
+          "persistence.write": 2.8959199999992506,
+          "persistence.rollout": 143.76874799999837,
+          "projection.thread_index": 20.18997500000023,
+          "persistence.flush": 163.1459770000008,
+          "startup.session_mount": 42.48926499999993,
+          "startup.sidecars": 0.14421999999990476,
+          "startup.session": 62.388165999999956,
+          "prompt.assembly": 76.96123100000045,
+          "admission.model": 104.27047600000037,
+          "model.request": 87.24123299999974,
+          "model.admitted": 227.50329399999987,
+          "admission.tool": 49.97410299999956,
+          "receipts.commit": 75.4251589999999,
+          "tool.invoke": 659.726367,
+          "tool.by_name.exec_command": 546.4253739999997,
+          "tool.admitted": 832.3643710000003,
+          "persistence.iteration": 1.4118490000007569,
+          "persistence.history": 23.12635499999965,
+          "tool.by_name.Write": 90.38948800000003,
+          "tool.by_name.FileRead": 10.798213999999916,
+          "tool.by_name.MultiEdit": 12.113291000000345,
+          "persistence.atomic": 1.6701929999999265,
+          "persistence.index": 1.8369050000001153,
+          "lifecycle.daemon_start": 825.9095980000001,
+          "lifecycle.daemon_ready": 2.8584249999998974,
+          "lifecycle.session_create": 568.2611569999999,
+          "lifecycle.teardown": 35.0851990000001,
+          "runtime_outside_tools": 2859.0105323791504,
+          "between_tools": 73.309814453125,
+          "post_tool.other": 146.839599609375,
+          "post_tool.receipts": 2.8701171875,
+          "post_tool.fsync": 52.178466796875,
+          "post_tool.sqlite": 87.667724609375,
+          "post_tool.persistence_other": 12.104736328125,
+          "post_tool.prompt_assembly": 64.893798828125,
+          "post_tool.admission": 31.02001953125,
+          "post_tool.derived_index": 0.54541015625,
+          "post_tool.fsync_count": 65,
+          "post_tool.written_bytes": 126050,
+          "first_request_assembly": 8.729053999999905,
+          "boundary.overhead": 734.782470703125,
+          "response_to_tool": 263.352783203125,
+          "tool_to_request": 398.119873046875,
+          "fsync_count": 174,
+          "written_bytes": 310898,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          64.13916015625,
+          60.09375,
+          57.250244140625,
+          63.6328125,
+          56.951904296875,
+          58.864501953125,
+          66.328369140625,
+          71.223388671875,
+          50.9345703125,
+          44.864501953125,
+          45.4853515625,
+          45.08349609375,
+          49.930419921875
+        ]
+      },
+      {
+        "label": "r2-paired-after",
+        "core_revision": "36751015fdf7c4e2b45506f131d5025be7bcfbcc",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "9f55e044f655f06ffcd306ee0f2675eebc3bc12206f77e058ea2696fcd1ea302",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-new-deepseek-flash-09-separator-payload-light-r1",
+        "adjusted_yield_calls": [],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "cold",
+        "task": "09-separator-payload",
+        "repeat": 1,
+        "start_ms": 1790714839955.7349,
+        "end_ms": 1790714843974.6436,
+        "wall_ms": 4018.9085006713867,
+        "daemon_stop_ms": 614.4638061523438,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 14,
+        "recorded_calls": 14,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714842100.9036,
+            "call": 1,
+            "response_end_ms": 1790714842100.961
+          },
+          {
+            "request_ms": 1790714842261.5042,
+            "call": 2,
+            "response_end_ms": 1790714842261.5635
+          },
+          {
+            "request_ms": 1790714842398.3894,
+            "call": 3,
+            "response_end_ms": 1790714842398.4424
+          },
+          {
+            "request_ms": 1790714842589.2446,
+            "call": 4,
+            "response_end_ms": 1790714842589.296
+          },
+          {
+            "request_ms": 1790714842698.1824,
+            "call": 5,
+            "response_end_ms": 1790714842698.2363
+          },
+          {
+            "request_ms": 1790714842814.5352,
+            "call": 6,
+            "response_end_ms": 1790714842814.5913
+          },
+          {
+            "request_ms": 1790714842931.8372,
+            "call": 7,
+            "response_end_ms": 1790714842931.8972
+          },
+          {
+            "request_ms": 1790714843092.8276,
+            "call": 8,
+            "response_end_ms": 1790714843092.8901
+          },
+          {
+            "request_ms": 1790714843231.0852,
+            "call": 9,
+            "response_end_ms": 1790714843231.1453
+          },
+          {
+            "request_ms": 1790714843351.7688,
+            "call": 10,
+            "response_end_ms": 1790714843351.8208
+          },
+          {
+            "request_ms": 1790714843470.2556,
+            "call": 11,
+            "response_end_ms": 1790714843470.3254
+          },
+          {
+            "request_ms": 1790714843580.11,
+            "call": 12,
+            "response_end_ms": 1790714843580.1633
+          },
+          {
+            "request_ms": 1790714843731.6106,
+            "call": 13,
+            "response_end_ms": 1790714843731.6682
+          },
+          {
+            "request_ms": 1790714843856.5303,
+            "call": 14,
+            "response_end_ms": 1790714843856.5974
+          }
+        ],
+        "load": [
+          2.23486328125,
+          2.19384765625,
+          2.236328125
+        ],
+        "totals": {
+          "persistence.sqlite_transaction": 13.297026999997229,
+          "persistence.sqlite_immediate": 493.7344949999931,
+          "persistence.atomic_sync": 12.035305999999991,
+          "persistence.atomic_async": 24.675384000000122,
+          "startup.shell": 9.718723999999952,
+          "startup.config": 2.998016000000007,
+          "startup.authority": 0.5359129999999368,
+          "startup.permissions": 23.264134000000013,
+          "startup.auth": 8.712091999999984,
+          "startup.roles": 4.451333999999974,
+          "startup.registry": 7.3845190000000684,
+          "startup.provider": 2.302175000000034,
+          "startup.model_metadata": 339.9877459999999,
+          "startup.instructions": 6.600732999999991,
+          "startup.services": 126.79575699999987,
+          "persistence.fsync": 391.5611170000004,
+          "persistence.write": 2.899778000000879,
+          "persistence.rollout": 391.2654030000044,
+          "projection.thread_index": 30.95410300000026,
+          "persistence.flush": 408.17556100000184,
+          "startup.session_mount": 46.65864099999999,
+          "startup.sidecars": 0.14837699999998222,
+          "startup.session": 67.69326699999988,
+          "prompt.assembly": 113.46714100000054,
+          "admission.model": 201.1246910000009,
+          "model.request": 98.09219199999939,
+          "model.admitted": 388.24176200000124,
+          "admission.tool": 95.61301599999979,
+          "receipts.commit": 176.57923400000072,
+          "tool.invoke": 546.4645170000015,
+          "tool.by_name.exec_command": 435.03103600000077,
+          "tool.admitted": 915.7199659999999,
+          "persistence.iteration": 1.3940589999990607,
+          "persistence.history": 52.5341599999997,
+          "tool.by_name.FileRead": 64.0143370000003,
+          "tool.by_name.MultiEdit": 9.960617000000184,
+          "tool.by_name.Write": 37.45852700000023,
+          "persistence.atomic": 4.574554000000262,
+          "persistence.index": 4.73902199999975,
+          "lifecycle.daemon_start": 901.823088,
+          "lifecycle.daemon_ready": 3.0019740000000183,
+          "lifecycle.session_create": 652.037589,
+          "lifecycle.teardown": 57.24160099999972,
+          "runtime_outside_tools": 3480.6011276245117,
+          "between_tools": 41.79833984375,
+          "post_tool.other": 161.5283203125,
+          "post_tool.receipts": 3.15380859375,
+          "post_tool.fsync": 162.8779296875,
+          "post_tool.sqlite": 217.210693359375,
+          "post_tool.persistence_other": 14.6962890625,
+          "post_tool.prompt_assembly": 91.242919921875,
+          "post_tool.derived_index": 2.646728515625,
+          "post_tool.admission": 31.5703125,
+          "post_tool.fsync_count": 65,
+          "post_tool.written_bytes": 160446,
+          "first_request_assembly": 10.279192000000194,
+          "boundary.overhead": 1216.572998046875,
+          "response_to_tool": 489.84765625,
+          "tool_to_request": 684.927001953125,
+          "fsync_count": 154,
+          "written_bytes": 293174,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          117.337890625,
+          92.596435546875,
+          133.3271484375,
+          98.92578125,
+          78.84033203125,
+          82.644775390625,
+          95.76953125,
+          87.72314453125,
+          85.684814453125,
+          83.038818359375,
+          76.359619140625,
+          96.173095703125,
+          88.151611328125
+        ]
+      },
+      {
+        "label": "r2-paired-after",
+        "core_revision": "36751015fdf7c4e2b45506f131d5025be7bcfbcc",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "3e3ade941bfd6f0b8ba180c5da089b5579aa9908dac05debc758994efee15474",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-confirm-screen-deepseek-flash-12-partition-map-light-r1",
+        "adjusted_yield_calls": [],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "cold",
+        "task": "12-partition-map",
+        "repeat": 1,
+        "start_ms": 1790714866152.2893,
+        "end_ms": 1790714881183.222,
+        "wall_ms": 15030.932426452637,
+        "daemon_stop_ms": 614.3393516540527,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 19,
+        "recorded_calls": 19,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714868302.0156,
+            "call": 1,
+            "response_end_ms": 1790714868302.0713
+          },
+          {
+            "request_ms": 1790714868547.8691,
+            "call": 2,
+            "response_end_ms": 1790714868547.922
+          },
+          {
+            "request_ms": 1790714868781.2554,
+            "call": 3,
+            "response_end_ms": 1790714868781.304
+          },
+          {
+            "request_ms": 1790714869076.9458,
+            "call": 4,
+            "response_end_ms": 1790714869076.9949
+          },
+          {
+            "request_ms": 1790714869368.048,
+            "call": 5,
+            "response_end_ms": 1790714869368.1235
+          },
+          {
+            "request_ms": 1790714869614.019,
+            "call": 6,
+            "response_end_ms": 1790714869614.072
+          },
+          {
+            "request_ms": 1790714869841.2185,
+            "call": 7,
+            "response_end_ms": 1790714869841.275
+          },
+          {
+            "request_ms": 1790714870008.2754,
+            "call": 8,
+            "response_end_ms": 1790714870008.3257
+          },
+          {
+            "request_ms": 1790714870238.532,
+            "call": 9,
+            "response_end_ms": 1790714870238.5862
+          },
+          {
+            "request_ms": 1790714870367.6416,
+            "call": 10,
+            "response_end_ms": 1790714870367.7012
+          },
+          {
+            "request_ms": 1790714870605.6077,
+            "call": 11,
+            "response_end_ms": 1790714870605.6777
+          },
+          {
+            "request_ms": 1790714870762.9312,
+            "call": 12,
+            "response_end_ms": 1790714870762.9905
+          },
+          {
+            "request_ms": 1790714871042.4673,
+            "call": 13,
+            "response_end_ms": 1790714871042.53
+          },
+          {
+            "request_ms": 1790714871210.1157,
+            "call": 14,
+            "response_end_ms": 1790714871210.1611
+          },
+          {
+            "request_ms": 1790714871625.6694,
+            "call": 15,
+            "response_end_ms": 1790714871625.72
+          },
+          {
+            "request_ms": 1790714880711.5256,
+            "call": 16,
+            "response_end_ms": 1790714880711.5935
+          },
+          {
+            "request_ms": 1790714880856.9775,
+            "call": 17,
+            "response_end_ms": 1790714880857.0361
+          },
+          {
+            "request_ms": 1790714880979.4668,
+            "call": 18,
+            "response_end_ms": 1790714880979.5254
+          },
+          {
+            "request_ms": 1790714881068.375,
+            "call": 19,
+            "response_end_ms": 1790714881068.4329
+          }
+        ],
+        "load": [
+          2.22216796875,
+          2.20166015625,
+          2.23828125
+        ],
+        "totals": {
+          "persistence.atomic_async": 12.329835999999887,
+          "lifecycle.daemon_start": 876.542463,
+          "lifecycle.daemon_ready": 2.7356949999998506,
+          "lifecycle.session_create": 703.1054459999998,
+          "lifecycle.teardown": 61.15286600000036,
+          "persistence.sqlite_transaction": 24.121038999996927,
+          "persistence.sqlite_immediate": 1190.6087560000037,
+          "persistence.atomic_sync": 30.869614999999044,
+          "startup.shell": 7.635557999999946,
+          "startup.config": 3.40744200000006,
+          "startup.authority": 0.48040800000001127,
+          "startup.permissions": 21.83892800000001,
+          "startup.auth": 9.083886000000007,
+          "startup.roles": 4.3302269999999226,
+          "startup.registry": 7.578311999999983,
+          "startup.provider": 2.269794999999931,
+          "startup.model_metadata": 369.382915,
+          "startup.instructions": 7.24081000000001,
+          "startup.services": 117.5743829999999,
+          "persistence.fsync": 1054.575445000011,
+          "persistence.write": 4.3775360000029195,
+          "persistence.rollout": 1055.2145200000105,
+          "projection.thread_index": 82.94371600000272,
+          "persistence.flush": 1081.0876690000018,
+          "startup.session_mount": 66.05758700000001,
+          "startup.sidecars": 0.1871200000000499,
+          "startup.session": 98.604149,
+          "prompt.assembly": 239.3863529999992,
+          "admission.model": 385.7289210000006,
+          "model.request": 152.1435070000025,
+          "model.admitted": 707.041903999999,
+          "admission.tool": 262.77828599999634,
+          "receipts.commit": 543.7091919999996,
+          "tool.invoke": 9851.215767000002,
+          "tool.by_name.exec_command": 9651.218202,
+          "tool.admitted": 10950.638814999998,
+          "persistence.iteration": 1.3431510000007165,
+          "persistence.history": 114.87975099999858,
+          "tool.by_name.TodoWrite": 45.42532499999993,
+          "tool.by_name.FileRead": 34.44921000000022,
+          "tool.by_name.MultiEdit": 46.23226500000055,
+          "tool.by_name.Write": 73.8907650000001,
+          "persistence.atomic": 4.869124999999258,
+          "persistence.index": 5.083244999999806,
+          "runtime_outside_tools": 5179.717094421387,
+          "between_tools": 574.981689453125,
+          "post_tool.other": 256.7919921875,
+          "post_tool.receipts": 3.95068359375,
+          "post_tool.fsync": 369.34326171875,
+          "post_tool.sqlite": 459.9658203125,
+          "post_tool.persistence_other": 18.188232421875,
+          "post_tool.prompt_assembly": 221.840087890625,
+          "post_tool.admission": 43.503173828125,
+          "post_tool.derived_index": 1.986572265625,
+          "post_tool.fsync_count": 90,
+          "post_tool.written_bytes": 199204,
+          "first_request_assembly": 8.51854000000003,
+          "boundary.overhead": 2914.11572265625,
+          "response_to_tool": 963.564208984375,
+          "tool_to_request": 1375.56982421875,
+          "fsync_count": 252,
+          "written_bytes": 453238,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          169.027099609375,
+          172.47265625,
+          198.81298828125,
+          205.803955078125,
+          194.404052734375,
+          174.520263671875,
+          145.207763671875,
+          180.607177734375,
+          116.8251953125,
+          187.04345703125,
+          122.016357421875,
+          221.41455078125,
+          126.862060546875,
+          261.09423828125,
+          180.25634765625,
+          92.3701171875,
+          85.77783203125,
+          79.599609375
+        ]
+      },
+      {
+        "label": "r2-paired-after",
+        "core_revision": "36751015fdf7c4e2b45506f131d5025be7bcfbcc",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "cb3ce1e787dab195912b098a35441251333ac556a54e556e8d836cbcdefb68ed",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-new-deepseek-flash-03-window-padding-light-r1",
+        "adjusted_yield_calls": [
+          "call_01_ET_jTINB9gRceFRZJz8ZtIj0302"
+        ],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "daemon",
+        "task": "03-window-padding",
+        "repeat": 1,
+        "start_ms": 1790714732504.9487,
+        "end_ms": 1790714743392.4136,
+        "wall_ms": 10887.465000152588,
+        "daemon_stop_ms": 614.6245002746582,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 16,
+        "recorded_calls": 16,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714732630.0027,
+            "call": 1,
+            "response_end_ms": 1790714732630.0474
+          },
+          {
+            "request_ms": 1790714732761.8235,
+            "call": 2,
+            "response_end_ms": 1790714732761.8525
+          },
+          {
+            "request_ms": 1790714732870.286,
+            "call": 3,
+            "response_end_ms": 1790714732870.3186
+          },
+          {
+            "request_ms": 1790714732913.7405,
+            "call": 4,
+            "response_end_ms": 1790714732913.7722
+          },
+          {
+            "request_ms": 1790714733023.569,
+            "call": 5,
+            "response_end_ms": 1790714733023.6052
+          },
+          {
+            "request_ms": 1790714733063.8828,
+            "call": 6,
+            "response_end_ms": 1790714733063.9106
+          },
+          {
+            "request_ms": 1790714733184.3767,
+            "call": 7,
+            "response_end_ms": 1790714733184.4092
+          },
+          {
+            "request_ms": 1790714733322.104,
+            "call": 8,
+            "response_end_ms": 1790714733322.1401
+          },
+          {
+            "request_ms": 1790714733447.2542,
+            "call": 9,
+            "response_end_ms": 1790714733447.282
+          },
+          {
+            "request_ms": 1790714733667.9692,
+            "call": 10,
+            "response_end_ms": 1790714733668.031
+          },
+          {
+            "request_ms": 1790714733757.8572,
+            "call": 11,
+            "response_end_ms": 1790714733757.9111
+          },
+          {
+            "request_ms": 1790714733849.4038,
+            "call": 12,
+            "response_end_ms": 1790714733849.4446
+          },
+          {
+            "request_ms": 1790714733994.9136,
+            "call": 13,
+            "response_end_ms": 1790714733995.0022
+          },
+          {
+            "request_ms": 1790714734388.8357,
+            "call": 14,
+            "response_end_ms": 1790714734388.8948
+          },
+          {
+            "request_ms": 1790714743169.9434,
+            "call": 15,
+            "response_end_ms": 1790714743170.0413
+          },
+          {
+            "request_ms": 1790714743260.7598,
+            "call": 16,
+            "response_end_ms": 1790714743260.825
+          }
+        ],
+        "load": [
+          1.9130859375,
+          2.19921875,
+          2.2470703125
+        ],
+        "daemon_client": {
+          "start_ms": 1790714732504.9487,
+          "created_ms": 1790714732582.883,
+          "turn_end_ms": 1790714743282.169,
+          "end_ms": 1790714743392.4136,
+          "wall_ms": 10887.46484375,
+          "session_create_ms": 77.934326171875,
+          "teardown_ms": 110.24462890625,
+          "priming_ms": 707,
+          "stop_reason": "completed"
+        },
+        "client_harness_sha256": "0aed4edb6845362c259f24beb2eec455ee0e12361ff82565b5a4bd259ba24719",
+        "totals": {
+          "startup.shell": 11.639541000000008,
+          "startup.config": 1.4493199999999433,
+          "startup.authority": 0.09399600000006103,
+          "startup.permissions": 0.9172060000000783,
+          "startup.auth": 6.110590000000002,
+          "startup.roles": 0.7856289999999717,
+          "startup.registry": 1.1125710000001163,
+          "startup.provider": 0.3603539999999157,
+          "startup.model_metadata": 3.093695999999909,
+          "startup.instructions": 3.8989429999999174,
+          "persistence.sqlite_immediate": 264.8540819999987,
+          "startup.services": 10.409530000000132,
+          "persistence.fsync": 165.16975300000217,
+          "persistence.write": 3.201027999993812,
+          "persistence.rollout": 168.7641840000033,
+          "persistence.sqlite_transaction": 15.357228999998824,
+          "projection.thread_index": 20.8846309999999,
+          "persistence.flush": 187.52635199999736,
+          "startup.session_mount": 18.853202999999894,
+          "startup.sidecars": 0.02757200000019111,
+          "startup.session": 26.772305000000188,
+          "prompt.assembly": 122.91398899999763,
+          "admission.model": 123.38225499999999,
+          "model.request": 153.98496399999976,
+          "model.admitted": 318.0705840000019,
+          "admission.tool": 57.30406600000106,
+          "receipts.commit": 89.72468099999764,
+          "tool.invoke": 9682.528843999999,
+          "tool.by_name.exec_command": 907.1131469999998,
+          "tool.admitted": 9888.799158000002,
+          "persistence.iteration": 1.3296460000021852,
+          "persistence.history": 32.0835890000003,
+          "tool.by_name.FileRead": 8.406214000000091,
+          "tool.by_name.MultiEdit": 7.980567000000065,
+          "tool.by_name.Write": 30.654246000000057,
+          "persistence.atomic_sync": 9.99145899999985,
+          "tool.by_name.write_stdin": 8728.37467,
+          "persistence.atomic": 1.7052700000003824,
+          "persistence.index": 1.8592380000009143,
+          "runtime_outside_tools": 1204.935947418213,
+          "daemon.session_create": 77.934326171875,
+          "daemon.session_teardown": 110.24462890625,
+          "daemon.priming": 707,
+          "between_tools": 82.937255859375,
+          "post_tool.other": 219.585205078125,
+          "post_tool.receipts": 2.61328125,
+          "post_tool.fsync": 70.389892578125,
+          "post_tool.sqlite": 114.336669921875,
+          "post_tool.persistence_other": 14.372802734375,
+          "post_tool.prompt_assembly": 114.742431640625,
+          "post_tool.admission": 32.8779296875,
+          "post_tool.fsync_count": 75,
+          "post_tool.written_bytes": 126462,
+          "first_request_assembly": 8.171865000000025,
+          "boundary.overhead": 947.52734375,
+          "response_to_tool": 295.671875,
+          "tool_to_request": 568.918212890625,
+          "fsync_count": 199,
+          "written_bytes": 310970,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          67.59521484375,
+          52.52294921875,
+          38.65185546875,
+          52.492431640625,
+          36.641357421875,
+          60.416748046875,
+          54.767333984375,
+          117.133544921875,
+          65.688720703125,
+          46.8818359375,
+          48.15087890625,
+          114.814697265625,
+          84.657470703125,
+          52.673828125,
+          54.4384765625
+        ]
+      },
+      {
+        "label": "r2-paired-after",
+        "core_revision": "36751015fdf7c4e2b45506f131d5025be7bcfbcc",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "b789b7722904734914dbf37b4bc7e221c5c0f399d06c439cf6a1dd096362fdfb",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-new-deepseek-flash-07-source-manifest-light-r1",
+        "adjusted_yield_calls": [],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "daemon",
+        "task": "07-source-manifest",
+        "repeat": 1,
+        "start_ms": 1790714775177.1738,
+        "end_ms": 1790714776796.582,
+        "wall_ms": 1619.408130645752,
+        "daemon_stop_ms": 614.6495342254639,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 14,
+        "recorded_calls": 14,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714775302.5024,
+            "call": 1,
+            "response_end_ms": 1790714775302.5637
+          },
+          {
+            "request_ms": 1790714775405.1182,
+            "call": 2,
+            "response_end_ms": 1790714775405.1704
+          },
+          {
+            "request_ms": 1790714775528.6052,
+            "call": 3,
+            "response_end_ms": 1790714775528.6797
+          },
+          {
+            "request_ms": 1790714775625.7139,
+            "call": 4,
+            "response_end_ms": 1790714775625.7861
+          },
+          {
+            "request_ms": 1790714775757.6199,
+            "call": 5,
+            "response_end_ms": 1790714775757.678
+          },
+          {
+            "request_ms": 1790714775854.0237,
+            "call": 6,
+            "response_end_ms": 1790714775854.074
+          },
+          {
+            "request_ms": 1790714775960.9143,
+            "call": 7,
+            "response_end_ms": 1790714775960.993
+          },
+          {
+            "request_ms": 1790714776174.4739,
+            "call": 8,
+            "response_end_ms": 1790714776174.5364
+          },
+          {
+            "request_ms": 1790714776372.4697,
+            "call": 9,
+            "response_end_ms": 1790714776372.541
+          },
+          {
+            "request_ms": 1790714776423.1992,
+            "call": 10,
+            "response_end_ms": 1790714776423.2478
+          },
+          {
+            "request_ms": 1790714776488.8127,
+            "call": 11,
+            "response_end_ms": 1790714776488.8655
+          },
+          {
+            "request_ms": 1790714776543.3127,
+            "call": 12,
+            "response_end_ms": 1790714776543.3542
+          },
+          {
+            "request_ms": 1790714776595.81,
+            "call": 13,
+            "response_end_ms": 1790714776595.8635
+          },
+          {
+            "request_ms": 1790714776746.9822,
+            "call": 14,
+            "response_end_ms": 1790714776747.0674
+          }
+        ],
+        "load": [
+          1.8955078125,
+          2.1513671875,
+          2.22802734375
+        ],
+        "daemon_client": {
+          "start_ms": 1790714775177.1738,
+          "created_ms": 1790714775246.5217,
+          "turn_end_ms": 1790714776767.4524,
+          "end_ms": 1790714776796.582,
+          "wall_ms": 1619.408203125,
+          "session_create_ms": 69.347900390625,
+          "teardown_ms": 29.129638671875,
+          "priming_ms": 643,
+          "stop_reason": "completed"
+        },
+        "client_harness_sha256": "0aed4edb6845362c259f24beb2eec455ee0e12361ff82565b5a4bd259ba24719",
+        "totals": {
+          "startup.shell": 7.549356999999873,
+          "startup.config": 1.374721000000136,
+          "startup.authority": 0.11800099999982194,
+          "startup.permissions": 0.9524310000001606,
+          "startup.auth": 4.898581000000149,
+          "startup.roles": 0.7290639999998803,
+          "startup.registry": 1.153626999999915,
+          "startup.provider": 0.36450200000012956,
+          "startup.model_metadata": 3.182802000000038,
+          "startup.instructions": 3.101220000000012,
+          "persistence.sqlite_immediate": 228.78019999999992,
+          "startup.services": 8.531342999999879,
+          "persistence.fsync": 156.17730799999435,
+          "persistence.write": 3.000789000003124,
+          "persistence.rollout": 159.30918199999724,
+          "persistence.sqlite_transaction": 13.126594999997906,
+          "projection.thread_index": 15.442486999999801,
+          "persistence.flush": 178.1850460000037,
+          "startup.session_mount": 17.591425999999956,
+          "startup.sidecars": 0.029684999999972206,
+          "startup.session": 24.926643000000013,
+          "prompt.assembly": 72.11626900000056,
+          "admission.model": 117.08086099999991,
+          "model.request": 90.84820599999989,
+          "model.admitted": 245.86147899999924,
+          "admission.tool": 55.441524999999274,
+          "receipts.commit": 80.00671000000057,
+          "tool.invoke": 665.0917790000005,
+          "tool.by_name.exec_command": 542.7602810000005,
+          "tool.admitted": 849.6488310000004,
+          "persistence.iteration": 1.3896060000001853,
+          "persistence.history": 25.50570399999947,
+          "tool.by_name.Write": 95.53373699999975,
+          "tool.by_name.FileRead": 14.651658000000225,
+          "tool.by_name.MultiEdit": 12.14610300000004,
+          "persistence.atomic": 1.6785189999995964,
+          "persistence.index": 1.8110659999997551,
+          "runtime_outside_tools": 954.316333770752,
+          "daemon.session_create": 69.347900390625,
+          "daemon.session_teardown": 29.129638671875,
+          "daemon.priming": 643,
+          "between_tools": 78.739990234375,
+          "post_tool.other": 153.999267578125,
+          "post_tool.receipts": 2.791015625,
+          "post_tool.fsync": 58.793212890625,
+          "post_tool.sqlite": 96.8837890625,
+          "post_tool.persistence_other": 12.854736328125,
+          "post_tool.prompt_assembly": 61.421142578125,
+          "post_tool.admission": 32.6865234375,
+          "post_tool.derived_index": 1.349609375,
+          "post_tool.fsync_count": 65,
+          "post_tool.written_bytes": 124917,
+          "first_request_assembly": 8.882861000000048,
+          "boundary.overhead": 778.610595703125,
+          "response_to_tool": 279.09130859375,
+          "tool_to_request": 420.779296875,
+          "fsync_count": 174,
+          "written_bytes": 309985,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          66.328369140625,
+          62.817138671875,
+          64.327880859375,
+          64.371826171875,
+          61.39794921875,
+          64.781494140625,
+          70.829833984375,
+          65.556640625,
+          47.76611328125,
+          61.432861328125,
+          50.8037109375,
+          48.31005859375,
+          49.88671875
+        ]
+      },
+      {
+        "label": "r2-paired-after",
+        "core_revision": "36751015fdf7c4e2b45506f131d5025be7bcfbcc",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "9f55e044f655f06ffcd306ee0f2675eebc3bc12206f77e058ea2696fcd1ea302",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-new-deepseek-flash-09-separator-payload-light-r1",
+        "adjusted_yield_calls": [],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "daemon",
+        "task": "09-separator-payload",
+        "repeat": 1,
+        "start_ms": 1790714837057.609,
+        "end_ms": 1790714839218.6948,
+        "wall_ms": 2161.086082458496,
+        "daemon_stop_ms": 614.3841743469238,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 14,
+        "recorded_calls": 14,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714837237.5085,
+            "call": 1,
+            "response_end_ms": 1790714837237.552
+          },
+          {
+            "request_ms": 1790714837380.6484,
+            "call": 2,
+            "response_end_ms": 1790714837380.6768
+          },
+          {
+            "request_ms": 1790714837521.1077,
+            "call": 3,
+            "response_end_ms": 1790714837521.133
+          },
+          {
+            "request_ms": 1790714837695.6199,
+            "call": 4,
+            "response_end_ms": 1790714837695.659
+          },
+          {
+            "request_ms": 1790714837801.5894,
+            "call": 5,
+            "response_end_ms": 1790714837801.6177
+          },
+          {
+            "request_ms": 1790714837916.4526,
+            "call": 6,
+            "response_end_ms": 1790714837916.4963
+          },
+          {
+            "request_ms": 1790714838049.4956,
+            "call": 7,
+            "response_end_ms": 1790714838049.551
+          },
+          {
+            "request_ms": 1790714838212.681,
+            "call": 8,
+            "response_end_ms": 1790714838212.7285
+          },
+          {
+            "request_ms": 1790714838368.3716,
+            "call": 9,
+            "response_end_ms": 1790714838368.4177
+          },
+          {
+            "request_ms": 1790714838515.3347,
+            "call": 10,
+            "response_end_ms": 1790714838515.386
+          },
+          {
+            "request_ms": 1790714838648.91,
+            "call": 11,
+            "response_end_ms": 1790714838648.941
+          },
+          {
+            "request_ms": 1790714838803.187,
+            "call": 12,
+            "response_end_ms": 1790714838803.2092
+          },
+          {
+            "request_ms": 1790714838947.7065,
+            "call": 13,
+            "response_end_ms": 1790714838947.7446
+          },
+          {
+            "request_ms": 1790714839104.9033,
+            "call": 14,
+            "response_end_ms": 1790714839104.9375
+          }
+        ],
+        "load": [
+          2.16796875,
+          2.18017578125,
+          2.23193359375
+        ],
+        "daemon_client": {
+          "start_ms": 1790714837057.609,
+          "created_ms": 1790714837172.5642,
+          "turn_end_ms": 1790714839153.7373,
+          "end_ms": 1790714839218.6948,
+          "wall_ms": 2161.0859375,
+          "session_create_ms": 114.955322265625,
+          "teardown_ms": 64.95751953125,
+          "priming_ms": 865,
+          "stop_reason": "completed"
+        },
+        "client_harness_sha256": "0aed4edb6845362c259f24beb2eec455ee0e12361ff82565b5a4bd259ba24719",
+        "totals": {
+          "startup.shell": 8.769338000000062,
+          "startup.config": 1.5416720000000623,
+          "startup.authority": 0.10687000000007174,
+          "startup.permissions": 0.9825869999999668,
+          "startup.auth": 4.20203800000013,
+          "startup.roles": 0.7304160000001048,
+          "startup.registry": 1.110456000000113,
+          "startup.provider": 0.3659940000000006,
+          "startup.model_metadata": 3.0912610000000313,
+          "startup.instructions": 3.133348999999953,
+          "persistence.sqlite_immediate": 541.7766819999981,
+          "startup.services": 12.10519700000009,
+          "persistence.fsync": 459.4867560000016,
+          "persistence.write": 2.5854609999992135,
+          "persistence.rollout": 455.07967700000154,
+          "persistence.sqlite_transaction": 11.981461999998828,
+          "projection.thread_index": 42.4555519999999,
+          "persistence.flush": 469.942736000002,
+          "startup.session_mount": 40.26112799999987,
+          "startup.sidecars": 0.026389999999992142,
+          "startup.session": 49.928715999999895,
+          "prompt.assembly": 151.9496219999994,
+          "admission.model": 227.4999750000004,
+          "model.request": 85.98207799999977,
+          "model.admitted": 409.0218610000004,
+          "admission.tool": 105.48494600000049,
+          "receipts.commit": 186.64544699999897,
+          "tool.invoke": 539.6462270000002,
+          "tool.by_name.exec_command": 435.6689820000006,
+          "tool.admitted": 932.0529479999998,
+          "persistence.iteration": 1.286656000000221,
+          "persistence.history": 54.272429999999076,
+          "tool.by_name.FileRead": 59.10986399999956,
+          "tool.by_name.MultiEdit": 10.613195999999789,
+          "tool.by_name.Write": 34.254185000000234,
+          "persistence.atomic": 6.453126999999768,
+          "persistence.index": 6.635619000000133,
+          "runtime_outside_tools": 1629.173484802246,
+          "daemon.session_create": 114.955322265625,
+          "daemon.session_teardown": 64.95751953125,
+          "daemon.priming": 865,
+          "between_tools": 28.525146484375,
+          "post_tool.other": 146.30419921875,
+          "post_tool.receipts": 2.634033203125,
+          "post_tool.fsync": 197.169677734375,
+          "post_tool.sqlite": 253.360107421875,
+          "post_tool.persistence_other": 14.185791015625,
+          "post_tool.prompt_assembly": 122.67626953125,
+          "post_tool.admission": 30.566650390625,
+          "post_tool.derived_index": 2.7421875,
+          "post_tool.fsync_count": 65,
+          "post_tool.written_bytes": 156999,
+          "first_request_assembly": 8.392434000000094,
+          "boundary.overhead": 1334.982177734375,
+          "response_to_tool": 536.818115234375,
+          "tool_to_request": 769.638916015625,
+          "fsync_count": 154,
+          "written_bytes": 294619,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          100.66162109375,
+          96.371826171875,
+          131.12109375,
+          95.317138671875,
+          80.580810546875,
+          98.52978515625,
+          98.55224609375,
+          104.340576171875,
+          109.095458984375,
+          95.285888671875,
+          104.62939453125,
+          104.429931640625,
+          116.06640625
+        ]
+      },
+      {
+        "label": "r2-paired-after",
+        "core_revision": "36751015fdf7c4e2b45506f131d5025be7bcfbcc",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "3e3ade941bfd6f0b8ba180c5da089b5579aa9908dac05debc758994efee15474",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-confirm-screen-deepseek-flash-12-partition-map-light-r1",
+        "adjusted_yield_calls": [],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "daemon",
+        "task": "12-partition-map",
+        "repeat": 1,
+        "start_ms": 1790714852913.2456,
+        "end_ms": 1790714865405.5657,
+        "wall_ms": 12492.32006072998,
+        "daemon_stop_ms": 614.3462657928467,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 19,
+        "recorded_calls": 19,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714853116.552,
+            "call": 1,
+            "response_end_ms": 1790714853116.6133
+          },
+          {
+            "request_ms": 1790714853357.0317,
+            "call": 2,
+            "response_end_ms": 1790714853357.101
+          },
+          {
+            "request_ms": 1790714853532.1772,
+            "call": 3,
+            "response_end_ms": 1790714853532.241
+          },
+          {
+            "request_ms": 1790714853736.9358,
+            "call": 4,
+            "response_end_ms": 1790714853737.0137
+          },
+          {
+            "request_ms": 1790714853927.397,
+            "call": 5,
+            "response_end_ms": 1790714853927.4685
+          },
+          {
+            "request_ms": 1790714854091.5774,
+            "call": 6,
+            "response_end_ms": 1790714854091.6475
+          },
+          {
+            "request_ms": 1790714854252.856,
+            "call": 7,
+            "response_end_ms": 1790714854252.9114
+          },
+          {
+            "request_ms": 1790714854403.413,
+            "call": 8,
+            "response_end_ms": 1790714854403.4915
+          },
+          {
+            "request_ms": 1790714854575.665,
+            "call": 9,
+            "response_end_ms": 1790714854575.7498
+          },
+          {
+            "request_ms": 1790714854672.198,
+            "call": 10,
+            "response_end_ms": 1790714854672.2632
+          },
+          {
+            "request_ms": 1790714854845.4097,
+            "call": 11,
+            "response_end_ms": 1790714854845.4768
+          },
+          {
+            "request_ms": 1790714855001.4333,
+            "call": 12,
+            "response_end_ms": 1790714855001.4998
+          },
+          {
+            "request_ms": 1790714855180.2166,
+            "call": 13,
+            "response_end_ms": 1790714855180.2888
+          },
+          {
+            "request_ms": 1790714855340.2563,
+            "call": 14,
+            "response_end_ms": 1790714855340.3247
+          },
+          {
+            "request_ms": 1790714855643.0679,
+            "call": 15,
+            "response_end_ms": 1790714855643.135
+          },
+          {
+            "request_ms": 1790714864922.995,
+            "call": 16,
+            "response_end_ms": 1790714864923.052
+          },
+          {
+            "request_ms": 1790714865076.1729,
+            "call": 17,
+            "response_end_ms": 1790714865076.2295
+          },
+          {
+            "request_ms": 1790714865210.2422,
+            "call": 18,
+            "response_end_ms": 1790714865210.2969
+          },
+          {
+            "request_ms": 1790714865308.1128,
+            "call": 19,
+            "response_end_ms": 1790714865308.1738
+          }
+        ],
+        "load": [
+          2.2939453125,
+          2.212890625,
+          2.2421875
+        ],
+        "daemon_client": {
+          "start_ms": 1790714852913.2456,
+          "created_ms": 1790714853040.1182,
+          "turn_end_ms": 1790714865347.2793,
+          "end_ms": 1790714865405.5657,
+          "wall_ms": 12492.320068359375,
+          "session_create_ms": 126.87255859375,
+          "teardown_ms": 58.286376953125,
+          "priming_ms": 845,
+          "stop_reason": "completed"
+        },
+        "client_harness_sha256": "0aed4edb6845362c259f24beb2eec455ee0e12361ff82565b5a4bd259ba24719",
+        "totals": {
+          "startup.shell": 11.443399,
+          "startup.config": 1.4046769999999924,
+          "startup.authority": 0.10814299999992727,
+          "startup.permissions": 0.9704750000000786,
+          "startup.auth": 3.9849420000000464,
+          "startup.roles": 0.7210179999999582,
+          "startup.registry": 1.1190819999999349,
+          "startup.provider": 0.36163699999997334,
+          "startup.model_metadata": 3.529690999999957,
+          "startup.instructions": 4.860619000000042,
+          "persistence.sqlite_immediate": 833.0872119999974,
+          "startup.services": 16.697193999999854,
+          "persistence.fsync": 678.892646000003,
+          "persistence.write": 4.672392000002446,
+          "persistence.rollout": 679.1486609999897,
+          "persistence.sqlite_transaction": 23.771983000002365,
+          "projection.thread_index": 62.860377999998946,
+          "persistence.flush": 704.2934750000015,
+          "startup.session_mount": 43.13935100000003,
+          "startup.sidecars": 0.02969499999994696,
+          "startup.session": 53.00798499999996,
+          "prompt.assembly": 225.22794599999952,
+          "admission.model": 305.9427919999994,
+          "model.request": 132.14364899999828,
+          "model.admitted": 563.0906489999975,
+          "admission.tool": 186.7591489999977,
+          "receipts.commit": 316.0526450000036,
+          "tool.invoke": 9999.823631,
+          "tool.by_name.exec_command": 9833.06557,
+          "tool.admitted": 10690.609596,
+          "persistence.iteration": 1.3395229999996445,
+          "persistence.history": 87.50192500000185,
+          "tool.by_name.TodoWrite": 32.29553399999986,
+          "tool.by_name.FileRead": 22.808222000000114,
+          "tool.by_name.MultiEdit": 32.710079000000405,
+          "tool.by_name.Write": 78.94422599999962,
+          "persistence.atomic_sync": 12.208819999998923,
+          "persistence.atomic": 5.103513000000021,
+          "persistence.index": 5.265848000000915,
+          "runtime_outside_tools": 2492.4965744018555,
+          "daemon.session_create": 126.87255859375,
+          "daemon.session_teardown": 58.286376953125,
+          "daemon.priming": 845,
+          "between_tools": 340.400146484375,
+          "post_tool.other": 257.976318359375,
+          "post_tool.receipts": 4.109130859375,
+          "post_tool.fsync": 246.595458984375,
+          "post_tool.sqlite": 334.318603515625,
+          "post_tool.persistence_other": 19.15673828125,
+          "post_tool.prompt_assembly": 195.33154296875,
+          "post_tool.admission": 46.907470703125,
+          "post_tool.derived_index": 2.630126953125,
+          "post_tool.fsync_count": 90,
+          "post_tool.written_bytes": 200404,
+          "first_request_assembly": 10.069159000000127,
+          "boundary.overhead": 2190.5302734375,
+          "response_to_tool": 743.104736328125,
+          "tool_to_request": 1107.025390625,
+          "fsync_count": 252,
+          "written_bytes": 454034,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          160.181396484375,
+          126.558349609375,
+          135.03076171875,
+          117.132568359375,
+          121.23388671875,
+          110.41064453125,
+          134.0517578125,
+          129.161376953125,
+          88.2607421875,
+          129.77880859375,
+          112.30712890625,
+          133.400634765625,
+          126.182373046875,
+          162.220458984375,
+          123.718505859375,
+          96.89892578125,
+          96.560302734375,
+          87.441650390625
+        ]
+      },
+      {
+        "label": "r2-paired-after",
+        "core_revision": "36751015fdf7c4e2b45506f131d5025be7bcfbcc",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "cb3ce1e787dab195912b098a35441251333ac556a54e556e8d836cbcdefb68ed",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-new-deepseek-flash-03-window-padding-light-r1",
+        "adjusted_yield_calls": [
+          "call_01_ET_jTINB9gRceFRZJz8ZtIj0302"
+        ],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "warm",
+        "task": "03-window-padding",
+        "repeat": 1,
+        "start_ms": 1790714759446.0164,
+        "end_ms": 1790714771427.4045,
+        "wall_ms": 11981.388330459595,
+        "daemon_stop_ms": 614.499568939209,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 16,
+        "recorded_calls": 16,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714760760.4165,
+            "call": 1,
+            "response_end_ms": 1790714760760.4666
+          },
+          {
+            "request_ms": 1790714760895.7554,
+            "call": 2,
+            "response_end_ms": 1790714760895.8057
+          },
+          {
+            "request_ms": 1790714761002.239,
+            "call": 3,
+            "response_end_ms": 1790714761002.292
+          },
+          {
+            "request_ms": 1790714761049.9187,
+            "call": 4,
+            "response_end_ms": 1790714761049.973
+          },
+          {
+            "request_ms": 1790714761164.33,
+            "call": 5,
+            "response_end_ms": 1790714761164.3792
+          },
+          {
+            "request_ms": 1790714761205.7314,
+            "call": 6,
+            "response_end_ms": 1790714761205.7974
+          },
+          {
+            "request_ms": 1790714761324.1501,
+            "call": 7,
+            "response_end_ms": 1790714761324.2117
+          },
+          {
+            "request_ms": 1790714761461.3496,
+            "call": 8,
+            "response_end_ms": 1790714761461.407
+          },
+          {
+            "request_ms": 1790714761585.2292,
+            "call": 9,
+            "response_end_ms": 1790714761585.2837
+          },
+          {
+            "request_ms": 1790714761788.5442,
+            "call": 10,
+            "response_end_ms": 1790714761788.6055
+          },
+          {
+            "request_ms": 1790714761876.4082,
+            "call": 11,
+            "response_end_ms": 1790714761876.4746
+          },
+          {
+            "request_ms": 1790714761964.2546,
+            "call": 12,
+            "response_end_ms": 1790714761964.3186
+          },
+          {
+            "request_ms": 1790714762113.7224,
+            "call": 13,
+            "response_end_ms": 1790714762113.7712
+          },
+          {
+            "request_ms": 1790714762504.992,
+            "call": 14,
+            "response_end_ms": 1790714762505.0544
+          },
+          {
+            "request_ms": 1790714771181.0635,
+            "call": 15,
+            "response_end_ms": 1790714771181.122
+          },
+          {
+            "request_ms": 1790714771265.8628,
+            "call": 16,
+            "response_end_ms": 1790714771265.9297
+          }
+        ],
+        "load": [
+          1.5380859375,
+          2.0859375,
+          2.20751953125
+        ],
+        "totals": {
+          "startup.shell": 10.658550999999989,
+          "startup.config": 3.1174499999999625,
+          "startup.authority": 0.4905679999999393,
+          "startup.permissions": 21.13521300000002,
+          "startup.auth": 10.08099100000004,
+          "startup.roles": 4.1745760000001155,
+          "startup.registry": 8.017923999999994,
+          "startup.provider": 2.294020000000046,
+          "startup.model_metadata": 455.4638460000001,
+          "startup.instructions": 7.622404000000188,
+          "persistence.sqlite_immediate": 271.4178970000105,
+          "startup.services": 101.90900899999997,
+          "persistence.fsync": 178.73743700000182,
+          "persistence.write": 3.352731000009271,
+          "persistence.rollout": 182.3208839999943,
+          "persistence.sqlite_transaction": 15.17120199999431,
+          "projection.thread_index": 27.979442999999264,
+          "persistence.flush": 200.9059810000026,
+          "startup.session_mount": 43.29206599999998,
+          "startup.sidecars": 0.18291199999998753,
+          "startup.session": 73.244778,
+          "prompt.assembly": 189.07219600000144,
+          "admission.model": 126.21895799999902,
+          "model.request": 91.10984699999881,
+          "model.admitted": 258.83501399999795,
+          "admission.tool": 60.78904200000079,
+          "receipts.commit": 94.57371799999964,
+          "tool.invoke": 9547.512284999999,
+          "tool.by_name.exec_command": 891.7415749999996,
+          "tool.admitted": 9760.671111999998,
+          "persistence.iteration": 1.7388430000009976,
+          "persistence.history": 30.237903000000642,
+          "tool.by_name.FileRead": 9.599271000000044,
+          "tool.by_name.MultiEdit": 8.435855000000174,
+          "tool.by_name.Write": 34.57930299999998,
+          "persistence.atomic_sync": 33.175897999999506,
+          "tool.by_name.write_stdin": 8603.156281,
+          "persistence.atomic": 1.8084509999989677,
+          "persistence.index": 1.9921749999994063,
+          "lifecycle.daemon_start": 11.291174999999953,
+          "lifecycle.daemon_ready": 3.7369979999999714,
+          "lifecycle.session_create": 724.911182,
+          "lifecycle.teardown": 102.85723299999881,
+          "runtime_outside_tools": 2433.8766117095947,
+          "between_tools": 86.24951171875,
+          "post_tool.other": 156.708251953125,
+          "post_tool.receipts": 2.85498046875,
+          "post_tool.fsync": 76.413818359375,
+          "post_tool.sqlite": 113.180419921875,
+          "post_tool.persistence_other": 14.216552734375,
+          "post_tool.prompt_assembly": 178.08935546875,
+          "post_tool.admission": 33.86865234375,
+          "post_tool.derived_index": 0.74755859375,
+          "post_tool.fsync_count": 75,
+          "post_tool.written_bytes": 126409,
+          "first_request_assembly": 8.828710000000228,
+          "boundary.overhead": 957.0771484375,
+          "response_to_tool": 294.748046875,
+          "tool_to_request": 576.07958984375,
+          "fsync_count": 199,
+          "written_bytes": 311554,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          69.86181640625,
+          50.320556640625,
+          42.71533203125,
+          55.95166015625,
+          36.664306640625,
+          58.305419921875,
+          54.28662109375,
+          115.386474609375,
+          60.136474609375,
+          45.920654296875,
+          44.993896484375,
+          114.824462890625,
+          81.854736328125,
+          72.852783203125,
+          53.001953125
+        ]
+      },
+      {
+        "label": "r2-paired-after",
+        "core_revision": "36751015fdf7c4e2b45506f131d5025be7bcfbcc",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "b789b7722904734914dbf37b4bc7e221c5c0f399d06c439cf6a1dd096362fdfb",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-new-deepseek-flash-07-source-manifest-light-r1",
+        "adjusted_yield_calls": [],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "warm",
+        "task": "07-source-manifest",
+        "repeat": 1,
+        "start_ms": 1790714783218.6345,
+        "end_ms": 1790714785935.9592,
+        "wall_ms": 2717.324733734131,
+        "daemon_stop_ms": 614.6607398986816,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 14,
+        "recorded_calls": 14,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714784448.6838,
+            "call": 1,
+            "response_end_ms": 1790714784448.7324
+          },
+          {
+            "request_ms": 1790714784549.64,
+            "call": 2,
+            "response_end_ms": 1790714784549.7017
+          },
+          {
+            "request_ms": 1790714784668.62,
+            "call": 3,
+            "response_end_ms": 1790714784668.6692
+          },
+          {
+            "request_ms": 1790714784758.878,
+            "call": 4,
+            "response_end_ms": 1790714784758.9272
+          },
+          {
+            "request_ms": 1790714784880.1768,
+            "call": 5,
+            "response_end_ms": 1790714784880.2253
+          },
+          {
+            "request_ms": 1790714784981.464,
+            "call": 6,
+            "response_end_ms": 1790714784981.5178
+          },
+          {
+            "request_ms": 1790714785088.5486,
+            "call": 7,
+            "response_end_ms": 1790714785088.6077
+          },
+          {
+            "request_ms": 1790714785292.728,
+            "call": 8,
+            "response_end_ms": 1790714785292.7754
+          },
+          {
+            "request_ms": 1790714785493.983,
+            "call": 9,
+            "response_end_ms": 1790714785494.0447
+          },
+          {
+            "request_ms": 1790714785543.7566,
+            "call": 10,
+            "response_end_ms": 1790714785543.8035
+          },
+          {
+            "request_ms": 1790714785592.6902,
+            "call": 11,
+            "response_end_ms": 1790714785592.7336
+          },
+          {
+            "request_ms": 1790714785641.3896,
+            "call": 12,
+            "response_end_ms": 1790714785641.4224
+          },
+          {
+            "request_ms": 1790714785690.5967,
+            "call": 13,
+            "response_end_ms": 1790714785690.6265
+          },
+          {
+            "request_ms": 1790714785841.7974,
+            "call": 14,
+            "response_end_ms": 1790714785841.8447
+          }
+        ],
+        "load": [
+          1.912109375,
+          2.1455078125,
+          2.22509765625
+        ],
+        "totals": {
+          "lifecycle.daemon_start": 11.155009999999947,
+          "lifecycle.daemon_ready": 3.5155940000000783,
+          "lifecycle.session_create": 636.1156040000001,
+          "lifecycle.teardown": 34.75527199999988,
+          "startup.shell": 10.480829000000085,
+          "startup.config": 3.225921999999855,
+          "startup.authority": 0.5012580000000071,
+          "startup.permissions": 19.714786999999887,
+          "startup.auth": 9.251820999999836,
+          "startup.roles": 4.415306999999984,
+          "startup.registry": 8.25930500000004,
+          "startup.provider": 2.6684700000000703,
+          "startup.model_metadata": 370.29086299999994,
+          "startup.instructions": 7.230411000000004,
+          "persistence.sqlite_immediate": 211.42909699999473,
+          "startup.services": 105.15135299999997,
+          "persistence.fsync": 142.50814200000445,
+          "persistence.write": 2.8523590000004333,
+          "persistence.rollout": 145.3036069999971,
+          "persistence.sqlite_transaction": 12.743415000000368,
+          "projection.thread_index": 18.875428999999713,
+          "persistence.flush": 164.74637300000427,
+          "startup.session_mount": 40.77180300000009,
+          "startup.sidecars": 0.18061800000009498,
+          "startup.session": 66.55789300000015,
+          "prompt.assembly": 74.03439199999957,
+          "admission.model": 99.66450599999939,
+          "model.request": 82.45247500000187,
+          "model.admitted": 217.25499599999966,
+          "admission.tool": 48.8863080000001,
+          "receipts.commit": 76.01901199999998,
+          "tool.invoke": 666.6688180000003,
+          "tool.by_name.exec_command": 546.6479710000001,
+          "tool.admitted": 837.3676150000008,
+          "persistence.iteration": 1.375020999998469,
+          "persistence.history": 23.982258,
+          "tool.by_name.Write": 95.74843899999996,
+          "tool.by_name.FileRead": 11.368978999999854,
+          "tool.by_name.MultiEdit": 12.903429000000415,
+          "persistence.atomic": 1.7198059999996076,
+          "persistence.index": 1.9068160000001626,
+          "runtime_outside_tools": 2050.656276702881,
+          "between_tools": 71.4609375,
+          "post_tool.other": 147.4453125,
+          "post_tool.receipts": 2.835693359375,
+          "post_tool.fsync": 52.931884765625,
+          "post_tool.sqlite": 87.584716796875,
+          "post_tool.persistence_other": 12.03173828125,
+          "post_tool.prompt_assembly": 61.63671875,
+          "post_tool.admission": 29.84814453125,
+          "post_tool.derived_index": 0.5224609375,
+          "post_tool.fsync_count": 65,
+          "post_tool.written_bytes": 126041,
+          "first_request_assembly": 9.022551999999905,
+          "boundary.overhead": 725.81298828125,
+          "response_to_tool": 259.515380859375,
+          "tool_to_request": 394.836669921875,
+          "fsync_count": 174,
+          "written_bytes": 310887,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          64.0009765625,
+          59.088623046875,
+          58.97998046875,
+          57.3447265625,
+          64.0537109375,
+          61.80224609375,
+          60.710205078125,
+          66.90478515625,
+          46.6005859375,
+          45.9443359375,
+          45.57080078125,
+          45.176513671875,
+          49.635498046875
+        ]
+      },
+      {
+        "label": "r2-paired-after",
+        "core_revision": "36751015fdf7c4e2b45506f131d5025be7bcfbcc",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "9f55e044f655f06ffcd306ee0f2675eebc3bc12206f77e058ea2696fcd1ea302",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-new-deepseek-flash-09-separator-payload-light-r1",
+        "adjusted_yield_calls": [],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "warm",
+        "task": "09-separator-payload",
+        "repeat": 1,
+        "start_ms": 1790714846111.3909,
+        "end_ms": 1790714849529.462,
+        "wall_ms": 3418.0710315704346,
+        "daemon_stop_ms": 614.4254207611084,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 14,
+        "recorded_calls": 14,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714847758.0674,
+            "call": 1,
+            "response_end_ms": 1790714847758.1206
+          },
+          {
+            "request_ms": 1790714847899.1147,
+            "call": 2,
+            "response_end_ms": 1790714847899.1775
+          },
+          {
+            "request_ms": 1790714848024.567,
+            "call": 3,
+            "response_end_ms": 1790714848024.6272
+          },
+          {
+            "request_ms": 1790714848186.5632,
+            "call": 4,
+            "response_end_ms": 1790714848186.626
+          },
+          {
+            "request_ms": 1790714848292.2646,
+            "call": 5,
+            "response_end_ms": 1790714848292.3025
+          },
+          {
+            "request_ms": 1790714848413.8616,
+            "call": 6,
+            "response_end_ms": 1790714848413.9219
+          },
+          {
+            "request_ms": 1790714848530.4016,
+            "call": 7,
+            "response_end_ms": 1790714848530.4695
+          },
+          {
+            "request_ms": 1790714848668.3738,
+            "call": 8,
+            "response_end_ms": 1790714848668.4314
+          },
+          {
+            "request_ms": 1790714848799.277,
+            "call": 9,
+            "response_end_ms": 1790714848799.3315
+          },
+          {
+            "request_ms": 1790714848919.25,
+            "call": 10,
+            "response_end_ms": 1790714848919.3206
+          },
+          {
+            "request_ms": 1790714849040.7634,
+            "call": 11,
+            "response_end_ms": 1790714849040.8142
+          },
+          {
+            "request_ms": 1790714849152.9312,
+            "call": 12,
+            "response_end_ms": 1790714849152.9836
+          },
+          {
+            "request_ms": 1790714849280.3438,
+            "call": 13,
+            "response_end_ms": 1790714849280.3918
+          },
+          {
+            "request_ms": 1790714849407.7637,
+            "call": 14,
+            "response_end_ms": 1790714849407.809
+          }
+        ],
+        "load": [
+          2.45654296875,
+          2.24072265625,
+          2.25146484375
+        ],
+        "totals": {
+          "startup.shell": 8.649734999999964,
+          "startup.config": 3.202649000000065,
+          "startup.authority": 0.5065369999999803,
+          "startup.permissions": 28.537995999999794,
+          "startup.auth": 10.549336999999923,
+          "startup.roles": 4.537796000000071,
+          "startup.registry": 8.092853999999988,
+          "startup.provider": 2.328665000000001,
+          "startup.model_metadata": 654.12337,
+          "startup.instructions": 7.262120000000323,
+          "persistence.sqlite_immediate": 462.6229069999945,
+          "startup.services": 156.7810599999998,
+          "persistence.fsync": 391.70978799999784,
+          "persistence.write": 2.7250809999968624,
+          "persistence.rollout": 387.1160719999948,
+          "persistence.sqlite_transaction": 11.881102999999257,
+          "projection.thread_index": 34.941791000000194,
+          "persistence.flush": 401.3863500000016,
+          "startup.session_mount": 82.78811300000007,
+          "startup.sidecars": 0.18178000000034444,
+          "startup.session": 113.02865400000019,
+          "prompt.assembly": 116.74805699999933,
+          "admission.model": 202.97672800000055,
+          "model.request": 83.23659200000111,
+          "model.admitted": 365.57969999999887,
+          "admission.tool": 91.52432999999928,
+          "receipts.commit": 158.1236889999991,
+          "tool.invoke": 497.16017099999954,
+          "tool.by_name.exec_command": 395.6349799999998,
+          "tool.admitted": 834.0436799999993,
+          "persistence.iteration": 1.2779199999999946,
+          "persistence.history": 43.62811800000054,
+          "tool.by_name.FileRead": 56.83864700000004,
+          "tool.by_name.MultiEdit": 10.307364999999663,
+          "tool.by_name.Write": 34.37917900000002,
+          "persistence.atomic": 4.818360999999641,
+          "persistence.index": 4.969853999999941,
+          "lifecycle.daemon_start": 11.375431999999932,
+          "lifecycle.daemon_ready": 3.9720980000000736,
+          "lifecycle.session_create": 1056.8749039999998,
+          "lifecycle.teardown": 55.77196300000014,
+          "runtime_outside_tools": 2928.6989612579346,
+          "between_tools": 26.41015625,
+          "post_tool.other": 150.156494140625,
+          "post_tool.receipts": 3.37158203125,
+          "post_tool.fsync": 161.967041015625,
+          "post_tool.sqlite": 207.13134765625,
+          "post_tool.persistence_other": 13.204833984375,
+          "post_tool.prompt_assembly": 93.60107421875,
+          "post_tool.derived_index": 2.326416015625,
+          "post_tool.admission": 29.436767578125,
+          "post_tool.fsync_count": 65,
+          "post_tool.written_bytes": 161035,
+          "first_request_assembly": 8.787152000000333,
+          "boundary.overhead": 1159.585205078125,
+          "response_to_tool": 471.9794921875,
+          "tool_to_request": 661.195556640625,
+          "fsync_count": 154,
+          "written_bytes": 293765,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          99.720947265625,
+          83.152099609375,
+          118.984375,
+          95.331298828125,
+          87.179931640625,
+          82.1435546875,
+          77.57421875,
+          83.127685546875,
+          84.79296875,
+          86.06103515625,
+          78.302001953125,
+          91.6826171875,
+          91.532470703125
+        ]
+      },
+      {
+        "label": "r2-paired-after",
+        "core_revision": "36751015fdf7c4e2b45506f131d5025be7bcfbcc",
+        "harness_sha256": "0abcbec46ff1a84cb5ff8ad47358257981ecede1794ff06c9357e4f816bb3635",
+        "trace_sha256": "3e3ade941bfd6f0b8ba180c5da089b5579aa9908dac05debc758994efee15474",
+        "source_dir": "/evidence/light-ultra/runs/candidate-round2-confirm-screen-deepseek-flash-12-partition-map-light-r1",
+        "adjusted_yield_calls": [],
+        "replay_errors": [],
+        "replay_valid": true,
+        "mode": "warm",
+        "task": "12-partition-map",
+        "repeat": 1,
+        "start_ms": 1790714883325.641,
+        "end_ms": 1790714896407.0708,
+        "wall_ms": 13081.429719924927,
+        "daemon_stop_ms": 614.5570278167725,
+        "exit_code": 0,
+        "stop_exit_code": 0,
+        "check_exit_code": 0,
+        "calls": 19,
+        "recorded_calls": 19,
+        "request_boundaries": [
+          {
+            "request_ms": 1790714884661.1077,
+            "call": 1,
+            "response_end_ms": 1790714884661.163
+          },
+          {
+            "request_ms": 1790714884878.7498,
+            "call": 2,
+            "response_end_ms": 1790714884878.81
+          },
+          {
+            "request_ms": 1790714885035.7341,
+            "call": 3,
+            "response_end_ms": 1790714885035.7964
+          },
+          {
+            "request_ms": 1790714885241.514,
+            "call": 4,
+            "response_end_ms": 1790714885241.5747
+          },
+          {
+            "request_ms": 1790714885475.6367,
+            "call": 5,
+            "response_end_ms": 1790714885475.7004
+          },
+          {
+            "request_ms": 1790714885649.4126,
+            "call": 6,
+            "response_end_ms": 1790714885649.4727
+          },
+          {
+            "request_ms": 1790714885818.9563,
+            "call": 7,
+            "response_end_ms": 1790714885819.0146
+          },
+          {
+            "request_ms": 1790714885948.8804,
+            "call": 8,
+            "response_end_ms": 1790714885948.9497
+          },
+          {
+            "request_ms": 1790714886103.3184,
+            "call": 9,
+            "response_end_ms": 1790714886103.3755
+          },
+          {
+            "request_ms": 1790714886195.9014,
+            "call": 10,
+            "response_end_ms": 1790714886195.9297
+          },
+          {
+            "request_ms": 1790714886352.3853,
+            "call": 11,
+            "response_end_ms": 1790714886352.4539
+          },
+          {
+            "request_ms": 1790714886477.351,
+            "call": 12,
+            "response_end_ms": 1790714886477.405
+          },
+          {
+            "request_ms": 1790714886648.939,
+            "call": 13,
+            "response_end_ms": 1790714886649.0002
+          },
+          {
+            "request_ms": 1790714886776.4026,
+            "call": 14,
+            "response_end_ms": 1790714886776.466
+          },
+          {
+            "request_ms": 1790714887077.7798,
+            "call": 15,
+            "response_end_ms": 1790714887077.8503
+          },
+          {
+            "request_ms": 1790714895916.5427,
+            "call": 16,
+            "response_end_ms": 1790714895916.596
+          },
+          {
+            "request_ms": 1790714896066.473,
+            "call": 17,
+            "response_end_ms": 1790714896066.527
+          },
+          {
+            "request_ms": 1790714896193.5537,
+            "call": 18,
+            "response_end_ms": 1790714896193.6204
+          },
+          {
+            "request_ms": 1790714896285.598,
+            "call": 19,
+            "response_end_ms": 1790714896285.6594
+          }
+        ],
+        "load": [
+          2.09228515625,
+          2.1748046875,
+          2.228515625
+        ],
+        "totals": {
+          "lifecycle.daemon_start": 11.014035999999976,
+          "lifecycle.daemon_ready": 3.519892000000027,
+          "lifecycle.session_create": 753.0685860000001,
+          "lifecycle.teardown": 59.491148000000976,
+          "startup.shell": 10.872321000000056,
+          "startup.config": 2.987386000000015,
+          "startup.authority": 0.46786500000007436,
+          "startup.permissions": 27.371004000000084,
+          "startup.auth": 9.016601000000037,
+          "startup.roles": 3.981113999999934,
+          "startup.registry": 7.079848999999967,
+          "startup.provider": 2.1302639999998974,
+          "startup.model_metadata": 419.43535299999985,
+          "startup.instructions": 7.127388999999994,
+          "persistence.sqlite_immediate": 797.6320650000011,
+          "startup.services": 119.24402600000008,
+          "persistence.fsync": 637.9564409999889,
+          "persistence.write": 4.3814790000024,
+          "persistence.rollout": 639.0924729999936,
+          "persistence.sqlite_transaction": 22.432143999993514,
+          "projection.thread_index": 55.53354799999988,
+          "persistence.flush": 665.3850799999977,
+          "startup.session_mount": 64.09474699999987,
+          "startup.sidecars": 0.1798359999997956,
+          "startup.session": 94.40528799999993,
+          "prompt.assembly": 189.67066200000045,
+          "admission.model": 272.35497100000157,
+          "model.request": 124.80107899999621,
+          "model.admitted": 508.6980040000003,
+          "admission.tool": 175.69481400000268,
+          "receipts.commit": 323.91104700000005,
+          "tool.invoke": 9539.652838,
+          "tool.by_name.exec_command": 9378.489011,
+          "tool.admitted": 10225.104410999997,
+          "persistence.iteration": 1.3339739999973972,
+          "persistence.history": 86.78913300000022,
+          "tool.by_name.TodoWrite": 31.168693999999505,
+          "tool.by_name.FileRead": 32.052818999999545,
+          "tool.by_name.MultiEdit": 28.14679600000045,
+          "tool.by_name.Write": 69.7955179999999,
+          "persistence.atomic_sync": 17.318413999999393,
+          "persistence.atomic": 4.814343000000008,
+          "persistence.index": 5.007835000000341,
+          "runtime_outside_tools": 3541.7766437530518,
+          "between_tools": 369.049072265625,
+          "post_tool.other": 239.88134765625,
+          "post_tool.receipts": 3.942626953125,
+          "post_tool.fsync": 229.2958984375,
+          "post_tool.sqlite": 327.272705078125,
+          "post_tool.persistence_other": 18.272216796875,
+          "post_tool.prompt_assembly": 160.37841796875,
+          "post_tool.admission": 44.30908203125,
+          "post_tool.derived_index": 3.09130859375,
+          "post_tool.fsync_count": 90,
+          "post_tool.written_bytes": 200382,
+          "first_request_assembly": 8.270625999999993,
+          "boundary.overhead": 2083.76953125,
+          "response_to_tool": 688.27685546875,
+          "tool_to_request": 1026.443603515625,
+          "fsync_count": 252,
+          "written_bytes": 454721,
+          "native_fsync_count": 0,
+          "native_written_bytes": 0
+        },
+        "boundary_source": "scripted_server_wire",
+        "boundary_gaps_ms": [
+          143.1337890625,
+          111.55029296875,
+          136.0634765625,
+          155.151123046875,
+          130.98291015625,
+          114.6923828125,
+          116.99169921875,
+          113.541015625,
+          84.721435546875,
+          114.53759765625,
+          89.551513671875,
+          119.890625,
+          93.305419921875,
+          161.0615234375,
+          131.9970703125,
+          94.943603515625,
+          89.43896484375,
+          82.215087890625
+        ]
+      }
+    ]
+  }
+}

@@ -211,6 +211,7 @@ export class ExecutionAdmissionKernel {
     string,
     Set<(event: AdmissionJournalEvent) => void>
   >();
+  readonly #criticalBatchListeners = new Map<string, Set<(events: readonly AdmissionJournalEvent[]) => void>>();
   readonly #criticalListeners = new Map<
     string,
     Set<(event: AdmissionJournalEvent) => void>
@@ -218,6 +219,7 @@ export class ExecutionAdmissionKernel {
   readonly #usageListeners = new Map<WorkspaceBinding, Set<UsageSubscription>>();
   #limits: AdmissionConcurrencyLimits;
   #drainScheduled = false;
+  #acquireDepth = 0;
   #closed = false;
 
   constructor(options: ExecutionAdmissionKernelOptions) {
@@ -423,7 +425,34 @@ export class ExecutionAdmissionKernel {
     input: AdmissionAcquireInput,
     signal?: AbortSignal,
   ): Promise<AdmissionLease> {
-    const attempt = this.admit(binding, input);
+    this.#acquireDepth += 1;
+    try {
+    this.#assertOpen();
+    const request = requestFor(binding, input, this.#now());
+    // Respect queued work and concurrency. Only an empty live queue can use
+    // the synchronous fast path; contended work keeps the existing scheduler.
+    const immediate = this.#acquireDepth === 1 && this.#pending.size === 0 &&
+      (this.#criticalListeners.get(request.step.runId)?.size ?? 0) === 0 &&
+      this.#hasCapacity(request)
+      ? binding.workspace.repository.enqueueAndClaim(request, {
+          ownerId: this.#ownerId, ownerPid: this.#ownerPid, attached: true,
+        })
+      : undefined;
+    if (immediate?.claim?.kind === "claimed") {
+      hitM4DurabilityFailpoint("after_reservation_commit");
+    }
+    const attempt = immediate?.attempt ?? this.admit(binding, input);
+    if (immediate !== undefined) this.#publishNewJournal(binding.workspace);
+    if (immediate?.claim?.kind === "claimed") {
+      const grant = immediate.claim.lease;
+      if (this.#active.has(grant.reservation.reservationId)) {
+        return Promise.reject(new AdmissionDeniedError("admission_step_already_running"));
+      }
+      return Promise.resolve(this.#activateGrant(binding.workspace, grant, signal));
+    }
+    if (immediate?.claim?.kind === "not_claimed") {
+      return Promise.reject(new AdmissionDeniedError(immediate.claim.reason));
+    }
     if (attempt.decision.decision === "deny") {
       return Promise.reject(
         new AdmissionDeniedError(attempt.decision.reason ?? "denied"),
@@ -483,6 +512,7 @@ export class ExecutionAdmissionKernel {
     );
     this.#pending.set(pending.key, pending);
     return this.#attachPending(pending, signal);
+    } finally { this.#acquireDepth -= 1; }
   }
 
   markDispatched(
@@ -735,6 +765,16 @@ export class ExecutionAdmissionKernel {
     };
   }
 
+  subscribeCriticalBatch(runId: string, listener: (events: readonly AdmissionJournalEvent[]) => void): () => void {
+    const listeners = this.#criticalBatchListeners.get(runId) ?? new Set();
+    listeners.add(listener);
+    this.#criticalBatchListeners.set(runId, listeners);
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) this.#criticalBatchListeners.delete(runId);
+    };
+  }
+
   subscribeCritical(
     runId: string,
     listener: (event: AdmissionJournalEvent) => void,
@@ -966,6 +1006,7 @@ export class ExecutionAdmissionKernel {
     this.#active.clear();
     this.#listeners.clear();
     this.#criticalListeners.clear();
+    this.#criticalBatchListeners.clear();
     this.#usageListeners.clear();
     for (const binding of this.#byStatePath.values()) {
       binding.driver.close();
@@ -1096,6 +1137,7 @@ export class ExecutionAdmissionKernel {
         }
         this.#listeners.delete(runId);
         this.#criticalListeners.delete(runId);
+        this.#criticalBatchListeners.delete(runId);
       }
     }
     this.#usageListeners.delete(binding);
@@ -1529,6 +1571,18 @@ export class ExecutionAdmissionKernel {
         limit: JOURNAL_PAGE_SIZE,
       });
       if (events.length === 0) return;
+      // All SQLite writes committed before any canonical projection or observer.
+      // Do not advance the cursor if any group fails; retry is identity-idempotent.
+      hitM4DurabilityFailpoint("after_admission_sqlite_commit_before_canonical_append");
+      const groups = new Map<string, AdmissionJournalEvent[]>();
+      for (const event of events) {
+        const group = groups.get(event.runId) ?? [];
+        group.push(event);
+        groups.set(event.runId, group);
+      }
+      for (const [runId, group] of groups) {
+        for (const listener of this.#criticalBatchListeners.get(runId) ?? []) listener(group);
+      }
       for (const event of events) {
         // Admission SQLite has already committed at this point. Canonical
         // journal projection is nevertheless a physical-work boundary: a
@@ -1552,8 +1606,8 @@ export class ExecutionAdmissionKernel {
             // Observers never get to roll back a committed admission event.
           }
         }
-        this.#publishUsage(binding);
       }
+      this.#publishUsage(binding);
       if (events.length < JOURNAL_PAGE_SIZE) return;
     }
   }
@@ -1654,6 +1708,10 @@ class KernelAdmissionClient implements ExecutionAdmissionClient {
 
   subscribeUsage(listener: (summary: AdmissionUsageSummary) => void): () => void {
     return this.kernel.subscribeUsage(this.binding, listener);
+  }
+
+  subscribeCriticalBatch(listener: (events: readonly AdmissionJournalEvent[]) => void): () => void {
+    return this.kernel.subscribeCriticalBatch(this.scope.runId, listener);
   }
 
   subscribeCritical(

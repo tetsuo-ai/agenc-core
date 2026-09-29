@@ -58,6 +58,17 @@ function downloadsOf(calls: readonly string[], url: string): number {
 }
 
 describe("public model catalog downloads", () => {
+  test("shares the public OpenRouter catalog across independent sessions", async () => {
+    const url = "https://openrouter.ai/api/v1/models";
+    const { impl, calls } = countingFetch({ [url]: json({ data: [{ id: "anthropic/unlisted-catalog-model", context_length: 65536, top_provider: { max_completion_tokens: 4096 } }] }) });
+    const publicCatalogs = new PublicModelCatalogCache();
+    for (let n = 0; n < 2; n++) {
+      const result = await new ModelMetadataResolver({ fetchImpl: impl, env: {}, publicCatalogs }).resolve({ ...LOOKUP, provider: "openrouter", model: "anthropic/unlisted-catalog-model" });
+      expect(result.source).toBe("openrouter_registry");
+    }
+    expect(downloadsOf(calls, url)).toBe(1);
+  });
+
   test("resolvers sharing a cache download each catalog once", async () => {
     const { impl, calls } = countingFetch(LITELLM_ONLY);
     const publicCatalogs = new PublicModelCatalogCache();
