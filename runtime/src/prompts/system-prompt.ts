@@ -589,7 +589,7 @@ export interface EnvInfoInputs {
 /** env_info_simple — cwd, model, git branch, time, OS. AgenC-original. */
 export function buildEnvInfoSection(inputs: EnvInfoInputs, light = false): string {
   const { model, provider, cwd } = inputs;
-  if (light) return `# Environment\nWorking directory: <cwd>${cwd}</cwd>\nPlatform: ${osPlatform()}. Date: ${new Date().toISOString().slice(0, 10)}.`;
+  if (light) return `# Environment\nWorking directory: <cwd>${cwd}</cwd>\n${provider ? `Model: ${model} (provider: ${provider})` : `Model: ${model}`}\nPlatform: ${osPlatform()}. Date: ${new Date().toISOString().slice(0, 10)}.`;
   const branch = readGitBranch(cwd, inputs.sandboxExecutionBroker);
   // I-82: wall-clock OK here — display only, not a deadline.
   const now = new Date().toISOString();
