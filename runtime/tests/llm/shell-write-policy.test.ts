@@ -273,7 +273,7 @@ describe("classifyShellWorkspaceWritePolicy", () => {
       expect(decision.blockedTargets).toEqual(["/repo/src/x.js"]);
       expect(decision.blockedDeletions).toEqual([]);
       expect(decision.message).toContain("shell_workspace_file_write_disallowed");
-      expect(decision.message).toContain("use Edit or Write instead");
+      expect(decision.message).toContain('edits:[{old_string:"",new_string:"<file content>"}]');
     });
 
     it("keeps blocking tee, touch and truncate as content writes", () => {
@@ -300,7 +300,7 @@ describe("classifyShellWorkspaceWritePolicy", () => {
       expect(decision.blocked).toBe(true);
       expect(decision.blockedTargets).toEqual(["/repo/src/x.js"]);
       expect(decision.blockedDeletions).toEqual([]);
-      expect(decision.message).toContain("use Edit or Write instead");
+      expect(decision.message).toContain('edits:[{old_string:"",new_string:"<file content>"}]');
     });
 
     it("still allows deletions under generated output roots without approval", () => {
