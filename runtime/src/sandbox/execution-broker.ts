@@ -67,6 +67,7 @@ import {
 import { resolveSessionTempRoot } from "../session/runtime-options.js";
 import { cronLockAuthorityRoots, protectCronAuthority } from "./cron-authority-protection.js";
 import { desktopAuthorityRoot, protectDesktopAuthority } from "./desktop-authority-protection.js";
+import { protectDaemonSocket } from "./daemon-socket-protection.js";
 import {
   confineProfileToWorktree,
   type SandboxForkOptions,
@@ -1121,13 +1122,13 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
   ): UnifiedExecRuntimeSandbox | undefined {
     if (!this.required) return undefined;
     const status = this.#assertReadyAfterLifecycleAdmission(surface);
-    const profile = protectCronAuthority(protectDesktopAuthority(
+    const profile = protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
       this.#permissionProfile ??
       permissionProfileForSandboxMode(this.mode, {
         cwd: this.#cwd,
       }),
       this.#desktopAuthorityRoot,
-    ), this.#cronAuthorityRoots);
+    ), this.#cronAuthorityRoots));
     const confined = this.#routineConfines(surface);
     const tempRoot = confined ? this.#routineChildTempRoot! : this.#sessionTempRoot;
     return {
@@ -1191,7 +1192,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
               ...modeSandbox,
               permissionProfile: this.#confineToWorktree(
                 surface,
-                protectCronAuthority(protectDesktopAuthority(command.permissionProfileOverride, this.#desktopAuthorityRoot), this.#cronAuthorityRoots),
+                protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(command.permissionProfileOverride, this.#desktopAuthorityRoot), this.#cronAuthorityRoots)),
                 modeSandbox.sessionTempRoot,
               ),
             }

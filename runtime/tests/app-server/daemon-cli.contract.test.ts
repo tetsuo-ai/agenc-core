@@ -4587,6 +4587,37 @@ workspace = ${JSON.stringify(process.cwd())}
     }
   });
 
+  it.skipIf(process.platform === "win32")("serves health and publishes the resolved endpoint for a long daemon home", async () => {
+    const root = await tempAgencHome();
+    const agencHome = join(root, "long-home-".repeat(14));
+    const host = createHost(agencHome);
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const socketPath = resolveAgenCDaemonSocketPath(host.env, host.userHome);
+    expect(Buffer.byteLength(join(agencHome, "daemon.sock"))).toBeGreaterThanOrEqual(110);
+    expect(socketPath).not.toBe(join(agencHome, "daemon.sock"));
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io: createIo(), signalProcess },
+    );
+    try {
+      await expect(waitForPid(pidPath)).resolves.toBe(host.pid);
+      const info = readDaemonRuntimeInfo(resolveAgenCDaemonRuntimeInfoPath(agencHome));
+      expect(info?.socketPath).toBe(socketPath);
+      const client = createAgenCJsonLineDaemonRequestClient({
+        socketPath,
+        authCookie: (await readFile(resolveAgenCDaemonCookiePath(host.env, host.userHome), "utf8")).trim(),
+        timeoutMs: 2_000,
+      });
+      await expect(client.request("health.ready", {})).resolves.toMatchObject({ ready: true });
+    } finally {
+      signalProcess.emit("SIGTERM");
+      await expect(running).resolves.toBe(0);
+      expect(existsSync(socketPath)).toBe(false);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("foreground daemon routes SIGHUP through cleanup and removes daemon.pid", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);

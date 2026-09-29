@@ -1,3 +1,4 @@
+import { agenCDaemonLocalEndpoint } from "../../packages/agenc-sdk/lib/local-endpoint.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
@@ -211,7 +212,7 @@ async function createShortGateRoot() {
 
 function assertShortSocketPath(agencHome) {
   if (process.platform === "win32") return;
-  const socketPath = path.join(agencHome, "daemon.sock");
+  const socketPath = agenCDaemonLocalEndpoint(agencHome);
   if (Buffer.byteLength(socketPath) >= 96) {
     throw new Error(`private TUI gate socket path is too long: ${socketPath}`);
   }
@@ -503,7 +504,9 @@ async function assertOwnedState(state) {
   }
 
   for (const filename of ["daemon.pid", "daemon.sock"]) {
-    const candidate = path.join(expectedAgencHome, filename);
+    const candidate = filename === "daemon.sock"
+      ? agenCDaemonLocalEndpoint(expectedAgencHome)
+      : path.join(expectedAgencHome, filename);
     if (!(await pathExists(candidate))) continue;
     const metadata = await lstat(candidate);
     if (metadata.isSymbolicLink()) {
@@ -761,7 +764,7 @@ export async function stopTuiGateDaemon(state) {
     );
   }
   const deadline = Date.now() + DAEMON_FORCE_KILL_GRACE_MS;
-  const socketPath = path.join(state.agencHome, "daemon.sock");
+  const socketPath = agenCDaemonLocalEndpoint(state.agencHome);
   while (
     ((await pathExists(socketPath)) ||
       (await readDaemonPid(state.agencHome)) !== null) &&
@@ -821,7 +824,7 @@ async function performTeardown(state) {
     );
   }
 
-  const socketPath = path.join(state.agencHome, "daemon.sock");
+  const socketPath = agenCDaemonLocalEndpoint(state.agencHome);
   const socketDeadline = Date.now() + DAEMON_FORCE_KILL_GRACE_MS;
   while ((await pathExists(socketPath)) && Date.now() < socketDeadline) {
     await sleep(DAEMON_POLL_MS);

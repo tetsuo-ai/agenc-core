@@ -106,7 +106,7 @@ also needs `removeListener("data")`. Update exit-only test fakes to emit `close`
 after exit and stdio closure. A Node `ChildProcess` satisfies the contract
 without an adapter. No protocol or stored-state migration is needed.
 
-- Local endpoint: `${AGENC_HOME:-~/.agenc}/daemon.sock` on Unix; a stable per-home named pipe on Windows
+- Local endpoint: `${AGENC_HOME:-~/.agenc}/daemon.sock` on Unix; paths over 107 UTF-8 bytes on Linux or 103 on macOS use `/tmp/agenc-<uid>/<sha256-of-canonical-home>.sock`. The fallback directory must be owned by the current user, mode `0700`, and not a symlink. Windows uses the existing stable per-home named pipe.
 - Cookie: `${AGENC_HOME:-~/.agenc}/daemon.cookie` (first message must be `initialize` with `authCookie`; `connect()` handles this)
 - Plugin storage: `createSession()` requires an exact absolute `pluginStorageRoot` of at most 4096 UTF-8 bytes, with no surrounding whitespace. `AgencClient` does not reread `AGENC_PLUGIN_CACHE_DIR`, derive a root from `AGENC_HOME`, or accept `agentId`; use `attachAgent()` for an existing agent.
 - Autostart: runs `agenc daemon start` when the socket is down (disable with `autostart: false`); when that start fails, the error carries the CLI's exit code and its last stderr lines
