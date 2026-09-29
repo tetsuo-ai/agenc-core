@@ -4201,6 +4201,12 @@ describe("runAgent", () => {
     const provider = makeProvider([{ content: "initial result" }]);
     const session = makeStubSession({ services: { provider } });
     const { control, live } = await spawnLive(session);
+    let costUsd = 0;
+    Object.assign(session.services, { executionAdmission: {
+      scope: { runId: session.conversationId },
+      getUsageSummary: () => ({ agents: [{ runId: live.agentId, costUsd, hasUnknownCost: false }] }),
+      forSession: () => undefined,
+    } });
     const childOutcomes: unknown[] = [];
     let unsubscribeChild: (() => void) | undefined;
     const iter = runAgent({
@@ -4210,6 +4216,7 @@ describe("runAgent", () => {
       taskPrompt: "initial task",
       keepAlive: true,
       onCacheSafeParams: (captured) => {
+        costUsd = 1;
         const child = (
           captured as unknown as {
             toolUseContext: { admissionSession: Session };
@@ -4255,6 +4262,8 @@ describe("runAgent", () => {
         turnId: accepted.turnId,
         outcome: "nack",
         reason: "worker_teardown_before_start",
+        terminal: expect.objectContaining({ costUsd: 0, completedWork: "",
+          unfinishedWork: "never start this", dispatch: "not_sent" }),
       }),
     );
   });
