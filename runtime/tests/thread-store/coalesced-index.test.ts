@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { tmpdir as temporaryRoot } from "node:os";
+import { join as pathJoin } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { RolloutStore } from "../../src/session/rollout-store.js";
 import { openStateDatabases, type StateSqliteDriver } from "../../src/state/sqlite-driver.js";
@@ -11,9 +11,9 @@ import { FileThreadStore } from "../../src/thread-store/store.js";
 const cleanup: (() => void)[] = [];
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); for (const fn of cleanup.splice(0).reverse()) fn(); });
 function fixture() {
-  const directory = mkdtempSync(join(tmpdir(), "agenc-coalesced-index-"));
-  const cwd = join(directory, "project"); const agencHome = join(directory, "home");
-  mkdirSync(join(cwd, ".git"), { recursive: true });
+  const directory = mkdtempSync(pathJoin(temporaryRoot(), "agenc-coalesced-index-"));
+  const cwd = pathJoin(directory, "project"); const agencHome = pathJoin(directory, "home");
+  mkdirSync(pathJoin(cwd, ".git"), { recursive: true });
   cleanup.push(() => rmSync(directory, { recursive: true, force: true }));
   const store = new FileThreadStore({ cwd, agencHome });
   const rollout = new RolloutStore({ cwd, agencHome, sessionId: "coalesced", agencVersion: "0.18.0", sessionTempRoot: directory });

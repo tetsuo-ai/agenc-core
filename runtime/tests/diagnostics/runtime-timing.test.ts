@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { tmpdir as temporaryRoot } from "node:os";
+import { join as pathJoin } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 
 const directories: string[] = [];
@@ -20,16 +20,16 @@ test("disabled instrumentation performs no writes and preserves failures", async
 });
 
 test("records intervals once, counts bytes, and preserves result identity", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "runtime-timing-"));
+  const directory = mkdtempSync(pathJoin(temporaryRoot(), "runtime-timing-"));
   directories.push(directory);
-  vi.stubEnv("AGENC_RUNTIME_TIMING", join(directory, "spans"));
+  vi.stubEnv("AGENC_RUNTIME_TIMING", pathJoin(directory, "spans"));
   const { runtimeSpan, timedRuntime, flushRuntimeTiming } = await import("../../src/diagnostics/runtime-timing.js");
   const finish = runtimeSpan("persistence.write", { bytes: 123 });
   finish(); finish();
   const value = {};
   expect(await timedRuntime("tool.invoke", async () => value)).toBe(value);
   flushRuntimeTiming();
-  const rows = readFileSync(join(directory, readdirSync(directory)[0]!), "utf8").trim().split("\n").map(line => JSON.parse(line));
+  const rows = readFileSync(pathJoin(directory, readdirSync(directory)[0]!), "utf8").trim().split("\n").map(line => JSON.parse(line));
   expect(rows).toHaveLength(2);
   expect(rows[0]).toMatchObject({ name: "persistence.write", bytes: 123, pid: process.pid });
   expect(rows[0].duration_ms).toBeGreaterThanOrEqual(0);
