@@ -774,6 +774,7 @@ export function buildToolRegistry(
   const firstClassFileTools = [
     createFileReadTool({
       allowedPaths: [options.workspaceRoot],
+      ...(options.lightMode ? { defaultTextLines: 120 } : {}),
       ...(options.sparseLineNumbers === true ? { sparseLineNumbers: true } : {}),
     }),
     createFileEditTool({

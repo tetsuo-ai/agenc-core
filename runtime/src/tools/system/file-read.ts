@@ -319,6 +319,8 @@ Usage:
 
 /** Tool factory configuration. */
 export interface FileReadToolConfig {
+  /** Optional presentation window for ordinary text; explicit ranges win. */
+  readonly defaultTextLines?: number;
   /**
    * Allowed path prefixes (required — no default). Same shape as the
    * filesystem-tool config so the parent can pass through the workspace
@@ -1721,7 +1723,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
             ),
           );
         }
-        return await finalizeRead(
+        const textResult = await finalizeRead(
           readTextFile(
             resolved,
             {
@@ -1729,7 +1731,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
               maxTokens,
               sparseLineNumbers,
               offset,
-              limit,
+              limit: limit ?? config.defaultTextLines,
               displayPath: filePath,
               readGuard,
             },
@@ -1738,6 +1740,11 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
             true,
           ),
         );
+        if (config.defaultTextLines !== undefined && textResult.metadata?.isPartial === true) {
+          const m = textResult.metadata;
+          return { ...textResult, content: `${textResult.content}\n[FileRead shows lines ${m.startLine}-${m.endLine} of ${m.totalLines}; request another offset for further text.]` };
+        }
+        return textResult;
       } catch (err) {
         const code = (err as NodeJS.ErrnoException)?.code;
         if (code === "ENOENT") {
