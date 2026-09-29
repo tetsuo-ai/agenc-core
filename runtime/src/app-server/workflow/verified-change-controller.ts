@@ -1283,6 +1283,20 @@ export class VerifiedChangeWorkflowController {
     const records: VerifiedChangeCommandRecord[] = [];
     for (const [index, command] of (ctx.plannedChecks ?? spec.requiredVerification).entries()) {
       const stepId = verifyCommandStepId(index + 1, attempt);
+      const intentDigest = sha256Digest(canonicalizeJson({
+        script: command.script,
+        treeHash: exported.treeHash,
+      }));
+      const previous = ctx.repo.getEffect(ctx.runId, stepId);
+      if (previous !== undefined && previous.intentDigest !== intentDigest) {
+        // Replaying a passing command for a changed tree would claim checks
+        // that never ran on the delivered files. Preserve the work for review.
+        throw new WorkflowHaltError({
+          status: "failed",
+          stopReason: "evidence_invalid",
+          finalMessage: "The Goal worktree changed since its verification was recorded. The saved checks cannot verify the changed files. Review the preserved work and run its checks again.",
+        });
+      }
       const result = await this.#driveEffect(ctx, {
         stepId,
         stage: "workflow.verify",
@@ -1294,12 +1308,7 @@ export class VerifiedChangeWorkflowController {
           command.script,
           exported.treeHash,
         ),
-        intentDigest: sha256Digest(
-          canonicalizeJson({
-            script: command.script,
-            treeHash: exported.treeHash,
-          }),
-        ),
+        intentDigest,
         estimate: ZERO_ESTIMATE,
         execute: async (signal) =>
           this.#executeVerificationCommand(ctx, command, attempt, signal),
@@ -1628,6 +1637,7 @@ export class VerifiedChangeWorkflowController {
     const spec = ctx.spec;
     const handle = this.#requireHandle(ctx);
     const ledger = this.#requireLedger(ctx);
+    const verified = this.#requireExport(ctx);
     hitM5WorkflowFailpoint("before_patch_export");
     const exported = await this.#deps.worktrees.exportPatch({
       handle,
@@ -1635,6 +1645,13 @@ export class VerifiedChangeWorkflowController {
       step: { runId: ctx.runId, stepId: "workflow.finalize" },
       sink: ledger,
     });
+    if (exported.treeHash !== verified.treeHash || exported.patch.digest !== verified.patch.digest) {
+      throw new WorkflowHaltError({
+        status: "failed",
+        stopReason: "evidence_invalid",
+        finalMessage: "The Goal worktree changed after verification began. The result was not finalized because its checks and review cover a different snapshot. Review the preserved work and run its checks again.",
+      });
+    }
     ctx.export = exported;
     const movement = await this.#deps.worktrees.checkBaseMovement({
       spec,

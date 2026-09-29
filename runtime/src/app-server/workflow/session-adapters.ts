@@ -992,20 +992,41 @@ export function createWorkflowSessionSeams(
           parentPath: "/root" as AgentPath,
           control,
           registry,
-          taskPrompt: [input.prompt, workflowProviderInstructions(
+          taskPrompt: [
+            ...(input.kind === "plan" ? [
+              `Your only readable workspace is ${input.worktreePath}. Inspect that checkout with FileRead, Glob, and Grep.`,
+              "Use relative paths within this workspace. Do not read the original checkout, parent directories, or external verification scripts. Their command and the goal below define the required checks.",
+            ] : []),
+            input.prompt, workflowProviderInstructions(
             childProviderPolicy(session).cross_provider_enabled === true,
           )].filter(Boolean).join("\n\n"),
-          ...(input.kind === "verify_agent" ? { role: "verification" } : {}),
+          ...(input.kind === "verify_agent"
+            ? { role: "verification" }
+            : input.kind === "plan" ? { role: "Plan" } : {}),
           agentName: workflowChildAgentName(input.childRunId),
           ...(input.spec.model !== undefined
             ? { model: input.spec.model }
             : {}),
           // Fresh context by construction: the child sees ONLY its prompt.
           parentMessagesOverride: [],
-          // Reuse the run's own deterministic worktree; getOrCreateWorktree
-          // fast-resumes the existing checkout at the same slug.
-          isolation: "worktree",
-          worktreeSlug: workflowWorktreeSlug(input.spec.runId),
+          // The read-only planner inspects the workflow's existing checkout.
+          // Asking a constrained child to create a worktree is correctly refused.
+          ...(input.kind === "plan" ? {
+            isolation: "none" as const,
+            // Planning needs file inspection, not shell execution. Restrict the
+            // advertised tools so a compound shell read cannot trip the strict
+            // read-only command evaluator and abort the entire Goal.
+            toolAllowlist: ["FileRead", "Glob", "Grep"],
+            inspectionWorktree: {
+              path: input.worktreePath,
+              gitRoot: input.spec.repoPath,
+              branch: `worktree-${workflowWorktreeSlug(input.spec.runId)}`,
+              created: false,
+            },
+          } : {
+            isolation: "worktree" as const,
+            worktreeSlug: workflowWorktreeSlug(input.spec.runId),
+          }),
           runInBackground: false,
           forceSynchronous: true,
           silent: true,
