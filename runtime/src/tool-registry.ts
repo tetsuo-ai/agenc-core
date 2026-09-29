@@ -716,6 +716,7 @@ export function buildToolRegistry(
           isDeferredSpec(spec) ? { ...spec, deferred: true } : spec,
         )),
     onDiscoverTools: markDiscovered,
+    lightMode: options.lightMode,
     ...(options.mcpToolsProvider?.primeCatalogs !== undefined
       ? { onBeforeSearch: () => options.mcpToolsProvider!.primeCatalogs!() }
       : {}),

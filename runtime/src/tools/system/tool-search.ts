@@ -175,8 +175,9 @@ function resolveSelection(
 export function createToolSearchTool(config: CodingToolConfig): Tool {
   return {
     name: SYSTEM_SEARCH_TOOLS_NAME,
-    description:
-      "Search the runtime tool catalog by name, family, source, keyword, or preferred profile. Use select or select:<tool_name> to load a deferred tool schema. Selection alone returns only selected tools or scoped name suggestions; use query or filters to search further.",
+    description: config.lightMode === true
+      ? "Find tools by name or capability. A unique best query match loads automatically; use select for exact names or ambiguous results. Loading exposes the schema, never executes the tool."
+      : "Search the runtime tool catalog by name, family, source, keyword, or preferred profile. Use select or select:<tool_name> to load a deferred tool schema. Selection alone returns only selected tools or scoped name suggestions; use query or filters to search further.",
     metadata: {
       ...codingToolMetadata(SYSTEM_SEARCH_TOOLS_NAME, false, ["coding", "general", "operator"]),
       keywords: ["tools", "catalog", "discovery", "select", "deferred"],
@@ -248,7 +249,7 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
               .filter((value): value is string => typeof value === "string"),
           )
         : undefined;
-      const matchedResults = searchCatalog
+      const rankedResults = searchCatalog
         .filter((entry) => {
           if (args.includeHidden !== true && entry.metadata.hiddenByDefault) return false;
           if (args.advertisedOnly === true && advertisedToolNames && !advertisedToolNames.has(entry.name)) {
@@ -270,8 +271,18 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
           const rightScore = scoreCatalogEntry(right, query);
           if (leftScore !== rightScore) return leftScore - rightScore;
           return left.name.localeCompare(right.name);
-        })
-        .slice(0, normalizePositiveInteger(args.maxResults, 50, MAX_RESULTS));
+        });
+      // Decide before limiting the response: maxResults:1 must never turn an
+      // ambiguous query into an apparently unique match. Selection only
+      // changes schema visibility; execution still uses normal admission.
+      const best = rankedResults[0];
+      if (config.lightMode === true && query && explicitSelections.length === 0 && best &&
+          (rankedResults[1] === undefined ||
+           scoreCatalogEntry(best, query) < scoreCatalogEntry(rankedResults[1], query))) {
+        selectedEntries.push(best);
+      }
+      const matchedResults = rankedResults.slice(0,
+        normalizePositiveInteger(args.maxResults, config.lightMode === true ? 5 : 50, MAX_RESULTS));
       const results = [
         ...selectedEntries,
         ...matchedResults,
@@ -293,6 +304,17 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
             (candidate) => candidate.name === entry.name,
           );
           const advertised = advertisedToolNames?.has(entry.name) ?? false;
+          if (config.lightMode === true) {
+            return {
+              name: modelFacingToolSearchText(entry.name),
+              description: modelFacingToolSearchText(entry.description).slice(0, 240),
+              selected,
+              advertised,
+              ...(selected || advertised
+                ? { useHint: modelFacingToolSearchText(`Call ${encodeMcpToolNameForWire(entry.name)} with its loaded schema.`) }
+                : { loadHint: modelFacingToolSearchText(`Select ${entry.name} to load its schema.`) }),
+            };
+          }
           const useHint = mcpUseHint(entry.name, selected || advertised);
           return {
             name: modelFacingToolSearchText(entry.name),

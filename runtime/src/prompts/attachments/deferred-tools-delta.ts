@@ -83,6 +83,9 @@ export const deferredToolsDeltaProducer: AttachmentProducer = async (
       kind: "deferred_tools_delta",
       addedNames: added,
       addedLines: added.map((name) => {
+        // The loaded schema already supplies the description. Keep prior
+        // history intact and append only the new name in light sessions.
+        if (opts.lightMode === true) return name;
         const desc = descriptionFor(name, opts.loadedTools);
         return desc.length > 0 ? `${name}: ${desc}` : name;
       }),

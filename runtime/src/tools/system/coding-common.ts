@@ -48,6 +48,8 @@ export interface CodingToolConfig {
   readonly getToolCatalog?: () => readonly ToolCatalogEntry[];
   readonly onDiscoverTools?: (toolNames: readonly string[]) => void;
   readonly onBeforeSearch?: () => Promise<void>;
+  /** Compact discovery and unique-best query loading for light sessions. */
+  readonly lightMode?: boolean;
   /**
    * Enable heavier AgenC-owned structured tools:
    * system.repoInventory, system.git*, system.symbol*.
