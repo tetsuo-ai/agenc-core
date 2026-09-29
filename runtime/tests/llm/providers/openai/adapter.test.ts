@@ -1723,7 +1723,9 @@ describe("OpenAIProvider", () => {
 
     expect(chunks).toEqual([
       { content: "Hi ", done: false },
+      { content: "", done: false, bufferedContentProgress: true },
       { content: "there", done: false },
+      { content: "", done: false, bufferedContentProgress: true },
       {
         content: "",
         done: true,
@@ -1779,7 +1781,7 @@ describe("OpenAIProvider", () => {
     ).rejects.toThrow(
       `${PROVIDER_TEST_LABEL} chat-completions stream emitted invalid tool_call`,
     );
-    expect(chunks).toEqual([]);
+    expect(chunks).toEqual([{ content: "", done: false, bufferedContentProgress: true }]);
     expectNoRequestMetadataWarning(emitWarning);
   });
 
@@ -1813,6 +1815,7 @@ describe("OpenAIProvider", () => {
     expect(response.toolCalls).toEqual([]);
     expect(chunks).toEqual([
       { content: "Let me write that.", done: false },
+      { content: "", done: false, bufferedContentProgress: true },
       { content: "", done: true },
     ]);
   });
