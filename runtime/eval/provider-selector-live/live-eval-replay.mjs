@@ -1,5 +1,5 @@
 /** Run through Core's installed tsx binary. This script performs no network IO. */
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -15,7 +15,7 @@ const profilesPath = join(core, "runtime/src/agents/provider-selector-profiles.t
 const { selectChildProvider, classifyChildTask, estimateChildCandidateCost } = await import(pathToFileURL(selectorPath).href);
 const { CHILD_ROUTING_PROFILE_REVISION } = await import(pathToFileURL(profilesPath).href);
 const suite = readJson("suite.json");
-const manifest = readJson("manifest.json");
+const manifest = readJson(existsSync(join(folder, "capture.json")) ? "capture.json" : "manifest.json");
 const fixture = readJson("recorded-measurements.json");
 if (fixture.provenance !== "recorded-measurements" || fixture.tasks.length !== 6 || manifest.suiteVersion !== suite.suiteVersion) {
   throw new Error("Run the Python export verifier against the fixed twelve-task suite first.");
@@ -132,12 +132,17 @@ const report = {
   provenance: "recorded-measurements", suiteVersion: suite.suiteVersion, split: "held-out",
   selectorSourceSha256: hash(readFileSync(selectorPath)), profilesSourceSha256: hash(readFileSync(profilesPath)),
   profileRevision: CHILD_ROUTING_PROFILE_REVISION,
-  costBasis: fixture.costBasis, accountBalanceDeltaUsd: manifest.accountBalanceDeltaUsd ?? null,
-  accountUsageExclusive: manifest.accountUsageExclusive,
+  costBasis: fixture.costBasis,
+  ...(manifest.accountBalanceDeltaUsd !== undefined ? { accountBalanceDeltaUsd: manifest.accountBalanceDeltaUsd } : {}),
+  ...(manifest.accountUsageExclusive !== undefined ? { accountUsageExclusive: manifest.accountUsageExclusive } : {}),
   completeMatrix: heldout.every(task => candidates.every(candidate => recordFor(task, candidateKey(candidate)) !== undefined)),
   calibrationObservations: aggregates.length, calibrationCostLearning: "omitted; per-call dollars are unreconciled",
   scores, modelScores, decisions,
   errors: records.filter(record => record.error !== undefined).map(record => ({ taskId: record.taskId, model: record.model, error: record.error })),
+  failures: records.filter(record => !record.grade.passed).map(record => ({
+    taskId: record.taskId, model: record.model, verdict: record.grade.verdict, finishReason: record.finishReason,
+    completionTokens: record.usage.completion_tokens, reasoningTokens: record.usage.reasoning_tokens,
+  })),
   limitations: [
     "Six held-out tasks and one completion per model and task cannot establish general routing superiority.",
     "Only native DeepSeek was measured. These direct API calls do not measure AgenC sub-agent orchestration or tool use.",
@@ -157,7 +162,8 @@ const lines = [
   "| Strategy | Passed / recorded | Estimated cost | Passes / estimated dollar | Sum of call latency |",
   "| --- | ---: | ---: | ---: | ---: |",
   ...scores.map(score => `| ${score.strategy} | ${score.passed}/${score.recorded} | ${money(score.usageCostUsdAtPeakRates)} | ${score.passedPerEstimatedDollar ?? "unknown"} | ${(score.totalLatencyMs / 1000).toFixed(2)}s |`),
-  "", `Account balance delta: ${manifest.accountBalanceDeltaUsd ?? "unknown"} USD. Exclusive account asserted: ${manifest.accountUsageExclusive}.`, "",
+  "", ...(manifest.accountBalanceDeltaUsd === undefined ? [] :
+    [`Account balance delta: ${manifest.accountBalanceDeltaUsd} USD. Exclusive account asserted: ${manifest.accountUsageExclusive}.`, ""]),
   "| Split | Model | Passed / recorded | Estimated cost |",
   "| --- | --- | ---: | ---: |",
   ...modelScores.map(score => `| ${score.split} | ${score.model} | ${score.passed}/${score.recorded} | ${money(score.usageCostUsdAtPeakRates)} |`),
@@ -165,4 +171,5 @@ const lines = [
   "See selector-replay.json for every selection, source hashes, uncertainty intervals and sanitized error codes.", "",
 ];
 writeFileSync(join(folder, "selector-replay.md"), lines.join("\n"), { mode: 0o600 });
-process.stdout.write(JSON.stringify({ completeMatrix: report.completeMatrix, scores, accountBalanceDeltaUsd: report.accountBalanceDeltaUsd }, null, 2) + "\n");
+process.stdout.write(JSON.stringify({ completeMatrix: report.completeMatrix, scores, failures: report.failures,
+  ...(report.accountBalanceDeltaUsd !== undefined ? { accountBalanceDeltaUsd: report.accountBalanceDeltaUsd } : {}) }, null, 2) + "\n");

@@ -1,0 +1,159 @@
+{
+  "provenance": "recorded-measurements",
+  "split": "held-out",
+  "suiteVersion": "xprov-deepseek-known-answer-v1",
+  "costBasis": "reported token usage times registry peak USD rates; not reconciled per-call charges",
+  "missingOrUnpriced": [],
+  "candidates": [
+    {
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "connected": true,
+      "allowed": true,
+      "supportsToolUse": true,
+      "supportsVision": true,
+      "supportsReasoning": true,
+      "contextWindow": 1048576,
+      "maxOutputTokens": 64000,
+      "billingSource": "byok",
+      "cost": {
+        "inputUsdPer1K": 0.0003,
+        "outputUsdPer1K": 0.0012,
+        "cachedInputUsdPer1K": 6e-06
+      }
+    },
+    {
+      "provider": "deepseek",
+      "model": "deepseek-v4-pro",
+      "connected": true,
+      "allowed": true,
+      "supportsToolUse": true,
+      "supportsVision": false,
+      "supportsReasoning": true,
+      "contextWindow": 1048576,
+      "maxOutputTokens": 64000,
+      "billingSource": "byok",
+      "cost": {
+        "inputUsdPer1K": 0.00132,
+        "outputUsdPer1K": 0.00396,
+        "cachedInputUsdPer1K": 4.4e-05
+      }
+    }
+  ],
+  "baselines": {
+    "strongest": "deepseek/deepseek-v4-pro",
+    "parent": "deepseek/deepseek-flash"
+  },
+  "tasks": [
+    {
+      "id": "hold-simple-extraction",
+      "kind": "extraction",
+      "complexity": "simple",
+      "outcomeCase": "hold-simple-extraction"
+    },
+    {
+      "id": "hold-simple-coding",
+      "kind": "coding",
+      "complexity": "simple",
+      "outcomeCase": "hold-simple-coding"
+    },
+    {
+      "id": "hold-simple-reasoning",
+      "kind": "reasoning",
+      "complexity": "simple",
+      "outcomeCase": "hold-simple-reasoning"
+    },
+    {
+      "id": "hold-hard-extraction",
+      "kind": "extraction",
+      "complexity": "hard",
+      "outcomeCase": "hold-hard-extraction"
+    },
+    {
+      "id": "hold-hard-coding",
+      "kind": "coding",
+      "complexity": "hard",
+      "outcomeCase": "hold-hard-coding"
+    },
+    {
+      "id": "hold-hard-reasoning",
+      "kind": "reasoning",
+      "complexity": "hard",
+      "outcomeCase": "hold-hard-reasoning"
+    }
+  ],
+  "outcomes": {
+    "hold-simple-extraction": {
+      "deepseek/deepseek-flash": {
+        "passed": true,
+        "costUsd": 0.0001476,
+        "latencyMs": 1036
+      },
+      "deepseek/deepseek-v4-pro": {
+        "passed": true,
+        "costUsd": 0.00068772,
+        "latencyMs": 2512
+      }
+    },
+    "hold-simple-coding": {
+      "deepseek/deepseek-flash": {
+        "passed": true,
+        "costUsd": 0.0001434,
+        "latencyMs": 1348
+      },
+      "deepseek/deepseek-v4-pro": {
+        "passed": true,
+        "costUsd": 0.00098472,
+        "latencyMs": 3356
+      }
+    },
+    "hold-simple-reasoning": {
+      "deepseek/deepseek-flash": {
+        "passed": true,
+        "costUsd": 0.0004353,
+        "latencyMs": 2335
+      },
+      "deepseek/deepseek-v4-pro": {
+        "passed": true,
+        "costUsd": 0.0013134,
+        "latencyMs": 4888
+      }
+    },
+    "hold-hard-extraction": {
+      "deepseek/deepseek-flash": {
+        "passed": true,
+        "costUsd": 0.0005622,
+        "latencyMs": 2302
+      },
+      "deepseek/deepseek-v4-pro": {
+        "passed": true,
+        "costUsd": 0.00237072,
+        "latencyMs": 8000
+      }
+    },
+    "hold-hard-coding": {
+      "deepseek/deepseek-flash": {
+        "passed": false,
+        "costUsd": 0.0098994,
+        "latencyMs": 40409
+      },
+      "deepseek/deepseek-v4-pro": {
+        "passed": false,
+        "costUsd": 0.03281388,
+        "latencyMs": 156472
+      }
+    },
+    "hold-hard-reasoning": {
+      "deepseek/deepseek-flash": {
+        "passed": false,
+        "costUsd": 0.0098937,
+        "latencyMs": 42287
+      },
+      "deepseek/deepseek-v4-pro": {
+        "passed": false,
+        "costUsd": 0.0327888,
+        "latencyMs": 172138
+      }
+    }
+  }
+}

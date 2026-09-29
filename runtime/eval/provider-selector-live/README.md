@@ -12,6 +12,23 @@ Expected answers have deterministic JSON graders. Object key order is ignored; a
 - `live-eval.py`: Linux-only live runner, exact grader, offline self-test and measured-matrix exporter.
 - `test-live-eval.py`: eleven offline harness tests with mock API responses. Mock responses are not benchmark evidence.
 - `live-eval-replay.mjs`: imports the actual Core selector and classifier for measured replay. It does not write the installation's routing-outcome store.
+- `verify-recorded.py`: checks frozen source and data hashes, recalculates every recorded grade and usage price, and checks the exported holdout matrix.
+- `measurements-2026-09-29/`: 24 normalized live records, task snapshot, capture metadata, held-out matrix and reproducible replay report. Account balances and the collection account manifest stay outside the repository.
+
+## Recorded results
+
+Both models passed 6/6 calibration tasks and 4/6 held-out tasks, or 10/12 overall. The four failed attempts exhausted all 8192 output tokens in the provider's reasoning channel and returned an empty final answer. Both models hit that limit on the hard JavaScript and hard scheduling tasks. These are failures to answer within the shared cap, not incorrect submitted JSON answers.
+
+| Held-out strategy | Passed | Peak-rate cost estimate | Passes / estimated dollar | Sum of call latency |
+| --- | ---: | ---: | ---: | ---: |
+| Selector with declared task labels | 4/6 | $0.06689118 | 59.7986 | 335.631 s |
+| Selector with calibration | 4/6 | $0.06689118 | 59.7986 | 335.631 s |
+| Runtime classifier and selector | 4/6 | $0.02108160 | 189.7389 | 89.717 s |
+| Always Pro | 4/6 | $0.07095924 | 56.3704 | 347.366 s |
+| Always cheapest | 4/6 | $0.02108160 | 189.7389 | 89.717 s |
+| Fixed Flash parent | 4/6 | $0.02108160 | 189.7389 | 89.717 s |
+
+The runtime classifier tied the cheapest and fixed-Flash baselines. Declared hard-task labels caused the selector to spend more on Pro without gaining a passing answer on this set. Calibration did not change those decisions. These observations do not prove superiority over a cheapest router. No model profile or task label was tuned against these held-out results.
 
 ## Offline verification
 
@@ -20,6 +37,7 @@ From this directory:
 ```sh
 python3 live-eval.py self-test
 python3 test-live-eval.py
+python3 verify-recorded.py
 ```
 
 The self-test verifies the scheduling optimum and grader behavior without network access. Harness tests check identical prompts, alternating order, held-out export, malformed usage, input structure, conservative budget admission, retained timeout reservations, interruptions, duplicate-run refusal, Mac network refusal and frozen-answer integrity.
@@ -71,6 +89,8 @@ node_modules/.bin/tsx runtime/eval/provider-selector-live/live-eval-replay.mjs \
 ```
 
 The replay writes `selector-replay.json` and `selector-replay.md`, recording selector and profile source hashes. It compares cold-start selection, selection calibrated only from the six calibration tasks, current text classification plus selection, always Pro, always cheapest and fixed Flash. Calibration quality uses independent JSON verifier results, not merely completion. Calibration cost learning is omitted because per-call dollars are not reconciled.
+
+For the checked-in collection, use `runtime/eval/provider-selector-live/measurements-2026-09-29` as the run folder. Replay reads its normalized `capture.json`; it does not need an account manifest. Run `verify-recorded.py` first. The collection runner remains byte-identical to the version identified by the capture hash.
 
 `selector` and `selector_calibrated` use the predeclared human task kind and complexity. `selector_classified` uses the runtime text classifier. All strategies use the identical measured holdout outcome matrix, actual pre-call input bounds, the fixed output cap and no tools. Passes per estimated dollar remains unknown if selected observations or usage costs are missing. Sum of call latency is not parallel-agent wall time.
 
