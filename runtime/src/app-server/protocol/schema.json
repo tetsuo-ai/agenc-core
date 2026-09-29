@@ -3,7 +3,7 @@
   "$id": "urn:agenc:app-server:protocol",
   "title": "AgenC Daemon JSON-RPC Protocol",
   "description": "Initial AgenC daemon JSON-RPC method surface.",
-  "x-agenc-protocol-version": "1.20.0",
+  "x-agenc-protocol-version": "1.23.0",
   "x-agenc-package": {
     "name": "@tetsuo-ai/protocol",
     "export": "./daemon-json-rpc.schema.json"
@@ -47,6 +47,8 @@
     "run.replay",
     "run.evidence",
     "run.cancel",
+    "run.pause",
+    "run.resume",
     "run.start",
     "routine.capabilities",
     "routine.list",
@@ -68,6 +70,9 @@
     "session.terminate",
     "session.clear",
     "session.snapshot",
+    "session.processes.list",
+    "session.processes.stop",
+    "session.goal",
     "session.transcript",
     "session.transcript.v2",
     "session.artifact.read",
@@ -148,6 +153,104 @@
     }
   ],
   "definitions": {
+    "RunPauseParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:#-]*$"
+        },
+        "requestId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:#-]*$"
+        }
+      },
+      "required": [
+        "runId",
+        "requestId"
+      ]
+    },
+    "RunResumeParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:#-]*$"
+        },
+        "suspensionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:#-]*$"
+        },
+        "envOverrides": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "runId",
+        "suspensionId"
+      ]
+    },
+    "RunPauseRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "run.pause"
+        },
+        "params": {
+          "$ref": "#/definitions/RunPauseParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "RunResumeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "run.resume"
+        },
+        "params": {
+          "$ref": "#/definitions/RunResumeParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
     "WhisperModel": { "type": "string", "enum": ["base", "small"] },
     "WhisperLanguage": { "type": "string", "enum": ["auto", "en", "es", "fr", "de", "it", "pt", "nl", "pl", "ru", "uk", "zh", "ja", "ko", "ar", "hi", "tr"] },
     "WhisperStatusParams": { "type": "object", "additionalProperties": false },
@@ -4201,6 +4304,12 @@
         },
         {
           "$ref": "#/definitions/RunCancelRequest"
+        },
+        {
+          "$ref": "#/definitions/RunPauseRequest"
+        },
+        {
+          "$ref": "#/definitions/RunResumeRequest"
         },
         {
           "$ref": "#/definitions/RunStartRequest"

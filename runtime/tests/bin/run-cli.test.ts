@@ -38,6 +38,81 @@ function captureIo(): {
 }
 
 describe("agenc run CLI", () => {
+  it("parses pause and exact-suspension resume without accepting new limits", () => {
+    expect(parseAgenCRunCliArgs(["run", "pause", "run-1", "--request-id", "pause-1"]))
+      .toEqual({ kind: "pause", runId: "run-1", requestId: "pause-1" });
+    expect(parseAgenCRunCliArgs(["run", "resume", "run-1", "--suspension", "pause:1"]))
+      .toEqual({ kind: "resume", runId: "run-1", suspensionId: "pause:1" });
+    expect(parseAgenCRunCliArgs(["run", "resume", "run-1"]))
+      .toEqual({ kind: "resume", runId: "run-1" });
+    for (const action of ["pause", "resume"]) {
+      expect(parseAgenCRunCliArgs(["run", action, "run-1", "--max-cost", "20"]))
+        .toMatchObject({ kind: "error" });
+    }
+    expect(parseAgenCRunCliArgs(["run", "resume", "run-1", "--suspension", "../other"]))
+      .toMatchObject({ kind: "error" });
+  });
+
+  it("uses a stable pause request id when supplied and generates one otherwise", async () => {
+    const request = vi.fn(async () => ({ runId: "run-1", state: "pause_requested" }));
+    const options = { io: captureIo().io, ensureDaemonReady: async () => {}, client: { request } as unknown as AgenCJsonLineDaemonRequestClient };
+    await runAgenCRunCli({ kind: "pause", runId: "run-1", requestId: "pause-1" }, options);
+    await runAgenCRunCli({ kind: "pause", runId: "run-1" }, options);
+    expect(request).toHaveBeenNthCalledWith(1, "run.pause", { runId: "run-1", requestId: "pause-1" });
+    expect(request).toHaveBeenNthCalledWith(2, "run.pause", { runId: "run-1", requestId: expect.stringMatching(/^[0-9a-f-]{36}$/) });
+  });
+
+  it("reads the current pause token and resumes the same run", async () => {
+    const request = vi.fn(async (method: string) => method === "run.status"
+      ? { runId: "run-1", workflow: { control: { state: "paused", suspensionId: "pause:1" } } }
+      : { runId: "run-1", state: "running" });
+    const code = await runAgenCRunCli({ kind: "resume", runId: "run-1" }, {
+      io: captureIo().io, ensureDaemonReady: async () => {}, client: { request } as unknown as AgenCJsonLineDaemonRequestClient,
+    });
+    expect(code).toBe(0);
+    expect(request).toHaveBeenNthCalledWith(1, "run.status", { runId: "run-1" });
+    expect(request).toHaveBeenNthCalledWith(2, "run.resume", { runId: "run-1", suspensionId: "pause:1" });
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not resume or start a new run when status is not paused", async () => {
+    const request = vi.fn(async () => ({ runId: "run-1", workflow: { control: { state: "pause_requested" } } }));
+    const output = captureIo();
+    expect(await runAgenCRunCli({ kind: "resume", runId: "run-1" }, {
+      io: output.io, ensureDaemonReady: async () => {}, client: { request } as unknown as AgenCJsonLineDaemonRequestClient,
+    })).toBe(1);
+    expect(request).toHaveBeenCalledExactlyOnceWith("run.status", { runId: "run-1" });
+    expect(output.stderr()).toContain("has no paused workflow to resume");
+  });
+
+  it("forwards an explicit suspension without replacing it from status", async () => {
+    const request = vi.fn(async () => ({ runId: "run-1", state: "running" }));
+    await runAgenCRunCli({ kind: "resume", runId: "run-1", suspensionId: "pause:1" }, {
+      io: captureIo().io, ensureDaemonReady: async () => {}, client: { request } as unknown as AgenCJsonLineDaemonRequestClient,
+    });
+    expect(request).toHaveBeenCalledExactlyOnceWith("run.resume", { runId: "run-1", suspensionId: "pause:1" });
+  });
+
+  it("ends follow when Core reports a durable pause and shows how limits behave", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "run.start") return { runId: "run-1", specDigest: "sha256:test", baseCommit: "abc", baseDirty: { dirty: false, fileCount: 0 } };
+      if (method === "run.replay") return { events: [], nextAfterSequence: 0, hasMore: false };
+      if (method === "run.status") return { runId: "run-1", status: "suspended", terminal: false, workflow: {
+        steps: [], control: { runId: "run-1", state: "paused", suspensionId: "pause:1" },
+      } };
+      throw new Error(`unexpected ${method}`);
+    });
+    const output = captureIo();
+    const sleep = vi.fn();
+    expect(await runAgenCRunCli({ kind: "start", goal: "Fix it", cwd: "/repo", verify: [], follow: true }, {
+      io: output.io, ensureDaemonReady: async () => {}, sleep, client: { request } as unknown as AgenCJsonLineDaemonRequestClient,
+    })).toBe(0);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(output.stdout()).toContain("workflow control: paused");
+    expect(output.stdout()).toContain("suspension: pause:1");
+    expect(output.stdout()).toContain("Resume keeps the original limits and deadline");
+  });
+
   it("parses bounded replay and evidence cursors", () => {
     expect(
       parseAgenCRunCliArgs([

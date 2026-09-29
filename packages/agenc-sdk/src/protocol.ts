@@ -90,6 +90,8 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "run.replay",
   "run.evidence",
   "run.cancel",
+  "run.pause",
+  "run.resume",
   "run.start",
   "routine.capabilities",
   "routine.list",
@@ -230,6 +232,11 @@ export type RunReplayParams = Wire.RunReplayParams;
 export type RunEvidenceParams = Wire.RunEvidenceParams;
 
 export type RunCancelParams = Wire.RunCancelParams;
+export type RunPauseParams = Wire.RunPauseParams;
+export type RunPauseResult = Wire.RunPauseResult;
+export type RunResumeParams = Wire.RunResumeParams;
+export type RunResumeResult = Wire.RunResumeResult;
+export type RunWorkflowControlState = Wire.RunWorkflowControlState;
 
 /** One required verification command for a verified-change workflow run. */
 export type RunStartVerificationCommand = Wire.RunStartVerificationCommand;
