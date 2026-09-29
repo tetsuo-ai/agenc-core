@@ -123,3 +123,14 @@ describe("write_stdin reaches a session started in another sandbox", () => {
     expect(properties.justification).toMatchObject({ type: "string" });
   });
 });
+
+test("polling output defaults reach the manager and explicit requests override them", async () => {
+  const writeStdin = vi.fn<UnifiedExecProcessManagerLike["writeStdin"]>(async () => ({ output: "ok", stdout: "ok", stderr: "", exitCode: 0, exit_code: 0, timedOut: false, durationMs: 1, wall_time_seconds: .001, original_token_count: 1, truncated: false }));
+  const manager: UnifiedExecProcessManagerLike = { maxTimeoutMs: 30_000,
+    execCommand: vi.fn(async () => undefined as never), writeStdin, closeAll: vi.fn(async () => {}) };
+  const tool = bindExplicitDangerBoundary(createUnboundWriteStdinTool({ cwd: root, unifiedExecManager: manager, defaultMaxOutputTokens: 2000 }));
+  await tool.execute({ session_id: 1, chars: "" });
+  expect(writeStdin.mock.calls[0]?.[0]).toMatchObject({ max_output_tokens: 2000 });
+  await tool.execute({ session_id: 1, chars: "", max_output_tokens: 7000 });
+  expect(writeStdin.mock.calls[1]?.[0]).toMatchObject({ max_output_tokens: 7000 });
+});

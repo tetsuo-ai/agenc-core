@@ -296,12 +296,12 @@ function resultFormatLine(sparse: boolean): string {
     : "Results are returned using cat -n format, with line numbers starting at 1";
 }
 
-const fileReadDescription = (sparse: boolean): string => `Reads a file from the local filesystem. You can access any file directly by using this tool.
+const fileReadDescription = (sparse: boolean, defaultLines = DEFAULT_LINE_LIMIT): string => `Reads a file from the local filesystem. You can access any file directly by using this tool.
 Assume this tool is able to read all files on the machine. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
 
 Usage:
 - ${FILE_TOOL_PATH_USAGE}
-- By default, it reads up to ${DEFAULT_LINE_LIMIT} lines starting from the beginning of the file
+- By default, it reads up to ${defaultLines} lines starting from the beginning of the file
 - Output is capped at ${DEFAULT_MAX_OUTPUT_TOKENS} tokens; a read that would exceed the cap returns an error instead of content, so for large files pass offset and limit.
 - When you already know which part of the file you need, only read that part. This can be important for larger files.
 - ${resultFormatLine(sparse)}
@@ -327,6 +327,8 @@ export interface FileReadToolConfig {
   readonly allowedPaths: readonly string[];
   /** Token cap for text reads (default: 25k). */
   readonly maxTokens?: number;
+  /** Default plain-text line window; explicit offset/limit remain available. */
+  readonly defaultTextLineLimit?: number;
   /**
    * Number only the first line of a read, every tenth line and the last line
    * (the session's `AGENC_SPARSE_LINE_NUMBERS`). Default: every line.
@@ -633,6 +635,7 @@ async function resolveAndCheck(
 // ─────────────────────────────────────────────────────────────────────
 
 interface TextReadOpts {
+  readonly announcePartial?: boolean;
   readonly readGuard?: () => void;
   readonly maxTextBytes: number;
   readonly maxTokens: number;
@@ -815,7 +818,9 @@ async function readTextFile(
   }
 
   return {
-    content: formatNumbered(sliced.content, sliced.startLine, opts.sparseLineNumbers),
+    content: formatNumbered(sliced.content, sliced.startLine, opts.sparseLineNumbers) +
+      (opts.announcePartial && sliced.isPartial
+        ? `\n[Showing lines ${sliced.startLine}-${sliced.endLine} of ${sliced.totalLines}. Use offset/limit for other lines.]` : ""),
     metadata: {
       filePath: opts.displayPath,
       totalLines: sliced.totalLines,
@@ -1520,7 +1525,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
 
   return {
     name: FILE_READ_TOOL_NAME,
-    description: fileReadDescription(sparseLineNumbers),
+    description: fileReadDescription(sparseLineNumbers, config.defaultTextLineLimit),
     metadata: {
       family: "filesystem",
       source: "builtin",
@@ -1729,7 +1734,8 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
               maxTokens,
               sparseLineNumbers,
               offset,
-              limit,
+              limit: limit ?? config.defaultTextLineLimit,
+              announcePartial: config.defaultTextLineLimit !== undefined,
               displayPath: filePath,
               readGuard,
             },

@@ -724,6 +724,7 @@ export function buildToolRegistry(
   const shellTools = [
     createExecCommandTool({
       cwd: options.workspaceRoot,
+      ...(options.lightMode === true ? { defaultMaxOutputTokens: 1000 } : {}),
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
       ...(options.bashExecObserver !== undefined
@@ -732,6 +733,7 @@ export function buildToolRegistry(
     }),
     createWriteStdinTool({
       cwd: options.workspaceRoot,
+      ...(options.lightMode === true ? { defaultMaxOutputTokens: 1000 } : {}),
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
     }),
@@ -771,6 +773,7 @@ export function buildToolRegistry(
   const firstClassFileTools = [
     createFileReadTool({
       allowedPaths: [options.workspaceRoot],
+      ...(options.lightMode === true ? { defaultTextLineLimit: 200 } : {}),
       ...((options.sparseLineNumbers ?? options.lightMode) === true ? { sparseLineNumbers: true } : {}),
     }),
     createFileEditTool({
