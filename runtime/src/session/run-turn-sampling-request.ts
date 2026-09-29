@@ -23,7 +23,6 @@ import type { Session } from "./session.js";
 import { modelContextWindow, type TurnContext } from "./turn-context.js";
 import type { TurnState } from "./turn-state.js";
 import { messageText } from "./run-turn-messages.js";
-import { lightReasoningEffort } from "./light-reasoning.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import { getSessionPermissionInstructions } from "./permission-instructions.js";
 import {
@@ -231,12 +230,6 @@ function buildSamplingRequestContract(
   );
   return {
     ...request,
-    lightReasoningEffort: lightReasoningEffort(
-      session.services.runtimeOptions.lightMode === true,
-      ctx.reasoningEffort,
-      ctx.modelInfo.supportedReasoningLevels,
-      state.completedToolResults,
-    ),
     ...(planModeHelpers.isPlanMode(samplingContext) && request.tools.length > 0
       ? { toolChoice: "required" as const }
       : {}),
