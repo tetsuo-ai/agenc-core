@@ -171,13 +171,16 @@ export function usesAnthropicAccountFlow(provider?: string): boolean {
 
 /**
  * True when `model` is registry-owned by a built-in non-Anthropic provider
- * (grok, openai, ...; the registered catalog carries no Anthropic entries).
+ * (grok, openai, ...). Native Anthropic identities retain their account flow.
  * This remains useful outside a bound runtime session because registry
  * ownership is determined directly from the model catalog.
  */
 export function isRegistryOwnedNonAnthropicModel(model: string): boolean {
   const trimmed = model.trim()
   if (trimmed.length === 0) return false
+  if (resolveRegisteredModelCatalogEntry({ provider: 'anthropic', model: trimmed }) !== undefined) {
+    return false
+  }
   const providers = new Set(
     REGISTERED_MODEL_CATALOG.map(entry => entry.provider),
   )
