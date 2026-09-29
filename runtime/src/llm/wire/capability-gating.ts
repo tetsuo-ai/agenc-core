@@ -375,7 +375,8 @@ export function chatCompletionsCapabilityHintsForProvider(
   // service_tier: recognized only by documented providers. Strip
   // everywhere else — most servers ignore it silently, but at least
   // one custom proxy in the wild rejects unknown fields.
-  const acceptsServiceTier = SERVICE_TIER_PROVIDERS.has(slug);
+  const acceptsServiceTier = SERVICE_TIER_PROVIDERS.has(slug) ||
+    (slug === "minimax" && model?.toLowerCase() === "minimax-m3");
 
   // stream_options: accepted by most openai-compat providers. Strip
   // only for providers known to reject it. The runtime emits a

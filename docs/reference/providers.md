@@ -297,6 +297,15 @@ Exact per-token pricing is not published in the authoritative
 provider documentation, so AgenC reports the cost as unknown instead of
 treating its conservative fallback estimate as authoritative.
 
+MiniMax keeps AgenC's 131,072-token output reservation while its [API reference](https://platform.minimax.io/docs/api-reference/text-chat-openai)
+sets exact upper limits of 524,288 for M3 and 204,800 for every listed M2 variant.
+M3's [published price](https://platform.minimax.io/docs/guides/pricing-paygo)
+doubles above 512K input tokens, defined as 524,288 tokens by the API reference.
+Priority admission uses `service_tier: "priority"` and costs 1.5 times the
+applicable standard tier. M3 has no published cache-write fee; M2.7 retains its
+own documented fee. The M3.1 preview is currently restricted to Token Plan and
+MiniMax Code, so it is not added to AgenC's standard PAYG picker.
+
 Groq defaults to `openai/gpt-oss-120b`. Its reviewed public catalog also
 contains `openai/gpt-oss-20b`, `qwen/qwen3.8-27b` (preview), and
 `minimaxai/minimax-m2.7` (enterprise preview). The GPT OSS models accept

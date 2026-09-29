@@ -94,6 +94,12 @@ providerTest('gpt-5.4 family uses provider-specific context and output caps', ()
   })
 })
 
+providerTest('native MiniMax keeps output reservations separate from exact API maxima', () => {
+  const context = { provider: 'minimax', environment: {} }
+  expect(getModelMaxOutputTokensForContext('MiniMax-M3', context)).toEqual({ default: 131_072, upperLimit: 524_288 })
+  expect(getModelMaxOutputTokensForContext('MiniMax-M2.1', context)).toEqual({ default: 131_072, upperLimit: 204_800 })
+})
+
 providerTest('MiniMax-M3 carries its 1M window on the openai-compatible table', () => {
   process.env.AGENC_PROVIDER = 'openai'
   delete process.env.AGENC_MAX_OUTPUT_TOKENS

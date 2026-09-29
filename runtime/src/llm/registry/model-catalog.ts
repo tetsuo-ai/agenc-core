@@ -539,6 +539,9 @@ function minimaxCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
     contextWindow: model.contextWindow,
     maxContextWindow: model.contextWindow,
     maxOutputTokens: MINIMAX_MAX_OUTPUT_TOKENS,
+    // https://platform.minimax.io/docs/api-reference/text-chat-openai
+    // Exact API maxima, separate from AgenC's existing output reservation.
+    maxOutputTokensUpperLimit: model.model === "MiniMax-M3" ? 524_288 : 204_800,
     inputModalities: model.vision ? TEXT_IMAGE_MODALITIES : TEXT_MODALITIES,
     supportsToolUse: true,
     supportsParallelToolCalls: false,
@@ -555,7 +558,7 @@ function minimaxCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
     ...(model.thinkingSwitch
       ? { defaultReasoningLevel: "high" as const }
       : {}),
-    additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+    additionalSpeedTiers: model.model === "MiniMax-M3" ? FAST_SPEED_TIER : NO_ADDITIONAL_SPEED_TIERS,
     priority: model.priority,
     visibility: "list" as const,
   }));
