@@ -170,6 +170,14 @@ def flags(run):
     return result
 
 
+def wall_distribution(runs):
+    values = sorted(r['wall_seconds'] for r in runs if number(r.get('wall_seconds')))
+    complete = bool(runs) and len(values) == len(runs)
+    return {'median': statistics.median(values) if complete else None,
+            'p90': values[math.ceil(len(values) * .9) - 1] if complete else None,
+            'method': 'median; p90 nearest rank; all attempts including failures'}
+
+
 def aggregate(runs):
     count = len(runs)
     passed = sum(effective_pass(r) is True for r in runs)
@@ -203,6 +211,7 @@ def aggregate(runs):
             'timeout_runs':sum(bool(r.get('timeout')) for r in runs),
             'provider_affected_runs':sum(bool(r.get('provider_errors') or r.get('provider_unavailable')) for r in runs),
             'completed_runs': completed, 'incomplete_runs': count-completed,
+            'wall_seconds': wall_distribution(runs),
             'sums': sums, 'means': means, 'observed_sums': observed, 'metric_counts': counts, 'observed_metric_counts':observed_counts,
             'cost_per_completed_run_usd': total_cost/completed if total_cost is not None and completed else None,
             'cost_per_passed_task_usd': total_cost/passed if total_cost is not None and passed else None,
@@ -228,8 +237,12 @@ def comparison(pi, light):
     tokens = (light['means']['total_tokens'] <= pi['means']['total_tokens']) if complete_usage and light['means']['total_tokens'] is not None and pi['means']['total_tokens'] is not None else None
     quality = light['pass_rate'] >= pi['pass_rate'] if light['pass_rate'] is not None and pi['pass_rate'] is not None else None
     ratio = light['means']['total_tokens']/pi['means']['total_tokens'] if complete_usage and light['means']['total_tokens'] is not None and pi['means']['total_tokens'] else None
+    median = light['wall_seconds']['median'] < pi['wall_seconds']['median'] if all(g['wall_seconds']['median'] is not None for g in (pi,light)) else None
+    p90 = light['wall_seconds']['p90'] < pi['wall_seconds']['p90'] if all(g['wall_seconds']['p90'] is not None for g in (pi,light)) else None
     return {'tokens_at_most_pi': tokens, 'pass_rate_at_least_pi': quality,
-            'light_to_pi_token_ratio': ratio, 'raw_metrics_meet_target': tokens is True and quality is True}
+            'wall_median_lower_than_pi': median, 'wall_p90_lower_than_pi': p90,
+            'light_to_pi_token_ratio': ratio, 'raw_metrics_meet_target': tokens is True and quality is True,
+            'all_owner_metrics_met': tokens is True and quality is True and median is True and p90 is True}
 
 
 def summarize(root, manifest_tasks, candidate_phase, baseline_phase, models, required_runs, confirmatory=False):
@@ -299,7 +312,8 @@ def summarize(root, manifest_tasks, candidate_phase, baseline_phase, models, req
             if confirmatory: warnings.append('original_light_baseline_not_in_confirmatory_cohort')
             elif diag['runs'] < required_runs: warnings.append('baseline_light_diagnostic_incomplete')
             check = comparison(summaries['pi'], summaries['light'])
-            check['accepted'] = not blockers and check['raw_metrics_meet_target']
+            check['no_pi_completed_task_lost'] = summaries['pi']['passed'] == 0 or (summaries['light']['runs'] > 0 and summaries['light']['passed'] == summaries['light']['runs'])
+            check['accepted'] = not blockers and check['raw_metrics_meet_target'] and check['no_pi_completed_task_lost']
             check['status'] = 'insufficient_evidence' if blockers else 'pass' if check['accepted'] else 'fail'
             task_reports.append({'task':task,'agents':summaries,'baseline_light':diag,
                                  'acceptance':check,'blockers':sorted(set(blockers)),'warnings':sorted(set(warnings))})
@@ -316,7 +330,7 @@ def summarize(root, manifest_tasks, candidate_phase, baseline_phase, models, req
                            and balanced['light']['mean_total_tokens'] <= balanced['pi']['mean_total_tokens']
                            and balanced['light']['mean_pass_rate'] >= balanced['pi']['mean_pass_rate'])
         total_check['task_balanced_target_met'] = balanced_target
-        total_check['accepted'] = not model_blockers and bool(task_reports) and all(t['acceptance']['accepted'] for t in task_reports) and total_check['raw_metrics_meet_target'] and balanced_target
+        total_check['accepted'] = not model_blockers and bool(task_reports) and all(t['acceptance']['accepted'] for t in task_reports) and total_check['all_owner_metrics_met'] and balanced_target
         reports.append({'model':model,'tasks':task_reports,'totals':totals,
                         'task_balanced_means':balanced,'baseline_light_totals':aggregate(diagnostic_light),
                         'acceptance':total_check,'blockers':model_blockers})
@@ -341,7 +355,8 @@ def summarize(root, manifest_tasks, candidate_phase, baseline_phase, models, req
                                 'artifact_check_pass':r.get('check_pass'),'stop_reason':r.get('stop_reason'),
                                 'anatomy':r['_anatomy']} for r in runs],
             'accepted':bool(reports) and all(m['acceptance']['accepted'] for m in reports),
-            'limitations':['At least two runs per cell is an exploratory sample, not statistical proof for all coding tasks.',
+            'limitations':['Wall p90 uses nearest rank across all selected attempts. Median and p90 must both be strictly lower in each model; no Pi-completed task may have a failed Light repeat.',
+                           'At least two runs per cell is an exploratory sample, not statistical proof for all coding tasks.',
                            'Failed coding, timeout, process, and provider-error runs remain in every selected denominator and token/cost total.',
                            'Unknown numeric metrics are not replaced by zero. Observed sums are partial when coverage is incomplete.',
                            'Selected unfinished or malformed attempts remain in attempt counts with unknown outcome; they are not fabricated coding failures. Unknown metrics block complete means and acceptance.',
@@ -369,6 +384,10 @@ def markdown(report):
         for agent in AGENTS:
             data=model['totals'][agent]; sums=data['sums']
             lines.append(f"| {agent} | {data['runs']} / {data['passed']} | {format_number(sums['input_tokens'])} | {format_number(sums['cached_tokens'])} | {format_number(sums['uncached_tokens'])} | {format_number(sums['output_tokens'])} | {format_number(sums['total_tokens'])} | {format_number(sums['cost_usd'],6)} | {format_number(data['cost_per_completed_run_usd'],6)} | {format_number(data['cost_per_passed_task_usd'],6)} | {format_number(sums['wall_seconds'],1)} | {format_number(sums['model_calls'])}/{format_number(sums['tool_calls'])} |")
+        lines += ['', '| Agent | Wall median seconds | Wall p90 seconds |', '| --- | ---: | ---: |']
+        for agent in AGENTS:
+            distribution = model['totals'][agent]['wall_seconds']
+            lines.append(f"| {agent} | {format_number(distribution['median'],1)} | {format_number(distribution['p90'],1)} |")
         lines += ['','Per-task strict target: Light mean total tokens <= Pi; Light pass rate >= Pi.','','| Task | Light/Pi tokens | Quality >= Pi | Evidence | Flags |','| --- | ---: | --- | --- | --- |']
         for task in model['tasks']:
             check=task['acceptance']; issues=task['blockers']+task['warnings']
@@ -408,7 +427,7 @@ def self_test():
             rid=f'{phase}-fixture-model-task-{agent}-r{repeat}'; directory=root/rid; directory.mkdir()
             body={'model':'fixture-model','messages':[{'role':'system','content':'fixed'},{'role':'user','content':'task'}],'tools':[],'max_tokens':100}
             (directory/'wire-001.json').write_text(json.dumps({'body':body}))
-            run={'id':rid,'phase':phase,'agent':agent,'repeat':repeat,'model':'fixture-model','task':'task','pass':passed,'check_pass':passed,'exit_code':0,'timeout':False,'usage_complete':complete,'input_tokens':tokens,'cached_tokens':tokens//2,'uncached_tokens':tokens-tokens//2,'output_tokens':10,'cost_usd':tokens/1000,'budget_charge_usd':tokens/1000,'wall_seconds':2,'model_calls':1,'tool_calls':1,'provider_errors':0,'prompt_sha256':'same','harness_sha256':'same','agent_revision':agent+'-revision','first_system_chars':7,'first_schema_chars':2}
+            run={'id':rid,'phase':phase,'agent':agent,'repeat':repeat,'model':'fixture-model','task':'task','pass':passed,'check_pass':passed,'exit_code':0,'timeout':False,'usage_complete':complete,'input_tokens':tokens,'cached_tokens':tokens//2,'uncached_tokens':tokens-tokens//2,'output_tokens':10,'cost_usd':tokens/1000,'budget_charge_usd':tokens/1000,'wall_seconds':1 if phase.startswith('candidate') and agent=='light' else 2,'model_calls':1,'tool_calls':1,'provider_errors':0,'prompt_sha256':'same','harness_sha256':'same','agent_revision':agent+'-revision','first_system_chars':7,'first_schema_chars':2}
             (directory/'result.json').write_text(json.dumps(run)); return directory
         for repeat in (1,2):
             fixture('baseline','pi',repeat,100,repeat==1)
@@ -420,6 +439,9 @@ def self_test():
         assert result['accepted'] and result['inventory']['selected_result_files']==6
         assert result['models'][0]['totals']['pi']['sums']['total_tokens']==220
         assert result['models'][0]['totals']['pi']['failed']==1
+        assert result['models'][0]['totals']['light']['wall_seconds']['p90'] == 1
+        assert wall_distribution([{'wall_seconds':n} for n in range(1,11)])['p90'] == 9
+        assert wall_distribution([{}])['median'] is None
         assert result['models'][0]['totals']['pi']['cost_per_passed_task_usd']==.2
         assert result['models'][0]['baseline_light_totals']['runs']==2
         for bad_tasks,bad_models,bad_phase in [(['task','task'],['fixture-model'],'candidate-final'), (['task'],['fixture-model','fixture-model'],'candidate-final'), (['task'],['fixture-model'],'baseline')]:

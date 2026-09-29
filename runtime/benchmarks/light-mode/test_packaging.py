@@ -48,8 +48,10 @@ class PackagingTests(unittest.TestCase):
 
     def test_portable_paths_and_provenance_without_network(self):
         args=self.arguments()
+        args.spend_cap_usd=25
         with mock.patch.object(runner,'cmd',side_effect=self.fake_cmd):
             tasks,agents,models=runner.configure(args)
+        self.assertEqual(runner.SPEND_CAP,25)
         self.assertEqual(runner.ROOT,self.root/'output');self.assertEqual(runner.CORE_CANDIDATE,self.root/'candidate')
         self.assertEqual(tasks[0]['id'],'01-chunked-strict');self.assertEqual(models,['deepseek-flash'])
         self.assertEqual(agents,['pi','normal','light'])
@@ -81,7 +83,7 @@ class PackagingTests(unittest.TestCase):
 
     def test_limits_and_remote_or_credential_urls_refused(self):
         args=self.arguments()
-        for field,value in [('workers',3),('repeats',0),('spend_cap_usd',11),('balance_floor_usd',9),('phase','../escape'),('openai_upstream','https://example.com/v1/responses'),('openai_upstream','http://user:password@localhost/responses')]:
+        for field,value in [('workers',3),('repeats',0),('spend_cap_usd',26),('balance_floor_usd',9),('phase','../escape'),('openai_upstream','https://example.com/v1/responses'),('openai_upstream','http://user:password@localhost/responses')]:
             before=getattr(args,field);setattr(args,field,value)
             with self.assertRaises(ValueError):runner.configure(args)
             setattr(args,field,before)
@@ -144,6 +146,8 @@ class PackagingTests(unittest.TestCase):
         (run/'result.json').write_text(json.dumps(result))
         (run/'wire-001.json').write_text('{"private_content":"PRIVATE_SENTINEL"}')
         ledger=self.root/'spend.jsonl';ledger.write_text(json.dumps({'run':run.name,'cost_usd':.5,'error':{'status':503,'body':'PRIVATE_SENTINEL'}})+'\n'+json.dumps({'run':'legacy-luna','model':'gpt-6-luna','cost_usd':0,'budget_charge_usd':0})+'\n')
+        with ledger.open('a') as stream:
+            stream.write(json.dumps({'run':run.name,'cost_usd':0,'usage_missing':True,'budget_charge_usd':.2,'original_budget_charge_usd':.4,'budget_charge_basis':'request-time-price-upper-bound'})+'\n')
         out=self.root/'public'
         summary=export_evidence.export(runs,[ledger],['baseline'],out)
         self.assertEqual(summary['selected_runs'],1);self.assertEqual(summary['all_attempts'],2)
@@ -157,6 +161,11 @@ class PackagingTests(unittest.TestCase):
         self.assertIsNone(legacy['cost_usd']);self.assertEqual(legacy['reported_cost_usd'],0)
         self.assertEqual(legacy['cost_basis'],'subscription-unpriced')
         self.assertEqual(json.loads(ledger.read_text().splitlines()[1])['cost_usd'],0)
+        reconciled=json.loads((out/'all-call-accounting.json').read_text())['calls'][2]
+        self.assertTrue(reconciled['usage_missing'])
+        self.assertEqual(reconciled['original_budget_charge_usd'],.4)
+        self.assertEqual(reconciled['budget_charge_usd'],.2)
+        self.assertEqual(reconciled['budget_charge_basis'],'request-time-price-upper-bound')
 
     def test_bridge_has_absolute_duration_and_byte_bounds(self):
         # Fake worker streams, not the HTTP worker. Real calls stay blocked.

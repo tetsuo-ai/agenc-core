@@ -21,4 +21,8 @@ The bare Linux host has no Node executable, so real-path `--validate-only` was r
 
 Final paid study evidence is intentionally pending. See `evidence/README.md` for the publication contract.
 
+Later accounting change,2026-09-29: eight new `test_reconcile_budget.py` checks passed on Linux. They cover peak Pro retention, off-peak Pro/Flash bounds, unchanged measured costs, and refusal of mismatched rates/models/reserves, conflicting usage and absent or excessive output caps. The changed exporter regression also passed in isolation and verifies both reserve values survive publication while usage remains missing. The earlier28 offline checks are reused; no paid call or completed suite was rerun for this change. Reconciliation keeps the original ledger and task results intact and does not raise the study cap.
+
 The packaging credential-pattern scan covered 45 owned Mac artifacts and 1,814 Linux package/validation artifacts, with zero token/private-key-pattern hits. It read no real credential and printed no matches. This is an artifact hygiene check, not a substitute for the study owner's scan of all raw model traces before publication.
+
+Operator-cap and owner-target update: the cap validator accepts an explicitly authorized $25 total, still rejects a $26 cap, a balance floor below $10 and more than two workers. Eleven packaging checks and the expanded summary self-test passed in the pinned Linux Node container. The summary now requires lower median and nearest-rank p90 wall time per model and no failed Light repeat on any Pi-completed task. Equal time is not a win. No new paid run was launched for these changes.

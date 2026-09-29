@@ -13,7 +13,7 @@ RUN_FIELDS=('id','phase','provider','task','agent','model','repeat','pass','chec
     'input_tokens','cached_tokens','uncached_tokens','output_tokens','tool_calls','cost_usd','cost_basis','budget_charge_usd',
     'first_system_chars','first_schema_chars','agent_revision','prompt_sha256','harness_sha256','configuration_sha256')
 CALL_FIELDS=('run','call','model','input_tokens','cached_tokens','uncached_tokens','output_tokens','tool_calls',
-    'cost_usd','cost_basis','budget_charge_usd','time','seconds','usage_missing','rates')
+    'cost_usd','cost_basis','budget_charge_usd','original_budget_charge_usd','budget_charge_basis','time','seconds','usage_missing','rates')
 KEY_PATTERN=re.compile(r'sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----')
 
 
