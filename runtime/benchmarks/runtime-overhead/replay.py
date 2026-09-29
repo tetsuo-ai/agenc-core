@@ -4,9 +4,27 @@ Runs only in a Linux container with a task-owned /work and read-only /evidence.
 """
 import argparse, collections, hashlib, http.server, json, os, pathlib, re, shutil, subprocess, threading, time
 
+def confined_path(root, relative):
+    """Reject absolute paths, traversal and symlink escapes before using inputs."""
+    relative = pathlib.Path(relative)
+    if relative.is_absolute() or '..' in relative.parts:
+        raise ValueError('Expected a confined relative path')
+    root = pathlib.Path(root).resolve()
+    resolved = (root / relative).resolve()
+    if resolved == root or not resolved.is_relative_to(root):
+        raise ValueError('Path escapes its benchmark root')
+    return resolved
+
 def command(args, *, env=None, cwd=None, log=None, timeout=120):
+    # Only interpreter + absolute script invocations, never interpreter flags
+    # or an executable supplied by a task manifest. Script content is trusted
+    # benchmark code, confined to the disposable container, not a sandbox here.
+    if (not isinstance(args, list) or len(args) < 2 or
+            args[0] not in ('python3', 'node') or
+            not isinstance(args[1], str) or not pathlib.Path(args[1]).is_absolute()):
+        raise ValueError('Expected an approved interpreter and absolute script')
     with open(log or '/dev/null','w') as output:
-        return subprocess.run(args,env=env,cwd=cwd,stdout=output,stderr=subprocess.STDOUT,timeout=timeout).returncode
+        return subprocess.run(args,shell=False,env=env,cwd=cwd,stdout=output,stderr=subprocess.STDOUT,timeout=timeout).returncode
 
 def responses(source, repo):
     result=[]
@@ -100,7 +118,10 @@ class Replay(http.server.BaseHTTPRequestHandler):
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--native-io');ap.add_argument('--core',required=True);ap.add_argument('--label',required=True);ap.add_argument('--traces',default='/evidence/light-ultra/runs');ap.add_argument('--prefix',default='candidate-round2-new-deepseek-flash');ap.add_argument('--tasks',default='03-window-padding,07-source-manifest,09-separator-payload,12-partition-map');ap.add_argument('--modes',default='cold,warm');ap.add_argument('--repeats',type=int,default=1);ap.add_argument('--repeat-start',type=int,default=1);args=ap.parse_args()
     if args.native_io and args.modes!='warm':raise ValueError('Native I/O diagnostics require --modes warm')
-    root=pathlib.Path('/work'); core=root/args.core
+    if any(mode not in ('cold', 'warm', 'daemon') for mode in args.modes.split(',')):
+        raise ValueError('Invalid replay mode')
+    root=pathlib.Path('/work'); core=confined_path(root,args.core)
+    if not re.fullmatch(r'[A-Za-z0-9_-]+', args.label):raise ValueError('Invalid run label')
     revision=(core/'.git/HEAD').read_text().strip()
     if not re.fullmatch('[0-9a-f]{40}',revision):raise ValueError('Replay requires a detached, pinned Core checkout')
     harness_digest=hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()
@@ -110,11 +131,14 @@ def main():
       for repeat in range(args.repeat_start-1,args.repeat_start-1+args.repeats):
        for task in tasks:
         if task['id'] not in args.tasks.split(','):continue
+        if not re.fullmatch(r'[A-Za-z0-9_-]+', task['id']):raise ValueError('Invalid task ID')
+        setup_script=confined_path(root/'bench/tasks',task['setup_script'])
+        check_script=confined_path(root/'bench/tasks',task['check_script'])
         dest=root/'replay-runs'/f'{args.label}-{mode}-{task["id"]}-{repeat+1}'
         dest.mkdir(parents=True,exist_ok=False);repo=dest/'repo';home=dest/'home';home.mkdir()
-        cache=pathlib.Path('/evidence/light-ultra/repos')/task['repo_sha']
+        cache=confined_path('/evidence/light-ultra/repos',task['repo_sha'])
         shutil.copytree(cache,repo,symlinks=True)
-        if command(['python3',str(root/'bench/tasks'/task['setup_script']),str(repo)],log=dest/'setup.log'):raise RuntimeError('setup failed')
+        if command(['python3',str(setup_script),str(repo)],log=dest/'setup.log'):raise RuntimeError('setup failed')
         env={k:v for k,v in os.environ.items() if not any(s in k for s in ('KEY','TOKEN','SECRET','AGENC'))}
         env.update(HOME=str(home),AGENC_HOME=str(home/'agenc'),DEEPSEEK_API_KEY='local-replay',DEEPSEEK_BASE_URL=f'http://127.0.0.1:{server.server_port}/v1',AGENC_RUNTIME_TIMING=str(dest/'timing'),CI='1')
         if args.native_io: env['LD_PRELOAD']=args.native_io
@@ -153,7 +177,7 @@ def main():
         else:
             stoprc=command(cli+['daemon','stop'],env=env,cwd=repo,log=dest/'daemon-stop.log',timeout=30)
         stopend=time.time()
-        check=command(['python3',str(root/'bench/tasks'/task['check_script']),str(repo)],log=dest/'check.log')
+        check=command(['python3',str(check_script),str(repo)],log=dest/'check.log')
         result={'label':args.label,'core_revision':revision,'harness_sha256':harness_digest,'trace_sha256':trace_digest,'source_dir':str(source),'adjusted_yield_calls':adjusted_yields,'replay_errors':server.replay_errors,'replay_valid':not server.replay_errors and server.calls==len(server.replies),'mode':mode,'task':task['id'],'repeat':repeat+1,'start_ms':start*1000,'end_ms':end*1000,'wall_ms':(end-start)*1000,'daemon_stop_ms':(stopend-stopstart)*1000,'exit_code':rc,'stop_exit_code':stoprc,'check_exit_code':check,'calls':server.calls,'recorded_calls':len(server.replies),'request_boundaries':server.boundaries,'load':os.getloadavg()}
         if mode=='daemon':
             result['daemon_client']=measured

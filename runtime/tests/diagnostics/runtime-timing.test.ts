@@ -42,3 +42,28 @@ test("an unavailable diagnostic destination cannot change an operation", async (
   expect(await timedRuntime("success", async () => 17)).toBe(17);
   expect(() => flushRuntimeTiming()).not.toThrow();
 });
+
+test("enabled timing closes synchronous and asynchronous failures exactly once", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "runtime-timing-"));
+  directories.push(directory);
+  vi.stubEnv("AGENC_RUNTIME_TIMING", join(directory, "spans"));
+  const { timedRuntime, flushRuntimeTiming } = await import("../../src/diagnostics/runtime-timing.js");
+  const synchronous = new Error("synchronous failure");
+  const asynchronous = new Error("asynchronous failure");
+  await expect(timedRuntime("sync", () => { throw synchronous; })).rejects.toBe(synchronous);
+  await expect(timedRuntime("async", async () => { throw asynchronous; })).rejects.toBe(asynchronous);
+  flushRuntimeTiming();
+  flushRuntimeTiming();
+  const rows = readFileSync(join(directory, readdirSync(directory)[0]!), "utf8").trim().split("\n").map(line => JSON.parse(line));
+  expect(rows.map(row => row.name)).toEqual(["sync", "async"]);
+  expect(new Set(rows.map(row => row.id)).size).toBe(2);
+});
+
+test("disabled timing preserves the original promise and synchronous throw", async () => {
+  vi.stubEnv("AGENC_RUNTIME_TIMING", "");
+  const { timedRuntime } = await import("../../src/diagnostics/runtime-timing.js");
+  const original = Promise.resolve({});
+  expect(timedRuntime("identity", () => original)).toBe(original);
+  const failure = new Error("synchronous failure");
+  expect(() => timedRuntime("sync", () => { throw failure; })).toThrow(failure);
+});
