@@ -53,8 +53,8 @@ providerTest('deepseek-v4-flash uses provider-specific context and output caps',
 
   expect(getContextWindowForModel('deepseek-v4-flash')).toBe(1_048_576)
   expect(getModelMaxOutputTokens('deepseek-v4-flash')).toEqual({
-    default: 384_000,
-    upperLimit: 384_000,
+    default: 393_216,
+    upperLimit: 393_216,
   })
 })
 

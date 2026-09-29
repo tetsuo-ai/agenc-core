@@ -14,6 +14,7 @@ import {
 } from "../../context/personality-spec-instructions.js";
 import type { ReasoningEffort, ReasoningSummary } from "../../session/turn-context.js";
 import { normalizeProviderIdentity } from "../../provider-identity.js";
+import { MISTRAL_MODEL_CATALOG, resolveMistralChatModel } from "./mistral-models.js";
 import { OLLAMA_CLOUD_MODELS } from "./ollama-cloud-models.js";
 import { OPENAI_REASONING_MODELS } from "./openai-reasoning-models.js";
 import { OPENROUTER_MODELS } from "./openrouter-models.js";
@@ -199,6 +200,7 @@ interface ZaiChatModelSpec {
   readonly model: string;
   readonly displayName: string;
   readonly vision: boolean;
+  readonly payGoOnly?: boolean;
   readonly priority: number;
 }
 
@@ -214,6 +216,13 @@ const ZAI_CHAT_MODELS = Object.freeze([
     displayName: "GLM-5.3 Flash",
     vision: true,
     priority: 1,
+  },
+  {
+    model: "glm-5.3-flashx",
+    displayName: "GLM-5.3 FlashX",
+    vision: true,
+    payGoOnly: true,
+    priority: 2,
   },
 ] as const satisfies readonly ZaiChatModelSpec[]);
 
@@ -403,6 +412,33 @@ const QWEN_CLOUD_CHAT_MODELS = Object.freeze([
     payGoOnly: true,
     priority: 8,
   },
+  {
+    model: "qwen3.8-27b",
+    displayName: "Qwen3.8 27B",
+    contextWindow: 1_000_000,
+    maxOutputTokens: 131_072,
+    vision: true,
+    payGoOnly: true,
+    priority: 9,
+  },
+  {
+    model: "qwen3.8-2.4t-a95b",
+    displayName: "Qwen3.8 2.4T A95B",
+    contextWindow: 1_000_000,
+    maxOutputTokens: 131_072,
+    vision: false,
+    payGoOnly: true,
+    priority: 10,
+  },
+  {
+    model: "qwen3.8-omni-flash",
+    displayName: "Qwen3.8 Omni Flash",
+    contextWindow: 1_000_000,
+    maxOutputTokens: 131_072,
+    vision: true,
+    payGoOnly: true,
+    priority: 11,
+  },
 ] as const satisfies readonly QwenCloudChatModelSpec[]);
 
 function qwenCloudCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
@@ -416,7 +452,7 @@ function qwenCloudCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
           model.payGoOnly !== true,
       )
       .map((model) => {
-        const supportsReasoningEffort = /^qwen3\.8-(?:max|flash)$/i.test(
+        const supportsReasoningEffort = /^qwen3\.8-(?:max|flash|omni-flash)$/i.test(
           model.model,
         );
         return Object.freeze({
@@ -443,7 +479,9 @@ function qwenCloudCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
           webSearchToolType: "none" as const,
           supportsReasoningSummaries: false,
           defaultReasoningSummary: "none" as const,
-          supportedReasoningLevels: supportsReasoningEffort
+          supportedReasoningLevels: model.model === "qwen3.8-omni-flash"
+            ? Object.freeze(["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const)
+            : supportsReasoningEffort
             ? QWEN_38_REASONING_LEVELS
             : NO_REASONING_LEVELS,
           ...(supportsReasoningEffort
@@ -459,7 +497,7 @@ function qwenCloudCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
 
 function zaiCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
   return ZAI_PROVIDER_IDS.flatMap((provider) =>
-    ZAI_CHAT_MODELS.map((model) => Object.freeze({
+    ZAI_CHAT_MODELS.filter((model) => provider === "zai" || !("payGoOnly" in model)).map((model) => Object.freeze({
       provider,
       model: model.model,
       displayName: model.displayName,
@@ -760,6 +798,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       priority: index + 100,
       visibility: "list",
     })),
+    ...MISTRAL_MODEL_CATALOG,
     ANTHROPIC_OPUS_5_5_ENTRY,
     ANTHROPIC_SONNET_5_5_ENTRY,
     ANTHROPIC_HAIKU_4_5_ENTRY,
@@ -1516,6 +1555,12 @@ export function resolveRegisteredModelCatalogEntry(input: {
     );
   }
   if (provider === "anthropic") return resolveAnthropicCatalogEntry(model);
+  // FlashX is explicitly unavailable on Coding Plan; do not prefix-match Flash.
+  if (provider === "zai-coding-plan" && model.toLowerCase() === "glm-5.3-flashx") return undefined;
+  if (provider === "mistral") {
+    const canonical = resolveMistralChatModel(model)?.model;
+    return canonical === undefined ? undefined : findExactModel(canonical, MISTRAL_MODEL_CATALOG);
+  }
   if (provider === "amazon-bedrock") return resolveBedrockCatalogEntry(model);
   const candidates = REGISTERED_MODEL_CATALOG.filter(
     (entry) => modelCatalogProviderIdentity(entry.provider) === provider,

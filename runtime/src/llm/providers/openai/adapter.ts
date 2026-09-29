@@ -57,6 +57,8 @@ import { sharedPrefixTailEnabled } from "../../wire/shared-prefix-tail.js";
 import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import {
   coerceUsage,
+  assistantTextFromContentBlocks,
+  thinkingTextFromContentBlocks,
   normalizeFinishReason,
   serializeProviderToolArguments,
 } from "../../wire/shared.js";
@@ -1851,8 +1853,11 @@ export class OpenAIProvider implements LLMProvider {
             choice.delta && typeof choice.delta === "object"
               ? (choice.delta as Record<string, unknown>)
               : {};
-          if (typeof delta.content === "string" && delta.content.length > 0) {
-            const split = thinkFilter.push(delta.content);
+          const contentDelta = typeof delta.content === "string" ? delta.content
+            : streamCapabilityHints.usesThinkingContentBlocks === true && Array.isArray(delta.content)
+              ? assistantTextFromContentBlocks(delta.content) : "";
+          if (contentDelta.length > 0) {
+            const split = thinkFilter.push(contentDelta);
             if (split.text.length > 0) {
               content += split.text;
               onChunk({ content: split.text, done: false });
@@ -1881,7 +1886,9 @@ export class OpenAIProvider implements LLMProvider {
               : delta.reasoning_content;
           const fallbackReasoningField = streamCapabilityHints.reasoningContentFallbackField;
           const reasoningDelta = primaryReasoningDelta ??
-            (fallbackReasoningField !== undefined ? delta[fallbackReasoningField] : undefined);
+            (fallbackReasoningField !== undefined ? delta[fallbackReasoningField] : undefined) ??
+            (streamCapabilityHints.usesThinkingContentBlocks === true && Array.isArray(delta.content)
+              ? thinkingTextFromContentBlocks(delta.content) : undefined);
           if (typeof reasoningDelta === "string" && reasoningDelta.length > 0) {
             reasoningContent += reasoningDelta;
             onChunk({

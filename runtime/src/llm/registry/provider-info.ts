@@ -720,7 +720,7 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
     "gemini-3.1-flash-lite",
     "gemini-2.5-flash",
   ]),
-  mistral: Object.freeze(["mistral-medium-latest"]),
+  mistral: mergeDerivedProviderModels("mistral"),
   "nvidia-nim": NVIDIA_PROVIDER_MODEL_IDS,
   minimax: mergeDerivedProviderModels("minimax"),
   // Copilot proxies models owned by several providers. Keep those entries

@@ -137,6 +137,13 @@ export function resolveReasoningEffort(input: {
     const entry = resolveRegisteredModelCatalogEntry({ provider: slug, model });
     reasoningEffortAllowedValues = new Set(entry?.supportedReasoningLevels ?? []);
     acceptsReasoningEffort = reasoningEffortAllowedValues.size > 0;
+  } else if (slug === "mistral") {
+    const entry = resolveRegisteredModelCatalogEntry(input);
+    reasoningEffortAllowedValues = new Set(entry?.supportedReasoningLevels ?? []);
+    acceptsReasoningEffort = reasoningEffortAllowedValues.size > 0;
+  } else if (slug === "qwen" && model?.trim().toLowerCase() === "qwen3.8-omni-flash") {
+    reasoningEffortAllowedValues = new Set(resolveRegisteredModelCatalogEntry(input)?.supportedReasoningLevels ?? []);
+    acceptsReasoningEffort = reasoningEffortAllowedValues.size > 0;
   } else if (slug === "openai") {
     acceptsReasoningEffort = isUpstreamReasoningModel(model);
   } else if (slug === "grok") {
@@ -162,7 +169,7 @@ export function resolveReasoningEffort(input: {
     acceptsReasoningEffort = true;
   } else if (
     isZai &&
-    /(?:^|[/:])glm-5\.3(?:-flash)?$/i.test(model ?? "")
+    /(?:^|[/:])glm-5\.3(?:-flashx?)?$/i.test(model ?? "")
   ) {
     reasoningEffortAllowedValues = ZAI_GLM_53_REASONING_EFFORT_VALUES;
     acceptsReasoningEffort = true;

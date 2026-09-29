@@ -14,7 +14,7 @@ describe("DeepSeekProvider", () => {
     const config = { ...defaultConfig(), model_provider: "deepseek", model, reasoning_effort: "max" as const };
     const resolver = new ModelMetadataResolver({ env: {} });
     const metadata = resolver.resolveSync({ provider: "deepseek", model, config });
-    expect(metadata).toMatchObject({ contextWindow: 1_048_576, maxOutputTokens: 64_000, maxOutputTokensUpperLimit: 384_000 });
+    expect(metadata).toMatchObject({ contextWindow: 1_048_576, maxOutputTokens: 64_000, maxOutputTokensUpperLimit: 393_216 });
     expect(resolver.resolveSync({ provider: "deepseek", model, config: { ...config, max_output_tokens: 8192 } }).maxOutputTokens).toBe(8192);
     const session = sessionConfigurationFromAgenCConfig({ config, provider: "deepseek", model, workspaceRoot: "/tmp/deepseek-contract" });
     expect(session.collaborationMode.reasoningEffort).toBe("max");
