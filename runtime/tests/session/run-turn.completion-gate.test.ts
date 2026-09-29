@@ -186,6 +186,7 @@ describe("completion gate in the turn loop", () => {
     "Read the file. Your final response must contain JSON only.",
     'Read the file and return exactly {"ok":true}.',
     "Delegate the task and return the child's final JSON answer verbatim, without commentary.",
+    "Spawn one child to solve this task and return its final answer verbatim.",
     "Read the file and reply with exactly the requested JSON final answer.",
     "Read the file and return exactly \"ok\".",
     "Read the file. " + "context ".repeat(1000) + "\nReturn JSON only.",
@@ -214,6 +215,7 @@ describe("completion gate in the turn loop", () => {
     ["indented fence", "   ````text\n   ```\nReturn JSON only.\n   ````"],
     ["fence inside a list", "- Example:\n  ````text\n  ```\n  Return JSON only.\n  ````"],
     ["unclosed fence", "````text\n```\nReturn JSON only."],
+    ["fenced delegation example", "````text\n```\nSpawn one child to solve this task and return its final answer verbatim.\n````"],
   ])("keeps completion verification for %s", async (_name, example) => {
     const { provider, requests } = scriptedProvider([
       toolStep("work-1"), textStep("Done."), toolStep("verify-1"),

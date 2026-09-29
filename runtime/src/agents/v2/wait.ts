@@ -1,6 +1,8 @@
 import type { Tool, ToolResult } from "../../tools/types.js";
 import type { Session } from "../../session/session.js";
 import { liveAgentSession } from "../live-session.js";
+import { MIN_TOOL_RESULT_BYTES, resolveOffloadThresholdBytes } from "../../tools/execution.js";
+import { frameUntrustedToolResultContent } from "../../tools/untrusted-tool-result-framing.js";
 import {
   agentValidationError,
   callIdFromArgs,
@@ -175,6 +177,52 @@ function drainMailboxUpdates(session: unknown): readonly WaitMailboxUpdate[] {
     .filter((message): message is WaitMailboxUpdate => message !== null);
 }
 
+/** Keep exact pages inline even at the smallest downstream model cap. The
+ * budget includes the JSON envelope, escaping and the model-facing frame. */
+function exactResultPage(
+  ref: { readonly agent_id: string; readonly turn_id: string },
+  page: { readonly text: string; readonly total_chars: number },
+  offset: number,
+): ToolResult {
+  const maxBytes = Math.min(MIN_TOOL_RESULT_BYTES,
+    resolveOffloadThresholdBytes() ?? MIN_TOOL_RESULT_BYTES);
+  // Search character boundaries so next_offset never splits a surrogate pair.
+  const characters = Array.from(page.text);
+  const serialize = (length: number): ToolResult => {
+    const text = characters.slice(0, length).join("");
+    const end = offset + text.length;
+    const complete = end === page.total_chars;
+    const result = json({ result_ref: ref, text, total_chars: page.total_chars,
+      next_offset: complete ? null : end, complete });
+    // Preserve the ordinary sanitizer. Parsing this ASCII JSON transport
+    // restores tags, framing delimiters and invisible Unicode exactly.
+    result.content = result.content.replace(/[<=>&\u007f-\uffff]/g,
+      char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+    return result;
+  };
+  const fits = (result: ToolResult): boolean => Buffer.byteLength(
+    frameUntrustedToolResultContent("wait_agent", result.content, "workspace") as string,
+    "utf8",
+  ) <= maxBytes;
+  const full = serialize(characters.length);
+  if (fits(full)) return full;
+  let low = 0;
+  let high = characters.length - 1;
+  let result = serialize(0);
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    const candidate = serialize(middle);
+    if (fits(candidate)) {
+      low = middle;
+      result = candidate;
+    } else {
+      high = middle - 1;
+    }
+  }
+  if (low === 0) throw new Error("Tool result inline limit is too small for an exact result page");
+  return result;
+}
+
 export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
   const session = opts.getSession();
   const { defaultTimeoutMs, minTimeoutMs, maxTimeoutMs } = session
@@ -236,14 +284,9 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
       try {
         const resultControl = control ?? opts.ensureAgentControl(rootSession).control;
         resultControl.registerSessionRoot(rootSession.conversationId);
-        const result = json({ result_ref: { agent_id: value.agent_id, turn_id: value.turn_id },
-          ...resultControl.readChildResultPage(current.threadId, value.agent_id, value.turn_id, value.offset as number | undefined) });
-        // Keep the ordinary untrusted-result sanitizer and framing. Escape
-        // tags, framing delimiters and non-ASCII (including invisible text)
-        // in the JSON transport so parsing a page restores its exact contents.
-        result.content = result.content.replace(/[<=>&\u007f-\uffff]/g,
-          char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
-        return result;
+        const offset = value.offset as number | undefined ?? 0;
+        return exactResultPage({ agent_id: value.agent_id, turn_id: value.turn_id },
+          resultControl.readChildResultPage(current.threadId, value.agent_id, value.turn_id, offset), offset);
       } catch (error) {
         return agentValidationError(error instanceof Error ? error.message : String(error));
       }

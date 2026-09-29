@@ -46,7 +46,7 @@ export function requestsExactOutput(task: string): boolean {
     // Only inherit the assistant as the subject of a coordinated command
     // after a clear assistant action. "Make the endpoint ... and return"
     // keeps the endpoint as its subject and is not a response contract.
-    return /^(?:read|inspect|review|analy[sz]e|summarize|run|test|delegate)\b/iu.test(command)
+    return /^(?:read|inspect|review|analy[sz]e|summarize|run|test|delegate|spawn)\b/iu.test(command)
       ? command.split(/\band\s+/iu)
       : [command];
   });

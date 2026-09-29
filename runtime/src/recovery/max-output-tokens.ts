@@ -47,8 +47,10 @@ export const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
 export const RETRY_TRUNCATED_TOOL_CONTENT =
   "The output limit truncated tool-call arguments. The incomplete calls were not executed. " +
   "Retry with complete valid JSON, not a continuation of the partial string. " +
-  "For spawn_agent use message_ref to copy the current user message or a delimited excerpt without regenerating it. " +
   "Keep arguments short and within the configured output budget. Do not claim that a child spawned without a successful spawn result.";
+
+const RETRY_REFERENCED_HANDOFF_CONTENT =
+  " For spawn_agent use message_ref to copy the current user message or a delimited excerpt without regenerating it.";
 
 const RESUME_META_CONTENT =
   "Continue generating directly from where you left off. Do not apologize, do not restart, do not add preamble. Pick up at the next token.";
@@ -429,10 +431,11 @@ export function runMaxOutputTokensRecovery(
   const { session, state } = opts;
   const overrideUnset = state.maxOutputTokensOverride === undefined;
   const truncatedTools = (state.truncatedToolCallNames?.length ?? 0) > 0;
-  // Referenced handoffs fit the configured cap; do not spend a larger budget
-  // repeating copied context. Other tools and responses retain escalation.
+  // Only the calling session's active human input can back message_ref.
+  // Child sessions and autonomous turns still need inline-message recovery.
+  const canReferenceMessage = (session.currentRootHumanTurn?.()?.text?.trim().length ?? 0) > 0;
   const referencedHandoffsOnly = truncatedTools &&
-    state.truncatedToolCallNames!.every(name => name === "spawn_agent");
+    canReferenceMessage && state.truncatedToolCallNames!.every(name => name === "spawn_agent");
   const escalateAllowed = opts.escalateAllowed !== false && !referencedHandoffsOnly;
 
   // Step 1: escalate path — first attempt, override unset.
@@ -452,7 +455,10 @@ export function runMaxOutputTokensRecovery(
     });
     const metaMessage: LLMMessage = {
       role: "user",
-      content: truncatedTools ? RETRY_TRUNCATED_TOOL_CONTENT : RESUME_META_CONTENT,
+      content: truncatedTools
+        ? RETRY_TRUNCATED_TOOL_CONTENT + (canReferenceMessage && state.truncatedToolCallNames!.includes("spawn_agent")
+          ? RETRY_REFERENCED_HANDOFF_CONTENT : "")
+        : RESUME_META_CONTENT,
     };
     state.messages.push(metaMessage);
     state.maxOutputTokensRecoveryCount += 1;
