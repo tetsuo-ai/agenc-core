@@ -375,7 +375,7 @@ The CLI exposes `agenc run pause <run-id> [--request-id <id>]` and
 reads the current paused token from status before resuming. `run start --follow`
 stops when the run is terminal or durably paused.
 
-#### Planner requirement conflicts (protocol 1.26)
+#### Planner requirement conflicts (protocol 1.28)
 
 A workflow may stop after planning with terminal status `failed` and
 `stopReason: "requirement_conflict"`. Its final message begins

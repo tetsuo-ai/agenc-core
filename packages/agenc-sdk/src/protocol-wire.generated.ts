@@ -48,10 +48,11 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.25 adds cooperative workflow pause/resume and its durable control status.
  * 1.26 adds live workflow stop observations when terminal persistence fails.
  * 1.27 adds explicit, idempotent continuation of completed verified results.
+ * 1.28 adds requirement_conflict for a failed structured planner report.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.27.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.28.0" as const;
 
 export const AGENC_DAEMON_METHODS = [
     "remote.capabilities",
@@ -1676,7 +1677,7 @@ export interface RunWorkflowStatus extends JsonObject {
     readonly requestedPermissionMode?: RunStartParams["permissionMode"];
     /** Actual mode observed from the owning live session; absent when unavailable. */
     readonly effectivePermissionMode?: RunEffectivePermissionMode;
-    /** Present when the run terminated with a workflow stop reason. Protocol 1.26 adds requirement_conflict for a failed planner report. */
+    /** Present when the run terminated with a workflow stop reason. Protocol 1.28 adds requirement_conflict for a failed planner report. */
     readonly stopReason?: string;
 }
 
