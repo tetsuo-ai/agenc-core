@@ -16,6 +16,7 @@ import type { ReasoningEffort, ReasoningSummary } from "../../session/turn-conte
 import { normalizeProviderIdentity } from "../../provider-identity.js";
 import { OLLAMA_CLOUD_MODELS } from "./ollama-cloud-models.js";
 import { OPENAI_REASONING_MODELS } from "./openai-reasoning-models.js";
+import { OPENROUTER_MODELS } from "./openrouter-models.js";
 import { DEEPSEEK_MODELS, DEEPSEEK_MODEL_ALIASES } from "./deepseek-models.js";
 import { QWEN_FLASH_NEXT_MODEL } from "./qwen-flash-next.js";
 import { QWEN_CODER_30B_MODEL } from "./qwen-coder-30b.js";
@@ -737,6 +738,28 @@ const ANTHROPIC_UNCURATED_ENTRIES: readonly RegisteredModelCatalogEntry[] = ([
 
 export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
   Object.freeze([
+    ...OPENROUTER_MODELS.map((entry, index): RegisteredModelCatalogEntry => ({
+      provider: "openrouter",
+      model: entry.model,
+      displayName: entry.label,
+      contextWindow: entry.context,
+      maxContextWindow: entry.context,
+      ...(entry.output !== undefined ? { maxOutputTokens: entry.output } : {}),
+      inputModalities: entry.modalities,
+      supportsToolUse: true,
+      supportsParallelToolCalls: entry.parameters.includes("parallel_tool_calls"),
+      supportsStructuredOutput: entry.parameters.includes("structured_outputs"),
+      supportsSearchTool: false,
+      supportsVerbosity: entry.parameters.includes("verbosity"),
+      webSearchToolType: "none",
+      supportsReasoningSummaries: entry.parameters.includes("include_reasoning"),
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: entry.efforts,
+      ...(entry.defaultEffort !== undefined ? { defaultReasoningLevel: entry.defaultEffort } : {}),
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority: index + 100,
+      visibility: "list",
+    })),
     ANTHROPIC_OPUS_5_5_ENTRY,
     ANTHROPIC_SONNET_5_5_ENTRY,
     ANTHROPIC_HAIKU_4_5_ENTRY,

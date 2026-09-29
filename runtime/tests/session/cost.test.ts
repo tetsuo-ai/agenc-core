@@ -228,7 +228,8 @@ describe("cost helpers", () => {
         1.5 * inputUsdPer1K + 0.5 * cachedInputUsdPer1K + outputUsdPer1K,
         10,
       );
-      for (const alias of [model, `openai/${model}`, `openrouter:openai/${model}`]) {
+      // OpenRouter has its own published tariff, tested in openrouter-catalog.test.ts.
+      for (const alias of [model, `openai/${model}`]) {
         expect(DEFAULT_MODEL_COSTS[alias]).toBe(DEFAULT_MODEL_COSTS[`openai:${model}`]);
       }
     },

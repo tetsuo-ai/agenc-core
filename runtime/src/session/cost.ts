@@ -27,6 +27,7 @@ import type { Event } from "./event-log.js";
 import type { Sidecar } from "./sidecar.js";
 import { normalizeProviderMetadataIdentity } from "../provider-identity.js";
 import { parseClaudeModelId } from "../utils/model/claudeModelId.js";
+import { OPENROUTER_MODELS } from "../llm/registry/openrouter-models.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Cost registry — USD per 1K tokens.
@@ -928,6 +929,41 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       label: "local",
       localZeroCost: true,
     },
+    // Provider-published USD/token rates, scoped to OpenRouter rather than
+    // copied from the upstream vendor. Missing or request-priced models keep
+    // the existing unknown-cost admission policy. Actual response cost wins.
+    ...Object.fromEntries(OPENROUTER_MODELS.flatMap((model) => {
+      const input = Number(model.pricing.prompt);
+      const output = Number(model.pricing.completion);
+      if (!Number.isFinite(input) || input < 0 || !Number.isFinite(output) || output < 0 ||
+        Number(model.pricing.request ?? 0) !== 0 || (model.priceOverrides?.length ?? 0) > 1 ||
+        model.priceOverrides?.some(rate => rate.min_prompt_tokens === undefined)) {
+        return [[`openrouter:${model.model}`, DEFAULT_UNKNOWN_MODEL_COST]];
+      }
+      const cacheRead = Number(model.pricing.input_cache_read);
+      const cacheWrite = Number(model.pricing.input_cache_write);
+      const long = model.priceOverrides?.[0];
+      return [[`openrouter:${model.model}`, {
+        inputUsdPer1K: input * 1000,
+        outputUsdPer1K: output * 1000,
+        ...(Number.isFinite(cacheRead) && cacheRead >= 0 ? { cachedInputUsdPer1K: cacheRead * 1000 } : {}),
+        ...(Number.isFinite(cacheWrite) && cacheWrite >= 0 ? { cacheCreationUsdPer1K: cacheWrite * 1000 } : {}),
+        cachedInputIncludedInInputTokens: true,
+        cacheCreationIncludedInInputTokens: true,
+        ...(long !== undefined ? { longContext: {
+          aboveInputTokens: long.min_prompt_tokens! - 1,
+          rates: {
+            inputUsdPer1K: Number(long.prompt) * 1000,
+            outputUsdPer1K: Number(long.completion) * 1000,
+            ...(long.input_cache_read !== undefined ? { cachedInputUsdPer1K: Number(long.input_cache_read) * 1000 } : {}),
+            ...(long.input_cache_write !== undefined ? { cacheCreationUsdPer1K: Number(long.input_cache_write) * 1000 } : {}),
+            cachedInputIncludedInInputTokens: true,
+            cacheCreationIncludedInInputTokens: true,
+          },
+        } } : {}),
+        ...(input === 0 && output === 0 ? { localZeroCost: true } : {}),
+      } satisfies ModelCostEntry]];
+    })),
   });
 
 // ─────────────────────────────────────────────────────────────────────
