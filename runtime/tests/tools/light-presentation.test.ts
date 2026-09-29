@@ -18,3 +18,14 @@ test("equivalent schema key orders produce identical serialization", () => {
   const b = { properties: { a: { type: "string" }, b: { minimum: 1, type: "number" } }, type: "object" };
   expect(JSON.stringify(compactLightSchema(a))).toBe(JSON.stringify(compactLightSchema(b)));
 });
+
+test("required argument order is stable across declaration order and keeps edit anchors first", () => {
+  const a = { type: "object", required: ["old_string", "new_string"], properties: {
+    new_string: { type: "string" }, replace_all: { type: "boolean" }, old_string: { type: "string" },
+  } };
+  const b = { ...a, properties: { old_string: a.properties.old_string, new_string: a.properties.new_string, replace_all: a.properties.replace_all } };
+  const compact = compactLightSchema(a) as typeof a;
+  expect(Object.keys(compact.properties)).toEqual(["old_string", "new_string", "replace_all"]);
+  expect(JSON.stringify(compact)).toBe(JSON.stringify(compactLightSchema(b)));
+  expect(compact.properties).toEqual(a.properties);
+});

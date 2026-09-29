@@ -26,7 +26,12 @@ export function compactLightSchema(value: unknown, schema = true): unknown {
     .filter(([key]) => !schema || key !== "description")
     .map(([key, item]) => {
       if (schema && schemaMaps.has(key) && item !== null && typeof item === "object" && !Array.isArray(item)) {
-        return [key, Object.fromEntries(Object.entries(item).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+        // Required fields follow the declared contract: choose the file, then
+        // the old text, then its replacement. Optional fields remain sorted.
+        const required = key === "properties" && Array.isArray((value as Record<string, unknown>).required)
+          ? (value as { required: unknown[] }).required : [];
+        const rank = (name: string) => { const i = required.indexOf(name); return i < 0 ? required.length : i; };
+        return [key, Object.fromEntries(Object.entries(item).sort(([a], [b]) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0))
           .map(([name, child]) => [name, compactLightSchema(child)]))];
       }
       return [key, compactLightSchema(item, schema && schemaValues.has(key))];
