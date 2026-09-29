@@ -927,6 +927,7 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       supportsReasoningSummaries: true,
       defaultReasoningSummary: "none",
       supportedReasoningLevels: entry.efforts,
+      ...(entry.defaultEffort !== undefined ? { defaultReasoningLevel: entry.defaultEffort } : {}),
       // Every GPT-5.6 and GPT-6 row has a fast-mode price on the OpenAI
       // pricing page (service_tier priority, 2x standard rates).
       additionalSpeedTiers: FAST_SPEED_TIER,
