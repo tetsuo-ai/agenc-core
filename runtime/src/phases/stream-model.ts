@@ -1789,8 +1789,10 @@ export async function streamModel(
       response.finishReason === "tool_calls";
     const textCorrection = marker.source === undefined && providerName === "ollama" &&
       response.finishReason === "stop";
+    // Native calls have a separate argument channel and may include prose.
+    // Text-parsed corrections still require the whole response to be rejected.
     if ((!nativeCorrection && !textCorrection) || !safeName || !safeMessage || !validTarget ||
-        response.content !== "" || response.toolCalls.length !== 0 ||
+        (textCorrection && response.content !== "") || response.toolCalls.length !== 0 ||
         streamedToolCalls.size !== 0 || state.toolUseBlocks.length !== 0) {
       throw new StreamModelError(new Error("Invalid tool-call correction response; no correction was admitted."), response);
     }

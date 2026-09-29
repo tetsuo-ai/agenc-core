@@ -10,7 +10,7 @@ the local evaluation needed before changing routing defaults.
 ```text
 /swarm setting
   → per-turn routing decision + model-facing audit receipt
-  → required initial spawn_agent tool choice for parallel routes
+  → prompt guidance for model-selected delegation
   → spawn_agent / assign_task / send_message / wait_agent / close_agent
   → AgentControl admission, identity, role provenance, and mailboxes
   → delegate isolation + fork-context boundary
@@ -28,17 +28,17 @@ through that state machine. Do not add a third agent lifecycle.
 
 ## What is advisory and what is enforced
 
-`/swarm` classifies each eligible root turn. A parallel decision force-selects
-`spawn_agent` for the first provider request so the model must attempt real
-delegation instead of merely describing it. The model still supplies the
-bounded assignment, and the existing tool path still owns admission. `/swarm`
-does not reserve capacity, approve a tool, create a worktree, or merge a
+`/swarm` classifies each eligible root turn and provides prompt guidance. The
+model decides whether to call `spawn_agent` after checking the full user request,
+approval prerequisites, and conditions. Routing never forces tool selection or
+automatically starts a child. The existing tool path still owns admission.
+`/swarm` does not reserve capacity, approve a tool, create a worktree, or merge a
 change.
 
 | Boundary | Runtime truth |
 | --- | --- |
-| `delegation_enforcement: "require_initial_spawn"` in `agenc.swarm.route.v2` | Enforced at the first provider request for an exact parallel root turn by selecting `spawn_agent`. Reconnects reuse that request; tool-result follow-ups do not force replacement workers. |
-| `recommended_max_agents`, isolation, and integration | Model-facing topology guidance. The first spawn is required, but the model may use fewer workers than the ceiling after considering dependencies. These fields are not spawn-admission controls. |
+| `delegation_enforcement: "none"` in `agenc.swarm.route.v2` | All routes emit `none`. Delegation is prompt guidance; neither initial requests nor follow-ups force `spawn_agent`. |
+| `recommended_max_agents`, isolation, and integration | Model-facing topology guidance. The model may use fewer workers, including none, after considering dependencies and user prerequisites. These fields are not spawn-admission controls. |
 | User instruction not to delegate | Emitted as high-priority model guidance and expected to be honored; it is not a new OS sandbox primitive. |
 | Agent depth, live-slot/concurrency capacity, role provenance, execution admission, and budgets | Enforced by the existing control and admission paths at spawn time. |
 | Tool availability, permission mode, approval rules, and sandbox policy | Enforced normally. Swarm mode grants no additional tool or filesystem authority. |
@@ -58,8 +58,8 @@ eligible root turn:
   explicit independence language together with a syntactic list, or a
   multi-domain review/research request with a syntactic list. List formatting,
   vague plurality, or task length alone stays sequential. A parallel decision
-  requires one initial worker-spawn attempt, then permits two workers normally
-  and a ceiling of four for four or more listed items.
+  recommends up to two workers normally and up to four for four or more listed
+  items, subject to the full user request and its prerequisites.
 - High-risk work that is otherwise parallelizable is capped at two workers.
   Coupling or an explicit no-delegation instruction still keeps it sequential.
 - `coordinate` is used when there is no matching new root-human task, including
@@ -81,15 +81,16 @@ The model-facing `<swarm_routing_receipt>` contains:
   policy-relevant layout/newlines, while never exposing that text in the
   receipt;
 - `sequential`, `parallel`, or `coordinate`;
-- `none` or `require_initial_spawn` delegation enforcement;
+- `none` delegation enforcement (`require_initial_spawn` is retained only in
+  the type for older receipts);
 - recommended maximum agents, isolation, and integration mode;
 - the conservative explicit-parallelism, independence/list, coupling, write,
   and risk signals that produced the decision.
 
 This receipt is derived from trusted turn provenance, but it is still an
 ephemeral prompt attachment. It is not written as a durable event-log record
-or a replay boundary. The provider request enforces the initial tool selection;
-the actual tool result is the evidence that admission succeeded or failed.
+or a replay boundary. The model selects tools; the actual tool result is the
+evidence that admission succeeded or failed.
 
 Actual delegation goes through `spawn_agent`, where the normal permission,
 sandbox, tool-policy, capacity, execution-admission, and budget checks remain

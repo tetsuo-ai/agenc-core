@@ -54,7 +54,12 @@ function sequence(responses: LLMResponse[], afterSample?: (index: number) => voi
 }
 
 describe("bounded admitted text-tool correction", () => {
-  test.each([false, true])("DeepSeek native malformed JSON uses bounded correction (exhausted=%s)", async exhausted => {
+  test.each([
+    { exhausted: false, preamble: "" },
+    { exhausted: true, preamble: "" },
+    { exhausted: false, preamble: "I will delegate this now" },
+    { exhausted: true, preamble: "I will delegate this now" },
+  ])("DeepSeek native malformed JSON uses bounded correction (exhausted=$exhausted, preamble=$preamble)", async ({ exhausted, preamble }) => {
     const r = registry();
     const spawn = { ...r.registry.tools[0]!, name: "spawn_agent" };
     const tools: ToolRegistry = { ...r.registry, tools: [spawn], toLLMTools: () => [{ type: "function", function: { name: spawn.name, description: spawn.description, parameters: spawn.inputSchema } }] };
@@ -62,7 +67,7 @@ describe("bounded admitted text-tool correction", () => {
     const frame = (delta: object, finish_reason: string | null = null) =>
       `data: ${JSON.stringify({ id: "native-spawn", model, choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
     const responses: LLMResponse[] = [
-      { ...success, content: "", finishReason: "tool_calls", toolCalls: [{ id: "cut", name: "spawn_agent", arguments: '{"file_path":"unfinished' }] },
+      { ...success, content: preamble, finishReason: "tool_calls", toolCalls: [{ id: "cut", name: "spawn_agent", arguments: '{"file_path":"unfinished' }] },
       { ...success, content: "", finishReason: "tool_calls", toolCalls: [{ id: "retry", name: "spawn_agent", arguments: '{"file_path":"fixture"}' }] },
       success,
     ];
@@ -87,6 +92,7 @@ describe("bounded admitted text-tool correction", () => {
     const retryMessages = bodyAt(fetchImpl, 1).messages as Array<{ content?: string; tool_calls?: unknown[] }>;
     expect(retryMessages.some(message => message.content?.includes(textToolCallCorrectionPrompt({ toolName: "spawn_agent", reason: "invalid_arguments" })))).toBe(true);
     expect(retryMessages.flatMap(message => message.tool_calls ?? [])).toEqual([]);
+    if (preamble) expect(retryMessages).toContainEqual(expect.objectContaining({ role: "assistant", content: preamble }));
     expect(events.some(event => event.msg.type === "tool_call_completed" && event.msg.payload.callId === "cut")).toBe(false);
     if (exhausted) {
       expect(events.find(event => event.msg.type === "turn_failed")?.msg).toMatchObject({ payload: { message: expect.stringContaining("correction is exhausted") } });
@@ -136,6 +142,16 @@ describe("bounded admitted text-tool correction", () => {
     expect(events.some(event => event.msg.type === "turn_complete")).toBe(false);
     expect(events.find(event => event.msg.type === "turn_failed")?.msg).toMatchObject({ payload: { message: expect.stringContaining("correction is exhausted") } });
     expect(wire.inputs.flat().some(message => typeof message.content === "string" && message.content.includes("no visible final answer"))).toBe(false);
+  });
+
+  test("text-parsed correction still rejects accompanying prose", async () => {
+    const r = registry();
+    const wire = sequence([rejected({ content: "I will read this now" })]);
+    const { session, events } = mkSession({ provider: wire.provider, registry: r.registry });
+    await drain(runTurn(session, mkCtx(), "Read the fixture."));
+    expect(wire.inputs).toHaveLength(1);
+    expect(r.execute).not.toHaveBeenCalled();
+    expect(events.some(event => event.msg.type === "turn_failed")).toBe(true);
   });
 
   test("unadvertised MCP is discovery-only and never auto-loaded or dispatched", async () => {

@@ -402,6 +402,10 @@ describe("static section emitters", () => {
     expect(s).toContain("wait_agent");
     expect(s).toContain("never wait by reflex");
     expect(s).toContain("in parallel");
+    expect(s).toContain("approval before spawning");
+    expect(s).toContain("condition to be satisfied first");
+    expect(s).toContain("prerequisites stated in another sentence");
+    expect(s).toContain("React children props do not authorize subagents");
     expect(s).not.toContain("system.agent.delegate");
     // No em dashes in user-visible prompt text.
     expect(s).not.toContain("\u2014");

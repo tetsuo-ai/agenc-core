@@ -2096,9 +2096,10 @@ export class OpenAIProvider implements LLMProvider {
         ? Array.from(toolCallAccumulator.values()).flatMap((toolCall) => {
           const validation = validateToolCallDetailed(toolCall);
           // Admit correction only for a solitary, advertised native call.
+          // A conversational preamble does not make its arguments valid.
           // Never expose the rejected arguments as an executable tool call.
           if (validation.failure?.code === "invalid_json" &&
-              toolCallAccumulator.size === 1 && content === "" && finishReason === "tool_calls" &&
+              toolCallAccumulator.size === 1 && finishReason === "tool_calls" &&
               toolCall.name.length <= 256 && /^[A-Za-z0-9_.:-]+$/.test(toolCall.name) &&
               requestOptions.tools.some(tool => tool.function.name === toolCall.name)) {
             toolCallRecovery = { source: "native", reason: "invalid_arguments",

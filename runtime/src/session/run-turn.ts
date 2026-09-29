@@ -120,8 +120,6 @@ import {
 } from "../phases/post-sample-recovery.js";
 import { getAttachments } from "../prompts/attachments/orchestrator.js";
 import { getAttachmentTrackingState } from "./attachment-state.js";
-import { requiredDelegationToolChoice } from "../agents/delegation-intent.js";
-import { claimRequiredSwarmToolChoice } from "../prompts/attachments/swarm-mode.js";
 import {
   frameWorkspaceAgentRoleGuidance,
   resolveLiveInstructionEnvelope,
@@ -989,31 +987,11 @@ async function prepareSamplingRequestBoundary(
   }
 
   const request = buildSamplingRequestContract(state, session, samplingContext, permissionContext);
-  const explicitDelegationChoice = requiredDelegationToolChoice({
-    taskText: rootHumanTurn?.turnId === ctx.subId ? rootHumanTurn.text : undefined,
-    initialSample: state.turnCount === 1,
-    depth: ctx.depth,
-    planMode: planModeHelpers.isPlanMode(samplingContext),
-    toolNames: request.tools.map((tool) => tool.function.name),
-  });
-  // Consume the swarm claim even when the explicit instruction also applies,
-  // so the next request cannot force an unnecessary replacement child.
-  const swarmToolChoice = claimRequiredSwarmToolChoice({
-    trackingState: getAttachmentTrackingState(session),
-    turnId: ctx.subId,
-    subagentDepth: ctx.depth,
-    planMode: planModeHelpers.isPlanMode(samplingContext),
-    toolNames: request.tools.map((tool) => tool.function.name),
-  });
 
   return {
     kind: "request",
     samplingContext,
-    request: snapshotSamplingRequestContract({
-      ...request,
-      ...((explicitDelegationChoice ?? swarmToolChoice) !== undefined
-        ? { toolChoice: explicitDelegationChoice ?? swarmToolChoice } : {}),
-    }),
+    request: snapshotSamplingRequestContract(request),
   };
 }
 
@@ -1234,8 +1212,6 @@ async function runSamplingRequest(
   beforeDispatch?: (request: StreamModelRequestContract) => Promise<boolean>,
   beforeOutageRetry?: () => void,
 ): Promise<SamplingRequestResult> {
-  const trackingState = getAttachmentTrackingState(session);
-  const previousSwarmChoiceTurnId = trackingState.lastSwarmSpawnToolChoiceTurnId;
   let prepared = await prepareSamplingRequestBoundary(
     state,
     ctx,
@@ -1246,9 +1222,6 @@ async function runSamplingRequest(
   );
   if (prepared.kind === "terminal") return prepared.result;
   if (beforeDispatch !== undefined && !(await beforeDispatch(prepared.request))) {
-    if (trackingState.lastSwarmSpawnToolChoiceTurnId === ctx.subId) {
-      trackingState.lastSwarmSpawnToolChoiceTurnId = previousSwarmChoiceTurnId;
-    }
     prepared = await prepareSamplingRequestBoundary(
       state, ctx, session, signal, events, querySource,
     );

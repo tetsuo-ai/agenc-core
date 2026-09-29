@@ -4558,7 +4558,7 @@ describe("runTurn — model request context ordering", () => {
     { swarm: true, task: "Review these areas:\n- API behavior\n- TUI behavior" },
     { swarm: false, task: "Spawn one child to review the API behavior." },
     { swarm: true, task: "Spawn two independent agents to review API and TUI behavior." },
-  ])("force-selects one initial spawn for required delegation: $task", async ({ swarm, task }) => {
+  ])("executes model-selected delegation without forcing in either mode: $task", async ({ swarm, task }) => {
     const toolChoices: Array<LLMToolChoice | undefined> = [];
     let providerCalls = 0;
     const provider: LLMProvider = {
@@ -4634,12 +4634,10 @@ describe("runTurn — model request context ordering", () => {
     );
 
     expect(toolChoices).toEqual([
-      { type: "function", name: "spawn_agent" },
+      undefined,
       undefined,
     ]);
-    expect(
-      getAttachmentTrackingState(session).lastSwarmSpawnToolChoiceTurnId,
-    ).toBe(swarm ? "turn-enforced-swarm" : undefined);
+
   });
 });
 
