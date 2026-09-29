@@ -916,6 +916,7 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       const rates: ModelCostEntry = {
         inputUsdPer1K: entry.rates[0] / 1000,
         outputUsdPer1K: entry.rates[1] / 1000,
+        ...(entry.free ? { localZeroCost: true } : {}),
         ...(entry.rates[2] === undefined ? {} : {cachedInputUsdPer1K: entry.rates[2] / 1000, cachedInputIncludedInInputTokens: true}),
       };
       return [entry.model, ...entry.aliases].map((model) => [`mistral:${model}`, rates]);
