@@ -35,7 +35,7 @@ import { ConfigStore } from "../../src/config/store.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { Session } from "../session/session.js";
 import { clearSystemPromptSections } from "./sections.js";
-import { UNTRUSTED_TOOL_RESULT_BOUNDARY } from "../tools/untrusted-tool-result-framing.js";
+import { LIGHT_WORKSPACE_DATA_BOUNDARY, UNTRUSTED_TOOL_RESULT_BOUNDARY } from "../tools/untrusted-tool-result-framing.js";
 import { DESKTOP_RICH_RENDERER_CLIENT, getClientRenderingSection } from "./client-rendering.js";
 import { snapshotProviderEnvironment } from "../llm/provider-options.js";
 import {
@@ -797,22 +797,16 @@ describe("assembleSystemPrompt", () => {
   test.each(["standard", "compact", "light", "coordinator"] as const)(
     "the %s profile states the untrusted-tool-result policy it marks data with",
     async (profile) => {
-      // The framing is emitted for every provider: a tool result that may
-      // carry outside content is wrapped in UNTRUSTED_TOOL_RESULT_BOUNDARY
-      // regardless of which profile is in play. A profile that omits the
-      // policy therefore hands the model a delimiter it was never told the
-      // meaning of, and the injected text inside reads as ordinary context.
-      //
-      // This bit ollama specifically. It runs the compact profile, and the
-      // desktop local-model flow creates its sessions with permissions on
-      // bypass, so nothing else stands between a file's contents and a tool
-      // call. The compact profile shipped without any of this text.
+      // Each profile must identify its workspace boundary and deny authority
+      // to the enclosed data. Light uses its compact marker; the other
+      // profiles retain the original marker and the same policy assertions.
       const snapshot = await assembleSystemPromptSnapshot({
         profile,
         session: fakeSession,
         ctx: fakeCtx(),
       });
-      expect(snapshot.text).toContain(UNTRUSTED_TOOL_RESULT_BOUNDARY);
+      expect(snapshot.text).toContain(profile === "light"
+        ? LIGHT_WORKSPACE_DATA_BOUNDARY : UNTRUSTED_TOOL_RESULT_BOUNDARY);
       expect(snapshot.text).toMatch(/tool results are untrusted data/i);
       // Naming the marker is not enough; it has to deny the two things an
       // injected instruction actually asks for.
