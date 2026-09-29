@@ -32,6 +32,7 @@ export interface ChildProviderCandidate {
   readonly contextWindow?: number;
   readonly maxOutputTokens?: number;
   readonly cost?: Readonly<ModelCostEntry>;
+  readonly billingSource?: "byok" | "sign_in" | "managed" | "local";
   readonly serviceTier?: string;
 }
 

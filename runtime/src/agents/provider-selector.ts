@@ -15,7 +15,7 @@ const OBSERVATION_HALF_LIFE_MS = 30 * 24 * 60 * 60 * 1_000;
 export function classifyChildTask(text: string, role?: string): { kind: ChildTaskKind; complexity: ChildTaskComplexity } {
   const value = `${role ?? ""}\n${text}`.toLowerCase();
   const kind: ChildTaskKind = /\b(review|audit|inspect|reviewer)\b/u.test(value) ? "review"
-    : /\b(implement|debug|refactor|coding|code|bug|patch|test|worker)\b/u.test(value) ? "coding"
+    : /\b(implement|debug|refactor|coding|code|bug|patch|test)\b/u.test(value) ? "coding"
     : /\b(prove|proof|reason|reasoning|mathematical|planner|design|plan)\b/u.test(value) ? "reasoning"
     : /\b(research|sources|search|compare|investigate)\b/u.test(value) ? "research"
     : /\b(extract|classify|format|translate|summarize|summary|list|count)\b/u.test(value) ? "extraction"
@@ -32,6 +32,7 @@ function nonNegative(value: number | undefined): value is number {
 
 /** Estimate only. The execution admission kernel still owns the spending boundary. */
 export function estimateChildCandidateCost(candidate: ChildProviderCandidate, task: ChildSelectionTask): number | undefined {
+  if (candidate.billingSource === "sign_in") return undefined;
   const entry = candidate.cost;
   if (entry === undefined || entry.costEstimated === true) return undefined;
   const pricing = selectCallRates(entry, {
@@ -111,7 +112,8 @@ export function selectChildProvider(input: {
       const observedCost = aggregate.costTotalUsd / aggregate.costSamples;
       if (estimatedCostUsd !== undefined) estimatedCostUsd = Math.max(estimatedCostUsd, observedCost * decay);
     }
-    if (estimatedCostUsd === undefined && (task.maxCostUsd !== undefined || input.override === undefined)) {
+    if (estimatedCostUsd === undefined && (task.maxCostUsd !== undefined ||
+        (input.override === undefined && candidate.billingSource !== "sign_in"))) {
       reject("price_unknown"); continue;
     }
     if (task.maxCostUsd !== undefined && estimatedCostUsd! > task.maxCostUsd) { reject("task_budget_insufficient"); continue; }
@@ -124,7 +126,9 @@ export function selectChildProvider(input: {
     const score = quality * completionReliability / ((estimatedCostUsd ?? 1) + latencyCost + 0.00001);
     const reason = input.override !== undefined
       ? `${candidate.provider}/${candidate.model} is the requested override.`
-      : `${candidate.provider}/${candidate.model} fits this ${task.complexity} ${task.kind} at an estimated $${estimatedCostUsd!.toFixed(4)}.`;
+      : estimatedCostUsd === undefined
+        ? `${candidate.provider}/${candidate.model} fits this ${task.complexity} ${task.kind} using your connected subscription.`
+        : `${candidate.provider}/${candidate.model} fits this ${task.complexity} ${task.kind} at an estimated $${estimatedCostUsd.toFixed(4)}.`;
     viable.push({ provider: candidate.provider, model: candidate.model,
       ...(estimatedCostUsd !== undefined ? { estimatedCostUsd } : {}), estimatedLatencyMs, quality, score, reason });
   }

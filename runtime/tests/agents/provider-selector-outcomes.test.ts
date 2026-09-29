@@ -62,11 +62,13 @@ describe("local child routing outcomes", () => {
     expect(restored.snapshot().health[0]?.blockedReason).toBe("insufficient_funds");
     await restored.record({ ...sample, receiptId: "late-old-success", atMs: 5_000 });
     expect(restored.snapshot().health[0]?.blockedReason).toBe("insufficient_funds");
-    await restored.clearProviderFailure("deepseek");
-    expect(restored.snapshot().health).toEqual([]);
+    await restored.clearProviderFailure("deepseek", 15_000);
+    expect(restored.snapshot().health[0]?.blockedReason).toBeUndefined();
     await restored.record({ ...sample, receiptId: "funds-again", terminalReason: "insufficient_funds", success: false, atMs: 20_000 });
     await restored.record({ ...sample, receiptId: "success-after-funding", atMs: 30_000 });
-    expect(restored.snapshot().health).toEqual([]);
+    expect(restored.snapshot().health[0]?.blockedReason).toBeUndefined();
+    await restored.record({ ...sample, receiptId: "older-funds-arrived-late", terminalReason: "insufficient_funds", success: false, atMs: 25_000 });
+    expect(restored.snapshot().health[0]?.blockedReason).toBeUndefined();
   });
 
   it("does not mutate the store when a caller edits its snapshot", async () => {

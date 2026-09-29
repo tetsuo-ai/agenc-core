@@ -53,6 +53,13 @@ describe("child provider selection", () => {
       { maxCostUsd: 0 }).selected?.estimatedCostUsd).toBe(0);
   });
 
+  it("does not infer a profile from prototype properties or unlisted snapshots", () => {
+    for (const candidate of [{ ...flash, provider: "constructor" }, { ...flash, model: "toString" },
+      { ...astra, model: "gpt-6-astra-2099-99-99" }]) {
+      expect(choose([candidate]).rejected[0]?.reason).toBe("model_profile_unknown");
+    }
+  });
+
   it("does not pick a cheap tool-only or text-only model for a vision task", () => {
     expect(choose([pro, astra], { requiresVision: true, complexity: "hard" }).selected?.model).toBe(astra.model);
   });
@@ -85,6 +92,15 @@ describe("child provider selection", () => {
     const unknownPrice = { ...flash, cost: undefined };
     expect(selectChildProvider({ task, candidates: [unknownPrice], override: flash }).selected).toBeDefined();
     expect(selectChildProvider({ task: { ...task, maxCostUsd: 1 }, candidates: [unknownPrice], override: flash }).selected).toBeUndefined();
+  });
+
+  it("can use a connected subscription without inventing an API price, unless a dollar cap applies", () => {
+    const subscribed = { ...astra, billingSource: "sign_in" as const };
+    const uncapped = choose([subscribed]);
+    expect(uncapped.selected?.model).toBe(astra.model);
+    expect(uncapped.selected?.estimatedCostUsd).toBeUndefined();
+    expect(uncapped.reason).toContain("connected subscription");
+    expect(choose([subscribed], { maxCostUsd: 10 }).rejected[0]?.reason).toBe("price_unknown");
   });
 
   it("excludes all models on a provider during cooldown and honors Retry-After expiry", () => {
@@ -140,6 +156,7 @@ describe("child provider selection", () => {
 
   it.each([
     ["Extract the three IDs", undefined, "extraction", "simple"],
+    ["Extract the three IDs", "worker", "extraction", "simple"],
     ["Audit concurrency and security", "reviewer", "review", "hard"],
     ["Implement the parser", "worker", "coding", "standard"],
     ["Prove this theorem", undefined, "reasoning", "hard"],

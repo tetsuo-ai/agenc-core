@@ -71,8 +71,9 @@ const PROFILES: Readonly<Record<string, Readonly<Record<string, ChildModelProfil
 });
 
 export function childModelProfile(provider: string, model: string): ChildModelProfile | undefined {
+  if (!Object.hasOwn(PROFILES, provider)) return undefined;
   const models = PROFILES[provider];
-  if (models === undefined) return undefined;
-  // Only a real dated snapshot of a maintained identity inherits its prior.
-  return models[model] ?? models[model.replace(/-\d{4}-\d{2}-\d{2}$/u, "")];
+  // Unknown names, prototype properties and unlisted dated snapshots do not
+  // acquire a quality prior from a substring or a JavaScript object property.
+  return models !== undefined && Object.hasOwn(models, model) ? models[model] : undefined;
 }

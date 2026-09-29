@@ -16,6 +16,8 @@ const INFRASTRUCTURE_FAILURES = new Set([
   "parent_cancelled", "policy_revoked", "resume_blocked", "cost_cap_reached",
   "effect_outcome_unknown", "consent_denied", "consent_unavailable",
 ]);
+const TASK_OUTCOMES = new Set(["completed", "step_limit", "model_unavailable", "context_insufficient",
+  "tool_protocol_unreliable", "model_refused"]);
 
 interface StoredHistory extends ChildRoutingSnapshot {
   readonly version: 1;
@@ -47,7 +49,7 @@ function validAggregate(value: unknown): value is ChildRoutingAggregate {
     CHILD_TASK_KINDS.includes(item.taskKind) && CHILD_TASK_COMPLEXITIES.includes(item.complexity) &&
     [item.attempts, item.successes, item.infrastructureFailures, item.qualityObservations, item.qualitySuccesses, item.latencySamples, item.costSamples].every(count) &&
     [item.latencyTotalMs, item.costTotalUsd, item.lastObservedAtMs].every(finite) &&
-    item.successes <= item.attempts && item.qualitySuccesses <= item.qualityObservations &&
+    item.successes <= item.attempts - item.infrastructureFailures && item.qualitySuccesses <= item.qualityObservations &&
     item.infrastructureFailures <= item.attempts &&
     item.qualityObservations <= item.attempts && item.latencySamples <= item.attempts && item.costSamples <= item.attempts;
 }
@@ -94,6 +96,8 @@ function validOutcome(item: ChildRoutingOutcome): boolean {
   return identity(item.receiptId) && identity(item.provider) && identity(item.model) &&
     CHILD_TASK_KINDS.includes(item.taskKind) && CHILD_TASK_COMPLEXITIES.includes(item.complexity) &&
     identity(item.terminalReason) && typeof item.success === "boolean" && finite(item.latencyMs) && finite(item.atMs) &&
+    (INFRASTRUCTURE_FAILURES.has(item.terminalReason) || TASK_OUTCOMES.has(item.terminalReason)) &&
+    (!item.success || item.terminalReason === "completed") &&
     (item.verifiedSuccess === undefined || typeof item.verifiedSuccess === "boolean") &&
     (item.costUsd === undefined || finite(item.costUsd)) && (item.retryAfterMs === undefined || finite(item.retryAfterMs));
 }
@@ -139,6 +143,10 @@ function applyOutcome(history: StoredHistory, item: ChildRoutingOutcome): Stored
       ...(previousHealth?.blockedReason !== undefined ? { blockedReason: previousHealth.blockedReason } : {}) });
   } else if (!item.success && previousHealth !== undefined) {
     health.push(previousHealth);
+  } else if (item.success) {
+    // Keep a timestamp even after recovery so a delayed older failure cannot
+    // undo newer evidence that the provider is usable again.
+    health.push({ provider: item.provider, cooldownUntilMs: 0, consecutiveFailures: 0, lastObservedAtMs: item.atMs });
   }
   const allReceipts = [...history.receipts, { id: item.receiptId, atMs: item.atMs }]
     .sort((left, right) => left.atMs - right.atMs || left.id.localeCompare(right.id));
@@ -198,9 +206,11 @@ export class ChildRoutingOutcomeStore {
   }
 
   /** Call after an explicit reconnect or retry. Funds/auth failures never expire silently. */
-  clearProviderFailure(provider: string): Promise<void> {
+  clearProviderFailure(provider: string, nowMs = Date.now()): Promise<void> {
     const pending = this.#pending.then(async () => {
-      const next = { ...this.#history, health: this.#history.health.filter(item => item.provider !== provider) };
+      if (!identity(provider) || !finite(nowMs)) throw new Error("Invalid provider recovery evidence");
+      const next = { ...this.#history, health: [...this.#history.health.filter(item => item.provider !== provider),
+        { provider, cooldownUntilMs: 0, consecutiveFailures: 0, lastObservedAtMs: nowMs }].slice(-MAX_HEALTH) };
       await this.#persist(next);
       this.#history = next;
     });
