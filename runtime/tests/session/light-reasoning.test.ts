@@ -29,3 +29,10 @@ test("normal sessions, opt-out and unknown model contracts retain their setting"
   expect(lightReasoningEffort(true, "high", ["high"], [])).toBeUndefined();
   expect(lightReasoningEffort(true, "low", ["low", "medium"], [result("npm test", 1)])).toBe("medium");
 });
+
+test("two failed checks escalate a low start to high without changing an explicit high setting", () => {
+  const failures = [result("npm test", 1), result("npm test", 1)];
+  expect(lightReasoningEffort(true, "low", levels, failures)).toBe("high");
+  expect(lightReasoningEffort(true, "low", ["low", "medium"], failures)).toBe("medium");
+  expect(lightReasoningEffort(true, "high", levels, failures)).toBeUndefined();
+});

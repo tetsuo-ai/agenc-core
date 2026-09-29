@@ -23,5 +23,7 @@ export function lightReasoningEffort(
   results: ReadonlyArray<CompletedToolResultRecord>,
 ): ReasoningEffort | undefined {
   if (!enabled || requested !== "low" || !supported?.includes("medium")) return undefined;
-  return results.some(failedCheck) ? "medium" : "low";
+  const failures = results.filter(failedCheck).length;
+  if (failures >= 2 && supported.includes("high")) return "high";
+  return failures > 0 ? "medium" : "low";
 }
