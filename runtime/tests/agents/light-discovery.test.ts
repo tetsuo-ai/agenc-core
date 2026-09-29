@@ -80,10 +80,10 @@ describe("Light child capability discovery", () => {
     await select(nested, "Specialist");
     expect(names(nested)).toContain("Specialist");
     expect(names(child)).not.toContain("Specialist");
-    await parent.dispatch({ id: "parent-select", name: "system.searchTools", arguments: '{"select":"MultiEdit"}' });
-    expect(names(parent)).toContain("MultiEdit");
-    expect(names(child)).not.toContain("MultiEdit");
-    expect(names(nested)).not.toContain("MultiEdit");
+    await parent.dispatch({ id: "parent-select", name: "system.searchTools", arguments: '{"select":"Write"}' });
+    expect(names(parent)).toContain("Write");
+    expect(names(child)).not.toContain("Write");
+    expect(names(nested)).not.toContain("Write");
   });
 
   it("never discovers role-denied tools or bypasses inherited execution policy", async () => {
