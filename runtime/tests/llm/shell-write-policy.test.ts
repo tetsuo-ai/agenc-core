@@ -148,14 +148,14 @@ describe("classifyShellWorkspaceWritePolicy", () => {
     expect(decision.observedTargets).toEqual([]);
   });
 
-  it("denies with one sentence plus the blocked targets", () => {
+  it("denies with a concrete recovery recipe and blocked targets", () => {
     const decision = classify("echo hi > notes.txt");
 
     expect(decision.blocked).toBe(true);
     expect(decision.message).toBe(
       "shell_workspace_file_write_disallowed: shell commands may not write " +
         "workspace files except under build, dist, logs, .cache, tmp, or coverage; " +
-        "use Edit or Write instead. Blocked target(s): /repo/notes.txt",
+        'use MultiEdit for workspace changes. To create a file, use file_path and edits:[{old_string:"",new_string:"<file content>"}]. For an existing file, FileRead then replace exact text. Blocked target(s): /repo/notes.txt',
     );
   });
 
