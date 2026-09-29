@@ -86,6 +86,8 @@ describe("September 2026 native provider catalog refresh", () => {
     expect(DEFAULT_MODEL_COSTS["mistral:codestral-2508"]?.cachedInputUsdPer1K).toBeCloseTo(0.00003, 12);
     expect(DEFAULT_MODEL_COSTS["mistral:magistral-small-latest"]).toEqual(DEFAULT_MODEL_COSTS["mistral:mistral-small-latest"]);
     expect(resolveMistralChatModel("labs-leanstral-1-5")?.free).toBe(true);
+    expect(DEFAULT_MODEL_COSTS["mistral:labs-leanstral-1-5"]?.localZeroCost).toBe(true);
+    expect(DEFAULT_MODEL_COSTS["mistral:labs-leanstral-1-5-1"]?.localZeroCost).toBe(true);
   });
 
   it("admits Z.AI FlashX only on PAYG and preserves the thinking-only wire contract", () => {
