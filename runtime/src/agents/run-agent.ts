@@ -3713,7 +3713,7 @@ async function refreshChildBaseInstructions(parent: Session, child: ChildSession
   if (parentBinding.provider === childIdentity.provider &&
       parentBinding.model === childIdentity.model) return;
 
-  const baseInstructions = await assembleBaseInstructionsForModel({
+  const assembled = await assembleBaseInstructionsForModel({
     session: child,
     ctx: child.newDefaultTurnWithSubId(child.nextInternalSubId()),
     registry: child.services.registry,
@@ -3726,6 +3726,9 @@ async function refreshChildBaseInstructions(parent: Session, child: ChildSession
         ? "light"
         : usesLocalToolProfile(childIdentity.provider) ? "compact" : "standard",
   });
+  const baseInstructions = child.services.runtimeOptions.lightMode === true
+    ? `${assembled}\nModel: ${childIdentity.model} (provider: ${childIdentity.provider})`
+    : assembled;
   await child.state.with((state) => {
     state.sessionConfiguration = { ...state.sessionConfiguration, baseInstructions };
   });
