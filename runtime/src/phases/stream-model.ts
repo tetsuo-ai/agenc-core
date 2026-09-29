@@ -1,3 +1,4 @@
+import { timedRuntime } from "../diagnostics/runtime-timing.js";
 /**
  * Phase 2 — Stream Model.
  *
@@ -1396,7 +1397,7 @@ export async function streamModel(
             }
           : {}),
       invoke: (admittedOptions) =>
-        provider.chatStream(messages, onChunk, admittedOptions),
+        timedRuntime("model.request", () => provider.chatStream(messages, onChunk, admittedOptions), { session_id: session.conversationId, turn_id: ctx.subId, ordinal: state.modelSampleOrdinal }),
     });
     // Legacy admission-disabled providers can resolve after an abort. Never
     // accept that response as success. Admitted calls settle usage first.

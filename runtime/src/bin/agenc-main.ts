@@ -1,3 +1,4 @@
+import { runtimeSpan, timedRuntime } from "../diagnostics/runtime-timing.js";
 /**
  * `agenc` CLI entry point - daemon-backed dispatcher.
  *
@@ -2449,7 +2450,7 @@ async function runDaemonOneShotPrompt(params: {
   if (params.signal.aborted) {
     return oneShotAbortExitCode(params.signal);
   }
-  await params.deps.ensureDaemonReady(params.env)();
+  await timedRuntime("lifecycle.daemon_ready", () => params.deps.ensureDaemonReady(params.env)());
   if (params.signal.aborted) {
     return oneShotAbortExitCode(params.signal);
   }
@@ -2497,9 +2498,9 @@ async function runDaemonOneShotPrompt(params: {
         mode: "one-shot",
       },
     };
-    const started = await daemonClient.request("agent.create", createParams, {
+    const started = await timedRuntime("lifecycle.session_create", () => daemonClient.request("agent.create", createParams, {
       signal: params.signal,
-    });
+    }));
     startedAgentId = started.agentId;
     if (params.signal.aborted) {
       cancelled = true;
@@ -2574,6 +2575,7 @@ async function runDaemonOneShotPrompt(params: {
     if (params.signal.aborted) cancelled = true;
     throw error;
   } finally {
+    const finishTeardown = runtimeSpan("lifecycle.teardown");
     // One-shot agents are terminal resources, not resumable conversations.
     // Closing the transport alone leaves the daemon-owned runtime, provider,
     // session and rollout references alive indefinitely. Always stop the agent
@@ -2591,6 +2593,7 @@ async function runDaemonOneShotPrompt(params: {
     await daemonClient.close().catch(() => {
       /* best effort */
     });
+    finishTeardown();
   }
 }
 
@@ -2796,7 +2799,7 @@ async function runDaemonOneShotContinue(params: OneShotContinueResumeOptions & {
   try {
     assertResumeCwdProof(target.descriptor.cwd, cwdProof);
     let descriptor = reproveResumeDescriptor(target.descriptor, params.agencHome);
-    await params.deps.ensureDaemonReady(params.env)();
+    await timedRuntime("lifecycle.daemon_ready", () => params.deps.ensureDaemonReady(params.env)());
     assertResumeCwdProof(descriptor.cwd, cwdProof);
     descriptor = reproveResumeSessionAfterDaemonReady(descriptor, params.agencHome);
     daemonClient = await params.deps.createConnectedTuiClient({ env: params.env });

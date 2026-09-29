@@ -1,3 +1,4 @@
+import { runtimeSpan } from "../diagnostics/runtime-timing.js";
 import { randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -183,8 +184,12 @@ export class StateSqliteDriver {
   }
 
   transaction<T>(fn: () => T): T {
+  const finishRuntimeSpan = runtimeSpan("persistence.sqlite_transaction");
+  try {
     return this.state.transaction(fn)();
-  }
+
+  } finally { finishRuntimeSpan(); }
+}
 
   /**
    * BEGIN IMMEDIATE transaction: acquires the write lock before the first
@@ -194,12 +199,20 @@ export class StateSqliteDriver {
    * savepoint inside the outer transaction (better-sqlite3 semantics).
    */
   transactionImmediate<T>(fn: () => T): T {
+  const finishRuntimeSpan = runtimeSpan("persistence.sqlite_immediate");
+  try {
     return this.state.transaction(fn).immediate();
-  }
+
+  } finally { finishRuntimeSpan(); }
+}
 
   logsTransaction<T>(fn: () => T): T {
+  const finishRuntimeSpan = runtimeSpan("persistence.sqlite_logs");
+  try {
     return this.logs.transaction(fn)();
-  }
+
+  } finally { finishRuntimeSpan(); }
+}
 
   /** Return free pages of the state database to the file system; see `reclaimStateFreePages`. */
   reclaimFreePages(options: ReclaimStateFreePagesOptions = {}): StateFreePageReclaim {

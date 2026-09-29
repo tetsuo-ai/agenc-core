@@ -1,3 +1,4 @@
+import { runtimeSpan } from "../diagnostics/runtime-timing.js";
 /**
  * run-turn — orchestration for one user turn.
  *
@@ -856,6 +857,8 @@ async function prepareSamplingRequestBoundary(
   events: PhaseEvent[],
   querySource: string,
 ): Promise<PreparedSamplingRequestBoundary> {
+  const finishRuntimeSpan = runtimeSpan("prompt.assembly", { session_id: session.conversationId, turn_id: ctx.subId });
+  try {
   await prepareAgenCTurnContext(state, ctx, session, querySource, signal);
   const prepareTerminal = getAgenCPreparedTerminal(state);
   if (prepareTerminal) {
@@ -1004,6 +1007,8 @@ async function prepareSamplingRequestBoundary(
       ...(swarmToolChoice !== undefined ? { toolChoice: swarmToolChoice } : {}),
     }),
   };
+
+  } finally { finishRuntimeSpan(); }
 }
 
 /**
@@ -1389,6 +1394,8 @@ async function preparedRequestFitsContext(
   signal: AbortSignal,
   requestedModel: string,
 ): Promise<boolean> {
+  const finishRuntimeSpan = runtimeSpan("prompt.context_accounting", { session_id: session.conversationId, turn_id: ctx.subId });
+  try {
   const configuredWindow = request.contextWindowTokens;
   if (configuredWindow === undefined || !Number.isFinite(configuredWindow) || configuredWindow <= 0) {
     return false;
@@ -1451,6 +1458,8 @@ async function preparedRequestFitsContext(
     accounting, window, maxOutputTokens,
     profile?.contextSafetyBufferTokens ?? 0,
   ) !== undefined;
+
+  } finally { finishRuntimeSpan(); }
 }
 
 function isTransientSamplingError(err: unknown): boolean {
@@ -2377,6 +2386,8 @@ async function* runTurnKernelInner(
     persistedMessageCount = state.messages.length;
   };
   const syncSessionState = async (): Promise<void> => {
+  const finishRuntimeSpan = runtimeSpan("persistence.history", { session_id: session.conversationId, turn_id: ctx.subId });
+  try {
     persistNewResponseItems();
     // Bound in-memory tool-result retention AFTER full content has been
     // persisted to the durable rollout (above), and only across messages
@@ -2434,7 +2445,9 @@ async function* runTurnKernelInner(
       };
       sessionState.referenceContextItem = resolvedReferenceContextItem;
     });
-  };
+
+  } finally { finishRuntimeSpan(); }
+};
 
   // ── GOAL #4b Stage 1 — durable iteration checkpoint emit ──────────────
   // The checkpoint promotes the already-consistent CB-Iteration boundary
@@ -2450,6 +2463,7 @@ async function* runTurnKernelInner(
   let checkpointSeq = opts.resume?.fromCheckpointSeq ?? 0;
   let iterationIndex = opts.resume?.fromIteration ?? 0;
   let lastCheckpointAtMs = 0;
+  let lastCommittedCheckpointIdentity: string | undefined;
   let checkpointedModelSampleOrdinal =
     opts.resume === undefined ? state.modelSampleOrdinal : state.modelSampleOrdinal - 1;
   const emitTurnCheckpoint = (
@@ -2469,7 +2483,6 @@ async function* runTurnKernelInner(
       }
       lastCheckpointAtMs = now;
     }
-    checkpointSeq += 1;
     // Hash the DURABLE-HISTORY PROJECTION of the prefix — exactly the
     // `response_item` sequence reconstruction rebuilds — so the write-side
     // and read-side hashes align by construction. This drops the leading
@@ -2489,24 +2502,28 @@ async function* runTurnKernelInner(
       durablePrefix,
       durablePrefix.length,
     );
+    const payload = {
+      turnId: ctx.subId,
+      iterationIndex,
+      boundary,
+      persistedMessageCount: durablePrefix.length,
+      prefixHash,
+      checkpointVersion: DURABLE_CHECKPOINT_WRITE_VERSION,
+      toolResultIntegrityVersion: 1 as const,
+      prefixHashVersion: 3 as const,
+      resumableState: toCheckpointSlice(state),
+    };
+    // The loop's pre-admission ordinal checkpoint can exactly repeat the
+    // preceding iteration checkpoint. Reuse only the identical committed
+    // recovery state, including boundary, prefix, iteration and every counter.
+    // Never remember a failed emit, and never reuse across process recovery.
+    const identity = JSON.stringify(payload);
+    if (identity === lastCommittedCheckpointIdentity) return;
     session.emit({
       id: session.nextInternalSubId(),
-      msg: {
-        type: "turn_checkpoint",
-        payload: {
-          turnId: ctx.subId,
-          iterationIndex,
-          boundary,
-          checkpointSeq,
-          persistedMessageCount: durablePrefix.length,
-          prefixHash,
-          checkpointVersion: DURABLE_CHECKPOINT_WRITE_VERSION,
-          toolResultIntegrityVersion: 1,
-          prefixHashVersion: 3,
-          resumableState: toCheckpointSlice(state),
-        },
-      },
+      msg: { type: "turn_checkpoint", payload: { ...payload, checkpointSeq: ++checkpointSeq } },
     });
+    lastCommittedCheckpointIdentity = identity;
   };
 
   // Per-turn guardian-denial counters reset at the top of every new
