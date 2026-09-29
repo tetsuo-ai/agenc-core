@@ -55,7 +55,9 @@ test("a real Light turn advertises polling immediately after canonical async exe
   const ctx = mkCtx({ sandboxPolicy: { value: "danger_full_access" }, permissionMode: "bypassPermissions" });
   await drain(runTurn(session, ctx, "Run the tests and wait for the result."));
   expect(requests).toHaveLength(3);
-  expect(requests[0]).toHaveLength(5);
+  expect([...requests[0]!].sort()).toEqual([
+    "FileRead", "MultiEdit", "exec_command", "system.searchTools",
+  ]);
   expect(requests[0]).not.toContain("write_stdin");
   expect(requests[1]).toContain("write_stdin");
   expect(manager.execCommand).toHaveBeenCalledTimes(1);
