@@ -100,6 +100,55 @@ beforeEach(() => { mockDelegate.mockReset(); mockObserve.mockReset(); });
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
 
 describe("initial automatic selection authority", () => {
+  it("retains a hidden original signal while retry consent is pending", async () => {
+    const value = await fixture();
+    const cancelled = new AbortController();
+    const callArgs = { ...args };
+    Object.defineProperty(callArgs, "__abortSignal", { value: cancelled.signal });
+    expect((await value.tool.execute(callArgs)).isError).not.toBe(true);
+    const originalRequest = value.requestConsent.getMockImplementation()!;
+    let consentReady!: () => void;
+    const pending = new Promise<void>(resolve => { consentReady = resolve; });
+    value.requestConsent.mockImplementation(async (...requestArgs) => {
+      await pending;
+      return originalRequest(...requestArgs);
+    });
+    value.finishFirst("rate_limited");
+    await vi.waitFor(() => expect(value.requestConsent).toHaveBeenCalledTimes(2));
+    cancelled.abort();
+    consentReady();
+    await vi.waitFor(() => expect(value.queuedMessages.some(message =>
+      (message as { content: string }).content.includes("Stopped automatic fallback"))).toBe(true));
+    expect(mockDelegate).toHaveBeenCalledOnce();
+  });
+
+  it("retains the original signal in the retry delegate's post-await authority guard", async () => {
+    const value = await fixture();
+    const cancelled = new AbortController();
+    const callArgs = { ...args };
+    Object.defineProperty(callArgs, "__abortSignal", { value: cancelled.signal });
+    expect((await value.tool.execute(callArgs)).isError).not.toBe(true);
+    let resumeDelegate!: () => void;
+    const pending = new Promise<void>(resolve => { resumeDelegate = resolve; });
+    let guardedFailure: unknown;
+    mockDelegate.mockImplementationOnce(async options => {
+      options.assertParentSessionActive?.();
+      await pending;
+      try { options.assertParentSessionActive?.(); }
+      catch (error) { guardedFailure = error; }
+      throw new Error("delegation boundary finished");
+    });
+    value.finishFirst("rate_limited");
+    await vi.waitFor(() => expect(mockDelegate).toHaveBeenCalledTimes(2));
+    cancelled.abort();
+    resumeDelegate();
+    await vi.waitFor(() => expect(value.queuedMessages.some(message =>
+      (message as { content: string }).content.includes("Stopped automatic fallback"))).toBe(true));
+    expect(guardedFailure).toBeInstanceOf(Error);
+    expect((guardedFailure as Error).message).toContain("no longer live");
+    expect(value.threads).toHaveLength(1);
+  });
+
   it.each(["new-human-turn", undefined])("refuses selection resumed after parent turn becomes %s", async turn => {
     const value = await fixture();
     let ready!: (result: { connected: boolean; billingSource: "byok" }) => void;

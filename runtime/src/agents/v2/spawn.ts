@@ -1288,10 +1288,16 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           const nextName = `${taskName.slice(0, 42)}_retry${context.attempt}`;
           notice(`Starting ${nextName} on ${context.candidate.provider}/${context.candidate.model} after a provider failure. Wait for this attempt before concluding the task.`);
           let nextObservation: Promise<ChildRoutingAttemptResult<AgentThread>> | undefined;
-          const retry = await execute({ ...args, __callId: `${callId}:retry:${context.attempt}`, task_name: nextName,
+          const retryArgs = { ...args, __callId: `${callId}:retry:${context.attempt}`, task_name: nextName,
             provider: context.candidate.provider, model: context.candidate.model,
             ...(context.remainingCostUsd !== undefined ? { max_cost_usd: context.remainingCostUsd } : {}),
-          }, {
+          };
+          // Keep the runtime cancellation signal outside model-facing keys,
+          // including after retry consent and delegate setup awaits.
+          if (originatingSignal !== undefined) {
+            Object.defineProperty(retryArgs, "__abortSignal", { value: originatingSignal });
+          }
+          const retry = await execute(retryArgs, {
             routing: { ...decision, reason: `${context.candidate.provider}/${context.candidate.model} is the next eligible provider after a provider failure.`,
               ...(context.candidate.estimatedCostUsd !== undefined ? { estimatedCostUsd: context.candidate.estimatedCostUsd } : {}) },
             maxModelCalls: context.remainingModelCalls,
