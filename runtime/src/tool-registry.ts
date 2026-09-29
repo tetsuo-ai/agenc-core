@@ -827,6 +827,7 @@ export function buildToolRegistry(
     createExitWorktreeTool({ cwd: options.workspaceRoot }),
   ] as const;
   const planningTools = createPlanningTools({
+    ...(options.lightMode === true ? { lightMode: true } : {}),
     ...(options.workflowController !== undefined
       ? { workflowController: options.workflowController }
       : {}),

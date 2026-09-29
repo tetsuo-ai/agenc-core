@@ -93,6 +93,7 @@ export interface WorkflowToolController {
 }
 
 export interface PlanningToolOptions {
+  readonly lightMode?: boolean;
   readonly workflowController?: WorkflowToolController;
 }
 
@@ -437,13 +438,16 @@ export function createPlanningTools(options: PlanningToolOptions = {}): readonly
       // the chat view stayed empty. Best-effort: the plan events already
       // landed, so board failures must not fail the tool call.
       await persistTodosToTaskBoard(nextTodos);
-      const verificationNudgeNeeded = allDone &&
+      const verificationNudgeNeeded = options.lightMode !== true && allDone &&
         todos.length >= 3 &&
         !todos.some((todo) => /\b(?:verif\w*|tests?|testing|checks?|checking|reviews?|reviewing)\b/i.test(todo.content));
       const nudge = verificationNudgeNeeded
         ? "\n\nVerify the changes with the checks allowed by the user's instructions, then report the actual results and any checks you could not perform."
         : "";
-      return textResult(`${TODO_WRITE_RESULT_MESSAGE}${nudge}`, {
+      const confirmation = options.lightMode === true
+        ? "Todos have been modified successfully."
+        : `${TODO_WRITE_RESULT_MESSAGE}${nudge}`;
+      return textResult(confirmation, {
         verificationNudgeNeeded,
       });
     },

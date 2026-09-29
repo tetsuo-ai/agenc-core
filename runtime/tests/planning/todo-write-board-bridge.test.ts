@@ -97,6 +97,18 @@ describe('TodoWrite → task board bridge', () => {
     expect(second.status).toBe('completed')
   })
 
+  it('acknowledges Light checklist completion without asking for more work', async () => {
+    const tool = createPlanningTools({ lightMode: true }).find(item => item.name === 'TodoWrite')!
+    const result = await withHomeAuthority(() => tool.execute({
+      todos: ['Inspect', 'Implement', 'Document'].map(content => ({
+        content, activeForm: content, status: 'completed',
+      })),
+    }))
+    expect(result.isError).not.toBe(true)
+    expect(result.content).toBe('Todos have been modified successfully.')
+    expect(result.metadata?.verificationNudgeNeeded).toBe(false)
+  })
+
   it('still returns the donor success message', async () => {
     const tool = findTodoWrite()
     const result = await withHomeAuthority(() => tool.execute({
