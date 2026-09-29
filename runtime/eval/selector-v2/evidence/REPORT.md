@@ -1,5 +1,7 @@
 # AgenC selector v2 report
 
+PR: [tetsuo-ai/agenc-core#2808](https://github.com/tetsuo-ai/agenc-core/pull/2808), base `xprov/automatic-selection`.
+
 Built on `xprov/automatic-selection` at `02d8c3d7b197187b9d0d4aa250fc2777f1c5b6b7`, in the independent `xprov/selector-v2` checkout. Runtime implementation and compatibility commits: `94f6b0b9abed`, `4e962317b520`, `6225ea0e919e`. No release, deployment or merge.
 
 ## Verdict
@@ -162,7 +164,7 @@ Only new calls from this job are counted here. Reused router-bench inference was
 
 No unresolved new provider costs remain. Keys were parsed in process memory from the authorized sources, passed to the PC through SSH stdin into the guard process environment, and never placed in command arguments or files. Four inference runs were serial, with at most two calls per provider in a run. The other router-bench job reported completion at 10:07:17 UTC; this job's first new inference began at 10:10:08 UTC. No inference account load was added during its recorded active phase.
 
-Final known-key scans cover all regular files in this job's Mac task root, isolated PC task directory, three runner worktrees and all five named runner result pairs. Symlinks into other jobs are not traversed. The scans compare authorized provider credentials in memory, including identifiable long-key prefixes, and inspect gzip and loose Git object payloads. They never print matches. Mac: **6,279 files**; PC: **107,186 files**. **Zero hits, zero redactions, zero unreadable files, zero missing roots** on both machines. Scan summaries are committed. Grok credentials were never read or copied; the scanner does not obtain them. No protected owner application homes, SSH directory, wallets or Codex configuration were accessed.
+Final known-key scans cover all regular files in this job's Mac task root, isolated PC task directory, three runner worktrees and all five named runner result pairs. Symlinks into other jobs are not traversed. The scans compare authorized provider credentials in memory, including identifiable long-key prefixes, and inspect gzip and loose Git object payloads. They never print matches. Per-machine file and compressed-payload counts are recorded in the scan JSON summaries. **Zero hits, zero redactions, zero unreadable files, zero missing roots** on both machines. Scan summaries are committed. Grok credentials were never read or copied; the scanner does not obtain them. No protected owner application homes, SSH directory, wallets or Codex configuration were accessed.
 
 ## Sources and replay
 
