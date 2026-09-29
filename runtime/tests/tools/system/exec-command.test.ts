@@ -214,6 +214,20 @@ describe("exec_command tool", () => {
     };
   }
 
+  test("configured output defaults reach the manager and explicit requests override them", async () => {
+    const execCommand = vi.fn<UnifiedExecProcessManagerLike["execCommand"]>(async () => completedExecOutput("ok"));
+    const manager: UnifiedExecProcessManagerLike = { maxTimeoutMs: 30_000, execCommand,
+      writeStdin: vi.fn(async () => completedExecOutput("")), closeAll: vi.fn(async () => {}) };
+    const tool = createExecCommandTool({ cwd: root, allowedPaths: [root], unifiedExecManager: manager, defaultMaxOutputTokens: 2000 });
+    const first = await tool.execute({ cmd: "pwd" });
+    expect(first.isError).toBeUndefined();
+    expect(first.metadata?.exitCode).toBe(0);
+    expect(first.effectDisposition).toBeDefined();
+    expect(execCommand.mock.calls[0]?.[0].max_output_tokens).toBe(2000);
+    await tool.execute({ cmd: "pwd", max_output_tokens: 7000 });
+    expect(execCommand.mock.calls[1]?.[0].max_output_tokens).toBe(7000);
+  });
+
   // Live incident (session conv-mtjdmlfc, 2026-09-02): 21 `npm start` calls
   // over 412 s, each denied by the sandbox, each answered only by the child's
   // own errno text and an escalation request the parser silently discarded.
