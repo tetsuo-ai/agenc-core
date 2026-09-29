@@ -184,6 +184,8 @@ import type {
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 
 export interface StreamModelRequestContract {
+  /** Frozen Light preference for stateless reasoning continuity. */
+  readonly openaiReasoningReplay?: boolean;
   /** Frozen Light effort decision; retries reuse the same option. */
   readonly lightReasoningEffort?: ReasoningEffort;
   /** Internal managed transport UUID, stable for every retry of this snapshot. */
@@ -365,6 +367,7 @@ export function buildProviderOptions(
   const traceSink = resolveProviderTraceSink(session);
   return {
     signal,
+    ...(request.openaiReasoningReplay === true ? { openaiReasoningReplay: true } : {}),
     ...(request.managedRequestId !== undefined
       ? { managedRequestId: request.managedRequestId }
       : {}),

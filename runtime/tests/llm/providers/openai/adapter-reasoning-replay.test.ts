@@ -97,6 +97,20 @@ function requestBody(
 }
 
 describe("OpenAIProvider encrypted reasoning replay (AGENC_OPENAI_REASONING_REPLAY)", () => {
+  test.each([[undefined, true], ["0", false], ["1", true]] as const)(
+    "a Light request preserves reasoning unless explicitly disabled (%s)", async (setting, expected) => {
+      const fetchImpl = vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(toolTurnStream([REASONING, SERVER_CALL]))
+        .mockResolvedValueOnce(answerStream());
+      const provider = new OpenAIProvider({ apiKey: "sk-test", model: MODEL, fetchImpl });
+      const options = { openaiReasoningReplay: true };
+      const first = await withReplaySwitch(setting, () =>
+        provider.chatStream([{ role: "user", content: "read a" }], () => {}, options));
+      await withReplaySwitch(setting, () => provider.chatStream(historyAfter(first), () => {}, options));
+      expect(first.providerReasoningContent !== undefined).toBe(expected);
+      expect((requestBody(fetchImpl, 1).input as unknown[]).some(item => JSON.stringify(item) === JSON.stringify(REASONING))).toBe(expected);
+    },
+  );
   test.each([
     ["the completion lists its output", [REASONING, SERVER_CALL]],
     ["the completion has an empty output, as on the ChatGPT backend", []],
@@ -189,7 +203,7 @@ describe("OpenAIProvider encrypted reasoning replay (AGENC_OPENAI_REASONING_REPL
       providerReasoningProvenance: { provider: "openai-compatible", model: MODEL },
     });
 
-    await withReplaySwitch("1", () => provider.chatStream(history, () => {}));
+    await withReplaySwitch("1", () => provider.chatStream(history, () => {}, { openaiReasoningReplay: true }));
 
     expect(requestBody(fetchImpl, 0).include).toBeUndefined();
     expect(requestBody(fetchImpl, 0).input).not.toContainEqual(REASONING);

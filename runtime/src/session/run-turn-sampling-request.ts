@@ -231,6 +231,8 @@ function buildSamplingRequestContract(
   );
   return {
     ...request,
+    ...(session.services.runtimeOptions.lightMode === true
+      ? { openaiReasoningReplay: true } : {}),
     lightReasoningEffort: lightReasoningEffort(
       session.services.runtimeOptions.lightMode === true,
       ctx.reasoningEffort,

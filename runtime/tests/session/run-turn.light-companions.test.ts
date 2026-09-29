@@ -28,9 +28,11 @@ test("a real Light turn advertises polling immediately after canonical async exe
     unifiedExecManager: manager, sandboxExecutionBroker: explicitDangerBroker,
   });
   const requests: string[][] = [];
+  const reasoningReplay: Array<boolean | undefined> = [];
   const provider = mkProvider();
   provider.chatStream = async (_messages, _onChunk, options): Promise<LLMResponse> => {
     requests.push((options?.tools ?? []).map((tool) => tool.function.name));
+    reasoningReplay.push(options?.openaiReasoningReplay);
     const toolCalls = requests.length === 1
       ? [{ id: "launch", name: "exec_command", arguments: '{"cmd":"python -m pytest","yield_time_ms":1}' }]
       : requests.length === 2
@@ -55,6 +57,7 @@ test("a real Light turn advertises polling immediately after canonical async exe
   const ctx = mkCtx({ sandboxPolicy: { value: "danger_full_access" }, permissionMode: "bypassPermissions" });
   await drain(runTurn(session, ctx, "Run the tests and wait for the result."));
   expect(requests).toHaveLength(3);
+  expect(reasoningReplay).toEqual([true, true, true]);
   expect([...requests[0]!].sort()).toEqual([
     "FileRead", "MultiEdit", "exec_command", "system.searchTools",
   ]);

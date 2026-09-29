@@ -479,18 +479,16 @@ function isTransportFailure(error: unknown): boolean {
 }
 
 /**
- * Encrypted reasoning replay on the Responses API is opt-in
- * (`AGENC_OPENAI_REASONING_REPLAY=1`), read from the environment the session
- * captured at ingress. Without a session or startup scope there is no such
- * environment, and replay stays off.
+ * Light requests preserve stateless reasoning continuity. An explicit
+ * session environment setting overrides that preference; ordinary requests
+ * retain the existing opt-in behavior.
  */
-function openAiReasoningReplayEnabled(): boolean {
+function openAiReasoningReplayEnabled(preferred: boolean): boolean {
   try {
-    return isEnvTruthy(
-      getSelectedProviderEnvironment().AGENC_OPENAI_REASONING_REPLAY,
-    );
+    const setting = getSelectedProviderEnvironment().AGENC_OPENAI_REASONING_REPLAY;
+    return setting === undefined ? preferred : isEnvTruthy(setting);
   } catch {
-    return false;
+    return preferred;
   }
 }
 
@@ -871,7 +869,7 @@ export class OpenAIProvider implements LLMProvider {
           const session = this.client.createTurnSession({
             wireApi: "responses",
           });
-          const reasoningReplay = this.reasoningReplayOptions();
+          const reasoningReplay = this.reasoningReplayOptions(options);
           const request = buildOpenAIResponsesRequest({
             model,
             messages,
@@ -1391,8 +1389,8 @@ export class OpenAIProvider implements LLMProvider {
    * subscription alike. Other providers served by this adapter keep their
    * current Responses wire.
    */
-  private reasoningReplayOptions(): { readonly reasoningReplayProvider?: string } {
-    return this.name === "openai" && openAiReasoningReplayEnabled()
+  private reasoningReplayOptions(options?: LLMChatOptions): { readonly reasoningReplayProvider?: string } {
+    return this.name === "openai" && openAiReasoningReplayEnabled(options?.openaiReasoningReplay === true)
       ? { reasoningReplayProvider: this.name }
       : {};
   }
@@ -1444,7 +1442,7 @@ export class OpenAIProvider implements LLMProvider {
       store: this.config.store,
       maxOutputTokens: this.resolveRequestMaxTokens(options),
       ...(this.isChatGptBackend() ? { chatgptBackend: true as const } : {}),
-      ...this.reasoningReplayOptions(),
+      ...this.reasoningReplayOptions(options),
     };
     assertProviderStructuredOutputCompatibility({
       providerName: this.name,

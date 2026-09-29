@@ -669,6 +669,8 @@ export type LLMToolChoice =
  * Optional provider call options.
  */
 export interface LLMChatOptions {
+  /** @internal Preserve stateless OpenAI reasoning across tool calls. */
+  readonly openaiReasoningReplay?: boolean;
   /**
    * @internal UUID of one immutable sampling request, preserved across
    * session reconnects. Only AgenC-managed adapters use it, as a transport
