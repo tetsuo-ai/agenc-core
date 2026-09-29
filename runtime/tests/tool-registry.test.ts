@@ -2157,7 +2157,9 @@ describe("Light presentation and deferred capability preservation", () => {
         expect(normal.tools.find(tool => tool.name === canonical.name)?.description)
           .toContain("Use select or select:<tool_name> to load");
       } else {
-        expect(canonical.description).toBe(normal.tools.find(tool => tool.name === canonical.name)?.description);
+        const normalDescription = normal.tools.find(tool => tool.name === canonical.name)?.description;
+        expect(canonical.description).toBe(canonical.name === "FileRead"
+          ? normalDescription?.replace("2000 lines starting", "200 lines starting") : normalDescription);
       }
     }
     const normalInitial = normal.toLLMTools().filter(tool => light.toLLMTools().some(loaded => loaded.function.name === tool.function.name));

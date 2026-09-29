@@ -170,6 +170,25 @@ describe("FileRead tool", () => {
     expect(result.content).toBe("10→line-10");
   });
 
+  test("a smaller default window announces omitted lines, permits continuation and preserves read state", async () => {
+    const file = join(root, "bounded.txt");
+    await writeFile(file, Array.from({ length: 260 }, (_, i) => `line-${i + 1}`).join("\n"));
+    const tool = createFileReadTool({ allowedPaths: [root], defaultTextLineLimit: 200 });
+    const result = await tool.execute({ file_path: file, __agencSessionId: sessionId });
+    expect(result.isError).toBeUndefined();
+    expect(result.metadata).toMatchObject({ numLines: 200, isPartial: true, totalLines: 260 });
+    expect(result.content).toContain("Showing lines 1-200 of 260");
+    expect(result.content).not.toContain("line-201");
+    expect(hasSessionRead(sessionId, file)).toBe(true);
+    const rest = await tool.execute({ file_path: file, offset: 201 });
+    expect(rest.content).toContain("line-260");
+    const explicit = await tool.execute({ file_path: file, limit: 300 });
+    expect(explicit.metadata).toMatchObject({ numLines: 260, isPartial: false });
+    expect(explicit.content).not.toContain("Showing lines");
+    const normal = await createFileReadTool({ allowedPaths: [root] }).execute({ file_path: file });
+    expect(normal.metadata?.numLines).toBe(260);
+  });
+
   test("offset without limit uses the default bounded window over the byte cap", async () => {
     const file = join(root, "large-offset-only.txt");
     const lines = Array.from({ length: 3000 }, () => "x");

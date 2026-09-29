@@ -21,6 +21,8 @@ import { SandboxExecutionError } from "../../sandbox/execution-broker.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 
 export interface WriteStdinToolConfig {
+  /** Default result budget; explicit max_output_tokens takes precedence. */
+  readonly defaultMaxOutputTokens?: number;
   readonly cwd?: string;
   readonly allowedPaths?: readonly string[];
   readonly env?: Record<string, string>;
@@ -208,8 +210,8 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           ...(asNumber(args.yield_time_ms) !== undefined
             ? { yield_time_ms: asNumber(args.yield_time_ms) }
             : {}),
-          ...(asNumber(args.max_output_tokens) !== undefined
-            ? { max_output_tokens: asNumber(args.max_output_tokens) }
+          ...((asNumber(args.max_output_tokens) ?? config?.defaultMaxOutputTokens) !== undefined
+            ? { max_output_tokens: asNumber(args.max_output_tokens) ?? config?.defaultMaxOutputTokens }
             : {}),
           ...(args.__abortSignal !== undefined
             ? { __abortSignal: args.__abortSignal }
