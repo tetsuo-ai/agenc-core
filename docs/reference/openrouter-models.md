@@ -34,3 +34,8 @@ Sources:
 - [Request parameters](https://openrouter.ai/docs/api/reference/parameters)
 
 Reviewed reasoning efforts use OpenRouter’s nested `reasoning: { effort }` envelope. Unlisted efforts stay omitted, and managed gateway request contracts remain separate. Source: https://openrouter.ai/docs/guides/best-practices/reasoning-tokens. Explicit NIM and local compatible provider selections retain their vendor/model identity when OpenRouter adds the same model ID.
+
+Catalog token prices are endpoint estimates, not guaranteed routing prices. Paid
+routes retain conservative unknown-price admission and settlement unless the
+response supplies an authoritative cost. Explicit free routes are zero only when
+the catalog lists no other charges. See [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection).

@@ -927,6 +927,7 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       const rates: ModelCostEntry = {
         inputUsdPer1K: entry.rates[0] / 1000,
         outputUsdPer1K: entry.rates[1] / 1000,
+        ...(entry.free ? { localZeroCost: true } : {}),
         ...(entry.rates[2] === undefined ? {} : {cachedInputUsdPer1K: entry.rates[2] / 1000, cachedInputIncludedInInputTokens: true}),
       };
       return [entry.model, ...entry.aliases].map((model) => [`mistral:${model}`, rates]);
@@ -969,9 +970,11 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       label: "local",
       localZeroCost: true,
     },
-    // Provider-published USD/token rates, scoped to OpenRouter rather than
-    // copied from the upstream vendor. Missing or request-priced models keep
-    // the existing unknown-cost admission policy. Actual response cost wins.
+    // OpenRouter catalog prices do not bound the endpoint selected by routing.
+    // Retain paid rates in the conservative registry ceiling, but never settle
+    // them as a known bill or use them directly for admission. Only explicit
+    // free routes with no additional charges are known zero. Response cost wins.
+    // https://openrouter.ai/docs/guides/routing/provider-selection
     ...Object.fromEntries(OPENROUTER_MODELS.flatMap((model) => {
       const input = Number(model.pricing.prompt);
       const output = Number(model.pricing.completion);
@@ -988,8 +991,8 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
         outputUsdPer1K: output * 1000,
         ...(Number.isFinite(cacheRead) && cacheRead >= 0 ? { cachedInputUsdPer1K: cacheRead * 1000 } : {}),
         ...(Number.isFinite(cacheWrite) && cacheWrite >= 0 ? { cacheCreationUsdPer1K: cacheWrite * 1000 } : {}),
-        cachedInputIncludedInInputTokens: true,
-        cacheCreationIncludedInInputTokens: true,
+        cachedInputIncludedInInputTokens: Number.isFinite(cacheRead) && cacheRead >= 0,
+        cacheCreationIncludedInInputTokens: Number.isFinite(cacheWrite) && cacheWrite >= 0,
         ...(long !== undefined ? { longContext: {
           aboveInputTokens: long.min_prompt_tokens! - 1,
           rates: {
@@ -1001,7 +1004,10 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
             cacheCreationIncludedInInputTokens: true,
           },
         } } : {}),
-        ...(input === 0 && output === 0 ? { localZeroCost: true } : {}),
+        ...(model.model.endsWith(":free") && input === 0 && output === 0 &&
+          long === undefined && Object.values(model.pricing).every(value => Number(value) === 0)
+          ? { localZeroCost: true }
+          : { costEstimated: true, label: "unverified routed price" }),
       } satisfies ModelCostEntry]];
     })),
   });
