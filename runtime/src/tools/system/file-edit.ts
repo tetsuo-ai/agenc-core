@@ -36,6 +36,7 @@ import { validateFileMutationPath } from "./light-write-path.js";
  * @module
  */
 
+import { lightEditPreview } from "./light-edit-preview.js";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 
@@ -1001,7 +1002,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         );
         const lspFeedback = await collectEditFeedback(absoluteFilePath, new_string);
         return {
-          content: `Created file ${file_path}.${lspFeedback}`,
+          content: `Created file ${file_path}.${lspFeedback}${config.lightMode ? lightEditPreview("", new_string) : ""}`,
           metadata: buildFileMutationMetadata({
             filePath: file_path,
             operation: "create",
@@ -1114,7 +1115,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         await snapshotPostWrite(sessionId, absoluteFilePath, new_string);
         const lspFeedback = await collectEditFeedback(absoluteFilePath, new_string);
         return {
-          content: `${successText(file_path, false)}${lspFeedback}`,
+          content: `${successText(file_path, false)}${lspFeedback}${config.lightMode ? lightEditPreview(snapshot.content, new_string) : ""}`,
           metadata: buildFileMutationMetadata({
             filePath: file_path,
             operation: "edit",
@@ -1162,7 +1163,7 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       const lspFeedback = await collectEditFeedback(absoluteFilePath, updated);
 
       return {
-        content: `${successText(file_path, replace_all)}${lspFeedback}`,
+        content: `${successText(file_path, replace_all)}${lspFeedback}${config.lightMode ? lightEditPreview(snapshot.content, updated) : ""}`,
         metadata: buildFileMutationMetadata({
           filePath: file_path,
           operation: "edit",
@@ -1281,7 +1282,8 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       for (const [i, edit] of edits.entries()) {
         if (edit.old_string === edit.new_string) {
           return preMutationErrorResult(
-            `No changes to make: edits[${i}].old_string and edits[${i}].new_string are exactly the same.`,
+            `No changes to make: edits[${i}].old_string and edits[${i}].new_string are exactly the same.` +
+              (config.lightMode ? " Nothing was written. To create a file, send one edit with old_string empty and new_string containing the file content." : ""),
             FILE_MULTI_EDIT_TOOL_NAME,
           );
         }
@@ -1368,7 +1370,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         );
         const lspFeedback = await collectEditFeedback(absoluteFilePath, firstEdit.new_string);
         return {
-          content: `Created file ${file_path}.${lspFeedback}`,
+          content: `Created file ${file_path}.${lspFeedback}${config.lightMode ? lightEditPreview("", firstEdit.new_string) : ""}`,
           metadata: buildFileMutationMetadata({
             filePath: file_path,
             operation: "create",
@@ -1476,7 +1478,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         );
         const lspFeedback = await collectEditFeedback(absoluteFilePath, firstEdit.new_string);
         return {
-          content: `${multiEditSuccessText(file_path, 1, 1)}${lspFeedback}`,
+          content: `${multiEditSuccessText(file_path, 1, 1)}${lspFeedback}${config.lightMode ? lightEditPreview(snapshot.content, firstEdit.new_string) : ""}`,
           metadata: buildFileMutationMetadata({
             filePath: file_path,
             operation: "edit",
@@ -1554,7 +1556,7 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       const lspFeedback = await collectEditFeedback(absoluteFilePath, updated);
 
       return {
-        content: `${multiEditSuccessText(file_path, edits.length, replacements)}${lspFeedback}`,
+        content: `${multiEditSuccessText(file_path, edits.length, replacements)}${lspFeedback}${config.lightMode ? lightEditPreview(snapshot.content, updated) : ""}`,
         metadata: buildFileMutationMetadata({
           filePath: file_path,
           operation: "edit",

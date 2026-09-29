@@ -118,6 +118,23 @@ describe("Edit tool", () => {
     clearAllPlanSlugs();
   });
 
+  test("Light MultiEdit returns final adjacent code and keeps normal results compact", async () => {
+    const file = await seedReadFile(root, "preview.pyi", "def existing(\n    value: int,\n) -> int: ...\n");
+    const tool = createFileMultiEditTool({ allowedPaths: [root], lightMode: true });
+    const result = await tool.execute({
+      file_path: file,
+      edits: [{ old_string: "def existing(\n", new_string: "def added() -> int: ...\n" }],
+      [SESSION_ID_ARG]: SESSION_ID,
+    });
+    expect(result.isError).not.toBe(true);
+    expect(String(result.content)).toContain("2:     value: int,");
+    expect(await readFile(file, "utf8")).toBe("def added() -> int: ...\n    value: int,\n) -> int: ...\n");
+    const normal = createFileMultiEditTool({ allowedPaths: [root] });
+    const next = await normal.execute({ file_path: file,
+      edits: [{ old_string: "added", new_string: "renamed" }], [SESSION_ID_ARG]: SESSION_ID });
+    expect(String(next.content)).not.toContain("Edited region");
+  });
+
   test("exposes the AgenC tool name", () => {
     expect(FILE_EDIT_TOOL_NAME).toBe("Edit");
     const tool = createFileEditTool({ allowedPaths: [root] });
