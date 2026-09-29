@@ -65,6 +65,21 @@ class PackagingTests(unittest.TestCase):
             with runner.provider_lock(self.root,'openai'):pass
         with runner.provider_lock(self.root,'deepseek'):pass
 
+    def test_repeat_start_schedules_only_the_missing_repeat(self):
+        args=self.arguments(); args.repeat_start=2; args.repeats=1; args.agents='light'
+        server=mock.Mock(server_port=12345)
+        with mock.patch.dict(os.environ,{'DEEPSEEK_API_KEY':'fixture-process-credential'}), \
+             mock.patch.object(runner,'parser') as parser, \
+             mock.patch.object(runner,'cmd',side_effect=self.fake_cmd), \
+             mock.patch.object(runner.http.server,'ThreadingHTTPServer',return_value=server), \
+             mock.patch.object(runner,'one') as one:
+            parser.return_value.parse_args.return_value=args
+            runner.main()
+        one.assert_called_once()
+        self.assertEqual(one.call_args.args[3],2)
+        self.assertEqual(runner.PROVENANCE['repeat_start'],2)
+        self.assertEqual(runner.KEY,'')
+
     def test_credential_removed_before_configuration_subprocesses(self):
         args=SimpleNamespace(phase='baseline',validate_only=True)
         runner.ROOT=self.root;runner.PROVENANCE={'configuration_sha256':'fixture'}
@@ -83,7 +98,7 @@ class PackagingTests(unittest.TestCase):
 
     def test_limits_and_remote_or_credential_urls_refused(self):
         args=self.arguments()
-        for field,value in [('workers',3),('repeats',0),('spend_cap_usd',26),('balance_floor_usd',9),('phase','../escape'),('openai_upstream','https://example.com/v1/responses'),('openai_upstream','http://user:password@localhost/responses')]:
+        for field,value in [('workers',3),('repeats',0),('repeat_start',0),('spend_cap_usd',26),('balance_floor_usd',9),('phase','../escape'),('openai_upstream','https://example.com/v1/responses'),('openai_upstream','http://user:password@localhost/responses')]:
             before=getattr(args,field);setattr(args,field,value)
             with self.assertRaises(ValueError):runner.configure(args)
             setattr(args,field,before)

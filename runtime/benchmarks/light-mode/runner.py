@@ -269,6 +269,7 @@ def parser():
     ap.add_argument('--agents',default='pi,normal,light')
     ap.add_argument('--tasks',default='')
     ap.add_argument('--repeats',type=int,default=2)
+    ap.add_argument('--repeat-start',type=int,default=1,help='First repeat ID; resume missing cells without repeating completed attempts')
     ap.add_argument('--workers',type=int,default=2)
     ap.add_argument('--spend-cap-usd',type=float,default=10)
     ap.add_argument('--balance-floor-usd',type=float,default=10)
@@ -282,8 +283,8 @@ def parser():
 def configure(args):
     global ROOT,CORE_BASE,CORE_CANDIDATE,PI_PREFIX,TASKS_DIR,PROVIDER,LEDGER,PRICING,PROVENANCE,SPEND_CAP,BALANCE_FLOOR,MAX_CALLS,OPENAI_UPSTREAM
     if sys.platform!='linux':raise RuntimeError('Benchmarks must run on Linux')
-    if not 1<=args.workers<=2 or args.repeats<1 or args.max_calls<1:
-        raise ValueError('Require workers 1..2, repeats >=1 and max-calls >=1')
+    if not 1<=args.workers<=2 or args.repeats<1 or args.repeat_start<1 or args.max_calls<1:
+        raise ValueError('Require workers 1..2, repeats/repeat-start >=1 and max-calls >=1')
     if not (0<args.spend_cap_usd<=25) or not (args.balance_floor_usd>=10):
         raise ValueError('Spend cap must be in (0,25]; balance floor must be at least10')
     if not re.fullmatch(r'baseline(?:-[A-Za-z0-9_-]+)?|candidate-[A-Za-z0-9_-]+',args.phase):
@@ -326,7 +327,7 @@ def configure(args):
       'baseline_revision':revision(CORE_BASE),'candidate_revision':revision(CORE_CANDIDATE),'pi_version':PI_VERSION,
       'node_version':cmd(['node','--version']).stdout.strip(),'python_version':sys.version.split()[0],
       'provider':PROVIDER,'models':models,'tasks':selected,'agents':agents,'phase':args.phase,
-      'repeats':args.repeats,'workers':args.workers,'seed':args.seed,'max_calls':MAX_CALLS,
+      'repeats':args.repeats,'repeat_start':args.repeat_start,'workers':args.workers,'seed':args.seed,'max_calls':MAX_CALLS,
       'spend_cap_usd':SPEND_CAP,'balance_floor_usd':BALANCE_FLOOR,
       'reasoning_effort':'low' if PROVIDER=='openai' else 'high','output_cap':8192,
       'pricing_verified_on':PRICING['verified_on']}
@@ -350,7 +351,7 @@ def main():
         server=http.server.ThreadingHTTPServer(('127.0.0.1',0),Proxy)
         threading.Thread(target=server.serve_forever,daemon=True).start()
         try:
-            jobs=[(t,a,m,r) for m in models for r in range(1,args.repeats+1) for t in tasks for a in agents]
+            jobs=[(t,a,m,r) for m in models for r in range(args.repeat_start,args.repeat_start+args.repeats) for t in tasks for a in agents]
             random.Random(args.seed).shuffle(jobs)
             with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
                 futures=[pool.submit(one,t,a,m,r,args.phase,server.server_port) for t,a,m,r in jobs]

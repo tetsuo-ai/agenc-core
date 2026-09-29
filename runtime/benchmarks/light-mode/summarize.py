@@ -245,12 +245,15 @@ def comparison(pi, light):
             'all_owner_metrics_met': tokens is True and quality is True and median is True and p90 is True}
 
 
-def summarize(root, manifest_tasks, candidate_phase, baseline_phase, models, required_runs, confirmatory=False):
+def summarize(root, manifest_tasks, candidate_phase, baseline_phase, models, required_runs, confirmatory=False, reuse_candidate_phases=()):
     if confirmatory and (candidate_phase != baseline_phase or not candidate_phase.startswith('candidate')):
         raise ValueError('Confirmatory cohort must use one explicitly named candidate phase')
     if not confirmatory and candidate_phase == baseline_phase: raise ValueError('Candidate phase must differ from baseline phase')
     if len(manifest_tasks) != len(set(manifest_tasks)): raise ValueError('Duplicate task selectors')
     if len(models) != len(set(models)): raise ValueError('Duplicate model selectors')
+    candidate_phases = [candidate_phase, *reuse_candidate_phases]
+    if len(candidate_phases) != len(set(candidate_phases)): raise ValueError('Duplicate candidate phases')
+    if reuse_candidate_phases and (confirmatory or baseline_phase in candidate_phases): raise ValueError('Reused candidate phases must be separate from baseline')
     runs, malformed, orphans = read_runs(root)
     result_file_count = len(runs)
     result_counts_by_phase = dict(Counter(r['phase'] for r in runs))
@@ -264,14 +267,14 @@ def summarize(root, manifest_tasks, candidate_phase, baseline_phase, models, req
         for model in models:
             for task in manifest_tasks:
                 for agent in AGENTS:
-                    phase = candidate_phase if agent == 'light' else baseline_phase
-                    prefix = f'{phase}-{model}-{task}-{agent}-r'
-                    if not name.startswith(prefix) or not name[len(prefix):].isdigit(): continue
-                    runs.append({'id':name,'phase':phase,'model':model,'task':task,'agent':agent,
-                                 'repeat':int(name[len(prefix):]),'pass':False,'usage_complete':False,
-                                 '_unfinished':True,'_malformed':name in malformed_dirs,
-                                 '_path':str(root/name/'result.json'),'_dir_name':name,
-                                 '_anatomy':anatomy(root/name),'_sampling':sampling({})})
+                    for phase in candidate_phases if agent == 'light' else [baseline_phase]:
+                        prefix = f'{phase}-{model}-{task}-{agent}-r'
+                        if not name.startswith(prefix) or not name[len(prefix):].isdigit(): continue
+                        runs.append({'id':name,'phase':phase,'model':model,'task':task,'agent':agent,
+                                     'repeat':int(name[len(prefix):]),'pass':False,'usage_complete':False,
+                                     '_unfinished':True,'_malformed':name in malformed_dirs,
+                                     '_path':str(root/name/'result.json'),'_dir_name':name,
+                                     '_anatomy':anatomy(root/name),'_sampling':sampling({})})
     groups = defaultdict(list)
     for run in runs:
         groups[(run['model'],run['task'],run['phase'],run['agent'])].append(run)
@@ -282,7 +285,7 @@ def summarize(root, manifest_tasks, candidate_phase, baseline_phase, models, req
         model_selected = {a:[] for a in AGENTS}
         diagnostic_light = []
         for task in manifest_tasks:
-            selected = {a:groups[(model,task,candidate_phase if a=='light' else baseline_phase,a)] for a in AGENTS}
+            selected = {a:[r for phase in (candidate_phases if a=='light' else [baseline_phase]) for r in groups[(model,task,phase,a)]] for a in AGENTS}
             summaries = {a:aggregate(selected[a]) for a in AGENTS}
             diag_runs = [] if confirmatory else groups[(model,task,baseline_phase,'light')]
             diag = aggregate(diag_runs)
@@ -299,8 +302,8 @@ def summarize(root, manifest_tasks, candidate_phase, baseline_phase, models, req
                 if len(group['agent_revisions']) > 1: blockers.append(f'{agent}:mixed_agent_revisions')
                 if any(not r.get('agent_revision') for r in selected[agent]): warnings.append(f'{agent}:missing_agent_revision')
                 if any(not r.get('harness_sha256') for r in selected[agent]): warnings.append(f'{agent}:missing_harness_digest')
-                prefix=f'{candidate_phase if agent=="light" else baseline_phase}-{model}-{task}-{agent}-r'
-                if any(name.startswith(prefix) for name in orphans): blockers.append(f'{agent}:unfinished_run_directory')
+                prefixes=[f'{phase}-{model}-{task}-{agent}-r' for phase in (candidate_phases if agent=='light' else [baseline_phase])]
+                if any(name.startswith(tuple(prefixes)) for name in orphans): blockers.append(f'{agent}:unfinished_run_directory')
             combined = sum(selected.values(), [])
             prompt_hashes = {r.get('prompt_sha256') for r in combined if r.get('prompt_sha256')}
             if len(prompt_hashes) > 1: blockers.append('prompt_mismatch')
@@ -346,14 +349,14 @@ def summarize(root, manifest_tasks, candidate_phase, baseline_phase, models, req
         reports.append({'model':model,'tasks':task_reports,'totals':totals,
                         'task_balanced_means':balanced,'baseline_light_totals':aggregate(diagnostic_light),
                         'acceptance':total_check,'blockers':model_blockers})
-    selected_paths = {r['_path'] for r in runs if r['task'] in manifest_tasks and r['model'] in models and ((r['phase']==baseline_phase and r['agent'] in ('pi','normal')) or (r['phase']==candidate_phase and r['agent']=='light'))}
+    selected_paths = {r['_path'] for r in runs if r['task'] in manifest_tasks and r['model'] in models and ((r['phase']==baseline_phase and r['agent'] in ('pi','normal')) or (r['phase'] in candidate_phases and r['agent']=='light'))}
     selected_result_count = sum(r['_path'] in selected_paths and not r.get('_unfinished') for r in runs)
     excluded = Counter(r['phase'] for r in runs if r['_path'] not in selected_paths)
     return {'schema_version':1, 'generated_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            'runs_root':str(root), 'selection':{'baseline_phase':baseline_phase,'candidate_phase':candidate_phase,
+            'runs_root':str(root), 'selection':{'baseline_phase':baseline_phase,'candidate_phase':candidate_phase,'candidate_phases':candidate_phases,
             'cohort_type':'confirmatory' if confirmatory else 'primary','original_light_baseline_available':not confirmatory,
             'tasks':manifest_tasks,'models':models,'required_distinct_repeats':required_runs,
-            'policy':'All result files in exactly selected phase/agent groups, including failures. No best-run selection.'},
+            'policy':'All result files in explicitly selected phase/agent groups, including reused screening failures. Duplicate repeat IDs and mixed source revisions block acceptance. No best-run selection.'},
             'inventory':{'result_files':result_file_count,'selected_result_files':selected_result_count,'selected_attempts':len(selected_paths),'result_files_by_phase':result_counts_by_phase,
                          'normal_exit_results_by_phase':completed_counts_by_phase,'available_models':available_models,
                          'available_phases':sorted({r['phase'] for r in runs}), 'unselected_counts_by_phase':dict(excluded),
@@ -388,6 +391,8 @@ def format_number(value, digits=0):
 def markdown(report):
     lines=['# Light benchmark comparison','',f"Selected baseline `{report['selection']['baseline_phase']}` and Light `{report['selection']['candidate_phase']}`. Required distinct repeats per task/agent: {report['selection']['required_distinct_repeats']}.",
            '',f"Complete three-way evidence: **{'PASS' if report['accepted'] else 'NOT PROVEN'}**. Owner Pi/Light target: **{'PASS' if report['owner_target_accepted'] else 'NOT MET OR INSUFFICIENT EVIDENCE'}**. All selected failed runs remain included. Token columns are per-run means; total tokens means input plus output, including cached input.",'']
+    if len(report['selection'].get('candidate_phases',[])) > 1:
+        lines += ['Reused candidate phases: '+', '.join('`'+p+'`' for p in report['selection']['candidate_phases'])+'. Screening results are reused; this is a completed two-repeat matrix, not an independent fresh confirmation sample.','']
     for model in report['models']:
         lines += [f"## {model['model']}",'','| Task | Agent | N | Pass | Input | Cached | Uncached | Output | Total | Cost/run | Time s | Model/tool calls |','| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |']
         for task in model['tasks']:
@@ -452,6 +457,21 @@ def self_test():
         result=summarize(root,['task'],'candidate-final','baseline',['fixture-model'],2)
         assert result['accepted'] and result['inventory']['selected_result_files']==6
         assert result['owner_target_accepted']
+        reused_dir=root/'candidate-final-fixture-model-task-light-r1'
+        reused_record=reused_dir/'result.json'; reused_original=reused_record.read_text()
+        reused=json.loads(reused_original); reused['phase']='candidate-screen'; reused['id']='candidate-screen-fixture-model-task-light-r1'
+        reused_record.write_text(json.dumps(reused))
+        reused_target=root/reused['id']; reused_dir.rename(reused_target)
+        combined=summarize(root,['task'],'candidate-final','baseline',['fixture-model'],2,reuse_candidate_phases=['candidate-screen'])
+        assert combined['accepted'] and combined['inventory']['selected_result_files']==6
+        assert combined['models'][0]['totals']['light']['runs']==2
+        reused['repeat']=2; (reused_target/'result.json').write_text(json.dumps(reused))
+        duplicate=summarize(root,['task'],'candidate-final','baseline',['fixture-model'],2,reuse_candidate_phases=['candidate-screen'])
+        assert not duplicate['owner_target_accepted'] and 'light:duplicate_repeats' in duplicate['models'][0]['tasks'][0]['blockers']
+        reused['repeat']=1; reused['agent_revision']='different'; (reused_target/'result.json').write_text(json.dumps(reused))
+        mixed=summarize(root,['task'],'candidate-final','baseline',['fixture-model'],2,reuse_candidate_phases=['candidate-screen'])
+        assert not mixed['owner_target_accepted'] and 'light:mixed_agent_revisions' in mixed['models'][0]['tasks'][0]['blockers']
+        reused_target.rename(reused_dir); reused_record.write_text(reused_original)
         normal_record=root/'baseline-fixture-model-task-normal-r1/result.json'
         normal_original=normal_record.read_text()
         normal_partial=json.loads(normal_original); normal_partial['usage_complete']=False
@@ -546,6 +566,7 @@ def main():
     parser.add_argument('--runs',type=Path)
     parser.add_argument('--manifest',type=Path,default=Path(__file__).parent/'tasks/manifest.json')
     parser.add_argument('--candidate-phase')
+    parser.add_argument('--reuse-candidate-phase',action='append',default=[],help='Reuse all Light results from another phase of the same source; duplicate repeats still block')
     parser.add_argument('--confirmatory-phase')
     parser.add_argument('--baseline-phase',default='baseline')
     parser.add_argument('--models',default='')
@@ -576,7 +597,7 @@ def main():
         if output and (output.resolve() == args.runs.resolve() or args.runs.resolve() in output.resolve().parents): parser.error('Outputs must be outside the raw runs tree')
     if args.json_out and args.markdown_out and args.json_out.resolve() == args.markdown_out.resolve(): parser.error('Output paths must differ')
     if set(tasks)-known: parser.error('Unknown task in --tasks')
-    report=summarize(args.runs.resolve(),tasks,args.candidate_phase,args.baseline_phase,args.models.split(',') if args.models else [],args.required_runs,confirmatory=bool(args.confirmatory_phase))
+    report=summarize(args.runs.resolve(),tasks,args.candidate_phase,args.baseline_phase,args.models.split(',') if args.models else [],args.required_runs,confirmatory=bool(args.confirmatory_phase),reuse_candidate_phases=args.reuse_candidate_phase)
     if args.json_out:
         args.json_out.parent.mkdir(parents=True,exist_ok=True); args.json_out.write_text(json.dumps(report,indent=2)+'\n')
     if args.markdown_out:
