@@ -24,7 +24,6 @@ import { modelContextWindow, type TurnContext } from "./turn-context.js";
 import type { TurnState } from "./turn-state.js";
 import { messageText } from "./run-turn-messages.js";
 import { lightReasoningEffort } from "./light-reasoning.js";
-import { LIGHT_INITIAL_TOOL_NAMES } from "../tools/light-profile.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import { getSessionPermissionInstructions } from "./permission-instructions.js";
 import {
@@ -123,22 +122,13 @@ function extractDirectMcpToolNameMentions(
   return [...new Set(text.match(DIRECT_MCP_TOOL_NAME_RE) ?? [])];
 }
 
-function discoverUserToolMentions(
+function discoverDirectMcpToolMentions(
   session: Session,
   text: string | null,
 ): void {
-  const names = new Set(extractDirectMcpToolNameMentions(text));
-  if (text && session.services.runtimeOptions.lightMode === true) {
-    // Exact public names in user input need no catalog round trip. Visibility
-    // does not bypass registry availability, admission or execution policy.
-    const mentions = new Set(text.match(/[\w]+(?:[.-][\w]+)*/gu) ?? []);
-    for (const tool of session.services.registry.tools) {
-      if (tool.metadata?.source === "builtin" && !LIGHT_INITIAL_TOOL_NAMES.has(tool.name) && mentions.has(tool.name)) {
-        names.add(tool.name);
-      }
-    }
-  }
-  if (names.size > 0) session.services.registry.discoverToolNames?.([...names]);
+  const directMcpToolNames = extractDirectMcpToolNameMentions(text);
+  if (directMcpToolNames.length === 0) return;
+  session.services.registry.discoverToolNames?.(directMcpToolNames);
 }
 
 export function builtTools(
@@ -335,7 +325,7 @@ function enforcePlanModeToolBoundary(
 
 // Shared with run-turn.ts and its sibling modules.
 export {
-  discoverUserToolMentions,
+  discoverDirectMcpToolMentions,
   buildSamplingRequestContract,
   snapshotSamplingRequestContract,
   enforcePlanModeToolBoundary,

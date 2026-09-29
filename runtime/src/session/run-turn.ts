@@ -268,7 +268,7 @@ import {
 import {
   buildSamplingRequestContract,
   builtTools,
-  discoverUserToolMentions,
+  discoverDirectMcpToolMentions,
   enforcePlanModeToolBoundary,
   snapshotSamplingRequestContract,
 } from "./run-turn-sampling-request.js";
@@ -922,7 +922,7 @@ async function prepareSamplingRequestBoundary(
   ).messages;
   const userInput = extractLastUserText(state.messagesForQuery);
   const rootHumanTurn = session.currentRootHumanTurn();
-  discoverUserToolMentions(session, userInput);
+  discoverDirectMcpToolMentions(session, userInput);
   const attachments = await getAttachments({
     sessionKey: session,
     lightMode: session.services.runtimeOptions?.lightMode === true,
