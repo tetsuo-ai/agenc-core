@@ -1,3 +1,4 @@
+import { openAiModelRequiresResponses, openAiModelRequiresBufferedResponse } from "../../registry/openai-current-models.js";
 /**
  * OpenAI provider adapter.
  *
@@ -980,6 +981,14 @@ export class OpenAIProvider implements LLMProvider {
     onChunk: StreamProgressCallback,
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
+    // o1-pro and o3-pro expose Responses without SSE. Keep the public stream
+    // contract while making exactly one ordinary, cancellable JSON request.
+    if (this.name === "openai" && openAiModelRequiresBufferedResponse(options?.model?.trim() || this.config.model)) {
+      const response = await this.chat(messages, options);
+      onChunk({ content: response.content, done: true,
+        ...(response.toolCalls.length > 0 ? { toolCalls: response.toolCalls } : {}) });
+      return response;
+    }
     const headers = this.managedRequestHeaders(options);
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options?.timeoutMs);
 
@@ -1041,6 +1050,7 @@ export class OpenAIProvider implements LLMProvider {
     options: LLMChatOptions | undefined,
   ): boolean {
     if (this.config.useResponsesApi !== false) return true;
+    if (this.name === "openai" && openAiModelRequiresResponses(model)) return true;
     return (
       this.name === "openai" &&
       tools.length > 0 &&

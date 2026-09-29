@@ -6,6 +6,7 @@
  * defaults, ordered environment ingress names, and onboarding classification.
  */
 
+import { NVIDIA_CURRENT_MODEL_CATALOG } from "./nvidia-current-models.js";
 import { OLLAMA_CLOUD_BASE_URL, OLLAMA_CLOUD_API_KEY_ENV, OLLAMA_CLOUD_DEFAULT_MODEL } from "./ollama-cloud-models.js";
 import { deriveFlatCatalog } from "./model-catalog.js";
 import { normalizeProviderIdentity } from "../../provider-identity.js";
@@ -166,6 +167,7 @@ const NVIDIA_PROVIDER_MODEL_IDS = Object.freeze([
   "moonshotai/kimi-k2-thinking",
   "moonshotai/kimi-k2.5-thinking",
   "moonshotai/kimi-k2-instruct-0905",
+  ...NVIDIA_CURRENT_MODEL_CATALOG.map((entry) => entry.model),
 ] as const);
 
 // Single source of truth: model lists for providers that have entries in
@@ -710,16 +712,7 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   kimi: mergeDerivedProviderModels("kimi"),
   // Mirrors the curated rows of GEMINI_THINKING_MODELS: every id here has a
   // verified thinking contract, so an effort never dies at request build.
-  gemini: Object.freeze([
-    "gemini-3.1-pro-preview",
-    "gemini-3.8-flash",
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite",
-    "gemini-2.5-flash",
-  ]),
+  gemini: mergeDerivedProviderModels("gemini"),
   mistral: mergeDerivedProviderModels("mistral"),
   "nvidia-nim": NVIDIA_PROVIDER_MODEL_IDS,
   minimax: mergeDerivedProviderModels("minimax"),

@@ -276,6 +276,7 @@ describe("StaticModelsManager", () => {
       usedFallbackModelMetadata: false,
     });
     expect(info.supportedReasoningLevels).toEqual([
+      "none",
       "low",
       "medium",
       "high",
@@ -460,7 +461,7 @@ describe("StaticModelsManager", () => {
     });
 
     const info = await manager.getModelInfo("gpt-5.4-mini");
-    expect(info.contextWindow).toBe(272_000);
+    expect(info.contextWindow).toBe(400_000);
     expect(info.usedFallbackModelMetadata).toBe(false);
     expect(fetchImpl).not.toHaveBeenCalled();
   });

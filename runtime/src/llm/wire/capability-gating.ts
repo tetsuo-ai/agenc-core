@@ -1,3 +1,4 @@
+import { resolveNvidiaCurrentModel } from "../registry/nvidia-current-models.js";
 /**
  * Per-provider capability gating for chat-completions wire fields.
  *
@@ -339,6 +340,7 @@ export function chatCompletionsCapabilityHintsForProvider(
     resolveModelCapabilityHints({ provider: slug, model })
       ?.supportsImageInput === true;
   const isZai = slug === "zai" || slug === "zai-coding-plan";
+  const nimModel = slug === "nvidia-nim" ? resolveNvidiaCurrentModel(model) : undefined;
   const isKimi = slug === "kimi";
   const isMinimax = slug === "minimax";
   const isMinimaxM3 =
@@ -417,6 +419,20 @@ export function chatCompletionsCapabilityHintsForProvider(
       replaysReasoningContent: true,
       acceptsDirectImageInput: acceptsToolResultImages,
       toolResultImagePolicy: acceptsToolResultImages ? "relay_as_user" as const : "strip" as const,
+    } : {}),
+    ...(nimModel ? {
+      acceptsDirectImageInput: nimModel.vision,
+      toolResultImagePolicy: nimModel.vision ? "relay_as_user" as const : "strip" as const,
+      acceptsParallelToolCalls: false,
+      outputTokensCeiling: nimModel.ceiling,
+      // NIM's Kimi K3 schema has tools but no tool_choice. K2.6 has both.
+      ...(nimModel.model === "moonshotai/kimi-k3" ? { acceptsToolChoice: false } : {}),
+      ...(nimModel.model === "meta/muse-glimmer-30b" ? { toolChoicePolicy: "no_required" as const } : {}),
+      ...(nimModel.model.startsWith("moonshotai/") ? {
+        replaysReasoningContent: true,
+        replaysReasoningContentOnlyForIntactHistory: true,
+        reasoningContentField: "reasoning_content" as const,
+      } : {}),
     } : {}),
     ...(slug === "ollama-cloud" ? {
       acceptsDirectImageInput: acceptsToolResultImages,
@@ -608,7 +624,7 @@ export function chatCompletionsCapabilityHintsForProvider(
       : {}),
     acceptsStopSequences: slug !== "meta",
     acceptsServiceTier,
-    acceptsStreamUsage: isZai ? false : acceptsStreamUsage,
+    acceptsStreamUsage: isZai || (nimModel && !nimModel.model.startsWith("moonshotai/")) ? false : acceptsStreamUsage,
     requiresGrammarSafeToolSchemas,
     ...(outputTokensCeiling !== undefined ? { outputTokensCeiling } : {}),
     ...(reasoningSoftSwitchSuffix !== undefined

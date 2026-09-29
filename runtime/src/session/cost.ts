@@ -299,6 +299,8 @@ const COST_TIER_GPT_4_1_NANO = openAiTier({
   standard: [0.1, 0.4, 0.025],
   fast: [0.2, 0.8, 0.05],
 });
+const COST_TIER_GPT_4_TURBO = openAiTier({ standard: [10, 30] });
+const COST_TIER_CHAT_LATEST = openAiTier({ standard: [5, 30, 0.5] });
 const COST_TIER_GPT_4O = openAiTier({
   standard: [2.5, 10, 1.25],
   fast: [4.25, 17, 2.125],
@@ -791,6 +793,8 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     ...openAiCostAliases("gpt-4.1", COST_TIER_GPT_4_1),
     ...openAiCostAliases("gpt-4.1-mini", COST_TIER_GPT_4_1_MINI),
     ...openAiCostAliases("gpt-4.1-nano", COST_TIER_GPT_4_1_NANO),
+    ...openAiCostAliases("gpt-4-turbo", COST_TIER_GPT_4_TURBO),
+    ...openAiCostAliases("chat-latest", COST_TIER_CHAT_LATEST),
     ...openAiCostAliases("gpt-4o", COST_TIER_GPT_4O),
     ...openAiCostAliases("gpt-4o-2024-05-13", COST_TIER_GPT_4O_2024_05_13),
     ...openAiCostAliases("gpt-4o-mini", COST_TIER_GPT_4O_MINI),
@@ -902,6 +906,13 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     "kimi:kimi-k2.6": COST_TIER_KIMI_K26,
     // Gemini rates and sources sit with the COST_TIER_GEMINI_* rows above.
     ...geminiCostAliases("gemini-3.1-pro-preview", COST_TIER_GEMINI_3_1_PRO),
+    ...geminiCostAliases("gemini-3.1-pro-preview-customtools", COST_TIER_GEMINI_3_1_PRO),
+    // Gemma is free-only on the Gemini API pricing page (2026-09-29).
+    ...geminiCostAliases("gemma-4-31b-it", geminiTier([0, 0, 0])),
+    ...geminiCostAliases("gemma-4-26b-a4b-it", geminiTier([0, 0, 0])),
+    // Standard launch rates through 2026-12-31. The pricing page announces
+    // $2/$10/$0.20 from 2027-01-01; refresh before that date.
+    ...geminiCostAliases("gemini-robotics-er-2-preview", geminiTier([1, 5, 0.1])),
     ...geminiCostAliases("gemini-3.8-flash", COST_TIER_GEMINI_3_FLASH),
     ...geminiCostAliases("gemini-3.7-flash", COST_TIER_GEMINI_3_FLASH),
     ...geminiCostAliases("gemini-3.6-flash", COST_TIER_GEMINI_3_FLASH),
@@ -1281,6 +1292,8 @@ const OPENAI_EXACTLY_PRICED_MODELS = Object.freeze([
   "gpt-5-nano",
   "gpt-5-pro",
   "gpt-4o-2024-05-13",
+  "gpt-4-turbo",
+  "chat-latest",
   "o1-pro",
   "o3-pro",
 ]);

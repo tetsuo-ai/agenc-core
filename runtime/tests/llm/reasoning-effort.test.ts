@@ -36,12 +36,12 @@ describe("provider-scoped effort contract", () => {
     expect(resolveReasoningEffort({provider: "nvidia-nim", model: "unknown"}).levels).toEqual([]);
   });
 
-  it("accepts unregistered NIM family snapshots Desktop can offer", () => {
+  it("accepts registered NIM models and verified family snapshots", () => {
     expect(resolveReasoningEffort({
       provider: "nvidia-nim",
       model: "openai/gpt-oss-20b",
     })).toMatchObject({
-      registered: false,
+      registered: true,
       levels: ["low", "medium", "high"],
       acceptsChatEffort: true,
     });

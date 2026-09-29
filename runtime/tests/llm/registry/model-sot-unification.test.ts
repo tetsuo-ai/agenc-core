@@ -192,8 +192,8 @@ describe("canonical provider catalogs preserve supported selection rows", () => 
 
   it("keeps the complete unique NVIDIA NIM selection surface", () => {
     const models = BUILT_IN_PROVIDER_MODEL_CATALOG["nvidia-nim"];
-    expect(models).toHaveLength(111);
-    expect(new Set(models)).toHaveLength(111);
+    expect(models).toHaveLength(115);
+    expect(new Set(models)).toHaveLength(115);
     expect(models).toEqual(
       expect.arrayContaining([
         "openai/gpt-oss-120b",
