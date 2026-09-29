@@ -712,10 +712,11 @@ export class OllamaProvider implements LLMProvider {
                 }
               }
 
-              toolCalls = [
-                ...toolCalls,
-                ...normalizeOllamaToolCalls(message.tool_calls),
-              ];
+              const chunkToolCalls = normalizeOllamaToolCalls(message.tool_calls);
+              if (chunkToolCalls.length > 0) {
+                toolCalls = [...toolCalls, ...chunkToolCalls];
+                onChunk({ content: "", done: false, bufferedContentProgress: true });
+              }
 
               const chunkModel = readString(chunk.model);
               if (chunkModel) model = chunkModel;

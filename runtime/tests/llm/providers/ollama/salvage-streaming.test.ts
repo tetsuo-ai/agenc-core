@@ -51,6 +51,46 @@ function providerFor(
 }
 
 describe("Ollama text-call recovery in actual adapter requests", () => {
+  test("buffered native tool generation after thinking survives three minutes without dispatching calls early", async () => {
+    vi.useFakeTimers();
+    const chunks: LLMStreamChunk[] = [];
+    const provider = new OllamaProvider({ model: "test-model", tools: [readTool] });
+    const paths = ["one.txt", "two.txt", "three.txt", "four.txt"];
+    async function* stream() {
+      yield { message: { thinking: "Prepare the tool calls." } };
+      for (const file_path of paths) {
+        await new Promise(resolve => setTimeout(resolve, 60_000));
+        expect(chunks.every(chunk => chunk.content === "" && !chunk.toolCalls && !chunk.toolInputDelta)).toBe(true);
+        yield { message: { tool_calls: [{ function: { name: "FileRead", arguments: { file_path } } }] } };
+      }
+      yield { done: true, done_reason: "stop" };
+    }
+    Object.assign(provider, { client: {
+      chat: async () => stream(), list: async () => ({ models: [] }),
+    } });
+    const chatStream = provider.chatStream.bind(provider);
+    vi.spyOn(provider, "chatStream").mockImplementation((input, emit, options) =>
+      chatStream(input, chunk => { chunks.push(chunk); emit(chunk); }, options));
+    const { session } = mkSession({ provider });
+    const ctx = mkCtx();
+    const state = buildInitialTurnState(ctx, messages[0]!);
+    const pending = streamModel(state, ctx, session, {
+      input: state.messages, tools: [readTool], parallelToolCalls: false, baseInstructions: "",
+      maxOutputTokens: 8192,
+    }).then(() => undefined, error => error);
+    const duration = paths.length * 60_000;
+    expect(duration).toBeGreaterThan(REASONING_NO_PROGRESS_MS);
+    await vi.advanceTimersByTimeAsync(duration + 1);
+    expect(await pending).toBeUndefined();
+    expect(provider.chatStream).toHaveBeenCalledOnce();
+    expect(chunks.filter(chunk => chunk.bufferedContentProgress)).toHaveLength(paths.length);
+    expect(chunks.flatMap(chunk => chunk.toolCalls ?? [])).toMatchObject(
+      paths.map(file_path => ({ name: "FileRead", arguments: JSON.stringify({ file_path }) })),
+    );
+    expect(chunks.filter(chunk => chunk.toolCalls?.length).every(chunk => chunk.done)).toBe(true);
+    expect(chunks.map(chunk => chunk.content).join("")).toBe("");
+  });
+
   test.each(["tool", "code"])("buffered %s generation after thinking survives three minutes without exposing unvalidated text", async kind => {
     vi.useFakeTimers();
     const text = kind === "tool" ? call : "```ts\nconst answer = 42;\n```";
