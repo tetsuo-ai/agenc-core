@@ -9,6 +9,7 @@ import type { LiveAgent } from "../../../src/agents/control.js";
 import { bindLiveAgentSession } from "../../../src/agents/live-session.js";
 import { signSessionId } from "../../../src/agents/_deps/filesystem-args.js";
 import { ModelRegistry, modelRegistryEntryToModelInfo } from "../../../src/llm/model-registry.js";
+import { createChildExecutionPlan } from "../../../src/agents/cross-provider.js";
 
 const destinationModelInfo = modelRegistryEntryToModelInfo(new ModelRegistry({
   config: {}, metadata: { env: {} },
@@ -16,17 +17,11 @@ const destinationModelInfo = modelRegistryEntryToModelInfo(new ModelRegistry({
   provider: "deepseek", model: "deepseek-v4-pro",
 }));
 
-function approvedChildPlan() {
-  return {
-    version: 1, crossProvider: true, modelInfo: destinationModelInfo,
-    route: { provider: "deepseek", model: "deepseek-v4-pro" },
-    destination: { provider: "deepseek", model: "deepseek-v4-pro",
-      endpoint: "https://api.deepseek.com/v1", authProfile: "api_key", billingSource: "byok" },
-    task: { id: "first", name: "child", text: "first task", attachments: [] },
-    parent: { sessionId: "root-session", agentPath: "/root" },
-    scope: { tools: [], data: "task_only", cwd: "/workspace", networkEnabled: false },
-    budgetAllocation: { maxModelCalls: 2 },
-  };
+function approvedChildPlan(session: Session) {
+  return createChildExecutionPlan({ session, modelInfo: destinationModelInfo,
+    selection: { provider: "deepseek", model: "deepseek-v4-pro" },
+    parentPath: "/root", taskId: "first", taskName: "child", taskText: "first task",
+    toolFree: true, forkedHistory: false });
 }
 
 function fixture(initialStatus: AgentStatus, onBegin?: () => void, crossProvider = false) {
@@ -60,6 +55,11 @@ function fixture(initialStatus: AgentStatus, onBegin?: () => void, crossProvider
   };
   const session = {
     conversationId: "root-session",
+    config: { agents: { cross_provider_enabled: true, allowed_providers: ["deepseek"],
+      cross_provider_ask_each_spawn: true } },
+    modelInfo: { slug: "grok-4.6" },
+    sessionConfiguration: { cwd: "/workspace" },
+    providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }) },
     services: {},
     nextInternalSubId: () => "event-1",
     emit: vi.fn((event: { msg: { type: string } }) => {
@@ -82,12 +82,28 @@ function fixture(initialStatus: AgentStatus, onBegin?: () => void, crossProvider
 }
 
 describe("send_message delivery report", () => {
+  it.each(["queue_only", "trigger_turn"] as const)(
+    "refuses %s for a worker planned before its effort ceiling changed", async (mode) => {
+      const f = fixture({ status: "idle", turnId: "first", endedAtMs: 1 }, undefined, true);
+      Object.assign(f.session.config!.agents!, { subagent_limits: { deepseek: { effort: "high" } } });
+      Object.assign(f.live.metadata, { executionPlan: await approvedChildPlan(f.session) });
+      Object.assign(f.session.config!.agents!, { subagent_limits: { deepseek: { effort: "minimal" } } });
+      const request = vi.fn();
+      Object.assign(f.session.services, { crossProviderConsent: { request } });
+      const result = await handleMessageStringTool({ target: f.live.agentPath, message: "new task" }, f.opts, mode);
+      expect(result.content).toContain("child execution policy changed");
+      expect(result.effectDisposition).toMatchObject({ disposition: "confirmed_no_effect" });
+      expect(request).not.toHaveBeenCalled();
+      expect(f.assignTask).not.toHaveBeenCalled();
+      expect(f.sendInterAgentCommunication).not.toHaveBeenCalled();
+    });
+
   it.each((["queue_only", "trigger_turn"] as const).flatMap((mode) =>
     (["root_closed", "root_replaced", "caller_revoked", "target_replaced", "target_plan_changed", "turn_cancelled", "turn_replaced"] as const)
       .map((change) => ({ mode, change }))))(
     "refuses $mode after $change while consent waits", async ({ mode, change }) => {
       const f = fixture({ status: "running", turnId: "child-turn", startedAtMs: 1 }, undefined, true);
-      Object.assign(f.live.metadata, { executionPlan: approvedChildPlan() });
+      Object.assign(f.live.metadata, { executionPlan: await approvedChildPlan(f.session) });
       let release!: () => void;
       const gate = new Promise<void>((resolve) => { release = resolve; });
       const request = vi.fn(async (_session: Session,
@@ -109,7 +125,7 @@ describe("send_message delivery report", () => {
       if (change === "caller_revoked") {
         const caller = { agentId: "caller", agentPath: "/root/parent",
           abortController: new AbortController(), role: { name: "worker" } } as LiveAgent;
-        const childSession = { conversationId: "caller", services: f.session.services,
+        const childSession = { conversationId: "caller", services: f.session.services, config: f.session.config,
           abortController: new AbortController(), onBeforeDurableClose: () => () => {} } as unknown as Session;
         revoke = bindLiveAgentSession(caller, childSession);
         f.control.getLive.mockImplementation((id) => id === "caller" ? caller : id === f.live.agentId ? f.live : undefined);
@@ -145,7 +161,7 @@ describe("send_message delivery report", () => {
   it.each(["queue_only", "trigger_turn"] as const)(
     "%s suppresses a denial within the requesting turn and asks again on the next turn", async (mode) => {
       const f = fixture({ status: "running", turnId: "child-turn", startedAtMs: 1 }, undefined, true);
-      Object.assign(f.live.metadata, { executionPlan: approvedChildPlan() });
+      Object.assign(f.live.metadata, { executionPlan: await approvedChildPlan(f.session) });
       let humanTurnId = "human-turn-1";
       Object.assign(f.session, {
         // The user asks at each spawn, so messages to the child ask too.
@@ -202,7 +218,7 @@ describe("send_message delivery report", () => {
 
   it("holds a cross-provider passive message until its text receives fresh approval", async () => {
     const f = fixture({ status: "running", turnId: "turn-1", startedAtMs: 1 }, undefined, true);
-    Object.assign(f.live.metadata, { executionPlan: approvedChildPlan() });
+    Object.assign(f.live.metadata, { executionPlan: await approvedChildPlan(f.session) });
     let allow: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => { allow = resolve; });
     const request = vi.fn(async (_session: Session, disclosure: { taskId: string; taskText: string; scopeKey: string; payloadKey: string },
