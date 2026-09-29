@@ -28,6 +28,15 @@ def fields(record,names):
     return {name:safe_value(record[name]) for name in names if name in record}
 
 
+def preserve_unpriced_cost(record,public):
+    # Historical OAuth-runner ledgers used numeric zero as a placeholder.
+    # Keep that reported value separately, never publish it as a priced charge.
+    if record.get('cost_basis')=='subscription-unpriced' or record.get('model')=='gpt-6-luna':
+        if record.get('cost_usd') is not None:public['reported_cost_usd']=safe_value(record['cost_usd'])
+        public['cost_usd']=None
+        public['cost_basis']='subscription-unpriced'
+
+
 def export(runs,ledgers,phases,destination):
     runs=runs.resolve();destination=destination.resolve()
     if destination.exists() or destination.is_relative_to(runs):raise ValueError('Choose a new destination outside raw runs')
@@ -48,6 +57,7 @@ def export(runs,ledgers,phases,destination):
         record=json.loads(read(result_path)) if result_path.exists() else None
         if record is not None:
             public=fields(record,RUN_FIELDS)
+            preserve_unpriced_cost(record,public)
             # Historical timeout/pass contradictions remain visible, never rewritten.
             public['effective_pass']=effective_pass(record)
             public['selected']=record.get('phase') in phases
@@ -63,6 +73,7 @@ def export(runs,ledgers,phases,destination):
         for line in read(ledger).decode().splitlines():
             if not line.strip():continue
             record=json.loads(line);public=fields(record,CALL_FIELDS)
+            preserve_unpriced_cost(record,public)
             public['error_present']=bool(record.get('error'))
             status=(record.get('error') or {}).get('status')
             if isinstance(status,int):public['http_status']=status

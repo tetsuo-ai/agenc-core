@@ -123,7 +123,7 @@ class PackagingTests(unittest.TestCase):
         result={'id':run.name,'phase':'baseline','model':'deepseek-flash','pass':False,'check_pass':False,'cost_usd':.5,'private_path':str(self.root)}
         (run/'result.json').write_text(json.dumps(result))
         (run/'wire-001.json').write_text('{"private_content":"PRIVATE_SENTINEL"}')
-        ledger=self.root/'spend.jsonl';ledger.write_text(json.dumps({'run':run.name,'cost_usd':.5,'error':{'status':503,'body':'PRIVATE_SENTINEL'}})+'\n')
+        ledger=self.root/'spend.jsonl';ledger.write_text(json.dumps({'run':run.name,'cost_usd':.5,'error':{'status':503,'body':'PRIVATE_SENTINEL'}})+'\n'+json.dumps({'run':'legacy-luna','model':'gpt-6-luna','cost_usd':0,'budget_charge_usd':0})+'\n')
         out=self.root/'public'
         summary=export_evidence.export(runs,[ledger],['baseline'],out)
         self.assertEqual(summary['selected_runs'],1);self.assertEqual(summary['all_attempts'],2)
@@ -133,6 +133,10 @@ class PackagingTests(unittest.TestCase):
         self.assertFalse(selected['pass']);self.assertEqual(selected['cost_usd'],.5)
         self.assertEqual(json.loads((out/'all-call-accounting.json').read_text())['calls'][0]['http_status'],503)
         self.assertEqual(json.loads((out/'all-attempts.json').read_text())['attempts'][1]['status'],'cancelled_before_launch')
+        legacy=json.loads((out/'all-call-accounting.json').read_text())['calls'][1]
+        self.assertIsNone(legacy['cost_usd']);self.assertEqual(legacy['reported_cost_usd'],0)
+        self.assertEqual(legacy['cost_basis'],'subscription-unpriced')
+        self.assertEqual(json.loads(ledger.read_text().splitlines()[1])['cost_usd'],0)
 
     def test_bridge_has_absolute_duration_and_byte_bounds(self):
         # Fake worker streams, not the HTTP worker. Real calls stay blocked.
