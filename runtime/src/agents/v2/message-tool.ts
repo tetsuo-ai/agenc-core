@@ -76,6 +76,19 @@ export async function handleMessageStringTool(
   if (isCurrentAgentContextError(current)) {
     return confirmedNoAgentEffect(current);
   }
+  const caller = current.threadId === sessionOrError.conversationId
+    ? undefined : control.getLive(current.threadId);
+  const callerSession = current.threadId === sessionOrError.conversationId
+    ? sessionOrError : caller === undefined ? undefined : liveAgentSession(caller);
+  const callerIsCurrent = (): boolean => callerSession !== undefined &&
+    opts.getSession() === sessionOrError && !sessionOrError.isShuttingDown &&
+    !callerSession.isShuttingDown && (caller === undefined
+      ? callerSession === sessionOrError
+      : control.getLive(current.threadId) === caller &&
+        caller.agentPath === current.agentPath && liveAgentSession(caller) === callerSession);
+  if (!callerIsCurrent()) {
+    return agentValidationError("invalid-runtime-identity: calling agent session is not live");
+  }
   let agentId: ThreadId;
   try {
     agentId = resolveAgentId(sessionOrError, target, current.agentPath, opts);
@@ -100,6 +113,14 @@ export async function handleMessageStringTool(
     return agentValidationError("target agent is missing an agent_path");
   }
   const targetPlan = live?.metadata.executionPlan ?? metadata?.executionPlan;
+  const targetSession = live === undefined ? undefined : liveAgentSession(live);
+  const targetIsCurrent = (): boolean => agentId === sessionOrError.conversationId ||
+    (live !== undefined && control.getLive(agentId) === live &&
+      live.agentPath === receiverAgentPath &&
+      targetSession?.isShuttingDown !== true &&
+      // A starting worker may bind its first Session while consent waits.
+      (targetSession === undefined || liveAgentSession(live) === targetSession) &&
+      (live.metadata.executionPlan ?? control.getAgentMetadata(agentId)?.executionPlan) === targetPlan);
   if ((live?.metadata.crossProvider !== undefined || metadata?.crossProvider !== undefined) &&
       targetPlan?.crossProvider !== true) {
     return agentValidationError("consent_unavailable: destination has no consent provenance");
@@ -110,39 +131,38 @@ export async function handleMessageStringTool(
     // consent before it enters the child's mailbox. Settings consent covers
     // it. With per-spawn consent, or after a funds stop, it needs a fresh
     // approval even if the worker holds a reusable session grant.
-    const caller = current.threadId === sessionOrError.conversationId
-      ? sessionOrError : liveAgentSession(control.getLive(current.threadId)!);
-    if (caller === undefined) return agentValidationError("consent_unavailable: calling session is no longer live");
     const previous = targetPlan;
-    const parentTurnId = caller.activeTurn?.unsafePeek()?.turnId;
+    const parentTurnId = callerSession!.activeTurn?.unsafePeek()?.turnId;
     const proposed: ChildExecutionPlan = { ...previous,
       task: { id: callId, name: previous.task.name, text: message, attachments: [],
         ...(parentTurnId !== undefined ? { parentTurnId } : {}) },
       consentGrant: null,
     };
-    const consent = await authorizeChildExecutionPlan(caller, proposed, { fresh: true });
+    const consent = await authorizeChildExecutionPlan(callerSession!, proposed, { fresh: true });
     if (consent.kind !== "granted") {
       return confirmedNoAgentEffect(json({ code: consent.kind, error: consent.reason,
         action: "Keep this message on the current provider or request consent again for a new task." }, true));
     }
   }
   if (mode === "trigger_turn" && targetPlan?.crossProvider) {
-    const caller = current.threadId === sessionOrError.conversationId
-      ? sessionOrError : liveAgentSession(control.getLive(current.threadId)!);
-    if (caller === undefined) return agentValidationError("consent_unavailable: calling session is no longer live; continue this task yourself");
     const previous = targetPlan;
-    const parentTurnId = caller.activeTurn?.unsafePeek()?.turnId;
+    const parentTurnId = callerSession!.activeTurn?.unsafePeek()?.turnId;
     const proposed: ChildExecutionPlan = { ...previous,
       task: { id: callId, name: previous.task.name, text: message, attachments: [],
         ...(parentTurnId !== undefined ? { parentTurnId } : {}) },
       consentGrant: null,
     };
-    const consent = await authorizeChildExecutionPlan(caller, proposed);
+    const consent = await authorizeChildExecutionPlan(callerSession!, proposed);
     if (consent.kind !== "granted") {
       return confirmedNoAgentEffect(json({ code: consent.kind, error: consent.reason,
         action: "Continue this subtask yourself on the current provider; do not retry the same cross-provider request." }, true));
     }
     assignedPlan = consent.plan;
+  }
+  // Consent can wait while either participant is closed or replaced. The
+  // approval covers the captured worker and caller, not a replacement handle.
+  if (!callerIsCurrent() || !targetIsCurrent()) {
+    return agentValidationError("invalid-runtime-identity: calling or target agent session is no longer live");
   }
   emit(sessionOrError, {
     type: "collab_agent_interaction_begin",

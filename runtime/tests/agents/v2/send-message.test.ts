@@ -5,6 +5,9 @@ import type { MultiAgentV2Options } from "../../../src/agents/v2/common.js";
 import { createSendMessageTool } from "../../../src/agents/v2/send-message.js";
 import { handleMessageStringTool } from "../../../src/agents/v2/message-tool.js";
 import { LiveApprovalBroker } from "../../../src/app-server/live-approval-broker.js";
+import type { LiveAgent } from "../../../src/agents/control.js";
+import { bindLiveAgentSession } from "../../../src/agents/live-session.js";
+import { signSessionId } from "../../../src/agents/_deps/filesystem-args.js";
 
 function fixture(initialStatus: AgentStatus, onBegin?: () => void, crossProvider = false) {
   let status = initialStatus;
@@ -53,12 +56,75 @@ function fixture(initialStatus: AgentStatus, onBegin?: () => void, crossProvider
     const result = await tool.execute({ target: live.agentPath, message: "hello" });
     return { result, body: JSON.parse(result.content) as Record<string, unknown> };
   };
-  return { send, sendInterAgentCommunication, assignTask, session, live,
+  return { send, sendInterAgentCommunication, assignTask, session, live, opts, control,
     assign: () => handleMessageStringTool({ target: live.agentPath, message: "new task" }, opts, "trigger_turn"),
     setStatus: (next: AgentStatus) => { status = next; }, tool };
 }
 
 describe("send_message delivery report", () => {
+  it.each((["queue_only", "trigger_turn"] as const).flatMap((mode) =>
+    (["root_closed", "root_replaced", "caller_revoked", "target_replaced", "target_plan_changed"] as const)
+      .map((change) => ({ mode, change }))))(
+    "refuses $mode after $change while consent waits", async ({ mode, change }) => {
+      const f = fixture({ status: "running", turnId: "child-turn", startedAtMs: 1 }, undefined, true);
+      Object.assign(f.live.metadata, { executionPlan: {
+        version: 1, crossProvider: true,
+        route: { provider: "deepseek", model: "deepseek-v4-pro" },
+        destination: { provider: "deepseek", model: "deepseek-v4-pro",
+          endpoint: "https://api.deepseek.com/v1", authProfile: "api_key", billingSource: "byok" },
+        task: { id: "first", name: "child", text: "first task", attachments: [] },
+        parent: { sessionId: "root-session", agentPath: "/root" },
+        scope: { tools: [], data: "task_only", cwd: "/workspace", networkEnabled: false },
+        budgetAllocation: { maxModelCalls: 2 },
+      } });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const request = vi.fn(async (_session: Session,
+        disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => {
+        await gate;
+        return { kind: "granted" as const, grant: { kind: "once" as const,
+          ownerSessionId: "root-session", sessionEpoch: "epoch", taskId: disclosure.taskId,
+          scopeKey: disclosure.scopeKey, payloadKey: disclosure.payloadKey } };
+      });
+      Object.assign(f.session.services, { crossProviderConsent: {
+        ownerSessionId: "root-session", sessionEpoch: "epoch", request,
+      } });
+      let revoke: (() => void) | undefined;
+      const identity: Record<string, unknown> = {};
+      if (change === "caller_revoked") {
+        const caller = { agentId: "caller", agentPath: "/root/parent",
+          abortController: new AbortController(), role: { name: "worker" } } as LiveAgent;
+        const childSession = { conversationId: "caller", services: f.session.services,
+          abortController: new AbortController(), onBeforeDurableClose: () => () => {} } as unknown as Session;
+        revoke = bindLiveAgentSession(caller, childSession);
+        f.control.getLive.mockImplementation((id) => id === "caller" ? caller : id === f.live.agentId ? f.live : undefined);
+        identity.__agencSessionId = caller.agentId;
+        identity.__agencSessionIdSig = signSessionId(caller.agentId);
+      }
+      try {
+        const pending = handleMessageStringTool({ target: f.live.agentPath, message: "new task", ...identity }, f.opts, mode);
+        await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+        if (change === "root_closed") Object.assign(f.session, { isShuttingDown: true });
+        if (change === "root_replaced") Object.assign(f.opts, { getSession: () => ({ ...f.session }) });
+        if (change === "caller_revoked") revoke!();
+        if (change === "target_replaced") f.control.getLive.mockImplementation(() => ({ ...f.live }));
+        if (change === "target_plan_changed") Object.assign(f.live.metadata, {
+          executionPlan: { ...f.live.metadata.executionPlan },
+        });
+        release();
+        const result = await pending;
+        expect(result.isError).toBe(true);
+        expect(result.effectDisposition).toMatchObject({ disposition: "confirmed_no_effect" });
+        expect(result.content).toContain("invalid-runtime-identity");
+        expect(f.sendInterAgentCommunication).not.toHaveBeenCalled();
+        expect(f.assignTask).not.toHaveBeenCalled();
+      } finally {
+        release();
+        revoke?.();
+      }
+    },
+  );
+
   it.each(["queue_only", "trigger_turn"] as const)(
     "%s suppresses a denial within the requesting turn and asks again on the next turn", async (mode) => {
       const f = fixture({ status: "running", turnId: "child-turn", startedAtMs: 1 }, undefined, true);
