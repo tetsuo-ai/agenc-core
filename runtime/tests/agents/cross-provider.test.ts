@@ -27,6 +27,69 @@ function sessionWithModels(provider: string, model: string, liveModels: string[]
 }
 
 describe("child provider selection", () => {
+  it.each([
+    { name: "automatic selection", change: { cross_provider_auto: false } },
+    { name: "reasoning effort", change: { subagent_limits: { openai: { effort: "low", speed: "fast" } } } },
+    { name: "service tier", change: { subagent_limits: { openai: { effort: "high", speed: "standard" } } } },
+  ])("rejects a granted plan after $name authority is lowered", async ({ change }) => {
+    const originalConfig = { ...defaultConfig(), model_provider: "grok", model: "grok-4.6",
+      agents: { cross_provider_enabled: true, allowed_providers: ["openai"], cross_provider_auto: true,
+        subagent_limits: { openai: { effort: "high", speed: "fast" } } } };
+    let config = originalConfig;
+    const session = sessionWithModels("grok", "grok-4.6", ["grok-4.6"]);
+    Object.assign(session, { conversationId: "policy-parent",
+      // The live store, not this captured config, is the policy authority.
+      config,
+      sessionConfiguration: { cwd: "/workspace", collaborationMode: { model: "grok-4.6" } },
+      providerService: { current: () => ({ provider: "grok", model: "grok-4.6" }),
+        previewChildDestination: async () => ({ endpoint: "https://api.openai.com/v1",
+          authProfile: "api_key", billingSource: "byok" }) } });
+    Object.assign(session.services, { configStore: { current: () => config },
+      crossProviderConsent: { ownerSessionId: "policy-parent", sessionEpoch: "epoch",
+        request: async (_session: Session, disclosure: { taskId: string; scopeKey: string; payloadKey: string }) => ({
+          kind: "granted" as const, grant: { kind: "once" as const, ownerSessionId: "policy-parent",
+            sessionEpoch: "epoch", taskId: disclosure.taskId, scopeKey: disclosure.scopeKey,
+            payloadKey: disclosure.payloadKey },
+        }) } });
+    const makePlan = () => createChildExecutionPlan({ session,
+      selection: { provider: "openai", model: "gpt-6-sol" },
+      modelInfo: { slug: "gpt-6-sol", provider: "openai", supportsToolUse: true } as Session["modelInfo"],
+      parentPath: "/root", taskId: "policy-child", taskName: "worker", taskText: "inspect",
+      toolFree: false, forkedHistory: false, reasoningEffort: "high", serviceTier: "priority" });
+    const proposed = await makePlan();
+    const approved = await authorizeChildExecutionPlan(session, proposed);
+    if (approved.kind !== "granted") throw new Error("fixture consent was not granted");
+    await assertChildExecutionPlan(session, approved.plan);
+    config = { ...config, agents: { ...config.agents, ...change } };
+    await expect(assertChildExecutionPlan(session, approved.plan)).rejects.toThrow(/policy changed/u);
+    const changedConfig = config;
+    config = originalConfig;
+    Object.assign(session.providerService, { previewChildDestination: async () => {
+      config = changedConfig;
+      return { endpoint: "https://api.openai.com/v1", authProfile: "api_key", billingSource: "byok" };
+    } });
+    await expect(makePlan()).rejects.toThrow(/policy changed/u);
+  });
+
+  it("treats explicit default limits as the same policy as unset limits", async () => {
+    const session = sessionWithModels("grok", "grok-4.6", ["grok-4.6"]);
+    const original = session.services.configStore.current();
+    let config = original;
+    Object.assign(session, { conversationId: "defaults-parent",
+      sessionConfiguration: { cwd: "/workspace", collaborationMode: { model: "grok-4.6" } } });
+    Object.assign(session.services, { configStore: { current: () => config } });
+    const makePlan = () => createChildExecutionPlan({ session,
+      selection: { provider: "grok", model: "grok-4.6" },
+      modelInfo: { slug: "grok-4.6", provider: "grok", supportsToolUse: true } as Session["modelInfo"],
+      parentPath: "/root", taskId: "defaults-child", taskName: "worker", taskText: "inspect",
+      toolFree: false, forkedHistory: false });
+    const plan = await makePlan();
+    config = { ...original, agents: { ...original.agents, cross_provider_auto: false,
+      subagent_limits: { grok: { effort: "minimal", speed: "standard" }, openai: {} } } };
+    await expect(assertChildExecutionPlan(session, plan)).resolves.toBeUndefined();
+    expect((await makePlan()).policyRevision).toBe(plan.policyRevision);
+  });
+
   it("does not reuse a different same-provider model's instructions without a model catalog", async () => {
     const session = sessionWithModels("grok", "grok-4.7", ["grok-4.7", "grok-4.6"]);
     Object.assign(session.services, { modelsManager: undefined });
