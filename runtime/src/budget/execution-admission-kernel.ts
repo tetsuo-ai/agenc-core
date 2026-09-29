@@ -100,6 +100,7 @@ interface PendingAdmission {
 interface ClientBudgetState {
   readonly scopes: readonly AdmissionBudgetScope[];
   readonly runAllocationKey: string;
+  readonly taskAllocationKey?: string;
   /** Durable root-agent identity for cumulative calendar-window caps. */
   readonly periodIdentity: string;
   readonly periodPolicy?: Pick<
@@ -371,13 +372,15 @@ export class ExecutionAdmissionKernel {
         this.cancelRun(options.scope.runId, "deadline_expired");
       }
       const proposedBudget = rootBudgetState(scope, options.budget);
-      const maxCostUsd = workspace.repository.bindRunCostLimit(
+      const persistedCaps = workspace.repository.bindRunBudgetLimits(
         scope.runId,
         proposedBudget.scopes[0]!,
       );
       const effectiveScope: AdmissionClientScope = {
         ...scope,
-        ...(maxCostUsd !== undefined ? { maxCostUsd, hasHardCostCap: true } : {}),
+        ...persistedCaps,
+        ...(persistedCaps.maxCostUsd !== undefined ? { hasHardCostCap: true } : {}),
+        ...(persistedCaps.maxTokens !== undefined ? { hasHardTokenCap: true } : {}),
       };
       const budget = rootBudgetState(effectiveScope, options.budget);
       return new KernelAdmissionClient(this, {
@@ -632,6 +635,7 @@ export class ExecutionAdmissionKernel {
     options: Parameters<ExecutionAdmissionClient["forSession"]>[0],
   ): ExecutionAdmissionClient {
     this.#assertOpen();
+    validateChildAllocation(options);
     binding.workspace.clientRefs += 1;
     try {
       const runId = options.runId ?? binding.scope.runId;
@@ -651,11 +655,44 @@ export class ExecutionAdmissionKernel {
         runId,
         earliestDeadline(binding.scope.deadlineAt, options.deadlineAt),
       );
+      const runAllocationKey = allocationKey(runId);
+      const taskId = options.taskId ?? (createsChildRun ? undefined : binding.scope.taskId);
+      // A new assignment replaces only this worker's task allocation. Parent
+      // task scopes remain ancestors of any child spawned for that assignment.
+      const scopes = createsChildRun ? [...binding.budget.scopes] :
+        binding.budget.scopes.filter((entry) => entry.key !== binding.budget.taskAllocationKey && entry.key !== runAllocationKey);
+      const previousRun = createsChildRun ? undefined : binding.budget.scopes.find((entry) => entry.key === runAllocationKey);
+      const runScope = {
+        ...(previousRun ?? {}),
+        key: runAllocationKey,
+        ...(createsChildRun ? { parentKey: binding.budget.taskAllocationKey ?? binding.budget.runAllocationKey } : {}),
+        ...(taskId === undefined && options.maxCostUsd !== undefined ? { maxCostUsd: options.maxCostUsd } : {}),
+        ...(taskId === undefined && options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+      };
+      scopes.push({ ...runScope, ...binding.workspace.repository.bindRunBudgetLimits(runId, runScope) });
+      const taskAllocationKey = taskId === undefined ? undefined : `task:${JSON.stringify([runId, taskId])}`;
+      if (taskAllocationKey !== undefined) {
+        const taskScope = { key: taskAllocationKey, parentKey: runAllocationKey,
+          ...(options.maxCostUsd !== undefined ? { maxCostUsd: options.maxCostUsd } : {}),
+          ...(options.maxTokens !== undefined ? { maxTokens: options.maxTokens } : {}),
+        };
+        scopes.push({ ...taskScope, ...binding.workspace.repository.bindRunBudgetLimits(runId, taskScope) });
+      }
+      const { maxCostUsd: _oldCost, maxTokens: _oldTokens, taskId: _oldTask,
+        hasHardCostCap: _oldCostCap, hasHardTokenCap: _oldTokenCap, ...baseScope } = binding.scope;
+      const maxCostUsd = minimumDefined(...scopes.map((entry) => entry.maxCostUsd));
+      const maxTokens = minimumDefined(...scopes.map((entry) => entry.maxTokens));
+      const period = binding.budget.periodPolicy;
       const scope: AdmissionClientScope = {
-        ...binding.scope,
+        ...baseScope,
         runId,
         sessionId: options.sessionId,
         parentRunId,
+        ...(taskId !== undefined ? { taskId } : {}),
+        ...(maxCostUsd !== undefined ? { maxCostUsd } : {}),
+        ...(maxTokens !== undefined ? { maxTokens } : {}),
+        ...(maxCostUsd !== undefined || period?.dailyUsd !== undefined || period?.monthlyUsd !== undefined ? { hasHardCostCap: true } : {}),
+        ...(maxTokens !== undefined || period?.dailyTokens !== undefined || period?.monthlyTokens !== undefined ? { hasHardTokenCap: true } : {}),
         ...(options.parentScopeId !== undefined
           ? { parentScopeId: options.parentScopeId }
           : {}),
@@ -664,20 +701,10 @@ export class ExecutionAdmissionKernel {
       if (deadlineAt !== undefined && deadlineAt <= this.#timestamp()) {
         this.cancelRun(runId, "deadline_expired");
       }
-      const runAllocationKey = allocationKey(runId);
-      const budget: ClientBudgetState = createsChildRun
-        ? {
-            ...binding.budget,
-            scopes: [
-              ...binding.budget.scopes,
-              {
-                key: runAllocationKey,
-                parentKey: binding.budget.runAllocationKey,
-              },
-            ],
-            runAllocationKey,
-          }
-        : binding.budget;
+      const { taskAllocationKey: _oldTaskKey, ...baseBudget } = binding.budget;
+      const budget: ClientBudgetState = { ...baseBudget, scopes, runAllocationKey,
+        ...(taskAllocationKey !== undefined ? { taskAllocationKey } : {}),
+      };
       const stepPrefix = createsChildRun
         ? undefined
         : options.sessionId === binding.scope.sessionId
@@ -699,7 +726,7 @@ export class ExecutionAdmissionKernel {
     this.#assertOpen();
     return binding.workspace.repository.getUsageSummary(
       binding.scope.runId,
-      binding.budget.runAllocationKey,
+      binding.budget.taskAllocationKey ?? binding.budget.runAllocationKey,
     );
   }
 
@@ -1707,9 +1734,22 @@ function requestFor(
 }
 
 function stepIdFor(binding: ClientBinding, stepId: string): string {
-  return binding.stepPrefix === undefined
+  const sessionStep = binding.stepPrefix === undefined
     ? stepId
     : `${binding.stepPrefix}${stepId}`;
+  return binding.scope.taskId === undefined ? sessionStep : `task:${JSON.stringify(binding.scope.taskId)}:${sessionStep}`;
+}
+
+function validateChildAllocation(options: Parameters<ExecutionAdmissionClient["forSession"]>[0]): void {
+  if (options.maxCostUsd !== undefined && (!Number.isFinite(options.maxCostUsd) || options.maxCostUsd < 0)) {
+    throw new AdmissionDeniedError("admission_child_cost_limit_invalid");
+  }
+  if (options.maxTokens !== undefined && (!Number.isSafeInteger(options.maxTokens) || options.maxTokens < 0)) {
+    throw new AdmissionDeniedError("admission_child_token_limit_invalid");
+  }
+  if (options.taskId !== undefined && (typeof options.taskId !== "string" || options.taskId.trim().length === 0)) {
+    throw new AdmissionDeniedError("admission_child_task_identity_invalid");
+  }
 }
 
 function rootBudgetState(

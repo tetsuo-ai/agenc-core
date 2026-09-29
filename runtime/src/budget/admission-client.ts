@@ -21,6 +21,8 @@ export interface AdmissionClientScope {
   readonly deadlineAt?: string;
   readonly maxCostUsd?: number;
   readonly maxTokens?: number;
+  /** Durable assignment identity when a keep-alive worker has a task cap. */
+  readonly taskId?: string;
   /** Any run or period allocation imposes a hard monetary ceiling. */
   readonly hasHardCostCap?: boolean;
   /** Any run or period allocation imposes a hard token ceiling. */
@@ -122,6 +124,11 @@ export interface ExecutionAdmissionClient {
     readonly parentRunId?: string;
     readonly parentScopeId?: string;
     readonly deadlineAt?: string;
+    /** Additional cap for this child run, or for taskId when supplied. */
+    readonly maxCostUsd?: number;
+    readonly maxTokens?: number;
+    /** Stable assignment identity. Rebinding it preserves spent and held usage. */
+    readonly taskId?: string;
   }): ExecutionAdmissionClient;
   /**
    * Commit-critical journal projection. A listener failure is allowed to stop

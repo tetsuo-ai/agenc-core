@@ -519,14 +519,23 @@ export class ExecutionAdmissionRepository {
     ownerRunId: string,
     scope: AdmissionBudgetScope,
   ): number | undefined {
-    requireNonEmpty(ownerRunId, "bindRunCostLimit.ownerRunId");
-    const key = requireNonEmpty(scope.key, "bindRunCostLimit.scope.key");
+    return this.bindRunBudgetLimits(ownerRunId, scope).maxCostUsd;
+  }
+
+  /** Bind durable caps without resetting charges. Rebinding can only tighten. */
+  bindRunBudgetLimits(
+    ownerRunId: string,
+    scope: AdmissionBudgetScope,
+  ): Pick<AdmissionBudgetScope, "maxCostUsd" | "maxTokens"> {
+    requireNonEmpty(ownerRunId, "bindRunBudgetLimits.ownerRunId");
+    const key = requireNonEmpty(scope.key, "bindRunBudgetLimits.scope.key");
     const proposed =
       scope.maxCostUsd === undefined ? undefined : usdToNanos(scope.maxCostUsd);
+    const proposedTokens = scope.maxTokens === undefined ? undefined
+      : normalizeNonNegativeInteger(scope.maxTokens, `${key}.maxTokens`);
     const now = this.#timestamp();
     return this.#driver.transactionImmediate(() => {
       const existing = this.#allocationLocked(key);
-      if (existing === undefined && proposed === undefined) return undefined;
       if (
         existing !== undefined &&
         proposed !== undefined &&
@@ -539,7 +548,15 @@ export class ExecutionAdmissionRepository {
           )
           .run(proposed, now, key);
       }
+      if (existing !== undefined && proposedTokens !== undefined &&
+          (existing.max_tokens === null || proposedTokens < existing.max_tokens)) {
+        this.#driver.prepareState(
+          `UPDATE execution_admission_allocations
+           SET max_tokens = ?, updated_at = ? WHERE scope_key = ?`,
+        ).run(proposedTokens, now, key);
+      }
       const persisted = this.#allocationLocked(key)?.max_cost_nanos ?? proposed;
+      const persistedTokens = this.#allocationLocked(key)?.max_tokens ?? proposedTokens;
       const allocation = this.#ensureAllocationLocked(
         ownerRunId,
         {
@@ -547,12 +564,14 @@ export class ExecutionAdmissionRepository {
           ...(persisted !== undefined
             ? { maxCostUsd: nanosToUsd(persisted) }
             : {}),
+          ...(persistedTokens !== undefined ? { maxTokens: persistedTokens } : {}),
         },
         now,
       );
-      return allocation.max_cost_nanos === null
-        ? undefined
-        : nanosToUsd(allocation.max_cost_nanos);
+      return {
+        ...(allocation.max_cost_nanos !== null ? { maxCostUsd: nanosToUsd(allocation.max_cost_nanos) } : {}),
+        ...(allocation.max_tokens !== null ? { maxTokens: allocation.max_tokens } : {}),
+      };
     });
   }
 
@@ -1953,7 +1972,7 @@ export class ExecutionAdmissionRepository {
     if (parentKey !== undefined && existing.parent_scope_key !== parentKey) {
       throw new AdmissionAllocationConflictError(key, "parentKey");
     }
-    if (maxTokens !== undefined && existing.max_tokens !== maxTokens) {
+    if (maxTokens !== undefined && (existing.max_tokens === null || maxTokens < existing.max_tokens)) {
       throw new AdmissionAllocationConflictError(key, "maxTokens");
     }
     if (
