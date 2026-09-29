@@ -50,12 +50,26 @@ for path in sorted((a.root/'runs').glob('*/result.json')):
  first=json.loads((path.parent/'wire-001.json').read_text())['body']
  system='\n\n'.join(m.get('content','') for m in first['messages'] if m['role'] in ('system','developer'))
  schemas=compact(first.get('tools',[]));P=count(system)+count(schemas)
- schema_sum=0;tool_results={};polls=0;tool_names={}
+ schema_sum=0;tool_results={};polls=0;tool_names={};history_components=collections.Counter();history_messages={}
  for w in sorted(path.parent.glob('wire-*.json')):
   i=int(w.stem.split('-')[-1]);b=json.loads(w.read_text())['body']
   schema_sum+=count(compact(b.get('tools',[])))-count(schemas)
   for j,m in enumerate(b['messages']):
    for t in m.get('tool_calls') or []:tool_names[t['id']]=t['function']['name']
+   role=m.get('role')
+   if role not in ('system','developer'):
+    serialized=compact(m);key=hashlib.sha256(serialized.encode()).hexdigest()
+    content=m.get('content','');content=content if isinstance(content,str) else compact(content)
+    reason=m.get('reasoning_content') or ''
+    if not isinstance(reason,str):reason=compact(reason)
+    argument_tokens=sum(count(t.get('function',{}).get('arguments') or '') for t in m.get('tool_calls') or [])
+    history_components['assistant_reasoning' if role=='assistant' else 'other_reasoning']+=count(reason)
+    history_components[{'tool':'tool_results','assistant':'assistant_text','user':'user_text'}.get(role,'other_content')]+=count(content)
+    history_components['tool_arguments']+=argument_tokens
+    history_components['serialized_messages']+=count(serialized)
+    if key not in history_messages:
+     history_messages[key]={'role':role,'raw_tokens':count(serialized),'reasoning_raw_tokens':count(reason),'argument_raw_tokens':argument_tokens,'first_input_call':i,'message_position':j,'replayed_raw_tokens':0}
+    history_messages[key]['replayed_raw_tokens']+=count(serialized)
    if m['role']!='tool':continue
    key=m.get('tool_call_id') or str(j)
    if key in tool_results:continue
@@ -71,10 +85,10 @@ for path in sorted((a.root/'runs').glob('*/result.json')):
  ttft=sum(t['first_token_at']-t['upstream_start_at'] for t in timing) if len(timing)==len(us) else None
  gen=sum(t['last_token_at']-t['first_token_at'] for t in timing) if len(timing)==len(us) else None
  model_s=sum(u['seconds'] for u in us)
- rows.append({'id':r['id'],'phase':r['phase'],'agent':r['agent'],'model':r['model'],'task':r['task'],'repeat':r['repeat'],'effective':bool(r['pass'] and r['check_pass'] and r['exit_code']==0 and not r.get('timeout') and not r.get('budget_stop')),'N':len(us),'P_raw':P,'P_system_raw':count(system),'P_schema_raw':count(schemas),'NP_raw':len(us)*P,'history_residual':inp-len(us)*P if inp is not None else None,'schema_growth_raw':schema_sum,'input':inp,'output':out,'reasoning':reason,'visible_output':out-reason if out is not None and reason is not None else None,'total':inp+out if inp is not None else None,'largest_results':sorted(tool_results.values(),key=lambda x:x['raw_tokens'],reverse=True)[:3],'largest_replay':sorted(tool_results.values(),key=lambda x:x['later_replay_estimate'],reverse=True)[:3],'poll_results':polls,'ttft_s':ttft,'generation_s':gen,'model_s':model_s,'tool_s':None,'overhead_s':None,'tool_plus_overhead_s':r['wall_seconds']-model_s,'wall_s':r['wall_seconds'],'cost_usd':r.get('cost_usd')})
+ rows.append({'id':r['id'],'phase':r['phase'],'agent':r['agent'],'model':r['model'],'task':r['task'],'repeat':r['repeat'],'effective':bool(r['pass'] and r['check_pass'] and r['exit_code']==0 and not r.get('timeout') and not r.get('budget_stop')),'N':len(us),'P_raw':P,'P_system_raw':count(system),'P_schema_raw':count(schemas),'NP_raw':len(us)*P,'history_residual':inp-len(us)*P if inp is not None else None,'schema_growth_raw':schema_sum,'input':inp,'output':out,'reasoning':reason,'visible_output':out-reason if out is not None and reason is not None else None,'total':inp+out if inp is not None else None,'largest_results':sorted(tool_results.values(),key=lambda x:x['raw_tokens'],reverse=True)[:3],'history_components_raw':dict(history_components),'largest_messages':sorted(history_messages.values(),key=lambda x:x['raw_tokens'],reverse=True)[:3],'largest_message_replay':sorted(history_messages.values(),key=lambda x:x['replayed_raw_tokens'],reverse=True)[:3],'largest_replay':sorted(tool_results.values(),key=lambda x:x['later_replay_estimate'],reverse=True)[:3],'poll_results':polls,'ttft_s':ttft,'generation_s':gen,'model_s':model_s,'tool_s':None,'overhead_s':None,'tool_plus_overhead_s':r['wall_seconds']-model_s,'wall_s':r['wall_seconds'],'cost_usd':r.get('cost_usd')})
  if r['agent']!='pi':
   measured=tool_timing(path.parent);rows[-1].update(measured)
   rows[-1]['overhead_estimate_s']=rows[-1]['tool_plus_overhead_s']-measured['tool_interval_estimate_s'] if measured['tool_interval_estimate_s'] is not None else None
   rows[-1]['tool_timing_method']='Measured tool durations anchored to effect-result timestamps and unioned for overlaps. Endpoints precede tool completion serialization slightly; overhead is diagnostic, not an exact critical-path split.'
-a.out.write_text(json.dumps({'method':'P is independently tokenized exact system text plus compact schema JSON. H* is provider input minus N*P: it includes conversation history, initial task, provider framing and schema growth. Thus NP+H*+O equals measured total exactly; raw P is not a provider-isolated prefix count. Schema growth is separately reported. Largest results are raw tokenizer counts at first appearance, 1-based request and 0-based message positions. TTFT/generation are null when instrumentation was absent. Historical tool wall time and client overhead cannot be separated on both agents; their measured combined residual is retained. No unknown metric is zero-filled.','tokenizer_sha256':hashlib.sha256(tokenizer_path.read_bytes()).hexdigest(),'runs':rows},indent=2)+'\n')
+a.out.write_text(json.dumps({'method':'P is independently tokenized exact system text plus compact schema JSON. H* is provider input minus N*P: it includes conversation history, initial task, provider framing and schema growth. Thus NP+H*+O equals measured total exactly; raw P is not a provider-isolated prefix count. Schema growth is separately reported. Largest messages include all non-system roles and reasoning, alongside the separate tool-result ranking. Counts are raw tokenization at first appearance, 1-based request and 0-based message positions. Raw history-field replay counts diagnose contributions but exclude provider framing and are not substituted for billed H*. TTFT/generation are null when instrumentation was absent. Historical tool wall time and client overhead cannot be separated on both agents; their measured combined residual is retained. No unknown metric is zero-filled.','tokenizer_sha256':hashlib.sha256(tokenizer_path.read_bytes()).hexdigest(),'runs':rows},indent=2)+'\n')
 print(json.dumps({'runs':len(rows),'path':str(a.out)}))
