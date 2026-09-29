@@ -36,3 +36,11 @@ test("two failed checks escalate a low start to high without changing an explici
   expect(lightReasoningEffort(true, "low", ["low", "medium"], failures)).toBe("medium");
   expect(lightReasoningEffort(true, "high", levels, failures)).toBeUndefined();
 });
+
+test("syntax checks and inline Python assertions are validation failures too", () => {
+  for (const command of ["sh -n scripts/check.sh", "bash -n scripts/check.sh", "python3 -m py_compile module.pyi", "node --check app.js", "git diff --check"]) {
+    expect(lightReasoningEffort(true, "low", levels, [result(command, 2)])).toBe("medium");
+  }
+  expect(lightReasoningEffort(true, "low", levels, [{ ...result("python3 - <<'PY'\nassert False\nPY", 1), content: "AssertionError: bad result" }])).toBe("medium");
+  expect(lightReasoningEffort(true, "low", levels, [{ ...result("rg SyntaxError .", 1), content: "SyntaxError: example" }])).toBe("low");
+});

@@ -12,7 +12,9 @@ function failedCheck(result: CompletedToolResultRecord): boolean {
   if (typeof command !== "string") return false;
   // A failed search, missing executable or permission refusal is not a check.
   if (exit === 126 || exit === 127 || /(?:ModuleNotFoundError|No module named|command not found)/.test(result.content)) return false;
-  return /(?:^|[;&|\n]\s*|\s)(?:pytest|vitest|jest|tsc|cargo\s+(?:test|check)|go\s+test|python\d?\s+-m\s+(?:pytest|unittest)|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|check|typecheck|lint|build)(?:[:\w-]*))(?=\s|$)/.test(command);
+  return /(?:^|[;&|\n]\s*|\s)(?:pytest|vitest|jest|tsc|cargo\s+(?:test|check)|go\s+test|python\d?\s+-m\s+(?:pytest|unittest|py_compile|compileall)|(?:sh|bash|dash)\s+-n|node\s+--check|git\s+diff\s+--check|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|check|typecheck|lint|build)(?:[:\w-]*))(?=\s|$)/.test(command)
+    || /(?:^|\s)python\d?(?=\s)/.test(command)
+      && /(?:AssertionError|SyntaxError|IndentationError):/.test(result.content);
 }
 
 /** The policy changes a request option, never the cached prompt or history. */
