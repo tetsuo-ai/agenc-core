@@ -71,6 +71,7 @@ export function buildBootstrapToolRegistry(
     // Read from the session's captured environment, so a client sets it per
     // session. An explicit toolRegistryOptions value below still wins.
     sparseLineNumbers: sparseLineNumbersEnabled(options.environment ?? {}),
+    lightFullCatalog: options.environment?.AGENC_LIGHT_FULL_CATALOG === "1",
     ...(options.agencHome !== undefined
       ? { agencHome: options.agencHome }
       : {}),

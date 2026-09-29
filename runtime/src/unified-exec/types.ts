@@ -80,6 +80,8 @@ export interface UnifiedExecManagerOptions {
 }
 
 export interface ExecCommandRequest extends ToolExecutionInjectedArgs {
+  /** Runtime-owned option; keep oversized collected output outside model context. */
+  readonly retainOutput?: boolean;
   readonly directInvocation?: ReadOnlyInspectionInvocation;
   readonly callId?: string;
   readonly cmd: string;
@@ -116,6 +118,8 @@ export interface DetachedProcessRequest extends ToolExecutionInjectedArgs {
 }
 
 export interface WriteStdinRequest extends ToolExecutionInjectedArgs {
+  /** Runtime-owned option; keep oversized collected output outside model context. */
+  readonly retainOutput?: boolean;
   readonly callId?: string;
   readonly session_id: number;
   readonly chars?: string;
@@ -192,6 +196,8 @@ export interface UnifiedExecBackgroundProcess {
 }
 
 export interface ExecCommandToolOutput {
+  readonly retained_output_path?: string;
+  readonly retained_output_unavailable?: boolean;
   readonly output: string;
   readonly stdout: string;
   readonly stderr: string;

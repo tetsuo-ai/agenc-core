@@ -2141,7 +2141,7 @@ describe("Light presentation and deferred capability preservation", () => {
     for (const presented of light.toLLMTools()) {
       const canonical = light.tools.find(tool => tool.name === presented.function.name)!;
       expect(presented.function.parameters.required).toEqual(canonical.inputSchema.required);
-      expect(presented.function.parameters.properties && Object.keys(presented.function.parameters.properties)).toEqual(Object.keys(canonical.inputSchema.properties ?? {}));
+      expect(presented.function.parameters.properties && Object.keys(presented.function.parameters.properties).sort()).toEqual(Object.keys(canonical.inputSchema.properties ?? {}).sort());
       expect(canonical.inputSchema).toEqual(normal.tools.find(tool => tool.name === canonical.name)!.inputSchema);
 
     }
@@ -2205,4 +2205,15 @@ test.each([
   expect(registry.toLLMTools().some(tool => tool.function.name === "system.searchTools")).toBe(false);
   expect(registry.toLLMTools().some(tool => tool.function.name === "Write")).toBe(false);
   expect(await registry.dispatch({ id: "reachable", name: "Specialist", arguments: '{}' })).toMatchObject({ content: "done" });
+});
+
+
+test("Light discovery appends schemas and full exposure still respects availability", async () => {
+  const deferred = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+  const before = deferred.toLLMTools();
+  await deferred.dispatch({ id: "load-plan", name: "system.searchTools", arguments: '{"select":"TodoWrite"}' });
+  expect(deferred.toLLMTools().slice(0, before.length)).toEqual(before);
+  const full = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true, lightFullCatalog: true, toolsConfig: { disabled_tools: ["Write"] } });
+  expect(full.toLLMTools().some(tool => tool.function.name === "TodoWrite")).toBe(true);
+  expect(full.toLLMTools().some(tool => tool.function.name === "Write")).toBe(false);
 });

@@ -572,6 +572,8 @@ export interface BuildToolRegistryOptions {
   readonly requireAdmission?: boolean;
   /** Session-owned presentation profile; does not filter executable capabilities. */
   readonly lightMode?: boolean;
+  /** Experimental measurement switch: eagerly present the eligible catalog. */
+  readonly lightFullCatalog?: boolean;
   readonly allowBashDelete?: boolean;
   /**
    * T6 gap #119: observer that receives `exec_command_begin` /
@@ -725,13 +727,13 @@ export function buildToolRegistry(
       cwd: options.workspaceRoot,
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
-      ...(options.lightMode ? { defaultOutputTokens: 1500 } : {}),
+      ...(options.lightMode ? { defaultOutputTokens: 1500, defaultYieldMs: 30000, retainOutput: true } : {}),
       ...(options.bashExecObserver !== undefined
         ? { execObserver: options.bashExecObserver }
         : {}),
     }),
     createWriteStdinTool({
-      ...(options.lightMode ? { defaultOutputTokens: 1500 } : {}),
+      ...(options.lightMode ? { defaultOutputTokens: 1500, defaultYieldMs: 30000, retainOutput: true } : {}),
       cwd: options.workspaceRoot,
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
@@ -1164,6 +1166,7 @@ export function buildToolRegistry(
 
   function visibleSpecs(): readonly ConfiguredToolSpec[] {
     const specs = allSpecs().filter((spec) => spec.unavailable !== true);
+    if (options.lightMode === true && options.lightFullCatalog === true) return specs;
     // A restrictive policy may remove discovery itself. Keep its remaining
     // capabilities callable instead of stranding them behind an absent tool.
     if (options.lightMode === true && !specs.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME)) {
@@ -1259,7 +1262,14 @@ export function buildToolRegistry(
       return allSpecs().map((spec) => spec.tool);
     },
     toLLMTools(): LLMTool[] {
-      const tools = visibleSpecs().map((spec) => {
+      const visible = [...visibleSpecs()];
+      if (options.lightMode === true) {
+        const order = [...LIGHT_INITIAL_TOOL_NAMES, ...discoveredToolNames];
+        const rank = (name: string) => { const i = order.indexOf(name); return i < 0 ? order.length : i; };
+        visible.sort((a, b) => rank(a.tool.name) - rank(b.tool.name) ||
+          (a.tool.name < b.tool.name ? -1 : a.tool.name > b.tool.name ? 1 : 0));
+      }
+      const tools = visible.map((spec) => {
         const tool = toolToLLMTool(spec.tool);
         return options.lightMode === true && spec.tool.metadata?.source === "builtin"
           ? lightPresentation(tool) : tool;

@@ -64,6 +64,11 @@ export function formatUnifiedExecToolContent(
   // model sees the two sections distinctly.
   sections.push("");
   sections.push(`[exec ${footerLines.join(" ")}]`);
+  if (output.retained_output_path !== undefined) {
+    sections.push(`Collected output saved at ${JSON.stringify(output.retained_output_path)}; inspect a relevant range if the excerpt is insufficient. Earlier buffer omissions remain omitted.`);
+  } else if (output.retained_output_unavailable === true) {
+    sections.push("Output excerpt only: retaining the collected buffer failed. The command has already executed.");
+  }
   if (output.residual_processes_terminated === true) {
     sections.push(RESIDUAL_PROCESSES_NOTE);
   }
@@ -98,6 +103,7 @@ export function unifiedExecCodeModeResult(
   if (sessionId !== undefined) {
     result.session_id = sessionId;
   }
+  if (output.retained_output_path !== undefined) result.retained_output_path = output.retained_output_path;
   if (output.detached === true) {
     result.detached = true;
     if (output.pid !== undefined) result.pid = output.pid;

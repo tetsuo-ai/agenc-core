@@ -22,6 +22,8 @@ import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 
 export interface WriteStdinToolConfig {
   readonly defaultOutputTokens?: number;
+  readonly defaultYieldMs?: number;
+  readonly retainOutput?: boolean;
   readonly cwd?: string;
   readonly allowedPaths?: readonly string[];
   readonly env?: Record<string, string>;
@@ -206,9 +208,10 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           session_id: sessionId,
           callId: asString(args.__callId),
           chars,
-          ...(asNumber(args.yield_time_ms) !== undefined
-            ? { yield_time_ms: asNumber(args.yield_time_ms) }
+          ...((asNumber(args.yield_time_ms) ?? config?.defaultYieldMs) !== undefined
+            ? { yield_time_ms: asNumber(args.yield_time_ms) ?? config?.defaultYieldMs }
             : {}),
+          ...(config?.retainOutput === true ? { retainOutput: true } : {}),
           ...((asNumber(args.max_output_tokens) ?? config?.defaultOutputTokens) !== undefined
             ? { max_output_tokens: asNumber(args.max_output_tokens) ?? config?.defaultOutputTokens }
             : {}),
