@@ -405,29 +405,26 @@ def replay_export(args):
 def schedule_oracle():
     durations = (3, 4, 4, 3, 5, 2, 3)
     dependencies = ((), (), (0,), (0,), (1,), (2, 3), (4, 5))
-    best = None
-
     def visit(t, done, running, starts):
-        nonlocal best
-        if best is not None and t > best[0]:
-            return
         ended = tuple(job for job, finish in running if finish <= t)
         done = done | frozenset(ended)
         running = tuple((job, finish) for job, finish in running if finish > t)
         if len(done) == 7:
-            value = (t, starts)
-            if best is None or value < best:
-                best = value
-            return
+            return (t, starts)
         ready = [j for j in range(7) if starts[j] < 0 and all(p in done for p in dependencies[j])]
+        best = None
         for count in range(min(2 - len(running), len(ready)) + 1):
             for chosen in itertools.combinations(ready, count):
                 active = running + tuple((j, t + durations[j]) for j in chosen)
                 if not active:
                     continue
                 next_starts = tuple(t if j in chosen else value for j, value in enumerate(starts))
-                visit(min(finish for _, finish in active), done, active, next_starts)
-    visit(0, frozenset(), (), (-1,) * 7)
+                candidate = visit(min(finish for _, finish in active), done, active, next_starts)
+                if candidate is not None and (best is None or candidate < best):
+                    best = candidate
+        return best
+
+    best = visit(0, frozenset(), (), (-1,) * 7)
     if best is None:
         raise ValueError("The fixed scheduling oracle has no feasible result")
     return {"makespan": best[0], "starts": list(best[1])}
