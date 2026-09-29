@@ -589,7 +589,8 @@ describe("model-facing tools", () => {
     expect(
       registry.tools.find((tool) => tool.name === "spawn_agent")?.inputSchema,
     ).toMatchObject({
-      required: ["message", "task_name"],
+      required: ["task_name"],
+      properties: { message_ref: { properties: { source: { enum: ["current_user_message"] } } } },
       additionalProperties: false,
     });
     expect(
