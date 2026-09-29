@@ -17,6 +17,12 @@ function choose(candidates: readonly ChildProviderCandidate[], changes: Partial<
 }
 
 describe("child provider selection", () => {
+  it("does not upgrade a short review because code is hard to trust", () => {
+    expect(classifyChildTask("Review this small function. Flag confusing naming that makes the math hard to trust."))
+      .toEqual({ kind: "review", complexity: "simple" });
+    expect(classifyChildTask("Perform a hard review of this algorithm"))
+      .toEqual({ kind: "review", complexity: "hard" });
+  });
   it("uses a cheaper sufficient model for simple work and a stronger model for hard work", () => {
     expect(choose([astra, pro, flash]).selected?.model).toBe(flash.model);
     expect(choose([astra, flash, pro], { kind: "reasoning", complexity: "hard" }).selected?.model).toBe(pro.model);

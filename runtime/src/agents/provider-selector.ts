@@ -20,7 +20,7 @@ export function classifyChildTask(text: string, role?: string): { kind: ChildTas
     : /\b(research|sources|search|compare|investigate)\b/u.test(value) ? "research"
     : /\b(extract|classify|format|translate|summarize|summary|list|count)\b/u.test(value) ? "extraction"
     : "general";
-  const complexity: ChildTaskComplexity = /\b(complex|hard|difficult|architecture|security|concurrency|cryptograph\w*|proof|prove|comprehensive)\b/u.test(value)
+  const complexity: ChildTaskComplexity = /\b(architecture|security|concurrency|cryptograph\w*|proof|prove|comprehensive)\b|\b(complex|hard|difficult)\s+(task|problem|reasoning|analysis|review|coding|refactor|migration|optimization)\b/u.test(value)
     ? "hard" : /\b(simple|short|brief|small|trivial|format|count|extract|classify)\b/u.test(value)
       ? "simple" : "standard";
   return { kind, complexity };
