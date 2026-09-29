@@ -24,6 +24,18 @@ function output(overrides: Partial<ExecCommandToolOutput>): ExecCommandToolOutpu
 }
 
 describe("formatUnifiedExecToolContent", () => {
+  test("exposes saved captures and preserves failed execution status", () => {
+    const saved = output({ exitCode: 1, exit_code: 1, truncated: true, saved_output_path: "/session/output.txt" });
+    expect(formatUnifiedExecToolContent(saved)).toContain("/session/output.txt");
+    expect(formatUnifiedExecToolContent(saved)).toContain("FileRead");
+    expect(formatUnifiedExecToolContent(saved)).toContain("exit_code=1");
+    expect(unifiedExecCodeModeResult(saved)).toMatchObject({ saved_output_path: "/session/output.txt", exit_code: 1 });
+    const failed = output({ output_save_failed: true });
+    expect(formatUnifiedExecToolContent(failed)).toContain("could not be saved");
+    expect(unifiedExecCodeModeResult(failed)).toHaveProperty("output_save_failed", true);
+    expect(unifiedExecCodeModeResult(failed)).not.toHaveProperty("saved_output_path");
+  });
+
   test("a detached service still running shows its pid and log instead of a session id", () => {
     const content = formatUnifiedExecToolContent(
       output({

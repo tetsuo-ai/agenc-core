@@ -25,6 +25,11 @@ export function formatUnifiedExecToolContent(
   // longer leads.
   const sections: string[] = [];
   sections.push(output.output);
+  if (output.saved_output_path !== undefined) {
+    sections.push(`[Captured output saved: ${output.saved_output_path}. Use FileRead with offset and limit for more.]`);
+  } else if (output.output_save_failed === true) {
+    sections.push("[Output excerpt only: the larger capture could not be saved.]");
+  }
 
   const footerLines: string[] = [];
   if (output.exitCode !== null) {
@@ -77,6 +82,8 @@ export function unifiedExecCodeModeResult(
     wall_time_seconds: output.wall_time_seconds,
     original_token_count: output.original_token_count,
     output: output.output,
+    ...(output.saved_output_path !== undefined ? { saved_output_path: output.saved_output_path } : {}),
+    ...(output.output_save_failed === true ? { output_save_failed: true } : {}),
   };
 
   if (output.exitCode !== null) {

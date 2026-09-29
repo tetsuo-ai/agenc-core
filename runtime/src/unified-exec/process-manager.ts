@@ -465,7 +465,8 @@ function truncateTail(text: string, maxChars: number): { text: string; truncated
   return { text: marker.slice(0, maxChars) + (tailChars > 0 ? text.slice(-tailChars) : ""), truncated: true };
 }
 
-function createResult(params: {
+async function createResult(params: {
+  readonly storeOutput?: (content: string) => Promise<string | undefined>;
   readonly tailOutput?: boolean;
   readonly stdout: string;
   readonly stderr: string;
@@ -479,7 +480,7 @@ function createResult(params: {
     readonly pid?: number;
     readonly logPath: string;
   };
-}): ExecCommandToolOutput {
+}): Promise<ExecCommandToolOutput> {
   const maxChars = maxCharsForTokens(params.maxOutputTokens);
   const truncate = params.tailOutput === true ? truncateTail : truncateHeadTail;
   const stdout = truncate(params.stdout, maxChars);
@@ -488,7 +489,17 @@ function createResult(params: {
     .filter((part) => part.length > 0)
     .join("");
   const originalText = `${params.stdout}${params.stderr}`;
+  let savedPath: string | undefined;
+  let saveFailed = false;
+  if ((stdout.truncated || stderr.truncated) && params.storeOutput && !params.detached) {
+    try {
+      savedPath = await params.storeOutput(originalText);
+      saveFailed = savedPath === undefined;
+    } catch { saveFailed = true; }
+  }
   return {
+    ...(savedPath !== undefined ? { saved_output_path: savedPath } : {}),
+    ...(saveFailed ? { output_save_failed: true } : {}),
     output,
     stdout: stdout.text,
     stderr: stderr.text,
@@ -542,6 +553,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private readonly shellPath: string;
   private readonly settleOnStreamClose: boolean;
   private readonly tailOutput: boolean;
+  private readonly storeOutput: UnifiedExecManagerOptions["storeOutput"];
   private readonly commandWrapperArgv: readonly string[];
   private readonly maxProcesses: number;
   private readonly sandboxManager: UnifiedExecSandboxManager;
@@ -560,6 +572,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     this.cwd = options.cwd ?? process.cwd();
     this.settleOnStreamClose = options.settleOnStreamClose === true;
     this.tailOutput = options.tailOutput === true;
+    this.storeOutput = options.storeOutput;
     this.env = options.env === undefined
       ? undefined
       : Object.freeze({ ...options.env });
@@ -909,8 +922,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     const outcome = settled as (ExitState & { readonly error?: Error }) | null;
     const output = readFileHead(logPath, DETACHED_LOG_READ_LIMIT_BYTES);
     const durationMs = Date.now() - startedAt;
-    const result = createResult({
+    const result = await createResult({
       tailOutput: this.tailOutput,
+      ...(this.storeOutput ? { storeOutput: this.storeOutput } : {}),
       stdout: output,
       stderr: outcome?.error === undefined ? "" : outcome.error.message,
       exitCode: outcome?.exitCode ?? null,
@@ -1714,6 +1728,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       .join("");
     return createResult({
       tailOutput: this.tailOutput,
+      ...(this.storeOutput ? { storeOutput: this.storeOutput } : {}),
       stdout,
       stderr,
       exitCode: entry.exitState?.exitCode ?? null,
