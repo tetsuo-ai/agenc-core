@@ -154,7 +154,10 @@ describe("retired models remain historical metadata, not live choices", () => {
       "mixtral-8x7b-32768",
     );
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.mistral).toEqual([
-      "mistral-medium-latest",
+      "mistral-medium-latest", "mistral-small-latest", "codestral-latest",
+      "ministral-14b-latest", "ministral-8b-latest", "ministral-3b-latest",
+      "voxtral-small-latest", "labs-leanstral-1-5",
+      "mistral-large-latest", "zai-glm-5-3", "zai-glm-5-2",
     ]);
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.minimax).toContain("MiniMax-M3");
   });
@@ -169,6 +172,12 @@ describe("retired models remain historical metadata, not live choices", () => {
 });
 
 describe("canonical provider catalogs preserve supported selection rows", () => {
+  it("keeps Copilot Claude identifiers out of the native Anthropic catalog", () => {
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.anthropic).toContain("claude-opus-5-5");
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.anthropic).not.toContain("claude-opus-5.5");
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.github).toContain("github:copilot:claude-opus-5.5");
+  });
+
   it("contains no duplicate raw or provider-local rows", () => {
     for (const [provider, models] of Object.entries(
       BUILT_IN_PROVIDER_MODEL_CATALOG,
@@ -190,8 +199,8 @@ describe("canonical provider catalogs preserve supported selection rows", () => 
 
   it("keeps the complete unique NVIDIA NIM selection surface", () => {
     const models = BUILT_IN_PROVIDER_MODEL_CATALOG["nvidia-nim"];
-    expect(models).toHaveLength(111);
-    expect(new Set(models)).toHaveLength(111);
+    expect(models).toHaveLength(115);
+    expect(new Set(models)).toHaveLength(115);
     expect(models).toEqual(
       expect.arrayContaining([
         "openai/gpt-oss-120b",

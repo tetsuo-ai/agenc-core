@@ -268,15 +268,19 @@ function isCerebrasVisionModel(model: string): boolean {
   );
 }
 
-function isZaiGlm53Model(model: string): boolean {
+function isZaiThinkingModel(model: string): boolean {
+  return matchesModelFamily(model, /(?:^|[/:])glm-(?:5(?:-turbo|\.[123](?:-flashx?)?)?|4\.(?:[67]|5(?:-air)?))$/);
+}
+
+function isZaiEffortModel(model: string): boolean {
   return matchesModelFamily(
     model,
-    /(?:^|[/:])glm-5\.3(?:-flash)?$/,
+    /(?:^|[/:])glm-5\.(?:2|3(?:-flashx?)?)$/,
   );
 }
 
 function isZaiGlm53VisionModel(model: string): boolean {
-  return matchesModelFamily(model, /(?:^|[/:])glm-5\.3-flash$/);
+  return matchesModelFamily(model, /(?:^|[/:])glm-5\.3-flashx?$/);
 }
 
 function isKimiGlobalChatModel(model: string): boolean {
@@ -490,18 +494,18 @@ const PROVIDER_CAPABILITIES: Readonly<Record<string, ProviderCapabilityDefinitio
   zai: {
     ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
     supportsImageInput: isZaiGlm53VisionModel,
-    supportsExtendedThinking: isZaiGlm53Model,
+    supportsExtendedThinking: isZaiThinkingModel,
     acceptsImageHistory: isZaiGlm53VisionModel,
-    acceptsThinkingHistory: isZaiGlm53Model,
-    acceptsReasoningEffort: isZaiGlm53Model,
+    acceptsThinkingHistory: isZaiThinkingModel,
+    acceptsReasoningEffort: isZaiEffortModel,
   },
   "zai-coding-plan": {
     ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,
     supportsImageInput: isZaiGlm53VisionModel,
-    supportsExtendedThinking: isZaiGlm53Model,
+    supportsExtendedThinking: isZaiThinkingModel,
     acceptsImageHistory: isZaiGlm53VisionModel,
-    acceptsThinkingHistory: isZaiGlm53Model,
-    acceptsReasoningEffort: isZaiGlm53Model,
+    acceptsThinkingHistory: isZaiThinkingModel,
+    acceptsReasoningEffort: isZaiEffortModel,
   },
   kimi: {
     ...HOSTED_CHAT_COMPATIBLE_CAPABILITIES,

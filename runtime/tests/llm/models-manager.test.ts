@@ -84,7 +84,6 @@ describe("StaticModelsManager", () => {
     const manager = claudeManager();
     for (const model of [
       "claude-opus-5.5",
-      "anthropic/claude-opus-5.5",
       "claude-opus-5-5-20260922",
       "claude-opus-5-5[1m]",
     ]) {
@@ -99,13 +98,20 @@ describe("StaticModelsManager", () => {
     }
   });
 
+  it("uses the exact OpenRouter contract for its vendor-qualified Opus ID", async () => {
+    expect(await claudeManager().getModelInfo("anthropic/claude-opus-5.5")).toMatchObject({
+      contextWindow: 1_000_000, maxOutputTokens: 128_000,
+      supportedReasoningLevels: ["max", "xhigh", "high", "medium", "low"],
+      defaultReasoningLevel: "high",
+    });
+  });
+
   it("never lends the Opus 5.5 row by prefix to ids the parser rejects", async () => {
     const manager = claudeManager();
     for (const model of [
       "claude-opus-5-5-fast",
       "claude-opus-5-5-preview",
       "claude-opus-5-50",
-      "claude-opus-5",
     ]) {
       const info = await manager.getModelInfo(model);
       expect(info.contextWindow, model).toBe(200_000);
@@ -143,11 +149,14 @@ describe("StaticModelsManager", () => {
       expect(info.serviceTiers, model).toBeUndefined();
     }
     // Models without a registered contract keep their Bedrock fallback.
-    for (const model of ["anthropic.claude-opus-5", "amazon.nova-pro-v1:0"]) {
+    for (const model of ["anthropic.claude-opus-5-50", "amazon.nova-pro-v1:0"]) {
       const info = await manager.getModelInfo(model);
       expect(info.supportedReasoningLevels, model).toEqual([]);
       expect(info.contextWindow, model).toBe(CONSERVATIVE_CONTEXT_WINDOW_TOKENS);
     }
+    expect(await manager.getModelInfo("anthropic.claude-opus-5")).toMatchObject({
+      contextWindow: 1_000_000, supportedReasoningLevels: [],
+    });
   });
 
   it("reads a configured Bedrock application profile as the Claude model it serves", async () => {
@@ -267,6 +276,7 @@ describe("StaticModelsManager", () => {
       usedFallbackModelMetadata: false,
     });
     expect(info.supportedReasoningLevels).toEqual([
+      "none",
       "low",
       "medium",
       "high",
@@ -310,8 +320,10 @@ describe("StaticModelsManager", () => {
     const listed = await manager.listModels();
     expect(listed.map((entry) => entry.slug)).toEqual(
       expect.arrayContaining([
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3.8-27b",
+        "minimaxai/minimax-m2.7",
       ]),
     );
     expect(listed.map((entry) => entry.slug)).not.toContain(
@@ -451,7 +463,7 @@ describe("StaticModelsManager", () => {
     });
 
     const info = await manager.getModelInfo("gpt-5.4-mini");
-    expect(info.contextWindow).toBe(272_000);
+    expect(info.contextWindow).toBe(400_000);
     expect(info.usedFallbackModelMetadata).toBe(false);
     expect(fetchImpl).not.toHaveBeenCalled();
   });

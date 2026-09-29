@@ -45,6 +45,7 @@ import { isAlwaysOnThinkingAnthropicModel } from "../../../utils/model/alwaysOnT
 import {
   anthropicAcceptsSamplingParameters,
   anthropicEffort,
+  anthropicSupportsBetweenToolsThinking,
 } from "../../../utils/model/anthropicThinkingControl.js";
 import { bedrockConverseEffortLevels } from "../../registry/model-catalog.js";
 import {
@@ -502,11 +503,15 @@ function claudeConverseContract(
   const effort = anthropicEffort(options?.reasoningEffort);
   const sendEffort =
     effort !== undefined && bedrockConverseEffortLevels(identity).includes(effort);
+  const betweenToolsThinking = anthropicSupportsBetweenToolsThinking(identity);
+  const thinking = betweenToolsThinking && options?.reasoningEffort === "none"
+    ? { thinking: { type: "between_tools" } }
+    : {};
   return {
     dropSampling: !anthropicAcceptsSamplingParameters(identity),
-    forbidForcedToolChoice: isAlwaysOnThinkingAnthropicModel(identity),
-    ...(sendEffort
-      ? { additionalModelRequestFields: { output_config: { effort } } }
+    forbidForcedToolChoice: isAlwaysOnThinkingAnthropicModel(identity) || betweenToolsThinking,
+    ...(sendEffort || Object.keys(thinking).length > 0
+      ? { additionalModelRequestFields: { ...thinking, ...(sendEffort ? { output_config: { effort } } : {}) } }
       : {}),
   };
 }

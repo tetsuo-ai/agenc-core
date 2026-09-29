@@ -25,7 +25,6 @@ import {
   normalizeFinishReason,
   normalizeToolCallsStrict,
   openAiServedSpeed,
-  parseOpenAIToolChoice,
   prepareMessagesForWire,
   readAudioPayload,
   readDocumentPayload,
@@ -478,7 +477,13 @@ export function buildOpenAIResponsesRequest(
   const tools = toOpenAIResponsesTools(input.tools);
   if (tools.length > 0) body.tools = tools;
   if (input.options?.toolChoice !== undefined) {
-    body.tool_choice = parseOpenAIToolChoice(input.options.toolChoice);
+    // Responses uses a flat named choice; Chat Completions nests function.name.
+    // https://developers.openai.com/api/docs/guides/function-calling#tool-choice
+    const choice = input.options.toolChoice;
+    body.tool_choice = typeof choice === "string" ? choice : {
+      type: "function",
+      name: encodeMcpToolNameForWire(choice.name),
+    };
   }
   if (input.options?.parallelToolCalls !== undefined) {
     body.parallel_tool_calls = input.options.parallelToolCalls;

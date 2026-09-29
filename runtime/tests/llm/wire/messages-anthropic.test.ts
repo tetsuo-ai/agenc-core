@@ -23,6 +23,76 @@ function countCacheControlBlocks(value: unknown): number {
     );
 }
 
+describe("Sonnet 5.5 Messages API contract", () => {
+  const model = "claude-sonnet-5-5";
+  const messages = [{ role: "user" as const, content: "Call echo with ok." }];
+  const tools = [{ type: "function" as const, function: {
+    name: "echo", description: "Echo a value", parameters: { type: "object" },
+  } }];
+
+  test("uses adaptive thinking with readable progress updates at every effort", () => {
+    for (const reasoningEffort of [undefined, "low", "medium", "high", "xhigh", "max"] as const) {
+      const body = buildAnthropicMessagesRequest({ model, messages, tools,
+        options: { reasoningEffort, temperature: 0.1, toolChoice: "required", serviceTier: "priority" },
+      });
+      expect(body.thinking).toEqual({ type: "adaptive", display: "summarized" });
+      expect(body.output_config).toEqual(reasoningEffort ? { effort: reasoningEffort } : undefined);
+      expect(body).not.toHaveProperty("temperature");
+      expect(body).not.toHaveProperty("tool_choice");
+      expect(body).not.toHaveProperty("speed");
+    }
+  });
+
+  test("maps none to between_tools without unsupported additional fields or forced tools", () => {
+    const body = buildAnthropicMessagesRequest({ model, messages, tools, options: {
+      reasoningEffort: "none", toolChoice: { type: "function", name: "echo" },
+    } });
+    expect(body.thinking).toEqual({ type: "between_tools" });
+    expect(body).not.toHaveProperty("output_config");
+    expect(body).not.toHaveProperty("tool_choice");
+    expect(buildAnthropicMessagesRequest({ model, messages, tools, options: { toolChoice: "none" } }).tool_choice)
+      .toEqual({ type: "none" });
+  });
+
+  test("does not force the structured-output tool", () => {
+    const body = buildAnthropicMessagesRequest({ model, messages, tools: [], options: {
+      structuredOutput: { schema: { type: "json_schema", name: "answer", schema: { type: "object" } } },
+    } });
+    expect(body.tools).toEqual([expect.objectContaining({ name: ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME })]);
+    expect(body).not.toHaveProperty("tool_choice");
+  });
+
+  test("keeps thinking signatures out of conversation replay across models and edited prefixes", () => {
+    const response = parseAnthropicMessagesResponse(model, {
+      content: [
+        { type: "thinking", thinking: "Calling echo.", signature: "model-bound-test-signature" },
+        { type: "tool_use", id: "call_1", name: "echo", input: {} },
+      ],
+      stop_reason: "tool_use", usage: { input_tokens: 3, output_tokens: 4 },
+    }, { model, messages, tools });
+    expect(response.thinking?.[0]).toMatchObject({ text: "Calling echo.", signature: "model-bound-test-signature" });
+    // AgenC renders the summary but currently preserves no Anthropic opaque
+    // replay state. Model-bound signatures therefore never cross a switch
+    // or return with an edited system/tool/message prefix.
+    expect(response.providerReasoningContent).toBeUndefined();
+    for (const target of [model, "claude-sonnet-5", "claude-opus-5-5"]) {
+      const body = buildAnthropicMessagesRequest({ model: target, tools,
+        messages: [
+          { role: "system", content: "Changed instructions." },
+          ...messages,
+          { role: "assistant", content: response.content, toolCalls: response.toolCalls },
+          { role: "tool", toolCallId: "call_1", content: "ok" },
+        ],
+      });
+      expect(JSON.stringify(body)).not.toContain("model-bound-test-signature");
+      expect(JSON.stringify(body)).not.toContain("Calling echo.");
+      expect(body.messages).toContainEqual(expect.objectContaining({ role: "assistant", content: [
+        { type: "tool_use", id: "call_1", name: "echo", input: {} },
+      ] }));
+    }
+  });
+});
+
 describe("buildAnthropicMessagesRequest", () => {
   test("sends speed fast only for fast-mode models on the priority tier", () => {
     const build = (model: string, serviceTier?: "priority" | "flex") =>
