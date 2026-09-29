@@ -75,6 +75,7 @@ import {
   selectOutputStyleConfig,
 } from "../constants/outputStyles.js";
 import { getClientRenderingSection } from "./client-rendering.js";
+import { getLightSystemPrompt } from "./light-system-prompt.js";
 import {
   getLeanActionsSection,
   getLeanAgentToolSection,
@@ -927,8 +928,7 @@ export async function assembleSystemPromptSnapshot(
   };
   switch (opts.profile ?? "standard") {
     case "light":
-      // Light changes tool exposure only; keep the canonical work instructions.
-      return assembleSystemPrompt(opts);
+      return assembleSystemPrompt(opts, "light");
     case "compact":
       return withClientRendering(
         compactSystemPromptSnapshot(
@@ -1116,6 +1116,7 @@ export function buildEffectiveSystemPrompt(
  */
 export async function assembleSystemPrompt(
   opts: AssembleSystemPromptOpts,
+  profile: "standard" | "light" = "standard",
 ): Promise<AssembledSystemPrompt> {
   const { ctx, session } = opts;
   const enabledTools = opts.enabledToolNames ?? new Set<string>();
@@ -1186,7 +1187,15 @@ export async function assembleSystemPrompt(
   // descriptions; its default depends on the provider
   // (prompts/lean-system-prompt.ts).
   const lean = leanSystemPromptEnabled(promptEnvironment, envInfoInputs.provider);
-  const staticSections: Array<string | null> = lean
+  const staticSections: Array<string | null> = profile === "light"
+    ? [
+        getLightSystemPrompt({
+          headless: headlessCompletionSection !== null,
+          deadline: typeof session.services?.runtimeOptions?.deadlineAt === "number",
+        }),
+        getMemoryInstructionsSection(opts.memoryInstructions),
+      ]
+    : lean
     ? [
         getLeanIntroSection(opts.outputStyle != null),
         getLeanSystemSection(),

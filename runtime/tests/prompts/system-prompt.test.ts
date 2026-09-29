@@ -1336,7 +1336,7 @@ describe("assembleSystemPrompt", () => {
 
 
 test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: explain tradeoffs." }])(
-  "Light uses unchanged standard instructions and preserves optional inputs (style=%s)",
+  "Light reduces the head while preserving policy and optional inputs (style=%s)",
   async (outputStyle) => {
     const session = { services: { runtimeOptions: { lightMode: true, simpleMode: false, nonInteractive: true, deadlineAt: 123 }, providerEnvironment: {} } } as unknown as Session;
     const options = {
@@ -1355,10 +1355,9 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
     const standard = await assembleSystemPromptSnapshot({ ...options, profile: "standard" });
     // Only the environment's wall-clock timestamp may differ between calls.
     const withoutClock = (text: string) => text.replace(/Current time \(UTC\): [^\n]+/gu, "Current time (UTC): <captured>");
-    expect(light.staticPrefix).toBe(standard.staticPrefix);
-    expect(withoutClock(light.text)).toBe(withoutClock(standard.text));
+    expect(light.staticPrefix.length).toBeLessThan(standard.staticPrefix.length * 0.5);
     expect(withoutClock(light.dynamicSuffix)).toBe(withoutClock(standard.dynamicSuffix));
-    for (const heading of ["# System", "# Executing actions with care", "# Using your tools", "# Tone and style", "# Output efficiency", "# Completing work without a human", "# Environment"]) {
+    for (const heading of ["# Authority", "# Capabilities", "# Completing work without a human", "# Environment"]) {
       expect(light.text).toContain(heading);
     }
     expect(light.text).toContain("system.searchTools");
@@ -1372,11 +1371,19 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
     expect(light.dynamicSuffix).toContain("/workspace/scratchpad");
     expect(light.text.toLowerCase()).toContain("plan");
     if (outputStyle === undefined) {
-      expect(light.text).toContain("# Doing tasks");
-      expect(light.text).toContain("never suppress or simplify failing checks");
+      expect(light.text).toContain("Never weaken checks to manufacture success");
     } else {
       expect(light.dynamicSuffix).toContain("OUTPUT_STYLE_SENTINEL");
       expect(light.text).not.toContain("# Doing tasks");
     }
   },
 );
+
+test("Light's cached head is independent of provider defaults and loaded tools", async () => {
+  const options = { session: fakeSession, ctx: fakeCtx(), profile: "light" as const };
+  const initial = await assembleSystemPromptSnapshot({ ...options, provider: "deepseek", enabledToolNames: new Set(["FileRead", "system.searchTools"]) });
+  const expanded = await assembleSystemPromptSnapshot({ ...options, provider: "openai", enabledToolNames: new Set(["FileRead", "system.searchTools", "spawn_agent", "Skill", "TodoWrite"]) });
+  expect(expanded.staticPrefix).toBe(initial.staticPrefix);
+  expect(initial.staticPrefix).toContain("worktree isolation");
+  expect(initial.staticPrefix).toContain("runtime's verification, review and budget controls");
+});

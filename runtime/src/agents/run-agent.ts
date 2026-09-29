@@ -21,6 +21,7 @@ import { isAbsolute, normalize, resolve as resolvePath } from "node:path";
 import { inheritBuiltinToolProvenance } from "../tools/builtin-provenance.js";
 import { SESSION_BOUND_TOOL_SURFACE, type SessionBoundToolSurface } from "../tools/session-bound-surface.js";
 import { createToolSearchTool } from "../tools/system/tool-search.js";
+import { lightToolPresentation } from "../tools/light-tool-presentation.js";
 import { SYSTEM_SEARCH_TOOLS_NAME } from "../tools/system/tool-search-name.js";
 import {
   SESSION_ADVERTISED_TOOL_NAMES_ARG,
@@ -2416,7 +2417,11 @@ export function buildFilteredRegistry(
       return wrappedTools.filter((tool) => names.has(tool.name));
     },
     toLLMTools() {
-      return advertisedLLMTools();
+      const tools = advertisedLLMTools();
+      return opts.lightMode === true
+        ? tools.map(tool => wrappedByName.get(tool.function.name)?.metadata?.source === "builtin"
+            ? lightToolPresentation(tool) : tool)
+        : tools;
     },
     getUnavailableToolNames() {
       return unavailable;

@@ -27,6 +27,19 @@ const select = (registry: ReturnType<typeof buildFilteredRegistry>, name: string
   registry.dispatch({ id: "discover", name: "system.searchTools", arguments: JSON.stringify({ select: name }) });
 
 describe("Light child capability discovery", () => {
+  it("keeps core schemas compact after child discovery and policy fallback", async () => {
+    const parent = fixture();
+    const child = buildFilteredRegistry(parent, opts("child"));
+    const initial = child.toLLMTools().find(tool => tool.function.name === "FileRead");
+    expect(initial).toEqual(parent.toLLMTools().find(tool => tool.function.name === "FileRead"));
+    await select(child, "FileRead");
+    expect(child.toLLMTools().find(tool => tool.function.name === "FileRead")).toEqual(initial);
+    const restricted = buildFilteredRegistry(parent, { ...opts("no-search"), allowlist: ["FileRead"] });
+    expect(restricted.toLLMTools()).toEqual([initial]);
+    expect(child.tools.find(tool => tool.name === "FileRead")?.inputSchema)
+      .toEqual(parent.tools.find(tool => tool.name === "FileRead")?.inputSchema);
+  });
+
   it("keeps explicitly allowed tools usable when the role excludes discovery", async () => {
     const parent = fixture();
     const child = buildFilteredRegistry(parent, { ...opts("restricted"), allowlist: ["Specialist"] });
