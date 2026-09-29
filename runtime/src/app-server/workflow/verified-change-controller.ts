@@ -114,6 +114,9 @@ import {
   recordWorkflowChildTerminal,
 } from "./child-terminals.js";
 import { projectWorkflowStatus, type WorkflowRunStatus } from "./status-projection.js";
+import { WORKFLOW_PAUSE_PREFIX, workflowControlState } from "./control-state.js";
+import { AgenCDaemonWorkflowControlError } from "./run-control-service.js";
+import type { RunPauseParams, RunResumeParams, RunWorkflowControlState } from "../protocol/index.js";
 import {
   deriveStageProjection,
   finalizeIdempotencyKey,
@@ -182,6 +185,8 @@ export interface WorkflowRunJournal {
    * journal emit a faithful `run_terminal` event; test journals ignore it.
    */
   appendTerminal(intent?: WorkflowTerminalJournalIntent): WorkflowEffectEventRef;
+  /** Suspend only after every effect has durably settled. */
+  appendSuspended?(input: { readonly suspendedAt: string }): WorkflowEffectEventRef;
   close(): Promise<void>;
 }
 
@@ -238,6 +243,8 @@ export interface WorkflowJournalWriter {
       readonly policy?: WorkflowRunSessionPolicy;
       /** In-memory bootstrap authority only, never journal evidence. */
       readonly envOverrides?: Readonly<Record<string, string>>;
+      /** Explicit authority to resume this exact user-paused checkpoint. */
+      readonly resumeSuspensionId?: string;
     },
   ): Promise<WorkflowRunJournal>;
 }
@@ -468,6 +475,8 @@ class WorkflowHaltError extends Error {
   }
 }
 
+class WorkflowPausedError extends Error {}
+
 /** Gates the terminal choke point demands before it will record `completed`. */
 interface CompletedGates {
   readonly record: VerifiedChangeRecord;
@@ -581,6 +590,8 @@ export class VerifiedChangeWorkflowController {
   readonly #now: () => Date;
   readonly #newRunId: () => string;
   readonly #active = new Map<string, Promise<void>>();
+  readonly #contexts = new Map<string, RunContext>();
+  readonly #resuming = new Map<string, { suspensionId: string; promise: Promise<RunWorkflowControlState> }>();
   /** Includes starts waiting on bootstrap and stopped runs awaiting durable status. */
   readonly #repositoryOwners = new Map<string, string>();
   readonly #providerWaits = new Map<string, { stepId: string; scope: ProviderWaitScope }>();
@@ -750,6 +761,76 @@ export class VerifiedChangeWorkflowController {
     return [...this.#active.keys()];
   }
 
+  controlState(runId: string): RunWorkflowControlState {
+    const repo = this.#deps.durability({ runId });
+    if (repo.getEffect(runId, "workflow.intake") === undefined) {
+      throw new AgenCDaemonWorkflowControlError("RUN_NOT_FOUND", "Goal run was not found.");
+    }
+    return workflowControlState({ runId, effects: repo.listEffects(runId),
+      suspensions: repo.listSuspensions(runId), terminal: repo.getCurrentTerminalResult(runId) !== undefined });
+  }
+
+  async requestPause(params: RunPauseParams): Promise<RunWorkflowControlState> {
+    const state = this.controlState(params.runId);
+    if (state.state !== "running") return state;
+    const ctx = this.#contexts.get(params.runId);
+    if (ctx === undefined || ctx.journal.appendSuspended === undefined) {
+      throw new AgenCDaemonWorkflowControlError("WORKFLOW_CONTROL_FAILED", "The Goal has no live writer. Reconnect after recovery before pausing it.");
+    }
+    const stepId = `${WORKFLOW_PAUSE_PREFIX}${sha256Digest(params.requestId).slice(7)}`;
+    const existing = ctx.repo.getEffect(params.runId, stepId);
+    // Retried delivery of an old request must not pause a later stage again.
+    if (existing?.outcome !== undefined) return state;
+    const requestedAt = existing?.intentAt ?? this.#nowIso();
+    if (existing === undefined) ctx.journal.appendIntent({
+      stepId, callId: params.requestId, toolName: "workflow.control.pause",
+      recoveryCategory: "idempotent", idempotencyKey: stepId,
+      intentDigest: sha256Digest(canonicalizeJson({ runId: params.runId, requestId: params.requestId })),
+      intentAt: requestedAt,
+    });
+    ctx.journal.appendResult({ stepId, outcome: "committed", evidence: { requestId: params.requestId, requestedAt }, completedAt: this.#nowIso() });
+    return this.controlState(params.runId);
+  }
+
+  async resumePaused(params: RunResumeParams): Promise<RunWorkflowControlState> {
+    const pending = this.#resuming.get(params.runId);
+    if (pending !== undefined) {
+      if (pending.suspensionId !== params.suspensionId) throw new AgenCDaemonWorkflowControlError("WORKFLOW_CONTROL_CONFLICT", "A different checkpoint is already being resumed.");
+      return pending.promise;
+    }
+    const state = this.controlState(params.runId);
+    if (state.state === "terminal") return state;
+    const repo = this.#deps.durability({ runId: params.runId });
+    if (state.state !== "paused") {
+      const replayed = repo.listSuspensions(params.runId).find(item => item.eventId === params.suspensionId && item.resumeReason === "workflow_user_resume");
+      if (replayed !== undefined) return state;
+      throw new AgenCDaemonWorkflowControlError("WORKFLOW_NOT_PAUSED", "The Goal has not reached a paused checkpoint.");
+    }
+    if (state.suspensionId !== params.suspensionId) {
+      throw new AgenCDaemonWorkflowControlError("WORKFLOW_CONTROL_CONFLICT", "This pause checkpoint is stale. Refresh Goal status and resume the current checkpoint.");
+    }
+    const resume = (async () => {
+      // A pause is visible as soon as its boundary commits. Wait for the old
+      // writer to close before opening the exact same run and budget identity.
+      await this.awaitRun(params.runId);
+      try { await this.#resumeRun(repo, params.runId, params); }
+      catch (error) {
+        // Before the resume boundary commits, the original pause is still
+        // authoritative. Once consumed, a failed bootstrap must not look live.
+        if (repo.getActiveSuspension(params.runId)?.reason !== "workflow_user_pause") {
+          this.#recordDetachedTerminal(repo, params.runId, "failed",
+            `The Goal could not resume: ${errorMessage(error)}.${this.#retainedWork(repo, params.runId)}`,
+            { usage: this.#checkpointUsage(repo, params.runId) });
+        }
+        throw error;
+      }
+      return this.controlState(params.runId);
+    })();
+    this.#resuming.set(params.runId, { suspensionId: params.suspensionId, promise: resume });
+    try { return await resume; }
+    finally { if (this.#resuming.get(params.runId)?.promise === resume) this.#resuming.delete(params.runId); }
+  }
+
   /** Observe live authority without opening or bootstrapping a run. */
   currentPermissionMode(runId: string): PermissionMode | undefined {
     return this.#deps.journal.currentPermissionMode?.(runId);
@@ -770,6 +851,7 @@ export class VerifiedChangeWorkflowController {
     const projected = projectWorkflowStatus({
       runId,
       effects,
+      suspensions: repo.listSuspensions(runId),
       ...(terminal !== undefined ? { terminal } : {}),
     });
     const effectivePermissionMode = terminal === undefined
@@ -799,7 +881,9 @@ export class VerifiedChangeWorkflowController {
     const repo = this.#deps.durability();
     const resumed: string[] = [];
     for (const runId of repo.listRunIdsWithStep("workflow.intake")) {
+      if (this.#resuming.has(runId)) continue;
       if (repo.getCurrentTerminalResult(runId) !== undefined) continue;
+      if (repo.getActiveSuspension(runId)?.reason === "workflow_user_pause") continue;
       try {
         const started = await this.#resumeRun(repo, runId);
         if (started) resumed.push(runId);
@@ -832,7 +916,7 @@ export class VerifiedChangeWorkflowController {
    * projection directly so status and cancel agree.
    */
   cancelDetached(runId: string, reason: string): WorkflowDetachedCancelOutcome {
-    if (this.#active.has(runId)) return "live";
+    if (this.#active.has(runId) || this.#resuming.has(runId)) return "live";
     const repo = this.#deps.durability({ runId });
     if (repo.getEffect(runId, "workflow.intake") === undefined) {
       return "not_a_workflow";
@@ -844,10 +928,22 @@ export class VerifiedChangeWorkflowController {
       repo,
       runId,
       "cancelled",
-      `cancelled by run.cancel (${reason}); the run had no live pipeline`,
+      `Goal cancelled (${reason}).${this.#retainedWork(repo, runId)}`,
+      { usage: this.#checkpointUsage(repo, runId) },
     )
       ? "cancelled"
       : "not_recorded";
+  }
+
+  #retainedWork(repo: StateRunDurabilityRepository, runId: string): string {
+    const worktree = repo.listEffects(runId).map(readWorkflowStepEvidence).find(item => item.worktree !== undefined)?.worktree;
+    return worktree === undefined ? "" : ` Work is retained in ${worktree.path} (branch ${worktree.branch}).`;
+  }
+
+  #checkpointUsage(repo: StateRunDurabilityRepository, runId: string): RunUsageTotals | null {
+    const checkpoint = repo.listEffects(runId).filter(effect => effect.toolName === "workflow.control.checkpoint" && effect.outcome === "committed")
+      .sort((a,b) => (b.resultSequence ?? 0) - (a.resultSequence ?? 0))[0];
+    return (checkpoint?.evidence as { usage?: RunUsageTotals | null } | undefined)?.usage ?? null;
   }
 
   /**
@@ -897,9 +993,13 @@ export class VerifiedChangeWorkflowController {
   async #resumeRun(
     repo: StateRunDurabilityRepository,
     runId: string,
+    resume?: RunResumeParams,
   ): Promise<boolean> {
     if (this.#active.has(runId)) return false;
-    const journal = await this.#deps.journal.open(runId);
+    const journal = await this.#deps.journal.open(runId, resume === undefined ? undefined : {
+      resumeSuspensionId: resume.suspensionId,
+      ...(resume.envOverrides !== undefined ? { envOverrides: resume.envOverrides } : {}),
+    });
     try { return await this.#resumeOpened(repo, runId, journal); }
     catch (error) {
       try { await journal.close(); }
@@ -909,6 +1009,10 @@ export class VerifiedChangeWorkflowController {
   }
 
   async #resumeOpened(repo: StateRunDurabilityRepository, runId: string, journal: WorkflowRunJournal): Promise<boolean> {
+    if (repo.getCurrentTerminalResult(runId) !== undefined) {
+      await journal.close();
+      return false;
+    }
     const intake = repo.getEffect(runId, "workflow.intake");
     if (intake === undefined) {
       await journal.close();
@@ -1021,13 +1125,20 @@ export class VerifiedChangeWorkflowController {
   // -------------------------------------------------------------------------
 
   async #continue(ctx: RunContext): Promise<void> {
+    this.#contexts.set(ctx.runId, ctx);
     try {
+      this.#pauseAtCheckpoint(ctx);
       await this.#stageWorktree(ctx);
+      this.#pauseAtCheckpoint(ctx);
       await this.#stagePlan(ctx);
+      this.#pauseAtCheckpoint(ctx);
       await this.#implementVerifyLoop(ctx);
+      this.#pauseAtCheckpoint(ctx);
       await this.#stageReview(ctx);
+      this.#pauseAtCheckpoint(ctx);
       await this.#stageFinalize(ctx);
     } catch (error) {
+      if (error instanceof WorkflowPausedError) return;
       if (error instanceof M5WorkflowFailpointError) throw error;
       const terminal =
         error instanceof WorkflowHaltError
@@ -1044,14 +1155,48 @@ export class VerifiedChangeWorkflowController {
       }
       await this.#terminalize(ctx, terminal);
     } finally {
-      this.#active.delete(ctx.runId);
       if (ctx.terminalized) this.#releaseRepository(ctx.runId);
       try {
         await this.#closeJournal(ctx);
       } finally {
-        ctx.admission.release?.();
+        try { ctx.admission.release?.(); }
+        finally {
+          this.#active.delete(ctx.runId);
+          this.#contexts.delete(ctx.runId);
+        }
       }
     }
+  }
+
+  #pauseAtCheckpoint(ctx: RunContext): void {
+    const control = this.controlState(ctx.runId);
+    if (control.state !== "pause_requested") return;
+    // Recover an interrupted request append before suspending. A caller whose
+    // acknowledgement was lost can retry the same id without another action.
+    for (const effect of ctx.repo.listEffects(ctx.runId)) {
+      if (effect.stepId.startsWith(WORKFLOW_PAUSE_PREFIX) && effect.outcome === undefined) {
+        ctx.journal.appendResult({ stepId: effect.stepId, outcome: "committed",
+          evidence: { requestId: effect.callId, requestedAt: effect.intentAt }, completedAt: this.#nowIso() });
+      }
+      if (effect.toolName === "workflow.control.checkpoint" && effect.outcome === undefined) {
+        ctx.journal.appendResult({ stepId: effect.stepId, outcome: "committed",
+          evidence: { usage: this.#canonicalUsage(ctx) }, completedAt: this.#nowIso() });
+      }
+    }
+    // Recovery may still need to adopt an already-dispatched child first.
+    if (ctx.repo.listEffects(ctx.runId).some(effect => effect.outcome === undefined || effect.reviewStatus === "pending")) return;
+    if (ctx.journal.appendSuspended === undefined) throw new Error("Goal journal cannot persist a paused checkpoint.");
+    const checkpointId = `workflow.control.checkpoint.${sha256Digest(control.requestId!).slice(7)}`;
+    if (ctx.repo.getEffect(ctx.runId, checkpointId)?.outcome !== "committed") {
+      const at = this.#nowIso();
+      if (ctx.repo.getEffect(ctx.runId, checkpointId) === undefined) ctx.journal.appendIntent({
+        stepId: checkpointId, toolName: "workflow.control.checkpoint", recoveryCategory: "idempotent",
+        idempotencyKey: checkpointId, intentDigest: sha256Digest(checkpointId), intentAt: at,
+      });
+      ctx.journal.appendResult({ stepId: checkpointId, outcome: "committed", evidence: { usage: this.#canonicalUsage(ctx) }, completedAt: at });
+    }
+    ctx.journal.appendSuspended({ suspendedAt: this.#nowIso() });
+    throw new WorkflowPausedError("Goal paused at a durable checkpoint.");
   }
 
   async #closeJournal(ctx: RunContext): Promise<void> {
@@ -1207,6 +1352,7 @@ export class VerifiedChangeWorkflowController {
       ).attempts,
     );
     for (;;) {
+      this.#pauseAtCheckpoint(ctx);
       const implement = await this.#driveEffect(
         ctx,
         this.#spawnPlan(ctx, {
@@ -1244,7 +1390,9 @@ export class VerifiedChangeWorkflowController {
         attempt += 1;
         continue;
       }
+      this.#pauseAtCheckpoint(ctx);
       const passed = await this.#stageVerify(ctx, attempt);
+      this.#pauseAtCheckpoint(ctx);
       if (passed) return;
       if (attempt >= spec.maxImplementAttempts) {
         throw new WorkflowHaltError({

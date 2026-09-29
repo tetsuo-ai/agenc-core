@@ -52,7 +52,7 @@ describe("shared run contracts (frozen v1)", () => {
   test("reserved run methods are frozen (run.start added by the M5 contract change)", () => {
     expect(RESERVED_RUN_METHODS).toEqual([
       "run.status", "run.result", "run.replay", "run.evidence", "run.cancel",
-      "run.start",
+      "run.start", "run.pause", "run.resume",
     ]);
   });
 

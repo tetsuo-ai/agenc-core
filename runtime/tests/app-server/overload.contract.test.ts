@@ -17,9 +17,11 @@ function request(method: string): JsonObject {
 }
 
 describe("AgenC daemon overload control messages", () => {
-  it("classifies only abort controls as daemon control messages", () => {
+  it("classifies stop and pause controls as daemon control messages", () => {
     expect(isDaemonControlMessage(request("request.cancel"))).toBe(true);
     expect(isDaemonControlMessage(request("run.cancel"))).toBe(true);
+    expect(isDaemonControlMessage(request("run.pause"))).toBe(true);
+    expect(isDaemonControlMessage(request("run.resume"))).toBe(false);
     expect(isDaemonControlMessage(request("session.cancelTurn"))).toBe(true);
     expect(isDaemonControlMessage(request("session.processes.stop"))).toBe(true);
     expect(isDaemonControlMessage(request("tool.cancel"))).toBe(true);
@@ -38,6 +40,7 @@ describe("AgenC daemon overload control messages", () => {
     for (const method of [
       "request.cancel",
       "run.cancel",
+      "run.pause",
       "session.cancelTurn",
       "tool.cancel",
       "commandExec.terminate",
@@ -49,6 +52,7 @@ describe("AgenC daemon overload control messages", () => {
     }
 
     expect(isDaemonPreemptiveMessage(request("message.send"))).toBe(false);
+    expect(isDaemonPreemptiveMessage(request("run.resume"))).toBe(false);
     expect(isDaemonPreemptiveMessage({ jsonrpc: JSON_RPC_VERSION })).toBe(false);
     expect(isDaemonPreemptiveMessage({ method: 1 })).toBe(false);
   });
@@ -132,7 +136,7 @@ describe("AgenC daemon overload control messages", () => {
     });
   });
 
-  it("admits abort controls even when normal requests are over limit", () => {
+  it("admits stop and pause controls even when normal requests are over limit", () => {
     const limiter = new AgenCDaemonConnectionLimiter({
       maxInFlightRequests: 1,
       requestRatePerSecond: 1,
@@ -167,6 +171,13 @@ describe("AgenC daemon overload control messages", () => {
     });
     expect(limiter.tryStart(request("run.cancel"), 0)).toMatchObject({
       admitted: true,
+    });
+    expect(limiter.tryStart(request("run.pause"), 0)).toMatchObject({
+      admitted: true,
+    });
+    expect(limiter.tryStart(request("run.resume"), 0)).toMatchObject({
+      admitted: false,
+      response: { error: { data: { code: "TOO_MANY_IN_FLIGHT_REQUESTS" } } },
     });
     expect(limiter.tryStart(request("tool.cancel"), 0)).toMatchObject({
       admitted: true,

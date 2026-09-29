@@ -649,6 +649,17 @@ class SessionWorkflowJournal implements WorkflowRunJournal {
     };
   }
 
+  appendSuspended(input: { readonly suspendedAt: string }) {
+    this.#entry.bootstrap.rolloutStore.assertRunSuspendable();
+    const event = this.#emitDurable({ type: "run_suspended", payload: {
+      runId: this.runId, epoch: this.epoch, reason: "workflow_user_pause", suspendedAt: input.suspendedAt,
+    } }, "run_suspended");
+    const ref = { eventId: canonicalEventId(event), sequence: requireSequence(event, "run_suspended") };
+    this.#entry.repo.recordRunSuspended({ runId: this.runId, epoch: this.epoch,
+      eventId: ref.eventId, eventSequence: ref.sequence, reason: "workflow_user_pause", suspendedAt: input.suspendedAt });
+    return ref;
+  }
+
   async close(): Promise<void> {
     await this.#onClose();
   }
@@ -676,6 +687,7 @@ export function createWorkflowSessionSeams(
     repoPath?: string,
     policy?: WorkflowRunSessionPolicy,
     envOverrides?: Readonly<Record<string, string>>,
+    resumeSuspensionId?: string,
   ): Promise<RunSessionEntry> => {
     const existing = entries.get(runId);
     if (existing !== undefined) return existing;
@@ -685,6 +697,12 @@ export function createWorkflowSessionSeams(
       // A2: the frozen spec's policy governs the run session — explicit on
       // start, re-resolved from the durable intake spec on resume.
       const resolvedPolicy = policy ?? options.resolveRunPolicy(runId);
+      if (resumeSuspensionId !== undefined) {
+        const suspension = options.durability({ runId, repoPath: resolvedRepoPath }).getActiveSuspension(runId);
+        if (suspension?.reason !== "workflow_user_pause" || suspension.eventId !== resumeSuspensionId) {
+          throw new WorkflowSessionSeamError("The Goal pause checkpoint changed before resume. Refresh status and retry.");
+        }
+      }
       // A supplied snapshot clears omitted credentials, exactly like agent.create.
       // Recovery re-resolves daemon/auth-backend authority; keys are never durable.
       const runEnvironment = envOverrides === undefined
@@ -700,6 +718,12 @@ export function createWorkflowSessionSeams(
         // A started run is a fresh conversation; a resumed run re-opens the
         // rollout it journaled before the restart.
         resumeConversation: repoPath === undefined,
+        ...(resumeSuspensionId !== undefined ? {
+          resumeSuspendedConversation: true,
+          suspendedResumeReason: "workflow_user_resume" as const,
+          deferAgentStartupSideEffects: true,
+          deferDurableTurnResume: true,
+        } : {}),
         cwd: resolvedRepoPath,
         ...(resolvedPolicy !== undefined
           ? { argv: workflowSessionArgv(resolvedPolicy, options.argv) }
@@ -791,7 +815,7 @@ export function createWorkflowSessionSeams(
     currentPermissionMode: (runId) =>
       currentEntry(runId)?.bootstrap.session.permissionModeRegistry.current().mode,
     open: async (runId, context) => {
-      const entry = await openEntry(runId, context?.repoPath, context?.policy, context?.envOverrides);
+      const entry = await openEntry(runId, context?.repoPath, context?.policy, context?.envOverrides, context?.resumeSuspensionId);
       return new SessionWorkflowJournal(
         entry,
         () => closeEntry(runId),

@@ -132,6 +132,10 @@ import {
   type RunResultParams,
   type RunStatusParams,
   type RunCancelParams,
+  type RunPauseParams,
+  type RunPauseResult,
+  type RunResumeParams,
+  type RunResumeResult,
   type RunStartParams,
   type RunStartResult,
   type CsvJobReviewListParams,
@@ -213,6 +217,7 @@ import {
 import { isRecord } from "../utils/record.js";
 import { LEDGER_SOLANA_SIGN_CLIENT_CAPABILITY } from "../elicitation/types.js";
 import { AgenCDaemonWorkflowStartError } from "./workflow/run-start-service.js";
+import { AgenCDaemonWorkflowControlError } from "./workflow/run-control-service.js";
 
 /**
  * Narrow daemon seam for the M5 verified-change workflow `run.start` method.
@@ -222,6 +227,9 @@ import { AgenCDaemonWorkflowStartError } from "./workflow/run-start-service.js";
  */
 export interface AgenCDaemonWorkflowStartService {
   startRun(params: RunStartParams): Promise<RunStartResult>;
+  /** Advertised only when a durable control implementation is wired. */
+  pauseRun?(params: RunPauseParams): Promise<RunPauseResult>;
+  resumeRun?(params: RunResumeParams): Promise<RunResumeResult>;
   /**
    * Closes a workflow run's projection when run.cancel finds no live
    * pipeline for it. Optional: older wirings without it keep the previous
@@ -356,6 +364,8 @@ function buildServerCapabilities(
     "run.replay": hasMethod(inputs.runInspection, "replay"),
     "run.evidence": hasMethod(inputs.runInspection, "evidence"),
     "run.cancel": hasMethod(agentManager, "cancelRunTree"),
+    "run.pause": hasMethod(inputs.workflow, "pauseRun"),
+    "run.resume": hasMethod(inputs.workflow, "resumeRun"),
     "run.start": hasMethod(inputs.workflow, "startRun"),
     "routine.capabilities": inputs.routines !== undefined,
     "routine.list": inputs.routines !== undefined,
@@ -1277,6 +1287,16 @@ export class AgenCDaemonJsonRpcDispatcher {
         });
         return successResponse(id, result);
       }
+      case "run.pause":
+        if (this.#workflow?.pauseRun === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(id, await this.#workflow.pauseRun(validateRunPauseParams(params)));
+      case "run.resume":
+        if (this.#workflow?.resumeRun === undefined) {
+          return methodNotImplementedResponse(id, method);
+        }
+        return successResponse(id, await this.#workflow.resumeRun(validateRunResumeParams(params)));
       case "run.start":
         if (this.#workflow === undefined) {
           return methodNotImplementedResponse(id, method);
@@ -3088,6 +3108,45 @@ function validateClientEnvOverrides(value: unknown, methodName: string): Record<
       `${methodName} param 'envOverrides' ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+}
+
+function validateWorkflowControlId(
+  params: JsonObject,
+  methodName: "run.pause" | "run.resume",
+  field: "runId" | "requestId" | "suspensionId",
+  maxLength: number,
+): void {
+  const value = params[field];
+  if (typeof value !== "string" || value.length > maxLength ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:#-]*$/.test(value)) {
+    throw invalidParams(`${methodName} param '${field}' must be a 1..${maxLength} character identifier`);
+  }
+}
+
+function validateRunPauseParams(params: JsonObject): RunPauseParams {
+  const validated = validateObjectShape(params, {
+    methodName: "run.pause",
+    stringFields: ["runId", "requestId"],
+  });
+  validateWorkflowControlId(validated, "run.pause", "runId", 256);
+  validateWorkflowControlId(validated, "run.pause", "requestId", 128);
+  return validated as RunPauseParams;
+}
+
+function validateRunResumeParams(params: JsonObject): RunResumeParams {
+  const validated = validateObjectShape(params, {
+    methodName: "run.resume",
+    stringFields: ["runId", "suspensionId"],
+    objectFields: ["envOverrides"],
+  });
+  validateWorkflowControlId(validated, "run.resume", "runId", 256);
+  validateWorkflowControlId(validated, "run.resume", "suspensionId", 512);
+  return {
+    ...validated,
+    ...(validated.envOverrides !== undefined
+      ? { envOverrides: validateClientEnvOverrides(validated.envOverrides, "run.resume") }
+      : {}),
+  } as RunResumeParams;
 }
 
 function validateRunStartParams(params: JsonObject): RunStartParams {
@@ -5033,6 +5092,9 @@ function mapDispatchError(
     return errorResponse(id, -32602, error.message, { code: error.code });
   }
   if (error instanceof AgenCDaemonWorkflowStartError) {
+    return errorResponse(id, -32602, error.message, { code: error.code });
+  }
+  if (error instanceof AgenCDaemonWorkflowControlError) {
     return errorResponse(id, -32602, error.message, { code: error.code });
   }
   if (error instanceof AgenCCsvJobReviewError) {

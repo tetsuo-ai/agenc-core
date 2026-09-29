@@ -54,10 +54,11 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.22 adds the step_limit child terminal reason for partial task results.
  * 1.23 adds the no_progress child terminal reason.
  * 1.24 adds durable child task admission and restart recovery references.
+ * 1.25 adds cooperative workflow pause/resume and its durable control status.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.24.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.25.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -142,6 +143,8 @@ export const AGENC_DAEMON_METHODS = [
   "run.replay",
   "run.evidence",
   "run.cancel",
+  "run.pause",
+  "run.resume",
   "run.start",
   "routine.capabilities",
   "routine.list",
@@ -686,6 +689,24 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     description:
       "Tree-scoped cancel: the run plus its queued and running descendants. " +
       "Durable cascade first, live interrupt second.",
+  },
+  "run.pause": {
+    method: "run.pause",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Request a durable workflow pause after the active stage settles. " +
+      "Acknowledgement of a request does not imply that the run is paused.",
+  },
+  "run.resume": {
+    method: "run.resume",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Resume the matching workflow suspension with the same run, worktree, " +
+      "charged usage, limits, and absolute deadline.",
   },
   "run.start": {
     method: "run.start",
@@ -1556,6 +1577,35 @@ export interface RunCancelParams extends JsonObject {
   readonly runId: string;
   readonly reason?: string;
 }
+
+export interface RunPauseParams extends JsonObject {
+  readonly runId: string;
+  /** Caller-generated idempotency key, 1..128 identifier characters. */
+  readonly requestId: string;
+}
+
+export interface RunResumeParams extends JsonObject {
+  readonly runId: string;
+  /** Exact durable suspension event being resumed, not a later pause. */
+  readonly suspensionId: string;
+  /** Filtered credential snapshot. Never persisted in control evidence. */
+  readonly envOverrides?: { readonly [key: string]: string };
+}
+
+/** Authoritative workflow control state. A pause is not a terminal result. */
+export interface RunWorkflowControlState extends JsonObject {
+  readonly runId: string;
+  readonly state: "running" | "pause_requested" | "paused" | "terminal";
+  readonly requestId?: string;
+  readonly suspensionId?: string;
+  readonly requestedAt?: string;
+  readonly pausedAt?: string;
+  /** Active stage that must settle before a requested pause can take effect. */
+  readonly afterStage?: string;
+}
+
+export type RunPauseResult = RunWorkflowControlState;
+export type RunResumeResult = RunWorkflowControlState;
 
 /** One required verification command for a verified-change workflow run. */
 export interface RunStartVerificationCommand extends JsonObject {
@@ -2624,6 +2674,8 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"run.replay", RunReplayParams>
   | AgenCDaemonRequestWithParams<"run.evidence", RunEvidenceParams>
   | AgenCDaemonRequestWithParams<"run.cancel", RunCancelParams>
+  | AgenCDaemonRequestWithParams<"run.pause", RunPauseParams>
+  | AgenCDaemonRequestWithParams<"run.resume", RunResumeParams>
   | AgenCDaemonRequestWithParams<"run.start", RunStartParams>
   | AgenCDaemonRequestWithParams<"csvJob.review.list", CsvJobReviewListParams>
   | AgenCDaemonRequestWithParams<"csvJob.review.show", CsvJobReviewShowParams>
@@ -2976,6 +3028,8 @@ export interface RunWorkflowStatusStep extends JsonObject {
  */
 export interface RunWorkflowStatus extends JsonObject {
   readonly steps: readonly RunWorkflowStatusStep[];
+  /** Absent on daemons without durable workflow controls. */
+  readonly control?: RunWorkflowControlState;
   /** Mode requested in the frozen workflow spec; does not establish live authority. */
   readonly requestedPermissionMode?: RunStartParams["permissionMode"];
   /** Actual mode observed from the owning live session; absent when unavailable. */
@@ -4123,6 +4177,8 @@ export interface AgenCDaemonResultByMethod {
   readonly "run.replay": RunReplayResult;
   readonly "run.evidence": RunEvidenceResult;
   readonly "run.cancel": RunCancelResult;
+  readonly "run.pause": RunPauseResult;
+  readonly "run.resume": RunResumeResult;
   readonly "run.start": RunStartResult;
   readonly "routine.capabilities": RoutineCapabilities;
   readonly "remote.capabilities": JsonObject;
