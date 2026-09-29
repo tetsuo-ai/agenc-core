@@ -617,6 +617,10 @@ export class VerifiedChangeWorkflowController {
     const repositoryKey = this.#repositoryKey(params.repoPath);
     const repo = this.#deps.durability({ runId, repoPath: params.repoPath });
     let owner = this.#repositoryOwners.get(repositoryKey);
+    if (owner !== undefined && repo.getCurrentTerminalResult(owner) !== undefined) {
+      this.#releaseRepository(owner);
+      owner = undefined;
+    }
     if (owner === undefined) {
       // A new request can arrive before the startup recovery sweep finishes.
       // Durable ownership also protects that interval and an interrupted run.
@@ -860,7 +864,10 @@ export class VerifiedChangeWorkflowController {
     details: { readonly stopReason?: WorkflowStopReason | null; readonly usage?: RunUsageTotals | null } = {},
   ): boolean {
     try {
-      if (repo.getCurrentTerminalResult(runId) !== undefined) return true;
+      if (repo.getCurrentTerminalResult(runId) !== undefined) {
+        this.#releaseRepository(runId);
+        return true;
+      }
       const epoch = repo.currentEpoch(runId)?.epoch;
       if (epoch === undefined) return false;
       repo.recordTerminalResult({

@@ -783,7 +783,7 @@ describe("workflow terminal persistence failures", () => {
 
   it("retains work and repository ownership when no terminal can be persisted", async () => {
     harness.hooks.failTerminalWith = new Error("journal disk full");
-    vi.spyOn(harness.repo, "recordTerminalResult").mockImplementation(() => {
+    const terminalWrite = vi.spyOn(harness.repo, "recordTerminalResult").mockImplementation(() => {
       throw new Error("SQLite disk full");
     });
     await runToTerminal(harness);
@@ -793,6 +793,15 @@ describe("workflow terminal persistence failures", () => {
     expect(harness.controller.activeRunIds()).toEqual([]);
     await expect(harness.controller.start(startParams(harness, { runId: "second" })))
       .rejects.toThrow("already active");
+    terminalWrite.mockRestore();
+    delete harness.hooks.failTerminalWith;
+    // Recovery can project the terminal after storage is repaired. Its
+    // durable result must release the old in-process reservation too.
+    harness.repo.recordTerminalResult({ epoch: harness.repo.currentEpoch(RUN_ID)!.epoch,
+      eventId: "recovered-terminal", result: { runId: RUN_ID, status: "failed", exitCode: 1,
+        stopReason: "evidence_invalid", finalMessage: "Storage recovered", usage: null,
+        lastSequence: null, finishedAt: new Date().toISOString() } });
+    await runToTerminal(harness, { runId: "after-recovery" });
   });
 });
 
