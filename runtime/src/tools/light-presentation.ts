@@ -5,7 +5,7 @@ const summaries: Readonly<Record<string, string>> = {
   MultiEdit: "Replace exact text after FileRead; preserve surrounding code. Batch same-file edits. Create: old_string empty, new_string entire content.",
   exec_command: "Workspace shell; 30s wait, 700-token output. Continue session_id with write_stdin.",
   write_stdin: "Send chars or wait 30s for output, bounded to 700 tokens.",
-  "system.searchTools": "select loads a tool by name; query searches. Load requested tools, then invoke them.",
+  "system.searchTools": "Find additional capabilities. Listed tools are ready to use. select: extra tool name; query: capability search.",
 };
 
 const initialFields: Readonly<Record<string, readonly string[]>> = {
