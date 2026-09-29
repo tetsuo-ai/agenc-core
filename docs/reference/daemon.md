@@ -307,7 +307,7 @@ chunk that crosses the limit. Multiple bounded lines can share a chunk.
 | `request.cancel`                                                                                            | Cancel an in-flight request                                                                                        |
 | `agent.create` / `agent.list` / `agent.attach` / `agent.stop` / `agent.logs`                                | Background agents                                                                                                  |
 | `run.start` / `run.status` / `run.result` / `run.replay` / `run.evidence` / `run.cancel`                    | Start a verified-change run; inspect durable state, journal replay/evidence, terminal result, or tree cancellation |
-| `run.pause` / `run.resume`                                                                               | Pause a verified-change workflow at a safe checkpoint and resume the same run with its original limits (protocol 1.23) |
+| `run.pause` / `run.resume`                                                                               | Pause a verified-change workflow at a safe checkpoint and resume the same run with its original limits (protocol 1.25) |
 | `csvJob.review.list` / `csvJob.review.show` / `csvJob.review.resolve`                                       | Inspect and settle durable CSV batch-review items                                                                  |
 | `session.create` / `session.list` / `session.attach` / `session.detach`                                     | Session lifecycle                                                                                                  |
 | `session.terminate` / `session.clear` / `session.snapshot` / `session.transcript` / `session.transcript.v2` | Session control and identity-bearing history sync                                                                  |
@@ -348,7 +348,7 @@ reviews are still pending. See
 and
 [provider-aware-token-accounting.md](../design/provider-aware-token-accounting.md#session-context-estimate).
 
-#### Workflow pause and resume (protocol 1.23)
+#### Workflow pause and resume (protocol 1.25)
 
 `run.pause` takes `runId` and a client-generated `requestId`. Retry the same
 request ID after a lost response. The response is a workflow control state,
