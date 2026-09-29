@@ -1653,6 +1653,10 @@ describe("a Goal whose check is npm test", () => {
     }
     expect(planner.prompt).toContain("Do NOT modify any files");
     expect(implementer.prompt).toContain("correct that plan and implement the goal");
+    expect(implementer.prompt).toContain("This worktree is owned by Goal. Leave changed and new files here.");
+    expect(implementer.prompt).toContain("The Goal controller stages files, creates snapshot commits, exports evidence, and delivers the reviewable result.");
+    expect(implementer.prompt).toContain("Do not run git add, git commit, git merge, or git push, or edit Git metadata.");
+    expect(implementer.prompt).toContain("report changed files and test results. A child commit is not required for this stage.");
     expect(implementer.prompt).toContain(plan);
     expect(verifier.prompt).toContain(plan);
     expect(verifier.prompt).toContain("assess independently against the goal");
@@ -1711,6 +1715,10 @@ describe("retry prompts", () => {
     expect(verifySpawns[0].prompt).not.toContain("Previous verification attempt");
     // The retry names the failures to fix.
     expect(implementSpawns[1].prompt).toContain("Agent verdict: FAIL");
+    expect(implementSpawns[1].prompt).toContain("This worktree is owned by Goal. Leave changed and new files here.");
+    expect(implementSpawns[1].prompt).toContain("The Goal controller stages files, creates snapshot commits, exports evidence, and delivers the reviewable result.");
+    expect(implementSpawns[1].prompt).toContain("Do not run git add, git commit, git merge, or git push, or edit Git metadata.");
+    expect(implementSpawns[1].prompt).toContain("report changed files and test results. A child commit is not required for this stage.");
     expect(implementSpawns[1].prompt).toContain("undo restored one of two rows");
     expect(implementSpawns[1].prompt).toContain(
       "Fix every failure reported above, then stop.",
