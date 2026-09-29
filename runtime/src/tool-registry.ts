@@ -727,13 +727,13 @@ export function buildToolRegistry(
       cwd: options.workspaceRoot,
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
-      ...(options.lightMode ? { defaultOutputTokens: 1500, defaultYieldMs: 30000, retainOutput: true } : {}),
+      ...(options.lightMode ? { defaultOutputTokens: 700, defaultYieldMs: 30000, retainOutput: true } : {}),
       ...(options.bashExecObserver !== undefined
         ? { execObserver: options.bashExecObserver }
         : {}),
     }),
     createWriteStdinTool({
-      ...(options.lightMode ? { defaultOutputTokens: 1500, defaultYieldMs: 30000, retainOutput: true } : {}),
+      ...(options.lightMode ? { defaultOutputTokens: 700, defaultYieldMs: 30000, retainOutput: true } : {}),
       cwd: options.workspaceRoot,
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
