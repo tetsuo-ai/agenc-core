@@ -80,7 +80,7 @@ describe("Light completion evidence", () => {
     const f = fixture([check(), result(name, { content: "pytest 12 passed", metadata: { mutating: false, exitCode: 0, effectDisposition: "confirmed_no_effect" } })]);
     expect((await run(f))?.outcome).toBe("injected");
     f.state.transition = undefined;
-    f.state.completedToolResults.push(check());
+    f.state.completedToolResults.push(check(), result("FileRead", { content: "pytest setup notes" }));
     expect((await run(f))?.outcome).toBe("verified");
   });
 

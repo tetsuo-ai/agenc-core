@@ -365,6 +365,7 @@ function itemHasAssociatedSuccess(
   results: readonly CompletedToolResultRecord[],
   freshFrom: number,
   successful: (result: CompletedToolResultRecord) => boolean = isSuccessfulResult,
+  requireRunnableRecovery = false,
 ): boolean {
   const related = associatedIndexed(itemText, results);
   const lastSuccess = related
@@ -377,6 +378,13 @@ function itemHasAssociatedSuccess(
         isRunnableEvidence(entry.result) && !isSuccessfulResult(entry.result),
     )
     .at(-1);
+  // Reusing earlier Light evidence must not let a later README/file read
+  // erase a real failing command merely because their words overlap.
+  if (requireRunnableRecovery && lastFailure !== undefined) {
+    return related.some((entry) => entry.index >= freshFrom &&
+      entry.index > lastFailure.index && isRunnableEvidence(entry.result) &&
+      successful(entry.result));
+  }
   return lastFailure === undefined || lastFailure.index < lastSuccess.index;
 }
 
@@ -403,6 +411,7 @@ function classifyChecklist(
   allResults: readonly CompletedToolResultRecord[],
   freshFrom: number,
   successful: (result: CompletedToolResultRecord) => boolean = isSuccessfulResult,
+  requireRunnableRecovery = false,
 ): {
   hasCheckedItem: boolean;
   hasMalformedItem: boolean;
@@ -420,7 +429,7 @@ function classifyChecklist(
     }
     if (item.mark === "x" || item.mark === "X") {
       hasCheckedItem = true;
-      if (!itemHasAssociatedSuccess(item.text, allResults, freshFrom, successful)) {
+      if (!itemHasAssociatedSuccess(item.text, allResults, freshFrom, successful, requireRunnableRecovery)) {
         pushBounded(unmetItems, item.text);
       }
       continue;
@@ -663,6 +672,7 @@ export async function completionGate(
       state.completedToolResults,
       lightEvidence?.freshFrom ?? (round === 0 ? 0 : state.completionGateToolLedgerMark),
       lightEvidence?.isSuccessful,
+      lightEvidence !== undefined,
     );
   const reportedItems = [...unmetItems, ...unavailableItems].slice(
     0,
