@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { BEDROCK_CONVERSE_MODELS } from "../../registry/bedrock-converse-models.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { createTokenAccountingRequest } from "../../token-accounting.js";
@@ -1476,5 +1477,28 @@ describe("providers/bedrock", () => {
       /AWS_BEDROCK_ACCESS_KEY_ID.*AWS_ACCESS_KEY_ID.*AWS_BEDROCK_SECRET_ACCESS_KEY.*AWS_SECRET_ACCESS_KEY/u,
     );
     await expect(provider.healthCheck()).resolves.toBe(false);
+  });
+});
+
+
+describe("reviewed Bedrock Converse model routing", () => {
+  it.each(BEDROCK_CONVERSE_MODELS)("serializes and parses tools for $model", async ({ model }) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({
+      output: { message: { role: "assistant", content: [
+        { toolUse: { toolUseId: "echo_call", name: "echo", input: { value: "ok" } } },
+      ] } }, stopReason: "tool_use", usage: { inputTokens: 2, outputTokens: 2, totalTokens: 4 },
+    }));
+    const provider = new BedrockProvider({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret", model,
+      fetchImpl, tools: [{ type: "function", function: { name: "echo", description: "Echo text",
+        parameters: { type: "object", properties: { value: { type: "string" } }, required: ["value"] } } }],
+    });
+    const response = await provider.chat([{ role: "user", content: "Call echo" }], { maxOutputTokens: 32 });
+    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(url)).toContain(`/model/${encodeURIComponent(model)}/converse`);
+    const body = JSON.parse(String(init?.body));
+    expect(body.inferenceConfig.maxTokens).toBe(32);
+    expect(body.toolConfig.toolChoice).toEqual({ auto: {} });
+    expect(body.toolConfig.tools[0].toolSpec.name).toBe("echo");
+    expect(response.toolCalls).toEqual([{ id: "echo_call", name: "echo", arguments: '{"value":"ok"}' }]);
   });
 });

@@ -793,7 +793,11 @@ export function buildChatCompletionsRequest(
     input.options?.serviceTier !== undefined &&
     input.providerCapabilityHints?.acceptsServiceTier !== false
   ) {
-    body.service_tier = input.options.serviceTier;
+    const tierMap = input.providerCapabilityHints?.serviceTierMap;
+    const tier = tierMap === undefined
+      ? input.options.serviceTier
+      : tierMap[input.options.serviceTier];
+    if (tier !== undefined) body.service_tier = tier;
   }
   if (usesZaiJsonObject) {
     body.response_format = { type: "json_object" };

@@ -26,23 +26,21 @@ const GITHUB_COPILOT_MODEL_IDS = Object.freeze([
   "gpt-5.6-luna",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
+  "gpt-6-astra",
+  "gpt-6-sol",
+  "gpt-6-luna",
   "claude-fable-5",
   "claude-haiku-4.5",
-  "claude-opus-4.5",
-  "claude-opus-4.6",
   "claude-opus-4.7",
   "claude-opus-4.8",
   "claude-opus-5",
-  "claude-sonnet-4.5",
+  "claude-opus-5.5",
   "claude-sonnet-4.6",
   "claude-sonnet-5",
-  "gemini-3.1-pro-preview",
   "gemini-3.5-flash",
   "gemini-3.6-flash",
   "gemini-3.7-flash",
-  "mai-code-1-flash-picker",
   "mai-code-1.1-flash",
-  "raptor-mini",
   "kimi-k2.7-code",
   "kimi-k3",
   "grok-4.5",
@@ -411,7 +409,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
   }),
   groq: providerDefinition({
     name: "Groq",
-    defaultModel: "llama-3.3-70b-versatile",
+    defaultModel: "openai/gpt-oss-120b",
     baseURL: "https://api.groq.com/openai/v1",
     credentials: apiKeyCredentials(["GROQ_API_KEY"]),
     baseURLEnvVars: ["GROQ_BASE_URL"],
@@ -693,12 +691,8 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
     "minimax/minimax-m2.5",
     "z-ai/glm-4.7-flash",
   ] }),
-  // mixtral-8x7b-32768 was shut down by groq on 2025-03-20 (deprecations
-  // page); listing it produced guaranteed-dead sessions.
-  groq: Object.freeze([
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-  ]),
+  // Shared API Llama rows retired 2026-08-16; enterprise IDs remain custom.
+  groq: mergeDerivedProviderModels("groq"),
   deepseek: Object.freeze(["deepseek-flash", "deepseek-v4-pro"]),
   // `/models` also advertises image generation and voice transcription.
   // Those are not chat-completion LLMs and deliberately stay out of this list.
@@ -719,11 +713,11 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   // Copilot proxies models owned by several providers. Keep those entries
   // qualified here so bare slugs such as gpt-5.4 retain one global owner.
   github: GITHUB_COPILOT_CATALOG_MODELS,
-  "amazon-bedrock": Object.freeze([
+  "amazon-bedrock": mergeDerivedProviderModels("amazon-bedrock", { leadingExtras: [
     "amazon.nova-pro-v1:0",
     "amazon.nova-lite-v1:0",
     "amazon.nova-micro-v1:0",
-  ]),
+  ] }),
   agenc: Object.freeze(["agenc"]),
 });
 

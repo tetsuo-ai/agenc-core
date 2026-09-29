@@ -27,23 +27,21 @@ const GITHUB_CATALOG = [
   "github:copilot:gpt-5.6-luna",
   "github:copilot:gpt-5.6-sol",
   "github:copilot:gpt-5.6-terra",
+  "github:copilot:gpt-6-astra",
+  "github:copilot:gpt-6-sol",
+  "github:copilot:gpt-6-luna",
   "github:copilot:claude-fable-5",
   "github:copilot:claude-haiku-4.5",
-  "github:copilot:claude-opus-4.5",
-  "github:copilot:claude-opus-4.6",
   "github:copilot:claude-opus-4.7",
   "github:copilot:claude-opus-4.8",
   "github:copilot:claude-opus-5",
-  "github:copilot:claude-sonnet-4.5",
+  "github:copilot:claude-opus-5.5",
   "github:copilot:claude-sonnet-4.6",
   "github:copilot:claude-sonnet-5",
-  "github:copilot:gemini-3.1-pro-preview",
   "github:copilot:gemini-3.5-flash",
   "github:copilot:gemini-3.6-flash",
   "github:copilot:gemini-3.7-flash",
-  "github:copilot:mai-code-1-flash-picker",
   "github:copilot:mai-code-1.1-flash",
-  "github:copilot:raptor-mini",
   "github:copilot:kimi-k2.7-code",
   "github:copilot:kimi-k3",
   "github:copilot:grok-4.5",
@@ -65,8 +63,8 @@ function unavailableResponse(): Response {
 }
 
 describe("GitHub model authority", () => {
-  test("locks the supported Copilot wire-model catalog as of 2026-08-26", () => {
-    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.github).toHaveLength(30);
+  test("locks the supported Copilot wire-model catalog as of 2026-09-29", () => {
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.github).toHaveLength(28);
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.github).toEqual(GITHUB_CATALOG);
   });
 

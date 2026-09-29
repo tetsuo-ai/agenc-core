@@ -15,6 +15,8 @@ import {
 import type { ReasoningEffort, ReasoningSummary } from "../../session/turn-context.js";
 import { normalizeProviderIdentity } from "../../provider-identity.js";
 import { MISTRAL_MODEL_CATALOG, resolveMistralChatModel } from "./mistral-models.js";
+import { BEDROCK_CONVERSE_MODELS } from "./bedrock-converse-models.js";
+import { GROQ_MODELS } from "./groq-models.js";
 import { OLLAMA_CLOUD_MODELS } from "./ollama-cloud-models.js";
 import { NVIDIA_CURRENT_MODEL_CATALOG } from "./nvidia-current-models.js";
 import { OPENAI_CURRENT_MODEL_CATALOG } from "./openai-current-models.js";
@@ -537,6 +539,9 @@ function minimaxCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
     contextWindow: model.contextWindow,
     maxContextWindow: model.contextWindow,
     maxOutputTokens: MINIMAX_MAX_OUTPUT_TOKENS,
+    // https://platform.minimax.io/docs/api-reference/text-chat-openai
+    // Exact API maxima, separate from AgenC's existing output reservation.
+    maxOutputTokensUpperLimit: model.model === "MiniMax-M3" ? 524_288 : 204_800,
     inputModalities: model.vision ? TEXT_IMAGE_MODALITIES : TEXT_MODALITIES,
     supportsToolUse: true,
     supportsParallelToolCalls: false,
@@ -553,7 +558,7 @@ function minimaxCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
     ...(model.thinkingSwitch
       ? { defaultReasoningLevel: "high" as const }
       : {}),
-    additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+    additionalSpeedTiers: model.model === "MiniMax-M3" ? FAST_SPEED_TIER : NO_ADDITIONAL_SPEED_TIERS,
     priority: model.priority,
     visibility: "list" as const,
   }));
@@ -960,6 +965,48 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       priority: 0,
       visibility: "list",
     },
+    ...GROQ_MODELS.map((entry, priority): RegisteredModelCatalogEntry => ({
+      provider: "groq",
+      model: entry.model,
+      displayName: entry.label,
+      contextWindow: entry.contextWindow,
+      maxContextWindow: entry.contextWindow,
+      maxOutputTokens: entry.maxOutputTokens,
+      inputModalities: entry.vision ? TEXT_IMAGE_MODALITIES : TEXT_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: entry.parallel,
+      supportsStructuredOutput: false,
+      supportsSearchTool: false,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: entry.efforts,
+      ...(entry.defaultEffort === undefined ? {} : { defaultReasoningLevel: entry.defaultEffort }),
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority,
+      visibility: "list",
+    })),
+    ...BEDROCK_CONVERSE_MODELS.map((entry, priority): RegisteredModelCatalogEntry => ({
+      provider: "amazon-bedrock",
+      model: entry.model,
+      displayName: entry.label,
+      // AWS cards use rounded K/M values. Do not turn those into exact limits.
+      // The current Converse adapter serializes text only, even for vision models.
+      inputModalities: TEXT_MODALITIES,
+      supportsToolUse: true,
+      supportsParallelToolCalls: false,
+      supportsStructuredOutput: false,
+      supportsSearchTool: false,
+      supportsVerbosity: false,
+      webSearchToolType: "none",
+      supportsReasoningSummaries: false,
+      defaultReasoningSummary: "none",
+      supportedReasoningLevels: NO_REASONING_LEVELS,
+      additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
+      priority,
+      visibility: "list",
+    })),
     ...OLLAMA_CLOUD_MODELS.map((entry, priority): RegisteredModelCatalogEntry => ({
       provider: "ollama-cloud",
       model: entry.model,
@@ -1037,7 +1084,8 @@ export const REGISTERED_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] =
       defaultReasoningLevel: "none",
       additionalSpeedTiers: NO_ADDITIONAL_SPEED_TIERS,
       priority: 2,
-      visibility: "list",
+      // Dedicated deployments remain usable, but shared inference retired 2026-09-03.
+      visibility: "none",
     },
     {
       provider: "meta",
@@ -1577,7 +1625,16 @@ export function resolveRegisteredModelCatalogEntry(input: {
     const canonical = resolveMistralChatModel(model)?.model;
     return canonical === undefined ? undefined : findExactModel(canonical, MISTRAL_MODEL_CATALOG);
   }
-  if (provider === "amazon-bedrock") return resolveBedrockCatalogEntry(model);
+  if (provider === "amazon-bedrock") {
+    const documented = findExactModel(
+      model,
+      REGISTERED_MODEL_CATALOG.filter((entry) => entry.provider === provider),
+    );
+    const claude = resolveBedrockCatalogEntry(model);
+    // Native Anthropic picker policy must not hide a separately reviewed AWS ID.
+    return claude === undefined ? documented : documented === undefined ? claude
+      : Object.freeze({ ...claude, visibility: documented.visibility });
+  }
   const candidates = REGISTERED_MODEL_CATALOG.filter(
     (entry) => modelCatalogProviderIdentity(entry.provider) === provider,
   );

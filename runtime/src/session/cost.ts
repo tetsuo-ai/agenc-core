@@ -146,6 +146,29 @@ type OpenAiRateRow = readonly [
   cacheWrite?: number,
 ];
 
+/** Copilot rates are independent of direct-provider fast/search charges.
+ * https://docs.github.com/en/copilot/reference/copilot-billing/models-and-pricing
+ * Reviewed 2026-09-29. Published long-context billing threshold: 272K inputs.
+ */
+function copilotCostAliases(
+  model: string,
+  [input, output, cachedInput, cacheWrite]: readonly [number, number, number, number],
+  longContext?: readonly [number, number, number, number],
+): Readonly<Record<string, ModelCostEntry>> {
+  const rates = ([i, o, c, w]: readonly [number, number, number, number]): ModelCostEntry => ({
+    inputUsdPer1K: i / 1000, outputUsdPer1K: o / 1000,
+    cachedInputUsdPer1K: c / 1000, cacheCreationUsdPer1K: w / 1000,
+    cachedInputIncludedInInputTokens: true, cacheCreationIncludedInInputTokens: true,
+  });
+  const entry: ModelCostEntry = {
+    ...rates([input, output, cachedInput, cacheWrite]),
+    ...(longContext === undefined ? {} : { longContext: { aboveInputTokens: 272_000, rates: rates(longContext) } }),
+  };
+  return Object.fromEntries([
+    `github:${model}`, `github:copilot:${model}`, `github:github:copilot:${model}`,
+  ].map(key => [key, entry]));
+}
+
 /** OpenAI bills a request over this many input tokens at long-context rates. */
 const OPENAI_LONG_CONTEXT_ABOVE_INPUT_TOKENS = 272_000;
 
@@ -511,7 +534,37 @@ const COST_TIER_OPUS_LEGACY: Readonly<ModelCostEntry> = Object.freeze({
 // Current Opus tier ($5/$25 per Mtok) — Opus dropped to $5/$25 with 4.5, so 4.5
 // through 4.8 (and later) bill here. Mirrors utils/modelCost.ts COST_TIER_5_25
 // (the canonical AgenC pricing source of truth), expressed per-1K.
+// MiniMax defines 512K as 524288 tokens in the Chat Completions reference.
+// Its current rate card doubles the entire request above that input boundary.
+// https://platform.minimax.io/docs/guides/pricing-paygo (2026-09-29)
 const COST_TIER_MINIMAX_M3: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.0003,
+  outputUsdPer1K: 0.0012,
+  cachedInputUsdPer1K: 0.00006,
+  cachedInputIncludedInInputTokens: true,
+  fastMode: Object.freeze({
+    inputUsdPer1K: 0.00045,
+    outputUsdPer1K: 0.0018,
+    cachedInputUsdPer1K: 0.00009,
+    cachedInputIncludedInInputTokens: true,
+  }),
+  longContext: Object.freeze({
+    aboveInputTokens: 524_288,
+    rates: Object.freeze({
+      inputUsdPer1K: 0.0006,
+      outputUsdPer1K: 0.0024,
+      cachedInputUsdPer1K: 0.00012,
+      cachedInputIncludedInInputTokens: true,
+      fastMode: Object.freeze({
+        inputUsdPer1K: 0.0009,
+        outputUsdPer1K: 0.0036,
+        cachedInputUsdPer1K: 0.00018,
+        cachedInputIncludedInInputTokens: true,
+      }),
+    }),
+  }),
+});
+const COST_TIER_MINIMAX_M2_7: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.0003,
   outputUsdPer1K: 0.0012,
   cachedInputUsdPer1K: 0.00006,
@@ -854,14 +907,16 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       cacheCreationUsdPer1K: 0.00125,
       webSearchUsdPerRequest: 0.01,
     },
-    "groq:llama-3.3-70b-versatile": {
-      inputUsdPer1K: 0.00059,
-      outputUsdPer1K: 0.00079,
-    },
-    "llama-3.3-70b-versatile": {
-      inputUsdPer1K: 0.00059,
-      outputUsdPer1K: 0.00079,
-    },
+    ...copilotCostAliases("gpt-6-astra", [10, 50, 1, 12.5], [20, 75, 2, 25]),
+    ...copilotCostAliases("gpt-6-sol", [2, 10, 0.2, 2.5], [4, 15, 0.4, 5]),
+    ...copilotCostAliases("gpt-6-luna", [0.1, 0.5, 0.01, 0.125], [0.2, 0.75, 0.02, 0.25]),
+    ...copilotCostAliases("claude-opus-5.5", [4, 20, 0.2, 5]),
+    // Groq published per-token prices, checked 2026-09-29.
+    // https://console.groq.com/docs/models
+    // Retired shared Llama and enterprise-preview MiniMax prices are unknown.
+    "groq:openai/gpt-oss-120b": { inputUsdPer1K: 0.00015, outputUsdPer1K: 0.0006 },
+    "groq:openai/gpt-oss-20b": { inputUsdPer1K: 0.000075, outputUsdPer1K: 0.0003 },
+    "groq:qwen/qwen3.8-27b": { inputUsdPer1K: 0.0008, outputUsdPer1K: 0.004 },
     "deepseek:deepseek-flash": COST_TIER_DEEPSEEK_V41_FLASH_NATIVE,
     "deepseek-flash": COST_TIER_DEEPSEEK_V41_FLASH_NATIVE,
     "deepseek:deepseek-v4-flash": COST_TIER_DEEPSEEK_V41_FLASH_NATIVE,
@@ -936,12 +991,12 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
     "nvidia-nim:nvidia/llama-3.1-nemotron-70b-instruct": DEFAULT_UNKNOWN_MODEL_COST,
     "nvidia/llama-3.1-nemotron-70b-instruct": DEFAULT_UNKNOWN_MODEL_COST,
     // MiniMax pay-as-you-go (platform.minimax.io/docs/guides/pricing-paygo,
-    // 2026-09-11, standard tier, prompts up to 512k): M3 $0.30/$1.20 per M
+    // 2026-09-29, standard tier, prompts up to 512k): M3 $0.30/$1.20 per M
     // with $0.06 cache reads; M2.7 the same; the other M2 generations read
     // cache at $0.03; every highspeed variant doubles input and output.
-    // Cache writes are $0.375 per M across the line.
+    // M2 cache writes are $0.375 per M. M3 has no published write fee.
     ...minimaxCostAliases("MiniMax-M3", COST_TIER_MINIMAX_M3),
-    ...minimaxCostAliases("MiniMax-M2.7", COST_TIER_MINIMAX_M3),
+    ...minimaxCostAliases("MiniMax-M2.7", COST_TIER_MINIMAX_M2_7),
     ...minimaxCostAliases("MiniMax-M2.7-highspeed", COST_TIER_MINIMAX_M2_7_HIGHSPEED),
     ...minimaxCostAliases("MiniMax-M2.5", COST_TIER_MINIMAX_M2),
     ...minimaxCostAliases("MiniMax-M2.5-highspeed", COST_TIER_MINIMAX_M2_HIGHSPEED),

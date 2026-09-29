@@ -179,6 +179,8 @@ export interface ChatCompletionsCapabilityHints {
    * either reject it or silently ignore it.
    */
   readonly acceptsServiceTier?: boolean;
+  /** Translate known service tiers; unmapped values are omitted. */
+  readonly serviceTierMap?: Readonly<Record<string, string>>;
   /**
    * If `false`, `stream_options.include_usage` is omitted from
    * streaming requests. Some local openai-compat servers reject the
@@ -375,7 +377,8 @@ export function chatCompletionsCapabilityHintsForProvider(
   // service_tier: recognized only by documented providers. Strip
   // everywhere else — most servers ignore it silently, but at least
   // one custom proxy in the wild rejects unknown fields.
-  const acceptsServiceTier = SERVICE_TIER_PROVIDERS.has(slug);
+  const acceptsServiceTier = SERVICE_TIER_PROVIDERS.has(slug) ||
+    (slug === "minimax" && model?.toLowerCase() === "minimax-m3");
 
   // stream_options: accepted by most openai-compat providers. Strip
   // only for providers known to reject it. The runtime emits a
@@ -433,6 +436,12 @@ export function chatCompletionsCapabilityHintsForProvider(
         replaysReasoningContentOnlyForIntactHistory: true,
         reasoningContentField: "reasoning_content" as const,
       } : {}),
+    } : {}),
+    ...(slug === "groq" ? {
+      acceptsDirectImageInput: acceptsToolResultImages,
+      toolResultImagePolicy: acceptsToolResultImages ? "relay_as_user" as const : "strip" as const,
+      acceptsParallelToolCalls: model === "qwen/qwen3.8-27b" || model === "minimaxai/minimax-m2.7",
+      omitsToolControlsWithoutTools: true,
     } : {}),
     ...(slug === "ollama-cloud" ? {
       acceptsDirectImageInput: acceptsToolResultImages,
@@ -624,6 +633,7 @@ export function chatCompletionsCapabilityHintsForProvider(
       : {}),
     acceptsStopSequences: slug !== "meta",
     acceptsServiceTier,
+    ...(isMinimaxM3 ? { serviceTierMap: { priority: "priority", default: "standard" } } : {}),
     acceptsStreamUsage: isZai || (nimModel && !nimModel.model.startsWith("moonshotai/")) ? false : acceptsStreamUsage,
     requiresGrammarSafeToolSchemas,
     ...(outputTokensCeiling !== undefined ? { outputTokensCeiling } : {}),
