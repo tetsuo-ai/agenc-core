@@ -174,6 +174,9 @@ export function resolveReasoningEffort(input: {
   ) {
     reasoningEffortAllowedValues = ZAI_GLM_53_REASONING_EFFORT_VALUES;
     acceptsReasoningEffort = true;
+  } else if (isZai && model?.trim().toLowerCase() === "glm-5.2") {
+    reasoningEffortAllowedValues = new Set(resolveRegisteredModelCatalogEntry(input)?.supportedReasoningLevels ?? []);
+    acceptsReasoningEffort = reasoningEffortAllowedValues.size > 0;
   } else if (isKimiK3) {
     reasoningEffortAllowedValues = KIMI_K3_REASONING_EFFORT_VALUES;
     acceptsReasoningEffort = true;

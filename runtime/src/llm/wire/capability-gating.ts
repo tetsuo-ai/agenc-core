@@ -618,7 +618,7 @@ export function chatCompletionsCapabilityHintsForProvider(
         }
       : {}),
     ...(isZai &&
-    /(?:^|[/:])glm-5\.3(?:-flashx?)?$/i.test(model ?? "")
+    /(?:^|[/:])glm-(?:5(?:-turbo|\.[123](?:-flashx?)?)?|4\.(?:[67]|5(?:-air)?))$/i.test(model ?? "")
       ? {
           replaysReasoningContent: true,
           replaysReasoningContentOnlyForAdjacentToolContinuation: true,
