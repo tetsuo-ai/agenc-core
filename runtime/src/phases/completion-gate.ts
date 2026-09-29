@@ -55,6 +55,8 @@ import type {
 import { isPlanMode } from "../session/plan-mode.js";
 import { inDeadlineReserve } from "../session/run-deadline.js";
 import { isSubagentSessionSource } from "../session/run-turn-queued-commands.js";
+import { lightCompletionEvidence } from "./light-completion-evidence.js";
+import { buildLightCompletionGateMessage } from "../prompts/light-completion-gate.js";
 
 export const DEFAULT_COMPLETION_GATE_ROUNDS = 3;
 export const COMPLETION_GATE_ROUNDS_HARD_CAP = 10;
@@ -362,10 +364,11 @@ function itemHasAssociatedSuccess(
   itemText: string,
   results: readonly CompletedToolResultRecord[],
   freshFrom: number,
+  successful: (result: CompletedToolResultRecord) => boolean = isSuccessfulResult,
 ): boolean {
   const related = associatedIndexed(itemText, results);
   const lastSuccess = related
-    .filter((entry) => entry.index >= freshFrom && isSuccessfulResult(entry.result))
+    .filter((entry) => entry.index >= freshFrom && successful(entry.result))
     .at(-1);
   if (lastSuccess === undefined) return false;
   const lastFailure = related
@@ -399,6 +402,7 @@ function classifyChecklist(
   text: string,
   allResults: readonly CompletedToolResultRecord[],
   freshFrom: number,
+  successful: (result: CompletedToolResultRecord) => boolean = isSuccessfulResult,
 ): {
   hasCheckedItem: boolean;
   hasMalformedItem: boolean;
@@ -416,7 +420,7 @@ function classifyChecklist(
     }
     if (item.mark === "x" || item.mark === "X") {
       hasCheckedItem = true;
-      if (!itemHasAssociatedSuccess(item.text, allResults, freshFrom)) {
+      if (!itemHasAssociatedSuccess(item.text, allResults, freshFrom, successful)) {
         pushBounded(unmetItems, item.text);
       }
       continue;
@@ -640,7 +644,13 @@ export async function completionGate(
       : state.completedToolResults.slice(state.completionGateToolLedgerMark);
   const toolCallsSinceInjection =
     round === 0 ? 0 : Math.max(0, postInjectionResults.length);
-  const hasSuccessfulResult = postInjectionResults.some(isSuccessfulResult);
+  const lightEvidence = session.services.runtimeOptions?.lightMode === true &&
+      ctx.config.coordinatorMode !== true
+    ? lightCompletionEvidence(state.completedToolResults, session.services.registry.tools)
+    : undefined;
+  const hasSuccessfulResult = lightEvidence === undefined
+    ? postInjectionResults.some(isSuccessfulResult)
+    : state.completedToolResults.some(lightEvidence.isSuccessful);
   if (inDeadlineReserve(session)) {
     // The run's deadline reserve (#2503): the model was told to restore its
     // best verified state and finish, so the answer is accepted rather than
@@ -651,7 +661,8 @@ export async function completionGate(
     classifyChecklist(
       text,
       state.completedToolResults,
-      round === 0 ? 0 : state.completionGateToolLedgerMark,
+      lightEvidence?.freshFrom ?? (round === 0 ? 0 : state.completionGateToolLedgerMark),
+      lightEvidence?.isSuccessful,
     );
   const reportedItems = [...unmetItems, ...unavailableItems].slice(
     0,
@@ -713,7 +724,12 @@ export async function completionGate(
   }
   injectCompletionGateMessage(
     state,
-    buildCompletionGateMessage({
+    lightEvidence !== undefined ? buildLightCompletionGateMessage({
+      round: state.completionGateRound,
+      maxRounds: plan.maxRounds,
+      reason,
+      quotedUntrustedItems: quotedUntrustedItems(injectItems),
+    }) : buildCompletionGateMessage({
       round: state.completionGateRound,
       maxRounds: plan.maxRounds,
       taskText: plan.taskText,
