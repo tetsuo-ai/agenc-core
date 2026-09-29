@@ -1,7 +1,9 @@
 /**
- * Mistral's distinct chat/tool deployments returned by GET /v1/models on
- * 2026-09-29. Alias groups and exact served context lengths come from that
- * endpoint. Prices: https://docs.mistral.ai/inference/pricing and
+ * Mistral's distinct chat/tool deployments verified on 2026-09-29 against
+ * GET /v1/models and official hosted model cards. Account-specific endpoint
+ * omissions do not exclude a documented current API route. Alias groups and
+ * exact served context lengths come from the endpoint where present.
+ * Prices: https://docs.mistral.ai/inference/pricing and
  * https://docs.mistral.ai/models/voxtral-small-25-07.
  * Output is intentionally unspecified when Mistral publishes only a shared
  * input/output context window. Leanstral says 128k without an exact integer.
@@ -12,7 +14,7 @@ export interface MistralChatModel {
   readonly model: string;
   readonly displayName: string;
   readonly aliases: readonly string[];
-  readonly contextWindow: number;
+  readonly contextWindow?: number;
   readonly maxOutputTokens?: number;
   readonly vision: boolean;
   readonly audio?: boolean;
@@ -33,6 +35,13 @@ export const MISTRAL_CHAT_MODELS: readonly MistralChatModel[] = Object.freeze([
   { model: "ministral-3b-latest", displayName: "Ministral 3 3B", aliases: ["ministral-3b-2512"], contextWindow: 131_072, vision: true, rates: [0.1, 0.1, 0.01] },
   { model: "voxtral-small-latest", displayName: "Voxtral Small", aliases: ["voxtral-small-2507"], contextWindow: 32_768, vision: false, audio: true, rates: [0.1, 0.4] },
   { model: "labs-leanstral-1-5", displayName: "Leanstral 1.5", aliases: ["labs-leanstral-1-5-1"], contextWindow: 262_144, vision: true, rates: [0, 0, 0], free: true },
+  // Current hosted routes documented in /vibe/code/cli/configuration and
+  // their model cards, but omitted by the audit account's /models response.
+  // Cards give only 256k or 1M context and 128k GLM output shorthand, so no
+  // exact token count or native ZAI effort enum is borrowed for this host.
+  { model: "mistral-large-latest", displayName: "Mistral Large 3", aliases: ["mistral-large-2512"], vision: true, rates: [0.5, 1.5, 0.05] },
+  { model: "zai-glm-5-3", displayName: "Z.ai GLM 5.3 (Mistral)", aliases: ["zai-glm-5", "zai-glm-latest"], vision: false, rates: [1.4, 4.4, 0.14] },
+  { model: "zai-glm-5-2", displayName: "Z.ai GLM 5.2 (Mistral)", aliases: [], vision: false, rates: [1.4, 4.4, 0.14] },
 ]);
 
 export function resolveMistralChatModel(model: string | undefined): MistralChatModel | undefined {
@@ -43,7 +52,7 @@ export function resolveMistralChatModel(model: string | undefined): MistralChatM
 export const MISTRAL_MODEL_CATALOG: readonly RegisteredModelCatalogEntry[] = Object.freeze(
   MISTRAL_CHAT_MODELS.map((entry, priority) => Object.freeze({
     provider: "mistral", model: entry.model, displayName: entry.displayName,
-    contextWindow: entry.contextWindow, maxContextWindow: entry.contextWindow,
+    ...(entry.contextWindow === undefined ? {} : {contextWindow: entry.contextWindow, maxContextWindow: entry.contextWindow}),
     ...(entry.maxOutputTokens === undefined ? {} : {maxOutputTokens: entry.maxOutputTokens}),
     // The Core message envelope currently has no audio part, so Voxtral's
     // audio API remains outside the exposed chat capability surface.

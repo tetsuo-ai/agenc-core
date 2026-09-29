@@ -157,6 +157,7 @@ describe("retired models remain historical metadata, not live choices", () => {
       "mistral-medium-latest", "mistral-small-latest", "codestral-latest",
       "ministral-14b-latest", "ministral-8b-latest", "ministral-3b-latest",
       "voxtral-small-latest", "labs-leanstral-1-5",
+      "mistral-large-latest", "zai-glm-5-3", "zai-glm-5-2",
     ]);
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.minimax).toContain("MiniMax-M3");
   });
