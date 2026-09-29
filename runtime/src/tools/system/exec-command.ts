@@ -65,6 +65,8 @@ import {
 export interface ExecCommandToolConfig extends BashToolConfig {
   /** Default result budget; explicit max_output_tokens takes precedence. */
   readonly defaultMaxOutputTokens?: number;
+  /** Optional presentation ceiling. Execution and canonical receipts are unaffected. */
+  readonly maxResultTokens?: number;
   readonly allowedPaths?: readonly string[];
   readonly unifiedExecManager?: UnifiedExecProcessManagerLike;
 }
@@ -778,7 +780,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
             ? { yield_time_ms: asNumber(args.yield_time_ms) }
             : {}),
           ...((asNumber(args.max_output_tokens) ?? config?.defaultMaxOutputTokens) !== undefined
-            ? { max_output_tokens: asNumber(args.max_output_tokens) ?? config?.defaultMaxOutputTokens }
+            ? { max_output_tokens: Math.min(asNumber(args.max_output_tokens) ?? config!.defaultMaxOutputTokens!, config?.maxResultTokens ?? Infinity) }
             : {}),
           ...(args.__abortSignal !== undefined
             ? { __abortSignal: args.__abortSignal }

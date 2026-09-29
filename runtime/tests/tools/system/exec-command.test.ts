@@ -226,6 +226,13 @@ describe("exec_command tool", () => {
     expect(execCommand.mock.calls[0]?.[0].max_output_tokens).toBe(2000);
     await tool.execute({ cmd: "pwd", max_output_tokens: 7000 });
     expect(execCommand.mock.calls[1]?.[0].max_output_tokens).toBe(7000);
+    const light = createExecCommandTool({ cwd: root, allowedPaths: [root], unifiedExecManager: manager, defaultMaxOutputTokens: 1000, maxResultTokens: 2000 });
+    const bounded = await light.execute({ cmd: "pwd", max_output_tokens: 50000 });
+    expect(execCommand.mock.calls[2]?.[0].max_output_tokens).toBe(2000);
+    expect(bounded.metadata?.exitCode).toBe(0);
+    expect(bounded.effectDisposition).toBeDefined();
+    await light.execute({ cmd: "pwd", max_output_tokens: 500 });
+    expect(execCommand.mock.calls[3]?.[0].max_output_tokens).toBe(500);
   });
 
   // Live incident (session conv-mtjdmlfc, 2026-09-02): 21 `npm start` calls

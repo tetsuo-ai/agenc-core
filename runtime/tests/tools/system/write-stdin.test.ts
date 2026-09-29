@@ -133,4 +133,9 @@ test("polling output defaults reach the manager and explicit requests override t
   expect(writeStdin.mock.calls[0]?.[0]).toMatchObject({ max_output_tokens: 2000 });
   await tool.execute({ session_id: 1, chars: "", max_output_tokens: 7000 });
   expect(writeStdin.mock.calls[1]?.[0]).toMatchObject({ max_output_tokens: 7000 });
+  const light = bindExplicitDangerBoundary(createUnboundWriteStdinTool({ cwd: root, unifiedExecManager: manager, defaultMaxOutputTokens: 1000, maxResultTokens: 2000 }));
+  await light.execute({ session_id: 1, chars: "", max_output_tokens: 50000 });
+  expect(writeStdin.mock.calls[2]?.[0]).toMatchObject({ max_output_tokens: 2000 });
+  await light.execute({ session_id: 1, chars: "", max_output_tokens: 500 });
+  expect(writeStdin.mock.calls[3]?.[0]).toMatchObject({ max_output_tokens: 500 });
 });

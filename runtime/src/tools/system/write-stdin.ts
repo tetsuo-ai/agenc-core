@@ -23,6 +23,8 @@ import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 export interface WriteStdinToolConfig {
   /** Default result budget; explicit max_output_tokens takes precedence. */
   readonly defaultMaxOutputTokens?: number;
+  /** Optional presentation ceiling, shared with the originating command. */
+  readonly maxResultTokens?: number;
   readonly cwd?: string;
   readonly allowedPaths?: readonly string[];
   readonly env?: Record<string, string>;
@@ -211,7 +213,7 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
             ? { yield_time_ms: asNumber(args.yield_time_ms) }
             : {}),
           ...((asNumber(args.max_output_tokens) ?? config?.defaultMaxOutputTokens) !== undefined
-            ? { max_output_tokens: asNumber(args.max_output_tokens) ?? config?.defaultMaxOutputTokens }
+            ? { max_output_tokens: Math.min(asNumber(args.max_output_tokens) ?? config!.defaultMaxOutputTokens!, config?.maxResultTokens ?? Infinity) }
             : {}),
           ...(args.__abortSignal !== undefined
             ? { __abortSignal: args.__abortSignal }
