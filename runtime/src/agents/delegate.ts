@@ -109,6 +109,8 @@ export interface DelegateOpts {
   readonly serviceTier?: string | null;
   readonly isolation?: IsolationMode;
   readonly worktreeSlug?: string;
+  /** Internal workflow handoff. Inspect an already-owned worktree without creating or deleting it. */
+  readonly inspectionWorktree?: WorktreeHandle;
   readonly forkMode?: ForkMode;
   readonly parentMessagesOverride?: ReadonlyArray<LLMMessage>;
   readonly runInBackground?: boolean;
@@ -292,6 +294,11 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
     requestedRole,
     parentThreadId === undefined ? undefined : opts.registry.agentMetadataForThread?.(parentThreadId)?.executionConstraint,
   );
+  if (opts.inspectionWorktree !== undefined &&
+      (readOnlyConstraint === undefined || isolation !== "none")) {
+    const reason = "An inspection worktree requires read-only delegation and isolation none.";
+    return reject("INVALID_DELEGATE_REQUEST", "invalid_request", reason, noChildCreated(reason));
+  }
   if (readOnlyConstraint !== undefined && isolation === "worktree") {
     const reason =
       "Read-only delegation cannot create a worktree. Use isolation none.";
@@ -324,7 +331,9 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
         };
 
   // Set up worktree if requested.
-  let worktree: WorktreeHandle | undefined;
+  // This invocation never owns lifecycle cleanup of an inspection checkout.
+  let worktree: WorktreeHandle | undefined = opts.inspectionWorktree === undefined
+    ? undefined : { ...opts.inspectionWorktree, created: false };
   let baseCommit: string | null = null;
   let worktreeSandboxExecutionBroker: SandboxExecutionBrokerLike | undefined;
   let preserveLiveAfterRoleProvenanceFailure = false;

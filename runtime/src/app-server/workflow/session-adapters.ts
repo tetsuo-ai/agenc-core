@@ -1004,10 +1004,20 @@ export function createWorkflowSessionSeams(
             : {}),
           // Fresh context by construction: the child sees ONLY its prompt.
           parentMessagesOverride: [],
-          // Reuse the run's own deterministic worktree; getOrCreateWorktree
-          // fast-resumes the existing checkout at the same slug.
-          isolation: "worktree",
-          worktreeSlug: workflowWorktreeSlug(input.spec.runId),
+          // The read-only planner inspects the workflow's existing checkout.
+          // Asking a constrained child to create a worktree is correctly refused.
+          ...(input.kind === "plan" ? {
+            isolation: "none" as const,
+            inspectionWorktree: {
+              path: input.worktreePath,
+              gitRoot: input.spec.repoPath,
+              branch: `worktree-${workflowWorktreeSlug(input.spec.runId)}`,
+              created: false,
+            },
+          } : {
+            isolation: "worktree" as const,
+            worktreeSlug: workflowWorktreeSlug(input.spec.runId),
+          }),
           runInBackground: false,
           forceSynchronous: true,
           silent: true,
