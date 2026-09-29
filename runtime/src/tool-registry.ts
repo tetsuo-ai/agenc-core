@@ -681,6 +681,7 @@ export function buildToolRegistry(
     options.unifiedExecManager ??
     new UnifiedExecProcessManager({ cwd: options.workspaceRoot, ...(options.lightMode === true ? { settleOnStreamClose: true, tailOutput: true, storeOutput: storeLightOutput } : {}) });
   const discoveredToolNames = new Set<string>();
+  const lightSchemaOrder = new Map<string, number>();
   const markDiscovered = (toolNames: readonly string[]): void => {
     for (const name of toolNames) {
       if (typeof name === "string" && name.trim().length > 0) {
@@ -1259,7 +1260,20 @@ export function buildToolRegistry(
       return allSpecs().map((spec) => spec.tool);
     },
     toLLMTools(): LLMTool[] {
-      const tools = visibleSpecs().map((spec) => {
+      const visible = [...visibleSpecs()];
+      if (options.lightMode === true) {
+        // Append newly visible names to this session's existing schema order.
+        // Rebuild definitions from live specs so removals and updates remain real.
+        for (const spec of visible) {
+          if (!lightSchemaOrder.has(spec.tool.name)) {
+            lightSchemaOrder.set(spec.tool.name, lightSchemaOrder.size);
+          }
+        }
+        visible.sort((left, right) =>
+          lightSchemaOrder.get(left.tool.name)! - lightSchemaOrder.get(right.tool.name)!,
+        );
+      }
+      const tools = visible.map((spec) => {
         const tool = toolToLLMTool(spec.tool);
         return options.lightMode === true && spec.tool.metadata?.source === "builtin"
           ? lightToolPresentation(tool, discoveredToolNames.has(spec.tool.name))

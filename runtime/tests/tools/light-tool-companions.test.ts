@@ -43,6 +43,8 @@ describe("Light companion discovery", () => {
     const one = registry();
     const schema = () => one.toLLMTools().find(tool => tool.function.name === "exec_command")!.function.parameters.properties;
     expect(schema()).not.toHaveProperty("sandbox_permissions");
+    load(one, { content: "program failed", isError: true, metadata: { exitCode: 127 } });
+    expect(schema()).not.toHaveProperty("sandbox_permissions");
     load(one, { content: "sandbox denied", isError: true });
     expect(schema()).toHaveProperty("sandbox_permissions");
     expect(one.tools.find(tool => tool.name === "exec_command")?.requiresApproval).toBe(true);
