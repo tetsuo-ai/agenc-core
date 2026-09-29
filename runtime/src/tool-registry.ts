@@ -1,3 +1,4 @@
+import { storeLightOutput } from "./tools/light-output.js";
 /**
  * Tool registry — the lean coding-profile surface.
  *
@@ -678,7 +679,7 @@ export function buildToolRegistry(
 ): ToolRegistry {
   const unifiedExecManager =
     options.unifiedExecManager ??
-    new UnifiedExecProcessManager({ cwd: options.workspaceRoot, ...(options.lightMode === true ? { settleOnStreamClose: true, tailOutput: true } : {}) });
+    new UnifiedExecProcessManager({ cwd: options.workspaceRoot, ...(options.lightMode === true ? { settleOnStreamClose: true, tailOutput: true, storeOutput: storeLightOutput } : {}) });
   const discoveredToolNames = new Set<string>();
   const markDiscovered = (toolNames: readonly string[]): void => {
     for (const name of toolNames) {

@@ -68,6 +68,8 @@ export interface UnifiedExecManagerOptions {
   readonly settleOnStreamClose?: boolean;
   /** Light command responses retain the bounded tail of each stream. */
   readonly tailOutput?: boolean;
+  /** Save a larger capture before returning an excerpt; never changes process authority. */
+  readonly storeOutput?: (content: string) => Promise<string | undefined>;
   readonly cwd?: string;
   readonly env?: Record<string, string>;
   readonly baseEnv?: Readonly<Record<string, string | undefined>>;
@@ -196,6 +198,8 @@ export interface UnifiedExecBackgroundProcess {
 }
 
 export interface ExecCommandToolOutput {
+  readonly saved_output_path?: string;
+  readonly output_save_failed?: boolean;
   readonly output: string;
   readonly stdout: string;
   readonly stderr: string;

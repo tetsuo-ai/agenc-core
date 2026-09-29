@@ -1299,6 +1299,26 @@ describe("background-shell trio (task 8)", () => {
 
 
 describe("Light command results", () => {
+  test.each([false, true])("saves the capture before clipping and reports save failures (%s)", async (fail) => {
+    const storeOutput = vi.fn(async (content: string) => {
+      expect(content).toContain("FIRST");
+      expect(content).toContain("LAST");
+      if (fail) throw new Error("storage unavailable");
+      return "/session/tool-results/capture.txt";
+    });
+    const manager = new UnifiedExecProcessManager({ tailOutput: true, storeOutput });
+    try {
+      const script = "process.stdout.write('FIRST'+'.'.repeat(5000)+'LAST')";
+      const result = await manager.execCommand({ cmd: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`, max_output_tokens: 100, yield_time_ms: 1000 });
+      expect(result.exitCode).toBe(0);
+      expect(storeOutput).toHaveBeenCalledOnce();
+      expect(result.stdout).not.toContain("FIRST");
+      expect(result.stdout).toMatch(/LAST$/u);
+      expect(result.saved_output_path).toBe(fail ? undefined : "/session/tool-results/capture.txt");
+      expect(result.output_save_failed).toBe(fail ? true : undefined);
+    } finally { await manager.closeAll("test cleanup"); }
+  });
+
   test("retains stream tails, exit status and total size after pipe drain", async () => {
     const manager = new UnifiedExecProcessManager({ tailOutput: true, settleOnStreamClose: true });
     try {

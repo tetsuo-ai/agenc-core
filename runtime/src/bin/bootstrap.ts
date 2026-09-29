@@ -1,3 +1,4 @@
+import { storeLightOutput } from "../tools/light-output.js";
 import { VERSION } from "../version.js";
 import { randomUUID } from "node:crypto";
 import { fstatSync, lstatSync, realpathSync } from "node:fs";
@@ -1252,7 +1253,7 @@ async function bootstrapLocalRuntimeSessionScoped(
     commandExecutionAuthority.childEnvironment,
   );
   const unifiedExecManager = new UnifiedExecProcessManager({
-    ...(runtimeOptions.lightMode === true ? { settleOnStreamClose: true, tailOutput: true } : {}),
+    ...(runtimeOptions.lightMode === true ? { settleOnStreamClose: true, tailOutput: true, storeOutput: storeLightOutput } : {}),
     cwd: workspaceRoot,
     baseEnv: env,
     shellPath: commandExecutionAuthority.path,
