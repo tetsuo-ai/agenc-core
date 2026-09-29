@@ -181,6 +181,9 @@ async function exhaustGate(maxRounds: number) {
 describe("completion gate in the turn loop", () => {
   test.each([
     "Read the file and return JSON only.",
+    "Only JSON. Read the file and report its values.",
+    "Read the file and respond in JSON.",
+    'Read the file and return exactly {"ok":true}.',
     "Delegate the task and return the child's final JSON answer verbatim, without commentary.",
     "Read the file and reply with exactly the requested JSON final answer.",
     "Read the file and return exactly \"ok\".",

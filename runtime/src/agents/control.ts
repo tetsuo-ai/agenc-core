@@ -2272,7 +2272,13 @@ export class AgentControl {
     }
     const text = receipt.message;
     if (offset > text.length) throw new Error("result_ref.offset exceeds the final answer length");
-    const end = Math.min(text.length, offset + 8_192);
+    const splitsCharacter = (index: number): boolean => {
+      const previous = text.charCodeAt(index - 1), next = text.charCodeAt(index);
+      return previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff;
+    };
+    if (splitsCharacter(offset)) throw new Error("result_ref.offset splits a Unicode character; use next_offset from the previous page");
+    let end = Math.min(text.length, offset + 8_192);
+    if (splitsCharacter(end)) end -= 1;
     return { text: text.slice(offset, end), total_chars: text.length,
       next_offset: end < text.length ? end : null, complete: end === text.length };
   }

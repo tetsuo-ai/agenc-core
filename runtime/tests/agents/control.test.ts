@@ -179,6 +179,7 @@ describe("AgentControl", () => {
     for (;;) {
       const page = control.readChildResultPage(session.conversationId, child.agentId, "done", offset);
       expect(page.text.length).toBeLessThanOrEqual(8192);
+      expect(Buffer.from(page.text, "utf8").toString("utf8")).toBe(page.text);
       result += page.text;
       if (page.next_offset === null) break;
       offset = page.next_offset;
@@ -188,6 +189,7 @@ describe("AgentControl", () => {
     expect(() => control.readChildResultPage("another-parent", child.agentId, "done")).toThrow(/not a child/);
     expect(() => control.readChildResultPage(session.conversationId, child.agentId, "stale")).toThrow(/no completed/);
     expect(() => control.readChildResultPage(session.conversationId, child.agentId, "done", -1)).toThrow(/nonnegative/);
+    expect(() => control.readChildResultPage(session.conversationId, child.agentId, "done", text.indexOf("🐈") + 1)).toThrow(/splits a Unicode character/);
     await control.shutdownAll();
   });
 
