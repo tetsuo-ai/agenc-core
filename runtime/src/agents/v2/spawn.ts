@@ -680,7 +680,14 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     const inheritedConsentPlan = caller?.metadata?.executionPlan;
     const session = current.threadId === rootSession.conversationId
       ? rootSession : caller === undefined ? undefined : liveAgentSession(caller);
+    const originatingTurnId = session?.activeTurn?.unsafePeek()?.turnId;
+    const originatingStopGeneration = session?.userStopGeneration;
+    const originatingSignal = (args as { readonly __abortSignal?: AbortSignal }).__abortSignal;
     const callerIsCurrent = (): boolean => session !== undefined &&
+      opts.getSession() === rootSession && !session.isShuttingDown &&
+      !session.abortController.signal.aborted && originatingSignal?.aborted !== true &&
+      session.stoppedByUserSinceLastPrompt !== true && session.userStopGeneration === originatingStopGeneration &&
+      (originatingTurnId === undefined || session.activeTurn?.unsafePeek()?.turnId === originatingTurnId) &&
       (caller === undefined
         ? session === rootSession
         : control.getLive(current.threadId) === caller &&
@@ -1061,6 +1068,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         reportedEffort = plan.reasoningEffort ?? reportedEffort;
         emitSpawnBegin();
       }
+      if (!callerIsCurrent()) {
+        return failSpawn("invalid-runtime-identity: calling agent session or turn changed before delegation");
+      }
       const worktreeSlug =
         isolation !== undefined
           ? deriveAgentWorktreeSlug({
@@ -1072,11 +1082,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       const outcome = await delegate({
         parent: session,
         parentPath: current.agentPath,
-        ...(caller !== undefined ? {
-          assertParentSessionActive: () => {
-            if (!callerIsCurrent()) throw new Error("invalid-runtime-identity: calling agent session is no longer live");
-          },
-        } : {}),
+        assertParentSessionActive: () => {
+          if (!callerIsCurrent()) throw new Error("invalid-runtime-identity: calling agent session or turn is no longer live");
+        },
         control,
         registry,
         taskPrompt: prompt,
