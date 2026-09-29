@@ -32,7 +32,7 @@ describe("provider-scoped effort contract", () => {
     }
   });
   it("does not borrow hosted capabilities across providers", () => {
-    expect(resolveReasoningEffort({provider: "openrouter", model: "openai/gpt-oss-120b"}).levels).toEqual([]);
+    expect(resolveReasoningEffort({provider: "openrouter", model: "unreviewed/gpt-oss-120b"}).levels).toEqual([]);
     expect(resolveReasoningEffort({provider: "nvidia-nim", model: "unknown"}).levels).toEqual([]);
   });
 

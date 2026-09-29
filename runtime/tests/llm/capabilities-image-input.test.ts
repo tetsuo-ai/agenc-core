@@ -43,7 +43,7 @@ describe("resolveImageInputSupport", () => {
     ["qwen", "qwen3.8-max", "supported"],
     // A constant `false` on a host of many models is a fail-closed default,
     // not knowledge of the model: the wire keeps its own policy.
-    ["openrouter", "anthropic/claude-sonnet-5", "unknown"],
+    ["openrouter", "anthropic/claude-sonnet-5", "supported"],
     ["agenc", "agenc", "unknown"],
     ["openai-compatible", "llava:13b", "unknown"],
     ["groq", "meta-llama/llama-4-scout-17b-16e-instruct", "unknown"],

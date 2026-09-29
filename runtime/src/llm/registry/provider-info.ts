@@ -8,7 +8,6 @@
 
 import { OLLAMA_CLOUD_BASE_URL, OLLAMA_CLOUD_API_KEY_ENV, OLLAMA_CLOUD_DEFAULT_MODEL } from "./ollama-cloud-models.js";
 import { deriveFlatCatalog } from "./model-catalog.js";
-import { OPENROUTER_FREE_MODEL_IDS } from "./openrouter-free-models.js";
 import { normalizeProviderIdentity } from "../../provider-identity.js";
 
 export const GEMINI_DEVELOPER_NATIVE_BASE_URL =
@@ -669,7 +668,7 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   ollama: Object.freeze(["llama3.3"]),
   lmstudio: Object.freeze(["gpt-4o-mini"]),
   "openai-compatible": Object.freeze(["local-model"]),
-  openrouter: Object.freeze([
+  openrouter: mergeDerivedProviderModels("openrouter", { leadingExtras: [
     "x-ai/grok-4.5",
     "x-ai/grok-4.3",
     "x-ai/grok-build-0.1",
@@ -691,8 +690,7 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
     "meta-llama/llama-4-scout",
     "minimax/minimax-m2.5",
     "z-ai/glm-4.7-flash",
-    ...OPENROUTER_FREE_MODEL_IDS,
-  ]),
+  ] }),
   // mixtral-8x7b-32768 was shut down by groq on 2025-03-20 (deprecations
   // page); listing it produced guaranteed-dead sessions.
   groq: Object.freeze([

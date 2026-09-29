@@ -133,6 +133,10 @@ export function resolveReasoningEffort(input: {
   } else if (isNativeDeepSeek) {
     acceptsReasoningEffort = true;
     reasoningEffortAllowedValues = new Set(DEEPSEEK_REASONING_LEVELS);
+  } else if (slug === "openrouter" && input.managedGateway !== true) {
+    const entry = resolveRegisteredModelCatalogEntry({ provider: slug, model });
+    reasoningEffortAllowedValues = new Set(entry?.supportedReasoningLevels ?? []);
+    acceptsReasoningEffort = reasoningEffortAllowedValues.size > 0;
   } else if (slug === "openai") {
     acceptsReasoningEffort = isUpstreamReasoningModel(model);
   } else if (slug === "grok") {

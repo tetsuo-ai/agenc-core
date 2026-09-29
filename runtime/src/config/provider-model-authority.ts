@@ -214,6 +214,15 @@ function resolveExplicitPair(
     );
   }
 
+  // A vendor/model spelling is provider-local on NIM and custom/local
+  // compatible servers. Gateway catalogs cannot override an explicit pair,
+  // including when multiple hosted providers list the same model. Explicit
+  // colon qualification has already been validated above.
+  if (projectedModel.includes("/") &&
+      ["nvidia-nim", "ollama", "lmstudio", "openai-compatible"].includes(provider)) {
+    return Object.freeze({ provider, model: projectedModel });
+  }
+
   try {
     const resolved = resolveModelDisambiguated(projectedModel, catalog);
     if (resolved.provider !== provider) {

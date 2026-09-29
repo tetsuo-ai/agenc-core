@@ -50,6 +50,8 @@ export interface ChatCompletionsCapabilityHints {
    * accept flag alone would forward values the destination rejects.
    */
   readonly reasoningEffortAllowedValues?: ReadonlySet<string>;
+  /** OpenRouter accepts its own nested reasoning envelope. */
+  readonly reasoningEffortEnvelope?: "openrouter";
   /**
    * Restricts provider-specific explicit tool-choice values. `auto_only`
    * downgrades `required` and named functions while preserving `none` by
@@ -404,6 +406,9 @@ export function chatCompletionsCapabilityHintsForProvider(
 
   return {
     acceptsReasoningEffort,
+    ...(slug === "openrouter" && options.managedGateway !== true
+      ? { reasoningEffortEnvelope: "openrouter" as const }
+      : {}),
     ...(slug === "openai" ? { gatesTemperatureOnOpenAiReasoning: true } : {}),
     ...(slug === "ollama-cloud" ? {
       acceptsDirectImageInput: acceptsToolResultImages,

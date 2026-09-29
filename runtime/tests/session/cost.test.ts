@@ -228,7 +228,8 @@ describe("cost helpers", () => {
         1.5 * inputUsdPer1K + 0.5 * cachedInputUsdPer1K + outputUsdPer1K,
         10,
       );
-      for (const alias of [model, `openai/${model}`, `openrouter:openai/${model}`]) {
+      // OpenRouter has its own published tariff, tested in openrouter-catalog.test.ts.
+      for (const alias of [model, `openai/${model}`]) {
         expect(DEFAULT_MODEL_COSTS[alias]).toBe(DEFAULT_MODEL_COSTS[`openai:${model}`]);
       }
     },
@@ -281,7 +282,7 @@ describe("cost helpers", () => {
     for (const [provider, model] of Object.entries(
       BUILT_IN_PROVIDER_DEFAULT_MODELS,
     )) {
-      if (["qwen-token-plan", "zai-coding-plan", "agenc", "nvidia-nim", "amazon-bedrock"].includes(provider)) continue;
+      if (["openrouter", "qwen-token-plan", "zai-coding-plan", "agenc", "nvidia-nim", "amazon-bedrock"].includes(provider)) continue;
       const sidecar = new CostSidecar({
         defaultProvider: provider,
         defaultModel: model,

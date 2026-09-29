@@ -27,6 +27,7 @@ import type { Event } from "./event-log.js";
 import type { Sidecar } from "./sidecar.js";
 import { normalizeProviderMetadataIdentity } from "../provider-identity.js";
 import { parseClaudeModelId } from "../utils/model/claudeModelId.js";
+import { OPENROUTER_MODELS } from "../llm/registry/openrouter-models.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Cost registry — USD per 1K tokens.
@@ -928,6 +929,46 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       label: "local",
       localZeroCost: true,
     },
+    // OpenRouter catalog prices do not bound the endpoint selected by routing.
+    // Retain paid rates in the conservative registry ceiling, but never settle
+    // them as a known bill or use them directly for admission. Only explicit
+    // free routes with no additional charges are known zero. Response cost wins.
+    // https://openrouter.ai/docs/guides/routing/provider-selection
+    ...Object.fromEntries(OPENROUTER_MODELS.flatMap((model) => {
+      const input = Number(model.pricing.prompt);
+      const output = Number(model.pricing.completion);
+      if (!Number.isFinite(input) || input < 0 || !Number.isFinite(output) || output < 0 ||
+        Number(model.pricing.request ?? 0) !== 0 || (model.priceOverrides?.length ?? 0) > 1 ||
+        model.priceOverrides?.some(rate => rate.min_prompt_tokens === undefined)) {
+        return [[`openrouter:${model.model}`, DEFAULT_UNKNOWN_MODEL_COST]];
+      }
+      const cacheRead = Number(model.pricing.input_cache_read);
+      const cacheWrite = Number(model.pricing.input_cache_write);
+      const long = model.priceOverrides?.[0];
+      return [[`openrouter:${model.model}`, {
+        inputUsdPer1K: input * 1000,
+        outputUsdPer1K: output * 1000,
+        ...(Number.isFinite(cacheRead) && cacheRead >= 0 ? { cachedInputUsdPer1K: cacheRead * 1000 } : {}),
+        ...(Number.isFinite(cacheWrite) && cacheWrite >= 0 ? { cacheCreationUsdPer1K: cacheWrite * 1000 } : {}),
+        cachedInputIncludedInInputTokens: Number.isFinite(cacheRead) && cacheRead >= 0,
+        cacheCreationIncludedInInputTokens: Number.isFinite(cacheWrite) && cacheWrite >= 0,
+        ...(long !== undefined ? { longContext: {
+          aboveInputTokens: long.min_prompt_tokens! - 1,
+          rates: {
+            inputUsdPer1K: Number(long.prompt) * 1000,
+            outputUsdPer1K: Number(long.completion) * 1000,
+            ...(long.input_cache_read !== undefined ? { cachedInputUsdPer1K: Number(long.input_cache_read) * 1000 } : {}),
+            ...(long.input_cache_write !== undefined ? { cacheCreationUsdPer1K: Number(long.input_cache_write) * 1000 } : {}),
+            cachedInputIncludedInInputTokens: true,
+            cacheCreationIncludedInInputTokens: true,
+          },
+        } } : {}),
+        ...(model.model.endsWith(":free") && input === 0 && output === 0 &&
+          long === undefined && Object.values(model.pricing).every(value => Number(value) === 0)
+          ? { localZeroCost: true }
+          : { costEstimated: true, label: "unverified routed price" }),
+      } satisfies ModelCostEntry]];
+    })),
   });
 
 // ─────────────────────────────────────────────────────────────────────
