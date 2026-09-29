@@ -66,6 +66,8 @@ function makeParentSession(cwd: string) {
     snapshotHistoryMessages: () => [],
     sessionConfiguration: { cwd },
     config: { cwd },
+    modelInfo: { slug: "fixture-model" },
+    providerService: { current: () => ({ provider: "deepseek", model: "fixture-model" }) },
     services: {
       sandboxExecutionBroker: explicitDangerBroker.forkForCwd(cwd),
     },

@@ -53,10 +53,11 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.21 adds an ephemeral allowlisted envOverrides snapshot to run.start.
  * 1.22 adds the step_limit child terminal reason for partial task results.
  * 1.23 adds the no_progress child terminal reason.
+ * 1.24 adds durable child task admission and restart recovery references.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.23.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.24.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =

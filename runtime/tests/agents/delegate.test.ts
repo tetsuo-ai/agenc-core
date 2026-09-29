@@ -108,6 +108,8 @@ function makeLive(
 function makeParentSession() {
   return {
     conversationId: "parent-session",
+    modelInfo: { slug: "test-model" },
+    providerService: { current: () => ({ provider: "test-provider", model: "test-model" }) },
     abortController: new AbortController(),
     eventLog: {},
     nextInternalSubId: () => "sub-1",
@@ -190,6 +192,31 @@ function makeRealDelegateHarness(
 }
 
 describe("delegate lifecycle recovery", () => {
+  it.each([undefined, "explicit-model"])("persists the initial task identity before running with model override %s", async (model) => {
+    const harness = makeRealDelegateHarness("initial-admission", (workspace) => {
+      registerAgentRole(workspace, { name: "scanner", config: { model: "role-model" } });
+    });
+    try {
+      mockRunAgent.mockImplementationOnce((params) => {
+        const edge = harness.rolloutStore.listThreadSpawnChildren(harness.parent.conversationId)
+          .find((item) => item.childThreadId === params.live.agentId);
+        expect(edge?.metadata.initialTaskAdmission).toMatchObject({
+          agentId: params.live.agentId, agentPath: params.live.agentPath,
+          taskId: "initial-task", turnId: params.initialTurnId, taskText: "inspect changes",
+          provider: "test-provider", model: model ?? "role-model", author: "/root",
+        });
+        expect(params.taskId).toBe("initial-task");
+        expect(params.initialTurnId).toBeTypeOf("string");
+        return runResult({ threadId: params.live.agentId, durationMs: 1, outcome: "completed" });
+      });
+      const outcome = await delegate({ parent: harness.parent as never, parentPath: "/root",
+        control: harness.control, registry: harness.registry, taskPrompt: "inspect changes",
+        taskId: "initial-task", role: "scanner", forceSynchronous: true,
+        ...(model === undefined ? {} : { model }) });
+      expect(outcome.kind).toBe("sync_completed");
+    } finally { harness.cleanup(); }
+  });
+
   it.each(["spawn", "fork"] as const)("retires a new live slot if caller authority expires during %s setup", async (stage) => {
     const live = makeLive("thread-expired", "/root/implementation/worker");
     let active = true;

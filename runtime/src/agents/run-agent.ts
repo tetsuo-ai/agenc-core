@@ -121,7 +121,7 @@ import {
   type TurnContext,
 } from "../session/turn-context.js";
 import type { ProviderSelection } from "../session/provider-service.js";
-import { assertChildExecutionPlan, assertPreparedChildMatchesPlan, consentGrantCoversPlan, type ChildExecutionPlan } from "./cross-provider.js";
+import { assertChildExecutionPlan, assertPreparedChildMatchesPlan, consentGrantCoversPlan, currentChildProvider, type ChildExecutionPlan } from "./cross-provider.js";
 import type { LiveAgent } from "./control.js";
 import {
   createMailboxMetadata,
@@ -232,6 +232,7 @@ export interface RunAgentParams {
   readonly summarizeAtStepLimit?: boolean;
   /** Correlation id for the initial task. Follow-up assignments replace it. */
   readonly taskId?: string;
+  readonly initialTurnId?: string;
   /** Exact commit captured at the start of this worktree-backed run. */
   readonly worktreeBaseCommit?: string;
   /** Internal cleanup evidence, including receipts that cannot be persisted. */
@@ -3734,7 +3735,7 @@ export async function* runAgent(
 ): AsyncGenerator<RunAgentProgressEvent, RunAgentResult, void> {
   const startedAt = Date.now();
   let revokeLiveSession: (() => void) | undefined;
-  let turnId: string = crypto.randomUUID();
+  let turnId: string = params.initialTurnId ?? crypto.randomUUID();
   const { live, parent } = params;
   let childSession: ChildSession | null = null;
   let ownedChildProvider: LLMProvider | null = null;
@@ -3745,7 +3746,7 @@ export async function* runAgent(
   let unsubscribeChildUsage: (() => void) | null = null;
   let forwardMergedAbort: (() => void) | null = null;
   let roleTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
-  let currentTaskId = params.taskId;
+  let currentTaskId: string | undefined = params.taskId ?? turnId;
   let currentTaskText = params.taskPrompt;
   let currentTurnReceiptCommitted = false;
   let currentCommittedReceipt: TaskTurnReceipt | undefined;
@@ -4404,6 +4405,18 @@ export async function* runAgent(
       childAuthority,
       terminalResultForPendingWorker,
     );
+    if (childSession.rolloutStore !== null) {
+      const destination = params.plan?.destination ?? currentChildProvider(childSession);
+      childSession.emit({ id: childSession.nextInternalSubId(), msg: {
+        type: "subagent_task_admitted", payload: live.metadata.initialTaskAdmission?.turnId === turnId
+          ? live.metadata.initialTaskAdmission : {
+          agentId: live.agentId, agentPath: live.agentPath, turnId,
+          taskId: currentTaskId ?? turnId, author: parentAgentPathFor(live.agentPath),
+          taskText: currentTaskText, acceptedAt: startedAt,
+          provider: destination.provider, model: destination.model,
+        },
+      } }, { durable: true });
+    }
     await refreshChildBaseInstructions(parent, childSession, params.plan?.destination);
     revokeLiveSession = bindLiveAgentSession(live, childSession);
     const {

@@ -2573,6 +2573,44 @@ describe("runAgent", () => {
     }
   });
 
+  it("projects the bound child provider while the parent and child selections change independently", async () => {
+    const provider = makeProvider([{ content: "ok" }]);
+    const session = makeStubSession({ services: { provider } });
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    control.registerSessionRoot(session.conversationId);
+    const live = await control.spawn({ parentPath: "/root" });
+    const projections: unknown[] = [];
+    const originalChat = provider.chatStream!;
+    vi.spyOn(provider, "chatStream").mockImplementationOnce(async (...args) => {
+      const child = liveAgentSession(live);
+      expect(child).toBeDefined();
+      if (child === undefined) throw new Error("child binding missing during model call");
+      const parentCurrent = vi.spyOn(session.providerService, "current").mockReturnValue({ provider: "openai", model: "parent-only" });
+      const childCurrent = vi.spyOn(child.providerService, "current").mockReturnValue({ provider: "deepseek", model: "child-first" });
+      try {
+        const capture = () => projections.push(
+          control.listAgents().find((item) => item.agentName === live.agentPath),
+          control.snapshotNativeWorkers(session.conversationId).find((item) => item.agentId === live.agentId),
+        );
+        capture();
+        parentCurrent.mockReturnValue({ provider: "grok", model: "parent-changed" });
+        capture();
+        childCurrent.mockReturnValue({ provider: "deepseek", model: "child-second" });
+        capture();
+      } finally { childCurrent.mockRestore(); parentCurrent.mockRestore(); }
+      return originalChat(...args);
+    });
+    const { result } = await collectRun(runAgent({ live, parent: session,
+      initialMessages: [{ role: "user", content: "go" }], taskPrompt: "go" }));
+    expect(result.outcome).toBe("completed");
+    expect(projections).toEqual([
+      ...Array.from({ length: 4 }, () => expect.objectContaining({ provider: "deepseek", model: "child-first" })),
+      ...Array.from({ length: 2 }, () => expect.objectContaining({ provider: "deepseek", model: "child-second" })),
+    ]);
+    await control.shutdownAll();
+    await session.shutdown();
+  });
+
   it("marks completed on success", async () => {
     const provider = makeProvider([{ content: "ok" }]);
     const session = makeStubSession({ services: { provider } });
@@ -3328,7 +3366,7 @@ describe("runAgent", () => {
           direction: "up",
           triggerTurn: true,
           content: expect.stringContaining(
-            `"durable_outcome_ref":{"projection_id":"${live.agentId}:${completed.turnId}:completed","agent_id":"${live.agentId}","turn_id":"${completed.turnId}"}`,
+            `"durable_outcome_ref":{"projection_id":"${live.agentId}:${completed.turnId}:completed","agent_id":"${live.agentId}","turn_id":"${completed.turnId}","task_id":"${completed.turnId}"}`,
           ),
           metadata: expect.objectContaining({
             kind: "subagent_notification",
@@ -6973,12 +7011,24 @@ describe("runAgent", () => {
           event.msg.type === "execution_admission" ? event.msg.payload : null,
         )
         .filter((event) => event !== null);
-      const childAdmissionEvents = readFileSync(childRolloutPath!, "utf8")
+      const childJournalEvents = readFileSync(childRolloutPath!, "utf8")
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line) as { type: string; payload?: Event })
         .filter((item) => item.type === "event_msg")
-        .map((item) => item.payload!)
+        .map((item) => item.payload!);
+      const taskAdmissionIndex = childJournalEvents.findIndex((event) => event.msg.type === "subagent_task_admitted");
+      const firstModelDispatchIndex = childJournalEvents.findIndex((event) => event.msg.type === "execution_admission" &&
+        event.msg.payload.kind === "model_turn" && event.msg.payload.event === "dispatched");
+      expect(taskAdmissionIndex).toBeGreaterThanOrEqual(0);
+      expect(firstModelDispatchIndex).toBeGreaterThan(taskAdmissionIndex);
+      expect(childJournalEvents[taskAdmissionIndex]!.msg).toMatchObject({ type: "subagent_task_admitted",
+        payload: { agentId: live.agentId, agentPath: live.agentPath, taskText: "go", author: "/root" } });
+      const initialAdmission = childJournalEvents[taskAdmissionIndex]!.msg;
+      if (initialAdmission.type !== "subagent_task_admitted") throw new Error("Expected durable task admission.");
+      expect(childJournalEvents.find((event) => event.msg.type === "subagent_turn_outcome")?.msg)
+        .toMatchObject({ payload: { taskId: initialAdmission.payload.taskId, turnId: initialAdmission.payload.turnId } });
+      const childAdmissionEvents = childJournalEvents
         .filter((event) => event.msg.type === "execution_admission")
         .map((event) =>
           event.msg.type === "execution_admission" ? event.msg.payload : null,

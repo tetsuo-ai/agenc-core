@@ -39,6 +39,7 @@ export const ROOT_AGENT_PATH = "/root" as AgentPath;
 export const MEMORY_AGENT_PATH = "/morpheus" as AgentPath;
 
 export interface AgentMetadata {
+  readonly initialTaskAdmission?: import("../session/event-log.js").SubagentTaskAdmissionEvent;
   readonly terminalOutcome?: import("./child-terminal.js").ChildTerminalOutcome;
   readonly executionPlan?: import("./cross-provider.js").ChildExecutionPlan;
   /** Durable routing decision and operator policy origin for child recovery. */
@@ -139,6 +140,17 @@ export function normalizeAgentMetadata(metadata: unknown): AgentMetadata {
   const crossProvider = record.crossProvider;
   const executionPlan = record.executionPlan;
   const terminalOutcome = record.terminalOutcome;
+  const initialTaskAdmission = record.initialTaskAdmission;
+  if (initialTaskAdmission !== undefined) {
+    const admission = initialTaskAdmission as Record<string, unknown> | null;
+    if (typeof admission !== "object" || admission === null || Array.isArray(admission) ||
+        ["agentId", "agentPath", "taskId", "turnId", "author", "taskText", "provider", "model"]
+          .some((key) => typeof admission[key] !== "string") ||
+        typeof admission.acceptedAt !== "number" || !Number.isFinite(admission.acceptedAt) ||
+        admission.agentId !== agentId || admission.agentPath !== agentPath) {
+      throw new InvalidAgentMetadataError("invalid initial child task admission");
+    }
+  }
   if (terminalOutcome !== undefined && (
     typeof terminalOutcome !== "object" || terminalOutcome === null ||
     typeof (terminalOutcome as Record<string, unknown>).provider !== "string" ||
@@ -172,6 +184,7 @@ export function normalizeAgentMetadata(metadata: unknown): AgentMetadata {
     ...(crossProvider !== undefined ? { crossProvider: crossProvider as NonNullable<AgentMetadata["crossProvider"]> } : {}),
     ...(executionPlan !== undefined ? { executionPlan: executionPlan as NonNullable<AgentMetadata["executionPlan"]> } : {}),
     ...(terminalOutcome !== undefined ? { terminalOutcome: terminalOutcome as NonNullable<AgentMetadata["terminalOutcome"]> } : {}),
+    ...(initialTaskAdmission !== undefined ? { initialTaskAdmission: initialTaskAdmission as NonNullable<AgentMetadata["initialTaskAdmission"]> } : {}),
   };
 }
 
