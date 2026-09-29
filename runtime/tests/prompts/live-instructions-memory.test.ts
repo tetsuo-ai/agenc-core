@@ -205,3 +205,13 @@ describe("live instructions memory indexes", () => {
     expect(envelope.text).toBe("BASE INSTRUCTIONS");
   });
 });
+
+
+it("Light defers instruction and memory indexes without reading ConfigStore or changing its prefix", async () => {
+  const session = { services: { runtimeOptions: { lightMode: true }, get configStore() { throw new Error("Unexpected eager instruction lookup"); } } } as unknown as Session;
+  const result = await resolveLiveInstructionEnvelope({ session, ctx: { cwd: project } as TurnContext, baseInstructions: "FIXED LIGHT HEAD" });
+  expect(result.text).toBe("FIXED LIGHT HEAD");
+  expect(result.workspaceText).toBe("");
+  expect(result.memoryText).toBe("");
+  expect(result.sources).toEqual([]);
+});
