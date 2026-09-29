@@ -2,6 +2,8 @@
 
 Final study measurements are still in progress. This directory intentionally contains no selected results yet.
 
+The summary reports both complete three-way acceptance and `owner_target_accepted` for Pi versus Light. Missing normal-mode usage blocks complete three-way evidence but does not change a fully observed Pi/Light comparison. Recorded timeouts and other failed attempts remain in pass, token, cost and wall-time denominators. Every Light task completed by Pi must pass all Light repeats; each model must also meet the token, median and p90 gates. Unknown Pi/Light usage, unmatched sampling and other evidence defects still block the owner gate.
+
 `test-results.json` records the completed Core/Desktop regression comparisons and SHA256 hashes of all retained study-labelled test logs. The final Core full run has four extra failed observations; matching-main or passing isolated checks support no reproducible Light-specific regression, not a green full suite. Desktop has zero new failures. Earlier interrupted and failed runs remain in the hash inventory and are not silently substituted for acceptance evidence.
 
 `legacy-harness/*.py.txt` preserves the exact historical local runner source hashes for auditing, not as recommended launchers. The original baseline source SHA256 is `9f8287611438941866cdaee3728d30c54ca985b395cf0858323cf718a34d89ad`. The later local runner fixes outcome/usage accounting and rejects incomplete-attempt reuse; its DeepSeek request settings, agent commands and task protocol are unchanged. Completed results are never replaced. Use the maintained portable runner at the package root for new studies. The accounting reconciliation report identifies the immutable original ledger and every reserve-price adjustment.

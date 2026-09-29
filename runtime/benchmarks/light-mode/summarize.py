@@ -315,8 +315,18 @@ def summarize(root, manifest_tasks, candidate_phase, baseline_phase, models, req
             check['no_pi_completed_task_lost'] = summaries['pi']['passed'] == 0 or (summaries['light']['runs'] > 0 and summaries['light']['passed'] == summaries['light']['runs'])
             check['accepted'] = not blockers and check['raw_metrics_meet_target'] and check['no_pi_completed_task_lost']
             check['status'] = 'insufficient_evidence' if blockers else 'pass' if check['accepted'] else 'fail'
+            # The owner comparison is Pi versus Light. Missing normal-mode usage
+            # still blocks the complete three-way study, but cannot change a
+            # fully observed Pi/Light result. Observed failures count in quality
+            # and time; they are not themselves missing performance evidence.
+            outcome_flags = {'timeout', 'budget_stop', 'process_failure',
+                             'reported_pass_contradiction', 'provider_errors', 'provider_unavailable'}
+            owner_blockers = [b for b in blockers if not b.startswith('normal:')
+                              and not (b.startswith(('pi:', 'light:')) and b.split(':',1)[1] in outcome_flags)]
+            check['owner_target_accepted'] = not owner_blockers and check['raw_metrics_meet_target'] and check['no_pi_completed_task_lost']
             task_reports.append({'task':task,'agents':summaries,'baseline_light':diag,
-                                 'acceptance':check,'blockers':sorted(set(blockers)),'warnings':sorted(set(warnings))})
+                                 'acceptance':check,'blockers':sorted(set(blockers)),
+                                 'owner_blockers':sorted(set(owner_blockers)),'warnings':sorted(set(warnings))})
         totals = {a:aggregate(model_selected[a]) for a in AGENTS}
         total_check = comparison(totals['pi'], totals['light'])
         model_blockers = [f'{agent}:mixed_agent_revisions_across_tasks' for agent in AGENTS if len(totals[agent]['agent_revisions']) > 1]
@@ -331,6 +341,8 @@ def summarize(root, manifest_tasks, candidate_phase, baseline_phase, models, req
                            and balanced['light']['mean_pass_rate'] >= balanced['pi']['mean_pass_rate'])
         total_check['task_balanced_target_met'] = balanced_target
         total_check['accepted'] = not model_blockers and bool(task_reports) and all(t['acceptance']['accepted'] for t in task_reports) and total_check['all_owner_metrics_met'] and balanced_target
+        owner_model_blockers = [b for b in model_blockers if not b.startswith('normal:')]
+        total_check['owner_target_accepted'] = not owner_model_blockers and bool(task_reports) and all(t['acceptance']['owner_target_accepted'] for t in task_reports) and total_check['all_owner_metrics_met'] and balanced_target
         reports.append({'model':model,'tasks':task_reports,'totals':totals,
                         'task_balanced_means':balanced,'baseline_light_totals':aggregate(diagnostic_light),
                         'acceptance':total_check,'blockers':model_blockers})
@@ -355,7 +367,9 @@ def summarize(root, manifest_tasks, candidate_phase, baseline_phase, models, req
                                 'artifact_check_pass':r.get('check_pass'),'stop_reason':r.get('stop_reason'),
                                 'anatomy':r['_anatomy']} for r in runs],
             'accepted':bool(reports) and all(m['acceptance']['accepted'] for m in reports),
+            'owner_target_accepted':bool(reports) and all(m['acceptance']['owner_target_accepted'] for m in reports),
             'limitations':['Wall p90 uses nearest rank across all selected attempts. Median and p90 must both be strictly lower in each model; no Pi-completed task may have a failed Light repeat.',
+                           'The separate owner_target_accepted gate compares fully observed Pi and Light attempts. Missing normal-mode usage still blocks complete three-way study acceptance. Observed Pi/Light failures remain in quality, token, cost and wall-time denominators.',
                            'At least two runs per cell is an exploratory sample, not statistical proof for all coding tasks.',
                            'Failed coding, timeout, process, and provider-error runs remain in every selected denominator and token/cost total.',
                            'Unknown numeric metrics are not replaced by zero. Observed sums are partial when coverage is incomplete.',
@@ -373,7 +387,7 @@ def format_number(value, digits=0):
 
 def markdown(report):
     lines=['# Light benchmark comparison','',f"Selected baseline `{report['selection']['baseline_phase']}` and Light `{report['selection']['candidate_phase']}`. Required distinct repeats per task/agent: {report['selection']['required_distinct_repeats']}.",
-           '',f"Acceptance: **{'PASS' if report['accepted'] else 'NOT PROVEN'}**. All selected failed runs remain included. Token columns are per-run means; total tokens means input plus output, including cached input.",'']
+           '',f"Complete three-way evidence: **{'PASS' if report['accepted'] else 'NOT PROVEN'}**. Owner Pi/Light target: **{'PASS' if report['owner_target_accepted'] else 'NOT MET OR INSUFFICIENT EVIDENCE'}**. All selected failed runs remain included. Token columns are per-run means; total tokens means input plus output, including cached input.",'']
     for model in report['models']:
         lines += [f"## {model['model']}",'','| Task | Agent | N | Pass | Input | Cached | Uncached | Output | Total | Cost/run | Time s | Model/tool calls |','| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |']
         for task in model['tasks']:
@@ -437,6 +451,22 @@ def self_test():
         fixture('pilot','pi',1,1)
         result=summarize(root,['task'],'candidate-final','baseline',['fixture-model'],2)
         assert result['accepted'] and result['inventory']['selected_result_files']==6
+        assert result['owner_target_accepted']
+        normal_record=root/'baseline-fixture-model-task-normal-r1/result.json'
+        normal_original=normal_record.read_text()
+        normal_partial=json.loads(normal_original); normal_partial['usage_complete']=False
+        normal_record.write_text(json.dumps(normal_partial))
+        partial_normal=summarize(root,['task'],'candidate-final','baseline',['fixture-model'],2)
+        assert not partial_normal['accepted'] and partial_normal['owner_target_accepted']
+        normal_record.write_text(normal_original)
+        pi_record=root/'baseline-fixture-model-task-pi-r2/result.json'
+        pi_original=pi_record.read_text(); pi_failed=json.loads(pi_original)
+        pi_failed.update(timeout=True,exit_code=5)
+        pi_record.write_text(json.dumps(pi_failed))
+        pi_timeout=summarize(root,['task'],'candidate-final','baseline',['fixture-model'],2)
+        assert not pi_timeout['accepted'] and pi_timeout['owner_target_accepted']
+        assert pi_timeout['models'][0]['totals']['pi']['failed']==1
+        pi_record.write_text(pi_original)
         assert result['models'][0]['totals']['pi']['sums']['total_tokens']==220
         assert result['models'][0]['totals']['pi']['failed']==1
         assert result['models'][0]['totals']['light']['wall_seconds']['p90'] == 1
@@ -467,6 +497,7 @@ def self_test():
         timed_group=timed_report['models'][0]['totals']['light']
         assert timed_group['passed']==1 and timed_group['reported_passed']==2 and timed_group['check_passed']==2
         assert 'reported_pass_contradiction' in timed_group['flags'] and not timed_report['accepted']
+        assert not timed_report['owner_target_accepted']
         record.write_text(original)
         wire=record.parent/'wire-001.json'; changed=json.loads(wire.read_text())
         changed['body']['messages'][0]['content']='changed prior system text'
