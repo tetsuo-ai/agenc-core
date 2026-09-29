@@ -3383,6 +3383,39 @@ export class SessionStore {
     };
   }
 
+  /** Bounded synchronous read under this store's existing lifetime writer lease.
+   * Receipts are fsynced before publication; pending non-durable events need
+   * not be flushed to read that committed prefix. Never takes a second lease. */
+  scanCanonicalChunks(maxBytes: number, consume: (chunk: Uint8Array) => void): void {
+    if (!this.opened || this.closed) throw new Error("cannot read a closed canonical store");
+    const identity = this.canonicalSourceIdentity();
+    const noFollow = "O_NOFOLLOW" in fsConstants ? fsConstants.O_NOFOLLOW : 0;
+    const fd = this.openCanonicalFile(fsConstants.O_RDONLY | noFollow, 0o600);
+    try {
+      const before = fstatSync(fd, { bigint: true });
+      if (before.dev.toString() !== identity.dev || before.ino.toString() !== identity.ino ||
+          before.size > BigInt(maxBytes)) throw new Error("Canonical result source changed or exceeds byte limit");
+      const chunk = Buffer.allocUnsafe(64 * 1_024);
+      const size = Number(before.size);
+      for (let offset = 0; offset < size;) {
+        const requested = Math.min(chunk.length, size - offset);
+        const read = readSync(fd, chunk, 0, requested, offset);
+        if (read !== requested) throw new Error("Canonical result source changed during read");
+        consume(chunk.subarray(0, read));
+        offset += read;
+      }
+      this.assertCanonicalFileStillBound(fd);
+      const after = fstatSync(fd, { bigint: true });
+      const current = this.canonicalSourceIdentity();
+      if (current.dev !== identity.dev || current.ino !== identity.ino ||
+          before.size !== after.size || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) {
+        throw new Error("Canonical result source changed during read");
+      }
+    } finally {
+      this.closeCanonicalOperationFd(fd);
+    }
+  }
+
   /** Read the rollout file fully and return the parsed items. */
   readAll(): RolloutItem[] {
     if (this.resumeSourceFaulted) {

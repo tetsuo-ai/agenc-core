@@ -173,6 +173,8 @@ import { runAdmittedToolCall } from "../budget/admitted-tool-call.js";
 import { AdmissionDeniedError } from "../budget/admission-client.js";
 import type { AssistantOutputStreamSink } from "../contracts/assistant-output-stream.js";
 
+import { CompletedTaskResults } from "./completed-task-results.js";
+
 const inspectionBrokers = new WeakMap<Session, Map<string, SandboxExecutionBrokerLike>>();
 
 // ─────────────────────────────────────────────────────────────────────
@@ -184,6 +186,7 @@ export interface RunAgentParams {
   readonly parent: Session;
   readonly initialMessages: ReadonlyArray<LLMMessage>;
   readonly taskPrompt: string;
+  readonly exactOutput?: boolean;
   readonly worktree?: WorktreeHandle;
   /** Tool allowlist — filters the parent's catalog. Default: all. */
   readonly toolAllowlist?: ReadonlyArray<string>;
@@ -1060,16 +1063,17 @@ function truncateReceiptField(value: string): string {
 function projectTaskReceiptForParent(
   receipt: TaskTurnReceipt,
 ): TaskTurnReceipt {
+  const { message, ...rest } = receipt;
   return {
-    ...receipt,
+    ...rest,
     ...(receipt.terminal !== undefined ? { terminal: {
       ...receipt.terminal,
       completedWork: truncateReceiptField(receipt.terminal.completedWork),
       unfinishedWork: truncateReceiptField(receipt.terminal.unfinishedWork),
     } } : {}),
-    ...(receipt.message !== undefined
-      ? { message: truncateReceiptField(receipt.message) }
-      : {}),
+    // Larger final answers use result_ref; never publish broken JSON.
+    ...(message !== undefined && Buffer.byteLength(message, "utf8") <= MAX_PARENT_RECEIPT_FIELD_BYTES
+      ? { message } : {}),
     ...(receipt.reason !== undefined
       ? { reason: truncateReceiptField(receipt.reason) }
       : {}),
@@ -1251,6 +1255,8 @@ function sendSubagentNotificationToParent(params: {
       : undefined;
   const content = formatSubagentNotification({
     agentPath: params.live.agentPath,
+    ...(params.receipt?.outcome === "completed" && params.receipt.message !== undefined
+      ? { resultRef: { agent_id: params.live.agentId, turn_id: params.receipt.turnId } } : {}),
     status:
       projectedReceipt === undefined
         ? params.live.status.value
@@ -3993,6 +3999,9 @@ export async function* runAgent(
     currentTurnReceiptCommitted = true;
     currentCommittedReceipt = receiptToCommit;
     currentReceiptWorktreeEvidence = receiptToCommit.worktreeEvidence;
+    if (receiptToCommit.outcome === "completed" && receiptToCommit.message !== undefined) {
+      (live.completedTaskResults ??= new CompletedTaskResults()).set(receiptToCommit.turnId, receiptToCommit.message);
+    }
     live.lastTaskReceipt = {
       turnId: receiptToCommit.turnId,
       outcome: receiptToCommit.outcome,
@@ -4437,6 +4446,7 @@ export async function* runAgent(
         totalTokens ?? (promptTokens ?? 0) + (completionTokens ?? 0);
     });
     let nextUserMessage: string | readonly LLMContentPart[] = userMessage;
+    let exactOutput = params.exactOutput;
     let firstTurn = true;
     let assistantText = "";
     let stoppedAtStepLimit = false;
@@ -4499,6 +4509,7 @@ export async function* runAgent(
         live.metadata.executionPlan?.task.text ??
         (typeof accepted.nextUserMessage === "string" ? accepted.nextUserMessage : currentTaskText);
       currentTaskId = accepted.taskId;
+      exactOutput = live.assignment?.exactOutput ?? false;
       turnId = accepted.turnId ?? crypto.randomUUID();
       currentTurnReceiptCommitted = false;
       taskStartingCost = knownWorkerCost();
@@ -4555,6 +4566,7 @@ export async function* runAgent(
       let terminalError: unknown;
 
       const iter = childSession.runTurn(nextUserMessage, {
+        exactOutput,
         ...(!params.keepAlive || params.summarizeAtStepLimit ? { stepLimitWrapup: {
           ...(params.plan?.budgetAllocation !== null && params.plan?.budgetAllocation !== undefined
             ? { maxModelCalls: params.plan.budgetAllocation.maxModelCalls } : {}),

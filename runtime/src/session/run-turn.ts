@@ -120,7 +120,6 @@ import {
 } from "../phases/post-sample-recovery.js";
 import { getAttachments } from "../prompts/attachments/orchestrator.js";
 import { getAttachmentTrackingState } from "./attachment-state.js";
-import { claimRequiredSwarmToolChoice } from "../prompts/attachments/swarm-mode.js";
 import {
   frameWorkspaceAgentRoleGuidance,
   resolveLiveInstructionEnvelope,
@@ -308,6 +307,8 @@ export type {
 import { StepLimitTrail, stepLimitReminder, stepLimitWrapup, STEP_LIMIT_WRAPUP_INSTRUCTION } from "./step-limit-wrapup.js";
 
 export interface RunTurnOptions {
+  /** Explicit output contract; never inferred from user prose. */
+  readonly exactOutput?: boolean;
   /** Only unattended child tasks opt in; interactive turns retain their lifecycle. */
   readonly stepLimitWrapup?: { readonly maxModelCalls?: number };
   readonly systemPrompt?: string;
@@ -988,21 +989,11 @@ async function prepareSamplingRequestBoundary(
   }
 
   const request = buildSamplingRequestContract(state, session, samplingContext, permissionContext);
-  const swarmToolChoice = claimRequiredSwarmToolChoice({
-    trackingState: getAttachmentTrackingState(session),
-    turnId: ctx.subId,
-    subagentDepth: ctx.depth,
-    planMode: planModeHelpers.isPlanMode(samplingContext),
-    toolNames: request.tools.map((tool) => tool.function.name),
-  });
 
   return {
     kind: "request",
     samplingContext,
-    request: snapshotSamplingRequestContract({
-      ...request,
-      ...(swarmToolChoice !== undefined ? { toolChoice: swarmToolChoice } : {}),
-    }),
+    request: snapshotSamplingRequestContract(request),
   };
 }
 
@@ -1223,8 +1214,6 @@ async function runSamplingRequest(
   beforeDispatch?: (request: StreamModelRequestContract) => Promise<boolean>,
   beforeOutageRetry?: () => void,
 ): Promise<SamplingRequestResult> {
-  const trackingState = getAttachmentTrackingState(session);
-  const previousSwarmChoiceTurnId = trackingState.lastSwarmSpawnToolChoiceTurnId;
   let prepared = await prepareSamplingRequestBoundary(
     state,
     ctx,
@@ -1235,9 +1224,6 @@ async function runSamplingRequest(
   );
   if (prepared.kind === "terminal") return prepared.result;
   if (beforeDispatch !== undefined && !(await beforeDispatch(prepared.request))) {
-    if (trackingState.lastSwarmSpawnToolChoiceTurnId === ctx.subId) {
-      trackingState.lastSwarmSpawnToolChoiceTurnId = previousSwarmChoiceTurnId;
-    }
     prepared = await prepareSamplingRequestBoundary(
       state, ctx, session, signal, events, querySource,
     );
@@ -2288,6 +2274,7 @@ async function* runTurnKernelInner(
     session,
     isRootHumanTurn: commons.rootHumanTurnText !== undefined,
     taskText: commons.rootHumanTurnText,
+    exactOutput: opts.exactOutput,
   });
   // Phase 4c: restate an active goal at the top of every root human turn. The
   // goal is session state, not conversation, so a compacted history or a
@@ -3743,6 +3730,7 @@ export function runTurn(
       userMessage: string | readonly LLMContentPart[],
       opts?: {
         ctx?: TurnContext;
+        exactOutput?: boolean;
         stepLimitWrapup?: RunTurnOptions["stepLimitWrapup"];
         systemPrompt?: string;
         history?: readonly LLMMessage[];
@@ -3765,6 +3753,7 @@ export function runTurn(
   if (typeof sessionOwner.runTurn === "function") {
     return sessionOwner.runTurn(userMessage, {
       ctx,
+      exactOutput: opts.exactOutput,
       stepLimitWrapup: opts.stepLimitWrapup,
       systemPrompt: opts.systemPrompt,
       history: opts.history,

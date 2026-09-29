@@ -93,7 +93,7 @@ describe("DeepSeekProvider", () => {
     const provider = new DeepSeekProvider({ apiKey: "deepseek-test", model, fetchImpl, tools: [ECHO_TOOL] });
     const onChunk = vi.fn();
     await expect(provider.chatStream([{ role: "user", content: "write" }], onChunk))
-      .resolves.toMatchObject({ finishReason: "length", toolCalls: [] });
+      .resolves.toMatchObject({ finishReason: "length", toolCalls: [], incompleteToolCalls: [{ id: "call_echo", name: "system.echo" }] });
     expect(onChunk).not.toHaveBeenCalledWith(expect.objectContaining({ toolCalls: expect.anything() }));
 
     const json = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify({
@@ -104,7 +104,7 @@ describe("DeepSeekProvider", () => {
     }), { headers: { "content-type": "application/json" } }));
     await expect(new DeepSeekProvider({ apiKey: "deepseek-test", model, fetchImpl: json, tools: [ECHO_TOOL] })
       .chat([{ role: "user", content: "write" }]))
-      .resolves.toMatchObject({ finishReason: "length", toolCalls: [] });
+      .resolves.toMatchObject({ finishReason: "length", toolCalls: [], incompleteToolCalls: [{ id: "call_echo", name: "system.echo" }] });
   });
 
   test.each([["stop", 'received "stop"'], [null, "no finish_reason"]] as const)(

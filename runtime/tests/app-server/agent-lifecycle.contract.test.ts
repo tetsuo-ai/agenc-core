@@ -6042,6 +6042,7 @@ describe("AgenC background agent lifecycle", () => {
       streamId: "stream_1",
       acceptedAt: "2026-05-01T12:00:01.000Z",
       displayUserMessage: null,
+      exactOutput: true,
     });
 
     expect(submitted).toEqual([
@@ -6064,6 +6065,7 @@ describe("AgenC background agent lifecycle", () => {
             },
           ],
           displayUserMessage: null,
+      exactOutput: true,
           messageId: "message_1",
           streamId: "stream_1",
           acceptedAt: "2026-05-01T12:00:01.000Z",

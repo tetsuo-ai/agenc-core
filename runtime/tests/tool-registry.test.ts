@@ -1199,9 +1199,10 @@ describe("tool-registry dynamic and deferred catalog", () => {
     ).toMatchObject({
       metadata: expect.objectContaining({ family: "agent" }),
       inputSchema: expect.objectContaining({
-        required: ["message", "task_name"],
+        required: ["task_name"],
         additionalProperties: false,
         properties: expect.objectContaining({
+          message_ref: expect.objectContaining({ required: ["source"], additionalProperties: false }),
           agent_type: expect.objectContaining({
             enum: expect.arrayContaining(["netrunner", "scanner", "runner"]),
             description: expect.stringContaining(

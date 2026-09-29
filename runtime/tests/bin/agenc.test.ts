@@ -3454,7 +3454,7 @@ describe("main() smoke", () => {
 
     const agentId = "agent_json";
     const sessionId = "session_json";
-    installDaemonCliDepsForTest({
+    const daemon = installDaemonCliDepsForTest({
       agentId,
       sessionId,
       cwd: tmpCwd,
@@ -3488,6 +3488,11 @@ describe("main() smoke", () => {
       trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await oneShotCLI("just answer this");
       expect(code).toBe(0);
+      expect(daemon.requests).toContainEqual(expect.objectContaining({
+        method: "agent.create", params: expect.objectContaining({
+          runtimeOptions: expect.objectContaining({ exactOutput: true }),
+        }),
+      }));
       const stdoutText = stdoutSpy.mock.calls
         .map(([chunk]) => String(chunk))
         .join("");
@@ -3549,7 +3554,7 @@ describe("main() smoke", () => {
 
     const agentId = "agent_jsonl";
     const sessionId = "session_jsonl";
-    installDaemonCliDepsForTest({
+    const daemon = installDaemonCliDepsForTest({
       agentId,
       sessionId,
       cwd: tmpCwd,
@@ -3592,6 +3597,11 @@ describe("main() smoke", () => {
       trustWorkspaceForTest(tmpHome, tmpCwd);
       const code = await oneShotCLI("just answer this");
       expect(code).toBe(0);
+      expect(daemon.requests).toContainEqual(expect.objectContaining({
+        method: "agent.create", params: expect.objectContaining({
+          runtimeOptions: expect.objectContaining({ exactOutput: true }),
+        }),
+      }));
       const lines = stdoutSpy.mock.calls
         .map(([chunk]) => String(chunk))
         .join("")

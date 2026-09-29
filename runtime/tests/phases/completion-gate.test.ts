@@ -124,11 +124,51 @@ describe("planCompletionGateForTurn", () => {
     taskText: "Fix the failing test",
   });
 
+  test.each([
+    "Return JSON only.", "Fix the bug and return JSON only.", "**Return JSON only.**",
+    "Update config.json only.", "Change settings.yaml only.", "Edit data.csv only.",
+    "Fix the endpoint to return JSON only. Run the tests and summarize the changes",
+    "Make the endpoint validate input and return JSON only. Run the tests and summarize the changes.",
+    "Make the serializer validate input and output only XML.",
+    "The CLI should validate input and emit CSV only.",
+    "Make the serializer output only XML.",
+    "The CLI should emit CSV only.",
+    "Do not return JSON only.",
+    "Don't respond in JSON.",
+    "Never reply with only YAML.",
+    "Do not copy the result verbatim.",
+  ])(
+    "keeps verification for a file scope restriction: %s", taskText => {
+      expect(planCompletionGateForTurn({ ...base(), taskText })).toMatchObject({ taskText, maxRounds: 3 });
+    },
+  );
+
   test("plans for a root human turn of a non-interactive session", () => {
     expect(planCompletionGateForTurn(base())).toEqual({
       maxRounds: 3,
       taskText: "Fix the failing test",
     });
+  });
+
+  test.each([
+    "```text\nReturn JSON only.\n```",
+    "~~~text\nReturn JSON only.\n~~~",
+    '> Example:\n> Return JSON only.',
+    '"Example. Return JSON only."',
+    "'Example. Return JSON only.'",
+    "“Example. Return JSON only.”",
+    "‘Example. Return JSON only.’",
+    "`Example. Return JSON only.`",
+  ])("keeps verification for quoted parser input: %s", example => {
+    const taskText = `Fix the parser for this input:\n${example}\nRun the tests and summarize the changes.`;
+    expect(planCompletionGateForTurn({ ...base(), taskText })).toMatchObject({ taskText, maxRounds: 3 });
+  });
+
+  test("only an explicit turn or session output setting exempts a root task", () => {
+    expect(planCompletionGateForTurn({ ...base(), exactOutput: true })).toBeUndefined();
+    const session = mkSession({ services: { runtimeOptions: { nonInteractive: true, exactOutput: true } } });
+    expect(planCompletionGateForTurn({ ...base(), session })).toBeUndefined();
+    expect(planCompletionGateForTurn({ ...base(), session, exactOutput: false })).toBeDefined();
   });
 
   test("truncates long task text", () => {

@@ -702,6 +702,21 @@ describe("parseOpenAIResponsesResponse", () => {
     expect(response.finishReason).toBe("length");
   });
 
+  test.each([
+    ["max_output_tokens", "length"],
+    ["content_filter", "content_filter"],
+    ["error", "error"],
+  ])("never parses or executes incomplete function calls (%s)", (reason, finishReason) => {
+    const response = parseOpenAIResponsesResponse("gpt-5", {
+      status: "incomplete", incomplete_details: { reason },
+      output: [{ type: "function_call", call_id: "call_cut", name: "spawn_agent", arguments: '{"message":"cut' }],
+    }, request);
+    expect(response.finishReason).toBe(finishReason);
+    expect(response.toolCalls).toEqual([]);
+    expect(response.incompleteToolCalls).toEqual(reason === "max_output_tokens"
+      ? [{ id: "call_cut", name: "spawn_agent" }] : undefined);
+  });
+
   test("records responses endpoint markers in request metrics", () => {
     const response = parseOpenAIResponsesResponse(
       "gpt-5",

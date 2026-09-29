@@ -162,6 +162,7 @@ export function resolveCompletionGatePolicy(
 }
 
 export function planCompletionGateForTurn(input: {
+  readonly exactOutput?: boolean;
   readonly ctx: TurnContext;
   readonly session: Pick<Session, "services" | "sessionConfiguration">;
   readonly isRootHumanTurn: boolean;
@@ -183,6 +184,7 @@ export function planCompletionGateForTurn(input: {
   }
   const taskText = (input.taskText ?? "").trim();
   if (taskText.length === 0) return undefined;
+  if (input.exactOutput ?? session.services?.runtimeOptions?.exactOutput ?? false) return undefined;
   return {
     maxRounds: policy.maxRounds,
     taskText:

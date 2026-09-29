@@ -263,13 +263,13 @@ describe("advisory compaction refusal", () => {
       .toContainEqual(expect.objectContaining({ outcome: "completed", code: 0 }));
   });
 
-  test("preserves an undispatched required swarm choice through mandatory re-preparation", async () => {
+  test("keeps swarm guidance advisory through mandatory re-preparation", async () => {
     const exercise = createToolExercise(0);
     const tracking = getAttachmentTrackingState(exercise.session);
     tracking.lastSwarmRoutingTurnId = exercise.ctx.subId;
     tracking.lastSwarmRoutingDecision = {
       ...routeSwarmTask("Implement independent features in parallel"),
-      delegationEnforcement: "require_initial_spawn",
+      delegationEnforcement: "none",
     };
     vi.spyOn(exercise.session.services.registry, "toLLMTools").mockReturnValue([{
       type: "function",
@@ -293,8 +293,7 @@ describe("advisory compaction refusal", () => {
 
     expect(attempts).toBe(2);
     expect(chatStream).toHaveBeenCalledTimes(1);
-    expect(chatStream.mock.calls[0]?.[2]?.toolChoice).toEqual({ type: "function", name: "spawn_agent" });
-    expect(tracking.lastSwarmSpawnToolChoiceTurnId).toBe(exercise.ctx.subId);
+    expect(chatStream.mock.calls[0]?.[2]?.toolChoice).toBeUndefined();
   });
 
   test("retains typed no-shrink evidence instead of interpreting error prose", async () => {

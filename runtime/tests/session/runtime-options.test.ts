@@ -42,6 +42,15 @@ afterEach(() => {
 });
 
 describe("agent runtime options", () => {
+  test("preserves and validates explicit exact-output settings", () => {
+    for (const exactOutput of [true, false]) {
+      const options = resolveAgentRuntimeOptions({}, { exactOutput });
+      expect(validateAgentRuntimeOptions(options).exactOutput).toBe(exactOutput);
+    }
+    expect(() => validateAgentRuntimeOptions({ ...resolveAgentRuntimeOptions({}), exactOutput: "true" }))
+      .toThrow("exactOutput must be boolean");
+  });
+
   test("normalizes supported environment values and typed overrides once", () => {
     const sessionTempRoot = join(makeTemporaryDirectory(), "session-temp");
     const pluginStorageRoot = join(makeTemporaryDirectory(), "plugins");

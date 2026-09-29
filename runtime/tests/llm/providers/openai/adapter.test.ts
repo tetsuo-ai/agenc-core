@@ -1501,6 +1501,7 @@ describe("OpenAIProvider", () => {
     expect(chunks).toEqual([
       { content: "Hel", done: false },
       { content: "lo", done: false },
+      { content: "", done: false, bufferedContentProgress: true },
       {
         content: "",
         done: false,

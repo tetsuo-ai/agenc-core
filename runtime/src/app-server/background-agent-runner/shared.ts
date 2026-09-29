@@ -285,6 +285,7 @@ export interface AgenCBackgroundAgentSessionEventBinding {
 }
 
 export interface AgenCBackgroundAgentMessageParams {
+  readonly exactOutput?: boolean;
   readonly sessionId: string;
   readonly content: MessageContent;
   readonly originalContent: MessageContent;

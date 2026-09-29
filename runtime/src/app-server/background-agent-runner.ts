@@ -2752,6 +2752,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       });
     }
     const submitOptions: DaemonHumanSessionSubmitOptions = {
+      ...(params.exactOutput !== undefined ? { exactOutput: params.exactOutput } : {}),
       [DAEMON_USER_STOP_GENERATION]: userStopGenerationToRelease,
       [DAEMON_LOCAL_MCP_ACCESS]: params.localMcpAccess === true,
       [DAEMON_USER_PROMPT_PREPARED]: true as const,
@@ -5845,6 +5846,7 @@ function installDaemonTurnDriverHooks(
           // main-thread source; subagents use their own sessions and autonomous ticks are still
           // excluded by rootHumanTurnText below.
           querySource: "sdk",
+          exactOutput: opts?.exactOutput,
           displayUserMessage: null,
           ...(opts?.[DAEMON_USER_STOP_GENERATION] !== undefined
             ? { userStopGenerationToRelease: opts[DAEMON_USER_STOP_GENERATION] }

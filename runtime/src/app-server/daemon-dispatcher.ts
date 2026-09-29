@@ -2308,6 +2308,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         this.#agentManager.streamAgentMessage({
           sessionId: streamParams.sessionId,
           content: streamParams.content,
+          ...(streamParams.exactOutput !== undefined ? { exactOutput: streamParams.exactOutput } : {}),
           ...displayUserMessageFromMetadata(
             "message.stream",
             streamParams.metadata,
@@ -4340,7 +4341,7 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
     methodName: "message.stream",
     stringFields: ["sessionId", "clientMessageId", "streamId", "ifBusy"],
     objectFields: ["metadata"],
-    valueFields: ["content"],
+    valueFields: ["content", "exactOutput"],
   });
   if (
     typeof validated.sessionId !== "string" ||
@@ -4351,6 +4352,9 @@ function validateMessageStreamParams(params: JsonObject): MessageStreamParams {
   validateMessageContent("message.stream", "content", validated.content);
   if (validated.ifBusy !== undefined && validated.ifBusy !== "reject") {
     throw invalidParams("message.stream param 'ifBusy' must be 'reject'");
+  }
+  if (validated.exactOutput !== undefined && typeof validated.exactOutput !== "boolean") {
+    throw invalidParams("message.stream param exactOutput must be a boolean");
   }
   return validated as MessageStreamParams;
 }

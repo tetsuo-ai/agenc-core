@@ -109,6 +109,26 @@ describe("session-store", () => {
     store.close();
   });
 
+  test("scans a live canonical journal in bounded chunks and refuses changed or closed sources", () => {
+    const store = new SessionStore({ cwd: home, sessionId: "scan-owner", agencVersion: "0.2.0" });
+    store.open({ sessionId: "scan-owner", timestamp: new Date().toISOString(), cwd: home,
+      originator: "test", agencVersion: "0.2.0" });
+    try {
+      const pieces: Buffer[] = [];
+      store.scanCanonicalChunks(1024 * 1024, chunk => pieces.push(Buffer.from(chunk)));
+      expect(Buffer.concat(pieces)).toEqual(readFileSync(store.rolloutPath));
+      expect(() => store.scanCanonicalChunks(1, () => {})).toThrow("byte limit");
+      expect(() => store.scanCanonicalChunks(1024 * 1024, () => {
+        const original = readFileSync(store.rolloutPath);
+        renameSync(store.rolloutPath, `${store.rolloutPath}.old`);
+        writeFileSync(store.rolloutPath, original);
+      })).toThrow(/changed|resume/);
+    } finally {
+      store.close();
+    }
+    expect(() => store.scanCanonicalChunks(1024, () => {})).toThrow("closed");
+  });
+
   test("fresh session metadata canonicalizes a symlink-spelled workspace", () => {
     const canonicalCwd = mkdtempSync(join(home, "canonical-workspace-"));
     const lexicalCwd = join(home, "workspace-alias");

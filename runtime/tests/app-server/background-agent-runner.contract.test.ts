@@ -9094,6 +9094,7 @@ describe("AgenC delegate background-agent runner", () => {
     await runner.submitAgentMessage("session-user-order", {
       sessionId: "session_1",
       content: "continue",
+      exactOutput: true,
       originalContent: "continue",
       messageId: "message_1",
       streamId: "stream_1",
@@ -9103,7 +9104,7 @@ describe("AgenC delegate background-agent runner", () => {
     expect(control.sendInput).toHaveBeenCalledWith(
       "session-user-order",
       "continue",
-      expect.objectContaining({ displayUserMessage: "continue" }),
+      expect.objectContaining({ displayUserMessage: "continue", exactOutput: true }),
     );
     expect(emitted).toHaveLength(1);
   });

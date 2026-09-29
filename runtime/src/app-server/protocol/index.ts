@@ -1389,6 +1389,8 @@ export interface AgentRuntimeOptionsParams extends JsonObject {
    * normalized to false.
    */
   readonly nonInteractive?: boolean;
+  /** Skip the completion checklist for an explicit machine-readable output contract. */
+  readonly exactOutput?: boolean;
   readonly stdinDataMode: boolean;
   readonly remoteMode: boolean;
   readonly remoteMemoryRoot?: string;
@@ -2137,6 +2139,8 @@ export interface MessageSendParams extends JsonObject {
 }
 
 export interface MessageStreamParams extends MessageSendParams {
+  /** Explicit output contract for this turn, including headless continuation. */
+  readonly exactOutput?: boolean;
   readonly streamId?: string;
 }
 

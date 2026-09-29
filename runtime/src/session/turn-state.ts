@@ -389,6 +389,8 @@ export interface TurnState {
   /** Consecutive max-output-tokens recovery attempts. Cap at
    *  MAX_OUTPUT_TOKENS_RECOVERY_LIMIT=3 (query.ts:162) before giving
    *  up. AgenC query.ts:1273. */
+  /** Names only: incomplete argument bytes never become executable history. */
+  truncatedToolCallNames?: readonly string[];
   maxOutputTokensRecoveryCount: number;
 
   /** Count of recovery re-entries this turn. Enforces I-42 (recovery

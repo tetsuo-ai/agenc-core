@@ -1,3 +1,4 @@
+import { createAssignTaskTool } from "../../../src/agents/v2/assign-task.js";
 import { describe, expect, it, vi } from "vitest";
 import type { Session } from "../../../src/session/session.js";
 import type { AgentStatus } from "../../../src/agents/status.js";
@@ -82,6 +83,19 @@ function fixture(initialStatus: AgentStatus, onBegin?: () => void, crossProvider
 }
 
 describe("send_message delivery report", () => {
+  it("validates and forwards the explicit output contract for each assignment", async () => {
+    const f = fixture({ status: "idle", turnId: "first", endedAtMs: 1 });
+    const tool = createAssignTaskTool(f.opts);
+    const result = await tool.execute({ target: f.live.agentPath, message: "Return JSON", exact_output: true });
+    expect(result.isError).not.toBe(true);
+    expect(f.assignTask).toHaveBeenLastCalledWith(f.live.agentId, expect.objectContaining({ exactOutput: true }));
+    await tool.execute({ target: f.live.agentPath, message: "ordinary follow-up" });
+    expect(f.assignTask).toHaveBeenLastCalledWith(f.live.agentId, expect.objectContaining({ exactOutput: false }));
+    f.assignTask.mockClear();
+    expect((await tool.execute({ target: f.live.agentPath, message: "Return JSON", exact_output: "true" })).isError).toBe(true);
+    expect(f.assignTask).not.toHaveBeenCalled();
+  });
+
   it.each(["queue_only", "trigger_turn"] as const)(
     "rechecks %s policy after synchronous interaction observers run", async (mode) => {
       const f = fixture({ status: "idle", turnId: "first", endedAtMs: 1 }, () => {

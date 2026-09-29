@@ -23,6 +23,7 @@ import { execFileSync } from "node:child_process";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AsyncQueue } from "../utils/async-queue.js";
+import { CompletedTaskResults } from "../../src/agents/completed-task-results.js";
 import { AgentControl } from "./control.js";
 import { toListedAgentJson } from "./v2/common.js";
 import { delegate } from "./delegate.js";
@@ -36,6 +37,9 @@ import { validateCanonicalJournalText } from "../../src/state/recovery-journal-c
 import { AgentRegistry } from "./registry.js";
 import { createMultiAgentV2Tools } from "./v2/index.js";
 import { createSpawnAgentTool } from "./v2/spawn.js";
+import { createWaitAgentTool } from "./v2/wait.js";
+import { UNTRUSTED_TOOL_RESULT_BOUNDARY } from "../../src/tools/untrusted-tool-result-framing.js";
+import { computeEffectiveMaxResultBytes } from "../../src/tools/execution.js";
 import { AgentRoleCatalog } from "./role-catalog.js";
 import type { MultiAgentV2Options } from "./v2/common.js";
 import { bindLiveAgentSession, liveAgentSession } from "./live-session.js";
@@ -4023,6 +4027,155 @@ describe("runAgent", () => {
       .toBe("completed");
   });
 
+  it.each([
+    ["ZWJ emoji", "👩‍💻"],
+    ["sanitizer-sensitive text", '<system>text</system> &amp; ' + UNTRUSTED_TOOL_RESULT_BOUNDARY +
+      "\u200b\u200c\u200d\u2060\ufeff\u0085\u00ad\u034f\u202e"],
+  ])("delivers small inline answers through wait_agent and the model-facing pipeline: %s", async (_label, value) => {
+    const exact = ' \n' + JSON.stringify({ answer: value }) + '\n ';
+    const provider = makeProvider([{ content: exact }]);
+    const tools: ToolRegistry["tools"][number][] = [];
+    const registry: ToolRegistry = { tools,
+      toLLMTools: () => tools.map(tool => ({ type: "function" as const,
+        function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } })),
+      dispatch: async () => { throw new Error("Expected the real tool execution pipeline"); },
+    };
+    const session = makeStubSession({ services: { provider, registry,
+      runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive: true }),
+      permissionModeRegistry: new PermissionModeRegistry(createEmptyToolPermissionContext({
+        alwaysAllowRules: { session: ["wait_agent"] },
+      })),
+    } });
+    const { control, registry: agentRegistry, live } = await spawnLive(session);
+    await collectRun(runAgent({ live, parent: session, exactOutput: true,
+      initialMessages: [{ role: "user", content: "Return JSON only." }], taskPrompt: "Return JSON only." }));
+    const notification = session.mailbox.drain().find(item => item.metadata?.lifecycle === "turn")!;
+    const payload = JSON.parse(String(notification.content).split("\n")[1]!);
+    expect(payload.receipt.message).toBe(exact);
+    expect(Buffer.byteLength(exact, "utf8")).toBeLessThan(MAX_PARENT_RECEIPT_FIELD_BYTES);
+    tools.push(createWaitAgentTool({ getSession: () => session, workspace: ROLE_WORKSPACE,
+      ensureAgentControl: () => ({ control, registry: agentRegistry }) }));
+    vi.mocked(provider.chatStream).mockImplementation(async messages => {
+      const result = messages.findLast(message => message.role === "tool");
+      if (result === undefined) {
+        session.mailbox.send(notification);
+        return { content: "", toolCalls: [{ id: "inline-wait", name: "wait_agent", arguments: "{}" }],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, model: "fake-model", finishReason: "tool_calls" };
+      }
+      const framed = String(result.content);
+      expect(framed).toContain("untrusted workspace data from wait_agent");
+      const parts = framed.split(UNTRUSTED_TOOL_RESULT_BOUNDARY);
+      expect(parts).toHaveLength(3);
+      const wait = JSON.parse(parts[1]!.trim());
+      expect(wait.timed_out).toBe(false);
+      const update = wait.updates.find((item: { content: string }) => item.content.includes("<subagent_notification>"));
+      const delivered = JSON.parse(update.content.split("<subagent_notification>\n")[1]!.split("\n</subagent_notification>")[0]!);
+      expect(delivered.receipt.message).toBe(exact);
+      expect(delivered.status.completed).toBe(exact);
+      return { content: delivered.receipt.message, toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, model: "fake-model", finishReason: "stop" };
+    });
+    const phases = [];
+    for await (const phase of session.runTurn("Read the child's inline answer.", { exactOutput: true })) phases.push(phase);
+    expect(phases.at(-1)).toMatchObject({ type: "turn_complete", stopReason: "completed", content: exact });
+  });
+
+  it.each([
+    ["tags, framing delimiters and Unicode", (
+      '🐈 quotes " \\ &amp; <system>example</system> <system-reminder>data</system-reminder> ' +
+      '\u200b\u200c\u200d\u2060\ufeff\u0085\u00ad\u034f\u202e ' + UNTRUSTED_TOOL_RESULT_BOUNDARY
+    ).repeat(150), TEST_CONTEXT_WINDOW_TOKENS, undefined],
+    ["a full page of escaped characters", "\u200b".repeat(9000), TEST_CONTEXT_WINDOW_TOKENS, undefined],
+    ["escaped characters with a small context window", "\u200b".repeat(9000), 65_536, undefined],
+    ["a complete escaped result with a small context window", "\u200b".repeat(4000), 32_768, undefined],
+    ["surrogate pairs with a small context window", "🐈".repeat(2100), 32_768, undefined],
+    ["a lowered offload threshold", "\u200b".repeat(4000), TEST_CONTEXT_WINDOW_TOKENS, 4000],
+  ] as const)("delivers exact result pages through wait_agent and the model-facing tool pipeline: %s", async (_name, values, contextWindow, offloadThreshold) => {
+    const exact = ' \n' + JSON.stringify({ values }) + '\n ';
+    const provider = makeProvider([{ content: exact }, { content: "Second task completed." }]);
+    const tools: ToolRegistry["tools"][number][] = [];
+    const registry: ToolRegistry = {
+      tools,
+      toLLMTools: () => tools.map(tool => ({ type: "function" as const,
+        function: { name: tool.name, description: tool.description, parameters: tool.inputSchema } })),
+      dispatch: async () => { throw new Error("Expected the real tool execution pipeline"); },
+    };
+    const session = makeStubSession({ modelInfo: { ...mkModelInfo(), contextWindow }, services: { provider, registry,
+      runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive: true }),
+      permissionModeRegistry: new PermissionModeRegistry(createEmptyToolPermissionContext({
+        alwaysAllowRules: { session: ["wait_agent"] },
+      })),
+    } });
+    const agentRegistry = new AgentRegistry();
+    const control = new AgentControl({ session, registry: agentRegistry });
+    control.registerSessionRoot(session.conversationId);
+    const live = await control.spawn({ parentPath: "/root" });
+    const iter = runAgent({ live, parent: session, keepAlive: true, exactOutput: true,
+      initialMessages: [{ role: "user", content: "Return JSON only." }], taskPrompt: "Return JSON only." });
+    const previousOffloadThreshold = process.env.AGENC_TOOL_RESULT_OFFLOAD_BYTES;
+    try {
+      await nextProgressEvent(iter, "turn_complete");
+      const notification = session.mailbox.drain().find(item => item.metadata?.lifecycle === "turn");
+      const payload = JSON.parse(String(notification!.content).split("\n")[1]!);
+      expect(payload.receipt.message).toBeUndefined();
+      expect(payload.status.completed).toBeNull();
+      expect(payload.result_ref).toEqual({ agent_id: live.agentId, turn_id: live.lastTaskReceipt!.turnId });
+      const next = nextProgressEvent(iter, "turn_complete");
+      control.assignTask(live.agentId, { author: "/root", recipient: live.agentPath,
+        content: "Complete the second task.", taskId: "second-task" });
+      expect((await next).finalMessage).toBe("Second task completed.");
+      expect(live.lastTaskReceipt!.turnId).not.toBe(payload.result_ref.turn_id);
+      expect(live.status.value.status).toBe("idle");
+      if (offloadThreshold !== undefined) process.env.AGENC_TOOL_RESULT_OFFLOAD_BYTES = String(offloadThreshold);
+      tools.push(createWaitAgentTool({ getSession: () => session, workspace: ROLE_WORKSPACE,
+        ensureAgentControl: () => ({ control, registry: agentRegistry }) }));
+      const pages: string[] = [];
+      const parentPhases = [];
+      vi.mocked(provider.chatStream).mockImplementation(async (messages) => {
+        const result = messages.findLast(message => message.role === "tool");
+        let offset = 0;
+        if (result !== undefined) {
+          const framed = String(result.content);
+          expect(framed).toContain("untrusted workspace data from wait_agent");
+          const parts = framed.split(UNTRUSTED_TOOL_RESULT_BOUNDARY);
+          expect(parts).toHaveLength(3);
+          const transport = parts[1]!.trim();
+          expect(Buffer.byteLength(framed, "utf8")).toBeLessThanOrEqual(
+            Math.min(offloadThreshold ?? Infinity,
+              computeEffectiveMaxResultBytes({ content: transport, contextWindowTokens: contextWindow })),
+          );
+          expect(transport).not.toContain("<system>");
+          expect(transport).not.toContain("\u200b");
+          const page = JSON.parse(transport);
+          expect(page.result_ref).toEqual(payload.result_ref);
+          expect(page.total_chars).toBe(exact.length);
+          expect(page.complete).toBe(page.next_offset === null);
+          expect(page.text.length).toBeGreaterThan(0);
+          expect(page.text.isWellFormed()).toBe(true);
+          pages.push(page.text);
+          if (page.complete) return { content: exact, toolCalls: [],
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, model: "fake-model", finishReason: "stop" };
+          offset = page.next_offset;
+          expect(offset).toBe(pages.join("").length);
+        }
+        return { content: "", toolCalls: [{ id: `page-${offset}`, name: "wait_agent",
+          arguments: JSON.stringify({ result_ref: { ...payload.result_ref, offset } }) }],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, model: "fake-model", finishReason: "tool_calls" };
+      });
+      for await (const phase of session.runTurn("Read all pages of the child's completed result.", { exactOutput: true })) parentPhases.push(phase);
+      expect(parentPhases.at(-1)).toMatchObject({ type: "turn_complete", stopReason: "completed", content: exact });
+      const text = pages.join("");
+      expect(pages.length).toBeGreaterThan(1);
+      expect(text).toBe(exact);
+      expect(JSON.parse(text)).toEqual(JSON.parse(exact));
+      expect(() => control.readChildResultPage("unrelated-parent", live.agentId, payload.result_ref.turn_id)).toThrow("not a child");
+    } finally {
+      if (previousOffloadThreshold === undefined) delete process.env.AGENC_TOOL_RESULT_OFFLOAD_BYTES;
+      else process.env.AGENC_TOOL_RESULT_OFFLOAD_BYTES = previousOffloadThreshold;
+      await stopKeepAliveRun(iter, live.abortController);
+    }
+  });
+
   it("bounds parent receipt reason metadata while retaining the durable full outcome", async () => {
     const hugeReason = `provider_boom:${"x".repeat(
       MAX_PARENT_RECEIPT_FIELD_BYTES * 4,
@@ -4852,6 +5005,48 @@ describe("runAgent", () => {
       );
     } finally {
       await stopKeepAliveRun(iter, live.abortController);
+    }
+  });
+
+  it("bounds repeated worker results and reads evicted answers from its live journal", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-result-cache-"));
+    const answers = Array.from({ length: 48 }, (_, index) => ' \n' + JSON.stringify({ index, text: "🐈".repeat(512) }) + '\n ');
+    const provider = makeProvider(answers.map(content => ({ content })));
+    const session = makeStubSession({ services: { provider }, config: { ...mkConfig(), cwd },
+      sessionConfiguration: mkSessionConfiguration({ cwd }) });
+    const store = new RolloutStore({ cwd, sessionId: session.conversationId,
+      agencVersion: "0.2.0", sessionTempRoot: tmpdir() });
+    store.open({ sessionId: session.conversationId, timestamp: new Date().toISOString(), cwd,
+      originator: "cache-test", agencVersion: "0.2.0", model: "fake-model", modelProvider: "fake" });
+    session.mountRolloutStore(store);
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    control.registerSessionRoot(session.conversationId);
+    const live = await control.spawn({ parentPath: "/root" });
+    live.completedTaskResults = new CompletedTaskResults(16 * 1024);
+    const iter = runAgent({ live, parent: session, keepAlive: true, exactOutput: true,
+      initialMessages: [{ role: "user", content: "first" }], taskPrompt: "first" });
+    const turnIds: string[] = [];
+    try {
+      for (let index = 0; index < answers.length; index += 1) {
+        const completed = nextProgressEvent(iter, "turn_complete");
+        if (index > 0) control.assignTask(live.agentId, { author: "/root", recipient: live.agentPath,
+          content: `assignment ${index}`, taskId: `task-${index}`, exactOutput: index % 2 === 0 });
+        const event = await completed;
+        expect(event.finalMessage).toBe(answers[index]);
+        turnIds.push(event.turnId!);
+        session.mailbox.drain();
+        expect(live.completedTaskResults.retainedBytes).toBeLessThanOrEqual(16 * 1024);
+      }
+      expect(live.completedTaskResults.size).toBeLessThan(answers.length);
+      expect(live.completedTaskResults.get(turnIds[0]!)).toBeUndefined();
+      expect(control.readChildResultPage(session.conversationId, live.agentId, turnIds[0]!).text).toBe(answers[0]);
+      expect(control.readChildResultPage(session.conversationId, live.agentId, turnIds[1]!).text).toBe(answers[1]);
+      expect(live.completedTaskResults.retainedBytes).toBeLessThanOrEqual(16 * 1024);
+      expect(provider.chatStream).toHaveBeenCalledTimes(answers.length);
+    } finally {
+      await stopKeepAliveRun(iter, live.abortController);
+      await session.shutdown();
+      rmSync(cwd, { recursive: true, force: true });
     }
   });
 
@@ -6832,9 +7027,10 @@ describe("runAgent", () => {
   });
 
   it.each([
-    ["worker", "bypassPermissions"], ["scanner", "bypassPermissions"],
-    ["worker", "default"], ["scanner", "default"],
-  ] as const)("admits a nested %s in %s mode and reads its current worktree", async (role, permissionMode) => {
+    ["worker", "bypassPermissions", false], ["scanner", "bypassPermissions", false],
+    ["worker", "default", false], ["scanner", "default", false],
+    ["worker", "bypassPermissions", true],
+  ] as const)("admits a nested %s in %s mode and reads its current worktree (truncated spawn: %s)", async (role, permissionMode, truncateSpawn) => {
     const previousHome = process.env.AGENC_HOME;
     const home = mkdtempSync(join(tmpdir(), "agenc-nested-parent-home-"));
     const cwd = mkdtempSync(join(tmpdir(), "agenc-nested-parent-workspace-"));
@@ -6853,10 +7049,11 @@ describe("runAgent", () => {
     const rootAdmission = kernel.bindClient({ cwd, scope: { runId: "nested-root", sessionId: "nested-root", autonomous: false } });
     const children: Session[] = [];
     let spawned = false;
+    const spawnBudgets: Array<number | undefined> = [];
     let readRequested = false;
     const provider = makeProvider([]);
     provider.getExecutionProfile = async () => ({ provider: "fake", model: "fake-model", usageReporting: "authoritative", supportsMaxOutputTokens: true });
-    vi.mocked(provider.chatStream).mockImplementation(async (messages) => {
+    vi.mocked(provider.chatStream).mockImplementation(async (messages, _onChunk, options) => {
       const nested = messages.some((message) => message.role === "user" && JSON.stringify(message.content).includes("nested-worker-task"));
       const base = { content: "complete", toolCalls: [], usage: { promptTokens: 8, completionTokens: 4, totalTokens: 12, availability: "reported" as const, provenance: "provider" as const }, model: "fake-model", finishReason: "stop" as const };
       if (nested && !readRequested) {
@@ -6864,6 +7061,15 @@ describe("runAgent", () => {
         return { ...base, content: "", finishReason: "tool_calls", toolCalls: [{ id: "nested-read", name: "FileRead", arguments: JSON.stringify({ file_path: "revision.txt" }) }] };
       }
       if (!nested && !spawned) {
+        spawnBudgets.push(options?.maxOutputTokens);
+        if (truncateSpawn) {
+          expect(children[0]!.currentRootHumanTurn()).toBeNull();
+          if (spawnBudgets.length <= 2) return { ...base, content: "", finishReason: "length",
+            incompleteToolCalls: [{ id: `nested-spawn-cut-${spawnBudgets.length}`, name: "spawn_agent" }] };
+          const guidance = messages.findLast(message => message.role === "user")?.content;
+          expect(guidance).toContain("Retry with complete valid JSON");
+          expect(guidance).not.toContain("message_ref");
+        }
         spawned = true;
         return { ...base, content: "", finishReason: "tool_calls", toolCalls: [{ id: "nested-spawn", name: "spawn_agent", arguments: JSON.stringify({ message: "nested-worker-task", task_name: "worker", fork_turns: "none", isolation: "none", ...(role === "scanner" ? { agent_type: "scanner" } : {}) }) }] };
       }
@@ -6881,7 +7087,8 @@ describe("runAgent", () => {
       conversationId: "nested-root",
       services: { provider, executionAdmission: rootAdmission, admissionRequired: true, sandboxExecutionBroker: broker, permissionModeRegistry: new PermissionModeRegistry(createEmptyToolPermissionContext({ mode: permissionMode, isBypassPermissionsModeAvailable: true, bypassPermissionsAcceptedIn: [cwd], alwaysAllowRules: { session: ["spawn_agent"] } })), registry: { ...mkRegistry(), tools } },
       sessionConfiguration: mkSessionConfiguration({ cwd, sandboxPolicy: { value: "danger_full_access" }, provider: { slug: "fake" } as SessionConfiguration["provider"] }),
-      config: { ...mkConfig(), cwd }, modelInfo: { ...mkModelInfo(), maxOutputTokens: 32 },
+      config: { ...mkConfig(), cwd }, modelInfo: { ...mkModelInfo(), maxOutputTokens: 32,
+        ...(truncateSpawn ? { maxOutputTokensCappedDefault: true } : {}) },
     });
     const store = new RolloutStore({ cwd, sessionId: session.conversationId, agencVersion: "0.2.0", sessionTempRoot: tmpdir() });
     store.open({ sessionId: session.conversationId, timestamp: new Date().toISOString(), cwd, originator: "nested-parent-test", agencVersion: "0.2.0", model: "fake-model", modelProvider: "fake" });
@@ -6901,6 +7108,11 @@ describe("runAgent", () => {
     try {
       const { result } = await collectRun(runAgent({ live, parent: session, initialMessages: [{ role: "user", content: "implementation-parent-task" }], taskPrompt: "implementation-parent-task", worktree: { path: worktreePath, branch: "implementation", gitRoot: cwd, created: false } }));
       expect(result.outcome, String(result.error)).toBe("completed");
+      if (truncateSpawn) {
+        expect(spawnBudgets).toHaveLength(3);
+        expect(spawnBudgets[1]).toBeGreaterThan(spawnBudgets[0]!);
+        expect(spawnBudgets[2]).toBe(spawnBudgets[1]);
+      }
       await vi.waitFor(() => expect(children, JSON.stringify(vi.mocked(provider.chatStream).mock.calls.at(-1)?.[0].filter((message) => message.role === "tool"))).toHaveLength(2));
       expect(children[1]!.services.executionAdmission!.scope.parentRunId).toBe(live.agentId);
       expect(children[1]!.sessionConfiguration.cwd).toBe(worktreePath);

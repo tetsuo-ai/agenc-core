@@ -46,6 +46,8 @@ export interface AgentRuntimeOptions {
    * are hidden from the model instead of being offered and then auto-denied.
    */
   readonly nonInteractive: boolean;
+  /** Caller explicitly requests machine-readable / exact output. */
+  readonly exactOutput?: boolean;
   readonly stdinDataMode: boolean;
   readonly remoteMode: boolean;
   readonly remoteMemoryRoot?: string;
@@ -403,6 +405,7 @@ function resolveAgentRuntimeOptionsAtIngress(
     dangerouslyBypassApprovalsAndSandbox:
       overrides.dangerouslyBypassApprovalsAndSandbox ?? false,
     nonInteractive: overrides.nonInteractive ?? false,
+    ...(overrides.exactOutput !== undefined ? { exactOutput: overrides.exactOutput } : {}),
     stdinDataMode:
       overrides.stdinDataMode ??
       parseBoolean(env, "AGENC_USE_DATA_STDIN", false),
@@ -598,6 +601,7 @@ export function validateAgentRuntimeOptions(
     "lightMode",
     "dangerouslyBypassApprovalsAndSandbox",
     "nonInteractive",
+    "exactOutput",
     "stdinDataMode",
     "remoteMode",
     "remoteMemoryRoot",
@@ -657,6 +661,9 @@ export function validateAgentRuntimeOptions(
     throw new AgentRuntimeOptionsError(
       "runtimeOptions.nonInteractive must be boolean",
     );
+  }
+  if (input.exactOutput !== undefined && typeof input.exactOutput !== "boolean") {
+    throw new AgentRuntimeOptionsError("runtimeOptions.exactOutput must be boolean");
   }
   if (typeof input.stdinDataMode !== "boolean") {
     throw new AgentRuntimeOptionsError(

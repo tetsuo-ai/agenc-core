@@ -179,6 +179,47 @@ async function exhaustGate(maxRounds: number) {
 }
 
 describe("completion gate in the turn loop", () => {
+  test.each(["turn", "session"] as const)("preserves explicit %s exact output after tool work", async (scope) => {
+    const task = "Read the file and report its values.";
+    const exact = ' {"text":"quotes \\" and 🐈", "items": [1,2]} \n';
+    expect(() => JSON.parse(exact)).not.toThrow();
+    const { provider, requests } = scriptedProvider([toolStep("work-1"), textStep(exact)]);
+    const { session, events } = headlessSession(provider, true);
+    const phases = [];
+    if (scope === "session") Object.assign(session.services, {
+      runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive: true, exactOutput: true }),
+    });
+    for await (const phase of runTurn(session, mkCtx(), task,
+      scope === "turn" ? { exactOutput: true } : {})) phases.push(phase);
+    expect(requests).toHaveLength(2);
+    expect(gatePayloads(events)).toEqual([]);
+    expectCompletedTurn(events);
+    const terminal = events.map(event => classifyTurnTerminal(event.msg)).find(item => item?.outcome === "completed");
+    expect(terminal?.message).toBe(exact);
+  });
+
+  test.each([
+    ["ordinary JSON request", "Return JSON only."],
+    ["coordinated instruction", "Fix the bug and return JSON only."],
+    ["emphasized instruction", "**Return JSON only.**"],
+    ["verbatim instruction", "Return the child's final answer verbatim."],
+    ["quoted example", "```text\nReturn JSON only.\n```"],
+  ])("keeps completion verification for %s", async (_name, example) => {
+    const { provider, requests } = scriptedProvider([
+      toolStep("work-1"), textStep("Done."), toolStep("verify-1"),
+      textStep("- [x] /app/out.txt contains done: cat showed done\n- [x] tests: pytest, 3 passed"),
+    ]);
+    const { session, events } = headlessSession(provider, true);
+    await drain(runTurn(session, mkCtx(), `${TASK}.\n${example}`));
+    expect(requests).toHaveLength(4);
+    expect(lastUserText(requests[2] ?? [])).toContain('<completion_gate round="1"');
+    expect(gatePayloads(events)).toEqual([
+      expect.objectContaining({ outcome: "injected", reason: "initial" }),
+      expect.objectContaining({ outcome: "verified", reason: "verified_with_tools" }),
+    ]);
+    expectCompletedTurn(events);
+  });
+
   test("a non-interactive turn is asked to verify once and accepted after a tool-backed answer", async () => {
     const { provider, requests } = scriptedProvider([
       toolStep("work-1"),

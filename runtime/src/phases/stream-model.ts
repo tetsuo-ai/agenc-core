@@ -1008,7 +1008,9 @@ function emitMalformedToolCallSyntheticResults(
         type: "tool_call_completed",
         payload: {
           callId: id,
-          result: `<tool_use_error>malformed tool_use dropped (${failure.cause})</tool_use_error>`,
+          result: JSON.stringify({ code: "malformed_tool_call", cause: failure.cause,
+            retryable: true, executed: false,
+            error: "Invalid or incomplete tool arguments. Retry a complete JSON call using the advertised schema; use spawn_agent.message_ref for large context." }),
           isError: true,
         },
       },
@@ -1189,6 +1191,9 @@ export async function streamModel(
   const streamedToolCalls = new Map<string, LLMToolCall>();
   const streamedToolBlocks = new Map<string, ToolUseBlock>();
   const malformedToolCompletionIds = new Set<string>();
+  const toolInputsStarted = new Map<string, string>();
+  const malformedToolNames = new Set<string>();
+  state.truncatedToolCallNames = undefined;
   let receivedProviderChunk = false;
   let streamedCanonicalAssistantText = "";
 
@@ -1291,6 +1296,9 @@ export async function streamModel(
     // synthesises start/stop for the latter on first/last sight per index.
     emitThinkingChunkEvents(chunk, session, thinkingDisplays);
 
+    if (chunk.toolInputBlockStart !== undefined) {
+      toolInputsStarted.set(chunk.toolInputBlockStart.callId, chunk.toolInputBlockStart.contentBlock.name);
+    }
     emitToolInputChunkEvents(chunk, session);
 
     if (chunk.toolCalls && chunk.toolCalls.length > 0) {
@@ -1309,6 +1317,10 @@ export async function streamModel(
       // id so the history has a matching entry — otherwise the next
       // iteration stalls on mismatched tool_use/tool_result pairing.
       if (validatedToolCalls.failures.length > 0) {
+        for (const failure of validatedToolCalls.failures) {
+          const name = (failure.raw as { name?: unknown } | null)?.name;
+          if (failure.cause === "invalid_json" && typeof name === "string") malformedToolNames.add(name);
+        }
         emitMalformedToolCallSyntheticResults(
           session,
           validatedToolCalls.failures,
@@ -1524,6 +1536,10 @@ export async function streamModel(
     // pass (covers providers that only surface tool_use blocks in the
     // final response envelope rather than per-chunk).
     if (validatedMergedToolCalls.failures.length > 0) {
+      for (const failure of validatedMergedToolCalls.failures) {
+        const name = (failure.raw as { name?: unknown } | null)?.name;
+        if (failure.cause === "invalid_json" && typeof name === "string") malformedToolNames.add(name);
+      }
       emitMalformedToolCallSyntheticResults(
         session,
         validatedMergedToolCalls.failures,
@@ -1537,6 +1553,20 @@ export async function streamModel(
   }
   state.assistantMessages = [assistant];
   if (maxOutputTruncated) {
+    // A provider can terminate inside a JSON string. Close the visible call
+    // with a retryable error; never execute or silently forget that handoff.
+    for (const call of [...(response.incompleteToolCalls ?? []), ...(response.toolCalls ?? [])]) {
+      if (call.id && call.name) toolInputsStarted.set(call.id, call.name);
+    }
+    const unfinished = [...toolInputsStarted].filter(([id]) => !streamedToolCalls.has(id));
+    state.truncatedToolCallNames = unfinished.map(([, name]) => name);
+    for (const [id, name] of unfinished) {
+      session.emit({ id: session.nextInternalSubId(), msg: {
+        type: "tool_call_completed", payload: { callId: id, toolName: name,
+          isError: true, result: JSON.stringify({ code: "tool_arguments_truncated", retryable: true,
+            executed: false, error: "Output limit interrupted tool arguments. Retry a complete tool call; for spawn_agent use message_ref instead of copying context." }) },
+      } });
+    }
     state.toolUseBlocks = [];
     state.needsFollowUp = false;
   } else {
@@ -1736,6 +1766,11 @@ export async function streamModel(
   if (response.error) {
     throw new StreamModelError(response.error, response);
   }
+  if (!maxOutputTruncated && assistant.toolCalls.length === 0 && streamedToolCalls.size === 0) {
+    const name = [...malformedToolNames].find(name => name.length <= 256 &&
+      /^[A-Za-z0-9_.:-]+$/.test(name) && request.tools.some(tool => tool.function.name === name));
+    if (name !== undefined) state.pendingTextToolCallCorrection = { toolName: name, reason: "invalid_arguments" };
+  }
   if (response.toolCallRecovery !== undefined) {
     const marker = response.toolCallRecovery;
     const advertised = state.samplingRequestToolNames ?? [];
@@ -1750,10 +1785,15 @@ export async function streamModel(
         advertised.includes("system.searchTools") &&
         !advertised.includes(marker.toolName) &&
         /^mcp\.[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+$/.test(marker.toolName);
-    if (providerName !== "ollama" || !safeName || !safeMessage || !validTarget ||
-        response.content !== "" || response.toolCalls.length !== 0 ||
-        streamedToolCalls.size !== 0 || state.toolUseBlocks.length !== 0 ||
-        response.finishReason !== "stop") {
+    const nativeCorrection = marker.source === "native" && marker.reason === "invalid_arguments" &&
+      response.finishReason === "tool_calls";
+    const textCorrection = marker.source === undefined && providerName === "ollama" &&
+      response.finishReason === "stop";
+    // Native calls have a separate argument channel and may include prose.
+    // Text-parsed corrections still require the whole response to be rejected.
+    if ((!nativeCorrection && !textCorrection) || !safeName || !safeMessage || !validTarget ||
+        (textCorrection && response.content !== "") || response.toolCalls.length !== 0 ||
+        streamedToolCalls.size !== 0 || state.toolUseBlocks.length !== 0) {
       throw new StreamModelError(new Error("Invalid tool-call correction response; no correction was admitted."), response);
     }
     state.pendingTextToolCallCorrection = { toolName: marker.toolName, reason: marker.reason };

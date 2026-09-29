@@ -151,6 +151,44 @@ function mkState(opts: Partial<TurnState> = {}): TurnState {
 }
 
 describe("runMaxOutputTokensRecovery — T8 hardening", () => {
+  test.each([
+    ["Write"],
+    ["mcp__files__write"],
+    ["spawn_agent", "Write"],
+  ])("truncated non-spawn calls retain budget escalation: %j", (...toolNames) => {
+    const state = mkState({ truncatedToolCallNames: toolNames });
+    const session = mkSession(new EventLog());
+    expect(runMaxOutputTokensRecovery({ state, session })).toEqual({ kind: "escalate" });
+    expect(state.maxOutputTokensOverride).toBe(MAX_OUTPUT_TOKENS_ESCALATED);
+    expect(state.maxOutputTokensRecoveryCount).toBe(0);
+  });
+
+  test("truncated tool arguments get a bounded retry with reference guidance, not prose continuation", () => {
+    const state = mkState({ truncatedToolCallNames: ["spawn_agent"] });
+    const session = mkSession(new EventLog());
+    session.currentRootHumanTurn = () => ({ turnId: "human-turn", text: "Delegate this task." });
+    expect(runMaxOutputTokensRecovery({ state, session, escalateAllowed: true })).toEqual({ kind: "continuation" });
+    expect(state.maxOutputTokensOverride).toBeUndefined();
+    expect(state.messages.at(-1)?.content).toContain("incomplete calls were not executed");
+    expect(state.messages.at(-1)?.content).toContain("message_ref");
+    state.maxOutputTokensRecoveryCount = MAX_OUTPUT_TOKENS_RECOVERY_LIMIT;
+    expect(runMaxOutputTokensRecovery({ state, session })).toMatchObject({ kind: "exhausted" });
+  });
+
+  test.each([null, { turnId: "empty-human-turn", text: " \n " }])(
+    "truncated spawns without usable human text retain escalation and omit reference guidance: %j",
+    (humanTurn) => {
+      const state = mkState({ truncatedToolCallNames: ["spawn_agent"] });
+      const session = mkSession(new EventLog());
+      session.currentRootHumanTurn = () => humanTurn;
+      expect(runMaxOutputTokensRecovery({ state, session })).toEqual({ kind: "escalate" });
+      expect(state.maxOutputTokensOverride).toBe(MAX_OUTPUT_TOKENS_ESCALATED);
+      expect(runMaxOutputTokensRecovery({ state, session })).toEqual({ kind: "continuation" });
+      expect(state.messages.at(-1)?.content).toContain("incomplete calls were not executed");
+      expect(state.messages.at(-1)?.content).not.toContain("message_ref");
+    },
+  );
+
   test("escalate path: discards pending executor + nulls slot", () => {
     const log = new EventLog();
     const session = mkSession(log);

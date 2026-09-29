@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Session } from "../../session/session.js";
 import { mkSession } from "../../fixtures.js";
+import { formatSubagentNotification } from "../../../src/agents/status.js";
 import { createWaitAgentTool } from "./wait.js";
 import type { MultiAgentV2Options } from "./common.js";
 
@@ -50,16 +51,18 @@ function fixture(options?: {
       lastTaskMessage: "verify SECURITY.md",
     },
   ]);
+  const control = { registerSessionRoot, listAgents, getLive: () => undefined };
   const opts = {
     getSession: () => session,
     workspace: {},
     ensureAgentControl: () => ({
-      control: { registerSessionRoot, listAgents, getLive: () => undefined },
+      control,
       registry: {},
     }),
   } as unknown as MultiAgentV2Options;
   const tool = createWaitAgentTool(opts);
   return {
+    control,
     tool,
     session,
     turn,
@@ -293,5 +296,34 @@ describe("wait_agent turn budget on a real Session", () => {
       consecutive_timeouts: 1,
       waited_ms: 30_000,
     });
+  });
+});
+
+
+describe("structured child result delivery", () => {
+  it("reads an exact result page without draining the mailbox or waiting", async () => {
+    const { tool, control, waitForMailboxChange } = fixture();
+    const read = vi.fn(() => ({ text: '  {"ok":true}\n', complete: true, total_chars: 14, next_offset: null }));
+    Object.assign(control, { readChildResultPage: read });
+    const response = await tool.execute({ result_ref: { agent_id: "child", turn_id: "turn", offset: 0 } });
+    expect(read).toHaveBeenCalledWith("root-session", "child", "turn", 0);
+    expect(waitForMailboxChange).not.toHaveBeenCalled();
+    expect(JSON.parse(response.content).text).toBe('  {"ok":true}\n');
+  });
+
+  it("preserves the exact final answer through notification, mailbox and wait JSON", async () => {
+    const { tool, session, waitForMailboxChange } = fixture();
+    const exact = '  \n' + JSON.stringify({ text: '\" \\ 🐈 </subagent_notification> &amp;', rows: Array.from({ length: 2000 }, (_, i) => i) }) + '\n ';
+    const notification = formatSubagentNotification({ agentPath: "/root/child", status: {
+      status: "completed", turnId: "child-turn", endedAtMs: 1, lastMessage: exact,
+    } });
+    Object.assign(session, { drainPendingInputMessages: () => [{ role: "user", content: notification }] });
+    waitForMailboxChange.mockResolvedValueOnce(true);
+    const result = await tool.execute({});
+    const body = JSON.parse(result.content);
+    expect(body.updates[0].content).toBe(notification);
+    const payload = JSON.parse(body.updates[0].content.slice('<subagent_notification>\n'.length, -'\n</subagent_notification>'.length));
+    expect(payload.status.completed).toBe(exact);
+    expect(JSON.parse(payload.status.completed)).toEqual(JSON.parse(exact));
   });
 });
