@@ -66,6 +66,20 @@ describe("child routing integration", () => {
     expect(childRoutingBudget(session, 20)).toBeCloseTo(0);
     expect((await routeChildTask(session, { prompt: "Extract names", maxCostUsd: 20 })).result.selected).toBeUndefined();
   });
+  it("prefers authoritative ancestor remaining dollars over task-local usage", () => {
+    const { session } = fixture(["deepseek"]);
+    Object.assign(session.services, { executionAdmission: { scope: { maxCostUsd: 1 },
+      getUsageSummary: () => ({ costUsd: 0, heldCostUsd: 0 }), getRemainingCostUsd: () => 0.02 } });
+    expect(childRoutingBudget(session)).toBe(0.02);
+    expect(childRoutingBudget(session, 0.5)).toBe(0.02);
+    expect(childRoutingBudget(session, 0.01)).toBe(0.01);
+  });
+  it("does not invent a cap when authoritative admission is uncapped", () => {
+    const { session } = fixture(["deepseek"]);
+    Object.assign(session.services, { executionAdmission: { scope: {}, getRemainingCostUsd: () => undefined } });
+    expect(childRoutingBudget(session)).toBeUndefined();
+    expect(childRoutingBudget(session, 0.5)).toBe(0.5);
+  });
   it("explicit task difficulty selects a strong model for hard reasoning", async () => {
     const { session } = fixture(["deepseek"]);
     const routed = await routeChildTask(session, { prompt: "Prove the invariant", taskKind: "reasoning", complexity: "hard" });

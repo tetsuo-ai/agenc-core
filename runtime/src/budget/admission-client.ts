@@ -145,6 +145,10 @@ export interface ExecutionAdmissionClient {
     readonly limit?: number;
   }): readonly AdmissionJournalEvent[];
   getUsageSummary?(): AdmissionUsageSummary;
+  /** Snapshot only. Minimum remaining dollars across durable task, ancestor
+   * and current calendar caps, including held reservations. Undefined means
+   * no monetary cap. Dispatch still needs an atomic admission lease. */
+  getRemainingCostUsd?(): number | undefined;
   subscribeUsage?(listener: (summary: AdmissionUsageSummary) => void): () => void;
   subscribe(listener: (event: AdmissionJournalEvent) => void): () => void;
 }

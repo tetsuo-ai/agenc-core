@@ -730,6 +730,20 @@ export class ExecutionAdmissionKernel {
     );
   }
 
+  getRemainingCostUsd(binding: ClientBinding): number | undefined {
+    this.#assertOpen();
+    const now = this.#now();
+    const scopes = [...budgetScopesFor(binding.budget, now)];
+    const keys = new Set(scopes.map(scope => scope.key));
+    const day = now.toISOString().slice(0, 10);
+    // Existing calendar allocations remain authoritative after config edits.
+    for (const [period, window] of [["day", day], ["month", day.slice(0, 7)]] as const) {
+      const key = admissionPeriodScopeKey(binding.budget.periodIdentity, period, window);
+      if (!keys.has(key)) scopes.push({ key });
+    }
+    return binding.workspace.repository.getRemainingCostUsd(scopes);
+  }
+
   subscribeUsage(
     binding: ClientBinding,
     listener: (summary: AdmissionUsageSummary) => void,
@@ -1662,6 +1676,10 @@ class KernelAdmissionClient implements ExecutionAdmissionClient {
 
   getUsageSummary(): AdmissionUsageSummary {
     return this.kernel.getUsageSummary(this.binding);
+  }
+
+  getRemainingCostUsd(): number | undefined {
+    return this.kernel.getRemainingCostUsd(this.binding);
   }
 
   subscribeUsage(listener: (summary: AdmissionUsageSummary) => void): () => void {

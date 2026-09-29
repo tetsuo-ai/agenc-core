@@ -1649,6 +1649,41 @@ export class ExecutionAdmissionRepository {
     });
   }
 
+  /** Read a consistent budget snapshot without creating or reserving a scope. */
+  getRemainingCostUsd(scopes: readonly AdmissionBudgetScope[]): number | undefined {
+    return this.#driver.transaction(() => {
+      const proposed = new Map(scopes.map(scope => [scope.key, scope]));
+      const queue = scopes.map(scope => scope.key);
+      const seen = new Set<string>();
+      let remainingNanos: number | undefined;
+      for (let hops = 0; queue.length > 0; hops += 1) {
+        if (hops >= MAX_ALLOCATION_ANCESTOR_WALK * Math.max(1, scopes.length)) {
+          throw new ExecutionAdmissionStateError("admission allocation hierarchy exceeds cycle/depth bound");
+        }
+        const key = queue.shift()!;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const row = this.#allocationLocked(key);
+        const scope = proposed.get(key);
+        if (row === undefined && scope === undefined) {
+          throw new ExecutionAdmissionStateError(`admission allocation parent does not exist: ${key}`);
+        }
+        if (row?.blocked_by_provider_overrun === 1) return 0;
+        const configuredCap = scope?.maxCostUsd === undefined ? undefined : usdToNanos(scope.maxCostUsd);
+        const durableCap = row?.max_cost_nanos ?? undefined;
+        const cap = configuredCap === undefined ? durableCap : durableCap === undefined
+          ? configuredCap : Math.min(configuredCap, durableCap);
+        if (cap !== undefined) {
+          const consumed = checkedNanoSum(row?.used_cost_nanos ?? 0, row?.held_cost_nanos ?? 0);
+          const available = Math.max(0, cap - consumed);
+          remainingNanos = remainingNanos === undefined ? available : Math.min(remainingNanos, available);
+        }
+        if (row?.parent_scope_key !== undefined && row.parent_scope_key !== null) queue.push(row.parent_scope_key);
+      }
+      return remainingNanos === undefined ? undefined : nanosToUsd(remainingNanos);
+    });
+  }
+
   listAllocations(
     options: {
       readonly ownerRunId?: string;

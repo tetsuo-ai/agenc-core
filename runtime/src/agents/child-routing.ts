@@ -59,6 +59,10 @@ export interface ChildRoutingRequest {
 /** The ranking estimate never replaces atomic admission at the provider wire. */
 export function childRoutingBudget(session: Session, requested?: number): number | undefined {
   const admission = session.services.executionAdmission;
+  if (admission?.getRemainingCostUsd !== undefined) {
+    const remaining = admission.getRemainingCostUsd();
+    return requested === undefined ? remaining : remaining === undefined ? requested : Math.min(requested, remaining);
+  }
   const cap = admission?.scope.maxCostUsd ?? session.config?.maxBudgetUsd;
   const usage = admission?.getUsageSummary?.();
   const remaining = cap === undefined ? undefined : Math.max(0, cap -
