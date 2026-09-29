@@ -11,13 +11,13 @@ import type { LLMMessage, LLMTool } from "../../src/llm/types.js";
 
 const MODELS = [
   ["glm-5.2", 1_000_000, 131_072, 1.4, 4.4, .26],
-  ["glm-5.1", 200_000, 131_072, 1.4, 4.4, .26],
-  ["glm-5-turbo", 200_000, 131_072, undefined, undefined, undefined],
-  ["glm-5", 200_000, 131_072, 1, 3.2, .2],
-  ["glm-4.7", 200_000, 131_072, .6, 2.2, .11],
-  ["glm-4.6", 200_000, 131_072, .6, 2.2, .11],
-  ["glm-4.5", 128_000, 96_000, .6, 2.2, .11],
-  ["glm-4.5-air", 128_000, 96_000, .2, 1.1, .03],
+  ["glm-5.1", undefined, 131_072, 1.4, 4.4, .26],
+  ["glm-5-turbo", undefined, 131_072, undefined, undefined, undefined],
+  ["glm-5", undefined, 131_072, 1, 3.2, .2],
+  ["glm-4.7", undefined, 131_072, .6, 2.2, .11],
+  ["glm-4.6", undefined, 131_072, .6, 2.2, .11],
+  ["glm-4.5", undefined, undefined, .6, 2.2, .11],
+  ["glm-4.5-air", undefined, undefined, .2, 1.1, .03],
 ] as const;
 const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const TOOL: LLMTool = { type: "function", function: { name: "echo", description: "Echo", parameters: { type: "object", properties: { value: { type: "string" } } } } };
@@ -28,7 +28,11 @@ describe("current ZAI PAYG generations", () => {
     expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.zai).toBe("glm-5.3");
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG["zai-coding-plan"]).not.toContain(model);
     expect(resolveRegisteredModelCatalogEntry({ provider: "zai-coding-plan", model })).toBeUndefined();
-    expect(resolveRegisteredModelCatalogEntry({ provider: "zai", model })).toMatchObject({ contextWindow, maxContextWindow: contextWindow, maxOutputTokens, inputModalities: ["text"], supportedReasoningLevels: model === "glm-5.2" ? EFFORTS : [] });
+    const entry = resolveRegisteredModelCatalogEntry({ provider: "zai", model });
+    expect(entry?.contextWindow).toBe(contextWindow);
+    expect(entry?.maxContextWindow).toBe(contextWindow);
+    expect(entry?.maxOutputTokens).toBe(maxOutputTokens);
+    expect(entry).toMatchObject({ inputModalities: ["text"], supportedReasoningLevels: model === "glm-5.2" ? EFFORTS : [] });
     expect(resolveProviderCapabilityEntry({ provider: "zai", model })).toMatchObject({ supportsToolUse: true, supportsImageInput: false, supportsExtendedThinking: true, acceptsThinkingHistory: true, acceptsReasoningEffort: model === "glm-5.2" });
     expect(resolveReasoningEffort({ provider: "zai", model }).levels).toEqual(model === "glm-5.2" ? EFFORTS : []);
   });

@@ -218,12 +218,16 @@ const ZAI_CHAT_MODELS: readonly ZaiChatModelSpec[] = Object.freeze([
     model: "glm-5.3",
     displayName: "GLM-5.3",
     vision: false,
+    contextWindow: 1_000_000,
+    maxOutputTokens: 131_072,
     priority: 0,
   },
   {
     model: "glm-5.3-flash",
     displayName: "GLM-5.3 Flash",
     vision: true,
+    contextWindow: 1_000_000,
+    maxOutputTokens: 131_072,
     priority: 1,
   },
   {
@@ -231,11 +235,15 @@ const ZAI_CHAT_MODELS: readonly ZaiChatModelSpec[] = Object.freeze([
     displayName: "GLM-5.3 FlashX",
     vision: true,
     payGoOnly: true,
+    contextWindow: 1_000_000,
+    maxOutputTokens: 131_072,
     priority: 2,
   },
   // Older canonical PAYG deployments remain in the live model list. Coding Plan
   // aliases instead route to 5.3/5.3-Flash; do not advertise the old metadata there.
   // Sources: docs.z.ai/guides/llm/glm-4.5 through glm-5.2 (2026-09-29).
+  // Rounded 128K/200K contexts and 96K outputs have no exact hosted integer;
+  // leave those fields absent rather than infer decimal or binary ceilings.
   {
     model: "glm-5.2",
     displayName: "GLM-5.2",
@@ -252,7 +260,6 @@ const ZAI_CHAT_MODELS: readonly ZaiChatModelSpec[] = Object.freeze([
     displayName: "GLM-5.1",
     vision: false,
     payGoOnly: true,
-    contextWindow: 200_000,
     maxOutputTokens: 131_072,
     reasoningLevels: NO_REASONING_LEVELS,
     priority: 4,
@@ -262,7 +269,6 @@ const ZAI_CHAT_MODELS: readonly ZaiChatModelSpec[] = Object.freeze([
     displayName: "GLM-5 Turbo",
     vision: false,
     payGoOnly: true,
-    contextWindow: 200_000,
     maxOutputTokens: 131_072,
     reasoningLevels: NO_REASONING_LEVELS,
     priority: 5,
@@ -272,7 +278,6 @@ const ZAI_CHAT_MODELS: readonly ZaiChatModelSpec[] = Object.freeze([
     displayName: "GLM-5",
     vision: false,
     payGoOnly: true,
-    contextWindow: 200_000,
     maxOutputTokens: 131_072,
     reasoningLevels: NO_REASONING_LEVELS,
     priority: 6,
@@ -282,7 +287,6 @@ const ZAI_CHAT_MODELS: readonly ZaiChatModelSpec[] = Object.freeze([
     displayName: "GLM-4.7",
     vision: false,
     payGoOnly: true,
-    contextWindow: 200_000,
     maxOutputTokens: 131_072,
     reasoningLevels: NO_REASONING_LEVELS,
     priority: 7,
@@ -292,7 +296,6 @@ const ZAI_CHAT_MODELS: readonly ZaiChatModelSpec[] = Object.freeze([
     displayName: "GLM-4.6",
     vision: false,
     payGoOnly: true,
-    contextWindow: 200_000,
     maxOutputTokens: 131_072,
     reasoningLevels: NO_REASONING_LEVELS,
     priority: 8,
@@ -302,8 +305,6 @@ const ZAI_CHAT_MODELS: readonly ZaiChatModelSpec[] = Object.freeze([
     displayName: "GLM-4.5",
     vision: false,
     payGoOnly: true,
-    contextWindow: 128_000,
-    maxOutputTokens: 96_000,
     reasoningLevels: NO_REASONING_LEVELS,
     priority: 9,
   },
@@ -312,8 +313,6 @@ const ZAI_CHAT_MODELS: readonly ZaiChatModelSpec[] = Object.freeze([
     displayName: "GLM-4.5 Air",
     vision: false,
     payGoOnly: true,
-    contextWindow: 128_000,
-    maxOutputTokens: 96_000,
     reasoningLevels: NO_REASONING_LEVELS,
     priority: 10,
   },
@@ -594,9 +593,11 @@ function zaiCatalogEntries(): readonly RegisteredModelCatalogEntry[] {
       provider,
       model: model.model,
       displayName: model.displayName,
-      contextWindow: model.contextWindow ?? 1_000_000,
-      maxContextWindow: model.contextWindow ?? 1_000_000,
-      maxOutputTokens: model.maxOutputTokens ?? 131_072,
+      ...(model.contextWindow === undefined ? {} : {
+        contextWindow: model.contextWindow,
+        maxContextWindow: model.contextWindow,
+      }),
+      ...(model.maxOutputTokens === undefined ? {} : { maxOutputTokens: model.maxOutputTokens }),
       inputModalities: model.vision
         ? TEXT_IMAGE_MODALITIES
         : TEXT_MODALITIES,
