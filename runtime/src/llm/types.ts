@@ -822,6 +822,10 @@ export interface LLMStoredResponseDeleteResult {
  * Response from an LLM provider
  */
 export interface LLMResponse {
+  /** Non-executable identities only; argument bytes were cut off by the
+   * provider output limit. Used to report a retryable failure and guide repair. */
+  incompleteToolCalls?: ReadonlyArray<{ readonly id: string; readonly name: string }>;
+
   content: string;
   toolCalls: LLMToolCall[];
   /** Non-executable, bounded provider diagnostic for a fresh admitted correction. */

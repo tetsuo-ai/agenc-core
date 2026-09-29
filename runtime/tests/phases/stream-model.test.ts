@@ -1313,16 +1313,17 @@ describe("streamModel — live assistant text sanitization", () => {
     ).toBe(true);
   });
 
-  test("a truncated spawn argument produces a retryable error and never dispatches", async () => {
+  test.each(["streamed", "buffered"])("a truncated %s spawn argument produces a retryable error and never dispatches", async (mode) => {
     const ctx = mkCtx("chat");
     const state = mkState(ctx);
     streamedDispatchCalls.length = 0;
     const provider = mkProvider(async (_messages, onChunk) => {
-      onChunk({ done: false, toolInputBlockStart: { callId: "spawn-cut", index: 0,
+      if (mode === "streamed") onChunk({ done: false, toolInputBlockStart: { callId: "spawn-cut", index: 0,
         contentBlock: { type: "tool_use", id: "spawn-cut", name: "spawn_agent", input: {} } } });
       onChunk({ done: false, toolInputDelta: { callId: "spawn-cut", index: 0,
         partialJson: '{"task_name":"child","message":"' + "long task ".repeat(5_000) } });
       return { content: "", toolCalls: [], model: "test-model", finishReason: "length",
+        ...(mode === "buffered" ? { incompleteToolCalls: [{ id: "spawn-cut", name: "spawn_agent" }] } : {}),
         usage: { promptTokens: 20_000, completionTokens: 4096, totalTokens: 24096 } };
     });
     const { session, events } = mkSession(provider);

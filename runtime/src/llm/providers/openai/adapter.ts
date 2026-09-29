@@ -2098,7 +2098,9 @@ export class OpenAIProvider implements LLMProvider {
             toolCall,
             OPENAI_CHAT_COMPLETIONS_INVALID_TOOL_CALL_MESSAGE,
           ))
-        : [];
+        // The wire parser retains only identities at length, never arguments
+        // or executable calls. Recovery must know a handoff was interrupted.
+        : finishReason === "length" ? Array.from(toolCallAccumulator.values()) : [];
       const parsed = withStreamingMetrics(
         parseChatCompletionsResponse(
           requestModel,

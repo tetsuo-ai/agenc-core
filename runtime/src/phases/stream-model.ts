@@ -1555,7 +1555,7 @@ export async function streamModel(
   if (maxOutputTruncated) {
     // A provider can terminate inside a JSON string. Close the visible call
     // with a retryable error; never execute or silently forget that handoff.
-    for (const call of response.toolCalls ?? []) {
+    for (const call of [...(response.incompleteToolCalls ?? []), ...(response.toolCalls ?? [])]) {
       if (call.id && call.name) toolInputsStarted.set(call.id, call.name);
     }
     const unfinished = [...toolInputsStarted].filter(([id]) => !streamedToolCalls.has(id));

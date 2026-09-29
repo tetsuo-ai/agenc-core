@@ -947,6 +947,18 @@ export function parseChatCompletionsResponse(
       `Missing or unsupported finish_reason ${JSON.stringify(choice.finish_reason)}`,
     );
   }
+  const incompleteToolCalls = finishReason === "length" && Array.isArray(message.tool_calls)
+    ? message.tool_calls.flatMap((raw: unknown, index: number) => {
+      if (raw === null || typeof raw !== "object") return [];
+      const call = raw as { id?: unknown; function?: { name?: unknown } };
+      const name = typeof call.function?.name === "string"
+        ? decodeMcpToolNameFromWire(call.function.name, advertisedToolNames) : "";
+      if (!name || name.length > 256) return [];
+      const rawId = typeof call.id === "string" && call.id.length > 0 ? call.id : `incomplete-${index}`;
+      const id = request.toolCallIdNamespace === undefined ? rawId
+        : "call_" + createHash("sha256").update(request.toolCallIdNamespace).update("\0").update(rawId).digest("hex").slice(0, 32);
+      return [{ id, name }];
+    }) : [];
   const acceptsToolCalls =
     finishReason === "stop" || finishReason === "tool_calls";
   const wireToolCalls = acceptsToolCalls && Array.isArray(message.tool_calls)
@@ -1086,6 +1098,7 @@ export function parseChatCompletionsResponse(
         }
       : {}),
     toolCalls,
+    ...(incompleteToolCalls.length > 0 ? { incompleteToolCalls } : {}),
     usage: coerceUsage({
       promptTokens: usageRecord.prompt_tokens,
       completionTokens: usageRecord.completion_tokens,
