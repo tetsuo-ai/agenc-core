@@ -127,6 +127,9 @@ describe("planCompletionGateForTurn", () => {
   test.each([
     "Update config.json only.", "Change settings.yaml only.", "Edit data.csv only.",
     "Fix the endpoint to return JSON only. Run the tests and summarize the changes",
+    "Make the endpoint validate input and return JSON only. Run the tests and summarize the changes.",
+    "Make the serializer validate input and output only XML.",
+    "The CLI should validate input and emit CSV only.",
     "Make the serializer output only XML.",
     "The CLI should emit CSV only.",
     "Do not return JSON only.",

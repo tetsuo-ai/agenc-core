@@ -11,7 +11,16 @@ export function requestsExactOutput(task: string): boolean {
   const prose = task.replace(/```[^]*?```|~~~[^]*?~~~/gu, " ")
     .replace(/`[^`]*`|"[^"]*"|“[^”]*”|‘[^’]*’|(?<!\w)'[^']*'(?!\w)/gu, '""')
     .split("\n").filter(line => !/^\s*>/u.test(line)).join("\n");
-  return prose.split(/(?:[.!?;]\s+|\n|\band\s+)/iu).some(clause => {
+  const clauses = prose.split(/(?:[.!?;]\s+|\n)/u).flatMap(clause => {
+    const command = clause.trim().replace(/^(?:please\s+|(?:can|could|will|would)\s+you\s+)/iu, "");
+    // Only inherit the assistant as the subject of a coordinated command
+    // after a clear assistant action. "Make the endpoint ... and return"
+    // keeps the endpoint as its subject and is not a response contract.
+    return /^(?:read|inspect|review|analy[sz]e|summarize|run|test|delegate)\b/iu.test(command)
+      ? command.split(/\band\s+/iu)
+      : [command];
+  });
+  return clauses.some(clause => {
     const command = clause.trim().replace(/^(?:please\s+|(?:can|could|will|would)\s+you\s+)/iu, "");
     return /^(?:json|xml|csv|yaml)\s*[- ]?only\s*[.!?]?$/iu.test(command) ||
       /^only\s+(?:valid\s+)?(?:json|xml|csv|yaml)\s*[.!?]?$/iu.test(command) ||

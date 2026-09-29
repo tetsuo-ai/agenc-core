@@ -10,15 +10,19 @@ export function explicitlyRequestsDelegation(text: string): boolean {
   // contain an imperative in their second sentence.
   const prose = text.replace(/```[^]*?```|~~~[^]*?~~~|`[^`]*`|"[^"]*"|“[^”]*”|‘[^’]*’|(?<!\w)'[^']*'(?!\w)/gu, "")
     .split("\n").filter(line => !/^\s*>/u.test(line)).join("\n");
-  const clauses = prose.split(/(?:[.!?;]\s+|\n)/u);
+  // Conditions can qualify a handoff across line or sentence boundaries.
+  // Let the model resolve their scope instead of forcing the initial tool.
+  if (/\b(?:if|unless|after|before|once|when|until|provided|pending)\b/iu.test(prose)) return false;
+  // Earlier instructions may be prerequisites. Only an initial command is
+  // unambiguous enough to force delegation before any other work.
+  const clauses = prose.split(/(?:[.!?;]\s+|\n)/u).filter(clause => clause.trim()).slice(0, 1);
   // A prohibition anywhere in the active request takes precedence over an
   // otherwise affirmative handoff. Quoted examples were removed above.
   if (/\b(?:do\s+not|don['’]t|never)\s+(?:delegate\b|(?:use|spawn|launch|ask|call)\b[^.!?;\n]{0,100}\b(?:sub[ -]?agents?|child(?:ren)?|workers?|spawn_agent)\b)/iu.test(prose) ||
       /\b(?:use|spawn|launch|ask)\s+(?:(?:exactly|just)\s+)?(?:no|zero|0)\s+(?:[\w-]+\s+){0,2}(?:sub[ -]?agents?|child(?:ren)?|workers?)\b/iu.test(prose)) return false;
   return clauses.some(clause => {
     const command = clause.trim().replace(/^(?:please\s+|(?:can|could|will|would)\s+you\s+)/iu, "");
-    if (/\b(?:if|unless|after|before|once|when|until|provided|pending)\b/iu.test(command) ||
-        /\b(?:web|service|shared|dedicated|background|application|queue|job)\s+workers?\b/iu.test(command)) return false;
+    if (/\b(?:web|service|shared|dedicated|background|application|queue|job)\s+workers?\b/iu.test(command)) return false;
     if (/^(?:use|spawn|launch|ask)\s+(?:(?:exactly|just)\s+)?(?:no|zero|0)\b/iu.test(command)) return false;
     return /^delegate\s+(?:this|the)\s+(?:task|work|request)\b/iu.test(command) ||
       /^(?:use|spawn|launch|ask)\s+(?:(?:exactly|just)\s+)?(?:(?:a|an|the|one|two|three|four|[1-9]|multiple|several)\s+)?(?:[\w-]+\s+){0,2}(?:sub[ -]?agents?|child(?:ren)?(?!\s+(?:process(?:es)?|components?|elements?|nodes?|routes?)\b)|workers?(?!\s+(?:threads?|process(?:es)?|pools?)\b))\b/iu.test(command) ||
