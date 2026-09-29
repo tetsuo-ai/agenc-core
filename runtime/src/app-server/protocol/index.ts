@@ -52,11 +52,12 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * and a mismatch is refused with `EFFECT_REVIEW_STALE`.
  * 1.21 adds an ephemeral allowlisted envOverrides snapshot to run.start.
  * 1.22 adds the step_limit child terminal reason for partial task results.
- * 1.23 adds durable child task admission and restart recovery references.
+ * 1.23 adds the no_progress child terminal reason.
+ * 1.24 adds durable child task admission and restart recovery references.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.23.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.24.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -3384,7 +3385,7 @@ export interface ChildTerminalOutcomeWire extends JsonObject {
   readonly model: string;
   readonly reason:
     | "completed" | "insufficient_funds" | "rate_limited" | "provider_unavailable"
-    | "step_limit" | "timeout" | "auth_required" | "model_unavailable" | "context_insufficient"
+    | "step_limit" | "no_progress" | "timeout" | "auth_required" | "model_unavailable" | "context_insufficient"
     | "tool_protocol_unreliable" | "model_refused" | "parent_cancelled"
     | "policy_revoked" | "resume_blocked" | "cost_cap_reached"
     | "effect_outcome_unknown" | "consent_denied" | "consent_unavailable";
