@@ -11,6 +11,14 @@ export function loadLightToolCompanions(input: {
 }): void {
   const { tool, result, registry } = input;
   if (!input.lightMode) return;
+  // An exact name in user-authored task text is already a discovery request.
+  // Delay exposure until the first core result so session startup stays small.
+  // Eligibility and all execution permissions still belong to the registry.
+  const mentioned = new Set(input.userInput?.match(/[A-Za-z_][A-Za-z0-9_.-]*/g) ?? []);
+  const requested = registry.tools.filter(candidate =>
+    candidate.metadata?.source === "builtin" && mentioned.has(candidate.name) &&
+    !registry.getUnavailableToolNames?.().has(candidate.name));
+  if (requested.length > 0) registry.discoverToolNames?.(requested.map(candidate => candidate.name));
   // Demand comes only from the root user, never from tool output. Discovery is
   // absent from the first request; expose it after the first core result only
   // for tasks that request another capability. It grants no execution rights.

@@ -11,6 +11,20 @@ function load(value: ToolRegistry, result = running, lightMode = true) {
 }
 
 describe("Light companion discovery", () => {
+  test("loads exact user-requested names after a result, without granting execution", () => {
+    const one = registry();
+    const tool = one.tools.find(candidate => candidate.name === "FileRead");
+    expect(names(one)).not.toContain("TodoWrite");
+    loadLightToolCompanions({ lightMode: true, tool, result: { content: "TodoWrite" }, registry: one, userInput: "Fix TodoWriteHelper" });
+    expect(names(one)).not.toContain("TodoWrite");
+    loadLightToolCompanions({ lightMode: true, tool, result: { content: "file" }, registry: one, userInput: "Use TodoWrite for my checklist" });
+    expect(names(one)).toContain("TodoWrite");
+    expect(names(registry())).not.toContain("TodoWrite");
+    const filtered = buildFilteredRegistry(one, { lightMode: true, childConversationId: "limited", disabledTools: new Set(["TodoWrite"]) });
+    loadLightToolCompanions({ lightMode: true, tool, result: { content: "file" }, registry: filtered, userInput: "Use TodoWrite" });
+    expect(names(filtered)).not.toContain("TodoWrite");
+  });
+
   test("starts with four core tools and loads discovery only for user-requested capabilities", () => {
     const one = registry();
     expect(names(one).sort()).toEqual(["FileRead", "MultiEdit", "Write", "exec_command"]);
