@@ -1,3 +1,26 @@
+import { Lexer, type Token, type Tokens } from "marked";
+
+function taskProse(task: string): string {
+  const pending: Token[] = Lexer.lex(task, { gfm: true }).reverse();
+  const prose: string[] = [];
+  while (pending.length > 0) {
+    const token = pending.pop()!;
+    // Let Markdown determine fence length, marker, indentation and list
+    // scope, including unclosed fences. Example text cannot grant an exemption.
+    if (token.type === "code" || token.type === "blockquote") continue;
+    if (token.type === "list") {
+      const items = (token as Tokens.List).items;
+      for (let i = items.length - 1; i >= 0; i -= 1) pending.push(items[i]!);
+    } else if (token.type === "list_item") {
+      const tokens = (token as Tokens.ListItem).tokens;
+      for (let i = tokens.length - 1; i >= 0; i -= 1) pending.push(tokens[i]!);
+    } else {
+      prose.push(token.raw);
+    }
+  }
+  return prose.join("\n");
+}
+
 /** Natural-language output contracts used by the completion gate (#2798).
  * Inspect the complete trusted task before truncating its diagnostic quote.
  * This is an exemption from a Markdown review, not a correctness verdict.
@@ -8,7 +31,14 @@ export function requestsExactOutput(task: string): boolean {
   // verify, not a contract for the assistant's final response.
   // Mask example contents before splitting clauses, but retain quote markers
   // so direct contracts such as 'return exactly "ok"' still match.
-  const prose = task.replace(/```[^]*?```|~~~[^]*?~~~/gu, " ")
+  let unquoted: string;
+  try {
+    unquoted = taskProse(task);
+  } catch {
+    // A parse failure must keep completion verification enabled.
+    return false;
+  }
+  const prose = unquoted
     .replace(/`[^`]*`|"[^"]*"|“[^”]*”|‘[^’]*’|(?<!\w)'[^']*'(?!\w)/gu, '""')
     .split("\n").filter(line => !/^\s*>/u.test(line)).join("\n");
   const clauses = prose.split(/(?:[.!?;]\s+|\n)/u).flatMap(clause => {

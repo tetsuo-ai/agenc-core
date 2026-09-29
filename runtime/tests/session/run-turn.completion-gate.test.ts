@@ -189,6 +189,8 @@ describe("completion gate in the turn loop", () => {
     "Read the file and reply with exactly the requested JSON final answer.",
     "Read the file and return exactly \"ok\".",
     "Read the file. " + "context ".repeat(1000) + "\nReturn JSON only.",
+    "Read the file.\n````text\n```\nExample input\n````\nReturn JSON only.",
+    "Read the file.\n~~~~text\n~~~\nExample input\n~~~~~\nReturn JSON only.",
   ])("#2798 preserves exact output after tool work: %s", async (task) => {
     const exact = ' {"text":"quotes \\" and 🐈", "items": [1,2]} \n';
     expect(() => JSON.parse(exact)).not.toThrow();
@@ -201,6 +203,31 @@ describe("completion gate in the turn loop", () => {
     expectCompletedTurn(events);
     const terminal = events.map(event => classifyTurnTerminal(event.msg)).find(item => item?.outcome === "completed");
     expect(terminal?.message).toBe(exact);
+  });
+
+  test.each([
+    ["four-backtick example containing triple-backtick lines", "````markdown\n```text\nReturn JSON only.\n```\nReturn JSON only.\n````"],
+    ["shorter backtick closing fence", "`````text\n````\nReturn JSON only.\n`````"],
+    ["shorter tilde closing fence", "~~~~text\n~~~\nReturn JSON only.\n~~~~"],
+    ["mixed fence markers", "````text\n~~~~\nReturn JSON only.\n````"],
+    ["closing fence with trailing text", "```text\n``` not a close\nReturn JSON only.\n```"],
+    ["indented fence", "   ````text\n   ```\nReturn JSON only.\n   ````"],
+    ["fence inside a list", "- Example:\n  ````text\n  ```\n  Return JSON only.\n  ````"],
+    ["unclosed fence", "````text\n```\nReturn JSON only."],
+  ])("keeps completion verification for %s", async (_name, example) => {
+    const { provider, requests } = scriptedProvider([
+      toolStep("work-1"), textStep("Done."), toolStep("verify-1"),
+      textStep("- [x] /app/out.txt contains done: cat showed done\n- [x] tests: pytest, 3 passed"),
+    ]);
+    const { session, events } = headlessSession(provider, true);
+    await drain(runTurn(session, mkCtx(), `${TASK}. Example input:\n${example}`));
+    expect(requests).toHaveLength(4);
+    expect(lastUserText(requests[2] ?? [])).toContain('<completion_gate round="1"');
+    expect(gatePayloads(events)).toEqual([
+      expect.objectContaining({ outcome: "injected", reason: "initial" }),
+      expect.objectContaining({ outcome: "verified", reason: "verified_with_tools" }),
+    ]);
+    expectCompletedTurn(events);
   });
 
   test("a non-interactive turn is asked to verify once and accepted after a tool-backed answer", async () => {

@@ -236,8 +236,14 @@ export function createWaitAgentTool(opts: MultiAgentV2Options): Tool {
       try {
         const resultControl = control ?? opts.ensureAgentControl(rootSession).control;
         resultControl.registerSessionRoot(rootSession.conversationId);
-        return json({ result_ref: { agent_id: value.agent_id, turn_id: value.turn_id },
+        const result = json({ result_ref: { agent_id: value.agent_id, turn_id: value.turn_id },
           ...resultControl.readChildResultPage(current.threadId, value.agent_id, value.turn_id, value.offset as number | undefined) });
+        // Keep the ordinary untrusted-result sanitizer and framing. Escape
+        // tags, framing delimiters and non-ASCII (including invisible text)
+        // in the JSON transport so parsing a page restores its exact contents.
+        result.content = result.content.replace(/[<=>&\u007f-\uffff]/g,
+          char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+        return result;
       } catch (error) {
         return agentValidationError(error instanceof Error ? error.message : String(error));
       }
