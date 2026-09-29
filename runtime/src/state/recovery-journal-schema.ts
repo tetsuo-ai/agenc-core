@@ -963,6 +963,10 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       postCompactTokens: isNumber,
     },
   ),
+  subagent_task_admitted: objectShape({
+    agentId: isString, agentPath: isString, turnId: isString, taskId: isString,
+    author: isString, taskText: isString, acceptedAt: isNumber, provider: isString, model: isString,
+  }),
   subagent_turn_outcome: objectShape(
     {
       agentId: isString,

@@ -201,6 +201,15 @@ export function formatSubagentNotification(params: {
     readonly task_id?: string;
     readonly rollout_path?: string;
   };
+  readonly durableAdmissionRef?: {
+    readonly projection_id: string;
+    readonly agent_id: string;
+    readonly turn_id: string;
+    readonly task_id?: string;
+    readonly rollout_path?: string;
+    readonly event_id: string;
+    readonly spawn_edge_id?: string;
+  };
   readonly receipt?: {
     readonly lifecycle: "turn";
     readonly outcome: "completed" | "errored" | "interrupted" | "nack";
@@ -236,6 +245,9 @@ export function formatSubagentNotification(params: {
     ...(params.receipt !== undefined ? { receipt: params.receipt } : {}),
     ...(params.durableOutcomeRef !== undefined
       ? { durable_outcome_ref: params.durableOutcomeRef }
+      : {}),
+    ...(params.durableAdmissionRef !== undefined
+      ? { durable_admission_ref: params.durableAdmissionRef }
       : {}),
   })
     // Keep model-controlled prose from terminating the outer framing. JSON

@@ -403,6 +403,9 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
     opts.assertParentSessionActive?.();
     live = await opts.control.spawn({
       parentPath: opts.parentPath,
+      initialTask: { text: opts.taskPrompt, ...(opts.taskId === undefined ? {} : { taskId: opts.taskId }),
+        ...(opts.plan?.destination ?? opts.providerSelection ?? currentChildProvider(opts.parent)),
+        ...(opts.model === undefined || opts.plan !== undefined ? {} : { modelOverride: opts.model }) },
       ...(opts.role !== undefined ? { roleName: opts.role } : {}),
       ...(opts.agentName !== undefined ? { agentName: opts.agentName } : {}),
       ...(opts.depthCap !== undefined ? { depthCap: opts.depthCap } : {}),
@@ -777,6 +780,7 @@ async function runDelegateAgentLoop(opts: {
   readonly finalMessageSink?: DelegateFinalMessageSink;
   readonly onRoleProvenanceFailure: () => void;
 }): Promise<RunAgentResult> {
+  const startedRuns = new Set<string>();
   while (true) {
     const live = opts.thread.live;
     const result = await runToCompletion(
@@ -785,7 +789,10 @@ async function runDelegateAgentLoop(opts: {
         parent: opts.parent,
         initialMessages: opts.initialMessages,
         taskPrompt: opts.taskPrompt,
-        ...(opts.taskId !== undefined ? { taskId: opts.taskId } : {}),
+        ...(opts.taskId !== undefined ? { taskId: opts.taskId }
+          : live.metadata.initialTaskAdmission !== undefined ? { taskId: live.metadata.initialTaskAdmission.taskId } : {}),
+        ...(!startedRuns.has(live.agentId) && live.metadata.initialTaskAdmission !== undefined
+          ? { initialTurnId: live.metadata.initialTaskAdmission.turnId } : {}),
         ...(opts.worktree !== undefined ? { worktree: opts.worktree } : {}),
         ...(opts.worktreeBaseCommit !== undefined
           ? { worktreeBaseCommit: opts.worktreeBaseCommit }
@@ -831,6 +838,7 @@ async function runDelegateAgentLoop(opts: {
       opts.finalMessageSink,
     );
 
+    startedRuns.add(live.agentId);
     const terminal = opts.thread.live.status.value;
     const terminalOutcome = terminalFromAgentStatus(terminal);
     if (terminalOutcome !== undefined) {
@@ -1021,6 +1029,10 @@ async function restartLiveAgent(opts: {
   try {
     const restarted = await opts.control.spawn({
       parentPath: opts.parentPath,
+      initialTask: { text: opts.thread.taskPrompt,
+        ...(live.metadata.initialTaskAdmission === undefined ? {} : { taskId: live.metadata.initialTaskAdmission.taskId }),
+        ...(plan?.destination ?? providerSelection ?? currentChildProvider(opts.parent)),
+        ...(live.metadata.initialTaskAdmission === undefined ? {} : { modelOverride: live.metadata.initialTaskAdmission.model }) },
       roleName: live.metadata.agentRole ?? live.role.name,
       agentPath: live.agentPath,
       preferredNickname: live.nickname,

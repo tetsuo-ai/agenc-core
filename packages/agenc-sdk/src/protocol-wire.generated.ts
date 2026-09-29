@@ -43,6 +43,7 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * and a mismatch is refused with `EFFECT_REVIEW_STALE`.
  * 1.21 adds an ephemeral allowlisted envOverrides snapshot to run.start.
  * 1.22 adds the step_limit child terminal reason for partial task results.
+ * 1.23 adds durable child task admission and restart recovery references.
  * Clients that need any of the additive surfaces above must not negotiate an
  * older daemon.
  */
