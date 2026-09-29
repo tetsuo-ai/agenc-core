@@ -1008,6 +1008,10 @@ export function createWorkflowSessionSeams(
           // Asking a constrained child to create a worktree is correctly refused.
           ...(input.kind === "plan" ? {
             isolation: "none" as const,
+            // Planning needs file inspection, not shell execution. Restrict the
+            // advertised tools so a compound shell read cannot trip the strict
+            // read-only command evaluator and abort the entire Goal.
+            toolAllowlist: ["FileRead", "Glob", "Grep"],
             inspectionWorktree: {
               path: input.worktreePath,
               gitRoot: input.spec.repoPath,

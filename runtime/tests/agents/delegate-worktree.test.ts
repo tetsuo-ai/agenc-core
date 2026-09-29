@@ -146,6 +146,7 @@ describe("delegate worktree isolation (real git)", () => {
       expect(remove).not.toHaveBeenCalled();
       expect(mockRunAgent).toHaveBeenLastCalledWith(expect.objectContaining({
         worktree: expect.objectContaining({ path: handle.path, created: false }),
+        worktreeBaseCommit: git(repo, "rev-parse", "HEAD").trim(),
       }));
       expect(existsSync(handle.path)).toBe(true);
       expect(git(repo, "status", "--porcelain")).toBe("");

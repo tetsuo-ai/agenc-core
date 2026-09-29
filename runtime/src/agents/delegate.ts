@@ -338,6 +338,12 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
   let worktreeSandboxExecutionBroker: SandboxExecutionBrokerLike | undefined;
   let preserveLiveAfterRoleProvenanceFailure = false;
   let worktreeEvidenceRequiringReview: WorktreeTurnEvidence | undefined;
+  if (opts.inspectionWorktree !== undefined) {
+    const broker = opts.parent.services?.sandboxExecutionBroker;
+    if (broker === undefined) throw missingSandboxExecutionBoundary("child_agent");
+    baseCommit = await captureBaseCommit(opts.inspectionWorktree.path,
+      broker.forkForCwd(opts.inspectionWorktree.path));
+  }
   if (isolation === "worktree") {
     const worktreeSlug = opts.worktreeSlug!;
     const workspaceRoot =
