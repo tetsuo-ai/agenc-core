@@ -2179,7 +2179,7 @@ describe("Light presentation and deferred capability preservation", () => {
     await light.dispatch({ id: "load-full-read", name: "system.searchTools", arguments: '{"select":"FileRead"}' });
     // Selecting an already exposed core tool does not rewrite its schema.
     expect(light.toLLMTools().find(tool => tool.function.name === "FileRead"))
-      .toEqual(other.toLLMTools().find(tool => tool.function.name === "FileRead")));
+      .toEqual(other.toLLMTools().find(tool => tool.function.name === "FileRead"));
   });
 
   test.each([undefined, { disabled_tools: ["system.searchTools"] }])(
