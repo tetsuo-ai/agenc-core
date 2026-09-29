@@ -724,7 +724,7 @@ export function buildToolRegistry(
   const shellTools = [
     createExecCommandTool({
       cwd: options.workspaceRoot,
-      ...(options.lightMode === true ? { defaultMaxOutputTokens: 2000 } : {}),
+      ...(options.lightMode === true ? { defaultMaxOutputTokens: 1000 } : {}),
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
       ...(options.bashExecObserver !== undefined
@@ -733,7 +733,7 @@ export function buildToolRegistry(
     }),
     createWriteStdinTool({
       cwd: options.workspaceRoot,
-      ...(options.lightMode === true ? { defaultMaxOutputTokens: 2000 } : {}),
+      ...(options.lightMode === true ? { defaultMaxOutputTokens: 1000 } : {}),
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
     }),

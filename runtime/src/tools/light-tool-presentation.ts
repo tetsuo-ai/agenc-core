@@ -8,8 +8,8 @@ const PRESENTATIONS: Readonly<Record<string, string>> = {
   Write: "Write content; FileRead existing files first.",
   Grep: "Search file contents with ripgrep regex. Defaults to matching file paths; use output_mode content for lines. Escape literal regex metacharacters. Ignored/build files are excluded unless includeIgnored.",
   Glob: "Find file paths by glob pattern, sorted by modification time. Skips ignored/build/vendor files and lockfiles unless includeIgnored.",
-  exec_command: "Run cmd in workdir. Time fields are milliseconds. Output defaults to 2000 tokens; max_output_tokens overrides. Running commands load write_stdin for polling; load kill_process to stop. Child processes stop on exit unless detach; tty allows input.",
-  write_stdin: "Output defaults to 2000 tokens; max_output_tokens overrides. Poll a running exec_command session with chars empty, or send input if it started with tty=true. Use the same sandbox_permissions as the originating command.",
+  exec_command: "Run cmd in workdir. Time fields are milliseconds. Output defaults to 1000 tokens; max_output_tokens overrides. Running commands load write_stdin for polling; load kill_process to stop. Child processes stop on exit unless detach; tty allows input.",
+  write_stdin: "Output defaults to 1000 tokens; max_output_tokens overrides. Poll a running exec_command session with chars empty, or send input if it started with tty=true. Use the same sandbox_permissions as the originating command.",
   "system.searchTools": "Query/select tools; unique matches load. instructions loads guidance.",
 };
 
