@@ -597,7 +597,7 @@ function recordCompletedToolCall(
   const registryTool = session.services.registry.tools.find(
     (tool) => tool.name === toolCall.name,
   );
-  loadLightToolCompanions({
+  const requestedToolsLoaded = loadLightToolCompanions({
     lightMode: session.services.runtimeOptions?.lightMode === true,
     userInput: session.currentRootHumanTurn()?.text,
     tool: registryTool,
@@ -656,6 +656,13 @@ function recordCompletedToolCall(
       untrustedKind,
     ),
   );
+  if (requestedToolsLoaded.length > 0) {
+    // Append a capability fact with this result batch. It is not an execution
+    // approval, a reminder turn, or a rewrite of the sealed tool response.
+    const content = `User-requested tools are ready: ${requestedToolsLoaded.join(", ")}. Use their loaded schemas.`;
+    state.toolResults.push({ uuid: crypto.randomUUID(), role: "user", kind: "attachment", content });
+    state.messages.push({ role: "user", content, runtimeOnly: { mergeBoundary: "user_context" } });
+  }
   return completed;
 }
 

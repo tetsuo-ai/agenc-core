@@ -67,3 +67,35 @@ test("a real Light turn advertises polling immediately after canonical async exe
   expect(completed.map((entry) => entry.toolName)).toEqual(["exec_command", "write_stdin"]);
   expect(completed.every((entry) => !entry.isError)).toBe(true);
 });
+
+
+test("named capabilities gain one availability notice after the initial core result", async () => {
+  const manager: UnifiedExecProcessManagerLike = {
+    maxTimeoutMs: 30_000,
+    execCommand: vi.fn(async () => ({ output: "ok", stdout: "ok", stderr: "", exitCode: 0, exit_code: 0, durationMs: 1, wall_time_seconds: 0.001, timedOut: false, truncated: false, original_token_count: 1 })),
+    writeStdin: vi.fn(), closeAll: vi.fn(async () => {}),
+  };
+  const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true, requireAdmission: false, unifiedExecManager: manager, sandboxExecutionBroker: explicitDangerBroker });
+  const provider = mkProvider();
+  let calls = 0;
+  provider.chatStream = async (messages, _chunk, options): Promise<LLMResponse> => {
+    calls++;
+    const visible = options?.tools?.map(tool => tool.function.name) ?? [];
+    const text = JSON.stringify(messages);
+    if (calls === 1) {
+      expect(visible.sort()).toEqual(["FileRead", "MultiEdit", "Write", "exec_command"]);
+      expect(text).not.toContain("User-requested tools are ready");
+    } else {
+      expect(visible).toContain("TodoWrite");
+      expect(text.split("User-requested tools are ready: TodoWrite")).toHaveLength(2);
+    }
+    return { content: calls > 2 ? "Done" : "", toolCalls: calls > 2 ? [] : [{ id: `command-${calls}`, name: "exec_command", arguments: '{"cmd":"true"}' }], usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, model: "test-model", finishReason: calls > 2 ? "stop" : "tool_calls" };
+  };
+  const { session } = mkSession({ provider, registry, services: {
+    runtimeOptions: resolveAgentRuntimeOptions({}, { lightMode: true }), sandboxExecutionBroker: explicitDangerBroker,
+    permissionModeRegistry: new PermissionModeRegistry(createEmptyToolPermissionContext({ mode: "bypassPermissions", isBypassPermissionsModeAvailable: true })),
+  } });
+  await drain(runTurn(session, mkCtx({ sandboxPolicy: { value: "danger_full_access" }, permissionMode: "bypassPermissions" }), "Inspect the work and use TodoWrite for a checklist."));
+  expect(calls).toBe(3);
+  expect(manager.execCommand).toHaveBeenCalledTimes(2);
+});
