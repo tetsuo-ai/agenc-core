@@ -1042,9 +1042,20 @@ describe("bootstrapLocalRuntimeSession", () => {
       const waited = JSON.parse((await wait.execute({})).content);
       expect(waited.timed_out).toBe(false);
       expect(waited.updates).toHaveLength(2);
-      expect(waited.updates[0].content).toContain("Original review result");
-      expect(waited.updates[1].content).toContain("Accepted before restart");
-      expect(waited.updates[1].content).toContain('"reason":"resume_blocked"');
+      const updates = waited.updates.map((update: { content: string }) => JSON.parse(update.content.split("\n")[1]!));
+      expect(updates).toEqual(expect.arrayContaining([
+        expect.objectContaining({ agent_path: completed.agentPath,
+          receipt: expect.objectContaining({ message: "Original review result", task_id: admitted.taskId, turn_id: admitted.turnId }),
+          durable_outcome_ref: expect.objectContaining({ agent_id: completed.agentId, task_id: admitted.taskId, turn_id: admitted.turnId }),
+        }),
+        expect.objectContaining({ agent_path: pending.agentPath,
+          status: expect.objectContaining({ terminal: expect.objectContaining({
+            reason: "resume_blocked", unfinishedWork: "Accepted before restart", dispatch: "unknown",
+          }) }),
+          durable_admission_ref: expect.objectContaining({ agent_id: pending.agentId, task_id: "pending-task" }),
+        }),
+      ]));
+      expect(updates.find((update: { agent_path: string }) => update.agent_path === pending.agentPath)).not.toHaveProperty("receipt");
       expect(control.drainRecoveredChildTaskUpdates(conversationId)).toEqual([]);
       expect(control.getLive(completed.agentId)).toBeUndefined();
       expect(control.getLive(pending.agentId)).toBeUndefined();
