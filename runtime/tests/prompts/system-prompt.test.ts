@@ -1340,7 +1340,7 @@ describe("assembleSystemPrompt", () => {
 
 
 test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: explain tradeoffs." }])(
-  "Light uses unchanged standard instructions and preserves optional inputs (style=%s)",
+  "Light uses its own workflow and preserves authority inputs (style=%s)",
   async (outputStyle) => {
     const session = { services: { runtimeOptions: { lightMode: true, simpleMode: false, nonInteractive: true, deadlineAt: 123 }, providerEnvironment: {} } } as unknown as Session;
     const options = {
@@ -1356,28 +1356,21 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
       scratchpadDir: "/workspace/scratchpad",
     };
     const light = await assembleSystemPromptSnapshot({ ...options, profile: "light" });
-    const standard = await assembleSystemPromptSnapshot({ ...options, profile: "standard" });
-    // Only the environment's wall-clock timestamp may differ between calls.
-    const withoutClock = (text: string) => text.replace(/Current time \(UTC\): [^\n]+/gu, "Current time (UTC): <captured>");
-    expect(light.staticPrefix).toBe(standard.staticPrefix);
-    expect(withoutClock(light.text)).toBe(withoutClock(standard.text));
-    expect(withoutClock(light.dynamicSuffix)).toBe(withoutClock(standard.dynamicSuffix));
-    for (const heading of ["# System", "# Executing actions with care", "# Using your tools", "# Tone and style", "# Output efficiency", "# Completing work without a human", "# Environment"]) {
-      expect(light.text).toContain(heading);
-    }
-    expect(light.text).toContain("system.searchTools");
+    expect(light.staticPrefix).toContain("You are AgenC.");
+    expect(light.staticPrefix).not.toContain("# Completing work without a human");
+    expect(light.text).toContain("catalog loader");
+    expect(light.text).toContain("select TodoWrite");
     expect(light.text).toContain(UNTRUSTED_TOOL_RESULT_BOUNDARY);
-    expect(light.text).toContain("fixed time budget");
+
     expect(light.text).toContain("USER_PROJECT_SENTINEL");
-    expect(light.staticPrefix).toContain("MEMORY_RULE_SENTINEL");
-    expect(light.dynamicSuffix).toContain("MEMORY_PATH_SENTINEL");
+    expect(light.staticPrefix).not.toContain("MEMORY_RULE_SENTINEL");
+    expect(light.dynamicSuffix).not.toContain("MEMORY_PATH_SENTINEL");
     expect(light.dynamicSuffix).toContain("MCP_INSTRUCTIONS_SENTINEL");
     expect(light.dynamicSuffix).toContain("French");
     expect(light.dynamicSuffix).toContain("/workspace/scratchpad");
     expect(light.text.toLowerCase()).toContain("plan");
     if (outputStyle === undefined) {
-      expect(light.text).toContain("# Doing tasks");
-      expect(light.text).toContain("never suppress or simplify failing checks");
+      expect(light.text).toContain("Run checks for the requested behavior");
     } else {
       expect(light.dynamicSuffix).toContain("OUTPUT_STYLE_SENTINEL");
       expect(light.text).not.toContain("# Doing tasks");

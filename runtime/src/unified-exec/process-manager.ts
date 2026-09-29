@@ -1,3 +1,4 @@
+import { retainCollectedOutput } from "./retained-output.js";
 import {
   spawn,
   type ChildProcess,
@@ -748,6 +749,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       yieldMs: clampExecYield(request.yield_time_ms),
       signal: request.__abortSignal,
       maxOutputTokens: request.max_output_tokens,
+      retainOutput: request.retainOutput,
       onProgress: request.__onProgress,
     });
     request.observer?.onEnd?.({
@@ -981,6 +983,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       yieldMs: clampWriteYield(request.yield_time_ms, input),
       signal: request.__abortSignal,
       maxOutputTokens: request.max_output_tokens,
+      retainOutput: request.retainOutput,
       onProgress: request.__onProgress,
     });
     if (entry.exitState !== null) {
@@ -1631,6 +1634,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     entry: ProcessEntry,
     options: {
       readonly yieldMs: number;
+      readonly retainOutput?: boolean;
       readonly signal?: AbortSignal;
       readonly maxOutputTokens?: number;
       readonly onProgress?: (event: UnifiedExecProgressEvent) => void;
@@ -1683,7 +1687,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       .filter((chunk) => chunk.stream === "stderr")
       .map((chunk) => chunk.chunk)
       .join("");
-    return createResult({
+    const result = createResult({
       stdout,
       stderr,
       exitCode: entry.exitState?.exitCode ?? null,
@@ -1696,6 +1700,14 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         ? { residualProcessesTerminated: true }
         : {}),
     });
+    if (options.retainOutput !== true || !result.truncated) return result;
+    try {
+      const root = entry.runtimeSandbox?.sessionTempRoot ?? this.sessionTempRoot;
+      return { ...result, retained_output_path: await retainCollectedOutput(root, stdout, stderr) };
+    } catch {
+      // The command has already executed; a logging failure must not request a retry.
+      return { ...result, retained_output_unavailable: true };
+    }
   }
 
   private forceTerminate(entry: ProcessEntry): void {

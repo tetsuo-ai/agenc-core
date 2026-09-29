@@ -2132,17 +2132,19 @@ describe("Light presentation and deferred capability preservation", () => {
     expect(disabled.getDiscoveredToolNames?.().size).toBe(0);
   });
 
-  test("keeps the complete executable catalog and unchanged function and parameter documentation", () => {
+  test("keeps canonical executors and compact shell presentation", () => {
     const normal = buildToolRegistry({ workspaceRoot: "/tmp" });
     const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
     expect(light.tools.map(tool => tool.name)).toEqual(normal.tools.map(tool => tool.name));
     expect(light.toLLMTools().map(tool => tool.function.name).sort()).toEqual([
-      "Edit", "FileRead", "Glob", "Grep", "Write", "exec_command", "system.searchTools", "write_stdin",
+      "FileRead", "MultiEdit", "exec_command", "system.searchTools", "write_stdin",
     ].sort());
     for (const presented of light.toLLMTools()) {
       const canonical = light.tools.find(tool => tool.name === presented.function.name)!;
-      expect(presented.function).toEqual({ name: canonical.name, description: canonical.description, parameters: canonical.inputSchema });
-      expect(presented).toEqual(normal.toLLMTools().find(tool => tool.function.name === canonical.name));
+      expect(presented.function.parameters.required).toEqual(canonical.inputSchema.required);
+      expect(presented.function.parameters.properties && Object.keys(presented.function.parameters.properties).sort()).toEqual(Object.keys(canonical.inputSchema.properties ?? {}).sort());
+      expect(canonical.inputSchema).toEqual(normal.tools.find(tool => tool.name === canonical.name)!.inputSchema);
+
     }
     expect(light.tools.find(tool => tool.name === "Write")?.requiresApproval).toBe(true);
     expect(light.tools.find(tool => tool.name === "Write")?.recoveryCategory).toBe("side-effecting");
@@ -2162,9 +2164,9 @@ describe("Light presentation and deferred capability preservation", () => {
     expect(execute).toHaveBeenCalledOnce();
     expect(other.toLLMTools().some(tool => tool.function.name === extra.name)).toBe(false);
     expect(normal.toLLMTools()).toEqual(normalBefore);
-    await light.dispatch({ id: "load-full-read", name: "system.searchTools", arguments: '{"select":"FileRead"}' });
-    const read = light.tools.find(tool => tool.name === "FileRead")!;
-    expect(light.toLLMTools().find(tool => tool.function.name === "FileRead")?.function).toEqual({ name: read.name, description: read.description, parameters: read.inputSchema });
+    await light.dispatch({ id: "load-full-write", name: "system.searchTools", arguments: '{"select":"Write"}' });
+    const write = light.tools.find(tool => tool.name === "Write")!;
+    expect(light.toLLMTools().find(tool => tool.function.name === "Write")?.function).toEqual({ name: write.name, description: write.description, parameters: write.inputSchema });
   });
 
   test.each([undefined, { disabled_tools: ["system.searchTools"] }])(
@@ -2204,4 +2206,18 @@ test.each([
   expect(registry.toLLMTools().some(tool => tool.function.name === "system.searchTools")).toBe(false);
   expect(registry.toLLMTools().some(tool => tool.function.name === "Write")).toBe(false);
   expect(await registry.dispatch({ id: "reachable", name: "Specialist", arguments: '{}' })).toMatchObject({ content: "done" });
+});
+
+
+test("Light discovery appends schemas and full exposure still respects availability", async () => {
+  const deferred = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+  const before = deferred.toLLMTools();
+  await deferred.dispatch({ id: "load-plan", name: "system.searchTools", arguments: '{"select":"TodoWrite"}' });
+  expect(deferred.toLLMTools().slice(0, before.length)).toEqual(before);
+  const full = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true, lightFullCatalog: true, toolsConfig: { disabled_tools: ["Write"] } });
+  expect(full.toLLMTools().some(tool => tool.function.name === "TodoWrite")).toBe(true);
+  expect(full.toLLMTools().some(tool => tool.function.name === "Write")).toBe(false);
+  const catalog = full.toLLMTools();
+  await full.dispatch({ id: "already-present", name: "system.searchTools", arguments: '{"select":"TodoWrite"}' });
+  expect(full.toLLMTools()).toEqual(catalog);
 });

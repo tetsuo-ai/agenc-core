@@ -140,6 +140,7 @@ export const autoModeProducer: AttachmentProducer = async (
   opts,
   trackingState,
 ) => {
+  if (opts.lightMode === true) return [];
   const attachments: Attachment[] = [];
   const mode = opts.permissionContext.mode;
 

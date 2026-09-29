@@ -91,6 +91,11 @@ function warningEvents(session: { emit: ReturnType<typeof vi.fn> }) {
 }
 
 describe("resolveCompletionGatePolicy", () => {
+  test("Light skips automatic reminders but honors explicit verification policy", () => {
+    const options = { nonInteractive: true, lightMode: true };
+    expect(resolveCompletionGatePolicy(undefined, options).enabled).toBe(false);
+    expect(resolveCompletionGatePolicy({ completionGate: { mode: "always" } }, options).enabled).toBe(true);
+  });
   test("auto follows the session's interactivity", () => {
     expect(resolveCompletionGatePolicy(undefined, { nonInteractive: true })).toEqual({
       enabled: true,

@@ -1,11 +1,8 @@
-/** Initial exposure only. Tool documentation, validation and execution stay canonical. */
+/** Initial working tools; the complete canonical catalog remains selectable. */
 export const LIGHT_INITIAL_TOOL_NAMES: ReadonlySet<string> = new Set([
   "system.searchTools",
   "FileRead",
-  "Edit",
-  "Write",
+  "MultiEdit",
   "exec_command",
   "write_stdin",
-  "Grep",
-  "Glob",
 ]);

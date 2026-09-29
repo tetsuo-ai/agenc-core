@@ -34,6 +34,7 @@
  * @module
  */
 
+import { lightWorkflow } from "./light-workflow.js";
 import { spawnSync } from "node:child_process";
 import { platform as osPlatform, type as osType, release as osRelease } from "node:os";
 
@@ -518,6 +519,9 @@ export async function resolveMemoryPromptInputs(session: SystemPromptSessionSnap
   readonly memoryInstructions: string;
   readonly memoryPrompt: string;
 }> {
+  if (session.services?.runtimeOptions?.lightMode === true) {
+    return { memoryInstructions: "", memoryPrompt: "" };
+  }
   try {
     const configStore = session.services?.configStore;
     if (configStore === undefined) return { memoryInstructions: "", memoryPrompt: "" };
@@ -776,6 +780,7 @@ export interface SystemPromptSessionSnapshot {
 }
 
 export interface AssembleSystemPromptOpts {
+  readonly lightProfile?: boolean;
   /** Captured session services that affect prompt assembly. */
   readonly session: SystemPromptSessionSnapshot;
   /** Per-turn immutable context. */
@@ -932,8 +937,7 @@ export async function assembleSystemPromptSnapshot(
   };
   switch (opts.profile ?? "standard") {
     case "light":
-      // Light changes tool exposure only; keep the canonical work instructions.
-      return assembleSystemPrompt(opts);
+      return assembleSystemPrompt({ ...opts, lightProfile: true });
     case "compact":
       return withClientRendering(
         compactSystemPromptSnapshot(
@@ -1125,6 +1129,7 @@ export async function assembleSystemPrompt(
   const { ctx, session } = opts;
   const enabledTools = opts.enabledToolNames ?? new Set<string>();
   const agentsEnabled = opts.agentsEnabled ?? false;
+  const light = opts.lightProfile === true || session.services?.runtimeOptions?.lightMode === true;
 
   const clientRendering = getClientRenderingSection(
     session.services?.providerEnvironment,
@@ -1191,7 +1196,9 @@ export async function assembleSystemPrompt(
   // descriptions; its default depends on the provider
   // (prompts/lean-system-prompt.ts).
   const lean = leanSystemPromptEnabled(promptEnvironment, envInfoInputs.provider);
-  const staticSections: Array<string | null> = lean
+  const staticSections: Array<string | null> = light
+    ? [lightWorkflow(opts.outputStyle != null)]
+    : lean
     ? [
         getLeanIntroSection(opts.outputStyle != null),
         getLeanSystemSection(),
@@ -1251,7 +1258,7 @@ export async function assembleSystemPrompt(
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "memory",
-      () => getMemorySection(opts.memoryPrompt),
+      () => light ? null : getMemorySection(opts.memoryPrompt),
       "memory directories are per session and must not leak across sessions",
     ),
     DANGEROUS_uncachedSystemPromptSection(
@@ -1264,7 +1271,9 @@ export async function assembleSystemPrompt(
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "env_info_simple",
-      () => buildEnvInfoSection(envInfoInputs),
+      () => light
+        ? `Workspace: ${cwd}\nPlatform: ${osPlatform()}\nModel: ${envInfoInputs.provider}/${model}\nDate: ${ctx.currentDate ?? "unknown"}`
+        : buildEnvInfoSection(envInfoInputs),
       "environment info includes wall-clock time and current branch",
     ),
     DANGEROUS_uncachedSystemPromptSection(
@@ -1289,7 +1298,7 @@ export async function assembleSystemPrompt(
     ),
     // The lean head leaves the token-target explanation to the continuation
     // message the runtime sends when a target is set.
-    ...(feature("TOKEN_BUDGET") && !lean
+    ...(feature("TOKEN_BUDGET") && !lean && !light
       ? [
           systemPromptSection(
             "token_budget",

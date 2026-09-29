@@ -137,6 +137,19 @@ describe("FileRead tool", () => {
     expect(() => JSON.parse(result.content)).toThrow();
   });
 
+  test("a configured text window discloses its range and accepts a larger explicit slice", async () => {
+    const file = join(root, "window.txt");
+    await writeFile(file, Array.from({ length: 240 }, (_, n) => `row ${n + 1}`).join("\n"));
+    const tool = createFileReadTool({ allowedPaths: [root], defaultTextLines: 120 });
+    const first = await tool.execute({ file_path: file });
+    expect(first.metadata?.isPartial).toBe(true);
+    expect(first.content).toContain("lines 1-120 of 240");
+    expect(first.content).not.toContain("row 121");
+    const whole = await tool.execute({ file_path: file, limit: 240 });
+    expect(whole.metadata?.isPartial).toBe(false);
+    expect(whole.content).toContain("row 240");
+  });
+
   test("uses dense token estimation for JSON files", async () => {
     const file = join(root, "data.json");
     await writeFile(file, "x".repeat(240), "utf8");

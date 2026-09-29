@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { snapshotProviderEnvironment } from "../../src/llm/provider-options.js";
 
 import {
   CANONICAL_SESSION_ENV_KEYS,
@@ -36,6 +37,14 @@ describe("isDynamicSessionCredentialEnvironmentKey", () => {
 });
 
 describe("canonicalSessionEnvironmentKeys", () => {
+  it("captures the Light catalog choice without inheriting a later environment change", () => {
+    const incoming = { AGENC_LIGHT_FULL_CATALOG: "1" };
+    const captured = snapshotProviderEnvironment(incoming);
+    incoming.AGENC_LIGHT_FULL_CATALOG = "0";
+    expect(captured.AGENC_LIGHT_FULL_CATALOG).toBe("1");
+    expect(snapshotProviderEnvironment({}).AGENC_LIGHT_FULL_CATALOG).toBeUndefined();
+  });
+
   it("always starts with the static daemon client surface", () => {
     const keys = canonicalSessionEnvironmentKeys();
     expect(keys.slice(0, CANONICAL_SESSION_ENV_KEYS.length)).toEqual([
