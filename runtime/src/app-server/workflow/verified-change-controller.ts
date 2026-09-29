@@ -114,6 +114,7 @@ import {
   encodeWorkflowReviewTerminal,
   recordWorkflowChildTerminal,
 } from "./child-terminals.js";
+import { PLAN_BLOCKED_INSTRUCTIONS, parsePlanBlockedResponse, readPlanBlocked } from "./plan-blocked.js";
 import { boundedWorkflowDiagnostic } from "../../workflow/diagnostics.js";
 import { projectWorkflowStatus, type WorkflowRunStatus } from "./status-projection.js";
 import { isWorkflowChildStopReason, workflowAdmissionStopReason, workflowStopMessage, type WorkflowChildStopReason } from "./stop-reasons.js";
@@ -1438,7 +1439,10 @@ export class VerifiedChangeWorkflowController {
           childRunId: `${ctx.runId}:plan#${attempt}`,
           prompt: buildPlanPrompt(ctx.spec),
           decorate: (outcome) => {
-            if (ctx.spec.requiredVerification.length > 0 || outcome.status !== "completed") return {};
+            if (outcome.status !== "completed") return {};
+            const planBlocked = parsePlanBlockedResponse(outcome.finalMessage);
+            if (planBlocked !== undefined) return { planBlocked };
+            if (ctx.spec.requiredVerification.length > 0) return {};
             try {
               // Freeze checks from the full response before bounding retained prose.
               return { requiredVerification: plannedVerification(outcome.finalMessage ?? "") };
@@ -1448,6 +1452,11 @@ export class VerifiedChangeWorkflowController {
           },
         }),
     });
+    const planBlocked = readPlanBlocked(result.evidence.planBlocked);
+    if (planBlocked !== undefined) {
+      throw new WorkflowHaltError({ status: "failed", stopReason: "requirement_conflict",
+        finalMessage: `The planner found conflicting requirements: ${boundedWorkflowDiagnostic(planBlocked.explanation)}` });
+    }
     ctx.planText = result.evidence.child?.finalMessage;
     if (ctx.spec.requiredVerification.length === 0) {
       ctx.plannedChecks = result.evidence.requiredVerification;
@@ -3110,7 +3119,8 @@ function buildPlanPrompt(spec: WorkflowSpec): string {
     "Produce a concrete implementation plan sufficient to fulfill the goal below.",
     AUTONOMOUS_GOAL_INSTRUCTIONS,
     "Include your interpretation, deliverables, and how each required command will verify them. In a greenfield workspace, plan the files and real checks the implementer must create; do not substitute true, :, exit 0, or echo.",
-    "Do NOT modify any files — respond with the plan only.",
+    "Do NOT modify any files. Respond with the plan or an explicit requirement conflict report.",
+    PLAN_BLOCKED_INSTRUCTIONS,
     "",
     "## Goal",
     spec.goal,
@@ -3120,7 +3130,7 @@ function buildPlanPrompt(spec: WorkflowSpec): string {
       "No client checks were supplied. Inspect the repository and select its real test, build or lint commands.",
       "For a new project, choose the commands the implementation will create, including tests and a CLI smoke run when applicable.",
       "These commands will be frozen when this plan commits and must pass unchanged. Run from the repository root; include any needed cd. Commands run in listed order.",
-      'End your plan with exactly one fenced agenc-verification block containing a JSON array of command strings, for example:',
+      'For an ordinary implementation plan, end with exactly one fenced agenc-verification block containing a JSON array of command strings, for example:',
       '```agenc-verification',
       '["npm test", "npm run build && node dist/cli.js --help"]',
       '```',

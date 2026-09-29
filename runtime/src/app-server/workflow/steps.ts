@@ -18,6 +18,7 @@
  */
 
 import { createHash } from "node:crypto";
+import type { WorkflowPlanBlocked } from "./plan-blocked.js";
 import type { WorkflowChildStopReason } from "./stop-reasons.js";
 
 import {
@@ -199,6 +200,8 @@ export interface WorkflowStepEvidence {
   readonly attempt?: number;
   readonly spec?: unknown;
   readonly specDigest?: string;
+  /** A validated planner refusal, committed before the run terminal is written. */
+  readonly planBlocked?: WorkflowPlanBlocked;
   /** Frozen at the successful plan commit when intake supplied no commands. */
   readonly requiredVerification?: readonly { readonly label: string; readonly script: string }[];
   readonly worktree?: {
