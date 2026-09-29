@@ -664,19 +664,21 @@ describe("provider resolution (T13)", () => {
     });
   });
 
-  test("buildProviderModelCatalog omits retired Groq Mixtral models", () => {
+  test("buildProviderModelCatalog lists current Groq routes and omits retired models", () => {
     const catalog = buildProviderModelCatalog(defaultConfig());
 
     expect(catalog.groq).toEqual([
-      "llama-3.3-70b-versatile",
-      "llama-3.1-8b-instant",
+      "openai/gpt-oss-120b",
+      "openai/gpt-oss-20b",
+      "qwen/qwen3.8-27b",
+      "minimaxai/minimax-m2.7",
     ]);
-    expect(
-      resolveModelDisambiguated("llama-3.1-8b-instant", catalog),
-    ).toEqual({
+    expect(resolveModelDisambiguated("groq:openai/gpt-oss-120b", catalog)).toEqual({
       provider: "groq",
-      model: "llama-3.1-8b-instant",
+      model: "openai/gpt-oss-120b",
     });
+    expect(catalog.groq).not.toContain("llama-3.1-8b-instant");
+    expect(catalog.groq).not.toContain("llama-3.3-70b-versatile");
     expect(() =>
       resolveModelDisambiguated("mixtral-8x7b-32768", catalog)
     ).toThrow(/unknown model/u);
