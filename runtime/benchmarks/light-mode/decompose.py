@@ -38,7 +38,15 @@ for path in sorted((a.root/'runs').glob('*/result.json')):
  r=json.loads(path.read_text())
  if r['model'] not in ('deepseek-flash','deepseek-v4-pro'): continue
  us=sorted([json.loads(p.read_text()) for p in path.parent.glob('usage-*.json')],key=lambda x:x['call'])
- if not us:continue
+ if not us:
+  if r.get('model_calls') != 0 or r.get('input_tokens') != 0:
+   raise ValueError('Missing call records without a confirmed zero-call result: '+r['id'])
+  rows.append({'id':r['id'],'phase':r['phase'],'agent':r['agent'],'model':r['model'],'task':r['task'],'repeat':r['repeat'],'effective':False,
+   'N':0,'P_raw':None,'P_system_raw':None,'P_schema_raw':None,'NP_raw':0,'history_residual':0,'schema_growth_raw':0,
+   'input':0,'output':0,'reasoning':0,'visible_output':0,'total':0,'largest_results':[],'largest_replay':[],'poll_results':0,
+   'ttft_s':None,'generation_s':None,'model_s':0,'tool_s':None,'overhead_s':None,'tool_plus_overhead_s':r['wall_seconds'],
+   'wall_s':r['wall_seconds'],'cost_usd':r.get('cost_usd'),'zero_call_infrastructure_failure':True})
+  continue
  first=json.loads((path.parent/'wire-001.json').read_text())['body']
  system='\n\n'.join(m.get('content','') for m in first['messages'] if m['role'] in ('system','developer'))
  schemas=compact(first.get('tools',[]));P=count(system)+count(schemas)
@@ -68,5 +76,5 @@ for path in sorted((a.root/'runs').glob('*/result.json')):
   measured=tool_timing(path.parent);rows[-1].update(measured)
   rows[-1]['overhead_estimate_s']=rows[-1]['tool_plus_overhead_s']-measured['tool_interval_estimate_s'] if measured['tool_interval_estimate_s'] is not None else None
   rows[-1]['tool_timing_method']='Measured tool durations anchored to effect-result timestamps and unioned for overlaps. Endpoints precede tool completion serialization slightly; overhead is diagnostic, not an exact critical-path split.'
- a.out.write_text(json.dumps({'method':'P is independently tokenized exact system text plus compact schema JSON. H* is provider input minus N*P: it includes conversation history, initial task, provider framing and schema growth. Thus NP+H*+O equals measured total exactly; raw P is not a provider-isolated prefix count. Schema growth is separately reported. Largest results are raw tokenizer counts at first appearance, 1-based request and 0-based message positions. TTFT/generation are null when instrumentation was absent. Historical tool wall time and client overhead cannot be separated on both agents; their measured combined residual is retained. No unknown metric is zero-filled.','tokenizer_sha256':hashlib.sha256(tokenizer_path.read_bytes()).hexdigest(),'runs':rows},indent=2)+'\n')
+a.out.write_text(json.dumps({'method':'P is independently tokenized exact system text plus compact schema JSON. H* is provider input minus N*P: it includes conversation history, initial task, provider framing and schema growth. Thus NP+H*+O equals measured total exactly; raw P is not a provider-isolated prefix count. Schema growth is separately reported. Largest results are raw tokenizer counts at first appearance, 1-based request and 0-based message positions. TTFT/generation are null when instrumentation was absent. Historical tool wall time and client overhead cannot be separated on both agents; their measured combined residual is retained. No unknown metric is zero-filled.','tokenizer_sha256':hashlib.sha256(tokenizer_path.read_bytes()).hexdigest(),'runs':rows},indent=2)+'\n')
 print(json.dumps({'runs':len(rows),'path':str(a.out)}))
