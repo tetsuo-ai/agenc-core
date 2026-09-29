@@ -95,6 +95,7 @@ describe("child terminal failures", () => {
   it.each([
     ["provider_unavailable", { status: 503 }],
     ["timeout", new Error("deadline_reached")],
+    ["no_progress", new Error("subagent stopped by the no-progress backstop")],
     ["step_limit", new Error("subagent exceeded maxTurns (32)")],
     ["no_progress", new Error("subagent stopped by the no-progress backstop")],
     ["auth_required", { status: 401 }],

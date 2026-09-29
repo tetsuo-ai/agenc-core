@@ -1195,6 +1195,24 @@ describe("providers/bedrock", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("forwards ConverseStream reasoning text to the shared guard, excluding signatures", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(eventStreamResponse([
+      { contentBlockDelta: { contentBlockIndex: 0, delta: { reasoningContent: { text: "Check the invariant." } } } },
+      { contentBlockDelta: { contentBlockIndex: 0, delta: { reasoningContent: { signature: "opaque" } } } },
+      { contentBlockStop: { contentBlockIndex: 0 } },
+      { contentBlockDelta: { contentBlockIndex: 1, delta: { text: "Done." } } },
+      { messageStop: { stopReason: "end_turn" } },
+    ]));
+    const provider = new BedrockProvider({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret",
+      model: "amazon.nova-pro-v1:0", fetchImpl, now: () => new Date("2024-01-02T03:04:05Z") });
+    const chunks: unknown[] = [];
+    const response = await provider.chatStream([{ role: "user", content: "hello" }], chunk => chunks.push(chunk));
+    expect(chunks).toContainEqual({ content: "", done: false, thinkingDelta: { delta: "Check the invariant.", index: 0 } });
+    expect(chunks).toContainEqual({ content: "", done: false, thinkingBlockStop: { index: 0 } });
+    expect(JSON.stringify(chunks)).not.toContain("opaque");
+    expect(response.content).toBe("Done.");
+  });
+
   it("streams ConverseStream text, tool input, final tool calls, and usage", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       eventStreamResponse([

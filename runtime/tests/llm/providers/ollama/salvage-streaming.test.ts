@@ -45,6 +45,13 @@ function providerFor(
 }
 
 describe("Ollama text-call recovery in actual adapter requests", () => {
+  test("forwards native thinking to the shared progress guard without adding answer text", async () => {
+    const { provider } = providerFor([], [], { message: { thinking: "Check the boundary condition." }, done: true });
+    const chunks: LLMStreamChunk[] = [];
+    const response = await provider.chatStream(messages, chunk => chunks.push(chunk));
+    expect(chunks).toContainEqual({ content: "", done: false, thinkingDelta: { delta: "Check the boundary condition.", index: 0 } });
+    expect(response.content).toBe("");
+  });
   test.each([false, true])("uses constructor tools when the call has no override (stream=%s)", async (streaming) => {
     const { provider, requests } = providerFor([call]);
     const chunks: LLMStreamChunk[] = [];

@@ -1,4 +1,5 @@
 import { isProviderFundsFailure } from "../llm/funds.js";
+import { StreamProgressError } from "../llm/stream-progress.js";
 import { getRateLimitResetDelayMs } from "../llm/api/retry.js";
 import { LLMRateLimitError, LLMTimeoutError, LLMAuthenticationError,
   LLMMissingCredentialsError,
@@ -11,7 +12,8 @@ export type ChildTerminalReason =
   | "step_limit" | "no_progress" | "timeout" | "auth_required" | "model_unavailable" | "context_insufficient"
   | "tool_protocol_unreliable" | "model_refused" | "parent_cancelled"
   | "policy_revoked" | "resume_blocked" | "cost_cap_reached"
-  | "effect_outcome_unknown" | "consent_denied" | "consent_unavailable";
+  | "effect_outcome_unknown" | "consent_denied" | "consent_unavailable"
+  | "model_loop";
 
 export interface ChildTerminalOutcome {
   readonly [key: string]: string | number | boolean | undefined;
@@ -38,6 +40,7 @@ function statusOf(error: unknown): number | undefined {
 /** Whether the failed sampling attempt crossed the provider wire boundary. */
 export function childDispatchCertainty(error: unknown): ChildTerminalOutcome["dispatch"] {
   for (let depth = 0; depth < 5; depth += 1) {
+    if (error instanceof StreamProgressError) return "sent";
     if (error instanceof LLMMissingCredentialsError) return "not_sent";
     if (error instanceof LLMManagedAdmissionError || error instanceof LLMMessageValidationError)
       return "not_sent";
@@ -99,6 +102,8 @@ export function classifyChildFailure(provider: string, error: unknown): {
   }
   const message = (error instanceof Error ? error.message : String(error ?? "")).toLowerCase();
   const status = statusOf(error);
+  if (error instanceof StreamProgressError)
+    return { reason: error.reason === "stream_loop" ? "model_loop" : "no_progress", retryable: false };
   if (error instanceof LLMModelUnavailableError)
     return { reason: "model_unavailable", retryable: false };
   if (error instanceof LLMRateLimitError || status === 429) {

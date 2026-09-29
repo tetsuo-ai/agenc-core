@@ -147,6 +147,11 @@ import {
 import { waitForProviderRetry } from "../recovery/provider-wait.js";
 import { abortableSleep, rateLimitRetryNotice, reconnectWithBackoff } from "../recovery/reconnection.js";
 import {
+  STREAM_RETRY_WINDOW_MS,
+  STREAM_STALL_RETRY_BUDGET_MS,
+  StreamProgressError,
+} from "../llm/stream-progress.js";
+import {
   DEFAULT_PROVIDER_OUTAGE_RETRY_MS,
   DEFAULT_PROVIDER_OUTAGE_WAIT_MS,
 } from "../config/schema.js";
@@ -246,6 +251,7 @@ import {
   isRetryableStreamError,
   streamRetryErrorStatus,
   streamRetryNoticeMessage,
+  isStreamProgressStop,
   suppressInterruptedStreamToolHistory,
   type InterruptedStreamHistoryState,
 } from "./run-turn-stream-retry.js";
@@ -1108,6 +1114,9 @@ async function tryRunSamplingRequest(
 
   // Phase 3: post-sample recovery. Always runs — even on stream
   // error — so the ladder can decide between recovery vs terminal.
+  // Progress stops have their own one-retry bound. No fallback trigger may
+  // swallow them and start a second, independent recovery ladder.
+  if (streamModelError && isStreamProgressStop(streamModelError)) throw streamModelError;
   await postSampleRecovery(state, ctx, session, signal);
 
   // If recovery applied a transition (any of I-10's triggers fired),
@@ -1240,105 +1249,130 @@ async function runSamplingRequest(
   const outage = providerOutagePolicy(session);
   let waitedMs = 0;
   let outageRetries = 0;
-  for (;;) {
-    let retryBlocked = false;
-    const outcome = await reconnectWithBackoff<SamplingRequestResult>({
-      session,
-      signal,
-      // One initial provider call plus the five recovery-ladder reservations.
-      // The reservation hook remains authoritative when another recovery path
-      // has already consumed part of the shared A1 ladder.
-      maxAttempts: MAX_RECOVERY_REENTRIES + 1,
-      attempt: () =>
-        tryRunSamplingRequest(
-          state,
-          samplingContext,
-          session,
-          request,
-          signal,
-          events,
-          assistantOutputSink,
-        ),
-      isTransient: isTransientSamplingError,
-      onTransientRetry: async (attempt, err) => {
-        const blockedReason = interruptedStreamRetryBlockReason(state, session);
-        if (blockedReason !== null) {
-          retryBlocked = true;
-          suppressInterruptedStreamToolHistory(state);
-          cancelQueuedInterruptedTools(state);
+  let stallRetryStarted = false;
+  const stallRetryController = new AbortController();
+  signal = AbortSignal.any([signal, stallRetryController.signal]);
+  let stallRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    for (;;) {
+      let retryBlocked = false;
+      const outcome = await reconnectWithBackoff<SamplingRequestResult>({
+        session,
+        signal,
+        // One initial provider call plus the five recovery-ladder reservations.
+        // The reservation hook remains authoritative when another recovery path
+        // has already consumed part of the shared A1 ladder.
+        maxAttempts: MAX_RECOVERY_REENTRIES + 1,
+        giveUpMs: STREAM_RETRY_WINDOW_MS,
+        attempt: () =>
+          tryRunSamplingRequest(
+            state,
+            samplingContext,
+            session,
+            request,
+            signal,
+            events,
+            assistantOutputSink,
+          ),
+        isTransient: isTransientSamplingError,
+        onTransientRetry: async (attempt, err) => {
+          // A stopped stream gets at most one new physical request, including
+          // when that retry fails for a different transient reason.
+          if (stallRetryStarted) return false;
+          const progressStop = isStreamProgressStop(err);
+          const blockedReason = interruptedStreamRetryBlockReason(state, session);
+          if (blockedReason !== null) {
+            retryBlocked = true;
+            suppressInterruptedStreamToolHistory(state);
+            cancelQueuedInterruptedTools(state);
+            emitError(session, session.nextInternalSubId(), {
+              cause: "stream_disconnected",
+              message: `Stream interrupted after streamed tool work; ${blockedReason}.`,
+              provider: session.services.provider.name,
+              status: streamRetryErrorStatus(err),
+              streamError: true,
+            });
+            return false;
+          }
+          const reservation = await reserveRecoveryReentry(session, state, {
+            triggerName: "reconnect",
+          });
+          if (reservation.kind !== "reserved") {
+            // The fast ladder is spent. Whether the turn now waits for the
+            // provider or ends is decided below, once the outcome is known.
+            return false;
+          }
+          cleanupInterruptedStreamAttempt(state, session, err);
+          if (progressStop) {
+            stallRetryStarted = true;
+            session.resetProviderIncrementalState();
+            stallRetryTimer = setTimeout(() => {
+              stallRetryController.abort(new StreamProgressError(
+                session.services.provider.name, "stream_retry_budget",
+              ));
+            }, STREAM_STALL_RETRY_BUDGET_MS);
+            stallRetryTimer.unref?.();
+          }
           emitError(session, session.nextInternalSubId(), {
             cause: "stream_disconnected",
-            message: `Stream interrupted after streamed tool work; ${blockedReason}.`,
+            message: streamRetryNoticeMessage(
+              err,
+              progressStop ? 1 : attempt,
+              progressStop ? 2 : MAX_RECOVERY_REENTRIES + 1,
+            ),
             provider: session.services.provider.name,
             status: streamRetryErrorStatus(err),
             streamError: true,
           });
-          return false;
-        }
-        const reservation = await reserveRecoveryReentry(session, state, {
-          triggerName: "reconnect",
-        });
-        if (reservation.kind !== "reserved") {
-          // The fast ladder is spent. Whether the turn now waits for the
-          // provider or ends is decided below, once the outcome is known.
-          return false;
-        }
-        cleanupInterruptedStreamAttempt(state, session, err);
-        emitError(session, session.nextInternalSubId(), {
-          cause: "stream_disconnected",
-          message: streamRetryNoticeMessage(
-            err,
-            attempt,
-            MAX_RECOVERY_REENTRIES + 1,
-          ),
-          provider: session.services.provider.name,
-          status: streamRetryErrorStatus(err),
-          streamError: true,
-        });
-        return true;
-      },
-    });
+          return true;
+        },
+      });
 
-    if (outcome.kind === "ok") return outcome.value;
-    if (outcome.kind === "aborted") {
-      throw samplingAbortError(signal, outcome.reason);
-    }
-    // The fast ladder is exhausted. A provider that is down for minutes is
-    // not the turn's fault (#2212): wait with a slow backoff and try again,
-    // within the operator's patience, unless retrying is unsafe.
-    const lastError = outcome.lastError;
-    const delayMs = providerOutageDelayMs(outage.retryMs, outageRetries);
-    const canWait =
-      !retryBlocked &&
-      outage.waitMs > 0 &&
-      waitedMs + delayMs <= outage.waitMs &&
-      isTransientSamplingError(lastError);
-    if (!canWait) {
-      if (!retryBlocked) {
-        suppressInterruptedStreamToolHistory(state);
-        cancelQueuedInterruptedTools(state);
+      if (outcome.kind === "ok") return outcome.value;
+      if (outcome.kind === "aborted") {
+        throw samplingAbortError(signal, outcome.reason);
       }
-      if (lastError instanceof Error) throw lastError;
-      throw new Error(`stream_retries_exhausted: ${String(lastError)}`);
+      // The fast ladder is exhausted. A provider that is down for minutes is
+      // not the turn's fault (#2212): wait with a slow backoff and try again,
+      // within the operator's patience, unless retrying is unsafe.
+      const lastError = outcome.lastError;
+      const delayMs = providerOutageDelayMs(outage.retryMs, outageRetries);
+      const canWait =
+        !retryBlocked &&
+        !stallRetryStarted &&
+        !isStreamProgressStop(lastError) &&
+        outage.waitMs > 0 &&
+        waitedMs + delayMs <= outage.waitMs &&
+        isTransientSamplingError(lastError);
+      if (!canWait) {
+        if (!retryBlocked) {
+          suppressInterruptedStreamToolHistory(state);
+          cancelQueuedInterruptedTools(state);
+        }
+        if (lastError instanceof Error) throw lastError;
+        throw new Error(`stream_retries_exhausted: ${String(lastError)}`);
+      }
+      outageRetries += 1;
+      waitedMs += delayMs;
+      cleanupInterruptedStreamAttempt(state, session, lastError);
+      const rateLimitNotice = rateLimitRetryNotice(lastError, delayMs);
+      await waitForProviderRetry({
+        session,
+        cause: rateLimitNotice !== undefined ? "provider_rate_limited" : "provider_outage_wait",
+        message: rateLimitNotice ??
+          (`${session.services.provider.name} is unavailable. ` +
+            `Retrying in ${Math.max(1, Math.ceil(delayMs / 1000))} s; ` +
+            `${Math.max(0, Math.round((outage.waitMs - waitedMs) / 60_000))} min of waiting left.`),
+        delayMs,
+        wait: () => abortableSleep(delayMs, signal),
+      });
+      if (signal.aborted) throw samplingAbortError(signal, "aborted");
+      // The fast recovery counter remains spent. This is a new physical sample,
+      // so persist a distinct identity without reusing its unknown reservation.
+      beforeOutageRetry?.();
     }
-    outageRetries += 1;
-    waitedMs += delayMs;
-    cleanupInterruptedStreamAttempt(state, session, lastError);
-    const rateLimitNotice = rateLimitRetryNotice(lastError, delayMs);
-    await waitForProviderRetry({
-      session,
-      cause: rateLimitNotice !== undefined ? "provider_rate_limited" : "provider_outage_wait",
-      message: rateLimitNotice ??
-        (`${session.services.provider.name} is unavailable. ` +
-          `Retrying in ${Math.max(1, Math.ceil(delayMs / 1000))} s; ` +
-          `${Math.max(0, Math.round((outage.waitMs - waitedMs) / 60_000))} min of waiting left.`),
-      delayMs,
-      wait: () => abortableSleep(delayMs, signal),
-    });
-    if (signal.aborted) throw samplingAbortError(signal, "aborted");
-    // The fast recovery counter remains spent. This is a new physical sample,
-    // so persist a distinct identity without reusing its unknown reservation.
-    beforeOutageRetry?.();
+  } finally {
+    clearTimeout(stallRetryTimer);
   }
 }
 
@@ -2022,7 +2056,7 @@ interface RunTurnKernelCommons {
     error?: unknown,
   ) => void;
   readonly emitTurnAborted: (reason: string) => void;
-  readonly emitTurnFailed: (message: string) => void;
+  readonly emitTurnFailed: (message: string, code?: string) => void;
   readonly referenceContextItem: TurnContextItem;
   readonly sessionOwner: Session & {
     consumePendingProviderSwitch?: () => Promise<void>;
@@ -3098,8 +3132,12 @@ async function* runTurnKernelInner(
         underlying instanceof Error && underlying.message.trim().length > 0
           ? underlying.message
           : "turn failed",
+        underlying instanceof StreamProgressError ? underlying.reason : undefined,
       );
-      const terminal: Terminal = { reason: "completed", error: underlying };
+      const terminal: Terminal = {
+        reason: underlying instanceof StreamProgressError ? "model_error" : "completed",
+        error: underlying,
+      };
       yield {
         type: "turn_complete",
         content: lastContent,

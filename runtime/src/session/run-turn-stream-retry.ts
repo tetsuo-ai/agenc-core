@@ -19,6 +19,7 @@ import {
   LLMTimeoutError,
 } from "../llm/errors.js";
 import type { LLMToolCall } from "../llm/types.js";
+import { StreamProgressError } from "../llm/stream-progress.js";
 import { StreamModelError } from "../phases/stream-model.js";
 import { isPartialProviderResponseError } from "../recovery/api-errors.js";
 import {
@@ -31,6 +32,13 @@ import type { TurnState } from "./turn-state.js";
 
 function streamRetryErrorCause(error: unknown): unknown {
   return error instanceof StreamModelError ? error.cause : error;
+}
+
+/** Controlled runtime stops, never provider prose containing these words. */
+export function isStreamProgressStop(error: unknown): boolean {
+  const cause = streamRetryErrorCause(error);
+  return cause instanceof StreamProgressError ||
+    (cause instanceof Error && cause.message.startsWith("stream_idle:"));
 }
 
 function streamRetryErrorStatus(error: unknown): number | undefined {
@@ -60,6 +68,9 @@ const TRANSIENT_NETWORK_ERROR_CODES: ReadonlySet<string> = new Set([
 ]);
 
 function streamRetryFailureLabel(cause: unknown): string {
+  if (cause instanceof StreamProgressError) {
+    return cause.reason === "stream_loop" ? "repetitive reasoning" : "no model progress";
+  }
   if (cause instanceof Error && cause.message.startsWith("stream_idle")) {
     return "stream idle";
   }
@@ -285,6 +296,7 @@ export function isRetryableStreamError(error: unknown): boolean {
   if (!(error instanceof StreamModelError)) return false;
   if (isPartialProviderResponseError(error)) return false;
   const cause = error.cause;
+  if (cause instanceof StreamProgressError) return true;
 
   // Explicitly non-retryable typed causes — fail closed before any
   // generic branch so a provider message containing "504" can't

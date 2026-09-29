@@ -683,6 +683,10 @@ export class OllamaProvider implements LLMProvider {
               const chunk = isRecord(rawChunk) ? rawChunk : {};
               const message = isRecord(chunk.message) ? chunk.message : {};
               const chunkContent = readString(message.content);
+              const thinking = readString(message.thinking);
+              if (thinking) {
+                onChunk({ content: "", done: false, thinkingDelta: { delta: thinking, index: 0 } });
+              }
 
               if (chunkContent) {
                 content += chunkContent;
