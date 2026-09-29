@@ -106,6 +106,17 @@ async function durableIdleWorker(parent: RolloutStore) {
 }
 
 describe("durable child results after daemon restart", () => {
+  test("retrieves one old result beyond the bulk recovery receipt limit", () => {
+    const parent = open("parent"), child = open("many_tasks");
+    edge(parent, child.sessionId);
+    for (let index = 1; index <= 1_030; index += 1) appendReceipt(child, index);
+    close(child);
+    const state = controlFixture(parent);
+    expect(state.control.readChildResultPage("parent", child.sessionId, "turn-1").text).toBe("review result 1");
+    expect(state.control.readChildResultPage("parent", child.sessionId, "turn-1029").text).toBe("review result 1029");
+    expect(() => parent.readThreadSpawnTaskReceipts(child.sessionId)).toThrow("count limit exceeded");
+  });
+
   test("recovers an initial task admitted by spawn before child journal construction", async () => {
     const parent = open("parent");
     const state = controlFixture(parent);

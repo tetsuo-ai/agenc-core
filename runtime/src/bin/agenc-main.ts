@@ -2326,6 +2326,7 @@ function oneShotCompactFailedContinuation(params: {
     ReturnType<AgenCDaemonCliDeps["createConnectedTuiClient"]>
   >;
   readonly sessionId: string;
+  readonly exactOutput: boolean;
   readonly env: NodeJS.ProcessEnv;
   readonly signal: AbortSignal;
 }): { readonly continuation?: OneShotContinuation } {
@@ -2339,6 +2340,7 @@ function oneShotCompactFailedContinuation(params: {
           "message.stream",
           {
             sessionId: params.sessionId,
+            exactOutput: params.exactOutput,
             content: ONE_SHOT_COMPACT_FAILED_CONTINUATION_PROMPT,
             clientMessageId: randomUUID(),
             streamId,
@@ -2471,7 +2473,7 @@ async function runDaemonOneShotPrompt(params: {
       objective: params.prompt,
       instructions: params.prompt,
       cwd: params.cwd,
-      runtimeOptions: params.runtimeOptions,
+      runtimeOptions: { ...params.runtimeOptions, exactOutput: outputFormat !== "text" },
       ...(params.model !== undefined ? { model: params.model } : {}),
       ...(params.provider !== undefined ? { provider: params.provider } : {}),
       ...(params.profile !== undefined ? { profile: params.profile } : {}),
@@ -2551,6 +2553,7 @@ async function runDaemonOneShotPrompt(params: {
                 {
                   sessionId,
                   content: goal.kickoff,
+                  exactOutput: outputFormat !== "text",
                   clientMessageId: randomUUID(),
                   streamId,
                 },
@@ -2563,6 +2566,7 @@ async function runDaemonOneShotPrompt(params: {
         sessionId,
         env: params.env,
         signal: params.signal,
+        exactOutput: (params.outputFormat ?? "text") !== "text",
       }),
     });
     cancelled = run.cancelled;
@@ -2841,7 +2845,8 @@ async function runDaemonOneShotContinue(params: OneShotContinueResumeOptions & {
       startTurn: (streamId) =>
         client.request(
           "message.stream",
-          { sessionId, content, clientMessageId: randomUUID(), streamId },
+          { sessionId, content, clientMessageId: randomUUID(), streamId,
+            exactOutput: (params.outputFormat ?? "text") !== "text" },
           { signal: params.signal },
         ),
       ...oneShotCompactFailedContinuation({
@@ -2849,6 +2854,7 @@ async function runDaemonOneShotContinue(params: OneShotContinueResumeOptions & {
         sessionId,
         env: params.env,
         signal: params.signal,
+        exactOutput: (params.outputFormat ?? "text") !== "text",
       }),
     });
     cancelled = run.cancelled;
@@ -2930,6 +2936,8 @@ export async function oneShotCLI(
       env: sessionEnv,
     });
     writeStartupSandboxBypassNotice(sandboxBypass);
+    const oneShotArgv = process.argv.slice(2);
+    const outputFormat = readOneShotOutputFormat(oneShotArgv);
     const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
       simpleMode: startupCliFlags.simpleMode === true,
     ...(startupCliFlags.lightMode === true ? { lightMode: true } : {}),
@@ -2939,14 +2947,13 @@ export async function oneShotCLI(
       // auto-denied below, so tools that only exist to ask a person must not
       // be offered in the first place.
       nonInteractive: true,
+      exactOutput: outputFormat !== "text",
       // `--deadline` (#2503): the instant this run must end by.
       ...readRunDeadlineFlags(process.argv, Date.now()),
     });
     validateAgencHome();
     throwIfAborted("validateAgencHome");
     const agencHome = resolveAgencHome(sessionEnv);
-    const oneShotArgv = process.argv.slice(2);
-    const outputFormat = readOneShotOutputFormat(oneShotArgv);
     readOneShotInputFormat(oneShotArgv);
 
     const resolvedUserMessage =

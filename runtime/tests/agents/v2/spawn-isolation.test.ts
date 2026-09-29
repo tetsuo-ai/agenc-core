@@ -124,12 +124,12 @@ describe("spawn_agent isolation", () => {
     Object.assign(session, { currentRootHumanTurn: () => ({ turnId: "turn-1", text: `Parent\n<task>${task}</task>` }) });
     mockDelegate.mockResolvedValue({ kind: "async_launched", thread: fakeThread(false) as never });
     const result = await createSpawnAgentTool(makeOptions(session)).execute({
-      task_name: "worker", fork_turns: "none",
+      task_name: "worker", fork_turns: "none", exact_output: true,
       message_ref: { source: "current_user_message", after: "<task>", before: "</task>" },
     });
     expect(result.isError).not.toBe(true);
     expect(mockDelegate).toHaveBeenCalledOnce();
-    expect(mockDelegate.mock.calls[0]?.[0]).toMatchObject({ parent: session, taskPrompt: task });
+    expect(mockDelegate.mock.calls[0]?.[0]).toMatchObject({ parent: session, taskPrompt: task, exactOutput: true });
   });
 
   it("rejects an invalid handoff before admission or child creation", async () => {

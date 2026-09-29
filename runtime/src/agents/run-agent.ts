@@ -173,6 +173,8 @@ import { runAdmittedToolCall } from "../budget/admitted-tool-call.js";
 import { AdmissionDeniedError } from "../budget/admission-client.js";
 import type { AssistantOutputStreamSink } from "../contracts/assistant-output-stream.js";
 
+import { CompletedTaskResults } from "./completed-task-results.js";
+
 const inspectionBrokers = new WeakMap<Session, Map<string, SandboxExecutionBrokerLike>>();
 
 // ─────────────────────────────────────────────────────────────────────
@@ -184,6 +186,7 @@ export interface RunAgentParams {
   readonly parent: Session;
   readonly initialMessages: ReadonlyArray<LLMMessage>;
   readonly taskPrompt: string;
+  readonly exactOutput?: boolean;
   readonly worktree?: WorktreeHandle;
   /** Tool allowlist — filters the parent's catalog. Default: all. */
   readonly toolAllowlist?: ReadonlyArray<string>;
@@ -3997,10 +4000,9 @@ export async function* runAgent(
     currentCommittedReceipt = receiptToCommit;
     currentReceiptWorktreeEvidence = receiptToCommit.worktreeEvidence;
     if (receiptToCommit.outcome === "completed" && receiptToCommit.message !== undefined) {
-      (live.completedTaskResults ??= new Map()).set(receiptToCommit.turnId, receiptToCommit.message);
+      (live.completedTaskResults ??= new CompletedTaskResults()).set(receiptToCommit.turnId, receiptToCommit.message);
     }
     live.lastTaskReceipt = {
-      ...(receiptToCommit.message === undefined ? {} : { message: receiptToCommit.message }),
       turnId: receiptToCommit.turnId,
       outcome: receiptToCommit.outcome,
       ...(receiptToCommit.terminal !== undefined ? { terminal: receiptToCommit.terminal } : {}),
@@ -4444,6 +4446,7 @@ export async function* runAgent(
         totalTokens ?? (promptTokens ?? 0) + (completionTokens ?? 0);
     });
     let nextUserMessage: string | readonly LLMContentPart[] = userMessage;
+    let exactOutput = params.exactOutput;
     let firstTurn = true;
     let assistantText = "";
     let stoppedAtStepLimit = false;
@@ -4506,6 +4509,7 @@ export async function* runAgent(
         live.metadata.executionPlan?.task.text ??
         (typeof accepted.nextUserMessage === "string" ? accepted.nextUserMessage : currentTaskText);
       currentTaskId = accepted.taskId;
+      exactOutput = live.assignment?.exactOutput ?? false;
       turnId = accepted.turnId ?? crypto.randomUUID();
       currentTurnReceiptCommitted = false;
       taskStartingCost = knownWorkerCost();
@@ -4562,6 +4566,7 @@ export async function* runAgent(
       let terminalError: unknown;
 
       const iter = childSession.runTurn(nextUserMessage, {
+        exactOutput,
         ...(!params.keepAlive || params.summarizeAtStepLimit ? { stepLimitWrapup: {
           ...(params.plan?.budgetAllocation !== null && params.plan?.budgetAllocation !== undefined
             ? { maxModelCalls: params.plan.budgetAllocation.maxModelCalls } : {}),

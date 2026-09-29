@@ -43,7 +43,6 @@
  * @module
  */
 
-import { requestsExactOutput } from "../prompts/exact-output.js";
 import { Lexer, type Token, type Tokens } from "marked";
 import type { LLMMessage } from "../llm/types.js";
 import type { Session } from "../session/session.js";
@@ -163,6 +162,7 @@ export function resolveCompletionGatePolicy(
 }
 
 export function planCompletionGateForTurn(input: {
+  readonly exactOutput?: boolean;
   readonly ctx: TurnContext;
   readonly session: Pick<Session, "services" | "sessionConfiguration">;
   readonly isRootHumanTurn: boolean;
@@ -184,8 +184,7 @@ export function planCompletionGateForTurn(input: {
   }
   const taskText = (input.taskText ?? "").trim();
   if (taskText.length === 0) return undefined;
-  // #2798: a Markdown verification round must never replace an exact answer.
-  if (requestsExactOutput(taskText)) return undefined;
+  if (input.exactOutput ?? session.services?.runtimeOptions?.exactOutput ?? false) return undefined;
   return {
     maxRounds: policy.maxRounds,
     taskText:

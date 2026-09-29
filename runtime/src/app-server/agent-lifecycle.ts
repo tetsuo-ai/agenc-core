@@ -4175,6 +4175,7 @@ export class AgenCDaemonAgentManager {
   }
 
   async streamAgentMessage(params: {
+    readonly exactOutput?: boolean;
     readonly sessionId: string;
     readonly content: MessageContent;
     readonly messageId: string;
@@ -4247,6 +4248,7 @@ export class AgenCDaemonAgentManager {
         sessionId: params.sessionId,
         content: params.content,
         originalContent: params.content,
+        ...(params.exactOutput !== undefined ? { exactOutput: params.exactOutput } : {}),
         ...(params.localMcpAccess !== undefined ? { localMcpAccess: params.localMcpAccess } : {}),
         ...(params.displayUserMessage !== undefined
           ? { displayUserMessage: params.displayUserMessage }

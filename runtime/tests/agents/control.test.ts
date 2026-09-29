@@ -1,3 +1,4 @@
+import { CompletedTaskResults } from "../../src/agents/completed-task-results.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -174,7 +175,8 @@ describe("AgentControl", () => {
     control.registerSessionRoot(session.conversationId);
     const child = await control.spawn({ parentPath: "/root" });
     const text = ' \n' + JSON.stringify({ rows: '🐈 " &amp;'.repeat(5000) }) + '\n ';
-    child.lastTaskReceipt = { turnId: "done", outcome: "completed", message: text };
+    child.completedTaskResults = new CompletedTaskResults();
+    child.completedTaskResults.set("done", text);
     let result = "", offset = 0;
     for (;;) {
       const page = control.readChildResultPage(session.conversationId, child.agentId, "done", offset);

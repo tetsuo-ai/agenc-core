@@ -125,6 +125,7 @@ describe("planCompletionGateForTurn", () => {
   });
 
   test.each([
+    "Return JSON only.", "Fix the bug and return JSON only.", "**Return JSON only.**",
     "Update config.json only.", "Change settings.yaml only.", "Edit data.csv only.",
     "Fix the endpoint to return JSON only. Run the tests and summarize the changes",
     "Make the endpoint validate input and return JSON only. Run the tests and summarize the changes.",
@@ -161,6 +162,13 @@ describe("planCompletionGateForTurn", () => {
   ])("keeps verification for quoted parser input: %s", example => {
     const taskText = `Fix the parser for this input:\n${example}\nRun the tests and summarize the changes.`;
     expect(planCompletionGateForTurn({ ...base(), taskText })).toMatchObject({ taskText, maxRounds: 3 });
+  });
+
+  test("only an explicit turn or session output setting exempts a root task", () => {
+    expect(planCompletionGateForTurn({ ...base(), exactOutput: true })).toBeUndefined();
+    const session = mkSession({ services: { runtimeOptions: { nonInteractive: true, exactOutput: true } } });
+    expect(planCompletionGateForTurn({ ...base(), session })).toBeUndefined();
+    expect(planCompletionGateForTurn({ ...base(), session, exactOutput: false })).toBeDefined();
   });
 
   test("truncates long task text", () => {

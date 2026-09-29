@@ -23,6 +23,7 @@ import { execFileSync } from "node:child_process";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AsyncQueue } from "../utils/async-queue.js";
+import { CompletedTaskResults } from "../../src/agents/completed-task-results.js";
 import { AgentControl } from "./control.js";
 import { toListedAgentJson } from "./v2/common.js";
 import { delegate } from "./delegate.js";
@@ -4047,6 +4048,7 @@ describe("runAgent", () => {
       dispatch: async () => { throw new Error("Expected the real tool execution pipeline"); },
     };
     const session = makeStubSession({ modelInfo: { ...mkModelInfo(), contextWindow }, services: { provider, registry,
+      runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive: true }),
       permissionModeRegistry: new PermissionModeRegistry(createEmptyToolPermissionContext({
         alwaysAllowRules: { session: ["wait_agent"] },
       })),
@@ -4055,7 +4057,7 @@ describe("runAgent", () => {
     const control = new AgentControl({ session, registry: agentRegistry });
     control.registerSessionRoot(session.conversationId);
     const live = await control.spawn({ parentPath: "/root" });
-    const iter = runAgent({ live, parent: session, keepAlive: true,
+    const iter = runAgent({ live, parent: session, keepAlive: true, exactOutput: true,
       initialMessages: [{ role: "user", content: "Return JSON only." }], taskPrompt: "Return JSON only." });
     const previousOffloadThreshold = process.env.AGENC_TOOL_RESULT_OFFLOAD_BYTES;
     try {
@@ -4098,7 +4100,7 @@ describe("runAgent", () => {
           expect(page.text.length).toBeGreaterThan(0);
           expect(page.text.isWellFormed()).toBe(true);
           pages.push(page.text);
-          if (page.complete) return { content: "Retrieved all result pages.", toolCalls: [],
+          if (page.complete) return { content: exact, toolCalls: [],
             usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, model: "fake-model", finishReason: "stop" };
           offset = page.next_offset;
           expect(offset).toBe(pages.join("").length);
@@ -4107,8 +4109,8 @@ describe("runAgent", () => {
           arguments: JSON.stringify({ result_ref: { ...payload.result_ref, offset } }) }],
           usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 }, model: "fake-model", finishReason: "tool_calls" };
       });
-      for await (const phase of session.runTurn("Read all pages of the child's completed result.")) parentPhases.push(phase);
-      expect(parentPhases.at(-1)).toMatchObject({ type: "turn_complete", stopReason: "completed" });
+      for await (const phase of session.runTurn("Read all pages of the child's completed result.", { exactOutput: true })) parentPhases.push(phase);
+      expect(parentPhases.at(-1)).toMatchObject({ type: "turn_complete", stopReason: "completed", content: exact });
       const text = pages.join("");
       expect(pages.length).toBeGreaterThan(1);
       expect(text).toBe(exact);
@@ -4950,6 +4952,48 @@ describe("runAgent", () => {
       );
     } finally {
       await stopKeepAliveRun(iter, live.abortController);
+    }
+  });
+
+  it("bounds repeated worker results and reads evicted answers from its live journal", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-result-cache-"));
+    const answers = Array.from({ length: 48 }, (_, index) => ' \n' + JSON.stringify({ index, text: "🐈".repeat(512) }) + '\n ');
+    const provider = makeProvider(answers.map(content => ({ content })));
+    const session = makeStubSession({ services: { provider }, config: { ...mkConfig(), cwd },
+      sessionConfiguration: mkSessionConfiguration({ cwd }) });
+    const store = new RolloutStore({ cwd, sessionId: session.conversationId,
+      agencVersion: "0.2.0", sessionTempRoot: tmpdir() });
+    store.open({ sessionId: session.conversationId, timestamp: new Date().toISOString(), cwd,
+      originator: "cache-test", agencVersion: "0.2.0", model: "fake-model", modelProvider: "fake" });
+    session.mountRolloutStore(store);
+    const control = new AgentControl({ session, registry: new AgentRegistry() });
+    control.registerSessionRoot(session.conversationId);
+    const live = await control.spawn({ parentPath: "/root" });
+    live.completedTaskResults = new CompletedTaskResults(16 * 1024);
+    const iter = runAgent({ live, parent: session, keepAlive: true, exactOutput: true,
+      initialMessages: [{ role: "user", content: "first" }], taskPrompt: "first" });
+    const turnIds: string[] = [];
+    try {
+      for (let index = 0; index < answers.length; index += 1) {
+        const completed = nextProgressEvent(iter, "turn_complete");
+        if (index > 0) control.assignTask(live.agentId, { author: "/root", recipient: live.agentPath,
+          content: `assignment ${index}`, taskId: `task-${index}`, exactOutput: index % 2 === 0 });
+        const event = await completed;
+        expect(event.finalMessage).toBe(answers[index]);
+        turnIds.push(event.turnId!);
+        session.mailbox.drain();
+        expect(live.completedTaskResults.retainedBytes).toBeLessThanOrEqual(16 * 1024);
+      }
+      expect(live.completedTaskResults.size).toBeLessThan(answers.length);
+      expect(live.completedTaskResults.get(turnIds[0]!)).toBeUndefined();
+      expect(control.readChildResultPage(session.conversationId, live.agentId, turnIds[0]!).text).toBe(answers[0]);
+      expect(control.readChildResultPage(session.conversationId, live.agentId, turnIds[1]!).text).toBe(answers[1]);
+      expect(live.completedTaskResults.retainedBytes).toBeLessThanOrEqual(16 * 1024);
+      expect(provider.chatStream).toHaveBeenCalledTimes(answers.length);
+    } finally {
+      await stopKeepAliveRun(iter, live.abortController);
+      await session.shutdown();
+      rmSync(cwd, { recursive: true, force: true });
     }
   });
 

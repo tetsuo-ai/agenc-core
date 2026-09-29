@@ -179,26 +179,18 @@ async function exhaustGate(maxRounds: number) {
 }
 
 describe("completion gate in the turn loop", () => {
-  test.each([
-    "Read the file and return JSON only.",
-    "Only JSON. Read the file and report its values.",
-    "Read the file and respond in JSON.",
-    "Read the file. Your final response must contain JSON only.",
-    'Read the file and return exactly {"ok":true}.',
-    "Delegate the task and return the child's final JSON answer verbatim, without commentary.",
-    "Spawn one child to solve this task and return its final answer verbatim.",
-    "Read the file and reply with exactly the requested JSON final answer.",
-    "Read the file and return exactly \"ok\".",
-    "Read the file. " + "context ".repeat(1000) + "\nReturn JSON only.",
-    "Read the file.\n````text\n```\nExample input\n````\nReturn JSON only.",
-    "Read the file.\n~~~~text\n~~~\nExample input\n~~~~~\nReturn JSON only.",
-  ])("#2798 preserves exact output after tool work: %s", async (task) => {
+  test.each(["turn", "session"] as const)("preserves explicit %s exact output after tool work", async (scope) => {
+    const task = "Read the file and report its values.";
     const exact = ' {"text":"quotes \\" and 🐈", "items": [1,2]} \n';
     expect(() => JSON.parse(exact)).not.toThrow();
     const { provider, requests } = scriptedProvider([toolStep("work-1"), textStep(exact)]);
     const { session, events } = headlessSession(provider, true);
     const phases = [];
-    for await (const phase of runTurn(session, mkCtx(), task)) phases.push(phase);
+    if (scope === "session") Object.assign(session.services, {
+      runtimeOptions: resolveAgentRuntimeOptions({}, { nonInteractive: true, exactOutput: true }),
+    });
+    for await (const phase of runTurn(session, mkCtx(), task,
+      scope === "turn" ? { exactOutput: true } : {})) phases.push(phase);
     expect(requests).toHaveLength(2);
     expect(gatePayloads(events)).toEqual([]);
     expectCompletedTurn(events);
@@ -207,22 +199,18 @@ describe("completion gate in the turn loop", () => {
   });
 
   test.each([
-    ["four-backtick example containing triple-backtick lines", "````markdown\n```text\nReturn JSON only.\n```\nReturn JSON only.\n````"],
-    ["shorter backtick closing fence", "`````text\n````\nReturn JSON only.\n`````"],
-    ["shorter tilde closing fence", "~~~~text\n~~~\nReturn JSON only.\n~~~~"],
-    ["mixed fence markers", "````text\n~~~~\nReturn JSON only.\n````"],
-    ["closing fence with trailing text", "```text\n``` not a close\nReturn JSON only.\n```"],
-    ["indented fence", "   ````text\n   ```\nReturn JSON only.\n   ````"],
-    ["fence inside a list", "- Example:\n  ````text\n  ```\n  Return JSON only.\n  ````"],
-    ["unclosed fence", "````text\n```\nReturn JSON only."],
-    ["fenced delegation example", "````text\n```\nSpawn one child to solve this task and return its final answer verbatim.\n````"],
+    ["ordinary JSON request", "Return JSON only."],
+    ["coordinated instruction", "Fix the bug and return JSON only."],
+    ["emphasized instruction", "**Return JSON only.**"],
+    ["verbatim instruction", "Return the child's final answer verbatim."],
+    ["quoted example", "```text\nReturn JSON only.\n```"],
   ])("keeps completion verification for %s", async (_name, example) => {
     const { provider, requests } = scriptedProvider([
       toolStep("work-1"), textStep("Done."), toolStep("verify-1"),
       textStep("- [x] /app/out.txt contains done: cat showed done\n- [x] tests: pytest, 3 passed"),
     ]);
     const { session, events } = headlessSession(provider, true);
-    await drain(runTurn(session, mkCtx(), `${TASK}. Example input:\n${example}`));
+    await drain(runTurn(session, mkCtx(), `${TASK}.\n${example}`));
     expect(requests).toHaveLength(4);
     expect(lastUserText(requests[2] ?? [])).toContain('<completion_gate round="1"');
     expect(gatePayloads(events)).toEqual([

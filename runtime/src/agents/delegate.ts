@@ -88,6 +88,7 @@ export interface DelegateOpts {
   readonly control: AgentControl;
   readonly registry: AgentRegistry;
   readonly taskPrompt: string;
+  readonly exactOutput?: boolean;
   /** Correlation id for the initial task/assignment. */
   readonly taskId?: string;
   readonly taskContent?: readonly LLMContentPart[];
@@ -594,6 +595,7 @@ export async function delegate(opts: DelegateOpts): Promise<DelegateOutcome> {
       parentPath: opts.parentPath,
       control: opts.control,
       taskPrompt: opts.taskPrompt,
+      exactOutput: opts.exactOutput,
       ...(opts.taskId !== undefined ? { taskId: opts.taskId } : {}),
       initialMessages: fork.messages,
       ...(worktree !== undefined ? { worktree } : {}),
@@ -768,6 +770,7 @@ async function runDelegateAgentLoop(opts: {
   readonly parentPath: AgentPath;
   readonly control: AgentControl;
   readonly taskPrompt: string;
+  readonly exactOutput?: boolean;
   readonly taskId?: string;
   readonly initialMessages: ReadonlyArray<LLMMessage>;
   readonly worktree?: WorktreeHandle;
@@ -804,6 +807,7 @@ async function runDelegateAgentLoop(opts: {
         parent: opts.parent,
         initialMessages: opts.initialMessages,
         taskPrompt: opts.taskPrompt,
+        exactOutput: opts.exactOutput,
         ...(opts.taskId !== undefined ? { taskId: opts.taskId }
           : live.metadata.initialTaskAdmission !== undefined ? { taskId: live.metadata.initialTaskAdmission.taskId } : {}),
         ...(!startedRuns.has(live.agentId) && live.metadata.initialTaskAdmission !== undefined

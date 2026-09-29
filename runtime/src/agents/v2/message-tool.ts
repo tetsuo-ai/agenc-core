@@ -51,6 +51,9 @@ export async function handleMessageStringTool(
   opts: MultiAgentV2Options,
   mode: MessageDeliveryMode,
 ): Promise<ToolResult> {
+  if (args.exact_output !== undefined && typeof args.exact_output !== "boolean") {
+    return agentValidationError("exact_output must be a boolean");
+  }
   const target = stringValue(args.target);
   const message = typeof args.message === "string" ? args.message : undefined;
   if (!target || !message) {
@@ -196,6 +199,7 @@ export async function handleMessageStringTool(
   try {
     if (mode === "trigger_turn") {
       acceptedTask = control.assignTask(agentId, {
+        exactOutput: args.exact_output === true,
         author: current.agentPath,
         recipient: receiverAgentPath,
         content: message,

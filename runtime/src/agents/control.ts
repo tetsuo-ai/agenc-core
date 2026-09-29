@@ -31,6 +31,7 @@
  * @module
  */
 
+import { CompletedTaskResults } from "./completed-task-results.js";
 import { emitError, emitWarning, type SubagentTaskAdmissionEvent } from "../session/event-log.js";
 import { childReadOnlyDelegation, normalizeReadOnlyDelegationConstraint } from "./readonly-delegation.js";
 import type { LLMMessage, LLMUsage } from "../llm/types.js";
@@ -237,6 +238,7 @@ export class AgentAssignmentRejectedError extends Error {
 export interface AgentAssignmentAdmission {
   readonly taskId: string;
   readonly taskText: string;
+  readonly exactOutput?: boolean;
   readonly executionPlan?: import("./cross-provider.js").ChildExecutionPlan;
   readonly turnId: string;
   readonly author: AgentPath;
@@ -349,14 +351,12 @@ export interface LiveAgent {
    * generic terminal only when this exact outcome already represented it.
    */
   lastTaskReceipt?: {
-    /** Exact final text retained by reference, never the bounded parent summary. */
-    readonly message?: string;
     readonly turnId: string;
     readonly outcome: "completed" | "errored" | "interrupted" | "nack";
     readonly terminal?: import("./child-terminal.js").ChildTerminalOutcome;
   };
-  /** Exact completed answers remain readable while this worker owns its journal. */
-  completedTaskResults?: Map<string, string>;
+  /** Byte-bounded front for exact answers stored in the child journal. */
+  completedTaskResults?: CompletedTaskResults;
   /** Effective child configuration snapshot once the child session is built. */
   configSnapshot?: Record<string, unknown>;
   /** Local rollout path for the live child session once initialized. */
@@ -1259,6 +1259,7 @@ export class AgentControl {
       readonly recipient: AgentPath;
       readonly content: string;
       readonly taskId: string;
+      readonly exactOutput?: boolean;
       readonly executionPlan?: import("./cross-provider.js").ChildExecutionPlan;
     },
   ): { readonly taskId: string; readonly turnId: string } {
@@ -1302,6 +1303,7 @@ export class AgentControl {
     const admission: AgentAssignmentAdmission = {
       taskId: assignment.taskId,
       taskText: assignment.content,
+      exactOutput: assignment.exactOutput,
       turnId: crypto.randomUUID(),
       author: assignment.author,
       acceptedAtMs: Date.now(),
@@ -2263,18 +2265,18 @@ export class AgentControl {
       throw new Error("Result reference is not a child of the calling agent");
     }
     const completedMessage = live?.completedTaskResults?.get(turnId);
-    let receipt = completedMessage === undefined ? live?.lastTaskReceipt
+    const receipt = completedMessage === undefined
+      ? this.session.rolloutStore?.readThreadSpawnTaskReceipts(childThreadId, Date.now() + 2_000, turnId,
+        live === undefined ? undefined : liveAgentSession(live)?.rolloutStore ?? undefined)
+        .find(item => item.admission === undefined && item.receipt.turnId === turnId)?.receipt
       : { turnId, outcome: "completed" as const, message: completedMessage };
-    if (receipt?.turnId !== turnId) {
-      // A live child may own a later task; never return that task's answer for
-      // an older immutable reference. Read only a validated durable outcome.
-      receipt = this.session.rolloutStore?.readThreadSpawnTaskReceipts(childThreadId, Date.now() + 2_000)
-        .find(item => item.admission === undefined && item.receipt.turnId === turnId)?.receipt;
-    }
     if (receipt?.turnId !== turnId || receipt.outcome !== "completed" || receipt.message === undefined) {
       throw new Error("The referenced child turn has no completed final answer");
     }
     const text = receipt.message;
+    if (live !== undefined && completedMessage === undefined) {
+      (live.completedTaskResults ??= new CompletedTaskResults()).set(turnId, text);
+    }
     if (offset > text.length) throw new Error("result_ref.offset exceeds the final answer length");
     const splitsCharacter = (index: number): boolean => {
       const previous = text.charCodeAt(index - 1), next = text.charCodeAt(index);

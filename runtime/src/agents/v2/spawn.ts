@@ -539,6 +539,7 @@ function buildSpawnAgentSchema(opts: MultiAgentV2Options, session = opts.getSess
       },
       reasoning_effort: { type: "string" },
       service_tier: { type: "string" },
+      exact_output: { type: "boolean", description: "Set true when this task needs an exact machine-readable answer, such as verbatim JSON. Skips the child completion checklist; child results are always delivered unchanged to the parent." },
       tool_free: {
         type: "boolean",
         description: "Only for a model without client-side tool calling, which requires it. A model that can call tools always keeps all of them, web search included, and this flag is ignored for it.",
@@ -597,6 +598,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         "reasoning_effort",
         "service_tier",
         "tool_free",
+        "exact_output",
         "fork_turns",
         "fork_context",
         "isolation",
@@ -624,6 +626,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       typeof args.fork_context !== "boolean"
     ) {
       return spawnValidationError("fork_context must be a boolean");
+    }
+    if (args.exact_output !== undefined && typeof args.exact_output !== "boolean") {
+      return spawnValidationError("exact_output must be a boolean");
     }
     if (args.tool_free !== undefined && typeof args.tool_free !== "boolean") {
       return spawnValidationError("tool_free must be a boolean");
@@ -1016,6 +1021,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         control,
         registry,
         taskPrompt: prompt,
+        exactOutput: args.exact_output === true,
         taskId: callId,
         agentName: taskName,
         depthCap: depthOfAgentPath(current.agentPath) + 1,

@@ -3661,10 +3661,16 @@ export class RolloutStore {
   }
 
   /** Recover committed task results without reopening the worker's execution epoch. */
-  readThreadSpawnTaskReceipts(childThreadId: ThreadId, deadline?: number): readonly RecoveredChildTaskReceipt[] {
+  readThreadSpawnTaskReceipts(childThreadId: ThreadId, deadline?: number, turnId?: string, liveSource?: RolloutStore): readonly RecoveredChildTaskReceipt[] {
     const edge = this.getThreadSpawnEdge(childThreadId);
     if (edge === undefined) throw new Error("Child receipt recovery requires a durable spawn edge.");
     return readSubagentTaskReceipts({ edge,
+      ...(turnId === undefined ? {} : { turnId }),
+      ...(liveSource === undefined ? {} : { scanLiveSource: (sourcePath: string, consume: (chunk: Uint8Array) => void) => {
+        if (liveSource.sessionId !== childThreadId || liveSource.rolloutPath !== sourcePath) return false;
+        liveSource.store.scanCanonicalChunks(64 * 1_024 * 1_024, consume);
+        return true;
+      } }),
       projectDir: getProjectDir(this.store.cwd, this.projectRootMarkers, this.store.agencHome),
       projectsDir: join(this.store.agencHome, "projects"),
       bindings: this.runDurabilityRepo.listJournalBindings(childThreadId),
