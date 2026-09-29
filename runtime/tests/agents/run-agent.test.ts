@@ -1230,6 +1230,8 @@ describe("runAgent", () => {
     const { result } = await run;
     expect(streamSignal?.aborted).toBe(true);
     expect(result.outcome).not.toBe("completed");
+    const receipt = parent.mailbox.drain().find((message) => message.metadata?.lifecycle === "turn");
+    expect(receipt?.content).toContain(`"reason":"${cause === "Stop" ? "parent_cancelled" : "policy_revoked"}"`);
     if (cause === "Stop") {
       expect(live.abortController.signal.aborted).toBe(true);
       expect(terminateOwnedProcesses).toHaveBeenCalledWith({ ownerId: live.agentId });
@@ -4824,6 +4826,52 @@ describe("runAgent", () => {
       await stopKeepAliveRun(iter, live.abortController);
     }
   });
+
+  it.each(["completed", "errored", "unknown"] as const)(
+    "reports only each assignment's reconciled cost when the follow-up is %s", async (outcome) => {
+      let costUsd = 0;
+      let hasUnknownCost = false;
+      const provider = makeProvider([]);
+      vi.mocked(provider.chatStream).mockImplementationOnce(async () => {
+        costUsd = 1;
+        return { content: "first result", toolCalls: [], model: "fake-model", finishReason: "stop",
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } };
+      }).mockImplementation(async () => {
+        costUsd = 2.75;
+        hasUnknownCost = outcome === "unknown";
+        if (outcome === "errored") throw new LLMFundsError("fake", 402);
+        return { content: "second result", toolCalls: [], model: "fake-model", finishReason: "stop",
+          usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } };
+      });
+      const session = makeStubSession({ services: { provider } });
+      const { control, live } = await spawnLive(session);
+      // Isolate receipt accounting from wire admission. The production facade
+      // reports cumulative per-run spend; child sampling stays mocked here.
+      Object.assign(session.services, { executionAdmission: {
+        scope: { runId: session.conversationId },
+        getUsageSummary: () => ({ agents: [{ runId: live.agentId, costUsd, hasUnknownCost }] }),
+        forSession: () => undefined,
+      } });
+      const iter = runAgent({ live, parent: session,
+        initialMessages: [{ role: "user", content: "first task" }], taskPrompt: "first task",
+        taskId: "first-cost-task", keepAlive: true });
+      try {
+        await nextProgressEvent(iter, "turn_complete");
+        const first = session.mailbox.drain().find((message) => message.metadata?.lifecycle === "turn");
+        expect(first?.content).toContain('"costUsd":1');
+        const next = outcome === "errored" ? collectRun(iter) : nextProgressEvent(iter, "turn_complete");
+        control.assignTask(live.agentId, { author: "/root", recipient: live.agentPath,
+          content: "second task", taskId: "second-cost-task" });
+        await next;
+        const second = session.mailbox.drain().find((message) => message.metadata?.lifecycle === "turn");
+        expect(second?.metadata?.taskId).toBe("second-cost-task");
+        if (outcome === "unknown") expect(second?.content).not.toContain('"costUsd"');
+        else expect(second?.content).toContain('"costUsd":1.75');
+      } finally {
+        await stopKeepAliveRun(iter, live.abortController);
+      }
+    },
+  );
 
   it("queues passive context without starting a turn and folds it into the next assignment", async () => {
     const provider = makeProvider([
