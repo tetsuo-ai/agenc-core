@@ -995,7 +995,9 @@ export function createWorkflowSessionSeams(
           taskPrompt: [input.prompt, workflowProviderInstructions(
             childProviderPolicy(session).cross_provider_enabled === true,
           )].filter(Boolean).join("\n\n"),
-          ...(input.kind === "verify_agent" ? { role: "verification" } : {}),
+          ...(input.kind === "verify_agent"
+            ? { role: "verification" }
+            : input.kind === "plan" ? { role: "Plan" } : {}),
           agentName: workflowChildAgentName(input.childRunId),
           ...(input.spec.model !== undefined
             ? { model: input.spec.model }

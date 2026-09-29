@@ -805,6 +805,52 @@ describe("workflow terminal persistence failures", () => {
   });
 });
 
+describe("workflow verified snapshot integrity", () => {
+  it.each(["command", "verifier", "reviewer"] as const)("does not deliver files changed by the %s after the verification snapshot", async (mutator) => {
+    const mutate = () => { harness.worktrees.patchText += "+unverified change\n"; };
+    if (mutator === "command") {
+      const original = harness.commands.run.bind(harness.commands);
+      vi.spyOn(harness.commands, "run").mockImplementation(async (input) => {
+        const result = await original(input);
+        mutate();
+        return result;
+      });
+    } else if (mutator === "verifier") {
+      harness.spawner.beforeReturn = ({ kind }) => { if (kind === "verify_agent") mutate(); };
+    } else {
+      harness.reviewer.onInvoke = mutate;
+    }
+    await runToTerminal(harness);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", stopReason: "evidence_invalid",
+      finalMessage: expect.stringContaining("checks and review cover a different snapshot"),
+    });
+    expect(harness.ledgers.get(RUN_ID)?.sealed).toBe(false);
+    expect(harness.worktrees.cleanups).toEqual([]);
+    expect(harness.worktrees.discards).toEqual([]);
+  });
+
+  it("refuses stale passing checks after a restart finds changed worktree content", async () => {
+    armFailpoint("after_verify_commit");
+    const started = await harness.controller.start(startParams(harness));
+    await expect(harness.controller.awaitRun(started.runId)).rejects.toThrow(/failpoint/);
+    disarmFailpoint();
+    const callsBefore = harness.spawner.spawns.length;
+    expect(harness.repo.getEffect(RUN_ID, "workflow.verify.cmd.1")?.outcome).toBe("committed");
+    harness.worktrees.patchText += "+edit made while the daemon was stopped\n";
+    await harness.controller.resumeOpenWorkflows();
+    await harness.controller.awaitRun(RUN_ID);
+    expect(harness.repo.getCurrentTerminalResult(RUN_ID)).toMatchObject({
+      status: "failed", stopReason: "evidence_invalid",
+      finalMessage: expect.stringContaining("changed since its verification was recorded"),
+    });
+    expect(harness.commands.executed).toEqual(["run-tests"]);
+    expect(harness.spawner.spawns).toHaveLength(callsBefore);
+    expect(harness.reviewer.invocations).toEqual([]);
+    expect(harness.worktrees.cleanups).toEqual([]);
+  });
+});
+
 describe("workflow provider waits", () => {
   it.each(["plan", "implement", "verify_agent", "review"] as const)(
     "projects a %s child's 429 through run.status and clears before retrying",
