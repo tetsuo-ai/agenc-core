@@ -277,8 +277,8 @@ describe("providers/bedrock", () => {
     const sentBody = (fetchImpl: ReturnType<typeof vi.fn<typeof fetch>>) =>
       JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
 
-    it("sends Opus 5.5 no temperature, no forced tool, and its effort in chat and streaming", async () => {
-      for (const model of ["anthropic.claude-opus-5-5", "global.anthropic.claude-opus-5-5"]) {
+    it("sends current Claude no temperature, no forced tool, and its effort in chat and streaming", async () => {
+      for (const model of ["anthropic.claude-opus-5-5", "global.anthropic.claude-opus-5-5", "anthropic.claude-sonnet-5-5"]) {
         const chatFetch = vi.fn<typeof fetch>().mockResolvedValue(converseReply());
         await provider(model, chatFetch).chat([{ role: "user", content: "hello" }], options);
         const streamFetch = vi.fn<typeof fetch>().mockResolvedValue(streamReply());
@@ -430,11 +430,11 @@ describe("providers/bedrock", () => {
     });
 
     it("sends effort only at the levels of a registered Bedrock contract", async () => {
-      // Fable 5.1 is always-on but has no registered Bedrock contract, so
+      // An unknown Fable minor has no registered Bedrock contract, so
       // registry validation offers it no levels and the wire sends none,
       // while the always-on request rules still apply.
       const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(converseReply());
-      await provider("global.anthropic.claude-fable-5-1", fetchImpl).chat(
+      await provider("global.anthropic.claude-fable-5-99", fetchImpl).chat(
         [{ role: "user", content: "hello" }],
         options,
       );

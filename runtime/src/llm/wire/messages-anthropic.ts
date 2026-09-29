@@ -45,6 +45,7 @@ import {
   anthropicAcceptsSamplingParameters,
   anthropicEffort,
   anthropicManualBudgetTokens,
+  anthropicSupportsBetweenToolsThinking,
   anthropicThinkingControl,
 } from "../../utils/model/anthropicThinkingControl.js";
 
@@ -381,6 +382,7 @@ export function buildAnthropicMessagesRequest(
   // 2026-07-08). Opus-family behavior is unchanged.
   const thinkingControl = anthropicThinkingControl(input.model);
   const alwaysOnThinking = thinkingControl === "always_on";
+  const betweenToolsThinking = anthropicSupportsBetweenToolsThinking(input.model);
   // `temperature` is "deprecated for this model" (400) on Opus 5, Sonnet 5,
   // Opus 4.8 and Opus 4.7 as well (probed 2026-09-11); the 4.6 generation
   // and older still take it.
@@ -425,7 +427,7 @@ export function buildAnthropicMessagesRequest(
   // and "any" are not supported for this model", Opus 5.5 migration guide,
   // 2026-09-22); falling back to auto never 400s.
   const thinkingEnabled =
-    alwaysOnThinking || input.options?.reasoningEffort !== undefined;
+    alwaysOnThinking || betweenToolsThinking || input.options?.reasoningEffort !== undefined;
   if (input.options?.toolChoice !== undefined) {
     const toolChoice = parseAnthropicToolChoice(input.options.toolChoice);
     if (toolChoice !== undefined && (!thinkingEnabled || input.options.toolChoice === "none")) {
@@ -454,7 +456,14 @@ export function buildAnthropicMessagesRequest(
   const requestedEffort = input.options?.reasoningEffort;
   const normalizedEffort = (requestedEffort === "max" || requestedEffort === "xhigh") &&
     !effortLevels.includes(requestedEffort) ? "high" : requestedEffort;
-  if (thinkingEnabled && !alwaysOnThinking) {
+  if (betweenToolsThinking) {
+    // `none` turns off up-front reasoning, but Sonnet 5.5 still produces
+    // progress-update thinking between tools. It accepts no additional
+    // fields in this mode. All actual effort tiers retain adaptive thinking.
+    body.thinking = requestedEffort === "none"
+      ? { type: "between_tools" }
+      : { type: "adaptive", display: "summarized" };
+  } else if (thinkingEnabled && !alwaysOnThinking) {
     body.thinking = thinkingControl === "adaptive"
       ? { type: "adaptive" }
       : {

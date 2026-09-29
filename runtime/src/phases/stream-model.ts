@@ -43,6 +43,7 @@ import type {
   LLMToolChoice,
 } from "../llm/types.js";
 import { cloneLlmMessageSnapshot } from "../llm/content-conversion.js";
+import { anthropicSupportsBetweenToolsThinking } from "../utils/model/anthropicThinkingControl.js";
 import {
   installStreamWatchdog,
   resolveSessionStreamIdleTimeoutMs,
@@ -127,6 +128,9 @@ function resolveSessionReasoningEffort(
   // Preserve accepted literal tiers before applying legacy max/xhigh aliases.
   const contract = selection === undefined ? undefined : resolveReasoningEffort(selection);
   if (requested === "none") {
+    if (selection?.provider === "anthropic" && anthropicSupportsBetweenToolsThinking(selection.model)) {
+      return "none";
+    }
     // OpenAI models that document `none` (GPT-6 Sol and Luna) run a
     // reasoning default when the field is omitted, so the opt-out has to be
     // sent literally. Elsewhere `none` still means "send no effort".
