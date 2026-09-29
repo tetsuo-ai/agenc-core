@@ -291,8 +291,12 @@ function renderSandbox(
 export function getPermissionsSection(
   ctx: ToolPermissionContext | null,
   authority: PermissionPromptExecutionAuthority,
+  light = false,
 ): string | null {
   if (ctx === null) return null;
+  if (light && ctx.mode === "bypassPermissions" && !unattendedPolicyForContext(ctx).noApprover) {
+    return `Permissions: bypassPermissions. Sandbox: ${authority.sandboxPolicy}; network ${authority.networkSandboxPolicy.enabled ? "enabled" : "restricted"}. No sandbox escalation is allowed. Act within the user request; ask before destructive actions outside it. Never bypass a denial.`;
+  }
   if (ctx.mode === "unattended") {
     const policy = unattendedPolicyForContext(ctx);
     const allow = policy.allowlist.length > 0

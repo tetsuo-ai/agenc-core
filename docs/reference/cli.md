@@ -104,7 +104,9 @@ From `formatCliHelpText()`:
   tools and explicitly still-running commands do not count, and an
   unrelated successful read does not verify a different claim. This is a
   structural check, not a guarantee of task correctness and not a
-  benchmark pass. In Light mode, current successful evidence can satisfy the
+  benchmark pass. Light omits this automatic reminder loop; use
+  `completion_gate.mode = "always"` to opt in. With that explicit setting,
+  current successful evidence can satisfy the
   first checklist or a formatting retry without rerunning checks. Before a
   verification request, arbitrary commands invalidate earlier evidence and a
   completed successful command can verify its own result. After the request,

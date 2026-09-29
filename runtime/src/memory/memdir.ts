@@ -32,7 +32,7 @@ import { formatFileSize } from '../utils/format.js'
 import { getProjectDir } from '../utils/sessionStorage.js'
 import { getSessionCoworkMemoryExtraGuidelines } from '../session/runtime-options.js'
 import { MEMORY_TYPES, WHAT_NOT_TO_SAVE_SECTION } from './types.js'
-import { lightMemoryDirectories, lightMemoryInstructions } from './light-memory-prompt.js'
+import { lightMemoryDirectories, LIGHT_MEMORY_DEFERRED_INSTRUCTIONS } from './light-memory-prompt.js'
 
 export const ENTRYPOINT_NAME = 'MEMORY.md'
 export const MAX_ENTRYPOINT_LINES = 200
@@ -410,7 +410,7 @@ export async function loadMemoryPrompt(owner?: ResolveAutoMemoryDirectoryOptions
   // checking. The prompt text reflects this ("already exist").
   return {
     instructions: light
-      ? lightMemoryInstructions(MEMORY_TYPES, MAX_ENTRYPOINT_LINES)
+      ? LIGHT_MEMORY_DEFERRED_INSTRUCTIONS
       : buildMemoryInstructionLines().join('\n'),
     directories: light
       ? lightMemoryDirectories(autoDir, globalDir, extraGuidelines)

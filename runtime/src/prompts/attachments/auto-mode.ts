@@ -140,6 +140,8 @@ export const autoModeProducer: AttachmentProducer = async (
   opts,
   trackingState,
 ) => {
+  // Light receives the current permission policy separately; no workflow pulses.
+  if (opts.lightMode === true) return [];
   const attachments: Attachment[] = [];
   const mode = opts.permissionContext.mode;
 

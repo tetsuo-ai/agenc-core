@@ -26,6 +26,18 @@ function deferredCatalogEntry(name = "system.deepTool"): ToolCatalogEntry {
 }
 
 describe("system.searchTools", () => {
+  test("loads memory rules in one call only for Light without discovering unrelated tools", async () => {
+    let discoveries = 0;
+    const tool = createToolSearchTool({ lightMode: true, allowedPaths: [process.cwd()], persistenceRootDir: process.cwd(), onDiscoverTools: () => { discoveries++; } });
+    const result = await tool.execute({ instructions: "memory" });
+    expect(result.content).toContain("Save requested memories immediately");
+    expect(result.content).toContain("200 lines");
+    expect(result.content).toContain("fix or delete stale");
+    expect(discoveries).toBe(0);
+    const normal = createToolSearchTool({ allowedPaths: [process.cwd()], persistenceRootDir: process.cwd() });
+    expect(normal.inputSchema.properties).not.toHaveProperty("instructions");
+  });
+
   test("is side-effecting because selected tools update advertised session state", () => {
     const tool = createToolSearchTool({
       allowedPaths: [process.cwd()],

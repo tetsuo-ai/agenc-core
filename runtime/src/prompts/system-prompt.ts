@@ -65,7 +65,9 @@ import {
 import { sanitizeSystemReminderContent } from "./attachments/system-reminder-sanitizer.js";
 import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./system-prompt-boundary.js";
 import { BRIEF_TOOL_NAME } from "../tools/BriefTool/prompt.js";
-import { loadMemoryPrompt } from "../memory/memdir.js";
+import { lightMemoryInstructions, LIGHT_MEMORY_DEFERRED_INSTRUCTIONS } from "../memory/light-memory-prompt.js";
+import { MEMORY_TYPES } from "../memory/types.js";
+import { MAX_ENTRYPOINT_LINES, loadMemoryPrompt } from "../memory/memdir.js";
 import { UNTRUSTED_TOOL_RESULT_BOUNDARY } from "../tools/untrusted-tool-result-framing.js";
 import { logForDebugging } from "../utils/debug.js";
 import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
@@ -587,6 +589,7 @@ export interface EnvInfoInputs {
 /** env_info_simple — cwd, model, git branch, time, OS. AgenC-original. */
 export function buildEnvInfoSection(inputs: EnvInfoInputs, light = false): string {
   const { model, provider, cwd } = inputs;
+  if (light) return `# Environment\nWorking directory: <cwd>${cwd}</cwd>\nPlatform: ${osPlatform()}. Date: ${new Date().toISOString().slice(0, 10)}.`;
   const branch = readGitBranch(cwd, inputs.sandboxExecutionBroker);
   // I-82: wall-clock OK here — display only, not a deadline.
   const now = new Date().toISOString();
@@ -1200,8 +1203,10 @@ export async function assembleSystemPrompt(
           headless: headlessCompletionSection !== null,
           deadline: typeof session.services?.runtimeOptions?.deadlineAt === "number",
           hasOutputStyle: opts.outputStyle != null,
+          completionGate: opts.ctx.config.completionGate?.mode === "always",
         }),
-        getMemoryInstructionsSection(opts.memoryInstructions),
+        getMemoryInstructionsSection(opts.memoryInstructions === LIGHT_MEMORY_DEFERRED_INSTRUCTIONS && !enabledTools.has("system.searchTools")
+          ? lightMemoryInstructions(MEMORY_TYPES, MAX_ENTRYPOINT_LINES) : opts.memoryInstructions),
       ]
     : lean
     ? [
@@ -1248,7 +1253,7 @@ export async function assembleSystemPrompt(
           : getPermissionsSection(opts.permissionContext ?? null, {
               sandboxPolicy: opts.ctx.sandboxPolicy.value,
               networkSandboxPolicy: opts.ctx.networkSandboxPolicy,
-            }),
+            }, profile === "light"),
       "permission mode can change mid-session via /mode and bypass toggles",
     ),
     DANGEROUS_uncachedSystemPromptSection(

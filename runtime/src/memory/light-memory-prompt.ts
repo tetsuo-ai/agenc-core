@@ -1,3 +1,5 @@
+export const LIGHT_MEMORY_DEFERRED_INSTRUCTIONS = 'Before saving or recalling memory, load its rules: system.searchTools({instructions: "memory"}).';
+
 /** Light presentation of the canonical memory contract. Paths remain session-scoped. */
 export function lightMemoryInstructions(types: readonly string[], indexLines: number): string {
   return [
@@ -14,7 +16,7 @@ export function lightMemoryDirectories(project: string, global: string, extra?: 
     "# Memory directories",
     `Global (cross-project): \`${global}\``,
     `Project (shared by worktrees): \`${project}\``,
-    "Directories exist. Write directly; no mkdir or existence checks. Keep session-only state in conversation, plans or tasks.",
+    "Directories exist; session state stays in the conversation.",
     ...(extra ?? []),
   ].join("\n");
 }

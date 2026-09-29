@@ -1357,10 +1357,9 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
     const withoutEnvironment = (text: string) => text.replace(/# Environment\n[\s\S]*?(?=\n\n#|$)/gu, "# Environment");
     expect(light.staticPrefix.length).toBeLessThan(standard.staticPrefix.length * 0.5);
     expect(withoutEnvironment(light.dynamicSuffix)).toBe(withoutEnvironment(standard.dynamicSuffix));
-    expect(light.dynamicSuffix).toContain("Filesystem working directory: <cwd>");
-    expect(light.dynamicSuffix).toContain("Agent identifiers such as /root/task1 are addresses, not files");
+    expect(light.dynamicSuffix).toContain("Working directory: <cwd>");
     expect(light.dynamicSuffix).not.toContain("Primary working directory:");
-    for (const heading of ["# Authority", "# Capabilities", "# Completing work without a human", "# Environment"]) {
+    for (const heading of ["Never bypass a denial", "system.searchTools", "No human is available", "# Environment"]) {
       expect(light.text).toContain(heading);
     }
     expect(light.text).toContain("system.searchTools");
@@ -1374,7 +1373,7 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
     expect(light.dynamicSuffix).toContain("/workspace/scratchpad");
     expect(light.text.toLowerCase()).toContain("plan");
     if (outputStyle === undefined) {
-      expect(light.text).toContain("Never weaken checks to manufacture success");
+      expect(light.text).toContain("Never weaken checks");
     } else {
       expect(light.dynamicSuffix).toContain("OUTPUT_STYLE_SENTINEL");
       expect(light.text).not.toContain("# Doing tasks");
@@ -1387,8 +1386,8 @@ test("Light's cached head is independent of provider defaults and loaded tools",
   const initial = await assembleSystemPromptSnapshot({ ...options, provider: "deepseek", enabledToolNames: new Set(["FileRead", "system.searchTools"]) });
   const expanded = await assembleSystemPromptSnapshot({ ...options, provider: "openai", enabledToolNames: new Set(["FileRead", "system.searchTools", "spawn_agent", "Skill", "TodoWrite"]) });
   expect(expanded.staticPrefix).toBe(initial.staticPrefix);
-  expect(initial.staticPrefix).toContain("worktree isolation");
-  expect(initial.staticPrefix).toContain("runtime's verification, review and budget controls");
+  expect(initial.staticPrefix).toContain("system.searchTools");
+  expect(initial.staticPrefix).not.toContain("- [x]");
 });
 
 test("Light custom output styles replace the default coding workflow while retaining tool and authority rules", async () => {
@@ -1396,14 +1395,24 @@ test("Light custom output styles replace the default coding workflow while retai
   const light = await assembleSystemPromptSnapshot({
     session: fakeSession, ctx: fakeCtx(), profile: "light", outputStyle: style,
   });
-  expect(light.staticPrefix).toContain('following the "Output Style" below');
+  expect(light.staticPrefix).toContain('Follow the "Output Style" below');
   expect(light.staticPrefix).not.toContain("a coding agent");
   expect(light.staticPrefix).not.toContain("# Work\n");
   expect(light.staticPrefix).not.toContain("make the smallest complete change");
   expect(light.staticPrefix).not.toContain("rerun affected checks");
   expect(light.staticPrefix).toContain("system.searchTools");
-  expect(light.staticPrefix).toContain("Read existing files with FileRead before Edit or Write");
+  expect(light.staticPrefix).toContain("Read before editing");
   expect(light.staticPrefix).toContain("Never bypass a denial");
-  expect(light.staticPrefix).toContain("Do not claim actions or results without evidence");
+  expect(light.staticPrefix).toContain("unobserved success");
   expect(light.dynamicSuffix).toContain(style.prompt);
+});
+
+ test("Light retains memory rules when discovery is unavailable", async () => {
+  const { LIGHT_MEMORY_DEFERRED_INSTRUCTIONS } = await import("../../src/memory/light-memory-prompt.js");
+  const opts = { session: fakeSession, ctx: fakeCtx(), profile: "light" as const, memoryInstructions: LIGHT_MEMORY_DEFERRED_INSTRUCTIONS };
+  const fallback = await assembleSystemPromptSnapshot({ ...opts, enabledToolNames: new Set(["FileRead"]) });
+  expect(fallback.staticPrefix).toContain("Save requested memories immediately");
+  const deferred = await assembleSystemPromptSnapshot({ ...opts, enabledToolNames: new Set(["system.searchTools"]) });
+  expect(deferred.staticPrefix).not.toContain("Save requested memories immediately");
+  expect(deferred.staticPrefix).toContain(LIGHT_MEMORY_DEFERRED_INSTRUCTIONS);
 });

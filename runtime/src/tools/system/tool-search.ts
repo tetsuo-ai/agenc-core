@@ -1,3 +1,5 @@
+import { lightMemoryInstructions } from "../../memory/light-memory-prompt.js";
+import { MEMORY_TYPES } from "../../memory/types.js";
 import type { Tool, ToolCatalogEntry } from "../types.js";
 import {
   decodeMcpToolNameFromWire,
@@ -187,6 +189,7 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
     inputSchema: {
       type: "object",
       properties: {
+        ...(config.lightMode === true ? { instructions: { type: "string", enum: ["memory"] } } : {}),
         query: {
           type: "string",
           description:
@@ -210,6 +213,9 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
       additionalProperties: false,
     },
     async execute(args) {
+      if (config.lightMode === true && args.instructions === "memory") {
+        return okResult(lightMemoryInstructions(MEMORY_TYPES, 200));
+      }
       await config.onBeforeSearch?.();
       // A subagent shares this tool with its parent's registry but cannot call
       // MCP, disabled or out-of-allowlist tools. Never offer or load those.
