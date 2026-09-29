@@ -1,4 +1,5 @@
 import { diffLines } from "diff";
+import { WORKSPACE_EDIT_PREVIEW_HEADER } from "../untrusted-tool-result-framing.js";
 
 /** Show the resulting boundaries, including untouched neighbors, without a reread. */
 export function lightEditPreview(before: string, after: string): string {
@@ -22,7 +23,7 @@ export function lightEditPreview(before: string, after: string): string {
     if (!part.removed) line += count;
   }
   const ordered = [...selected].sort((a, b) => a - b);
-  const out = ["\nEdited region (line numbers are not file content):"];
+  const out = ["\n" + WORKSPACE_EDIT_PREVIEW_HEADER];
   let size = out[0]!.length;
   let previous = -1;
   for (const i of ordered) {

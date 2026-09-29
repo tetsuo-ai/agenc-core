@@ -2,6 +2,8 @@ import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import { sanitizeSystemReminderContent } from "../prompts/attachments/system-reminder-sanitizer.js";
 import type { Tool } from "./types.js";
 
+export const WORKSPACE_EDIT_PREVIEW_HEADER = "Edited region (line numbers are not file content):";
+
 export const UNTRUSTED_TOOL_RESULT_BOUNDARY =
   "===== AGENC UNTRUSTED TOOL RESULT DATA =====";
 
@@ -251,7 +253,10 @@ export function frameUntrustedToolResultContent(
   if (isCanonicallyFramedUntrustedToolResult(toolName, content)) {
     return content;
   }
-  if (isRuntimeAuthoredResult(toolName, kind)) {
+  const hasWorkspacePreview = (toolName === "Edit" || toolName === "MultiEdit") &&
+    (typeof content === "string" ? content : content.filter(isTextPart).map(part => part.text).join("\n"))
+      .includes(WORKSPACE_EDIT_PREVIEW_HEADER);
+  if (isRuntimeAuthoredResult(toolName, kind) && !hasWorkspacePreview) {
     return sanitizeUnframedContent(content);
   }
   if (typeof content === "string") {
