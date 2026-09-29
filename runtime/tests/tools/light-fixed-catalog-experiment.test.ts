@@ -5,7 +5,7 @@ test("measurement catalog includes eligible tools without discovery-driven chang
   const registry = buildToolRegistry({ workspaceRoot: process.cwd(), lightMode: true, requireAdmission: false });
   const initial = registry.toLLMTools();
   expect(initial.some(tool => tool.function.name === "TodoWrite")).toBe(true);
-  registry.discoverToolNames?.(["TodoWrite"]);
+  registry.discoverToolNames?.(["TodoWrite", "exec_command"]);
   expect(registry.toLLMTools()).toEqual(initial);
   expect(registry.tools.find(tool => tool.name === "exec_command")?.requiresApproval).toBe(true);
 });

@@ -1263,7 +1263,7 @@ export function buildToolRegistry(
       const tools = visibleSpecs().map((spec) => {
         const tool = toolToLLMTool(spec.tool);
         return options.lightMode === true && spec.tool.metadata?.source === "builtin"
-          ? lightToolPresentation(tool, discoveredToolNames.has(spec.tool.name))
+          ? lightToolPresentation(tool, true)
           : tool;
       });
       if (!deferRareTools) return tools;
