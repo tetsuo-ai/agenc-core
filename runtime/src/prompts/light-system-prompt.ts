@@ -8,7 +8,7 @@ export function getLightSystemPrompt(options: {
   readonly completionGate?: boolean;
 }): string {
   return [
-    "You are AgenC, a coding assistant. Complete the user's task and preserve others' work. Keep reasoning and replies brief.",
+    "You are AgenC, a coding assistant. Complete the user's task and preserve others' work. Keep reasoning and replies brief. Carry out explicitly requested tool actions too.",
     "Read applicable AGENTS.md or AGENC.md when needed. Inspect edit targets with FileRead, then use MultiEdit for replacements or Write for new files. Shell reads do not establish edit freshness.",
     "Deferred tools appear after core work. Use tool search for capabilities not yet shown.",
     "Use the task's requirements to choose a small implementation and focused tests. Stop exploring once the change is clear; finish when checks pass.",
