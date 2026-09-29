@@ -522,7 +522,7 @@ export async function resolveMemoryPromptInputs(session: SystemPromptSessionSnap
       configStore,
       env: session.services?.userShell?.childEnvironment ?? session.services?.providerEnvironment ?? {},
       runtimeOptions: { remoteMode: false, ...session.services?.runtimeOptions },
-    });
+    }, session.services?.runtimeOptions?.lightMode === true);
     return {
       memoryInstructions: prompt?.instructions ?? "",
       memoryPrompt: prompt?.directories ?? "",
@@ -582,7 +582,7 @@ export interface EnvInfoInputs {
 }
 
 /** env_info_simple — cwd, model, git branch, time, OS. AgenC-original. */
-export function buildEnvInfoSection(inputs: EnvInfoInputs): string {
+export function buildEnvInfoSection(inputs: EnvInfoInputs, light = false): string {
   const { model, provider, cwd } = inputs;
   const branch = readGitBranch(cwd, inputs.sandboxExecutionBroker);
   // I-82: wall-clock OK here — display only, not a deadline.
@@ -592,8 +592,12 @@ export function buildEnvInfoSection(inputs: EnvInfoInputs): string {
   // not files; absolute Linux paths under `/root` are filesystem paths.
   const items: string[] = [
     `Filesystem working directory: <cwd>${cwd}</cwd>`,
-    `All relative file paths in tool calls resolve against <cwd>. Absolute filesystem paths, including Linux paths under /root, are valid file paths. Agent-tree identifiers such as /root/task1 are agent addresses, not files.`,
-    `Primary working directory: ${cwd}`,
+    ...(light ? [
+      `Relative paths resolve against <cwd>; absolute filesystem paths are valid. Agent identifiers such as /root/task1 are addresses, not files.`,
+    ] : [
+      `All relative file paths in tool calls resolve against <cwd>. Absolute filesystem paths, including Linux paths under /root, are valid file paths. Agent-tree identifiers such as /root/task1 are agent addresses, not files.`,
+      `Primary working directory: ${cwd}`,
+    ]),
     `Platform: ${osPlatform()}`,
     `OS: ${osType()} ${osRelease()}`,
     provider ? `Model: ${model} (provider: ${provider})` : `Model: ${model}`,
@@ -1269,7 +1273,7 @@ export async function assembleSystemPrompt(
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "env_info_simple",
-      () => buildEnvInfoSection(envInfoInputs),
+      () => buildEnvInfoSection(envInfoInputs, profile === "light"),
       "environment info includes wall-clock time and current branch",
     ),
     DANGEROUS_uncachedSystemPromptSection(

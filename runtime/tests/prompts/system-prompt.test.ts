@@ -1353,10 +1353,13 @@ test.each([undefined, { name: "project-style", prompt: "OUTPUT_STYLE_SENTINEL: e
     };
     const light = await assembleSystemPromptSnapshot({ ...options, profile: "light" });
     const standard = await assembleSystemPromptSnapshot({ ...options, profile: "standard" });
-    // Only the environment's wall-clock timestamp may differ between calls.
-    const withoutClock = (text: string) => text.replace(/Current time \(UTC\): [^\n]+/gu, "Current time (UTC): <captured>");
+    // Light compacts the environment; all other caller-supplied tail sections stay intact.
+    const withoutEnvironment = (text: string) => text.replace(/# Environment\n[\s\S]*?(?=\n\n#|$)/gu, "# Environment");
     expect(light.staticPrefix.length).toBeLessThan(standard.staticPrefix.length * 0.5);
-    expect(withoutClock(light.dynamicSuffix)).toBe(withoutClock(standard.dynamicSuffix));
+    expect(withoutEnvironment(light.dynamicSuffix)).toBe(withoutEnvironment(standard.dynamicSuffix));
+    expect(light.dynamicSuffix).toContain("Filesystem working directory: <cwd>");
+    expect(light.dynamicSuffix).toContain("Agent identifiers such as /root/task1 are addresses, not files");
+    expect(light.dynamicSuffix).not.toContain("Primary working directory:");
     for (const heading of ["# Authority", "# Capabilities", "# Completing work without a human", "# Environment"]) {
       expect(light.text).toContain(heading);
     }

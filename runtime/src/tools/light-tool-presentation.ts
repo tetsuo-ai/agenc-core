@@ -8,7 +8,7 @@ const PRESENTATIONS: Readonly<Record<string, {
   readonly parameters?: Readonly<Record<string, string>>;
 }>> = {
   FileRead: {
-    description: "Read files, images, PDFs or notebooks. Text has display line numbers. Use offset/limit for large files; oversized reads fail. PDFs over 10 pages require pages, at most 20 per call. Cannot read directories.",
+    description: "Read files, images, PDFs or notebooks. Text has display line numbers, possibly only first, every tenth and last line. Use offset/limit for large files; oversized reads fail. PDFs over 10 pages require pages, at most 20 per call. Cannot read directories.",
     parameters: {
       file_path: FILE_PATH,
       offset: "Start line, 1-indexed. Numeric strings accepted.",
@@ -58,6 +58,12 @@ const PRESENTATIONS: Readonly<Record<string, {
   },
   write_stdin: {
     description: "Poll a running exec_command session with chars empty, or send input if it started with tty=true. Use the same sandbox_permissions as the originating command.",
+    parameters: {
+      session_id: "Running exec_command session_id.",
+      chars: "Input, including newlines for shell commands. Empty polls output.",
+      yield_time_ms: "Wait for output, in milliseconds.",
+      max_output_tokens: "Output token limit.",
+    },
   },
   "system.searchTools": {
     description: "Find tools by capability or name. A unique best query match loads its schema; otherwise select exact result names to load. Discovery grants no execution permission.",

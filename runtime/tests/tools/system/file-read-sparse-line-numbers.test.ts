@@ -95,7 +95,7 @@ describe("FileRead with sparse line numbers", () => {
     // daemon client allowlist, as a daemon-owned (Desktop) session does; the
     // bootstrap registry reads the switch from that environment.
     const file = await writeTwelve();
-    const readWith = (environment: Record<string, string>) =>
+    const readWith = (environment: Record<string, string>, lightMode = false, sparseLineNumbers?: boolean) =>
       runWithStartupProviderSelection(
         { provider: "deepseek", model: "deepseek-flash", environment },
         async () => {
@@ -115,6 +115,7 @@ describe("FileRead with sparse line numbers", () => {
             },
             getSession: () => null,
             emitWarning: () => {},
+            toolRegistryOptions: { lightMode, ...(sparseLineNumbers !== undefined ? { sparseLineNumbers } : {}) },
           });
           const tool = registry.tools.find((candidate) => candidate.name === "FileRead")!;
           return (await bindExplicitDangerBoundary(tool).execute({ file_path: file })).content;
@@ -122,5 +123,9 @@ describe("FileRead with sparse line numbers", () => {
       );
     expect(await readWith({ [SPARSE_LINE_NUMBERS_ENV]: "1" })).toBe(SPARSE_TWELVE);
     expect(await readWith({})).toContain("2→row 2");
+    expect(await readWith({}, true)).toBe(SPARSE_TWELVE);
+    expect(await readWith({ [SPARSE_LINE_NUMBERS_ENV]: "0" }, true)).toContain("2→row 2");
+    expect(await readWith({}, true, false)).toContain("2→row 2");
+    expect(await readWith({ [SPARSE_LINE_NUMBERS_ENV]: "0" }, true, true)).toBe(SPARSE_TWELVE);
   });
 });

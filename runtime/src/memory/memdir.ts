@@ -32,6 +32,7 @@ import { formatFileSize } from '../utils/format.js'
 import { getProjectDir } from '../utils/sessionStorage.js'
 import { getSessionCoworkMemoryExtraGuidelines } from '../session/runtime-options.js'
 import { MEMORY_TYPES, WHAT_NOT_TO_SAVE_SECTION } from './types.js'
+import { lightMemoryDirectories, lightMemoryInstructions } from './light-memory-prompt.js'
 
 export const ENTRYPOINT_NAME = 'MEMORY.md'
 export const MAX_ENTRYPOINT_LINES = 200
@@ -373,7 +374,7 @@ function quoteShellPath(path: string): string {
  * stays readable and writable as ordinary project memory. Returns null when
  * auto memory is disabled.
  */
-export async function loadMemoryPrompt(owner?: ResolveAutoMemoryDirectoryOptions): Promise<MemoryPromptSections | null> {
+export async function loadMemoryPrompt(owner?: ResolveAutoMemoryDirectoryOptions, light = false): Promise<MemoryPromptSections | null> {
   const resolved = owner === undefined ? undefined : await resolveAutoMemoryDirectory(owner)
   if (resolved === undefined ? !isAutoMemoryEnabled() : !resolved.enabled || resolved.path === undefined) return null
   const autoDir = owner === undefined ? getAutoMemPath() : resolved?.path
@@ -408,7 +409,11 @@ export async function loadMemoryPrompt(owner?: ResolveAutoMemoryDirectoryOptions
   // Harness guarantees the directories exist so the model can write without
   // checking. The prompt text reflects this ("already exist").
   return {
-    instructions: buildMemoryInstructionLines().join('\n'),
-    directories: buildMemoryDirectoryLines(autoDir, extraGuidelines, globalDir).join('\n'),
+    instructions: light
+      ? lightMemoryInstructions(MEMORY_TYPES, MAX_ENTRYPOINT_LINES)
+      : buildMemoryInstructionLines().join('\n'),
+    directories: light
+      ? lightMemoryDirectories(autoDir, globalDir, extraGuidelines)
+      : buildMemoryDirectoryLines(autoDir, extraGuidelines, globalDir).join('\n'),
   }
 }

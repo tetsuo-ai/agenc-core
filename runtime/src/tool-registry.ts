@@ -771,11 +771,11 @@ export function buildToolRegistry(
   const firstClassFileTools = [
     createFileReadTool({
       allowedPaths: [options.workspaceRoot],
-      ...(options.sparseLineNumbers === true ? { sparseLineNumbers: true } : {}),
+      ...((options.sparseLineNumbers ?? options.lightMode) === true ? { sparseLineNumbers: true } : {}),
     }),
     createFileEditTool({
       allowedPaths: [options.workspaceRoot],
-      ...(options.sparseLineNumbers === true ? { sparseLineNumbers: true } : {}),
+      ...((options.sparseLineNumbers ?? options.lightMode) === true ? { sparseLineNumbers: true } : {}),
     }),
     // MultiEdit is the multi-edit batch editor for one-file rewrite sets.
     createFileMultiEditTool({

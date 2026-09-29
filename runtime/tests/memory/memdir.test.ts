@@ -135,6 +135,26 @@ describe("memory prompt", () => {
     expect(existsSync(getProjectMemoryPath())).toBe(true);
   });
 
+  it("Light retains memory scope, format, recall and forgetting with a smaller fixed head", async () => {
+    installMemoryAuthority();
+    const standard = await memory.loadMemoryPrompt();
+    const light = await memory.loadMemoryPrompt(undefined, true);
+    expect(light).not.toBeNull();
+    expect(light!.instructions.length).toBeLessThan(standard!.instructions.length * 0.7);
+    expect(light!.instructions).not.toContain(tempRoot);
+    for (const contract of ["Save requested memories immediately", "deleting the file and index entry", "user | feedback | project | reference", "YAML frontmatter name, description", "**Why:**", "**How to apply:**", "150 characters", "200 lines", "check memory", "fix or delete stale", "ignore memory", "AGENC.md duplicates"]) {
+      expect(light!.instructions).toContain(contract);
+    }
+    expect(light!.directories).toContain(getProjectMemoryPath());
+    expect(light!.directories).toContain(getGlobalMemoryPath());
+    expect(light!.directories).toContain("shared by worktrees");
+    expect(light!.directories).toContain("session-only state");
+    expect(light!.directories).toContain("no mkdir");
+    expect(existsSync(getGlobalMemoryPath())).toBe(true);
+    expect(existsSync(getProjectMemoryPath())).toBe(true);
+    expect(await memory.loadMemoryPrompt()).toEqual(standard);
+  });
+
   it.skipIf(process.platform === "win32")(
     "loadMemoryPrompt creates the memory directories owner-only under a permissive umask",
     async () => {
