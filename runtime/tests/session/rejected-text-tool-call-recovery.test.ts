@@ -52,6 +52,26 @@ function sequence(responses: LLMResponse[], afterSample?: (index: number) => voi
 }
 
 describe("bounded admitted text-tool correction", () => {
+  test("native malformed JSON retries a complete call, never dispatching the partial arguments", async () => {
+    const r = registry();
+    const spawn = { ...r.registry.tools[0]!, name: "spawn_agent" };
+    const tools: ToolRegistry = { ...r.registry, tools: [spawn], toLLMTools: () => [{ type: "function", function: { name: spawn.name, description: spawn.description, parameters: spawn.inputSchema } }] };
+    const wire = sequence([
+      { ...success, content: "", finishReason: "tool_calls", toolCalls: [{ id: "cut", name: "spawn_agent", arguments: '{"file_path":"unfinished' }] },
+      { ...success, content: "", finishReason: "tool_calls", toolCalls: [{ id: "retry", name: "spawn_agent", arguments: '{"file_path":"fixture"}' }] },
+      success,
+    ]);
+    const provider = { ...wire.provider, name: "deepseek" };
+    const { session, events } = mkSession({ provider, registry: tools });
+    await drain(runTurn(session, mkCtx(), "Read the fixture."));
+    expect(wire.inputs).toHaveLength(3);
+    expect(r.execute).toHaveBeenCalledTimes(1);
+    expect(wire.inputs[1]!.some(message => message.content === textToolCallCorrectionPrompt({ toolName: "spawn_agent", reason: "invalid_arguments" }))).toBe(true);
+    const rejectedCall = events.find(event => event.msg.type === "tool_call_completed" && event.msg.payload.callId === "cut");
+    expect(rejectedCall?.msg.payload).toMatchObject({ isError: true });
+    expect(events.some(event => event.msg.type === "turn_complete")).toBe(true);
+  });
+
   test("two rejected calls then a valid call use fresh samples, execute only once and retain usage/pairing", async () => {
     const r = registry();
     const wire = sequence([rejected(), rejected(), { ...success, content: "", finishReason: "tool_calls", toolCalls: [{ id: "real-read", name: "system.readFile", arguments: '{"file_path":"fixture"}' }] }, success]);

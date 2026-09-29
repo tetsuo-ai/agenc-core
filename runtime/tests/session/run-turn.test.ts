@@ -4554,7 +4554,11 @@ describe("runTurn — model request context ordering", () => {
     expect(injectedRequest).toContain('"signals":["write_task"]');
   });
 
-  test("force-selects one initial spawn for a parallel swarm route", async () => {
+  test.each([
+    { swarm: true, task: "Review these areas:\n- API behavior\n- TUI behavior" },
+    { swarm: false, task: "Spawn one child to review the API behavior." },
+    { swarm: true, task: "Spawn two independent agents to review API and TUI behavior." },
+  ])("force-selects one initial spawn for required delegation: $task", async ({ swarm, task }) => {
     const toolChoices: Array<LLMToolChoice | undefined> = [];
     let providerCalls = 0;
     const provider: LLMProvider = {
@@ -4620,11 +4624,11 @@ describe("runTurn — model request context ordering", () => {
     const { session } = mkSession({
       provider,
       registry,
-      configStoreBase: { swarmMode: true },
+      configStoreBase: { swarmMode: swarm },
     });
 
     await drain(
-      session.runTurn("Review these areas:\n- API behavior\n- TUI behavior", {
+      session.runTurn(task, {
         ctx: { ...mkCtx(), subId: "turn-enforced-swarm" },
       }),
     );
@@ -4635,7 +4639,7 @@ describe("runTurn — model request context ordering", () => {
     ]);
     expect(
       getAttachmentTrackingState(session).lastSwarmSpawnToolChoiceTurnId,
-    ).toBe("turn-enforced-swarm");
+    ).toBe(swarm ? "turn-enforced-swarm" : undefined);
   });
 });
 

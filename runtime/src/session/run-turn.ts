@@ -996,7 +996,9 @@ async function prepareSamplingRequestBoundary(
     planMode: planModeHelpers.isPlanMode(samplingContext),
     toolNames: request.tools.map((tool) => tool.function.name),
   });
-  const swarmToolChoice = explicitDelegationChoice ?? claimRequiredSwarmToolChoice({
+  // Consume the swarm claim even when the explicit instruction also applies,
+  // so the next request cannot force an unnecessary replacement child.
+  const swarmToolChoice = claimRequiredSwarmToolChoice({
     trackingState: getAttachmentTrackingState(session),
     turnId: ctx.subId,
     subagentDepth: ctx.depth,
@@ -1009,7 +1011,8 @@ async function prepareSamplingRequestBoundary(
     samplingContext,
     request: snapshotSamplingRequestContract({
       ...request,
-      ...(swarmToolChoice !== undefined ? { toolChoice: swarmToolChoice } : {}),
+      ...((explicitDelegationChoice ?? swarmToolChoice) !== undefined
+        ? { toolChoice: explicitDelegationChoice ?? swarmToolChoice } : {}),
     }),
   };
 }

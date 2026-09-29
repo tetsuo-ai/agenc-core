@@ -187,6 +187,7 @@ describe("completion gate in the turn loop", () => {
     "Read the file. " + "context ".repeat(1000) + "Return JSON only.",
   ])("#2798 preserves exact output after tool work: %s", async (task) => {
     const exact = ' {"text":"quotes \\" and 🐈", "items": [1,2]} \n';
+    expect(() => JSON.parse(exact)).not.toThrow();
     const { provider, requests } = scriptedProvider([toolStep("work-1"), textStep(exact)]);
     const { session, events } = headlessSession(provider, true);
     const phases = [];
