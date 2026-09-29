@@ -2,6 +2,8 @@ import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import { sanitizeSystemReminderContent } from "../prompts/attachments/system-reminder-sanitizer.js";
 import type { Tool } from "./types.js";
 
+export const LIGHT_WORKSPACE_DATA_BOUNDARY = "AGENC_DATA";
+
 export const UNTRUSTED_TOOL_RESULT_BOUNDARY =
   "===== AGENC UNTRUSTED TOOL RESULT DATA =====";
 
@@ -52,7 +54,9 @@ export type UntrustedToolResultKind = "external" | "workspace";
 function neutralizeBoundary(text: string): string {
   return text
     .split(UNTRUSTED_TOOL_RESULT_BOUNDARY)
-    .join("= A G E N C  U N T R U S T E D  T O O L  R E S U L T =");
+    .join("= A G E N C  U N T R U S T E D  T O O L  R E S U L T =")
+    .split(LIGHT_WORKSPACE_DATA_BOUNDARY)
+    .join("A G E N C _ D A T A");
 }
 
 function sanitizeToolResultText(text: string): string {
@@ -239,38 +243,63 @@ export function shouldFrameUntrustedToolResult(
   );
 }
 
+function isCompactWorkspaceFrame(content: LLMMessage["content"]): boolean {
+  const boundary = LIGHT_WORKSPACE_DATA_BOUNDARY;
+  if (typeof content === "string") {
+    if (!content.startsWith(`${boundary}\n`) || !content.endsWith(`\n${boundary}`)) {
+      return false;
+    }
+    const body = content.slice(boundary.length + 1, -boundary.length - 1);
+    return sanitizeToolResultText(body) === body;
+  }
+  const first = content[0];
+  const last = content.at(-1);
+  return content.length >= 2 && first?.type === "text" && first.text === boundary &&
+    last?.type === "text" && last.text === boundary &&
+    content.slice(1, -1).every(
+      (part) => !isTextPart(part) || sanitizeToolResultText(part.text) === part.text,
+    );
+}
+
 export function frameUntrustedToolResultContent(
   toolName: string,
   content: LLMMessage["content"],
   kind: UntrustedToolResultKind = "external",
+  compactWorkspace = false,
 ): LLMMessage["content"] {
   // Model-visible history can cross compatibility and daemon-recovery
   // boundaries more than once. Preserve an exact, sanitized AgenC frame so
   // those boundaries remain single and unambiguous; lookalike or unsanitized
   // payloads still flow through the normal fail-closed framing path.
-  if (isCanonicallyFramedUntrustedToolResult(toolName, content)) {
+  if (
+    (kind === "workspace" && isCompactWorkspaceFrame(content)) ||
+    isCanonicallyFramedUntrustedToolResult(toolName, content)
+  ) {
     return content;
   }
   if (isRuntimeAuthoredResult(toolName, kind)) {
     return sanitizeUnframedContent(content);
   }
+  const compact = compactWorkspace && kind === "workspace";
+  const header = compact ? LIGHT_WORKSPACE_DATA_BOUNDARY : framingHeader(toolName, kind);
+  const footer = compact ? LIGHT_WORKSPACE_DATA_BOUNDARY : framingFooter();
   if (typeof content === "string") {
     return [
-      framingHeader(toolName, kind),
+      header,
       sanitizeToolResultText(content),
-      framingFooter(),
+      footer,
     ].join("\n");
   }
 
   const parts = [...content];
   const framed: LLMContentPart[] = [
-    { type: "text", text: framingHeader(toolName, kind) },
+    { type: "text", text: header },
     ...parts.map((part) =>
       isTextPart(part)
         ? { ...part, text: sanitizeToolResultText(part.text) }
         : part,
     ),
-    { type: "text", text: framingFooter() },
+    { type: "text", text: footer },
   ];
   return framed;
 }

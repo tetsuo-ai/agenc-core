@@ -104,10 +104,11 @@ function toolResultMessage(
   toolName: string,
   result: ToolDispatchResult,
   untrustedKind: UntrustedToolResultKind,
+  compactWorkspace = false,
 ): LLMMessage {
   // Seal the exact model-facing body at the result boundary, before any
   // budgeting, microcompaction, in-memory bounding, or durable serialization.
-  const content = modelFacingToolResultContent(toolName, result, untrustedKind);
+  const content = modelFacingToolResultContent(toolName, result, untrustedKind, compactWorkspace);
   const message: LLMMessage = {
     role: "tool",
     toolCallId: callId,
@@ -171,9 +172,10 @@ function modelFacingToolResultContent(
   toolName: string,
   result: ToolDispatchResult,
   untrustedKind: UntrustedToolResultKind,
+  compactWorkspace = false,
 ): LLMMessage["content"] {
   const content = toolResultContent(result);
-  return frameUntrustedToolResultContent(toolName, content, untrustedKind);
+  return frameUntrustedToolResultContent(toolName, content, untrustedKind, compactWorkspace);
 }
 
 function toolResultUserRecord(
@@ -181,13 +183,14 @@ function toolResultUserRecord(
   toolName: string,
   result: ToolDispatchResult,
   untrustedKind: UntrustedToolResultKind,
+  compactWorkspace = false,
 ): UserMessage {
   return {
     uuid: crypto.randomUUID(),
     role: "user",
     toolCallId: callId,
     toolName,
-    content: modelFacingToolResultContent(toolName, result, untrustedKind),
+    content: modelFacingToolResultContent(toolName, result, untrustedKind, compactWorkspace),
   };
 }
 
@@ -647,7 +650,10 @@ function recordCompletedToolCall(
   };
   state.completedToolResults.push(completed);
   state.toolResults.push(
-    toolResultUserRecord(toolCall.id, toolCall.name, result, untrustedKind),
+    toolResultUserRecord(
+      toolCall.id, toolCall.name, result, untrustedKind,
+      session.services.runtimeOptions?.lightMode === true,
+    ),
   );
   state.messages.push(
     toolResultMessage(
@@ -656,6 +662,7 @@ function recordCompletedToolCall(
       toolCall.name,
       result,
       untrustedKind,
+      session.services.runtimeOptions?.lightMode === true,
     ),
   );
   for (const name of requestedToolsLoaded) loadedCapabilities?.add(name);
