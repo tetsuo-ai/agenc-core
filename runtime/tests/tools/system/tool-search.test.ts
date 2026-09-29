@@ -26,6 +26,24 @@ function deferredCatalogEntry(name = "system.deepTool"): ToolCatalogEntry {
 }
 
 describe("system.searchTools", () => {
+  test("Light finds a uniquely relevant tool when a natural query contains unmatched words", async () => {
+    const catalog = [
+      { ...deferredCatalogEntry("TodoWrite"), description: "Create a checklist of tasks", metadata: { ...deferredCatalogEntry().metadata, keywords: ["todo", "task"] } },
+      { ...deferredCatalogEntry("PlanMode"), description: "Plan before implementation" },
+    ];
+    const discovered: string[][] = [];
+    const base = { allowedPaths: [process.cwd()], persistenceRootDir: process.cwd(), getToolCatalog: () => catalog, onDiscoverTools: (names: readonly string[]) => discovered.push([...names]) };
+    const query = "checklist todo task planning tool";
+    const payload = JSON.parse((await createToolSearchTool({ ...base, lightMode: true }).execute({ query })).content);
+    expect(payload.loaded).toEqual(["TodoWrite"]);
+    expect(discovered).toEqual([["TodoWrite"]]);
+    expect(JSON.parse((await createToolSearchTool(base).execute({ query })).content).loaded).toEqual([]);
+    const scoped = JSON.parse((await createToolSearchTool({ ...base, lightMode: true }).execute({ query, [SESSION_TOOL_CATALOG_SCOPE_ARG]: ["PlanMode"] })).content);
+    expect(scoped.loaded).not.toContain("TodoWrite");
+    const tied = createToolSearchTool({ ...base, lightMode: true, getToolCatalog: () => [catalog[0]!, { ...catalog[0]!, name: "OtherTodoWrite" }] });
+    expect(JSON.parse((await tied.execute({ query, maxResults: 1 })).content).loaded).toEqual([]);
+  });
+
   test("loads memory rules in one call only for Light without discovering unrelated tools", async () => {
     let discoveries = 0;
     const tool = createToolSearchTool({ lightMode: true, allowedPaths: [process.cwd()], persistenceRootDir: process.cwd(), onDiscoverTools: () => { discoveries++; } });

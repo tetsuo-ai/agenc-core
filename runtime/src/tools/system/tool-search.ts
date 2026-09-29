@@ -51,7 +51,7 @@ function parseToolSearchQuery(rawQuery?: string): {
   };
 }
 
-function scoreCatalogEntry(entry: ToolCatalogEntry, query?: string): number {
+function scoreCatalogEntry(entry: ToolCatalogEntry, query?: string, partial = false): number {
   if (!query) return 10;
   const lowered = query.toLowerCase();
   const entryName = entry.name.toLowerCase();
@@ -76,12 +76,17 @@ function scoreCatalogEntry(entry: ToolCatalogEntry, query?: string): number {
   }
   if (entry.description.toLowerCase().includes(lowered)) return 5;
   if (keywords.some((keyword) => keyword.includes(lowered))) return 6;
+  if (partial) {
+    const terms = [...new Set(tokens)].filter(token => token.length >= 3 && !["tool", "tools", "for", "the", "and", "with", "capability"].includes(token));
+    const weight = terms.reduce((sum, token) => sum + (entryName.includes(token) ? 4 : keywords.some(keyword => keyword.includes(token)) ? 3 : family.includes(token) ? 2 : entry.description.toLowerCase().includes(token) ? 1 : 0), 0);
+    if (weight > 0) return 50 - Math.min(weight, 30);
+  }
   return 99;
 }
 
-function matchesCatalogQuery(entry: ToolCatalogEntry, query?: string): boolean {
+function matchesCatalogQuery(entry: ToolCatalogEntry, query?: string, partial = false): boolean {
   if (!query) return true;
-  return scoreCatalogEntry(entry, query) < 99;
+  return scoreCatalogEntry(entry, query, partial) < 99;
 }
 
 function mcpUseHint(toolName: string, available: boolean): string | undefined {
@@ -270,11 +275,11 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
           ) {
             return false;
           }
-          return matchesCatalogQuery(entry, query);
+          return matchesCatalogQuery(entry, query, config.lightMode === true);
         })
         .sort((left, right) => {
-          const leftScore = scoreCatalogEntry(left, query);
-          const rightScore = scoreCatalogEntry(right, query);
+          const leftScore = scoreCatalogEntry(left, query, config.lightMode === true);
+          const rightScore = scoreCatalogEntry(right, query, config.lightMode === true);
           if (leftScore !== rightScore) return leftScore - rightScore;
           return left.name.localeCompare(right.name);
         });
@@ -284,7 +289,7 @@ export function createToolSearchTool(config: CodingToolConfig): Tool {
       const best = rankedResults[0];
       if (config.lightMode === true && query && explicitSelections.length === 0 && best &&
           (rankedResults[1] === undefined ||
-           scoreCatalogEntry(best, query) < scoreCatalogEntry(rankedResults[1], query))) {
+           scoreCatalogEntry(best, query, config.lightMode === true) < scoreCatalogEntry(rankedResults[1], query, config.lightMode === true))) {
         selectedEntries.push(best);
       }
       const matchedResults = rankedResults.slice(0,
