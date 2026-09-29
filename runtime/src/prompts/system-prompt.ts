@@ -34,7 +34,7 @@
  * @module
  */
 
-import { lightWorkflow } from "./light-workflow.js";
+import { lightWorkflow, lightPermissionSummary } from "./light-workflow.js";
 import { spawnSync } from "node:child_process";
 import { platform as osPlatform, type as osType, release as osRelease } from "node:os";
 
@@ -1235,7 +1235,7 @@ export async function assembleSystemPrompt(
       () =>
         opts.deferPermissionInstructions === true
           ? null
-          : getPermissionsSection(opts.permissionContext ?? null, {
+          : (light ? lightPermissionSummary(opts.permissionContext ?? null) : null) ?? getPermissionsSection(opts.permissionContext ?? null, {
               sandboxPolicy: opts.ctx.sandboxPolicy.value,
               networkSandboxPolicy: opts.ctx.networkSandboxPolicy,
             }),
@@ -1267,7 +1267,7 @@ export async function assembleSystemPrompt(
     DANGEROUS_uncachedSystemPromptSection(
       "env_info_simple",
       () => light
-        ? `Workspace: ${cwd}\nPlatform: ${osPlatform()}\nModel: ${envInfoInputs.provider}/${model}\nDate: ${ctx.currentDate ?? "unknown"}`
+        ? `Workspace: ${cwd}`
         : buildEnvInfoSection(envInfoInputs),
       "environment info includes wall-clock time and current branch",
     ),

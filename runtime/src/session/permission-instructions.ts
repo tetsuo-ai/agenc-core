@@ -2,6 +2,7 @@ import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import { getPermissionsSection } from "../prompts/permissions-prompt.js";
 import { getAutonomousWorkSection } from "../prompts/system-prompt.js";
+import { lightPermissionSummary } from "../prompts/light-workflow.js";
 import type { Session } from "./session.js";
 import type { TurnContext } from "./turn-context.js";
 
@@ -19,6 +20,10 @@ export function getSessionPermissionInstructions(
     return "";
   }
   const currentPermissions = permissionContext ?? session.permissionModeRegistry.current();
+  if (session.services.runtimeOptions?.lightMode === true) {
+    const summary = lightPermissionSummary(currentPermissions);
+    if (summary !== null) return summary;
+  }
   return [
     getPermissionsSection(currentPermissions, {
       sandboxPolicy: ctx.sandboxPolicy.value,

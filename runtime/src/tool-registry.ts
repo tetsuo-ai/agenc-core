@@ -1278,7 +1278,7 @@ export function buildToolRegistry(
       const tools = visible.map((spec) => {
         const tool = toolToLLMTool(spec.tool);
         return options.lightMode === true && spec.tool.metadata?.source === "builtin"
-          ? lightPresentation(tool) : tool;
+          ? lightPresentation(tool, discoveredToolNames.has(spec.tool.name) || options.lightFullCatalog === true) : tool;
       });
       if (!deferRareTools) return tools;
       const pointer = rareToolPointer(new Set(

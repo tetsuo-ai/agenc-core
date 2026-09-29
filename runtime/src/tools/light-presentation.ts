@@ -1,11 +1,18 @@
 import type { LLMTool } from "../llm/types.js";
 
 const summaries: Readonly<Record<string, string>> = {
-  FileRead: "Inspect a workspace file and register its current version for editing. file_path identifies it; offset is a line number starting at 1, limit is the number of lines. Text defaults to 120 lines. Use focused ranges around search matches. Line labels are display annotations. pages selects PDF pages; images and notebooks are supported.",
-  MultiEdit: "Apply a batch to file_path after FileRead. Each edits entry supplies old_string and new_string; old text must identify one location unless replace_all is true. Edits are checked in order against the evolving text, then committed together. Omit displayed line labels. Create a missing file with one entry whose old_string is empty. After another mutation, refresh with FileRead before the next batch.",
-  exec_command: "Execute a command in the workspace shell for searches and checks. cmd is required; workdir changes directory. Output defaults to 700 tokens; max_output_tokens overrides it. A returned session_id means the command is still running: continue with write_stdin. Waits up to 30 seconds for the process exit event; yield_time_ms overrides waiting, timeout_ms sets the command deadline. Oversized collected output has a file reference. Detached services require detach and runtime authorization.",
-  write_stdin: "Continue a running command by session_id. Omit chars to collect output, or supply input bytes. Waits for the process exit event, up to 30 seconds by default; yield_time_ms overrides waiting; max_output_tokens overrides the 700-token output allowance.",
-  "system.searchTools": "Catalog loader for additional AgenC tools. Check here before declaring a requested capability unavailable. For a planning-tool request, call this function with select set to TodoWrite, then invoke the loaded tool. select also accepts other exact tool names; query searches names and descriptions and loads a single exact tool name mentioned in it. maxResults bounds search matches.",
+  FileRead: "Read and refresh for edits. offset: line 1 onward; limit: 120 lines.",
+  MultiEdit: "After FileRead, apply edits in order. Match unique text unless replace_all. New file: one empty old_string.",
+  exec_command: "Workspace shell; 30s wait, 700-token output. Continue session_id with write_stdin.",
+  write_stdin: "Send chars or wait 30s for output, bounded to 700 tokens.",
+  "system.searchTools": "select loads a tool by name; query searches. Load requested tools, then invoke them.",
+};
+
+const initialFields: Readonly<Record<string, readonly string[]>> = {
+  FileRead: ["file_path", "offset", "limit"],
+  exec_command: ["cmd", "workdir", "max_output_tokens"],
+  write_stdin: ["session_id", "chars"],
+  "system.searchTools": ["select", "query"],
 };
 
 const schemaMaps = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"]);
@@ -27,15 +34,26 @@ export function compactLightSchema(value: unknown, schema = true): unknown {
 }
 
 /** Only presentation changes. The registry dispatches the original tool. */
-export function lightPresentation(tool: LLMTool): LLMTool {
+export function lightPresentation(tool: LLMTool, expanded = false): LLMTool {
   const description = summaries[tool.function.name];
   if (description === undefined) return tool;
+  const parameters = compactLightSchema(tool.function.parameters) as LLMTool["function"]["parameters"];
+  const fields = expanded ? undefined : initialFields[tool.function.name];
+  const properties = parameters.properties as Record<string, unknown> | undefined;
+  const selected = fields && properties ? Object.fromEntries(fields
+    .filter(name => properties[name] !== undefined)
+    .map(name => {
+      // Explicit discovery reveals every accepted alternative and extra field.
+      const field = properties[name] as { anyOf?: Array<Record<string, unknown>> };
+      const preferred = field.anyOf?.find(value => value.type === (name === "select" ? "string" : "number"));
+      return [name, preferred ?? field];
+    })) : properties;
   return {
     ...tool,
     function: {
       ...tool.function,
       description,
-      parameters: compactLightSchema(tool.function.parameters) as LLMTool["function"]["parameters"],
+      parameters: selected ? { ...parameters, properties: selected } : parameters,
     },
   };
 }

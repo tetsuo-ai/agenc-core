@@ -4,6 +4,7 @@ import { assembleBaseInstructionsForModel } from "../../src/prompts/system-promp
 import { runTurn } from "../../src/session/run-turn.js";
 import { buildSamplingRequestContract } from "../../src/session/run-turn-sampling-request.js";
 import { buildInitialTurnState } from "../../src/session/turn-state.js";
+import { getSessionPermissionInstructions } from "../../src/session/permission-instructions.js";
 import { getPermissionsSection } from "../../src/prompts/permissions-prompt.js";
 import { attachmentsToMessages } from "../../src/prompts/attachments/messages.js";
 import { createAttachmentRetentionLedger, projectRetainedAttachments, recordRetainedAttachments } from "../../src/session/attachment-retention.js";
@@ -13,6 +14,20 @@ import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
 afterEach(() => vi.restoreAllMocks());
 
 describe("live permission instructions", () => {
+  test("Light keeps plan guidance and follows the live mode with compact ordinary guidance", async () => {
+    const { session } = mkSession({ services: { runtimeOptions: { lightMode: true } } });
+    const context = { ...mkCtx(), permissionInstructionsDeferred: true };
+    await session.permissionModeRegistry.update({ ...session.permissionModeRegistry.current(), mode: "plan" });
+    const before = getSessionPermissionInstructions(session, context);
+    expect(before).toContain("# Permission Mode: plan");
+    await session.permissionModeRegistry.update({ ...session.permissionModeRegistry.current(), mode: "bypassPermissions" });
+    const after = getSessionPermissionInstructions(session, context);
+    expect(after).toContain("Permissions: bypassPermissions");
+    expect(after).toContain("Honor runtime refusals");
+    expect(after.length).toBeLessThan(before.length);
+    expect(context.permissionInstructionsDeferred).toBe(true);
+  });
+
   test("replaces plan guidance and required tool choice after an in-turn exit", async () => {
     const requests: { messages: readonly LLMMessage[]; options: LLMChatOptions | undefined }[] = [];
     const provider = mkProvider();

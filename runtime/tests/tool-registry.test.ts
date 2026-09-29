@@ -2141,12 +2141,28 @@ describe("Light presentation and deferred capability preservation", () => {
     for (const presented of light.toLLMTools()) {
       const canonical = light.tools.find(tool => tool.name === presented.function.name)!;
       expect(presented.function.parameters.required).toEqual(canonical.inputSchema.required);
-      expect(presented.function.parameters.properties && Object.keys(presented.function.parameters.properties).sort()).toEqual(Object.keys(canonical.inputSchema.properties ?? {}).sort());
+      expect(Object.keys(canonical.inputSchema.properties ?? {})).toEqual(expect.arrayContaining(Object.keys(presented.function.parameters.properties ?? {})));
+      for (const required of presented.function.parameters.required ?? []) {
+        expect(presented.function.parameters.properties).toHaveProperty(required);
+      }
       expect(canonical.inputSchema).toEqual(normal.tools.find(tool => tool.name === canonical.name)!.inputSchema);
 
     }
     expect(light.tools.find(tool => tool.name === "Write")?.requiresApproval).toBe(true);
     expect(light.tools.find(tool => tool.name === "Write")?.recoveryCategory).toBe("side-effecting");
+  });
+
+  test("explicit discovery restores advanced arguments without changing canonical enforcement", async () => {
+    const registry = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
+    const initial = structuredClone(registry.toLLMTools());
+    const shell = registry.tools.find(tool => tool.name === "exec_command")!;
+    expect(initial.find(tool => tool.function.name === shell.name)?.function.parameters.properties).not.toHaveProperty("sandbox_permissions");
+    await registry.dispatch({ id: "load-advanced-shell", name: "system.searchTools", arguments: '{"select":"exec_command"}' });
+    const expanded = registry.toLLMTools().find(tool => tool.function.name === shell.name)!;
+    expect(Object.keys(expanded.function.parameters.properties ?? {}).sort()).toEqual(Object.keys(shell.inputSchema.properties ?? {}).sort());
+    expect(expanded.function.parameters.properties?.sandbox_permissions).toEqual(expect.objectContaining({ enum: expect.arrayContaining(["require_escalated"]) }));
+    expect(registry.tools.find(tool => tool.name === shell.name)).toBe(shell);
+    expect(registry.toLLMTools().filter(tool => tool.function.name !== shell.name)).toEqual(initial.filter(tool => tool.function.name !== shell.name));
   });
 
   test("loads full deferred schemas through real discovery without changing another profile", async () => {
