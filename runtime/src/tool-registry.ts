@@ -23,7 +23,6 @@
  */
 
 import type { LLMTool, LLMToolCall } from "./llm/types.js";
-import { LIGHT_INITIAL_TOOL_NAMES } from "./tools/light-profile.js";
 import { lightToolPresentation } from "./tools/light-tool-presentation.js";
 import type { FunctionCallOutputContentItem } from "./tools/context.js";
 import type {
@@ -1168,15 +1167,7 @@ export function buildToolRegistry(
     const specs = allSpecs().filter((spec) => spec.unavailable !== true);
     // Isolated measurement variant: hold the complete eligible catalog fixed.
     if (options.lightMode === true) return specs;
-    // Explicit tool policies that exclude discovery retain their allowed set.
-    if (options.lightMode === true && !specs.some(spec => spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME)) return specs;
-    return specs.filter(
-      (spec) =>
-        (options.lightMode === true
-          ? LIGHT_INITIAL_TOOL_NAMES.has(spec.tool.name) ||
-            (spec.tool.name === "StructuredOutput" && options.outputSchema !== undefined)
-          : !isDeferredSpec(spec)) || discoveredToolNames.has(spec.tool.name),
-    );
+    return specs.filter((spec) => !isDeferredSpec(spec) || discoveredToolNames.has(spec.tool.name));
   }
 
   async function executeConfiguredTool(
