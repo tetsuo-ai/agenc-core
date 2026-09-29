@@ -118,7 +118,8 @@ describe("Light completion evidence", () => {
     f.state.assistantMessages[0] = { uuid: "answer2", role: "assistant", text: "12 tests passed.", toolCalls: [] };
     expect(await run(f)).toMatchObject({ outcome: "injected", reason: "no_checklist" });
     expect(f.state.messages.at(-1)?.content).toContain("formatting alone does not require rerunning tools");
-    // These scalar fields and tool records survive the existing turn checkpoint.
+    // Cloning records within this live turn must preserve the formatting retry.
+    // Durable resume starts a new ledger and is covered by the session tests.
     f.state.transition = undefined;
     f.state.completedToolResults = structuredClone(f.state.completedToolResults);
     f.state.assistantMessages[0] = { uuid: "answer3", role: "assistant", text: "- [x] pytest tests/test_chunks.py: 12 passed", toolCalls: [] };
