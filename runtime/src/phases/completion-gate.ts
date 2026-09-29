@@ -141,7 +141,7 @@ const UNAVAILABLE_INVESTIGATION_MARKER =
 
 export function resolveCompletionGatePolicy(
   config: Pick<Config, "completionGate"> | undefined,
-  runtimeOptions: Pick<AgentRuntimeOptions, "nonInteractive"> | undefined,
+  runtimeOptions: Pick<AgentRuntimeOptions, "nonInteractive" | "lightMode"> | undefined,
 ): ResolvedCompletionGatePolicy {
   const mode: CompletionGateMode = config?.completionGate?.mode ?? "auto";
   const enabled =
@@ -149,7 +149,8 @@ export function resolveCompletionGatePolicy(
       ? true
       : mode === "never"
         ? false
-        : runtimeOptions?.nonInteractive === true;
+        : runtimeOptions?.nonInteractive === true &&
+          runtimeOptions.lightMode !== true;
   const requested = config?.completionGate?.max_rounds;
   const maxRounds =
     typeof requested === "number" && Number.isFinite(requested)

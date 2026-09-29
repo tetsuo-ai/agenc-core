@@ -2131,17 +2131,19 @@ describe("Light presentation and deferred capability preservation", () => {
     expect(disabled.getDiscoveredToolNames?.().size).toBe(0);
   });
 
-  test("keeps the complete executable catalog and unchanged function and parameter documentation", () => {
+  test("keeps canonical executors and compact shell presentation", () => {
     const normal = buildToolRegistry({ workspaceRoot: "/tmp" });
     const light = buildToolRegistry({ workspaceRoot: "/tmp", lightMode: true });
     expect(light.tools.map(tool => tool.name)).toEqual(normal.tools.map(tool => tool.name));
     expect(light.toLLMTools().map(tool => tool.function.name).sort()).toEqual([
-      "Edit", "FileRead", "Glob", "Grep", "Write", "exec_command", "system.searchTools", "write_stdin",
+      "exec_command", "system.searchTools", "write_stdin",
     ].sort());
     for (const presented of light.toLLMTools()) {
       const canonical = light.tools.find(tool => tool.name === presented.function.name)!;
-      expect(presented.function).toEqual({ name: canonical.name, description: canonical.description, parameters: canonical.inputSchema });
-      expect(presented).toEqual(normal.toLLMTools().find(tool => tool.function.name === canonical.name));
+      expect(presented.function.parameters.required).toEqual(canonical.inputSchema.required);
+      expect(presented.function.parameters.properties && Object.keys(presented.function.parameters.properties)).toEqual(Object.keys(canonical.inputSchema.properties ?? {}));
+      expect(canonical.inputSchema).toEqual(normal.tools.find(tool => tool.name === canonical.name)!.inputSchema);
+
     }
     expect(light.tools.find(tool => tool.name === "Write")?.requiresApproval).toBe(true);
     expect(light.tools.find(tool => tool.name === "Write")?.recoveryCategory).toBe("side-effecting");

@@ -23,6 +23,7 @@
  */
 
 import type { LLMTool, LLMToolCall } from "./llm/types.js";
+import { lightPresentation } from "./tools/light-presentation.js";
 import { LIGHT_INITIAL_TOOL_NAMES } from "./tools/light-profile.js";
 import type { FunctionCallOutputContentItem } from "./tools/context.js";
 import type {
@@ -724,11 +725,13 @@ export function buildToolRegistry(
       cwd: options.workspaceRoot,
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
+      ...(options.lightMode ? { defaultOutputTokens: 1500 } : {}),
       ...(options.bashExecObserver !== undefined
         ? { execObserver: options.bashExecObserver }
         : {}),
     }),
     createWriteStdinTool({
+      ...(options.lightMode ? { defaultOutputTokens: 1500 } : {}),
       cwd: options.workspaceRoot,
       allowedPaths: [options.workspaceRoot],
       unifiedExecManager,
@@ -1256,7 +1259,11 @@ export function buildToolRegistry(
       return allSpecs().map((spec) => spec.tool);
     },
     toLLMTools(): LLMTool[] {
-      const tools = visibleSpecs().map((spec) => toolToLLMTool(spec.tool));
+      const tools = visibleSpecs().map((spec) => {
+        const tool = toolToLLMTool(spec.tool);
+        return options.lightMode === true && spec.tool.metadata?.source === "builtin"
+          ? lightPresentation(tool) : tool;
+      });
       if (!deferRareTools) return tools;
       const pointer = rareToolPointer(new Set(
         allSpecs()

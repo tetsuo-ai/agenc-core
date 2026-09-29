@@ -63,6 +63,7 @@ import {
 } from "../../sandbox/worktree-confinement.js";
 
 export interface ExecCommandToolConfig extends BashToolConfig {
+  readonly defaultOutputTokens?: number;
   readonly allowedPaths?: readonly string[];
   readonly unifiedExecManager?: UnifiedExecProcessManagerLike;
 }
@@ -775,8 +776,8 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           ...(asNumber(args.yield_time_ms) !== undefined
             ? { yield_time_ms: asNumber(args.yield_time_ms) }
             : {}),
-          ...(asNumber(args.max_output_tokens) !== undefined
-            ? { max_output_tokens: asNumber(args.max_output_tokens) }
+          ...((asNumber(args.max_output_tokens) ?? config?.defaultOutputTokens) !== undefined
+            ? { max_output_tokens: asNumber(args.max_output_tokens) ?? config?.defaultOutputTokens }
             : {}),
           ...(args.__abortSignal !== undefined
             ? { __abortSignal: args.__abortSignal }

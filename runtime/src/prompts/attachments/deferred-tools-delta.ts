@@ -83,6 +83,7 @@ export const deferredToolsDeltaProducer: AttachmentProducer = async (
       kind: "deferred_tools_delta",
       addedNames: added,
       addedLines: added.map((name) => {
+        if (opts.lightMode === true) return name;
         const desc = descriptionFor(name, opts.loadedTools);
         return desc.length > 0 ? `${name}: ${desc}` : name;
       }),
