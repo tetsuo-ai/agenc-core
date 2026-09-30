@@ -8,16 +8,16 @@ import {
   MAX_CSV_AUTOMATIC_FULL_RECONCILIATIONS_PER_JOB_LIFECYCLE,
   MAX_CSV_READY_ROWS_PER_JOB,
 } from "../../../src/contracts/csv-job-contract.js";
-import { CsvAgentJobsRepository } from "../../state/csv-agent-jobs.js";
-import { openStateDatabases } from "../../state/sqlite-driver.js";
+import { CsvAgentJobsRepository } from "../../../src/state/csv-agent-jobs.js";
+import { openStateDatabases } from "../../../src/state/sqlite-driver.js";
 import {
   recordAgentJobResult,
   runAgentsOnCsv as runAgentsOnCsvWithCapability,
   type AgentJobSpawn,
   type AgentJobSpawnContext,
-} from "./job-orchestrator.js";
-import { createCsvInputRootCapability } from "./csv-reader.js";
-import { createCsvOutputRootCapability } from "./csv-output.js";
+} from "../../../src/agents/jobs/job-orchestrator.js";
+import { createCsvInputRootCapability } from "../../../src/agents/jobs/csv-reader.js";
+import { createCsvOutputRootCapability } from "../../../src/agents/jobs/csv-output.js";
 
 let workDir: string;
 const configuredSchedulerStressRows = Number(
@@ -69,6 +69,54 @@ async function writeLargeCsvFixture(
   }
   output.end();
   await once(output, "finish");
+}
+
+
+/** Only the pagination fixtures use this owned asynchronous reporter. */
+function checkedPaginationReporter(report = recordAgentJobResult) {
+  const controller = new AbortController();
+  let failure: Error | undefined;
+  const diagnostic = {
+    phase: "fixture_csv", pages: 0, loadedRows: 0,
+    spawned: 0, settled: 0, reported: 0, refused: 0, threw: 0, cancelCalls: 0,
+  };
+  const spawn: AgentJobSpawn = {
+    async spawn(ctx) {
+      diagnostic.spawned += 1;
+      try {
+        // Preserve deferred reporting without an unowned microtask callback.
+        await Promise.resolve();
+        let outcome: ReturnType<typeof recordAgentJobResult>;
+        try {
+          outcome = report({
+            jobId: ctx.jobId, itemId: ctx.itemId, result: { value: ctx.row.value },
+          });
+        } catch (error) {
+          diagnostic.threw += 1;
+          failure ??= new Error("CSV pagination reporter threw", { cause: error });
+          controller.abort(failure);
+          throw failure;
+        }
+        if (outcome.kind !== "ok") {
+          diagnostic.refused += 1;
+          failure ??= new Error("CSV pagination reporter refused");
+          controller.abort(failure);
+          throw failure;
+        }
+        diagnostic.reported += 1;
+      } finally {
+        diagnostic.settled += 1;
+      }
+    },
+    async cancelOutstanding() {
+      // No process/timer exists here; processItems drains the spawn promises.
+      diagnostic.cancelCalls += 1;
+    },
+  };
+  return {
+    spawn, signal: controller.signal, diagnostic,
+    assertNoFailure() { if (failure !== undefined) throw failure; },
+  };
 }
 
 function fakeSpawnReporter(): AgentJobSpawn & {
@@ -386,6 +434,7 @@ describe("runAgentsOnCsv", () => {
             result: { sourceId },
           });
         });
+        return undefined;
       },
       async cancelOutstanding() {},
     };
@@ -762,7 +811,7 @@ describe("runAgentsOnCsv with SQLite repository", () => {
       let residentItemHighWater = 0;
       const mapSetSpy = vi
         .spyOn(Map.prototype, "set")
-        .mockImplementation(function (key: unknown, value: unknown) {
+        .mockImplementation(function (this: Map<unknown, unknown>, key: unknown, value: unknown) {
           const result = originalMapSet.call(this, key, value);
           if (
             typeof value === "object" &&
@@ -778,36 +827,37 @@ describe("runAgentsOnCsv with SQLite repository", () => {
         });
       const originalPage = repository.listItemsForScheduler.bind(repository);
       const observedPageSizes: number[] = [];
+      const checked = checkedPaginationReporter();
       repository.listItemsForScheduler = (options) => {
         const page = originalPage(options);
         observedPageSizes.push(page.items.length);
+        checked.diagnostic.pages += 1;
+        checked.diagnostic.loadedRows += page.items.length;
         return page;
       };
       try {
         const rowCount = schedulerStressRows;
         const csvPath = join(workDir, "large-input.csv");
         await writeLargeCsvFixture(csvPath, rowCount);
-        const spawn: AgentJobSpawn = {
-          async spawn(ctx) {
-            queueMicrotask(() => {
-              recordAgentJobResult({
-                jobId: ctx.jobId,
-                itemId: ctx.itemId,
-                result: { value: ctx.row.value },
-              });
-            });
-          },
-          async cancelOutstanding() {},
-        };
-
+        checked.diagnostic.phase = "import_and_schedule";
         const result = await runAgentsOnCsv({
           csvPath,
           instruction: "process",
           idColumn: "id",
           maxConcurrency: 8,
-          spawn,
+          spawn: checked.spawn,
+          signal: checked.signal,
           repository,
         });
+        checked.diagnostic.phase = "settled";
+        // Ordinary spawn errors may return a needs-review result; fail only
+        // after the complete run has drained workers and removed job state.
+        checked.assertNoFailure();
+        checked.diagnostic.phase = "assertions";
+        expect(checked.diagnostic.reported).toBe(rowCount);
+        expect(checked.diagnostic.settled).toBe(checked.diagnostic.spawned);
+        expect(checked.diagnostic.refused).toBe(0);
+        expect(checked.diagnostic.threw).toBe(0);
 
         expect(result.summary).toMatchObject({
           totalItems: rowCount,
@@ -820,6 +870,10 @@ describe("runAgentsOnCsv with SQLite repository", () => {
         expect(residentItemHighWater).toBeLessThanOrEqual(
           MAX_CSV_READY_ROWS_PER_JOB,
         );
+      } catch (error) {
+        // Static keys/scalars only: no IDs, paths, row values or exception text.
+        console.error("CSV pagination diagnostic", JSON.stringify(checked.diagnostic));
+        throw error;
       } finally {
         mapSetSpy.mockRestore();
         driver.close();
@@ -830,5 +884,77 @@ describe("runAgentsOnCsv with SQLite repository", () => {
       }
     },
     schedulerStressTimeoutMs,
+  );
+
+  it.each(["success", "refused", "threw"] as const)(
+    "checked pagination reporter drains a tiny SQLite run: %s",
+    async (mode) => {
+      const home = mkdtempSync(join(tmpdir(), "agenc-pagination-check-home-"));
+      const cwd = mkdtempSync(join(tmpdir(), "agenc-pagination-check-cwd-"));
+      mkdirSync(join(cwd, ".git"));
+      const previousHome = process.env.AGENC_HOME;
+      process.env.AGENC_HOME = home;
+      const driver = openStateDatabases({ cwd });
+      const repository = new CsvAgentJobsRepository(driver);
+      const checked = checkedPaginationReporter(mode === "threw"
+        ? () => { throw new Error("synthetic_reporter_throw"); }
+        : recordAgentJobResult);
+      const mark = vi.spyOn(repository, "markItemCompleted");
+      if (mode === "refused") {
+        mark.mockImplementationOnce(() => { throw new Error("synthetic_result_commit_refused"); });
+      }
+      try {
+        const csvPath = join(workDir, "tiny-pagination.csv");
+        await writeLargeCsvFixture(csvPath, 3);
+        const run = async () => {
+          const result = await runAgentsOnCsv({
+            csvPath, instruction: "process", idColumn: "id", maxConcurrency: 1,
+            repository, spawn: checked.spawn, signal: checked.signal,
+          });
+          checked.assertNoFailure();
+          return result;
+        };
+        if (mode !== "success") {
+          await expect(run()).rejects.toThrow(mode === "refused"
+            ? "CSV pagination reporter refused" : "CSV pagination reporter threw");
+          expect(checked.signal.aborted).toBe(true);
+          expect(checked.diagnostic).toMatchObject({
+            spawned: 1, settled: 1, reported: 0,
+            refused: mode === "refused" ? 1 : 0,
+            threw: mode === "threw" ? 1 : 0, cancelCalls: 1,
+          });
+        } else {
+          await expect(run()).resolves.toMatchObject({
+            summary: { totalItems: 3, completedItems: 3 },
+          });
+          expect(checked.signal.aborted).toBe(false);
+          expect(checked.diagnostic).toMatchObject({
+            spawned: 3, settled: 3, reported: 3, refused: 0, threw: 0, cancelCalls: 0,
+          });
+        }
+        // Inspect after the awaited run and before driver.close: no waiter can
+        // still depend on this database or accept a late in-memory report.
+        const rows = driver.prepareState<[], {
+          readonly job_id: string; readonly item_id: string; readonly status: string;
+        }>("SELECT job_id, item_id, status FROM csv_agent_job_items").all();
+        expect(rows).toHaveLength(3);
+        expect(rows.filter(row => row.status === "running" || row.status === "pending")).toHaveLength(0);
+        if (mode !== "success") {
+          expect(rows.filter(row => row.status === "unknown_outcome")).toHaveLength(1);
+          expect(rows.filter(row => row.status === "cancelled")).toHaveLength(2);
+        }
+        const row = rows[0]!;
+        expect(recordAgentJobResult({
+          jobId: row.job_id, itemId: row.item_id, result: { value: "late" },
+        })).toEqual({ kind: "unknown_job" });
+      } finally {
+        mark.mockRestore();
+        driver.close();
+        if (previousHome === undefined) delete process.env.AGENC_HOME;
+        else process.env.AGENC_HOME = previousHome;
+        await rm(home, { recursive: true, force: true });
+        await rm(cwd, { recursive: true, force: true });
+      }
+    },
   );
 });
