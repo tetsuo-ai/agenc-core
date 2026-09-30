@@ -120,6 +120,8 @@ import {
   postSampleRecovery,
 } from "../phases/post-sample-recovery.js";
 import { getAttachments } from "../prompts/attachments/orchestrator.js";
+import type { AttachmentAssemblyEvidence } from "../prompts/attachments/assembly-evidence.js";
+import { buildPreparedSamplingEvidence, type PreparedSamplingFacts } from "./prepared-sampling-evidence.js";
 import { getAttachmentTrackingState } from "./attachment-state.js";
 import { claimRequiredSwarmToolChoice } from "../prompts/attachments/swarm-mode.js";
 import {
@@ -696,6 +698,7 @@ type PreparedSamplingRequestBoundary =
       readonly kind: "request";
       readonly request: StreamModelRequestContract;
       readonly samplingContext: TurnContext;
+      readonly preparationFacts?: PreparedSamplingFacts;
     }
   | {
       readonly kind: "terminal";
@@ -913,6 +916,15 @@ async function prepareSamplingRequestBoundary(
     permissionMode: permissionContext.mode,
   });
   const fileMentionAllowedRoots = extractMentionAllowedRoots(currentConfig);
+  const enrolled = session.hasPreparedSamplingValidator;
+  const retained = getAttachmentTrackingState(session).retainedAttachments;
+  const preAttachmentCounts = enrolled ? {
+    sourceMessageCount: state.messages.length,
+    preAttachmentMessageCount: state.messagesForQuery.length,
+    retainedAttachmentBlocks: retained.blocks.length,
+    retainedAttachmentMessages: retained.blocks.reduce((sum, block) => sum + block.messages.length, 0),
+  } : undefined;
+  let assembly: AttachmentAssemblyEvidence | undefined;
   // Retained attachments first: producers see what the model already has in
   // front of it, and the bytes sent on earlier requests keep their place.
   state.messagesForQuery = projectRetainedAttachments(
@@ -925,6 +937,7 @@ async function prepareSamplingRequestBoundary(
   discoverDirectMcpToolMentions(session, userInput);
   const unavailableTools = session.services.registry.getUnavailableToolNames?.();
   const attachments = await getAttachments({
+    ...(enrolled ? { collectAssemblyEvidence: (report: AttachmentAssemblyEvidence): undefined => { assembly = report; } } : {}),
     sessionKey: session,
     lightMode: session.services.runtimeOptions?.lightMode === true,
     admittedMemorySelector: createAdmittedMemorySelector(session),
@@ -1008,6 +1021,11 @@ async function prepareSamplingRequestBoundary(
   return {
     kind: "request",
     samplingContext,
+    ...(preAttachmentCounts !== undefined ? { preparationFacts: {
+      ...preAttachmentCounts, turnId: ctx.subId,
+      rootHumanTurn: rootHumanTurn === null ? null : { turnId: rootHumanTurn.turnId, text: rootHumanTurn.text },
+      rawAttachmentOutputs: attachments.length, assembly,
+    } } : {}),
     request: snapshotSamplingRequestContract({
       ...request,
       ...(swarmToolChoice !== undefined ? { toolChoice: swarmToolChoice } : {}),
@@ -1259,6 +1277,10 @@ async function runSamplingRequest(
   }
   const request = prepared.request;
   const samplingContext = prepared.samplingContext;
+  if (prepared.preparationFacts !== undefined) {
+    signal.throwIfAborted();
+    session.validatePreparedSampling(buildPreparedSamplingEvidence(request, prepared.preparationFacts), signal);
+  }
 
   const outage = providerOutagePolicy(session);
   let waitedMs = 0;

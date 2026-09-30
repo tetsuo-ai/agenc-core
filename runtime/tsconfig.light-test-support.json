@@ -6,6 +6,8 @@
     "tests/llm/providers/openai/adapter.incomplete-identities.test.ts",
     "tests/session/run-turn.truncated-tool-recovery.test.ts",
     "tests/session/run-turn.responses-terminal-safety.test.ts",
-    "tests/session/run-turn.light-write-admission.test.ts"
+    "tests/session/run-turn.light-write-admission.test.ts",
+    "tests/session/prepared-sampling-evidence.test.ts",
+    "tests/session/run-turn.prepared-sampling-evidence.test.ts"
   ]
 }

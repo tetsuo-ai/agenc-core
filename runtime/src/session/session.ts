@@ -33,6 +33,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { validatePreparedSamplingEvidence, type PreparedSamplingEvidence, type PreparedSamplingValidator } from "./prepared-sampling-evidence.js";
 import { persistDisplayAttachments } from "./display-artifact-store.js";
 import { boundDisplayCompletionEvent } from "./display-completion.js";
 import { createSavedPluginSecretRedactor } from '../plugins/secret-redaction.js';
@@ -1338,6 +1339,8 @@ export interface StateDbContext {
 
 /** DI container of all session-scoped services. */
 export interface SessionServices {
+  /** Trusted, synchronous opt-in gate for selected main semantic preparations. */
+  readonly validatePreparedSampling?: PreparedSamplingValidator;
   readonly readOnlyDelegation?: ReadOnlyDelegationConstraint;
   /** Immutable operator policy captured for this session at creation time. */
   readonly runtimeOptions: AgentRuntimeOptions;
@@ -2464,6 +2467,16 @@ export class Session {
   /** Session-scoped services (DI container). */
   readonly services: SessionServices;
 
+  private readonly preparedSamplingValidator: PreparedSamplingValidator | undefined;
+
+  get hasPreparedSamplingValidator(): boolean { return this.preparedSamplingValidator !== undefined; }
+
+  validatePreparedSampling(report: PreparedSamplingEvidence, signal: AbortSignal): void {
+    if (this.preparedSamplingValidator !== undefined) {
+      validatePreparedSamplingEvidence(report, this.preparedSamplingValidator, signal);
+    }
+  }
+
   /** JS REPL handle. */
   readonly jsRepl: JsReplHandle;
 
@@ -2747,6 +2760,7 @@ export class Session {
       get: () => providerService.current().instance,
     });
     this.services = services;
+    this.preparedSamplingValidator = opts.services.validatePreparedSampling;
     this.jsRepl = opts.jsRepl;
     this.config =
       opts.config ??

@@ -11,13 +11,14 @@ import { CompactionCannotReduceError } from "../../src/services/compact/transact
 import { getAttachmentTrackingState } from "../../src/session/attachment-state.js";
 import { routeSwarmTask } from "../../src/agents/swarm-routing.js";
 import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
+import { preparedSemanticDigest, type PreparedSamplingEvidence, type PreparedSamplingValidator } from "../../src/session/prepared-sampling-evidence.js";
 
 afterEach(() => {
   setAutoCompactImplForTests(null);
   vi.restoreAllMocks();
 });
 
-function createToolExercise(toolRounds: number, largeResultAt?: number) {
+function createToolExercise(toolRounds: number, largeResultAt?: number, validator?: PreparedSamplingValidator) {
   let samples = 0;
   let tools = 0;
   const requests: LLMMessage[][] = [];
@@ -56,7 +57,7 @@ function createToolExercise(toolRounds: number, largeResultAt?: number) {
     toLLMTools: () => [],
     dispatch: nextResult,
   } as unknown as ToolRegistry;
-  const { session, events } = mkSession({ provider, registry });
+  const { session, events } = mkSession({ provider, registry, services: validator === undefined ? {} : { validatePreparedSampling: validator } });
   const base = mkCtx();
   const ctx = mkCtx({
     modelInfo: {
@@ -137,7 +138,8 @@ describe("advisory compaction refusal", () => {
   });
 
   test.each(advisoryRefusals)("$name: re-prepares after mandatory compaction and continues only with the smaller request", async ({ name, refuse }) => {
-    const exercise = createToolExercise(1, 1);
+    const reports: PreparedSamplingEvidence[] = [];
+    const exercise = createToolExercise(1, 1, report => { reports.push(report); });
     Object.assign(exercise.session.services.provider, {
       tokenCountCapability: {
         capabilityVersion: "mandatory-compaction-native-count",
@@ -172,6 +174,14 @@ describe("advisory compaction refusal", () => {
 
     expect(attempts).toBe(2);
     expect(exercise.samples()).toBe(2);
+    // The oversized preparation is discarded, not validated. Only the two
+    // actual main samples receive reports, and the selected replacement has
+    // the compacted message digest (not an approval from the discarded one).
+    expect(reports).toHaveLength(2);
+    expect(new Set(reports.map(report => report.managedRequestId)).size).toBe(2);
+    expect(reports[1]?.inventory).toBe("complete");
+    expect(reports[1]?.details?.messages.map(message => message.digest))
+      .toContain(preparedSemanticDigest({ role: "user", content: "small summary" }));
     expect(JSON.stringify(exercise.requests[1])).toContain("small summary");
     expect(JSON.stringify(exercise.requests[1])).not.toContain("fresh oversized result");
     expect(exercise.events.map((event) => classifyTurnTerminal(event.msg)))
