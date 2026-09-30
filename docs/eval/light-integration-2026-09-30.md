@@ -276,3 +276,27 @@ actual filesystem explicitly to the financial owner. Callback production logic
 remains unchanged. This is not actual observer/client execution or a new model
 benchmark result. All deployment/containment gates remain false; the Linux PC
 still timed out before authentication and its saved control connection was absent.
+
+A subsequent local companion build compiled 3,472 pinned source inputs with one
+canonical session-context module, but read-only review found an **import blocker
+in that experimental artifact**: the single-file bundle hoisted an absent
+optional Chrome MCP package into a static import. The artifact was never loaded.
+The companion recipe was then corrected to split ESM while retaining lazy
+boundaries and a single shared session module. This does not establish a defect
+in the canonical built CLI or change any benchmark result. See the
+[build-only evidence](../../experiments/light/2026-09-30/companion-build-v1/COMPANION-BUILD-RESULT.md).
+
+The corrected build passed with 3,472 inputs / 280 output files and exactly one
+emitted canonical session module. Its entry imported under OS network deny and
+correctly refused activation while selections stayed disabled. This is only a
+static-entry smoke, not startup of its later dynamic daemon graph.
+[Split build result](../../experiments/light/2026-09-30/observer-and-split-v2/COMPANION-SPLIT-RESULT.md).
+
+The unchanged real observer was also joined to the new callbacks and parent
+reader in a sequential offline integration test: all three owned children
+exited/closed/disconnected normally. Positive-cap and credit-exhaustion cases
+each reconciled one synthetic admission/settlement and genuine receipt ACK;
+changed task was refused by the actual binding checker before any admission.
+[Observer integration result](../../experiments/light/2026-09-30/observer-and-split-v2/OBSERVER-INTEGRATION-RESULT.md).
+This still does not establish real client identity, canonical independent
+preflight, Linux readiness or current matched Light/Pi results.

@@ -11,3 +11,7 @@
 !port-scanners/SOURCE-MANIFEST.json
 !callback-validation-v1/SOURCE-MANIFEST.json
 !callback-validation-v1/tsconfig.callbacks.json
+!companion-build-v1/SOURCE-MANIFEST.json
+!companion-build-v1/tsconfig.callbacks.json
+!observer-and-split-v2/SOURCE-MANIFEST.json
+!observer-and-split-v2/tsconfig.callbacks.json

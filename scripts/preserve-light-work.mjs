@@ -24,7 +24,12 @@ const frozenSelections = new Map([
   ['/private/tmp/light-takeover/fair-confirmation/current-cli-observer-v1',
     ['fixture-callbacks.ts', 'fixture-callbacks.test.ts', 'vitest.callbacks.config.mts',
       'tsconfig.callbacks.json', 'check-callbacks.mjs', 'CALLBACK-VALIDATION.md',
-      'callback-checks-first', 'callback-checks-corrected']],
+      'callback-checks-first', 'callback-checks-corrected', 'build-companion.mjs',
+      'seal-build-inputs.mjs', 'COMPANION-BUILD.md', 'COMPANION-BUILD-RESULT.md',
+      'companion-build-inputs-v1.json', 'companion-build-inputs-v2.json', 'BUILD-EXTERNAL-REVIEW.md',
+      'COMPANION-SPLIT-RESULT.md', 'smoke-disabled-companion.mjs', 'callback-observer-child.mjs',
+      'callback-observer.test.mjs', 'check-observer-integration.mjs', 'OBSERVER-INTEGRATION-RESULT.md',
+      'observer-check-first']],
   ['/private/tmp/light-ultra/bench', ['scan_credentials.py']],
   ['/private/tmp/light-port/bench', ['review_credential_scan.py', 'scan_task_credentials.py']],
 ]);
@@ -33,6 +38,12 @@ const privateSelections = new Map([
     'openai-admissions.jsonl', 'sol-relay-admissions.jsonl', 'spend-grok.jsonl',
     'spend-minimax.jsonl', 'spend-openai.jsonl']],
   ['/private/tmp/light-ultra/evidence', ['cache-fixture-timings.jsonl']],
+  ['/private/tmp/light-companion-build-v1', ['selection.json', 'build-result.json',
+    'metafile.json', 'reviewed-build-config.mjs']],
+  ['/private/tmp/light-companion-build-v2', ['selection.json', 'build-result.json',
+    'metafile.json', 'reviewed-build-config.mjs', 'disabled-entry-smoke.json']],
+  ...['cQGTZZ', 's1uUGY', 'o2Nz01'].map(id => ['/private/tmp/cli-callback-observer-' + id,
+    ['run', 'financial', 'selection.json', 'child.log', 'parent-lifecycle.json', 'parent-artifacts.json']]),
 ]);
 const frozenSelection = frozenSelections.get(source) ?? privateSelections.get(source);
 if (!predecessor && !frozenSelection && path.basename(source) !== 'light-takeover') throw new Error('unselected source root');
@@ -77,7 +88,7 @@ function inspect(relative, topLevel = false) {
   if (!frozenSelections.get(source)?.includes(relative)
     && /^\.env(?:\.|$)|^\.npmrc$|(?:^|[._-])(?:credentials?|cookies?|id_rsa|id_ed25519)(?:[._-]|$)/i.test(path.basename(relative)))
     return refuse(relative, 'credential_named_file');
-  if (!evidenceExtensions.has(path.extname(relative)) && !privateSelections.get(source)?.includes(relative))
+  if (!evidenceExtensions.has(path.extname(relative)) && !privateSelections.get(source)?.some(selected => relative === selected || relative.startsWith(selected + '/')))
     return refuse(relative, 'binary_or_unselected_extension');
   if (stat.size > 16 * 1024 * 1024) return refuse(relative, 'over_16MiB_review_required');
   if (relative.startsWith('fair-confirmation/current-cli-observer-v1/')
@@ -93,6 +104,7 @@ function inspect(relative, topLevel = false) {
     || relative.startsWith('harness/') || relative.startsWith('bench/')
     || ['evidence/measured-baseline.patch', 'evidence/runner-initial.py'].includes(relative));
   const publicCode = frozenSelections.has(source) ? !relative.startsWith('callback-checks-')
+      && !relative.startsWith('observer-check-') && !/^companion-build-inputs-v[12]\.json$/.test(relative)
     : !privateSelections.has(source) && !generated && (predecessor ? predecessorPublic : topLevel ? rootCode.has(relative)
     : codeExtensions.has(path.extname(relative)) || path.basename(relative) === 'source-pins.json'
       || /^tsconfig.*\.json$/.test(path.basename(relative)));

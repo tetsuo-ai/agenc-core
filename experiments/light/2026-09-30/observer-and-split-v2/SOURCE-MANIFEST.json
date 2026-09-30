@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "scope": "experimental source preservation, not installed or approved to execute",
+  "files": [
+    {
+      "path": "BUILD-EXTERNAL-REVIEW.md",
+      "bytes": 1652,
+      "sha256": "6976e4fc98385ab7adf8b87e3b3e07a1aa9bdbe95db59c4d8581be7d851dd8bb"
+    },
+    {
+      "path": "CALLBACK-VALIDATION.md",
+      "bytes": 2548,
+      "sha256": "d5514eab08d1809f8667be7b15ae4812def32ac78d5155ad851e1e0ac97870e4"
+    },
+    {
+      "path": "COMPANION-BUILD-RESULT.md",
+      "bytes": 2489,
+      "sha256": "a09249c3ecd647560537fadad14ad31ac3bb0c60c14ac95c597ddadc3e5219ef"
+    },
+    {
+      "path": "COMPANION-BUILD.md",
+      "bytes": 7081,
+      "sha256": "da7822d1b070b57fe5d998bd009db1279c7d4c01db9a49517e6757e059943006"
+    },
+    {
+      "path": "COMPANION-SPLIT-RESULT.md",
+      "bytes": 2330,
+      "sha256": "0bf0b072ba0e4e15b4e76d887712c49d033d45e9e327b970edf0073150bc1375"
+    },
+    {
+      "path": "OBSERVER-INTEGRATION-RESULT.md",
+      "bytes": 2294,
+      "sha256": "dc00be75c3fa6f815d751b562219ba5cd608f1ae278267d9732b5cab865380b3"
+    },
+    {
+      "path": "build-companion.mjs",
+      "bytes": 17065,
+      "sha256": "27dc35b0950eb81265b90d402f24230f93a5ea84b3d97cfdcc280465c5f37410"
+    },
+    {
+      "path": "callback-observer-child.mjs",
+      "bytes": 11494,
+      "sha256": "0e4d4b5b3906c89a34488682ddd0ebb358d1d8ba3a8e82a2eb0fd19729f28e84"
+    },
+    {
+      "path": "callback-observer.test.mjs",
+      "bytes": 16385,
+      "sha256": "42534f2104fdb1adb74b736d5fd9bbee6909b4148a016d1cfa8ac03cc79062b5"
+    },
+    {
+      "path": "check-callbacks.mjs",
+      "bytes": 2646,
+      "sha256": "58df340028c62b1c36c64fc2f900e94792aaec02d43211c549472e925f9c050c"
+    },
+    {
+      "path": "check-observer-integration.mjs",
+      "bytes": 2085,
+      "sha256": "32c33b424866e723f3af45b104107e96c4e9dfab65560c70cb14a56afdff35c1"
+    },
+    {
+      "path": "fixture-callbacks.test.ts",
+      "bytes": 18278,
+      "sha256": "2723790403bc2b47b8977c8cb929bafcadd6d64dcc59fa15250f2c67a43dd53c"
+    },
+    {
+      "path": "fixture-callbacks.ts",
+      "bytes": 23592,
+      "sha256": "40e03b818ed202b7ce6f8bd6f8f88dd4ef607d7f5c0c3b87bccf79fd2ce49d82"
+    },
+    {
+      "path": "seal-build-inputs.mjs",
+      "bytes": 3395,
+      "sha256": "8c42e899d06133b60fc5b40c86790f07deb96545f5ac00ff0da84804dce7e0bf"
+    },
+    {
+      "path": "smoke-disabled-companion.mjs",
+      "bytes": 2347,
+      "sha256": "d150ba1a6cddb7e9a2c4d6923a39839758b6c652122f5a32e8624126da2fa1b0"
+    },
+    {
+      "path": "tsconfig.callbacks.json",
+      "bytes": 809,
+      "sha256": "4a0d3b20d7435f2732513577a9d029f8028e2f0548b56e9d179b015fc54568a1"
+    },
+    {
+      "path": "vitest.callbacks.config.mts",
+      "bytes": 712,
+      "sha256": "3e99553de6429f25ef0ae8cecdb516dfb4a9d9fa29770be20ba528a61c74dcad"
+    }
+  ]
+}

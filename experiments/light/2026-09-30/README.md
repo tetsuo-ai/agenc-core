@@ -29,7 +29,7 @@ accepted integration or permission to execute clients.
 
 ## Supplemental preservation
 
-The complete selected public source inventory is now 848 original files. Each
+The initial preservation checkpoint contains 848 original source files. Each
 snapshot has a `SOURCE-MANIFEST.json` with byte lengths and SHA-256 hashes:
 
 | Snapshot | Original source/config files | Scope |
@@ -71,3 +71,19 @@ has now passed 25 offline tests and strict types. Read its validation note for
 the first failed typecheck, exact hashes and limits. Its six private log/result
 files are retained only in Desktop. These additions are separate from the
 original 848-file preservation count above. No real-client or performance claim.
+
+## Observer integration and split companion
+
+`companion-build-v1/` preserves the first graph-build recipe, whose single-file
+output compiled but exposed an optional Chrome import blocker. That generated
+artifact was never imported. `observer-and-split-v2/` is the later reviewed
+snapshot: split ESM keeps Chrome lazy, emits the canonical session module once,
+and passes a disabled-entry import/refusal smoke. No daemon was started.
+
+The real observer also passed one sequential offline integration test covering
+three owned children: two correctly settled synthetic calls and one task drift
+refused before admission. See `OBSERVER-INTEGRATION-RESULT.md` and
+`COMPANION-SPLIT-RESULT.md` in that directory. Source/config/docs are here;
+sealed input inventories, logs, metadata and synthetic run receipts are private
+Desktop evidence. Generated bundles/maps remain local and hash-recorded.
+Neither result is a live-provider, Linux, performance or Light/Pi win claim.
