@@ -58,7 +58,6 @@ import { chatCompletionsCapabilityHintsForProvider } from "../../wire/capability
 import { sharedPrefixTailEnabled } from "../../wire/shared-prefix-tail.js";
 import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import {
-  coerceUsage,
   assistantTextFromContentBlocks,
   thinkingTextFromContentBlocks,
   normalizeFinishReason,
@@ -1495,10 +1494,8 @@ export class OpenAIProvider implements LLMProvider {
       }
 
       let streamedContent = "";
-      const streamedToolCalls = new Map<
-        string,
-        { id: string; name: string; arguments: string }
-      >();
+      const streamedFunctionItems = new Map<string, Record<string, unknown>>();
+      const bufferedFunctionSnapshots = new Set<string>();
       const streamedReasoningItems: Record<string, unknown>[] = [];
       let completedResponse: Record<string, unknown> | null = null;
 
@@ -1527,66 +1524,19 @@ export class OpenAIProvider implements LLMProvider {
             streamedReasoningItems.push(item);
           }
           if (item?.type === "function_call") {
-            let toolCall: LLMToolCall;
-            try {
-              toolCall = validateProviderToolCallOrThrow(
-                this.name,
-                {
-                  id: String(item.call_id ?? item.id ?? "").trim(),
-                  // Streaming-path decode (mirrors the non-streaming
-                  // path in `parseOpenAIResponsesResponse`). Without
-                  // this, mid-stream `onChunk(toolCalls)` carries the
-                  // wire-form `mcp__server__tool` straight into the
-                  // dispatcher, which keys on the dotted internal form
-                  // and reports a silent dispatch miss.
-                  name: decodeMcpToolNameFromWire(
-                    String(item.name ?? "").trim(),
-                    requestOptions.tools.map((tool) => tool.function.name),
-                  ),
-                  arguments: String(item.arguments ?? "{}"),
-                },
-                OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
-              );
-            } catch (validationError) {
-              // A single malformed function_call must not discard output
-              // already forwarded to the consumer. When nothing has been
-              // emitted yet, rethrow so the outer fallback/retry path can
-              // act; otherwise surface a partial response (mirrors the
-              // Anthropic adapter's partial-recovery and the in-stream
-              // `response.failed` branch below).
-              if (
-                streamedContent.length === 0 &&
-                streamedToolCalls.size === 0
-              ) {
-                throw validationError;
-              }
-              const partialError =
-                validationError instanceof Error
-                  ? validationError
-                  : new LLMProviderError(
-                    this.name,
-                    OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE,
-                  );
-              const recoveredToolCalls = Array.from(streamedToolCalls.values());
-              onChunk({
-                content: "",
-                done: true,
-                ...(recoveredToolCalls.length > 0
-                  ? { toolCalls: recoveredToolCalls }
-                  : {}),
-              });
-              return {
-                content: streamedContent,
-                toolCalls: recoveredToolCalls,
-                usage: coerceUsage({}),
-                model,
-                finishReason: "error",
-                error: partialError,
-                partial: true,
-              };
+            // Item completion is not response completion. Keep unvalidated
+            // arguments private until an affirmative successful terminal event.
+            const id = String(item.call_id ?? item.id ?? "").trim();
+            const name = String(item.name ?? "").trim();
+            const args = String(item.arguments ?? "");
+            streamedFunctionItems.set(id, item);
+            const snapshot = JSON.stringify([id, name, args]);
+            if ((id || name || args.trim()) && !bufferedFunctionSnapshots.has(snapshot)) {
+              bufferedFunctionSnapshots.add(snapshot);
+              // Novel buffered output counts for the watchdog, but never
+              // exposes an executable call. Replayed snapshots are not progress.
+              onChunk({ content: "", done: false, bufferedContentProgress: true });
             }
-            streamedToolCalls.set(toolCall.id, toolCall);
-            onChunk({ content: "", done: false, toolCalls: [toolCall] });
           }
           continue;
         }
@@ -1595,14 +1545,29 @@ export class OpenAIProvider implements LLMProvider {
           eventType === "response.completed" ||
           eventType === "response.incomplete"
         ) {
+          const conflictingEventType = event.data.type !== undefined && event.data.type !== eventType;
           completedResponse =
-            event.data.response && typeof event.data.response === "object"
+            event.data.response && typeof event.data.response === "object" &&
+              !Array.isArray(event.data.response)
               ? (event.data.response as Record<string, unknown>)
               : null;
+          if (completedResponse) {
+            const status = completedResponse.status;
+            const malformedOutput = completedResponse.output !== undefined &&
+              !Array.isArray(completedResponse.output);
+            completedResponse = {
+              ...completedResponse,
+              // A missing status is supported only with the completed event.
+              // An incomplete event cannot authorize calls via contradictory data.
+              status: conflictingEventType || malformedOutput ? "failed" : eventType === "response.completed"
+                ? status === undefined ? "completed" : status
+                : status === undefined || status === "incomplete" ? "incomplete" : "failed",
+            };
+          }
           break;
         }
 
-        if (eventType === "response.failed") {
+        if (eventType === "response.failed" || eventType === "error") {
           const failedResponse =
             event.data.response && typeof event.data.response === "object"
               ? (event.data.response as Record<string, unknown>)
@@ -1614,7 +1579,7 @@ export class OpenAIProvider implements LLMProvider {
           const eventError =
             event.data.error && typeof event.data.error === "object"
               ? (event.data.error as Record<string, unknown>)
-              : undefined;
+              : eventType === "error" ? event.data : undefined;
           const message =
             typeof failedError?.message === "string"
               ? String(failedError.message)
@@ -1628,7 +1593,7 @@ export class OpenAIProvider implements LLMProvider {
             fallbackMessage: message,
           });
           if (!isProviderFundsFailure(this.name, streamError) &&
-            streamedContent.length === 0 && streamedToolCalls.size === 0) {
+            streamedContent.length === 0 && streamedFunctionItems.size === 0) {
             const fallbackDecision = this.evaluateConfiguredFallback(
               openAIStreamFallbackCandidate(errorBody, message),
               consecutiveFallbackFailures,
@@ -1658,17 +1623,43 @@ export class OpenAIProvider implements LLMProvider {
         );
       }
 
-      const parsed = withStreamingMetrics(
-        parseOpenAIResponsesResponse(
-          model,
-          completedResponse,
-          requestOptions,
-        ),
-      );
-      const toolCalls =
-        parsed.toolCalls.length > 0
-          ? parsed.toolCalls
-          : Array.from(streamedToolCalls.values());
+      const terminalOutput = Array.isArray(completedResponse.output)
+        ? completedResponse.output as Record<string, unknown>[] : [];
+      const hasTerminalCalls = terminalOutput.some(item => item.type === "function_call");
+      // Some backends omit function items from the terminal output. Fallback
+      // is allowed ONLY for successful completion, and a present terminal call
+      // set is authoritative (do not union in stale or contradictory items).
+      const selectedOutput = completedResponse.status === "completed" &&
+        !hasTerminalCalls
+        ? [...terminalOutput, ...streamedFunctionItems.values()] : terminalOutput;
+      let parsed: LLMResponse;
+      try {
+        if (completedResponse.status === "completed") {
+          for (const item of selectedOutput.filter(item => item.type === "function_call")) {
+            validateProviderToolCallOrThrow(this.name, {
+              id: String(item.call_id ?? item.id ?? "").trim(),
+              name: decodeMcpToolNameFromWire(String(item.name ?? "").trim(),
+                requestOptions.tools.map(tool => tool.function.name)),
+              arguments: String(item.arguments ?? "{}"),
+            }, hasTerminalCalls ? "OpenAI Responses response emitted invalid function_call"
+              : OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE);
+          }
+        }
+        parsed = withStreamingMetrics(parseOpenAIResponsesResponse(
+          model, { ...completedResponse, output: selectedOutput }, requestOptions,
+        ));
+      } catch (validationError) {
+        if (streamedContent.length === 0) throw validationError;
+        // Preserve visible partial text and terminal usage, but never return
+        // executable calls alongside a validation error.
+        parsed = withStreamingMetrics(parseOpenAIResponsesResponse(model, {
+          ...completedResponse, status: "failed", output: terminalOutput,
+        }, requestOptions));
+        parsed = { ...parsed, toolCalls: [], finishReason: "error", partial: true,
+          error: validationError instanceof Error ? validationError
+            : new LLMProviderError(this.name, OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE) };
+      }
+      const toolCalls = parsed.toolCalls;
       const finalResponse: LLMResponse = {
         ...parsed,
         // The ChatGPT backend completes with an empty `output`, so its

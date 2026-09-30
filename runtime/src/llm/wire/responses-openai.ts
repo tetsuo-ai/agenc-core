@@ -22,7 +22,6 @@ import {
   collectRequestMetrics,
   hasOpaqueAudioReference,
   messageTextContent,
-  normalizeFinishReason,
   normalizeToolCallsStrict,
   openAiServedSpeed,
   prepareMessagesForWire,
@@ -319,29 +318,22 @@ function toResponsesFileData(
 
 function resolveResponsesFinishReason(
   response: Record<string, unknown>,
-  toolCalls: readonly LLMToolCall[],
 ): LLMResponse["finishReason"] {
-  if (toolCalls.length > 0) {
-    return "tool_calls";
-  }
-
-  const status = String(response.status ?? "");
+  const status = response.status;
   if (status === "incomplete") {
     const details =
       response.incomplete_details &&
       typeof response.incomplete_details === "object"
         ? (response.incomplete_details as Record<string, unknown>)
         : {};
-    const reason = String(details.reason ?? "");
+    const reason = typeof details.reason === "string" ? details.reason : "";
     if (reason.includes("max_output_tokens") || reason.includes("max_tokens")) {
       return "length";
     }
     if (reason.includes("content_filter") || reason.includes("refusal")) {
       return "content_filter";
     }
-    if (reason.includes("error")) {
-      return "error";
-    }
+    return "error";
   }
 
   if (
@@ -352,7 +344,10 @@ function resolveResponsesFinishReason(
     return "error";
   }
 
-  return normalizeFinishReason(status);
+  // Only an affirmative terminal success can authorize executable calls.
+  // Streaming legacy payloads without status are normalized by their completed
+  // event in the adapter; a standalone missing/unknown status is not success.
+  return status === "completed" ? "stop" : "error";
 }
 
 export function buildOpenAIResponsesRequest(
@@ -562,7 +557,10 @@ export function parseOpenAIResponsesResponse(
   const output = Array.isArray(response.output)
     ? (response.output as Array<Record<string, unknown>>)
     : [];
-  const toolCalls = normalizeToolCallsStrict(
+  const terminalReason = resolveResponsesFinishReason(response);
+  // Decide terminal status BEFORE repairing or validating function arguments.
+  // An item.done can carry partial JSON from an incomplete generation.
+  const toolCalls = terminalReason !== "stop" ? [] : normalizeToolCallsStrict(
     output
       .filter((item) => item.type === "function_call")
       .map(
@@ -616,7 +614,7 @@ export function parseOpenAIResponsesResponse(
     request.options,
   );
 
-  const finishReason = resolveResponsesFinishReason(response, toolCalls);
+  const finishReason = toolCalls.length > 0 ? "tool_calls" : terminalReason;
   // A truncated/incomplete generation (finishReason 'length', 'error', or
   // 'content_filter') leaves partial JSON in `content`, which
   // parseStructuredOutputText would JSON.parse and throw on — failing the whole

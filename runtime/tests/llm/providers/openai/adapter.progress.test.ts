@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { DeepSeekProvider } from "../../../../src/llm/providers/deepseek/index.js";
 import { KimiProvider } from "../../../../src/llm/providers/kimi/index.js";
+import { OpenAIProvider } from "../../../../src/llm/providers/openai/adapter.js";
 import type { LLMStreamChunk, LLMTool } from "../../../../src/llm/types.js";
 import { REASONING_NO_PROGRESS_MS } from "../../../../src/llm/stream-progress.js";
 import { streamModel } from "../../../../src/phases/stream-model.js";
@@ -104,4 +105,96 @@ describe.each(["deepseek", "kimi"] as const)("%s buffered tool progress", name =
     expect(run.fetchImpl).toHaveBeenCalledOnce();
     expect(run.chunks.some(chunk => chunk.bufferedContentProgress || chunk.toolCalls)).toBe(false);
   });
+});
+
+function delayedTerminalProbe(useResponsesApi: boolean, incomplete: boolean, repeat = false) {
+  const chunks: LLMStreamChunk[] = [];
+  const args = incomplete ? '{"file_path":"unfinished' : '{"file_path":"note.txt"}';
+  const item = { type: "function_call", id: "fc_read", call_id: "read-1", name: "FileRead", arguments: args };
+  let providerSignal: AbortSignal | null | undefined;
+  const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+    providerSignal = init?.signal;
+    return new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        const emit = (data: object) => controller.enqueue(
+          new TextEncoder().encode(`data: ${JSON.stringify(data)}\n\n`),
+        );
+        const emitItem = () => emit(useResponsesApi
+          ? { type: "response.output_item.done", item }
+          : { choices: [{ index: 0, delta: { tool_calls: [{
+              index: 0, id: item.call_id, type: "function",
+              function: { name: item.name, arguments: args },
+            }] } }] });
+        const itemTimer = repeat ? undefined : setTimeout(emitItem, 45_000);
+        const repeatTimer = repeat ? setInterval(emitItem, 45_000) : undefined;
+        const terminalTimer = setTimeout(() => {
+          cleanup();
+          emit(useResponsesApi
+            ? { type: incomplete ? "response.incomplete" : "response.completed", response: {
+                status: incomplete ? "incomplete" : "completed", output: [],
+                ...(incomplete ? { incomplete_details: { reason: "max_output_tokens" } } : {}),
+              } }
+            : { choices: [{ index: 0, delta: {}, finish_reason: incomplete ? "length" : "tool_calls" }] });
+          controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+          controller.close();
+        }, repeat ? 180_000 : 90_000);
+        const cleanup = () => {
+          clearTimeout(itemTimer);
+          clearInterval(repeatTimer);
+          clearTimeout(terminalTimer);
+          providerSignal?.removeEventListener("abort", onAbort);
+        };
+        const onAbort = () => { cleanup(); controller.error(providerSignal?.reason); };
+        providerSignal?.addEventListener("abort", onAbort, { once: true });
+      },
+    }), { headers: { "content-type": "text/event-stream" } });
+  });
+  const provider = new OpenAIProvider({ apiKey: "dummy-test", model: "gpt-5", useResponsesApi, fetchImpl });
+  const chatStream = provider.chatStream.bind(provider);
+  const chatStreamSpy = vi.spyOn(provider, "chatStream").mockImplementation((input, emit, options) =>
+    chatStream(input, chunk => { chunks.push(chunk); emit(chunk); }, options));
+  const { session } = mkSession({ provider, services: {
+    providerService: new SessionProviderService({ initialProvider: provider }),
+  } });
+  vi.spyOn(session.services.configStore!, "current").mockReturnValue({
+    ...session.services.configStore!.current(), stream_watchdog_timeout_ms: 60_000,
+  });
+  const ctx = mkCtx();
+  const state = buildInitialTurnState(ctx, { role: "user", content: "Read the file" });
+  const pending = streamModel(state, ctx, session, {
+    input: state.messages, tools: [readTool], parallelToolCalls: false,
+    baseInstructions: "", maxOutputTokens: 8192,
+  }).then(() => undefined, error => error);
+  return { chunks, fetchImpl, chatStreamSpy, pending, signal: () => providerSignal };
+}
+
+describe.each([true, false])("delayed terminal tool progress (Responses=%s)", useResponsesApi => {
+  test.each([false, true])("keeps the 60s watchdog alive until the 90s terminal (incomplete=%s)", async incomplete => {
+    vi.useFakeTimers();
+    const run = delayedTerminalProbe(useResponsesApi, incomplete);
+    await vi.advanceTimersByTimeAsync(45_000);
+    const beforeTerminal = [...run.chunks];
+    await vi.advanceTimersByTimeAsync(45_001);
+    expect(await run.pending).toBeUndefined();
+    expect(run.signal()?.aborted).toBe(false);
+    expect(run.fetchImpl).toHaveBeenCalledOnce();
+    // Even malformed arguments signal progress without leaking tool text or
+    // anything the streaming executor could dispatch before the terminal.
+    expect(beforeTerminal).toEqual([{ content: "", done: false, bufferedContentProgress: true }]);
+    const response = await run.chatStreamSpy.mock.results[0]!.value;
+    expect(response).toMatchObject(incomplete
+      ? { finishReason: "length", toolCalls: [] }
+      : { finishReason: "tool_calls", toolCalls: [{ id: "read-1", name: "FileRead", arguments: '{"file_path":"note.txt"}' }] });
+    if (incomplete) expect(run.chunks.flatMap(chunk => chunk.toolCalls ?? [])).toEqual([]);
+    expect(run.chunks.at(-1)?.done).toBe(true);
+  });
+});
+
+test("replayed Responses items cannot keep the idle watchdog alive", async () => {
+  vi.useFakeTimers();
+  const run = delayedTerminalProbe(true, false, true);
+  await vi.advanceTimersByTimeAsync(105_001);
+  expect((await run.pending).message).toMatch(/^stream_idle:/);
+  expect(run.fetchImpl).toHaveBeenCalledOnce();
+  expect(run.chunks).toEqual([{ content: "", done: false, bufferedContentProgress: true }]);
 });

@@ -1504,9 +1504,7 @@ describe("OpenAIProvider", () => {
       {
         content: "",
         done: false,
-        toolCalls: [
-          { id: "call_1", name: "system.echo", arguments: '{"text":"hi"}' },
-        ],
+        bufferedContentProgress: true,
       },
       {
         content: "",
@@ -1570,12 +1568,11 @@ describe("OpenAIProvider", () => {
       (chunk) => chunks.push(chunk),
     );
 
-    // Mid-stream emit must carry the dotted form so the dispatcher
-    // can resolve it against the registry.
-    const midStream = chunks.find(
-      (c) => c.done === false && c.toolCalls !== undefined,
-    );
-    expect(midStream?.toolCalls?.[0]?.name).toBe("mcp.memory.search_nodes");
+    // Calls stay private until completion; the terminal emit must carry the
+    // dotted form so the dispatcher can resolve it against the registry.
+    expect(chunks.some(c => !c.done && c.toolCalls !== undefined)).toBe(false);
+    const terminal = chunks.find(c => c.done && c.toolCalls !== undefined);
+    expect(terminal?.toolCalls?.[0]?.name).toBe("mcp.memory.search_nodes");
     // Final aggregated response also dotted (covered by
     // parseOpenAIResponsesResponse decode in the wire layer).
     expect(response.toolCalls[0]?.name).toBe("mcp.memory.search_nodes");

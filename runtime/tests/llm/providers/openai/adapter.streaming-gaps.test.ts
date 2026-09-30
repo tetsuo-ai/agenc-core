@@ -150,6 +150,7 @@ describe("OpenAIProvider streaming gaps", () => {
     expect(chunks).toEqual([
       { content: "Par", done: false },
       { content: "tial", done: false },
+      { content: "", done: false, bufferedContentProgress: true },
       { content: "", done: true },
     ]);
     expect(response.content).toBe("Partial");
