@@ -344,6 +344,7 @@ const started = await client.startRun({
   model: "grok-4.6",
   reviewerModel: "grok-4.5",
   permissionMode: "acceptEdits",
+  lightMode: true,
   requiredVerification: [{ label: "unit", script: "npm test" }],
 });
 // started: { runId, specDigest, baseCommit, baseDirty }
@@ -353,6 +354,12 @@ const started = await client.startRun({
 continues in the daemon. `model` and `provider` ride on the run session
 bootstrap the same way `agenc run start --model` does. Omitting them uses
 the daemon default, including for children that inherit the run's provider.
+`lightMode: true` runs the Goal session, implementer, reviewer, repair children,
+and their sub-agents in Light mode. Omit it for standard mode. The setting is
+frozen with the run and reported as `runStatus(id).workflow.lightMode` after
+restart. A continuation inherits its source Goal's mode unless it explicitly
+sets `lightMode` to `true` or `false`. Clients can check the
+`run.start.lightMode` initialize capability before sending it.
 Follow the run by id with the existing cursor contract: `runStatus` adds a
 `workflow` step projection (stage statuses, attempts, verdicts, artifact
 pointers, stop reason), `runResult` returns the durable terminal, and

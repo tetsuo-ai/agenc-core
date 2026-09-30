@@ -790,6 +790,8 @@ export interface RunStartParams extends JsonObject {
     };
     /** The engineering goal / issue text driving the change. */
     readonly goal: string;
+    /** Run the Goal and all of its child sessions in Light mode. Defaults to standard mode. */
+    readonly lightMode?: boolean;
     /** Absolute directory inside the target git repository (daemon cwd default). */
     readonly cwd?: string;
     readonly model?: string;
@@ -1261,10 +1263,13 @@ export const AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY = "routine.sessionAuthor
 
 export const AGENC_WORKFLOW_CONTINUATION_CAPABILITY = "workflow.continuation.v1" as const;
 
+export const AGENC_RUN_START_LIGHT_MODE_CAPABILITY = "run.start.lightMode" as const;
+
 export type AgenCDaemonServerCapabilities = JsonObject & {
     readonly [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: AgenCDaemonMethodCapabilities;
     readonly [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]?: true;
     readonly [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]?: true;
+    readonly [AGENC_RUN_START_LIGHT_MODE_CAPABILITY]?: true;
 };
 
 export interface DaemonInstanceIdentity extends JsonObject {
@@ -1673,6 +1678,8 @@ export type RunEffectivePermissionMode = "default" | "acceptEdits" | "plan" | "b
  */
 export interface RunWorkflowStatus extends JsonObject {
     readonly steps: readonly RunWorkflowStatusStep[];
+    /** Frozen at intake and available after recovery. */
+    readonly lightMode?: boolean;
     /** Absent on daemons without durable workflow controls. */
     readonly control?: RunWorkflowControlState;
     readonly runtimeFailure?: RunWorkflowRuntimeFailure;
@@ -1909,6 +1916,7 @@ export interface RunStartResult extends JsonObject {
     readonly replayed?: boolean;
     readonly continuationOf?: RunWorkflowContinuation;
     readonly runId: string;
+    readonly lightMode?: boolean;
     /** Canonical digest of the frozen WorkflowSpec (the spec's durable identity). */
     readonly specDigest: string;
     /** Exact base commit recorded before any work began. */

@@ -26,6 +26,7 @@ import {
   type WorkflowChildOutcome,
   type WorkflowEvidenceLedger,
   type WorkflowRunJournal,
+  type WorkflowRunSessionPolicy,
   type WorkflowSpawnKind,
   type WorkflowWorktreeBroker,
 } from "../../src/app-server/workflow/verified-change-controller.js";
@@ -377,6 +378,7 @@ interface Harness {
 
 let harness: Harness;
 let seenOverrides: Readonly<Record<string, string>> | undefined;
+let seenPolicies: (WorkflowRunSessionPolicy | undefined)[];
 
 function makeHarness(): Harness {
   const home = mkdtempSync(join(tmpdir(), "agenc-m5-run-start-home-"));
@@ -393,7 +395,7 @@ function makeHarness(): Harness {
   const recorded: WorkflowStartedRunRecord[] = [];
   const controller = new VerifiedChangeWorkflowController({
     durability: () => repo,
-    journal: { open: async (runId, context) => { seenOverrides = context?.envOverrides; return new TestJournal(repo, runId); } },
+    journal: { open: async (runId, context) => { seenOverrides = context?.envOverrides; seenPolicies.push(context?.policy); return new TestJournal(repo, runId); } },
     admission: ({ runId }) => {
       admission.scope.runId = runId;
       return admission;
@@ -481,6 +483,7 @@ async function dispatchRunStart(
 }
 
 beforeEach(() => {
+  seenPolicies = [];
   harness = makeHarness();
 });
 
@@ -536,6 +539,7 @@ describe("daemon dispatcher — run.start", () => {
 
   it("advertises the run.start capability exactly when the workflow seam exists", async () => {
     const { initialize } = await initializedConnection();
+    expect((initialize as unknown as { result: { capabilities: JsonObject } }).result.capabilities["run.start.lightMode"]).toBe(true);
     const capabilities = (
       initialize as unknown as {
         result: { capabilities: { "daemon.methods": Record<string, boolean> } };
@@ -558,6 +562,7 @@ describe("daemon dispatcher — run.start", () => {
     expect(
       bareInitialize.result.capabilities["daemon.methods"]["run.start"],
     ).toBe(false);
+    expect((bareInitialize.result.capabilities as JsonObject)["run.start.lightMode"]).toBeUndefined();
     const unimplemented = (await bareConnection.dispatch({
       jsonrpc: JSON_RPC_VERSION,
       id: "start",
@@ -598,6 +603,49 @@ describe("daemon dispatcher — run.start", () => {
       status: "running",
       cwd: harness.repoDir,
     });
+  });
+
+  it("freezes Light mode for a Goal and keeps omitted mode standard", async () => {
+    const light = await dispatchRunStart(startParams({ lightMode: true }));
+    expect(light.error).toBeUndefined();
+    expect(light.result?.lightMode).toBe(true);
+    expect(seenPolicies[0]?.lightMode).toBe(true);
+    await harness.controller.awaitRun(light.result!.runId);
+    const lightSpec = (harness.repo.getEffect(light.result!.runId, "workflow.intake")!.evidence as { spec: WorkflowSpec }).spec;
+    expect(lightSpec.lightMode).toBe(true);
+    expect(harness.recorded[0]?.metadata?.lightMode).toBe(true);
+
+    const standard = await dispatchRunStart(startParams());
+    expect(standard.error).toBeUndefined();
+    expect(standard.result?.lightMode).toBe(false);
+    expect(seenPolicies[1]?.lightMode).toBeUndefined();
+    await harness.controller.awaitRun(standard.result!.runId);
+    const standardSpec = (harness.repo.getEffect(standard.result!.runId, "workflow.intake")!.evidence as { spec: WorkflowSpec }).spec;
+    expect(standardSpec.lightMode).toBeUndefined();
+  });
+
+  it("rejects a non-boolean Light mode before opening a run", async () => {
+    const response = await dispatchRunStart(startParams({ lightMode: "true" }));
+    expect(response.error?.code).toBe(-32602);
+    expect(seenPolicies).toEqual([]);
+  });
+
+  it("inherits a source Goal's Light mode for continuations, with an explicit override", async () => {
+    const source = await dispatchRunStart(startParams({ lightMode: true }));
+    await harness.controller.awaitRun(source.result!.runId);
+    const continuation = { sourceRunId: source.result!.runId, requestId: "light-inherit" };
+    const inherited = await dispatchRunStart(startParams({ continuation, maxCostUsd: 1,
+      deadlineAt: "2099-01-01T00:00:00.000Z" }));
+    expect(inherited.error).toBeUndefined();
+    expect(inherited.result?.lightMode).toBe(true);
+    expect(seenPolicies[1]?.lightMode).toBe(true);
+    await harness.controller.awaitRun(inherited.result!.runId);
+    const overridden = await dispatchRunStart(startParams({ continuation: { ...continuation, requestId: "light-override" },
+      lightMode: false, maxCostUsd: 1, deadlineAt: "2099-01-01T00:00:00.000Z" }));
+    expect(overridden.error).toBeUndefined();
+    expect(overridden.result?.lightMode).toBe(false);
+    expect(seenPolicies[2]?.lightMode).toBe(false);
+    await harness.controller.awaitRun(overridden.result!.runId);
   });
 
   it("rejects a missing or empty goal with a typed INVALID_ARGUMENT error", async () => {

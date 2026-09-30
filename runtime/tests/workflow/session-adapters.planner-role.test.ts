@@ -11,10 +11,10 @@ import { EventLog } from "../../src/session/event-log.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
 import { openStateDatabases } from "../../src/state/sqlite-driver.js";
 
-const calls = vi.hoisted(() => [] as { role?: string; taskPrompt?: string; parentMessagesOverride?: unknown[]; isolation?: string; toolAllowlist?: string[]; inspectionWorktree?: { path: string; created: boolean } }[]);
+const calls = vi.hoisted(() => [] as { role?: string; taskPrompt?: string; parentMessagesOverride?: unknown[]; isolation?: string; toolAllowlist?: string[]; inspectionWorktree?: { path: string; created: boolean }; parent?: { services: { runtimeOptions: { lightMode?: boolean } } } }[]);
 vi.mock("../../src/bin/delegate-tool.js", () => ({ ensureAgentControl: () => ({ control: {}, registry: {} }) }));
 vi.mock("../../src/agents/delegate.js", () => ({
-  delegate: async (input: { role?: string; parentMessagesOverride?: unknown[] }) => {
+  delegate: async (input: { role?: string; parentMessagesOverride?: unknown[]; parent?: { services: { runtimeOptions: { lightMode?: boolean } } } }) => {
     calls.push(input);
     return { kind: "sync_completed", result: { outcome: "completed", finalMessage: "done", threadId: "child" } };
   },
@@ -25,12 +25,13 @@ it("delegates Goal planning through the read-only Plan role even when the run al
   const driver = openStateDatabases({ cwd: home, agencHome: home });
   const repo = new StateRunDurabilityRepository(driver);
   const bootstrap: AgenCBootstrapFunction = async (options) => {
+    expect(options.runtimeOptions?.lightMode).toBe(true);
     const eventLog = new EventLog();
     return {
       session: {
         conversationId: options.conversationId,
         abortController: new AbortController(),
-        services: {},
+        services: { runtimeOptions: options.runtimeOptions },
         permissionModeRegistry: new PermissionModeRegistry({ mode: "bypassPermissions",
           additionalWorkingDirectories: new Map(), alwaysAllowRules: {}, alwaysDenyRules: {},
           alwaysAskRules: {}, isBypassPermissionsModeAvailable: true }),
@@ -42,13 +43,13 @@ it("delegates Goal planning through the read-only Plan role even when the run al
   const seams = createWorkflowSessionSeams({
     agencHome: home, env: {}, argv: ["node", "agenc"], kernel: {} as never,
     durability: () => repo, resolveRunRepoPath: () => home,
-    resolveRunPolicy: () => ({ permissionMode: "bypassPermissions" }),
+    resolveRunPolicy: () => ({ permissionMode: "bypassPermissions", lightMode: true }),
     fallbackCwd: home, warn: () => {}, bootstrap,
   });
   const spec: WorkflowSpec = {
     runId: "wf-plan-role", goal: "Plan then implement a change", repoPath: home,
     baseCommit: "a".repeat(40), baseDirty: { dirty: false, fileCount: 0, summaryDigest: "sha256:empty" },
-    reviewerModel: "test-model", permissionMode: "bypassPermissions", budget: {},
+    reviewerModel: "test-model", permissionMode: "bypassPermissions", lightMode: true, budget: {},
     requiredVerification: [{ label: "test", script: "node --test" }], maxImplementAttempts: 2,
   };
   try {
@@ -58,6 +59,7 @@ it("delegates Goal planning through the read-only Plan role even when the run al
         worktreePath: home, prompt: "Work", signal: new AbortController().signal });
     }
     expect(calls.map((call) => call.role)).toEqual(["Plan", undefined, "verification"]);
+    expect(calls.map((call) => call.parent?.services.runtimeOptions.lightMode)).toEqual([true, true, true]);
     expect(calls.map((call) => call.isolation)).toEqual(["none", "worktree", "worktree"]);
     expect(calls[0]?.inspectionWorktree).toMatchObject({ path: home, created: false });
     expect(calls[0]?.toolAllowlist).toEqual(["FileRead", "Glob", "Grep"]);

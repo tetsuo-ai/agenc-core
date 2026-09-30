@@ -111,6 +111,7 @@ export class DaemonWorkflowStartService {
     const startParams: WorkflowStartParams = {
       ...(params.continuation !== undefined ? { continuation: params.continuation } : {}),
       goal: params.goal,
+      ...(params.lightMode !== undefined ? { lightMode: params.lightMode } : {}),
       repoPath,
       ...(params.model !== undefined ? { model: params.model } : {}),
       ...(params.provider !== undefined
@@ -177,7 +178,7 @@ export class DaemonWorkflowStartService {
           startedAt: at,
           lastActiveAt: at,
           currentSessionId: started.runId,
-          metadata: { kind: "verified-change-workflow" },
+          metadata: { kind: "verified-change-workflow", lightMode: started.lightMode === true },
           cwd: repoPath,
         });
       } catch (error) {
@@ -190,6 +191,7 @@ export class DaemonWorkflowStartService {
     }
     return {
       runId: started.runId,
+      lightMode: started.lightMode === true,
       specDigest: started.specDigest,
       requestedPermissionMode: started.requestedPermissionMode,
       ...(started.effectivePermissionMode !== undefined

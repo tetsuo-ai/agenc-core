@@ -112,6 +112,7 @@ import {
   AGENC_DAEMON_INTERNAL_METHODS,
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
   AGENC_WORKFLOW_CONTINUATION_CAPABILITY,
+  AGENC_RUN_START_LIGHT_MODE_CAPABILITY,
   AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY,
   AGENC_DAEMON_METHODS,
   AGENC_DAEMON_PROTOCOL_VERSION,
@@ -514,6 +515,7 @@ function buildServerCapabilities(
     ) as AgenCDaemonMethodCapabilities,
     ...(inputs.routines !== undefined ? { [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]: true } : {}),
     ...(inputs.workflow?.supportsContinuation === true ? { [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]: true } : {}),
+    ...(hasMethod(inputs.workflow, "startRun") ? { [AGENC_RUN_START_LIGHT_MODE_CAPABILITY]: true } : {}),
   }) as AgenCDaemonServerCapabilities;
 }
 
@@ -940,13 +942,15 @@ export class AgenCDaemonJsonRpcDispatcher {
           const negotiated = negotiateInitializeProtocol(
             initializeParams,
             connection.remoteAccess ? {
-              ...Object.fromEntries(Object.entries(this.#serverCapabilities).filter(([key]) => key !== AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY && key !== AGENC_WORKFLOW_CONTINUATION_CAPABILITY)),
+              ...Object.fromEntries(Object.entries(this.#serverCapabilities).filter(([key]) => key !== AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY && key !== AGENC_WORKFLOW_CONTINUATION_CAPABILITY && key !== AGENC_RUN_START_LIGHT_MODE_CAPABILITY)),
               [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: Object.fromEntries(Object.entries(this.#serverCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY]).map(([key, value]) => [key, value && connection.remoteAccess!.allowsMethod(key)])) as AgenCDaemonMethodCapabilities,
               // Match the filtered routine methods in this remote-access view.
               ...(this.#serverCapabilities[AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY] && connection.remoteAccess.allowsMethod("routine.create") && connection.remoteAccess.allowsMethod("routine.update")
                 ? { [AGENC_ROUTINE_SESSION_AUTHORITY_CAPABILITY]: true as const } : {}),
               ...(this.#serverCapabilities[AGENC_WORKFLOW_CONTINUATION_CAPABILITY] && connection.remoteAccess.allowsMethod("run.start")
                 ? { [AGENC_WORKFLOW_CONTINUATION_CAPABILITY]: true as const } : {}),
+              ...(this.#serverCapabilities[AGENC_RUN_START_LIGHT_MODE_CAPABILITY] && connection.remoteAccess.allowsMethod("run.start")
+                ? { [AGENC_RUN_START_LIGHT_MODE_CAPABILITY]: true as const } : {}),
             } : this.#serverCapabilities,
           );
           if (!negotiated.supported) {
@@ -3173,6 +3177,7 @@ function validateRunStartParams(params: JsonObject): RunStartParams {
       "permissionMode",
     ],
     numberFields: ["maxCostUsd", "maxTokens", "maxImplementAttempts"],
+    booleanFields: ["lightMode"],
     stringArrayFields: ["unattendedAllow", "unattendedDeny"],
     valueFields: ["requiredVerification"],
     objectFields: ["envOverrides", "continuation"],
