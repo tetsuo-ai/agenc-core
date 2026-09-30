@@ -87,6 +87,18 @@ incomplete or a kind that resumes after another was written. It used to refuse
 the second chunk of the same kind, so any bundle over one line failed at
 commit as `durable compaction commit failed` (#2499).
 
+The model sees the committed summary as one user message after the boundary
+policy message: canonical JSON with `version: 2`,
+`kind: "agenc_compaction_context_v2"`, `trust: "untrusted_historical_data"`,
+the `narrative`, and the text of each fact and open action. `summary_sha256`,
+the runtime-pinned tool pairs, record IDs, and source refs stay in the durable
+summary, its `final_summary` and `summary_dag` payloads, and the
+`compactionHistory` marker. The model cannot use them, and in the message they
+would cost about 53 tokens per compacted tool call on every later request. The
+`PostCompact` hook's `compact_summary` is the same text. Readers identify the
+boundary and summary by the marker, never by content, so
+`agenc_compaction_context_v1` messages in older rollouts stay valid.
+
 ### Failure, commit, and projection
 
 After an intent exists, every provider, abort, limit, schema, provenance,

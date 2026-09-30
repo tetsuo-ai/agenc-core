@@ -53,7 +53,7 @@ import {
 import {
   COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
   COMPACTION_CONFIGURATION_DIGEST_DOMAIN,
-  COMPACTION_CONTEXT_KIND_V1,
+  COMPACTION_CONTEXT_KIND_V2,
   COMPACTION_EVENT_FORMAT_VERSION,
   COMPACTION_MINIMUM_READER_RUNTIME,
   COMPACTION_POLICY_DIGEST_DOMAIN,
@@ -79,6 +79,7 @@ import {
   type CompactionSourcePayloadBundlesV1,
   type CompactionSourceRefV1,
   type CompactionStage,
+  type CompactionSummaryBodyV1,
   type CompactionSummaryRefV1,
   type CompactionSummaryDagV1,
   type CompactionSummaryV1,
@@ -489,16 +490,8 @@ async function compactConversationTransactionBody(
       startedAt,
     }));
     deadline.assertActive();
-    const canonicalSummaryEnvelope = canonicalizeJson({
-      version: 1,
-      kind: COMPACTION_CONTEXT_KIND_V1,
-      trust: "untrusted_historical_data",
-      summary_sha256: run.finalSummary.summary_sha256,
-      body: run.finalSummary.body,
-    });
-    const rawSummaryMessage = options.createSummaryMessage(
-      canonicalSummaryEnvelope,
-    );
+    const compactionContext = renderCompactionContext(run.finalSummary.body);
+    const rawSummaryMessage = options.createSummaryMessage(compactionContext);
     const historyMarkerBase = {
       version: COMPACTION_HISTORY_MARKER_VERSION,
       attempt_id: attemptId,
@@ -596,7 +589,7 @@ async function compactConversationTransactionBody(
             ...hookMetadata,
             hook_event_name: "PostCompact",
             trigger: options.automatic ? "auto" : "manual",
-            compact_summary: canonicalSummaryEnvelope,
+            compact_summary: compactionContext,
           },
           context.abortController?.signal,
         ),
@@ -808,6 +801,23 @@ async function waitForHookUntilAbort<T>(
   } finally {
     removeAbortListener();
   }
+}
+
+/**
+ * Model-visible projection of the committed summary. The summary digest,
+ * pinned tool pairs, record ids and source refs stay in the durable summary,
+ * its payload bundles and the compactionHistory marker: the model cannot use
+ * them, and in the message they would be re-sent with every later request.
+ */
+function renderCompactionContext(body: CompactionSummaryBodyV1): string {
+  return canonicalizeJson({
+    version: 2,
+    kind: COMPACTION_CONTEXT_KIND_V2,
+    trust: "untrusted_historical_data",
+    narrative: body.narrative,
+    facts: body.facts.map((fact) => fact.text),
+    open_actions: body.open_actions.map((action) => action.text),
+  });
 }
 
 function buildCompactionDisplayMessage(

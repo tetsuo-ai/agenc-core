@@ -56,7 +56,7 @@ options. `PreCompact` may return `newCustomInstructions`; those merge into the
 summary focus prompt and **do** count against the summary window. If
 `PreCompact` fails or throws, compaction continues without its focus text.
 `PostCompact` runs only after a flushed `compaction_committed` and receives
-`compact_summary`. Details:
+`compact_summary`, the summary message text the model sees. Details:
 [mcp.md](mcp.md#compaction-summaries-stay-tool-free).
 
 ### Config map shape

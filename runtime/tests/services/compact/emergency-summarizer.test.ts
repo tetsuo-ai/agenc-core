@@ -112,6 +112,15 @@ describe("runtime emergency summarizer", () => {
       // does not expose.
       expect(history[0]).toMatchObject({ role: "developer", content: expect.stringContaining("agenc_compaction_boundary_v1") });
       expect(history[1]).toMatchObject({ role: "user", content: expect.stringContaining("Runtime emergency compaction") });
+      // The emergency tier renders the same model-facing projection.
+      expect(JSON.parse(String(history[1]?.content))).toEqual({
+        facts: [],
+        kind: "agenc_compaction_context_v2",
+        narrative: committed.payload.summary.body.narrative,
+        open_actions: [],
+        trust: "untrusted_historical_data",
+        version: 2,
+      });
       expect(JSON.stringify(history)).not.toContain("Working message 3");
     } finally {
       harness.close();
