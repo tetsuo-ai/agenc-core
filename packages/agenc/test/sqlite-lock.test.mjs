@@ -937,6 +937,11 @@ test("Darwin ACL verdicts reuse only unchanged successful path identities", asyn
   await probe();
   await probe();
   assert.equal(listings, 10, "a path changed during listing must not be cached");
+
+  identity.ctimeNs = 5_000_000_000n;
+  await probe();
+  await probe();
+  assert.equal(listings, 12, "whole-second change times (HFS+) must not be cached");
 });
 
 test("non-Darwin private directory validation does not use the Darwin ACL lister", {

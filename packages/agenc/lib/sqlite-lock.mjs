@@ -432,6 +432,14 @@ async function assertDarwinPathSecurity(path, role, context) {
   );
 }
 
+// HFS+ reports change time in whole seconds, so an ACL edit within the same
+// second can leave the identity unchanged. Only sub-second change times are
+// precise enough to cache a verdict.
+function hasSubsecondChangeTime(stats) {
+  if (typeof stats.ctimeNs === "bigint") return stats.ctimeNs % 1_000_000_000n !== 0n;
+  return Number.isFinite(stats.ctimeMs) && stats.ctimeMs % 1000 !== 0;
+}
+
 function darwinAclIdentity(stats) {
   return [
     stats.dev, stats.ino, stats.ctimeNs ?? stats.ctimeMs,
@@ -472,9 +480,10 @@ async function assertDarwinPathSecurityWithIO(path, role, context, lister, statP
   validateDarwinAclListing(result.stdout, path, role);
   throwIfExpired(context, path);
   // A path changed while ls ran must never seed a verdict for its new state.
-  const after = darwinAclIdentity(await statPath(path));
+  const afterStats = await statPath(path);
+  const after = darwinAclIdentity(afterStats);
   throwIfExpired(context, path);
-  if (after === before) {
+  if (after === before && hasSubsecondChangeTime(afterStats)) {
     if (darwinAclVerdicts.size >= DARWIN_ACL_VERDICT_CACHE_LIMIT) {
       darwinAclVerdicts.delete(darwinAclVerdicts.keys().next().value);
     }
