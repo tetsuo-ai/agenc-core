@@ -13,6 +13,11 @@ import { trustProjectSync } from "../../src/permissions/trust/project-trust.js";
 import * as shell from "../../src/utils/Shell.js";
 
 const cleanups: Array<() => void | Promise<void>> = [];
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(accept => { resolve = accept; });
+  return { promise, resolve };
+}
 afterEach(async () => {
   const errors: unknown[] = [];
   for (const cleanup of cleanups.splice(0).reverse()) {
@@ -67,8 +72,8 @@ describe("canonical bootstrap prepared-sampling authority", () => {
       return undefined;
     });
     const swapped = vi.fn<PreparedSamplingValidator>(() => { throw new Error("replacement must not run"); });
-    const entered = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<string>();
+    const entered = deferred<void>();
+    const release = deferred<string>();
     vi.spyOn(shell, "findSuitableShell").mockImplementation(async () => { entered.resolve(); return release.promise; });
     const options: BootstrapLocalRuntimeSessionOptions = {
       apiKey: "synthetic-unused", cwd, conversationId: runId,
