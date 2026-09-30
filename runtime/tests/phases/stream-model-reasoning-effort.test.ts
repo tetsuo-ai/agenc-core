@@ -3,7 +3,7 @@ import type { ReasoningEffort } from "../../src/session/turn-context.js";
 import desktopEffortCatalog from "../llm/desktop-effort-catalog.json";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
-import { resolveSessionReasoningEffort } from "../../src/phases/stream-model.js";
+import { resolveSessionReasoningEffort } from "../../src/session/session-reasoning-effort.js";
 import { sessionConfigurationFromAgenCConfig } from "../../src/session/configuration.js";
 import { defaultConfig } from "../../src/config/schema.js";
 

@@ -966,6 +966,13 @@ function createTeammateRolloutOwner(params: {
     const admissionSession = {
       conversationId: sessionId,
       modelInfo: params.parentSession.modelInfo,
+      // Compaction sends the reasoning effort the teammate's own requests
+      // send: createTurnCompatSession gives them the parent session's
+      // current configuration and the teammate's model.
+      get sessionConfiguration() {
+        return params.parentSession.sessionConfiguration
+      },
+      config: { model: params.model },
       rolloutStore: store,
       services: {
         ...params.parentSession.services,

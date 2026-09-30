@@ -10,6 +10,7 @@
  */
 
 import type { LLMMessage } from "../../llm/types.js";
+import { isRecord } from "../../utils/record.js";
 import type { CompactionStage } from "./transaction-types.js";
 import { conservativeOutputTokenEstimate } from "./transaction-limits.js";
 
@@ -117,7 +118,7 @@ function digestTranscript(payload: unknown): EmergencyDigest {
           for (const call of entry.tool_calls) {
             const name = typeof call.name === "string" ? call.name : "tool";
             digest.toolCalls.set(name, (digest.toolCalls.get(name) ?? 0) + 1);
-            const args = typeof call.arguments === "string" ? call.arguments : "";
+            const args = argumentsText(call.arguments);
             digest.latestToolCalls.push(
               args.length > 0 ? `${name}(${truncateUtf8(args, MAX_TOOL_ARGUMENT_BYTES)})` : name,
             );
@@ -127,6 +128,25 @@ function digestTranscript(payload: unknown): EmergencyDigest {
     }
   }
   return digest;
+}
+
+/**
+ * The transcript embeds arguments that parse as JSON values, with sorted
+ * object keys, and others as the sent string. An object's shorter entries
+ * come first, so one long value (a Write's content, a MultiEdit's edits)
+ * cannot push the target path past MAX_TOOL_ARGUMENT_BYTES.
+ */
+function argumentsText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === undefined) return "";
+  if (!isRecord(value)) return JSON.stringify(value);
+  const entries = Object.entries(value).map(([key, entry]) => {
+    const text = `${JSON.stringify(key)}:${JSON.stringify(entry)}`;
+    return { text, bytes: Buffer.byteLength(text, "utf8") };
+  });
+  // Array sort is stable, so entries of equal size keep their order.
+  entries.sort((left, right) => left.bytes - right.bytes);
+  return `{${entries.map((entry) => entry.text).join(",")}}`;
 }
 
 function section(narrative: string, heading: string): string | undefined {
@@ -160,7 +180,7 @@ function digestSummaries(payload: unknown): EmergencyDigest {
   const summaries = (payload as { summaries?: unknown } | undefined)?.summaries;
   if (!Array.isArray(summaries)) return digest;
   for (const child of summaries) {
-    const narrative = (child as { body?: { narrative?: unknown } } | undefined)?.body?.narrative;
+    const narrative = (child as { narrative?: unknown } | undefined)?.narrative;
     if (typeof narrative !== "string") continue;
     const header = parseHeader(narrative);
     digest.droppedMessages += header.messages;

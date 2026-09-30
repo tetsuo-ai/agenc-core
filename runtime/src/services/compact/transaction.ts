@@ -53,7 +53,7 @@ import {
 import {
   COMPACTION_ACCOUNTING_DIGEST_DOMAIN,
   COMPACTION_CONFIGURATION_DIGEST_DOMAIN,
-  COMPACTION_CONTEXT_KIND_V1,
+  COMPACTION_CONTEXT_KIND_V2,
   COMPACTION_EVENT_FORMAT_VERSION,
   COMPACTION_MINIMUM_READER_RUNTIME,
   COMPACTION_POLICY_DIGEST_DOMAIN,
@@ -79,6 +79,7 @@ import {
   type CompactionSourcePayloadBundlesV1,
   type CompactionSourceRefV1,
   type CompactionStage,
+  type CompactionSummaryBodyV1,
   type CompactionSummaryRefV1,
   type CompactionSummaryDagV1,
   type CompactionSummaryV1,
@@ -95,6 +96,8 @@ import {
 import type { CompactContext, CompactionResult, RuntimeMessage } from "./types.js";
 import { COMPACTION_HISTORY_MARKER_VERSION } from "../../session/compaction-history-marker.js";
 import { bindExecutionAdmissionJournal } from "../../session/execution-admission-journal.js";
+import { resolveMainLoopReasoningEffort } from "../../session/session-reasoning-effort.js";
+import { runWithCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
 import {
   compactActiveHistoryEntries,
   createCompactionPayloadBundleV1,
@@ -368,6 +371,10 @@ async function compactConversationTransactionBody(
     providerOptions.model ??
     session.modelInfo.slug ??
     COMPACTION_UNKNOWN_MODEL;
+  // Summary calls send the effort the main loop sends. Without one the
+  // provider default applies, which can be higher: xAI's is high on grok-4.6,
+  // the configured default is medium.
+  const reasoningEffort = resolveSummaryReasoningEffort(session);
   const policyMaterial = {
     map: getCompactionSystemPrompt("map", direction),
     reduce: getCompactionSystemPrompt("reduce", direction),
@@ -486,19 +493,12 @@ async function compactConversationTransactionBody(
       requestedFocus,
       providerName,
       model,
+      reasoningEffort,
       startedAt,
     }));
     deadline.assertActive();
-    const canonicalSummaryEnvelope = canonicalizeJson({
-      version: 1,
-      kind: COMPACTION_CONTEXT_KIND_V1,
-      trust: "untrusted_historical_data",
-      summary_sha256: run.finalSummary.summary_sha256,
-      body: run.finalSummary.body,
-    });
-    const rawSummaryMessage = options.createSummaryMessage(
-      canonicalSummaryEnvelope,
-    );
+    const compactionContext = renderCompactionContext(run.finalSummary.body);
+    const rawSummaryMessage = options.createSummaryMessage(compactionContext);
     const historyMarkerBase = {
       version: COMPACTION_HISTORY_MARKER_VERSION,
       attempt_id: attemptId,
@@ -596,7 +596,7 @@ async function compactConversationTransactionBody(
             ...hookMetadata,
             hook_event_name: "PostCompact",
             trigger: options.automatic ? "auto" : "manual",
-            compact_summary: canonicalSummaryEnvelope,
+            compact_summary: compactionContext,
           },
           context.abortController?.signal,
         ),
@@ -742,6 +742,27 @@ function readCompactionPermissionMode(
   }
 }
 
+/**
+ * The effort the session's next main-loop turn sends. A turn resolves it
+ * under the session's own settings authority, which Session.runTurn binds.
+ * A compaction can run outside a turn with no authority bound (the daemon's
+ * manual compaction), so it binds the session's here.
+ */
+function resolveSummaryReasoningEffort(
+  session: NonNullable<CompactContext["admissionSession"]>,
+): LLMChatOptions["reasoningEffort"] {
+  const resolve = () =>
+    resolveMainLoopReasoningEffort(session, {
+      reasoningEffort:
+        session.sessionConfiguration?.collaborationMode.reasoningEffort,
+      modelInfo: session.modelInfo,
+    });
+  const configStore = session.services.configStore;
+  return configStore === undefined
+    ? resolve()
+    : runWithCanonicalSettingsAuthority(configStore, resolve);
+}
+
 function mergeCompactionFocus(
   explicitInstructions: string,
   additionalInstructions: string | undefined,
@@ -810,6 +831,23 @@ async function waitForHookUntilAbort<T>(
   }
 }
 
+/**
+ * Model-visible projection of the committed summary. The summary digest,
+ * pinned tool pairs, record ids and source refs stay in the durable summary,
+ * its payload bundles and the compactionHistory marker: the model cannot use
+ * them, and in the message they would be re-sent with every later request.
+ */
+function renderCompactionContext(body: CompactionSummaryBodyV1): string {
+  return canonicalizeJson({
+    version: 2,
+    kind: COMPACTION_CONTEXT_KIND_V2,
+    trust: "untrusted_historical_data",
+    narrative: body.narrative,
+    facts: body.facts.map((fact) => fact.text),
+    open_actions: body.open_actions.map((action) => action.text),
+  });
+}
+
 function buildCompactionDisplayMessage(
   hookDiagnostics: readonly string[],
 ): string {
@@ -827,6 +865,7 @@ async function runSummaryTree(params: {
   readonly requestedFocus: string;
   readonly providerName: string;
   readonly model: string;
+  readonly reasoningEffort: LLMChatOptions["reasoningEffort"];
   readonly startedAt: number;
 }): Promise<{
   readonly finalSummary: CompactionSummaryV1;
@@ -938,6 +977,7 @@ async function runSummaryTree(params: {
         systemPrompt: params.policyMaterial[stage],
         providerName: params.providerName,
         model: params.model,
+        reasoningEffort: params.reasoningEffort,
         callCount,
         attemptId: params.attemptId,
         contextWindowTokens: params.plan.context_window_tokens,
@@ -1048,7 +1088,6 @@ async function runSummaryTree(params: {
           structuredReductionMessages({
             children: group.map((node) => ({
               ref_id: node.ref.ref_id,
-              sha256: node.ref.sha256,
               body: node.summary.body,
             })),
             stage: "reduce",
@@ -1066,7 +1105,6 @@ async function runSummaryTree(params: {
     structuredReductionMessages({
       children: level.map((node) => ({
         ref_id: node.ref.ref_id,
-        sha256: node.ref.sha256,
         body: node.summary.body,
       })),
       stage: "final",
@@ -1253,6 +1291,7 @@ async function invokeCompactionProvider(params: {
   readonly systemPrompt: string;
   readonly providerName: string;
   readonly model: string;
+  readonly reasoningEffort: LLMChatOptions["reasoningEffort"];
   readonly callCount: number;
   readonly attemptId: string;
   readonly contextWindowTokens: number;
@@ -1267,6 +1306,7 @@ async function invokeCompactionProvider(params: {
     systemPrompt: params.systemPrompt,
     maxOutputTokens: params.outputReserveTokens,
     contextWindowTokens: params.contextWindowTokens,
+    reasoningEffort: params.reasoningEffort,
     // Compaction is a constrained summarization call, not an agent turn. Keep
     // it explicitly tool-free so constructor-scoped client tools and
     // provider-native server tools cannot be added after preflight token
