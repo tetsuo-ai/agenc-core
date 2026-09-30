@@ -62,3 +62,12 @@ The importer, `scripts/preserve-light-work.mjs`, is a one-use preservation tool
 with an audit mode. It neither launches a client/provider nor writes a financial
 ledger. Its credential-pattern check is a precaution, not a proof of arbitrary
 content safety. Do not use it to blanket-publish private operational archives.
+
+## Subsequent callback validation
+
+`callback-validation-v1/` adds six source/configuration/document files as a
+separate versioned snapshot; it does not overwrite the frozen draft. The callback
+has now passed 25 offline tests and strict types. Read its validation note for
+the first failed typecheck, exact hashes and limits. Its six private log/result
+files are retained only in Desktop. These additions are separate from the
+original 848-file preservation count above. No real-client or performance claim.

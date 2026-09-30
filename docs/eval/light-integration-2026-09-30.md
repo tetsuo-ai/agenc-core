@@ -267,7 +267,12 @@ preserves 2,085 original files with per-file hashes under
 Reviewed accounting ledgers remain private and byte-identical. Separate original
 experimental branches were verified remotely; they were not merged here.
 
-The new callback publisher and synthetic test draft are frozen and archived,
-**not executed or typechecked yet**. Their preservation is not another benchmark
-result. No provider call, client launch, merge, release or deployment occurred
-during the preservation step. Historical pins and paths were not rewritten.
+At the preservation checkpoint the callback publisher and synthetic tests were
+frozen but unexecuted. The subsequent
+[callback validation checkpoint](../../experiments/light/2026-09-30/callback-validation-v1/CALLBACK-VALIDATION.md)
+now passes **25/25 offline tests, zero skips, and strict no-emit TypeScript**.
+The first typecheck failure is retained; the only correction supplies the test's
+actual filesystem explicitly to the financial owner. Callback production logic
+remains unchanged. This is not actual observer/client execution or a new model
+benchmark result. All deployment/containment gates remain false; the Linux PC
+still timed out before authentication and its saved control connection was absent.

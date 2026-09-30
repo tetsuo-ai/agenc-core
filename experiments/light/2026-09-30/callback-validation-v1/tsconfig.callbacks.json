@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.companion.json",
+  "compilerOptions": {
+    "paths": {
+      "agenc-selected/*": ["/private/tmp/light-clean-cli-validator-v2-GANyA9/source/runtime/src/*"],
+      "bun:bundle": ["/private/tmp/light-clean-cli-validator-v2-GANyA9/source/runtime/src/build/feature.ts"],
+      "bun:test": ["/private/tmp/light-clean-cli-validator-v2-GANyA9/source/runtime/tests/helpers/bun-test-shim.ts"],
+      "src/*": ["/private/tmp/light-clean-cli-validator-v2-GANyA9/source/runtime/src/*"],
+      "vitest": ["/private/tmp/light-clean-cli-validator-v2-GANyA9/source/node_modules/vitest/dist/index.d.ts"]
+    }
+  },
+  "include": [
+    "fixture-callbacks.ts", "fixture-callbacks.test.ts",
+    "/private/tmp/light-clean-cli-validator-v2-GANyA9/source/runtime/src/types/**/*.d.ts"
+  ],
+  "exclude": []
+}

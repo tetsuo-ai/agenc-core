@@ -22,7 +22,9 @@ const frozenSelections = new Map([
   ['/private/tmp/light-runtime/core/runtime/benchmarks/runtime-overhead',
     ['REPORT.md', 'ROUND2.md', 'summarize.py', 'test_summarize.py']],
   ['/private/tmp/light-takeover/fair-confirmation/current-cli-observer-v1',
-    ['fixture-callbacks.ts', 'fixture-callbacks.test.ts']],
+    ['fixture-callbacks.ts', 'fixture-callbacks.test.ts', 'vitest.callbacks.config.mts',
+      'tsconfig.callbacks.json', 'check-callbacks.mjs', 'CALLBACK-VALIDATION.md',
+      'callback-checks-first', 'callback-checks-corrected']],
   ['/private/tmp/light-ultra/bench', ['scan_credentials.py']],
   ['/private/tmp/light-port/bench', ['review_credential_scan.py', 'scan_task_credentials.py']],
 ]);
@@ -56,7 +58,7 @@ const patterns = {
 };
 function refuse(relative, reason) {excluded.push({path: relative, reason});}
 function inspect(relative, topLevel = false) {
-  if (frozenSelection && !frozenSelection.includes(relative)) return;
+  if (frozenSelection && !frozenSelection.some(selected => relative === selected || relative.startsWith(selected + '/'))) return;
   const filename = path.join(source, relative), stat = fs.lstatSync(filename);
   if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile())) return refuse(relative, 'non_regular');
   if (stat.isDirectory()) {
@@ -64,7 +66,7 @@ function inspect(relative, topLevel = false) {
     if (predecessor && (fs.existsSync(path.join(filename, '.git'))
       || ['sources', 'pi-source', 'pi-reference-full', 'raw'].includes(path.basename(relative))))
       return refuse(relative, 'embedded_repository_third_party_or_raw_capture');
-    if (!predecessor && topLevel && !roots.has(relative)) return refuse(relative, 'outside_selected_light_artifact_roots');
+    if (!predecessor && !frozenSelection && topLevel && !roots.has(relative)) return refuse(relative, 'outside_selected_light_artifact_roots');
     for (const name of fs.readdirSync(filename).sort()) inspect(path.join(relative, name));
     return;
   }
@@ -90,7 +92,8 @@ function inspect(relative, topLevel = false) {
     || codeExtensions.has(path.extname(relative)) && (topLevel
     || relative.startsWith('harness/') || relative.startsWith('bench/')
     || ['evidence/measured-baseline.patch', 'evidence/runner-initial.py'].includes(relative));
-  const publicCode = frozenSelections.has(source) || !privateSelections.has(source) && !generated && (predecessor ? predecessorPublic : topLevel ? rootCode.has(relative)
+  const publicCode = frozenSelections.has(source) ? !relative.startsWith('callback-checks-')
+    : !privateSelections.has(source) && !generated && (predecessor ? predecessorPublic : topLevel ? rootCode.has(relative)
     : codeExtensions.has(path.extname(relative)) || path.basename(relative) === 'source-pins.json'
       || /^tsconfig.*\.json$/.test(path.basename(relative)));
   records.push({path: relative, bytes: raw.length, sha256: sha(raw), publicCode});

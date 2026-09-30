@@ -9,3 +9,5 @@
 !frozen-callbacks/SOURCE-MANIFEST.json
 !ultra-scanner/SOURCE-MANIFEST.json
 !port-scanners/SOURCE-MANIFEST.json
+!callback-validation-v1/SOURCE-MANIFEST.json
+!callback-validation-v1/tsconfig.callbacks.json
