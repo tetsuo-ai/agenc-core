@@ -1,0 +1,53 @@
+model gpt-5.6-sol  phases ['matched-v4-heldout-sol']  cells 24  matched pairs 12  tasks 12
+
+task                     rep agent pass calls    input   cached    out    cost $  wall s
+H01-stable-merge         1   light Y        5    14384        0   2503       n/a    58.3
+H01-stable-merge         1   pi    Y        6    15560     4224   2491       n/a    60.9
+H02-incremental-utf8     1   light Y        6    14050        0   1762       n/a    46.4
+H02-incremental-utf8     1   pi    Y        5    10961     4096   1234       n/a    33.0
+H03-expiring-map         1   light Y        6    14535        0   1571       n/a    45.0
+H03-expiring-map         1   pi    Y        6    15242     4480   1642       n/a    48.2
+H04-jsonl-summary-cli    1   light Y        6    16566        0   2535       n/a    63.0
+H04-jsonl-summary-cli    1   pi    Y        7    21884     5504   2678       n/a    70.1
+H05-relative-path-catalog 1   light Y        7    25447        0   3134       n/a    74.6
+H05-relative-path-catalog 1   pi    Y        7    24864     8320   3016       n/a    74.3
+H06-configuration-precedence 1   light Y        7    20864        0   2151       n/a    62.0
+H06-configuration-precedence 1   pi    Y        5    10780     1408    946       n/a    34.4
+H07-coalescing-intervals 1   light Y        6    17845        0   2373       n/a    57.5
+H07-coalescing-intervals 1   pi    Y        9    23541        0   1751       n/a    55.6
+H08-first-error-parser   1   light Y        6    16969        0   2356       n/a    60.4
+H08-first-error-parser   1   pi    Y        6    14889     2688   1471       n/a    36.5
+H09-bounded-queue        1   light Y        6    16007        0   1565       n/a    44.5
+H09-bounded-queue        1   pi    Y        6    13288        0   1169       n/a    34.6
+H10-archive-listing      1   light Y        7    20987        0   2438       n/a    71.4
+H10-archive-listing      1   pi    Y        7    21177     1152   2312       n/a    58.2
+H11-graph-ordering       1   light Y        8    29899     4992   2893       n/a    73.4
+H11-graph-ordering       1   pi    Y        6    15953     1152   1927       n/a    52.6
+H12-batch-router         1   light Y       15    70985     1280   3888       n/a   116.0
+H12-batch-router         1   pi    Y       11    33932     3840   2392       n/a    69.4
+
+light pass 12/12  calls 85  input 278538  cached 6272  uncached+output 301435  cost inconclusive (usage incomplete or flagged)  median 61.2s  p90 74.6s
+pi    pass 12/12  calls 81  input 222071  cached 36864  uncached+output 208236  cost inconclusive (usage incomplete or flagged)  median 54.1s  p90 70.1s
+
+by category (Light / Pi): pass, calls, median wall s
+  artifact-task                    pass 1/1 of 1  calls 7/7  wall 74.6/74.3
+  behavior-preserving-refactor     pass 1/1 of 1  calls 6/6  wall 60.4/36.5
+  boundary-bug                     pass 1/1 of 1  calls 6/5  wall 46.4/33.0
+  cli                              pass 1/1 of 1  calls 7/7  wall 71.4/58.2
+  cli-feature                      pass 1/1 of 1  calls 6/7  wall 63.0/70.1
+  deterministic-state-bug          pass 1/1 of 1  calls 6/6  wall 45.0/48.2
+  feature                          pass 2/2 of 2  calls 23/17  wall 94.7/61.0
+  feature-tests                    pass 1/1 of 1  calls 6/9  wall 57.5/55.6
+  iterator-bug                     pass 1/1 of 1  calls 5/6  wall 58.3/60.9
+  repair                           pass 1/1 of 1  calls 6/6  wall 44.5/34.6
+  repository-question              pass 1/1 of 1  calls 7/5  wall 62.0/34.4
+
+Light failed where Pi passed: none
+Light passed where Pi failed: none
+
+Light minus Pi, mean per cell, 95% bootstrap over whole tasks:
+  wall seconds: +12.052  [+4.041, +20.951]  Light higher
+  model calls: +0.33333  [-0.66667, +1.3333]  inconclusive
+  uncached+output tokens: +7766.6  [+2581.1, +14930]  Light higher
+  cost usd: inconclusive (usage incomplete or flagged)
+  (one repeat: initial diagnostic panel, not evidence of superiority)

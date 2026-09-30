@@ -19,7 +19,14 @@ PANELS = [
 def load(panel):
     rows = []
     for d in panel['dirs']:
-        rows += [json.loads(p.read_text()) for p in sorted(d.glob('*/result.json'))]
+        for p in sorted(d.glob('*/result.json')):
+            r = json.loads(p.read_text())
+            for g in sorted(p.parent.glob('regrade-*.json')):
+                fix = json.loads(g.read_text())
+                r['check_pass'] = fix['check_pass']
+                r['pass'] = fix['check_pass'] and r['exit_code'] == 0 and not r['timeout'] and not r.get('budget_stop')
+                r['regraded'] = True
+            rows.append(r)
     audits = [json.loads(p.read_text()) for p in panel['audits'] if p.exists()]
     for d in panel['dirs']:
         audits += [json.loads(p.read_text()) for p in sorted(d.glob('audit*.json')) if p not in panel['audits']]
@@ -54,8 +61,9 @@ def fmt_int(n):
     return f'{n / 1e6:.2f}M' if n >= 1e6 else f'{n / 1e3:.0f}k' if n >= 1e4 else str(n)
 
 
-data = []
-for panel in PANELS:
+def compute(panels):
+  data = []
+  for panel in panels:
     if not any(d.exists() for d in panel['dirs']):
         continue
     rows, pairs, flagged, settings, audited = load(panel)
@@ -84,6 +92,16 @@ for panel in PANELS:
     data.append({**panel, 'pairs': len(pairs), 'repeats': len({l['repeat'] for l, _ in pairs}), 'agents': agents, 'diffs': diffs,
                  'outcomes': outcomes, 'settings_tuples': len(settings), 'audited': audited, 'flags': len(flagged),
                  'usage_ok': usage_ok})
+  return data
+
+
+data = compute(PANELS)
+HELDOUT = [
+    {'key': 'h-luna', 'label': 'GPT-6 Luna', 'note': 'Held-out, direct API', 'dirs': [BASE / 'matched-v4/results-heldout-luna'], 'audits': [], 'priced': True},
+    {'key': 'h-ds', 'label': 'DeepSeek Flash', 'note': 'Held-out, API', 'dirs': [BASE / 'matched-v4-ds/results-heldout-ds'], 'audits': [], 'priced': True},
+    {'key': 'h-sol', 'label': 'GPT-5.6 Sol', 'note': 'Held-out, ChatGPT sign-in', 'dirs': [BASE / 'matched-v4-sol/results-heldout-sol'], 'audits': [], 'priced': False},
+]
+heldout = compute(HELDOUT)
 
 TASK_NAMES = {'01-chunked-strict': 'chunked strict', '02-split-limit': 'split limit', '03-window-padding': 'window padding',
               '04-count-by': 'count_by feature', '05-empty-refactor': 'first/last refactor', '06-key-rotation-map': 'key rotation question',
@@ -104,8 +122,8 @@ METRICS = [('time', 'Time per task', 's', 1), ('calls', 'Model calls per task', 
            ('tokens', 'Uncached + output tokens per task', '', 0), ('cost', 'Cost per task', '$', 5)]
 
 
-def forest(metric, title, unit, digits):
-    rows = [(p['label'], p['diffs'][metric]) for p in data if metric in p['diffs']]
+def forest(metric, title, unit, digits, dataset=None):
+    rows = [(p['label'], p['diffs'][metric]) for p in (data if dataset is None else dataset) if metric in p['diffs']]
     if not rows:
         return ''
     lo = min(min(d[1] for _, d in rows), 0)
@@ -138,17 +156,22 @@ def cell(v):
     return '<span class="mark pass" title="passed">✓</span>' if v else '<span class="mark fail" title="failed">✗</span>'
 
 
-summary_rows = []
-for p in data:
+def summary(dataset):
+  out = []
+  for p in dataset:
     L, P = p['agents']['light'], p['agents']['pi']
     cost = (f'${L["cost"]:.4f}', f'${P["cost"]:.4f}') if L['cost'] is not None else ('not priced', 'not priced')
-    summary_rows.append(f'''<tr><th scope="row">{e(p["label"])}<span class="sub">{e(p["note"])} · {p["repeats"]} run{"s" if p["repeats"] > 1 else ""}, {p["pairs"]} pairs</span></th>
+    out.append(f'''<tr><th scope="row">{e(p["label"])}<span class="sub">{e(p["note"])} · {p["repeats"]} run{"s" if p["repeats"] > 1 else ""}, {p["pairs"]} pairs</span></th>
 <td class="num"><b>{L["pass"]}</b>/{L["n"]}</td><td class="num"><b>{P["pass"]}</b>/{P["n"]}</td>
 <td class="num">{L["calls"]}</td><td class="num">{P["calls"]}</td>
 <td class="num">{fmt_int(L["uo"])}</td><td class="num">{fmt_int(P["uo"])}</td>
 <td class="num">{cost[0]}</td><td class="num">{cost[1]}</td>
 <td class="num">{L["median"]:.1f}s</td><td class="num">{P["median"]:.1f}s</td></tr>''')
+  return out
 
+
+summary_rows = summary(data)
+heldout_rows = summary(heldout)
 tasks = sorted({t for p in data for t in p['outcomes']})
 head = ''.join(f'<th scope="col" colspan="2">{e(p["label"])}</th>' for p in data)
 sub = ''.join('<th scope="col" class="agent">Light</th><th scope="col" class="agent">Pi</th>' for _ in data)
@@ -164,6 +187,20 @@ PHRASES = {'time': ('Light is faster', 'Light is slower'), 'calls': ('Light make
            'tokens': ('Light uses fewer tokens', 'Light uses more tokens'), 'cost': ('Light costs less', 'Light costs more')}
 sig = [f'{PHRASES[m[0]][0 if verdict(p["diffs"][m[0]]) == "Light lower" else 1]} on {p["label"]}' for p in data for m in METRICS
        if m[0] in p['diffs'] and verdict(p['diffs'][m[0]]) != 'even']
+SHORT = {'time': ('is faster', 'is slower'), 'calls': ('makes fewer model calls', 'makes more model calls'),
+         'tokens': ('uses fewer tokens', 'uses more tokens'), 'cost': ('costs less', 'costs more')}
+held_sig = []
+for p in heldout:
+    parts = [SHORT[m[0]][0 if verdict(p['diffs'][m[0]]) == 'Light lower' else 1] for m in METRICS
+             if m[0] in p['diffs'] and verdict(p['diffs'][m[0]]) != 'even']
+    if parts:
+        held_sig.append(f'on {p["label"]} Light ' + (', '.join(parts[:-1]) + ' and ' + parts[-1] if len(parts) > 1 else parts[0]))
+held_line = ''
+if heldout:
+    hp = sum(p['pairs'] for p in heldout)
+    hl = sum(p['agents']['light']['pass'] for p in heldout); hpi = sum(p['agents']['pi']['pass'] for p in heldout)
+    held_line = (f' <b>On the held-out tasks</b> ({hp} pairs so far), Light passed {hl} and Pi passed {hpi}'
+                 + ('; ' + '; '.join(held_sig) + '.' if held_sig else '.'))
 total_pairs = sum(p['pairs'] for p in data)
 light_pass = sum(p['agents']['light']['pass'] for p in data)
 pi_pass = sum(p['agents']['pi']['pass'] for p in data)
@@ -234,7 +271,7 @@ code {{ font-family: var(--mono); font-size: 0.9em; }}
   <p class="meta">Matched benchmark · updated {e(now)}</p>
   <h1><span class="l">AgenC Light</span> vs <span class="p">Pi</span></h1>
   <p class="lede">Two coding agents get the same 12 coding tasks, the same model and the same settings, and we compare whether they finish the task, how many model calls and tokens they spend, what it costs and how long it takes.</p>
-  <p class="answer"><b>Where it stands:</b> across {total_pairs} matched task pairs, Light passed {light_pass} and Pi passed {pi_pass}. Time, tokens and cost are even within the uncertainty on every model.{(" The one clear difference: " + "; ".join(e(s) for s in sig) + ".") if sig else ""} That is not yet evidence that either agent is better.</p>
+  <p class="answer"><b>Where it stands:</b> across {total_pairs} matched task pairs, Light passed {light_pass} and Pi passed {pi_pass}. Time, tokens and cost are even within the uncertainty on every model.{(" The one clear difference: " + "; ".join(e(s) for s in sig) + ".") if sig else ""} That is not yet evidence that either agent is better.{held_line}</p>
 </header>
 
 <section>
@@ -255,12 +292,40 @@ code {{ font-family: var(--mono); font-size: 0.9em; }}
 </section>
 
 <section>
+  <h2>Held-out confirmation</h2>
+  <p class="prose">Twelve new tasks written by an independent author and frozen before any agent saw them, used once to check the results above. Light here is the same unchanged build.</p>
+  {"" if heldout_rows else '<p class="meta">Running now.</p>'}
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Model</th><th scope="col" colspan="2">Tasks passed</th><th scope="col" colspan="2">Model calls</th><th scope="col" colspan="2">Uncached + output tokens</th><th scope="col" colspan="2">Cost</th><th scope="col" colspan="2">Median time</th></tr>
+    <tr><th></th><th class="agent">Light</th><th class="agent">Pi</th><th class="agent">Light</th><th class="agent">Pi</th><th class="agent">Light</th><th class="agent">Pi</th><th class="agent">Light</th><th class="agent">Pi</th><th class="agent">Light</th><th class="agent">Pi</th></tr></thead>
+    <tbody>{"".join(heldout_rows)}</tbody>
+  </table></div>
+  <div class="forests">{"".join(forest(*m, dataset=heldout) for m in METRICS)}</div>
+  <p class="prose meta">Two grading faults were fixed during these runs, both affecting the two agents alike: H07's check could not read a file it needed in the first packaging, and the H07, H11 and H12 checks crashed on doctest-style README examples. Every affected run of both agents was graded again on its saved final code; one result changed (DeepSeek H07, Pi, fail to pass) and none went from pass to fail.</p>
+</section>
+
+<section>
   <h2>Every task, every run</h2>
   <p class="prose meta">One mark per run. ✓ passed the hidden check, ✗ failed it.</p>
   <div class="scroll"><table class="tasks">
     <thead><tr><th scope="col">Task</th>{head}</tr><tr><th></th>{sub}</tr></thead>
     <tbody>{"".join(task_rows)}</tbody>
   </table></div>
+</section>
+
+<section>
+  <h2>Where Light's extra time goes</h2>
+  <p class="prose">Measured on the benchmark's Linux container (2 CPUs) with a local fake model server, so only AgenC's own work is timed. Light starts a background daemon for every headless run; Pi runs in one process and reaches its first model request in about 0.3 s.</p>
+  <div class="scroll"><table>
+    <thead><tr><th scope="col">Stage of a headless Light run</th><th scope="col" class="agent">Ends at</th><th scope="col" class="agent">Takes</th></tr></thead>
+    <tbody>
+      <tr><th scope="row">Command starts and decides to launch the daemon</th><td class="num">285 ms</td><td class="num">285 ms</td></tr>
+      <tr><th scope="row">Daemon process boots</th><td class="num">970 ms</td><td class="num">~670 ms</td></tr>
+      <tr><th scope="row">Session setup (services, mount, sidecars)</th><td class="num">1,202 ms</td><td class="num">~230 ms</td></tr>
+      <tr><th scope="row">First model request</th><td class="num">1,238 ms</td><td class="num"></td></tr>
+    </tbody>
+  </table></div>
+  <p class="prose meta">Median of 5 warm runs. On the Luna runs Light also fetched the model list over the network first (0.4 to 0.6 s), caused by the harness; <a href="https://github.com/tetsuo-ai/agenc-core/pull/2830">#2830</a> removes that lookup for the official URL.</p>
 </section>
 
 <section class="cols">
@@ -282,6 +347,7 @@ code {{ font-family: var(--mono); font-size: 0.9em; }}
       <li>Headless Light refused every shell command under accept-edits mode. Fix: <a href="https://github.com/tetsuo-ai/agenc-core/pull/2827">agenc-core #2827</a>.</li>
       <li>On Linux without bubblewrap, every command in a git repository failed after startup. Fix, fail early with the remedy: <a href="https://github.com/tetsuo-ai/agenc-core/pull/2828">#2828</a>.</li>
       <li>macOS startup repeated about 108 permission-list subprocesses; caching cuts it to 43. <a href="https://github.com/tetsuo-ai/agenc-core/pull/2829">#2829</a>.</li>
+      <li>An explicit default <code>OPENAI_BASE_URL</code> made every session fetch the model list before starting. <a href="https://github.com/tetsuo-ai/agenc-core/pull/2830">#2830</a>.</li>
       <li>Light's one repeated miss: task 12 on Luna (2 of 3 runs) returned original items instead of callback values.</li>
     </ul>
     <h2 style="margin-top:18px">Next</h2>

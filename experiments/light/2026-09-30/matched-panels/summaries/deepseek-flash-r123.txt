@@ -1,0 +1,98 @@
+model deepseek-flash  phases ['matched-v3-ds-flash-r1', 'matched-v3-ds-flash-r23']  cells 72  matched pairs 36  tasks 12
+
+task                     rep agent pass calls    input   cached    out    cost $  wall s
+01-chunked-strict        1   light Y       15   102010    94464   4117   0.00389    44.5
+01-chunked-strict        1   pi    Y       13    70533    64128   3417   0.00320    36.8
+01-chunked-strict        2   light Y       11    72176    65408   3408   0.00326    39.8
+01-chunked-strict        2   pi    Y       11    56853    51584   3121   0.00282    33.3
+01-chunked-strict        3   light Y       10    52647    46848   2564   0.00255    34.7
+01-chunked-strict        3   pi    Y       15    99997    93184   5706   0.00473    58.1
+02-split-limit           1   light Y       13   103481    95360   6042   0.00513    43.6
+02-split-limit           1   pi    Y       17    99189    93056   4394   0.00384    40.7
+02-split-limit           2   light Y       14    92719    86144   5367   0.00446    49.8
+02-split-limit           2   pi    Y       21   148425   141312   6612   0.00546    64.8
+02-split-limit           3   light Y       14   101723    94336   4640   0.00418    54.5
+02-split-limit           3   pi    Y       13    91400    84992   5207   0.00434    49.0
+03-window-padding        1   light Y       12   132017   124416  14613   0.01028    81.1
+03-window-padding        1   pi    Y       15   173007   161792  11472   0.00905    73.1
+03-window-padding        2   light Y       14    97121    89728   5133   0.00446    49.5
+03-window-padding        2   pi    Y       23   580923   550656  21869   0.01931   129.5
+03-window-padding        3   light Y       12   141433   131968  10407   0.00806    68.7
+03-window-padding        3   pi    Y       23   335692   321536  13614   0.01126    90.4
+04-count-by              1   light N       20   275876   261888   9232   0.00842    66.8
+04-count-by              1   pi    Y       28   390856   376320  11181   0.01002    88.3
+04-count-by              2   light Y       24   380912   363776   9474   0.00935    83.8
+04-count-by              2   pi    Y       25   378495   361472  10485   0.00993    80.6
+04-count-by              3   light Y       15   189942   177408  10887   0.00894    68.1
+04-count-by              3   pi    Y       27   482333   463744  11725   0.01121   101.0
+05-empty-refactor        1   light Y       11    68734    61824   4490   0.00392    42.1
+05-empty-refactor        1   pi    Y       13    57172    52480   2878   0.00259    30.4
+05-empty-refactor        2   light Y        9    32524    29056   2761   0.00226    28.8
+05-empty-refactor        2   pi    Y       15    84735    78464   4256   0.00373    47.3
+05-empty-refactor        3   light Y       16    95432    89216   4622   0.00397    44.1
+05-empty-refactor        3   pi    Y       17   102004    94720   3853   0.00369    43.2
+06-key-rotation-map      1   light Y       12   137321   124160   5289   0.00552    39.8
+06-key-rotation-map      1   pi    Y       17   167406   156032   4604   0.00494    40.2
+06-key-rotation-map      2   light Y       10   119820   105856   6769   0.00647    41.4
+06-key-rotation-map      2   pi    Y       11   125786   113920   5235   0.00526    33.9
+06-key-rotation-map      3   light N       13   231885   217600  18438   0.01386    96.8
+06-key-rotation-map      3   pi    Y       14   160476   148224   4700   0.00510    38.2
+07-source-manifest       1   light Y       13   142839   136448  10328   0.00756    60.8
+07-source-manifest       1   pi    Y       15   125493   118272   7025   0.00565    43.9
+07-source-manifest       2   light Y       17   198643   189568   8826   0.00723    62.6
+07-source-manifest       2   pi    Y        9    55764    50304   4346   0.00358    27.0
+07-source-manifest       3   light Y       14    98042    92672   6752   0.00513    48.1
+07-source-manifest       3   pi    Y       12    76991    71552   5877   0.00456    36.7
+08-integer-encoding      1   light Y        8    33337    29312   2801   0.00237    24.1
+08-integer-encoding      1   pi    Y       16   122144   113792   5490   0.00489    41.8
+08-integer-encoding      2   light Y        6    22430    19072   2762   0.00222    19.5
+08-integer-encoding      2   pi    Y        9    38572    34688   3288   0.00266    21.9
+08-integer-encoding      3   light Y       10    41790    37504   2440   0.00222    24.3
+08-integer-encoding      3   pi    Y       12    62860    58112   4915   0.00384    33.1
+09-separator-payload     1   light Y       11   118113   106112   5909   0.00566    41.7
+09-separator-payload     1   pi    Y       12    97507    88704   3644   0.00377    30.0
+09-separator-payload     2   light Y       13   110755   101760   5843   0.00516    44.3
+09-separator-payload     2   pi    Y       26   295324   282880   9530   0.00843    72.2
+09-separator-payload     3   light Y       10    70836    62208   4038   0.00390    35.4
+09-separator-payload     3   pi    Y       18   156626   147328   6700   0.00586    55.1
+10-expiry-boundary       1   light Y       13    98079    89216   4093   0.00405    36.6
+10-expiry-boundary       1   pi    Y       13   127237   117504   7371   0.00624    42.9
+10-expiry-boundary       2   light Y       10    62506    55808   3869   0.00349    28.7
+10-expiry-boundary       2   pi    Y       20   184013   174208   6813   0.00608    53.7
+10-expiry-boundary       3   light Y       14   134157   123264   5218   0.00513    42.2
+10-expiry-boundary       3   pi    Y       15   175372   163712   7546   0.00677    50.7
+11-compression-marker    1   light Y       12   125551   113664   5284   0.00529    39.7
+11-compression-marker    1   pi    Y       21   237776   224768   6482   0.00651    50.9
+11-compression-marker    2   light Y       14   127721   117632   4718   0.00470    42.9
+11-compression-marker    2   pi    Y       25   361879   345728  11413   0.01031    81.5
+11-compression-marker    3   light Y       14   141976   129280   5632   0.00567    44.3
+11-compression-marker    3   pi    Y       18   208379   195968   8069   0.00729    56.1
+12-partition-map         1   light Y       30   575280   554112  17842   0.01554   126.4
+12-partition-map         1   pi    Y       25   342803   328832  12401   0.01052    85.9
+12-partition-map         2   light Y       25   474495   455424  13648   0.01242   103.9
+12-partition-map         2   pi    Y       16   176924   165504   7825   0.00690    57.8
+12-partition-map         3   light Y       28   446305   429056  10824   0.01037    95.9
+12-partition-map         3   pi    Y       30   552994   534272  13412   0.01246   103.2
+
+light pass 34/36  calls 507  input 5450628  cached 5101568  uncached+output 598140  cost $0.21711  median 44.2s  p90 95.9s
+pi    pass 36/36  calls 630  input 7003940  cached 6623744  uncached+output 646672  cost $0.23679  median 49.8s  p90 90.4s
+
+by category (Light / Pi): pass, calls, median wall s
+  behavior-preserving-refactor     pass 3/3 of 3  calls 36/45  wall 42.1/43.2
+  boundary-bug                     pass 3/3 of 3  calls 37/48  wall 36.6/50.7
+  deferred-planning-feature-tests  pass 3/3 of 3  calls 83/71  wall 103.9/85.9
+  iterator-bug                     pass 3/3 of 3  calls 38/61  wall 68.7/90.4
+  multi-file-feature-tests         pass 2/3 of 3  calls 59/80  wall 68.1/88.3
+  repo-question-search             pass 2/3 of 3  calls 35/42  wall 41.4/38.2
+  serialization-bug                pass 3/3 of 3  calls 40/64  wall 42.9/56.1
+  shell-heavy                      pass 3/3 of 3  calls 44/36  wall 60.8/36.7
+  single-file-bug                  pass 12/12 of 12  calls 135/183  wall 40.7/41.3
+
+Light failed where Pi passed: ['04-count-by r1', '06-key-rotation-map r3']
+Light passed where Pi failed: none
+
+Light minus Pi, mean per cell, 95% bootstrap over whole tasks:
+  wall seconds: -3.4402  [-12.956, +6.5912]  inconclusive
+  model calls: -3.4167  [-5.4722, -1.2222]  Light lower
+  uncached+output tokens: -1348.1  [-4953, +1882.3]  inconclusive
+  cost usd: -0.00054651  [-0.0019436, +0.00079745]  inconclusive

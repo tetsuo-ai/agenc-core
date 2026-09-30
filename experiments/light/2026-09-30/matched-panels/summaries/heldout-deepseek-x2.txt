@@ -1,0 +1,77 @@
+model deepseek-flash  phases ['matched-v4-heldout-ds']  cells 48  matched pairs 24  tasks 12
+REGRADED (harness fix, unchanged checker): H07-coalescing-intervals light r1: pass (regrade-grader-v1.1.json); H07-coalescing-intervals pi r1: pass (regrade-grader-v1.1.json); H11-graph-ordering light r1: pass (regrade-grader-v1.1.json); H11-graph-ordering light r2: pass (regrade-grader-v1.1.json); H11-graph-ordering pi r1: pass (regrade-grader-v1.1.json); H11-graph-ordering pi r2: pass (regrade-grader-v1.1.json); H12-batch-router light r1: pass (regrade-grader-v1.1.json); H12-batch-router pi r1: pass (regrade-grader-v1.1.json)
+
+task                     rep agent pass calls    input   cached    out    cost $  wall s
+H01-stable-merge         1   light Y        9    59821    54528   7143   0.00524    41.6
+H01-stable-merge         1   pi    Y       19   226290   218752  13550   0.00992    80.4
+H01-stable-merge         2   light Y        9    64997    60672   7251   0.00518    41.5
+H01-stable-merge         2   pi    Y       12    86053    80768   7269   0.00540    44.1
+H02-incremental-utf8     1   light Y        7    21844    18944   2545   0.00202    19.4
+H02-incremental-utf8     1   pi    Y        9    31200    27776   2397   0.00204    19.9
+H02-incremental-utf8     2   light Y        6    20762    18048   3588   0.00261    22.7
+H02-incremental-utf8     2   pi    Y       12    50611    46592   4632   0.00352    31.3
+H03-expiring-map         1   light Y        6    19787    16896   2015   0.00169    17.3
+H03-expiring-map         1   pi    Y        6    18938    15872   2047   0.00174    14.7
+H03-expiring-map         2   light Y        5    13113    10624   1465   0.00128    13.4
+H03-expiring-map         2   pi    Y        6    18237    15360   1872   0.00160    13.7
+H04-jsonl-summary-cli    1   light Y        8    32686    30080   4204   0.00300    27.2
+H04-jsonl-summary-cli    1   pi    Y       12    75831    71808   6396   0.00466    40.5
+H04-jsonl-summary-cli    2   light Y       10    66082    62208   7031   0.00499    41.9
+H04-jsonl-summary-cli    2   pi    Y        7    26440    23424   3187   0.00243    20.1
+H05-relative-path-catalog 1   light Y       13    99272    93696   6860   0.00523    46.7
+H05-relative-path-catalog 1   pi    N        9    47668    43904   5095   0.00375    29.3
+H05-relative-path-catalog 2   light Y       12    79393    74752   6975   0.00511    42.8
+H05-relative-path-catalog 2   pi    Y       13    85541    80128   5834   0.00455    36.8
+H06-configuration-precedence 1   light Y        8    26821    23680   1958   0.00172    21.2
+H06-configuration-precedence 1   pi    Y        8    29534    25472   2021   0.00190    16.3
+H06-configuration-precedence 2   light Y        7    24886    21760   2302   0.00192    18.6
+H06-configuration-precedence 2   pi    Y        7    23941    20608   2039   0.00179    16.1
+H07-coalescing-intervals 1   light Y        9    36445    33024   3430   0.00267    25.9
+H07-coalescing-intervals 1   pi    Y        8    27962    24832   2925   0.00230    19.4
+H07-coalescing-intervals 2   light Y       11    52363    48768   4024   0.00310    31.2
+H07-coalescing-intervals 2   pi    Y        8    29259    25984   2790   0.00224    20.9
+H08-first-error-parser   1   light Y        6    20939    17792   2809   0.00221    19.3
+H08-first-error-parser   1   pi    Y        9    32825    28928   2337   0.00207    18.8
+H08-first-error-parser   2   light Y        7    22386    19712   2246   0.00181    18.7
+H08-first-error-parser   2   pi    Y        9    35467    31360   2686   0.00232    21.6
+H09-bounded-queue        1   light Y        6    17942    15232   1715   0.00148    15.7
+H09-bounded-queue        1   pi    Y        7    20266    17408   1639   0.00146    13.7
+H09-bounded-queue        2   light Y        8    27626    24448   1987   0.00174    21.1
+H09-bounded-queue        2   pi    Y        7    21212    18304   1629   0.00147    14.7
+H10-archive-listing      1   light Y        8    41188    37888   5011   0.00362    31.8
+H10-archive-listing      1   pi    Y       12    58164    54144   4231   0.00330    30.6
+H10-archive-listing      2   light Y       11    73762    69376   6782   0.00494    42.4
+H10-archive-listing      2   pi    Y       14    94858    90112   6582   0.00493    41.2
+H11-graph-ordering       1   light Y        6    28480    24704   4198   0.00316    23.9
+H11-graph-ordering       1   pi    Y       15    68338    63744   4369   0.00350    33.1
+H11-graph-ordering       2   light Y        9    39649    36352   4742   0.00345    30.2
+H11-graph-ordering       2   pi    Y       11    63367    58240   4762   0.00380    30.6
+H12-batch-router         1   light Y        7    30681    27264   3749   0.00284    24.1
+H12-batch-router         1   pi    Y       10    43460    39552   2810   0.00239    21.3
+H12-batch-router         2   light Y       11    64987    60544   5479   0.00414    34.2
+H12-batch-router         2   pi    Y        6    22588    19584   3197   0.00243    17.9
+
+light pass 24/24  calls 199  input 985912  cached 900992  uncached+output 184429  cost $0.07515  median 25.0s  p90 42.4s
+pi    pass 23/24  calls 236  input 1238050  cached 1142656  uncached+output 191690  cost $0.07551  median 21.1s  p90 41.2s
+
+by category (Light / Pi): pass, calls, median wall s
+  artifact-task                    pass 2/1 of 2  calls 25/22  wall 44.8/33.0
+  behavior-preserving-refactor     pass 2/2 of 2  calls 13/18  wall 19.0/20.2
+  boundary-bug                     pass 2/2 of 2  calls 13/21  wall 21.1/25.6
+  cli                              pass 2/2 of 2  calls 19/26  wall 37.1/35.9
+  cli-feature                      pass 2/2 of 2  calls 18/19  wall 34.6/30.3
+  deterministic-state-bug          pass 2/2 of 2  calls 11/12  wall 15.3/14.2
+  feature                          pass 4/4 of 4  calls 33/42  wall 27.2/26.0
+  feature-tests                    pass 2/2 of 2  calls 20/16  wall 28.5/20.2
+  iterator-bug                     pass 2/2 of 2  calls 18/31  wall 41.6/62.3
+  repair                           pass 2/2 of 2  calls 14/14  wall 18.4/14.2
+  repository-question              pass 2/2 of 2  calls 15/15  wall 19.9/16.2
+
+Light failed where Pi passed: none
+Light passed where Pi failed: ['H05-relative-path-catalog r1']
+
+Light minus Pi, mean per cell, 95% bootstrap over whole tasks:
+  wall seconds: +1.0693  [-4.0097, +5.3004]  inconclusive
+  model calls: -1.5417  [-3.0833, -0.083333]  Light lower
+  uncached+output tokens: -302.54  [-1386.8, +637.67]  inconclusive
+  cost usd: -1.5345e-05  [-0.00056842, +0.00042955]  inconclusive

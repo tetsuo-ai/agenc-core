@@ -14,7 +14,18 @@ import collections, json, pathlib, random, statistics, sys
 
 EXPECTED_TASKS = 12
 root = pathlib.Path(sys.argv[1])
-rows = [json.loads(p.read_text()) for p in sorted(root.glob('*/result.json'))]
+rows = []
+regraded = []
+for p in sorted(root.glob('*/result.json')):
+    r = json.loads(p.read_text())
+    # A regrade re-runs the unchanged hidden checker on the preserved final repository after a
+    # harness packaging fix. It is applied explicitly and listed, never silently.
+    for g in sorted(p.parent.glob('regrade-*.json')):
+        fix = json.loads(g.read_text())
+        r['check_pass'] = fix['check_pass']
+        r['pass'] = fix['check_pass'] and r['exit_code'] == 0 and not r['timeout'] and not r.get('budget_stop')
+        regraded.append(f"{r['task']} {r['agent']} r{r['repeat']}: {'pass' if r['pass'] else 'fail'} ({g.name})")
+    rows.append(r)
 flagged = {}
 for audit in sys.argv[2:]:
     a = json.loads(pathlib.Path(audit).read_text())
@@ -44,6 +55,8 @@ if len(tasks) != EXPECTED_TASKS:
     print(f'INCOMPLETE: {len(tasks)} of {EXPECTED_TASKS} tasks present')
 if flagged:
     print('AUDIT FLAGS:', json.dumps(flagged))
+if regraded:
+    print('REGRADED (harness fix, unchanged checker):', '; '.join(regraded))
 
 
 def clean_usage(r):
