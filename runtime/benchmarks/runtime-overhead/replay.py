@@ -57,7 +57,10 @@ def command(args, *, env=None, cwd=None, log=None, timeout=120, stdin_text=None)
             not isinstance(args[1], str) or not pathlib.Path(args[1]).is_absolute()):
         raise ValueError('Expected an approved interpreter and absolute script')
     with open(log or '/dev/null','w') as output:
-        return subprocess.run(args,shell=False,input=stdin_text,text=True,env=env,cwd=cwd,stdout=output,stderr=subprocess.STDOUT,timeout=timeout).returncode
+        # Explicitly terminate interpreter options. Everything from the validated
+        # absolute script onward is a script path/argument, never interpreter flags.
+        invocation = [args[0], '--', *args[1:]]
+        return subprocess.run(invocation,shell=False,input=stdin_text,text=True,env=env,cwd=cwd,stdout=output,stderr=subprocess.STDOUT,timeout=timeout).returncode
 
 def responses(source, repo):
     result=[]

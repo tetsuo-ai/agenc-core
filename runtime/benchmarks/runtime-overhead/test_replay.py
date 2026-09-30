@@ -141,7 +141,7 @@ class ReplayTests(unittest.TestCase):
             run.return_value.returncode=0
             args=['node','/work/core/runtime/bin/agenc','literal; $(not-executed)']
             self.assertEqual(m.command(args),0)
-            self.assertEqual(run.call_args.args[0],args)
+            self.assertEqual(run.call_args.args[0],[args[0],'--',*args[1:]])
             self.assertIs(run.call_args.kwargs['shell'],False)
     def test_prompt_starting_with_an_option_is_stdin_data(self):
         with patch.object(m.subprocess,'run') as run:
@@ -149,9 +149,22 @@ class ReplayTests(unittest.TestCase):
             args=['node','/work/core/runtime/bin/agenc','-p']
             prompt='--some-option\nLiteral prompt with $() and quotes'
             self.assertEqual(m.command(args,stdin_text=prompt),0)
-            self.assertEqual(run.call_args.args[0],args)
+            self.assertEqual(run.call_args.args[0],[args[0],'--',*args[1:]])
             self.assertEqual(run.call_args.kwargs['input'],prompt)
             self.assertTrue(run.call_args.kwargs['text'])
+    def test_real_interpreters_keep_option_shaped_script_arguments_literal(self):
+        sources = {'python3': 'import json,sys; print(json.dumps(sys.argv[1:]))',
+                   'node': 'console.log(JSON.stringify(process.argv.slice(2)))'}
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            arguments=['--eval','literal; $(not-executed)','-c']
+            for interpreter, source in sources.items():
+                with self.subTest(interpreter=interpreter):
+                    script=root/('-script.py' if interpreter=='python3' else '-script.cjs')
+                    script.write_text(source)
+                    log=root/(interpreter+'.log')
+                    self.assertEqual(m.command([interpreter,str(script),*arguments],log=log),0)
+                    self.assertEqual(json.loads(log.read_text()),arguments)
     def test_a_poll_uses_the_handle_returned_by_the_matching_live_tool(self):
         reply={'tool_calls':[{'id':'poll','function':{'name':'write_stdin','arguments':'{"session_id":16,"chars":""}'}}]}
         body={'messages':[{'role':'tool','tool_call_id':'other','content':'session_id=99'},
