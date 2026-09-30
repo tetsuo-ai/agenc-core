@@ -2,8 +2,27 @@ import { describe, expect, test } from "vitest";
 import {
   buildAnthropicMessagesRequest,
   parseAnthropicMessagesResponse,
+  SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER,
 } from "./messages-anthropic.js";
 import { ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME } from "../structured-output.js";
+import type { LLMMessage } from "../types.js";
+
+/** A turn that reads two files in parallel, followed by both results. */
+function parallelReadHistory(): LLMMessage[] {
+  return [
+    { role: "user", content: "read both files" },
+    {
+      role: "assistant",
+      content: "",
+      toolCalls: [
+        { id: "toolu_a", name: "FileRead", arguments: "{\"file_path\":\"a.ts\"}" },
+        { id: "toolu_b", name: "FileRead", arguments: "{\"file_path\":\"b.ts\"}" },
+      ],
+    },
+    { role: "tool", toolCallId: "toolu_a", toolName: "FileRead", content: "A" },
+    { role: "tool", toolCallId: "toolu_b", toolName: "FileRead", content: "B" },
+  ];
+}
 
 function countCacheControlBlocks(value: unknown): number {
   if (Array.isArray(value)) {
@@ -660,6 +679,126 @@ describe("buildAnthropicMessagesRequest", () => {
     expect(messages.at(-1)).toEqual({
       role: "user",
       content: "continue",
+    });
+  });
+
+  test("returns the results of one parallel tool turn in a single user message", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet-4.5",
+      messages: parallelReadHistory(),
+      tools: [],
+      options: {
+        systemPrompt: `static head\n${SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER}\nbranch: main`,
+      },
+    });
+
+    // The results answer the tool_use blocks in order, the breakpoint sits on
+    // the last result, and the volatile tail follows every tool_result block.
+    expect(request.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "read both files",
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "toolu_a", name: "FileRead", input: { file_path: "a.ts" } },
+          { type: "tool_use", id: "toolu_b", name: "FileRead", input: { file_path: "b.ts" } },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "toolu_a", content: "A" },
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_b",
+            content: "B",
+            cache_control: { type: "ephemeral" },
+          },
+          { type: "text", text: "<system-reminder>\nbranch: main\n</system-reminder>" },
+        ],
+      },
+    ]);
+    // The static head, the last user message and the last tool result.
+    expect(countCacheControlBlocks(request)).toBe(3);
+  });
+
+  test("keeps the results of separate tool turns in separate user messages", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet-4.5",
+      messages: [
+        ...parallelReadHistory(),
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            { id: "toolu_c", name: "FileRead", arguments: "{\"file_path\":\"c.ts\"}" },
+          ],
+        },
+        { role: "tool", toolCallId: "toolu_c", toolName: "FileRead", content: "C" },
+      ],
+      tools: [],
+    });
+
+    const messages = request.messages as Array<Record<string, unknown>>;
+    expect(messages.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "user",
+    ]);
+    // The earlier results keep their blocks and order; only the breakpoint
+    // has moved on to the newest result.
+    expect(messages[2]).toEqual({
+      role: "user",
+      content: [
+        { type: "tool_result", tool_use_id: "toolu_a", content: "A" },
+        { type: "tool_result", tool_use_id: "toolu_b", content: "B" },
+      ],
+    });
+    expect(messages[4]).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "toolu_c",
+          content: "C",
+          cache_control: { type: "ephemeral" },
+        },
+      ],
+    });
+  });
+
+  test("skipCacheWrite keeps the fork's cache marker on the result it was placed on", () => {
+    const request = buildAnthropicMessagesRequest({
+      model: "claude-sonnet-4.5",
+      messages: parallelReadHistory(),
+      tools: [],
+      options: { skipCacheWrite: true },
+    });
+
+    // The marker lands on the second-to-last message, the first result; the
+    // fork's final result stays out of the cache.
+    expect(countCacheControlBlocks(request)).toBe(1);
+    expect((request.messages as Array<Record<string, unknown>>).at(-1)).toEqual({
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "toolu_a",
+          content: "A",
+          cache_control: { type: "ephemeral" },
+        },
+        { type: "tool_result", tool_use_id: "toolu_b", content: "B" },
+      ],
     });
   });
 

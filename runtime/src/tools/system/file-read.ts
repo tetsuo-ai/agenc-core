@@ -109,7 +109,7 @@ export const DEFAULT_MAX_OUTPUT_TOKENS = 25_000;
  * gate so we don't slurp gigantic files into memory just to reject them
  * post-read on the token cap.
  */
-const DEFAULT_MAX_TEXT_BYTES = 256 * 1024;
+export const DEFAULT_MAX_TEXT_BYTES = 256 * 1024;
 
 /** Default output cap for image reads in bytes. */
 const DEFAULT_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -127,7 +127,7 @@ const PDF_SUBPROCESS_TIMEOUT_MS = 120_000;
 const NOTEBOOK_LARGE_OUTPUT_THRESHOLD = 10_000;
 
 /** Default upper line count when no explicit `limit` is supplied. */
-const DEFAULT_LINE_LIMIT = 2000;
+export const DEFAULT_LINE_LIMIT = 2000;
 
 /** Image extensions the tool will accept and emit as multimodal output. */
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);

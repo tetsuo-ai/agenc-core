@@ -243,6 +243,97 @@ function appendDynamicTailBlock(
   message.content = blocks;
 }
 
+/** Serialize a user or assistant message as one Messages API turn. */
+function toAnthropicTurn(message: LLMMessage): Record<string, unknown> {
+  if (message.role === "assistant" && message.toolCalls?.length) {
+    const assistantContent = contentBlocksOf(
+      normalizeAnthropicMessageContent(message),
+    );
+    const toolUseBlocks = message.toolCalls.map((toolCall) => {
+      // History tool-call arguments are not re-validated, so a
+      // malformed JSON string must not throw here — that would
+      // also break parseAnthropicMessagesResponse, which rebuilds
+      // this request purely for metrics after a successful call.
+      let parsedInput: unknown = {};
+      try {
+        parsedInput = JSON.parse(toolCall.arguments || "{}");
+      } catch {
+        parsedInput = {};
+      }
+      return {
+        type: "tool_use",
+        id: toolCall.id,
+        // The messages API enforces the strict
+        // `^[a-zA-Z0-9_-]{1,64}$` function-name regex; encode the
+        // dotted MCP form before sending. The response parser
+        // decodes back to the internal-registry form.
+        name: encodeMcpToolNameForWire(toolCall.name),
+        input: parsedInput,
+      };
+    });
+    const content =
+      hasEphemeralCacheControl(message)
+        ? withEphemeralCacheControl([
+          ...assistantContent,
+          ...toolUseBlocks,
+        ])
+        : [
+          ...assistantContent,
+          ...toolUseBlocks,
+        ];
+    return {
+      role: "assistant",
+      content,
+    };
+  }
+  return {
+    role: message.role,
+    content: normalizeAnthropicMessageContent(message),
+  };
+}
+
+function toAnthropicToolResultBlock(
+  message: LLMMessage,
+): Record<string, unknown> {
+  const block = {
+    type: "tool_result",
+    tool_use_id: message.toolCallId,
+    content: toAnthropicToolResultContent(message.content),
+  };
+  return hasEphemeralCacheControl(message)
+    ? { ...block, cache_control: { type: "ephemeral" } }
+    : block;
+}
+
+/**
+ * Serialize the conversation as Messages API turns. The results of one
+ * parallel tool turn go back as the ordered `tool_result` blocks of a single
+ * user message, the format the API documents for parallel tool use: a
+ * separate user message per result teaches Claude to stop calling tools in
+ * parallel. Each block keeps its own message's cache breakpoint, so a marker
+ * stays on the result normalization placed it on (a fork's skipCacheWrite
+ * marker can sit on a result before the last).
+ */
+function toAnthropicTurns(
+  conversation: readonly LLMMessage[],
+): Array<Record<string, unknown>> {
+  const turns: Array<Record<string, unknown>> = [];
+  let toolResults: Array<Record<string, unknown>> | undefined;
+  for (const message of conversation) {
+    if (message.role !== "tool") {
+      toolResults = undefined;
+      turns.push(toAnthropicTurn(message));
+      continue;
+    }
+    if (toolResults === undefined) {
+      toolResults = [];
+      turns.push({ role: "user", content: toolResults });
+    }
+    toolResults.push(toAnthropicToolResultBlock(message));
+  }
+  return turns;
+}
+
 export function buildAnthropicMessagesRequest(
   input: AnthropicMessagesRequestOptions,
 ): Record<string, unknown> {
@@ -261,77 +352,11 @@ export function buildAnthropicMessagesRequest(
 
   const body: Record<string, unknown> = {
     model: input.model,
-    messages: messages
-      .filter((message) =>
+    messages: toAnthropicTurns(
+      messages.filter((message) =>
         message.role !== "system" && message.role !== "developer"
-      )
-      .map((message) => {
-        if (message.role === "assistant" && message.toolCalls?.length) {
-          const anthropicContent = normalizeAnthropicMessageContent(message);
-          const assistantContent =
-            typeof anthropicContent === "string"
-              ? anthropicContent.length > 0
-                ? [{
-                  type: "text",
-                  text: anthropicContent,
-                }]
-                : []
-              : anthropicContent;
-          const toolUseBlocks = message.toolCalls.map((toolCall) => {
-            // History tool-call arguments are not re-validated, so a
-            // malformed JSON string must not throw here — that would
-            // also break parseAnthropicMessagesResponse, which rebuilds
-            // this request purely for metrics after a successful call.
-            let parsedInput: unknown = {};
-            try {
-              parsedInput = JSON.parse(toolCall.arguments || "{}");
-            } catch {
-              parsedInput = {};
-            }
-            return {
-              type: "tool_use",
-              id: toolCall.id,
-              // The messages API enforces the strict
-              // `^[a-zA-Z0-9_-]{1,64}$` function-name regex; encode the
-              // dotted MCP form before sending. The response parser
-              // decodes back to the internal-registry form.
-              name: encodeMcpToolNameForWire(toolCall.name),
-              input: parsedInput,
-            };
-          });
-          const content =
-            hasEphemeralCacheControl(message)
-              ? withEphemeralCacheControl([
-                ...assistantContent,
-                ...toolUseBlocks,
-              ])
-              : [
-                ...assistantContent,
-                ...toolUseBlocks,
-              ];
-          return {
-            role: "assistant",
-            content,
-          };
-        }
-        if (message.role === "tool") {
-          const toolResultBlock = {
-            type: "tool_result",
-            tool_use_id: message.toolCallId,
-            content: toAnthropicToolResultContent(message.content),
-          };
-          return {
-            role: "user",
-            content: hasEphemeralCacheControl(message)
-              ? withEphemeralCacheControl([toolResultBlock])
-              : [toolResultBlock],
-          };
-        }
-        return {
-          role: message.role,
-          content: normalizeAnthropicMessageContent(message),
-        };
-      }),
+      ),
+    ),
     max_tokens: maxTokens,
   };
 
