@@ -866,6 +866,96 @@ test("Darwin ACL listing parser accepts deny/read ACEs and rejects mutation or a
   }
 });
 
+test("Darwin ACL verdicts reuse only unchanged successful path identities", async () => {
+  const original = readFileSync(new URL(LOCK_MODULE_URL), "utf8");
+  const exposed = original.replace(
+    "async function assertDarwinPathSecurityWithIO(",
+    "export async function assertDarwinPathSecurityWithIO(",
+  );
+  assert.notEqual(exposed, original, "Darwin ACL probe test seam did not apply");
+  const { assertDarwinPathSecurityWithIO: check } = await import(
+    `data:text/javascript;base64,${Buffer.from(exposed).toString("base64")}`
+  );
+  const path = "/protected/lock.sqlite";
+  const context = {
+    deadline: performance.now() + 10_000,
+    label: "Darwin ACL cache test",
+    timeoutMs: 10_000,
+  };
+  const identity = {
+    dev: 1n, ino: 2n, ctimeNs: 3n, mode: 0o100600n,
+    uid: 501n, gid: 20n,
+  };
+  let listings = 0;
+  let stats = 0;
+  let changeDuringListing = false;
+  let listing = "-rw------- 1 owner group 0 Jan 1 00:00 lock.sqlite\n";
+  const lister = async () => {
+    listings += 1;
+    if (changeDuringListing) {
+      identity.ctimeNs += 1n;
+      changeDuringListing = false;
+    }
+    return { stdout: listing, stderr: "" };
+  };
+  const statPath = async () => {
+    stats += 1;
+    return { ...identity };
+  };
+  const probe = (role = "lock database file") =>
+    check(path, role, context, lister, statPath);
+
+  await probe();
+  await probe();
+  assert.equal(listings, 1);
+  assert.equal(stats, 3, "cache hits must re-stat the path");
+
+  identity.ctimeNs += 1n;
+  await probe();
+  assert.equal(listings, 2, "ctime changes must invalidate the verdict");
+  identity.ino += 1n;
+  await probe();
+  assert.equal(listings, 3, "inode changes must invalidate the verdict");
+  identity.mode = 0o100640n;
+  await probe();
+  assert.equal(listings, 4, "mode changes must invalidate the verdict");
+  identity.uid += 1n;
+  await probe();
+  assert.equal(listings, 5, "owner changes must invalidate the verdict");
+  await probe("file");
+  assert.equal(listings, 6, "different validation roles need separate verdicts");
+
+  identity.ctimeNs += 1n;
+  listing += " 0: group:everyone allow write\n";
+  await assert.rejects(probe(), /mutation-capable Darwin ACL/u);
+  await assert.rejects(probe(), /mutation-capable Darwin ACL/u);
+  assert.equal(listings, 8, "failed verdicts must be listed again");
+
+  listing = "-rw------- 1 owner group 0 Jan 1 00:00 lock.sqlite\n";
+  identity.ctimeNs += 1n;
+  changeDuringListing = true;
+  await probe();
+  await probe();
+  assert.equal(listings, 10, "a path changed during listing must not be cached");
+});
+
+test("non-Darwin private directory validation does not use the Darwin ACL lister", {
+  skip: process.platform === "darwin" || process.platform === "win32",
+}, async (t) => {
+  const root = makeRoot(t, "agenc-package-non-darwin-acl-");
+  const original = readFileSync(new URL(LOCK_MODULE_URL), "utf8");
+  const patched = original.replace(
+    "async function assertDarwinPathSecurity(path, role, context) {",
+    "async function assertDarwinPathSecurity() { throw new Error('unexpected Darwin ACL lister'); }\n" +
+      "async function unusedAssertDarwinPathSecurity(path, role, context) {",
+  );
+  assert.notEqual(patched, original, "non-Darwin ACL guard test seam did not apply");
+  const { assertLocalPrivateDirectory } = await import(
+    `data:text/javascript;base64,${Buffer.from(patched).toString("base64")}`
+  );
+  await assertLocalPrivateDirectory(root);
+});
+
 test("a timed-out FIFO waiter is removed before its successor runs", async (t) => {
   const root = makeRoot(t, "agenc-package-sqlite-waiter-cleanup-");
   const lockPath = join(root, "operation.sqlite");

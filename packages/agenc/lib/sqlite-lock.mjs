@@ -73,6 +73,8 @@ const DARWIN_ACL_KNOWN_TOKENS = new Set([
   ...DARWIN_ACL_INHERITANCE_FLAGS,
   ...DARWIN_ACL_MUTATION_RIGHTS,
 ]);
+const DARWIN_ACL_VERDICT_CACHE_LIMIT = 512;
+const darwinAclVerdicts = new Map();
 
 const WINDOWS_SECURITY_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -421,10 +423,37 @@ function validateDarwinAclListing(stdout, path, role) {
 }
 
 async function assertDarwinPathSecurity(path, role, context) {
+  return assertDarwinPathSecurityWithIO(
+    path,
+    role,
+    context,
+    execFileUtf8,
+    (candidate) => lstat(candidate, { bigint: true }),
+  );
+}
+
+function darwinAclIdentity(stats) {
+  return [
+    stats.dev, stats.ino, stats.ctimeNs ?? stats.ctimeMs,
+    stats.mode, stats.uid, stats.gid,
+    process.getuid?.(), process.geteuid?.(),
+  ].join(":");
+}
+
+async function assertDarwinPathSecurityWithIO(path, role, context, lister, statPath) {
   throwIfExpired(context, path);
+  // A Darwin ACL edit advances ctime. Re-stat on every lookup so an old
+  // successful verdict cannot authorize a changed inode, owner, or ACL.
+  const before = darwinAclIdentity(await statPath(path));
+  const cacheKey = `${role}\0${path}`;
+  if (darwinAclVerdicts.get(cacheKey) === before) {
+    throwIfExpired(context, path);
+    return;
+  }
+  darwinAclVerdicts.delete(cacheKey);
   let result;
   try {
-    result = await execFileUtf8(
+    result = await lister(
       "/bin/ls",
       ["-ldeq", path],
       {
@@ -442,6 +471,15 @@ async function assertDarwinPathSecurity(path, role, context) {
   }
   validateDarwinAclListing(result.stdout, path, role);
   throwIfExpired(context, path);
+  // A path changed while ls ran must never seed a verdict for its new state.
+  const after = darwinAclIdentity(await statPath(path));
+  throwIfExpired(context, path);
+  if (after === before) {
+    if (darwinAclVerdicts.size >= DARWIN_ACL_VERDICT_CACHE_LIMIT) {
+      darwinAclVerdicts.delete(darwinAclVerdicts.keys().next().value);
+    }
+    darwinAclVerdicts.set(cacheKey, before);
+  }
 }
 
 function trustedWindowsPowerShellPath(
