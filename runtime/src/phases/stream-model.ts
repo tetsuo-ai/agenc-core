@@ -31,7 +31,6 @@
  * @module
  */
 
-import { resolveReasoningEffort } from "../llm/reasoning-effort.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -43,7 +42,6 @@ import type {
   LLMToolChoice,
 } from "../llm/types.js";
 import { cloneLlmMessageSnapshot } from "../llm/content-conversion.js";
-import { anthropicSupportsBetweenToolsThinking } from "../utils/model/anthropicThinkingControl.js";
 import {
   installStreamWatchdog,
   resolveSessionStreamIdleTimeoutMs,
@@ -76,101 +74,7 @@ import {
   type ProviderTraceSink,
 } from "../llm/provider-trace-sink.js";
 import { getAgencHomeDir } from "../session/session-store.js";
-import {
-  getInitialEffortSetting,
-} from "../utils/effort.js";
-import type { ReasoningEffort } from "../session/turn-context.js";
-import { resolveGeminiReasoningEffort } from "../llm/registry/gemini-thinking-models.js";
-
-type WireReasoningEffort = NonNullable<LLMChatOptions["reasoningEffort"]>;
-
-function resolveGeminiSessionReasoningEffort(
-  turnEffort: ReasoningEffort | undefined,
-  model: string,
-  effortSource: string | undefined,
-): WireReasoningEffort | undefined {
-  if (turnEffort !== undefined) return resolveGeminiReasoningEffort(model, turnEffort);
-  const configuredEffort = effortSource === "default"
-    ? undefined
-    : getInitialEffortSetting();
-  return resolveGeminiReasoningEffort(model, configuredEffort);
-}
-
-/**
- * Sessions created without an explicit reasoning effort — every
- * daemon-spawned interactive session today — must still honor the
- * persisted `reasoning_effort` from canonical config. Without this fallback the
- * provider default applies and grok-4.5 burns ~16k hidden reasoning
- * tokens per trivial reply at xAI's HIGH default (measured: ~2m30s for
- * a 150-word answer, matching the user's "grok is fucking slow").
- * An explicit per-session "none" stays respected as an opt-out.
- *
- * Persistence historically spells Grok's deepest `xhigh` tier as `max`, while
- * providers such as Z.AI use `max` as the literal wire value and do not accept
- * `xhigh`. Resolve that alias against the selected model's catalog: prefer the
- * requested top-tier spelling when supported, translate to the other top-tier
- * spelling when that is the model's only form, and otherwise clamp to `high`.
- */
-function resolveSessionReasoningEffort(
-  turnEffort: ReasoningEffort | undefined,
-  supportedReasoningLevels?: ReadonlyArray<ReasoningEffort>,
-  selection?: {
-    readonly provider: string;
-    readonly model: string;
-    readonly effortSource?: string;
-  },
-): WireReasoningEffort | undefined {
-  if (selection?.provider === "gemini") {
-    return resolveGeminiSessionReasoningEffort(
-      turnEffort,
-      selection.model,
-      selection.effortSource,
-    );
-  }
-  const requested = turnEffort ?? getInitialEffortSetting();
-  if (requested === undefined) return undefined;
-  // Hosted providers can expose an effort contract absent from ModelInfo.
-  // Preserve accepted literal tiers before applying legacy max/xhigh aliases.
-  const contract = selection === undefined ? undefined : resolveReasoningEffort(selection);
-  if (requested === "none") {
-    if (selection?.provider === "anthropic" && anthropicSupportsBetweenToolsThinking(selection.model)) {
-      return "none";
-    }
-    // OpenAI models that document `none` (GPT-6 Sol and Luna) run a
-    // reasoning default when the field is omitted, so the opt-out has to be
-    // sent literally. Elsewhere `none` still means "send no effort".
-    return selection?.provider === "openai" &&
-      (supportedReasoningLevels?.includes("none") === true ||
-        contract?.levels.includes("none") === true)
-      ? "none"
-      : undefined;
-  }
-  if (selection?.provider === "anthropic" && contract !== undefined && !contract.levels.includes("xhigh")) {
-    // Settings fallback is legacy configuration, not a literal session choice.
-    // Configured max is seeded as xhigh for these older models; an explicit
-    // applyConfig max remains max and must be forwarded exactly as accepted.
-    if (turnEffort === undefined && !contract.levels.includes("xhigh") &&
-        (requested === "max" || requested === "xhigh")) return "high";
-    if (contract.levels.includes(requested)) return requested;
-    if (requested === "max" || requested === "xhigh") return "high";
-  }
-  if (contract?.registered === false && contract.levels.includes(requested)) {
-    return requested;
-  }
-  if (requested === "max" || requested === "xhigh") {
-    if (supportedReasoningLevels === undefined) {
-      return requested === "max" ? "xhigh" : requested;
-    }
-    if (supportedReasoningLevels.includes(requested)) return requested;
-    const topTierAlias = requested === "max" ? "xhigh" : "max";
-    if (supportedReasoningLevels.includes(topTierAlias)) return topTierAlias;
-    return "high";
-  }
-  return requested;
-}
-
-// Exported for unit tests; the wiring above is the single call site.
-export { resolveSessionReasoningEffort };
+import { resolveMainLoopReasoningEffort } from "../session/session-reasoning-effort.js";
 import type { Session } from "../session/session.js";
 import { disposeProviderStartupPrewarmHandle } from "../session/startup-prewarm.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -387,16 +291,7 @@ export function buildProviderOptions(
         ? { toolChoice: "required" as const }
         : {}),
     toolRouting: { allowedToolNames },
-    reasoningEffort: resolveSessionReasoningEffort(
-      ctx.reasoningEffort,
-      ctx.modelInfo.supportedReasoningLevels,
-      {
-        provider: session.services.provider.name,
-        model: session.config?.model ?? ctx.modelInfo.slug,
-        effortSource: session.services.configStore
-          ?.provenance?.("reasoning_effort")?.scope,
-      },
-    ),
+    reasoningEffort: resolveMainLoopReasoningEffort(session, ctx),
     reasoningSummary: ctx.reasoningSummary,
     modelVerbosity: ctx.modelVerbosity,
     serviceTier:

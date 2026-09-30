@@ -1,5 +1,5 @@
 import { ModelRegistry, modelRegistryEntryToModelInfo } from "../../src/llm/model-registry.js";
-import { resolveSessionReasoningEffort } from "../../src/phases/stream-model.js";
+import { resolveSessionReasoningEffort } from "../../src/session/session-reasoning-effort.js";
 import { buildAnthropicMessagesRequest } from "../../src/llm/wire/messages-anthropic.js";
 import desktopEffortCatalog from "../llm/desktop-effort-catalog.json";
 import {

@@ -170,6 +170,7 @@ const sessionContractExportFiles = [
   "src/session/rollout-reconstruction.ts",
   "src/session/rollout-trace.ts",
   "src/session/run-turn.ts",
+  "src/session/session-reasoning-effort.ts",
   "src/session/session-store.ts",
   "src/session/session.ts",
   "src/session/current-session.ts",

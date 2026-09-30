@@ -96,6 +96,8 @@ import {
 import type { CompactContext, CompactionResult, RuntimeMessage } from "./types.js";
 import { COMPACTION_HISTORY_MARKER_VERSION } from "../../session/compaction-history-marker.js";
 import { bindExecutionAdmissionJournal } from "../../session/execution-admission-journal.js";
+import { resolveMainLoopReasoningEffort } from "../../session/session-reasoning-effort.js";
+import { runWithCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
 import {
   compactActiveHistoryEntries,
   createCompactionPayloadBundleV1,
@@ -369,6 +371,10 @@ async function compactConversationTransactionBody(
     providerOptions.model ??
     session.modelInfo.slug ??
     COMPACTION_UNKNOWN_MODEL;
+  // Summary calls send the effort the main loop sends. Without one the
+  // provider default applies, which can be higher: xAI's is high on grok-4.6,
+  // the configured default is medium.
+  const reasoningEffort = resolveSummaryReasoningEffort(session);
   const policyMaterial = {
     map: getCompactionSystemPrompt("map", direction),
     reduce: getCompactionSystemPrompt("reduce", direction),
@@ -487,6 +493,7 @@ async function compactConversationTransactionBody(
       requestedFocus,
       providerName,
       model,
+      reasoningEffort,
       startedAt,
     }));
     deadline.assertActive();
@@ -735,6 +742,27 @@ function readCompactionPermissionMode(
   }
 }
 
+/**
+ * The effort the session's next main-loop turn sends. A turn resolves it
+ * under the session's own settings authority, which Session.runTurn binds.
+ * A compaction can run outside a turn with no authority bound (the daemon's
+ * manual compaction), so it binds the session's here.
+ */
+function resolveSummaryReasoningEffort(
+  session: NonNullable<CompactContext["admissionSession"]>,
+): LLMChatOptions["reasoningEffort"] {
+  const resolve = () =>
+    resolveMainLoopReasoningEffort(session, {
+      reasoningEffort:
+        session.sessionConfiguration?.collaborationMode.reasoningEffort,
+      modelInfo: session.modelInfo,
+    });
+  const configStore = session.services.configStore;
+  return configStore === undefined
+    ? resolve()
+    : runWithCanonicalSettingsAuthority(configStore, resolve);
+}
+
 function mergeCompactionFocus(
   explicitInstructions: string,
   additionalInstructions: string | undefined,
@@ -837,6 +865,7 @@ async function runSummaryTree(params: {
   readonly requestedFocus: string;
   readonly providerName: string;
   readonly model: string;
+  readonly reasoningEffort: LLMChatOptions["reasoningEffort"];
   readonly startedAt: number;
 }): Promise<{
   readonly finalSummary: CompactionSummaryV1;
@@ -948,6 +977,7 @@ async function runSummaryTree(params: {
         systemPrompt: params.policyMaterial[stage],
         providerName: params.providerName,
         model: params.model,
+        reasoningEffort: params.reasoningEffort,
         callCount,
         attemptId: params.attemptId,
         contextWindowTokens: params.plan.context_window_tokens,
@@ -1261,6 +1291,7 @@ async function invokeCompactionProvider(params: {
   readonly systemPrompt: string;
   readonly providerName: string;
   readonly model: string;
+  readonly reasoningEffort: LLMChatOptions["reasoningEffort"];
   readonly callCount: number;
   readonly attemptId: string;
   readonly contextWindowTokens: number;
@@ -1275,6 +1306,7 @@ async function invokeCompactionProvider(params: {
     systemPrompt: params.systemPrompt,
     maxOutputTokens: params.outputReserveTokens,
     contextWindowTokens: params.contextWindowTokens,
+    reasoningEffort: params.reasoningEffort,
     // Compaction is a constrained summarization call, not an agent turn. Keep
     // it explicitly tool-free so constructor-scoped client tools and
     // provider-native server tools cannot be added after preflight token

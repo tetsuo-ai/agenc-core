@@ -382,10 +382,27 @@ native tools. Admission derives its provider-native accounting catalog from
 the same options that the wire adapter receives, so it accounts the same
 selected native tools that can reach the provider.
 
+Summary calls send the reasoning effort the main loop sends. Each
+transaction reads the session's current effort, or the configured
+`reasoning_effort` when the session has none, and resolves it for the
+session's provider and model with the main loop's resolver
+(`runtime/src/session/session-reasoning-effort.ts`). It reads the
+configuration through the session's own settings authority, as a turn
+does: a manual compaction that the daemon runs has no authority bound. An
+in-process teammate's summary calls send the parent session's current
+effort, resolved for the teammate's model, as the teammate's own requests
+do. A summary call without an effort would get the provider default, which
+can be higher: xAI's default on grok-4.6 is high, the configured default is
+medium. A model-downshift compaction sends its summary calls to the
+previous model with the effort resolved for the current one, so a tier that
+only the current model offers can be refused there.
+
 Accepted output is still strict `CompactionSummaryV1`. Shrink must save at
 least **1,024** tokens and **20 percent**. Automatic compaction is suppressed
 after **two** durable `compaction_failed` rows for the same
 history/configuration digest; `/compact` (manual) is the explicit retry.
+The digest leaves out the reasoning effort, so changing the effort does not
+lift that suppression.
 
 ### Compaction transaction wall budget
 

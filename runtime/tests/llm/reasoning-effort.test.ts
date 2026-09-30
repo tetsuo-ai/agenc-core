@@ -1,5 +1,5 @@
 import { buildAnthropicMessagesRequest } from "../../src/llm/wire/messages-anthropic.js";
-import { resolveSessionReasoningEffort } from "../../src/phases/stream-model.js";
+import { resolveSessionReasoningEffort } from "../../src/session/session-reasoning-effort.js";
 import type { ReasoningEffort } from "../../src/session/turn-context.js";
 import type { AgenCConfig } from "../../src/config/schema.js";
 import type { LLMChatOptions } from "../../src/llm/types.js";

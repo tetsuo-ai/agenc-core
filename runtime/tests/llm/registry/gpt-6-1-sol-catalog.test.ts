@@ -5,7 +5,7 @@ import { resolveReasoningEffort } from "../../../src/llm/reasoning-effort.js";
 import { buildOpenAIResponsesRequest } from "../../../src/llm/wire/responses-openai.js";
 import { buildChatCompletionsRequest } from "../../../src/llm/wire/chat-completions.js";
 import { chatCompletionsCapabilityHintsForProvider } from "../../../src/llm/wire/capability-gating.js";
-import { resolveSessionReasoningEffort } from "../../../src/phases/stream-model.js";
+import { resolveSessionReasoningEffort } from "../../../src/session/session-reasoning-effort.js";
 import { computeUsdCostWithResolution, DEFAULT_MODEL_COSTS, type ModelUsage } from "../../../src/session/cost.js";
 
 const model = "gpt-6.1-sol";

@@ -6,7 +6,7 @@ import { BUILT_IN_PROVIDER_MODEL_CATALOG, BUILT_IN_PROVIDER_DEFAULT_MODELS } fro
 import { resolveReasoningEffort } from "../reasoning-effort.js";
 import { getModelCosts } from "../../../src/utils/modelCost.js";
 import { computeUsdCostWithResolution, DEFAULT_MODEL_COSTS } from "../../../src/session/cost.js";
-import { resolveSessionReasoningEffort } from "../../../src/phases/stream-model.js";
+import { resolveSessionReasoningEffort } from "../../../src/session/session-reasoning-effort.js";
 import { buildAnthropicMessagesRequest } from "../wire/messages-anthropic.js";
 
 // Verified with Anthropic's authenticated Models API and model overview
