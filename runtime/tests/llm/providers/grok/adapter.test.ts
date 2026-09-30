@@ -1132,12 +1132,42 @@ describe("GrokProvider streaming incremental continuation (AGENC_XAI_INCREMENTAL
     { role: "assistant", content: "hi" },
     { role: "user", content: "follow up" },
   ];
+  const thirdTurn: LLMMessage[] = [
+    ...secondTurn,
+    { role: "assistant", content: "done" },
+    { role: "user", content: "third" },
+  ];
   const systemPromptAt = (clock: string): string =>
     `Static instructions.${SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER}Current time: ${clock}`;
   const conversationTurn = (clock: string): LLMChatOptions => ({
     systemPrompt: systemPromptAt(clock),
     promptCacheKey: CONVERSATION_KEY,
   });
+  /** A conversation turn whose system prompt has no dynamic tail. */
+  const staticTurn: LLMChatOptions = {
+    systemPrompt: "Static instructions.",
+    promptCacheKey: CONVERSATION_KEY,
+  };
+
+  /**
+   * The input items xAI conditions request `index` on, outputs left out: a
+   * chained request's input follows the stored chain it continues, and
+   * `resp_<n>` answers request n.
+   */
+  function storedChainInput(
+    bodies: readonly Record<string, unknown>[],
+    index: number,
+  ): unknown[] {
+    const body = bodies[index]!;
+    const input = body.input as unknown[];
+    const previous = body.previous_response_id;
+    return typeof previous === "string"
+      ? [...storedChainInput(bodies, Number(previous.slice("resp_".length)) - 1), ...input]
+      : input;
+  }
+
+  const copiesOf = (items: readonly unknown[], text: string): number =>
+    items.filter((item) => JSON.stringify(item).includes(text)).length;
 
   function streamingProvider(incrementalContinuation: boolean | undefined) {
     const warnings: Array<{ cause: string; message: string }> = [];
@@ -1164,7 +1194,16 @@ describe("GrokProvider streaming incremental continuation (AGENC_XAI_INCREMENTAL
       );
     });
     (provider as any).client = { responses: { create } };
-    return { provider, requestBodies, create, warnings };
+    // The next request fails the way xAI rejects an expired previous_response_id.
+    const expireNextRequest = (): void => {
+      create.mockImplementationOnce((params: Record<string, unknown>) => {
+        requestBodies.push(params);
+        throw Object.assign(new Error("previous response not found"), {
+          status: 404,
+        });
+      });
+    };
+    return { provider, requestBodies, warnings, expireNextRequest };
   }
 
   test("the second streaming request carries previous_response_id and only the delta", async () => {
@@ -1202,16 +1241,11 @@ describe("GrokProvider streaming incremental continuation (AGENC_XAI_INCREMENTAL
   });
 
   test("a single-wire attempt that loses its continuation clears the tracker for the next attempt", async () => {
-    const { provider, requestBodies, create, warnings } = streamingProvider(true);
+    const { provider, requestBodies, warnings, expireNextRequest } = streamingProvider(true);
     await provider.chatStream(firstTurn, () => {}, conversationTurn("noon"));
     expect((provider as any).incrementalTracker.previousResponseId()).toBe("resp_1");
 
-    create.mockImplementationOnce((params: Record<string, unknown>) => {
-      requestBodies.push(params);
-      throw Object.assign(new Error("previous response not found"), {
-        status: 404,
-      });
-    });
+    expireNextRequest();
 
     await expect(
       provider.chatStream(secondTurn, () => {}, {
@@ -1277,7 +1311,93 @@ describe("GrokProvider streaming incremental continuation (AGENC_XAI_INCREMENTAL
     });
   });
 
-  test.each<[string, LLMMessage[], LLMChatOptions]>([
+  describe("a chain stores its trailing instructions once", () => {
+    const noon = "Current time: noon";
+
+    test("unchanged instructions stay out of later deltas", async () => {
+      const { provider, requestBodies } = streamingProvider(true);
+
+      await provider.chatStream(firstTurn, () => {}, conversationTurn("noon"));
+      await provider.chatStream(secondTurn, () => {}, conversationTurn("noon"));
+      await provider.chatStream(thirdTurn, () => {}, conversationTurn("noon"));
+
+      expect(requestBodies.map((body) => body.previous_response_id))
+        .toEqual([undefined, "resp_1", "resp_2"]);
+      expect(JSON.stringify(requestBodies[1]?.input)).toContain("follow up");
+      expect(JSON.stringify(requestBodies[2]?.input)).toContain("third");
+      for (const body of requestBodies.slice(1)) {
+        expect(JSON.stringify(body.input)).not.toContain("Current time");
+      }
+      expect(copiesOf(storedChainInput(requestBodies, 2), noon)).toBe(1);
+    });
+
+    test("changed instructions end the delta", async () => {
+      const { provider, requestBodies } = streamingProvider(true);
+
+      await provider.chatStream(firstTurn, () => {}, conversationTurn("noon"));
+      await provider.chatStream(secondTurn, () => {}, conversationTurn("noon"));
+      await provider.chatStream(thirdTurn, () => {}, conversationTurn("one"));
+
+      expect(requestBodies[2]?.previous_response_id).toBe("resp_2");
+      const delta = requestBodies[2]?.input as unknown[];
+      expect(JSON.stringify(delta.at(-1))).toContain("Current time: one");
+      const chain = storedChainInput(requestBodies, 2);
+      expect(copiesOf(chain, noon)).toBe(1);
+      expect(copiesOf(chain, "Current time: one")).toBe(1);
+    });
+
+    test("the full retry of an expired chain carries them once, at the end", async () => {
+      const { provider, requestBodies, expireNextRequest } = streamingProvider(true);
+
+      await provider.chatStream(firstTurn, () => {}, conversationTurn("noon"));
+      expireNextRequest();
+      await provider.chatStream(secondTurn, () => {}, conversationTurn("noon"));
+      await provider.chatStream(thirdTurn, () => {}, conversationTurn("noon"));
+
+      // xAI rejects request 2, which is resent in full as request 3.
+      expect(requestBodies.map((body) => body.previous_response_id))
+        .toEqual([undefined, "resp_1", undefined, "resp_3"]);
+      const retry = requestBodies[2]?.input as unknown[];
+      expect(copiesOf(retry, noon)).toBe(1);
+      expect(JSON.stringify(retry.at(-1))).toContain(noon);
+      expect(JSON.stringify(requestBodies[3]?.input)).not.toContain("Current time");
+      expect(copiesOf(storedChainInput(requestBodies, 3), noon)).toBe(1);
+    });
+
+    test("a request that adds nothing else sends them rather than an empty input", async () => {
+      const { provider, requestBodies } = streamingProvider(true);
+
+      await provider.chatStream(firstTurn, () => {}, conversationTurn("noon"));
+      await provider.chatStream(
+        [...firstTurn, { role: "assistant", content: "hi" }],
+        () => {},
+        conversationTurn("noon"),
+      );
+
+      expect(requestBodies[1]?.previous_response_id).toBe("resp_1");
+      const delta = requestBodies[1]?.input as unknown[];
+      expect(delta).toHaveLength(1);
+      expect(JSON.stringify(delta)).toContain(noon);
+    });
+
+    test("a chain without them sends every new item", async () => {
+      const { provider, requestBodies } = streamingProvider(true);
+
+      await provider.chatStream(firstTurn, () => {}, staticTurn);
+      await provider.chatStream(
+        [...secondTurn, { role: "user", content: "and more" }],
+        () => {},
+        staticTurn,
+      );
+
+      expect(requestBodies[1]?.previous_response_id).toBe("resp_1");
+      const delta = JSON.stringify(requestBodies[1]?.input);
+      expect(delta).toContain("follow up");
+      expect(delta).toContain("and more");
+    });
+  });
+
+  test.each<[string, LLMMessage[], LLMChatOptions, LLMChatOptions?]>([
     [
       "a replaced (compacted) history",
       [
@@ -1290,12 +1410,19 @@ describe("GrokProvider streaming incremental continuation (AGENC_XAI_INCREMENTAL
       // Without a dynamic tail, nothing follows the stored response.
       "a request that adds nothing to the stored response",
       [...firstTurn, { role: "assistant", content: "hi" }],
-      { systemPrompt: "Static instructions.", promptCacheKey: CONVERSATION_KEY },
+      staticTurn,
     ],
-  ])("%s is sent in full", async (_label, input, options) => {
+    [
+      // The stored chain keeps its copy, which a delta cannot take back.
+      "a request without the trailing instructions its chain stores",
+      secondTurn,
+      staticTurn,
+      conversationTurn("noon"),
+    ],
+  ])("%s is sent in full", async (_label, input, options, firstOptions = options) => {
     const { provider, requestBodies } = streamingProvider(true);
 
-    await provider.chatStream(firstTurn, () => {}, options);
+    await provider.chatStream(firstTurn, () => {}, firstOptions);
     await provider.chatStream(input, () => {}, options);
 
     expect(requestBodies[1]?.previous_response_id).toBeUndefined();

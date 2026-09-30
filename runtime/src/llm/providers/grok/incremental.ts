@@ -6,7 +6,9 @@
  * the previous request. We only reuse an incremental input delta when
  * non-input request fields are unchanged and `input` is a strict
  * extension of the previous known input. Server-returned output items
- * are treated as part of the baseline so we do not resend them.
+ * are treated as part of the baseline so we do not resend them, and the
+ * trailing instructions the stored chain already holds are sent again
+ * only when they change.
  *
  * Invariants covered here:
  *   I-2  (no `previous_response_id` across compaction): compaction replaces
@@ -51,6 +53,13 @@ export interface IncrementalRequestShape {
 export interface LastResponseSnapshot {
   readonly previousResponseId: string;
   readonly itemsAdded: ReadonlyArray<LLMMessage>;
+  /**
+   * Trailing instructions (the system message a request ends with) in
+   * effect for the request that produced this response, whether that
+   * request sent them or an earlier request of its chain did. The stored
+   * chain holds them from there on.
+   */
+  readonly trailingInstructions?: string;
   /** Monotonic clock (ms) when this snapshot was recorded — used for
    *  opportunistic TTL enforcement against provider-side expiration. */
   readonly recordedAtMs: number;
@@ -131,14 +140,22 @@ export class IncrementalTracker {
    *
    * Control flow:
    *   1. Compare non-input request shape → full on mismatch
-   *   2. Build baseline = previous input + last-response items
-   *   3. Current input must start with baseline
-   *   4. If `allowEmptyDelta=false`, require baseline.len < current.len
-   *   5. Return current[baseline_len..] on success
+   *   2. Full when the stored chain holds trailing instructions and the
+   *      current request has none: a stored item cannot be taken back
+   *   3. Build baseline = previous input + last-response items
+   *   4. Current input must start with baseline
+   *   5. If `allowEmptyDelta=false`, require baseline.len < current.len
+   *   6. Return current[baseline_len..] on success, without the trailing
+   *      instructions when the chain holds them unchanged
    */
   decide(opts: {
     readonly currentShape: IncrementalRequestShape;
     readonly currentInput: ReadonlyArray<LLMMessage>;
+    /**
+     * Content of the system message `currentInput` ends with, when the
+     * request ends with trailing instructions.
+     */
+    readonly trailingInstructions?: string;
     readonly allowEmptyDelta?: boolean;
   }): IncrementalDecision {
     if (!this.lastRequestShape) {
@@ -146,6 +163,10 @@ export class IncrementalTracker {
     }
     if (!shapesEqual(this.lastRequestShape, opts.currentShape)) {
       return { kind: "full", reason: "request_shape_mismatch" };
+    }
+    const heldInstructions = this.lastResponse?.trailingInstructions;
+    if (heldInstructions !== undefined && opts.trailingInstructions === undefined) {
+      return { kind: "full", reason: "trailing_instructions_removed" };
     }
     const baseline: LLMMessage[] = [...this.lastRequestInput];
     if (this.lastResponse) {
@@ -159,6 +180,17 @@ export class IncrementalTracker {
       return { kind: "full", reason: "empty_delta_not_allowed" };
     }
     const delta = opts.currentInput.slice(baseline.length);
+    // Unchanged instructions are already stored with the chain; another copy
+    // would stay in every later request's context. Changed ones are sent and
+    // become the chain's newest system item. A delta of the instructions
+    // alone keeps them, so the input is never empty.
+    if (
+      heldInstructions !== undefined &&
+      heldInstructions === opts.trailingInstructions &&
+      delta.length > 1
+    ) {
+      return { kind: "reuse", delta: delta.slice(0, -1) };
+    }
     return { kind: "reuse", delta };
   }
 

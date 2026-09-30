@@ -1102,12 +1102,14 @@ export class GrokProvider implements LLMProvider {
 
   private noteIncrementalResponse(
     previousResponseId: string | undefined,
+    trailingInstructions: string | undefined,
     itemsAdded: LLMMessage[],
   ): void {
     if (!previousResponseId) return;
     const snapshot: LastResponseSnapshot = {
       previousResponseId,
       itemsAdded,
+      trailingInstructions,
       recordedAtMs: monotonicMs(),
     };
     this.incrementalTracker.recordResponse(snapshot);
@@ -1993,7 +1995,8 @@ export class GrokProvider implements LLMProvider {
       // completed response so the next compatible request sends
       // previous_response_id plus the delta instead of the full history. Only
       // stored responses can be continued, and a failed response has nothing
-      // to continue from.
+      // to continue from. The trailing instructions come from the plan that
+      // produced the response, which a retry above may have replaced.
       if (
         continuation &&
         this.config.incrementalContinuation === true &&
@@ -2001,7 +2004,7 @@ export class GrokProvider implements LLMProvider {
         params.store !== false &&
         finishReason !== "error"
       ) {
-        this.noteIncrementalResponse(completedResponseId, [
+        this.noteIncrementalResponse(completedResponseId, plan.trailingInstructions, [
           {
             role: "assistant",
             content,
@@ -2252,6 +2255,7 @@ export class GrokProvider implements LLMProvider {
     compactionDiagnostics?: LLMCompactionDiagnostics;
     requestMessages?: readonly LLMMessage[];
     incrementalBaseline?: readonly LLMMessage[];
+    trailingInstructions?: string;
   } {
     const compactionDiagnostics = undefined;
     const toolSelection = this.resolveResponseTools(
@@ -2285,6 +2289,7 @@ export class GrokProvider implements LLMProvider {
       compactionDiagnostics,
       requestMessages: built.requestMessages,
       incrementalBaseline: built.incrementalBaseline,
+      trailingInstructions: built.trailingInstructions,
     };
   }
 
@@ -2329,6 +2334,7 @@ export class GrokProvider implements LLMProvider {
     toolSelection: ToolSelectionDiagnostics;
     requestMessages: readonly LLMMessage[];
     incrementalBaseline: readonly LLMMessage[];
+    trailingInstructions?: string;
   } {
     const visionModel = this.config.visionModel ??
       (this.config.model === "grok-4.7" ? this.config.model : DEFAULT_VISION_MODEL);
@@ -2491,11 +2497,22 @@ export class GrokProvider implements LLMProvider {
         format: structuredFormat,
       };
     }
+    // The dynamic tail the request ends with (such as the permission section)
+    // is its trailing instructions: a continuing request sends them only when
+    // they differ from the ones its stored chain holds (IncrementalTracker.decide).
+    const trailing = repairedMessages.at(-1);
+    const trailingInstructions =
+      dynamicSystemPrompt !== undefined &&
+      trailing?.role === "system" &&
+      trailing.content === dynamicSystemPrompt
+        ? dynamicSystemPrompt
+        : undefined;
     if (!options?.disableIncremental) {
       const previousResponseId = this.incrementalTracker.previousResponseId();
       const decision = this.incrementalTracker.decide({
         currentShape: this.buildIncrementalRequestShape(params),
         currentInput: repairedMessages,
+        trailingInstructions,
       });
       if (decision.kind === "reuse" && previousResponseId) {
         // The delta is a validated suffix of the full sequence: send its
@@ -2507,16 +2524,12 @@ export class GrokProvider implements LLMProvider {
       }
     }
 
-    // Baseline for the incremental tracker. The trailing dynamic system
-    // message (timestamp, git state) changes every call, so recording it
-    // would fail the next request's prefix check at that position and force
-    // a full resend; the fresh dynamic tail travels in the delta instead.
-    const trailing = repairedMessages.at(-1);
+    // Baseline for the incremental tracker: the request without its trailing
+    // instructions. The next request's new items go where they sit now, so
+    // recording them would fail its prefix check and force a full resend.
     const incrementalBaseline =
       this.config.incrementalContinuation === true &&
-      dynamicSystemPrompt !== undefined &&
-      trailing?.role === "system" &&
-      trailing.content === dynamicSystemPrompt
+      trailingInstructions !== undefined
         ? repairedMessages.slice(0, -1)
         : repairedMessages;
 
@@ -2525,6 +2538,7 @@ export class GrokProvider implements LLMProvider {
       toolSelection: selectedTools,
       requestMessages: repairedMessages,
       incrementalBaseline,
+      trailingInstructions,
     };
   }
 
