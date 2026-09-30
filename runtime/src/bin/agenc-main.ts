@@ -75,7 +75,6 @@ import {
   isAutonomousModeEnabled,
   type SessionSubmitOptions,
 } from "../session/autonomous-mode.js";
-import type { TurnContext } from "../session/turn-context.js";
 import {
   resolveAgentRuntimeOptions,
   runWithAgentRuntimeOptions,
