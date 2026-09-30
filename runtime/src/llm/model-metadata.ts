@@ -540,15 +540,40 @@ function shouldQueryLiveEndpoint(
   env: Readonly<Record<string, string | undefined>>,
 ): boolean {
   const provider = normalizeMetadataProviderIdentity(params.provider);
-  const providerConfig = readProviderConfig(params.config, provider);
   return (
     provider === "lmstudio" ||
     provider === "openai-compatible" ||
     provider === "ollama" ||
     provider === "ollama-cloud" ||
-    Boolean(providerConfig?.base_url?.trim()) ||
-    Boolean(envBaseUrl(provider, env))
+    hasCustomProviderBaseUrl(
+      provider,
+      providerBaseUrl(params.config, provider, env),
+    )
   );
+}
+
+function hasCustomProviderBaseUrl(
+  provider: string,
+  baseUrl: string | undefined,
+): boolean {
+  if (!baseUrl?.trim()) return false;
+  const defaultBaseUrl = defaultProviderBaseUrl(provider);
+  if (!defaultBaseUrl) return true;
+  try {
+    const configured = new URL(baseUrl.trim());
+    const official = new URL(defaultBaseUrl);
+    const path = (url: URL) => url.pathname.replace(/\/+$/, "") || "/";
+    return configured.protocol !== official.protocol ||
+      configured.hostname !== official.hostname ||
+      configured.port !== official.port ||
+      path(configured) !== path(official) ||
+      configured.username !== official.username ||
+      configured.password !== official.password ||
+      configured.search !== official.search ||
+      configured.hash !== official.hash;
+  } catch {
+    return true;
+  }
 }
 
 function shouldPreferLiveEndpointOverExplicit(
