@@ -1,5 +1,7 @@
 import { structuredPatch } from "diff";
 
+import { isRecord } from "../utils/record.js";
+
 const DIFF_TIMEOUT_MS = 1_000;
 
 export type FileMutationOperation = "create" | "write" | "edit";
@@ -86,4 +88,18 @@ export function buildFileMutationMetadata(
       : {}),
   };
   return { ui };
+}
+
+/**
+ * Whether a tool result's metadata records a workspace file mutation: the
+ * `ui` block a single-file edit or write attaches, or apply_patch's per-file
+ * `fileMutations` entries.
+ */
+export function hasFileMutationMetadata(
+  metadata: Readonly<Record<string, unknown>> | undefined,
+): boolean {
+  const ui = metadata?.ui;
+  if (isRecord(ui) && ui.kind === "file_mutation") return true;
+  const fileMutations = metadata?.fileMutations;
+  return Array.isArray(fileMutations) && fileMutations.length > 0;
 }

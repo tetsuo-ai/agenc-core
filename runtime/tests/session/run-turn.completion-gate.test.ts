@@ -24,6 +24,15 @@ import { drain, mkCtx, mkProvider, mkSession } from "../fixtures.js";
 
 const TASK = "Create /app/out.txt containing the word done and make the tests pass";
 
+/** The work step's result, with the metadata a production Write result carries. */
+const WROTE_OUT_TXT: ToolResult = {
+  content: "Wrote /app/out.txt",
+  isError: false,
+  metadata: {
+    ui: { kind: "file_mutation", filePath: "/app/out.txt", operation: "create", additions: 1, removals: 0 },
+  },
+};
+
 function toolStep(id: string): Partial<LLMResponse> {
   return {
     content: "",
@@ -255,6 +264,30 @@ describe("completion gate in the turn loop", () => {
     ).toBe(true);
   });
 
+  test("a first answer that cites a check run after the last change completes without a request", async () => {
+    const { provider, requests } = scriptedProvider([
+      toolStep("read-1"),
+      toolStep("write-1"),
+      toolStep("check-1"),
+      textStep("- [x] /app/out.txt contains done: cat printed done\n- [x] tests pass: pytest printed 3 passed"),
+    ]);
+    const { registry } = queuedToolRegistry([
+      { content: "def main():\n    return 0", isError: false },
+      WROTE_OUT_TXT,
+      { content: "$ cat /app/out.txt\ndone\n$ pytest\n3 passed", isError: false, metadata: { exitCode: 0 } },
+    ]);
+    const { session, events, state } = headlessSession(provider, true, registry);
+    const phases = await collect(session);
+
+    expect(requests).toHaveLength(4);
+    expect(gatePayloads(events)).toEqual([
+      expect.objectContaining({ outcome: "verified", reason: "verified_with_tools", round: 0 }),
+    ]);
+    expect(state.history.some((message) => String(message.content).includes("<completion_gate"))).toBe(false);
+    expect(phases.at(-1)).toMatchObject({ type: "turn_complete", stopReason: "completed" });
+    expectCompletedTurn(events);
+  });
+
   test("a failed verification tool cannot back a checked claim, but a later successful check can", async () => {
     const failedClaim = "- [x] /app/out.txt contains done: checked the file\n- [x] tests pass";
     const verifiedAnswer = "- [x] /app/out.txt contains done: cat showed done\n- [x] tests: pytest, 3 passed";
@@ -267,7 +300,7 @@ describe("completion gate in the turn loop", () => {
       textStep(verifiedAnswer),
     ]);
     const { registry, execute } = queuedToolRegistry([
-      { content: "Wrote /app/out.txt", isError: false },
+      WROTE_OUT_TXT,
       { content: "Verification command failed", isError: true },
       { content: "/app/out.txt contains done; pytest 3 passed", isError: false },
     ]);
@@ -392,9 +425,8 @@ describe("completion gate in the turn loop", () => {
 
     // Successful local smoke work does not establish that the oracle is absent,
     // so the gate re-asks instead of settling and the leftover reaches the cap.
-    // The model keeps re-checking the item it can verify, which is what keeps
-    // the outcome partial: a final round with no work leaves nothing verified
-    // since the latest request and is reported as exhausted instead.
+    // The item the model can verify stays verified because no workspace change
+    // followed its check, which is what keeps the outcome partial.
     expect(requests).toHaveLength(8);
     expect(gatePayloads(events)).toEqual([
       ...unavailablePromptedPrefix(unavailable),
@@ -499,10 +531,10 @@ describe("completion gate in the turn loop", () => {
     expect(requests).toHaveLength(4);
     expect(lastUserText(requests[2] ?? [])).toContain('<completion_gate round="1" of="2">');
     expect(lastUserText(requests[3] ?? [])).toContain('<completion_gate round="2" of="2">');
-    expect(lastUserText(requests[3] ?? [])).toContain("successful");
+    expect(lastUserText(requests[3] ?? [])).toContain("did not provide a valid acceptance checklist");
     expect(gatePayloads(events).map((payload) => [payload.outcome, payload.reason])).toEqual([
       ["injected", "initial"],
-      ["injected", "no_verification"],
+      ["injected", "no_checklist"],
       ["exhausted", "rounds_exhausted"],
     ]);
     expect(phases.at(-1)).toMatchObject({ type: "turn_complete", stopReason: "completed" });
@@ -512,6 +544,27 @@ describe("completion gate in the turn loop", () => {
       cause: "completion_gate_exhausted",
       message: "completion gate exhausted after 2 rounds; the final answer was not verified",
     }]);
+  });
+
+  test.each([
+    ["answers the second request the same way without a tool", 2, []],
+    ["runs a tool, then answers the second request the same way", 3, [toolStep("probe-1")]],
+  ])("a model that %s gets %i gate requests", async (_name, rounds, between) => {
+    const { provider, requests } = scriptedProvider([
+      toolStep("work-1"), textStep("Done."), textStep("Done."), ...between, textStep("Done."),
+    ]);
+    const { session, events } = headlessSession(provider, true);
+    await collect(session);
+
+    // the work sample, the first answer, one answer per request, and the tool step
+    expect(requests).toHaveLength(2 + rounds + between.length);
+    expect(
+      (requests.at(-1) ?? []).filter((message) => String(message.content).includes("<completion_gate")),
+    ).toHaveLength(rounds);
+    expect(gatePayloads(events).at(-1)).toMatchObject({
+      outcome: "exhausted", reason: "rounds_exhausted", round: rounds, maxRounds: 3,
+    });
+    expectCompletedTurn(events);
   });
 
   test("a fresh agent projects the real exhaustion warning with its canonical turn scope", async () => {
@@ -620,6 +673,9 @@ describe("completion gate in the turn loop", () => {
     expect(toCheckpointSlice(state)).not.toHaveProperty("completionGateRound");
     state.completionGateRound = 2;
     expect(toCheckpointSlice(state).completionGateRound).toBe(2);
+    // The last request is runtime-only: a resumed turn asks once more.
+    state.completionGateLastRequest = { reason: "no_checklist", unmetItems: [], unlinkedItems: [] };
+    expect(toCheckpointSlice(state)).not.toHaveProperty("completionGateLastRequest");
 
     const restored = buildInitialTurnState(mkCtx(), { role: "user", content: TASK });
     restoreFromCheckpoint(restored, { ...toCheckpointSlice(state), completionGateRound: 2 });

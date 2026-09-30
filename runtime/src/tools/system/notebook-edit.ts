@@ -6,6 +6,7 @@ import { isRecord } from "../../utils/record.js";
 import { nonEmptyString as stringValue } from "../../utils/stringUtils.js";
 import type { Tool, ToolResult } from "../types.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
+import { buildFileMutationMetadata } from "../result-metadata.js";
 import {
   getSessionReadSnapshot,
   hasSessionRead,
@@ -412,18 +413,26 @@ export function createNotebookEditTool(config: NotebookEditToolConfig): Tool {
         });
       }
 
-      return json({
-        notebook_path: filePath,
-        cell_id: resultCellId,
-        ...(editMode !== "delete" && resultCellType !== undefined
-          ? { cell_type: resultCellType }
-          : {}),
-        language: notebookLanguage(parsed),
-        edit_mode: editMode,
-        ...(editMode !== "delete" ? { new_source: args.new_source } : {}),
-        original_file: original,
-        updated_file: updated,
-      });
+      return {
+        ...json({
+          notebook_path: filePath,
+          cell_id: resultCellId,
+          ...(editMode !== "delete" && resultCellType !== undefined
+            ? { cell_type: resultCellType }
+            : {}),
+          language: notebookLanguage(parsed),
+          edit_mode: editMode,
+          ...(editMode !== "delete" ? { new_source: args.new_source } : {}),
+          original_file: original,
+          updated_file: updated,
+        }),
+        metadata: buildFileMutationMetadata({
+          filePath: notebookPath,
+          operation: "edit",
+          beforeText: original,
+          afterText: updated,
+        }),
+      };
     },
   };
 }

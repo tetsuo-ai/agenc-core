@@ -92,20 +92,30 @@ From `formatCliHelpText()`:
   re-verify, and the advice to escalate with the ask-user-question tool). The
   contract is also enforced structurally: the first tool-free final answer of
   a turn that used tools is held back while the runtime injects a
-  `<completion_gate>` verification request. Verification requires each
-  nonempty checked `- [x]` item to have an associated successful tool
-  result since the latest request (the tool name, arguments, or content
-  must share a distinctive token with the claim). Unchecked `- [ ]` items
+  `<completion_gate>` verification request, unless it already passes
+  verification and cites a command that ran successfully after the last
+  workspace change. Verification requires each nonempty checked `- [x]`
+  item to have an associated successful tool result after the last
+  workspace change (the last file edit or a command the checklist does not
+  name). The tool name, arguments, or content must share a distinctive
+  token with the claim; sentence punctuation is not part of a token. A
+  checked item without such a result and without a
+  failed check is quoted back apart from the other unmet items, with a
+  request to put the command run or file inspected on its line. Unchecked
+  `- [ ]` items
   and malformed checklist items prevent verification. An explicit `- [-]`
   unavailable claim is asked to show its observed limitation, and the gate
-  keeps asking until `completion_gate.max_rounds`, where the leftover
-  settles as `partial`. It is never settled early on a successful check
-  for some other item. Failed
+  keeps asking while the model runs tools, up to
+  `completion_gate.max_rounds`, where the leftover settles as `partial`. It
+  is never settled early on a successful check for some other item. Failed
   tools and explicitly still-running commands do not count, and an
   unrelated successful read does not verify a different claim. This is a
   structural check, not a guarantee of task correctness and not a
   benchmark pass. After `completion_gate.max_rounds` (default 3), an
-  unmet answer still ends the turn with the existing exit code. Text-mode
+  unmet answer still ends the turn with the existing exit code. An answer
+  that ran no tool since the last request and draws that request's verdict
+  again (the same reason and items) settles the same way before the cap:
+  the same request again cannot change it. Text-mode
   `agenc -p` prints a warning to stderr (`exhausted` or `partial`) and
   structured output includes the event. `completion_gate.mode = "never"`
   in the config turns that off; see
