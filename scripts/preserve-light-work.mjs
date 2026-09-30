@@ -29,7 +29,9 @@ const frozenSelections = new Map([
       'companion-build-inputs-v1.json', 'companion-build-inputs-v2.json', 'BUILD-EXTERNAL-REVIEW.md',
       'COMPANION-SPLIT-RESULT.md', 'smoke-disabled-companion.mjs', 'callback-observer-child.mjs',
       'callback-observer.test.mjs', 'check-observer-integration.mjs', 'OBSERVER-INTEGRATION-RESULT.md',
-      'observer-check-first']],
+      'observer-check-first', 'preflight-entry.ts', 'preflight.ts', 'preflight-selection.mjs',
+      'tsconfig.companion.json', 'DEPLOYMENT-CLOSURE.md', 'REAL-CLIENT-NEXT-GATE.md',
+      'companion-build-inputs-v3.json', 'COMPANION-PACKAGE-RESULT.md', 'smoke-disabled-package.mjs']],
   ['/private/tmp/light-ultra/bench', ['scan_credentials.py']],
   ['/private/tmp/light-port/bench', ['review_credential_scan.py', 'scan_task_credentials.py']],
 ]);
@@ -42,6 +44,8 @@ const privateSelections = new Map([
     'metafile.json', 'reviewed-build-config.mjs']],
   ['/private/tmp/light-companion-build-v2', ['selection.json', 'build-result.json',
     'metafile.json', 'reviewed-build-config.mjs', 'disabled-entry-smoke.json']],
+  ['/private/tmp/light-companion-build-v3', ['selection.json', 'build-result.json',
+    'metafile.json', 'reviewed-build-config.mjs', 'disabled-entries-smoke.json']],
   ...['cQGTZZ', 's1uUGY', 'o2Nz01'].map(id => ['/private/tmp/cli-callback-observer-' + id,
     ['run', 'financial', 'selection.json', 'child.log', 'parent-lifecycle.json', 'parent-artifacts.json']]),
 ]);
@@ -104,7 +108,7 @@ function inspect(relative, topLevel = false) {
     || relative.startsWith('harness/') || relative.startsWith('bench/')
     || ['evidence/measured-baseline.patch', 'evidence/runner-initial.py'].includes(relative));
   const publicCode = frozenSelections.has(source) ? !relative.startsWith('callback-checks-')
-      && !relative.startsWith('observer-check-') && !/^companion-build-inputs-v[12]\.json$/.test(relative)
+      && !relative.startsWith('observer-check-') && !/^companion-build-inputs-v[0-9]+\.json$/.test(relative)
     : !privateSelections.has(source) && !generated && (predecessor ? predecessorPublic : topLevel ? rootCode.has(relative)
     : codeExtensions.has(path.extname(relative)) || path.basename(relative) === 'source-pins.json'
       || /^tsconfig.*\.json$/.test(path.basename(relative)));

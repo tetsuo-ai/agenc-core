@@ -1,5 +1,11 @@
 # Light integration and evaluation status — 2026-09-30
 
+Latest packaging checkpoint: the [v3 result](../../experiments/light/2026-09-30/package-v3/COMPANION-PACKAGE-RESULT.md)
+records successful strict types, two-entry split build and disabled-import/path
+checks. It fixes missing classifier text assets and runtime package/VERSION
+geometry in the experimental companion, not production runtime code. Actual
+Linux-native closure and the parent/preflight-to-ordinary-CLI run remain pending.
+
 Light has reviewed runtime fixes, narrower startup dependencies and stronger
 offline evaluation evidence. **There is no current, prospectively matched
 Light-versus-Pi benchmark establishing superiority.** The ordinary CLI-to-observer

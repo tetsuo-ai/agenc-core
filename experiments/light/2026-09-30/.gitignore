@@ -15,3 +15,6 @@
 !companion-build-v1/tsconfig.callbacks.json
 !observer-and-split-v2/SOURCE-MANIFEST.json
 !observer-and-split-v2/tsconfig.callbacks.json
+!package-v3/SOURCE-MANIFEST.json
+!package-v3/tsconfig.callbacks.json
+!package-v3/tsconfig.companion.json

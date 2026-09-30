@@ -1,5 +1,13 @@
 # Preserved Light evaluation source — 2026-09-30
 
+Latest: [package-v3 result](package-v3/COMPANION-PACKAGE-RESULT.md) adds a guarded
+independent preflight entry and repairs the companion's package identity and
+classifier asset paths. Strict types, split build and both disabled imports
+passed. The [closure audit](package-v3/DEPLOYMENT-CLOSURE.md) and
+[next real-client gate](package-v3/REAL-CLIENT-NEXT-GATE.md) identify remaining
+parent/Linux prerequisites. No dynamic Core startup, paid comparison or
+deployment approval is implied. Earlier snapshots remain unchanged.
+
 This directory preserves the operator-side source for the Light work described
 in [the integration checkpoint](../../../docs/eval/light-integration-2026-09-30.md).
 It is **not shipped runtime code, an installation, or approval to run benchmarks**.
