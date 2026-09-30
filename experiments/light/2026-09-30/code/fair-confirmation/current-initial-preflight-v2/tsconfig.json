@@ -1,0 +1,29 @@
+{
+  "extends": "/private/tmp/light-clean-prepared-mHtxlR/source/runtime/tsconfig.light-test-support.json",
+  "compilerOptions": {
+    "rootDir": "/private/tmp",
+    "typeRoots": [
+      "/private/tmp/light-clean-prepared-mHtxlR/source/node_modules/@types",
+      "/private/tmp/light-clean-prepared-mHtxlR/source/node_modules"
+    ],
+    "paths": {
+      "vitest": [
+        "/private/tmp/light-clean-prepared-mHtxlR/source/node_modules/vitest"
+      ],
+      "bun:bundle": [
+        "/private/tmp/light-clean-prepared-mHtxlR/source/runtime/src/build/feature.ts"
+      ],
+      "bun:test": [
+        "/private/tmp/light-clean-prepared-mHtxlR/source/runtime/tests/helpers/bun-test-shim.ts"
+      ],
+      "src/*": [
+        "/private/tmp/light-clean-prepared-mHtxlR/source/runtime/src/*"
+      ]
+    }
+  },
+  "include": [
+    "/private/tmp/light-takeover/fair-confirmation/current-initial-preflight-v2/probe.test.ts",
+    "/private/tmp/light-clean-prepared-mHtxlR/source/runtime/src/types/**/*.d.ts"
+  ],
+  "exclude": []
+}

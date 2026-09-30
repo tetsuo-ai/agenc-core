@@ -1,0 +1,17 @@
+diff --git a/runtime/tests/browser/manager-navigation-failure.test.ts b/runtime/tests/browser/manager-navigation-failure.test.ts
+index a3d3e6d99..46cb031d6 100644
+--- a/runtime/tests/browser/manager-navigation-failure.test.ts
++++ b/runtime/tests/browser/manager-navigation-failure.test.ts
+@@ -569,8 +569,11 @@ describe("project-scoped browser profiles", () => {
+   });
+ 
+   it.skipIf(process.platform === "win32")("accepts an agencHome named through a symlinked tmp path", async () => {
+-    const alias = profileRoot.replace(/^\/private\/tmp\//, "/tmp/").replace(/^\/private\/var\//, "/var/");
++    // Keep the alias inside the fixture so afterEach removes it with profileRoot.
++    const alias = join(profileRoot, "tmp-alias");
++    symlinkSync(profileRoot, alias, "dir");
+     expect(alias).not.toBe(profileRoot);
++    expect(realpathSync.native(alias)).toBe(profileRoot);
+     const home = join(profileRoot, "home");
+     mkdirSync(home);
+     const { manager } = fakeManager(async () => ({}), undefined, undefined, undefined, {

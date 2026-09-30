@@ -14,6 +14,13 @@ execution. Existing [evaluation contracts](../evaluation-contract-v1.md) and
 
 ## Branch and artifact identity
 
+Preservation update: operator-side source/configuration files now also live in
+[`experiments/light/2026-09-30`](../../experiments/light/2026-09-30/README.md),
+with original-byte hashes. Evaluation evidence is being preserved separately in
+the private Desktop archive branch under `light-evaluation-2026-09-30/takeover`.
+These copies are historical/experimental material, not installed runtime modules
+or a claim that disabled CLI fixtures have executed.
+
 | Identity | Verified scope |
 | --- | --- |
 | Current documented HEAD `bf23c4d36b68a6b57880cad76817c6e62b40124a` | Local `light/final-integration`; adds the reviewed jobs test diagnostic, narrow strict type gate and its package/ignore wiring. No production-source change from `403da`. No new full build was run on this head. |
@@ -225,8 +232,10 @@ are retained in E1's `run.mjs` and `result.json`; the examples above are not a
 claim to reproduce its test count. Do not rerun its single-use driver/reset its
 started marker. Current normal typecheck also selects the newly added jobs gate.
 
-Evidence below is **external retained operator material, not tracked repo
-content**. Paths are locators for review, not portable clone links or commands
+Evidence below uses the **original retained operator locations**. Selected files
+are additionally preserved in the private Desktop Git archive with the same
+relative paths and byte hashes; they are not public Core evidence data. Paths
+are locators for review, not portable clone links or commands
 to launch a provider. `E` denotes `/private/tmp/light-takeover/`.
 
 | ID | Authoritative retained paths |

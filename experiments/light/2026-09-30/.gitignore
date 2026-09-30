@@ -1,0 +1,4 @@
+# Explicitly reviewed source/configuration inventory, not arbitrary JSON data.
+!code/SOURCE-MANIFEST.json
+!code/**/source-pins.json
+!code/**/tsconfig*.json
