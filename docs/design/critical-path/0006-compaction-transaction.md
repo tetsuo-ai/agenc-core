@@ -51,8 +51,24 @@ idempotently. Missing proof keeps the source pinned.
 Immutable policy and output schema use the privileged instruction channel.
 Transcript, tool output, and prior summaries are untrusted structured data;
 their bytes are never interpolated into control delimiters. Complete semantic
-units preserve order and never separate a tool use from its result or lose the
-checkpoint-bound result digest from CP-0003.
+units preserve order and never separate a tool use from its result. The
+runtime binds each result's checkpoint-bound digest from CP-0003 to its unit
+and pins the unit's tool pairs into the summary itself.
+
+The summarizer payload carries only what the model summarizes. Within a
+unit, calls and results are linked by short refs (`c1`, `c2`, ...) instead of
+provider call IDs, and a result does not carry its checkpoint-bound digest.
+Tool-call arguments that parse are embedded as JSON values instead of escaped
+strings; a unit whose parsed arguments the canonical encoder refuses (node or
+depth bound, lone surrogate) keeps the strings. A tool result that is an exact
+untrusted-data frame for its tool is sent without the frame: the payload kind
+and the compactor's policy already label every unit untrusted, and the frame's
+body was sanitized when it was framed. Reduce and final calls receive each
+child's ref, narrative, and fact and open-action IDs and text, without its
+digest, pinned tool pairs, or record sources, so the fan-in preflight measures
+the payload that is sent. In captured sessions, the omitted digests, IDs,
+frames, and escaping were 5 to 35 percent of map input, depending on result
+size, and pinned tool pairs were 85 percent of a reduce call's input.
 
 The reduction plan is a bounded, preflighted map/reduce tree. It reserves policy,
 schema, and output tokens; caps source bytes/messages/units, chunks, levels,

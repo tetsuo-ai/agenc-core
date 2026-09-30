@@ -64,6 +64,38 @@ describe("compaction with runtime-owned tool pairs", () => {
     }
   });
 
+  it("sends no call id or digest to any summarizer call and still pins every pair", async () => {
+    const source = createSource(TOOL_CALLS, 400);
+    harness = createCompactionTransactionHarness(source, {
+      compactionMode: "automatic",
+      sessionId: SESSION_ID,
+      contextWindowTokens: 24_000,
+      chat: bodyCitingFirstSource,
+    });
+
+    const result = await compactConversation(source, harness.context, "", {
+      keepCount: 0,
+    });
+    const payloads = (harness.provider.chat.mock.calls as unknown as LLMMessage[][][])
+      .map((call) => String(call[0]?.[0]?.content));
+    const kinds = payloads.map((payload) => (JSON.parse(payload) as { kind: string }).kind);
+
+    // Several map calls and a final reduction over their summaries.
+    expect(kinds.filter((kind) => kind === "untrusted_compaction_transcript").length)
+      .toBeGreaterThan(1);
+    expect(kinds.at(-1)).toBe("untrusted_compaction_summaries");
+    for (const payload of payloads) {
+      expect(payload).not.toMatch(/[0-9a-f]{64}/u);
+      expect(payload).not.toContain("call-");
+    }
+    // Provenance never depended on the model: the runtime pins every pair.
+    expect(
+      result.transaction?.committed.summary.body.tool_pairs.map(
+        (pair) => pair.tool_call_id,
+      ),
+    ).toEqual(Array.from({ length: TOOL_CALLS }, (_, index) => `call-${index}`));
+  });
+
   it("accepts a summary larger than 8 KB when the provider reports its token count", async () => {
     // Tool results of a few hundred bytes each, so the summary still
     // shrinks the span by far more than the required fifth.

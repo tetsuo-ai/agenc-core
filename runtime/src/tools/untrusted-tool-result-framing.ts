@@ -139,10 +139,10 @@ function boundaryOccurrences(text: string): number {
   return text.split(UNTRUSTED_TOOL_RESULT_BOUNDARY).length - 1;
 }
 
-function isCanonicalFramedString(
+function canonicalFramedStringBody(
   toolName: string,
   content: string,
-): boolean {
+): string | undefined {
   for (const header of canonicalFramingHeaders(toolName)) {
     const prefix = `${header}\n`;
     const suffix = `\n${framingFooter()}`;
@@ -152,17 +152,17 @@ function isCanonicalFramedString(
       boundaryOccurrences(content) === 2 &&
       sanitizeToolResultText(body) === body
     ) {
-      return true;
+      return body;
     }
   }
-  return false;
+  return undefined;
 }
 
-function isCanonicalFramedParts(
+function canonicalFramedPartsBody(
   toolName: string,
   content: readonly LLMContentPart[],
-): boolean {
-  if (content.length < 2) return false;
+): LLMContentPart[] | undefined {
+  if (content.length < 2) return undefined;
   const first = content[0];
   const last = content.at(-1);
   if (
@@ -170,26 +170,36 @@ function isCanonicalFramedParts(
     last?.type !== "text" ||
     last.text !== framingFooter()
   ) {
-    return false;
+    return undefined;
   }
   if (!canonicalFramingHeaders(toolName).includes(first.text)) {
-    return false;
+    return undefined;
   }
-  return content.slice(1, -1).every(
+  const body = content.slice(1, -1);
+  return body.every(
     (part) =>
       part.type !== "text" ||
       (sanitizeToolResultText(part.text) === part.text &&
         !part.text.includes(UNTRUSTED_TOOL_RESULT_BOUNDARY)),
-  );
+  )
+    ? body
+    : undefined;
+}
+
+function canonicalFramedBody(
+  toolName: string,
+  content: LLMMessage["content"],
+): LLMMessage["content"] | undefined {
+  return typeof content === "string"
+    ? canonicalFramedStringBody(toolName, content)
+    : canonicalFramedPartsBody(toolName, content);
 }
 
 function isCanonicallyFramedUntrustedToolResult(
   toolName: string,
   content: LLMMessage["content"],
 ): boolean {
-  return typeof content === "string"
-    ? isCanonicalFramedString(toolName, content)
-    : isCanonicalFramedParts(toolName, content);
+  return canonicalFramedBody(toolName, content) !== undefined;
 }
 
 function isTextPart(
@@ -273,6 +283,20 @@ export function frameUntrustedToolResultContent(
     { type: "text", text: framingFooter() },
   ];
   return framed;
+}
+
+/**
+ * The body of an exact AgenC frame made for `toolName`, for a reader whose
+ * own envelope already labels the whole text untrusted (the compaction
+ * transcript). Only an exact frame unwraps, and its body was sanitized when
+ * it was framed; anything else, including lookalike and nested frames, is
+ * returned as it is.
+ */
+export function unframeUntrustedToolResultContent(
+  toolName: string,
+  content: LLMMessage["content"],
+): LLMMessage["content"] {
+  return canonicalFramedBody(toolName, content) ?? content;
 }
 
 /**

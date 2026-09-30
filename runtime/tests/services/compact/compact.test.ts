@@ -529,38 +529,13 @@ function validProvider(gate?: Promise<void>): CompactHarness["provider"] {
       countedComponents: ["system" as const, "messages" as const],
     };
   });
-  const chat = vi.fn(async (messages: LLMMessage[]): Promise<LLMResponse> => {
+  const chat = vi.fn<(messages: LLMMessage[]) => Promise<LLMResponse>>(async () => {
     await gate;
-    const payload = JSON.parse(String(messages[0]?.content)) as {
-      readonly units?: ReadonlyArray<{
-        readonly messages: ReadonlyArray<{
-          readonly tool_call_id?: string;
-          readonly tool_result_sha256?: string;
-        }>;
-      }>;
-      readonly children?: ReadonlyArray<{
-        readonly body: {
-          readonly tool_pairs: ReadonlyArray<{
-            readonly tool_call_id: string;
-            readonly result_sha256: string;
-          }>;
-        };
-      }>;
-    };
-    const toolPairs = payload.units?.flatMap((unit) =>
-      unit.messages
-        .filter((entry) => entry.tool_call_id && entry.tool_result_sha256)
-        .map((entry) => ({
-          tool_call_id: entry.tool_call_id!,
-          result_sha256: entry.tool_result_sha256!,
-        })),
-    ) ?? payload.children?.flatMap((child) => child.body.tool_pairs) ?? [];
     return {
       content: JSON.stringify({
         narrative: "Bounded summary.",
         facts: [],
         open_actions: [],
-        tool_pairs: toolPairs,
       }),
       toolCalls: [],
       usage: {

@@ -247,50 +247,24 @@ export function createProvider(
     confidence: "exact" as const,
     countedComponents: ["system" as const, "messages" as const],
   }));
-  const defaultChat = async (messages: LLMMessage[]): Promise<LLMResponse> => {
-    const payload = JSON.parse(String(messages[0]?.content)) as {
-      readonly units?: ReadonlyArray<{
-        readonly messages: ReadonlyArray<{
-          readonly tool_call_id?: string;
-          readonly tool_result_sha256?: string;
-        }>;
-      }>;
-      readonly summaries?: ReadonlyArray<{
-        readonly body: {
-          readonly tool_pairs: ReadonlyArray<{
-            readonly tool_call_id: string;
-            readonly result_sha256: string;
-          }>;
-        };
-      }>;
-    };
-    const toolPairs = payload.units?.flatMap((unit) =>
-      unit.messages
-        .filter((message) => message.tool_call_id && message.tool_result_sha256)
-        .map((message) => ({
-          tool_call_id: message.tool_call_id!,
-          result_sha256: message.tool_result_sha256!,
-        })),
-    ) ?? payload.summaries?.flatMap((child) => child.body.tool_pairs) ?? [];
-    return {
-      content: JSON.stringify({
-        narrative: "Bounded summary.",
-        facts: [],
-        open_actions: [],
-        tool_pairs: toolPairs,
-      }),
-      toolCalls: [],
-      usage: {
-        promptTokens: 128,
-        completionTokens: 128,
-        totalTokens: 256,
-        availability: "reported",
-        provenance: "provider",
-      },
-      model: "grok-4.5",
-      finishReason: "stop",
-    };
-  };
+  // The runtime pins every tool pair itself; the summary is prose only.
+  const defaultChat: (messages: LLMMessage[]) => Promise<LLMResponse> = async () => ({
+    content: JSON.stringify({
+      narrative: "Bounded summary.",
+      facts: [],
+      open_actions: [],
+    }),
+    toolCalls: [],
+    usage: {
+      promptTokens: 128,
+      completionTokens: 128,
+      totalTokens: 256,
+      availability: "reported",
+      provenance: "provider",
+    },
+    model: "grok-4.5",
+    finishReason: "stop",
+  });
   const chat = vi.fn(chatOverride ?? defaultChat);
   return {
     name: "grok",

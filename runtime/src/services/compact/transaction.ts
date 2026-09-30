@@ -1058,7 +1058,6 @@ async function runSummaryTree(params: {
           structuredReductionMessages({
             children: group.map((node) => ({
               ref_id: node.ref.ref_id,
-              sha256: node.ref.sha256,
               body: node.summary.body,
             })),
             stage: "reduce",
@@ -1076,7 +1075,6 @@ async function runSummaryTree(params: {
     structuredReductionMessages({
       children: level.map((node) => ({
         ref_id: node.ref.ref_id,
-        sha256: node.ref.sha256,
         body: node.summary.body,
       })),
       stage: "final",
