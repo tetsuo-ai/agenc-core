@@ -673,8 +673,10 @@ export interface LLMChatOptions {
   readonly openaiReasoningReplay?: boolean;
   /**
    * @internal UUID of one immutable sampling request, preserved across
-   * session reconnects. Only AgenC-managed adapters use it, as a transport
-   * idempotency header; it is never part of the model request body.
+   * session reconnects. AgenC-managed adapters use it as a transport
+   * idempotency header; it is never part of the model request body. Admission
+   * journals canonical UUIDv4 values for correlation only, not as preparation
+   * approval or permission to reuse a reservation.
    */
   readonly managedRequestId?: string;
   /**

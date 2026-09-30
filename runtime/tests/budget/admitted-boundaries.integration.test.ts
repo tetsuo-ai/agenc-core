@@ -113,12 +113,15 @@ async function modelCall(params: {
   stepId: string;
   invoke: (options: LLMChatOptions) => Promise<LLMResponse>;
   signal?: AbortSignal;
+  managedRequestId?: string;
 }): Promise<LLMResponse> {
   return runAdmittedModelCall({
     session: sessionFor(params.client),
     provider,
     messages: [{ role: "user", content: "hello" }],
-    options: { maxOutputTokens: 32 },
+    options: { maxOutputTokens: 32,
+      ...(params.managedRequestId !== undefined ? { managedRequestId: params.managedRequestId } : {}),
+    },
     stepId: params.stepId,
     model: "grok-4.5",
     providerName: "grok",
@@ -149,6 +152,33 @@ async function flushAdmissionScheduler(): Promise<void> {
 }
 
 describe("admitted execution boundaries with the durable kernel", () => {
+  it("retains request correlation across distinct reservations and SQLite reopen", async () => {
+    const client = admission("request-correlation");
+    const shared = "11111111-1111-4111-8111-111111111111";
+    const next = "22222222-2222-4222-8222-222222222222";
+    const seen: Array<string | undefined> = [];
+    for (const [index, managedRequestId] of [shared, shared, next].entries()) {
+      await modelCall({ client, stepId: `sample:${index}`, managedRequestId,
+        invoke: async options => {
+          seen.push(options.managedRequestId);
+          return modelResponse(index === 2 ? { availability: "unknown" } : {});
+        },
+      });
+    }
+    const before = kernel.listJournal({ cwd, runId: client.scope.runId });
+    const dispatched = before.filter(event => event.event === "dispatched");
+    expect(dispatched).toHaveLength(3);
+    expect(dispatched.map(event => event.details?.managedRequestId)).toEqual(seen);
+    expect(seen).toEqual([shared, shared, next]);
+    expect(new Set(dispatched.map(event => event.reservationId)).size).toBe(3);
+    expect(before.some(event => event.stepId === "sample:2" && event.event === "held_unknown")).toBe(true);
+    kernel.close();
+    kernel = new ExecutionAdmissionKernel({ agencHome, ownerId: "correlation-reopened", ownerPid: process.pid });
+    // Actual persistence, not a mock journal. This is a clean close/reopen,
+    // deliberately not a process-crash or all-wire-attempt proof.
+    expect(kernel.listJournal({ cwd, runId: client.scope.runId })).toEqual(before);
+  });
+
   it("keeps admitted capacity while an abort-ignoring provider settles", async () => {
     useSingleCapacityKernel();
     const client = admission("abort-ignoring-model-run");

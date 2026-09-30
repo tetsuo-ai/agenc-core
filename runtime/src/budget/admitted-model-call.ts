@@ -859,24 +859,6 @@ export async function runAdmittedModelCall(
       params.onFallbackRecorded?.();
     }
     if (routingEvent !== undefined) client.recordFallback(routingEvent);
-    client.markDispatched(reservationId, {
-      boundary: "provider_wire",
-      details: {
-        model: effectiveModel,
-        provider: effectiveProvider,
-        ...(usesConcreteExecutionIdentity
-          ? {
-              routedFromModel: params.model,
-              routedFromProvider: params.providerName,
-            }
-          : {}),
-        maxOutputTokens: admittedMaxOutputTokens,
-        tokenAccountingSource: accountingResult?.source,
-        tokenAccountingConfidence: accountingResult?.confidence,
-        tokenAccountingCoverageComplete: accountingResult?.coverage.complete,
-      },
-    });
-    dispatched = true;
     // The lease minimum can be lower than the admitted ceiling, so this is the
     // figure actually dispatched and therefore the one a squeeze is measured
     // against.
@@ -884,7 +866,7 @@ export async function runAdmittedModelCall(
       admittedMaxOutputTokens,
       lease.request.estimate.maxOutputTokens,
     );
-    const response = await invoke({
+    const invocationOptions: LLMChatOptions = {
       ...accountingOptions,
       ...(profile?.providerExecutionHandle !== undefined
         ? { providerExecutionHandle: profile.providerExecutionHandle }
@@ -907,7 +889,35 @@ export async function runAdmittedModelCall(
       // The lease signal also carries parent cancellation, deadline expiry,
       // daemon shutdown, and restart recovery decisions.
       signal: lease.signal,
+    };
+    // Correlation only: UUID shape does not prove preparation or validation.
+    // Snapshot the actual invocation scalar before journal callbacks, without
+    // normalizing arbitrary caller text into durable evidence. Each retry
+    // still owns its independent reservation, even when this UUID is shared.
+    const managedRequestId = invocationOptions.managedRequestId;
+    const hasCanonicalRequestId = typeof managedRequestId === "string" &&
+      managedRequestId.length === 36 &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(managedRequestId);
+    client.markDispatched(reservationId, {
+      boundary: "provider_wire",
+      details: {
+        model: effectiveModel,
+        provider: effectiveProvider,
+        ...(hasCanonicalRequestId ? { managedRequestId } : {}),
+        ...(usesConcreteExecutionIdentity
+          ? {
+              routedFromModel: params.model,
+              routedFromProvider: params.providerName,
+            }
+          : {}),
+        maxOutputTokens: admittedMaxOutputTokens,
+        tokenAccountingSource: accountingResult?.source,
+        tokenAccountingConfidence: accountingResult?.confidence,
+        tokenAccountingCoverageComplete: accountingResult?.coverage.complete,
+      },
     });
+    dispatched = true;
+    const response = await invoke(invocationOptions);
     // The provider has physically answered, but no durable accounting result
     // has committed. A process loss here must recover as unknown, never free.
     hitM4DurabilityFailpoint("before_model_response_commit");

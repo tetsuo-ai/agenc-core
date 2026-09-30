@@ -109,6 +109,94 @@ function callOptions(
 }
 
 describe("runAdmittedModelCall", () => {
+  test("journals the exact invocation UUID despite profile, acquisition and dispatch mutations", async () => {
+    const state = harness({});
+    const initial = "11111111-1111-4111-8111-111111111111";
+    const selected = "22222222-2222-4222-8222-222222222222";
+    const late = "33333333-3333-4333-8333-333333333333";
+    const options = { maxOutputTokens: 200, managedRequestId: initial };
+    let accountingOptions: LLMChatOptions | undefined;
+    const profile = state.provider.getExecutionProfile!.bind(state.provider);
+    state.provider.getExecutionProfile = async () => {
+      options.managedRequestId = selected;
+      return profile(options);
+    };
+    state.provider.projectRequestForAccounting = (messages, projected) => {
+      accountingOptions = projected;
+      return { messages, options: projected };
+    };
+    const acquire = state.acquire.getMockImplementation()!;
+    state.acquire.mockImplementation(async input => {
+      options.managedRequestId = late;
+      return acquire(input);
+    });
+    const mark = vi.spyOn(state.admission, "markDispatched").mockImplementation(() => {
+      // Even a callback holding the accounting projection cannot change the
+      // invocation's scalar after its journal evidence has been selected.
+      Object.assign(accountingOptions!, { managedRequestId: late });
+    });
+    const invoke = vi.fn(async (_options: LLMChatOptions) => response());
+    await callOptions(state, options, invoke);
+    expect(mark).toHaveBeenCalledWith("reservation-1", expect.objectContaining({
+      details: expect.objectContaining({ managedRequestId: selected }),
+    }));
+    expect(invoke.mock.calls[0]?.[0].managedRequestId).toBe(selected);
+    expect(state.acquire).toHaveBeenCalledOnce();
+    expect(state.reconcile).toHaveBeenCalledOnce();
+  });
+
+  test.each([
+    undefined, "", "private caller text", "11111111-1111-4111-8111-111111111111\n",
+    "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA", "11111111-1111-5111-8111-111111111111",
+    "11111111-1111-4111-7111-111111111111", " 11111111-1111-4111-8111-111111111111",
+  ])("omits noncanonical correlation from the journal without changing invocation: %j", async managedRequestId => {
+    const state = harness({});
+    const invoke = vi.fn(async (_options: LLMChatOptions) => response());
+    await callOptions(state, {
+      maxOutputTokens: 200,
+      ...(managedRequestId !== undefined ? { managedRequestId } : {}),
+    }, invoke);
+    const mark = vi.mocked(state.admission.markDispatched);
+    expect(mark).toHaveBeenCalledOnce();
+    expect(mark.mock.calls[0]?.[1]?.details).not.toHaveProperty("managedRequestId");
+    expect(invoke.mock.calls[0]?.[0].managedRequestId).toBe(managedRequestId);
+  });
+
+  test("does not dispatch or journal correlation after denied acquisition", async () => {
+    const state = harness({});
+    const denied = new Error("denied acquisition");
+    state.acquire.mockRejectedValueOnce(denied);
+    const invoke = vi.fn(async () => response());
+    await expect(callOptions(state, { maxOutputTokens: 200,
+      managedRequestId: "11111111-1111-4111-8111-111111111111" }, invoke)).rejects.toBe(denied);
+    expect(state.admission.markDispatched).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  test("voids a journal failure before invocation and retains unknown usage after dispatch", async () => {
+    const managedRequestId = "11111111-1111-4111-8111-111111111111";
+    const failed = harness({});
+    vi.spyOn(failed.admission, "markDispatched").mockImplementation(() => { throw new Error("journal failed"); });
+    const invoke = vi.fn(async () => response());
+    await expect(callOptions(failed, { maxOutputTokens: 200, managedRequestId }, invoke)).rejects.toThrow("journal failed");
+    expect(invoke).not.toHaveBeenCalled();
+    expect(failed.voidReservation).toHaveBeenCalledWith("reservation-1", "provider_call_failed_before_dispatch");
+    expect(failed.holdUnknown).not.toHaveBeenCalled();
+    expect(failed.acknowledgeCompletion).toHaveBeenCalledOnce();
+
+    const unknown = harness({});
+    await callOptions(unknown, { maxOutputTokens: 200, managedRequestId }, async () => response({
+      usage: { ...response().usage, availability: "unknown" },
+    }));
+    expect(unknown.admission.markDispatched).toHaveBeenCalledWith("reservation-1", expect.objectContaining({
+      details: expect.objectContaining({ managedRequestId }),
+    }));
+    expect(unknown.holdUnknown).toHaveBeenCalledWith("reservation-1", "missing_provider_usage");
+    expect(unknown.reconcile).not.toHaveBeenCalled();
+    expect(unknown.voidReservation).not.toHaveBeenCalled();
+    expect(unknown.acknowledgeCompletion).toHaveBeenCalledOnce();
+  });
+
   test.each(["before-headers", "before-body", "after-interim-usage", "http-503"] as const)("keeps Gemini's full reservation for an ambiguous failure: %s", async (failure) => {
     const state = harness({ maxCostUsd: 20, hasHardCostCap: true });
     let chunks = 0;
