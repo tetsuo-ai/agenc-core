@@ -408,6 +408,50 @@ describe("SandboxExecutionBroker", () => {
       })),
     } as never;
 
+    it("rejects a git workspace at startup before a model request", () => {
+      const root = tempRoot("agenc-broker-startup-git-");
+      mkdirSync(join(root, ".git"));
+      const broker = new SandboxExecutionBroker({
+        mode: "workspace_write",
+        cwd: root,
+        platform: "linux",
+        probe: fallbackStatus,
+      });
+      const firstRequest = vi.fn();
+
+      expect(broker.status()).toMatchObject({
+        kind: "unavailable",
+        reason: expect.stringContaining(join(root, ".git")),
+      });
+      expect(() => {
+        broker.assertReady("startup");
+        firstRequest();
+      }).toThrowError(expect.objectContaining({
+        code: "sandbox_policy_unexpressible",
+        message: expect.stringMatching(/\.git.*Install bubblewrap.*unprivileged user namespaces.*Docker.*seccomp\/AppArmor/s),
+      }));
+      expect(() => broker.assertReady("tool")).toThrowError(
+        expect.objectContaining({ code: "sandbox_policy_unexpressible" }),
+      );
+      expect(firstRequest).not.toHaveBeenCalled();
+    });
+
+    it("keeps startup ready with bubblewrap or a read-only policy", () => {
+      const root = tempRoot("agenc-broker-startup-safe-");
+      mkdirSync(join(root, ".git"));
+      const bubblewrap = new SandboxExecutionBroker({
+        mode: "workspace_write", cwd: root, platform: "linux",
+        probe: () => ({ ...readyStatus("workspace_write"), platform: "linux" }),
+      });
+      const readOnly = new SandboxExecutionBroker({
+        mode: "read_only", cwd: root, platform: "linux",
+        probe: () => ({ ...fallbackStatus(), mode: "read_only" }),
+      });
+
+      expect(bubblewrap.assertReady("startup").kind).toBe("ready");
+      expect(readOnly.assertReady("startup").kind).toBe("ready");
+    });
+
     it("refuses an unexpressible policy with the precise reason and the probe-time remediation", () => {
       const root = tempRoot("agenc-broker-preflight-");
       mkdirSync(join(root, ".agenc"));
