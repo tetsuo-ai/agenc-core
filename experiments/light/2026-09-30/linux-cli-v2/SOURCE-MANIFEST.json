@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "scope": "preservation only; no launch approval",
+  "files": [
+    {
+      "source": "fair-confirmation/linux-preflight-v2/fetch-classifier.mjs",
+      "destination": "fair-confirmation/linux-preflight-v2/fetch-classifier.mjs",
+      "bytes": 1318,
+      "sha256": "82794e478ceb405bdb07a373d5bd792968f7f8527dece7f29c5d0a35e1d89786"
+    },
+    {
+      "source": "fair-confirmation/linux-preflight-v2/fetch-classifier.test.mjs",
+      "destination": "fair-confirmation/linux-preflight-v2/fetch-classifier.test.mjs",
+      "bytes": 4354,
+      "sha256": "2e342f7ad5452d0dd60a213b61df6f7f527550b5fd9abb73d008f30f79ea7193"
+    },
+    {
+      "source": "fair-confirmation/linux-preflight-v2/preflight.ts",
+      "destination": "fair-confirmation/linux-preflight-v2/preflight.ts",
+      "bytes": 14492,
+      "sha256": "8a8dd133a4752abbd1f7ce5b1f8599360e68d972010f213680e112c31a83e9ae"
+    },
+    {
+      "source": "fair-confirmation/linux-owner-v2/README.md",
+      "destination": "fair-confirmation/linux-owner-v2/README.md",
+      "bytes": 1519,
+      "sha256": "fe4689e593376fbce3b662d1b7bfbdd9cf97d15cc7d26abe62bdd7adb6247735"
+    },
+    {
+      "source": "fair-confirmation/linux-owner-v2/owner-entry.test.mjs",
+      "destination": "fair-confirmation/linux-owner-v2/owner-entry.test.mjs",
+      "bytes": 8060,
+      "sha256": "05db4a96cd94547c052ea512d0280e6b9e611534b62dda41ea8fbd66a3332d9b"
+    },
+    {
+      "source": "fair-confirmation/linux-owner-v2/owner-entry.ts",
+      "destination": "fair-confirmation/linux-owner-v2/owner-entry.ts",
+      "bytes": 5791,
+      "sha256": "617e3222331211060a550e0011ab5c74e8b9e765dd9f47aaae20382efe5b5548"
+    },
+    {
+      "source": "fair-confirmation/linux-parent-v2/child.mjs",
+      "destination": "fair-confirmation/linux-parent-v2/child.mjs",
+      "bytes": 3125,
+      "sha256": "7bd77e8c2f7f63ffd11f6f59d1d3a8cc56ea361f97aa602bbc734ed8e80428b9"
+    },
+    {
+      "source": "fair-confirmation/linux-parent-v2/io.mjs",
+      "destination": "fair-confirmation/linux-parent-v2/io.mjs",
+      "bytes": 3718,
+      "sha256": "f57d9dc2a8832a66991792b25461a06ed0a5f28026c3dced28cbcc91eafab10e"
+    },
+    {
+      "source": "fair-confirmation/linux-parent-v2/parent.mjs",
+      "destination": "fair-confirmation/linux-parent-v2/parent.mjs",
+      "bytes": 16832,
+      "sha256": "9ec5ebdf2724bcb5e6e7e7aeb77aabeed427fa207ad5c42b773a7f692cd4c85f"
+    },
+    {
+      "source": "fair-confirmation/linux-parent-v2/setup.mjs",
+      "destination": "fair-confirmation/linux-parent-v2/setup.mjs",
+      "bytes": 6870,
+      "sha256": "3a8ee9fd8fc1d823355de07f7457c07f4bcddf60a6892725fc6d146af742e97b"
+    },
+    {
+      "source": "fair-confirmation/linux-build-v2/build.mjs",
+      "destination": "fair-confirmation/linux-build-v2/build.mjs",
+      "bytes": 21084,
+      "sha256": "edfb8e3df6dbd1bdc346292578dc42b4d073414421eae000a4a17f074247ffd9"
+    },
+    {
+      "source": "fair-confirmation/linux-build-v2/seal-inputs.mjs",
+      "destination": "fair-confirmation/linux-build-v2/seal-inputs.mjs",
+      "bytes": 2746,
+      "sha256": "3e306578926bdac5f915ac2b854e6543233a29881217dbdffa64485e3fc9ed53"
+    },
+    {
+      "source": "linux-resume-20260930/run-cli-v2.sh",
+      "destination": "linux-resume-20260930/run-cli-v2.sh",
+      "bytes": 2258,
+      "sha256": "30d40658730c6017aa3c75d84b14f93f43a42c344f50f533a365076e323bb076"
+    }
+  ]
+}
