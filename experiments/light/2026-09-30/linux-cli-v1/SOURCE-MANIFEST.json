@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "scope": "preservation only; no launch approval",
+  "files": [
+    {
+      "source": "fair-confirmation/linux-parent-v1/README.md",
+      "destination": "fair-confirmation/linux-parent-v1/README.md",
+      "bytes": 8594,
+      "sha256": "6d5c2f2fcc34add675252c097c7571792baa1f0b1e6204dac8c31df5fa520ca0"
+    },
+    {
+      "source": "fair-confirmation/linux-parent-v1/STAGE-FILES.txt",
+      "destination": "fair-confirmation/linux-parent-v1/STAGE-FILES.txt",
+      "bytes": 1451,
+      "sha256": "33a51c24fcbe6f4f2e9ea3eded4a357536e0cd1353e6f232e7166deaa6d18297"
+    },
+    {
+      "source": "fair-confirmation/linux-parent-v1/child.mjs",
+      "destination": "fair-confirmation/linux-parent-v1/child.mjs",
+      "bytes": 2176,
+      "sha256": "9510b327944ff7f8c76ef3f1de73fb2cb3c69e91c1492811a9dcf3c820cee353"
+    },
+    {
+      "source": "fair-confirmation/linux-parent-v1/io.mjs",
+      "destination": "fair-confirmation/linux-parent-v1/io.mjs",
+      "bytes": 3718,
+      "sha256": "f57d9dc2a8832a66991792b25461a06ed0a5f28026c3dced28cbcc91eafab10e"
+    },
+    {
+      "source": "fair-confirmation/linux-parent-v1/parent.mjs",
+      "destination": "fair-confirmation/linux-parent-v1/parent.mjs",
+      "bytes": 16832,
+      "sha256": "9ec5ebdf2724bcb5e6e7e7aeb77aabeed427fa207ad5c42b773a7f692cd4c85f"
+    },
+    {
+      "source": "fair-confirmation/linux-parent-v1/seal-inputs.mjs",
+      "destination": "fair-confirmation/linux-parent-v1/seal-inputs.mjs",
+      "bytes": 2710,
+      "sha256": "f27bef43fd0e2a720edcb0ffc357ffdd6a6b892601503c4bae31985b0eff1514"
+    },
+    {
+      "source": "fair-confirmation/linux-parent-v1/setup.mjs",
+      "destination": "fair-confirmation/linux-parent-v1/setup.mjs",
+      "bytes": 6870,
+      "sha256": "3a8ee9fd8fc1d823355de07f7457c07f4bcddf60a6892725fc6d146af742e97b"
+    },
+    {
+      "source": "fair-confirmation/linux-build-v1/build.mjs",
+      "destination": "fair-confirmation/linux-build-v1/build.mjs",
+      "bytes": 20521,
+      "sha256": "c57e0a17fee71c65c11bbd57e3b27f2e816f08b66a125fd8db06927d6d9f085e"
+    },
+    {
+      "source": "linux-resume-20260930/build-manifest-v2.mjs",
+      "destination": "linux-resume-20260930/build-manifest-v2.mjs",
+      "bytes": 1010,
+      "sha256": "a847937d01874864c763576338355ac40d06c837d1a072a2855b8439efe8ce25"
+    },
+    {
+      "source": "linux-resume-20260930/diagnose-preflight.mjs",
+      "destination": "linux-resume-20260930/diagnose-preflight.mjs",
+      "bytes": 7078,
+      "sha256": "f8769489087aa2e5e19bddb780998d690b965dbf70c5cf061597b4b5e525bea8"
+    },
+    {
+      "source": "linux-resume-20260930/diagnose-preflight-v2.mjs",
+      "destination": "linux-resume-20260930/diagnose-preflight-v2.mjs",
+      "bytes": 7734,
+      "sha256": "baefd6839a547ee3f4c537afb5fe970fb30134a532deef9252f5112dc9725d98"
+    }
+  ]
+}
