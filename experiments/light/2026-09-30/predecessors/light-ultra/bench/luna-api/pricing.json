@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "verified_on": "2026-09-29",
+  "source": "https://api-docs.deepseek.com/quick_start/pricing",
+  "method": "Provider list-rate estimate by request-start UTC, not invoice attribution. Prices may change; verify before a new study.",
+  "rate_order": ["cached_input", "uncached_input", "output"],
+  "peak_weekdays_utc": [0, 1, 2, 3, 4],
+  "peak_hours_utc": [[1, 4], [6, 10]],
+  "peak_multiplier": 2,
+  "models": {
+    "deepseek-flash": {"usd_per_million_tokens": [0.003, 0.15, 0.60]},
+    "deepseek-v4-pro": {"usd_per_million_tokens": [0.022, 0.66, 1.98]}
+  },
+  "openai_cost_basis": "subscription-unpriced"
+}

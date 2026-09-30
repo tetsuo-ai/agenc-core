@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "scope": "experimental source preservation, not installed or approved to execute",
+  "files": [
+    {
+      "path": "measure.py",
+      "bytes": 5360,
+      "sha256": "08f7841218ee0374cee268209a47cffe9ea05e29aa68ebf182b39c718c983b6c"
+    }
+  ]
+}

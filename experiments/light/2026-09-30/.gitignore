@@ -2,3 +2,10 @@
 !code/SOURCE-MANIFEST.json
 !code/**/source-pins.json
 !code/**/tsconfig*.json
+!predecessors/**/SOURCE-MANIFEST.json
+!predecessors/**/pricing.json
+!predecessors/**/tasks/manifest.json
+!runtime-overhead-overlay/SOURCE-MANIFEST.json
+!frozen-callbacks/SOURCE-MANIFEST.json
+!ultra-scanner/SOURCE-MANIFEST.json
+!port-scanners/SOURCE-MANIFEST.json

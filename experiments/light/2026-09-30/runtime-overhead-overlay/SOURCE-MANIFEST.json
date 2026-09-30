@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "scope": "experimental source preservation, not installed or approved to execute",
+  "files": [
+    {
+      "path": "REPORT.md",
+      "bytes": 11074,
+      "sha256": "52841506d731bca530b6de12921d09fbc2f3a7588ab4b0b0b7f724e6dbf05eff"
+    },
+    {
+      "path": "ROUND2.md",
+      "bytes": 13108,
+      "sha256": "07c645f1d1c2cf32366452ac8e2125f6830b014d7687d9839953cc01a24102a4"
+    },
+    {
+      "path": "summarize.py",
+      "bytes": 7549,
+      "sha256": "7089cec3e04c2b0cec4ae58eb5d26d444a8fe45df8b6924f85aa47e0ce279c9b"
+    },
+    {
+      "path": "test_summarize.py",
+      "bytes": 3426,
+      "sha256": "0c7d3cf908ea911882ec0a7d474371e7fbc6b420c506451b8342352ccb067b0e"
+    }
+  ]
+}

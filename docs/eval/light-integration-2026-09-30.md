@@ -254,3 +254,20 @@ to launch a provider. `E` denotes `/private/tmp/light-takeover/`.
 External scripts are versioned prototypes with their own pins and approval
 boundaries. The repository documentation intentionally contains no credentials,
 raw captured prompts, opaque reasoning payloads or private transcripts.
+
+## Git preservation checkpoint
+
+The owner selected public Core for code/technical docs and private Desktop for
+evidence. [The source inventory](../../experiments/light/2026-09-30/README.md)
+preserves 848 original source/configuration files across takeover and predecessor
+experiments, including a four-file uncommitted historical runtime overlay. The
+private `archive/claude-session-4e2cff2c` branch in `tetsuo-ai/agenc-desktop`
+preserves 2,085 original files with per-file hashes under
+`light-evaluation-2026-09-30/`, plus the unchanged original Claude archive.
+Reviewed accounting ledgers remain private and byte-identical. Separate original
+experimental branches were verified remotely; they were not merged here.
+
+The new callback publisher and synthetic test draft are frozen and archived,
+**not executed or typechecked yet**. Their preservation is not another benchmark
+result. No provider call, client launch, merge, release or deployment occurred
+during the preservation step. Historical pins and paths were not rewritten.

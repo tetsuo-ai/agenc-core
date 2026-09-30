@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "scope": "experimental source preservation, not installed or approved to execute",
+  "files": [
+    {
+      "path": "build-report.py",
+      "bytes": 13914,
+      "sha256": "76662756d78ad6e5dd0ab6f56ae12a1fde6371a9ccf600c63cbfe3002d081daf"
+    },
+    {
+      "path": "collect-flash.py",
+      "bytes": 1589,
+      "sha256": "446da5279218ab7a7043287ffb3d197bee74a5c70bfaf9dfa036a85915c2c0b6"
+    },
+    {
+      "path": "collect-r2-tests.py",
+      "bytes": 1215,
+      "sha256": "b2f3c4421279d54989391100a7a43bf6713e3109c50f6d05339e87f00ac49704"
+    },
+    {
+      "path": "collect-r3-tests.py",
+      "bytes": 1071,
+      "sha256": "7acdb2bf1679922be1a741642d77d3d68eb9eea6894f74d9886620c4b082eebd"
+    },
+    {
+      "path": "evidence/measured-baseline.patch",
+      "bytes": 23475,
+      "sha256": "49790bb987e9324f9ae16c32a5ac8dd0e0aa868ce32f0ee06927c9f19212f0eb"
+    },
+    {
+      "path": "exact-scan.py",
+      "bytes": 981,
+      "sha256": "5d4f47c8d8222eb9b3093d92c0ef3e8a582e6c8c2661c839044cf75d8addd414"
+    },
+    {
+      "path": "harness/frozen-runner.py",
+      "bytes": 26437,
+      "sha256": "76845456e519429d4ffb8c33ffabf2e409334bb6a858c9890a71813c6aec983c"
+    },
+    {
+      "path": "harness/runner.py",
+      "bytes": 16444,
+      "sha256": "a2b6ce0108c3150b8365f303c5bea472c06dc96ebca1d6eca8657449e41827a1"
+    },
+    {
+      "path": "instrument-more.cjs",
+      "bytes": 1292,
+      "sha256": "948a693e608e7fb8abf61c537d150b68de611a60cac7d6439bab70de136835c7"
+    },
+    {
+      "path": "instrument.cjs",
+      "bytes": 2005,
+      "sha256": "e37ccee0b3e14d2872f8d5da5682c069e60dd2f648d8b2306e43ad30869a6659"
+    },
+    {
+      "path": "live-check.py",
+      "bytes": 2245,
+      "sha256": "58bc15e3f74af435b0d65e6c85bc8405470648cab3c15345cedd91aac0117a6c"
+    },
+    {
+      "path": "profile-replay.py",
+      "bytes": 12254,
+      "sha256": "e34cc63c349770ca965b42717469164c47a6fef8a8f5a74dad80e4e5fb525488"
+    },
+    {
+      "path": "r2-candidate.patch",
+      "bytes": 21889,
+      "sha256": "39c0d5fa0a8850845c31de646b41a03b1f8252bf259957aa20b167b37f681191"
+    },
+    {
+      "path": "r2-triage-after.sh",
+      "bytes": 588,
+      "sha256": "65a895f5fadc83fad0c209abd94013e26a6a44f7cabee68705b4444ae9476ea1"
+    },
+    {
+      "path": "r3-source.patch",
+      "bytes": 11803,
+      "sha256": "82a988d4412665c4a898047c8c17fcbd48f01a907bc610b6be9725959d613377"
+    },
+    {
+      "path": "round2-edit.py",
+      "bytes": 7332,
+      "sha256": "42a67266e3df16c8c11c0631f3b2207642e084678aeb264d56d999149e1d5040"
+    },
+    {
+      "path": "round2-instrument.patch",
+      "bytes": 4628,
+      "sha256": "3bf753cfafb9656b1be3ab8923ae5cebeceb2c9eb1b6e9929abe051f37d66853"
+    },
+    {
+      "path": "run-matched.sh",
+      "bytes": 1613,
+      "sha256": "b834b69e02b0526e2b2aa38d4f8c10325593ae0c0fd352881cdcbfce54caaf76"
+    },
+    {
+      "path": "run-round2.sh",
+      "bytes": 877,
+      "sha256": "181e205f8fb3ffe441bfe2d6cd1e1867f5fd80363410b0c1ced8d6e4af8908ae"
+    },
+    {
+      "path": "run-round3-tests.sh",
+      "bytes": 937,
+      "sha256": "53fd174b8427aa4be21c38ec6ad0025a57ae2992041da6d1145a5c8b7ba6d924"
+    },
+    {
+      "path": "run-round3.sh",
+      "bytes": 877,
+      "sha256": "bb1c4404d01a407651f3ccdf50b92a3b2cf0a539eb8794a54452fc227bbfffd5"
+    },
+    {
+      "path": "scan-authored.py",
+      "bytes": 1808,
+      "sha256": "3179b73194299978b02e9e31f4e5eb4901e06deab8e6a2ac0a9294f29f25311d"
+    },
+    {
+      "path": "thread-store-before.ts",
+      "bytes": 76633,
+      "sha256": "15c6eb5fc44010618bca809da4a569b2c22e5fc669498742224a64cf1bd98df2"
+    },
+    {
+      "path": "triage-r2.py",
+      "bytes": 1092,
+      "sha256": "2f659db1a9b75578a9b70c93f8564d6b9c58f56622045f40c2d0041df80f6ca0"
+    },
+    {
+      "path": "triage-r3.py",
+      "bytes": 1116,
+      "sha256": "ede802b63ef5795c7b5f46d7779a6079a9d781c4d89f8c19a3a61e31cc858de3"
+    },
+    {
+      "path": "triage-round3-tests.sh",
+      "bytes": 1286,
+      "sha256": "e48850aecd2683ea44e5c9f26eff9a055b5db4b825b4841deb4c224dc9118323"
+    },
+    {
+      "path": "write-r2-report.py",
+      "bytes": 11226,
+      "sha256": "6696fa68dc8d75f6ec1ea233bb4ba05dc857f07d2dfca8a6f67f59344fa0915e"
+    },
+    {
+      "path": "write-r3-report.py",
+      "bytes": 10772,
+      "sha256": "7b21c85948159603880103d821dcc1d14869f889e650717f66414c96e5eb8bd9"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "scope": "experimental source preservation, not installed or approved to execute",
+  "files": [
+    {
+      "path": "review_credential_scan.py",
+      "bytes": 1480,
+      "sha256": "28e43fd96d5ece7639b120ed757430ea033c3474c7b4302833e3417986d5b8d1"
+    },
+    {
+      "path": "scan_task_credentials.py",
+      "bytes": 2608,
+      "sha256": "57904dc1efc386f1532ca8e21c99474abea04d3f6e2069d10116b0689ecda1ce"
+    }
+  ]
+}

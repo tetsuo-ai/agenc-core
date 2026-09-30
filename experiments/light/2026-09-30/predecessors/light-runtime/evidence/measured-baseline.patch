@@ -1,0 +1,624 @@
+diff --git a/runtime/src/app-server/daemon-autostart.ts b/runtime/src/app-server/daemon-autostart.ts
+index 40dad8530..7ff5a14d2 100644
+--- a/runtime/src/app-server/daemon-autostart.ts
++++ b/runtime/src/app-server/daemon-autostart.ts
+@@ -1,3 +1,4 @@
++import { runtimeSpan } from "../diagnostics/runtime-timing.js";
+ /**
+  * AgenC daemon autostart orchestration.
+  *
+@@ -225,7 +226,11 @@ export async function resolveAgenCDaemonAutostartConfig(
+ export async function ensureAgenCDaemonAutostart(
+   options: AgenCDaemonAutostartOptions = {},
+ ): Promise<AgenCDaemonAutostartResult> {
+-  return ensureAgenCDaemonAutostartCycle(options, 0);
++  const finishRuntimeSpan = runtimeSpan("lifecycle.daemon_start");
++  try {
++  return await ensureAgenCDaemonAutostartCycle(options, 0);
++
++  } finally { finishRuntimeSpan(); }
+ }
+ 
+ /**
+diff --git a/runtime/src/bin/agenc-main.ts b/runtime/src/bin/agenc-main.ts
+index cbf440888..344d83f5e 100644
+--- a/runtime/src/bin/agenc-main.ts
++++ b/runtime/src/bin/agenc-main.ts
+@@ -1,3 +1,4 @@
++import { runtimeSpan, timedRuntime } from "../diagnostics/runtime-timing.js";
+ /**
+  * `agenc` CLI entry point - daemon-backed dispatcher.
+  *
+@@ -2451,7 +2452,7 @@ async function runDaemonOneShotPrompt(params: {
+   if (params.signal.aborted) {
+     return oneShotAbortExitCode(params.signal);
+   }
+-  await params.deps.ensureDaemonReady(params.env)();
++  await timedRuntime("lifecycle.daemon_ready", () => params.deps.ensureDaemonReady(params.env)());
+   if (params.signal.aborted) {
+     return oneShotAbortExitCode(params.signal);
+   }
+@@ -2499,9 +2500,9 @@ async function runDaemonOneShotPrompt(params: {
+         mode: "one-shot",
+       },
+     };
+-    const started = await daemonClient.request("agent.create", createParams, {
++    const started = await timedRuntime("lifecycle.session_create", () => daemonClient.request("agent.create", createParams, {
+       signal: params.signal,
+-    });
++    }));
+     startedAgentId = started.agentId;
+     if (params.signal.aborted) {
+       cancelled = true;
+@@ -2578,6 +2579,7 @@ async function runDaemonOneShotPrompt(params: {
+     if (params.signal.aborted) cancelled = true;
+     throw error;
+   } finally {
++    const finishTeardown = runtimeSpan("lifecycle.teardown");
+     // One-shot agents are terminal resources, not resumable conversations.
+     // Closing the transport alone leaves the daemon-owned runtime, provider,
+     // session and rollout references alive indefinitely. Always stop the agent
+@@ -2595,6 +2597,7 @@ async function runDaemonOneShotPrompt(params: {
+     await daemonClient.close().catch(() => {
+       /* best effort */
+     });
++    finishTeardown();
+   }
+ }
+ 
+@@ -2800,7 +2803,7 @@ async function runDaemonOneShotContinue(params: OneShotContinueResumeOptions & {
+   try {
+     assertResumeCwdProof(target.descriptor.cwd, cwdProof);
+     let descriptor = reproveResumeDescriptor(target.descriptor, params.agencHome);
+-    await params.deps.ensureDaemonReady(params.env)();
++    await timedRuntime("lifecycle.daemon_ready", () => params.deps.ensureDaemonReady(params.env)());
+     assertResumeCwdProof(descriptor.cwd, cwdProof);
+     descriptor = reproveResumeSessionAfterDaemonReady(descriptor, params.agencHome);
+     daemonClient = await params.deps.createConnectedTuiClient({ env: params.env });
+diff --git a/runtime/src/budget/admitted-model-call.ts b/runtime/src/budget/admitted-model-call.ts
+index 0cc4c4136..a64ec9944 100644
+--- a/runtime/src/budget/admitted-model-call.ts
++++ b/runtime/src/budget/admitted-model-call.ts
+@@ -1,3 +1,4 @@
++import { runtimeSpan } from "../diagnostics/runtime-timing.js";
+ /** Shared M3 boundary for logical model calls. */
+ 
+ import type { Session } from "../session/session.js";
+@@ -506,6 +507,13 @@ export function fitOutputReservationToContext(
+ export async function runAdmittedModelCall(
+   params: AdmittedModelCallOptions,
+ ): Promise<LLMResponse> {
++  const finishRuntimeSpan = runtimeSpan("model.admitted", { session_id: params.session.conversationId });
++  const finishAdmission = runtimeSpan("admission.model", { session_id: params.session.conversationId });
++  const invoke = (options: LLMChatOptions): Promise<LLMResponse> => {
++    finishAdmission();
++    return params.invoke(options);
++  };
++  try {
+   const client = params.session.services.executionAdmission;
+   const providerFactoryOptions = readProviderFactoryOptions(params.provider);
+   // A few structurally typed embedding/test providers predate the explicit
+@@ -762,7 +770,7 @@ export async function runAdmittedModelCall(
+     if (accountingFailureReason !== undefined) {
+       throw new AdmissionDeniedError(accountingFailureReason);
+     }
+-    return params.invoke({
++    return await invoke({
+       ...accountingOptions,
+       ...(configuredMaxOutputTokens !== undefined
+         ? { maxOutputTokens: admittedMaxOutputTokens }
+@@ -876,7 +884,7 @@ export async function runAdmittedModelCall(
+       admittedMaxOutputTokens,
+       lease.request.estimate.maxOutputTokens,
+     );
+-    const response = await params.invoke({
++    const response = await invoke({
+       ...accountingOptions,
+       ...(profile?.providerExecutionHandle !== undefined
+         ? { providerExecutionHandle: profile.providerExecutionHandle }
+@@ -1021,4 +1029,6 @@ export async function runAdmittedModelCall(
+     // idempotent when reconcile/holdUnknown/void already released the slot.
+     client.acknowledgeCompletion(reservationId);
+   }
++
++  } finally { finishAdmission(); finishRuntimeSpan(); }
+ }
+diff --git a/runtime/src/budget/admitted-tool-call.ts b/runtime/src/budget/admitted-tool-call.ts
+index 03687639e..cbfed503f 100644
+--- a/runtime/src/budget/admitted-tool-call.ts
++++ b/runtime/src/budget/admitted-tool-call.ts
+@@ -1,3 +1,4 @@
++import { runtimeSpan, timedRuntime } from "../diagnostics/runtime-timing.js";
+ /** Shared M3 boundary for approved tool effects. */
+ 
+ import { createHash, randomUUID } from "node:crypto";
+@@ -257,6 +258,8 @@ function appendEffectEvent(
+     }
+   >,
+ ): EffectEventCommit {
++  const finishRuntimeSpan = runtimeSpan("receipts.commit", { session_id: session.conversationId, event: msg.type });
++  try {
+   const emit = (session as { readonly emit?: Session["emit"] }).emit;
+   if (session.rolloutStore == null || typeof emit !== "function") {
+     if (session.services?.admissionRequired !== false) {
+@@ -278,6 +281,8 @@ function appendEffectEvent(
+   } catch (projectionError) {
+     return { event, projectionError };
+   }
++
++  } finally { finishRuntimeSpan(); }
+ }
+ 
+ function requireEffectProjection(commit: EffectEventCommit): void {
+@@ -289,6 +294,8 @@ function requireEffectProjection(commit: EffectEventCommit): void {
+ }
+ 
+ function projectCommittedEffectEvent(session: Session, event: Event): void {
++  const finishRuntimeSpan = runtimeSpan("receipts.projection");
++  try {
+   try {
+     effectProjection(session)?.recordEffectEvent(event);
+   } catch (projectionError) {
+@@ -296,6 +303,8 @@ function projectCommittedEffectEvent(session: Session, event: Event): void {
+       cause: projectionError,
+     });
+   }
++
++  } finally { finishRuntimeSpan(); }
+ }
+ 
+ function appendEffectIntent(params: {
+@@ -773,6 +782,8 @@ function liveIdentity(context: EffectJournalContext): LiveEffectIdentity {
+ export async function runAdmittedToolCall(
+   params: AdmittedToolCallOptions,
+ ): Promise<ToolDispatchResult> {
++  const finishRuntimeSpan = runtimeSpan("tool.admitted", { tool: params.tool.name, call_id: params.callId, session_id: params.session.conversationId });
++  try {
+   const category = recoveryCategory(params.tool);
+   assertNoLiveUnknownEffect(params.session, category);
+   params.session.rolloutStore?.assertToolAdmissionAllowed(category);
+@@ -841,7 +852,7 @@ export async function runAdmittedToolCall(
+   const lease =
+     client === undefined
+       ? undefined
+-      : await client.acquire(
++      : await timedRuntime("admission.tool", () => client.acquire(
+           {
+             stepId,
+             kind: "tool_exec",
+@@ -852,7 +863,7 @@ export async function runAdmittedToolCall(
+             maxCostUsd: estimate.maxCostUsd,
+           },
+           params.signal,
+-        );
++        ));
+   const reservationId = lease?.reservation.reservationId;
+   const runId = lease?.reservation.step.runId ?? logicalRunId;
+   const durableStepId = lease?.reservation.step.stepId ?? stepId;
+@@ -920,7 +931,7 @@ export async function runAdmittedToolCall(
+     }
+ 
+     hitM4DurabilityFailpoint("before_tool_spawn");
+-    const result = await params.invoke(dispatch.context);
++    const result = await timedRuntime("tool.invoke", () => params.invoke(dispatch.context), { tool: params.tool.name, call_id: params.callId, session_id: params.session.conversationId });
+     const lateCancellation = cancellationAfterDispatch(
+       lease?.signal ?? dispatch.context.signal,
+     );
+@@ -1335,4 +1346,6 @@ export async function runAdmittedToolCall(
+       dispatch.cleanup();
+     }
+   }
++
++  } finally { finishRuntimeSpan(); }
+ }
+diff --git a/runtime/src/diagnostics/runtime-timing.ts b/runtime/src/diagnostics/runtime-timing.ts
+new file mode 100644
+index 000000000..e831b3821
+--- /dev/null
++++ b/runtime/src/diagnostics/runtime-timing.ts
+@@ -0,0 +1,57 @@
++/** Opt-in, payload-free runtime timing. Each process owns its JSONL file.
++ * A buffered, best-effort diagnostic sink must never become a durability barrier.
++ */
++import { appendFileSync } from "node:fs";
++
++const output = process.env.AGENC_RUNTIME_TIMING;
++const enabled = Boolean(output);
++let pending: string[] = [];
++let timer: ReturnType<typeof setTimeout> | undefined;
++let sequence = 0;
++
++export function flushRuntimeTiming(): void {
++  if (timer) clearTimeout(timer);
++  timer = undefined;
++  if (!output || pending.length === 0) return;
++  const lines = pending;
++  pending = [];
++  try { appendFileSync(`${output}.${process.pid}.jsonl`, lines.join(""), { mode: 0o600 }); }
++  catch { /* Diagnostics cannot change runtime outcomes. */ }
++}
++
++if (enabled) process.on("exit", flushRuntimeTiming);
++
++export function runtimeSpan(
++  name: string,
++  fields?: Readonly<Record<string, string | number>>,
++): () => void {
++  if (!enabled) return noop;
++  const start = performance.now();
++  const id = ++sequence;
++  let done = false;
++  return () => {
++    if (done) return;
++    done = true;
++    pending.push(JSON.stringify({ name, id, pid: process.pid,
++      start_ms: performance.timeOrigin + start,
++      duration_ms: performance.now() - start, ...fields }) + "\n");
++    // Bounded memory even when a task produces an unusually large event stream.
++    if (pending.length >= 4096) flushRuntimeTiming();
++    else timer ??= setTimeout(flushRuntimeTiming, 100).unref();
++  };
++}
++function noop(): void {}
++
++export function timedRuntime<T>(
++  name: string, operation: () => Promise<T>,
++  fields?: Readonly<Record<string, string | number>>,
++): Promise<T> {
++  if (!enabled) return operation();
++  const end = runtimeSpan(name, fields);
++  try {
++    return operation().then(
++      value => { end(); return value; },
++      error => { end(); throw error; },
++    );
++  } catch (error) { end(); return Promise.reject(error); }
++}
+diff --git a/runtime/src/phases/commit.ts b/runtime/src/phases/commit.ts
+index 13f3e7e1d..40559f3d7 100644
+--- a/runtime/src/phases/commit.ts
++++ b/runtime/src/phases/commit.ts
+@@ -1,3 +1,4 @@
++import { runtimeSpan } from "../diagnostics/runtime-timing.js";
+ /**
+  * Phase 6 — Commit.
+  *
+@@ -417,6 +418,8 @@ export async function commit(
+   signal?: AbortSignal,
+   options: CommitOptions = {},
+ ): Promise<TurnState> {
++  const finishRuntimeSpan = runtimeSpan("persistence.iteration");
++  try {
+   // ── 1. Append history — await any pending tool-use summary promise
+   //      so the UI sees the final summary before the next iteration.
+   if (state.pendingToolUseSummary) {
+@@ -563,4 +566,6 @@ export async function commit(
+   state.turnCount += 1;
+   state.maxOutputTokensOverride = undefined;
+   return state;
++
++  } finally { finishRuntimeSpan(); }
+ }
+diff --git a/runtime/src/phases/stream-model.ts b/runtime/src/phases/stream-model.ts
+index 94ef282d3..09d4d5792 100644
+--- a/runtime/src/phases/stream-model.ts
++++ b/runtime/src/phases/stream-model.ts
+@@ -1,3 +1,4 @@
++import { timedRuntime } from "../diagnostics/runtime-timing.js";
+ /**
+  * Phase 2 — Stream Model.
+  *
+@@ -1406,7 +1407,7 @@ export async function streamModel(
+             }
+           : {}),
+       invoke: (admittedOptions) =>
+-        provider.chatStream(messages, onChunk, admittedOptions),
++        timedRuntime("model.request", () => provider.chatStream(messages, onChunk, admittedOptions), { session_id: session.conversationId, turn_id: ctx.subId, ordinal: state.modelSampleOrdinal }),
+     });
+     // Legacy admission-disabled providers can resolve after an abort. Never
+     // accept that response as success. Admitted calls settle usage first.
+diff --git a/runtime/src/session/run-turn.ts b/runtime/src/session/run-turn.ts
+index bfdde90cf..d4f7b65a9 100644
+--- a/runtime/src/session/run-turn.ts
++++ b/runtime/src/session/run-turn.ts
+@@ -1,3 +1,4 @@
++import { runtimeSpan } from "../diagnostics/runtime-timing.js";
+ /**
+  * run-turn — orchestration for one user turn.
+  *
+@@ -857,6 +858,8 @@ async function prepareSamplingRequestBoundary(
+   events: PhaseEvent[],
+   querySource: string,
+ ): Promise<PreparedSamplingRequestBoundary> {
++  const finishRuntimeSpan = runtimeSpan("prompt.assembly");
++  try {
+   await prepareAgenCTurnContext(state, ctx, session, querySource, signal);
+   const prepareTerminal = getAgenCPreparedTerminal(state);
+   if (prepareTerminal) {
+@@ -995,6 +998,8 @@ async function prepareSamplingRequestBoundary(
+     samplingContext,
+     request: snapshotSamplingRequestContract(request),
+   };
++
++  } finally { finishRuntimeSpan(); }
+ }
+ 
+ /**
+@@ -1375,6 +1380,8 @@ async function preparedRequestFitsContext(
+   signal: AbortSignal,
+   requestedModel: string,
+ ): Promise<boolean> {
++  const finishRuntimeSpan = runtimeSpan("prompt.context_accounting");
++  try {
+   const configuredWindow = request.contextWindowTokens;
+   if (configuredWindow === undefined || !Number.isFinite(configuredWindow) || configuredWindow <= 0) {
+     return false;
+@@ -1437,6 +1444,8 @@ async function preparedRequestFitsContext(
+     accounting, window, maxOutputTokens,
+     profile?.contextSafetyBufferTokens ?? 0,
+   ) !== undefined;
++
++  } finally { finishRuntimeSpan(); }
+ }
+ 
+ function isTransientSamplingError(err: unknown): boolean {
+@@ -2364,6 +2373,8 @@ async function* runTurnKernelInner(
+     persistedMessageCount = state.messages.length;
+   };
+   const syncSessionState = async (): Promise<void> => {
++  const finishRuntimeSpan = runtimeSpan("persistence.history");
++  try {
+     persistNewResponseItems();
+     // Bound in-memory tool-result retention AFTER full content has been
+     // persisted to the durable rollout (above), and only across messages
+@@ -2421,7 +2432,9 @@ async function* runTurnKernelInner(
+       };
+       sessionState.referenceContextItem = resolvedReferenceContextItem;
+     });
+-  };
++  
++  } finally { finishRuntimeSpan(); }
++};
+ 
+   // ── GOAL #4b Stage 1 — durable iteration checkpoint emit ──────────────
+   // The checkpoint promotes the already-consistent CB-Iteration boundary
+diff --git a/runtime/src/session/session-store.ts b/runtime/src/session/session-store.ts
+index 80bac842d..8a686e444 100644
+--- a/runtime/src/session/session-store.ts
++++ b/runtime/src/session/session-store.ts
+@@ -1,3 +1,4 @@
++import { runtimeSpan } from "../diagnostics/runtime-timing.js";
+ /**
+  * Session on-disk store — owns the rollout JSONL file, its fsync
+  * guarantees, flock acquisition, atomic write-then-rename, and the
+@@ -53,7 +54,7 @@ import {
+   existsSync,
+   fstatSync,
+   ftruncateSync,
+-  fsyncSync,
++  fsyncSync as nativeFsyncSync,
+   linkSync,
+   lstatSync,
+   mkdirSync,
+@@ -862,6 +863,8 @@ export function rewriteAtomically(
+   bytes: string | Buffer,
+   mode: number = 0o600,
+ ): void {
++  const finishRuntimeSpan = runtimeSpan("persistence.atomic");
++  try {
+   const tmpPath = `${targetPath}.tmp`;
+   // Clear any stale tmp from a prior crash so O_EXCL can succeed.
+   try {
+@@ -918,6 +921,8 @@ export function rewriteAtomically(
+   } catch {
+     /* best-effort */
+   }
++
++  } finally { finishRuntimeSpan(); }
+ }
+ 
+ /** Read exactly the first newline-terminated canonical row with a hard cap. */
+@@ -2036,6 +2041,8 @@ export class SessionStore {
+    * for tests.
+    */
+   flushBatch(durable: boolean): boolean {
++  const finishRuntimeSpan = runtimeSpan("persistence.flush");
++  try {
+     // A slow flush (a large batch, or a durable fsync on a busy disk) stalls
+     // the event loop that streams to every client, so it is worth reporting.
+     // It must NOT go through this store's diagnostic channel:
+@@ -2055,7 +2062,9 @@ export class SessionStore {
+       durable ? "rollout_flush_durable" : "rollout_flush_batch",
+       () => this.flushBatchUntimed(durable),
+     );
+-  }
++  
++  } finally { finishRuntimeSpan(); }
++}
+ 
+   private flushBatchUntimed(durable: boolean): boolean {
+     if (this.pending.length === 0) {
+@@ -2224,7 +2233,8 @@ export class SessionStore {
+       fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND;
+     const fd = this.openCanonicalFile(flags, 0o600);
+     try {
+-      this.writeAll(fd, content);
++      const finishWrite = runtimeSpan("persistence.write", { bytes: Buffer.byteLength(content) });
++      try { this.writeAll(fd, content); } finally { finishWrite(); }
+       this.assertCanonicalFileStillBound(fd);
+     } finally {
+       this.closeCanonicalOperationFd(fd);
+@@ -2314,12 +2324,15 @@ export class SessionStore {
+     content: string,
+     onRetryFailure?: (err: unknown) => void,
+   ): boolean {
++  const finishRuntimeSpan = runtimeSpan("persistence.rollout");
++  try {
+     const flags =
+       fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND;
+     const fd = this.openCanonicalFile(flags, 0o600);
+     let firstErr: unknown;
+     try {
+-      this.writeAll(fd, content);
++      const finishWrite = runtimeSpan("persistence.write", { bytes: Buffer.byteLength(content) });
++      try { this.writeAll(fd, content); } finally { finishWrite(); }
+       try {
+         this.fsyncImpl(fd);
+         this.assertCanonicalFileStillBound(fd);
+@@ -2338,7 +2351,9 @@ export class SessionStore {
+       return false;
+     }
+     return true;
+-  }
++  
++  } finally { finishRuntimeSpan(); }
++}
+ 
+   private writeAll(fd: number, content: string): void {
+     this.repairUncertainAppendTail(fd);
+@@ -3611,6 +3626,8 @@ export class SessionStore {
+    * or missing snapshot is recoverable.
+    */
+   private writeIndexSnapshot(): void {
++  const finishRuntimeSpan = runtimeSpan("persistence.index");
++  try {
+     const snapshot: IndexSnapshot = {
+       snapshotSequenceNumber: this.lastSeqWritten,
+       fileSize: this.fileSize,
+@@ -3635,7 +3652,9 @@ export class SessionStore {
+         message: `index.json snapshot failed: ${(err as { code?: string }).code ?? (err as { message?: string }).message ?? "unknown"}`,
+       });
+     }
+-  }
++  
++  } finally { finishRuntimeSpan(); }
++}
+ 
+   /** Accessor for the byte-offset index (T12 `/resume` fast-seek). */
+   getByteOffsetForSeq(seq: EventSeq): number | undefined {
+@@ -4150,3 +4169,8 @@ export function listResumableSessions(projectDir: string): ResumableSession[] {
+   result.sort((a, b) => b.lastModified - a.lastModified);
+   return result;
+ }
++
++function fsyncSync(fd: number): void {
++  const finish = runtimeSpan("persistence.fsync", { count: 1 });
++  try { nativeFsyncSync(fd); } finally { finish(); }
++}
+diff --git a/runtime/src/state/sqlite-driver.ts b/runtime/src/state/sqlite-driver.ts
+index b67a1f468..3c1eef3f5 100644
+--- a/runtime/src/state/sqlite-driver.ts
++++ b/runtime/src/state/sqlite-driver.ts
+@@ -1,3 +1,4 @@
++import { runtimeSpan } from "../diagnostics/runtime-timing.js";
+ import { randomUUID } from "node:crypto";
+ import {
+   chmodSync,
+@@ -183,8 +184,12 @@ export class StateSqliteDriver {
+   }
+ 
+   transaction<T>(fn: () => T): T {
++  const finishRuntimeSpan = runtimeSpan("persistence.sqlite_transaction");
++  try {
+     return this.state.transaction(fn)();
+-  }
++  
++  } finally { finishRuntimeSpan(); }
++}
+ 
+   /**
+    * BEGIN IMMEDIATE transaction: acquires the write lock before the first
+@@ -194,12 +199,20 @@ export class StateSqliteDriver {
+    * savepoint inside the outer transaction (better-sqlite3 semantics).
+    */
+   transactionImmediate<T>(fn: () => T): T {
++  const finishRuntimeSpan = runtimeSpan("persistence.sqlite_immediate");
++  try {
+     return this.state.transaction(fn).immediate();
+-  }
++  
++  } finally { finishRuntimeSpan(); }
++}
+ 
+   logsTransaction<T>(fn: () => T): T {
++  const finishRuntimeSpan = runtimeSpan("persistence.sqlite_logs");
++  try {
+     return this.logs.transaction(fn)();
+-  }
++  
++  } finally { finishRuntimeSpan(); }
++}
+ 
+   /** Return free pages of the state database to the file system; see `reclaimStateFreePages`. */
+   reclaimFreePages(options: ReclaimStateFreePagesOptions = {}): StateFreePageReclaim {
+diff --git a/runtime/src/thread-store/store.ts b/runtime/src/thread-store/store.ts
+index 953d2b8e6..c44f6670d 100644
+--- a/runtime/src/thread-store/store.ts
++++ b/runtime/src/thread-store/store.ts
+@@ -1,3 +1,4 @@
++import { runtimeSpan } from "../diagnostics/runtime-timing.js";
+ /** Thread-store persistence boundary for live and on-disk AgenC threads. */
+ 
+ import {
+@@ -1328,11 +1329,15 @@ export class FileThreadStore implements ThreadStore {
+   }
+ 
+   private indexRolloutFile(rolloutPath: string): void {
++  const finishRuntimeSpan = runtimeSpan("projection.thread_index");
++  try {
+     backfillRolloutFile({
+       rolloutPath,
+       threads: this.threadIndex,
+     });
+-  }
++  
++  } finally { finishRuntimeSpan(); }
++}
+ 
+   /**
+    * Register a live recorder and keep the SQLite mirror current as it
+diff --git a/runtime/src/utils/durable-atomic-file.ts b/runtime/src/utils/durable-atomic-file.ts
+index 93548ceb5..c1737eb91 100644
+--- a/runtime/src/utils/durable-atomic-file.ts
++++ b/runtime/src/utils/durable-atomic-file.ts
+@@ -1,3 +1,4 @@
++import { runtimeSpan } from "../diagnostics/runtime-timing.js";
+ import {
+   closeSync,
+   fsyncSync,
+@@ -63,6 +64,8 @@ export function writeDurableAtomicFileSync(
+   mode = 0o600,
+   operations: DurableAtomicSyncOperations = DEFAULT_SYNC_OPERATIONS,
+ ): void {
++  const finishRuntimeSpan = runtimeSpan("persistence.atomic_sync");
++  try {
+   operations.mkdir(dirname(path));
+   let handle: unknown;
+   let openHandle = false;
+@@ -103,6 +106,8 @@ export function writeDurableAtomicFileSync(
+     }
+   }
+   throwDurableAtomicFileErrors(hasPrimaryError, primaryError, cleanupErrors);
++
++  } finally { finishRuntimeSpan(); }
+ }
+ 
+ export async function writeDurableAtomicFile(
+@@ -112,6 +117,8 @@ export async function writeDurableAtomicFile(
+   mode = 0o600,
+   operations: DurableAtomicAsyncOperations = DEFAULT_ASYNC_OPERATIONS,
+ ): Promise<void> {
++  const finishRuntimeSpan = runtimeSpan("persistence.atomic_async");
++  try {
+   await operations.mkdir(dirname(path));
+   let handle: unknown;
+   let openHandle = false;
+@@ -150,6 +157,8 @@ export async function writeDurableAtomicFile(
+     }
+   }
+   throwDurableAtomicFileErrors(hasPrimaryError, primaryError, cleanupErrors);
++
++  } finally { finishRuntimeSpan(); }
+ }
+ 
+ function throwDurableAtomicFileErrors(

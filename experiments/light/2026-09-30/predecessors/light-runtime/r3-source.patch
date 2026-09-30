@@ -1,0 +1,269 @@
+diff --git a/runtime/benchmarks/runtime-overhead/summarize.py b/runtime/benchmarks/runtime-overhead/summarize.py
+index 553714ebb..ee4c43f8d 100644
+--- a/runtime/benchmarks/runtime-overhead/summarize.py
++++ b/runtime/benchmarks/runtime-overhead/summarize.py
+@@ -80,6 +80,10 @@ def summarize(root, label):
+         totals['first_request_assembly']=by['prompt.assembly'][0]['duration_ms'] if by['prompt.assembly'] else 0
+         totals['boundary.overhead']=sum(gaps);totals['response_to_tool']=sum(pre);totals['tool_to_request']=sum(post)
+         totals['fsync_count']=sum(s.get('count',0) for s in spans);totals['written_bytes']=sum(s.get('bytes',0) for s in spans if s['name']=='persistence.write')
++        for name in ('persistence.sqlite_immediate', 'persistence.sqlite_transaction'):
++            totals[name+'.count']=len(by[name])
++            totals[name+'.per_call']=len(by[name])/result['calls'] if result['calls'] else 0
++        totals['fsync_per_call']=totals['fsync_count']/result['calls'] if result['calls'] else 0
+         totals['native_fsync_count']=sum(s['name'] in ('native.fsync','native.fdatasync') for s in spans)
+         totals['native_written_bytes']=sum(s.get('bytes',0) for s in spans if s['name'].startswith('native.'))
+         runs.append({**result,'totals':totals,'boundary_source':boundary_source,'boundary_gaps_ms':gaps})
+diff --git a/runtime/src/state/execution-admission.ts b/runtime/src/state/execution-admission.ts
+index 61fd04b4b..940a47292 100644
+--- a/runtime/src/state/execution-admission.ts
++++ b/runtime/src/state/execution-admission.ts
+@@ -1422,9 +1422,11 @@ export class ExecutionAdmissionRepository {
+     );
+   }
+ 
++  // Read APIs need a consistent SQLite snapshot, not a WAL writer reservation.
++  // Mutation APIs recheck policy under their own BEGIN IMMEDIATE boundary.
+   get(key: string): PersistedAdmissionRecord | undefined {
+     requireNonEmpty(key, "admission key");
+-    return this.#driver.transactionImmediate(() => {
++    return this.#driver.transaction(() => {
+       const row = this.#jobByKeyLocked(key);
+       return row === undefined ? undefined : this.#recordFromRowLocked(row);
+     });
+@@ -1434,7 +1436,7 @@ export class ExecutionAdmissionRepository {
+     options: ListAdmissionOptions = {},
+   ): readonly PersistedAdmissionRecord[] {
+     const limit = normalizeLimit(options.limit);
+-    return this.#driver.transactionImmediate(() => {
++    return this.#driver.transaction(() => {
+       const where = ["admission_run_id IS NOT NULL"];
+       const params: unknown[] = [];
+       if (options.statuses !== undefined && options.statuses.length > 0) {
+@@ -1484,10 +1486,8 @@ export class ExecutionAdmissionRepository {
+     reservationId: string,
+   ): PersistedAdmissionReservation | undefined {
+     requireNonEmpty(reservationId, "reservationId");
+-    return this.#driver.transactionImmediate(() => {
+-      const row = this.#reservationLocked(reservationId);
+-      return row === undefined ? undefined : reservationFromRow(row);
+-    });
++    const row = this.#reservationLocked(reservationId);
++    return row === undefined ? undefined : reservationFromRow(row);
+   }
+ 
+   listReservations(
+@@ -1498,28 +1498,26 @@ export class ExecutionAdmissionRepository {
+     } = {},
+   ): readonly PersistedAdmissionReservation[] {
+     const limit = normalizeLimit(options.limit);
+-    return this.#driver.transactionImmediate(() => {
+-      const where = ["1 = 1"];
+-      const params: unknown[] = [];
+-      if (options.runId !== undefined) {
+-        where.push("run_id = ?");
+-        params.push(options.runId);
+-      }
+-      if (options.statuses !== undefined && options.statuses.length > 0) {
+-        where.push(`status IN (${sqlPlaceholders(options.statuses.length)})`);
+-        params.push(...options.statuses);
+-      }
+-      params.push(limit);
+-      return this.#driver
+-        .prepareState<unknown[], ReservationRow>(
+-          `SELECT * FROM execution_admission_reservations
+-           WHERE ${where.join(" AND ")}
+-           ORDER BY created_at ASC, reservation_id ASC
+-           LIMIT ?`,
+-        )
+-        .all(...params)
+-        .map(reservationFromRow);
+-    });
++    const where = ["1 = 1"];
++    const params: unknown[] = [];
++    if (options.runId !== undefined) {
++      where.push("run_id = ?");
++      params.push(options.runId);
++    }
++    if (options.statuses !== undefined && options.statuses.length > 0) {
++      where.push(`status IN (${sqlPlaceholders(options.statuses.length)})`);
++      params.push(...options.statuses);
++    }
++    params.push(limit);
++    return this.#driver
++      .prepareState<unknown[], ReservationRow>(
++        `SELECT * FROM execution_admission_reservations
++         WHERE ${where.join(" AND ")}
++         ORDER BY created_at ASC, reservation_id ASC
++         LIMIT ?`,
++      )
++      .all(...params)
++      .map(reservationFromRow);
+   }
+ 
+   /**
+@@ -1653,23 +1651,21 @@ export class ExecutionAdmissionRepository {
+     } = {},
+   ): readonly PersistedAdmissionAllocation[] {
+     const limit = normalizeLimit(options.limit);
+-    return this.#driver.transactionImmediate(() => {
+-      const rows =
+-        options.ownerRunId === undefined
+-          ? this.#driver
+-              .prepareState<[number], AllocationRow>(
+-                `SELECT * FROM execution_admission_allocations
+-                 ORDER BY scope_key ASC LIMIT ?`,
+-              )
+-              .all(limit)
+-          : this.#driver
+-              .prepareState<[string, number], AllocationRow>(
+-                `SELECT * FROM execution_admission_allocations
+-                 WHERE owner_run_id = ? ORDER BY scope_key ASC LIMIT ?`,
+-              )
+-              .all(options.ownerRunId, limit);
+-      return rows.map(allocationFromRow);
+-    });
++    const rows =
++      options.ownerRunId === undefined
++        ? this.#driver
++            .prepareState<[number], AllocationRow>(
++              `SELECT * FROM execution_admission_allocations
++               ORDER BY scope_key ASC LIMIT ?`,
++            )
++            .all(limit)
++        : this.#driver
++            .prepareState<[string, number], AllocationRow>(
++              `SELECT * FROM execution_admission_allocations
++               WHERE owner_run_id = ? ORDER BY scope_key ASC LIMIT ?`,
++            )
++            .all(options.ownerRunId, limit);
++    return rows.map(allocationFromRow);
+   }
+ 
+   /** Last event only: an earlier denial followed by work is not a terminal cause. */
+@@ -1685,33 +1681,31 @@ export class ExecutionAdmissionRepository {
+     options: ListAdmissionJournalOptions = {},
+   ): readonly AdmissionJournalEvent[] {
+     const limit = normalizeLimit(options.limit);
+-    return this.#driver.transactionImmediate(() => {
+-      const where = ["1 = 1"];
+-      const params: unknown[] = [];
+-      if (options.runId !== undefined) {
+-        where.push("run_id = ?");
+-        params.push(options.runId);
+-      }
+-      if (options.stepId !== undefined) {
+-        where.push("step_id = ?");
+-        params.push(options.stepId);
+-      }
+-      if (options.afterSequence !== undefined) {
+-        where.push("sequence > ?");
+-        params.push(
+-          normalizeNonNegativeInteger(options.afterSequence, "afterSequence"),
+-        );
+-      }
+-      params.push(limit);
+-      return this.#driver
+-        .prepareState<unknown[], JournalRow>(
+-          `SELECT * FROM execution_admission_journal
+-           WHERE ${where.join(" AND ")}
+-           ORDER BY sequence ASC LIMIT ?`,
+-        )
+-        .all(...params)
+-        .map(journalFromRow);
+-    });
++    const where = ["1 = 1"];
++    const params: unknown[] = [];
++    if (options.runId !== undefined) {
++      where.push("run_id = ?");
++      params.push(options.runId);
++    }
++    if (options.stepId !== undefined) {
++      where.push("step_id = ?");
++      params.push(options.stepId);
++    }
++    if (options.afterSequence !== undefined) {
++      where.push("sequence > ?");
++      params.push(
++        normalizeNonNegativeInteger(options.afterSequence, "afterSequence"),
++      );
++    }
++    params.push(limit);
++    return this.#driver
++      .prepareState<unknown[], JournalRow>(
++        `SELECT * FROM execution_admission_journal
++         WHERE ${where.join(" AND ")}
++         ORDER BY sequence ASC LIMIT ?`,
++      )
++      .all(...params)
++      .map(journalFromRow);
+   }
+ 
+   #timestamp(): string {
+diff --git a/runtime/tests/session/admission-group-commit.test.ts b/runtime/tests/session/admission-group-commit.test.ts
+index 5d5bdfc38..61dd880cb 100644
+--- a/runtime/tests/session/admission-group-commit.test.ts
++++ b/runtime/tests/session/admission-group-commit.test.ts
+@@ -89,3 +89,30 @@ it("queues the whole group ahead of a re-entrant event", async () => {
+   expect(published.map(e => e.seq)).toEqual([...published.map(e => e.seq)].sort((a,b) => a!-b!));
+   expect(published.at(-1)?.id).toBe("nested");
+ });
++
++it.each(["provider_wire", "tool_effect"] as const)(
++  "refuses %s dispatch after a failed canonical flush and durably repairs before retry",
++  async boundary => {
++    const client = setup();
++    const lease = await client.acquire({ ...input, kind: boundary === "tool_effect" ? "tool_exec" : "model_turn" });
++    const reservationId = lease.reservation.reservationId;
++    published.length = 0;
++    let physicalCalls = 0;
++    const dispatch = () => {
++      client.markDispatched(reservationId, { boundary });
++      physicalCalls += 1;
++    };
++    rollout.store.setFsyncImplForTest(() => { throw Object.assign(new Error("failed sync"), { code: "EIO" }); });
++    expect(dispatch).toThrow(/fsync-committed/);
++    expect(physicalCalls).toBe(0);
++    expect(published).toEqual([]);
++    let repaired = false;
++    rollout.store.setFsyncImplForTest(fd => { fsyncSync(fd); repaired = true; });
++    dispatch();
++    expect(repaired).toBe(true);
++    expect(physicalCalls).toBe(1);
++    const dispatched = rollout.readAll().filter(row => row.type === "event_msg" &&
++      row.payload.msg.type === "execution_admission" && row.payload.msg.payload.event === "dispatched");
++    expect(dispatched).toHaveLength(1);
++  },
++);
+diff --git a/runtime/tests/state/execution-admission.test.ts b/runtime/tests/state/execution-admission.test.ts
+index 6080fc8b8..6d32602c0 100644
+--- a/runtime/tests/state/execution-admission.test.ts
++++ b/runtime/tests/state/execution-admission.test.ts
+@@ -1112,3 +1112,28 @@ describe("durable admission limit dimensions", () => {
+     });
+   });
+ });
++
++describe("admission read snapshots", () => {
++  it("reads committed state while another WAL connection holds the writer lock", () => {
++    const queued = admissions.enqueue(request("snapshot-run", "step"));
++    const lease = claimReservation(queued.record.key);
++    const writer = new Database(driver.stateDbPath);
++    driver.state.pragma("busy_timeout = 1");
++    try {
++      writer.exec("BEGIN IMMEDIATE");
++      writer.prepare("UPDATE execution_admission_reservations SET provider_request_id = ? WHERE reservation_id = ?")
++        .run("uncommitted", lease.reservationId);
++      expect(admissions.get(queued.record.key)?.status).toBe("running");
++      expect(admissions.list({ runId: "snapshot-run" })).toHaveLength(1);
++      expect(admissions.getReservation(lease.reservationId)?.providerRequestId).toBeUndefined();
++      expect(admissions.listReservations({ runId: "snapshot-run" })).toHaveLength(1);
++      expect(admissions.listAllocations()).toEqual([]);
++      expect(admissions.listJournal({ runId: "snapshot-run" })).toHaveLength(2);
++      writer.exec("COMMIT");
++      expect(admissions.getReservation(lease.reservationId)?.providerRequestId).toBe("uncommitted");
++    } finally {
++      if (writer.inTransaction) writer.exec("ROLLBACK");
++      writer.close();
++    }
++  });
++});

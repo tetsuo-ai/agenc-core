@@ -1,0 +1,1131 @@
+{
+  "schema_version": 1,
+  "scope": "experimental source preservation, not installed or approved to execute",
+  "files": [
+    {
+      "path": "bench/add_timing_components.py",
+      "bytes": 1853,
+      "sha256": "0607c974f99046e8348133e8168d04574ad56b22e69f7b1db9dd218189cc6f82"
+    },
+    {
+      "path": "bench/analyze_gates.py",
+      "bytes": 14997,
+      "sha256": "52718e17fd86f2829528ee2758bea5869efc9da54089b563e55d66eeb15ef887"
+    },
+    {
+      "path": "bench/audit_path_tokens.py",
+      "bytes": 1669,
+      "sha256": "55ecb560d91b21dbfcd63ba511c00bbf6ec5ab0906a071e8a168507b0b0a6c0d"
+    },
+    {
+      "path": "bench/build-candidate.sh",
+      "bytes": 1155,
+      "sha256": "92e3e0debe5302c2bf876ce3b4a3178ae90ec3fc9081bc851372efb21cf6d1be"
+    },
+    {
+      "path": "bench/cache_profile.py",
+      "bytes": 6637,
+      "sha256": "6775ddb846d07b8ca63e4d9f235d0d9451d5dc07b1f0a6b434f971a507e056ee"
+    },
+    {
+      "path": "bench/cache_wire_audit.py",
+      "bytes": 3372,
+      "sha256": "181ff4c7a44714704082ae15a1d34a1d571668874169c657058994bdabfdb73f"
+    },
+    {
+      "path": "bench/cache_wire_probe.mjs",
+      "bytes": 2584,
+      "sha256": "b52418714fd471b0d31a909d0c76ed46193e4d4064b64d4d73f4025dd5cf0765"
+    },
+    {
+      "path": "bench/call_categories.py",
+      "bytes": 5353,
+      "sha256": "5d4e25dfb66ec96f7a7f50aa7e9cc9e103676b59bbe6464d1c80b109293f25b6"
+    },
+    {
+      "path": "bench/capture_next_head.py",
+      "bytes": 3061,
+      "sha256": "8011c3cc08bb3025fa59878f29b106d34c62d4eedd110dd608c530db8da812ca"
+    },
+    {
+      "path": "bench/check-sqlite.cjs",
+      "bytes": 265,
+      "sha256": "920be664137f4583a25285e45606caeb6751d1856294766662325c9daffa22d5"
+    },
+    {
+      "path": "bench/collect_test_evidence.py",
+      "bytes": 1308,
+      "sha256": "247202fd3495b73337a52a418e4002b95b54f017dbd85b04610f8fb252ac15ab"
+    },
+    {
+      "path": "bench/compare_suites.py",
+      "bytes": 1190,
+      "sha256": "f5f9e27758df0a453a687696fc829c8e0d1fefcb820ad0df5089a884566c58f4"
+    },
+    {
+      "path": "bench/context_edits.py",
+      "bytes": 8306,
+      "sha256": "f26a459706271d6ce5c56fcdd578df41e24e523ece8f2f6716b027e10a16f48b"
+    },
+    {
+      "path": "bench/context_metrics.py",
+      "bytes": 1920,
+      "sha256": "5fe7be465c47e85a677587a9cd92b8ccad02bb1beb8255be36cbedb7010bace4"
+    },
+    {
+      "path": "bench/converge/export_evidence.py",
+      "bytes": 6643,
+      "sha256": "9f98699140bb1612590dcdb6bce15d24337c2c9faf382582ccbc25c219e74f9a"
+    },
+    {
+      "path": "bench/converge/luna_bridge.py",
+      "bytes": 19754,
+      "sha256": "f6463b085b88cc5a8011a72ccd454cd5eee730565a86b42b65e8abd3599feb3e"
+    },
+    {
+      "path": "bench/converge/pricing.json",
+      "bytes": 632,
+      "sha256": "8f575852e0e3657f3df2801da78d6b8c7608679c818e4f0a341a8afac59cefc9"
+    },
+    {
+      "path": "bench/converge/reconcile_budget.py",
+      "bytes": 5685,
+      "sha256": "002b0cf3acc77a3773f57ce20939503be083e2cc35d6614a35d4b521d617a2ec"
+    },
+    {
+      "path": "bench/converge/runner.py",
+      "bytes": 27382,
+      "sha256": "9141aac009975534487d7aa6ed04401f7e9ae249c64a2c035695963d14cb540e"
+    },
+    {
+      "path": "bench/converge/stdin_entry.py",
+      "bytes": 522,
+      "sha256": "0a6e27da7473c08ab3dc63dd66a2febe04901207b748b88f40545ba184d7fed6"
+    },
+    {
+      "path": "bench/converge/summarize.py",
+      "bytes": 50848,
+      "sha256": "b291c576e66e6baca88c6b30a63cbc6e4b031544f5b262828816b71816aade0e"
+    },
+    {
+      "path": "bench/converge/tasks/01-chunked-strict/check.py",
+      "bytes": 207,
+      "sha256": "0ed837d6d4184fe10717b86de58984a0925c8cb402c469ae452dc38f1a8ecf10"
+    },
+    {
+      "path": "bench/converge/tasks/01-chunked-strict/setup.py",
+      "bytes": 207,
+      "sha256": "06926389715f256db1c922d3ea77832926a915064e9198ab6d5c9ae00de1c588"
+    },
+    {
+      "path": "bench/converge/tasks/02-split-limit/check.py",
+      "bytes": 204,
+      "sha256": "efbce3164a2b981a882ef0f4f5500c5588b0348299e3accbf488935acf482ad1"
+    },
+    {
+      "path": "bench/converge/tasks/02-split-limit/setup.py",
+      "bytes": 204,
+      "sha256": "ef5757a2a60cd118f733f04fdf3f90da0b6c8d2a2354cc2564c5d9e86d24bd9e"
+    },
+    {
+      "path": "bench/converge/tasks/03-window-padding/check.py",
+      "bytes": 207,
+      "sha256": "a446ea1657095fc103c5abaa225243bf9eea8ea5e4f6e46dc5e462fd2ddcb3b4"
+    },
+    {
+      "path": "bench/converge/tasks/03-window-padding/setup.py",
+      "bytes": 207,
+      "sha256": "ccc866f446bcdbc1634381670072d3ae3016838f58c292286b75ee6de2fe0bc4"
+    },
+    {
+      "path": "bench/converge/tasks/04-count-by/check.py",
+      "bytes": 201,
+      "sha256": "a3f29815ee3e902ffef3f34b404c3b21620a09803e31375108dea74ddd8e474d"
+    },
+    {
+      "path": "bench/converge/tasks/04-count-by/setup.py",
+      "bytes": 201,
+      "sha256": "921a7bed588618f856932c4740d701a281e5e85c1dfaacda578c34f6cf1b4dbd"
+    },
+    {
+      "path": "bench/converge/tasks/05-empty-refactor/check.py",
+      "bytes": 207,
+      "sha256": "7f5eb106eeae2d9bbdd5034f48cfb1b60a971b96c128ff502dbf9d92e901c969"
+    },
+    {
+      "path": "bench/converge/tasks/05-empty-refactor/setup.py",
+      "bytes": 207,
+      "sha256": "43a53818b87b315e0e1396e452ce08a3c4b4edeb8b9075fc84b90c7cfe2795a6"
+    },
+    {
+      "path": "bench/converge/tasks/06-key-rotation-map/check.py",
+      "bytes": 209,
+      "sha256": "fc1ac500f7517c001ccb0246d888e813c45c36d249dd95cc188a28e1fdd408b8"
+    },
+    {
+      "path": "bench/converge/tasks/06-key-rotation-map/setup.py",
+      "bytes": 209,
+      "sha256": "cfb432f02c954de31da7d28f184ec2fe177c0d74365513727bdef57dd1d6ac93"
+    },
+    {
+      "path": "bench/converge/tasks/07-source-manifest/check.py",
+      "bytes": 208,
+      "sha256": "f83d4174045eabcb027241b6a143e46ecdb80b698f73080213eb001098b025c5"
+    },
+    {
+      "path": "bench/converge/tasks/07-source-manifest/setup.py",
+      "bytes": 208,
+      "sha256": "beb7debada774a85af1f9e2514f41fc251757df3971719515bc742a45a7cc2b5"
+    },
+    {
+      "path": "bench/converge/tasks/08-integer-encoding/check.py",
+      "bytes": 209,
+      "sha256": "0f75daa4ba71816dbe3a9684722e4d79e21de3590bfaf09cd21cb9b8bcafecb4"
+    },
+    {
+      "path": "bench/converge/tasks/08-integer-encoding/setup.py",
+      "bytes": 209,
+      "sha256": "fd407e34a3335bab625acd4dc3e0559fb6b9b13e4110beec7ad291a669be0850"
+    },
+    {
+      "path": "bench/converge/tasks/09-separator-payload/check.py",
+      "bytes": 210,
+      "sha256": "2d2f4d27bfd837e6e137a30905ca489ca0484c864e628d2434b95eb257e1a271"
+    },
+    {
+      "path": "bench/converge/tasks/09-separator-payload/setup.py",
+      "bytes": 210,
+      "sha256": "dc6d52cf9a4d82e48b2289eebb1ff05528a88dc22d1d8a3766ca4a7f5b2783d7"
+    },
+    {
+      "path": "bench/converge/tasks/10-expiry-boundary/check.py",
+      "bytes": 208,
+      "sha256": "991594ce3d471b4c03c2ba7a65e88b9fc44be33bcc2ed6b24fd80d4816dbacf7"
+    },
+    {
+      "path": "bench/converge/tasks/10-expiry-boundary/setup.py",
+      "bytes": 208,
+      "sha256": "62776ac7b31889c59a124255e0eec2d2bd0dd5aa8c28b33ba231a66a1da70ed3"
+    },
+    {
+      "path": "bench/converge/tasks/11-compression-marker/check.py",
+      "bytes": 211,
+      "sha256": "4d325da3c7336d6158cf9327d369c2afe91d4393a63490154a17ddfe6eb92743"
+    },
+    {
+      "path": "bench/converge/tasks/11-compression-marker/setup.py",
+      "bytes": 211,
+      "sha256": "19499cec5cac92b623df2e5c0b633898449d338cb0f61904811a5e641b4b6305"
+    },
+    {
+      "path": "bench/converge/tasks/12-partition-map/check.py",
+      "bytes": 206,
+      "sha256": "81081d0553450372f762d766b5c9bd200ecc85c9f7011710e4c70870a568701d"
+    },
+    {
+      "path": "bench/converge/tasks/12-partition-map/setup.py",
+      "bytes": 206,
+      "sha256": "66a004ddb4d0e12e118fc38f2a5a4dddaa88d9bf5ff75ac4262c67932d0fd949"
+    },
+    {
+      "path": "bench/converge/tasks/manifest.json",
+      "bytes": 15379,
+      "sha256": "d95dd4bd1ee0d61d6b149c7c38e0f1a23a71be0fca2d1d9d461728037f5358ab"
+    },
+    {
+      "path": "bench/converge/tasks/reference.py",
+      "bytes": 5459,
+      "sha256": "2bfc37856a451aab1c550b23a1e0c61782fb2d9117333ef85d64f51889442039"
+    },
+    {
+      "path": "bench/converge/tasks/self_validate.py",
+      "bytes": 2279,
+      "sha256": "454108ae3a9e71368557c9662fe818dc197fda4f98dc384e9b441b0f0270c104"
+    },
+    {
+      "path": "bench/converge/tasks/task_support.py",
+      "bytes": 15053,
+      "sha256": "b5302b6aeae9c1f178fa3c97ccfce559b019de290f1ca7d51dcb75533426edb3"
+    },
+    {
+      "path": "bench/converge/test_packaging.py",
+      "bytes": 15658,
+      "sha256": "c488a826d2bd911606d5dfd85d7c4c4d4f07540e64ffe3f7b236243b2535f43c"
+    },
+    {
+      "path": "bench/converge/test_reconcile_budget.py",
+      "bytes": 3538,
+      "sha256": "b4132fa5aa6ef499772cf351eee19ef554b7afcd6ca5ceb1dfda58b26fd506f0"
+    },
+    {
+      "path": "bench/converge/test_runner.py",
+      "bytes": 15558,
+      "sha256": "4b88b24334da5f2a1549be5861efe111782a903681e6c11f2ec680d571b6f638"
+    },
+    {
+      "path": "bench/converge/trace_audit.py",
+      "bytes": 9115,
+      "sha256": "335c10d7aa2400224eafb1caf1494f48a76199e660ecb4264266e6121217bf67"
+    },
+    {
+      "path": "bench/converge/trace_checks.py",
+      "bytes": 2169,
+      "sha256": "f7b353fb30f9a07182214c87858db55608400471eacf82f8f91c580535bacf1b"
+    },
+    {
+      "path": "bench/convergence_metrics.py",
+      "bytes": 2396,
+      "sha256": "8173bab0de360d05d921dbda004a57e8d95fda773def33f231b89d5c23c7ba9c"
+    },
+    {
+      "path": "bench/current_panel.py",
+      "bytes": 3379,
+      "sha256": "e96c59d37ce0c84750a1a9af40558f2785d79ade2a26264febc5c053c080c846"
+    },
+    {
+      "path": "bench/decompose.py",
+      "bytes": 4548,
+      "sha256": "7e1abf060ad93ad64d1a37084e30aa0808c69d991b43af30f9d015d97aec7336"
+    },
+    {
+      "path": "bench/decompose_converged.py",
+      "bytes": 11599,
+      "sha256": "4c6467608969faad1e56e1fe9ce59035c24074fc6778e6086e192202f00494b4"
+    },
+    {
+      "path": "bench/expanded_metrics.py",
+      "bytes": 3728,
+      "sha256": "7e6559629ee726a0732b08597336dfc9f255fe9510581cc3143e63c0764f0cdd"
+    },
+    {
+      "path": "bench/final-measurements.sh",
+      "bytes": 2875,
+      "sha256": "cd06a40a5677854d590be03c58454baa425ab1559e629137dcc06e81a5a11357"
+    },
+    {
+      "path": "bench/final_heads.py",
+      "bytes": 1880,
+      "sha256": "34754c5de66d04e5adfe2d643195d8c6905efa7f8d5610d9b89086b5721877a1"
+    },
+    {
+      "path": "bench/first_request_metrics.py",
+      "bytes": 2925,
+      "sha256": "7144cc06cc0f2ce3cb203806108e611ae2335087831b44c835fbc54b625061a3"
+    },
+    {
+      "path": "bench/frame_cost.py",
+      "bytes": 1720,
+      "sha256": "7b57d7721892b863a2fd6b6592b8bc5824f07c769c8397ab40366582d4188171"
+    },
+    {
+      "path": "bench/iteration_metrics.py",
+      "bytes": 1616,
+      "sha256": "b3f7aba544219fa434cd6f015304d40867b6af6c309b5f45a29a48aff51dda8d"
+    },
+    {
+      "path": "bench/luna-api/direct.mjs",
+      "bytes": 7746,
+      "sha256": "bcbe835a4694fdfe187a75178418b3d9d1a911ee53bb31719441ea915d6505c7"
+    },
+    {
+      "path": "bench/luna-api/direct.test.mjs",
+      "bytes": 9795,
+      "sha256": "d077d8e09ae3685e2ad7bde901e35c76ead94fcfe875dfaef52aa45cf6ff7c8c"
+    },
+    {
+      "path": "bench/luna-api/health.mjs",
+      "bytes": 534,
+      "sha256": "f31151dd0dc4601e0052db2e98f0f37db79809d582e9c03dad15d9005c8d82e5"
+    },
+    {
+      "path": "bench/luna-api/health_entry.py",
+      "bytes": 919,
+      "sha256": "d30501b94ef171f389fc8cb2bd8c3f322e7db15b59e8433f1230c76320e188f5"
+    },
+    {
+      "path": "bench/luna-api/pricing.json",
+      "bytes": 632,
+      "sha256": "8f575852e0e3657f3df2801da78d6b8c7608679c818e4f0a341a8afac59cefc9"
+    },
+    {
+      "path": "bench/luna-api/runner.py",
+      "bytes": 22221,
+      "sha256": "08e98b556559d7119a7b7f4634f7ae94810ccdbc92f5d003730b92232873e2b3"
+    },
+    {
+      "path": "bench/luna-api/startup_fixture.mjs",
+      "bytes": 2553,
+      "sha256": "aa8a0d3068fa3e746258571a0246c49f6562e2c855c97eb8a93346bc8b01307f"
+    },
+    {
+      "path": "bench/luna-api/stdin_entry.py",
+      "bytes": 352,
+      "sha256": "b48c92847604c0a14d87484bf26dbde9fbdeddcbb2c24188da1de4f0e86afa94"
+    },
+    {
+      "path": "bench/luna-api/tasks/01-chunked-strict/check.py",
+      "bytes": 207,
+      "sha256": "0ed837d6d4184fe10717b86de58984a0925c8cb402c469ae452dc38f1a8ecf10"
+    },
+    {
+      "path": "bench/luna-api/tasks/01-chunked-strict/setup.py",
+      "bytes": 207,
+      "sha256": "06926389715f256db1c922d3ea77832926a915064e9198ab6d5c9ae00de1c588"
+    },
+    {
+      "path": "bench/luna-api/tasks/02-split-limit/check.py",
+      "bytes": 204,
+      "sha256": "efbce3164a2b981a882ef0f4f5500c5588b0348299e3accbf488935acf482ad1"
+    },
+    {
+      "path": "bench/luna-api/tasks/02-split-limit/setup.py",
+      "bytes": 204,
+      "sha256": "ef5757a2a60cd118f733f04fdf3f90da0b6c8d2a2354cc2564c5d9e86d24bd9e"
+    },
+    {
+      "path": "bench/luna-api/tasks/03-window-padding/check.py",
+      "bytes": 207,
+      "sha256": "a446ea1657095fc103c5abaa225243bf9eea8ea5e4f6e46dc5e462fd2ddcb3b4"
+    },
+    {
+      "path": "bench/luna-api/tasks/03-window-padding/setup.py",
+      "bytes": 207,
+      "sha256": "ccc866f446bcdbc1634381670072d3ae3016838f58c292286b75ee6de2fe0bc4"
+    },
+    {
+      "path": "bench/luna-api/tasks/04-count-by/check.py",
+      "bytes": 201,
+      "sha256": "a3f29815ee3e902ffef3f34b404c3b21620a09803e31375108dea74ddd8e474d"
+    },
+    {
+      "path": "bench/luna-api/tasks/04-count-by/setup.py",
+      "bytes": 201,
+      "sha256": "921a7bed588618f856932c4740d701a281e5e85c1dfaacda578c34f6cf1b4dbd"
+    },
+    {
+      "path": "bench/luna-api/tasks/05-empty-refactor/check.py",
+      "bytes": 207,
+      "sha256": "7f5eb106eeae2d9bbdd5034f48cfb1b60a971b96c128ff502dbf9d92e901c969"
+    },
+    {
+      "path": "bench/luna-api/tasks/05-empty-refactor/setup.py",
+      "bytes": 207,
+      "sha256": "43a53818b87b315e0e1396e452ce08a3c4b4edeb8b9075fc84b90c7cfe2795a6"
+    },
+    {
+      "path": "bench/luna-api/tasks/06-key-rotation-map/check.py",
+      "bytes": 209,
+      "sha256": "fc1ac500f7517c001ccb0246d888e813c45c36d249dd95cc188a28e1fdd408b8"
+    },
+    {
+      "path": "bench/luna-api/tasks/06-key-rotation-map/setup.py",
+      "bytes": 209,
+      "sha256": "cfb432f02c954de31da7d28f184ec2fe177c0d74365513727bdef57dd1d6ac93"
+    },
+    {
+      "path": "bench/luna-api/tasks/07-source-manifest/check.py",
+      "bytes": 208,
+      "sha256": "f83d4174045eabcb027241b6a143e46ecdb80b698f73080213eb001098b025c5"
+    },
+    {
+      "path": "bench/luna-api/tasks/07-source-manifest/setup.py",
+      "bytes": 208,
+      "sha256": "beb7debada774a85af1f9e2514f41fc251757df3971719515bc742a45a7cc2b5"
+    },
+    {
+      "path": "bench/luna-api/tasks/08-integer-encoding/check.py",
+      "bytes": 209,
+      "sha256": "0f75daa4ba71816dbe3a9684722e4d79e21de3590bfaf09cd21cb9b8bcafecb4"
+    },
+    {
+      "path": "bench/luna-api/tasks/08-integer-encoding/setup.py",
+      "bytes": 209,
+      "sha256": "fd407e34a3335bab625acd4dc3e0559fb6b9b13e4110beec7ad291a669be0850"
+    },
+    {
+      "path": "bench/luna-api/tasks/09-separator-payload/check.py",
+      "bytes": 210,
+      "sha256": "2d2f4d27bfd837e6e137a30905ca489ca0484c864e628d2434b95eb257e1a271"
+    },
+    {
+      "path": "bench/luna-api/tasks/09-separator-payload/setup.py",
+      "bytes": 210,
+      "sha256": "dc6d52cf9a4d82e48b2289eebb1ff05528a88dc22d1d8a3766ca4a7f5b2783d7"
+    },
+    {
+      "path": "bench/luna-api/tasks/10-expiry-boundary/check.py",
+      "bytes": 208,
+      "sha256": "991594ce3d471b4c03c2ba7a65e88b9fc44be33bcc2ed6b24fd80d4816dbacf7"
+    },
+    {
+      "path": "bench/luna-api/tasks/10-expiry-boundary/setup.py",
+      "bytes": 208,
+      "sha256": "62776ac7b31889c59a124255e0eec2d2bd0dd5aa8c28b33ba231a66a1da70ed3"
+    },
+    {
+      "path": "bench/luna-api/tasks/11-compression-marker/check.py",
+      "bytes": 211,
+      "sha256": "4d325da3c7336d6158cf9327d369c2afe91d4393a63490154a17ddfe6eb92743"
+    },
+    {
+      "path": "bench/luna-api/tasks/11-compression-marker/setup.py",
+      "bytes": 211,
+      "sha256": "19499cec5cac92b623df2e5c0b633898449d338cb0f61904811a5e641b4b6305"
+    },
+    {
+      "path": "bench/luna-api/tasks/12-partition-map/check.py",
+      "bytes": 206,
+      "sha256": "81081d0553450372f762d766b5c9bd200ecc85c9f7011710e4c70870a568701d"
+    },
+    {
+      "path": "bench/luna-api/tasks/12-partition-map/setup.py",
+      "bytes": 206,
+      "sha256": "66a004ddb4d0e12e118fc38f2a5a4dddaa88d9bf5ff75ac4262c67932d0fd949"
+    },
+    {
+      "path": "bench/luna-api/tasks/manifest.json",
+      "bytes": 15379,
+      "sha256": "d95dd4bd1ee0d61d6b149c7c38e0f1a23a71be0fca2d1d9d461728037f5358ab"
+    },
+    {
+      "path": "bench/luna-api/tasks/reference.py",
+      "bytes": 5459,
+      "sha256": "2bfc37856a451aab1c550b23a1e0c61782fb2d9117333ef85d64f51889442039"
+    },
+    {
+      "path": "bench/luna-api/tasks/self_validate.py",
+      "bytes": 2279,
+      "sha256": "454108ae3a9e71368557c9662fe818dc197fda4f98dc384e9b441b0f0270c104"
+    },
+    {
+      "path": "bench/luna-api/tasks/task_support.py",
+      "bytes": 15053,
+      "sha256": "b5302b6aeae9c1f178fa3c97ccfce559b019de290f1ca7d51dcb75533426edb3"
+    },
+    {
+      "path": "bench/luna-api/test_cli_startup.py",
+      "bytes": 4026,
+      "sha256": "ec43b6718dcf9a58d36984a55069dfb87d8f89a626ca3a3b4ec0f92cb033c494"
+    },
+    {
+      "path": "bench/luna-api/test_runner_settings.py",
+      "bytes": 13062,
+      "sha256": "dd86c90192022c6ea660f7e2d6b266dd61f0c55f8d5984c8529036c96bb4e121"
+    },
+    {
+      "path": "bench/luna-api/trace_checks.py",
+      "bytes": 2480,
+      "sha256": "5b34d336c7fc81ca4a28ac226ed2be6a80b56cb12beee4a57e3c75f4b2f18f84"
+    },
+    {
+      "path": "bench/luna_bridge.py",
+      "bytes": 19755,
+      "sha256": "1511a654cf8d59bde548c17cc9e0526c3ecb87b65c680996e6c1991ae21c1b20"
+    },
+    {
+      "path": "bench/luna_call_audit.py",
+      "bytes": 926,
+      "sha256": "58f28e7d3b49086508a2cae477245b84b25b9e4bd672a108db1e0d8379203dc0"
+    },
+    {
+      "path": "bench/luna_mechanisms.py",
+      "bytes": 3060,
+      "sha256": "a2433f6341d2209fe031fbc4bc8144977c467ef41fa0cf4199a1657ea04d6e79"
+    },
+    {
+      "path": "bench/next_iteration_edits.py",
+      "bytes": 8547,
+      "sha256": "870fb5667dadd06909f22d18b32a29bfaf93cae37ebb3062e100e3dfbd5368fd"
+    },
+    {
+      "path": "bench/next_iteration_tests.py",
+      "bytes": 9797,
+      "sha256": "df9dd695070c7a6cf9de82a34c35a0bd347a70e9e6c698d3f17336acb9a72ee4"
+    },
+    {
+      "path": "bench/offline_profile.py",
+      "bytes": 5940,
+      "sha256": "522af44b4dd55e0ab711cd8ba42dc0656a8b71cc994547ee8f589c93d7931145"
+    },
+    {
+      "path": "bench/paired_convergence.py",
+      "bytes": 4814,
+      "sha256": "a298908c6061514af847928855b75401f858f2d5b705b58c5df2180bfb283622"
+    },
+    {
+      "path": "bench/parity2_edits.py",
+      "bytes": 928,
+      "sha256": "5927a0ca98a5720b398b053e6f12a2d8b57d111ce29ee850217d0c1c0421a148"
+    },
+    {
+      "path": "bench/parity_edits.py",
+      "bytes": 7995,
+      "sha256": "e171e868922689c2a38c48993c13437c502a968e498bad26854e3707f84c3c85"
+    },
+    {
+      "path": "bench/parity_tests.py",
+      "bytes": 8561,
+      "sha256": "7fcb790d3a7cd582e4000e0a604416f13ab5e97c4d7888bcd9a377431dd6e09a"
+    },
+    {
+      "path": "bench/prepare_luna_api.py",
+      "bytes": 3677,
+      "sha256": "6fb5e5f877f877489a1e741903d524a669be7e6f3a6de5db36605acb81793beb"
+    },
+    {
+      "path": "bench/prepare_similarity.py",
+      "bytes": 3134,
+      "sha256": "61baa3140a07b657c7720766d47a29c54db09d8a8c3ca6d60fd533636866f29f"
+    },
+    {
+      "path": "bench/profile_modes.py",
+      "bytes": 6509,
+      "sha256": "3e985f54b6584200ffbb03d125fa0093f0a27a193a3f5dac97ce3bf88b4e805e"
+    },
+    {
+      "path": "bench/progress.py",
+      "bytes": 1270,
+      "sha256": "b301ff0ab11efc6f84d892dd73bbba1266a32feea2a6af0d9bb78cc98480a5a4"
+    },
+    {
+      "path": "bench/project_prefix.py",
+      "bytes": 2288,
+      "sha256": "5d668cb8f8128828513873c4231bd938a6f6efdce2d864cf41884f4c79c5e300"
+    },
+    {
+      "path": "bench/prune_pressure.py",
+      "bytes": 2379,
+      "sha256": "ccfcef3cf64076bd5e8145442bb951078ce3fd9e9f7e42d320204c815057c936"
+    },
+    {
+      "path": "bench/relative_cost.py",
+      "bytes": 2148,
+      "sha256": "c3965a14aad778fd98835c5438e27a85ee69fb10d6b8357815a4afa7c5721c10"
+    },
+    {
+      "path": "bench/render_cache.py",
+      "bytes": 1540,
+      "sha256": "93baf6e5c1892b6053cddd4140e1cfa0c5b8772aecfebda019433d7a0df099ad"
+    },
+    {
+      "path": "bench/render_call_categories.py",
+      "bytes": 2866,
+      "sha256": "e151976a783bce23d11e29ccf965055e5c3b1726ad6221473766f4c7152b89da"
+    },
+    {
+      "path": "bench/render_converged.py",
+      "bytes": 3950,
+      "sha256": "6eeddab64280743d8e83ac8e14f30f97e2ede8a1dd63c7c23b95d1fe9c9bacea"
+    },
+    {
+      "path": "bench/render_current_report.py",
+      "bytes": 11140,
+      "sha256": "4b213fa19ce86ce5267f6385fc744c5abecdbbf9afe167496a5f8670b5a9f319"
+    },
+    {
+      "path": "bench/render_decomposition.py",
+      "bytes": 3806,
+      "sha256": "90e0a537c5f711a8c796aab8d1d1df09721747a76dd74ec2644eb63a08f3fd3e"
+    },
+    {
+      "path": "bench/render_expanded_report.py",
+      "bytes": 11817,
+      "sha256": "f030f0fe8ed2cf10f2588db5de62b637f26e58fd132f4aef36a96999deaea23f"
+    },
+    {
+      "path": "bench/render_final_report.py",
+      "bytes": 10484,
+      "sha256": "d10d5ea83cbf69590711cb5f3b29ca5c9b616f306444656b14dccd500374407c"
+    },
+    {
+      "path": "bench/render_luna_screen.py",
+      "bytes": 6607,
+      "sha256": "6f095618cac2dad0675049190dcc17780fd125766c52b0669d19f451d2d9ebb6"
+    },
+    {
+      "path": "bench/render_successor_decomp.py",
+      "bytes": 1498,
+      "sha256": "308863a3d1d89c0c5a8fc816534cc4c51ce691cda0249196cabc4024c6534c9c"
+    },
+    {
+      "path": "bench/replay-compat.mjs",
+      "bytes": 2231,
+      "sha256": "53b58407052e246ae86192cc24c617466214a599db0015664e477bfef72c2eb1"
+    },
+    {
+      "path": "bench/report_tables.py",
+      "bytes": 2108,
+      "sha256": "7577f887a6e9165e7f8482fa7e5996637a8c303f0b8b802c9cb3a85fbfe1c2c7"
+    },
+    {
+      "path": "bench/request_growth.py",
+      "bytes": 1884,
+      "sha256": "2b7e0040d840472332ec745ccb94403ad0a846ed1c8e5deb947ddb4a4ef7662c"
+    },
+    {
+      "path": "bench/rescore_symmetric.py",
+      "bytes": 1760,
+      "sha256": "2be7cc6b1d8deeb3b9e81ddd097dec2a3352dc25d29a91d96f6ce12f0512de52"
+    },
+    {
+      "path": "bench/result_repetition.py",
+      "bytes": 1895,
+      "sha256": "273f355b41cd08469c87434254594d4629135e8175ebf7b74d7525cffc88fb6c"
+    },
+    {
+      "path": "bench/resume-snapshot.py",
+      "bytes": 1264,
+      "sha256": "0bbe8467c94403a4fc4d464796f2bf7f4a78a1c726cd4e864a006d3917f0a094"
+    },
+    {
+      "path": "bench/resume_baseline_entry.py",
+      "bytes": 352,
+      "sha256": "28489a01e69cf325c58fe2dfe041a0c0a8d179bc36441f98c7aab04a9cf2206e"
+    },
+    {
+      "path": "bench/reuse_edits.py",
+      "bytes": 7607,
+      "sha256": "cfac68d329422071135291fa0ee4af4d85b5ffe66ded3eef759813e90b68a028"
+    },
+    {
+      "path": "bench/review_new_paths.py",
+      "bytes": 1157,
+      "sha256": "ef6a92e83f93884b45cce6b3263b7173042cb34007af48f7eab316afb7ba8d13"
+    },
+    {
+      "path": "bench/review_remaining_paths.py",
+      "bytes": 1173,
+      "sha256": "8a3d84e531def5ba7d51937a40af8503a91be1c03d3147015e7574e190c3b8b6"
+    },
+    {
+      "path": "bench/round2-final-measurements.sh",
+      "bytes": 2966,
+      "sha256": "59f432bfc6542ff247c0d5d6dd34f1c00c6028e9d734c5595bb1c13326cfcc2d"
+    },
+    {
+      "path": "bench/round2_metrics.py",
+      "bytes": 4074,
+      "sha256": "52affa0948fe8f06020c33fbb4eda04616c29bc556b756658b8c6cab0d2e6ad6"
+    },
+    {
+      "path": "bench/run-actions-subset.sh",
+      "bytes": 1485,
+      "sha256": "8897a7c3aad015eb31a63f75c0d4ff751d85c3197b3c4dac2b289ab5893980d0"
+    },
+    {
+      "path": "bench/run-batch-full-tests.sh",
+      "bytes": 736,
+      "sha256": "a860cd7ad529fc6e5a05dafd6ad5a2f6487d648cf157db217e31451ae1f52aa5"
+    },
+    {
+      "path": "bench/run-batch-subset.sh",
+      "bytes": 1999,
+      "sha256": "556310b2d36dedfb7867120ae93afe3859d48a2ecc0db31481b2dcd1d10f9a28"
+    },
+    {
+      "path": "bench/run-bounded-subset.sh",
+      "bytes": 2025,
+      "sha256": "3ba331a003bd6ce4d4b059efa5105c276ad540c322d3d9b5178626abcf1c1979"
+    },
+    {
+      "path": "bench/run-brief-subset.sh",
+      "bytes": 2103,
+      "sha256": "bc345b0b56267a0f44abe0f7c2ba39f61b908e3c3a54af93f9a1b1ea6eee501b"
+    },
+    {
+      "path": "bench/run-candidate-after-baseline.sh",
+      "bytes": 2423,
+      "sha256": "112e95e14130adcfefcea029d4dce308923c6af91bd886772bccce666171e7e7"
+    },
+    {
+      "path": "bench/run-catalog-subset.sh",
+      "bytes": 1656,
+      "sha256": "07487522c4f6160b3e63215d5d0b08579f5b1d8f0118ff6fda238ca9ddd2f6ca"
+    },
+    {
+      "path": "bench/run-context-full.sh",
+      "bytes": 497,
+      "sha256": "be5516ebda64ba7c564aeddaa75af05f777e88f692b63f97e663aaef28a1f972"
+    },
+    {
+      "path": "bench/run-context-subset.sh",
+      "bytes": 1848,
+      "sha256": "2954e2a0f0212c1d3e70b5a759968e128f4f0167998da871210fa58f032617c5"
+    },
+    {
+      "path": "bench/run-converged-screen.sh",
+      "bytes": 982,
+      "sha256": "5a3dd7b8b27311497900bd68f3062e72667f97bb9ddf361ca6897f442ceed831"
+    },
+    {
+      "path": "bench/run-demand-full-tests.sh",
+      "bytes": 303,
+      "sha256": "b359f557429191b4be71390fd9334fbb429181e73fcb535b9d0dae7a80e929c9"
+    },
+    {
+      "path": "bench/run-demand-subset.sh",
+      "bytes": 1892,
+      "sha256": "f346d729ecb2c54663449644f4ea372f1b92311b168364363edf7bb9cf05cc66"
+    },
+    {
+      "path": "bench/run-final-candidate.sh",
+      "bytes": 1379,
+      "sha256": "7b4f8b9bda39930633d674da8cf26e3d27fee97e68d096136dcb660865171382"
+    },
+    {
+      "path": "bench/run-focus-subset.sh",
+      "bytes": 2143,
+      "sha256": "7b35db023a21b1bc1960ede0126d933ef9945167624d7c17756575ae61cba0b5"
+    },
+    {
+      "path": "bench/run-frames-subset.sh",
+      "bytes": 1938,
+      "sha256": "7e85f64224f3054c73420642292bb905fe9ea32fc6d35a5029c5d3b8b985e452"
+    },
+    {
+      "path": "bench/run-frames2-subset.sh",
+      "bytes": 2037,
+      "sha256": "922bbc07966a97d8bbfac70200ac0e15b17c9010840659bf6d71d8e99650a1a0"
+    },
+    {
+      "path": "bench/run-key-scan.sh",
+      "bytes": 4355,
+      "sha256": "bf3f47c4ebafb462e9be6071b4c21b0b0f3d01c78a0d1277e48a39c12804ffad"
+    },
+    {
+      "path": "bench/run-luna-api-fixedconfig.sh",
+      "bytes": 1182,
+      "sha256": "71b6858ec138e5b02cf885d402487d33de45c13eea28142b7bbaae468ba4d968"
+    },
+    {
+      "path": "bench/run-luna-api-missing-pi.sh",
+      "bytes": 715,
+      "sha256": "61d232d4bec6f1eb90ce891d2301e3865d722645ef95b47c3c1d88b83f3cdcb6"
+    },
+    {
+      "path": "bench/run-luna-api-policy.sh",
+      "bytes": 1312,
+      "sha256": "365d2d7d23baa87668b6c460f68b72e38cf767be2875d2b14796dfe253b8e347"
+    },
+    {
+      "path": "bench/run-luna-api-screen.sh",
+      "bytes": 1272,
+      "sha256": "eed8bbab8551f803a2113612c8577f9f54444f3a44ca47481e65041e1167b68e"
+    },
+    {
+      "path": "bench/run-luna-api.sh",
+      "bytes": 794,
+      "sha256": "a1a09bc252f27f450f7ca03123c77fcb904cd1eb852a2074b415c082b9923240"
+    },
+    {
+      "path": "bench/run-luna-full.sh",
+      "bytes": 1167,
+      "sha256": "42a725aa25e693181cb3cdf00b52a731d44ec38406f46e000d9a019518d6bbd2"
+    },
+    {
+      "path": "bench/run-luna-replay.sh",
+      "bytes": 1608,
+      "sha256": "7a9ac476c6ce3889e4fba146ee4c816411ac3e35c9ac4774f7dc744032f7fea5"
+    },
+    {
+      "path": "bench/run-minimal-subset.sh",
+      "bytes": 2010,
+      "sha256": "60f32ef5202cff4d969d5b2258909fef23850a55724f962d30f4c55593c1d00e"
+    },
+    {
+      "path": "bench/run-next-subset.sh",
+      "bytes": 1626,
+      "sha256": "404c99c84ddbbf0b3bddd6d46e31186664db17d0c97efbf66bc88a5e2a7722c2"
+    },
+    {
+      "path": "bench/run-notice-subset.sh",
+      "bytes": 1800,
+      "sha256": "039f60ef3464f6e5b824ffd55224a2834e61158e2ba0f6055d811e9c677f06ba"
+    },
+    {
+      "path": "bench/run-notice2-subset.sh",
+      "bytes": 1937,
+      "sha256": "56a2d7c036a75cbd27b0ad4c359f35e1d1044ea87e0265bd872044a7e8d72d9c"
+    },
+    {
+      "path": "bench/run-parity-subset.sh",
+      "bytes": 1646,
+      "sha256": "abf98c65a791bd045ded0df5895598419e46fa51bca742cd7794758ffe3724e7"
+    },
+    {
+      "path": "bench/run-parity2-subset.sh",
+      "bytes": 1644,
+      "sha256": "842dc688baef5b63fe001ca5e04f7c7f5ed02db167cf46886b92abba777b2668"
+    },
+    {
+      "path": "bench/run-parity3-subset.sh",
+      "bytes": 1644,
+      "sha256": "db1747f519e491f872ed5562db910a2db05e4363b3d6e28ce8d22dc368a159fa"
+    },
+    {
+      "path": "bench/run-relative-subset.sh",
+      "bytes": 1471,
+      "sha256": "f3a0b5cf384e99489693b1b0fc5cef8aa5d2b25dab2647b2c30a876a5004c757"
+    },
+    {
+      "path": "bench/run-remote.sh",
+      "bytes": 592,
+      "sha256": "80191966603d03e4c626c05f30830e23dd6966ac62ac872e0dc9865c7b82a0db"
+    },
+    {
+      "path": "bench/run-round2-confirm-screen.sh",
+      "bytes": 1761,
+      "sha256": "fa33444bf5e314071f69966bc80b2967893c565e1974c26f9f165b0728ab4be3"
+    },
+    {
+      "path": "bench/run-round2-full.sh",
+      "bytes": 2900,
+      "sha256": "2c0a0e2462b999dd99b638947a75b68d0432395f9868af0d7802f524e59685a6"
+    },
+    {
+      "path": "bench/run-selected-full.sh",
+      "bytes": 2594,
+      "sha256": "bdb50444638036819ff8abd10c4e0d4dbcfb4561e971bffad85343a34803c1d4"
+    },
+    {
+      "path": "bench/run-stable-subset.sh",
+      "bytes": 2028,
+      "sha256": "50f297854d785af524e979aa7aa701b509e22687b61b747fc42d73573dc46150"
+    },
+    {
+      "path": "bench/run-tight-subset.sh",
+      "bytes": 2002,
+      "sha256": "adc365741359e07eac94c074de6e33882a217f86965f78411268bfb3594f8679"
+    },
+    {
+      "path": "bench/runner-baseline.py",
+      "bytes": 13164,
+      "sha256": "9f8287611438941866cdaee3728d30c54ca985b395cf0858323cf718a34d89ad"
+    },
+    {
+      "path": "bench/runner.py",
+      "bytes": 16444,
+      "sha256": "a2b6ce0108c3150b8365f303c5bea472c06dc96ebca1d6eca8657449e41827a1"
+    },
+    {
+      "path": "bench/scan-converged-keys.sh",
+      "bytes": 1623,
+      "sha256": "4efeed524aa19b21430f62405fe99a5b566f3e13ab6b33671d68ecdea9ba861f"
+    },
+    {
+      "path": "bench/screen_wire_summary.py",
+      "bytes": 1393,
+      "sha256": "996940b6f4e286608f0b6f742f46b2361833ede58fcc9e3287ea729ff6a1bde8"
+    },
+    {
+      "path": "bench/similarity_check.py",
+      "bytes": 2764,
+      "sha256": "0727b65657e133efa44584b9da5ea291ffd228e75b4a08a710df022e0b0a3251"
+    },
+    {
+      "path": "bench/speed2_edits.py",
+      "bytes": 6676,
+      "sha256": "05c003cbe6b765c891f13718b6ebdd354e95869acbc99097596d66205d9f300b"
+    },
+    {
+      "path": "bench/speed_edits.py",
+      "bytes": 7446,
+      "sha256": "4aeef7c3db561678830b0506620cec246cd6537892e3dafc992a5aa4153c0147"
+    },
+    {
+      "path": "bench/start.py",
+      "bytes": 326,
+      "sha256": "ca0c57584fad1a3be71d16e6bb9d054a7e1e591aa75645529379a5f3266170d2"
+    },
+    {
+      "path": "bench/subset_metrics.py",
+      "bytes": 2118,
+      "sha256": "c8ab450f55c598d0b33b021efb9ff0739ede5337075b3b6f6ac8ad4a2c20ff13"
+    },
+    {
+      "path": "bench/summarize.py",
+      "bytes": 42905,
+      "sha256": "65a76d234a6e83becc7f6605970249d4173b16a503edf291bf94080cc6953fc4"
+    },
+    {
+      "path": "bench/sync_iteration_status.py",
+      "bytes": 2053,
+      "sha256": "fb8bd161cc92cfac41a7f7665dcdb49eb3c739d48ba6802154ff09afef836ab5"
+    },
+    {
+      "path": "bench/sync_status.py",
+      "bytes": 2104,
+      "sha256": "76a3967257c4e33910a6ee8f162847926ae21dc2f088c3571950bd9d180c2b38"
+    },
+    {
+      "path": "bench/tasks/01-chunked-strict/check.py",
+      "bytes": 207,
+      "sha256": "0ed837d6d4184fe10717b86de58984a0925c8cb402c469ae452dc38f1a8ecf10"
+    },
+    {
+      "path": "bench/tasks/01-chunked-strict/setup.py",
+      "bytes": 207,
+      "sha256": "06926389715f256db1c922d3ea77832926a915064e9198ab6d5c9ae00de1c588"
+    },
+    {
+      "path": "bench/tasks/02-split-limit/check.py",
+      "bytes": 204,
+      "sha256": "efbce3164a2b981a882ef0f4f5500c5588b0348299e3accbf488935acf482ad1"
+    },
+    {
+      "path": "bench/tasks/02-split-limit/setup.py",
+      "bytes": 204,
+      "sha256": "ef5757a2a60cd118f733f04fdf3f90da0b6c8d2a2354cc2564c5d9e86d24bd9e"
+    },
+    {
+      "path": "bench/tasks/03-window-padding/check.py",
+      "bytes": 207,
+      "sha256": "a446ea1657095fc103c5abaa225243bf9eea8ea5e4f6e46dc5e462fd2ddcb3b4"
+    },
+    {
+      "path": "bench/tasks/03-window-padding/setup.py",
+      "bytes": 207,
+      "sha256": "ccc866f446bcdbc1634381670072d3ae3016838f58c292286b75ee6de2fe0bc4"
+    },
+    {
+      "path": "bench/tasks/04-count-by/check.py",
+      "bytes": 201,
+      "sha256": "a3f29815ee3e902ffef3f34b404c3b21620a09803e31375108dea74ddd8e474d"
+    },
+    {
+      "path": "bench/tasks/04-count-by/setup.py",
+      "bytes": 201,
+      "sha256": "921a7bed588618f856932c4740d701a281e5e85c1dfaacda578c34f6cf1b4dbd"
+    },
+    {
+      "path": "bench/tasks/05-empty-refactor/check.py",
+      "bytes": 207,
+      "sha256": "7f5eb106eeae2d9bbdd5034f48cfb1b60a971b96c128ff502dbf9d92e901c969"
+    },
+    {
+      "path": "bench/tasks/05-empty-refactor/setup.py",
+      "bytes": 207,
+      "sha256": "43a53818b87b315e0e1396e452ce08a3c4b4edeb8b9075fc84b90c7cfe2795a6"
+    },
+    {
+      "path": "bench/tasks/06-key-rotation-map/check.py",
+      "bytes": 209,
+      "sha256": "fc1ac500f7517c001ccb0246d888e813c45c36d249dd95cc188a28e1fdd408b8"
+    },
+    {
+      "path": "bench/tasks/06-key-rotation-map/setup.py",
+      "bytes": 209,
+      "sha256": "cfb432f02c954de31da7d28f184ec2fe177c0d74365513727bdef57dd1d6ac93"
+    },
+    {
+      "path": "bench/tasks/07-source-manifest/check.py",
+      "bytes": 208,
+      "sha256": "f83d4174045eabcb027241b6a143e46ecdb80b698f73080213eb001098b025c5"
+    },
+    {
+      "path": "bench/tasks/07-source-manifest/setup.py",
+      "bytes": 208,
+      "sha256": "beb7debada774a85af1f9e2514f41fc251757df3971719515bc742a45a7cc2b5"
+    },
+    {
+      "path": "bench/tasks/08-integer-encoding/check.py",
+      "bytes": 209,
+      "sha256": "0f75daa4ba71816dbe3a9684722e4d79e21de3590bfaf09cd21cb9b8bcafecb4"
+    },
+    {
+      "path": "bench/tasks/08-integer-encoding/setup.py",
+      "bytes": 209,
+      "sha256": "fd407e34a3335bab625acd4dc3e0559fb6b9b13e4110beec7ad291a669be0850"
+    },
+    {
+      "path": "bench/tasks/09-separator-payload/check.py",
+      "bytes": 210,
+      "sha256": "2d2f4d27bfd837e6e137a30905ca489ca0484c864e628d2434b95eb257e1a271"
+    },
+    {
+      "path": "bench/tasks/09-separator-payload/setup.py",
+      "bytes": 210,
+      "sha256": "dc6d52cf9a4d82e48b2289eebb1ff05528a88dc22d1d8a3766ca4a7f5b2783d7"
+    },
+    {
+      "path": "bench/tasks/10-expiry-boundary/check.py",
+      "bytes": 208,
+      "sha256": "991594ce3d471b4c03c2ba7a65e88b9fc44be33bcc2ed6b24fd80d4816dbacf7"
+    },
+    {
+      "path": "bench/tasks/10-expiry-boundary/setup.py",
+      "bytes": 208,
+      "sha256": "62776ac7b31889c59a124255e0eec2d2bd0dd5aa8c28b33ba231a66a1da70ed3"
+    },
+    {
+      "path": "bench/tasks/11-compression-marker/check.py",
+      "bytes": 211,
+      "sha256": "4d325da3c7336d6158cf9327d369c2afe91d4393a63490154a17ddfe6eb92743"
+    },
+    {
+      "path": "bench/tasks/11-compression-marker/setup.py",
+      "bytes": 211,
+      "sha256": "19499cec5cac92b623df2e5c0b633898449d338cb0f61904811a5e641b4b6305"
+    },
+    {
+      "path": "bench/tasks/12-partition-map/check.py",
+      "bytes": 206,
+      "sha256": "81081d0553450372f762d766b5c9bd200ecc85c9f7011710e4c70870a568701d"
+    },
+    {
+      "path": "bench/tasks/12-partition-map/setup.py",
+      "bytes": 206,
+      "sha256": "66a004ddb4d0e12e118fc38f2a5a4dddaa88d9bf5ff75ac4262c67932d0fd949"
+    },
+    {
+      "path": "bench/tasks/build_definitions.py",
+      "bytes": 7795,
+      "sha256": "114f3349b06cbc44b1be2b5661debcab0e6359f4bbde1833cafe4d63a3253742"
+    },
+    {
+      "path": "bench/tasks/manifest.json",
+      "bytes": 15379,
+      "sha256": "d95dd4bd1ee0d61d6b149c7c38e0f1a23a71be0fca2d1d9d461728037f5358ab"
+    },
+    {
+      "path": "bench/tasks/reference.py",
+      "bytes": 5459,
+      "sha256": "2bfc37856a451aab1c550b23a1e0c61782fb2d9117333ef85d64f51889442039"
+    },
+    {
+      "path": "bench/tasks/self_validate.py",
+      "bytes": 2279,
+      "sha256": "454108ae3a9e71368557c9662fe818dc197fda4f98dc384e9b441b0f0270c104"
+    },
+    {
+      "path": "bench/tasks/task_support.py",
+      "bytes": 15053,
+      "sha256": "b5302b6aeae9c1f178fa3c97ccfce559b019de290f1ca7d51dcb75533426edb3"
+    },
+    {
+      "path": "bench/test_analyze_gates.py",
+      "bytes": 6727,
+      "sha256": "e75b97628a6303ad9e3bd1ab0aa28782b54d5be12133229b7e3111e8b44581bd"
+    },
+    {
+      "path": "bench/test_runner.py",
+      "bytes": 13145,
+      "sha256": "4283fbcac0f193ca8523b723467b9301421a0737329dd9a3523695b378e8d91d"
+    },
+    {
+      "path": "bench/trace_checks.py",
+      "bytes": 1944,
+      "sha256": "b693ff83feddb406e90c8692971c2f809148db75332a48efc1af29fd3bbf0f4b"
+    },
+    {
+      "path": "bench/update_method.py",
+      "bytes": 2774,
+      "sha256": "f8f12e66f6ff43f8ad53885fe15391739c6c10d69a95c83248790c4f6e8e62be"
+    },
+    {
+      "path": "bench/update_summary.py",
+      "bytes": 4654,
+      "sha256": "3615200934899d3b619bf57c77312b77b1abfea93ee3aed036c7b4333b93cd84"
+    }
+  ]
+}

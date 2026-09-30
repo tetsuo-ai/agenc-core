@@ -1,0 +1,311 @@
+{
+  "schema_version": 1,
+  "scope": "experimental source preservation, not installed or approved to execute",
+  "files": [
+    {
+      "path": "evidence/runner-initial.py",
+      "bytes": 28167,
+      "sha256": "bd437abc822b2994693cc3674f479540fa7ecc0262fb0dc65fc931fba4cc1b95"
+    },
+    {
+      "path": "harness/adapt_runner.py",
+      "bytes": 8080,
+      "sha256": "a8aff8df6379d381560a0740805fc4733b1d81711b5acf68c9af070100be4559"
+    },
+    {
+      "path": "harness/audit_results.py",
+      "bytes": 4614,
+      "sha256": "415a8bf643e99fbe43a9bd63679f0f29b8d70a2ba5563e1c0f3a03d022f18e06"
+    },
+    {
+      "path": "harness/availability_sol.py",
+      "bytes": 1950,
+      "sha256": "36d89bc95d6b4611cda3de3d17a8242d219f24932cb5e7a89247b324aec77afc"
+    },
+    {
+      "path": "harness/final_scan.py",
+      "bytes": 1035,
+      "sha256": "869fea63a584303840b03f7c06b2e20a3bba15476d006a12b9f5a438299728a4"
+    },
+    {
+      "path": "harness/grok_bridge.mjs",
+      "bytes": 4242,
+      "sha256": "333841b80213d1f8683a893acab921fecdc571ca40da756016489882884aa131"
+    },
+    {
+      "path": "harness/grok_diagnostic.mjs",
+      "bytes": 830,
+      "sha256": "60579b68c67fc848e7ad0b4d55678a0ba298ebe71329809a9d7df4d73f8954ab"
+    },
+    {
+      "path": "harness/input_metrics_pc.py",
+      "bytes": 1335,
+      "sha256": "c1bd9ce7187d043774cfa08b45eb444588b628802cbc8ded2b9619abd5b5ca0a"
+    },
+    {
+      "path": "harness/launch_batch.py",
+      "bytes": 1921,
+      "sha256": "c408eb3467619d823b265e203f97d5bf0ce0556d8a92132ea12f15dddc1d42d4"
+    },
+    {
+      "path": "harness/launch_minimax.py",
+      "bytes": 618,
+      "sha256": "556e06209166cda7405fc938e6ddad404619a3497f0429d3644b10d0fb16231b"
+    },
+    {
+      "path": "harness/launch_sol_bridge.py",
+      "bytes": 472,
+      "sha256": "b9111567ff6f1f33a3cfc5eb3440b5aac763f3870ab6ac1cd828b1acfcc8ae4e"
+    },
+    {
+      "path": "harness/luna_gate.py",
+      "bytes": 1627,
+      "sha256": "0508ebcfea6ec9042cb82ccfc7aeb8499281f38a5bd9c6f33e1ec5ce417ba0ab"
+    },
+    {
+      "path": "harness/metrics_pc.py",
+      "bytes": 4957,
+      "sha256": "c8bb0060c3c4ca37d11cb544c6c2d4826959644ccea00720bc6836e08b671df7"
+    },
+    {
+      "path": "harness/monitor_pc.py",
+      "bytes": 855,
+      "sha256": "8d85bd7b8014e6bea02326a97aa324ac116cae53be3962a57675e303a5dedd0f"
+    },
+    {
+      "path": "harness/normalize_trace.py",
+      "bytes": 3031,
+      "sha256": "5c9bc4cab3b4e959eca62c84fc87961bdd1e1c9dcd81b3fc312087880eba713c"
+    },
+    {
+      "path": "harness/offline_checks.py",
+      "bytes": 1504,
+      "sha256": "dbe281290b7c6af16c4dcb9a9874c35c33efc7bad5b9f8b6374c09f45a829a76"
+    },
+    {
+      "path": "harness/preflight_minimax.py",
+      "bytes": 767,
+      "sha256": "d5d7e1482332350a8fd7e2dd8eae47a4375099dc46dae9b7bb431cf9c9ffed6c"
+    },
+    {
+      "path": "harness/prepare.py",
+      "bytes": 2335,
+      "sha256": "a5c0496808bf7660ddd69ecaad2d6bafb4b66a138836c59415d98350c5ee5c1f"
+    },
+    {
+      "path": "harness/pricing.json",
+      "bytes": 632,
+      "sha256": "8f575852e0e3657f3df2801da78d6b8c7608679c818e4f0a341a8afac59cefc9"
+    },
+    {
+      "path": "harness/queue_minimax_repeat2.py",
+      "bytes": 2283,
+      "sha256": "dd3e22c80622dd1219ada57e901795b7529760c6271d9e0f68701b8b9a0349d0"
+    },
+    {
+      "path": "harness/remote_entry.py",
+      "bytes": 203,
+      "sha256": "e8827b678f9ac189ee23b308bf532bd729e4c635e3956ffe6a184bd6bea095ec"
+    },
+    {
+      "path": "harness/report.py",
+      "bytes": 8937,
+      "sha256": "0401a6d98d4bd20265ed72b90b61613e301e32cf56edafcbb3012ac6d974dbc1"
+    },
+    {
+      "path": "harness/report_finish.py",
+      "bytes": 4682,
+      "sha256": "fc894b2630e48450677b919fb28564715d79d52cefbaa17a84ebc22105688a08"
+    },
+    {
+      "path": "harness/review_scan_pc.py",
+      "bytes": 1275,
+      "sha256": "4e8fa5eba1a2a99849822bbb0dcb56d09ef233d491203aa3252722a8ba78495d"
+    },
+    {
+      "path": "harness/runner-source.py",
+      "bytes": 27186,
+      "sha256": "490ddeb3bbaaed24648f46520b6289d96b6fba73f4b17b1a8d904721c99c9849"
+    },
+    {
+      "path": "harness/runner-v2.py",
+      "bytes": 28209,
+      "sha256": "b4791b6183b5835f424fc5e2a8da01bdebe7f6378b775044c46de2b091028f38"
+    },
+    {
+      "path": "harness/runner.py",
+      "bytes": 28209,
+      "sha256": "b4791b6183b5835f424fc5e2a8da01bdebe7f6378b775044c46de2b091028f38"
+    },
+    {
+      "path": "harness/scan_files.py",
+      "bytes": 1451,
+      "sha256": "b6124025187af5880dbb51d4e296f0a8c7e6f32012de7fc7f1515cf9057b4ace"
+    },
+    {
+      "path": "harness/sol_bridge.py",
+      "bytes": 20139,
+      "sha256": "e9a33770a6a992981d3be69ec8f04e53a0f05d8caee6d9329197eebbd90cfe11"
+    },
+    {
+      "path": "harness/sync_metrics.sh",
+      "bytes": 879,
+      "sha256": "24d20ec74a3f841845174c08e626e63f018a1e2110f39f7cfad0684887f820c8"
+    },
+    {
+      "path": "harness/tasks/01-chunked-strict/check.py",
+      "bytes": 207,
+      "sha256": "0ed837d6d4184fe10717b86de58984a0925c8cb402c469ae452dc38f1a8ecf10"
+    },
+    {
+      "path": "harness/tasks/01-chunked-strict/setup.py",
+      "bytes": 207,
+      "sha256": "06926389715f256db1c922d3ea77832926a915064e9198ab6d5c9ae00de1c588"
+    },
+    {
+      "path": "harness/tasks/02-split-limit/check.py",
+      "bytes": 204,
+      "sha256": "efbce3164a2b981a882ef0f4f5500c5588b0348299e3accbf488935acf482ad1"
+    },
+    {
+      "path": "harness/tasks/02-split-limit/setup.py",
+      "bytes": 204,
+      "sha256": "ef5757a2a60cd118f733f04fdf3f90da0b6c8d2a2354cc2564c5d9e86d24bd9e"
+    },
+    {
+      "path": "harness/tasks/03-window-padding/check.py",
+      "bytes": 207,
+      "sha256": "a446ea1657095fc103c5abaa225243bf9eea8ea5e4f6e46dc5e462fd2ddcb3b4"
+    },
+    {
+      "path": "harness/tasks/03-window-padding/setup.py",
+      "bytes": 207,
+      "sha256": "ccc866f446bcdbc1634381670072d3ae3016838f58c292286b75ee6de2fe0bc4"
+    },
+    {
+      "path": "harness/tasks/04-count-by/check.py",
+      "bytes": 201,
+      "sha256": "a3f29815ee3e902ffef3f34b404c3b21620a09803e31375108dea74ddd8e474d"
+    },
+    {
+      "path": "harness/tasks/04-count-by/setup.py",
+      "bytes": 201,
+      "sha256": "921a7bed588618f856932c4740d701a281e5e85c1dfaacda578c34f6cf1b4dbd"
+    },
+    {
+      "path": "harness/tasks/05-empty-refactor/check.py",
+      "bytes": 207,
+      "sha256": "7f5eb106eeae2d9bbdd5034f48cfb1b60a971b96c128ff502dbf9d92e901c969"
+    },
+    {
+      "path": "harness/tasks/05-empty-refactor/setup.py",
+      "bytes": 207,
+      "sha256": "43a53818b87b315e0e1396e452ce08a3c4b4edeb8b9075fc84b90c7cfe2795a6"
+    },
+    {
+      "path": "harness/tasks/06-key-rotation-map/check.py",
+      "bytes": 209,
+      "sha256": "fc1ac500f7517c001ccb0246d888e813c45c36d249dd95cc188a28e1fdd408b8"
+    },
+    {
+      "path": "harness/tasks/06-key-rotation-map/setup.py",
+      "bytes": 209,
+      "sha256": "cfb432f02c954de31da7d28f184ec2fe177c0d74365513727bdef57dd1d6ac93"
+    },
+    {
+      "path": "harness/tasks/07-source-manifest/check.py",
+      "bytes": 208,
+      "sha256": "f83d4174045eabcb027241b6a143e46ecdb80b698f73080213eb001098b025c5"
+    },
+    {
+      "path": "harness/tasks/07-source-manifest/setup.py",
+      "bytes": 208,
+      "sha256": "beb7debada774a85af1f9e2514f41fc251757df3971719515bc742a45a7cc2b5"
+    },
+    {
+      "path": "harness/tasks/08-integer-encoding/check.py",
+      "bytes": 209,
+      "sha256": "0f75daa4ba71816dbe3a9684722e4d79e21de3590bfaf09cd21cb9b8bcafecb4"
+    },
+    {
+      "path": "harness/tasks/08-integer-encoding/setup.py",
+      "bytes": 209,
+      "sha256": "fd407e34a3335bab625acd4dc3e0559fb6b9b13e4110beec7ad291a669be0850"
+    },
+    {
+      "path": "harness/tasks/09-separator-payload/check.py",
+      "bytes": 210,
+      "sha256": "2d2f4d27bfd837e6e137a30905ca489ca0484c864e628d2434b95eb257e1a271"
+    },
+    {
+      "path": "harness/tasks/09-separator-payload/setup.py",
+      "bytes": 210,
+      "sha256": "dc6d52cf9a4d82e48b2289eebb1ff05528a88dc22d1d8a3766ca4a7f5b2783d7"
+    },
+    {
+      "path": "harness/tasks/10-expiry-boundary/check.py",
+      "bytes": 208,
+      "sha256": "991594ce3d471b4c03c2ba7a65e88b9fc44be33bcc2ed6b24fd80d4816dbacf7"
+    },
+    {
+      "path": "harness/tasks/10-expiry-boundary/setup.py",
+      "bytes": 208,
+      "sha256": "62776ac7b31889c59a124255e0eec2d2bd0dd5aa8c28b33ba231a66a1da70ed3"
+    },
+    {
+      "path": "harness/tasks/11-compression-marker/check.py",
+      "bytes": 211,
+      "sha256": "4d325da3c7336d6158cf9327d369c2afe91d4393a63490154a17ddfe6eb92743"
+    },
+    {
+      "path": "harness/tasks/11-compression-marker/setup.py",
+      "bytes": 211,
+      "sha256": "19499cec5cac92b623df2e5c0b633898449d338cb0f61904811a5e641b4b6305"
+    },
+    {
+      "path": "harness/tasks/12-partition-map/check.py",
+      "bytes": 206,
+      "sha256": "81081d0553450372f762d766b5c9bd200ecc85c9f7011710e4c70870a568701d"
+    },
+    {
+      "path": "harness/tasks/12-partition-map/setup.py",
+      "bytes": 206,
+      "sha256": "66a004ddb4d0e12e118fc38f2a5a4dddaa88d9bf5ff75ac4262c67932d0fd949"
+    },
+    {
+      "path": "harness/tasks/manifest.json",
+      "bytes": 15379,
+      "sha256": "d95dd4bd1ee0d61d6b149c7c38e0f1a23a71be0fca2d1d9d461728037f5358ab"
+    },
+    {
+      "path": "harness/tasks/reference.py",
+      "bytes": 5459,
+      "sha256": "2bfc37856a451aab1c550b23a1e0c61782fb2d9117333ef85d64f51889442039"
+    },
+    {
+      "path": "harness/tasks/self_validate.py",
+      "bytes": 2279,
+      "sha256": "454108ae3a9e71368557c9662fe818dc197fda4f98dc384e9b441b0f0270c104"
+    },
+    {
+      "path": "harness/tasks/task_support.py",
+      "bytes": 15053,
+      "sha256": "b5302b6aeae9c1f178fa3c97ccfce559b019de290f1ca7d51dcb75533426edb3"
+    },
+    {
+      "path": "harness/test_normalized_grader.py",
+      "bytes": 1685,
+      "sha256": "693140a644d59739382a7b2591561489654de24604147f9b1100e49e9884d5ef"
+    },
+    {
+      "path": "harness/trace_checks.py",
+      "bytes": 2480,
+      "sha256": "5b34d336c7fc81ca4a28ac226ed2be6a80b56cb12beee4a57e3c75f4b2f18f84"
+    },
+    {
+      "path": "harness/watch_finish.py",
+      "bytes": 1314,
+      "sha256": "30e493e903293dc18bd686c661b330bc1271b206ba2e4a3840e4927edc1124bc"
+    }
+  ]
+}

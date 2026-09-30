@@ -1,0 +1,116 @@
+diff --git a/runtime/src/bin/bootstrap.ts b/runtime/src/bin/bootstrap.ts
+index 838bc29f8..ae2fa7735 100644
+--- a/runtime/src/bin/bootstrap.ts
++++ b/runtime/src/bin/bootstrap.ts
+@@ -1,3 +1,4 @@
++import { runtimeSpan } from "../diagnostics/runtime-timing.js";
+ import { VERSION } from "../version.js";
+ import { randomUUID } from "node:crypto";
+ import { fstatSync, lstatSync, realpathSync } from "node:fs";
+@@ -844,7 +845,9 @@ export async function bootstrapLocalRuntimeSession(
+         return sandboxBypass.dangerouslyBypassApprovalsAndSandbox;
+       })(),
+     });
++  const finishShell = runtimeSpan("startup.shell");
+   const commandShellPath = await findSuitableShell(parsedRuntimeOptions, env);
++  finishShell();
+   options.signal?.throwIfAborted();
+   const commandExecutionAuthority = resolveCommandExecutionAuthority(
+     parsedRuntimeOptions,
+@@ -880,6 +883,8 @@ async function bootstrapLocalRuntimeSessionScoped(
+     >;
+   },
+ ): Promise<LocalRuntimeBootstrap> {
++  let finishStage = runtimeSpan("startup.config");
++  const stage = (name: string): void => { finishStage(); finishStage = runtimeSpan(`startup.${name}`); };
+   const env = options.env ?? process.env;
+   const providerEnvironment = options.providerEnvironment;
+   const mcpRequestEnvironment = options.mcpRequestEnvironment;
+@@ -911,6 +916,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+     }),
+   });
+   await configStore.reload();
++  stage("authority");
+   const startup = resolveCanonicalStartupSelection({
+     config: configStore.current(),
+     ...(profileName !== undefined ? { profileName } : {}),
+@@ -1134,6 +1140,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+       },
+     });
+   };
++  stage("permissions");
+   const permissionInit = await initializeToolPermissionContext({
+     env: {
+       home: agencHome,
+@@ -1206,6 +1213,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+   );
+   const toolApprovals = new RuntimeApprovalStore<unknown>();
+   const networkApproval = new RuntimeNetworkApprovalService();
++  stage("auth");
+   const authSubscriptionTier = await resolveAuthSubscriptionTier(
+     options.authBackend,
+     conversationId,
+@@ -1306,6 +1314,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+   }): void => {
+     // Keep provider request-shape diagnostics out of warning/error streams.
+   };
++  stage("roles");
+   const { isCoordinatorModeEnabled, LIVE_COORDINATOR_ALLOWED_TOOLS } =
+     await import("../coordinator/coordinatorMode.js");
+   const coordinatorModeEnabled = isCoordinatorModeEnabled(
+@@ -1332,6 +1341,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+   const baseToolsConfig = runtimeOptions.nonInteractive
+     ? withDisabledTools(configuredToolsConfig, NON_INTERACTIVE_HIDDEN_TOOLS)
+     : configuredToolsConfig;
++  stage("registry");
+   const registry = buildBootstrapToolRegistry({
+     workspaceRoot,
+     agencHome,
+@@ -1449,6 +1459,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+       },
+     };
+   };
++  stage("provider");
+   const initialPreparation = await resolveProviderPreparationRequest({
+     provider: resolvedProvider,
+     model: providerModel,
+@@ -1511,6 +1522,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+     agentDefinitions.activeAgents,
+     sandboxExecutionBroker.status(),
+   );
++  stage("model_metadata");
+   const modelsManager = new StaticModelsManager({
+     config: startup.config,
+     fallbackProvider: profileProvider,
+@@ -1580,6 +1592,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+     sessionConfiguration: authorizedSessionConfiguration,
+     permissionMode: toolPermissionContext.mode,
+   });
++  stage("instructions");
+   const baseInstructions = await assembleBaseInstructionsForModel({
+     session: {
+       services: {
+@@ -1607,6 +1620,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+     baseInstructions,
+     permissionInstructionsDeferred: true,
+   } satisfies SessionConfiguration;
++  stage("services");
+   let initialState: SessionState = {
+     sessionConfiguration,
+     history: [],
+@@ -1845,6 +1859,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+     // NOT pass `mcp` to `bootstrapSession` because the live MCP
+     // connection manager starts AFTER SessionConfigured; the
+     // `onAfterSessionConfigured` hook does that work instead.
++  stage("session");
+     const session = await bootstrapSession({
+       ...(options.signal !== undefined ? { signal: options.signal } : {}),
+       conversationId,
+@@ -2342,6 +2357,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+       );
+     }
+ 
++    finishStage();
+     return {
+       agencHome,
+       configStore,

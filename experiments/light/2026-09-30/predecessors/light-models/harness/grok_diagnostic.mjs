@@ -1,0 +1,4 @@
+import {resolveHomeContext,readNativeSecureStorage} from './grok_credentials.mjs';
+const home=resolveHomeContext({AGENC_HOME:'/home/paul/claude-agenc-work/router-bench/grok-home',HOME:'/home/paul'});
+try{const data=readNativeSecureStorage(home);console.log(JSON.stringify({credentialPresent:!!data?.xaiOauth?.accessToken,quarantined:!!data?.xaiOauth?.quarantinedAt,hasRefresh:!!data?.xaiOauth?.refreshToken,expiresInSeconds:data?.xaiOauth?.expiresAt?(data.xaiOauth.expiresAt-Date.now())/1000:null}));}
+catch(e){const s=String(e.message);console.log(JSON.stringify({type:e.name,helper:/helper|executable/i.test(s),bus:/bus|DBus|org.freedesktop/i.test(s),locked:/locked/i.test(s),decode:/decode|JSON|parse/i.test(s),missingModule:/module|require|execa|import/i.test(s),timeout:/timeout/i.test(s),duplicate:/duplicate/i.test(s)}));}

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "scope": "experimental source preservation, not installed or approved to execute",
+  "files": [
+    {
+      "path": "fixture-callbacks.test.ts",
+      "bytes": 18274,
+      "sha256": "d07e64aae35c10c429190c7b55571d02053af0605dc1a0eceae6e7129877dcbb"
+    },
+    {
+      "path": "fixture-callbacks.ts",
+      "bytes": 23592,
+      "sha256": "40e03b818ed202b7ce6f8bd6f8f88dd4ef607d7f5c0c3b87bccf79fd2ce49d82"
+    }
+  ]
+}

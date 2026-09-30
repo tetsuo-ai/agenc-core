@@ -23,8 +23,40 @@ Full evaluation documents, result JSON, logs and provenance are preserved in the
 That archive includes a per-file preservation manifest and explicit exclusions.
 The original Claude session archive on that branch remains unchanged. Credentials,
 raw session exports, dependency caches and active worker files were not silently
-added to the public repository. Excluded active work will receive a later frozen
-snapshot rather than an inconsistent copy.
+added to the public repository. The callback worker has now frozen its two files;
+their separate `frozen-callbacks/` snapshot is **untested draft code**, not an
+accepted integration or permission to execute clients.
+
+## Supplemental preservation
+
+The complete selected public source inventory is now 848 original files. Each
+snapshot has a `SOURCE-MANIFEST.json` with byte lengths and SHA-256 hashes:
+
+| Snapshot | Original source/config files | Scope |
+| --- | ---: | --- |
+| `code/` | 420 | Codex takeover implementation and evaluation prototypes |
+| `predecessors/light-runtime/` | 28 | Runtime overhead harness |
+| `predecessors/light-ultra/` | 225 | Historical prompt/runtime experiment harnesses |
+| `predecessors/light-port/` | 104 | Ported and fair-check harnesses |
+| `predecessors/light-models/` | 61 | Historical model harnesses |
+| `predecessors/light-diag/` | 1 | Diagnostic script |
+| `runtime-overhead-overlay/` | 4 | Uncommitted report/test/script overlay, preserved without altering its source checkout |
+| `frozen-callbacks/` | 2 | Unexecuted callback and test drafts |
+| `ultra-scanner/`, `port-scanners/` | 3 | Reviewed credential-detection source, not credentials |
+
+The runtime overlay's baseline is commit
+`2da4a495cf91a59adc97d50d5b8426653187cb4e`; filenames map to
+`runtime/benchmarks/runtime-overhead/` in that checkout. It is not a patch applied
+to the current runtime. The 11 task manifests/pricing tables are historical
+source inputs, not verification of today's prices or model authorization.
+
+Nineteen embedded experimental repository heads were checked against fresh
+remote advertised branch tips; all are already retained remotely. They remain
+separate experimental branches, not ancestors of the current integration branch.
+Third-party checkouts, dependencies and rebuildable binary bundles are not copied
+into this directory. Private accounting ledgers are retained only in Desktop,
+without reconciliation, retries or mutation. See the private archive's inventory
+for exact source locations, references and exclusions.
 
 The importer, `scripts/preserve-light-work.mjs`, is a one-use preservation tool
 with an audit mode. It neither launches a client/provider nor writes a financial

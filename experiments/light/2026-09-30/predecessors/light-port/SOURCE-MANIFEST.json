@@ -1,0 +1,526 @@
+{
+  "schema_version": 1,
+  "scope": "experimental source preservation, not installed or approved to execute",
+  "files": [
+    {
+      "path": "bench/balance_probe.py",
+      "bytes": 1247,
+      "sha256": "0f8955b0bfe5c8bf15a4a30a2e6383fd02032f5f19d5d93e6bf4ee3aff66ec6d"
+    },
+    {
+      "path": "bench/build_fair_report.py",
+      "bytes": 10979,
+      "sha256": "e77031dba26ee21c81698b85753f14df387d640fdc5ff0d15c8f3ac165445712"
+    },
+    {
+      "path": "bench/build_pr_body.py",
+      "bytes": 6465,
+      "sha256": "4e8597e50e9f287fcf0805200dad8a4fec7012696adf841a5a7e81e6b512682d"
+    },
+    {
+      "path": "bench/build_report.py",
+      "bytes": 15958,
+      "sha256": "74870e1afb8e1fbee49d907c5cbbbeb72a2d399692a527513f3619076e0546be"
+    },
+    {
+      "path": "bench/compare_core_tests.py",
+      "bytes": 1524,
+      "sha256": "529d41be5f63f0cfc59111cde2f0175d512a527af1e2910df00923df135be994"
+    },
+    {
+      "path": "bench/decompose.py",
+      "bytes": 17036,
+      "sha256": "16b387084742d7241ba2bc6045e2d14e5c2a3ea7c85fea88bab543f8065d2d43"
+    },
+    {
+      "path": "bench/export_fair_traces.py",
+      "bytes": 721,
+      "sha256": "7e653584bab457f627ad8229899ba88e0dd9eca724865b78d0bdc39165060993"
+    },
+    {
+      "path": "bench/finish_fair_analysis.py",
+      "bytes": 3251,
+      "sha256": "3bd3fb02c06bb5477e59d1bc04c806a8fc2967bd440205c40e955dbcb4a7ba38"
+    },
+    {
+      "path": "bench/harness/export_evidence.py",
+      "bytes": 6643,
+      "sha256": "9f98699140bb1612590dcdb6bce15d24337c2c9faf382582ccbc25c219e74f9a"
+    },
+    {
+      "path": "bench/harness/luna_bridge.py",
+      "bytes": 19754,
+      "sha256": "f6463b085b88cc5a8011a72ccd454cd5eee730565a86b42b65e8abd3599feb3e"
+    },
+    {
+      "path": "bench/harness/pricing.json",
+      "bytes": 632,
+      "sha256": "8f575852e0e3657f3df2801da78d6b8c7608679c818e4f0a341a8afac59cefc9"
+    },
+    {
+      "path": "bench/harness/reconcile_budget.py",
+      "bytes": 5685,
+      "sha256": "002b0cf3acc77a3773f57ce20939503be083e2cc35d6614a35d4b521d617a2ec"
+    },
+    {
+      "path": "bench/harness/runner.py",
+      "bytes": 25992,
+      "sha256": "19096266f233aecfc9746bcfd1a422a566e0b00c74c98f6f74d1873dcc60659c"
+    },
+    {
+      "path": "bench/harness/stdin_entry.py",
+      "bytes": 522,
+      "sha256": "0a6e27da7473c08ab3dc63dd66a2febe04901207b748b88f40545ba184d7fed6"
+    },
+    {
+      "path": "bench/harness/summarize.py",
+      "bytes": 50848,
+      "sha256": "b291c576e66e6baca88c6b30a63cbc6e4b031544f5b262828816b71816aade0e"
+    },
+    {
+      "path": "bench/harness/tasks/01-chunked-strict/check.py",
+      "bytes": 207,
+      "sha256": "0ed837d6d4184fe10717b86de58984a0925c8cb402c469ae452dc38f1a8ecf10"
+    },
+    {
+      "path": "bench/harness/tasks/01-chunked-strict/setup.py",
+      "bytes": 207,
+      "sha256": "06926389715f256db1c922d3ea77832926a915064e9198ab6d5c9ae00de1c588"
+    },
+    {
+      "path": "bench/harness/tasks/02-split-limit/check.py",
+      "bytes": 204,
+      "sha256": "efbce3164a2b981a882ef0f4f5500c5588b0348299e3accbf488935acf482ad1"
+    },
+    {
+      "path": "bench/harness/tasks/02-split-limit/setup.py",
+      "bytes": 204,
+      "sha256": "ef5757a2a60cd118f733f04fdf3f90da0b6c8d2a2354cc2564c5d9e86d24bd9e"
+    },
+    {
+      "path": "bench/harness/tasks/03-window-padding/check.py",
+      "bytes": 207,
+      "sha256": "a446ea1657095fc103c5abaa225243bf9eea8ea5e4f6e46dc5e462fd2ddcb3b4"
+    },
+    {
+      "path": "bench/harness/tasks/03-window-padding/setup.py",
+      "bytes": 207,
+      "sha256": "ccc866f446bcdbc1634381670072d3ae3016838f58c292286b75ee6de2fe0bc4"
+    },
+    {
+      "path": "bench/harness/tasks/04-count-by/check.py",
+      "bytes": 201,
+      "sha256": "a3f29815ee3e902ffef3f34b404c3b21620a09803e31375108dea74ddd8e474d"
+    },
+    {
+      "path": "bench/harness/tasks/04-count-by/setup.py",
+      "bytes": 201,
+      "sha256": "921a7bed588618f856932c4740d701a281e5e85c1dfaacda578c34f6cf1b4dbd"
+    },
+    {
+      "path": "bench/harness/tasks/05-empty-refactor/check.py",
+      "bytes": 207,
+      "sha256": "7f5eb106eeae2d9bbdd5034f48cfb1b60a971b96c128ff502dbf9d92e901c969"
+    },
+    {
+      "path": "bench/harness/tasks/05-empty-refactor/setup.py",
+      "bytes": 207,
+      "sha256": "43a53818b87b315e0e1396e452ce08a3c4b4edeb8b9075fc84b90c7cfe2795a6"
+    },
+    {
+      "path": "bench/harness/tasks/06-key-rotation-map/check.py",
+      "bytes": 209,
+      "sha256": "fc1ac500f7517c001ccb0246d888e813c45c36d249dd95cc188a28e1fdd408b8"
+    },
+    {
+      "path": "bench/harness/tasks/06-key-rotation-map/setup.py",
+      "bytes": 209,
+      "sha256": "cfb432f02c954de31da7d28f184ec2fe177c0d74365513727bdef57dd1d6ac93"
+    },
+    {
+      "path": "bench/harness/tasks/07-source-manifest/check.py",
+      "bytes": 208,
+      "sha256": "f83d4174045eabcb027241b6a143e46ecdb80b698f73080213eb001098b025c5"
+    },
+    {
+      "path": "bench/harness/tasks/07-source-manifest/setup.py",
+      "bytes": 208,
+      "sha256": "beb7debada774a85af1f9e2514f41fc251757df3971719515bc742a45a7cc2b5"
+    },
+    {
+      "path": "bench/harness/tasks/08-integer-encoding/check.py",
+      "bytes": 209,
+      "sha256": "0f75daa4ba71816dbe3a9684722e4d79e21de3590bfaf09cd21cb9b8bcafecb4"
+    },
+    {
+      "path": "bench/harness/tasks/08-integer-encoding/setup.py",
+      "bytes": 209,
+      "sha256": "fd407e34a3335bab625acd4dc3e0559fb6b9b13e4110beec7ad291a669be0850"
+    },
+    {
+      "path": "bench/harness/tasks/09-separator-payload/check.py",
+      "bytes": 210,
+      "sha256": "2d2f4d27bfd837e6e137a30905ca489ca0484c864e628d2434b95eb257e1a271"
+    },
+    {
+      "path": "bench/harness/tasks/09-separator-payload/setup.py",
+      "bytes": 210,
+      "sha256": "dc6d52cf9a4d82e48b2289eebb1ff05528a88dc22d1d8a3766ca4a7f5b2783d7"
+    },
+    {
+      "path": "bench/harness/tasks/10-expiry-boundary/check.py",
+      "bytes": 208,
+      "sha256": "991594ce3d471b4c03c2ba7a65e88b9fc44be33bcc2ed6b24fd80d4816dbacf7"
+    },
+    {
+      "path": "bench/harness/tasks/10-expiry-boundary/setup.py",
+      "bytes": 208,
+      "sha256": "62776ac7b31889c59a124255e0eec2d2bd0dd5aa8c28b33ba231a66a1da70ed3"
+    },
+    {
+      "path": "bench/harness/tasks/11-compression-marker/check.py",
+      "bytes": 211,
+      "sha256": "4d325da3c7336d6158cf9327d369c2afe91d4393a63490154a17ddfe6eb92743"
+    },
+    {
+      "path": "bench/harness/tasks/11-compression-marker/setup.py",
+      "bytes": 211,
+      "sha256": "19499cec5cac92b623df2e5c0b633898449d338cb0f61904811a5e641b4b6305"
+    },
+    {
+      "path": "bench/harness/tasks/12-partition-map/check.py",
+      "bytes": 206,
+      "sha256": "81081d0553450372f762d766b5c9bd200ecc85c9f7011710e4c70870a568701d"
+    },
+    {
+      "path": "bench/harness/tasks/12-partition-map/setup.py",
+      "bytes": 206,
+      "sha256": "66a004ddb4d0e12e118fc38f2a5a4dddaa88d9bf5ff75ac4262c67932d0fd949"
+    },
+    {
+      "path": "bench/harness/tasks/manifest.json",
+      "bytes": 15379,
+      "sha256": "d95dd4bd1ee0d61d6b149c7c38e0f1a23a71be0fca2d1d9d461728037f5358ab"
+    },
+    {
+      "path": "bench/harness/tasks/reference.py",
+      "bytes": 5459,
+      "sha256": "2bfc37856a451aab1c550b23a1e0c61782fb2d9117333ef85d64f51889442039"
+    },
+    {
+      "path": "bench/harness/tasks/self_validate.py",
+      "bytes": 2279,
+      "sha256": "454108ae3a9e71368557c9662fe818dc197fda4f98dc384e9b441b0f0270c104"
+    },
+    {
+      "path": "bench/harness/tasks/task_support.py",
+      "bytes": 15053,
+      "sha256": "b5302b6aeae9c1f178fa3c97ccfce559b019de290f1ca7d51dcb75533426edb3"
+    },
+    {
+      "path": "bench/harness/test_packaging.py",
+      "bytes": 15294,
+      "sha256": "2de0cf55065c32a44de4f72df7cb4cf62435733f86ecd2d42fb39369f3671c36"
+    },
+    {
+      "path": "bench/harness/test_reconcile_budget.py",
+      "bytes": 3538,
+      "sha256": "b4132fa5aa6ef499772cf351eee19ef554b7afcd6ca5ceb1dfda58b26fd506f0"
+    },
+    {
+      "path": "bench/harness/test_runner.py",
+      "bytes": 13254,
+      "sha256": "360d3da284689254d48de23a7e90615e7ff20c9d0060e0ef558588f85a7a48cf"
+    },
+    {
+      "path": "bench/harness/trace_audit.py",
+      "bytes": 9115,
+      "sha256": "335c10d7aa2400224eafb1caf1494f48a76199e660ecb4264266e6121217bf67"
+    },
+    {
+      "path": "bench/harness/trace_checks.py",
+      "bytes": 2169,
+      "sha256": "f7b353fb30f9a07182214c87858db55608400471eacf82f8f91c580535bacf1b"
+    },
+    {
+      "path": "bench/harness-fair/export_evidence.py",
+      "bytes": 6643,
+      "sha256": "9f98699140bb1612590dcdb6bce15d24337c2c9faf382582ccbc25c219e74f9a"
+    },
+    {
+      "path": "bench/harness-fair/luna_bridge.py",
+      "bytes": 19754,
+      "sha256": "f6463b085b88cc5a8011a72ccd454cd5eee730565a86b42b65e8abd3599feb3e"
+    },
+    {
+      "path": "bench/harness-fair/pricing.json",
+      "bytes": 632,
+      "sha256": "8f575852e0e3657f3df2801da78d6b8c7608679c818e4f0a341a8afac59cefc9"
+    },
+    {
+      "path": "bench/harness-fair/reconcile_budget.py",
+      "bytes": 5685,
+      "sha256": "002b0cf3acc77a3773f57ce20939503be083e2cc35d6614a35d4b521d617a2ec"
+    },
+    {
+      "path": "bench/harness-fair/runner.py",
+      "bytes": 26437,
+      "sha256": "306f739d275f76362839f6403212e84e8541d42a4e946ed6f32d81e7913a90a6"
+    },
+    {
+      "path": "bench/harness-fair/stdin_entry.py",
+      "bytes": 522,
+      "sha256": "0a6e27da7473c08ab3dc63dd66a2febe04901207b748b88f40545ba184d7fed6"
+    },
+    {
+      "path": "bench/harness-fair/summarize.py",
+      "bytes": 50848,
+      "sha256": "b291c576e66e6baca88c6b30a63cbc6e4b031544f5b262828816b71816aade0e"
+    },
+    {
+      "path": "bench/harness-fair/tasks/01-chunked-strict/check.py",
+      "bytes": 207,
+      "sha256": "0ed837d6d4184fe10717b86de58984a0925c8cb402c469ae452dc38f1a8ecf10"
+    },
+    {
+      "path": "bench/harness-fair/tasks/01-chunked-strict/setup.py",
+      "bytes": 207,
+      "sha256": "06926389715f256db1c922d3ea77832926a915064e9198ab6d5c9ae00de1c588"
+    },
+    {
+      "path": "bench/harness-fair/tasks/02-split-limit/check.py",
+      "bytes": 204,
+      "sha256": "efbce3164a2b981a882ef0f4f5500c5588b0348299e3accbf488935acf482ad1"
+    },
+    {
+      "path": "bench/harness-fair/tasks/02-split-limit/setup.py",
+      "bytes": 204,
+      "sha256": "ef5757a2a60cd118f733f04fdf3f90da0b6c8d2a2354cc2564c5d9e86d24bd9e"
+    },
+    {
+      "path": "bench/harness-fair/tasks/03-window-padding/check.py",
+      "bytes": 207,
+      "sha256": "a446ea1657095fc103c5abaa225243bf9eea8ea5e4f6e46dc5e462fd2ddcb3b4"
+    },
+    {
+      "path": "bench/harness-fair/tasks/03-window-padding/setup.py",
+      "bytes": 207,
+      "sha256": "ccc866f446bcdbc1634381670072d3ae3016838f58c292286b75ee6de2fe0bc4"
+    },
+    {
+      "path": "bench/harness-fair/tasks/04-count-by/check.py",
+      "bytes": 201,
+      "sha256": "a3f29815ee3e902ffef3f34b404c3b21620a09803e31375108dea74ddd8e474d"
+    },
+    {
+      "path": "bench/harness-fair/tasks/04-count-by/setup.py",
+      "bytes": 201,
+      "sha256": "921a7bed588618f856932c4740d701a281e5e85c1dfaacda578c34f6cf1b4dbd"
+    },
+    {
+      "path": "bench/harness-fair/tasks/05-empty-refactor/check.py",
+      "bytes": 207,
+      "sha256": "7f5eb106eeae2d9bbdd5034f48cfb1b60a971b96c128ff502dbf9d92e901c969"
+    },
+    {
+      "path": "bench/harness-fair/tasks/05-empty-refactor/setup.py",
+      "bytes": 207,
+      "sha256": "43a53818b87b315e0e1396e452ce08a3c4b4edeb8b9075fc84b90c7cfe2795a6"
+    },
+    {
+      "path": "bench/harness-fair/tasks/06-key-rotation-map/check.py",
+      "bytes": 209,
+      "sha256": "fc1ac500f7517c001ccb0246d888e813c45c36d249dd95cc188a28e1fdd408b8"
+    },
+    {
+      "path": "bench/harness-fair/tasks/06-key-rotation-map/setup.py",
+      "bytes": 209,
+      "sha256": "cfb432f02c954de31da7d28f184ec2fe177c0d74365513727bdef57dd1d6ac93"
+    },
+    {
+      "path": "bench/harness-fair/tasks/07-source-manifest/check.py",
+      "bytes": 208,
+      "sha256": "f83d4174045eabcb027241b6a143e46ecdb80b698f73080213eb001098b025c5"
+    },
+    {
+      "path": "bench/harness-fair/tasks/07-source-manifest/setup.py",
+      "bytes": 208,
+      "sha256": "beb7debada774a85af1f9e2514f41fc251757df3971719515bc742a45a7cc2b5"
+    },
+    {
+      "path": "bench/harness-fair/tasks/08-integer-encoding/check.py",
+      "bytes": 209,
+      "sha256": "0f75daa4ba71816dbe3a9684722e4d79e21de3590bfaf09cd21cb9b8bcafecb4"
+    },
+    {
+      "path": "bench/harness-fair/tasks/08-integer-encoding/setup.py",
+      "bytes": 209,
+      "sha256": "fd407e34a3335bab625acd4dc3e0559fb6b9b13e4110beec7ad291a669be0850"
+    },
+    {
+      "path": "bench/harness-fair/tasks/09-separator-payload/check.py",
+      "bytes": 210,
+      "sha256": "2d2f4d27bfd837e6e137a30905ca489ca0484c864e628d2434b95eb257e1a271"
+    },
+    {
+      "path": "bench/harness-fair/tasks/09-separator-payload/setup.py",
+      "bytes": 210,
+      "sha256": "dc6d52cf9a4d82e48b2289eebb1ff05528a88dc22d1d8a3766ca4a7f5b2783d7"
+    },
+    {
+      "path": "bench/harness-fair/tasks/10-expiry-boundary/check.py",
+      "bytes": 208,
+      "sha256": "991594ce3d471b4c03c2ba7a65e88b9fc44be33bcc2ed6b24fd80d4816dbacf7"
+    },
+    {
+      "path": "bench/harness-fair/tasks/10-expiry-boundary/setup.py",
+      "bytes": 208,
+      "sha256": "62776ac7b31889c59a124255e0eec2d2bd0dd5aa8c28b33ba231a66a1da70ed3"
+    },
+    {
+      "path": "bench/harness-fair/tasks/11-compression-marker/check.py",
+      "bytes": 211,
+      "sha256": "4d325da3c7336d6158cf9327d369c2afe91d4393a63490154a17ddfe6eb92743"
+    },
+    {
+      "path": "bench/harness-fair/tasks/11-compression-marker/setup.py",
+      "bytes": 211,
+      "sha256": "19499cec5cac92b623df2e5c0b633898449d338cb0f61904811a5e641b4b6305"
+    },
+    {
+      "path": "bench/harness-fair/tasks/12-partition-map/check.py",
+      "bytes": 206,
+      "sha256": "81081d0553450372f762d766b5c9bd200ecc85c9f7011710e4c70870a568701d"
+    },
+    {
+      "path": "bench/harness-fair/tasks/12-partition-map/setup.py",
+      "bytes": 206,
+      "sha256": "66a004ddb4d0e12e118fc38f2a5a4dddaa88d9bf5ff75ac4262c67932d0fd949"
+    },
+    {
+      "path": "bench/harness-fair/tasks/manifest.json",
+      "bytes": 15379,
+      "sha256": "d95dd4bd1ee0d61d6b149c7c38e0f1a23a71be0fca2d1d9d461728037f5358ab"
+    },
+    {
+      "path": "bench/harness-fair/tasks/reference.py",
+      "bytes": 5459,
+      "sha256": "2bfc37856a451aab1c550b23a1e0c61782fb2d9117333ef85d64f51889442039"
+    },
+    {
+      "path": "bench/harness-fair/tasks/self_validate.py",
+      "bytes": 2279,
+      "sha256": "454108ae3a9e71368557c9662fe818dc197fda4f98dc384e9b441b0f0270c104"
+    },
+    {
+      "path": "bench/harness-fair/tasks/task_support.py",
+      "bytes": 15053,
+      "sha256": "b5302b6aeae9c1f178fa3c97ccfce559b019de290f1ca7d51dcb75533426edb3"
+    },
+    {
+      "path": "bench/harness-fair/test_packaging.py",
+      "bytes": 15294,
+      "sha256": "2de0cf55065c32a44de4f72df7cb4cf62435733f86ecd2d42fb39369f3671c36"
+    },
+    {
+      "path": "bench/harness-fair/test_reconcile_budget.py",
+      "bytes": 3538,
+      "sha256": "b4132fa5aa6ef499772cf351eee19ef554b7afcd6ca5ceb1dfda58b26fd506f0"
+    },
+    {
+      "path": "bench/harness-fair/test_runner.py",
+      "bytes": 15183,
+      "sha256": "c0f481a387d08bb10d29a33352e6d69a22747b58fcb3262f1227cdf77306bef3"
+    },
+    {
+      "path": "bench/harness-fair/trace_audit.py",
+      "bytes": 9115,
+      "sha256": "335c10d7aa2400224eafb1caf1494f48a76199e660ecb4264266e6121217bf67"
+    },
+    {
+      "path": "bench/harness-fair/trace_checks.py",
+      "bytes": 2169,
+      "sha256": "f7b353fb30f9a07182214c87858db55608400471eacf82f8f91c580535bacf1b"
+    },
+    {
+      "path": "bench/next_subsets.py",
+      "bytes": 1090,
+      "sha256": "9f4ec0025b78a8cfffc6fc971d2083847bd147fcd724e7b85780ae66651037e2"
+    },
+    {
+      "path": "bench/overlap.py",
+      "bytes": 1844,
+      "sha256": "0b2bac7b5aae0cb6f57b71fb43a5f229d7f2268ea534218f7f1a2ae99d7597ae"
+    },
+    {
+      "path": "bench/probe_exit.py",
+      "bytes": 5199,
+      "sha256": "1685a5ec3c584a73ad1965dd99dda282b46344b2da213c2677f6be4709716cfc"
+    },
+    {
+      "path": "bench/publish_proof_docs.py",
+      "bytes": 2055,
+      "sha256": "3556a31ffa911507458f766d124051c785874f12017a57c31fe11c516ec0a6e4"
+    },
+    {
+      "path": "bench/render_status.py",
+      "bytes": 4977,
+      "sha256": "1ef659a13acdfc027f87b711f163951f177c5e3f1b1d77cf12bd79f7fbee7318"
+    },
+    {
+      "path": "bench/report_metrics.py",
+      "bytes": 5861,
+      "sha256": "de7df2e943a7f160fc08562bbbb726df8283bc5a65b9acaa9f2eaacc7a8c7bbd"
+    },
+    {
+      "path": "bench/review_trace_paths.py",
+      "bytes": 2246,
+      "sha256": "ebaf25069002e91f2a1067bb9a4509afab90be1bc534e8fd45a3d5734d839db7"
+    },
+    {
+      "path": "bench/run-cohort.sh",
+      "bytes": 1842,
+      "sha256": "7e0c5dbab4d3d3c9da3a642b42de6be7373a6ade4b18a4d1bee3dfeee9d49d1a"
+    },
+    {
+      "path": "bench/run-fair-tests.sh",
+      "bytes": 505,
+      "sha256": "7d5d5ccf8826f038c67f8b162a7a6c561be841331ea264b03b77147f872937bf"
+    },
+    {
+      "path": "bench/run_matrix.py",
+      "bytes": 3318,
+      "sha256": "d593d2b92d0587b1538bed199b4c17514cec60def6d38ae72c20f193b8bbe8f4"
+    },
+    {
+      "path": "bench/run_screening.py",
+      "bytes": 1818,
+      "sha256": "43b89da85edcdb901d6f52394cb64d9ebd60f7cf00645e277607b765c7bd2e5f"
+    },
+    {
+      "path": "bench/run_socket_repairs.py",
+      "bytes": 3598,
+      "sha256": "f1ea4848d41f06113c53166884df1d79d023444dcebeb0568ba4ecd4284a6b2c"
+    },
+    {
+      "path": "bench/similarity.py",
+      "bytes": 3615,
+      "sha256": "709f962a5f98fdff88c33688bf524088426efffc757157e42f67f68d87ef4b45"
+    },
+    {
+      "path": "bench/verify_fair.py",
+      "bytes": 2784,
+      "sha256": "c7f164b22fc4a566297bab686bfd2b88952e3a675f2bdd12adca062c62406c58"
+    },
+    {
+      "path": "bench/verify_final.py",
+      "bytes": 1851,
+      "sha256": "7ca301a4aba937d7b8ba9eafe415d643ddda1fd0cc34f7dc44b7752f42c75c5a"
+    },
+    {
+      "path": "bench/window_subset.py",
+      "bytes": 820,
+      "sha256": "c82e8eabc7771fb36ea33942e98e9c7a49a82eb291c9aa64f0cc11d3d5a100d2"
+    }
+  ]
+}

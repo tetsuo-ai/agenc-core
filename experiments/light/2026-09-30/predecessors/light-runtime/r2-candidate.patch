@@ -1,0 +1,454 @@
+diff --git a/runtime/benchmarks/runtime-overhead/replay.py b/runtime/benchmarks/runtime-overhead/replay.py
+index a81f0ed3b..94db82bc2 100644
+--- a/runtime/benchmarks/runtime-overhead/replay.py
++++ b/runtime/benchmarks/runtime-overhead/replay.py
+@@ -128,7 +128,7 @@ def main():
+         adjusted_yields=prepare_polled_commands(server.replies,server.expected_yields)
+         cli=['node',str(core/'runtime/bin/agenc')]
+         native_daemon=None
+-        if mode=='warm':
++        if mode in ('warm', 'daemon'):
+             if args.native_io:
+                 # Autostart correctly sanitizes loader variables. Start the
+                 # diagnostic daemon in this process so the preload stays loaded.
+@@ -139,7 +139,13 @@ def main():
+                     if native_daemon.poll() is not None or time.monotonic()>deadline:raise RuntimeError('native diagnostic daemon failed')
+                     time.sleep(.05)
+             elif command(cli+['daemon','start'],env=env,cwd=repo,log=dest/'daemon-start.log'):raise RuntimeError('warm daemon failed')
+-        start=time.time();rc=command(cli+['--provider','deepseek','--model','deepseek-flash','-p','--output-format','json','--dangerously-bypass-approvals-and-sandbox',task['prompt']],env=env,cwd=repo,log=dest/'agent.log',timeout=240);end=time.time()
++        if mode=='daemon':
++            (dest/'client-input.json').write_text(json.dumps({'cwd':str(repo),'prompt':task['prompt']}))
++            rc=command(['node',str(core/'runtime/benchmarks/runtime-overhead/daemon-client.mjs'),str(dest/'client-input.json'),str(dest/'client-result.json')],env=env,cwd=repo,log=dest/'agent.log',timeout=240)
++            measured=json.loads((dest/'client-result.json').read_text())
++            start=measured['start_ms']/1000;end=measured['end_ms']/1000
++        else:
++            start=time.time();rc=command(cli+['--provider','deepseek','--model','deepseek-flash','-p','--output-format','json','--dangerously-bypass-approvals-and-sandbox',task['prompt']],env=env,cwd=repo,log=dest/'agent.log',timeout=240);end=time.time()
+         stopstart=time.time()
+         if native_daemon is not None:
+             native_daemon.terminate()  # Only the diagnostic process created above.
+@@ -149,6 +155,7 @@ def main():
+         stopend=time.time()
+         check=command(['python3',str(root/'bench/tasks'/task['check_script']),str(repo)],log=dest/'check.log')
+         result={'label':args.label,'core_revision':revision,'harness_sha256':harness_digest,'trace_sha256':trace_digest,'source_dir':str(source),'adjusted_yield_calls':adjusted_yields,'replay_errors':server.replay_errors,'replay_valid':not server.replay_errors and server.calls==len(server.replies),'mode':mode,'task':task['id'],'repeat':repeat+1,'start_ms':start*1000,'end_ms':end*1000,'wall_ms':(end-start)*1000,'daemon_stop_ms':(stopend-stopstart)*1000,'exit_code':rc,'stop_exit_code':stoprc,'check_exit_code':check,'calls':server.calls,'recorded_calls':len(server.replies),'request_boundaries':server.boundaries,'load':os.getloadavg()}
++        if mode=='daemon':result['daemon_client']=measured
+         (dest/'result.json').write_text(json.dumps(result,indent=2));print(json.dumps({k:v for k,v in result.items() if k!='request_boundaries'}),flush=True)
+     server.shutdown()
+ if __name__=='__main__':main()
+diff --git a/runtime/src/bin/bootstrap.ts b/runtime/src/bin/bootstrap.ts
+index 838bc29f8..ae2fa7735 100644
+--- a/runtime/src/bin/bootstrap.ts
++++ b/runtime/src/bin/bootstrap.ts
+@@ -1,3 +1,4 @@
++import { runtimeSpan } from "../diagnostics/runtime-timing.js";
+ import { VERSION } from "../version.js";
+ import { randomUUID } from "node:crypto";
+ import { fstatSync, lstatSync, realpathSync } from "node:fs";
+@@ -844,7 +845,9 @@ export async function bootstrapLocalRuntimeSession(
+         return sandboxBypass.dangerouslyBypassApprovalsAndSandbox;
+       })(),
+     });
++  const finishShell = runtimeSpan("startup.shell");
+   const commandShellPath = await findSuitableShell(parsedRuntimeOptions, env);
++  finishShell();
+   options.signal?.throwIfAborted();
+   const commandExecutionAuthority = resolveCommandExecutionAuthority(
+     parsedRuntimeOptions,
+@@ -880,6 +883,8 @@ async function bootstrapLocalRuntimeSessionScoped(
+     >;
+   },
+ ): Promise<LocalRuntimeBootstrap> {
++  let finishStage = runtimeSpan("startup.config");
++  const stage = (name: string): void => { finishStage(); finishStage = runtimeSpan(`startup.${name}`); };
+   const env = options.env ?? process.env;
+   const providerEnvironment = options.providerEnvironment;
+   const mcpRequestEnvironment = options.mcpRequestEnvironment;
+@@ -911,6 +916,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+     }),
+   });
+   await configStore.reload();
++  stage("authority");
+   const startup = resolveCanonicalStartupSelection({
+     config: configStore.current(),
+     ...(profileName !== undefined ? { profileName } : {}),
+@@ -1134,6 +1140,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+       },
+     });
+   };
++  stage("permissions");
+   const permissionInit = await initializeToolPermissionContext({
+     env: {
+       home: agencHome,
+@@ -1206,6 +1213,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+   );
+   const toolApprovals = new RuntimeApprovalStore<unknown>();
+   const networkApproval = new RuntimeNetworkApprovalService();
++  stage("auth");
+   const authSubscriptionTier = await resolveAuthSubscriptionTier(
+     options.authBackend,
+     conversationId,
+@@ -1306,6 +1314,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+   }): void => {
+     // Keep provider request-shape diagnostics out of warning/error streams.
+   };
++  stage("roles");
+   const { isCoordinatorModeEnabled, LIVE_COORDINATOR_ALLOWED_TOOLS } =
+     await import("../coordinator/coordinatorMode.js");
+   const coordinatorModeEnabled = isCoordinatorModeEnabled(
+@@ -1332,6 +1341,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+   const baseToolsConfig = runtimeOptions.nonInteractive
+     ? withDisabledTools(configuredToolsConfig, NON_INTERACTIVE_HIDDEN_TOOLS)
+     : configuredToolsConfig;
++  stage("registry");
+   const registry = buildBootstrapToolRegistry({
+     workspaceRoot,
+     agencHome,
+@@ -1449,6 +1459,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+       },
+     };
+   };
++  stage("provider");
+   const initialPreparation = await resolveProviderPreparationRequest({
+     provider: resolvedProvider,
+     model: providerModel,
+@@ -1511,6 +1522,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+     agentDefinitions.activeAgents,
+     sandboxExecutionBroker.status(),
+   );
++  stage("model_metadata");
+   const modelsManager = new StaticModelsManager({
+     config: startup.config,
+     fallbackProvider: profileProvider,
+@@ -1580,6 +1592,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+     sessionConfiguration: authorizedSessionConfiguration,
+     permissionMode: toolPermissionContext.mode,
+   });
++  stage("instructions");
+   const baseInstructions = await assembleBaseInstructionsForModel({
+     session: {
+       services: {
+@@ -1607,6 +1620,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+     baseInstructions,
+     permissionInstructionsDeferred: true,
+   } satisfies SessionConfiguration;
++  stage("services");
+   let initialState: SessionState = {
+     sessionConfiguration,
+     history: [],
+@@ -1845,6 +1859,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+     // NOT pass `mcp` to `bootstrapSession` because the live MCP
+     // connection manager starts AFTER SessionConfigured; the
+     // `onAfterSessionConfigured` hook does that work instead.
++  stage("session");
+     const session = await bootstrapSession({
+       ...(options.signal !== undefined ? { signal: options.signal } : {}),
+       conversationId,
+@@ -2342,6 +2357,7 @@ async function bootstrapLocalRuntimeSessionScoped(
+       );
+     }
+ 
++    finishStage();
+     return {
+       agencHome,
+       configStore,
+diff --git a/runtime/src/budget/admission-client.ts b/runtime/src/budget/admission-client.ts
+index aa168f696..355c4949e 100644
+--- a/runtime/src/budget/admission-client.ts
++++ b/runtime/src/budget/admission-client.ts
+@@ -129,6 +129,8 @@ export interface ExecutionAdmissionClient {
+    * provider/tool/spawn boundary proceeds. Ordinary `subscribe` listeners
+    * remain best-effort observers.
+    */
++  /** A committed boundary, projected and acknowledged as one durable group. */
++  subscribeCriticalBatch?(listener: (events: readonly AdmissionJournalEvent[]) => void): () => void;
+   subscribeCritical?(
+     listener: (event: AdmissionJournalEvent) => void,
+   ): () => void;
+diff --git a/runtime/src/budget/execution-admission-kernel.ts b/runtime/src/budget/execution-admission-kernel.ts
+index e6f0595da..e9b41bea0 100644
+--- a/runtime/src/budget/execution-admission-kernel.ts
++++ b/runtime/src/budget/execution-admission-kernel.ts
+@@ -211,6 +211,7 @@ export class ExecutionAdmissionKernel {
+     string,
+     Set<(event: AdmissionJournalEvent) => void>
+   >();
++  readonly #criticalBatchListeners = new Map<string, Set<(events: readonly AdmissionJournalEvent[]) => void>>();
+   readonly #criticalListeners = new Map<
+     string,
+     Set<(event: AdmissionJournalEvent) => void>
+@@ -423,7 +424,30 @@ export class ExecutionAdmissionKernel {
+     input: AdmissionAcquireInput,
+     signal?: AbortSignal,
+   ): Promise<AdmissionLease> {
+-    const attempt = this.admit(binding, input);
++    this.#assertOpen();
++    const request = requestFor(binding, input, this.#now());
++    // Respect queued work and concurrency. Only an empty live queue can use
++    // the synchronous fast path; contended work keeps the existing scheduler.
++    const immediate = this.#pending.size === 0 && this.#hasCapacity(request)
++      ? binding.workspace.repository.enqueueAndClaim(request, {
++          ownerId: this.#ownerId, ownerPid: this.#ownerPid, attached: true,
++        })
++      : undefined;
++    if (immediate?.claim?.kind === "claimed") {
++      hitM4DurabilityFailpoint("after_reservation_commit");
++    }
++    const attempt = immediate?.attempt ?? this.admit(binding, input);
++    if (immediate !== undefined) this.#publishNewJournal(binding.workspace);
++    if (immediate?.claim?.kind === "claimed") {
++      const grant = immediate.claim.lease;
++      if (this.#active.has(grant.reservation.reservationId)) {
++        return Promise.reject(new AdmissionDeniedError("admission_step_already_running"));
++      }
++      return Promise.resolve(this.#activateGrant(binding.workspace, grant, signal));
++    }
++    if (immediate?.claim?.kind === "not_claimed") {
++      return Promise.reject(new AdmissionDeniedError(immediate.claim.reason));
++    }
+     if (attempt.decision.decision === "deny") {
+       return Promise.reject(
+         new AdmissionDeniedError(attempt.decision.reason ?? "denied"),
+@@ -735,6 +759,16 @@ export class ExecutionAdmissionKernel {
+     };
+   }
+ 
++  subscribeCriticalBatch(runId: string, listener: (events: readonly AdmissionJournalEvent[]) => void): () => void {
++    const listeners = this.#criticalBatchListeners.get(runId) ?? new Set();
++    listeners.add(listener);
++    this.#criticalBatchListeners.set(runId, listeners);
++    return () => {
++      listeners.delete(listener);
++      if (listeners.size === 0) this.#criticalBatchListeners.delete(runId);
++    };
++  }
++
+   subscribeCritical(
+     runId: string,
+     listener: (event: AdmissionJournalEvent) => void,
+@@ -966,6 +1000,7 @@ export class ExecutionAdmissionKernel {
+     this.#active.clear();
+     this.#listeners.clear();
+     this.#criticalListeners.clear();
++    this.#criticalBatchListeners.clear();
+     this.#usageListeners.clear();
+     for (const binding of this.#byStatePath.values()) {
+       binding.driver.close();
+@@ -1096,6 +1131,7 @@ export class ExecutionAdmissionKernel {
+         }
+         this.#listeners.delete(runId);
+         this.#criticalListeners.delete(runId);
++        this.#criticalBatchListeners.delete(runId);
+       }
+     }
+     this.#usageListeners.delete(binding);
+@@ -1529,6 +1565,18 @@ export class ExecutionAdmissionKernel {
+         limit: JOURNAL_PAGE_SIZE,
+       });
+       if (events.length === 0) return;
++      // All SQLite writes committed before any canonical projection or observer.
++      // Do not advance the cursor if any group fails; retry is identity-idempotent.
++      hitM4DurabilityFailpoint("after_admission_sqlite_commit_before_canonical_append");
++      const groups = new Map<string, AdmissionJournalEvent[]>();
++      for (const event of events) {
++        const group = groups.get(event.runId) ?? [];
++        group.push(event);
++        groups.set(event.runId, group);
++      }
++      for (const [runId, group] of groups) {
++        for (const listener of this.#criticalBatchListeners.get(runId) ?? []) listener(group);
++      }
+       for (const event of events) {
+         // Admission SQLite has already committed at this point. Canonical
+         // journal projection is nevertheless a physical-work boundary: a
+@@ -1656,6 +1704,10 @@ class KernelAdmissionClient implements ExecutionAdmissionClient {
+     return this.kernel.subscribeUsage(this.binding, listener);
+   }
+ 
++  subscribeCriticalBatch(listener: (events: readonly AdmissionJournalEvent[]) => void): () => void {
++    return this.kernel.subscribeCriticalBatch(this.scope.runId, listener);
++  }
++
+   subscribeCritical(
+     listener: (event: AdmissionJournalEvent) => void,
+   ): () => void {
+diff --git a/runtime/src/llm/model-metadata.ts b/runtime/src/llm/model-metadata.ts
+index 4233071ec..fb8202180 100644
+--- a/runtime/src/llm/model-metadata.ts
++++ b/runtime/src/llm/model-metadata.ts
+@@ -363,7 +363,7 @@ export class ModelMetadataResolver {
+     params: LookupParams,
+   ): Promise<ModelMetadataValues | undefined> {
+     if (normalizeMetadataProviderIdentity(params.provider) !== "openrouter") return undefined;
+-    const response = await this.fetchJson(OPENROUTER_MODELS_URL);
++    const response = await this.fetchPublicCatalog(OPENROUTER_MODELS_URL);
+     return metadataFromOpenAiModelsResponse(response, params.model);
+   }
+ 
+diff --git a/runtime/src/session/execution-admission-journal.ts b/runtime/src/session/execution-admission-journal.ts
+index 5b3b3e83c..f48b23f28 100644
+--- a/runtime/src/session/execution-admission-journal.ts
++++ b/runtime/src/session/execution-admission-journal.ts
+@@ -23,7 +23,40 @@ export function bindExecutionAdmissionJournal(
+   const append = (event: AdmissionJournalEvent): void => {
+     appendExecutionAdmissionEvent(session, event);
+   };
+-  const unsubscribe =
++  let lastUsageSequence = -1;
++  let lastUsageSignature = "";
++  const appendBatch = (payloads: readonly AdmissionJournalEvent[]): void => {
++    const rollout = session.rolloutStore;
++    if (!rollout || typeof session.emitAdmissionBatch !== "function") {
++      for (const payload of payloads) append(payload);
++      return;
++    }
++    const fresh: Event[] = [];
++    for (const payload of payloads) {
++      const existing = findExecutionAdmissionEvent(rollout, payload.eventId);
++      if (existing) assertMatchingExecutionAdmissionEvent(existing, payload);
++      else fresh.push({ eventId: payload.eventId, id: payload.eventId, msg: { type: "execution_admission", payload } });
++    }
++    const usage = admission.getUsageSummary?.();
++    const signature = usage === undefined ? "" : JSON.stringify({ ...usage, sequence: 0 });
++    if (usage && signature !== lastUsageSignature) {
++      fresh.push({ id: `usage:${usage.runId}:${usage.sequence}`, eventId: randomUUID(), msg: { type: "session_usage", payload: usage } });
++    }
++    try {
++      if (fresh.length > 0) {
++        for (const event of session.emitAdmissionBatch(fresh)) {
++          if (event.msg.type === "execution_admission") rememberExecutionAdmissionEvent(rollout, event);
++        }
++      } else rollout.syncCanonicalTail();
++      if (usage) { lastUsageSequence = usage.sequence; lastUsageSignature = signature; }
++    } catch (error) {
++      // A post-fsync publication error may leave a committed prefix. Rebuild
++      // from the canonical bytes on retry, never from an uncommitted cache.
++      executionAdmissionEventIndexes.delete(rollout);
++      throw error;
++    }
++  };
++  const unsubscribe = admission.subscribeCriticalBatch?.(appendBatch) ??
+     admission.subscribeCritical?.(append) ?? admission.subscribe(append);
+   let unsubscribeUsage: (() => void) | undefined;
+   try {
+@@ -65,12 +98,12 @@ export function bindExecutionAdmissionJournal(
+       }
+       if (page.length < EXECUTION_ADMISSION_CATCHUP_PAGE_SIZE) break;
+     }
+-    let lastUsageSequence = -1;
+     const appendUsage = (summary: AdmissionUsageSummary): void => {
+       if (summary.sequence <= lastUsageSequence) return;
+       if (typeof session.conversationId === "string" && summary.runId !== session.conversationId) return;
+       session.emit({ id: `usage:${summary.runId}:${summary.sequence}`, eventId: randomUUID(), msg: { type: "session_usage", payload: summary } }, { durable: true });
+       lastUsageSequence = summary.sequence;
++      lastUsageSignature = JSON.stringify({ ...summary, sequence: 0 });
+     };
+     unsubscribeUsage = admission.subscribeUsage?.(appendUsage);
+     const usage = admission.getUsageSummary?.();
+diff --git a/runtime/src/session/rollout-store.ts b/runtime/src/session/rollout-store.ts
+index 18ec06580..1bc2a53e1 100644
+--- a/runtime/src/session/rollout-store.ts
++++ b/runtime/src/session/rollout-store.ts
+@@ -977,6 +977,10 @@ export class RolloutStore {
+     }
+   }
+ 
++  appendDurableBatch(events: readonly Event[]): void {
++    this.store.appendDurableBatch(events);
++  }
++
+   append(event: Event, opts: AppendOptions = {}): boolean {
+     return this.store.append(event, opts);
+   }
+diff --git a/runtime/src/session/session-store.ts b/runtime/src/session/session-store.ts
+index 75e0b5d53..b840902fe 100644
+--- a/runtime/src/session/session-store.ts
++++ b/runtime/src/session/session-store.ts
+@@ -1935,6 +1935,26 @@ export class SessionStore {
+    * project or publish an event that the canonical rollout rejected. Events
+    * WITHOUT seq (sidecar synth or replay re-entry) remain deduped by `event.id`.
+    */
++  private collectingDurableBatch = false;
++
++  /** One synchronous boundary: no caller can observe a partial acknowledgement. */
++  appendDurableBatch(events: readonly Event[]): void {
++    if (!this.opened || this.closed || this.collectingDurableBatch) {
++      throw new Error("cannot begin durable rollout batch");
++    }
++    this.collectingDurableBatch = true;
++    try {
++      for (const event of events) {
++        if (!this.append(event, { durable: true })) {
++          throw new Error("durable rollout batch append failed");
++        }
++      }
++    } finally {
++      this.collectingDurableBatch = false;
++    }
++    if (!this.flushBatch(true)) throw new Error("durable rollout batch was not fsync-committed");
++  }
++
+   append(event: Event, opts: AppendOptions = {}): boolean {
+     if (!this.opened || this.closed) return false;
+     this.lastBoundReadProof = undefined;
+@@ -2001,6 +2021,7 @@ export class SessionStore {
+     this.pending.push(item);
+ 
+     const durable = opts.durable === true || isDurableEvent(event);
++    if (this.collectingDurableBatch) return true;
+     if (durable) {
+       return this.flushBatch(/*durable*/ true);
+     } else if (this.pending.length >= 1024) {
+diff --git a/runtime/src/session/session.ts b/runtime/src/session/session.ts
+index cbf14f096..ad681b525 100644
+--- a/runtime/src/session/session.ts
++++ b/runtime/src/session/session.ts
+@@ -4906,6 +4906,20 @@ export class Session {
+    * event becomes observable; ordinary callers publish immediately after the
+    * append, while state-transition owners may use {@link prepareEmit}.
+    */
++  /** Admission rows and their derived usage become visible after one durable flush. */
++  emitAdmissionBatch(events: readonly Event[]): readonly Event[] {
++    if (this.canonicalJournalSealed || this.isRolloutPersistenceSuspended() || !this.rolloutStore) {
++      throw new Error("admission batch requires an active canonical journal");
++    }
++    if (events.some(event => event.msg.type !== "execution_admission" && event.msg.type !== "session_usage")) {
++      throw new Error("unsupported admission batch event");
++    }
++    const stamped = events.map(event => this.eventLog.stamp(event));
++    this.rolloutStore.appendDurableBatch(stamped);
++    for (const event of stamped) this.publishPreparedEvent(event);
++    return stamped;
++  }
++
+   emit(event: Event, appendOpts: AppendOptions = {}): Event {
+     return this.prepareEmit(event, appendOpts).publish();
+   }
+diff --git a/runtime/src/state/execution-admission.ts b/runtime/src/state/execution-admission.ts
+index cf0d145d1..61fd04b4b 100644
+--- a/runtime/src/state/execution-admission.ts
++++ b/runtime/src/state/execution-admission.ts
+@@ -1,3 +1,4 @@
++import { hitM4DurabilityFailpoint } from "../durability/failpoints.js";
+ import { randomUUID } from "node:crypto";
+ 
+ import type {
+@@ -695,6 +696,20 @@ export class ExecutionAdmissionRepository {
+     });
+   }
+ 
++  /** Queue insertion and immediate reservation share one SQLite durable commit. */
++  enqueueAndClaim(request: RuntimeAdmissionRequest, options: EnqueueAdmissionOptions = {}): {
++    readonly attempt: AdmissionAttempt;
++    readonly claim?: AdmissionClaimResult;
++  } {
++    return this.#driver.transactionImmediate(() => {
++      const attempt = this.enqueue(request, options);
++      if (attempt.decision.decision !== "queue") return { attempt };
++      hitM4DurabilityFailpoint("before_reservation_commit");
++      const claim = this.claim({ ...options, key: attempt.record.key });
++      return { attempt, claim };
++    });
++  }
++
+   claim(options: ClaimAdmissionOptions = {}): AdmissionClaimResult {
+     const now = normalizeTimestamp(
+       options.now ?? this.#timestamp(),

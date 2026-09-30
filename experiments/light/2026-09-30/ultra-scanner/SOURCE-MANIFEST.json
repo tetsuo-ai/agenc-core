@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "scope": "experimental source preservation, not installed or approved to execute",
+  "files": [
+    {
+      "path": "scan_credentials.py",
+      "bytes": 3845,
+      "sha256": "f5ee50588a1718c18c196cf3aa9b4eb4ae0858ff9760bdd411a7bd1b3a98fc43"
+    }
+  ]
+}

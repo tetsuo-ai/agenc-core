@@ -17,8 +17,33 @@ const roots = new Set(['cli-boundary-diagnostic', 'cli-policy-recovery', 'edit-e
   'responses-terminal-safety', 'result-projection', 'startup-cache', 'startup-cpu', 'truncated-recovery-validation']);
 const rootCode = new Set(['audit_scores.py', 'test_audit_scores.py', 'request-correlation-typecheck.mjs',
   'build-final-a793fdb.sh', 'build-final-b82ae4d.sh']);
-const codeExtensions = new Set(['.py', '.mjs', '.ts', '.mts', '.sh', '.patch', '.c']);
-const evidenceExtensions = new Set([...codeExtensions, '.json', '.md', '.log', '.tap', '.txt', '.csv', '.out', '.err']);
+const predecessor = ['light-runtime', 'light-ultra', 'light-port', 'light-diag', 'light-models'].includes(path.basename(source));
+const frozenSelections = new Map([
+  ['/private/tmp/light-runtime/core/runtime/benchmarks/runtime-overhead',
+    ['REPORT.md', 'ROUND2.md', 'summarize.py', 'test_summarize.py']],
+  ['/private/tmp/light-takeover/fair-confirmation/current-cli-observer-v1',
+    ['fixture-callbacks.ts', 'fixture-callbacks.test.ts']],
+  ['/private/tmp/light-ultra/bench', ['scan_credentials.py']],
+  ['/private/tmp/light-port/bench', ['review_credential_scan.py', 'scan_task_credentials.py']],
+]);
+const privateSelections = new Map([
+  ['/private/tmp/light-models/evidence', ['grok-admissions.jsonl', 'minimax-admissions.jsonl',
+    'openai-admissions.jsonl', 'sol-relay-admissions.jsonl', 'spend-grok.jsonl',
+    'spend-minimax.jsonl', 'spend-openai.jsonl']],
+  ['/private/tmp/light-ultra/evidence', ['cache-fixture-timings.jsonl']],
+]);
+const frozenSelection = frozenSelections.get(source) ?? privateSelections.get(source);
+if (!predecessor && !frozenSelection && path.basename(source) !== 'light-takeover') throw new Error('unselected source root');
+const codeExtensions = new Set(['.py', '.mjs', '.cjs', '.ts', '.mts', '.sh', '.patch', '.c']);
+const evidenceExtensions = new Set([...codeExtensions, '.json', '.md', '.log', '.tap', '.txt', '.csv', '.out', '.err', '.fails']);
+const publicSourceJson = new Set([
+  'light-models/harness/pricing.json', 'light-models/harness/tasks/manifest.json',
+  'light-port/bench/harness/pricing.json', 'light-port/bench/harness/tasks/manifest.json',
+  'light-port/bench/harness-fair/pricing.json', 'light-port/bench/harness-fair/tasks/manifest.json',
+  'light-ultra/bench/tasks/manifest.json', 'light-ultra/bench/converge/pricing.json',
+  'light-ultra/bench/converge/tasks/manifest.json', 'light-ultra/bench/luna-api/pricing.json',
+  'light-ultra/bench/luna-api/tasks/manifest.json',
+]);
 const skipDirs = new Set(['node_modules', '.git', '__pycache__', '.venv']);
 const records = [], excluded = [];
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -31,27 +56,41 @@ const patterns = {
 };
 function refuse(relative, reason) {excluded.push({path: relative, reason});}
 function inspect(relative, topLevel = false) {
+  if (frozenSelection && !frozenSelection.includes(relative)) return;
   const filename = path.join(source, relative), stat = fs.lstatSync(filename);
   if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile())) return refuse(relative, 'non_regular');
   if (stat.isDirectory()) {
     if (skipDirs.has(path.basename(relative))) return refuse(relative, 'dependency_or_cache');
-    if (topLevel && !roots.has(relative)) return refuse(relative, 'outside_selected_light_artifact_roots');
+    if (predecessor && (fs.existsSync(path.join(filename, '.git'))
+      || ['sources', 'pi-source', 'pi-reference-full', 'raw'].includes(path.basename(relative))))
+      return refuse(relative, 'embedded_repository_third_party_or_raw_capture');
+    if (!predecessor && topLevel && !roots.has(relative)) return refuse(relative, 'outside_selected_light_artifact_roots');
     for (const name of fs.readdirSync(filename).sort()) inspect(path.join(relative, name));
     return;
   }
-  if (/^\.env(?:\.|$)|^\.npmrc$|(?:^|[._-])(?:credentials?|cookies?|id_rsa|id_ed25519)(?:[._-]|$)/i.test(path.basename(relative)))
+  if (path.basename(relative).startsWith('._')) return refuse(relative, 'appledouble_metadata');
+  if (predecessor && (/^codex.*\.log$/.test(path.basename(relative))
+    || ['grok_credentials.mjs', 'minimax_secret.py'].includes(path.basename(relative))))
+    return refuse(relative, 'private_session_or_credential_helper_review_required');
+  if (!frozenSelections.get(source)?.includes(relative)
+    && /^\.env(?:\.|$)|^\.npmrc$|(?:^|[._-])(?:credentials?|cookies?|id_rsa|id_ed25519)(?:[._-]|$)/i.test(path.basename(relative)))
     return refuse(relative, 'credential_named_file');
-  if (!evidenceExtensions.has(path.extname(relative))) return refuse(relative, 'binary_or_unselected_extension');
+  if (!evidenceExtensions.has(path.extname(relative)) && !privateSelections.get(source)?.includes(relative))
+    return refuse(relative, 'binary_or_unselected_extension');
   if (stat.size > 16 * 1024 * 1024) return refuse(relative, 'over_16MiB_review_required');
   if (relative.startsWith('fair-confirmation/current-cli-observer-v1/')
-    && ['fixture-callbacks.ts', 'fixture-callbacks.test.mjs'].includes(path.basename(relative)))
+    && ['fixture-callbacks.ts', 'fixture-callbacks.test.ts', 'fixture-callbacks.test.mjs'].includes(path.basename(relative)))
     return refuse(relative, 'moving_worker_file_hold');
   const raw = fs.readFileSync(filename), text = new TextDecoder('utf-8', {fatal: true}).decode(raw);
   if (text.includes('\0')) return refuse(relative, 'binary_content_review_required');
   const candidates = Object.entries(patterns).filter(([, expression]) => expression.test(text)).map(([name]) => name);
   if (candidates.length) return refuse(relative, 'content_review_required:' + candidates.join(','));
   const generated = relative === 'fair-confirmation/real-parent-bridge-build-v1/canonical-bridge.mjs';
-  const publicCode = !generated && (topLevel ? rootCode.has(relative)
+  const predecessorPublic = publicSourceJson.has(path.basename(source) + '/' + relative)
+    || codeExtensions.has(path.extname(relative)) && (topLevel
+    || relative.startsWith('harness/') || relative.startsWith('bench/')
+    || ['evidence/measured-baseline.patch', 'evidence/runner-initial.py'].includes(relative));
+  const publicCode = frozenSelections.has(source) || !privateSelections.has(source) && !generated && (predecessor ? predecessorPublic : topLevel ? rootCode.has(relative)
     : codeExtensions.has(path.extname(relative)) || path.basename(relative) === 'source-pins.json'
       || /^tsconfig.*\.json$/.test(path.basename(relative)));
   records.push({path: relative, bytes: raw.length, sha256: sha(raw), publicCode});
