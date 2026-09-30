@@ -1,5 +1,12 @@
 # Preserved Light evaluation source — 2026-09-30
 
+Newest incremental source: [parent glue](parent-glue-v1/PARENT-GLUE-RESULT.md)
+and `identity-adapter-v2/`. The caller composes the existing callback factory
+with the real foreground entry; the adapter selects current 403da without
+changing authentication/PID/shutdown algorithms. Strict types and one narrow
+source-refusal ordering regression passed. These are not built or executed
+real-client artifacts; Linux and parent deployment remain pending.
+
 Latest: [package-v3 result](package-v3/COMPANION-PACKAGE-RESULT.md) adds a guarded
 independent preflight entry and repairs the companion's package identity and
 classifier asset paths. Strict types, split build and both disabled imports

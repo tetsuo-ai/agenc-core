@@ -1,0 +1,34 @@
+{
+  "extends": "/private/tmp/light-clean-cli-validator-v2-GANyA9/source/runtime/tsconfig.test-support.json",
+  "compilerOptions": {
+    "rootDir": "/private/tmp",
+    "typeRoots": [
+      "/private/tmp/light-clean-cli-validator-v2-GANyA9/source/node_modules/@types",
+      "/private/tmp/light-clean-cli-validator-v2-GANyA9/source/node_modules"
+    ],
+    "paths": {
+      "agenc-selected/*": [
+        "/private/tmp/light-clean-cli-validator-v2-GANyA9/source/runtime/src/*"
+      ],
+      "bun:bundle": [
+        "/private/tmp/light-clean-cli-validator-v2-GANyA9/source/runtime/src/build/feature.ts"
+      ],
+      "bun:test": [
+        "/private/tmp/light-clean-cli-validator-v2-GANyA9/source/runtime/tests/helpers/bun-test-shim.ts"
+      ],
+      "src/*": [
+        "/private/tmp/light-clean-cli-validator-v2-GANyA9/source/runtime/src/*"
+      ]
+    }
+  },
+  "include": [
+    "owner-entry.ts",
+    "companion-validator.ts",
+    "preflight.ts",
+    "preflight-entry.ts",
+    "owner-caller.ts",
+    "../real-parent-adapters-v2/bridge-entry.ts",
+    "/private/tmp/light-clean-cli-validator-v2-GANyA9/source/runtime/src/types/**/*.d.ts"
+  ],
+  "exclude": []
+}

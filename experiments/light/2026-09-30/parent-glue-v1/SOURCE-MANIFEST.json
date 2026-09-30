@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "scope": "experimental source preservation, not installed or approved to execute",
+  "files": [
+    {
+      "path": "CURRENT-IDENTITY-ADAPTER-REVIEW.md",
+      "bytes": 7980,
+      "sha256": "7c6f702625f56cf6ea430e3abf11c4d4598ef357d90ec6ec7cbddfc58d7ab514"
+    },
+    {
+      "path": "PARENT-GLUE-RESULT.md",
+      "bytes": 2914,
+      "sha256": "4963aa5f057925869263110c4c614237b45713d41234347228ee15b64d4ab662"
+    },
+    {
+      "path": "owner-caller.test.mjs",
+      "bytes": 3100,
+      "sha256": "d530ba9b61b8d48e878e01b6b43998018a7e3ca3b18bab2c78e40412fdae4960"
+    },
+    {
+      "path": "owner-caller.ts",
+      "bytes": 4798,
+      "sha256": "f7bab3b8297f0bbdae0418dbc451da178741f47ce0f2924c9369f6888011bff0"
+    },
+    {
+      "path": "tsconfig.companion.json",
+      "bytes": 1158,
+      "sha256": "cd88feeb388a4785b20316fb1835a3b55c2ffcc6f3b8a0bf960a095ee5096e42"
+    }
+  ]
+}

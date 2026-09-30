@@ -18,3 +18,6 @@
 !package-v3/SOURCE-MANIFEST.json
 !package-v3/tsconfig.callbacks.json
 !package-v3/tsconfig.companion.json
+!parent-glue-v1/SOURCE-MANIFEST.json
+!parent-glue-v1/tsconfig.companion.json
+!identity-adapter-v2/SOURCE-MANIFEST.json

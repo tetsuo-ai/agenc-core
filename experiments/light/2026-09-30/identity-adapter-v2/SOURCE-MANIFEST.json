@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "scope": "experimental source preservation, not installed or approved to execute",
+  "files": [
+    {
+      "path": "adapters.mjs",
+      "bytes": 6371,
+      "sha256": "1e1526531c9e579829e448a26ba693dffb82700056a6f95607f24a45cbac23f7"
+    },
+    {
+      "path": "bridge-entry.ts",
+      "bytes": 1413,
+      "sha256": "168cb09d13b15d5ad2eeb83ebe5aedb452d1eba16ac3296fd7ae62519d18cefb"
+    },
+    {
+      "path": "load-bridge.mjs",
+      "bytes": 1821,
+      "sha256": "f32f4bc866dfd4ac33092532d4e5a1c8366adf2db799f2092eb5bf69a79470bf"
+    },
+    {
+      "path": "pins.mjs",
+      "bytes": 1089,
+      "sha256": "eff97184774b64ba237a45040b176b58e7822b06dafaaed91a3b1dbf8e4dd8d3"
+    }
+  ]
+}
