@@ -49,6 +49,11 @@ import type { Attachment } from "./types.js";
 import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.js";
 import type { AdmittedMemorySelector } from "../../memory/recall-contract.js";
 import { isMemoryRecallAbort } from "../../memory/recall-contract.js";
+import {
+  buildAttachmentAssemblyEvidence,
+  deliverAttachmentAssemblyEvidence,
+  type AttachmentEvidenceCollector,
+} from "./assembly-evidence.js";
 
 /**
  * Inputs every producer receives. Mirrors the upstream donor's
@@ -56,6 +61,8 @@ import { isMemoryRecallAbort } from "../../memory/recall-contract.js";
  * AgenC types.
  */
 export interface GetAttachmentsOptions {
+  /** Trusted opt-in synchronous collector; no payloads or implicit logging. */
+  readonly collectAssemblyEvidence?: AttachmentEvidenceCollector;
   /**
    * Narrow, admission-aware memory selection dependency. Producers never
    * receive ambient Session authority and fall back lexically when absent.
@@ -192,46 +199,49 @@ export type AttachmentProducer = (
  * commits. Empty during the foundation commit; the orchestrator and
  * call-site wiring are otherwise complete.
  */
-const PRODUCERS: readonly AttachmentProducer[] = [
+const PRODUCERS = [
   // Phase 2 — Mode pulses:
-  planModeProducer,
-  verifyPlanReminderProducer,
-  autoModeProducer,
-  swarmModeProducer,
+  { id: "plan_mode", run: planModeProducer },
+  { id: "verify_plan_reminder", run: verifyPlanReminderProducer },
+  { id: "auto_mode", run: autoModeProducer },
+  { id: "swarm_mode", run: swarmModeProducer },
   //
   // Phase 3 — Mid-session deltas:
-  deferredToolsDeltaProducer,
-  requestedToolsProducer,
-  agentListingDeltaProducer,
-  mcpInstructionsDeltaProducer,
+  { id: "deferred_tools_delta", run: deferredToolsDeltaProducer },
+  { id: "requested_tools", run: requestedToolsProducer },
+  { id: "agent_listing_delta", run: agentListingDeltaProducer },
+  { id: "mcp_instructions_delta", run: mcpInstructionsDeltaProducer },
   //
   // Phase 4 — System reminders:
-  dateChangeProducer,
-  instructionUpdateProducer,
-  criticalReminderProducer,
-  outputStyleProducer,
+  { id: "date_change", run: dateChangeProducer },
+  { id: "instruction_update", run: instructionUpdateProducer },
+  { id: "critical_reminder", run: criticalReminderProducer },
+  { id: "output_style", run: outputStyleProducer },
   //
   // Phase 5 — Memory + file injections:
-  relevantMemoriesProducer,
-  changedFilesProducer,
-  lspDiagnosticsProducer,
-  agentMentionsProducer,
-  mcpResourcesProducer,
-  fileMentionsProducer,
-  skillListingProducer,
-];
+  { id: "relevant_memories", run: relevantMemoriesProducer },
+  { id: "changed_files", run: changedFilesProducer },
+  { id: "lsp_diagnostics", run: lspDiagnosticsProducer },
+  { id: "agent_mentions", run: agentMentionsProducer },
+  { id: "mcp_resources", run: mcpResourcesProducer },
+  { id: "file_mentions", run: fileMentionsProducer },
+  { id: "skill_listing", run: skillListingProducer },
+] as const satisfies readonly { readonly id: string; readonly run: AttachmentProducer }[];
+
+export type AttachmentProducerId = (typeof PRODUCERS)[number]["id"];
 
 /**
  * Fail-closed allowlist for Editor attachment collection. A newly registered
  * ordinary producer is not Editor-authorized until it is deliberately
  * classified and added here.
  */
-const LOCAL_READ_ONLY_PRODUCERS: readonly AttachmentProducer[] = [];
+const LOCAL_READ_ONLY_PRODUCERS: readonly (typeof PRODUCERS)[number][] = [];
 
 export const __INTERNAL = {
-  ordinaryProducerNames: PRODUCERS.map((producer) => producer.name),
+  ordinaryProducerNames: PRODUCERS.map((producer) => producer.run.name),
+  ordinaryProducerIds: PRODUCERS.map((producer) => producer.id),
   localReadOnlyProducerNames: LOCAL_READ_ONLY_PRODUCERS.map(
-    (producer) => producer.name,
+    (producer) => producer.run.name,
   ),
 } as const;
 
@@ -246,10 +256,18 @@ export const __INTERNAL = {
 export async function getAttachments(
   opts: GetAttachmentsOptions,
 ): Promise<readonly Attachment[]> {
-  if (opts.effectsPolicy === "local_read_only") return [];
+  if (opts.effectsPolicy === "local_read_only") {
+    if (opts.collectAssemblyEvidence !== undefined) {
+      deliverAttachmentAssemblyEvidence(
+        buildAttachmentAssemblyEvidence("local_read_only", [], []),
+        opts.collectAssemblyEvidence, opts.signal,
+      );
+    }
+    return [];
+  }
   const trackingState = getAttachmentTrackingState(opts.sessionKey);
   const settled = await Promise.allSettled(
-    PRODUCERS.map((producer) => producer(opts, trackingState)),
+    PRODUCERS.map(({ run }) => run(opts, trackingState)),
   );
   const all: Attachment[] = [];
   for (const result of settled) {
@@ -265,6 +283,12 @@ export async function getAttachments(
     // for the daemon log; do not propagate.
     // eslint-disable-next-line no-console
     console.error("[attachments] producer failed:", result.reason);
+  }
+  if (opts.collectAssemblyEvidence !== undefined) {
+    deliverAttachmentAssemblyEvidence(
+      buildAttachmentAssemblyEvidence("ordinary", PRODUCERS.map(producer => producer.id), settled),
+      opts.collectAssemblyEvidence, opts.signal,
+    );
   }
   return all;
 }
