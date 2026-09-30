@@ -13,7 +13,7 @@ import { SandboxManager, type SandboxType } from "../sandbox/engine/index.js";
 import {
   approximateTokenCount,
   maxCharsForTokens,
-  truncateHeadTail,
+  truncateHeadTailTogether,
 } from "./head-tail-buffer.js";
 import {
   type DetachedProcessRequest,
@@ -205,57 +205,27 @@ export class ProcessOutputBuffer {
       .map((chunk) => chunk.chunk)
       .join("");
 
-    // Preserve original stream order (stdout before stderr) for deterministic
-    // output; only non-empty streams participate.
-    const segments: OutputChunk[] = [];
-    if (stdoutText.length > 0) {
-      segments.push({ stream: "stdout", chunk: stdoutText });
-    }
-    if (stderrText.length > 0) {
-      segments.push({ stream: "stderr", chunk: stderrText });
-    }
-    if (segments.length === 0) return;
-    const totalLen = stdoutText.length + stderrText.length;
-
-    // Allocate the cap across streams with max-min fairness: smallest stream
-    // first, each taking an equal share of the remaining budget, with any unused
-    // share rolling forward to the larger stream(s). A proportional split would
-    // starve a tiny stderr exit-summary when stdout floods past the cap; this
-    // keeps the small stream intact (its budget == its length) and gives the
-    // overflow budget to whichever stream actually needs truncating.
-    const budgetByStream = new Map<UnifiedExecStream, number>();
-    const ordered = [...segments].sort(
-      (a, b) => a.chunk.length - b.chunk.length,
+    // The streams share the cap with max-min fairness, so a tiny stderr
+    // exit-summary survives a stdout flood. Each truncated text embeds its own
+    // `[... omitted N chars ...]` marker between the preserved head and tail,
+    // so it replaces the pending chunks directly, stdout before stderr for
+    // deterministic output; an empty stream contributes no chunk.
+    const [stdout, stderr] = truncateHeadTailTogether(
+      [stdoutText, stderrText],
+      this.maxChars,
     );
-    let remainingCap = this.maxChars;
-    let remaining = ordered.length;
-    for (const segment of ordered) {
-      const share = Math.floor(remainingCap / remaining);
-      const budget = Math.min(segment.chunk.length, share);
-      budgetByStream.set(segment.stream, budget);
-      remainingCap -= budget;
-      remaining -= 1;
-    }
-
-    // truncateHeadTail embeds its own `[... omitted N chars ...]` marker inline
-    // between the preserved head and tail, so we replace the pending chunks with
-    // the per-stream truncated text directly. Clamp each budget to truncateHeadTail's
-    // own 64-char floor: passing a smaller budget would make it report a negative
-    // omitted count for a sub-64 stream (it never truncates below 64 chars anyway).
-    const replacement: OutputChunk[] = [];
-    for (const segment of segments) {
-      const budget = budgetByStream.get(segment.stream) ?? segment.chunk.length;
-      const truncated = truncateHeadTail(segment.chunk, Math.max(64, budget));
-      replacement.push({ stream: segment.stream, chunk: truncated.text });
-    }
+    const replacement: OutputChunk[] = [
+      { stream: "stdout", chunk: stdout.text },
+      { stream: "stderr", chunk: stderr.text },
+    ];
 
     this.chunks.length = this.consumedIndex;
-    this.chunks.push(...replacement);
-    const replacementChars = replacement.reduce(
-      (sum, chunk) => sum + chunk.chunk.length,
-      0,
-    );
-    this.totalChars = this.totalChars - totalLen + replacementChars;
+    this.chunks.push(...replacement.filter((chunk) => chunk.chunk.length > 0));
+    this.totalChars +=
+      stdout.text.length +
+      stderr.text.length -
+      stdoutText.length -
+      stderrText.length;
   }
 }
 
@@ -472,9 +442,11 @@ function createResult(params: {
     readonly logPath: string;
   };
 }): ExecCommandToolOutput {
-  const maxChars = maxCharsForTokens(params.maxOutputTokens);
-  const stdout = truncateHeadTail(params.stdout, maxChars);
-  const stderr = truncateHeadTail(params.stderr, maxChars);
+  // max_output_tokens bounds the whole result, so stdout and stderr share it.
+  const [stdout, stderr] = truncateHeadTailTogether(
+    [params.stdout, params.stderr],
+    maxCharsForTokens(params.maxOutputTokens),
+  );
   const output = [stdout.text, stderr.text]
     .filter((part) => part.length > 0)
     .join("");
