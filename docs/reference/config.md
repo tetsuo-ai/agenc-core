@@ -377,21 +377,24 @@ durable, shutdown or a forced kill can still lose that unpersisted state.
 `max_turns` is unset by default; an unset turn cap does not impose a
 synthetic stop. `completion_gate` defaults to `mode = "auto"` with
 `max_rounds = 3`: in a non-interactive session (`agenc -p`, a routine, an
-evaluation harness) the first tool-free final answer of a turn that used
-tools is not accepted; the runtime injects a durable `<completion_gate>`
-user message that quotes the task and asks for a checklist backed by
-executed checks. Acceptance requires each nonempty checked `- [x]` item
+evaluation harness) acceptance requires each nonempty checked `- [x]` item
 outside code fences to have an associated successful tool result after the
-latest request. Association is token overlap between the item text and the
-tool name, arguments, or content — a successful unrelated FileRead does
-not verify a numerical claim. Sentence punctuation is not part of a token:
+last workspace change (the last file edit or a command the checklist does
+not name). The first tool-free final answer of a turn that used tools is
+accepted without a request when it already meets this and cites a command
+that ran successfully after the last change; otherwise the runtime injects
+a durable `<completion_gate>` user message that quotes the task and asks
+for a checklist backed by executed checks. Association is token overlap
+between the item text and the tool name, arguments, or content — a
+successful unrelated FileRead does not verify a numerical claim.
+Sentence punctuation is not part of a token:
 `array.` matches `array`, `./x.js` matches `/abs/x.js`, and a lone `.` or
 `/` matches nothing. Unchecked `- [ ]` or malformed items prevent
 verification. The re-request quotes unlinked items (checked, but no
-successful result since the latest request names them and no associated
-check failed) apart from the other unmet items, and asks for the command
-run or file inspected on each unlinked item's line. Explicit `- [-]`
-unavailable claims get an investigation
+successful result since the last workspace change names them and no
+associated check failed) apart from the other unmet items, and asks for
+the command run or file inspected on each unlinked item's line.
+Explicit `- [-]` unavailable claims get an investigation
 request every round and settle as `partial` with `unavailable_checks` only
 at the round cap. The gate does not accept a probe as proof of a missing
 capability, because a probe and the check itself are both runnable results

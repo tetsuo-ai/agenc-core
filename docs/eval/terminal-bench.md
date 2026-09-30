@@ -205,11 +205,13 @@ harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal
   `--ak env=AGENC_COMPLETION_CONTRACT=0` runs the same build without it, which
   is how its effect is measured. The same rule is enforced structurally by
   the completion gate (`phases/completion-gate.ts`, config `completion_gate`):
-  the first tool-free final answer of a tool-using non-interactive turn is
-  held while a durable `<completion_gate>` message quoting the task asks for
-  a checklist backed by executed checks; the answer is accepted once each
-  checked item has associated tool evidence, or as `partial` when remaining
-  checks are unavailable, or after three rounds (`exhausted`). A
+  a tool-free final answer of a tool-using non-interactive turn is accepted
+  once each checked item has associated tool evidence from after the last
+  workspace change, and the first answer also cites a command that ran
+  successfully since then; otherwise it is held while a durable
+  `<completion_gate>` message quoting the task asks for a checklist backed by
+  executed checks. It settles as `partial` when remaining checks are
+  unavailable, or after three rounds (`exhausted`). A
   `verified` gate event is not a Terminal-Bench pass. Every decision is a
   `completion_gate` rollout event, so a trial's transcript shows whether the
   verification round happened. `agenc config set completion_gate.mode never`

@@ -92,11 +92,14 @@ From `formatCliHelpText()`:
   re-verify, and the advice to escalate with the ask-user-question tool). The
   contract is also enforced structurally: the first tool-free final answer of
   a turn that used tools is held back while the runtime injects a
-  `<completion_gate>` verification request. Verification requires each
-  nonempty checked `- [x]` item to have an associated successful tool
-  result since the latest request (the tool name, arguments, or content
-  must share a distinctive token with the claim; sentence punctuation is
-  not part of a token). A checked item without such a result and without a
+  `<completion_gate>` verification request, unless it already passes
+  verification and cites a command that ran successfully after the last
+  workspace change. Verification requires each nonempty checked `- [x]`
+  item to have an associated successful tool result after the last
+  workspace change (the last file edit or a command the checklist does not
+  name). The tool name, arguments, or content must share a distinctive
+  token with the claim; sentence punctuation is not part of a token. A
+  checked item without such a result and without a
   failed check is quoted back apart from the other unmet items, with a
   request to put the command run or file inspected on its line. Unchecked
   `- [ ]` items

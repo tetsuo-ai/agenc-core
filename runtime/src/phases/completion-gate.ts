@@ -8,15 +8,19 @@
  * transcript does not contain. The gate makes the verification round a
  * structural step of the turn instead of a request in the prompt:
  *
- *   - The first tool-free final answer of an eligible turn is not accepted.
- *     The gate injects a durable user message that quotes the task and asks
- *     for an acceptance checklist backed by executed checks, then re-enters
- *     the loop (`transition: completion_gate`).
- *   - The next tool-free answer is judged structurally: each nonempty
- *     `- [x]` item must have an associated successful post-injection tool
- *     result (token overlap with the tool name, arguments, or content;
- *     sentence punctuation is not a token). A checked item no result names
- *     is quoted back apart from failed ones and asked to name its evidence.
+ *   - Evidence counts from the last workspace change: the last successful
+ *     file edit or write, or the last command no checked item names. A check
+ *     recorded before that change does not verify the changed workspace.
+ *   - A tool-free final answer is judged structurally: each nonempty `- [x]`
+ *     item must have an associated successful tool result since the last
+ *     change (token overlap with the tool name, arguments, or content;
+ *     sentence punctuation is not a token). The first answer must also cite a
+ *     command that succeeded since then, so reads alone never settle it. An
+ *     answer that falls short gets a durable user message and the loop
+ *     re-enters (`transition: completion_gate`). The first message quotes the
+ *     task and asks for an acceptance checklist backed by executed checks; a
+ *     later one names what is missing, quoting a checked item no result names
+ *     apart from failed ones and asking it to name its evidence.
  *     Unchecked `- [ ]` items retry as unmet. Explicit `- [-]` items are
  *     unavailable claims: a bounded investigation round asks for evidence
  *     of the limitation, then the gate settles as `partial` instead of
@@ -57,6 +61,7 @@ import type {
 import { isPlanMode } from "../session/plan-mode.js";
 import { inDeadlineReserve } from "../session/run-deadline.js";
 import { isSubagentSessionSource } from "../session/run-turn-queued-commands.js";
+import { hasFileMutationMetadata } from "../tools/result-metadata.js";
 
 export const DEFAULT_COMPLETION_GATE_ROUNDS = 3;
 export const COMPLETION_GATE_ROUNDS_HARD_CAP = 10;
@@ -145,9 +150,9 @@ const UNMET_ITEMS_REVIEW =
 const UNAVAILABLE_MARK_RULE =
   "Mark an item `- [-] reason` only when it genuinely cannot be verified in this environment.";
 const UNLINKED_ITEMS_LEAD =
-  "No successful tool result since the previous request names what these checked items claim";
+  "No successful tool result since your last change names what these checked items claim";
 const UNLINKED_ITEMS_ACTION =
-  "Put on each item's line the command you ran or the file you inspected. Only results recorded after this request count, so re-run those checks.";
+  "Put on each item's line the command you ran or the file you inspected; a check you already ran after your last change counts and need not be re-run.";
 
 export function resolveCompletionGatePolicy(
   config: Pick<Config, "completionGate"> | undefined,
@@ -334,6 +339,19 @@ function isRunnableEvidence(result: CompletedToolResultRecord): boolean {
   return typeof result.metadata?.exitCode === "number";
 }
 
+/**
+ * A successful file edit or write. Edit, MultiEdit, Write, NotebookEdit and
+ * apply_patch record one in their result metadata.
+ */
+function isWorkspaceFileMutation(result: CompletedToolResultRecord): boolean {
+  return result.isError !== true && hasFileMutationMetadata(result.metadata);
+}
+
+/** A command result: an exit code, or `null` while it runs or once killed. */
+function isProcessResult(result: CompletedToolResultRecord): boolean {
+  return isRunnableEvidence(result) || result.metadata?.exitCode === null;
+}
+
 function resultSessionId(
   result: CompletedToolResultRecord,
 ): number | undefined {
@@ -380,20 +398,19 @@ type CheckedItemVerdict = "verified" | "failed" | "unlinked";
 /**
  * Lineage spans the whole turn, the successful observation does not.
  *
- * An async launch recorded before the mark is what a later poll refers to, and
+ * `related` is the item's associated evidence from the whole turn: an async
+ * launch recorded before the last change is what a later poll refers to, and
  * a runnable failure anywhere in the turn still counts against the item. The
  * success itself has to be fresh: docs/reference/cli.md requires an associated
- * successful result since the latest request, and a pass recorded before a
- * subsequent source edit does not verify the edited state. An item with
- * neither a fresh success nor a runnable failure is unlinked: no successful
- * result since the request names what it claims.
+ * successful result after the last workspace change, and a pass recorded
+ * before a subsequent source edit does not verify the edited state. An item
+ * with neither a fresh success nor a runnable failure is unlinked: no
+ * successful result since the last change names what it claims.
  */
 function checkedItemVerdict(
-  itemText: string,
-  results: readonly CompletedToolResultRecord[],
+  related: readonly IndexedResult[],
   freshFrom: number,
 ): CheckedItemVerdict {
-  const related = associatedIndexed(itemText, results);
   const lastSuccess = related
     .filter((entry) => entry.index >= freshFrom && isSuccessfulResult(entry.result))
     .at(-1);
@@ -426,9 +443,43 @@ function pushBounded(items: string[], text: string, count = items.length): void 
 }
 
 /**
- * Per-item judgement reads the whole turn, not the post-injection window: the
- * ledger mark advances on every injection, so a failed runnable check would
- * otherwise be forgotten by the next round and its item could settle.
+ * Index of the first result after the last workspace change: the last file
+ * edit or write, or the last command, finished or still running, that no
+ * checked item names. A command the checklist names is its evidence, not a
+ * change. 0 when nothing in the turn changed the workspace.
+ */
+function evidenceAnchor(
+  results: readonly CompletedToolResultRecord[],
+  cited: ReadonlySet<number>,
+): number {
+  for (let index = results.length - 1; index >= 0; index -= 1) {
+    const result = results[index]!;
+    if (
+      isWorkspaceFileMutation(result) ||
+      (isProcessResult(result) && !cited.has(index))
+    ) {
+      return index + 1;
+    }
+  }
+  return 0;
+}
+
+interface ChecklistVerdict {
+  readonly hasCheckedItem: boolean;
+  readonly hasMalformedItem: boolean;
+  readonly failedItems: string[];
+  readonly unlinkedItems: string[];
+  readonly unavailableItems: string[];
+  /** Some result recorded after the last workspace change succeeded. */
+  readonly hasFreshSuccess: boolean;
+  /** A command a checked item names exited successfully after that change. */
+  readonly hasFreshCitedCommand: boolean;
+}
+
+/**
+ * Per-item judgement reads the whole turn: a failed runnable check anywhere in
+ * it still counts against its item, and only the success has to be recorded
+ * after the last workspace change.
  *
  * Failed items (unchecked, a check that failed, or a `[-]` whose check ran)
  * need work; unlinked items only need to name their evidence. Together they
@@ -437,14 +488,20 @@ function pushBounded(items: string[], text: string, count = items.length): void 
 function classifyChecklist(
   text: string,
   allResults: readonly CompletedToolResultRecord[],
-  freshFrom: number,
-): {
-  hasCheckedItem: boolean;
-  hasMalformedItem: boolean;
-  failedItems: string[];
-  unlinkedItems: string[];
-  unavailableItems: string[];
-} {
+): ChecklistVerdict {
+  // A nonempty checked item's evidence decides both its verdict and which
+  // commands the checklist names, so it is associated once.
+  const entries = [...checklistItems(text)].map((item) => ({
+    item,
+    related:
+      (item.mark === "x" || item.mark === "X") && item.text.length > 0
+        ? associatedIndexed(item.text, allResults)
+        : undefined,
+  }));
+  const cited = new Set(
+    entries.flatMap(({ related }) => (related ?? []).map(({ index }) => index)),
+  );
+  const anchor = evidenceAnchor(allResults, cited);
   let hasCheckedItem = false;
   let hasMalformedItem = false;
   const failedItems: string[] = [];
@@ -452,14 +509,14 @@ function classifyChecklist(
   const unavailableItems: string[] = [];
   const pushUnmet = (items: string[], itemText: string): void =>
     pushBounded(items, itemText, failedItems.length + unlinkedItems.length);
-  for (const item of checklistItems(text)) {
+  for (const { item, related } of entries) {
     if (item.text.length === 0) {
       hasMalformedItem = true;
       continue;
     }
-    if (item.mark === "x" || item.mark === "X") {
+    if (related !== undefined) {
       hasCheckedItem = true;
-      const verdict = checkedItemVerdict(item.text, allResults, freshFrom);
+      const verdict = checkedItemVerdict(related, anchor);
       if (verdict === "failed") pushUnmet(failedItems, item.text);
       if (verdict === "unlinked") pushUnmet(unlinkedItems, item.text);
       continue;
@@ -478,12 +535,20 @@ function classifyChecklist(
     }
     hasMalformedItem = true;
   }
+  const fresh = allResults.slice(anchor);
   return {
     hasCheckedItem,
     hasMalformedItem,
     failedItems,
     unlinkedItems,
     unavailableItems,
+    hasFreshSuccess: fresh.some(isSuccessfulResult),
+    hasFreshCitedCommand: fresh.some(
+      (result, offset) =>
+        cited.has(anchor + offset) &&
+        isRunnableEvidence(result) &&
+        isSuccessfulResult(result),
+    ),
   };
 }
 
@@ -561,7 +626,7 @@ export function buildCompletionGateMessage(input: {
   if (input.reason === "no_verification") {
     return [
       open,
-      "Your previous answer did not run any check successfully after the verification request. Failed tool calls and commands that are still running do not establish verification. Run the task's own checks now (its tests, its build, the commands it names, the delivered program on its inputs), read their results, fix what fails, then answer again in the checklist form with one line of evidence per item.",
+      "No check your answer cites succeeded after your last change (a file edit, or a command your checklist does not name, makes earlier results stale). Failed tool calls and commands that are still running do not establish verification. Run the task's own checks now (its tests, its build, the commands it names, the delivered program on its inputs), read their results, fix what fails, then answer again in the checklist form with one line of evidence per item.",
       close,
     ].join("\n");
   }
@@ -596,7 +661,7 @@ export function buildCompletionGateMessage(input: {
     "",
     "Do this now, with tools:",
     "1. Write an acceptance checklist from the task quoted below: every file, path, name, format, command, test, exit code, edge case and behaviour it states or clearly implies.",
-    "2. For each item, run the concrete check that proves it in this environment: re-run the tests, builds or commands the task names; execute the delivered program on the stated inputs and on edge cases; inspect the produced files. Read the actual output; do not rely on memory of earlier output.",
+    "2. For each item, name the concrete check that proves it in this environment: the tests, builds or commands the task names; the delivered program run on the stated inputs and on edge cases; the produced files inspected. A check that ran after your last change counts and need not be re-run; run every check you have not observed passing since then, and read its actual output.",
     "3. If any item is unmet or broken, keep working on it now, then re-check the whole list, because a fix can break something that passed before.",
     "4. Then answer again with the checklist as markdown checkboxes, one line of evidence per item (the command you ran and what it showed), followed by a short summary. Use `- [x]` for verified items, `- [ ]` for items still unmet, and `- [-] reason` for items that cannot be verified here.",
     "",
@@ -652,6 +717,24 @@ function emitCompletionGate(
       },
     },
   });
+}
+
+/**
+ * Why an answer after a request is not accepted. An answer without a usable
+ * checklist is asked for one. A checklist whose checked items have nothing
+ * that succeeded since the last change is asked to run its checks; otherwise
+ * the unmet items, then the unavailable ones, are quoted back.
+ */
+function laterRoundReason(
+  verdict: ChecklistVerdict,
+  unmetCount: number,
+  leftoverIsOnlyUnavailable: boolean,
+): CompletionGateInjectReason {
+  if (unmetCount === 0 && !leftoverIsOnlyUnavailable) return "no_checklist";
+  if (verdict.hasCheckedItem && !verdict.hasFreshSuccess) {
+    return "no_verification";
+  }
+  return unmetCount > 0 ? "unmet_items" : "unavailable_unproven";
 }
 
 export async function completionGate(
@@ -716,30 +799,28 @@ export async function completionGate(
     // A turn that never touched a tool has nothing to verify.
     return settle("skipped", "no_tool_use", 0);
   }
-  const postInjectionResults =
-    round === 0
-      ? []
-      : state.completedToolResults.slice(state.completionGateToolLedgerMark);
   const toolCallsSinceInjection =
-    round === 0 ? 0 : Math.max(0, postInjectionResults.length);
-  const hasSuccessfulResult = postInjectionResults.some(isSuccessfulResult);
+    round === 0
+      ? 0
+      : Math.max(
+          0,
+          state.completedToolResults.length -
+            state.completionGateToolLedgerMark,
+        );
   if (inDeadlineReserve(session)) {
     // The run's deadline reserve (#2503): the model was told to restore its
     // best verified state and finish, so the answer is accepted rather than
     // spending the last minutes on another verification round.
     return settle("skipped", "deadline_reserve", toolCallsSinceInjection);
   }
+  const verdict = classifyChecklist(text, state.completedToolResults);
   const {
     hasCheckedItem,
     hasMalformedItem,
     failedItems,
     unlinkedItems,
     unavailableItems,
-  } = classifyChecklist(
-    text,
-    state.completedToolResults,
-    round === 0 ? 0 : state.completionGateToolLedgerMark,
-  );
+  } = verdict;
   const unmetItems = [...failedItems, ...unlinkedItems];
   const reportedItems = [...unmetItems, ...unavailableItems].slice(
     0,
@@ -747,12 +828,15 @@ export async function completionGate(
   );
   const leftoverIsOnlyUnavailable =
     unmetItems.length === 0 && unavailableItems.length > 0 && !hasMalformedItem;
+  // Every checked item has an associated success since the last change. No
+  // request preceded the first answer, so it must also cite a command that
+  // succeeded since then: reads alone do not settle it.
   if (
-    hasSuccessfulResult &&
     hasCheckedItem &&
     !hasMalformedItem &&
     unmetItems.length === 0 &&
-    unavailableItems.length === 0
+    unavailableItems.length === 0 &&
+    (round > 0 || verdict.hasFreshCitedCommand)
   ) {
     return settle("verified", "verified_with_tools", toolCallsSinceInjection);
   }
@@ -785,13 +869,7 @@ export async function completionGate(
   const reason: CompletionGateInjectReason =
     round === 0
       ? "initial"
-      : !hasSuccessfulResult
-        ? "no_verification"
-        : unmetItems.length > 0
-          ? "unmet_items"
-          : leftoverIsOnlyUnavailable
-            ? "unavailable_unproven"
-            : "no_checklist";
+      : laterRoundReason(verdict, unmetItems.length, leftoverIsOnlyUnavailable);
   const injectItems =
     reason === "unavailable_unproven" ? unavailableItems : unmetItems;
   state.completionGateRound += 1;
