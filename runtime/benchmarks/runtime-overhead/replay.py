@@ -4,6 +4,39 @@ Runs only in a Linux container with a task-owned /work and read-only /evidence.
 """
 import argparse, collections, hashlib, http.server, json, os, pathlib, re, shutil, stat, subprocess, threading, time
 
+# This replay is for the reviewed twelve-task corpus, not an arbitrary script
+# runner. A manifest selects a known fixture; it cannot nominate executable
+# paths, even other Python files inside the task directory. Adding a workload
+# requires an explicit source review here as well as manifest provenance.
+TASK_SCRIPTS = {
+    '01-chunked-strict': ('01-chunked-strict/setup.py', '01-chunked-strict/check.py'),
+    '02-split-limit': ('02-split-limit/setup.py', '02-split-limit/check.py'),
+    '03-window-padding': ('03-window-padding/setup.py', '03-window-padding/check.py'),
+    '04-count-by': ('04-count-by/setup.py', '04-count-by/check.py'),
+    '05-empty-refactor': ('05-empty-refactor/setup.py', '05-empty-refactor/check.py'),
+    '06-key-rotation-map': ('06-key-rotation-map/setup.py', '06-key-rotation-map/check.py'),
+    '07-source-manifest': ('07-source-manifest/setup.py', '07-source-manifest/check.py'),
+    '08-integer-encoding': ('08-integer-encoding/setup.py', '08-integer-encoding/check.py'),
+    '09-separator-payload': ('09-separator-payload/setup.py', '09-separator-payload/check.py'),
+    '10-expiry-boundary': ('10-expiry-boundary/setup.py', '10-expiry-boundary/check.py'),
+    '11-compression-marker': ('11-compression-marker/setup.py', '11-compression-marker/check.py'),
+    '12-partition-map': ('12-partition-map/setup.py', '12-partition-map/check.py'),
+}
+
+def task_script_paths(root, task):
+    """Return source-owned fixture paths, checking manifest identity first.
+
+    The directory/files are still trusted code, not untrusted content made safe
+    by their names. Existing no-follow checks also reject substituted symlinks.
+    """
+    task_id = task.get('id') if isinstance(task, dict) else None
+    if not isinstance(task_id, str) or task_id not in TASK_SCRIPTS:
+        raise ValueError('Unknown replay task; reviewed fixture mapping required')
+    setup, check = TASK_SCRIPTS[task_id]
+    if task.get('setup_script') != setup or task.get('check_script') != check:
+        raise ValueError('Manifest script does not match the reviewed task fixture')
+    return confined_path(root, setup), confined_path(root, check)
+
 def confined_path(root, relative):
     """Select a symlink-free child of a trusted benchmark root.
 
@@ -168,8 +201,7 @@ def main():
        for task in tasks:
         if task['id'] not in args.tasks.split(','):continue
         if not re.fullmatch(r'[A-Za-z0-9_-]+', task['id']):raise ValueError('Invalid task ID')
-        setup_script=confined_path(root/'bench/tasks',task['setup_script'])
-        check_script=confined_path(root/'bench/tasks',task['check_script'])
+        setup_script,check_script=task_script_paths(root/'bench/tasks',task)
         dest=root/'replay-runs'/f'{args.label}-{mode}-{task["id"]}-{repeat+1}'
         dest.mkdir(parents=True,exist_ok=False);repo=dest/'repo';home=dest/'home';home.mkdir()
         cache=repository_cache_path('/evidence/light-ultra/repos',task['repo_sha'])

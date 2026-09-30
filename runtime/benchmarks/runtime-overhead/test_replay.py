@@ -9,6 +9,27 @@ from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('replay',pathlib.Path(__file__).with_name('replay.py'))
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 class ReplayTests(unittest.TestCase):
+    def test_task_script_mapping_covers_exact_reviewed_twelve_task_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=pathlib.Path(directory)
+            self.assertEqual(len(m.TASK_SCRIPTS),12)
+            self.assertEqual(sorted(int(name[:2]) for name in m.TASK_SCRIPTS),list(range(1,13)))
+            for task_id,(setup,check) in m.TASK_SCRIPTS.items():
+                with self.subTest(task=task_id):
+                    self.assertEqual((setup,check),(task_id+'/setup.py',task_id+'/check.py'))
+                    task={'id':task_id,'setup_script':setup,'check_script':check}
+                    self.assertEqual(m.task_script_paths(root,task),(root.resolve()/setup,root.resolve()/check))
+    def test_manifest_cannot_nominate_other_executable_paths(self):
+        valid={'id':'03-window-padding','setup_script':'03-window-padding/setup.py','check_script':'03-window-padding/check.py'}
+        invalid=[None,[],{}, {**valid,'id':[]},{**valid,'id':'new-task'}]
+        for field in ('setup_script','check_script'):
+            for selector in (None,42,'../outside.py','/tmp/outside.py','03-window-padding/other.py',
+                             '04-count-by/check.py','03-window-padding/check.py\n','--eval'):
+                invalid.append({**valid,field:selector})
+        for task in invalid:
+            with self.subTest(task=task),patch.object(m,'confined_path') as resolve:
+                with self.assertRaises(ValueError):m.task_script_paths('/trusted',task)
+                resolve.assert_not_called()
     def test_cache_revision_validation_precedes_path_resolution(self):
         invalid = ('', '../outside', '/tmp/cache', 'a/b', '--help', 'a'*39,
                    'a'*41, 'g'*40, 'A'*40, 'a'*40+'\n', None, 42, ['a'*40])
@@ -116,21 +137,23 @@ class ReplayTests(unittest.TestCase):
             root=pathlib.Path(directory);core=root/'core';(core/'.git').mkdir(parents=True)
             (core/'.git/HEAD').write_text('a'*40)
             scripts=root/'bench/tasks';scripts.mkdir(parents=True)
-            (scripts/'escape').symlink_to(root)
+            fixture=scripts/'03-window-padding';fixture.mkdir()
             real_confined=m.confined_path;real_read=pathlib.Path.read_text
             for field in ('setup_script','check_script'):
-                task={'id':'task','setup_script':'setup.py','check_script':'check.py',field:'escape/outside.py'}
+                task={'id':'03-window-padding','setup_script':'03-window-padding/setup.py','check_script':'03-window-padding/check.py'}
+                link=scripts/task[field];link.symlink_to(root/'outside.py')
                 def remap_confined(path, selector):
                     return real_confined(root/pathlib.Path(path).relative_to('/work'),selector)
                 def manifest_read(path,*args,**kwargs):
                     if str(path)=='/work/bench/tasks/manifest.json':return json.dumps([task])
                     return real_read(path,*args,**kwargs)
-                with self.subTest(field=field),patch.object(sys,'argv',['replay','--core','core','--label','test','--tasks','task','--modes','cold']), \
+                with self.subTest(field=field),patch.object(sys,'argv',['replay','--core','core','--label','test','--tasks','03-window-padding','--modes','cold']), \
                      patch.object(m,'confined_path',remap_confined),patch.object(pathlib.Path,'read_text',manifest_read), \
                      patch.object(m.http.server,'ThreadingHTTPServer'),patch.object(m.threading,'Thread'), \
                      patch.object(m.shutil,'copytree') as copy,patch.object(m,'command') as command:
                     with self.assertRaisesRegex(ValueError,'Symlinks'):m.main()
                     copy.assert_not_called();command.assert_not_called()
+                link.unlink()
     def test_command_rejects_interpreter_flags_and_unapproved_executables(self):
         for args in (['sh','/tmp/script'], ['python3','-c','print(1)'], ['node','--eval','x'], 'node /tmp/script'):
             with self.subTest(args=args), patch.object(m.subprocess,'run') as run:
