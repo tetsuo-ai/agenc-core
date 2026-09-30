@@ -29,11 +29,13 @@ function staticLocalGraph(entry: string): Set<string> {
           ts.isNamedExports(statement.exportClause) &&
           statement.exportClause.elements.every(element => element.isTypeOnly))) continue;
       const specifier = statement.moduleSpecifier.text;
-      if (!specifier.startsWith(".")) continue;
-      const base = resolve(dirname(file), specifier);
+      if (!specifier.startsWith(".") && !specifier.startsWith("src/") && specifier !== "bun:bundle") continue;
+      const base = specifier === "bun:bundle" ? resolve("src/build/feature.ts") :
+        specifier.startsWith("src/") ? resolve(specifier) : resolve(dirname(file), specifier);
       const target = [base.replace(/\.mjs$/, ".mts").replace(/\.cjs$/, ".cts").replace(/\.js$/, ".ts"),
-        base.replace(/\.js$/, ".tsx"), base, base + "/index.ts"].find(existsSync);
-      if (target) visit(target);
+        base.replace(/\.js$/, ".tsx"), base, base + ".ts", base + ".tsx", base + "/index.ts"].find(existsSync);
+      if (!target) throw new Error(`Unresolved local static import: ${file} -> ${specifier}`);
+      visit(target);
     }
   }
   visit(entry);
@@ -60,6 +62,10 @@ describe("daemon control foreground boundary", () => {
     expect(graph.has(resolve("src/app-server/daemon-cli.ts"))).toBe(false);
     expect(graph.has(resolve("src/bin/local-turn-runtime.ts"))).toBe(false);
     expect(graph.has(resolve("src/session/run-turn.ts"))).toBe(false);
+    for (const target of ["bin/mcp-cli.ts", "bin/doctor-cli.ts", "bin/trajectories-cli.ts",
+      "skills/skills-cli.ts", "bin/slash.ts", "utils/gracefulShutdown.ts"]) {
+      expect(graph.has(resolve("src", target)), target).toBe(false);
+    }
   });
 
   it("loads foreground only on run and preserves the exact host capability", async () => {

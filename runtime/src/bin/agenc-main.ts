@@ -88,7 +88,6 @@ import {
   SchemaMismatchError,
   SessionLockedError,
 } from "../session/session-store.js";
-import { runSlashCommand } from "./slash.js";
 import type { SlashCommandAppStateBridge } from "../commands/types.js";
 import { goalKickoffPrompt, goalSetRequestParams } from "../commands/goal.js";
 import type { ResolveDaemonToolCallParams } from "../commands/resolve.js";
@@ -203,13 +202,11 @@ import {
 import {
   formatAgenCMcpCliHelpText,
   parseAgenCMcpCliArgs,
-  runAgenCMcpCli,
-} from "./mcp-cli.js";
+} from "./mcp-cli-args.js";
 import {
   formatAgenCDoctorCliHelpText,
   parseAgenCDoctorCliArgs,
-  runAgenCDoctorCli,
-} from "./doctor-cli.js";
+} from "./doctor-cli-args.js";
 import {
   formatAgenCOnboardCliHelpText,
   parseAgenCOnboardCliArgs,
@@ -266,8 +263,7 @@ import {
 import {
   formatAgenCSkillsCliHelpText,
   parseAgenCSkillsCliArgs,
-  runAgenCSkillsCli,
-} from "../skills/skills-cli.js";
+} from "../skills/skills-cli-args.js";
 import {
   formatAgenCPermissionsCliHelpText,
   parseAgenCPermissionsCliArgs,
@@ -283,8 +279,7 @@ import { createRecoveryMutationAdapter } from "../state/recovery-mutations.js";
 import {
   formatAgenCTrajectoriesCliHelpText,
   parseAgenCTrajectoriesCliArgs,
-  runAgenCTrajectoriesCli,
-} from "./trajectories-cli.js";
+} from "./trajectories-cli-args.js";
 import { prepareUserPromptForTurn } from "../hooks/user-prompt-ingress.js";
 import {
   readRunDeadlineFlags,
@@ -311,7 +306,7 @@ import {
   setSessionTrustAccepted,
 } from "../bootstrap/state.js";
 import { installAgenCShutdownSignalHandlers } from "../lifecycle/signal-handlers.js";
-import { installGlobalErrorNet } from "../utils/gracefulShutdown.js";
+import { installGlobalErrorNet } from "../utils/global-error-net.js";
 import { registerProcessOutputErrorHandlers } from "../utils/process.js";
 import { isRecord } from "../utils/record.js";
 import type { AgenCTuiBridgeSession } from "../tui/daemon-session.js";
@@ -1218,6 +1213,7 @@ function installTuiSessionContract(params: {
             appStateBridge?: SlashCommandAppStateBridge;
           }
         ).appStateBridge;
+        const { runSlashCommand } = await import("./slash.js");
         const slash = await runSlashCommand(message, {
           session: params.session,
           cwd: params.session.sessionConfiguration.cwd ?? process.cwd(),
@@ -3414,6 +3410,7 @@ async function handleLocalTuiSlashCommand(params: {
       appStateBridge?: SlashCommandAppStateBridge;
     }
   ).appStateBridge;
+  const { runSlashCommand } = await import("./slash.js");
   const slash = await runSlashCommand(params.message, {
     session: params.session as unknown as Session,
     cwd: params.cwd,
@@ -6325,10 +6322,12 @@ export async function main(): Promise<number> {
     : undefined;
   const mcpCommand = parseAgenCMcpCliArgs(argv, mcpConfig);
   if (mcpCommand !== null) {
+    const { runAgenCMcpCli } = await import("./mcp-cli.js");
     return runAgenCMcpCli(mcpCommand);
   }
   const doctorCommand = parseAgenCDoctorCliArgs(argv);
   if (doctorCommand !== null) {
+    const { runAgenCDoctorCli } = await import("./doctor-cli.js");
     return runAgenCDoctorCli(doctorCommand);
   }
   const onboardCommand = parseAgenCOnboardCliArgs(argv);
@@ -6405,6 +6404,7 @@ export async function main(): Promise<number> {
   if (skillsCommand !== null) {
     const skillsEnvironment = Object.freeze({ ...process.env });
     const skillsRuntimeOptions = resolveAgentRuntimeOptions(skillsEnvironment);
+    const { runAgenCSkillsCli } = await import("../skills/skills-cli.js");
     return runAgenCSkillsCli(skillsCommand, {
       agencHome: resolveAgencHome(skillsEnvironment),
       env: skillsEnvironment,
@@ -6424,6 +6424,7 @@ export async function main(): Promise<number> {
   }
   const trajectoriesCommand = parseAgenCTrajectoriesCliArgs(argv);
   if (trajectoriesCommand !== null) {
+    const { runAgenCTrajectoriesCli } = await import("./trajectories-cli.js");
     return runAgenCTrajectoriesCli(trajectoriesCommand);
   }
 
