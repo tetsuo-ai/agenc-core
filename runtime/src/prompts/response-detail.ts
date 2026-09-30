@@ -12,7 +12,7 @@ export function getResponseDetailSection(level: LLMChatOptions["modelVerbosity"]
     : level === "medium"
       ? "Give a balanced amount of explanation in user-facing progress and final messages."
       : "Give more explanation and useful context in user-facing progress and final messages.";
-  return `# Response Detail\n${amount} Always report required checks and test results, errors, blockers, and approval requests.`;
+  return `# Response Detail\n${amount} If you ran checks or tests, still report their results. Always report errors, blockers, and approval requests.`;
 }
 
 /** Add a fallback to the volatile tail for routes selected after prompt assembly. */

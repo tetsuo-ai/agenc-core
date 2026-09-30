@@ -53,7 +53,7 @@ describe("buildOpenAIResponsesRequest", () => {
         type: "message", role: "user",
         content: [{ type: "input_text", text: expect.stringContaining("# Response Detail") }],
       });
-      expect(JSON.stringify(subscription)).toContain("checks and test results, errors, blockers, and approval requests");
+      expect(JSON.stringify(subscription)).toContain("If you ran checks or tests, still report their results. Always report errors, blockers, and approval requests.");
     }
     expect(subscriptionBase.instructions).not.toContain("# Response Detail");
     expect(JSON.stringify(subscriptionBase.input)).not.toContain("# Response Detail");

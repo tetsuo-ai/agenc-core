@@ -65,7 +65,7 @@ describe("Sonnet 5.5 Messages API contract", () => {
       expect(candidate.max_tokens).toEqual(inherited.max_tokens);
       expect(candidate.system).toEqual(inherited.system);
       expect(JSON.stringify(candidate.messages)).toContain("# Response Detail");
-      expect(JSON.stringify(candidate.messages)).toContain("checks and test results, errors, blockers, and approval requests");
+      expect(JSON.stringify(candidate.messages)).toContain("If you ran checks or tests, still report their results. Always report errors, blockers, and approval requests.");
     }
     expect(JSON.stringify(inherited.messages)).not.toContain("# Response Detail");
     const inheritedConfig = buildAnthropicMessagesRequest({ model, messages, tools,

@@ -657,7 +657,7 @@ describe("assembleSystemPrompt", () => {
     for (const prompt of [concise, balanced, detailed]) {
       expect(prompt.staticPrefix).toBe(inherited.staticPrefix);
       expect(prompt.dynamicSuffix).toMatch(/STYLE_SENTINEL\n\n# Response Detail\n/);
-      expect(prompt.dynamicSuffix).toContain("checks and test results, errors, blockers, and approval requests");
+      expect(prompt.dynamicSuffix).toContain("If you ran checks or tests, still report their results. Always report errors, blockers, and approval requests.");
       expect(prompt.text.indexOf("# Response Detail")).toBeGreaterThan(prompt.text.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY));
     }
     expect(new Set([concise.dynamicSuffix, balanced.dynamicSuffix, detailed.dynamicSuffix]).size).toBe(3);
