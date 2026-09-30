@@ -58,6 +58,8 @@ describe("daemon control foreground boundary", () => {
   it("keeps the CLI static graph outside the foreground facade", () => {
     const graph = staticLocalGraph(resolve("src/bin/agenc-main.ts"));
     expect(graph.has(resolve("src/app-server/daemon-cli.ts"))).toBe(false);
+    expect(graph.has(resolve("src/bin/local-turn-runtime.ts"))).toBe(false);
+    expect(graph.has(resolve("src/session/run-turn.ts"))).toBe(false);
   });
 
   it("loads foreground only on run and preserves the exact host capability", async () => {
