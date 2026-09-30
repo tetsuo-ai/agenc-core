@@ -78,7 +78,7 @@ describe("buildOpenAIResponsesRequest", () => {
     expect(configured).not.toHaveProperty("text.verbosity");
     expect(configured.instructions).toBe("STATIC_HEAD\n\nDYNAMIC_TAIL");
     expect((configured.input as Array<Record<string, unknown>>).at(-1)).toMatchObject({
-      role: "user", content: [{ text: expect.stringContaining("Give more explanation") }],
+      role: "user", content: [{ text: expect.stringContaining("Detailed: give thorough user-facing answers.") }],
     });
     expect(configured).not.toHaveProperty("max_output_tokens");
   });
