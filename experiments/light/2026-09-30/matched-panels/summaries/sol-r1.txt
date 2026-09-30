@@ -1,0 +1,51 @@
+model gpt-5.6-sol  phases ['matched-v3-sol-r1']  cells 24  matched pairs 12  tasks 12
+
+task                     rep agent pass calls    input   cached    out    cost $  wall s
+01-chunked-strict        1   light Y        8    33623     3456   1645       n/a    52.8
+01-chunked-strict        1   pi    Y        9    32603     1024   1526       n/a    58.8
+02-split-limit           1   light Y        9    36991     5504   1610       n/a    57.5
+02-split-limit           1   pi    Y        9    24959        0   1273       n/a    43.1
+03-window-padding        1   light Y        8    36115     4736   2289       n/a    67.4
+03-window-padding        1   pi    Y       10    39024     5888   2140       n/a    71.3
+04-count-by              1   light Y       11   116302    33152   3550       n/a   104.4
+04-count-by              1   pi    Y       14   113869    37760   3403       n/a    96.5
+05-empty-refactor        1   light Y        5    16353     3584   1148       n/a    35.1
+05-empty-refactor        1   pi    Y        7    26834        0    996       n/a    41.0
+06-key-rotation-map      1   light Y        6    23840     3200   1534       n/a    43.6
+06-key-rotation-map      1   pi    Y        5    36704    10496   1045       n/a    44.0
+07-source-manifest       1   light Y       11    59174     5504   3520       n/a    96.7
+07-source-manifest       1   pi    Y        8    27100     1920   2645       n/a    69.1
+08-integer-encoding      1   light Y        8    32736     1152   1740       n/a    52.5
+08-integer-encoding      1   pi    Y        8    33735        0   1762       n/a    48.9
+09-separator-payload     1   light Y        7    37687     7296   1708       n/a    53.1
+09-separator-payload     1   pi    Y        9    47805     2688   1961       n/a    56.3
+10-expiry-boundary       1   light Y        8    36377     3712   1853       n/a    59.7
+10-expiry-boundary       1   pi    Y       11    75253     7424   2767       n/a    84.0
+11-compression-marker    1   light Y        7    21597     3328   1944       n/a    56.9
+11-compression-marker    1   pi    Y       13    98213    14336   3522       n/a   100.8
+12-partition-map         1   light Y       16   176864    62976   3971       n/a   135.6
+12-partition-map         1   pi    Y       12    88138    17152   2768       n/a    91.1
+
+light pass 12/12  calls 104  input 627659  cached 137600  uncached+output 516571  cost inconclusive (usage incomplete or flagged)  median 57.2s  p90 104.4s
+pi    pass 12/12  calls 115  input 644237  cached 98688  uncached+output 571357  cost inconclusive (usage incomplete or flagged)  median 64.0s  p90 96.5s
+
+by category (Light / Pi): pass, calls, median wall s
+  behavior-preserving-refactor     pass 1/1 of 1  calls 5/7  wall 35.1/41.0
+  boundary-bug                     pass 1/1 of 1  calls 8/11  wall 59.7/84.0
+  deferred-planning-feature-tests  pass 1/1 of 1  calls 16/12  wall 135.6/91.1
+  iterator-bug                     pass 1/1 of 1  calls 8/10  wall 67.4/71.3
+  multi-file-feature-tests         pass 1/1 of 1  calls 11/14  wall 104.4/96.5
+  repo-question-search             pass 1/1 of 1  calls 6/5  wall 43.6/44.0
+  serialization-bug                pass 1/1 of 1  calls 7/13  wall 56.9/100.8
+  shell-heavy                      pass 1/1 of 1  calls 11/8  wall 96.7/69.1
+  single-file-bug                  pass 4/4 of 4  calls 32/35  wall 52.9/52.6
+
+Light failed where Pi passed: none
+Light passed where Pi failed: none
+
+Light minus Pi, mean per cell, 95% bootstrap over whole tasks:
+  wall seconds: +0.86144  [-11.42, +13.187]  inconclusive
+  model calls: -0.91667  [-2.4167, +0.58333]  inconclusive
+  uncached+output tokens: -4565.5  [-20490, +10425]  inconclusive
+  cost usd: inconclusive (usage incomplete or flagged)
+  (one repeat: initial diagnostic panel, not evidence of superiority)

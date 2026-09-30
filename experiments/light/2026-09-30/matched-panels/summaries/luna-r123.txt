@@ -1,0 +1,98 @@
+model gpt-6-luna  phases ['matched-v3-luna', 'matched-v3-luna-r23']  cells 72  matched pairs 36  tasks 12
+
+task                     rep agent pass calls    input   cached    out    cost $  wall s
+01-chunked-strict        1   light Y        7    19778    14692   1384   0.00135    32.4
+01-chunked-strict        1   pi    Y        9    29573    24665   1398   0.00144    25.3
+01-chunked-strict        2   light Y        8    34672    27322   1316   0.00167    23.3
+01-chunked-strict        2   pi    Y        9   118742   101353   1254   0.00338    31.2
+01-chunked-strict        3   light Y        9    42820    34815   1508   0.00190    29.3
+01-chunked-strict        3   pi    Y        9    28303    23387   1489   0.00147    30.6
+02-split-limit           1   light Y        9    33961    27351   1512   0.00169    31.1
+02-split-limit           1   pi    Y        9    31557    26318   1155   0.00136    28.5
+02-split-limit           2   light Y       14    66163    57677   1847   0.00235    41.3
+02-split-limit           2   pi    Y       11   154537   136817   1208   0.00374    38.2
+02-split-limit           3   light Y       10    35677    28277   1858   0.00195    30.5
+02-split-limit           3   pi    Y        7    16571    13062   1352   0.00116    30.2
+03-window-padding        1   light Y       10    42525    34757   2787   0.00252    43.0
+03-window-padding        1   pi    Y       14   246035   220751   3698   0.00658    84.1
+03-window-padding        2   light Y       13    86863    73678   2351   0.00323    38.8
+03-window-padding        2   pi    Y       10    45094    38134   1927   0.00204    47.9
+03-window-padding        3   light Y        9    35788    28257   2340   0.00221    34.6
+03-window-padding        3   pi    N       16    88588    77328   3292   0.00355    74.6
+04-count-by              1   light Y       16   126274   112292   3068   0.00406    58.9
+04-count-by              1   pi    Y       11   258033   231057   1730   0.00587    30.8
+04-count-by              2   light Y       11    80517    68443   2356   0.00307    36.7
+04-count-by              2   pi    Y       11    63579    55537   2101   0.00241    41.8
+04-count-by              3   light Y       16   149970   133993   3177   0.00453    51.7
+04-count-by              3   pi    Y       11   259515   232004   1896   0.00602    43.6
+05-empty-refactor        1   light Y        8    28562    21825   1553   0.00167    28.8
+05-empty-refactor        1   pi    Y        7    94183    78362    662   0.00270    28.4
+05-empty-refactor        2   light Y       12    56525    47732   2146   0.00243    44.0
+05-empty-refactor        2   pi    Y        6    80300    63633   1067   0.00284    25.7
+05-empty-refactor        3   light Y        8    32071    24726   1347   0.00166    31.2
+05-empty-refactor        3   pi    Y        6    79278    63112   1025   0.00276    26.6
+06-key-rotation-map      1   light Y        7    30742    23248   1304   0.00163    20.4
+06-key-rotation-map      1   pi    Y        6    40437    30932    622   0.00157    11.6
+06-key-rotation-map      2   light Y        7    48184    36888   1333   0.00216    20.8
+06-key-rotation-map      2   pi    N       10    71371    60954    605   0.00195    17.3
+06-key-rotation-map      3   light N        6    46616    35405   1114   0.00203    19.7
+06-key-rotation-map      3   pi    Y        7    27968    21176    663   0.00122    14.5
+07-source-manifest       1   light Y        7    23474    17154   2206   0.00191    28.5
+07-source-manifest       1   pi    Y       10    36442    31357   1557   0.00160    25.3
+07-source-manifest       2   light Y        7    24648    17245   2098   0.00196    27.2
+07-source-manifest       2   pi    Y        7    18354    13682   1268   0.00124    19.3
+07-source-manifest       3   light Y        8    23948    17929   2165   0.00186    30.6
+07-source-manifest       3   pi    Y        5    12864     8341   1205   0.00114    34.7
+08-integer-encoding      1   light Y        9    28593    21875   1448   0.00161    27.6
+08-integer-encoding      1   pi    Y       10    23379    19918   1021   0.00106    22.1
+08-integer-encoding      2   light Y        9    36471    28452   1399   0.00179    26.1
+08-integer-encoding      2   pi    Y       10    23353    19880   1065   0.00108    19.9
+08-integer-encoding      3   light Y        9    26352    21078   1546   0.00151    29.8
+08-integer-encoding      3   pi    Y        8    18121    14843    962   0.00096    18.9
+09-separator-payload     1   light Y        9    54168    44185   1500   0.00219    26.5
+09-separator-payload     1   pi    Y       11    40083    34649    909   0.00134    21.7
+09-separator-payload     2   light Y        8    37927    29981   1351   0.00177    35.1
+09-separator-payload     2   pi    Y        9    37887    31934   1144   0.00149    26.2
+09-separator-payload     3   light Y       10    72787    59963   2689   0.00323    38.8
+09-separator-payload     3   pi    Y       10    38391    32511   1449   0.00164    23.0
+10-expiry-boundary       1   light Y        9    39146    30729   1445   0.00187    24.9
+10-expiry-boundary       1   pi    Y        9    36923    30867   1079   0.00145    22.7
+10-expiry-boundary       2   light Y       12    80432    69568   1938   0.00275    33.0
+10-expiry-boundary       2   pi    Y        9    39434    32970   1091   0.00152    24.7
+10-expiry-boundary       3   light Y        8    49073    38228   1467   0.00220    28.4
+10-expiry-boundary       3   pi    Y       10    48339    41350   1319   0.00177    23.1
+11-compression-marker    1   light Y        8    43798    34609   1897   0.00221    29.2
+11-compression-marker    1   pi    Y       12    50369    44486   1450   0.00176    30.8
+11-compression-marker    2   light Y       10    49582    40440   1856   0.00225    32.3
+11-compression-marker    2   pi    Y       12    48328    42611   1296   0.00165    29.9
+11-compression-marker    3   light Y       10    34646    27250   1680   0.00185    31.4
+11-compression-marker    3   pi    Y        9    34573    28939   1144   0.00142    21.8
+12-partition-map         1   light N       18   139288   123744   3257   0.00442    52.5
+12-partition-map         1   pi    Y       15    72114    64849   2075   0.00241    34.1
+12-partition-map         2   light N       19   176126   156906   3621   0.00530    52.1
+12-partition-map         2   pi    Y       19    95964    87968   2145   0.00275    40.7
+12-partition-map         3   light Y       14    94921    80942   2912   0.00366    48.7
+12-partition-map         3   pi    Y       12   237823   210936   1700   0.00565    30.2
+
+light pass 33/36  calls 364  input 2033088  cached 1691656  uncached+output 412208  cost $0.08645  median 31.1s  p90 51.7s
+pi    pass 34/36  calls 356  input 2646405  cached 2290673  uncached+output 406755  cost $0.08399  median 27.5s  p90 43.6s
+
+by category (Light / Pi): pass, calls, median wall s
+  behavior-preserving-refactor     pass 3/3 of 3  calls 28/19  wall 31.2/26.6
+  boundary-bug                     pass 3/3 of 3  calls 29/28  wall 28.4/23.1
+  deferred-planning-feature-tests  pass 1/3 of 3  calls 51/46  wall 52.1/34.1
+  iterator-bug                     pass 3/2 of 3  calls 32/40  wall 38.8/74.6
+  multi-file-feature-tests         pass 3/3 of 3  calls 43/33  wall 51.7/41.8
+  repo-question-search             pass 2/2 of 3  calls 20/23  wall 20.4/14.5
+  serialization-bug                pass 3/3 of 3  calls 28/33  wall 31.4/29.9
+  shell-heavy                      pass 3/3 of 3  calls 22/22  wall 28.5/25.3
+  single-file-bug                  pass 12/12 of 12  calls 111/112  wall 30.1/25.8
+
+Light failed where Pi passed: ['06-key-rotation-map r3', '12-partition-map r1', '12-partition-map r2']
+Light passed where Pi failed: ['03-window-padding r3', '06-key-rotation-map r2']
+
+Light minus Pi, mean per cell, 95% bootstrap over whole tasks:
+  wall seconds: +3.3049  [-3.7216, +8.2688]  inconclusive
+  model calls: +0.22222  [-0.77778, +1.2778]  inconclusive
+  uncached+output tokens: +151.47  [-2333.8, +2466.8]  inconclusive
+  cost usd: +6.8231e-05  [-0.00036971, +0.00047374]  inconclusive

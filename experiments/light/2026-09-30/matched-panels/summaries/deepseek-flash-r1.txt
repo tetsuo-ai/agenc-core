@@ -1,0 +1,51 @@
+model deepseek-flash  phases ['matched-v3-ds-flash-r1']  cells 24  matched pairs 12  tasks 12
+
+task                     rep agent pass calls    input   cached    out    cost $  wall s
+01-chunked-strict        1   light Y       15   102010    94464   4117   0.00389    44.5
+01-chunked-strict        1   pi    Y       13    70533    64128   3417   0.00320    36.8
+02-split-limit           1   light Y       13   103481    95360   6042   0.00513    43.6
+02-split-limit           1   pi    Y       17    99189    93056   4394   0.00384    40.7
+03-window-padding        1   light Y       12   132017   124416  14613   0.01028    81.1
+03-window-padding        1   pi    Y       15   173007   161792  11472   0.00905    73.1
+04-count-by              1   light N       20   275876   261888   9232   0.00842    66.8
+04-count-by              1   pi    Y       28   390856   376320  11181   0.01002    88.3
+05-empty-refactor        1   light Y       11    68734    61824   4490   0.00392    42.1
+05-empty-refactor        1   pi    Y       13    57172    52480   2878   0.00259    30.4
+06-key-rotation-map      1   light Y       12   137321   124160   5289   0.00552    39.8
+06-key-rotation-map      1   pi    Y       17   167406   156032   4604   0.00494    40.2
+07-source-manifest       1   light Y       13   142839   136448  10328   0.00756    60.8
+07-source-manifest       1   pi    Y       15   125493   118272   7025   0.00565    43.9
+08-integer-encoding      1   light Y        8    33337    29312   2801   0.00237    24.1
+08-integer-encoding      1   pi    Y       16   122144   113792   5490   0.00489    41.8
+09-separator-payload     1   light Y       11   118113   106112   5909   0.00566    41.7
+09-separator-payload     1   pi    Y       12    97507    88704   3644   0.00377    30.0
+10-expiry-boundary       1   light Y       13    98079    89216   4093   0.00405    36.6
+10-expiry-boundary       1   pi    Y       13   127237   117504   7371   0.00624    42.9
+11-compression-marker    1   light Y       12   125551   113664   5284   0.00529    39.7
+11-compression-marker    1   pi    Y       21   237776   224768   6482   0.00651    50.9
+12-partition-map         1   light Y       30   575280   554112  17842   0.01554   126.4
+12-partition-map         1   pi    Y       25   342803   328832  12401   0.01052    85.9
+
+light pass 11/12  calls 170  input 1912638  cached 1790976  uncached+output 211702  cost $0.07765  median 42.9s  p90 81.1s
+pi    pass 12/12  calls 205  input 2011123  cached 1895680  uncached+output 195802  cost $0.07122  median 42.4s  p90 85.9s
+
+by category (Light / Pi): pass, calls, median wall s
+  behavior-preserving-refactor     pass 1/1 of 1  calls 11/13  wall 42.1/30.4
+  boundary-bug                     pass 1/1 of 1  calls 13/13  wall 36.6/42.9
+  deferred-planning-feature-tests  pass 1/1 of 1  calls 30/25  wall 126.4/85.9
+  iterator-bug                     pass 1/1 of 1  calls 12/15  wall 81.1/73.1
+  multi-file-feature-tests         pass 0/1 of 1  calls 20/28  wall 66.8/88.3
+  repo-question-search             pass 1/1 of 1  calls 12/17  wall 39.8/40.2
+  serialization-bug                pass 1/1 of 1  calls 12/21  wall 39.7/50.9
+  shell-heavy                      pass 1/1 of 1  calls 13/15  wall 60.8/43.9
+  single-file-bug                  pass 4/4 of 4  calls 47/58  wall 42.7/38.8
+
+Light failed where Pi passed: ['04-count-by r1']
+Light passed where Pi failed: none
+
+Light minus Pi, mean per cell, 95% bootstrap over whole tasks:
+  wall seconds: +3.5266  [-5.2233, +13.029]  inconclusive
+  model calls: -2.9167  [-5.1667, -0.58333]  Light lower
+  uncached+output tokens: +1325  [-1358.1, +4259.8]  inconclusive
+  cost usd: +0.00053561  [-0.00057561, +0.0017237]  inconclusive
+  (one repeat: initial diagnostic panel, not evidence of superiority)
