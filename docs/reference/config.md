@@ -396,7 +396,8 @@ associated check failed) apart from the other unmet items, and asks for
 the command run or file inspected on each unlinked item's line.
 Explicit `- [-]` unavailable claims get an investigation
 request every round and settle as `partial` with `unavailable_checks` only
-at the round cap. The gate does not accept a probe as proof of a missing
+through the round-cap fallback below. The gate does not accept a probe as
+proof of a missing
 capability, because a probe and the check itself are both runnable results
 associated with the same item and cannot be told apart structurally. A `- [-]` mark is not itself evidence: if the
 named check actually ran (numeric `exitCode`), the item is unmet, not
@@ -407,7 +408,10 @@ The gate checks this structure, not whether the evidence proves every task
 requirement or whether the delivered work is correct, and a `verified`
 event is not a benchmark pass. A turn that never called a tool (a plain
 question) is not gated. At `max_rounds` an unmet answer is recorded as
-`exhausted`; an unavailable leftover is `partial`. Warnings
+`exhausted`; an unavailable leftover is `partial`. An answer that ran no
+tool since the last request and draws that request's verdict again (the
+same reason and items) is recorded the same way before `max_rounds`: the
+same request again cannot change it. Warnings
 `completion_gate_exhausted` and `completion_gate_partial` state that the
 final answer was not fully verified. The turn still completes with its
 existing stop reason and exit code; text-mode `agenc -p` prints the

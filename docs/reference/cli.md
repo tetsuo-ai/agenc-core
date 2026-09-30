@@ -105,14 +105,17 @@ From `formatCliHelpText()`:
   `- [ ]` items
   and malformed checklist items prevent verification. An explicit `- [-]`
   unavailable claim is asked to show its observed limitation, and the gate
-  keeps asking until `completion_gate.max_rounds`, where the leftover
-  settles as `partial`. It is never settled early on a successful check
-  for some other item. Failed
+  keeps asking while the model runs tools, up to
+  `completion_gate.max_rounds`, where the leftover settles as `partial`. It
+  is never settled early on a successful check for some other item. Failed
   tools and explicitly still-running commands do not count, and an
   unrelated successful read does not verify a different claim. This is a
   structural check, not a guarantee of task correctness and not a
   benchmark pass. After `completion_gate.max_rounds` (default 3), an
-  unmet answer still ends the turn with the existing exit code. Text-mode
+  unmet answer still ends the turn with the existing exit code. An answer
+  that ran no tool since the last request and draws that request's verdict
+  again (the same reason and items) settles the same way before the cap:
+  the same request again cannot change it. Text-mode
   `agenc -p` prints a warning to stderr (`exhausted` or `partial`) and
   structured output includes the event. `completion_gate.mode = "never"`
   in the config turns that off; see

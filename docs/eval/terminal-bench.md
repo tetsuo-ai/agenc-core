@@ -210,8 +210,10 @@ harbor run ... -a agenc_agent:Agenc --ak runtime_url=http://host.docker.internal
   workspace change, and the first answer also cites a command that ran
   successfully since then; otherwise it is held while a durable
   `<completion_gate>` message quoting the task asks for a checklist backed by
-  executed checks. It settles as `partial` when remaining checks are
-  unavailable, or after three rounds (`exhausted`). A
+  executed checks. It settles after three rounds, as `partial` when the
+  remaining checks are unavailable and `exhausted` otherwise, or after two
+  when an answer that ran no tool repeats the verdict of the request before
+  it. A
   `verified` gate event is not a Terminal-Bench pass. Every decision is a
   `completion_gate` rollout event, so a trial's transcript shows whether the
   verification round happened. `agenc config set completion_gate.mode never`

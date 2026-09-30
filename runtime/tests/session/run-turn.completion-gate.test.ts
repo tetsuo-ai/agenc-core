@@ -546,6 +546,27 @@ describe("completion gate in the turn loop", () => {
     }]);
   });
 
+  test.each([
+    ["answers the second request the same way without a tool", 2, []],
+    ["runs a tool, then answers the second request the same way", 3, [toolStep("probe-1")]],
+  ])("a model that %s gets %i gate requests", async (_name, rounds, between) => {
+    const { provider, requests } = scriptedProvider([
+      toolStep("work-1"), textStep("Done."), textStep("Done."), ...between, textStep("Done."),
+    ]);
+    const { session, events } = headlessSession(provider, true);
+    await collect(session);
+
+    // the work sample, the first answer, one answer per request, and the tool step
+    expect(requests).toHaveLength(2 + rounds + between.length);
+    expect(
+      (requests.at(-1) ?? []).filter((message) => String(message.content).includes("<completion_gate")),
+    ).toHaveLength(rounds);
+    expect(gatePayloads(events).at(-1)).toMatchObject({
+      outcome: "exhausted", reason: "rounds_exhausted", round: rounds, maxRounds: 3,
+    });
+    expectCompletedTurn(events);
+  });
+
   test("a fresh agent projects the real exhaustion warning with its canonical turn scope", async () => {
     const { events, ctx } = await exhaustGate(1);
     const warning = events.find((event) =>
@@ -652,6 +673,9 @@ describe("completion gate in the turn loop", () => {
     expect(toCheckpointSlice(state)).not.toHaveProperty("completionGateRound");
     state.completionGateRound = 2;
     expect(toCheckpointSlice(state).completionGateRound).toBe(2);
+    // The last request is runtime-only: a resumed turn asks once more.
+    state.completionGateLastRequest = { reason: "no_checklist", unmetItems: [], unlinkedItems: [] };
+    expect(toCheckpointSlice(state)).not.toHaveProperty("completionGateLastRequest");
 
     const restored = buildInitialTurnState(mkCtx(), { role: "user", content: TASK });
     restoreFromCheckpoint(restored, { ...toCheckpointSlice(state), completionGateRound: 2 });

@@ -22,15 +22,18 @@
  *     later one names what is missing, quoting a checked item no result names
  *     apart from failed ones and asking it to name its evidence.
  *     Unchecked `- [ ]` items retry as unmet. Explicit `- [-]` items are
- *     unavailable claims: a bounded investigation round asks for evidence
- *     of the limitation, then the gate settles as `partial` instead of
- *     repeating the same request to the round cap. An unrelated successful
- *     FileRead or echo does not verify a different claim, and a `[-]` mark
- *     does not waive a check that actually ran. This is a structural check,
- *     not proof of task correctness and not a benchmark pass.
+ *     unavailable claims: each request asks for evidence of the limitation,
+ *     and a leftover of only such items settles as `partial` (below). An
+ *     unrelated successful FileRead or echo does not verify a different
+ *     claim, and a `[-]` mark does not waive a check that actually ran. This
+ *     is a structural check, not proof of task correctness and not a
+ *     benchmark pass.
  *   - At the round cap an answer that still has unmet or malformed items is
- *     accepted as `exhausted`. An evidenced unavailable leftover settles as
- *     `partial`. The turn still completes normally. Both are recorded in the
+ *     accepted as `exhausted`, and an unavailable leftover settles as
+ *     `partial`. An answer that ran no tool since the last request and draws
+ *     that request's verdict again (the same reason and items) settles the
+ *     same way before the cap: the same request again cannot change it. The
+ *     turn still completes normally. Both are recorded in the
  *     `completion_gate` event and surfaced as a warning, never as a failure.
  *
  * Eligibility is resolved once per turn (`planCompletionGateForTurn`): the
@@ -107,6 +110,16 @@ export type CompletionGateInjectReason =
   | "no_checklist"
   | "unmet_items"
   | "unavailable_unproven";
+
+/**
+ * The verdict one gate request was built from: its reason, the failed items
+ * (the unavailable ones for `unavailable_unproven`) and the unlinked items.
+ */
+export interface CompletionGateRequest {
+  readonly reason: CompletionGateInjectReason;
+  readonly unmetItems: readonly string[];
+  readonly unlinkedItems: readonly string[];
+}
 
 const ASSOCIATION_STOPWORDS = new Set([
   "the",
@@ -737,6 +750,23 @@ function laterRoundReason(
   return unmetCount > 0 ? "unmet_items" : "unavailable_unproven";
 }
 
+function sameItems(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((item, index) => item === b[index]);
+}
+
+/** Whether `next` would repeat `last`: the same reason over the same items. */
+function repeatsRequest(
+  last: CompletionGateRequest | undefined,
+  next: CompletionGateRequest,
+): boolean {
+  return (
+    last !== undefined &&
+    last.reason === next.reason &&
+    sameItems(last.unmetItems, next.unmetItems) &&
+    sameItems(last.unlinkedItems, next.unlinkedItems)
+  );
+}
+
 export async function completionGate(
   state: TurnState,
   ctx: TurnContext,
@@ -840,17 +870,35 @@ export async function completionGate(
   ) {
     return settle("verified", "verified_with_tools", toolCallsSinceInjection);
   }
-  // No early partial. The prompt tells the model to run the check or show the
-  // observed limitation for each unavailable item, and that evidence cannot be
-  // recognised structurally: a capability probe and the check itself are both
-  // runnable results associated with the same item, and an item that has any
-  // runnable associated result is already routed to unmet as a dishonest mark.
+  const reason: CompletionGateInjectReason =
+    round === 0
+      ? "initial"
+      : laterRoundReason(verdict, unmetItems.length, leftoverIsOnlyUnavailable);
+  const request: CompletionGateRequest = {
+    reason,
+    unmetItems:
+      reason === "unavailable_unproven" ? unavailableItems : failedItems,
+    unlinkedItems,
+  };
+  // Partial is a fallback, not a verdict on evidence. The prompt tells the
+  // model to run the check or show the observed limitation for each
+  // unavailable item, and that evidence cannot be recognised structurally: a
+  // capability probe and the check itself are both runnable results
+  // associated with the same item, and an item that has any runnable
+  // associated result is already routed to unmet as a dishonest mark.
   // Requiring a probe here would therefore be unreachable, and accepting a
   // runnable failure as proof would make a failing check look like an absent
   // one. Anything weaker settled on activity about some other item. So an
-  // unavailable leftover keeps getting the investigation request and settles
-  // as partial only through the round-cap fallback below.
-  if (round >= plan.maxRounds) {
+  // unavailable leftover keeps getting the investigation request while the
+  // model runs tools, and settles as partial only through the fallback below:
+  // at the round cap, or once an answer that ran no tool since the last
+  // request repeats that request's verdict, because the same request again
+  // cannot change the answer.
+  if (
+    round >= plan.maxRounds ||
+    (toolCallsSinceInjection === 0 &&
+      repeatsRequest(state.completionGateLastRequest, request))
+  ) {
     if (leftoverIsOnlyUnavailable) {
       return settle(
         "partial",
@@ -866,14 +914,11 @@ export async function completionGate(
       reportedItems,
     );
   }
-  const reason: CompletionGateInjectReason =
-    round === 0
-      ? "initial"
-      : laterRoundReason(verdict, unmetItems.length, leftoverIsOnlyUnavailable);
   const injectItems =
     reason === "unavailable_unproven" ? unavailableItems : unmetItems;
   state.completionGateRound += 1;
   state.completionGateToolLedgerMark = state.completedToolResults.length;
+  state.completionGateLastRequest = request;
   if (reason === "unavailable_unproven") {
     state.completionGateUnavailablePrompted = true;
   }
@@ -883,10 +928,7 @@ export async function completionGate(
       round: state.completionGateRound,
       maxRounds: plan.maxRounds,
       taskText: plan.taskText,
-      reason,
-      unmetItems:
-        reason === "unavailable_unproven" ? unavailableItems : failedItems,
-      unlinkedItems,
+      ...request,
     }),
   );
   // Same recovery-shared resets as the continuation nudge: the re-entry is

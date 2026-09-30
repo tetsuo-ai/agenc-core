@@ -114,7 +114,12 @@ function gateEvents(session: { emit: ReturnType<typeof vi.fn> }) {
 async function judge(state: TurnState) {
   const session = mkSession();
   await completionGate(state, mkCtx(), session);
-  return { state, events: gateEvents(session), message: String(state.messages.at(-1)?.content) };
+  return {
+    state,
+    events: gateEvents(session),
+    warnings: warningEvents(session),
+    message: String(state.messages.at(-1)?.content),
+  };
 }
 
 /** Judges `text` after one gate request whose round recorded only `results`. */
@@ -1057,5 +1062,85 @@ describe("completionGate", () => {
     const { events, message } = await judgeAfterRequest([...open, ...claimed].join("\n"), unrelatedRead);
     expect(events[0].unmetItems).toHaveLength(20);
     expect(message.match(/^- "/gmu)).toHaveLength(20);
+  });
+
+  /**
+   * Judges `first` after the round-1 request, then `second` as the answer to
+   * the round-2 request once `results` completed, as the loop re-enters.
+   */
+  async function answerTwice(first: string, second: string, ...results: CompletedToolResultRecord[]) {
+    const state = laterAnswer(first, 2);
+    const { events: asked } = await judge(state);
+    state.transition = undefined;
+    state.assistantMessages = answer(second);
+    state.completedToolResults.push(...results);
+    const judged = await judge(state);
+    return { ...judged, events: [...asked, ...judged.events] };
+  }
+
+  const UNAVAILABLE_LEFTOVER = "- [x] tests pass: pytest, 3 passed\n- [-] no GPU here";
+
+  test.each([
+    ["exhausted", "Done.", "no_checklist", "rounds_exhausted", [],
+      "completion gate exhausted after 2 rounds; the final answer was not verified"],
+    ["partial", UNAVAILABLE_LEFTOVER, "unavailable_unproven", "unavailable_checks", ["no GPU here"],
+      "completion gate settled as partial after 2 rounds; some checks were unavailable in this environment"],
+  ])("settles as %s at round 2 when an answer that ran no tool repeats the verdict of the request", async (
+    outcome, text, asked, reason, items, warning,
+  ) => {
+    const { state, events, warnings, message } = await answerTwice(text, text);
+    expect(state.completionGateSettled).toBe(true);
+    expect(state.transition).toBeUndefined();
+    expect(state.completionGateRound).toBe(2);
+    // The task and the round-2 request: no third request was sent.
+    expect(state.messages).toHaveLength(2);
+    expect(message).toContain('<completion_gate round="2" of="3">');
+    expect(events).toEqual([
+      expect.objectContaining({ outcome: "injected", reason: asked, round: 2, toolCallsSinceInjection: 1 }),
+      expect.objectContaining({ outcome, reason, round: 2, maxRounds: 3, toolCallsSinceInjection: 0 }),
+    ]);
+    expect(events[1].unmetItems ?? []).toEqual(items);
+    expect(warnings).toEqual([{ cause: `completion_gate_${outcome}`, message: warning, turnId: "turn-gate" }]);
+  });
+
+  test.each([
+    ["a missing checklist after a successful tool call", "Done.", "no_checklist",
+      toolResult("c3", { content: ASSOCIATED_SUCCESS })],
+    ["an unavailable leftover after a successful tool call", UNAVAILABLE_LEFTOVER, "unavailable_unproven",
+      toolResult("c3", { content: ASSOCIATED_SUCCESS })],
+    ["an unavailable leftover after a failed tool call", UNAVAILABLE_LEFTOVER, "unavailable_unproven",
+      toolResult("c3", { content: "permission denied", isError: true })],
+  ])("asks a third time about %s since the second request", async (_name, text, reason, tool) => {
+    const { state, events, message } = await answerTwice(text, text, tool);
+    expect(state.completionGateSettled).toBe(false);
+    expect(state.transition).toEqual({ reason: "completion_gate" });
+    expect(message).toContain('<completion_gate round="3" of="3">');
+    expect(events.map((event) => [event.outcome, event.reason, event.round, event.toolCallsSinceInjection])).toEqual([
+      ["injected", reason, 2, 1],
+      ["injected", reason, 3, 1],
+    ]);
+  });
+
+  test.each([
+    ["drops one of its unmet items", "- [x] built\n- [ ] output file exists\n- [ ] README updated",
+      "- [x] built\n- [ ] README updated", "Your previous answer listed these unmet or unverified items."],
+    ["checks an unmet item that no result names", "- [x] built\n- [ ] README updated",
+      "- [x] built\n- [x] README updated", UNLINKED_LEAD],
+  ])("asks again when an answer that ran no tool %s", async (_name, first, second, lead) => {
+    const { state, events, message } = await answerTwice(first, second);
+    expect(state.completionGateSettled).toBe(false);
+    expect(state.completionGateRound).toBe(3);
+    expect(events.at(-1)).toMatchObject({
+      outcome: "injected", reason: "unmet_items", round: 3, toolCallsSinceInjection: 0, unmetItems: ["README updated"],
+    });
+    expect(message).toContain(lead);
+  });
+
+  test("a resumed turn, which keeps no record of the last request, asks once more", async () => {
+    const { state, events } = await judge(mkState({ completionGateRound: 2, completionGateToolLedgerMark: 1 }));
+    expect(state.completionGateSettled).toBe(false);
+    expect(events).toEqual([
+      expect.objectContaining({ outcome: "injected", reason: "no_checklist", round: 3, toolCallsSinceInjection: 0 }),
+    ]);
   });
 });
