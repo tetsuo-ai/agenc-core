@@ -9,19 +9,19 @@
  * are treated as part of the baseline so we do not resend them.
  *
  * Invariants covered here:
- *   I-2  (clear `previous_response_id` on compaction): `clearResponseId()`
- *        is the runtime entrypoint — AgenC post-compact cleanup calls
- *        this (via the provider abstraction) as the first cleanup step so the
- *        next request can't reference a server-side state that covered
- *        compacted-away turns. Synchronous + idempotent.
+ *   I-2  (no `previous_response_id` across compaction): compaction replaces
+ *        the history, so the next request no longer extends the recorded
+ *        baseline and `decide()` returns a full request, which can't
+ *        reference a server-side state that covered compacted-away turns.
  *   I-14 (`previous_response_id` server-side expiration retry):
  *        the Grok adapter transport catches the "previous_response_id expired"
  *        server error; recovery reads/writes this tracker to fall back
  *        to a full-history request without the `previous_response_id`
  *        hint.
  *
- * The Grok adapter consults this tracker before request construction and
- * records completed response IDs after successful responses.
+ * The Grok adapter consults this tracker before building a request of the
+ * conversation and records its completed response IDs after successful
+ * responses. Side calls on the same provider never touch it.
  *
  * @module
  */
@@ -114,10 +114,10 @@ function baselineIsPrefix(
 
 /**
  * IncrementalTracker — owns the `LastResponse` slot and computes the
- * per-request delta decision. A Grok adapter instance can hold one of
- * these per logical session. The adapter must call `recordRequest()`
- * on every outbound request and `recordResponse()` on every completed
- * response for the tracker to stay in sync.
+ * per-request delta decision. A Grok adapter instance holds one of
+ * these for its conversation. The adapter must call `recordRequest()`
+ * on every outbound request of the conversation and `recordResponse()`
+ * on every completed response for the tracker to stay in sync.
  *
  * The adapter consults `decide()` before constructing the HTTP body.
  */
@@ -189,11 +189,9 @@ export class IncrementalTracker {
   }
 
   /**
-   * I-2 enforcement entry point. Called by AgenC post-compact cleanup on
-   * every compaction event (auto, reactive, manual /compact,
-   * session-memory). Wipes `lastResponse` so the next request omits
-   * `previous_response_id` and the server can't carry pre-compact
-   * state forward into a post-compact turn.
+   * Drops the stored response once it can no longer be continued (xAI
+   * refused to store it, or rejected its id as expired). Wipes
+   * `lastResponse` so the next request omits `previous_response_id`.
    *
    * Does NOT touch `lastRequestShape` / `lastRequestInput` — the
    * request-shape baseline is independent of the server-side state
@@ -214,47 +212,4 @@ export class IncrementalTracker {
     this.lastRequestInput = [];
     this.lastResponse = null;
   }
-}
-
-/**
- * Process-level singleton set keyed by provider-instance identity.
- * `runPostCompactCleanup()` (I-2) calls `clearAllResponseIds()` to
- * invalidate every tracker without knowing which one the current provider
- * owns. Shared ProviderHttpClient-based Responses adapters also clear their
- * per-turn continuation state through the compact runtime context.
- */
-// WeakRef-backed so a tracker whose owning provider is dropped (e.g. the fresh
-// grok provider the auto-mode classifier / delegate builds per call, which never
-// calls dispose()) becomes GC-eligible instead of being pinned forever. The Set
-// only holds tiny WeakRefs; collected entries are pruned on the next sweep.
-const registered = new Set<WeakRef<IncrementalTracker>>();
-
-export function registerIncrementalTracker(t: IncrementalTracker): () => void {
-  const ref = new WeakRef(t);
-  registered.add(ref);
-  return () => registered.delete(ref);
-}
-
-export function clearAllResponseIds(): void {
-  for (const ref of registered) {
-    const t = ref.deref();
-    if (t) {
-      t.clearResponseId();
-    } else {
-      registered.delete(ref);
-    }
-  }
-}
-
-/** Live (non-collected) tracker count. Test-only introspection. */
-export function registeredIncrementalTrackerCountForTest(): number {
-  let live = 0;
-  for (const ref of registered) {
-    if (ref.deref()) {
-      live += 1;
-    } else {
-      registered.delete(ref);
-    }
-  }
-  return live;
 }

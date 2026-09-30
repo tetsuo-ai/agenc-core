@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 
-import type { LLMMessage, LLMTool } from "../../types.js";
+import type { LLMChatOptions, LLMMessage, LLMTool } from "../../types.js";
 import {
   LLMRequestRebuiltError, LLMTimeoutError } from "../../errors.js";
 import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER } from "../../wire/shared.js";
@@ -93,14 +93,19 @@ function useDeterministicFallbackTimers(): () => void {
   };
 }
 
+/** prompt_cache_key of the conversation: the main loop sends the session id. */
+const CONVERSATION_KEY = "conv-main";
+
 function primeStoredContinuation(
   provider: GrokProvider,
   responseId: string,
-  store: boolean,
   messages: readonly LLMMessage[],
 ): void {
   (provider as any).incrementalTracker.recordRequest(
-    (provider as any).buildIncrementalRequestShape({ model: "grok-4-fast", store }),
+    (provider as any).buildIncrementalRequestShape({
+      model: "grok-4-fast",
+      prompt_cache_key: CONVERSATION_KEY,
+    }),
     messages,
   );
   (provider as any).incrementalTracker.recordResponse({
@@ -167,45 +172,6 @@ describe("GrokProvider incremental continuation", () => {
     ).rejects.toMatchObject({ statusCode: 401 });
     expect(create).toHaveBeenCalledTimes(1);
     expect(refreshBearer).not.toHaveBeenCalled();
-  });
-
-  test("single-wire chat does not retry an expired continuation", async () => {
-    const warnings: Array<{ cause: string; message: string }> = [];
-    const provider = new GrokProvider({
-      apiKey: "xai-test",
-      model: "grok-4-fast",
-      emitWarning: (warning) => warnings.push(warning),
-    });
-    (provider as any).incrementalTracker.recordRequest(
-      (provider as any).buildIncrementalRequestShape({
-        model: "grok-4-fast",
-        store: false,
-      }),
-      previousMessages,
-    );
-    (provider as any).incrementalTracker.recordResponse({
-      previousResponseId: "resp_single_wire",
-      itemsAdded: [{ role: "assistant", content: "hi" }],
-      recordedAtMs: Date.now(),
-    });
-    const create = vi.fn().mockImplementation(
-      (params: Record<string, unknown>, requestOptions: Record<string, unknown>) => {
-        expect(params.previous_response_id).toBe("resp_single_wire");
-        expect(requestOptions).toMatchObject({ maxRetries: 0 });
-        throw Object.assign(new Error("previous_response_id expired"), {
-          status: 404,
-        });
-      },
-    );
-    (provider as any).client = { responses: { create } };
-
-    await expect(
-      provider.chat(currentMessages, { singleWireAttempt: true }),
-    ).rejects.toBeDefined();
-    expect(create).toHaveBeenCalledTimes(1);
-    expect(warnings).not.toContainEqual(
-      expect.objectContaining({ cause: "previous_response_id_expired" }),
-    );
   });
 
   test("single-wire stream hands fallback outward after one SDK request", async () => {
@@ -682,61 +648,6 @@ describe("GrokProvider incremental continuation", () => {
     expect(requestBodies[0]?.tools).toBeUndefined();
   });
 
-  test("reuses previous_response_id and retries chat with full history on expiry", async () => {
-    const warnings: Array<{ cause: string; message: string }> = [];
-    const provider = new GrokProvider({
-      apiKey: "xai-test",
-      model: "grok-4-fast",
-      emitWarning: (warning) => warnings.push(warning),
-    });
-
-    (provider as any).incrementalTracker.recordRequest(
-      (provider as any).buildIncrementalRequestShape({
-        model: "grok-4-fast",
-        store: false,
-      }),
-      previousMessages,
-    );
-    (provider as any).incrementalTracker.recordResponse({
-      previousResponseId: "resp_prev",
-      itemsAdded: [{ role: "assistant", content: "hi" }],
-      recordedAtMs: Date.now(),
-    });
-
-    const requestBodies: Record<string, unknown>[] = [];
-    (provider as any).client = {
-      responses: {
-        create: vi
-          .fn()
-          .mockImplementationOnce((params: Record<string, unknown>) => {
-            requestBodies.push(params);
-            throw Object.assign(new Error("previous_response_id expired"), {
-              status: 404,
-            });
-          })
-          .mockImplementationOnce((params: Record<string, unknown>) => {
-            requestBodies.push(params);
-            return withResponse(buildXaiResponse("resp_next", "done"));
-          }),
-      },
-    };
-
-    const result = await provider.chat(currentMessages);
-
-    expect(result.content).toBe("done");
-    expect(requestBodies[0]?.previous_response_id).toBe("resp_prev");
-    expect(JSON.stringify(requestBodies[0]?.input)).toContain("follow up");
-    expect(JSON.stringify(requestBodies[0]?.input)).not.toContain("hello");
-    expect(requestBodies[1]?.previous_response_id).toBeUndefined();
-    expect(JSON.stringify(requestBodies[1]?.input)).toContain("hello");
-    expect(JSON.stringify(requestBodies[1]?.input)).toContain("follow up");
-    expect(warnings).toContainEqual(
-      expect.objectContaining({
-        cause: "previous_response_id_expired",
-      }),
-    );
-  });
-
   const STORE_REFUSAL =
     "Response is too large to store. You can avoid this error by setting `store` to false in your request.";
   function storeRefusalClient(
@@ -804,7 +715,6 @@ describe("GrokProvider incremental continuation", () => {
     const { provider, warnings, requestBodies } = refusingProvider(() =>
       withResponse(buildXaiResponse("resp_unstored_next", "done")),
     );
-    primeStoredContinuation(provider, "resp_stored_prev", true, previousMessages);
 
     await expect(
       provider.chat(currentMessages, { singleWireAttempt: true }),
@@ -826,14 +736,19 @@ describe("GrokProvider incremental continuation", () => {
     const { provider, requestBodies } = refusingProvider(() =>
       withResponse(streamFromEvents([completedStreamEvent("resp_unstored_stream_next", "stream done")])),
     );
+    primeStoredContinuation(provider, "resp_stored_prev", previousMessages);
+    const options = { singleWireAttempt: true, promptCacheKey: CONVERSATION_KEY };
 
     await expect(
-      provider.chatStream(currentMessages, () => {}, { singleWireAttempt: true }),
+      provider.chatStream(currentMessages, () => {}, options),
     ).rejects.toBeInstanceOf(LLMRequestRebuiltError);
     expect(requestBodies).toHaveLength(1);
-    const result = await provider.chatStream(currentMessages, () => {}, { singleWireAttempt: true });
+    expect(requestBodies[0]?.previous_response_id).toBe("resp_stored_prev");
+    // The next admitted attempt carries the rebuilt plan: unstored, full history.
+    const result = await provider.chatStream(currentMessages, () => {}, options);
     expect(result.content).toBe("stream done");
     expect(requestBodies.map((body) => body.store)).toEqual([true, false]);
+    expect(requestBodies[1]).not.toHaveProperty("previous_response_id");
   });
 
   test("does not retry the store error when the request was already unstored", async () => {
@@ -865,7 +780,7 @@ describe("GrokProvider incremental continuation", () => {
       emitWarning: (warning) => warnings.push(warning),
     });
 
-    primeStoredContinuation(provider, "resp_prev_stream", false, previousMessages);
+    primeStoredContinuation(provider, "resp_prev_stream", previousMessages);
 
     const requestBodies: Record<string, unknown>[] = [];
     (provider as any).client = {
@@ -900,6 +815,7 @@ describe("GrokProvider incremental continuation", () => {
           chunks.push(chunk.content);
         }
       },
+      { promptCacheKey: CONVERSATION_KEY },
     );
 
     expect(result.content).toBe("stream done");
@@ -1218,6 +1134,10 @@ describe("GrokProvider streaming incremental continuation (AGENC_XAI_INCREMENTAL
   ];
   const systemPromptAt = (clock: string): string =>
     `Static instructions.${SYSTEM_PROMPT_DYNAMIC_BOUNDARY_MARKER}Current time: ${clock}`;
+  const conversationTurn = (clock: string): LLMChatOptions => ({
+    systemPrompt: systemPromptAt(clock),
+    promptCacheKey: CONVERSATION_KEY,
+  });
 
   function streamingProvider(incrementalContinuation: boolean | undefined) {
     const warnings: Array<{ cause: string; message: string }> = [];
@@ -1233,16 +1153,14 @@ describe("GrokProvider streaming incremental continuation (AGENC_XAI_INCREMENTAL
     const create = vi.fn((params: Record<string, unknown>) => {
       requestBodies.push(params);
       const ordinal = requestBodies.length;
+      const response = buildXaiResponse(
+        `resp_${ordinal}`,
+        ordinal === 1 ? "hi" : "done",
+      );
       return withResponse(
-        streamFromEvents([
-          {
-            type: "response.completed",
-            response: buildXaiResponse(
-              `resp_${ordinal}`,
-              ordinal === 1 ? "hi" : "done",
-            ),
-          },
-        ]),
+        params.stream === true
+          ? streamFromEvents([{ type: "response.completed", response }])
+          : response,
       );
     });
     (provider as any).client = { responses: { create } };
@@ -1252,12 +1170,8 @@ describe("GrokProvider streaming incremental continuation (AGENC_XAI_INCREMENTAL
   test("the second streaming request carries previous_response_id and only the delta", async () => {
     const { provider, requestBodies } = streamingProvider(true);
 
-    await provider.chatStream(firstTurn, () => {}, {
-      systemPrompt: systemPromptAt("noon"),
-    });
-    await provider.chatStream(secondTurn, () => {}, {
-      systemPrompt: systemPromptAt("one"),
-    });
+    await provider.chatStream(firstTurn, () => {}, conversationTurn("noon"));
+    await provider.chatStream(secondTurn, () => {}, conversationTurn("one"));
 
     expect(requestBodies).toHaveLength(2);
     expect(requestBodies[0]?.previous_response_id).toBeUndefined();
@@ -1276,12 +1190,8 @@ describe("GrokProvider streaming incremental continuation (AGENC_XAI_INCREMENTAL
   test("stays off by default: every streaming request re-sends the full history", async () => {
     const { provider, requestBodies } = streamingProvider(undefined);
 
-    await provider.chatStream(firstTurn, () => {}, {
-      systemPrompt: systemPromptAt("noon"),
-    });
-    await provider.chatStream(secondTurn, () => {}, {
-      systemPrompt: systemPromptAt("one"),
-    });
+    await provider.chatStream(firstTurn, () => {}, conversationTurn("noon"));
+    await provider.chatStream(secondTurn, () => {}, conversationTurn("one"));
 
     expect(requestBodies).toHaveLength(2);
     expect(requestBodies[1]?.previous_response_id).toBeUndefined();
@@ -1293,9 +1203,7 @@ describe("GrokProvider streaming incremental continuation (AGENC_XAI_INCREMENTAL
 
   test("a single-wire attempt that loses its continuation clears the tracker for the next attempt", async () => {
     const { provider, requestBodies, create, warnings } = streamingProvider(true);
-    await provider.chatStream(firstTurn, () => {}, {
-      systemPrompt: systemPromptAt("noon"),
-    });
+    await provider.chatStream(firstTurn, () => {}, conversationTurn("noon"));
     expect((provider as any).incrementalTracker.previousResponseId()).toBe("resp_1");
 
     create.mockImplementationOnce((params: Record<string, unknown>) => {
@@ -1307,7 +1215,7 @@ describe("GrokProvider streaming incremental continuation (AGENC_XAI_INCREMENTAL
 
     await expect(
       provider.chatStream(secondTurn, () => {}, {
-        systemPrompt: systemPromptAt("one"),
+        ...conversationTurn("one"),
         singleWireAttempt: true,
       }),
     ).rejects.toBeDefined();
@@ -1320,6 +1228,78 @@ describe("GrokProvider streaming incremental continuation (AGENC_XAI_INCREMENTAL
     expect(warnings).toContainEqual(
       expect.objectContaining({ cause: "previous_response_id_expired" }),
     );
+  });
+
+  describe("continuation belongs to the conversation's streaming requests", () => {
+    const mainTurn = (clock: string): LLMChatOptions => ({
+      ...conversationTurn(clock),
+      tools: [TEST_TOOL],
+    });
+    const sideInput: LLMMessage[] = [{ role: "user", content: "Pick the memories." }];
+    const sideOptions: LLMChatOptions = {
+      systemPrompt: "Select relevant memories.",
+      tools: [],
+      maxOutputTokens: 256,
+    };
+
+    test.each<[string, (provider: GrokProvider) => Promise<unknown>]>([
+      ["a chat() side call", (provider) => provider.chat(sideInput, sideOptions)],
+      [
+        "a chat() call under the conversation's key",
+        (provider) => provider.chat(secondTurn, mainTurn("one")),
+      ],
+      [
+        "a streaming side call without a key",
+        (provider) => provider.chatStream(sideInput, () => {}, sideOptions),
+      ],
+      [
+        "a streaming side call under another key",
+        (provider) =>
+          provider.chatStream(sideInput, () => {}, {
+            ...sideOptions,
+            promptCacheKey: "memory-selector",
+          }),
+      ],
+    ])("%s neither continues nor breaks the conversation's chain", async (_label, sideCall) => {
+      const { provider, requestBodies } = streamingProvider(true);
+
+      await provider.chatStream(firstTurn, () => {}, mainTurn("noon"));
+      await sideCall(provider);
+      await provider.chatStream(secondTurn, () => {}, mainTurn("one"));
+
+      expect(requestBodies).toHaveLength(3);
+      expect(requestBodies[1]?.previous_response_id).toBeUndefined();
+      expect(requestBodies[2]?.previous_response_id).toBe("resp_1");
+      const delta = JSON.stringify(requestBodies[2]?.input);
+      expect(delta).toContain("follow up");
+      expect(delta).not.toContain("hello");
+      expect(delta).not.toContain("Static instructions");
+    });
+  });
+
+  test.each<[string, LLMMessage[], LLMChatOptions]>([
+    [
+      "a replaced (compacted) history",
+      [
+        { role: "user", content: "Summary of the earlier conversation." },
+        { role: "user", content: "follow up" },
+      ],
+      conversationTurn("noon"),
+    ],
+    [
+      // Without a dynamic tail, nothing follows the stored response.
+      "a request that adds nothing to the stored response",
+      [...firstTurn, { role: "assistant", content: "hi" }],
+      { systemPrompt: "Static instructions.", promptCacheKey: CONVERSATION_KEY },
+    ],
+  ])("%s is sent in full", async (_label, input, options) => {
+    const { provider, requestBodies } = streamingProvider(true);
+
+    await provider.chatStream(firstTurn, () => {}, options);
+    await provider.chatStream(input, () => {}, options);
+
+    expect(requestBodies[1]?.previous_response_id).toBeUndefined();
+    expect(JSON.stringify(requestBodies[1]?.input)).toContain("Static instructions");
   });
 });
 
