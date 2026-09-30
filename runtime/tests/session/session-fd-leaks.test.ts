@@ -1,4 +1,4 @@
-import { readdirSync } from "node:fs";
+import { readdirSync, watch } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +21,18 @@ async function makeFixture() {
   const home = await mkdtemp(join(tmpdir(), "agenc-fd-home-"));
   const workspace = await mkdtemp(join(tmpdir(), "agenc-fd-workspace-"));
   trustProjectSync({ agencHome: home, cwd: workspace, env: { HOME: home } });
+  // The Linux worker's libuv loop lazily creates an inotify descriptor on first
+  // fs.watch, retaining the empty descriptor after the final watcher closes.
+  // Initialize that infrastructure before measuring session-owned descriptors;
+  // keep the exact before/after count assertion, including all database handles.
+  if (process.platform === "linux") {
+    await new Promise<void>((resolve, reject) => {
+      const watcher = watch(workspace, () => {});
+      watcher.once("error", reject);
+      watcher.once("close", resolve);
+      watcher.close();
+    });
+  }
   return {
     home,
     workspace,
