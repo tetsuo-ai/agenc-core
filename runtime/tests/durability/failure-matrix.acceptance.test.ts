@@ -15,7 +15,7 @@ import {
   AgencRunReplayGapError,
   connect,
   type AgencClient,
-} from "../../../packages/agenc-sdk/src/index";
+} from "../../../packages/agenc-sdk/src/index.js";
 
 import {
   M4_DURABILITY_FAILPOINTS,

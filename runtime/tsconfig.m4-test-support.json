@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.test-support.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "paths": {
+      "bun:bundle": ["./src/build/feature.ts"],
+      "bun:test": ["./tests/helpers/bun-test-shim.ts"],
+      "src/*": ["./src/*"],
+      "@tetsuo-ai/agenc-sdk": ["../packages/agenc-sdk/src/index.ts"]
+    }
+  },
+  "include": [
+    "src/types/**/*.d.ts",
+    "tests/durability/failure-matrix.acceptance.test.ts",
+    "tests/durability/fixtures/m4-failure-matrix-child.ts",
+    "tests/durability/fixtures/daemon-main-child.ts"
+  ]
+}

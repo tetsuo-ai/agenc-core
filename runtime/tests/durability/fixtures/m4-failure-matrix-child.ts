@@ -96,8 +96,8 @@ function walkFiles(directory: string): string[] {
 function canonicalEvents(paths: FixturePaths): CanonicalEvent[] {
   return walkFiles(paths.home)
     .filter((path) => /rollout-.*\.jsonl$/.test(path))
-    .flatMap((path) => readJsonLines(path))
-    .flatMap((item) => {
+    .flatMap((path) => readJsonLines(path).map((item) => ({ path, item })))
+    .flatMap(({ path, item }) => {
       if (
         typeof item !== "object" ||
         item === null ||
@@ -663,7 +663,7 @@ async function recoverAdmissionAndEffects(
     firstRecovery,
     secondRecovery,
     pendingEffectReviews,
-    jobs: jobs.map((job) => ({ id: job.id, status: job.status })),
+    jobs: jobs.map((job) => ({ id: job.jobId, status: job.status })),
     reservations: reservations.map((reservation) => ({
       id: reservation.reservationId,
       status: reservation.status,
@@ -753,10 +753,10 @@ async function recoverTerminal(paths: FixturePaths) {
   const events = canonicalEvents(paths).filter(
     (event) => event.msg.type === "run_terminal",
   );
-  if (events.length !== 1 || events[0]!.msg.type !== "run_terminal") {
+  const event = events[0];
+  if (events.length !== 1 || event?.msg.type !== "run_terminal") {
     throw new Error(`expected one canonical terminal event, got ${events.length}`);
   }
-  const event = events[0]!;
   const payload = event.msg.payload;
   const driver = openStateDatabases({ cwd: paths.cwd, agencHome: paths.home });
   const repository = new StateRunDurabilityRepository(driver);
