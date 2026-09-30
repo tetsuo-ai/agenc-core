@@ -34,6 +34,7 @@ import {
   withSerializedMetrics,
 } from "./shared.js";
 import { toOpenAIResponsesTools } from "./tools.js";
+import { withResponseDetailSystemPrompt } from "../../prompts/response-detail.js";
 import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
@@ -361,7 +362,11 @@ export function buildOpenAIResponsesRequest(
     staticPrefix: staticSystemPrompt,
     sessionSuffix: sessionSystemPrompt,
     dynamicSuffix: dynamicSystemPrompt,
-  } = splitSystemPromptOnDynamicBoundary(input.options?.systemPrompt);
+  } = splitSystemPromptOnDynamicBoundary(
+    input.chatgptBackend === true
+      ? withResponseDetailSystemPrompt(input.options?.systemPrompt, input.options?.responseDetailOverride)
+      : input.options?.systemPrompt,
+  );
   const instructions = [
     staticSystemPrompt,
     // Fixed for the session, so it stays in the cached instructions.
@@ -526,7 +531,7 @@ export function buildOpenAIResponsesRequest(
       summary: input.options.reasoningSummary,
     };
   }
-  if (input.options?.modelVerbosity !== undefined) {
+  if (input.chatgptBackend !== true && input.options?.modelVerbosity !== undefined) {
     body.text = {
       ...(body.text && typeof body.text === "object"
         ? (body.text as Record<string, unknown>)

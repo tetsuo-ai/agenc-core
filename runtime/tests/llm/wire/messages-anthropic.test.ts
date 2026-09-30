@@ -49,6 +49,29 @@ describe("Sonnet 5.5 Messages API contract", () => {
     name: "echo", description: "Echo a value", parameters: { type: "object" },
   } }];
 
+  test("keeps tools, effort, output cap and cached head identical across response detail levels", () => {
+    const build = (modelVerbosity?: "low" | "medium" | "high") => buildAnthropicMessagesRequest({
+      model, messages, tools, maxTokens: 4096,
+      options: { systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL",
+        responseDetailOverride: modelVerbosity, reasoningEffort: "high", toolChoice: "required" },
+    });
+    const inherited = build();
+    for (const level of ["low", "medium", "high"] as const) {
+      const candidate = build(level);
+      expect(candidate.tools).toEqual(inherited.tools);
+      expect(candidate.tool_choice).toEqual(inherited.tool_choice);
+      expect(candidate.output_config).toEqual(inherited.output_config);
+      expect(candidate.max_tokens).toEqual(inherited.max_tokens);
+      expect(candidate.system).toEqual(inherited.system);
+      expect(JSON.stringify(candidate.messages)).toContain("# Response Detail");
+      expect(JSON.stringify(candidate.messages)).toContain("checks and test results, errors, blockers, and approval requests");
+    }
+    expect(JSON.stringify(inherited.messages)).not.toContain("# Response Detail");
+    const inheritedConfig = buildAnthropicMessagesRequest({ model, messages, tools,
+      options: { systemPrompt: "STATIC_HEAD", modelVerbosity: "high" } });
+    expect(JSON.stringify(inheritedConfig)).not.toContain("# Response Detail");
+  });
+
   test("uses adaptive thinking with readable progress updates at every effort", () => {
     for (const reasoningEffort of [undefined, "low", "medium", "high", "xhigh", "max"] as const) {
       const body = buildAnthropicMessagesRequest({ model, messages, tools,

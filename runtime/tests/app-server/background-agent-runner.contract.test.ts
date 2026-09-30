@@ -6430,6 +6430,52 @@ describe("AgenC delegate background-agent runner", () => {
     expect(recordedRuntimeSettingsEvents(rolloutItems).at(-1)?.msg?.payload).toMatchObject({ reasoningEffort });
   });
 
+  it("updates response detail durably between turns, clears it, and combines it atomically with effort", async () => {
+    const agentId = "response-detail-update";
+    const h = makeTopLevelRunner({ conversationId: agentId, canonicalRuntimeSettings: true });
+    h.sessionState.sessionConfiguration.provider.slug = "openai";
+    h.sessionState.sessionConfiguration.collaborationMode.model = "gpt-5";
+    await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const initialCount = recordedRuntimeSettingsEvents(h.rolloutItems).length;
+    for (const modelVerbosity of ["low", "medium", "high", null] as const) {
+      const result = await h.runner.applyAgentConfig(agentId, { sessionId: "session_1", modelVerbosity });
+      expect(result).toMatchObject({ applied: true, modelVerbosity, runtimeSettingsEventId: expect.any(String) });
+      expect((await h.runner.getAgentSnapshot(agentId))?.runtimeSettings?.modelVerbosity).toBe(modelVerbosity);
+      expect(recordedRuntimeSettingsEvents(h.rolloutItems).at(-1)?.msg?.payload?.modelVerbosity).toBe(modelVerbosity);
+      expect(h.sessionState.sessionConfiguration.modelVerbosity).toBe(modelVerbosity ?? undefined);
+    }
+    expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toHaveLength(initialCount + 4);
+    const combined = await h.runner.applyAgentConfig(agentId, { sessionId: "session_1", modelVerbosity: "low", reasoningEffort: "high" });
+    expect(combined).toMatchObject({ modelVerbosity: "low" });
+    expect((await h.runner.getAgentSnapshot(agentId))?.runtimeSettings).toMatchObject({ modelVerbosity: "low", reasoningEffort: "high" });
+    const before = recordedRuntimeSettingsEvents(h.rolloutItems);
+    await expect(h.runner.applyAgentConfig(agentId, { sessionId: "session_1", modelVerbosity: "low" }))
+      .resolves.toMatchObject({ modelVerbosity: "low", runtimeSettingsEventId: combined.runtimeSettingsEventId });
+    expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toEqual(before);
+    for (const extra of [{ modelVerbosity: "invalid" }, { modelVerbosity: "high", reload: true }, { modelVerbosity: null, profile: "fast" }, { modelVerbosity: "high", reasoningEffort: "invalid" }] as const) {
+      await expect(h.runner.applyAgentConfig(agentId, { sessionId: "session_1", ...extra })).rejects.toThrow();
+    }
+    expect(recordedRuntimeSettingsEvents(h.rolloutItems)).toEqual(before);
+    Object.assign(h.session, { activeTurn: h.activeTurn });
+    h.setActiveTurn("running-turn");
+    await expect(h.runner.applyAgentConfig(agentId, { sessionId: "session_1", modelVerbosity: "high" })).rejects.toThrow("between turns");
+  });
+
+  it("restores the configured verbosity when a session override is cleared", async () => {
+    const agentId = "response-detail-inherits-config";
+    const h = makeTopLevelRunner({ conversationId: agentId, canonicalRuntimeSettings: true });
+    h.sessionState.sessionConfiguration.modelVerbosity = "high";
+    await h.runner.startAgent({ objective: "work", cwd: process.cwd() });
+    expect((await h.runner.getAgentSnapshot(agentId))?.runtimeSettings?.modelVerbosity).toBeNull();
+    await h.runner.applyAgentConfig(agentId, { sessionId: "session_1", modelVerbosity: "low" });
+    expect(h.sessionState.sessionConfiguration.modelVerbosity).toBe("low");
+    const cleared = await h.runner.applyAgentConfig(agentId, { sessionId: "session_1", modelVerbosity: null });
+    expect(cleared.modelVerbosity).toBeNull();
+    expect(h.sessionState.sessionConfiguration.modelVerbosity).toBe("high");
+    expect((await h.runner.getAgentSnapshot(agentId))?.runtimeSettings?.modelVerbosity).toBeNull();
+    expect(recordedRuntimeSettingsEvents(h.rolloutItems).at(-1)?.msg?.payload?.modelVerbosity).toBeNull();
+  });
+
   it.each([undefined, null])("normalizes absent optional runtime settings from %s", async (absent) => {
     const agentId = `normalized-runtime-settings-${String(absent)}`;
     const { runner, sessionState, rolloutItems } = makeTopLevelRunner({

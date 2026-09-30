@@ -23,6 +23,31 @@ const TEST_TOOLS: LLMTool[] = [
 ];
 
 describe("buildOpenAIResponsesRequest", () => {
+  test("changes only native verbosity on direct Responses and uses a prompt fallback on ChatGPT subscription", () => {
+    const build = (modelVerbosity?: "low" | "high", chatgptBackend = false) => buildOpenAIResponsesRequest({
+      model: "gpt-5", messages: [{ role: "user", content: "hello" }], tools: TEST_TOOLS,
+      chatgptBackend,
+      options: { systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL",
+        modelVerbosity, ...(chatgptBackend ? { responseDetailOverride: modelVerbosity } : {}),
+        reasoningEffort: "high", toolChoice: "required", maxOutputTokens: 4096 },
+    });
+    const inherited = build();
+    const low = build("low");
+    const high = build("high");
+    expect(inherited).not.toHaveProperty("text");
+    expect(low.text).toEqual({ verbosity: "low" });
+    expect(high.text).toEqual({ verbosity: "high" });
+    for (const candidate of [low, high]) {
+      const { text: _detail, ...rest } = candidate;
+      expect(rest).toEqual(inherited);
+    }
+    const subscription = build("low", true);
+    expect(subscription).not.toHaveProperty("text");
+    expect(subscription.instructions).toContain("STATIC_HEAD");
+    expect(subscription.instructions).toContain("# Response Detail");
+    expect(JSON.stringify(subscription)).toContain("checks and test results, errors, blockers, and approval requests");
+    expect(build(undefined, true).instructions).not.toContain("# Response Detail");
+  });
   test.each(["conv-123", "k".repeat(64), `review-${"a".repeat(64)}`])(
     "bounds prompt cache keys while preserving existing short keys: %s",
     (promptCacheKey) => {

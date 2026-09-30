@@ -5,6 +5,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { withResponseDetailSystemPrompt } from "../../prompts/response-detail.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -549,6 +550,12 @@ function projectRuntimeContextIntoToolResults(
 export function buildChatCompletionsRequest(
   input: ChatCompletionsRequestOptions,
 ): Record<string, unknown> {
+  const promptOptions = input.options?.responseDetailOverride === undefined
+    ? input.options
+    : {
+        ...input.options,
+        systemPrompt: withResponseDetailSystemPrompt(input.options.systemPrompt, input.options.responseDetailOverride),
+      };
   const maxTokenField = input.maxTokenField ?? "max_tokens";
   const requestedMaxTokens =
     positiveInteger(input.maxTokens) ??
@@ -630,7 +637,7 @@ export function buildChatCompletionsRequest(
     stream: false,
     messages: toChatCompletionsMessages(
       normalizedMessages,
-      input.options,
+      promptOptions,
       systemSuffix,
       input.providerCapabilityHints?.toolResultImagePolicy,
       input.providerCapabilityHints?.replaysReasoningContent === true,

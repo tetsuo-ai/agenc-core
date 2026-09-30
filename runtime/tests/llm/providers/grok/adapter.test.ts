@@ -45,6 +45,27 @@ const TEST_TOOL: LLMTool = {
   },
 };
 
+test("xAI Responses keeps the cached prefix and controls stable across response detail levels", () => {
+  const provider = new GrokProvider({ apiKey: "xai-test", model: "grok-4-fast", tools: [TEST_TOOL] });
+  const build = (modelVerbosity?: "low" | "medium" | "high") =>
+    (provider as any).buildRequestPlan([{ role: "user", content: "hello" }], {
+      systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL",
+      responseDetailOverride: modelVerbosity, reasoningEffort: "high", toolChoice: "required", maxOutputTokens: 4096,
+    } as LLMChatOptions).params as Record<string, unknown>;
+  const inherited = build();
+  for (const level of ["low", "medium", "high"] as const) {
+    const candidate = build(level);
+    expect(candidate.tools).toEqual(inherited.tools);
+    expect(candidate.tool_choice).toEqual(inherited.tool_choice);
+    expect(candidate.reasoning).toEqual(inherited.reasoning);
+    expect(candidate.max_output_tokens).toEqual(inherited.max_output_tokens);
+    expect(JSON.stringify((candidate.input as unknown[])[0])).toContain("STATIC_HEAD");
+    expect(JSON.stringify(candidate.input)).toContain("# Response Detail");
+    expect(candidate).not.toHaveProperty("text.verbosity");
+  }
+  expect(JSON.stringify(inherited.input)).not.toContain("# Response Detail");
+});
+
 /** A user message carrying a pasted image. */
 const IMAGE_MESSAGE: LLMMessage = {
   role: "user",
