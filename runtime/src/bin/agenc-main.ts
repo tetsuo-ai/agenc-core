@@ -1,3 +1,4 @@
+import "../bootstrap/node-env.js";
 import { runtimeSpan, timedRuntime } from "../diagnostics/runtime-timing.js";
 /**
  * `agenc` CLI entry point - daemon-backed dispatcher.
@@ -37,7 +38,7 @@ import { randomUUID } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import { cwd as processCwd } from "node:process";
 import { isDeepStrictEqual } from "node:util";
-import { VERSION } from "../index.js";
+import { VERSION } from "../version.js";
 import {
   APPROVAL_DENIED_ABORT_REASON,
   classifyTurnTerminal,
@@ -63,7 +64,7 @@ import {
 } from "../prompts/attachments/user-image-input.js";
 import type { PhaseEvent } from "../phases/events.js";
 import {
-  Session,
+  type Session,
   type IdleInputAdmission,
   type IdleInputOwnership,
   type McpSurfaceSnapshot,
@@ -130,7 +131,7 @@ import {
   parseAgenCDaemonCliArgs,
   runAgenCDaemonCli,
   type AgenCDaemonCliAction,
-} from "../app-server/daemon-cli.js";
+} from "../app-server/daemon-control.js";
 import {
   AGENC_DAEMON_STARTUP_GUARD_ENV,
   isAgenCDaemonStartupGuardToken,

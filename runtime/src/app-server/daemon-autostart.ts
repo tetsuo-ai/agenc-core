@@ -25,7 +25,7 @@ import {
   writeAgenCDaemonPid,
   type AgenCDaemonCliHost,
   type AgenCDaemonCliIo,
-} from "./daemon-cli.js";
+} from "./daemon-control.js";
 import {
   daemonInstanceIdentityFromRuntimeInfo,
   readDaemonRuntimeInfo,
@@ -51,7 +51,7 @@ import { loadCanonicalDaemonConfig } from "../config/repository.js";
 import {
   resolveMcpServeDefaults,
   type ResolvedMcpServeDefaults,
-} from "../mcp/server/start.js";
+} from "../mcp/server/defaults.js";
 import {
   canConnectToUnixSocket,
   isAgenCWindowsNamedPipePath,
