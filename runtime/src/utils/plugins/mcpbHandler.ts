@@ -2,7 +2,7 @@ import axios from 'axios'
 import { createHash } from 'crypto'
 import { chmod, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
-import { Worker } from 'node:worker_threads'
+import { matchConfigPatterns } from './pattern-worker.js'
 import type { McpServerConfig } from '../../services/mcp/types.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { parseAndValidateManifestFromBytes } from '../dxt/helpers.js'
@@ -49,47 +49,6 @@ export type UserConfigValues = Record<
  * User configuration schema from DXT manifest
  */
 export type UserConfigSchema = Record<string, McpbUserConfigurationOption>
-
-// Manifest regexes run off the main thread. One shared-memory deadline covers
-// the entire pass, including all fields and entries; a timed-out worker is
-// discarded so catastrophic backtracking cannot delay later validations.
-const PATTERN_MATCH_TIMEOUT_MS = 125
-const PATTERN_WORKER_SOURCE = `
-  const { parentPort, workerData } = require('node:worker_threads');
-  const results = [];
-  for (const { pattern, entries } of workerData) {
-      try {
-        const regex = new RegExp(pattern, 'u');
-        results.push(entries.every(entry => typeof entry !== 'string' || regex.test(entry)) ? 1 : 2);
-      } catch { results.push(3); }
-  }
-  parentPort.postMessage(results);
-`
-
-function matchPatterns(checks: readonly { pattern: string; entries: unknown[] }[]): Promise<number[]> {
-  const invalid = () => checks.map(() => 3)
-  return new Promise(resolve => {
-    let worker: Worker
-    try {
-      worker = new Worker(PATTERN_WORKER_SOURCE, { eval: true, workerData: checks })
-    } catch {
-      resolve(invalid())
-      return
-    }
-    let settled = false
-    const finish = (results: number[]) => {
-      if (settled) return
-      settled = true
-      clearTimeout(deadline)
-      resolve(results.length === checks.length ? results : invalid())
-      void worker.terminate()
-    }
-    const deadline = setTimeout(() => finish(invalid()), PATTERN_MATCH_TIMEOUT_MS)
-    worker.once('message', value => finish(Array.isArray(value) ? value as number[] : invalid()))
-    worker.once('error', () => finish(invalid()))
-    worker.once('exit', () => finish(invalid()))
-  })
-}
 
 /**
  * Result of loading an MCPB file (success case)
@@ -485,7 +444,9 @@ export async function validateUserConfig(
   }
 
   if (patternChecks.length > 0) {
-    const results = await matchPatterns(patternChecks)
+    const results = await matchConfigPatterns(patternChecks, cause => {
+      logForDebugging(`Plugin pattern validation: ${cause}`, { level: 'warn' })
+    })
     patternChecks.forEach((check, index) => {
       if (results[index] === 2) {
         errors.push(`${check.label} does not match the required pattern`)
