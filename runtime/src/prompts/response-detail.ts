@@ -8,11 +8,11 @@ import {
 export function getResponseDetailSection(level: LLMChatOptions["modelVerbosity"] | null): string | null {
   if (level == null) return null;
   const amount = level === "low"
-    ? "Keep user-facing progress and final explanations brief."
+    ? "Concise: keep every user-facing message short. Answer in 1 to 3 sentences, or at most 3 short bullets, with no preamble, recap or offer to continue. Write more only when the user asks for it."
     : level === "medium"
-      ? "Give a balanced amount of explanation in user-facing progress and final messages."
-      : "Give more explanation and useful context in user-facing progress and final messages.";
-  return `# Response Detail\n${amount} If you ran checks or tests, still report their results. Always report errors, blockers, and approval requests.`;
+      ? "Balanced: explain as much as the question needs, without padding."
+      : "Detailed: give thorough user-facing answers. Explain the reasoning, context and trade-offs, and include a concrete example when it helps.";
+  return `# Response Detail\n${amount} This sets only how much you write: do the same work and checks. If you ran checks or tests, still report their results. Always report errors, blockers, and approval requests.`;
 }
 
 /** Add a fallback to the volatile tail for routes selected after prompt assembly. */
