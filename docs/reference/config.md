@@ -384,8 +384,14 @@ executed checks. Acceptance requires each nonempty checked `- [x]` item
 outside code fences to have an associated successful tool result after the
 latest request. Association is token overlap between the item text and the
 tool name, arguments, or content — a successful unrelated FileRead does
-not verify a numerical claim. Unchecked `- [ ]` or malformed items prevent
-verification. Explicit `- [-]` unavailable claims get an investigation
+not verify a numerical claim. Sentence punctuation is not part of a token:
+`array.` matches `array`, `./x.js` matches `/abs/x.js`, and a lone `.` or
+`/` matches nothing. Unchecked `- [ ]` or malformed items prevent
+verification. The re-request quotes unlinked items (checked, but no
+successful result since the latest request names them and no associated
+check failed) apart from the other unmet items, and asks for the command
+run or file inspected on each unlinked item's line. Explicit `- [-]`
+unavailable claims get an investigation
 request every round and settle as `partial` with `unavailable_checks` only
 at the round cap. The gate does not accept a probe as proof of a missing
 capability, because a probe and the check itself are both runnable results

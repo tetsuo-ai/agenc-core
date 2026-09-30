@@ -95,7 +95,11 @@ From `formatCliHelpText()`:
   `<completion_gate>` verification request. Verification requires each
   nonempty checked `- [x]` item to have an associated successful tool
   result since the latest request (the tool name, arguments, or content
-  must share a distinctive token with the claim). Unchecked `- [ ]` items
+  must share a distinctive token with the claim; sentence punctuation is
+  not part of a token). A checked item without such a result and without a
+  failed check is quoted back apart from the other unmet items, with a
+  request to put the command run or file inspected on its line. Unchecked
+  `- [ ]` items
   and malformed checklist items prevent verification. An explicit `- [-]`
   unavailable claim is asked to show its observed limitation, and the gate
   keeps asking until `completion_gate.max_rounds`, where the leftover
