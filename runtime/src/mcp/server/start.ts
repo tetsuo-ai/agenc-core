@@ -6,6 +6,7 @@
  * transport, host, and port defaults before opening real transports.
  */
 
+import "../../bootstrap/node-env.js";
 import type { Server } from "node:http";
 import { realpath, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
@@ -21,7 +22,7 @@ import {
   createSkillPromptProvider,
 } from "./content-providers.js";
 import type { AgenCConfig, McpServerModeConfig } from "../../config/schema.js";
-import { VERSION } from "../../index.js";
+import { VERSION } from "../../version.js";
 import { McpServerFramework } from "../../mcp-server/framework.js";
 import { McpHttpSseServerTransport } from "../../mcp-server/http-sse.js";
 import { McpStdioServerTransport } from "../../mcp-server/stdio.js";

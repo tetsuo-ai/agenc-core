@@ -137,9 +137,21 @@ describe("process entries are order-proof NODE_ENV wrappers", () => {
   // ordering, but it covers source-run paths (tsx/vitest) and direct imports.
   const staticEntries: ReadonlyArray<readonly [string, string]> = [
     ["src/index.ts", "./bootstrap/node-env.js"],
+    ["src/bin/agenc-main.ts", "../bootstrap/node-env.js"],
+    ["src/mcp/server/start.ts", "../../bootstrap/node-env.js"],
     ["src/bin/tui-trust-prompt.tsx", "../bootstrap/node-env.js"],
     ["src/tui/main.tsx", "../bootstrap/node-env.js"],
   ];
+
+  it.each([
+    ["src/bin/agenc-main.ts", "../version.js", "../index.js"],
+    ["src/mcp/server/start.ts", "../../version.js", "../../index.js"],
+  ])("%s reads the version without importing the public library graph", (entry, version, barrel) => {
+    const source = readFileSync(join(runtimeRoot, entry), "utf8");
+    expect(source).toContain(`import { VERSION } from "${version}";`);
+    expect(source).not.toContain(`from "${barrel}"`);
+    expect(source).not.toContain(`from '${barrel}'`);
+  });
 
   it.each(staticEntries)("%s imports the bootstrap before all other imports", (entry, spec) => {
     const source = readFileSync(join(runtimeRoot, entry), "utf8");
