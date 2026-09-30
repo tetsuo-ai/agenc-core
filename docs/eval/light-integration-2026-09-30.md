@@ -1,5 +1,16 @@
 # Light integration and evaluation status — 2026-09-30
 
+Linux resume checkpoint: the exact-source bounded gate on `38d63e586` passed
+fresh installation, all normal type projects, canonical build and **64 files /
+1,077 tests, zero skips**. The selected product remains `403da0439`; `runtime/src`
+is unchanged between those commits. See the
+[Linux gate recipe and limits](../../experiments/light/2026-09-30/linux-resume-v1/README.md).
+
+A disjoint six-file supplement passed164 tests with zero failed assertions and
+one explicitly Darwin-only skip. Its strict zero-skip wrapper exited1, retained
+without waiver or rerun. Total disjoint Linux coverage is 70 files /1,241 passes,
+one platform skip; this is not a full-suite pass or Light/Pi benchmark.
+
 Latest packaging checkpoint: the [v3 result](../../experiments/light/2026-09-30/package-v3/COMPANION-PACKAGE-RESULT.md)
 records successful strict types, two-entry split build and disabled-import/path
 checks. It fixes missing classifier text assets and runtime package/VERSION
@@ -29,12 +40,16 @@ or a claim that disabled CLI fixtures have executed.
 
 | Identity | Verified scope |
 | --- | --- |
-| Current documented HEAD `bf23c4d36b68a6b57880cad76817c6e62b40124a` | Local `light/final-integration`; adds the reviewed jobs test diagnostic, narrow strict type gate and its package/ignore wiring. No production-source change from `403da`. No new full build was run on this head. |
+| Snapshot tested on Linux `38d63e586a92c4da8b1e51b31d46f74ee359a55a` | `light/final-integration`; includes the jobs diagnostic and later experimental source/documentation preservation. `runtime/src` is byte-identical to `403da`. Fresh install, types, canonical build and 64 files / 1,077 tests passed with zero skips. |
+| Earlier documented checkpoint `bf23c4d36b68a6b57880cad76817c6e62b40124a` | Added reviewed jobs test diagnostics, narrow strict type gate and package/ignore wiring. No production-source change from `403da`; its recorded focused evidence remains separate. |
 | Last clean install/type/build checkpoint `403da04398b55e51d1f4e8814f9a70957b0db5ef` | Fresh Git archive, Darwin arm64, Node 26.8.1 / npm 11.17.0; install, all then-current normal type projects, build, **63 files / 1,056 tests, zero skips**. Built runtime 0.18.0 VERSION matches this exact commit. |
 | Archive SHA256 | `b684a0b8857ade377f06c5ca9e528ff4126ee26f8ee43bb036c430b3a398a4e0` |
 | Selected external CLI artifact | Still immutable `403da`; later test-support changes were not silently substituted into an already selected artifact. |
 
-The local commits are not evidence of push, merge, release or deployment. The
+Subsequent public preservation checkpoints include `a0be4de04`, `98291a80e`,
+`266dd0c97`, `aa4f52b16` and `3bc4c9e56`; these record experimental code/docs,
+not replacement product builds or paid results. Commit identity alone is not
+evidence of push, merge, release or deployment. The
 1,056-test selection is not the entire repository suite and is not a Linux run.
 
 ## What the branch implements
@@ -81,7 +96,7 @@ These tasks were repeatedly used during tuning and are not held-out confirmation
 | --- | --- | --- | --- |
 | Flash C16, `0638f0267b70a241c3a34c21214ad0659d582bc5` | 12/12 original passes; 171 calls; 2,057,286 input+output tokens; 212,934 uncached+output; median 31.955 s; p90 96.423 s; cost $0.078070806 | 12/12; 214 calls; 2,379,162 raw tokens; 203,546 uncached+output; median 44.580 s; p90 91.231 s | Lower raw traffic/median, higher uncached+output/p90. Complete candidate usage, no provider errors. No strict matched pairs; mixed evidence, not superiority. |
 | Luna fixed-only control, `3a4215afb0a6b9b5de54714a6c576397b82e4da3` | 12/12; 120 calls; 699,130 raw tokens; 141,687 uncached+output; median 25.621 s; p90 42.167 s; total cell wall 357.312 s; $0.02890313 | 12/12; 120 calls; 851,968 raw tokens; 130,001 uncached+output; median 24.410 s; p90 37.035 s; total wall 313.772 s; $0.02769137 | Raw tokens −17.94%, but uncached+output +8.99%, cost +4.38%, wall sum +13.88%. No strict matched pairs; no Write treatment in this control. |
-| Current `bf23` / built `403da` | Focused correctness/build gates; external synthetic component/client diagnostics | No matched current paid baseline | **No current completion, cost or latency comparison exists.** SDK/source diagnostics do not substitute for the intended ordinary CLI/app treatment. |
+| Selected product `403da` / Linux gate snapshot `38d63` | Prior focused gates plus Linux install/types/build and 64 files / 1,077 tests passed, zero skips | No matched current paid baseline | **No current completion, cost or latency comparison exists.** SDK/source diagnostics do not substitute for the intended ordinary CLI/app treatment. |
 
 Costs are recorded historical API list-rate accounting, not current prices or
 account balances. Raw, cached, uncached, output and reasoning tokens are not
@@ -116,6 +131,7 @@ retains exact artifacts, resource limits, pairs and mistaken smoke expectations.
 | Evidence | Result | What it does not establish |
 | --- | --- | --- |
 | Clean `403da` gate, E1 | Install, standard types, build; 63 files / 1,056 tests, zero skips | Full suite, Linux or `bf23` full-build validation |
+| Resumed Linux `38d63` gate, E11 | Fresh install, all normal types, canonical build and 64 files / 1,077 tests passed; zero skips and no OOM kills. Node 26.5.0 / npm 11.17.0 | Not the Darwin 26.8.1 toolchain, full suite, timing comparison, ordinary CLI-to-observer gate or Pi proof |
 | Jobs diagnostic on copied `403da` plus exact adopted patch, E4 | Strict types `18050/52cd5f`; entire file `4984/9b79e3`, 21/21, zero skips, including unchanged 4,097-row case and injected refused/thrown result reporting | Cause/resolution of the original loaded Linux timeout; production scheduler change |
 | Isolated unchanged `403da` compaction, E5 | `86798/a409bf`, 3/3, zero skips; includes 1,657 complete tool pairs and cold reopen | Loaded Linux behavior or performance gain |
 | Native Light and Pi continuation diagnostics, E6 | Each uses the actual selected source/SDK, native read, second provider request, two financial admissions/known settlements and two ordered publications with fake network; first output checklist score accepted | Current canonical CLI bootstrap, paid quality, planning semantics or final production parent authority |
@@ -180,11 +196,13 @@ execution and unset deployment approvals.
    the shared finalizer. Never infer expected root/contract from a received ACK.
 3. **Clear platform-specific gates honestly.** The attempted Darwin outer sandbox
    denied external TCP but also blocked canonical process inspection and nested
-   sandbox startup; it cannot contain the unchanged CLI as configured. Last
-   read-only Linux connection check `10060/abda91` exited 255 on connection
-   timeout before authentication; no remote command ran or password was used.
-   Remote process state is unknown. Restore approved reachability before inspection or
-   launch, rather than bypassing identity/sandbox or retrying unknown jobs.
+   sandbox startup; it cannot contain the unchanged CLI as configured. The earlier
+   Linux connection check `10060/abda91` timed out before authentication and is
+   retained. Access is now restored. Read-only inventory found no running Docker
+   containers or visible Node/Vitest/AgenC jobs at that snapshot; this is not a
+   continuing idle guarantee. The bounded correctness gate below is separate
+   from still-unapproved real CLI companion deployment. Never bypass canonical
+   identity/sandbox or retry unknown jobs.
 4. **Resolve relevant Linux/full-suite proof gaps.** Run only justified current
    affected gates after source/artifact selection, including M4 readiness/crash
    wiring and descriptor-dependent workflow tests. The jobs change improves
@@ -256,6 +274,7 @@ to launch a provider. `E` denotes `/private/tmp/light-takeover/`.
 | E8 | `E/fair-confirmation/current-cli-observer-v1/ROOT-IPC-RESULT.md`, `PARENT-LIFECYCLE.md`, `parent-lifecycle.test.mjs`, `parent-dispatch.test.mjs`; lifecycle SHA256 `e7d5b4bcaf5151cc5fec7c0128358891046af61fde863f3bc6cc3ec7e94793ad` |
 | E9 | `E/fair-confirmation/current-cli-observer-v1/{companion-types-first-red.log,companion-types-corrected.log,preflight-types-first-red.log,tsconfig.companion.json}`; expanded strict config SHA256 `771aaec63e0a6ec9bde0a14c207c58c295e642929ec3218a6a66efcc70463470`; original companion-only config retained as `tsconfig.companion-only.accepted.json`; `E/evaluation-audit/CURRENT-CLI-READINESS.md`; latest scope updates in `E/HANDOFF.md` top |
 | E10 | `E/fair-confirmation/current-cli-observer-v1/CLI-BINDING-REUSE.md`; `E/fair-confirmation/darwin-containment-v1/RESULT.md`; `E/COMPLETION-AUDIT.md` (read newest assessment before retained historical sections) |
+| E11 | `E/linux-resume-20260930/{run.sh,RESULT.md,initial-logs/}` and exact `source-38d63.tar`; terminal87963/bf6728 exited0. Logs remain private. Public recipe: `experiments/light/2026-09-30/linux-resume-v1/README.md`. |
 
 External scripts are versioned prototypes with their own pins and approval
 boundaries. The repository documentation intentionally contains no credentials,
@@ -280,8 +299,9 @@ now passes **25/25 offline tests, zero skips, and strict no-emit TypeScript**.
 The first typecheck failure is retained; the only correction supplies the test's
 actual filesystem explicitly to the financial owner. Callback production logic
 remains unchanged. This is not actual observer/client execution or a new model
-benchmark result. All deployment/containment gates remain false; the Linux PC
-still timed out before authentication and its saved control connection was absent.
+benchmark result. At that checkpoint Linux still timed out before authentication.
+Reachability has since returned; restoration alone does not approve the companion's
+deployment/containment gates.
 
 A subsequent local companion build compiled 3,472 pinned source inputs with one
 canonical session-context module, but read-only review found an **import blocker
