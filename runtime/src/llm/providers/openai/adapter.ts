@@ -58,6 +58,11 @@ import { chatCompletionsCapabilityHintsForProvider } from "../../wire/capability
 import { sharedPrefixTailEnabled } from "../../wire/shared-prefix-tail.js";
 import { decodeMcpToolNameFromWire } from "../../wire/mcp-tool-naming.js";
 import {
+  incompleteToolCallIdentities,
+  MAX_INCOMPLETE_TOOL_CALLS,
+  MAX_INCOMPLETE_TOOL_IDENTITY_LENGTH,
+} from "../../wire/incomplete-tool-calls.js";
+import {
   assistantTextFromContentBlocks,
   thinkingTextFromContentBlocks,
   normalizeFinishReason,
@@ -1495,12 +1500,94 @@ export class OpenAIProvider implements LLMProvider {
 
       let streamedContent = "";
       const streamedFunctionItems = new Map<string, Record<string, unknown>>();
+      const incompleteIdentities = new Map<string, { readonly id: string; readonly name: string }>();
+      const incompleteIdentitySources = new Map<string, { readonly itemId: string | undefined; readonly index: number | undefined; readonly added: boolean }>();
+      const incompleteItemCalls = new Map<string, string>();
+      const incompleteIndexCalls = new Map<number, string>();
+      const nonFunctionItemIds = new Set<string>();
+      const nonFunctionIndexes = new Set<number>();
+      const validIncompleteItemId = (value: unknown): value is string => typeof value === "string" && value.length > 0
+        && value.length <= MAX_INCOMPLETE_TOOL_IDENTITY_LENGTH && /^[A-Za-z0-9_.:-]+$/u.test(value);
+      let incompleteIdentitiesInvalid = false;
       const bufferedFunctionSnapshots = new Set<string>();
       const streamedReasoningItems: Record<string, unknown>[] = [];
       let completedResponse: Record<string, unknown> | null = null;
 
       for await (const event of this.readSseEvents(response)) {
         const eventType = event.event ?? String(event.data.type ?? "");
+
+        if (eventType === "response.output_item.added" || eventType === "response.output_item.done") {
+          const item = event.data.item;
+          // A known non-function item/slot cannot also identify a function.
+          // Track only bounded identity metadata, not message/reasoning content.
+          if (item !== null && typeof item === "object" && !Array.isArray(item)
+              && (item as Record<string, unknown>).type !== "function_call" && !incompleteIdentitiesInvalid) {
+            const record = item as Record<string, unknown>;
+            const itemId = record.id;
+            const index = event.data.output_index;
+            const validIndex = typeof index === "number" && Number.isSafeInteger(index) && index >= 0;
+            if ((Object.hasOwn(record, "id") && !validIncompleteItemId(itemId))
+                || (Object.hasOwn(event.data, "output_index") && !validIndex)
+                || (validIncompleteItemId(itemId) && incompleteItemCalls.has(itemId))
+                || (validIndex && incompleteIndexCalls.has(index))) {
+              incompleteIdentitiesInvalid = true;
+            } else {
+              if (validIncompleteItemId(itemId)) nonFunctionItemIds.add(itemId);
+              if (validIndex) nonFunctionIndexes.add(index);
+              incompleteIdentitiesInvalid = nonFunctionItemIds.size > MAX_INCOMPLETE_TOOL_CALLS
+                || nonFunctionIndexes.size > MAX_INCOMPLETE_TOOL_CALLS;
+            }
+          }
+          if (item !== null && typeof item === "object" && !Array.isArray(item)
+              && (item as Record<string, unknown>).type === "function_call" && !incompleteIdentitiesInvalid) {
+            const identity = incompleteToolCallIdentities([item], "responses",
+              requestOptions.tools.map(tool => tool.function.name))[0];
+            const source = identity === undefined ? undefined : incompleteIdentitySources.get(identity.id);
+            const record = item as Record<string, unknown>;
+            const rawItemId = record.id;
+            const rawIndex = event.data.output_index;
+            const validItemId = validIncompleteItemId(rawItemId);
+            const validIndex = typeof rawIndex === "number" && Number.isSafeInteger(rawIndex) && rawIndex >= 0;
+            const itemId = validItemId ? rawItemId : undefined;
+            const index = validIndex ? rawIndex : undefined;
+            // Compatibility: absent item/slot metadata is allowed, but cannot
+            // erase a known binding. An absent call_id may use the supplied
+            // item.id (the wire parser's existing rule); never fabricate an ID.
+            // Explicit null/wrong-type metadata is not an omission. All three
+            // supplied identities must stay bijective across added/done events.
+            if (identity === undefined
+                || (Object.hasOwn(record, "id") && !validItemId)
+                || (Object.hasOwn(event.data, "output_index") && !validIndex)
+                || (Object.hasOwn(record, "call_id") && typeof record.call_id !== "string")
+                || (itemId !== undefined && nonFunctionItemIds.has(itemId))
+                || (index !== undefined && nonFunctionIndexes.has(index))
+                || (itemId !== undefined && incompleteItemCalls.has(itemId)
+                  && incompleteItemCalls.get(itemId) !== identity.id)
+                || (index !== undefined && incompleteIndexCalls.has(index)
+                  && incompleteIndexCalls.get(index) !== identity.id)
+                || (incompleteIdentities.has(identity.id)
+                && incompleteIdentities.get(identity.id)!.name !== identity.name)
+                || (source !== undefined && ((source.itemId !== undefined && itemId !== undefined && source.itemId !== itemId)
+                  || (source.index !== undefined && index !== undefined && source.index !== index)
+                  || (source.added && eventType === "response.output_item.added")))) {
+              incompleteIdentitiesInvalid = true;
+            } else {
+              incompleteIdentities.set(identity.id, identity);
+              if (itemId !== undefined) incompleteItemCalls.set(itemId, identity.id);
+              if (index !== undefined) incompleteIndexCalls.set(index, identity.id);
+              incompleteIdentitySources.set(identity.id, {
+                itemId: source?.itemId ?? itemId,
+                index: source?.index ?? index,
+                added: source?.added === true || eventType === "response.output_item.added" });
+              incompleteIdentitiesInvalid = incompleteIdentities.size > MAX_INCOMPLETE_TOOL_CALLS;
+            }
+          }
+          if (incompleteIdentitiesInvalid) {
+            incompleteIdentities.clear(); incompleteIdentitySources.clear();
+            incompleteItemCalls.clear(); incompleteIndexCalls.clear();
+            nonFunctionItemIds.clear(); nonFunctionIndexes.clear();
+          }
+        }
 
         if (eventType === "response.output_text.delta") {
           const delta =
@@ -1662,6 +1749,11 @@ export class OpenAIProvider implements LLMProvider {
       const toolCalls = parsed.toolCalls;
       const finalResponse: LLMResponse = {
         ...parsed,
+        ...(incompleteIdentitiesInvalid ? { incompleteToolCalls: undefined } : {}),
+        // Terminal calls remain authoritative. A length-only identity fallback
+        // cannot restore argument bytes or the executable item.done fast path.
+        ...(parsed.finishReason === "length" && !hasTerminalCalls && !incompleteIdentitiesInvalid
+          && incompleteIdentities.size > 0 ? { incompleteToolCalls: [...incompleteIdentities.values()] } : {}),
         // The ChatGPT backend completes with an empty `output`, so its
         // reasoning comes from the items streamed before completion.
         ...(parsed.providerReasoningContent === undefined
@@ -1794,6 +1886,7 @@ export class OpenAIProvider implements LLMProvider {
       let endedWithUnterminatedEvent = false;
       let unterminatedFragmentNamesToolCalls = false;
       const rawFinishReasons = new Set<string>();
+      let incompleteToolIdentitiesInvalid = false;
       let usage: Record<string, unknown> = {};
       let servedServiceTier: unknown;
       const toolCallAccumulator = new Map<
@@ -1942,6 +2035,14 @@ export class OpenAIProvider implements LLMProvider {
               name: "",
               arguments: "",
             };
+            if (!Number.isSafeInteger(toolCall.index) || (toolCall.index as number) < 0
+                || (Object.hasOwn(toolCall, "type") && toolCall.type !== "function")
+                || (toolCall.id !== undefined && (typeof toolCall.id !== "string"
+                  || (existing.id.length > 0 && existing.id !== toolCall.id)))
+                || (fn.name !== undefined && (typeof fn.name !== "string"
+                  || (existing.name.length > 0 && existing.name !== fn.name)))) {
+              incompleteToolIdentitiesInvalid = true;
+            }
             let bufferedToolProgress = false;
             if (typeof toolCall.id === "string" && toolCall.id.length > 0) {
               bufferedToolProgress ||= existing.id !== toolCall.id;
@@ -2153,8 +2254,14 @@ export class OpenAIProvider implements LLMProvider {
           ? { toolCalls: parsed.toolCalls }
           : {}),
       });
+      const incompleteToolCalls = !incompleteToolIdentitiesInvalid && finishReason === "length"
+        && rawFinishReasons.size === 1 && rawFinishReasons.has("length")
+        ? incompleteToolCallIdentities(Array.from(toolCallAccumulator.values()), "identity",
+          requestOptions.tools.map(tool => tool.function.name), requestOptions.toolCallIdNamespace)
+        : [];
       return {
         ...parsed,
+        ...(incompleteToolCalls.length > 0 ? { incompleteToolCalls } : {}),
         ...(reasoningContent.length > 0
           ? {
             thinking: Object.freeze([

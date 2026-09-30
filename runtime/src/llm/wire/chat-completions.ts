@@ -5,6 +5,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { incompleteToolCallIdentities } from "./incomplete-tool-calls.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -949,6 +950,9 @@ export function parseChatCompletionsResponse(
   }
   const acceptsToolCalls =
     finishReason === "stop" || finishReason === "tool_calls";
+  const incompleteToolCalls = choice.finish_reason === "length"
+    ? incompleteToolCallIdentities(message.tool_calls, "chat", advertisedToolNames, request.toolCallIdNamespace)
+    : [];
   const wireToolCalls = acceptsToolCalls && Array.isArray(message.tool_calls)
     ? normalizeToolCallsStrict(
       (message.tool_calls as Array<Record<string, unknown>>).map(
@@ -1086,6 +1090,7 @@ export function parseChatCompletionsResponse(
         }
       : {}),
     toolCalls,
+    ...(incompleteToolCalls.length > 0 ? { incompleteToolCalls } : {}),
     usage: coerceUsage({
       promptTokens: usageRecord.prompt_tokens,
       completionTokens: usageRecord.completion_tokens,

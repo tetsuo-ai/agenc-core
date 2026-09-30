@@ -1312,6 +1312,30 @@ describe("streamModel — live assistant text sanitization", () => {
     ).toBe(true);
   });
 
+  test("retains only advertised truncated names and clears them on the next sample", async () => {
+    const ctx = mkCtx("chat");
+    const state = mkState(ctx);
+    streamedDispatchCalls.length = 0;
+    let length = true;
+    const registry = mkRegistry([{ name: "Write", description: "synthetic", inputSchema: { type: "object" },
+      execute: async () => ({ content: "unexpected" }) }]);
+    const provider = mkProvider(async () => ({ content: "", toolCalls: [],
+      incompleteToolCalls: [{ id: "cut", name: "Write" }],
+      usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 }, model: "test-model",
+      finishReason: length ? "length" : "stop" }));
+    const { session, events } = mkSession(provider, null, registry);
+    const request = { ...mkRequest([{ role: "user" as const, content: "synthetic" }]), tools: registry.toLLMTools() };
+    await streamModel(state, ctx, session, request);
+    expect(state.truncatedToolCallNames).toEqual(["Write"]);
+    expect(state.toolUseBlocks).toEqual([]);
+    expect(state.completedToolResults).toEqual([]);
+    expect(streamedDispatchCalls).toEqual([]);
+    expect(events.some(event => event.msg.type === "tool_call_completed")).toBe(false);
+    length = false;
+    await streamModel(state, ctx, session, request);
+    expect(state.truncatedToolCallNames).toBeUndefined();
+  });
+
   test("marks length responses for max-output recovery and drops tool calls", async () => {
     const ctx = mkCtx("chat");
     const state = mkState(ctx);

@@ -1,4 +1,5 @@
 import { timedRuntime } from "../diagnostics/runtime-timing.js";
+import { incompleteToolCallIdentities } from "../llm/wire/incomplete-tool-calls.js";
 /**
  * Phase 2 — Stream Model.
  *
@@ -1078,6 +1079,7 @@ export async function streamModel(
   signal?: AbortSignal,
   assistantOutputSink?: AssistantOutputStreamSink,
 ): Promise<TurnState> {
+  state.truncatedToolCallNames = undefined;
   if (signal?.aborted) {
     throw new StreamModelError(new Error("aborted before provider call"));
   }
@@ -1543,6 +1545,11 @@ export async function streamModel(
   }
   state.assistantMessages = [assistant];
   if (maxOutputTruncated) {
+    const identities = incompleteToolCallIdentities(response.incompleteToolCalls, "identity",
+      request.tools.map(tool => tool.function.name));
+    const names = identities.filter(call => !streamedToolCalls.has(call.id)
+      && !state.completedToolResults.some(result => result.callId === call.id)).map(call => call.name);
+    if (names.length > 0) state.truncatedToolCallNames = [...new Set(names)];
     state.toolUseBlocks = [];
     state.needsFollowUp = false;
   } else {

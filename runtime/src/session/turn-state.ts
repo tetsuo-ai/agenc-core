@@ -391,6 +391,11 @@ export interface TurnState {
    *  up. AgenC query.ts:1273. */
   maxOutputTokensRecoveryCount: number;
 
+  /** Per-sample non-executable names only; cleared before the next sample.
+   * Per-sample only; recovery's selected ordinary user instruction and spent
+   * counter use the existing canonical durable message/checkpoint path. */
+  truncatedToolCallNames?: readonly string[];
+
   /** Count of recovery re-entries this turn. Enforces I-42 (recovery
    *  re-entry cap). Wired in T8 — incremented at each recovery
    *  continue site, checked before re-entering stream. */
@@ -887,6 +892,7 @@ export function resetIterationFields(state: TurnState): void {
   state.toolUseBlocks = [];
   state.toolResults = [];
   state.needsFollowUp = false;
+  state.truncatedToolCallNames = undefined;
   state.preventContinuation = false;
   state.noProgressStop = undefined;
   state.effectReviewStop = undefined;

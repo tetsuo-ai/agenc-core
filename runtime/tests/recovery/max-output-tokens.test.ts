@@ -7,6 +7,7 @@ import {
   MAX_OUTPUT_TOKENS_ESCALATED,
   MAX_OUTPUT_TOKENS_RECOVERY_LIMIT,
   runMaxOutputTokensRecovery,
+  RETRY_TRUNCATED_TOOL_CONTENT,
 } from "./max-output-tokens.js";
 
 interface FakeExecutor {
@@ -151,6 +152,27 @@ function mkState(opts: Partial<TurnState> = {}): TurnState {
 }
 
 describe("runMaxOutputTokensRecovery — T8 hardening", () => {
+  test("truncated calls get bounded fresh JSON guidance under an explicit unchanged cap", () => {
+    const state = mkState({ truncatedToolCallNames: ["Write"], maxOutputTokensOverride: 8192 });
+    const session = mkSession(new EventLog());
+    for (let attempt = 1; attempt <= MAX_OUTPUT_TOKENS_RECOVERY_LIMIT; attempt += 1) {
+      expect(runMaxOutputTokensRecovery({ session, state, escalateAllowed: false })).toEqual({ kind: "continuation" });
+      expect(state.messages.at(-1)?.content).toBe(RETRY_TRUNCATED_TOOL_CONTENT);
+      expect(state.maxOutputTokensOverride).toBe(8192);
+      expect(state.maxOutputTokensRecoveryCount).toBe(attempt);
+    }
+    expect(runMaxOutputTokensRecovery({ session, state, escalateAllowed: false }).kind).toBe("exhausted");
+    expect(RETRY_TRUNCATED_TOOL_CONTENT).not.toContain("message_ref");
+    expect(state.toolUseBlocks).toEqual([]);
+  });
+
+  test("truncation marker does not change existing capped-default escalation eligibility", () => {
+    const state = mkState({ truncatedToolCallNames: ["Write"] });
+    expect(runMaxOutputTokensRecovery({ session: mkSession(new EventLog()), state,
+      escalateAllowed: true, escalatedMaxOutputTokens: 16384 })).toEqual({ kind: "escalate" });
+    expect(state.maxOutputTokensOverride).toBe(16384);
+  });
+
   test("escalate path: discards pending executor + nulls slot", () => {
     const log = new EventLog();
     const session = mkSession(log);

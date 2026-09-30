@@ -821,9 +821,17 @@ export interface LLMStoredResponseDeleteResult {
 }
 
 /**
- * Response from an LLM provider
+ * Bounded identity-only diagnostic; never executable or argument-bearing.
  */
+export interface LLMIncompleteToolCall {
+  readonly id: string;
+  readonly name: string;
+}
+
+/** Response from an LLM provider. */
 export interface LLMResponse {
+  /** Length-only, bounded non-executable identities. Never carries arguments. */
+  readonly incompleteToolCalls?: readonly LLMIncompleteToolCall[];
   content: string;
   toolCalls: LLMToolCall[];
   /** Non-executable, bounded provider diagnostic for a fresh admitted correction. */

@@ -5,6 +5,7 @@
  */
 
 import { normalizePromptCacheKey } from "../prompt-cache-key.js";
+import { incompleteToolCallIdentities } from "./incomplete-tool-calls.js";
 import type {
   LLMChatOptions,
   LLMMessage,
@@ -558,6 +559,9 @@ export function parseOpenAIResponsesResponse(
     ? (response.output as Array<Record<string, unknown>>)
     : [];
   const terminalReason = resolveResponsesFinishReason(response);
+  const incompleteToolCalls = terminalReason === "length"
+    ? incompleteToolCallIdentities(output, "responses", request.tools.map(tool => tool.function.name))
+    : [];
   // Decide terminal status BEFORE repairing or validating function arguments.
   // An item.done can carry partial JSON from an incomplete generation.
   const toolCalls = terminalReason !== "stop" ? [] : normalizeToolCallsStrict(
@@ -627,6 +631,7 @@ export function parseOpenAIResponsesResponse(
   return {
     content,
     toolCalls,
+    ...(incompleteToolCalls.length > 0 ? { incompleteToolCalls } : {}),
     ...extractOpenAIReasoningReplay(output, request),
     usage: coerceUsage({
       promptTokens: usageRecord.input_tokens,

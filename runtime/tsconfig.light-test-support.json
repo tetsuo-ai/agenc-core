@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.test-support.json",
+  "include": [
+    "src/types/**/*.d.ts",
+    "tests/llm/wire/incomplete-tool-calls.test.ts",
+    "tests/llm/providers/openai/adapter.incomplete-identities.test.ts",
+    "tests/session/run-turn.truncated-tool-recovery.test.ts",
+    "tests/session/run-turn.responses-terminal-safety.test.ts",
+    "tests/session/run-turn.light-write-admission.test.ts"
+  ]
+}

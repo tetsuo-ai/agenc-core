@@ -47,6 +47,11 @@ export const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
 const RESUME_META_CONTENT =
   "Continue generating directly from where you left off. Do not apologize, do not restart, do not add preamble. Pick up at the next token.";
 
+export const RETRY_TRUNCATED_TOOL_CONTENT =
+  "The output limit interrupted tool-call arguments. The incomplete calls were not executed. " +
+  "Generate a fresh complete valid JSON tool call using the advertised schema; do not continue the partial argument string. " +
+  "Keep arguments short and within the configured output budget.";
+
 export type MaxOutputTokensOutcome =
   | { readonly kind: "escalate" }
   | { readonly kind: "continuation" }
@@ -441,7 +446,7 @@ export function runMaxOutputTokensRecovery(
     });
     const metaMessage: LLMMessage = {
       role: "user",
-      content: RESUME_META_CONTENT,
+      content: (state.truncatedToolCallNames?.length ?? 0) > 0 ? RETRY_TRUNCATED_TOOL_CONTENT : RESUME_META_CONTENT,
     };
     state.messages.push(metaMessage);
     state.maxOutputTokensRecoveryCount += 1;
