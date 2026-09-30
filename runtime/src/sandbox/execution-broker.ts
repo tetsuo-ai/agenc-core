@@ -1086,12 +1086,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       this.#platform !== "linux" || this.mode !== "workspace_write" ||
       host.kind !== "ready" || host.landlockFallback === undefined
     ) return host;
-    const profile = protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
-      this.#permissionProfile ?? permissionProfileForSandboxMode(this.mode, {
-        cwd: this.#cwd,
-      }),
-      this.#desktopAuthorityRoot,
-    ), this.#cronAuthorityRoots));
+    const profile = this.#protectedProfile();
     const plan = this.#planLandlockPolicy({
       fileSystem: this.#confineToWorktree("tool", profile, this.#sessionTempRoot).fileSystem,
       sandboxPolicyCwd: this.#cwd,
@@ -1141,6 +1136,15 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       !ROUTINE_SERVICE_SURFACES.has(surface);
   }
 
+  #protectedProfile(): PermissionProfile {
+    return protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
+      this.#permissionProfile ?? permissionProfileForSandboxMode(this.mode, {
+        cwd: this.#cwd,
+      }),
+      this.#desktopAuthorityRoot,
+    ), this.#cronAuthorityRoots));
+  }
+
   /** A worktree child's command surface: its profile writes inside the worktree only. */
   #confineToWorktree(
     surface: SandboxExecutionSurface,
@@ -1160,13 +1164,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     // A spawn may tighten the session profile; its exact policy is checked
     // immediately before launch by #preflightLandlockPlan.
     const status = this.#assertReadyAfterLifecycleAdmission(surface, true);
-    const profile = protectDaemonSocket(protectCronAuthority(protectDesktopAuthority(
-      this.#permissionProfile ??
-      permissionProfileForSandboxMode(this.mode, {
-        cwd: this.#cwd,
-      }),
-      this.#desktopAuthorityRoot,
-    ), this.#cronAuthorityRoots));
+    const profile = this.#protectedProfile();
     const confined = this.#routineConfines(surface);
     const tempRoot = confined ? this.#routineChildTempRoot! : this.#sessionTempRoot;
     return {

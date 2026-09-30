@@ -35,8 +35,6 @@ describe("production sandbox startup boundary", () => {
         env: {
           AGENC_HOME: home,
           HOME: home,
-          PATH: join(workspace, "untrusted-bin"),
-          AGENC_DISABLE_LANDLOCK_FALLBACK: "1",
         },
         argv: ["node", "agenc"],
         requireSandboxReadyAtStartup: true,
@@ -51,6 +49,35 @@ describe("production sandbox startup boundary", () => {
       },
     });
   });
+
+  test.skipIf(process.platform !== "linux")(
+    "fails startup after a real probe when bubblewrap is absent and Landlock fallback is disabled",
+    async () => {
+      const home = await mkdtemp(join(tmpdir(), "agenc-startup-home-"));
+      const workspace = await mkdtemp(join(tmpdir(), "agenc-startup-workspace-"));
+      roots.push(home, workspace);
+
+      await expect(bootstrapLocalRuntimeSession({
+        cwd: workspace,
+        env: {
+          AGENC_HOME: home,
+          HOME: home,
+          PATH: join(workspace, "untrusted-bin"),
+          AGENC_DISABLE_LANDLOCK_FALLBACK: "1",
+        },
+        argv: ["node", "agenc"],
+        requireSandboxReadyAtStartup: true,
+      })).rejects.toMatchObject({
+        code: "sandbox_required_unavailable",
+        surface: "startup",
+        status: {
+          kind: "unavailable",
+          reason: expect.stringContaining("bubblewrap"),
+          remediation: expect.stringContaining("Install bubblewrap"),
+        },
+      });
+    },
+  );
 
   test("refuses an unexpressible headless policy before provider setup", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-startup-home-"));

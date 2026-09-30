@@ -1443,6 +1443,25 @@ describe("AgenC TUI session transcript", () => {
       );
     });
 
+    test("renders an unexpressible sandbox policy warning", () => {
+      const transcript = adaptTranscriptEvents([{
+        id: "sandbox-policy",
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "sandbox_policy_unexpressible",
+            message: "Workspace sandbox policy cannot be enforced; install bubblewrap",
+          },
+        },
+      }]);
+
+      expect(transcript.messages).toMatchObject([{
+        type: "system",
+        level: "warning",
+        content: "Workspace sandbox policy cannot be enforced; install bubblewrap",
+      }]);
+    });
+
     test("renders background agent status events as visible status rows", () => {
       const transcript = adaptTranscriptEvents([
         {
