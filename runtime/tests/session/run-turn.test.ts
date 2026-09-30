@@ -7504,6 +7504,39 @@ describe("runTurn — GOAL #4b Stage 1 durable resume continuation", () => {
     }
   });
 
+  test("reuses only an identical committed checkpoint before the next model request", async () => {
+    let calls = 0;
+    let seenEvents: Event[] = [];
+    const provider: LLMProvider = {
+      ...mkProvider({ content: "done", toolCalls: [] }),
+      chatStream: async () => {
+        if (++calls === 2) {
+          const checkpoints = seenEvents.filter(e => e.msg.type === "turn_checkpoint");
+          expect(checkpoints.map(e => e.msg.type === "turn_checkpoint" && e.msg.payload.boundary))
+            .toEqual(["postAssistant", "iteration"]);
+          expect(checkpoints.at(-1)?.msg).toMatchObject({ payload: {
+            resumableState: { modelSampleOrdinal: 1 }, checkpointSeq: 2,
+          } });
+        }
+        return { content: calls === 1 ? "" : "done",
+          toolCalls: calls === 1 ? [{ id: "read-once", type: "function", function: { name: "read", arguments: "{}" } }] : [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "test-model", finishReason: calls === 1 ? "tool_calls" : "stop" };
+      },
+    };
+    const tool = { name: "read", description: "read", inputSchema: { type: "object" },
+      requiresApproval: false, isReadOnly: true, recoveryCategory: "idempotent",
+      execute: async () => ({ content: "ok", isError: false }) } as unknown as Tool;
+    const registry = { tools: [tool], toLLMTools: () => [],
+      dispatch: async () => ({ content: "ok", isError: false }) } as unknown as ToolRegistry;
+    const { session, events } = mkSession({ provider, registry });
+    seenEvents = events;
+    session.rolloutStore = { assertCompactionProjectionReady: () => {}, append: vi.fn(),
+      appendRollout: vi.fn(), rolloutPath: "/tmp/does-not-matter.jsonl" } as unknown as Session["rolloutStore"];
+    await drain(session.runTurn("read once"));
+    expect(calls).toBe(2);
+  });
+
   test("a restarted physical model sample checkpoints a fresh admission identity", async () => {
     const { session, events } = mkSession({
       provider: mkProvider({ content: "finished", toolCalls: [] }),

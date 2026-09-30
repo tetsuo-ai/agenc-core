@@ -1,3 +1,4 @@
+import { runtimeSpan } from "../diagnostics/runtime-timing.js";
 /** Shared M3 boundary for logical model calls. */
 
 import type { Session } from "../session/session.js";
@@ -506,6 +507,13 @@ export function fitOutputReservationToContext(
 export async function runAdmittedModelCall(
   params: AdmittedModelCallOptions,
 ): Promise<LLMResponse> {
+  const finishRuntimeSpan = runtimeSpan("model.admitted", { session_id: params.session.conversationId });
+  const finishAdmission = runtimeSpan("admission.model", { session_id: params.session.conversationId });
+  const invoke = (options: LLMChatOptions): Promise<LLMResponse> => {
+    finishAdmission();
+    return params.invoke(options);
+  };
+  try {
   const client = params.session.services.executionAdmission;
   const providerFactoryOptions = readProviderFactoryOptions(params.provider);
   // A few structurally typed embedding/test providers predate the explicit
@@ -762,7 +770,7 @@ export async function runAdmittedModelCall(
     if (accountingFailureReason !== undefined) {
       throw new AdmissionDeniedError(accountingFailureReason);
     }
-    return params.invoke({
+    return await invoke({
       ...accountingOptions,
       ...(configuredMaxOutputTokens !== undefined
         ? { maxOutputTokens: admittedMaxOutputTokens }
@@ -876,7 +884,7 @@ export async function runAdmittedModelCall(
       admittedMaxOutputTokens,
       lease.request.estimate.maxOutputTokens,
     );
-    const response = await params.invoke({
+    const response = await invoke({
       ...accountingOptions,
       ...(profile?.providerExecutionHandle !== undefined
         ? { providerExecutionHandle: profile.providerExecutionHandle }
@@ -1021,4 +1029,6 @@ export async function runAdmittedModelCall(
     // idempotent when reconcile/holdUnknown/void already released the slot.
     client.acknowledgeCompletion(reservationId);
   }
+
+  } finally { finishAdmission(); finishRuntimeSpan(); }
 }

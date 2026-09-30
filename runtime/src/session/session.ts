@@ -3630,7 +3630,9 @@ export class Session {
     this.lifecycleState = "shutting_down";
     if (this.ownsMcpManager) {
       this.services.mcpStartupCancellationToken.cancel();
-      this.startOwnedMcpDisposal(false);
+      // The disposal task retains rejection handlers and is awaited by shutdown.
+      // Keep this admission-closing transition synchronous.
+      void this.startOwnedMcpDisposal(false);
     }
     if (this.deferredSessionStartHookPromise === null) {
       this.deferredSessionStartHook = null;
@@ -4906,6 +4908,24 @@ export class Session {
    * event becomes observable; ordinary callers publish immediately after the
    * append, while state-transition owners may use {@link prepareEmit}.
    */
+  /** Admission rows and their derived usage become visible after one durable flush. */
+  emitAdmissionBatch(events: readonly Event[]): readonly Event[] {
+    if (this.canonicalJournalSealed || this.isRolloutPersistenceSuspended() || !this.rolloutStore) {
+      throw new Error("admission batch requires an active canonical journal");
+    }
+    if (events.some(event => event.msg.type !== "execution_admission" && event.msg.type !== "session_usage")) {
+      throw new Error("unsupported admission batch event");
+    }
+    const stamped = events.map(event => this.eventLog.stamp(event));
+    this.rolloutStore.appendDurableBatch(stamped);
+    hitM4DurabilityFailpoint("before_event_publish");
+    this.eventLog.publishBatch(stamped, (event) => {
+      this.txEvent.send(event);
+      hitM4DurabilityFailpoint("after_event_publish");
+    });
+    return stamped;
+  }
+
   emit(event: Event, appendOpts: AppendOptions = {}): Event {
     return this.prepareEmit(event, appendOpts).publish();
   }

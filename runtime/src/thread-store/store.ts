@@ -1,3 +1,4 @@
+import { runtimeSpan } from "../diagnostics/runtime-timing.js";
 /** Thread-store persistence boundary for live and on-disk AgenC threads. */
 
 import {
@@ -373,6 +374,11 @@ export class FileThreadStore implements ThreadStore {
   private readonly threadIndex: StateThreadRepository;
   private readonly liveRecorders = new Map<ThreadId, RolloutStore>();
   private closed = false;
+  // Display/history indexes are rebuildable from the already committed rollout.
+  // Coalesce live flush notifications; explicit reads and shutdown drain them.
+  private readonly pendingRolloutIndexes = new Set<string>();
+  private rolloutIndexTimer: ReturnType<typeof setTimeout> | undefined;
+
   /** One legacy sessions-dir import per store instance (see readRegistryUnlocked). */
   private legacyImportDone = false;
 
@@ -552,12 +558,14 @@ export class FileThreadStore implements ThreadStore {
     this.assertOpen();
     const recorder = this.liveRecorderOrThrow(threadId);
     recorder.flushDurable();
+    this.flushPendingRolloutIndexes();
   }
 
   flushThread(threadId: ThreadId): void {
     this.assertOpen();
     const recorder = this.liveRecorderOrThrow(threadId);
     recorder.flushDurable();
+    this.flushPendingRolloutIndexes();
   }
 
   shutdownThread(threadId: ThreadId): void {
@@ -806,6 +814,7 @@ export class FileThreadStore implements ThreadStore {
 
   listThreads(params: ListThreadsParams): ThreadPage {
     this.assertOpen();
+    this.flushPendingRolloutIndexes();
     const pageSize = validatePageSize(params.pageSize);
     const scope = normalizeListScope(params);
     const cursor = parseThreadCursor(params.cursor, scope.hash);
@@ -1075,6 +1084,9 @@ export class FileThreadStore implements ThreadStore {
 
   close(): void {
     if (this.closed) return;
+    this.flushPendingRolloutIndexes();
+    if (this.rolloutIndexTimer) clearTimeout(this.rolloutIndexTimer);
+    this.rolloutIndexTimer = undefined;
     this.closed = true;
     for (const recorder of this.liveRecorders.values()) {
       recorder.setOnRolloutCommitted(undefined);
@@ -1328,11 +1340,16 @@ export class FileThreadStore implements ThreadStore {
   }
 
   private indexRolloutFile(rolloutPath: string): void {
+  const finishRuntimeSpan = runtimeSpan("projection.thread_index");
+  try {
     backfillRolloutFile({
       rolloutPath,
       threads: this.threadIndex,
     });
-  }
+    this.pendingRolloutIndexes.delete(rolloutPath);
+
+  } finally { finishRuntimeSpan(); }
+}
 
   /**
    * Register a live recorder and keep the SQLite mirror current as it
@@ -1344,9 +1361,20 @@ export class FileThreadStore implements ThreadStore {
     rolloutStore.setOnRolloutCommitted((rolloutPath) => {
       if (this.closed) return;
       if (this.liveRecorders.get(threadId) !== rolloutStore) return;
-      this.indexRolloutFile(rolloutPath);
+      this.pendingRolloutIndexes.add(rolloutPath);
+      this.rolloutIndexTimer ??= setTimeout(() => {
+        this.rolloutIndexTimer = undefined;
+        this.flushPendingRolloutIndexes();
+      }, 250).unref();
     });
     this.liveRecorders.set(threadId, rolloutStore);
+  }
+
+  private flushPendingRolloutIndexes(): void {
+    for (const path of this.pendingRolloutIndexes) {
+      try { this.indexRolloutFile(path); }
+      catch { /* Keep failed mirrors pending; canonical bytes remain authoritative. */ }
+    }
   }
 
   private prepareLiveRecorder(rolloutStore: RolloutStore): void {
@@ -1362,6 +1390,7 @@ export class FileThreadStore implements ThreadStore {
     if (this.liveRecorders.get(threadId) === rolloutStore) {
       this.liveRecorders.delete(threadId);
     }
+    this.flushPendingRolloutIndexes();
     rolloutStore.setOnRolloutCommitted(undefined);
   }
 
@@ -1457,6 +1486,7 @@ export class FileThreadStore implements ThreadStore {
   private readRegistryUnlocked(
     includeLegacy: boolean,
   ): Map<ThreadId, RegistryEntry> {
+    this.flushPendingRolloutIndexes();
     const result = new Map<ThreadId, RegistryEntry>();
     for (const entry of this.threadIndex.listThreads()) {
       const normalized = normalizeRegistryEntry(entry);

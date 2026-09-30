@@ -1,3 +1,4 @@
+import { runtimeSpan } from "../diagnostics/runtime-timing.js";
 /**
  * Phase 6 — Commit.
  *
@@ -417,6 +418,8 @@ export async function commit(
   signal?: AbortSignal,
   options: CommitOptions = {},
 ): Promise<TurnState> {
+  const finishRuntimeSpan = runtimeSpan("persistence.iteration");
+  try {
   // ── 1. Append history — await any pending tool-use summary promise
   //      so the UI sees the final summary before the next iteration.
   if (state.pendingToolUseSummary) {
@@ -563,4 +566,6 @@ export async function commit(
   state.turnCount += 1;
   state.maxOutputTokensOverride = undefined;
   return state;
+
+  } finally { finishRuntimeSpan(); }
 }

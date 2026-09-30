@@ -1,3 +1,4 @@
+import { runtimeSpan } from "../diagnostics/runtime-timing.js";
 /**
  * Session on-disk store — owns the rollout JSONL file, its fsync
  * guarantees, flock acquisition, atomic write-then-rename, and the
@@ -53,7 +54,7 @@ import {
   existsSync,
   fstatSync,
   ftruncateSync,
-  fsyncSync,
+  fsyncSync as nativeFsyncSync,
   linkSync,
   lstatSync,
   mkdirSync,
@@ -862,6 +863,8 @@ export function rewriteAtomically(
   bytes: string | Buffer,
   mode: number = 0o600,
 ): void {
+  const finishRuntimeSpan = runtimeSpan("persistence.atomic");
+  try {
   const tmpPath = `${targetPath}.tmp`;
   // Clear any stale tmp from a prior crash so O_EXCL can succeed.
   try {
@@ -918,6 +921,8 @@ export function rewriteAtomically(
   } catch {
     /* best-effort */
   }
+
+  } finally { finishRuntimeSpan(); }
 }
 
 /** Read exactly the first newline-terminated canonical row with a hard cap. */
@@ -1930,6 +1935,26 @@ export class SessionStore {
    * project or publish an event that the canonical rollout rejected. Events
    * WITHOUT seq (sidecar synth or replay re-entry) remain deduped by `event.id`.
    */
+  private collectingDurableBatch = false;
+
+  /** One synchronous boundary: no caller can observe a partial acknowledgement. */
+  appendDurableBatch(events: readonly Event[]): void {
+    if (!this.opened || this.closed || this.collectingDurableBatch) {
+      throw new Error("cannot begin durable rollout batch");
+    }
+    this.collectingDurableBatch = true;
+    try {
+      for (const event of events) {
+        if (!this.append(event, { durable: true })) {
+          throw new Error("durable rollout batch append failed");
+        }
+      }
+    } finally {
+      this.collectingDurableBatch = false;
+    }
+    if (!this.flushBatch(true)) throw new Error("durable rollout batch was not fsync-committed");
+  }
+
   append(event: Event, opts: AppendOptions = {}): boolean {
     if (!this.opened || this.closed) return false;
     this.lastBoundReadProof = undefined;
@@ -1996,6 +2021,7 @@ export class SessionStore {
     this.pending.push(item);
 
     const durable = opts.durable === true || isDurableEvent(event);
+    if (this.collectingDurableBatch) return true;
     if (durable) {
       return this.flushBatch(/*durable*/ true);
     } else if (this.pending.length >= 1024) {
@@ -2036,6 +2062,11 @@ export class SessionStore {
    * for tests.
    */
   flushBatch(durable: boolean): boolean {
+  const tail = this.pending.at(-1);
+  const finishRuntimeSpan = runtimeSpan("persistence.flush", {
+    boundary: tail?.type === "event_msg" ? tail.payload.msg.type : tail?.type ?? "empty",
+  });
+  try {
     // A slow flush (a large batch, or a durable fsync on a busy disk) stalls
     // the event loop that streams to every client, so it is worth reporting.
     // It must NOT go through this store's diagnostic channel:
@@ -2055,7 +2086,9 @@ export class SessionStore {
       durable ? "rollout_flush_durable" : "rollout_flush_batch",
       () => this.flushBatchUntimed(durable),
     );
-  }
+
+  } finally { finishRuntimeSpan(); }
+}
 
   private flushBatchUntimed(durable: boolean): boolean {
     if (this.pending.length === 0) {
@@ -2224,7 +2257,8 @@ export class SessionStore {
       fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND;
     const fd = this.openCanonicalFile(flags, 0o600);
     try {
-      this.writeAll(fd, content);
+      const finishWrite = runtimeSpan("persistence.write", { bytes: Buffer.byteLength(content) });
+      try { this.writeAll(fd, content); } finally { finishWrite(); }
       this.assertCanonicalFileStillBound(fd);
     } finally {
       this.closeCanonicalOperationFd(fd);
@@ -2314,12 +2348,15 @@ export class SessionStore {
     content: string,
     onRetryFailure?: (err: unknown) => void,
   ): boolean {
+  const finishRuntimeSpan = runtimeSpan("persistence.rollout");
+  try {
     const flags =
       fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND;
     const fd = this.openCanonicalFile(flags, 0o600);
     let firstErr: unknown;
     try {
-      this.writeAll(fd, content);
+      const finishWrite = runtimeSpan("persistence.write", { bytes: Buffer.byteLength(content) });
+      try { this.writeAll(fd, content); } finally { finishWrite(); }
       try {
         this.fsyncImpl(fd);
         this.assertCanonicalFileStillBound(fd);
@@ -2334,11 +2371,14 @@ export class SessionStore {
       // loop. The data is already in the OS buffer from writeSync, so
       // re-opening the file and calling fsyncSync on that fd flushes
       // the same kernel-level buffers to disk.
-      this.scheduleFsyncRetry(firstErr, onRetryFailure);
+      // scheduleFsyncRetry owns the task in pendingFsyncRetries; close drains it.
+      void this.scheduleFsyncRetry(firstErr, onRetryFailure);
       return false;
     }
     return true;
-  }
+
+  } finally { finishRuntimeSpan(); }
+}
 
   private writeAll(fd: number, content: string): void {
     this.repairUncertainAppendTail(fd);
@@ -3611,6 +3651,8 @@ export class SessionStore {
    * or missing snapshot is recoverable.
    */
   private writeIndexSnapshot(): void {
+  const finishRuntimeSpan = runtimeSpan("persistence.index");
+  try {
     const snapshot: IndexSnapshot = {
       snapshotSequenceNumber: this.lastSeqWritten,
       fileSize: this.fileSize,
@@ -3635,7 +3677,9 @@ export class SessionStore {
         message: `index.json snapshot failed: ${(err as { code?: string }).code ?? (err as { message?: string }).message ?? "unknown"}`,
       });
     }
-  }
+
+  } finally { finishRuntimeSpan(); }
+}
 
   /** Accessor for the byte-offset index (T12 `/resume` fast-seek). */
   getByteOffsetForSeq(seq: EventSeq): number | undefined {
@@ -4149,4 +4193,9 @@ export function listResumableSessions(projectDir: string): ResumableSession[] {
   }
   result.sort((a, b) => b.lastModified - a.lastModified);
   return result;
+}
+
+function fsyncSync(fd: number): void {
+  const finish = runtimeSpan("persistence.fsync", { count: 1 });
+  try { nativeFsyncSync(fd); } finally { finish(); }
 }

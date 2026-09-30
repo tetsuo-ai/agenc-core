@@ -1,3 +1,4 @@
+import { runtimeSpan, timedRuntime } from "../diagnostics/runtime-timing.js";
 /** Shared M3 boundary for approved tool effects. */
 
 import { createHash, randomUUID } from "node:crypto";
@@ -257,6 +258,8 @@ function appendEffectEvent(
     }
   >,
 ): EffectEventCommit {
+  const finishRuntimeSpan = runtimeSpan("receipts.commit", { session_id: session.conversationId, event: msg.type });
+  try {
   const emit = (session as { readonly emit?: Session["emit"] }).emit;
   if (session.rolloutStore == null || typeof emit !== "function") {
     if (session.services?.admissionRequired !== false) {
@@ -278,6 +281,8 @@ function appendEffectEvent(
   } catch (projectionError) {
     return { event, projectionError };
   }
+
+  } finally { finishRuntimeSpan(); }
 }
 
 function requireEffectProjection(commit: EffectEventCommit): void {
@@ -289,6 +294,8 @@ function requireEffectProjection(commit: EffectEventCommit): void {
 }
 
 function projectCommittedEffectEvent(session: Session, event: Event): void {
+  const finishRuntimeSpan = runtimeSpan("receipts.projection");
+  try {
   try {
     effectProjection(session)?.recordEffectEvent(event);
   } catch (projectionError) {
@@ -296,6 +303,8 @@ function projectCommittedEffectEvent(session: Session, event: Event): void {
       cause: projectionError,
     });
   }
+
+  } finally { finishRuntimeSpan(); }
 }
 
 function appendEffectIntent(params: {
@@ -773,6 +782,8 @@ function liveIdentity(context: EffectJournalContext): LiveEffectIdentity {
 export async function runAdmittedToolCall(
   params: AdmittedToolCallOptions,
 ): Promise<ToolDispatchResult> {
+  const finishRuntimeSpan = runtimeSpan("tool.admitted", { tool: params.tool.name, call_id: params.callId, session_id: params.session.conversationId });
+  try {
   const category = recoveryCategory(params.tool);
   assertNoLiveUnknownEffect(params.session, category);
   params.session.rolloutStore?.assertToolAdmissionAllowed(category);
@@ -841,7 +852,7 @@ export async function runAdmittedToolCall(
   const lease =
     client === undefined
       ? undefined
-      : await client.acquire(
+      : await timedRuntime("admission.tool", () => client.acquire(
           {
             stepId,
             kind: "tool_exec",
@@ -852,7 +863,7 @@ export async function runAdmittedToolCall(
             maxCostUsd: estimate.maxCostUsd,
           },
           params.signal,
-        );
+        ));
   const reservationId = lease?.reservation.reservationId;
   const runId = lease?.reservation.step.runId ?? logicalRunId;
   const durableStepId = lease?.reservation.step.stepId ?? stepId;
@@ -920,7 +931,7 @@ export async function runAdmittedToolCall(
     }
 
     hitM4DurabilityFailpoint("before_tool_spawn");
-    const result = await params.invoke(dispatch.context);
+    const result = await timedRuntime("tool.invoke", () => params.invoke(dispatch.context), { tool: params.tool.name, call_id: params.callId, session_id: params.session.conversationId });
     const lateCancellation = cancellationAfterDispatch(
       lease?.signal ?? dispatch.context.signal,
     );
@@ -1335,4 +1346,6 @@ export async function runAdmittedToolCall(
       dispatch.cleanup();
     }
   }
+
+  } finally { finishRuntimeSpan(); }
 }

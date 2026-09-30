@@ -1,0 +1,170 @@
+[
+  {
+    "label": "light-runtime-alone-01",
+    "file_summary": [
+      " Test Files  1 failed (1)"
+    ],
+    "test_summary": [
+      "      Tests  1 failed (1)"
+    ],
+    "exit": [
+      "exit=1 end=2026-09-29T19:54:49Z"
+    ]
+  },
+  {
+    "label": "light-runtime-alone-02",
+    "file_summary": [
+      " Test Files  1 failed (1)"
+    ],
+    "test_summary": [
+      "      Tests  1 failed | 3 passed (4)"
+    ],
+    "exit": [
+      "exit=1 end=2026-09-29T19:54:54Z"
+    ]
+  },
+  {
+    "label": "light-runtime-alone-03",
+    "file_summary": [
+      " Test Files  1 passed (1)"
+    ],
+    "test_summary": [
+      "      Tests  163 passed (163)"
+    ],
+    "exit": [
+      "exit=0 end=2026-09-29T19:55:15Z"
+    ]
+  },
+  {
+    "label": "light-runtime-alone-04",
+    "file_summary": [
+      " Test Files  1 passed (1)"
+    ],
+    "test_summary": [
+      "      Tests  8 passed (8)"
+    ],
+    "exit": [
+      "exit=0 end=2026-09-29T19:55:25Z"
+    ]
+  },
+  {
+    "label": "light-runtime-alone-05",
+    "file_summary": [
+      " Test Files  1 passed (1)"
+    ],
+    "test_summary": [
+      "      Tests  15 passed (15)"
+    ],
+    "exit": [
+      "exit=0 end=2026-09-29T19:56:43Z"
+    ]
+  },
+  {
+    "label": "light-runtime-alone-06",
+    "file_summary": [
+      " Test Files  1 passed (1)"
+    ],
+    "test_summary": [
+      "      Tests  47 passed (47)"
+    ],
+    "exit": [
+      "exit=0 end=2026-09-29T19:57:35Z"
+    ]
+  },
+  {
+    "label": "light-runtime-alone-07",
+    "file_summary": [
+      " Test Files  1 failed (1)"
+    ],
+    "test_summary": [
+      "      Tests  1 failed | 75 passed (76)"
+    ],
+    "exit": [
+      "exit=1 end=2026-09-29T19:57:44Z"
+    ]
+  },
+  {
+    "label": "light-runtime-alone-08",
+    "file_summary": [
+      " Test Files  1 passed (1)"
+    ],
+    "test_summary": [
+      "      Tests  61 passed (61)"
+    ],
+    "exit": [
+      "exit=0 end=2026-09-29T19:57:59Z"
+    ]
+  },
+  {
+    "label": "light-runtime-alone-09",
+    "file_summary": [
+      " Test Files  1 passed (1)"
+    ],
+    "test_summary": [
+      "      Tests  4 passed (4)"
+    ],
+    "exit": [
+      "exit=0 end=2026-09-29T19:58:35Z"
+    ]
+  },
+  {
+    "label": "light-runtime-authority-again",
+    "file_summary": [
+      " Test Files  1 passed (1)"
+    ],
+    "test_summary": [
+      "      Tests  76 passed (76)"
+    ],
+    "exit": [
+      "exit=0 end=2026-09-29T20:00:05Z"
+    ]
+  },
+  {
+    "label": "light-runtime-authority-main",
+    "file_summary": [
+      " Test Files  1 passed (1)"
+    ],
+    "test_summary": [
+      "      Tests  76 passed (76)"
+    ],
+    "exit": [
+      "exit=0 end=2026-09-29T19:59:47Z"
+    ]
+  },
+  {
+    "label": "light-runtime-candidate",
+    "file_summary": [
+      " Test Files  39 failed | 2681 passed | 1 skipped (2721)"
+    ],
+    "test_summary": [
+      "      Tests  92 failed | 32637 passed | 11 skipped (32740)"
+    ],
+    "exit": [
+      "exit=1 end=2026-09-29T19:52:33Z"
+    ]
+  },
+  {
+    "label": "light-runtime-final-focus",
+    "file_summary": [
+      " Test Files  14 passed (14)"
+    ],
+    "test_summary": [
+      "      Tests  351 passed | 1 skipped (352)"
+    ],
+    "exit": [
+      "exit=0 end=2026-09-29T19:58:08Z"
+    ]
+  },
+  {
+    "label": "light-runtime-main",
+    "file_summary": [
+      " Test Files  35 failed | 2683 passed | 1 skipped (2719)"
+    ],
+    "test_summary": [
+      "      Tests  83 failed | 32638 passed | 11 skipped (32732)"
+    ],
+    "exit": [
+      "exit=1 end=2026-09-29T19:52:38Z"
+    ]
+  }
+]
