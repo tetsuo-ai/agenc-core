@@ -92,7 +92,7 @@ import { EventLog, type Event } from "../../src/session/event-log.js";
 import { reconstructFromRollout } from "../../src/session/rollout-reconstruction.js";
 import { computeCheckpointPrefixHashV3 } from "../../src/session/durable-checkpoint-reader.js";
 import { currentBuildId } from "../../src/session/durable-turns.js";
-import type { RolloutItem } from "../../src/session/rollout-item.js";
+import { parseRolloutLine, serializeRolloutItem, type RolloutItem } from "../../src/session/rollout-item.js";
 import { RolloutStore } from "../../src/session/rollout-store.js";
 import { openStateDatabases } from "../../src/state/sqlite-driver.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
@@ -6474,6 +6474,53 @@ describe("AgenC delegate background-agent runner", () => {
     expect(h.sessionState.sessionConfiguration.modelVerbosity).toBe("high");
     expect((await h.runner.getAgentSnapshot(agentId))?.runtimeSettings?.modelVerbosity).toBeNull();
     expect(recordedRuntimeSettingsEvents(h.rolloutItems).at(-1)?.msg?.payload?.modelVerbosity).toBeNull();
+  });
+
+  it("recovers a persisted response detail override, exposes it on attach, and restores config on clear", async () => {
+    const agentId = "response-detail-persisted-recovery";
+    const root = mkdtempSync(join(tmpdir(), "agenc-detail-recovery-"));
+    const journalPath = join(root, "rollout.jsonl");
+    try {
+      const first = makeTopLevelRunner({ conversationId: agentId, canonicalRuntimeSettings: true });
+      first.sessionState.sessionConfiguration.modelVerbosity = "high";
+      await first.runner.startAgent({ objective: "work", deferInitialTurn: true });
+      await first.runner.applyAgentConfig(agentId, { sessionId: "session_1", modelVerbosity: "low" });
+      expect((await first.runner.getAgentSnapshot(agentId))?.runtimeSettings?.modelVerbosity).toBe("low");
+      const suspended = await first.runner.suspendIdleAgentForDaemonShutdown(agentId);
+      expect(suspended.disposition).toBe("suspended");
+      writeFileSync(journalPath, first.rolloutItems.map(item => serializeRolloutItem(item as RolloutItem)).join("\n") + "\n");
+
+      // Read the actual canonical journal bytes into a fresh runner generation.
+      const recoveredItems = readFileSync(journalPath, "utf8").trimEnd().split("\n")
+        .map(line => parseRolloutLine(line)).filter((item): item is RolloutItem => item !== null);
+      const persisted = recordedRuntimeSettingsEvents(recoveredItems).at(-1);
+      expect(persisted?.msg?.payload?.modelVerbosity).toBe("low");
+      const restored = makeTopLevelRunner({ conversationId: agentId, canonicalRuntimeSettings: true,
+        rolloutItems: recoveredItems });
+      restored.sessionState.sessionConfiguration.modelVerbosity = "high";
+      await expect(restored.runner.restoreAgent({ agentId, objective: "work", resumeSuspendedRun: true,
+        suspendedResumeReason: "daemon_startup_restore",
+        runtimeSettings: persisted?.msg?.payload as unknown as RunRuntimeSettingsSnapshot }))
+        .resolves.toBe(true);
+      expect(restored.sessionState.sessionConfiguration.modelVerbosity).toBe("low");
+
+      const sessions = new AgenCDaemonSessionManager();
+      await sessions.restoreSession({ sessionId: "session_1", agentId, status: "waiting", cwd: process.cwd(),
+        createdAt: "2026-05-09T00:00:00.000Z", initialPrompt: "work",
+        metadata: { runtimeOptions: resolveAgentRuntimeOptions({}) } });
+      const manager = new AgenCDaemonAgentManager({ runner: restored.runner, sessionManager: sessions });
+      await manager.restoreAgent({ agentId, objective: "work", status: "idle", cwd: process.cwd(),
+        startedAt: "2026-05-09T00:00:00.000Z", lastActiveAt: "2026-05-09T00:00:00.000Z",
+        sessionIds: ["session_1"], runtimeAvailable: true });
+      const attach = () => manager.attachAgent({ agentId, clientId: "desktop" }, async () => async () => {});
+      expect((await attach()).runtimeSettings.modelVerbosity).toBe("low");
+      const cleared = await restored.runner.applyAgentConfig(agentId, { sessionId: "session_1", modelVerbosity: null });
+      expect(cleared.modelVerbosity).toBeNull();
+      expect(restored.sessionState.sessionConfiguration.modelVerbosity).toBe("high");
+      expect((await attach()).runtimeSettings.modelVerbosity).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it.each([undefined, null])("normalizes absent optional runtime settings from %s", async (absent) => {

@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import { createHash } from "node:crypto";
 
 import type { LLMChatOptions, LLMMessage, LLMTool } from "../../types.js";
 import {
@@ -64,6 +65,17 @@ test("xAI Responses keeps the cached prefix and controls stable across response 
     expect(candidate).not.toHaveProperty("text.verbosity");
   }
   expect(JSON.stringify(inherited.input)).not.toContain("# Response Detail");
+});
+
+test("xAI keeps unset request bytes and output cap from the pre-detail builder", () => {
+  const provider = new GrokProvider({ apiKey: "xai-test", model: "grok-4-fast" });
+  const request = (provider as any).buildRequestPlan([{ role: "user", content: "hello" }], {
+    systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL",
+    maxOutputTokens: 4096,
+  } as LLMChatOptions).params as Record<string, unknown>;
+  expect(createHash("sha256").update(JSON.stringify(request)).digest("hex"))
+    .toBe("f8e955d74cfaee1ec3ec43b30d46884a4a3bb5fa0f4ebdd9c54586a61f12f339");
+  expect(request.max_output_tokens).toBe(4096);
 });
 
 /** A user message carrying a pasted image. */

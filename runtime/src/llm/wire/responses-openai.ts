@@ -34,12 +34,13 @@ import {
   withSerializedMetrics,
 } from "./shared.js";
 import { toOpenAIResponsesTools } from "./tools.js";
-import { withResponseDetailSystemPrompt } from "../../prompts/response-detail.js";
+import { getResponseDetailSection, withResponseDetailSystemPrompt } from "../../prompts/response-detail.js";
 import {
   decodeMcpToolNameFromWire,
   encodeMcpToolNameForWire,
 } from "./mcp-tool-naming.js";
 import { openAiAcceptsSamplingTemperature } from "../registry/openai-reasoning-models.js";
+import { resolveRegisteredModelCatalogEntry } from "../registry/model-catalog.js";
 
 export interface OpenAIResponsesRequestOptions {
   readonly model: string;
@@ -354,6 +355,11 @@ export function buildOpenAIResponsesRequest(
   input: OpenAIResponsesRequestOptions,
 ): Record<string, unknown> {
   const messages = prepareMessagesForWire(input.messages);
+  const catalogEntry = resolveRegisteredModelCatalogEntry({ provider: "openai", model: input.model });
+  const nativeVerbosity = input.chatgptBackend !== true &&
+    catalogEntry?.model.toLowerCase() === input.model.trim().toLowerCase() &&
+    catalogEntry.supportsVerbosity;
+  const fallbackVerbosity = !nativeVerbosity ? input.options?.modelVerbosity : undefined;
   // Prefix-cache split: only the cross-turn-stable head of the system
   // prompt goes into `instructions` (part of the cached prefix); the
   // volatile tail is appended as the LAST input item below so the
@@ -363,8 +369,8 @@ export function buildOpenAIResponsesRequest(
     sessionSuffix: sessionSystemPrompt,
     dynamicSuffix: dynamicSystemPrompt,
   } = splitSystemPromptOnDynamicBoundary(
-    input.chatgptBackend === true
-      ? withResponseDetailSystemPrompt(input.options?.systemPrompt, input.options?.responseDetailOverride)
+    input.chatgptBackend !== true && fallbackVerbosity !== undefined
+      ? withResponseDetailSystemPrompt(input.options?.systemPrompt, fallbackVerbosity)
       : input.options?.systemPrompt,
   );
   const instructions = [
@@ -377,10 +383,9 @@ export function buildOpenAIResponsesRequest(
       )
       .map((message) => messageTextContent(message.content))
       .map((text) => text.trim()),
-    // The ChatGPT subscription backend rejects system-role input items
-    // outright ("System messages are not allowed"), so the volatile tail
-    // folds into instructions there: a colder prefix cache beats a turn
-    // that cannot run at all. Platform keys keep the split below.
+    // The ChatGPT subscription backend rejects system-role input items.
+    // Its existing volatile prompt tail stays in instructions; response
+    // detail is appended separately as an accepted user input item below.
     ...(input.chatgptBackend === true && dynamicSystemPrompt !== undefined
       ? [dynamicSystemPrompt]
       : []),
@@ -462,6 +467,13 @@ export function buildOpenAIResponsesRequest(
       content: [{ type: "input_text", text: dynamicSystemPrompt }],
     });
   }
+  if (input.chatgptBackend === true && fallbackVerbosity !== undefined) {
+    responseInput.push({
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text: getResponseDetailSection(fallbackVerbosity) }],
+    });
+  }
 
   const body: Record<string, unknown> = {
     model: input.model,
@@ -531,7 +543,7 @@ export function buildOpenAIResponsesRequest(
       summary: input.options.reasoningSummary,
     };
   }
-  if (input.chatgptBackend !== true && input.options?.modelVerbosity !== undefined) {
+  if (nativeVerbosity && input.options?.modelVerbosity !== undefined) {
     body.text = {
       ...(body.text && typeof body.text === "object"
         ? (body.text as Record<string, unknown>)

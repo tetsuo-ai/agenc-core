@@ -26,6 +26,15 @@ describe("buildChatCompletionsRequest", () => {
     }
     expect(JSON.stringify(inherited.messages)).not.toContain("# Response Detail");
   });
+  test("keeps unset request bytes from the pre-detail builder", () => {
+    const request = buildChatCompletionsRequest({
+      model: "qwen-local", messages: [{ role: "user", content: "hello" }], tools: [],
+      options: { systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL",
+        maxOutputTokens: 4096 },
+    });
+    expect(JSON.stringify(request)).toBe('{"model":"qwen-local","stream":false,"messages":[{"role":"system","content":"STATIC_HEAD\\n\\n<!-- dynamic-boundary -->\\n\\nDYNAMIC_TAIL"},{"role":"user","content":"hello"}],"max_tokens":4096}');
+    expect(request.max_tokens).toBe(4096);
+  });
   test("serializes request instructions as the first system message only", () => {
     const request = buildChatCompletionsRequest({
       model: "qwen-local",

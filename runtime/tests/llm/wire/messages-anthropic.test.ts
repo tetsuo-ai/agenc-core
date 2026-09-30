@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { createHash } from "node:crypto";
 import {
   buildAnthropicMessagesRequest,
   parseAnthropicMessagesResponse,
@@ -70,6 +71,15 @@ describe("Sonnet 5.5 Messages API contract", () => {
     const inheritedConfig = buildAnthropicMessagesRequest({ model, messages, tools,
       options: { systemPrompt: "STATIC_HEAD", modelVerbosity: "high" } });
     expect(JSON.stringify(inheritedConfig)).not.toContain("# Response Detail");
+  });
+  test("keeps unset request bytes and output cap from the pre-detail builder", () => {
+    const request = buildAnthropicMessagesRequest({
+      model, messages: [{ role: "user", content: "hello" }], tools: [], maxTokens: 4096,
+      options: { systemPrompt: "STATIC_HEAD\n\n<!-- dynamic-boundary -->\n\nDYNAMIC_TAIL" },
+    });
+    expect(createHash("sha256").update(JSON.stringify(request)).digest("hex"))
+      .toBe("c66fb5c6b7879af6bf3a19d1a4f42fef4874824a4a2731d138d72d1d62a84ec6");
+    expect(request.max_tokens).toBe(4096);
   });
 
   test("uses adaptive thinking with readable progress updates at every effort", () => {
