@@ -50,6 +50,10 @@ import {
 } from "./exec-sandbox-denial.js";
 import { parseSandboxPermissionsArgs } from "../../sandbox/escalation/sandboxing.js";
 import { readReadOnlyInspectionInvocation } from "../../permissions/readonly-inspection.js";
+import { isDangerousCommand } from "../../permissions/bash.js";
+import { shellCallRequestsSandboxEscalation } from "../../permissions/read-only-grant.js";
+import { getRuleByContentsForTool } from "../../permissions/rules.js";
+import type { PermissionResult } from "../../permissions/types.js";
 import {
   permissionProfileForRuntimeContext,
   runtimeChildTempRoot,
@@ -545,6 +549,86 @@ function validateExecCommandInput(
   return null;
 }
 
+/** Modes in which a command the OS sandbox contains runs without a prompt. */
+const SANDBOX_AUTO_ALLOW_MODES: ReadonlySet<string> = new Set([
+  "default",
+  "acceptEdits",
+  "auto",
+  "dontAsk",
+]);
+
+/**
+ * `sandbox.autoAllowBashIfSandboxed` (on unless set to false) for
+ * exec_command: a command that will run inside the OS sandbox proceeds without
+ * asking, because the sandbox is its boundary. Without this every command
+ * asked, so a run with nobody to answer (`agenc -p`) had every one refused.
+ *
+ * Anything else keeps the normal flow, which asks: no sandbox for this
+ * dispatch, an escalation request, a workdir outside the workspace, a command
+ * the safety floor flags, a deny or ask rule on the shell tools, plan mode,
+ * and a run with nobody attached, which keeps its own policy (evaluator.ts,
+ * decideReadOnlyGrant and decideWithoutApprover).
+ */
+function sandboxAutoAllow(
+  args: Record<string, unknown>,
+  context: Parameters<NonNullable<Tool["checkPermissions"]>>[1],
+  config: ExecCommandToolConfig | undefined,
+): PermissionResult {
+  const keepAsking: PermissionResult = {
+    behavior: "passthrough",
+    message: "Permission required to use exec_command",
+  };
+  if (
+    context.sandboxMode === undefined ||
+    !sandboxModeRequiresPlatformIsolation(context.sandboxMode)
+  ) {
+    return keepAsking;
+  }
+  const settings = context.session?.services?.configStore?.current();
+  if (settings === undefined || settings.sandbox?.autoAllowBashIfSandboxed === false) {
+    return keepAsking;
+  }
+  const appState = context.getAppState();
+  const permissions = context.toolPermissionContext?.(appState) ??
+    appState.toolPermissionContext;
+  // The auto-mode classifier re-runs tool checks with the mode set to
+  // acceptEdits (evaluator.ts, tryAcceptEditsSimulation). autoModeActive
+  // outside auto mode means plan with auto, which keeps its classifier.
+  if (
+    !SANDBOX_AUTO_ALLOW_MODES.has(permissions.mode) ||
+    (appState.autoModeActive === true && permissions.mode !== "auto") ||
+    permissions.unattendedPolicy?.noApprover === true ||
+    permissions.unattendedPolicy?.readOnly === true
+  ) {
+    return keepAsking;
+  }
+  // Whole-tool deny and ask rules already decided the call (evaluator.ts steps
+  // 1a and 1b). The permission flow has no matcher for content rules such as
+  // `exec_command(npm:*)`, so any such deny or ask rule on the shell tools
+  // keeps the prompt rather than being guessed at here.
+  if (
+    getRuleByContentsForTool(permissions, "exec_command", "deny").size > 0 ||
+    getRuleByContentsForTool(permissions, "exec_command", "ask").size > 0
+  ) {
+    return keepAsking;
+  }
+  if (
+    shellCallRequestsSandboxEscalation(args) ||
+    validateExecCommandInput(args, config) !== null ||
+    isDangerousCommand(asString(args.cmd)!)
+  ) {
+    return keepAsking;
+  }
+  return {
+    behavior: "allow",
+    updatedInput: args,
+    decisionReason: {
+      type: "other",
+      reason: "Auto-allowed with sandbox (autoAllowBashIfSandboxed enabled)",
+    },
+  };
+}
+
 export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
   const manager =
     config?.unifiedExecManager ??
@@ -585,6 +669,9 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
     supportsParallelToolCalls: false,
     isConcurrencySafe: () => false,
     interruptBehavior: () => "cancel",
+    checkPermissions(input, context) {
+      return sandboxAutoAllow(input as Record<string, unknown>, context, config);
+    },
     preflight(args) {
       const failure = validateExecCommandInput(args, config);
       if (failure !== null) return failure;
