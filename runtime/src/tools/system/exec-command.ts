@@ -612,7 +612,11 @@ function sandboxAutoAllow(
   ) {
     return keepAsking;
   }
+  // A detached service needs danger-full-access and a contained TTY is refused
+  // by the process manager, so neither runs inside the sandbox this allows for.
   if (
+    args.detach === true ||
+    args.tty === true ||
     shellCallRequestsSandboxEscalation(args) ||
     validateExecCommandInput(args, config) !== null ||
     isDangerousCommand(asString(args.cmd)!)

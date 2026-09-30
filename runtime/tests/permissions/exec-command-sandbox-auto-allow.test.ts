@@ -149,7 +149,9 @@ describe("exec_command sandbox auto-allow", () => {
       sandbox_permissions: "with_additional_permissions",
       additional_permissions: { network: { enabled: true } },
     }],
-  ])("still asks for a sandbox escalation request (%s)", async (_label, input) => {
+    ["a detached service", { cmd: "python3 -m http.server", detach: true }],
+    ["a TTY session", { cmd: "python3", tty: true }],
+  ])("still asks for a call that would not run inside the sandbox (%s)", async (_label, input) => {
     expect((await decide(input)).behavior).toBe("ask");
   });
 
