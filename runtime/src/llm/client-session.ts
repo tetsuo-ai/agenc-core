@@ -1092,13 +1092,18 @@ export class ProviderHttpClientSession {
             abortController: currentAttempt.attemptState.abortController,
             timeoutMs: idleTimeoutMs,
           });
+          let reachedEof = false;
+          let consumerInterrupted = false;
           try {
             while (true) {
               const next = await readWithAbort(
                 reader,
-                currentAttempt.attemptState.abortController.signal,
+                currentAttempt.attemptState.signal,
               );
-              if (next.done) return;
+              if (next.done) {
+                reachedEof = true;
+                return;
+              }
               // LLM-09: empty chunks still count as body progress for idle
               // watchdog (providers may send keepalives).
               watchdog.kick();
@@ -1120,15 +1125,25 @@ export class ProviderHttpClientSession {
                   }
                 }
               }
-              yield { value: next.value, index };
               yieldedBodyBytes = true;
+              try {
+                yield { value: next.value, index };
+              } catch (error) {
+                // iterator.throw belongs to the consumer, not the transport.
+                consumerInterrupted = true;
+                throw error;
+              }
               index += 1;
             }
           } catch (error) {
+            if (consumerInterrupted) throw error;
             if (isStreamIdleTimeoutError(error)) {
               throw new Error(
                 `${session.config.providerName} stream idle for ${idleTimeoutMs}ms`,
               );
+            }
+            if (currentAttempt.attemptState.signal?.aborted) {
+              throw abortReasonToError(currentAttempt.attemptState.signal.reason);
             }
             const transport = normalizeTransportError(error);
             if (
@@ -1158,8 +1173,21 @@ export class ProviderHttpClientSession {
             throw materializeTransportError(session.config.providerName, transport);
           } finally {
             watchdog.stop();
-            reader.releaseLock();
-            currentAttempt.attemptState.cleanup();
+            if (!reachedEof) {
+              // Closing an iterator is not EOF. Relinquish the unread body,
+              // but a stalled/rejecting source cancel must not delay cleanup
+              // or replace the original consumer/transport failure.
+              try {
+                void reader.cancel().catch(() => {});
+              } catch {
+                // Best-effort cancellation; still release local resources.
+              }
+            }
+            try {
+              reader.releaseLock();
+            } finally {
+              currentAttempt.attemptState.cleanup();
+            }
           }
         }
       },

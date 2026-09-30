@@ -2,6 +2,8 @@
   "extends": "./tsconfig.test-support.json",
   "include": [
     "src/types/**/*.d.ts",
+    "tests/llm/client-session-stream-close.test.ts",
+    "tests/llm/providers/openai/adapter.responses-eof.test.ts",
     "tests/llm/wire/incomplete-tool-calls.test.ts",
     "tests/llm/providers/openai/adapter.incomplete-identities.test.ts",
     "tests/session/run-turn.truncated-tool-recovery.test.ts",

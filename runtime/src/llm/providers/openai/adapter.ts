@@ -1513,8 +1513,17 @@ export class OpenAIProvider implements LLMProvider {
       const streamedReasoningItems: Record<string, unknown>[] = [];
       let completedResponse: Record<string, unknown> | null = null;
 
-      for await (const event of this.readSseEvents(response)) {
+      for await (const event of this.readResponsesSseEvents(response)) {
         const eventType = event.event ?? String(event.data.type ?? "");
+
+        // A terminal payload is not physical body completion. Keep consuming
+        // through EOF before publishing executable calls or final usage. Any
+        // further data event contradicts the terminal response; comments and
+        // the optional [DONE] marker are handled by the reader below.
+        if (completedResponse !== null) {
+          throw new LLMInvalidResponseError(this.name,
+            "OpenAI Responses stream emitted data after its terminal response");
+        }
 
         if (eventType === "response.output_item.added" || eventType === "response.output_item.done") {
           const item = event.data.item;
@@ -1651,7 +1660,11 @@ export class OpenAIProvider implements LLMProvider {
                 : status === undefined || status === "incomplete" ? "incomplete" : "failed",
             };
           }
-          break;
+          if (completedResponse === null) {
+            throw new LLMInvalidResponseError(this.name,
+              "OpenAI Responses stream emitted an invalid terminal response");
+          }
+          continue;
         }
 
         if (eventType === "response.failed" || eventType === "error") {
@@ -2274,6 +2287,59 @@ export class OpenAIProvider implements LLMProvider {
           }
           : {}),
       };
+    }
+  }
+
+  private async *readResponsesSseEvents(
+    response: ProviderHttpStreamResponse,
+  ): AsyncGenerator<OpenAISseEvent> {
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    let buffer = "";
+    let doneMarker = false;
+    const takeFrames = (final = false): readonly SSEFrame[] => {
+      // SSE treats CR, LF and CRLF as line boundaries. The shared legacy
+      // parser removes CR characters; normalize here first so an embedded CR
+      // cannot silently repair malformed JSON. Retain a split CRLF boundary.
+      const pendingCr = !final && buffer.endsWith("\r");
+      const ready = pendingCr ? buffer.slice(0, -1) : buffer;
+      const parsed = parseSSEFrames(ready.replace(/\r\n?/g, "\n"), this.name);
+      buffer = parsed.remaining + (pendingCr ? "\r" : "");
+      return parsed.frames;
+    };
+    const decode = (frames: readonly SSEFrame[]): OpenAISseEvent[] => {
+      const events: OpenAISseEvent[] = [];
+      for (const frame of frames) {
+        if (!frame.data) continue;
+        if (doneMarker) {
+          throw new LLMInvalidResponseError(this.name,
+            "OpenAI Responses stream emitted data after [DONE]");
+        }
+        if (frame.data === "[DONE]") { doneMarker = true; continue; }
+        let data: unknown;
+        try { data = JSON.parse(frame.data); } catch {
+          throw new LLMInvalidResponseError(this.name,
+            "OpenAI Responses stream emitted malformed JSON");
+        }
+        if (data === null || typeof data !== "object" || Array.isArray(data)) {
+          throw new LLMInvalidResponseError(this.name,
+            "OpenAI Responses stream emitted a non-object event");
+        }
+        events.push({ event: frame.event, data: data as Record<string, unknown> });
+      }
+      return events;
+    };
+    // Do not return at [DONE]: the HTTP session still owns its watchdog and
+    // caller cancellation until the actual reader reports EOF. No implicit
+    // model-idle deadline is introduced here.
+    for await (const chunk of response) {
+      buffer += decoder.decode(chunk.value, { stream: true });
+      for (const event of decode(takeFrames())) yield event;
+    }
+    buffer += decoder.decode();
+    for (const event of decode(takeFrames(true))) yield event;
+    if (buffer.split("\n").some(line => line.trim().length > 0 && !line.startsWith(":"))) {
+      throw new LLMInvalidResponseError(this.name,
+        "OpenAI Responses stream ended with an unterminated event");
     }
   }
 
