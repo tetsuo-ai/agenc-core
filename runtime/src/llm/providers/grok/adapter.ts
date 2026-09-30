@@ -112,6 +112,7 @@ import {
   BUILT_IN_PROVIDER_BASE_URLS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
 } from "../../registry/provider-info.js";
+import { resolveRegisteredModelCatalogEntry } from "../../registry/model-catalog.js";
 import {
   XAI_PRIORITY_SERVICE_TIER,
   xaiSendsPriorityProcessing,
@@ -170,6 +171,15 @@ type ProviderFallbackWaitDecision = Extract<
   ProviderFallbackDecision,
   { readonly kind: "wait" }
 >;
+
+/**
+ * Whether the model catalog lists image input for a Grok model. An
+ * unregistered model counts as text-only.
+ */
+function catalogListsImageInput(model: string): boolean {
+  return resolveRegisteredModelCatalogEntry({ provider: "grok", model })
+    ?.inputModalities.includes("image") === true;
+}
 
 /**
  * Vision models known to support client-side function-calling alongside image
@@ -2336,8 +2346,6 @@ export class GrokProvider implements LLMProvider {
     incrementalBaseline: readonly LLMMessage[];
     trailingInstructions?: string;
   } {
-    const visionModel = this.config.visionModel ??
-      (this.config.model === "grok-4.7" ? this.config.model : DEFAULT_VISION_MODEL);
     // Prefix-cache split: xAI caching is prefix-based ("never modify
     // earlier messages — only append"), so the volatile tail of the
     // system prompt (timestamp, git state, …) must not sit at the front
@@ -2370,8 +2378,14 @@ export class GrokProvider implements LLMProvider {
     const hasImages = repairedMessages.some((message) =>
       Array.isArray(message.content) &&
       message.content.some((part) => part.type === "image_url"));
-    const model =
-      options?.model ?? (hasImages ? visionModel : this.config.model);
+    // Images stay on a model whose catalog row lists image input: switching
+    // models would restart the conversation's continuation chain and cache.
+    // Only a text-only model hands image requests to the vision model.
+    const visionModel =
+      hasImages && !catalogListsImageInput(this.config.model)
+        ? this.config.visionModel ?? DEFAULT_VISION_MODEL
+        : undefined;
+    const model = options?.model ?? visionModel ?? this.config.model;
     const xaiInput = buildXaiResponsesInputItems(repairedMessages, model);
 
     const params: Record<string, unknown> = {
@@ -2439,7 +2453,8 @@ export class GrokProvider implements LLMProvider {
     const structuredOutputEnabled =
       options?.structuredOutput?.enabled !== false &&
       structuredOutputSchema !== undefined;
-    // Enable tools unless the vision model is known to not support them.
+    // Enable tools unless the request went to a vision model not known to
+    // support them.
     //
     // Removed 2026-04-09: the previous logic also dropped the entire tools
     // array on any follow-up turn whose tool-schema serialized to more than
@@ -2456,7 +2471,7 @@ export class GrokProvider implements LLMProvider {
     // array is cheap; the previous guard was a token-saving theory that
     // silently broke multi-step tool sequences end-to-end.
     if (selectedTools.tools.length > 0) {
-      if (!xaiInput.hasImages || VISION_MODELS_WITH_TOOLS.has(visionModel)) {
+      if (visionModel === undefined || VISION_MODELS_WITH_TOOLS.has(visionModel)) {
         params.tools = selectedTools.tools;
         selectedTools.toolsAttached = true;
         params.parallel_tool_calls = this.config.parallelToolCalls;

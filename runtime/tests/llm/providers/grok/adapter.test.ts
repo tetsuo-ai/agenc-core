@@ -45,6 +45,15 @@ const TEST_TOOL: LLMTool = {
   },
 };
 
+/** A user message carrying a pasted image. */
+const IMAGE_MESSAGE: LLMMessage = {
+  role: "user",
+  content: [
+    { type: "text", text: "What does this show?" },
+    { type: "image_url", image_url: { url: "data:image/png;base64,YWJj" } },
+  ],
+};
+
 function withResponse<T>(data: T) {
   return {
     withResponse: async () => ({
@@ -1125,6 +1134,43 @@ describe("GrokProvider incremental continuation", () => {
   });
 });
 
+describe("GrokProvider image routing", () => {
+  function imageRequestPlan(model: string, visionModel?: string) {
+    const provider = new GrokProvider({
+      apiKey: "xai-test",
+      model,
+      tools: [TEST_TOOL],
+      ...(visionModel !== undefined ? { visionModel } : {}),
+    });
+    return (provider as any).buildRequestPlan([IMAGE_MESSAGE]);
+  }
+
+  test.each<[string, string | undefined, string]>([
+    // The catalog lists image input for these models, so they keep the image.
+    ["grok-4.6", undefined, "grok-4.6"],
+    ["grok-4.3", undefined, "grok-4.3"],
+    ["grok-4.6", "grok-4-0709", "grok-4.6"],
+    // A text-only model hands the image to the vision model.
+    ["grok-code-fast-1", undefined, "grok-4-0709"],
+    ["grok-code-fast-1", "grok-4.6", "grok-4.6"],
+  ])("an image for %s (vision model %s) goes to %s with the tools", (model, visionModel, expected) => {
+    const plan = imageRequestPlan(model, visionModel);
+
+    expect(plan.params.model).toBe(expected);
+    expect(plan.params.tools).toHaveLength(1);
+  });
+
+  test("a vision model without tool support receives no tools", () => {
+    const plan = imageRequestPlan("grok-code-fast-1", "grok-2-vision-1212");
+
+    expect(plan.params.model).toBe("grok-2-vision-1212");
+    expect(plan.params).not.toHaveProperty("tools");
+    expect(plan.toolSelection.toolSuppressionReason).toBe(
+      "vision_model_without_tool_support",
+    );
+  });
+});
+
 describe("GrokProvider streaming incremental continuation (AGENC_XAI_INCREMENTAL)", () => {
   const firstTurn: LLMMessage[] = [{ role: "user", content: "hello" }];
   const secondTurn: LLMMessage[] = [
@@ -1169,11 +1215,14 @@ describe("GrokProvider streaming incremental continuation (AGENC_XAI_INCREMENTAL
   const copiesOf = (items: readonly unknown[], text: string): number =>
     items.filter((item) => JSON.stringify(item).includes(text)).length;
 
-  function streamingProvider(incrementalContinuation: boolean | undefined) {
+  function streamingProvider(
+    incrementalContinuation: boolean | undefined,
+    model = "grok-4-fast",
+  ) {
     const warnings: Array<{ cause: string; message: string }> = [];
     const provider = new GrokProvider({
       apiKey: "xai-test",
-      model: "grok-4-fast",
+      model,
       emitWarning: (warning) => warnings.push(warning),
       ...(incrementalContinuation !== undefined
         ? { incrementalContinuation }
@@ -1224,6 +1273,23 @@ describe("GrokProvider streaming incremental continuation (AGENC_XAI_INCREMENTAL
     expect(delta).not.toContain("hello");
     expect(delta).not.toContain("Static instructions");
     expect(delta).not.toContain("Current time: noon");
+  });
+
+  test("an image keeps an image-capable model and its chain", async () => {
+    const { provider, requestBodies } = streamingProvider(true, "grok-4.6");
+
+    await provider.chatStream(firstTurn, () => {}, conversationTurn("noon"));
+    await provider.chatStream(
+      [...firstTurn, { role: "assistant", content: "hi" }, IMAGE_MESSAGE],
+      () => {},
+      conversationTurn("noon"),
+    );
+
+    expect(requestBodies.map((body) => body.model)).toEqual(["grok-4.6", "grok-4.6"]);
+    expect(requestBodies[1]?.previous_response_id).toBe("resp_1");
+    const delta = JSON.stringify(requestBodies[1]?.input);
+    expect(delta).toContain("input_image");
+    expect(delta).not.toContain("hello");
   });
 
   test("stays off by default: every streaming request re-sends the full history", async () => {

@@ -47,6 +47,9 @@ export interface GrokProviderConfig
    * false; without it, follow-up requests re-upload the full history.
    */
   incrementalContinuation?: boolean;
-  /** Vision-capable model to auto-switch to when images are present (default: 'grok-2-vision-1212') */
+  /**
+   * Vision-capable model that takes requests with images when the model
+   * catalog does not list image input for `model` (default: 'grok-4-0709').
+   */
   visionModel?: string;
 }
