@@ -2,6 +2,8 @@
   "extends": "./tsconfig.test-support.json",
   "include": [
     "src/types/**/*.d.ts",
+    "tests/bin/bootstrap.prepared-sampling.test.ts",
+    "tests/app-server/background-agent-runner.prepared-sampling.test.ts",
     "tests/llm/client-session-stream-close.test.ts",
     "tests/llm/providers/openai/adapter.responses-eof.test.ts",
     "tests/llm/wire/incomplete-tool-calls.test.ts",

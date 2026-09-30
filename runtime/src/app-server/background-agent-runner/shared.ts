@@ -4,6 +4,7 @@
  */
 
 import type { AgenCSessionEventDelivery } from "../approval-delivery.js";
+import type { PreparedSamplingValidator } from "../../session/prepared-sampling-evidence.js";
 import { createHash } from "node:crypto";
 import type {
   BootstrapLocalRuntimeSessionOptions,
@@ -854,6 +855,8 @@ function positiveInteger(value: unknown): number {
 }
 
 export interface AgenCDelegateBackgroundAgentRunnerOptions {
+  /** Trusted constructor-only observer, not a reloadable runtime setting. */
+  readonly validatePreparedSampling?: PreparedSamplingValidator;
   readonly approvalBroker?: import("../live-approval-broker.js").LiveApprovalBroker;
   readonly agentStopTimeoutMs?: number;
   /**

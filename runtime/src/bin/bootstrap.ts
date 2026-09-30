@@ -1,4 +1,5 @@
 import { runtimeSpan } from "../diagnostics/runtime-timing.js";
+import type { PreparedSamplingValidator } from "../session/prepared-sampling-evidence.js";
 import { VERSION } from "../version.js";
 import { randomUUID } from "node:crypto";
 import { fstatSync, lstatSync, realpathSync } from "node:fs";
@@ -611,6 +612,8 @@ function createMemoryAutoSaveSidecar(): Sidecar {
 }
 
 export interface BootstrapLocalRuntimeSessionOptions {
+  /** Trusted in-process observer installed before Session construction. */
+  readonly validatePreparedSampling?: PreparedSamplingValidator;
   readonly signal?: AbortSignal;
   readonly apiKey?: string;
   readonly authBackend?: AuthBackend;
@@ -825,6 +828,8 @@ function snapshotGrokAcpChildEnvironment(
 export async function bootstrapLocalRuntimeSession(
   options: BootstrapLocalRuntimeSessionOptions,
 ): Promise<LocalRuntimeBootstrap> {
+  // Capture the trusted callback before the first asynchronous startup step.
+  options = { ...options };
   options.signal?.throwIfAborted();
   const env = { ...(options.env ?? process.env) };
   const providerEnvironment = snapshotProviderEnvironment(env);
@@ -1693,6 +1698,9 @@ async function bootstrapLocalRuntimeSessionScoped(
   });
   const bootstrapServices: BootstrapSessionServicesHandle =
     buildBootstrapSessionServices({
+      ...(options.validatePreparedSampling !== undefined
+        ? { validatePreparedSampling: options.validatePreparedSampling }
+        : {}),
       provider,
       providerName: resolvedProvider,
       ...(options.authBackend !== undefined

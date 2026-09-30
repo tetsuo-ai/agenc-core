@@ -8,6 +8,7 @@
 
 
 import { crossProviderConsentAvailability, LiveApprovalBroker } from "./live-approval-broker.js";
+import type { PreparedSamplingValidator } from "../session/prepared-sampling-evidence.js";
 
 
 import { enterDaemonWorkingDirectory } from "./daemon-working-directory.js";
@@ -312,6 +313,8 @@ export async function runAgenCDaemonForeground(
   io: AgenCDaemonCliIo,
   options: {
     readonly enterDaemonHome?: boolean;
+    /** Trusted foreground-owner observer; never serialized over RPC or spawn. */
+    readonly validatePreparedSampling?: PreparedSamplingValidator;
     readonly signalProcess?: AgenCSignalProcess;
     readonly beforeDaemonReady?: () => void | Promise<void>;
     readonly beforeDaemonReloadAdoption?: () => void | Promise<void>;
@@ -329,6 +332,11 @@ export async function runAgenCDaemonForeground(
     readonly findLegacyDaemonProcesses?: RunAgenCDaemonCliOptions["findLegacyDaemonProcesses"];
   } = {},
 ): Promise<number> {
+  // Preserve the owner-selected callback across lifecycle-lock awaits.
+  options = { ...options };
+  if (options.validatePreparedSampling !== undefined && options.runner !== undefined) {
+    throw new Error("Prepared sampling validation requires the canonical daemon runner");
+  }
   const startupStartedAt = Date.now();
   // Leave the caller's directory before anything else: it may not outlive
   // this process, and a dead cwd breaks every later child spawn (#2149).
@@ -389,6 +397,7 @@ async function runAgenCDaemonForegroundLocked(
   host: AgenCDaemonCliHost,
   io: AgenCDaemonCliIo,
   options: {
+    readonly validatePreparedSampling?: PreparedSamplingValidator;
     readonly signalProcess?: AgenCSignalProcess;
     readonly beforeDaemonReady?: () => void | Promise<void>;
     readonly beforeDaemonReloadAdoption?: () => void | Promise<void>;
@@ -866,6 +875,9 @@ async function runAgenCDaemonForegroundLocked(
     let configuredRunner: AgenCDelegateBackgroundAgentRunner | undefined;
     if (runner === undefined) {
       configuredRunner = new AgenCDelegateBackgroundAgentRunner({
+        ...(options.validatePreparedSampling !== undefined
+          ? { validatePreparedSampling: options.validatePreparedSampling }
+          : {}),
         approvalBroker,
         ...(activeConfig.daemon?.agent_stop_timeout_ms !== undefined
           ? { agentStopTimeoutMs: activeConfig.daemon.agent_stop_timeout_ms }

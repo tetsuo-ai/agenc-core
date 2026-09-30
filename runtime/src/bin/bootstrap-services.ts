@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { LLMProvider } from "../llm/types.js";
+import type { PreparedSamplingValidator } from "../session/prepared-sampling-evidence.js";
 import {
   isFactoryProvider,
   readProviderFactoryOptions,
@@ -137,6 +138,8 @@ interface BootstrapShellSnapshot {
 }
 
 export interface BootstrapSessionServicesOptions {
+  /** Trusted in-process observer; never sourced from configuration or RPC. */
+  readonly validatePreparedSampling?: PreparedSamplingValidator;
   readonly provider: LLMProvider;
   readonly providerName: string;
   readonly authBackend?: AuthBackend;
@@ -851,6 +854,9 @@ export function buildBootstrapSessionServices(
   });
 
   const services: SessionServices = {
+    ...(opts.validatePreparedSampling !== undefined
+      ? { validatePreparedSampling: opts.validatePreparedSampling }
+      : {}),
     runtimeOptions: opts.runtimeOptions,
     hookExecutionAuthority,
     mcpConnectionManager,

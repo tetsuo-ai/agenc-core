@@ -8,6 +8,7 @@
  */
 
 import type { AgenCSessionEventDelivery } from "./approval-delivery.js";
+import type { PreparedSamplingValidator } from "../session/prepared-sampling-evidence.js";
 import { LiveApprovalBroker } from "./live-approval-broker.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
@@ -427,6 +428,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   readonly #agentStopTimeoutMs: number;
   readonly #durableResumeTimeoutMs: number;
   readonly #bootstrap: AgenCBootstrapFunction;
+  readonly #validatePreparedSampling: PreparedSamplingValidator | undefined;
   readonly #requireSandboxReadyAtStartup: boolean;
   readonly #ensureAgentControl: AgenCEnsureAgentControlFunction;
   #authBackend: AgenCDaemonRuntimeAuthBackend | undefined;
@@ -463,6 +465,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       throw new RangeError("durableResumeTimeoutMs must be a positive timer interval");
     }
     this.#bootstrap = options.bootstrap ?? bootstrapLocalRuntimeSession;
+    this.#validatePreparedSampling = options.validatePreparedSampling;
     this.#requireSandboxReadyAtStartup = options.bootstrap === undefined;
     this.#ensureAgentControl = options.ensureAgentControl ?? ensureAgentControl;
     this.updateAuthBackend(options.authBackend);
@@ -535,6 +538,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       () =>
         runWithBootstrapSessionScope(() =>
           this.#bootstrap({
+      ...(this.#validatePreparedSampling !== undefined
+        ? { validatePreparedSampling: this.#validatePreparedSampling }
+        : {}),
       ...(params.signal !== undefined ? { signal: params.signal } : {}),
       ...(mergedEnv !== undefined ? { env: mergedEnv } : {}),
       ...(this.#authBackend !== undefined
@@ -1059,6 +1065,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           () =>
             runWithBootstrapSessionScope(() =>
               this.#bootstrap({
+          ...(this.#validatePreparedSampling !== undefined
+            ? { validatePreparedSampling: this.#validatePreparedSampling }
+            : {}),
           ...(params.signal !== undefined ? { signal: params.signal } : {}),
           ...(mergedEnv !== undefined ? { env: mergedEnv } : {}),
           ...(this.#authBackend !== undefined
